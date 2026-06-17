@@ -12,22 +12,40 @@
 import {
   defineStore,
   defineReaction,
-  getGameState,
-  updateState,
+  type StateValue,
+} from "postretro";
+import {
+  Bar,
+  Button,
+  Panel,
+  Slider,
+  Text,
+  Tree,
   appendText,
   backspaceText,
   bindState,
-  stateEquals,
+  defineTheme,
+  getDesignTokens,
+  getGameState,
   onStateCrossing,
-  Text,
-  Bar,
-  Button,
-  Slider,
-  Tree,
-  Panel,
-  type StateValue,
+  stateEquals,
+  updateState,
   type LocalizedText,
-} from "postretro";
+} from "postretro/ui";
+
+const fixtureTheme = defineTheme({
+  color: {
+    ok: [0.12, 0.72, 0.40, 1.0],
+    panel: {
+      default: [0.018, 0.026, 0.039, 0.82],
+    },
+  },
+  font: {
+    primary: "JetBrains Mono",
+  },
+});
+
+const tokens = getDesignTokens(fixtureTheme);
 
 // --- (1) Value-typed slot handles -------------------------------------------
 // `defineStore` infers each slot's value type from its `type` discriminant.
@@ -58,8 +76,8 @@ const _healthText = Text({ content: "HP", bind: gameState.player.health });
 const _healthBar = Bar({
   bind: gameState.player.health,
   max: gameState.player.maxHealth,
-  fill: "ok",
-  background: [0.1, 0.1, 0.1, 1],
+  fill: tokens.color.ok,
+  background: tokens.color.panel.default,
 });
 const _formattedHealth = Text({
   content: "HP",
@@ -69,11 +87,17 @@ const _formattedHealth = Text({
   }),
 });
 const _flashPanel = Panel({
-  fill: "panel.default",
+  fill: tokens.color.panel.default,
   bind: bindState(gameState.screen.flash, {
     tween: { durationMs: 80, easing: "linear", from: [0, 0, 0, 0] },
   }),
 });
+
+// @ts-expect-error — color slots accept color tokens, not font tokens.
+const _badPanelColor = Panel({ fill: tokens.font.primary });
+
+// @ts-expect-error — font slots reject one-off font family literals.
+const _badFontLiteral = Text({ content: "Bad font", font: "JetBrains Mono" });
 
 // Slider writes require a writable number ref; engine health is readonly.
 // @ts-expect-error — readonly health cannot feed an interactive Slider.
@@ -172,6 +196,8 @@ void _healthText;
 void _healthBar;
 void _formattedHealth;
 void _flashPanel;
+void _badPanelColor;
+void _badFontLiteral;
 void _volumeSlider;
 void _badArrayBind;
 void _named;

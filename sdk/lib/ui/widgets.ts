@@ -12,21 +12,24 @@
 // See: context/lib/ui.md · context/lib/scripting.md §7
 
 import type { LocalizedText } from "./text";
+import type { ColorToken, FontToken, SpacingToken } from "./theme";
+import { __unwrapThemeToken } from "./theme";
 
 // --- Shared wire-shape aliases ----------------------------------------------
 
 /**
  * A widget color slot: an inline linear-RGBA tuple (`[r, g, b, a]`, 0–1) or a
- * theme-token name resolved against the active theme. Mirrors `descriptor.rs`
- * `ColorValue` (untagged: bare array or bare string).
+ * color token from `getDesignTokens(theme)`. Mirrors `descriptor.rs`
+ * `ColorValue` after SDK unwrapping (untagged: bare array or bare string).
  */
-export type WidgetColor = [number, number, number, number] | string;
+export type WidgetColor = [number, number, number, number] | ColorToken;
 
 /**
- * A spacing slot (gap/padding): an inline logical-px number or a theme-token
- * name. Mirrors `descriptor.rs` `SpacingValue` (untagged: bare number or string).
+ * A spacing slot (gap/padding): an inline logical-px number or a branded spacing
+ * token from `getDesignTokens(theme)`. Mirrors `descriptor.rs` `SpacingValue`
+ * after SDK unwrapping (untagged: bare number or bare string).
  */
-export type WidgetSpacing = number | string;
+export type WidgetSpacing = number | SpacingToken;
 
 /** Cross-axis alignment of a container's children. Mirrors `Align`. */
 export type WidgetAlign = "start" | "center" | "end" | "stretch";
@@ -238,14 +241,50 @@ function requireFiniteNumber(value: unknown, field: string, factory: string): vo
   }
 }
 
-function requireColor(value: unknown, field: string, factory: string): void {
+function unwrapToken(
+  value: unknown,
+  category: "color" | "font" | "spacing",
+  field: string,
+  factory: string,
+): string | undefined {
+  if (value === null || typeof value !== "object") {
+    return undefined;
+  }
+  const token = __unwrapThemeToken(value, category);
+  if (token !== undefined) {
+    return token;
+  }
+  if ("__postretroToken" in value) {
+    throw new Error(`${factory}: \`${field}\` must be a ${category} token returned by getDesignTokens(theme)`);
+  }
+  return undefined;
+}
+
+function requireColor(value: unknown, field: string, factory: string): [number, number, number, number] | string {
+  const token = unwrapToken(value, "color", field, factory);
+  if (token !== undefined) {
+    return token;
+  }
   if (typeof value === "string") {
-    return;
+    throw new Error(`${factory}: \`${field}\` must be a color token object, not a raw string`);
   }
   if (!Array.isArray(value) || value.length !== 4) {
     throw new Error(
-      `${factory}: \`${field}\` must be a [r, g, b, a] tuple or a theme-token string`,
+      `${factory}: \`${field}\` must be a [r, g, b, a] tuple or a color token`,
     );
+  }
+  for (let i = 0; i < 4; i++) {
+    const c = value[i];
+    if (typeof c !== "number" || !Number.isFinite(c)) {
+      throw new Error(`${factory}: \`${field}\` color element ${i} is not a finite number`);
+    }
+  }
+  return value as [number, number, number, number];
+}
+
+function requireColorLiteral(value: unknown, field: string, factory: string): void {
+  if (!Array.isArray(value) || value.length !== 4) {
+    throw new Error(`${factory}: \`${field}\` must be a [r, g, b, a] tuple`);
   }
   for (let i = 0; i < 4; i++) {
     const c = value[i];
@@ -255,11 +294,27 @@ function requireColor(value: unknown, field: string, factory: string): void {
   }
 }
 
-function requireSpacing(value: unknown, field: string, factory: string): void {
+function requireSpacing(value: unknown, field: string, factory: string): number | string {
+  const token = unwrapToken(value, "spacing", field, factory);
+  if (token !== undefined) {
+    return token;
+  }
   if (typeof value === "string") {
-    return;
+    throw new Error(`${factory}: \`${field}\` must be a spacing token object, not a raw string`);
   }
   requireFiniteNumber(value, field, factory);
+  return value as number;
+}
+
+function requireFontToken(value: unknown, field: string, factory: string): string {
+  const token = unwrapToken(value, "font", field, factory);
+  if (token !== undefined) {
+    return token;
+  }
+  if (typeof value === "string") {
+    throw new Error(`${factory}: \`${field}\` must be a font token object, not a raw string`);
+  }
+  throw new Error(`${factory}: \`${field}\` must be a font token`);
 }
 
 function validateEasing(value: unknown, field: string, factory: string): void {
@@ -312,7 +367,7 @@ function buildBind(
     const tween: Record<string, unknown> = { durationMs: tw.durationMs, easing: tw.easing };
     if (tw.from !== undefined) {
       if (kind === "panel") {
-        requireColor(tw.from, "bind.tween.from", factory);
+        requireColorLiteral(tw.from, "bind.tween.from", factory);
       } else {
         requireFiniteNumber(tw.from, "bind.tween.from", factory);
       }
@@ -350,8 +405,7 @@ function buildStyleRanges(value: unknown, factory: string): StyleRangesProp | un
       out.upTo = e.upTo as number;
     }
     if (e.color !== undefined) {
-      requireColor(e.color, `styleRanges.entries[${i}].color`, factory);
-      out.color = e.color as WidgetColor;
+      out.color = requireColor(e.color, `styleRanges.entries[${i}].color`, factory) as WidgetColor;
     }
     if (e.pulse !== undefined) {
       const p = e.pulse as Record<string, unknown>;
@@ -503,7 +557,7 @@ export type TextProps = {
   content: LocalizedText;
   fontSize?: number;
   color?: WidgetColor;
-  font?: string;
+  font?: FontToken;
   bind?: TextBindProp;
   styleRanges?: StyleRangesProp;
   id?: string;
@@ -524,13 +578,12 @@ export function Text(props: TextProps): WidgetDescriptor {
   const fontSize = props.fontSize ?? 12.0;
   requireFiniteNumber(fontSize, "fontSize", "Text");
   const color = props.color ?? [1.0, 1.0, 1.0, 1.0];
-  requireColor(color, "color", "Text");
+  const resolvedColor = requireColor(color, "color", "Text");
 
-  const out: WidgetDescriptor = { kind: "text", content: props.content, fontSize, color };
+  const out: WidgetDescriptor = { kind: "text", content: props.content, fontSize, color: resolvedColor };
   applyFocusFields(out, props, "Text");
   if (props.font !== undefined) {
-    requireString(props.font, "font", "Text");
-    out.font = props.font;
+    out.font = requireFontToken(props.font, "font", "Text");
   }
   const bind = buildBind(props.bind, "Text", "text");
   if (bind !== undefined) out.bind = bind;
@@ -564,9 +617,9 @@ export type PanelProps = {
  */
 export function Panel(props: PanelProps): WidgetDescriptor {
   requireObject(props, "Panel");
-  requireColor(props.fill, "fill", "Panel");
+  const fill = requireColor(props.fill, "fill", "Panel");
 
-  const out: WidgetDescriptor = { kind: "panel", fill: props.fill };
+  const out: WidgetDescriptor = { kind: "panel", fill };
   if (props.border !== undefined) {
     out.border = validateBorder(props.border, "Panel");
   }
@@ -592,11 +645,11 @@ export function validateBorder(value: unknown, factory: string): BorderProp {
   for (let i = 0; i < 4; i++) {
     requireFiniteNumber(b.slice[i], `border.slice[${i}]`, factory);
   }
-  requireColor(b.tint, "border.tint", factory);
+  const tint = requireColor(b.tint, "border.tint", factory);
   return {
     texture: b.texture as string,
     slice: b.slice as [number, number, number, number],
-    tint: b.tint as WidgetColor,
+    tint: tint as WidgetColor,
   };
 }
 
@@ -877,15 +930,15 @@ export function Bar(props: BarProps): WidgetDescriptor {
     throw new Error("Bar: `bind` is required");
   }
   const max = buildBarMax(props.max, "Bar");
-  requireColor(props.fill, "fill", "Bar");
-  requireColor(props.background, "background", "Bar");
+  const fill = requireColor(props.fill, "fill", "Bar");
+  const background = requireColor(props.background, "background", "Bar");
 
   const out: WidgetDescriptor = {
     kind: "bar",
     bind,
     max,
-    fill: props.fill,
-    background: props.background,
+    fill,
+    background,
   };
   if (props.id !== undefined) {
     requireNonemptyString(props.id, "id", "Bar");

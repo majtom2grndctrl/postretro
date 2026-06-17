@@ -138,6 +138,14 @@ Type-definition files are generated from the primitive registry via `cargo run -
 - `sdk/types/postretro.d.ts` — TypeScript declarations
 - `sdk/types/postretro.d.luau` — Luau type annotations
 
+The TypeScript declaration file declares both SDK module IDs:
+`"postretro"` for non-UI authoring APIs and `"postretro/ui"` for UI factories,
+tree/state helpers, UI reactions, game-state refs used by UI, and theme token
+helpers. Dev script `tsconfig.json` files resolve both module IDs to the same
+generated declaration file. Luau exposes the same split through literal
+`require("postretro")` and `require("postretro/ui")` overloads in
+`postretro.d.luau`.
+
 In debug builds, the runtime also emits these files at startup as a convenience for developers (so the working tree stays current while the engine is running). For CI and pre-commit checks, a drift-detection test in `cargo test` fails if the committed files do not match the current registry, catching stale type definitions. Scripts written against the SDK get IDE completions and type checking.
 
 ### SDK library globals
@@ -154,7 +162,7 @@ Higher-level vocabulary (`world`, `timeline`, `sequence`, etc.) is provided by t
 - `sdk/lib/util/keyframes.{ts,luau}` — structurally generic keyframe utilities: the `Keyframe` type alias, `timeline`, and `sequence`. Not light-specific; usable for any keyframed animation.
 - `sdk/lib/data_script.{ts,luau}` — definition-context vocabulary.
 - `sdk/lib/ui/tree.{ts,luau}` — pure UI tree helpers: `Tree(...)` builds the placement envelope and `defineUiTree(...)` builds the returned registration entry without changing the manifest wire shape.
-- `sdk/lib/ui/theme.{ts,luau}` — pure theme authoring helper (`defineTheme`) that preserves flat token maps while adding token accessors for editor completion, warning, and visible unknown-token degradation.
+- `sdk/lib/ui/theme.{ts,luau}` — pure theme authoring helpers. `defineTheme` preserves the flat theme maps accepted by `setupMod().theme`; `getDesignTokens(theme)` returns nested token leaves that widget factories unwrap to flat token strings. Token leaves are runtime-authenticated in both runtimes; hand-built token-shaped records are rejected, and missing authored token paths throw instead of defaulting.
 
 ### Animation capabilities
 
@@ -178,14 +186,14 @@ Handle types compose them by channel: `LightEntityHandle extends AnimatableScala
 
 **TypeScript:** `sdk/lib/prelude.js` is generated at build time by `postretro`'s `build.rs` (via `postretro-script-compiler` as a `[build-dependencies]` entry) and written to `$OUT_DIR`. It is embedded in the engine binary via `include_str!(concat!(env!("OUT_DIR"), "/prelude.js"))` and evaluated in every QuickJS context. The file is gitignored and never committed — `cargo build` regenerates it automatically from `sdk/lib/**/*.ts`. Authors import SDK symbols as bare specifiers: `import { world, timeline, sequence, defineReaction, defineEntity } from "postretro"`. UI authors import from `"postretro/ui"`. The import is stripped at bundle time; the symbol resolves from the prelude-installed global.
 
-**Luau:** Each SDK library file under `sdk/lib/` is embedded via `include_str!` and evaluated in a fixed order in every Luau context. Return values are destructured into bare globals — no import or require needed. Evaluation order matters: `world.luau` captures `wrapLightEntity` from `entities/lights.luau` and `wrapFogVolumeEntity` from `entities/fog_volumes.luau` as closure upvalues; both must evaluate before `world.luau`. Both bridges are nil'd out after `world.luau` evaluates so author scripts never see them as bare globals. Type-only symbols (`export type` declarations) serve luau-lsp completions only — never promoted to runtime globals.
+**Luau:** Each SDK library file under `sdk/lib/` is embedded via `include_str!` and evaluated in a fixed order in every Luau context. Non-UI return values are destructured into bare globals during the transition; UI return values populate only the `require("postretro/ui")` virtual module and are not promoted as bare globals. Evaluation order matters: `world.luau` captures `wrapLightEntity` from `entities/lights.luau` and `wrapFogVolumeEntity` from `entities/fog_volumes.luau` as closure upvalues; both must evaluate before `world.luau`. Both bridges are nil'd out after `world.luau` evaluates so author scripts never see them as bare globals. Type-only symbols (`export type` declarations) serve luau-lsp completions only — never promoted to runtime globals.
 
 Luau authors may opt into SDK modules with
 `local Postretro = require("postretro")` or
 `local UI = require("postretro/ui")`. This is the Luau idiom; it intentionally
 differs from TypeScript named imports. Symmetry between the runtimes is module
-IDs and export vocabulary, not syntax. Bare globals remain available while the
-project transitions.
+IDs and export vocabulary, not syntax. Non-UI bare globals remain available
+while the project transitions; UI authors use `require("postretro/ui")`.
 
 Both preludes are baked at compile time. SDK library changes require an engine restart.
 
@@ -207,7 +215,7 @@ Does not type-check. Use `tsc --noEmit` separately.
 
 Two non-obvious consequences of how prelude generation works:
 
-**`globalThis.<name>` rewrite.** After bundling `sdk/lib/index.ts`, the compiler runs an extra AST pass that rewrites every surviving named export as `globalThis.<name> = <name>`. This is what makes SDK symbols available as bare globals in user scripts — it is not a standard module mechanism and cannot be replicated by ordinary bundler output. Default exports, namespace re-exports, and bare-specifier re-exports are unsupported in the prelude entry and bail with a clear panic.
+**`globalThis.<name>` rewrite.** After bundling `sdk/lib/prelude.ts`, the compiler runs an extra AST pass that rewrites every surviving named export as `globalThis.<name> = <name>`. This is what makes SDK symbols available as bare globals in user scripts — it is not a standard module mechanism and cannot be replicated by ordinary bundler output. `sdk/lib/index.ts` is the public root `postretro` module entry; `prelude.ts` may temporarily export extra implementation-only globals, including TypeScript UI globals, while imports are stripped without alias rewriting. Default exports, namespace re-exports, and bare-specifier re-exports are unsupported in the prelude entry and bail with a clear panic.
 
 **`const enum` across file boundaries is unsupported.** SWC strips `const enum` declarations without inlining their values into consumers in other files, producing `undefined` at runtime — silently, with no error. Use `enum` or `as const` objects instead. Enforce with `"isolatedModules": true` in `tsconfig.json`.
 

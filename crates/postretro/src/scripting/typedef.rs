@@ -653,8 +653,10 @@ pub(crate) fn generate_typescript(registry: &PrimitiveRegistry) -> String {
     }
 
     emit_ts_game_state_refs(&mut out);
-    out.push_str(TS_SDK_LIB_BLOCK);
+    let sdk_block = ts_public_root_sdk_lib_block();
+    out.push_str(&sdk_block);
     out.push_str("}\n");
+    out.push_str(ts_ui_sdk_module_block());
     out
 }
 
@@ -889,61 +891,6 @@ const TS_SDK_LIB_BLOCK: &str = r#"
       | SequenceReactionDescriptor,
   ): NamedReactionDescriptor;
 
-  /** Build a state-crossing watcher. Pure: returns a plain object, no FFI. Place the result in `setupLevel`'s returned `crossings` array. The engine fires every reaction in `fire` exactly once on a crossing in the condition's direction, re-arming only after a crossing back; a registration against a non-Number slot warns and is skipped at load. Each `fire` entry is a `defineReaction` handle (typed) or a bare reaction-name string (the shipped path); handles are reduced to their `.name`, so the wire `CrossingDescriptor.fire` stays a `string[]`. */
-  export function onStateCrossing(
-    ref: ReadonlyStateRef<number>,
-    condition: CrossingCondition,
-    fire: (NamedReactionDescriptor | string)[],
-  ): CrossingDescriptor;
-
-  /** System-reaction body: play `sound` through the M12 audio module on the optional named `bus` (omitted when undefined → engine default bus). Pure: returns a `PrimitiveReactionDescriptor`, no FFI. Pass to `defineReaction("name", playSound(...))`. */
-  export function playSound(sound: string, bus?: string): PrimitiveReactionDescriptor;
-
-  /** System-reaction body: drive gilrs gamepad force feedback. `strong`/optional `weak` (omitted when undefined) are 0–1 motor intensities; `durationMs` is the rumble length. Warn-once no-op without force-feedback hardware. Pure: returns a `PrimitiveReactionDescriptor`, no FFI. */
-  export function rumble(strong: number, durationMs: number, weak?: number): PrimitiveReactionDescriptor;
-
-  /** System-reaction body: flash the screen by writing the engine-owned `screen.flash` RGBA slot, which decays to transparent. `color` is `[r, g, b, a]` (0–1); `durationMs` is the decay time. Pure: returns a `PrimitiveReactionDescriptor`, no FFI. */
-  export function flashScreen(color: [number, number, number, number], durationMs: number): PrimitiveReactionDescriptor;
-
-  /** System-reaction body: darken (or tint) the screen edges by writing the engine-owned `screen.vignette` slot, which rises to peak then decays to rest. `strength` is the peak edge-darken amount; `durationMs` is the total rise-plus-decay time. Optional `color` is an `[r, g, b]` linear-RGB tint (omitted when undefined → black, a pure strength-only edge-darken). Pure: returns a `PrimitiveReactionDescriptor`, no FFI. */
-  export function vignette(strength: number, durationMs: number, color?: [number, number, number]): PrimitiveReactionDescriptor;
-
-  /** System-reaction body: shake the screen by writing the engine-owned `screen.shake` offset slot, a decaying oscillation that fades to rest. `amplitude` is the peak displacement in logical-reference px; `durationMs` is the total decay time. Optional `frequency` is the oscillation rate in Hz (omitted when undefined → the engine applies its default frequency). Pure: returns a `PrimitiveReactionDescriptor`, no FFI. */
-  export function screenShake(amplitude: number, durationMs: number, frequency?: number): PrimitiveReactionDescriptor;
-
-  /** System-reaction body: push the dialog UI tree `tree` onto the modal stack, with an optional `onCommit` reaction (omitted when undefined). An unknown tree name warns and no-ops at dispatch time. Pure: returns a `PrimitiveReactionDescriptor`, no FFI. */
-  export function showDialog(tree: string, onCommit?: string): PrimitiveReactionDescriptor;
-
-  /** The engine-shipped on-screen keyboard's registry name (M13 Text Entry). `openTextEntry` opens this tree; the engine loads its descriptor from `content/base/ui/keyboard.json` at boot. The keyboard edits the `ui.textEntry` writable String slot. */
-  export const KEYBOARD_TREE: "keyboard";
-
-  /** Reserved button `onPress` action that closes the active modal. The App intercepts this exact wire value before named-reaction dispatch. */
-  export const CLOSE_DIALOG_ACTION: "ui.closeDialog";
-
-  /** Reserved button `onPress` action that requests a clean app shutdown. The App intercepts this exact wire value before named-reaction dispatch. */
-  export const EXIT_TO_DESKTOP_ACTION: "ui.exitToDesktop";
-
-  /** System-reaction body (M13 Text Entry): open the engine-shipped on-screen keyboard, a capturing modal that edits the `ui.textEntry` slot. Optional `onCommit` names a reaction fired on commit (the on-screen `done` key or hardware Enter); `nav.cancel` closes without firing it. The same `ui.textEntry` slot also receives the hardware-keyboard path's edits. Wraps `showDialog("keyboard", onCommit)`. Pure: returns a `PrimitiveReactionDescriptor`, no FFI. */
-  export function openTextEntry(onCommit?: string): PrimitiveReactionDescriptor;
-
-  /** System-reaction body: push the menu UI tree `tree` onto the modal stack. A v1 alias of `showDialog` (identical push behavior) without `onCommit`. An unknown tree name warns and no-ops at dispatch time. Pure: returns a `PrimitiveReactionDescriptor`, no FFI. */
-  export function openMenu(tree: string): PrimitiveReactionDescriptor;
-
-  /** System-reaction body: pop the top UI tree off the modal stack. An empty stack warns and no-ops at dispatch time. Pure: returns a `PrimitiveReactionDescriptor`, no FFI. */
-  export function closeDialog(): PrimitiveReactionDescriptor;
-
-  /** System-reaction body (M13 Goal F): write `value` to a writable state ref at the game-logic stage. Emits the existing `setState` wire descriptor. Readonly-gated at runtime — a readonly slot warns and stays unchanged; an engine-owned writable slot is valid. `value` is coerced to the slot's declared type. Pure: returns a `PrimitiveReactionDescriptor`, no FFI. */
-  export function updateState<T extends number | boolean | string | ReadonlyArray<number>>(ref: WritableStateRef<T>, value: T): PrimitiveReactionDescriptor;
-
-  /** System-reaction body (M13 Text Entry): append `text` to a writable String state ref at the game-logic stage. Emits the existing dotted-slot wire. */
-  export function appendText(ref: WritableStateRef<string>, text: string): PrimitiveReactionDescriptor;
-
-  /** System-reaction body (M13 Text Entry): remove the last character (one Unicode scalar value) from a writable String state ref. Emits the existing dotted-slot wire. */
-  export function backspaceText(ref: WritableStateRef<string>): PrimitiveReactionDescriptor;
-
-  /** System-reaction body (M13 Text Entry): empty a writable String state ref. Emits the existing dotted-slot wire. */
-  export function clearText(ref: WritableStateRef<string>): PrimitiveReactionDescriptor;
-
   // -------------------------------------------------------------------------
   // State-store declarations. `defineStore` is special-cased in the typedef
   // generator (mirroring `worldQuery`): per-slot value types live only in the
@@ -991,38 +938,65 @@ const TS_SDK_LIB_BLOCK: &str = r#"
   ): StoreDefinition<S>;
 
   // -------------------------------------------------------------------------
-  // UI theme helpers. `defineTheme` preserves the runtime wire shape (flat
-  // colors/fonts/spacing maps) and adds typed token accessors for authoring
-  // sites. Accessors return the token string, so widget descriptors stay
-  // byte-identical to hand-authored strings while editors autocomplete keys
-  // from the concrete theme object.
+  // UI theme helpers. `defineTheme` accepts nested singular token groups and
+  // returns the runtime wire shape (flat colors/fonts/spacing maps).
+  // `getDesignTokens` exposes a nested token-name tree for authoring sites
+  // without changing descriptor wire data.
 
   /** Linear RGBA color token value. Components are in display-linear 0-1 space; alpha is the fourth element. */
   export type ThemeColorValue = readonly [number, number, number, number];
-  /** Theme override returned from `setupMod().theme`. Keys are flat token strings, including dotted names such as `"hud.panel"`; categories stay separate so a color token and spacing token may share a name. */
+  declare const themeTokenBrand: unique symbol;
+  /** Runtime-authenticated SDK token record. Widget factories unwrap only records produced by `getDesignTokens(theme)`, not hand-built lookalikes. */
+  export type ThemeToken<Category extends "color" | "font" | "spacing"> = Readonly<{
+    __postretroToken: Category;
+    token: string;
+    readonly [themeTokenBrand]: Category;
+  }>;
+  export type ColorToken = ThemeToken<"color">;
+  export type FontToken = ThemeToken<"font">;
+  export type SpacingToken = ThemeToken<"spacing">;
+  /** Nested authored token tree for one theme category. Leaf values are category-specific token definitions; object keys become dot-joined token names. */
+  export type ThemeTokenTree<Leaf> = { readonly [key: string]: Leaf | ThemeTokenTree<Leaf> };
+  /** Nested theme authoring input. Use singular `color`, `font`, and `spacing`; plural `colors` / `fonts` input is unsupported. */
   export type ThemeDefinition = {
-    readonly colors?: Readonly<Record<string, ThemeColorValue>>;
-    readonly fonts?: Readonly<Record<string, string>>;
-    readonly spacing?: Readonly<Record<string, number>>;
+    readonly color?: ThemeTokenTree<ThemeColorValue>;
+    readonly font?: ThemeTokenTree<string>;
+    readonly spacing?: ThemeTokenTree<number>;
+    readonly colors?: never;
+    readonly fonts?: never;
+    readonly tokens?: never;
   };
-  /** Internal helper that extracts the concrete map for one theme category. Usually reached through `DefinedTheme["tokens"]`, not named directly. */
-  export type ThemeTokenMap<T extends ThemeDefinition, K extends keyof ThemeDefinition> =
-    Extract<NonNullable<T[K]>, Readonly<Record<string, unknown>>>;
-  /** String-literal keys available in one concrete theme category. */
-  export type ThemeTokenKeys<T extends ThemeDefinition, K extends keyof ThemeDefinition> =
-    [ThemeTokenMap<T, K>] extends [never] ? never : Extract<keyof ThemeTokenMap<T, K>, string>;
-  /** Typed token accessors added by `defineTheme`. Each function returns the token string and warns when it was not present in the matching theme category, giving editor autocomplete without changing descriptor wire data or aborting mod init. */
-  export type ThemeTokenAccessors<T extends ThemeDefinition> = {
-    color<K extends ThemeTokenKeys<T, "colors">>(token: K): K;
-    font<K extends ThemeTokenKeys<T, "fonts">>(token: K): K;
-    spacing<K extends ThemeTokenKeys<T, "spacing">>(token: K): K;
+  type ThemeJoinPath<Prefix extends string, Key extends string> = Prefix extends "" ? Key : `${Prefix}.${Key}`;
+  type ThemeFlattenTokenKeys<Tree, Leaf, Prefix extends string = ""> =
+    Tree extends Leaf ? Prefix :
+    Tree extends Readonly<Record<string, unknown>> ? {
+      [K in Extract<keyof Tree, string>]: ThemeFlattenTokenKeys<Tree[K], Leaf, ThemeJoinPath<Prefix, K>>
+    }[Extract<keyof Tree, string>] : never;
+  type ThemeFlatTokenMap<Tree, Leaf, Value> = Record<ThemeFlattenTokenKeys<NonNullable<Tree>, Leaf>, Value>;
+  type ThemeDesignTokenTree<Tree, Leaf, Token, Prefix extends string = ""> =
+    Tree extends Leaf ? Token :
+    Tree extends Readonly<Record<string, unknown>> ? {
+      readonly [K in Extract<keyof Tree, string>]: ThemeDesignTokenTree<Tree[K], Leaf, Token, ThemeJoinPath<Prefix, K>>
+    } : never;
+  type ThemeDesignTokenGroup<Tree, Leaf, Token> = [Tree] extends [undefined] ? {} : ThemeDesignTokenTree<NonNullable<Tree>, Leaf, Token>;
+  /** Nested token tree returned by `getDesignTokens`. Leaves are branded objects that widget factories unwrap to the flat token path consumed by descriptors. */
+  export type DesignTokens<T extends ThemeDefinition> = {
+    readonly color: ThemeDesignTokenGroup<T["color"], ThemeColorValue, ColorToken>;
+    readonly font: ThemeDesignTokenGroup<T["font"], string, FontToken>;
+    readonly spacing: ThemeDesignTokenGroup<T["spacing"], number, SpacingToken>;
   };
-  /** A theme returned by `defineTheme`: the original flat theme object plus non-enumerable TypeScript `tokens` accessors for authoring. Pass this object directly as `setupMod().theme`. */
-  export type DefinedTheme<T extends ThemeDefinition> = T & {
-    readonly tokens: ThemeTokenAccessors<T>;
+  declare const definedThemeBrand: unique symbol;
+  /** A theme returned by `defineTheme`: enumerable flat manifest maps plus SDK metadata for `getDesignTokens`. Pass this object directly as `setupMod().theme`. */
+  export type DefinedTheme<T extends ThemeDefinition> = {
+    readonly colors: ThemeFlatTokenMap<T["color"], ThemeColorValue, ThemeColorValue>;
+    readonly fonts: ThemeFlatTokenMap<T["font"], string, string>;
+    readonly spacing: ThemeFlatTokenMap<T["spacing"], number, number>;
+    readonly [definedThemeBrand]: T;
   };
-  /** Define a custom theme while preserving the runtime theme shape. Use `hudTheme.tokens.color("hud.text")` / `.font(...)` / `.spacing(...)` at widget call sites for autocomplete and warn-and-degrade unknown-token feedback. */
+  /** Define a custom theme from nested singular groups while preserving the runtime theme shape. */
   export function defineTheme<const T extends ThemeDefinition>(theme: T): DefinedTheme<T>;
+  /** Return the nested token-name tree for the exact object returned by `defineTheme`; plain manifest themes and clones throw. */
+  export function getDesignTokens<const T extends ThemeDefinition>(theme: DefinedTheme<T>): DesignTokens<T>;
 
   // -------------------------------------------------------------------------
   // Shared UI widget value slots (M13 Goal F). Type-only aliases for the slot
@@ -1031,8 +1005,8 @@ const TS_SDK_LIB_BLOCK: &str = r#"
   /** The type of every user-facing text string a widget displays. A single alias (`= string` today) so a future localization scheme — message keys, ICU handles — is one edit, not a sweep across every text prop. */
   export type LocalizedText = string;
 
-  /** A widget color slot: either an inline linear-RGBA tuple `[r, g, b, a]` or a color theme-token string. Prefer `defineTheme(...).tokens.color("token")` for custom tokens so editors autocomplete valid names. */
-  export type WidgetColor = [number, number, number, number] | string;
+  /** A widget color slot: either an inline linear-RGBA tuple `[r, g, b, a]` or a branded color token from `getDesignTokens(theme)`. */
+  export type WidgetColor = [number, number, number, number] | ColorToken;
 
   /** A numeric state bind descriptor shared by low-level `slider`/`bar` wire shapes: a dotted slot name plus an optional number tween. Most authors should call `bindState(ref, options)` instead of constructing this manually. */
   export type SliderBind = { slot: string; tween?: { durationMs: number; easing: "linear" | "easeIn" | "easeOut" | "easeInOut"; from?: number } };
@@ -1048,8 +1022,8 @@ const TS_SDK_LIB_BLOCK: &str = r#"
   // state}.ts. Containers and `Tree` take `children`/`root` as a POSITIONAL
   // second argument (Compose/SwiftUI lineage), not a prop.
 
-  /** A spacing slot for gaps and padding: either an inline logical-pixel number or a spacing theme-token string. Theme spacing affects styling/layout rhythm, not anchored tree placement. */
-  export type WidgetSpacing = number | string;
+  /** A spacing slot for gaps and padding: either an inline logical-pixel number or a branded spacing token from `getDesignTokens(theme)`. Theme spacing affects styling/layout rhythm, not anchored tree placement. */
+  export type WidgetSpacing = number | SpacingToken;
   /** Cross-axis alignment inside a stack/grid. Valid values: `"start"`, `"center"`, `"end"`, `"stretch"`. */
   export type WidgetAlign = "start" | "center" | "end" | "stretch";
   /** Easing curve for a UI presentation tween. Valid values: `"linear"`, `"easeIn"`, `"easeOut"`, `"easeInOut"`. Tweens change renderer-local display state only. */
@@ -1094,7 +1068,7 @@ const TS_SDK_LIB_BLOCK: &str = r#"
   export type WidgetDescriptor = { kind: string; [field: string]: unknown };
 
   /** Props for `Text`. `content` is `LocalizedText`. `fontSize` defaults to 12; `color` to opaque white. */
-  export type TextProps = { content: LocalizedText; fontSize?: number; color?: WidgetColor; font?: string; bind?: TextBindProp; styleRanges?: StyleRangesProp; id?: string; focusNeighbors?: FocusNeighborsProp; visibleWhen?: Predicate; role?: WidgetRole };
+  export type TextProps = { content: LocalizedText; fontSize?: number; color?: WidgetColor; font?: FontToken; bind?: TextBindProp; styleRanges?: StyleRangesProp; id?: string; focusNeighbors?: FocusNeighborsProp; visibleWhen?: Predicate; role?: WidgetRole };
   /** A `text` leaf. An optional `bind` resolves the rendered string from a store slot; `styleRanges` recolors by value. */
   export function Text(props: TextProps): WidgetDescriptor;
 
@@ -1137,10 +1111,10 @@ const TS_SDK_LIB_BLOCK: &str = r#"
   export type FocusKind = "linear" | "spatial";
   /** A container focus policy. Use a bare `"linear"`/`"spatial"` shorthand or an object with `wrap` and `repeat` options; `repeat` controls held navigation events inside the container. */
   export type FocusPolicyProp = FocusKind | { policy: FocusKind; wrap?: boolean; repeat?: RepeatPolicyProp };
-  /** Props for `VStack`/`HStack`. `gap` and `padding` default to 0; `align` defaults to `"start"`; optional `fill`/`border` draw a backdrop behind the arranged children. */
-  export type StackProps = { gap?: WidgetSpacing; padding?: WidgetSpacing; align?: WidgetAlign; id?: string; focusNeighbors?: FocusNeighborsProp; focus?: FocusPolicyProp; restoreOnReturn?: boolean; fill?: WidgetColor; border?: BorderProp };
-  /** Props for `Grid`. `cols` is required and must be an integer >= 1. Children flow row-major across columns; grid currently has no backdrop fill/border. */
-  export type GridProps = { gap?: WidgetSpacing; padding?: WidgetSpacing; align?: WidgetAlign; id?: string; focusNeighbors?: FocusNeighborsProp; focus?: FocusPolicyProp; restoreOnReturn?: boolean; cols: number };
+  /** Props for `VStack`/`HStack`. `gap` and `padding` default to 0; `align` defaults to `"start"`; optional `fill`/`border` draw a backdrop behind the arranged children. Stack containers may declare `localState`; stack and grid containers both accept `visibleWhen` and `role`. */
+  export type StackProps = { gap?: WidgetSpacing; padding?: WidgetSpacing; align?: WidgetAlign; id?: string; focusNeighbors?: FocusNeighborsProp; focus?: FocusPolicyProp; restoreOnReturn?: boolean; fill?: WidgetColor; border?: BorderProp; localState?: { scope: string; cells: Record<string, CellInit> }; visibleWhen?: Predicate; role?: WidgetRole };
+  /** Props for `Grid`. `cols` is required and must be an integer >= 1. Children flow row-major across columns; grid currently has no backdrop fill/border and no `localState`. */
+  export type GridProps = { gap?: WidgetSpacing; padding?: WidgetSpacing; align?: WidgetAlign; id?: string; focusNeighbors?: FocusNeighborsProp; focus?: FocusPolicyProp; restoreOnReturn?: boolean; cols: number; visibleWhen?: Predicate; role?: WidgetRole };
 
   /** A vertical stack (`vstack`): `children` is a POSITIONAL second argument. */
   export function VStack(props?: StackProps, children?: WidgetDescriptor[]): WidgetDescriptor;
@@ -1325,6 +1299,249 @@ const TS_SDK_LIB_BLOCK: &str = r#"
    * `NavIntentName` set, so only `"nav.up"` … `"nav.options"` type-check. */
   export type NavIntent = `nav.${NavIntentName}`;
 "#;
+
+const TS_ROOT_UI_MANIFEST_TYPES: &str = r#"
+  // -------------------------------------------------------------------------
+  // UI manifest wire types used by `ModManifest.uiTrees` / `LevelManifest.uiTrees`.
+  //
+  // Root `postretro` intentionally exposes only data shapes needed by manifest
+  // declarations. UI authoring factories, layout helpers, state helpers,
+  // reactions, and theme helpers are excluded from this root module; they live
+  // behind the `postretro/ui` surface. The QuickJS prelude still installs
+  // UI globals from `sdk/lib/prelude.ts` as temporary implementation plumbing
+  // while import stripping lacks alias rewriting.
+
+  /** The flat `kind`-tagged descriptor retained by Rust after setup. */
+  export type WidgetDescriptor = { kind: string; [field: string]: unknown };
+  /** Accessibility role override carried on widget and tree descriptors. */
+  export type WidgetRole = "tab" | "tablist" | "checkbox" | "radio" | "listitem" | "button" | "slider" | "progressbar" | "image" | "group" | "none";
+  /** Tree viewport anchor. */
+  export type WidgetAnchor = "topLeft" | "top" | "topRight" | "left" | "center" | "right" | "bottomLeft" | "bottom" | "bottomRight";
+  /** Tree input behavior. */
+  export type WidgetCaptureMode = "capture" | "passthrough";
+  /** Flat `AnchoredTree` manifest envelope stored in UI registries. */
+  export type AnchoredTreeDescriptor = {
+    anchor: WidgetAnchor;
+    offset: [number, number];
+    root: WidgetDescriptor;
+    captureMode?: WidgetCaptureMode;
+    initialFocus?: string;
+    textEntryTarget?: string;
+    accessibleName?: string;
+    role?: WidgetRole;
+  };
+"#;
+
+fn ts_public_root_sdk_lib_block() -> String {
+    // Task 1 of the UI SDK split makes `sdk/types/postretro.d.ts` the authority
+    // for the public root `postretro` module. `sdk/lib/prelude.ts` may still
+    // export UI names solely to install QuickJS globals while the compiler strips
+    // imports without alias rewriting; those names must not leak into the root
+    // declaration block generated here.
+    let mut block = TS_SDK_LIB_BLOCK.to_string();
+    try_remove_range(
+        &mut block,
+        "  /** Build a state-crossing watcher.",
+        "  // -------------------------------------------------------------------------\n  // State-store declarations.",
+    );
+    replace_range(
+        &mut block,
+        "  // -------------------------------------------------------------------------\n  // UI theme helpers.",
+        "  /** Pure identity builder for entity-type descriptors.",
+        TS_ROOT_UI_MANIFEST_TYPES,
+    );
+    block
+}
+
+const TS_UI_SDK_MODULE_BLOCK: &str = r#"
+
+declare module "postretro/ui" {
+  import type {
+    ReadonlyStateRef,
+    WritableStateRef,
+    ScalarStateValue,
+    NumericArrayStateValue,
+    GameStateRefs,
+    ModUiTree,
+    PrimitiveReactionDescriptor,
+    NamedReactionDescriptor,
+    CrossingCondition,
+    CrossingDescriptor,
+  } from "postretro";
+
+  /** Linear RGBA color token value. Components are in display-linear 0-1 space; alpha is the fourth element. */
+  export type ThemeColorValue = readonly [number, number, number, number];
+  declare const themeTokenBrand: unique symbol;
+  /** Runtime-authenticated SDK token record. Widget factories unwrap only records produced by `getDesignTokens(theme)`, not hand-built lookalikes. */
+  export type ThemeToken<Category extends "color" | "font" | "spacing"> = Readonly<{
+    __postretroToken: Category;
+    token: string;
+    readonly [themeTokenBrand]: Category;
+  }>;
+  export type ColorToken = ThemeToken<"color">;
+  export type FontToken = ThemeToken<"font">;
+  export type SpacingToken = ThemeToken<"spacing">;
+  export type ThemeTokenTree<Leaf> = { readonly [key: string]: Leaf | ThemeTokenTree<Leaf> };
+  /** Nested singular token groups accepted by `defineTheme`. */
+  export type ThemeDefinition = {
+    readonly color?: ThemeTokenTree<ThemeColorValue>;
+    readonly font?: ThemeTokenTree<string>;
+    readonly spacing?: ThemeTokenTree<number>;
+    readonly colors?: never;
+    readonly fonts?: never;
+    readonly tokens?: never;
+  };
+  export type JoinThemePath<Prefix extends string, Key extends string> = Prefix extends "" ? Key : `${Prefix}.${Key}`;
+  export type FlattenTokenKeys<Tree, Leaf, Prefix extends string = ""> = Tree extends Leaf
+    ? Prefix
+    : Tree extends Readonly<Record<string, unknown>>
+      ? { [K in Extract<keyof Tree, string>]: FlattenTokenKeys<Tree[K], Leaf, JoinThemePath<Prefix, K>> }[Extract<keyof Tree, string>]
+      : never;
+  export type FlatTokenMap<Tree, Leaf, Value> = Record<FlattenTokenKeys<NonNullable<Tree>, Leaf>, Value>;
+  export type DesignTokenTree<Tree, Leaf, Token, Prefix extends string = ""> = Tree extends Leaf
+    ? Token
+    : Tree extends Readonly<Record<string, unknown>>
+      ? { readonly [K in Extract<keyof Tree, string>]: DesignTokenTree<Tree[K], Leaf, Token, JoinThemePath<Prefix, K>> }
+      : never;
+  export type DesignTokenGroup<Tree, Leaf, Token> = [Tree] extends [undefined] ? {} : DesignTokenTree<NonNullable<Tree>, Leaf, Token>;
+  export type DesignTokens<T extends ThemeDefinition> = {
+    readonly color: DesignTokenGroup<T["color"], ThemeColorValue, ColorToken>;
+    readonly font: DesignTokenGroup<T["font"], string, FontToken>;
+    readonly spacing: DesignTokenGroup<T["spacing"], number, SpacingToken>;
+  };
+  declare const definedThemeBrand: unique symbol;
+  /** Manifest-compatible flat theme maps returned from `defineTheme`. */
+  export type DefinedTheme<T extends ThemeDefinition> = {
+    readonly colors: FlatTokenMap<T["color"], ThemeColorValue, ThemeColorValue>;
+    readonly fonts: FlatTokenMap<T["font"], string, string>;
+    readonly spacing: FlatTokenMap<T["spacing"], number, number>;
+    readonly [definedThemeBrand]: T;
+  };
+  export function defineTheme<const T extends ThemeDefinition>(theme: T): DefinedTheme<T>;
+  export function getDesignTokens<const T extends ThemeDefinition>(theme: DefinedTheme<T>): DesignTokens<T>;
+
+  export type LocalizedText = string;
+  export type WidgetColor = [number, number, number, number] | ColorToken;
+  export type WidgetSpacing = number | SpacingToken;
+  export type WidgetAlign = "start" | "center" | "end" | "stretch";
+  export type WidgetEasing = "linear" | "easeIn" | "easeOut" | "easeInOut";
+  export type NumberTween = { durationMs: number; easing: WidgetEasing; from?: number };
+  export type ColorTween = { durationMs: number; easing: WidgetEasing; from?: [number, number, number, number] };
+  export type LocalBindRef = { local: string };
+  export type PredicateValue = number | boolean | string;
+  export type Predicate = ((ReadonlyStateRef<PredicateValue> & { local?: never }) | LocalBindRef) & { equals?: PredicateValue };
+  export type WidgetRole = "tab" | "tablist" | "checkbox" | "radio" | "listitem" | "button" | "slider" | "progressbar" | "image" | "group" | "none";
+  export type AnnouncePriority = "polite" | "assertive";
+  export type TextBindProp = ((ReadonlyStateRef<ScalarStateValue> & { local?: never }) | LocalBindRef) & { format?: string; tween?: NumberTween };
+  export type PanelBindProp = ((ReadonlyStateRef<NumericArrayStateValue> & { local?: never; format?: never }) | LocalBindRef) & { tween?: ColorTween };
+  export type SliderBindProp = ((WritableStateRef<number> & { local?: never; format?: never }) | LocalBindRef) & { tween?: NumberTween };
+  export type BarBindProp = ((ReadonlyStateRef<number> & { local?: never; format?: never }) | LocalBindRef) & { tween?: NumberTween };
+  export type BarMaxProp = number | ReadonlyStateRef<number>;
+  export type StyleRangeEntry = { upTo?: number; color?: WidgetColor; pulse?: { periodMs: number }; flash?: { durationMs: number } };
+  export type StyleRangesProp = { max: number; entries: StyleRangeEntry[] };
+  export type BorderProp = { texture: string; slice: [number, number, number, number]; tint: WidgetColor };
+  export type FocusNeighborsProp = { up?: string; down?: string; left?: string; right?: string };
+  export type RepeatPolicyProp = { initialDelayMs: number; intervalMs: number };
+  export type ReactionHandleRef = { name: string };
+  export type WidgetDescriptor = { kind: string; [field: string]: unknown };
+
+  export type TextProps = { content: LocalizedText; fontSize?: number; color?: WidgetColor; font?: FontToken; bind?: TextBindProp; styleRanges?: StyleRangesProp; id?: string; focusNeighbors?: FocusNeighborsProp; visibleWhen?: Predicate; role?: WidgetRole };
+  export function Text(props: TextProps): WidgetDescriptor;
+  export type PanelProps = { fill: WidgetColor; border?: BorderProp; bind?: PanelBindProp; styleRanges?: StyleRangesProp; id?: string; focusNeighbors?: FocusNeighborsProp; visibleWhen?: Predicate; role?: WidgetRole };
+  export function Panel(props: PanelProps): WidgetDescriptor;
+  export type ImageProps = { asset: string; id?: string; focusNeighbors?: FocusNeighborsProp; visibleWhen?: Predicate; role?: WidgetRole } & ({ label: string; decorative?: never } | { decorative: true; label?: never });
+  export function Image(props: ImageProps): WidgetDescriptor;
+  export type SpacerProps = { flexGrow?: number; id?: string; visibleWhen?: Predicate; role?: WidgetRole };
+  export function Spacer(props?: SpacerProps): WidgetDescriptor;
+  export type ButtonProps = { id: string; onPress: ReactionHandleRef | string; repeatOnHold?: RepeatPolicyProp; focusNeighbors?: FocusNeighborsProp; selected?: Predicate; checked?: Predicate; bind?: Predicate; styleRanges?: StyleRangesProp; disabled?: boolean; visibleWhen?: Predicate; role?: WidgetRole } & ({ label: LocalizedText; labelledBy?: never } | { labelledBy: string; label?: never });
+  export function Button(props: ButtonProps): WidgetDescriptor;
+  export type SliderProps = { id: string; bind: SliderBindProp; min: number; max: number; step: number; capturesNav?: string[]; focusNeighbors?: FocusNeighborsProp; disabled?: boolean; visibleWhen?: Predicate; role?: WidgetRole } & ({ label: LocalizedText; labelledBy?: never } | { labelledBy: string; label?: never });
+  export function Slider(props: SliderProps): WidgetDescriptor;
+  export type BarProps = { bind: BarBindProp; max: BarMaxProp; fill: WidgetColor; background: WidgetColor; styleRanges?: StyleRangesProp; id?: string; visibleWhen?: Predicate; role?: WidgetRole };
+  export function Bar(props: BarProps): WidgetDescriptor;
+  export type AnnounceProps = { priority?: AnnouncePriority; visibleWhen?: Predicate };
+  export function Announce(props: AnnounceProps, text: LocalizedText): WidgetDescriptor;
+
+  export type FocusKind = "linear" | "spatial";
+  export type FocusPolicyProp = FocusKind | { policy: FocusKind; wrap?: boolean; repeat?: RepeatPolicyProp };
+  export type StackProps = { gap?: WidgetSpacing; padding?: WidgetSpacing; align?: WidgetAlign; id?: string; focusNeighbors?: FocusNeighborsProp; focus?: FocusPolicyProp; restoreOnReturn?: boolean; fill?: WidgetColor; border?: BorderProp; localState?: { scope: string; cells: Record<string, CellInit> }; visibleWhen?: Predicate; role?: WidgetRole };
+  export type GridProps = { gap?: WidgetSpacing; padding?: WidgetSpacing; align?: WidgetAlign; id?: string; focusNeighbors?: FocusNeighborsProp; focus?: FocusPolicyProp; restoreOnReturn?: boolean; cols: number; visibleWhen?: Predicate; role?: WidgetRole };
+  export function VStack(props?: StackProps, children?: WidgetDescriptor[]): WidgetDescriptor;
+  export function HStack(props?: StackProps, children?: WidgetDescriptor[]): WidgetDescriptor;
+  export function Grid(props: GridProps, children?: WidgetDescriptor[]): WidgetDescriptor;
+
+  export type WidgetAnchor = "topLeft" | "top" | "topRight" | "left" | "center" | "right" | "bottomLeft" | "bottom" | "bottomRight";
+  export type WidgetCaptureMode = "capture" | "passthrough";
+  export type TreeProps = { anchor: WidgetAnchor; offset: [number, number]; captureMode?: WidgetCaptureMode; initialFocus?: string; textEntryTarget?: WritableStateRef<string>; accessibleName?: string; role?: WidgetRole };
+  export type AnchoredTreeDescriptor = { anchor: WidgetAnchor; offset: [number, number]; root: WidgetDescriptor; captureMode?: WidgetCaptureMode; initialFocus?: string; textEntryTarget?: string; accessibleName?: string; role?: WidgetRole };
+  export function Tree(props: TreeProps, root: WidgetDescriptor): AnchoredTreeDescriptor;
+  export type UiTreeRegistrationProps<Name extends string = string> = { name: Name; tree: AnchoredTreeDescriptor; alwaysOn?: boolean };
+  export type UiTreeRegistration<Name extends string = string> = ModUiTree & { readonly name: Name };
+  export function defineUiTree<const Name extends string>(registration: UiTreeRegistrationProps<Name>): UiTreeRegistration<Name>;
+
+  export type StateBindOptionsFor<T> =
+    T extends number ? { format?: string; tween?: NumberTween; slot?: never; local?: never } :
+    T extends NumericArrayStateValue ? { tween?: ColorTween; slot?: never; local?: never } :
+    T extends ScalarStateValue ? { format?: string; slot?: never; local?: never } :
+    never;
+  export function bindState<T>(ref: ReadonlyStateRef<T>): ReadonlyStateRef<T>;
+  export function bindState<T, Options extends StateBindOptionsFor<T>>(ref: ReadonlyStateRef<T>, options: Options): ReadonlyStateRef<T> & Omit<Options, "slot" | "local">;
+  export function stateEquals<T extends PredicateValue>(ref: ReadonlyStateRef<T>, value: T): Predicate;
+  type CellInit = number | boolean | string | [number, number, number, number];
+  export type LocalStateHandle<T extends CellInit> = { get(): LocalBindRef; set(value: T): PrimitiveReactionDescriptor; is(value: T): Predicate };
+  export type LocalStateBundle<I extends Record<string, CellInit>> = { scope: { scope: string; cells: I }; cells: { [K in keyof I]: LocalStateHandle<I[K]> } };
+  export function createLocalState<I extends Record<string, CellInit>>(init: I): LocalStateBundle<I>;
+  export function Switch(cell: LocalStateHandle<string>, map: Record<string, WidgetDescriptor>): WidgetDescriptor[];
+  export const ui: { createLocalState: typeof createLocalState };
+  export function getGameState(): GameStateRefs;
+
+  export function onStateCrossing(ref: ReadonlyStateRef<number>, condition: CrossingCondition, fire: (NamedReactionDescriptor | string)[]): CrossingDescriptor;
+  export function playSound(sound: string, bus?: string | null): PrimitiveReactionDescriptor;
+  export function rumble(strong: number, durationMs: number, weak?: number | null): PrimitiveReactionDescriptor;
+  export function flashScreen(color: [number, number, number, number], durationMs: number): PrimitiveReactionDescriptor;
+  export function vignette(strength: number, durationMs: number, color?: [number, number, number] | null): PrimitiveReactionDescriptor;
+  export function screenShake(amplitude: number, durationMs: number, frequency?: number | null): PrimitiveReactionDescriptor;
+  export function showDialog(tree: string, onCommit?: string | null): PrimitiveReactionDescriptor;
+  export const KEYBOARD_TREE: "keyboard";
+  export const CLOSE_DIALOG_ACTION: "ui.closeDialog";
+  export const EXIT_TO_DESKTOP_ACTION: "ui.exitToDesktop";
+  export function openTextEntry(onCommit?: string | null): PrimitiveReactionDescriptor;
+  export function openMenu(tree: string): PrimitiveReactionDescriptor;
+  export function closeDialog(): PrimitiveReactionDescriptor;
+  export function updateState<T>(ref: WritableStateRef<T>, value: T): PrimitiveReactionDescriptor;
+  export function appendText(ref: WritableStateRef<string>, text: string): PrimitiveReactionDescriptor;
+  export function backspaceText(ref: WritableStateRef<string>): PrimitiveReactionDescriptor;
+  export function clearText(ref: WritableStateRef<string>): PrimitiveReactionDescriptor;
+}
+"#;
+
+fn ts_ui_sdk_module_block() -> &'static str {
+    TS_UI_SDK_MODULE_BLOCK
+}
+
+fn remove_range(text: &mut String, start_marker: &str, end_marker: &str) {
+    replace_range(text, start_marker, end_marker, "");
+}
+
+fn try_remove_range(text: &mut String, start_marker: &str, end_marker: &str) {
+    if text.contains(start_marker) {
+        remove_range(text, start_marker, end_marker);
+    }
+}
+
+fn replace_range(text: &mut String, start_marker: &str, end_marker: &str, replacement: &str) {
+    let start = text
+        .find(start_marker)
+        .unwrap_or_else(|| panic!("typedef generator missing TS block marker `{start_marker}`"));
+    let end = text
+        .find(end_marker)
+        .unwrap_or_else(|| panic!("typedef generator missing TS block marker `{end_marker}`"));
+    assert!(
+        start <= end,
+        "typedef generator TS block marker `{start_marker}` appears after `{end_marker}`"
+    );
+    text.replace_range(start..end, replacement);
+}
 
 // ---------------------------------------------------------------------------
 // Luau generation
@@ -1521,7 +1738,8 @@ pub(crate) fn generate_luau(registry: &PrimitiveRegistry) -> String {
     }
 
     emit_luau_game_state_refs(&mut out);
-    out.push_str(LUAU_SDK_LIB_BLOCK);
+    let sdk_block = luau_public_sdk_lib_block();
+    out.push_str(&sdk_block);
     out
 }
 
@@ -1974,37 +2192,42 @@ export type StoreDefinition = {
 declare function defineStore(namespace: string, schema: { [string]: StoreSlotSchema }): StoreDefinition
 
 -- ---------------------------------------------------------------------------
--- UI theme helpers. `defineTheme` preserves the runtime wire shape (flat
--- colors/fonts/spacing maps) and adds token accessors for authoring sites.
--- Accessors return the token string, so widget descriptors stay byte-identical
--- to hand-authored strings.
+-- UI theme helpers. `defineTheme` accepts nested singular token groups and
+-- returns the manifest-compatible flat token maps consumed by Rust.
 
 --- Linear RGBA color token value. Components are in display-linear 0-1 space;
 --- alpha is the fourth element.
 export type ThemeColorValue = {number}
---- Theme override returned from `setupMod().theme`. Keys are flat token strings,
---- including dotted names such as `"hud.panel"`; categories stay separate so a
---- color token and spacing token may share a name.
+export type ThemeTokenTree<Leaf> = { [string]: Leaf | ThemeTokenTree<Leaf> }
+--- Nested singular token groups accepted by `defineTheme`.
 export type ThemeDefinition = {
-  colors: { [string]: ThemeColorValue }?,
-  fonts: { [string]: string }?,
-  spacing: { [string]: number }?,
+  color: ThemeTokenTree<ThemeColorValue>?,
+  font: ThemeTokenTree<string>?,
+  spacing: ThemeTokenTree<number>?,
 }
---- Token accessors added by `defineTheme`. Each function returns the token
---- string and warns when it was not present in the matching theme category.
-export type ThemeTokenAccessors = {
-  color: (string) -> string,
-  font: (string) -> string,
-  spacing: (string) -> string,
+--- Runtime-authenticated SDK token records. These Luau aliases are structural
+--- for type checking only; widget/layout factories accept only records produced
+--- by `getDesignTokens(theme)`.
+export type ColorToken = { __postretroToken: "color", token: string }
+export type FontToken = { __postretroToken: "font", token: string }
+export type SpacingToken = { __postretroToken: "spacing", token: string }
+--- Luau cannot express the exact nested token shape derived from a concrete
+--- `defineTheme` argument. This open tree preserves token category safety while
+--- runtime `getDesignTokens` remains authoritative for which paths exist.
+export type DesignTokenTree<Token> = Token & { [string]: DesignTokenTree<Token> }
+export type DesignTokens = {
+  color: DesignTokenTree<ColorToken>,
+  font: DesignTokenTree<FontToken>,
+  spacing: DesignTokenTree<SpacingToken>,
 }
---- A theme returned by `defineTheme`: the original flat theme object plus
---- `tokens` accessors for authoring. Pass this object directly as
---- `setupMod().theme`.
-export type DefinedTheme = ThemeDefinition & { tokens: ThemeTokenAccessors }
---- Define a custom theme while preserving the runtime theme shape. Use
---- `theme.tokens.color("hud.text")` / `.font(...)` / `.spacing(...)` at widget
---- call sites for warn-and-degrade unknown-token feedback.
+--- Manifest-compatible flat theme maps returned from `defineTheme`.
+export type DefinedTheme = {
+  colors: { [string]: ThemeColorValue },
+  fonts: { [string]: string },
+  spacing: { [string]: number },
+}
 declare function defineTheme(theme: ThemeDefinition): DefinedTheme
+declare function getDesignTokens(theme: DefinedTheme): DesignTokens
 
 -- ---------------------------------------------------------------------------
 -- Interactive UI widget descriptors (M13 Goal F, Task 4). Authored as data in a
@@ -2017,8 +2240,8 @@ declare function defineTheme(theme: ThemeDefinition): DefinedTheme
 export type LocalizedText = string
 
 --- A widget color slot: either an inline linear-RGBA tuple `{r, g, b, a}` or a
---- color theme-token string.
-export type WidgetColor = {number} | string
+--- color token from `getDesignTokens(theme)`.
+export type WidgetColor = {number} | ColorToken
 
 --- A numeric state bind descriptor shared by low-level `slider`/`bar` wire
 --- shapes: a dotted slot name plus an optional number tween. Most authors should
@@ -2033,17 +2256,17 @@ export type SliderBind = { slot: string, tween: { durationMs: number, easing: st
 export type WidgetStyleRanges = { max: number, entries: { upTo: number?, color: WidgetColor?, pulse: { periodMs: number }?, flash: { durationMs: number }? } }
 
 -- ---------------------------------------------------------------------------
--- UI widget / layout / tree / state factories (M13 G1a). Pure builders lifted
--- to bare globals by the Luau prelude: each returns the camelCase wire
+-- UI widget / layout / tree / state factories (M13 G1a). Pure builders are
+-- available through `require("postretro/ui")`: each returns the camelCase wire
 -- descriptor of the matching `render/ui/descriptor.rs` variant and errors with a
 -- field-named message on invalid props. Source of truth: sdk/lib/ui/{widgets,
 -- layout,tree,state}.luau. Containers and `Tree` take `children`/`root` as a
 -- POSITIONAL second argument (Compose/SwiftUI lineage), not a prop.
 
 --- A spacing slot for gaps and padding: either an inline logical-pixel number or
---- a spacing theme-token string. Theme spacing affects styling/layout rhythm,
+--- a spacing token from `getDesignTokens(theme)`. Theme spacing affects styling/layout rhythm,
 --- not anchored tree placement.
-export type WidgetSpacing = number | string
+export type WidgetSpacing = number | SpacingToken
 --- Cross-axis alignment inside a stack/grid. Valid values: `"start"`, `"center"`,
 --- `"end"`, `"stretch"`.
 export type WidgetAlign = "start" | "center" | "end" | "stretch"
@@ -2117,7 +2340,7 @@ export type ReactionHandleRef = { name: string }
 export type WidgetDescriptor = { [string]: any }
 
 --- Props for `Text`. `content` is `LocalizedText`. `fontSize` defaults to 12; `color` to opaque white.
-export type TextProps = { content: LocalizedText, fontSize: number?, color: WidgetColor?, font: string?, bind: TextBindProp?, styleRanges: StyleRangesProp?, id: string?, focusNeighbors: FocusNeighborsProp?, visibleWhen: Predicate?, role: WidgetRole? }
+export type TextProps = { content: LocalizedText, fontSize: number?, color: WidgetColor?, font: FontToken?, bind: TextBindProp?, styleRanges: StyleRangesProp?, id: string?, focusNeighbors: FocusNeighborsProp?, visibleWhen: Predicate?, role: WidgetRole? }
 --- A `text` leaf. An optional `bind` resolves the rendered string from a store slot; `styleRanges` recolors by value.
 declare function Text(props: TextProps): WidgetDescriptor
 
@@ -2171,11 +2394,13 @@ export type FocusKind = "linear" | "spatial"
 export type FocusPolicyProp = FocusKind | { policy: FocusKind, wrap: boolean?, ["repeat"]: RepeatPolicyProp? }
 --- Props for `VStack`/`HStack`. `gap` and `padding` default to 0; `align`
 --- defaults to `"start"`; optional `fill`/`border` draw a backdrop behind the
---- arranged children.
-export type StackProps = { gap: WidgetSpacing?, padding: WidgetSpacing?, align: WidgetAlign?, id: string?, focusNeighbors: FocusNeighborsProp?, focus: FocusPolicyProp?, restoreOnReturn: boolean?, fill: WidgetColor?, border: BorderProp? }
+--- arranged children. Stack containers may declare `localState`; stack and grid
+--- containers both accept `visibleWhen` and `role`.
+export type StackProps = { gap: WidgetSpacing?, padding: WidgetSpacing?, align: WidgetAlign?, id: string?, focusNeighbors: FocusNeighborsProp?, focus: FocusPolicyProp?, restoreOnReturn: boolean?, fill: WidgetColor?, border: BorderProp?, localState: { scope: string, cells: { [string]: number | boolean | string | {number} } }?, visibleWhen: Predicate?, role: WidgetRole? }
 --- Props for `Grid`. `cols` is required and must be an integer >= 1. Children
---- flow row-major across columns; grid currently has no backdrop fill/border.
-export type GridProps = { gap: WidgetSpacing?, padding: WidgetSpacing?, align: WidgetAlign?, id: string?, focusNeighbors: FocusNeighborsProp?, focus: FocusPolicyProp?, restoreOnReturn: boolean?, cols: number }
+--- flow row-major across columns; grid currently has no backdrop fill/border
+--- and no `localState`.
+export type GridProps = { gap: WidgetSpacing?, padding: WidgetSpacing?, align: WidgetAlign?, id: string?, focusNeighbors: FocusNeighborsProp?, focus: FocusPolicyProp?, restoreOnReturn: boolean?, cols: number, visibleWhen: Predicate?, role: WidgetRole? }
 
 --- A vertical stack (`vstack`): `children` is a POSITIONAL second argument.
 declare function VStack(props: StackProps?, children: {WidgetDescriptor}?): WidgetDescriptor
@@ -2346,52 +2571,60 @@ declare runtime: Runtime
 -- See: context/research/ui-layer.md §16.
 export type NavIntent = "nav.up" | "nav.down" | "nav.left" | "nav.right" | "nav.next" | "nav.prev" | "nav.confirm" | "nav.cancel" | "nav.menu" | "nav.options"
 
+"#;
+
+const LUAU_VIRTUAL_MODULE_TYPES: &str = r#"
 -- ---------------------------------------------------------------------------
 -- Luau SDK virtual modules. Runtime module tables contain values only; these
 -- structural aliases describe the read-only engine-owned singletons returned by
--- literal `require` calls while preserving bare-global SDK declarations.
+-- literal `require` calls. Root `postretro` excludes UI authoring APIs; `postretro/ui`
+-- is typed directly from SDK function signatures instead of bare globals.
 
 export type PostretroUiModule = {
-  Text: typeof(Text),
-  Panel: typeof(Panel),
-  Image: typeof(Image),
-  Spacer: typeof(Spacer),
-  Button: typeof(Button),
-  Slider: typeof(Slider),
-  Bar: typeof(Bar),
-  Announce: typeof(Announce),
-  VStack: typeof(VStack),
-  HStack: typeof(HStack),
-  Grid: typeof(Grid),
-  Tree: typeof(Tree),
-  defineUiTree: typeof(defineUiTree),
+  Text: (props: TextProps) -> WidgetDescriptor,
+  Panel: (props: PanelProps) -> WidgetDescriptor,
+  Image: (props: ImageProps) -> WidgetDescriptor,
+  Spacer: (props: SpacerProps?) -> WidgetDescriptor,
+  Button: (props: ButtonProps) -> WidgetDescriptor,
+  Slider: (props: SliderProps) -> WidgetDescriptor,
+  Bar: (props: BarProps) -> WidgetDescriptor,
+  Announce: (props: AnnounceProps, text: LocalizedText) -> WidgetDescriptor,
+  VStack: (props: StackProps?, children: {WidgetDescriptor}?) -> WidgetDescriptor,
+  HStack: (props: StackProps?, children: {WidgetDescriptor}?) -> WidgetDescriptor,
+  Grid: (props: GridProps, children: {WidgetDescriptor}?) -> WidgetDescriptor,
+  Tree: (props: TreeProps, root: WidgetDescriptor) -> AnchoredTreeDescriptor,
+  defineUiTree: (registration: UiTreeRegistrationProps) -> UiTreeRegistration,
   getGameState: typeof(getGameState),
-  bindState: typeof(bindState),
-  stateEquals: typeof(stateEquals),
+  bindState: ((ReadonlyStateRef<number>, NumberStateBindOptions?) -> ReadonlyStateRef<number> & NumberStateBindOptions)
+    & ((ReadonlyStateRef<{number}>, NumericArrayStateBindOptions?) -> ReadonlyStateRef<{number}> & NumericArrayStateBindOptions)
+    & ((ReadonlyStateRef<string>, ScalarStateBindOptions?) -> ReadonlyStateRef<string> & ScalarStateBindOptions)
+    & ((ReadonlyStateRef<boolean>, ScalarStateBindOptions?) -> ReadonlyStateRef<boolean> & ScalarStateBindOptions),
+  stateEquals: <T>(ref: ReadonlyStateRef<T>, value: T) -> Predicate,
   createLocalState: (init: { [string]: any }) -> { scope: any, cells: any },
-  ui: typeof(ui),
-  Switch: typeof(Switch),
-  defineTheme: typeof(defineTheme),
-  onStateCrossing: typeof(onStateCrossing),
-  playSound: typeof(playSound),
-  rumble: typeof(rumble),
-  flashScreen: typeof(flashScreen),
-  vignette: typeof(vignette),
-  screenShake: typeof(screenShake),
-  showDialog: typeof(showDialog),
-  openMenu: typeof(openMenu),
-  closeDialog: typeof(closeDialog),
-  openTextEntry: typeof(openTextEntry),
+  ui: { createLocalState: (init: { [string]: any }) -> { scope: any, cells: any } },
+  Switch: (cell: LocalStateHandle<string>, map: { [string]: WidgetDescriptor }) -> {WidgetDescriptor},
+  defineTheme: (theme: ThemeDefinition) -> DefinedTheme,
+  getDesignTokens: (theme: DefinedTheme) -> DesignTokens,
+  onStateCrossing: (ref: ReadonlyStateRef<number>, condition: CrossingCondition, fire: {NamedReactionDescriptor | string}) -> CrossingDescriptor,
+  playSound: (sound: string, bus: string?) -> PrimitiveReactionDescriptor,
+  rumble: (strong: number, durationMs: number, weak: number?) -> PrimitiveReactionDescriptor,
+  flashScreen: (color: {number}, durationMs: number) -> PrimitiveReactionDescriptor,
+  vignette: (strength: number, durationMs: number, color: {number}?) -> PrimitiveReactionDescriptor,
+  screenShake: (amplitude: number, durationMs: number, frequency: number?) -> PrimitiveReactionDescriptor,
+  showDialog: (tree: string, onCommit: string?) -> PrimitiveReactionDescriptor,
+  openMenu: (tree: string) -> PrimitiveReactionDescriptor,
+  closeDialog: () -> PrimitiveReactionDescriptor,
+  openTextEntry: (onCommit: string?) -> PrimitiveReactionDescriptor,
   KEYBOARD_TREE: "keyboard",
   CLOSE_DIALOG_ACTION: "ui.closeDialog",
   EXIT_TO_DESKTOP_ACTION: "ui.exitToDesktop",
-  updateState: typeof(updateState),
-  appendText: typeof(appendText),
-  backspaceText: typeof(backspaceText),
-  clearText: typeof(clearText),
+  updateState: <T>(ref: WritableStateRef<T>, value: T) -> PrimitiveReactionDescriptor,
+  appendText: (ref: WritableStateRef<string>, text: string) -> PrimitiveReactionDescriptor,
+  backspaceText: (ref: WritableStateRef<string>) -> PrimitiveReactionDescriptor,
+  clearText: (ref: WritableStateRef<string>) -> PrimitiveReactionDescriptor,
 }
 
-export type PostretroModule = PostretroUiModule & {
+export type PostretroModule = {
   world: World,
   runtime: Runtime,
   getGameState: typeof(getGameState),
@@ -2410,6 +2643,77 @@ declare require: ((path: "postretro") -> PostretroModule)
   & ((path: "postretro/ui") -> PostretroUiModule)
   & ((path: string) -> any)
 "#;
+
+fn luau_public_sdk_lib_block() -> String {
+    // Runtime still evaluates the UI SDK chunks so `require("postretro/ui")`
+    // can be populated from the internal export inventory. The root Luau
+    // author-visible surface no longer promotes UI entries into `_G`, so the
+    // generated declaration file must remove matching bare global declarations.
+    let mut block = LUAU_SDK_LIB_BLOCK.to_string();
+    remove_range(
+        &mut block,
+        "--- Build a state-crossing watcher.",
+        "-- ---------------------------------------------------------------------------\n-- State-store declarations",
+    );
+    remove_doc_and_decl_line(&mut block, "declare function defineTheme(");
+    remove_doc_and_decl_line(&mut block, "declare function getDesignTokens(");
+    remove_doc_and_decl_line(&mut block, "declare function Text(");
+    remove_doc_and_decl_line(&mut block, "declare function Panel(");
+    remove_doc_and_decl_line(&mut block, "declare function Image(");
+    remove_doc_and_decl_line(&mut block, "declare function Spacer(");
+    remove_doc_and_decl_line(&mut block, "declare function Button(");
+    remove_doc_and_decl_line(&mut block, "declare function Slider(");
+    remove_doc_and_decl_line(&mut block, "declare function Bar(");
+    remove_doc_and_decl_line(&mut block, "declare function Announce(");
+    remove_doc_and_decl_line(&mut block, "declare function VStack(");
+    remove_doc_and_decl_line(&mut block, "declare function HStack(");
+    remove_doc_and_decl_line(&mut block, "declare function Grid(");
+    remove_doc_and_decl_line(&mut block, "declare function Tree(");
+    remove_doc_and_decl_line(&mut block, "declare function defineUiTree(");
+    remove_range(
+        &mut block,
+        "--- Compose bind-only options onto a state ref",
+        "--- Build `{ slot, equals }` for scalar state refs.",
+    );
+    remove_doc_and_decl_line(&mut block, "declare function stateEquals");
+    remove_doc_and_decl_line(&mut block, "declare function createLocalState");
+    remove_doc_and_decl_line(&mut block, "declare function Switch");
+    remove_decl_line(&mut block, "declare ui:");
+    block.push_str(LUAU_VIRTUAL_MODULE_TYPES);
+    block
+}
+
+fn remove_doc_and_decl_line(text: &mut String, marker: &str) {
+    let Some(decl_start) = text.find(marker) else {
+        panic!("typedef generator missing Luau declaration marker `{marker}`");
+    };
+    let mut start = decl_start;
+    while start > 0 {
+        let previous_newline = text[..start - 1].rfind('\n').map_or(0, |idx| idx + 1);
+        let previous_line = &text[previous_newline..start - 1];
+        if previous_line.starts_with("---") {
+            start = previous_newline;
+        } else {
+            break;
+        }
+    }
+    let end = text[decl_start..]
+        .find('\n')
+        .map(|offset| decl_start + offset + 1)
+        .unwrap_or(text.len());
+    text.replace_range(start..end, "");
+}
+
+fn remove_decl_line(text: &mut String, marker: &str) {
+    let Some(start) = text.find(marker) else {
+        panic!("typedef generator missing Luau declaration marker `{marker}`");
+    };
+    let end = text[start..]
+        .find('\n')
+        .map(|offset| start + offset + 1)
+        .unwrap_or(text.len());
+    text.replace_range(start..end, "");
+}
 
 // ---------------------------------------------------------------------------
 // Filesystem emission
@@ -3447,8 +3751,10 @@ export type Event = {
             .expect("expected TS snapshot to end with `}\\n`");
         let mut out = stripped.to_string();
         emit_ts_game_state_refs(&mut out);
-        out.push_str(TS_SDK_LIB_BLOCK);
+        let sdk_block = ts_public_root_sdk_lib_block();
+        out.push_str(&sdk_block);
         out.push_str("}\n");
+        out.push_str(ts_ui_sdk_module_block());
         out
     }
 
@@ -3457,7 +3763,8 @@ export type Event = {
     fn luau_with_sdk_lib_block(prefix: &str) -> String {
         let mut out = prefix.to_string();
         emit_luau_game_state_refs(&mut out);
-        out.push_str(LUAU_SDK_LIB_BLOCK);
+        let sdk_block = luau_public_sdk_lib_block();
+        out.push_str(&sdk_block);
         out
     }
 
@@ -3475,6 +3782,19 @@ export type Event = {
         panic!(
             "{label} registry snapshot drift at byte {mismatch}:\nexpected: {expected_tail:?}\ngot:      {got_tail:?}"
         );
+    }
+
+    fn ts_module_block<'a>(ts: &'a str, module_name: &str) -> &'a str {
+        let marker = format!("declare module \"{module_name}\" {{");
+        let start = ts
+            .find(&marker)
+            .unwrap_or_else(|| panic!("missing TypeScript module `{module_name}`"));
+        let after_start = start + marker.len();
+        let next_module = ts[after_start..]
+            .find("\ndeclare module ")
+            .map(|offset| after_start + offset)
+            .unwrap_or(ts.len());
+        &ts[start..next_module]
     }
 
     #[test]
@@ -3871,7 +4191,7 @@ export type Event = {
 
     /// `defineReaction` (M13 G1a) widens to accept an optional `name`: both the
     /// `(body)` overload (deterministic auto-id) and the `(name, body)` overload
-    /// surface in both type outputs, and the reaction-reference authoring types
+    /// surface in the root TypeScript output, and the Luau UI module prop types
     /// (`ButtonProps.onPress`, crossing `fire`) accept a typed handle or a bare
     /// string. The wire form (`onPress: string`) is unchanged.
     #[test]
@@ -3890,17 +4210,8 @@ export type Event = {
             2,
             "ts must declare both defineReaction overloads"
         );
-        // Widened reaction-reference props. The button factory's `onPress`
-        // accepts a typed handle (`ReactionHandleRef`) or a bare name string;
-        // crossing `fire` accepts a `NamedReactionDescriptor` handle or a string.
-        assert!(
-            ts.contains("onPress: ReactionHandleRef | string"),
-            "ts ButtonProps.onPress must accept a handle or string"
-        );
-        assert!(
-            ts.contains("fire: (NamedReactionDescriptor | string)[]"),
-            "ts onStateCrossing.fire must accept handles or strings"
-        );
+        // Widened reaction-reference props still appear in the Luau UI module
+        // prop types. TypeScript root no longer exposes UI prop types in Task 1.
         assert!(
             luau.contains("onPress: ReactionHandleRef | string"),
             "luau ButtonProps.onPress must accept a handle or string"
@@ -3911,14 +4222,8 @@ export type Event = {
         );
     }
 
-    /// M13 G1a Task 6: the widget/layout/tree/state factory declarations must
-    /// surface in BOTH generated type files so authors get IDE completions on the
-    /// capitalized constructors. Asserts each factory appears in the form the
-    /// generator emits (`export function …` for TS, `declare function …` for
-    /// Luau), and that `LocalizedText` — the user-facing text-prop alias — is
-    /// declared in both.
     #[test]
-    fn ui_factory_declarations_appear_in_both_type_outputs() {
+    fn root_type_outputs_do_not_expose_ui_authoring_helpers() {
         use crate::scripting::ctx::ScriptCtx;
         use crate::scripting::primitives::register_all;
 
@@ -3926,55 +4231,75 @@ export type Event = {
         register_all(&mut r, ScriptCtx::new());
         let ts = generate_typescript(&r);
         let luau = generate_luau(&r);
+        let ts_root = ts_module_block(&ts, "postretro");
 
-        // Every factory: widgets, layout containers, and the Tree envelope.
-        const FACTORIES: &[&str] = &[
-            "Text", "Panel", "Image", "Spacer", "Button", "Slider", "Bar", "VStack", "HStack",
-            "Grid", "Tree",
+        const UI_FUNCTIONS: &[&str] = &[
+            "Text",
+            "Panel",
+            "Image",
+            "Spacer",
+            "Button",
+            "Slider",
+            "Bar",
+            "Announce",
+            "VStack",
+            "HStack",
+            "Grid",
+            "Tree",
+            "defineUiTree",
+            "bindState",
+            "stateEquals",
+            "createLocalState",
+            "Switch",
+            "defineTheme",
+            "onStateCrossing",
+            "playSound",
+            "rumble",
+            "flashScreen",
+            "vignette",
+            "screenShake",
+            "showDialog",
+            "openMenu",
+            "closeDialog",
+            "openTextEntry",
+            "updateState",
+            "appendText",
+            "backspaceText",
+            "clearText",
         ];
-        for f in FACTORIES {
-            let ts_decl = format!("export function {f}(");
+        for f in UI_FUNCTIONS {
             assert!(
-                ts.contains(&ts_decl),
-                "ts d.ts missing UI factory declaration `{ts_decl}`"
+                !ts_root.contains(&format!("export function {f}(")),
+                "root TS d.ts must not expose UI helper `{f}`"
             );
-            let luau_decl = format!("declare function {f}(");
             assert!(
-                luau.contains(&luau_decl),
-                "luau d.luau missing UI factory declaration `{luau_decl}`"
+                !luau.contains(&format!("declare function {f}(")),
+                "Luau d.luau must not expose UI bare global `{f}`"
             );
         }
         assert!(
-            ts.contains("export function bindState<T>(ref: ReadonlyStateRef<T>): ReadonlyStateRef<T>;")
-                && ts.contains("export function bindState<T, Options extends StateBindOptionsFor<T>>(ref: ReadonlyStateRef<T>, options: Options): ReadonlyStateRef<T> & Omit<Options, \"slot\" | \"local\">;")
-                && ts.contains("export function stateEquals<"),
-            "ts d.ts missing state reference helper declarations"
+            !ts_root.contains("export const ui:")
+                && !luau.contains("declare ui:")
+                && !luau.contains("declare bindState:"),
+            "root outputs must not expose UI state helper globals"
         );
         assert!(
-            luau.contains("declare bindState:")
-                && luau.contains("NumberStateBindOptions")
-                && luau.contains("NumericArrayStateBindOptions")
-                && luau.contains("ScalarStateBindOptions")
-                && luau.contains("declare function stateEquals<T>("),
-            "luau d.luau missing state reference helper declarations"
+            !ts_root.contains("export const KEYBOARD_TREE")
+                && !ts_root.contains("export const CLOSE_DIALOG_ACTION")
+                && !luau.contains("declare KEYBOARD_TREE")
+                && !luau.contains("declare CLOSE_DIALOG_ACTION"),
+            "root outputs must not expose UI reaction constants"
         );
         assert!(
-            ts.contains("export function defineTheme<const T extends ThemeDefinition>(theme: T): DefinedTheme<T>;")
-                && ts.contains("export type ThemeTokenAccessors<T extends ThemeDefinition>")
-                && luau.contains("declare function defineTheme(theme: ThemeDefinition): DefinedTheme")
-                && luau.contains("export type ThemeTokenAccessors"),
-            "generated type outputs missing theme helper declarations"
+            ts_root.contains(
+                "export type WidgetDescriptor = { kind: string; [field: string]: unknown };"
+            ) && ts_root.contains("export type AnchoredTreeDescriptor = {")
+                && luau.contains("export type WidgetDescriptor = { [string]: any }")
+                && luau.contains("export type AnchoredTreeDescriptor ="),
+            "manifest UI wire types must remain available for ModUiTree declarations"
         );
         assert!(
-            ts.contains("export function updateState<T extends number | boolean | string | ReadonlyArray<number>>(ref: WritableStateRef<T>, value: T): PrimitiveReactionDescriptor;"),
-            "ts d.ts missing typed updateState declaration"
-        );
-        assert!(
-            luau.contains("declare function updateState<T>(ref: WritableStateRef<T>, value: T): PrimitiveReactionDescriptor"),
-            "luau d.luau missing updateState declaration"
-        );
-        assert!(
-            !ts.contains("export function setState("),
+            !ts_root.contains("export function setState("),
             "ts must not expose raw-string setState as an author-facing helper"
         );
         assert!(
@@ -3990,21 +4315,7 @@ export type Event = {
             "luau must not expose storeHandle"
         );
 
-        // The user-facing text-prop alias is the single localization chokepoint
-        // (every widget text prop is typed `LocalizedText`).
-        assert!(
-            ts.contains("export type LocalizedText = string;"),
-            "ts d.ts missing LocalizedText alias"
-        );
-        assert!(
-            luau.contains("export type LocalizedText = string"),
-            "luau d.luau missing LocalizedText alias"
-        );
-        // The text-prop typing reaches the factory props (review/grep gate).
-        assert!(
-            ts.contains("content: LocalizedText") && ts.contains("label: LocalizedText"),
-            "ts UI factory props must type user-facing text as LocalizedText"
-        );
+        assert!(luau.contains("export type PostretroUiModule = {"));
     }
 
     #[test]
@@ -4021,7 +4332,23 @@ export type Event = {
 
         assert!(
             luau.contains("export type PostretroUiModule = {")
-                && luau.contains("export type PostretroModule = PostretroUiModule & {"),
+                && luau.contains("export type PostretroModule = {")
+                && luau.contains(
+                    "export type ColorToken = { __postretroToken: \"color\", token: string }"
+                )
+                && luau.contains(
+                    "export type FontToken = { __postretroToken: \"font\", token: string }"
+                )
+                && luau.contains(
+                    "export type SpacingToken = { __postretroToken: \"spacing\", token: string }"
+                )
+                && luau.contains(
+                    "export type DesignTokenTree<Token> = Token & { [string]: DesignTokenTree<Token> }"
+                )
+                && luau.contains("color: DesignTokenTree<ColorToken>,")
+                && luau.contains("export type WidgetColor = {number} | ColorToken")
+                && luau.contains("export type WidgetSpacing = number | SpacingToken")
+                && luau.contains("font: FontToken?"),
             "luau output missing virtual module aliases:\n{luau}"
         );
         assert!(
@@ -4044,6 +4371,47 @@ export type Event = {
                 "PostretroUiModule missing UI export `{export}`"
             );
         }
+    }
+
+    #[test]
+    fn typescript_ui_module_declaration_is_generated() {
+        use crate::scripting::ctx::ScriptCtx;
+        use crate::scripting::primitives::register_all;
+
+        let mut r = PrimitiveRegistry::new();
+        register_all(&mut r, ScriptCtx::new());
+        let ts = generate_typescript(&r);
+        let ui_module = ts_module_block(&ts, "postretro/ui");
+        let root_module = ts_module_block(&ts, "postretro");
+
+        assert!(
+            ui_module.contains("export function Text(props: TextProps): WidgetDescriptor;")
+                && ui_module
+                    .contains("export function defineTheme<const T extends ThemeDefinition>")
+                && ui_module
+                    .contains("export function getDesignTokens<const T extends ThemeDefinition>")
+                && ui_module.contains("export function createLocalState")
+                && ui_module.contains("export const ui:")
+                && ui_module.contains("export function showDialog(")
+                && ui_module.contains("export function getGameState(): GameStateRefs;")
+                && ui_module.contains(
+                    "export type ThemeToken<Category extends \"color\" | \"font\" | \"spacing\">"
+                )
+                && ui_module.contains("export type ColorToken = ThemeToken<\"color\">;")
+                && ui_module.contains("export type FontToken = ThemeToken<\"font\">;")
+                && ui_module.contains("export type SpacingToken = ThemeToken<\"spacing\">;")
+                && ui_module.contains(
+                    "export type WidgetColor = [number, number, number, number] | ColorToken;"
+                )
+                && ui_module.contains("export type WidgetSpacing = number | SpacingToken;")
+                && ui_module.contains("font?: FontToken;"),
+            "TypeScript `postretro/ui` module missing UI authoring surface:\n{ui_module}"
+        );
+        assert!(
+            !root_module.contains("export function Text(props: TextProps): WidgetDescriptor;")
+                && !root_module.contains("export function defineTheme("),
+            "root TypeScript module leaked UI authoring helpers:\n{root_module}"
+        );
     }
 
     /// The runtime-value vocabulary (scripting.md §11) is a closed union: every
@@ -4157,43 +4525,32 @@ export type Event = {
     /// M13 G2 Task 5: the emitted typedefs must NARROW props per widget kind, so
     /// an author wiring the wrong prop to the wrong widget gets a compile error
     /// in their editor (the no-`tsc`-CI contract — the committed `.d.ts`/`.d.luau`
-    /// IS the type-safety surface; `@ts-expect-error` fixtures under
-    /// `content/dev/scripts/` pin the negative cases for a human/IDE reviewer).
+    /// IS the type-safety surface.
     ///
     /// This test guards the narrowing at the typedef-block level: it asserts that
     /// `content` lives ONLY on the `Text` prop type (so `Button({ content })` is a
     /// type error — `ButtonProps`/`SliderProps` carry no `content`), that the
     /// passive `Bar` prop type requires no accessible name (no `label`/`labelledBy`
     /// XOR appended), and that the interactive `Button`/`Slider` prop types DO
-    /// carry the name XOR. Both language outputs are asserted (TS/Luau parity).
+    /// carry the name XOR.
     #[test]
-    fn widget_props_narrow_per_kind_in_both_outputs() {
+    fn luau_widget_props_narrow_per_kind() {
         use crate::scripting::ctx::ScriptCtx;
         use crate::scripting::primitives::register_all;
 
         let mut r = PrimitiveRegistry::new();
         register_all(&mut r, ScriptCtx::new());
-        let ts = generate_typescript(&r);
         let luau = generate_luau(&r);
 
         // `content` is a Text-only prop. The TextProps type declares it; the
         // Button/Slider/Bar prop types must NOT — that absence is exactly what
         // makes `Button({ content: "x" })` a type error (an unknown-prop excess).
         assert!(
-            ts.contains("export type TextProps = { content: LocalizedText"),
-            "ts TextProps must carry `content`"
-        );
-        assert!(
             luau.contains("export type TextProps = { content: LocalizedText"),
             "luau TextProps must carry `content`"
         );
         // The interactive + passive widget prop types must be content-free.
         for props in ["ButtonProps", "SliderProps", "BarProps"] {
-            let ts_line = extract_decl_line(&ts, &format!("export type {props} = "));
-            assert!(
-                !ts_line.contains("content"),
-                "ts {props} must NOT carry a `content` prop (Text-only), got: {ts_line}"
-            );
             let luau_line = extract_decl_line(&luau, &format!("export type {props} = "));
             assert!(
                 !luau_line.contains("content"),
@@ -4203,11 +4560,6 @@ export type Event = {
 
         // A passive widget (`Bar`) needs no accessible name — its prop type ends
         // at the plain object, with no `label`/`labelledBy` name-XOR appended.
-        let bar_ts = extract_decl_line(&ts, "export type BarProps = ");
-        assert!(
-            !bar_ts.contains("label") && !bar_ts.contains("labelledBy"),
-            "ts BarProps must require no name (no label/labelledBy XOR), got: {bar_ts}"
-        );
         let bar_luau = extract_decl_line(&luau, "export type BarProps = ");
         assert!(
             !bar_luau.contains("label") && !bar_luau.contains("labelledBy"),
@@ -4215,15 +4567,8 @@ export type Event = {
         );
 
         // The interactive widgets DO carry the `label` xor `labelledBy` name
-        // requirement (the union tail). TS spells the XOR with `?: never`; Luau
-        // with a two-arm intersection.
+        // requirement (the union tail).
         for props in ["ButtonProps", "SliderProps"] {
-            let ts_line = extract_decl_line(&ts, &format!("export type {props} = "));
-            assert!(
-                ts_line.contains("{ label: LocalizedText; labelledBy?: never }")
-                    && ts_line.contains("{ labelledBy: string; label?: never }"),
-                "ts {props} must carry the label-xor-labelledBy union, got: {ts_line}"
-            );
             let luau_line = extract_decl_line(&luau, &format!("export type {props} = "));
             assert!(
                 luau_line.contains("({ label: LocalizedText } | { labelledBy: string })"),
@@ -4233,12 +4578,6 @@ export type Event = {
 
         // `Image` narrows to `label` xor `decorative: true` (the alt-vs-decorative
         // contract): neither/both is a type error.
-        let img_ts = extract_decl_line(&ts, "export type ImageProps = ");
-        assert!(
-            img_ts.contains("{ label: string; decorative?: never }")
-                && img_ts.contains("{ decorative: true; label?: never }"),
-            "ts ImageProps must narrow label xor decorative, got: {img_ts}"
-        );
         let img_luau = extract_decl_line(&luau, "export type ImageProps = ");
         assert!(
             img_luau.contains("({ label: string } | { decorative: true })"),
@@ -4249,28 +4588,16 @@ export type Event = {
     /// State equality uses `stateEquals(ref, value)` for authoritative refs, while
     /// presentation-local cells keep their existing `LocalStateHandle.is(value)`.
     #[test]
-    fn is_predicate_helper_is_typed_to_the_value_type_in_both_outputs() {
+    fn luau_predicate_helpers_are_typed_to_the_value_type() {
         use crate::scripting::ctx::ScriptCtx;
         use crate::scripting::primitives::register_all;
 
         let mut r = PrimitiveRegistry::new();
         register_all(&mut r, ScriptCtx::new());
-        let ts = generate_typescript(&r);
         let luau = generate_luau(&r);
 
         assert!(
-            ts.contains("export function stateEquals<T extends PredicateValue>(ref: ReadonlyStateRef<T>, value: T): Predicate;"),
-            "ts stateEquals must type the comparand to the ref value type"
-        );
-        assert!(
-            ts.contains("export type LocalStateHandle<T extends CellInit> = { get(): LocalBindRef; set(value: T): PrimitiveReactionDescriptor; is(value: T): Predicate };"),
-            "ts LocalStateHandle.is must be typed `is(value: T): Predicate`"
-        );
-
-        assert!(
-            luau.contains(
-                "declare function stateEquals<T>(ref: ReadonlyStateRef<T>, value: T): Predicate"
-            ),
+            luau.contains("stateEquals: <T>(ref: ReadonlyStateRef<T>, value: T) -> Predicate,"),
             "luau stateEquals declaration must type the comparand to the ref value type"
         );
         assert!(

@@ -18,6 +18,9 @@
 
 import {
   type NamedReactionDescriptor,
+  defineReaction,
+} from "postretro";
+import {
   Button,
   HStack,
   Text,
@@ -25,10 +28,17 @@ import {
   VStack,
   Switch,
   defineUiTree,
-  defineReaction,
   ui,
-  type ModUiTree,
-} from "postretro";
+  type UiTreeRegistration,
+} from "postretro/ui";
+
+const COLOR_OK: [number, number, number, number] = [0.12, 0.72, 0.40, 1.0];
+const COLOR_PANEL_DEFAULT: [number, number, number, number] = [
+  0.018, 0.026, 0.039, 0.82,
+];
+const COLOR_TEXT: [number, number, number, number] = [0.82, 0.95, 0.98, 1.0];
+const SPACING_S = 4;
+const SPACING_M = 8;
 
 // Each tab's (key, label). Lexicographic key order is what `Switch` expands in,
 // so the content panels and the tab strip stay in a stable, cross-runtime order.
@@ -39,9 +49,9 @@ const TABS: ReadonlyArray<[string, string]> = [
 
 /** A simple content panel for the demo — distinct text per tab. */
 function panel(title: string, body: string) {
-  return VStack({ gap: "s", padding: "m" }, [
-    Text({ content: title, fontSize: 22, color: "ok" }),
-    Text({ content: body, fontSize: 16, color: "body" as never }),
+  return VStack({ gap: SPACING_S, padding: SPACING_M }, [
+    Text({ content: title, fontSize: 22, color: COLOR_OK }),
+    Text({ content: body, fontSize: 16, color: COLOR_TEXT }),
   ]);
 }
 
@@ -52,7 +62,7 @@ function panel(title: string, body: string) {
  */
 export function tabsDemo(): {
   reactions: NamedReactionDescriptor[];
-  uiTrees: ModUiTree[];
+  uiTrees: UiTreeRegistration[];
 } {
   // One string-valued presentation cell selects the active tab.
   const sel = ui.createLocalState({ tab: "loadout" });
@@ -76,7 +86,7 @@ export function tabsDemo(): {
       bind: sel.cells.tab.is(key),
       styleRanges: {
         max: 1,
-        entries: [{ upTo: 0, color: "panel.default" }, { color: "ok" }],
+        entries: [{ upTo: 0, color: COLOR_PANEL_DEFAULT }, { color: COLOR_OK }],
       },
       // A11y: the SAME predicate tags the button selected when active.
       selected: sel.cells.tab.is(key),
@@ -90,18 +100,26 @@ export function tabsDemo(): {
       { anchor: "topRight", offset: [-16, 16], role: "group", accessibleName: "Tabs demo" },
       // `localState` is declared on the vstack (NOT the tablist strip / Grid) so
       // the cell scope covers both the tab strip and the content `Switch`.
-      VStack({ localState: sel.scope, gap: "m", padding: "m", fill: [0.05, 0.05, 0.08, 0.85] }, [
-        HStack({ role: "tablist", gap: "s", focus: "linear" }, TABS.map(tab)),
-        // `Switch` expands to each panel with `visibleWhen: cell.is(key)` injected
-        // in sorted key order — exactly the active tab's panel is visible.
-        VStack(
-          { gap: "s" },
-          Switch(sel.cells.tab, {
-            loadout: panel("Loadout", "Pistol · Shotgun · Plasma"),
-            stats: panel("Stats", "Kills 0 · Accuracy --"),
-          }),
-        ),
-      ]),
+      VStack(
+        {
+          localState: sel.scope,
+          gap: SPACING_M,
+          padding: SPACING_M,
+          fill: [0.05, 0.05, 0.08, 0.85],
+        },
+        [
+          HStack({ role: "tablist", gap: SPACING_S, focus: "linear" }, TABS.map(tab)),
+          // `Switch` expands to each panel with `visibleWhen: cell.is(key)` injected
+          // in sorted key order — exactly the active tab's panel is visible.
+          VStack(
+            { gap: SPACING_S },
+            Switch(sel.cells.tab, {
+              loadout: panel("Loadout", "Pistol · Shotgun · Plasma"),
+              stats: panel("Stats", "Kills 0 · Accuracy --"),
+            }),
+          ),
+        ],
+      ),
     ),
   });
 

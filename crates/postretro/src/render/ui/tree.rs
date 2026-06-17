@@ -130,6 +130,12 @@ const UNKNOWN_SPACING_FALLBACK: f32 = 0.0;
 /// additive field could expose it); their labels measure/draw at this size.
 const INTERACTIVE_LABEL_FONT_SIZE: f32 = 18.0;
 
+/// Default text color for an interactive `button`/`slider` label run. These
+/// widgets do not expose a color field in the descriptor contract, so the
+/// renderer keeps their base label color as a literal instead of naming a theme
+/// token that mods are not required to define.
+const INTERACTIVE_LABEL_COLOR: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
+
 /// Default bar size (logical-reference px, `[width, height]`). A `bar` has no
 /// intrinsic content to measure, so its leaf carries an explicit style size; a
 /// container's `align`/stretch may still override it. Horizontal-only in v1.
@@ -215,26 +221,26 @@ fn resolve_spacing(value: &SpacingValue, theme: &UiTheme) -> f32 {
 }
 
 /// Resolve a `text` widget's optional `font` token to a concrete family string.
-/// `None` selects the `body` token's family; `Some(name)` looks the token up. An
-/// unknown font token degrades to the `body` family and logs exactly one warning
-/// per tree build. The `body` token is a required theme token (it always
-/// resolves on the engine default), so the unwrap-to-body path never recurses
-/// into a second miss; a theme that somehow lacks `body` falls back to the
-/// embedded body family constant rather than panicking.
+/// `None` selects the `primary` token's family; `Some(name)` looks the token up.
+/// An unknown font token degrades to the `primary` family and logs exactly one
+/// warning per tree build. The `primary` token is a required theme token (it
+/// always resolves on the engine default), so the unwrap-to-primary path never
+/// recurses into a second miss; a theme that somehow lacks `primary` falls back
+/// to the embedded Inter family constant rather than panicking.
 fn resolve_font(font: &Option<String>, theme: &UiTheme) -> String {
-    let body = || {
+    let primary = || {
         theme
-            .font("body")
+            .font("primary")
             .unwrap_or(super::text::UI_FONT_FAMILY)
             .to_string()
     };
     match font {
-        None => body(),
+        None => primary(),
         Some(name) => match theme.font(name) {
             Some(family) => family.to_string(),
             None => {
-                log::warn!("[UI] unknown font token '{name}' — using body family fallback");
-                body()
+                log::warn!("[UI] unknown font token '{name}' — using primary family fallback");
+                primary()
             }
         },
     }
@@ -349,7 +355,7 @@ enum NodeContext {
         font_size: f32,
         color: [f32; 4],
         /// Theme-resolved font family this run shapes and draws with. Sourced
-        /// from the `text` widget's `font` token (or the `body` token when the
+        /// from the `text` widget's `font` token (or the `primary` token when the
         /// widget names none) at tree-build time, so the measure seam and the
         /// draw step both select the same registered face. See `resolve_font`.
         family: String,
@@ -1484,7 +1490,7 @@ impl UiTree {
                     font_size * scale,
                     linear_rgba_to_srgb_u8(color),
                     // The theme-resolved family carried on the node (from the
-                    // widget's `font` token, or `body` when it names none), so the
+                    // widget's `font` token, or `primary` when it names none), so the
                     // drawn line shapes against the same registered face the
                     // measure seam sized it with.
                     family.clone(),
@@ -2158,8 +2164,8 @@ fn build_node(
                         // an unknown token degrades to opaque magenta + one warn.
                         color: resolve_color(color, theme),
                         // Resolve the optional font token to a concrete family:
-                        // `None` → the `body` token, `Some(name)` → that token,
-                        // unknown → `body` + one warn.
+                        // `None` → the `primary` token, `Some(name)` → that token,
+                        // unknown → `primary` + one warn.
                         family: resolve_font(font, theme),
                         bind_scope: bind_scope_for(bind.as_ref().map(|b| &b.source), scope),
                         bind: bind.clone(),
@@ -2247,11 +2253,12 @@ fn build_node(
 }
 
 /// Build an interactive `button` leaf. Renders its `label`
-/// as a centered text run shaping against the theme `body` face. The button is a
+/// as a centered text run shaping against the theme `primary` face. The button is a
 /// pure text leaf for layout/draw; its focusable marker + activation (`on_press`)
 /// ride the focus-rect export (`focus_meta` / `widget_interaction`), not the draw
-/// payload. The label color resolves the theme `body`-text default (white), the
-/// same flat color a literal text widget would carry.
+/// payload. The base label color is the renderer-owned literal white default;
+/// styleRanges, when present, may still replace it through the existing text
+/// color path.
 ///
 /// M13 G2: a button's `bind` is a [`Predicate`] (not a slot bind) accepted as the
 /// `styleRanges` value source — a tab/segmented button self-highlights when its
@@ -2285,7 +2292,7 @@ fn build_button(
                 // task; for now an absent inline label renders empty.
                 content: button.label.clone().unwrap_or_default(),
                 font_size: INTERACTIVE_LABEL_FONT_SIZE,
-                color: resolve_color(&ColorValue::Token("body".to_string()), theme),
+                color: INTERACTIVE_LABEL_COLOR,
                 family: resolve_font(&None, theme),
                 // A button label is static text — no slot bind, tween, or format.
                 bind_scope: None,
@@ -2334,7 +2341,7 @@ fn build_slider(
             NodeContext::Text {
                 content: slider.label.clone().unwrap_or_default(),
                 font_size: INTERACTIVE_LABEL_FONT_SIZE,
-                color: resolve_color(&ColorValue::Token("body".to_string()), theme),
+                color: INTERACTIVE_LABEL_COLOR,
                 family: resolve_font(&None, theme),
                 bind_scope,
                 bind: Some(bind),
@@ -4502,16 +4509,16 @@ mod tests {
     }
 
     #[test]
-    fn absent_font_resolves_to_the_body_family() {
-        // A text widget with no `font` token resolves to the `body` family — the
-        // pre-theming default, so fontless text keeps the body face.
+    fn absent_font_resolves_to_the_primary_family() {
+        // A text widget with no `font` token resolves to the `primary` family —
+        // the pre-theming default, so fontless text keeps the primary face.
         let theme = UiTheme::engine_default();
         let tree = themed_text(ColorValue::Literal([1.0; 4]), None);
         let ui = UiTree::from_descriptor(&tree, &theme);
         if let Some(NodeContext::Text { family, .. }) = ui.taffy.get_node_context(ui.root) {
             assert_eq!(
                 family, UI_FONT_FAMILY,
-                "absent font selects the body family"
+                "absent font selects the primary family"
             );
         } else {
             panic!("root must be a text node");
@@ -4519,16 +4526,16 @@ mod tests {
     }
 
     #[test]
-    fn unknown_font_token_falls_back_to_body_family() {
-        // An unknown font token degrades to the `body` family (not magenta, not a
-        // panic) — text still renders in the default face.
+    fn unknown_font_token_falls_back_to_primary_family() {
+        // An unknown font token degrades to the `primary` family (not magenta,
+        // not a panic) — text still renders in the default face.
         let theme = UiTheme::engine_default();
         let tree = themed_text(ColorValue::Literal([1.0; 4]), Some("no.such.font"));
         let ui = UiTree::from_descriptor(&tree, &theme);
         if let Some(NodeContext::Text { family, .. }) = ui.taffy.get_node_context(ui.root) {
             assert_eq!(
                 family, UI_FONT_FAMILY,
-                "unknown font token falls back to the body family",
+                "unknown font token falls back to the primary family",
             );
         } else {
             panic!("root must be a text node");
@@ -5784,6 +5791,23 @@ mod tests {
     }
 
     #[test]
+    fn button_label_uses_literal_white_default_color() {
+        // Regression: interactive labels used the removed `body` color token and
+        // therefore degraded to opaque magenta under the engine default theme.
+        let tree = anchored(button("resume", "resumeGame"));
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+        let data = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
+
+        assert_eq!(data.texts.len(), 1);
+        assert_eq!(
+            data.texts[0].color,
+            srgb_of(INTERACTIVE_LABEL_COLOR),
+            "button label uses the renderer-owned literal white default",
+        );
+    }
+
+    #[test]
     fn slider_exports_focusable_rect_with_step_interaction() {
         // A slider always exports as focusable carrying its bound-value step params
         // and capturesNav wire names — the app drives the value step from these.
@@ -5811,6 +5835,23 @@ mod tests {
                 step: 0.1,
                 captures_nav: vec!["nav.left".to_string(), "nav.right".to_string()],
             }),
+        );
+    }
+
+    #[test]
+    fn slider_label_uses_literal_white_default_color() {
+        // Regression: interactive labels used the removed `body` color token and
+        // therefore degraded to opaque magenta under the engine default theme.
+        let tree = anchored(slider("vol", "audio.master", &[]));
+        let mut ui = UiTree::from_descriptor(&tree, &theme());
+        let mut fs = font_system();
+        let data = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &no_slots());
+
+        assert_eq!(data.texts.len(), 1);
+        assert_eq!(
+            data.texts[0].color,
+            srgb_of(INTERACTIVE_LABEL_COLOR),
+            "slider label uses the renderer-owned literal white default",
         );
     }
 

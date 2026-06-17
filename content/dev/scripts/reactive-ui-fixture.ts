@@ -17,11 +17,31 @@ import {
   Announce,
   Bar,
   Button,
+  defineTheme,
+  getDesignTokens,
   Image,
   Slider,
   Text,
   ui,
-} from "postretro";
+} from "postretro/ui";
+
+const fixtureTheme = defineTheme({
+  color: {
+    ok: [0.12, 0.72, 0.40, 1.0],
+    panel: {
+      default: [0.018, 0.026, 0.039, 0.82],
+    },
+  },
+  font: {
+    primary: "JetBrains Mono",
+    mono: "JetBrains Mono",
+  },
+  spacing: {
+    m: 8,
+  },
+});
+
+const tokens = getDesignTokens(fixtureTheme);
 
 // --- Shared cell scope ------------------------------------------------------
 // A string-valued presentation cell. `cells.tab` is a `LocalStateHandle<string>`;
@@ -33,7 +53,7 @@ const sel = ui.createLocalState({ tab: "loadout" });
 // `content` is a `Text` prop. The interactive/passive widget prop types carry
 // no `content`, so wiring it onto a Button/Slider/Bar is an excess-property
 // (unknown-prop) type error — the headline per-kind narrowing the AC requires.
-const _text = Text({ content: "Loadout", fontSize: 18, color: "ok" });
+const _text = Text({ content: "Loadout", fontSize: 18, color: tokens.color.ok });
 
 // @ts-expect-error — `content` is a Text-only prop; ButtonProps has no `content`.
 const _badButtonContent = Button({ id: "x", label: "X", onPress: "noop", content: "X" });
@@ -54,9 +74,18 @@ const _unnamedButton = Button({ id: "bad", onPress: "noop" });
 const _bar = Bar({
   bind: { slot: "player.health" as never },
   max: 100,
-  fill: "ok",
-  background: [0.1, 0.1, 0.1, 1],
+  fill: tokens.color.ok,
+  background: tokens.color.panel.default,
 });
+
+// @ts-expect-error — color props accept color tokens, not spacing tokens.
+const _badColorToken = Text({ content: "Bad color", color: tokens.spacing.m });
+
+// @ts-expect-error — font props accept font tokens only, not literal font families.
+const _badFontLiteral = Text({ content: "Bad font", font: "JetBrains Mono" });
+
+// @ts-expect-error — font props accept font tokens, not color tokens.
+const _badFontToken = Text({ content: "Bad font token", font: tokens.color.ok });
 
 // --- (4) Image: label xor decorative ----------------------------------------
 // `Image` requires exactly one of `label` (alt text) or `decorative: true`.
@@ -86,7 +115,7 @@ const _tab = Button({
   bind: sel.cells.tab.is("loadout"),
   styleRanges: {
     max: 1,
-    entries: [{ upTo: 0, color: "panel.default" }, { color: "ok" }],
+    entries: [{ upTo: 0, color: tokens.color.panel.default }, { color: tokens.color.ok }],
   },
   selected: sel.cells.tab.is("loadout"),
   onPress: "selectLoadout",
@@ -104,6 +133,9 @@ void _named;
 void _labelled;
 void _unnamedButton;
 void _bar;
+void _badColorToken;
+void _badFontLiteral;
+void _badFontToken;
 void _altImage;
 void _decoImage;
 void _badImage;

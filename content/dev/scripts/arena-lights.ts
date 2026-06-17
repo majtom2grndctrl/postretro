@@ -1,16 +1,18 @@
 import {
   type NamedReactionDescriptor,
+  defineReaction,
+  world,
+} from "postretro";
+import {
   appendText,
   backspaceText,
-  defineReaction,
   flashScreen,
   getGameState,
   onStateCrossing,
   playSound,
   screenShake,
   vignette,
-  world,
-} from "postretro";
+} from "postretro/ui";
 import { tabsDemo } from "./tabs-demo";
 
 export function setupLevel(_ctx: unknown) {

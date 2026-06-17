@@ -364,32 +364,28 @@ mod tests {
     use crate::scripting::primitives::register_all;
     use crate::scripting::primitives_registry::ContextScope;
 
-    // 16 `type(...)` strings returned by `sdk_prelude_installs_globals`.
-    type PreludeTypeNames = (
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-    );
-
     fn setup() -> (LuauSubsystem, ScriptCtx) {
         let ctx = ScriptCtx::new();
         let mut registry = PrimitiveRegistry::new();
         register_all(&mut registry, ctx.clone());
         let subsys = LuauSubsystem::new(&registry, &LuauConfig::default()).unwrap();
         (subsys, ctx)
+    }
+
+    fn install_ui_theme_token_validator(lua: &mlua::Lua) -> mlua::Table {
+        const THEME_SRC: &str = include_str!("../../../../sdk/lib/ui/theme.luau");
+        let theme: mlua::Table = lua
+            .load(THEME_SRC)
+            .set_name("theme.luau")
+            .eval()
+            .expect("theme.luau must evaluate to a module table");
+        let unwrap: mlua::Value = theme
+            .get("__unwrapThemeToken")
+            .expect("theme.luau must expose internal token validator");
+        lua.globals()
+            .set("__postretroUnwrapThemeToken", unwrap)
+            .expect("install temporary token validator");
+        theme
     }
 
     #[test]
@@ -573,24 +569,7 @@ mod tests {
         let (subsys, _ctx) = setup();
         {
             let which = Which::Definition;
-            let (
-                world_ty,
-                flicker_ty,
-                pulse_ty,
-                color_ty,
-                sweep_ty,
-                fog_pulse_ty,
-                fog_fade_ty,
-                timeline_ty,
-                sequence_ty,
-                emitter_ty,
-                smoke_ty,
-                spark_ty,
-                dust_ty,
-                define_theme_ty,
-                wrap_light_ty,
-                wrap_fog_ty,
-            ): PreludeTypeNames = subsys
+            let values: mlua::MultiValue = subsys
                 .run_source(
                     which,
                     r#"
@@ -609,12 +588,50 @@ mod tests {
                       type(sparkEmitter),
                       type(dustEmitter),
                       type(defineTheme),
+                      type(getDesignTokens),
+                      type(Text),
+                      type(VStack),
+                      type(showDialog),
                       type(wrapLightEntity),
                       type(wrapFogVolumeEntity)
                     "#,
                     "prelude.luau",
                 )
                 .unwrap();
+            let values: Vec<String> = values
+                .into_iter()
+                .map(|value| {
+                    value
+                        .as_string()
+                        .and_then(|s| s.to_str().ok().map(|s| s.to_string()))
+                        .expect("type() returns a string")
+                })
+                .collect();
+            let [
+                world_ty,
+                flicker_ty,
+                pulse_ty,
+                color_ty,
+                sweep_ty,
+                fog_pulse_ty,
+                fog_fade_ty,
+                timeline_ty,
+                sequence_ty,
+                emitter_ty,
+                smoke_ty,
+                spark_ty,
+                dust_ty,
+                define_theme_ty,
+                get_design_tokens_ty,
+                text_ty,
+                vstack_ty,
+                show_dialog_ty,
+                wrap_light_ty,
+                wrap_fog_ty,
+            ] = values.as_slice()
+            else {
+                panic!("unexpected prelude type result count: {values:?}");
+            };
             assert_eq!(world_ty, "table", "{which:?}: world");
             // Capability methods — not bare globals anymore.
             assert_eq!(flicker_ty, "nil", "{which:?}: flicker");
@@ -629,7 +646,12 @@ mod tests {
             assert_eq!(smoke_ty, "function", "{which:?}: smokeEmitter");
             assert_eq!(spark_ty, "function", "{which:?}: sparkEmitter");
             assert_eq!(dust_ty, "function", "{which:?}: dustEmitter");
-            assert_eq!(define_theme_ty, "function", "{which:?}: defineTheme");
+            // UI authoring APIs are no longer promoted to Luau bare globals.
+            assert_eq!(define_theme_ty, "nil", "{which:?}: defineTheme");
+            assert_eq!(get_design_tokens_ty, "nil", "{which:?}: getDesignTokens");
+            assert_eq!(text_ty, "nil", "{which:?}: Text");
+            assert_eq!(vstack_ty, "nil", "{which:?}: VStack");
+            assert_eq!(show_dialog_ty, "nil", "{which:?}: showDialog");
             // Temporary bridges nil'd out before author scripts run.
             assert_eq!(wrap_light_ty, "nil", "{which:?}: wrapLightEntity");
             assert_eq!(wrap_fog_ty, "nil", "{which:?}: wrapFogVolumeEntity");
@@ -838,13 +860,10 @@ mod tests {
 
     #[test]
     fn ui_reactions_fields_contains_complete_sdk_surface() {
-        // Regression: openTextEntry/KEYBOARD_TREE were declared in the typedef
-        // + SDK but not lifted, so Luau callers hit a nil global at runtime
-        // while TS callers worked fine (TS installs them via globalThis rewrite).
-        //
-        // This test guards against the same gap recurring: every name exposed by
-        // `sdk/lib/ui/reactions.luau` as a UiReactionsSdk field must appear in
-        // UI_REACTIONS_FIELDS so the field is actually promoted to a bare global.
+        // Every name exposed by `sdk/lib/ui/reactions.luau` as a UiReactionsSdk
+        // field must appear in UI_REACTIONS_FIELDS so the `postretro/ui` virtual
+        // module gets the complete reaction helper surface without promoting
+        // those names to bare globals.
         let expected: &[&str] = &[
             "onStateCrossing",
             "playSound",
@@ -870,81 +889,51 @@ mod tests {
             assert!(
                 actual.contains(name),
                 "UI_REACTIONS_FIELDS is missing `{name}` — it is declared in \
-                sdk/lib/ui/reactions.luau and the Luau typedef but was not lifted \
-                to a bare global, so Luau callers hit nil at runtime",
+                sdk/lib/ui/reactions.luau but would be absent from require(\"postretro/ui\")",
             );
         }
     }
 
     #[test]
-    fn close_dialog_action_global_emits_reserved_wire_name() {
+    fn ui_reserved_action_globals_are_absent_from_luau_prelude() {
         let lua = build_lua_state(&[], None, None).expect("lua state");
-        let value: String = lua
-            .load("return CLOSE_DIALOG_ACTION")
+        let (close_ty, exit_ty): (String, String) = lua
+            .load("return type(CLOSE_DIALOG_ACTION), type(EXIT_TO_DESKTOP_ACTION)")
             .eval()
-            .expect("CLOSE_DIALOG_ACTION global");
-        assert_eq!(value, "ui.closeDialog");
+            .expect("global type check");
+        assert_eq!(close_ty, "nil");
+        assert_eq!(exit_ty, "nil");
     }
 
     #[test]
-    fn exit_to_desktop_action_global_emits_reserved_wire_name() {
-        let lua = build_lua_state(&[], None, None).expect("lua state");
-        let value: String = lua
-            .load("return EXIT_TO_DESKTOP_ACTION")
-            .eval()
-            .expect("EXIT_TO_DESKTOP_ACTION global");
-        assert_eq!(value, "ui.exitToDesktop");
-    }
-
-    #[test]
-    fn sdk_prelude_installs_ui_factory_globals() {
-        // M13 G1a Task 6: the widget/layout/tree/state factory modules must be
-        // wired into the Luau prelude so authors call them by bare name. Without
-        // the wiring (the precedent the Task 3/4 notes flag), a Luau author hits a
-        // nil global at runtime while a TS author works (TS lifts via the
-        // globalThis rewrite). Asserts every lifted field is a callable global and
-        // that the internal `validateBorder`/`resolveReactionName` helpers stay
-        // OFF the global table.
+    fn sdk_prelude_does_not_install_ui_factory_globals() {
         let (subsys, _ctx) = setup();
         let src = r#"
-            local function isfn(n) return type(_G[n]) == "function" end
             return
-              isfn("Text"), isfn("Panel"), isfn("Image"), isfn("Spacer"),
-              isfn("Button"), isfn("Slider"), isfn("Bar"),
-              isfn("VStack"), isfn("HStack"), isfn("Grid"),
-              isfn("Tree"), isfn("bindState"), isfn("stateEquals"),
-              isfn("defineTheme"),
+              type(Text), type(Panel), type(Image), type(Spacer),
+              type(Button), type(Slider), type(Bar),
+              type(VStack), type(HStack), type(Grid),
+              type(Tree), type(bindState), type(stateEquals),
+              type(defineTheme), type(getDesignTokens), type(showDialog), type(ui),
               type(validateBorder), type(resolveReactionName)
         "#;
         let results: mlua::MultiValue = subsys
             .run_source(Which::Definition, src, "ui_prelude.luau")
             .unwrap();
-        let vals: Vec<mlua::Value> = results.into_iter().collect();
-        // First 14 are the factory/helper globals: must all be functions (true).
-        for (i, v) in vals.iter().take(14).enumerate() {
+        let vals: Vec<String> = results
+            .into_iter()
+            .map(|v| {
+                v.as_string()
+                    .and_then(|s| s.to_str().ok().map(|s| s.to_string()))
+                    .expect("type() returns a string")
+            })
+            .collect();
+        for (i, ty) in vals.iter().enumerate() {
             assert_eq!(
-                v.as_boolean(),
-                Some(true),
-                "UI factory global #{i} must be installed as a function"
+                ty, "nil",
+                "UI/global helper #{i} must not be installed as a Luau bare global"
             );
         }
-        // Last 2 are the internal helpers: must be `nil` (not leaked).
-        let validate_border_ty = vals[14]
-            .as_string()
-            .and_then(|s| s.to_str().ok().map(|s| s.to_string()));
-        assert_eq!(
-            validate_border_ty.as_deref(),
-            Some("nil"),
-            "validateBorder must NOT be a bare global"
-        );
-        let resolve_reaction_name_ty = vals[15]
-            .as_string()
-            .and_then(|s| s.to_str().ok().map(|s| s.to_string()));
-        assert_eq!(
-            resolve_reaction_name_ty.as_deref(),
-            Some("nil"),
-            "resolveReactionName must NOT be a bare global"
-        );
     }
 
     /// M13 G1a Task 6: `defineReaction` auto-id determinism + byte-identical
@@ -957,6 +946,7 @@ mod tests {
         const DATA_SCRIPT_SRC: &str = include_str!("../../../../sdk/lib/data_script.luau");
         const WIDGETS_SRC: &str = include_str!("../../../../sdk/lib/ui/widgets.luau");
         let lua = mlua::Lua::new();
+        install_ui_theme_token_validator(&lua);
         let data_script: mlua::Table = lua
             .load(DATA_SCRIPT_SRC)
             .set_name("data_script.luau")
@@ -1035,61 +1025,18 @@ mod tests {
         );
     }
 
-    /// M13 G1b: `ui.createLocalState` is promoted to the `ui` global after the
-    /// prelude step that evaluates `ui/state.luau`. Without `"ui"` in
-    /// `UI_STATE_FIELDS`, a Luau author calling `ui.createLocalState(...)` gets
-    /// "attempt to index nil value 'ui'". This test verifies:
-    ///   1. `ui` is a table (not nil).
-    ///   2. `ui.createLocalState` is a function.
-    ///   3. Calling `ui.createLocalState({ hp = 100 })` returns a bundle whose
-    ///      `cells.hp:get()` is a `{ local = ... }` bind ref.
-    ///   4. `cells.hp:set(42)` returns a `cellWrite` reaction descriptor
-    ///      (primitive = "cellWrite", args.cell = "hp", args.value = 42).
     #[test]
-    fn sdk_prelude_installs_ui_create_local_state() {
+    fn sdk_prelude_does_not_install_ui_create_local_state_global() {
         let (subsys, _ctx) = setup();
-        let src = r#"
-            -- 1. ui is a table, not nil
-            assert(type(ui) == "table",
-                "ui must be a table, got: " .. type(ui))
-            -- 2. ui.createLocalState is a function
-            assert(type(ui.createLocalState) == "function",
-                "ui.createLocalState must be a function, got: " .. type(ui.createLocalState))
-            -- 3. Call createLocalState and inspect the bundle
-            local bundle = ui.createLocalState({ hp = 100 })
-            assert(type(bundle) == "table", "bundle must be a table")
-            assert(type(bundle.cells) == "table", "bundle.cells must be a table")
-            local cell = bundle.cells.hp
-            assert(type(cell) == "table", "cells.hp must be a table")
-            -- 4. :get() yields the { local } bind ref
-            local ref_ = cell:get()
-            assert(type(ref_) == "table", "get() must return a table")
-            local localField = ref_["local"]
-            assert(type(localField) == "string",
-                "bind ref must have a string 'local' field, got: " .. type(localField))
-            -- 5. :set(v) emits a cellWrite reaction descriptor
-            local desc = cell:set(42)
-            assert(type(desc) == "table", "set() must return a table")
-            assert(desc.primitive == "cellWrite",
-                "set() primitive must be 'cellWrite', got: " .. tostring(desc.primitive))
-            assert(type(desc.args) == "table", "set() must have args table")
-            assert(desc.args.cell == "hp",
-                "args.cell must be 'hp', got: " .. tostring(desc.args.cell))
-            assert(desc.args.value == 42,
-                "args.value must be 42, got: " .. tostring(desc.args.value))
-            -- 6. args.scope is present and is the stable "localState.N" id.
-            -- The SDK's monotonic counter starts at 0; the first createLocalState
-            -- call in this script yields "localState.0".
-            assert(type(desc.args.scope) == "string" and #desc.args.scope > 0,
-                "args.scope must be a non-empty string, got: " .. tostring(desc.args.scope))
-            assert(desc.args.scope == "localState.0",
-                "args.scope must be 'localState.0', got: " .. tostring(desc.args.scope))
-            return true
-        "#;
-        let ok: bool = subsys
-            .run_source(Which::Definition, src, "ui_create_local_state.luau")
+        let (ui_ty, create_ty): (String, String) = subsys
+            .run_source(
+                Which::Definition,
+                "return type(ui), type(createLocalState)",
+                "ui_create_local_state_absent.luau",
+            )
             .unwrap();
-        assert!(ok, "ui.createLocalState round-trip failed");
+        assert_eq!(ui_ty, "nil");
+        assert_eq!(create_ty, "nil");
     }
 
     #[test]
@@ -1161,17 +1108,12 @@ mod tests {
     }
 
     #[test]
-    fn luau_define_theme_returns_token_strings_without_retaining_helper_metadata() {
-        const THEME_SRC: &str = include_str!("../../../../sdk/lib/ui/theme.luau");
+    fn luau_define_theme_flattens_nested_tokens_and_returns_design_tokens() {
         const WIDGETS_SRC: &str = include_str!("../../../../sdk/lib/ui/widgets.luau");
         const LAYOUT_SRC: &str = include_str!("../../../../sdk/lib/ui/layout.luau");
 
         let lua = mlua::Lua::new();
-        let theme_sdk: mlua::Table = lua
-            .load(THEME_SRC)
-            .set_name("theme.luau")
-            .eval()
-            .expect("theme.luau must evaluate to a module table");
+        let theme_sdk = install_ui_theme_token_validator(&lua);
         lua.globals().set("T", theme_sdk).unwrap();
         let widgets_sdk: mlua::Table = lua
             .load(WIDGETS_SRC)
@@ -1186,95 +1128,163 @@ mod tests {
             .expect("layout.luau must evaluate to a module table");
         lua.globals().set("L", layout_sdk).unwrap();
 
-        let (
-            color,
-            font,
-            spacing,
-            unknown,
-            empty,
-            invalid,
-            text_color,
-            text_font,
-            stack_gap,
-            stack_padding,
-            has_raw_tokens,
-            pair_count,
-            theme,
-        ): (
-            String,
-            String,
-            String,
-            String,
-            String,
-            String,
-            String,
-            String,
-            String,
-            String,
-            bool,
-            i64,
-            mlua::Value,
-        ) = lua
+        let (result, theme): (mlua::Value, mlua::Value) = lua
             .load(
                 r#"
                 local theme = T.defineTheme({
-                  colors = { ["hud.text"] = {1, 1, 1, 1} },
-                  fonts = { ["hud.status"] = "JetBrains Mono" },
-                  spacing = { ["hud.gap"] = 8 },
+                  color = {
+                    critical = {1, 0, 0, 1},
+                    panel = { default = {0, 0, 0, 0.75} },
+                    custom = { accent = {0.25, 0.5, 1, 1} },
+                  },
+                  font = { primary = "JetBrains Mono", display = { title = "Orbitron" } },
+                  spacing = { m = 8, rhythm = { tight = 3 } },
                 })
-                theme.colors["late.color"] = {0, 1, 0, 1}
-                theme.colors["hud.text"] = nil
+                local tokens = T.getDesignTokens(theme)
                 local pairCount = 0
                 for _ in pairs(theme) do
                   pairCount += 1
                 end
                 local text = W.Text({
-                  content = "empty token",
-                  color = theme.tokens.color(""),
-                  font = theme.tokens.font(""),
+                  content = "nested token",
+                  color = tokens.color.panel.default,
+                  font = tokens.font.primary,
                 })
                 local stack = L.VStack({
-                  gap = theme.tokens.spacing(""),
-                  padding = theme.tokens.spacing(""),
+                  gap = tokens.spacing.m,
+                  padding = tokens.spacing.m,
                 }, { text })
-                return
-                  theme.tokens.color("hud.text"),
-                  theme.tokens.font("hud.status"),
-                  theme.tokens.spacing("hud.gap"),
-                  theme.tokens.color("late.color"),
-                  theme.tokens.spacing(""),
-                  theme.tokens.font(42),
-                  text.color,
-                  text.font,
-                  stack.gap,
-                  stack.padding,
-                  rawget(theme, "tokens") ~= nil,
-                  pairCount,
-                  theme
+
+                local function throws(fn)
+                  local ok = pcall(fn)
+                  return not ok
+                end
+
+                local clone = {}
+                for key, value in pairs(theme) do
+                  clone[key] = value
+                end
+
+                return {
+                  flatPanel = theme.colors["panel.default"],
+                  flatCritical = theme.colors.critical,
+                  flatFont = theme.fonts.primary,
+                  flatSpacing = theme.spacing.m,
+                  tokenColor = tokens.color.panel.default,
+                  tokenCustomColor = tokens.color.custom.accent,
+                  tokenFont = tokens.font.primary,
+                  tokenCustomFont = tokens.font.display.title,
+                  tokenSpacing = tokens.spacing.m,
+                  tokenCustomSpacing = tokens.spacing.rhythm.tight,
+                  tokenReadonly = throws(function()
+                    tokens.color.panel.default.token = "changed"
+                  end),
+                  textColor = text.color,
+                  textFont = text.font,
+                  stackGap = stack.gap,
+                  stackPadding = stack.padding,
+                  hasRawTokens = rawget(theme, "tokens") ~= nil,
+                  pairCount = pairCount,
+                  rejectsPlain = throws(function()
+                    T.getDesignTokens({
+                      colors = theme.colors,
+                      fonts = theme.fonts,
+                      spacing = theme.spacing,
+                    })
+                  end),
+                  rejectsClone = throws(function()
+                    T.getDesignTokens(clone)
+                  end),
+                  rejectsPluralInput = throws(function()
+                    T.defineTheme({ colors = {} })
+                  end),
+                  rejectsDottedKey = throws(function()
+                    T.defineTheme({ color = { ["panel.default"] = {1, 1, 1, 1} } })
+                  end),
+                  rejectsBadColor = throws(function()
+                    T.defineTheme({ color = { bad = {1, 1, 1} } })
+                  end),
+                  rejectsEmptyFont = throws(function()
+                    T.defineTheme({ font = { bad = "" } })
+                  end),
+                  rejectsBadSpacing = throws(function()
+                    T.defineTheme({ spacing = { bad = math.huge } })
+                  end),
+                  rejectsSpecialKey = throws(function()
+                    T.defineTheme({ color = { ["__proto__"] = {1, 1, 1, 1} } })
+                  end),
+                  rejectsMissingTokenPath = throws(function()
+                    W.Text({ content = "bad", color = tokens.color.missing })
+                  end),
+                  rejectsForgedColor = throws(function()
+                    W.Text({ content = "bad", color = { __postretroToken = "color", token = "critical" } })
+                  end),
+                  rejectsForgedFont = throws(function()
+                    W.Text({ content = "bad", font = { __postretroToken = "font", token = "primary" } })
+                  end),
+                  rejectsForgedSpacing = throws(function()
+                    L.VStack({ gap = { __postretroToken = "spacing", token = "m" } }, {})
+                  end),
+                  rejectsWrongCategory = throws(function()
+                    W.Text({ content = "bad", color = tokens.font.primary })
+                  end),
+                }, theme
                 "#,
             )
             .set_name("define_theme_case")
             .eval()
-            .expect("defineTheme should return token strings");
+            .expect("defineTheme should flatten nested theme tokens");
 
-        assert_eq!(color, "hud.text");
-        assert_eq!(font, "hud.status");
-        assert_eq!(spacing, "hud.gap");
-        assert_eq!(unknown, "late.color");
-        assert_eq!(empty, "");
-        assert_eq!(invalid, "42");
-        assert_eq!(text_color, "");
-        assert_eq!(text_font, "");
-        assert_eq!(stack_gap, "");
-        assert_eq!(stack_padding, "");
+        let got = super::super::conv::lua_to_json(result).expect("result converts to JSON");
+        assert_eq!(got["flatPanel"], serde_json::json!([0, 0, 0, 0.75]));
+        assert_eq!(got["flatCritical"], serde_json::json!([1, 0, 0, 1]));
+        assert_eq!(got["flatFont"], "JetBrains Mono");
+        assert_eq!(got["flatSpacing"], 8);
+        assert_eq!(got["tokenColor"]["__postretroToken"], "color");
+        assert_eq!(got["tokenColor"]["token"], "panel.default");
+        assert_eq!(got["tokenCustomColor"]["__postretroToken"], "color");
+        assert_eq!(got["tokenCustomColor"]["token"], "custom.accent");
+        assert_eq!(got["tokenFont"]["__postretroToken"], "font");
+        assert_eq!(got["tokenFont"]["token"], "primary");
+        assert_eq!(got["tokenCustomFont"]["__postretroToken"], "font");
+        assert_eq!(got["tokenCustomFont"]["token"], "display.title");
+        assert_eq!(got["tokenSpacing"]["__postretroToken"], "spacing");
+        assert_eq!(got["tokenSpacing"]["token"], "m");
+        assert_eq!(got["tokenCustomSpacing"]["__postretroToken"], "spacing");
+        assert_eq!(got["tokenCustomSpacing"]["token"], "rhythm.tight");
+        assert_eq!(
+            got["tokenReadonly"], true,
+            "Luau token leaves must be read-only records"
+        );
+        assert_eq!(got["textColor"], "panel.default");
+        assert_eq!(got["textFont"], "primary");
+        assert_eq!(got["stackGap"], "m");
+        assert_eq!(got["stackPadding"], "m");
         assert!(
-            !has_raw_tokens,
+            !got["hasRawTokens"].as_bool().unwrap(),
             "tokens helper must not be a retained table field"
         );
         assert_eq!(
-            pair_count, 3,
+            got["pairCount"], 3,
             "pairs(theme) must see only theme category maps"
         );
+        for key in [
+            "rejectsPlain",
+            "rejectsClone",
+            "rejectsPluralInput",
+            "rejectsDottedKey",
+            "rejectsBadColor",
+            "rejectsEmptyFont",
+            "rejectsBadSpacing",
+            "rejectsSpecialKey",
+            "rejectsMissingTokenPath",
+            "rejectsForgedColor",
+            "rejectsForgedFont",
+            "rejectsForgedSpacing",
+            "rejectsWrongCategory",
+        ] {
+            assert_eq!(got[key], true, "{key} should throw");
+        }
         let json = super::super::conv::lua_to_json(theme).expect("theme converts to JSON");
         assert_eq!(
             json.get("tokens"),
@@ -1303,6 +1313,28 @@ mod tests {
         const LAYOUT_SRC: &str = include_str!("../../../../sdk/lib/ui/layout.luau");
 
         let lua = mlua::Lua::new();
+        let theme = install_ui_theme_token_validator(&lua);
+        lua.globals().set("T", theme).unwrap();
+        lua.load(
+            r#"
+            local theme = T.defineTheme({
+              color = {
+                critical = {1, 0, 0, 1},
+                ok = {0, 1, 0, 1},
+                panel = { default = {0, 0, 0, 1} },
+              },
+              font = { primary = "JetBrains Mono" },
+              spacing = { m = 8, s = 4 },
+            })
+            local tokens = T.getDesignTokens(theme)
+            C = tokens.color
+            F = tokens.font
+            S = tokens.spacing
+            "#,
+        )
+        .set_name("token_setup")
+        .exec()
+        .expect("token setup");
         let widgets: mlua::Table = lua
             .load(WIDGETS_SRC)
             .set_name("widgets.luau")
@@ -1331,12 +1363,20 @@ mod tests {
                 r#"{"kind":"text","content":"0","fontSize":18,"color":[1,1,1,1],"bind":{"slot":"player.health","tween":{"durationMs":1200,"easing":"easeOut","from":0}}}"#,
             ),
             (
-                r#"W.Text({ content = "0", fontSize = 18, color = {1,1,1,1}, bind = { slot = "player.health" }, styleRanges = { max = 100, entries = { { upTo = 0.25, color = "critical" }, { color = "ok" } } } })"#,
+                r#"W.Text({ content = "0", fontSize = 18, color = {1,1,1,1}, bind = { slot = "player.health" }, styleRanges = { max = 100, entries = { { upTo = 0.25, color = C.critical }, { color = C.ok } } } })"#,
                 r#"{"kind":"text","content":"0","fontSize":18,"color":[1,1,1,1],"bind":{"slot":"player.health"},"styleRanges":{"max":100,"entries":[{"upTo":0.25,"color":"critical"},{"color":"ok"}]}}"#,
+            ),
+            (
+                r#"W.Text({ content = "tokenized", font = F.primary, color = C.panel.default })"#,
+                r#"{"kind":"text","content":"tokenized","fontSize":12,"color":"panel.default","font":"primary"}"#,
             ),
             (
                 r#"W.Panel({ fill = {0.1,0.2,0.3,1}, border = { texture = "ui/frame", slice = {8,8,8,8}, tint = {1,1,1,1} } })"#,
                 r#"{"kind":"panel","fill":[0.1,0.2,0.3,1],"border":{"texture":"ui/frame","slice":[8,8,8,8],"tint":[1,1,1,1]}}"#,
+            ),
+            (
+                r#"W.Panel({ fill = C.panel.default, border = { texture = "ui/frame", slice = {8,8,8,8}, tint = C.ok } })"#,
+                r#"{"kind":"panel","fill":"panel.default","border":{"texture":"ui/frame","slice":[8,8,8,8],"tint":"ok"}}"#,
             ),
             (
                 r#"W.Panel({ fill = {0.1,0.2,0.3,1} })"#,
@@ -1367,6 +1407,10 @@ mod tests {
                 r#"{"kind":"button","id":"a","label":"A","onPress":"fa"}"#,
             ),
             (
+                r#"W.Button({ id = "a", label = "A", onPress = { name = "fa" }, styleRanges = { max = 1, entries = { { color = C.ok } } } })"#,
+                r#"{"kind":"button","id":"a","label":"A","onPress":"fa","styleRanges":{"max":1,"entries":[{"color":"ok"}]}}"#,
+            ),
+            (
                 r#"W.Slider({ id = "vol", label = "Volume", bind = { slot = "audio.master" }, min = 0, max = 1, step = 0.1, capturesNav = {"nav.left","nav.right"} })"#,
                 r#"{"kind":"slider","id":"vol","label":"Volume","bind":{"slot":"audio.master"},"min":0,"max":1,"step":0.1,"capturesNav":["nav.left","nav.right"]}"#,
             ),
@@ -1375,12 +1419,36 @@ mod tests {
                 r#"{"kind":"bar","bind":{"slot":"player.health"},"max":100,"fill":[0,1,0,1],"background":[0.1,0.1,0.1,1]}"#,
             ),
             (
+                r#"W.Bar({ bind = { slot = "player.health" }, max = 100, fill = C.ok, background = C.panel.default })"#,
+                r#"{"kind":"bar","bind":{"slot":"player.health"},"max":100,"fill":"ok","background":"panel.default"}"#,
+            ),
+            (
                 r#"L.VStack({ gap = 4, padding = 8, align = "start" }, { W.Text({ content = "hi", fontSize = 12 }) })"#,
                 r#"{"kind":"vstack","gap":4,"padding":8,"align":"start","children":[{"kind":"text","content":"hi","fontSize":12,"color":[1,1,1,1]}]}"#,
             ),
             (
+                r#"L.VStack({ gap = 4, padding = 8, align = "start", fill = C.panel.default, border = { texture = "ui/frame", slice = {8,8,8,8}, tint = C.ok } }, { W.Text({ content = "hi", fontSize = 12 }) })"#,
+                r#"{"kind":"vstack","gap":4,"padding":8,"align":"start","fill":"panel.default","border":{"texture":"ui/frame","slice":[8,8,8,8],"tint":"ok"},"children":[{"kind":"text","content":"hi","fontSize":12,"color":[1,1,1,1]}]}"#,
+            ),
+            (
+                r#"L.VStack({ localState = { scope = "tabs", cells = { active = "stats" } }, visibleWhen = { ["local"] = "open", equals = true }, role = "group" }, { W.Text({ content = "pane", fontSize = 12 }) })"#,
+                r#"{"kind":"vstack","gap":0,"padding":0,"align":"start","localState":{"scope":"tabs","cells":{"active":"stats"}},"visibleWhen":{"local":"open","equals":true},"role":"group","children":[{"kind":"text","content":"pane","fontSize":12,"color":[1,1,1,1]}]}"#,
+            ),
+            (
+                r#"L.HStack({ role = "tablist", gap = S.m }, { W.Text({ content = "tab", fontSize = 12 }) })"#,
+                r#"{"kind":"hstack","gap":"m","padding":0,"align":"start","role":"tablist","children":[{"kind":"text","content":"tab","fontSize":12,"color":[1,1,1,1]}]}"#,
+            ),
+            (
                 r#"L.Grid({ gap = 1, padding = 3, align = "stretch", cols = 2 }, { W.Image({ asset = "ui/icon", decorative = true }) })"#,
                 r#"{"kind":"grid","gap":1,"padding":3,"align":"stretch","cols":2,"children":[{"kind":"image","asset":"ui/icon","decorative":true}]}"#,
+            ),
+            (
+                r#"L.Grid({ cols = 2, visibleWhen = { slot = "ui.showGrid" }, role = "group" }, { W.Image({ asset = "ui/icon", decorative = true }) })"#,
+                r#"{"kind":"grid","gap":0,"padding":0,"align":"start","cols":2,"visibleWhen":{"slot":"ui.showGrid"},"role":"group","children":[{"kind":"image","asset":"ui/icon","decorative":true}]}"#,
+            ),
+            (
+                r#"L.Grid({ gap = S.m, padding = S.s, align = "stretch", cols = 2 }, { W.Image({ asset = "ui/icon", decorative = true }) })"#,
+                r#"{"kind":"grid","gap":"m","padding":"s","align":"stretch","cols":2,"children":[{"kind":"image","asset":"ui/icon","decorative":true}]}"#,
             ),
             (
                 // Detailed focus policy (wrap:false + repeat) + a child. (A child
@@ -1438,6 +1506,7 @@ mod tests {
         const WIDGETS_SRC: &str = include_str!("../../../../sdk/lib/ui/widgets.luau");
         const LAYOUT_SRC: &str = include_str!("../../../../sdk/lib/ui/layout.luau");
         let lua = mlua::Lua::new();
+        install_ui_theme_token_validator(&lua);
         let widgets: mlua::Table = lua.load(WIDGETS_SRC).eval().unwrap();
         let layout: mlua::Table = lua.load(LAYOUT_SRC).eval().unwrap();
         lua.globals().set("W", widgets).unwrap();
@@ -1471,6 +1540,21 @@ mod tests {
                 r#"W.Image({ asset = "x", label = "L", decorative = true })"#,
                 "decorative",
             ),
+            (r#"W.Text({ content = "x", color = "ok" })"#, "raw string"),
+            (
+                r#"W.Text({ content = "x", color = { __postretroToken = "font", token = "primary" } })"#,
+                "color token",
+            ),
+            (r#"W.Text({ content = "x", font = "Arial" })"#, "raw string"),
+            (
+                r#"W.Text({ content = "x", font = { __postretroToken = "color", token = "ok" } })"#,
+                "font token",
+            ),
+            (r#"L.VStack({ gap = "m" }, {})"#, "raw string"),
+            (
+                r#"L.VStack({ gap = { __postretroToken = "color", token = "ok" } }, {})"#,
+                "spacing token",
+            ),
         ];
         for (expr, field) in cases {
             let err = lua
@@ -1498,6 +1582,7 @@ mod tests {
         const STATE_SRC: &str = include_str!("../../../../sdk/lib/ui/state.luau");
 
         let lua = mlua::Lua::new();
+        install_ui_theme_token_validator(&lua);
         let widgets: mlua::Table = lua
             .load(WIDGETS_SRC)
             .set_name("widgets.luau")

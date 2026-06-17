@@ -17,8 +17,8 @@ use swc_bundler::{Bundler, Config, Hook, Load, ModuleData, ModuleRecord, Resolve
 use swc_common::{FileName, GLOBALS, Globals, Mark, SourceMap, Span, errors::Handler, sync::Lrc};
 use swc_ecma_ast::{
     AssignExpr, AssignOp, AssignTarget, BindingIdent, ComputedPropName, Decl, EsVersion, Expr,
-    ExprStmt, Ident, KeyValueProp, MemberExpr, MemberProp, ModuleDecl, ModuleExportName,
-    ModuleItem, Pass, Pat, Program, SimpleAssignTarget, Stmt,
+    ExprStmt, Ident, ImportSpecifier, KeyValueProp, MemberExpr, MemberProp, ModuleDecl,
+    ModuleExportName, ModuleItem, Pass, Pat, Program, SimpleAssignTarget, Stmt, TsModuleRef,
 };
 use swc_ecma_codegen::{Emitter, text_writer::JsWriter};
 use swc_ecma_loader::resolve::Resolution;
@@ -51,13 +51,13 @@ pub fn bundle_entry_with_dependencies(entry: &Path) -> Result<BundleWithDependen
     bundle_with_dependencies(entry, false)
 }
 
-/// Bundle the SDK prelude rooted at `<sdk_root>/index.ts`. Canonicalizes the
+/// Bundle the SDK prelude rooted at `<sdk_root>/prelude.ts`. Canonicalizes the
 /// entry so swc resolves relative imports against a stable absolute path.
 pub fn bundle_prelude(sdk_root: &Path) -> Result<String> {
-    let entry_path = sdk_root.join("index.ts");
+    let entry_path = sdk_root.join("prelude.ts");
     let entry = std::fs::canonicalize(&entry_path).with_context(|| {
         format!(
-            "failed to locate prelude entry `{}` (expected `<sdk-root>/index.ts`)",
+            "failed to locate prelude entry `{}` (expected `<sdk-root>/prelude.ts`)",
             entry_path.display(),
         )
     })?;
@@ -96,6 +96,7 @@ fn bundle_with_dependencies(entry: &Path, prelude: bool) -> Result<BundleWithDep
         let loader = TsLoader {
             cm: cm.clone(),
             dependencies: dependencies.clone(),
+            validate_sdk_imports: !prelude,
         };
         let resolver_impl = RelativeOnlyResolver;
         let mut bundler = Bundler::new(
@@ -178,6 +179,7 @@ fn emit_module(cm: &Lrc<SourceMap>, module: &swc_ecma_ast::Module) -> Result<Str
 struct TsLoader {
     cm: Lrc<SourceMap>,
     dependencies: Rc<RefCell<Vec<PathBuf>>>,
+    validate_sdk_imports: bool,
 }
 
 impl Load for TsLoader {
@@ -244,6 +246,10 @@ impl Load for TsLoader {
 
         if parse_error_count > 0 {
             bail!("{parse_error_count} parse error(s) in `{}`", path.display());
+        }
+
+        if self.validate_sdk_imports {
+            validate_bare_sdk_imports(&parsed, &path)?;
         }
 
         // Run resolver + TS strip in the active GLOBALS scope (the bundler
@@ -347,6 +353,92 @@ fn resolve_with_extensions(base: &Path) -> Option<PathBuf> {
         }
     }
     None
+}
+
+fn validate_bare_sdk_imports(module: &swc_ecma_ast::Module, path: &Path) -> Result<()> {
+    for item in &module.body {
+        match item {
+            ModuleItem::ModuleDecl(ModuleDecl::Import(import)) => {
+                let specifier = import.src.value.to_string_lossy();
+                if !is_bare_sdk_specifier(specifier.as_ref()) {
+                    continue;
+                }
+
+                for imported in &import.specifiers {
+                    match imported {
+                        ImportSpecifier::Named(named) if named.imported.is_some() => {
+                            let local = named.local.sym.as_ref();
+                            bail!(
+                                "unsupported bare SDK import in `{}` from \"{}\": aliased named import `{}` is not supported; use unaliased named imports because SDK imports are stripped before runtime",
+                                path.display(),
+                                specifier,
+                                local,
+                            );
+                        }
+                        ImportSpecifier::Default(default) => {
+                            bail!(
+                                "unsupported bare SDK import in `{}` from \"{}\": default import `{}` is not supported; use unaliased named imports because SDK imports are stripped before runtime",
+                                path.display(),
+                                specifier,
+                                default.local.sym,
+                            );
+                        }
+                        ImportSpecifier::Namespace(namespace) => {
+                            bail!(
+                                "unsupported bare SDK import in `{}` from \"{}\": namespace import `{}` is not supported; use unaliased named imports because SDK imports are stripped before runtime",
+                                path.display(),
+                                specifier,
+                                namespace.local.sym,
+                            );
+                        }
+                        ImportSpecifier::Named(_) => {}
+                    }
+                }
+            }
+            ModuleItem::ModuleDecl(ModuleDecl::ExportNamed(export)) => {
+                if let Some(src) = &export.src {
+                    let specifier = src.value.to_string_lossy();
+                    if is_bare_sdk_specifier(specifier.as_ref()) {
+                        bail!(
+                            "unsupported bare SDK re-export in `{}` from \"{}\": re-export declarations are stripped before runtime; import SDK symbols directly at their use site",
+                            path.display(),
+                            specifier,
+                        );
+                    }
+                }
+            }
+            ModuleItem::ModuleDecl(ModuleDecl::ExportAll(export)) => {
+                let specifier = export.src.value.to_string_lossy();
+                if is_bare_sdk_specifier(specifier.as_ref()) {
+                    bail!(
+                        "unsupported bare SDK re-export in `{}` from \"{}\": re-export declarations are stripped before runtime; import SDK symbols directly at their use site",
+                        path.display(),
+                        specifier,
+                    );
+                }
+            }
+            ModuleItem::ModuleDecl(ModuleDecl::TsImportEquals(import)) => {
+                let TsModuleRef::TsExternalModuleRef(module_ref) = &import.module_ref else {
+                    continue;
+                };
+                let specifier = module_ref.expr.value.to_string_lossy();
+                if is_bare_sdk_specifier(specifier.as_ref()) {
+                    bail!(
+                        "unsupported bare SDK import in `{}` from \"{}\": import assignment `{}` is not supported; use unaliased named imports because SDK imports are stripped before runtime",
+                        path.display(),
+                        specifier,
+                        import.id.sym,
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn is_bare_sdk_specifier(specifier: &str) -> bool {
+    specifier == "postretro" || specifier == "postretro/ui"
 }
 
 /// No-op `Hook`. The bundler invokes this only for `import.meta` properties,
@@ -718,11 +810,176 @@ mod tests {
     }
 
     #[test]
+    fn bundle_drops_postretro_ui_bare_specifier_imports() {
+        let dir = unique_tempdir("bare-ui");
+        let entry = dir.join("entry.ts");
+
+        fs::write(
+            &entry,
+            r#"
+            import { Text, defineTheme, getDesignTokens } from "postretro/ui";
+            const theme = defineTheme({
+                color: { ok: [0.0, 1.0, 0.0, 1.0] },
+                font: { primary: "JetBrains Mono" },
+            });
+            const tokens = getDesignTokens(theme);
+            const label = Text({
+                content: "HP",
+                color: tokens.color.ok,
+                font: tokens.font.primary,
+            });
+            "#,
+        )
+        .unwrap();
+
+        let canonical_entry = fs::canonicalize(&entry).unwrap();
+        let js = bundle_entry(&canonical_entry).expect("bundle should succeed");
+
+        assert!(
+            !js.contains("import "),
+            "bundled output still contains a bare-specifier import: {js}"
+        );
+        assert!(
+            !js.contains("\"postretro/ui\""),
+            "bundled output still references the bare `postretro/ui` specifier: {js}"
+        );
+        assert!(
+            js.contains("Text"),
+            "bundled output dropped the UI call site: {js}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bundle_rejects_unsupported_bare_sdk_import_forms() {
+        for specifier in ["postretro", "postretro/ui"] {
+            for (label, source, expected) in [
+                (
+                    "default",
+                    format!(r#"import SDK from "{specifier}"; void SDK;"#),
+                    "default import",
+                ),
+                (
+                    "namespace",
+                    format!(r#"import * as SDK from "{specifier}"; void SDK;"#),
+                    "namespace import",
+                ),
+                (
+                    "aliased",
+                    format!(r#"import {{ world as w }} from "{specifier}"; void w;"#),
+                    "aliased named import",
+                ),
+            ] {
+                let dir = unique_tempdir(&format!(
+                    "unsupported-{}-{}",
+                    specifier.replace('/', "-"),
+                    label
+                ));
+                let entry = dir.join("entry.ts");
+                fs::write(&entry, source).unwrap();
+
+                let canonical_entry = fs::canonicalize(&entry).unwrap();
+                let err = bundle_entry(&canonical_entry).expect_err("bundle should reject import");
+                let message = err
+                    .chain()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                assert!(
+                    message.contains(expected),
+                    "diagnostic for {specifier} {label} import should mention `{expected}`: {message}"
+                );
+                assert!(
+                    message.contains(specifier),
+                    "diagnostic for {specifier} {label} import should mention the SDK specifier: {message}"
+                );
+
+                let _ = fs::remove_dir_all(&dir);
+            }
+        }
+    }
+
+    #[test]
+    fn bundle_rejects_bare_sdk_re_exports_before_they_are_stripped() {
+        for specifier in ["postretro", "postretro/ui"] {
+            for (label, source) in [
+                (
+                    "named",
+                    format!(r#"export {{ Text as T }} from "{specifier}";"#),
+                ),
+                ("star", format!(r#"export * from "{specifier}";"#)),
+            ] {
+                let dir = unique_tempdir(&format!(
+                    "unsupported-reexport-{}-{}",
+                    specifier.replace('/', "-"),
+                    label
+                ));
+                let entry = dir.join("entry.ts");
+                fs::write(&entry, source).unwrap();
+
+                let canonical_entry = fs::canonicalize(&entry).unwrap();
+                let err =
+                    bundle_entry(&canonical_entry).expect_err("bundle should reject re-export");
+                let message = err
+                    .chain()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                assert!(
+                    message.contains("re-export"),
+                    "diagnostic for {specifier} {label} re-export should mention re-export: {message}"
+                );
+                assert!(
+                    message.contains(specifier),
+                    "diagnostic for {specifier} {label} re-export should mention the SDK specifier: {message}"
+                );
+
+                let _ = fs::remove_dir_all(&dir);
+            }
+        }
+    }
+
+    #[test]
+    fn bundle_rejects_bare_sdk_import_assignment_before_typescript_strip() {
+        // Regression: TS import-assignment emitted a runtime `require("postretro/ui")`.
+        let dir = unique_tempdir("unsupported-import-assignment");
+        let entry = dir.join("entry.ts");
+
+        fs::write(
+            &entry,
+            r#"
+            import UI = require("postretro/ui");
+            void UI;
+            "#,
+        )
+        .unwrap();
+
+        let canonical_entry = fs::canonicalize(&entry).unwrap();
+        let err = bundle_entry(&canonical_entry).expect_err("bundle should reject import");
+        let message = err
+            .chain()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            message.contains("import assignment"),
+            "diagnostic should mention import assignment: {message}"
+        );
+        assert!(
+            message.contains("postretro/ui"),
+            "diagnostic should mention the SDK specifier: {message}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn prelude_mode_rewrites_named_exports_as_global_assignments() {
         let dir = unique_tempdir("prelude");
         let world = dir.join("world.ts");
         let helpers = dir.join("helpers.ts");
-        let entry = dir.join("index.ts");
+        let entry = dir.join("prelude.ts");
 
         fs::write(
             &world,
@@ -751,7 +1008,7 @@ mod tests {
         )
         .unwrap();
 
-        // `bundle_prelude` resolves `<sdk_root>/index.ts` itself, so pass the
+        // `bundle_prelude` resolves `<sdk_root>/prelude.ts` itself, so pass the
         // tempdir as the SDK root.
         let js = bundle_prelude(&dir).expect("prelude bundle should succeed");
 

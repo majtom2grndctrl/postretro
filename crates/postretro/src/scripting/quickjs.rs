@@ -507,7 +507,13 @@ mod tests {
         subsys.definition_ctx().with(|ctx| {
             let typeof_world: String = ctx.eval("typeof world").unwrap();
             assert_eq!(typeof_world, "object", "world missing");
-            for fn_name in ["timeline", "sequence", "getGameState", "defineTheme"] {
+            for fn_name in [
+                "timeline",
+                "sequence",
+                "getGameState",
+                "defineTheme",
+                "getDesignTokens",
+            ] {
                 let kind: String = ctx
                     .eval(format!("typeof {fn_name}").as_str())
                     .unwrap_or_else(|e| panic!("{fn_name}: {e}"));
@@ -535,57 +541,124 @@ mod tests {
     }
 
     #[test]
-    fn define_theme_returns_token_strings_without_enumerating_helpers() {
+    fn define_theme_flattens_nested_tokens_and_returns_design_tokens() {
         let (subsys, _ctx) = setup();
         subsys.definition_ctx().with(|ctx| {
             let result: String = ctx
                 .eval(
                     r#"
                     const theme = defineTheme({
-                      colors: { "hud.text": [1, 1, 1, 1] },
-                      fonts: { "hud.status": "JetBrains Mono" },
-                      spacing: { "hud.gap": 8 },
+                      color: {
+                        critical: [1, 0, 0, 1],
+                        panel: { default: [0, 0, 0, 0.75] },
+                      },
+                      font: { primary: "JetBrains Mono" },
+                      spacing: { m: 8 },
                     });
-                    theme.colors["late.color"] = [0, 1, 0, 1];
-                    delete theme.colors["hud.text"];
+                    const tokens = getDesignTokens(theme);
                     const text = Text({
-                      content: "empty token",
-                      color: theme.tokens.color(""),
-                      font: theme.tokens.font(""),
+                      content: "nested token",
+                      color: tokens.color.panel.default,
+                      font: tokens.font.primary,
                     });
                     const stack = VStack({
-                      gap: theme.tokens.spacing(""),
-                      padding: theme.tokens.spacing(""),
+                      gap: tokens.spacing.m,
+                      padding: tokens.spacing.m,
                     }, [text]);
+                    const scopedStack = VStack({
+                      localState: { scope: "tabs", cells: { active: "stats" } },
+                      visibleWhen: { local: "open", equals: true },
+                      role: "group",
+                    }, []);
+                    const tablist = HStack({ role: "tablist", gap: tokens.spacing.m }, []);
+
+                    const throws = (fn) => {
+                      try {
+                        fn();
+                        return false;
+                      } catch (_) {
+                        return true;
+                      }
+                    };
+
                     JSON.stringify({
-                      color: theme.tokens.color("hud.text"),
-                      font: theme.tokens.font("hud.status"),
-                      spacing: theme.tokens.spacing("hud.gap"),
-                      unknown: theme.tokens.color("late.color"),
-                      empty: theme.tokens.spacing(""),
-                      invalid: theme.tokens.font(42),
+                      flatPanel: theme.colors["panel.default"],
+                      flatCritical: theme.colors.critical,
+                      flatFont: theme.fonts.primary,
+                      flatSpacing: theme.spacing.m,
+                      tokenColor: tokens.color.panel.default.token,
+                      tokenColorCategory: tokens.color.panel.default.__postretroToken,
+                      tokenFont: tokens.font.primary.token,
+                      tokenFontCategory: tokens.font.primary.__postretroToken,
+                      tokenSpacing: tokens.spacing.m.token,
+                      tokenSpacingCategory: tokens.spacing.m.__postretroToken,
                       textColor: text.color,
                       textFont: text.font,
                       stackGap: stack.gap,
                       stackPadding: stack.padding,
+                      scopedStackLocalState: scopedStack.localState.scope,
+                      scopedStackVisibleWhen: scopedStack.visibleWhen,
+                      scopedStackRole: scopedStack.role,
+                      tablistRole: tablist.role,
+                      flatColorsPrototypeIsNull: Object.getPrototypeOf(theme.colors) === null,
+                      flatFontsPrototypeIsNull: Object.getPrototypeOf(theme.fonts) === null,
+                      flatSpacingPrototypeIsNull: Object.getPrototypeOf(theme.spacing) === null,
                       keys: Object.keys(theme),
                       assigned: Object.keys(Object.assign({}, theme)),
                       json: JSON.stringify(theme),
+                      rejectsPlain: throws(() => getDesignTokens({
+                        colors: theme.colors,
+                        fonts: theme.fonts,
+                        spacing: theme.spacing,
+                      })),
+                      rejectsClone: throws(() => getDesignTokens(Object.assign({}, theme))),
+                      rejectsPluralInput: throws(() => defineTheme({ colors: {} })),
+                      rejectsDottedKey: throws(() => defineTheme({ color: { "panel.default": [1, 1, 1, 1] } })),
+                      rejectsBadColor: throws(() => defineTheme({ color: { bad: [1, 1, 1] } })),
+                      rejectsEmptyFont: throws(() => defineTheme({ font: { bad: "" } })),
+                      rejectsBadSpacing: throws(() => defineTheme({ spacing: { bad: Infinity } })),
+                      rejectsProtoKey: throws(() => defineTheme({ color: { __proto__: { bad: [1, 1, 1, 1] } } })),
+                      rejectsForgedTextColor: throws(() => Text({ content: "x", color: { __postretroToken: "color", token: "critical" } })),
+                      rejectsForgedTextFont: throws(() => Text({ content: "x", font: { __postretroToken: "font", token: "primary" } })),
+                      rejectsForgedStackGap: throws(() => VStack({ gap: { __postretroToken: "spacing", token: "m" } }, [])),
+                      rejectsMissingTokenPath: throws(() => Text({ content: "x", color: tokens.color.missing })),
+                      rejectsRawTextColor: throws(() => Text({ content: "x", color: "m" })),
+                      rejectsRawTextFont: throws(() => Text({ content: "x", font: "Arial" })),
+                      rejectsWrongTextColorToken: throws(() => Text({ content: "x", color: tokens.spacing.m })),
+                      rejectsWrongTextFontToken: throws(() => Text({ content: "x", font: tokens.color.critical })),
+                      rejectsRawStackGap: throws(() => VStack({ gap: "critical", fill: [1, 1, 1, 1] }, [])),
+                      rejectsRawStackFill: throws(() => VStack({ gap: 0, fill: "m" }, [])),
+                      rejectsWrongStackGapToken: throws(() => VStack({ gap: tokens.color.critical }, [])),
+                      rejectsRawBarFill: throws(() => Bar({ bind: { slot: "player.health" }, max: 100, fill: "primary", background: [0, 0, 0, 1] })),
+                      rejectsRawBarBackground: throws(() => Bar({ bind: { slot: "player.health" }, max: 100, fill: tokens.color.critical, background: "m" })),
+                      rejectsWrongBarFillToken: throws(() => Bar({ bind: { slot: "player.health" }, max: 100, fill: tokens.font.primary, background: tokens.color.panel.default })),
                     })
                     "#,
                 )
                 .unwrap();
             let got: serde_json::Value = serde_json::from_str(&result).unwrap();
-            assert_eq!(got["color"], "hud.text");
-            assert_eq!(got["font"], "hud.status");
-            assert_eq!(got["spacing"], "hud.gap");
-            assert_eq!(got["unknown"], "late.color");
-            assert_eq!(got["empty"], "");
-            assert_eq!(got["invalid"], "42");
-            assert_eq!(got["textColor"], "");
-            assert_eq!(got["textFont"], "");
-            assert_eq!(got["stackGap"], "");
-            assert_eq!(got["stackPadding"], "");
+            assert_eq!(got["flatPanel"], serde_json::json!([0, 0, 0, 0.75]));
+            assert_eq!(got["flatCritical"], serde_json::json!([1, 0, 0, 1]));
+            assert_eq!(got["flatFont"], "JetBrains Mono");
+            assert_eq!(got["flatSpacing"], 8);
+            assert_eq!(got["tokenColor"], "panel.default");
+            assert_eq!(got["tokenColorCategory"], "color");
+            assert_eq!(got["tokenFont"], "primary");
+            assert_eq!(got["tokenFontCategory"], "font");
+            assert_eq!(got["tokenSpacing"], "m");
+            assert_eq!(got["tokenSpacingCategory"], "spacing");
+            assert_eq!(got["textColor"], "panel.default");
+            assert_eq!(got["textFont"], "primary");
+            assert_eq!(got["stackGap"], "m");
+            assert_eq!(got["stackPadding"], "m");
+            assert_eq!(got["scopedStackLocalState"], "tabs");
+            assert_eq!(got["scopedStackVisibleWhen"]["local"], "open");
+            assert_eq!(got["scopedStackVisibleWhen"]["equals"], true);
+            assert_eq!(got["scopedStackRole"], "group");
+            assert_eq!(got["tablistRole"], "tablist");
+            assert_eq!(got["flatColorsPrototypeIsNull"], true);
+            assert_eq!(got["flatFontsPrototypeIsNull"], true);
+            assert_eq!(got["flatSpacingPrototypeIsNull"], true);
             assert_eq!(
                 got["keys"],
                 serde_json::json!(["colors", "fonts", "spacing"])
@@ -598,6 +671,32 @@ mod tests {
                 !got["json"].as_str().unwrap().contains("tokens"),
                 "defineTheme helper metadata must not enter JSON theme data"
             );
+            for key in [
+                "rejectsPlain",
+                "rejectsClone",
+                "rejectsPluralInput",
+                "rejectsDottedKey",
+                "rejectsBadColor",
+                "rejectsEmptyFont",
+                "rejectsBadSpacing",
+                "rejectsProtoKey",
+                "rejectsForgedTextColor",
+                "rejectsForgedTextFont",
+                "rejectsForgedStackGap",
+                "rejectsMissingTokenPath",
+                "rejectsRawTextColor",
+                "rejectsRawTextFont",
+                "rejectsWrongTextColorToken",
+                "rejectsWrongTextFontToken",
+                "rejectsRawStackGap",
+                "rejectsRawStackFill",
+                "rejectsWrongStackGapToken",
+                "rejectsRawBarFill",
+                "rejectsRawBarBackground",
+                "rejectsWrongBarFillToken",
+            ] {
+                assert_eq!(got[key], true, "{key} should throw");
+            }
         });
     }
 

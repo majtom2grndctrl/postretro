@@ -19,16 +19,21 @@
 --- the prelude has no cross-module require). `= string` today.
 export type LocalizedText = string
 
---- A widget color slot: an inline `{r, g, b, a}` tuple (0-1) or a theme token.
-export type WidgetColor = { number } | string
+export type ColorToken = { __postretroToken: "color", token: string }
+export type FontToken = { __postretroToken: "font", token: string }
 
---- A spacing slot (gap/padding): an inline logical-px number or a theme token.
-export type WidgetSpacing = number | string
+--- A widget color slot: an inline `{r, g, b, a}` tuple (0-1) or a color token.
+export type WidgetColor = { number } | ColorToken
 
 --- A flat descriptor table a widget factory produces.
 export type WidgetDescriptor = { [string]: any }
 
 local UiWidgetsSdk = {}
+local unwrapThemeToken = rawget(_G, "__postretroUnwrapThemeToken")
+if type(unwrapThemeToken) ~= "function" then
+  error("widgets.luau: missing internal theme-token validator")
+end
+local unwrapThemeToken = unwrapThemeToken :: (any, string) -> string?
 
 -- --- Validation helpers -----------------------------------------------------
 
@@ -56,23 +61,55 @@ local function requireFiniteNumber(value: any, field: string, factory: string)
   end
 end
 
-local function requireColor(value: any, field: string, factory: string)
+local function unwrapToken(value: any, category: string, field: string, factory: string): string?
+  if type(value) ~= "table" or value.__postretroToken == nil then
+    return nil
+  end
+  local token = unwrapThemeToken(value, category)
+  if token == nil then
+    error(`{factory}: \`{field}\` must be a {category} token returned by getDesignTokens(theme)`)
+  end
+  return token
+end
+
+local function requireColor(value: any, field: string, factory: string): any
+  local token = unwrapToken(value, "color", field, factory)
+  if token ~= nil then
+    return token
+  end
   if type(value) == "string" then
-    return
+    error(`{factory}: \`{field}\` must be a color token record, not a raw string`)
+  end
+  if type(value) == "table" and value.__postretroToken ~= nil then
+    error(`{factory}: \`{field}\` must be a color token returned by getDesignTokens(theme)`)
   end
   if type(value) ~= "table" or #value ~= 4 then
-    error(`{factory}: \`{field}\` must be a \{r, g, b, a\} tuple or a theme-token string`)
+    error(`{factory}: \`{field}\` must be a \{r, g, b, a\} tuple or a color token`)
+  end
+  for i = 1, 4 do
+    requireFiniteNumber(value[i], `{field}[{i}]`, factory)
+  end
+  return value
+end
+
+local function requireColorLiteral(value: any, field: string, factory: string)
+  if type(value) ~= "table" or #value ~= 4 or value.__postretroToken ~= nil then
+    error(`{factory}: \`{field}\` must be a \{r, g, b, a\} tuple`)
   end
   for i = 1, 4 do
     requireFiniteNumber(value[i], `{field}[{i}]`, factory)
   end
 end
 
-local function requireSpacing(value: any, field: string, factory: string)
-  if type(value) == "string" then
-    return
+local function requireFontToken(value: any, field: string, factory: string): string
+  local token = unwrapToken(value, "font", field, factory)
+  if token == nil then
+    if type(value) == "string" then
+      error(`{factory}: \`{field}\` must be a font token record, not a raw string`)
+    end
+    error(`{factory}: \`{field}\` must be a font token`)
   end
-  requireFiniteNumber(value, field, factory)
+  return token
 end
 
 local function validateEasing(value: any, field: string, factory: string)
@@ -118,7 +155,7 @@ local function buildBind(bind: any, factory: string, kind: string): any?
     local tween: { [string]: any } = { durationMs = tw.durationMs, easing = tw.easing }
     if tw.from ~= nil then
       if kind == "panel" then
-        requireColor(tw.from, "bind.tween.from", factory)
+        requireColorLiteral(tw.from, "bind.tween.from", factory)
       else
         requireFiniteNumber(tw.from, "bind.tween.from", factory)
       end
@@ -153,8 +190,7 @@ local function buildStyleRanges(value: any, factory: string): any?
       entry.upTo = raw.upTo
     end
     if raw.color ~= nil then
-      requireColor(raw.color, `styleRanges.entries[{i}].color`, factory)
-      entry.color = raw.color
+      entry.color = requireColor(raw.color, `styleRanges.entries[{i}].color`, factory)
     end
     if raw.pulse ~= nil then
       if type(raw.pulse) ~= "table" then
@@ -312,8 +348,7 @@ local function validateBorder(value: any, factory: string): any
   for i = 1, 4 do
     requireFiniteNumber(value.slice[i], `border.slice[{i}]`, factory)
   end
-  requireColor(value.tint, "border.tint", factory)
-  return { texture = value.texture, slice = value.slice, tint = value.tint }
+  return { texture = value.texture, slice = value.slice, tint = requireColor(value.tint, "border.tint", factory) }
 end
 UiWidgetsSdk.validateBorder = validateBorder
 
@@ -347,13 +382,12 @@ function UiWidgetsSdk.Text(props: any): WidgetDescriptor
   local fontSize = if props.fontSize ~= nil then props.fontSize else 12.0
   requireFiniteNumber(fontSize, "fontSize", "Text")
   local color = if props.color ~= nil then props.color else { 1.0, 1.0, 1.0, 1.0 }
-  requireColor(color, "color", "Text")
+  color = requireColor(color, "color", "Text")
 
   local out: { [string]: any } = { kind = "text", content = props.content, fontSize = fontSize, color = color }
   applyFocusFields(out, props, "Text")
   if props.font ~= nil then
-    requireString(props.font, "font", "Text")
-    out.font = props.font
+    out.font = requireFontToken(props.font, "font", "Text")
   end
   local bind = buildBind(props.bind, "Text", "text")
   if bind ~= nil then
@@ -378,9 +412,9 @@ end
 --- output. Mirrors `PanelWidget`.
 function UiWidgetsSdk.Panel(props: any): WidgetDescriptor
   requireObject(props, "Panel")
-  requireColor(props.fill, "fill", "Panel")
+  local fill = requireColor(props.fill, "fill", "Panel")
 
-  local out: { [string]: any } = { kind = "panel", fill = props.fill }
+  local out: { [string]: any } = { kind = "panel", fill = fill }
   if props.border ~= nil then
     out.border = validateBorder(props.border, "Panel")
   end
@@ -595,15 +629,15 @@ function UiWidgetsSdk.Bar(props: any): WidgetDescriptor
     error("Bar: `bind` is required")
   end
   local max = buildBarMax(props.max, "Bar")
-  requireColor(props.fill, "fill", "Bar")
-  requireColor(props.background, "background", "Bar")
+  local fill = requireColor(props.fill, "fill", "Bar")
+  local background = requireColor(props.background, "background", "Bar")
 
   local out: { [string]: any } = {
     kind = "bar",
     bind = bind,
     max = max,
-    fill = props.fill,
-    background = props.background,
+    fill = fill,
+    background = background,
   }
   if props.id ~= nil then
     requireNonemptyString(props.id, "id", "Bar")

@@ -1,6 +1,6 @@
 # Luau SDK Virtual Modules
 
-> **Status:** ready
+> **Status:** in-progress
 > **Related:** `context/lib/scripting.md` · `crates/postretro/src/scripting/luau.rs` · `sdk/types/postretro.d.luau`
 
 ## Goal
@@ -26,6 +26,10 @@ later UI import cleanup.
 - Resolve virtual modules before mod-root files. Mods cannot shadow them.
 - Exclude virtual modules from staged hot-reload dependency paths.
 - Luau type declarations for the new module tables and literal `require` overloads.
+- Data-script Luau VMs keep the same full mod-root `require` resolver as
+  mod-init VMs. Virtual modules resolve first.
+- `context/lib/scripting.md` is updated with the durable virtual-module
+  contract.
 
 ### Out of scope
 
@@ -43,12 +47,15 @@ later UI import cleanup.
       Task 3.
 - [ ] `require("postretro/ui")` returns the initial UI export inventory listed in
       Task 3.
-- [ ] Repeated `require("postretro/ui")` calls in one VM return the same
-      read-only table. Writes to the module table or nested namespace tables fail.
-- [ ] `require("postretro/ui")` works in mod-init and data-script Luau contexts.
-- [ ] `require("postretro/ui")` does not attempt to read
-      `<mod_root>/postretro/ui.luau`.
-- [ ] A mod file named `postretro/ui.luau` cannot shadow the engine module.
+- [ ] Repeated `require("postretro")` and `require("postretro/ui")` calls in one
+      VM return the same read-only table. Writes to the module table or nested
+      namespace tables fail under `pcall`.
+- [ ] `require("postretro")` and `require("postretro/ui")` work in mod-init and
+      data-script Luau contexts.
+- [ ] `require("postretro")` and `require("postretro/ui")` do not attempt to
+      read `<mod_root>/postretro.luau` or `<mod_root>/postretro/ui.luau`.
+- [ ] Mod files named `postretro.luau` or `postretro/ui.luau` cannot shadow the
+      engine modules.
 - [ ] Staged Luau manifest dependency tracking records authored files only, not
       `postretro` or `postretro/ui`.
 - [ ] Existing Luau scripts that use bare globals still run.
@@ -57,15 +64,15 @@ later UI import cleanup.
 
 ## Tasks
 
-### Task 1: Split Luau prelude and require code
+### Task 1: Confirm split Luau prelude and require code
 
-Behavior-preserving split before extension. Move SDK source constants, field
-lists, and `evaluate_prelude` out of the oversized Luau subsystem file. Move
-`LuauRequireTracker`, `install_require_resolver`, `resolve_require_path`, and
-`canonical_require_dependency` into a require-focused sibling module. Keep
-`build_lua_state` and `build_lua_state_with_require_tracking` as the construction
-entry points, and keep virtual modules scoped to construction paths that install
-the require resolver. Update tests only for module paths, not behavior.
+Current-state gate before remaining work. SDK source constants, field lists, and
+`evaluate_prelude` live in the Luau prelude module. `LuauRequireTracker`,
+`install_require_resolver`, `resolve_require_path`, and
+`canonical_require_dependency` live in the require-focused sibling module.
+`build_lua_state` and `build_lua_state_with_require_tracking` remain the
+construction entry points. Virtual modules stay scoped to construction paths
+that install the require resolver.
 
 ### Task 2: Add a virtual-module registry
 
@@ -79,8 +86,10 @@ or mutate the current bare globals.
 
 ### Task 3: Populate `postretro` and `postretro/ui`
 
-Build the initial module tables from evaluated SDK return tables recorded in an
-internal export inventory, not from author-visible globals. In this plan,
+Build the initial module tables from evaluated SDK return-table values recorded
+in an internal export inventory, not from author-visible globals. The export
+inventory is authoritative: it stores export names by SDK source group and reads
+the corresponding evaluated values when populating module tables. In this plan,
 `postretro` mirrors the current flat SDK surface for opt-in module use.
 `postretro/ui` contains UI factories, layout helpers, UI tree helpers, UI state
 helpers, UI reactions, `getGameState`, and theme helpers. Nested namespace
@@ -92,7 +101,7 @@ Initial runtime export inventory:
 | Module | Exports |
 |---|---|
 | `postretro` | `world`, `runtime`, `getGameState`, `timeline`, `sequence`, `defineReaction`, `defineEntity`, `defineStore`, `emitter`, `smokeEmitter`, `sparkEmitter`, `dustEmitter`, plus every `postretro/ui` export below |
-| `postretro/ui` | `Text`, `Panel`, `Image`, `Spacer`, `Button`, `Slider`, `Bar`, `Announce`, `VStack`, `HStack`, `Grid`, `Tree`, `defineUiTree`, `bindState`, `stateEquals`, `createLocalState`, `ui`, `Switch`, `defineTheme`, `onStateCrossing`, `playSound`, `rumble`, `flashScreen`, `vignette`, `screenShake`, `showDialog`, `openMenu`, `closeDialog`, `openTextEntry`, `KEYBOARD_TREE`, `CLOSE_DIALOG_ACTION`, `EXIT_TO_DESKTOP_ACTION`, `updateState`, `appendText`, `backspaceText`, `clearText` |
+| `postretro/ui` | `Text`, `Panel`, `Image`, `Spacer`, `Button`, `Slider`, `Bar`, `Announce`, `VStack`, `HStack`, `Grid`, `Tree`, `defineUiTree`, `getGameState`, `bindState`, `stateEquals`, `createLocalState`, `ui`, `Switch`, `defineTheme`, `onStateCrossing`, `playSound`, `rumble`, `flashScreen`, `vignette`, `screenShake`, `showDialog`, `openMenu`, `closeDialog`, `openTextEntry`, `KEYBOARD_TREE`, `CLOSE_DIALOG_ACTION`, `EXIT_TO_DESKTOP_ACTION`, `updateState`, `appendText`, `backspaceText`, `clearText` |
 
 Type-only declarations may name more helper types. Runtime module tables contain
 values only.
@@ -100,26 +109,41 @@ values only.
 ### Task 4: Generate Luau module types
 
 Extend the Luau type generator to emit module table types and literal `require`
-overloads. Keep the existing global declarations for now. The overloads must
-make `local UI = require("postretro/ui")` type as the UI module table while
+overloads from the same export inventory used by Task 3. Keep the existing
+global declarations for now. The overloads must make
+`local UI = require("postretro/ui")` type as the UI module table while
 unrecognized require strings remain `any` for mod-root files.
 
 ### Task 5: Test mod-init, data-script, and staging paths
 
 Cover both short-lived Luau VM paths and staged manifest dependency tracking.
 Tests should prove virtual modules bypass filesystem resolution, cannot be
-shadowed by mod files, and do not enter hot-reload dependency sets.
+shadowed by mod files, and do not enter hot-reload dependency sets. Tests must
+also validate runtime/type inventory agreement, root module behavior, read-only
+write failure under `pcall`, nested table immutability, bare-global
+preservation, and typedef overload output.
+
+### Task 6: Update durable scripting context
+
+Update `context/lib/scripting.md` with the durable virtual SDK module contract:
+module IDs and export vocabulary are symmetric with TypeScript, syntax is
+language-native, virtual modules resolve before mod files, virtual modules are
+VM-local read-only singletons in short-lived require-enabled Luau VMs, and
+file-backed require remains no-cache.
 
 ## Sequencing
 
-**Phase 1 (sequential):** Task 1 — split oversized files before adding behavior.
+**Phase 1 (sequential):** Task 1 — confirm the split is present before adding
+behavior.
 
 **Phase 2 (sequential):** Task 2 — virtual-module registry; Task 3 consumes it.
 
-**Phase 3 (concurrent):** Task 3, Task 4 — runtime modules and typedefs share the
-export inventory but do not block each other after Task 2.
+**Phase 3 (sequential):** Task 3, then Task 4. Runtime modules establish the
+shared export inventory and drift guard before typedef generation consumes it.
 
 **Phase 4 (sequential):** Task 5 — validates runtime and typedef behavior.
+
+**Phase 5 (sequential):** Task 6 — durable context update.
 
 ## Rough sketch
 

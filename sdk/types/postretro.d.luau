@@ -635,6 +635,55 @@ declare function timeline(keyframes: {Keyframe}): {Keyframe}
 declare function sequence(keyframes: {Keyframe}): {Keyframe}
 
 -- ---------------------------------------------------------------------------
+-- Emitter component vocabulary — pure constructors from
+-- `sdk/lib/entities/emitters.luau`, lifted to bare globals by the Luau prelude.
+
+--- Input shape for `emitter()`. Required: `lifetime`, `velocity`, and `sprite`.
+--- Other fields fall back to the documented emitter defaults.
+export type EmitterProps = {
+  rate: number?,
+  burst: number?,
+  spread: number?,
+  lifetime: number,
+  velocity: {number},
+  buoyancy: number?,
+  drag: number?,
+  size_over_lifetime: {number}?,
+  opacity_over_lifetime: {number}?,
+  color: {number}?,
+  sprite: string,
+  spin_rate: number?,
+}
+
+--- Optional override shape accepted by emitter presets.
+export type EmitterOverrides = {
+  rate: number?,
+  burst: number?,
+  spread: number?,
+  lifetime: number?,
+  velocity: {number}?,
+  buoyancy: number?,
+  drag: number?,
+  size_over_lifetime: {number}?,
+  opacity_over_lifetime: {number}?,
+  color: {number}?,
+  sprite: string?,
+  spin_rate: number?,
+}
+
+--- Build a `billboard_emitter` component descriptor from props.
+declare function emitter(props: EmitterProps): ComponentValue
+
+--- Soft, slowly-rising smoke emitter preset.
+declare function smokeEmitter(overrides: EmitterOverrides?): ComponentValue
+
+--- Fast, falling, tumbling sparks emitter preset.
+declare function sparkEmitter(overrides: EmitterOverrides?): ComponentValue
+
+--- Slow drifting dust motes emitter preset.
+declare function dustEmitter(overrides: EmitterOverrides?): ComponentValue
+
+-- ---------------------------------------------------------------------------
 -- Data script vocabulary — pure descriptor builders consumed by the engine
 -- when `setupLevel` returns. See: context/lib/scripting.md §2.
 
@@ -1291,3 +1340,67 @@ declare runtime: Runtime
 -- so this is a flat string union over the same closed set.
 -- See: context/research/ui-layer.md §16.
 export type NavIntent = "nav.up" | "nav.down" | "nav.left" | "nav.right" | "nav.next" | "nav.prev" | "nav.confirm" | "nav.cancel" | "nav.menu" | "nav.options"
+
+-- ---------------------------------------------------------------------------
+-- Luau SDK virtual modules. Runtime module tables contain values only; these
+-- structural aliases describe the read-only engine-owned singletons returned by
+-- literal `require` calls while preserving bare-global SDK declarations.
+
+export type PostretroUiModule = {
+  Text: typeof(Text),
+  Panel: typeof(Panel),
+  Image: typeof(Image),
+  Spacer: typeof(Spacer),
+  Button: typeof(Button),
+  Slider: typeof(Slider),
+  Bar: typeof(Bar),
+  Announce: typeof(Announce),
+  VStack: typeof(VStack),
+  HStack: typeof(HStack),
+  Grid: typeof(Grid),
+  Tree: typeof(Tree),
+  defineUiTree: typeof(defineUiTree),
+  getGameState: typeof(getGameState),
+  bindState: typeof(bindState),
+  stateEquals: typeof(stateEquals),
+  createLocalState: (init: { [string]: any }) -> { scope: any, cells: any },
+  ui: typeof(ui),
+  Switch: typeof(Switch),
+  defineTheme: typeof(defineTheme),
+  onStateCrossing: typeof(onStateCrossing),
+  playSound: typeof(playSound),
+  rumble: typeof(rumble),
+  flashScreen: typeof(flashScreen),
+  vignette: typeof(vignette),
+  screenShake: typeof(screenShake),
+  showDialog: typeof(showDialog),
+  openMenu: typeof(openMenu),
+  closeDialog: typeof(closeDialog),
+  openTextEntry: typeof(openTextEntry),
+  KEYBOARD_TREE: "keyboard",
+  CLOSE_DIALOG_ACTION: "ui.closeDialog",
+  EXIT_TO_DESKTOP_ACTION: "ui.exitToDesktop",
+  updateState: typeof(updateState),
+  appendText: typeof(appendText),
+  backspaceText: typeof(backspaceText),
+  clearText: typeof(clearText),
+}
+
+export type PostretroModule = PostretroUiModule & {
+  world: World,
+  runtime: Runtime,
+  getGameState: typeof(getGameState),
+  timeline: typeof(timeline),
+  sequence: typeof(sequence),
+  defineReaction: typeof(defineReaction),
+  defineEntity: typeof(defineEntity),
+  defineStore: typeof(defineStore),
+  emitter: typeof(emitter),
+  smokeEmitter: typeof(smokeEmitter),
+  sparkEmitter: typeof(sparkEmitter),
+  dustEmitter: typeof(dustEmitter),
+}
+
+declare require: ((path: "postretro") -> PostretroModule)
+  & ((path: "postretro/ui") -> PostretroUiModule)
+  & ((path: string) -> any)

@@ -36,6 +36,19 @@ The context is dropped after the data script completes. No live reference to the
 
 **Luau `require` resolver.** The mod-init Luau VM installs a `require` global rooted at the mod root. `require("./actors/player")` reads `<mod_root>/actors/player.luau`, compiles it, and returns its export. `..` segments and absolute paths are rejected (mods must not escape their root). Module caching, init-file conventions, and upward search are deliberately omitted — the resolver is the minimum needed to share descriptors across files. The long-lived definition Luau state has no `require` (the deny-list nil's it out); only short-lived VMs with a known mod root install the resolver.
 
+Data-script Luau VMs install the same mod-root `require` resolver as mod-init
+VMs. File-backed `require` keeps no cache: each call reads and evaluates the
+target `.luau` file.
+
+**Luau virtual SDK modules.** Short-lived require-enabled Luau VMs also install
+engine-owned virtual modules for `require("postretro")` and
+`require("postretro/ui")`. Virtual module lookup is exact and runs before
+mod-root file lookup, so mod files cannot shadow those IDs. Virtual modules are
+VM-local read-only singletons; repeated requires in one VM return the same
+table, and mutation attempts fail under `pcall`. Nested namespace tables owned
+by the module are read-only too. Virtual module loads are not file dependencies
+for staged hot reload.
+
 ---
 
 ## 3. Context Scope
@@ -163,9 +176,16 @@ Handle types compose them by channel: `LightEntityHandle extends AnimatableScala
 
 **Rule for future entity types.** When adding an animatable scalar or vec3 channel to a new handle type, compose the existing capability interface rather than introducing free-function constructors. The handle method is the canonical way to construct animation step descriptors. See `sdk/lib/entities/*.ts` for reference implementations.
 
-**TypeScript:** `sdk/lib/prelude.js` is generated at build time by `postretro`'s `build.rs` (via `postretro-script-compiler` as a `[build-dependencies]` entry) and written to `$OUT_DIR`. It is embedded in the engine binary via `include_str!(concat!(env!("OUT_DIR"), "/prelude.js"))` and evaluated in every QuickJS context. The file is gitignored and never committed — `cargo build` regenerates it automatically from `sdk/lib/**/*.ts`. Authors import SDK symbols as bare specifiers: `import { world, timeline, sequence, defineReaction, defineEntity } from "postretro"`. The import is stripped at bundle time; the symbol resolves from the prelude-installed global.
+**TypeScript:** `sdk/lib/prelude.js` is generated at build time by `postretro`'s `build.rs` (via `postretro-script-compiler` as a `[build-dependencies]` entry) and written to `$OUT_DIR`. It is embedded in the engine binary via `include_str!(concat!(env!("OUT_DIR"), "/prelude.js"))` and evaluated in every QuickJS context. The file is gitignored and never committed — `cargo build` regenerates it automatically from `sdk/lib/**/*.ts`. Authors import SDK symbols as bare specifiers: `import { world, timeline, sequence, defineReaction, defineEntity } from "postretro"`. UI authors import from `"postretro/ui"`. The import is stripped at bundle time; the symbol resolves from the prelude-installed global.
 
 **Luau:** Each SDK library file under `sdk/lib/` is embedded via `include_str!` and evaluated in a fixed order in every Luau context. Return values are destructured into bare globals — no import or require needed. Evaluation order matters: `world.luau` captures `wrapLightEntity` from `entities/lights.luau` and `wrapFogVolumeEntity` from `entities/fog_volumes.luau` as closure upvalues; both must evaluate before `world.luau`. Both bridges are nil'd out after `world.luau` evaluates so author scripts never see them as bare globals. Type-only symbols (`export type` declarations) serve luau-lsp completions only — never promoted to runtime globals.
+
+Luau authors may opt into SDK modules with
+`local Postretro = require("postretro")` or
+`local UI = require("postretro/ui")`. This is the Luau idiom; it intentionally
+differs from TypeScript named imports. Symmetry between the runtimes is module
+IDs and export vocabulary, not syntax. Bare globals remain available while the
+project transitions.
 
 Both preludes are baked at compile time. SDK library changes require an engine restart.
 

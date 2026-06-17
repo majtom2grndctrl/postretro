@@ -16,7 +16,8 @@ use super::data_descriptors::{
     entity_descriptor_from_js,
 };
 use super::error::ScriptError;
-use super::luau::{LuauConfig, LuauRequireTracker};
+use super::luau::LuauConfig;
+use super::luau_require::LuauRequireTracker;
 use super::primitives::store::{drain_store_declarations_js, drain_store_declarations_lua};
 use super::quickjs::{QuickJsConfig, run_script};
 use super::runtime::ModManifestResult;
@@ -838,6 +839,87 @@ mod tests {
                 .dependency_paths
                 .contains(&dir.join("data/level.luau").canonicalize().unwrap()),
             "data-script files must not enter mod-init dependency output"
+        );
+    }
+
+    #[test]
+    fn staged_manifest_build_luau_excludes_virtual_sdk_modules_from_dependencies() {
+        let dir = temp_mod_root("luau_virtual_dependencies");
+        fs::create_dir_all(dir.join("helpers")).unwrap();
+        fs::create_dir_all(dir.join("postretro")).unwrap();
+        fs::write(
+            dir.join("helpers/entity.luau"),
+            "return { descriptor = { canonicalName = 'virtual_dep_entity' } }\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("postretro.luau"),
+            r#"error("shadow postretro.luau was read")"#,
+        )
+        .unwrap();
+        fs::write(
+            dir.join("postretro/ui.luau"),
+            r#"error("shadow postretro/ui.luau was read")"#,
+        )
+        .unwrap();
+        fs::write(
+            dir.join("start-script.luau"),
+            r#"
+            local root = require("postretro")
+            local UI = require("postretro/ui")
+            local helper = require("./helpers/entity")
+            assert(root.shadow == nil, "mod-root postretro.luau shadowed the engine module")
+            assert(UI.shadow == nil, "mod-root postretro/ui.luau shadowed the engine module")
+            assert(UI.Text({ content = "staged" }).kind == "text", "UI.Text must be the SDK factory")
+            assert(UI.getGameState().player.health.slot == "player.health", "UI getGameState must expose refs")
+            assert(root.Text({ content = "root" }).kind == "text", "root module must expose UI factories")
+            function setupMod()
+                return {
+                    name = "VirtualDeps",
+                    entities = { helper.descriptor },
+                }
+            end
+            "#,
+        )
+        .unwrap();
+
+        let result = build_staged_manifest(&dir, 13, &StagedManifestBuildConfig::default());
+        let StagedManifestBuildStatus::Built(manifest) = result.status else {
+            panic!("expected built result, got {:?}", result.status);
+        };
+
+        let expected = vec![
+            dir.join("helpers/entity.luau").canonicalize().unwrap(),
+            dir.join("start-script.luau").canonicalize().unwrap(),
+        ];
+        assert_eq!(manifest.name, "VirtualDeps");
+        assert_eq!(manifest.entities.len(), 1);
+        assert_eq!(
+            manifest.entities[0].canonical_name.as_deref(),
+            Some("virtual_dep_entity")
+        );
+        assert_eq!(
+            manifest.dependency_paths, expected,
+            "staged Luau deps must include authored files only"
+        );
+        assert!(
+            !manifest
+                .dependency_paths
+                .iter()
+                .any(|path| path.ends_with("postretro") || path.ends_with("postretro/ui")),
+            "virtual module names must not be recorded as dependency paths"
+        );
+        assert!(
+            !manifest
+                .dependency_paths
+                .contains(&dir.join("postretro/ui.luau").canonicalize().unwrap()),
+            "shadow file for postretro/ui must not enter dependency output"
+        );
+        assert!(
+            !manifest
+                .dependency_paths
+                .contains(&dir.join("postretro.luau").canonicalize().unwrap()),
+            "shadow file for postretro must not enter dependency output"
         );
     }
 

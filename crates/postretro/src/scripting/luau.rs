@@ -6,477 +6,21 @@
 // file extension.
 
 use std::cell::RefCell;
-use std::collections::BTreeSet;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::rc::Rc;
 
 use mlua::{Compiler, Function, Lua, Table};
 
 use super::error::ScriptError;
+use super::luau_require::{LuauRequireTracker, install_require_resolver};
+use super::luau_virtual_modules::LuauVirtualModuleRegistry;
 use super::primitives_registry::{PrimitiveRegistry, ScriptPrimitive};
 use super::quickjs::{ArchetypeAccumulator, ArchetypeDescriptor};
 
 /// Engine-internal sink function installed into the definition Lua state.
 /// Leading underscore: the type-def generator skips names starting with `_`.
 const COLLECT_FN_NAME: &str = "__collect_definitions";
-
-/// SDK library prelude — `world.luau` returns the `world` table; we promote
-/// it to global `world`. Embedded at compile time; SDK changes require an
-/// engine rebuild.
-const WORLD_LUAU_SRC: &str = include_str!("../../../../sdk/lib/world.luau");
-
-/// SDK library prelude — `entities/lights.luau` returns a table whose only
-/// promoted field is `wrapLightEntity`, installed as a temporary global for
-/// `world.luau` to capture and then nil'd out before the sandbox freezes.
-/// Capability methods (`pulse`, `fade`, `flicker`, `colorShift`, `sweep`)
-/// live on the handle returned from `wrapLightEntity`; no bare globals.
-const LIGHTS_LUAU_SRC: &str = include_str!("../../../../sdk/lib/entities/lights.luau");
-
-/// SDK library prelude — `util/keyframes.luau` returns a table whose fields
-/// (`timeline`, `sequence`) are destructured into globals.
-const KEYFRAMES_LUAU_SRC: &str = include_str!("../../../../sdk/lib/util/keyframes.luau");
-
-/// SDK library prelude — `entities/emitters.luau` returns a table whose fields
-/// are destructured into globals so authors can call them by bare name.
-const EMITTERS_LUAU_SRC: &str = include_str!("../../../../sdk/lib/entities/emitters.luau");
-
-/// SDK library prelude — `entities/fog_volumes.luau` returns a table whose
-/// only promoted field is `wrapFogVolumeEntity`, installed as a temporary
-/// global for `world.luau` to capture and then nil'd out before the sandbox
-/// freezes. Capability methods (`pulse`, `fade`, `flicker`,
-/// `pulseSaturation`, `fadeSaturation`) live on the handle returned from
-/// `wrapFogVolumeEntity`; no bare globals.
-const FOG_VOLUMES_LUAU_SRC: &str = include_str!("../../../../sdk/lib/entities/fog_volumes.luau");
-
-/// SDK library prelude — `data_script.luau` returns a table whose fields
-/// (`defineReaction`, `defineEntity`, `defineStore`) are destructured into globals so
-/// data-script authors call them by bare name. Pure descriptor builders;
-/// no FFI happens until `setupMod` or `setupLevel` returns.
-const DATA_SCRIPT_LUAU_SRC: &str = include_str!("../../../../sdk/lib/data_script.luau");
-
-/// SDK library prelude — `runtime.luau` returns the runtime-value builder table,
-/// promoted whole to global `runtime` (mirroring `world`). Pure data assembly: a
-/// builder assembles a `RuntimeValue` table and never calls back into Rust.
-const RUNTIME_LUAU_SRC: &str = include_str!("../../../../sdk/lib/runtime.luau");
-
-/// SDK library prelude — `ui/reactions.luau` returns a table whose field
-/// (`onStateCrossing`) is destructured into a global so data-script authors
-/// call it by bare name. A pure descriptor builder; its result lands in
-/// `setupLevel`'s `crossings` array — no FFI until the script returns.
-const UI_REACTIONS_LUAU_SRC: &str = include_str!("../../../../sdk/lib/ui/reactions.luau");
-
-/// SDK library prelude — `ui/widgets.luau` returns a table whose widget-factory
-/// fields are destructured into globals (the capitalized `Text`/`Panel`/… leaf
-/// constructors). Pure descriptor builders; the FFI boundary is the eventual
-/// `return` of the authored tree. The `validateBorder`/`resolveReactionName`
-/// helpers it also exports are internal and intentionally NOT lifted.
-const UI_WIDGETS_LUAU_SRC: &str = include_str!("../../../../sdk/lib/ui/widgets.luau");
-
-/// SDK library prelude — `ui/layout.luau` returns a table whose container-factory
-/// fields (`VStack`/`HStack`/`Grid`) are destructured into globals. Pure builders.
-const UI_LAYOUT_LUAU_SRC: &str = include_str!("../../../../sdk/lib/ui/layout.luau");
-
-/// SDK library prelude — `ui/tree.luau` returns pure UI tree helpers that are
-/// destructured into globals.
-const UI_TREE_LUAU_SRC: &str = include_str!("../../../../sdk/lib/ui/tree.luau");
-
-/// SDK library prelude — `ui/state.luau` returns state-reference helpers plus
-/// the presentation-local state namespace. Authoritative helpers are pure
-/// descriptor composers; local cell handles remain presentation-only.
-const UI_STATE_LUAU_SRC: &str = include_str!("../../../../sdk/lib/ui/state.luau");
-
-/// SDK library prelude — `ui/theme.luau` returns `defineTheme`, a pure authoring
-/// helper that preserves the flat runtime theme shape while adding token
-/// accessors for clearer call sites.
-const UI_THEME_LUAU_SRC: &str = include_str!("../../../../sdk/lib/ui/theme.luau");
-
-/// SDK library prelude — `game_state.luau` captures the temporary frozen
-/// engine-state reference tree bridge and returns `getGameState`.
-const GAME_STATE_LUAU_SRC: &str = include_str!("../../../../sdk/lib/game_state.luau");
-
-/// Lights SDK fields lifted to globals after evaluating
-/// `entities/lights.luau`. Empty: the public vocabulary lives on the handle
-/// returned from `wrapLightEntity`, which is itself installed as a
-/// temporary bridge (not a bare global) before `world.luau` evaluates and
-/// nil'd out afterward.
-const LIGHTS_LUAU_FIELDS: &[&str] = &[];
-
-/// Keyframe-utility SDK fields lifted to globals after evaluating
-/// `util/keyframes.luau`.
-const KEYFRAMES_LUAU_FIELDS: &[&str] = &["timeline", "sequence"];
-
-/// Emitter SDK fields lifted to globals after evaluating
-/// `entities/emitters.luau`.
-const EMITTERS_LUAU_FIELDS: &[&str] = &["emitter", "smokeEmitter", "sparkEmitter", "dustEmitter"];
-
-/// Fog-volume SDK fields lifted to globals after evaluating
-/// `entities/fog_volumes.luau`. Empty: the public vocabulary lives on the
-/// handle returned from `wrapFogVolumeEntity`, which is itself installed
-/// as a temporary bridge (not a bare global) before `world.luau`
-/// evaluates and nil'd out afterward.
-const FOG_VOLUMES_LUAU_FIELDS: &[&str] = &[];
-
-/// Data-script SDK fields lifted to globals after evaluating
-/// `data_script.luau`.
-const DATA_SCRIPT_FIELDS: &[&str] = &["defineReaction", "defineEntity", "defineStore"];
-
-/// UI-reactions SDK fields lifted to globals after evaluating
-/// `ui/reactions.luau`. `onStateCrossing` builds a state-crossing watcher; the
-/// rest are system-reaction body constructors that pair with `defineReaction` to
-/// emit `playSound` / `rumble` / `flashScreen` / `vignette` / `screenShake`,
-/// the UI-stack (`showDialog` /
-/// `openMenu` / `closeDialog`) primitives, the `updateState` slot write (Goal F),
-/// the text-entry helpers (`openTextEntry` wraps `showDialog` for the engine
-/// keyboard; `KEYBOARD_TREE` is its registry name constant), reserved button
-/// actions (`CLOSE_DIALOG_ACTION`, `EXIT_TO_DESKTOP_ACTION`), and the text-edit
-/// reactions (`appendText` / `backspaceText` / `clearText`, M13 Text Entry).
-const UI_REACTIONS_FIELDS: &[&str] = &[
-    "onStateCrossing",
-    "playSound",
-    "rumble",
-    "flashScreen",
-    "vignette",
-    "screenShake",
-    "showDialog",
-    "openMenu",
-    "closeDialog",
-    "openTextEntry",
-    "KEYBOARD_TREE",
-    "CLOSE_DIALOG_ACTION",
-    "EXIT_TO_DESKTOP_ACTION",
-    "updateState",
-    "appendText",
-    "backspaceText",
-    "clearText",
-];
-
-/// UI widget-factory SDK fields lifted to globals after evaluating
-/// `ui/widgets.luau`. The capitalized leaf-widget constructors only —
-/// `validateBorder` / `resolveReactionName` are internal helpers that
-/// `layout.luau` redeclares locally, so they stay off the global table.
-const UI_WIDGETS_FIELDS: &[&str] = &[
-    "Text", "Panel", "Image", "Spacer", "Button", "Slider", "Bar", "Announce",
-];
-
-/// UI layout-factory SDK fields lifted to globals after evaluating
-/// `ui/layout.luau`.
-const UI_LAYOUT_FIELDS: &[&str] = &["VStack", "HStack", "Grid"];
-
-/// UI tree SDK fields lifted to globals after evaluating `ui/tree.luau`.
-const UI_TREE_FIELDS: &[&str] = &["Tree", "defineUiTree"];
-
-/// UI state-helper SDK fields lifted to globals after evaluating
-/// `ui/state.luau`. `bindState`/`stateEquals` compose authoritative state refs;
-/// `ui` exposes presentation-local `ui.createLocalState` (G1b).
-const UI_STATE_FIELDS: &[&str] = &["bindState", "stateEquals", "ui", "Switch"];
-
-/// UI theme-helper SDK fields lifted to globals after evaluating
-/// `ui/theme.luau`.
-const UI_THEME_FIELDS: &[&str] = &["defineTheme"];
-
-/// Engine-state SDK fields lifted to globals after evaluating
-/// `game_state.luau`.
-const GAME_STATE_FIELDS: &[&str] = &["getGameState"];
-
-/// Evaluate the Luau SDK prelude in `lua` and promote the return values to
-/// globals. Must be called after primitives are installed and before
-/// `sandbox(true)` (which freezes `_G`). The primitive dependency applies
-/// to `entities/lights.luau`, `world.luau`, and `fog_volumes.luau` — they
-/// reference primitives like `worldQuery` and `setLightAnimation`.
-/// `data_script.luau` is also evaluated as a prelude step but has no
-/// primitive dependencies; it's pure data builders (`defineReaction`,
-/// `defineEntity`).
-/// The prelude source uses type annotations declared in postretro.d.luau (luau-lsp only); the runtime evaluates the .luau source without loading the declaration file.
-pub(crate) fn evaluate_prelude(lua: &Lua) -> Result<(), ScriptError> {
-    super::game_state_refs::install_luau_bridge(lua)?;
-
-    // Step 0: capture the engine-owned state reference tree into the pure
-    // `getGameState` closure, then hide the temporary bridge before any author
-    // code runs or `_G` is frozen.
-    let game_state_sdk: Table = lua
-        .load(GAME_STATE_LUAU_SRC)
-        .set_name("postretro/sdk/game_state.luau")
-        .eval()
-        .map_err(|e| ScriptError::ScriptThrew {
-            msg: format!("failed to evaluate SDK prelude `game_state.luau`: {e}"),
-            source_name: "sdk/lib/game_state.luau".to_string(),
-        })?;
-    let globals = lua.globals();
-    for field in GAME_STATE_FIELDS {
-        let value: mlua::Value =
-            game_state_sdk
-                .get(*field)
-                .map_err(|e| ScriptError::InvalidArgument {
-                    reason: format!("game_state.luau missing `{field}`: {e}"),
-                })?;
-        globals
-            .set(*field, value)
-            .map_err(|e| ScriptError::InvalidArgument {
-                reason: format!("failed to install global `{field}`: {e}"),
-            })?;
-    }
-
-    // Step 1: evaluate `entities/lights.luau`. The only exported field is
-    // the `wrapLightEntity` bridge — capability methods (`pulse`, `fade`,
-    // `flicker`, `colorShift`, `sweep`) live on the handle it produces,
-    // not as bare globals. `wrapLightEntity` itself is installed below as
-    // a temporary global so `world.luau` can capture it as an upvalue,
-    // then nil'd out in step 4.
-    let lights_sdk: Table = lua
-        .load(LIGHTS_LUAU_SRC)
-        .set_name("postretro/sdk/entities/lights.luau")
-        .eval()
-        .map_err(|e| ScriptError::ScriptThrew {
-            msg: format!("failed to evaluate SDK prelude `entities/lights.luau`: {e}"),
-            source_name: "sdk/lib/entities/lights.luau".to_string(),
-        })?;
-    let wrap_light_entity: mlua::Value =
-        lights_sdk
-            .get("wrapLightEntity")
-            .map_err(|e| ScriptError::InvalidArgument {
-                reason: format!("entities/lights.luau missing `wrapLightEntity`: {e}"),
-            })?;
-    globals
-        .set("wrapLightEntity", wrap_light_entity)
-        .map_err(|e| ScriptError::InvalidArgument {
-            reason: format!("failed to install temporary global `wrapLightEntity`: {e}"),
-        })?;
-
-    // Step 2: install the public lights fields as globals.
-    // `LIGHTS_LUAU_FIELDS` is empty in the capability-handle world; the
-    // loop is retained so adding a future bare global is a one-line
-    // change in the slice declaration.
-    for field in LIGHTS_LUAU_FIELDS {
-        let value: mlua::Value =
-            lights_sdk
-                .get(*field)
-                .map_err(|e| ScriptError::InvalidArgument {
-                    reason: format!("entities/lights.luau missing `{field}`: {e}"),
-                })?;
-        globals
-            .set(*field, value)
-            .map_err(|e| ScriptError::InvalidArgument {
-                reason: format!("failed to install global `{field}`: {e}"),
-            })?;
-    }
-
-    // Step 2b: evaluate `entities/fog_volumes.luau`. Mirrors lights.luau:
-    // the only exported field is `wrapFogVolumeEntity`. Capability
-    // methods (`pulse`, `fade`, `flicker`, `pulseSaturation`,
-    // `fadeSaturation`) live on the handle, not as bare globals.
-    let fog_volumes_sdk: Table = lua
-        .load(FOG_VOLUMES_LUAU_SRC)
-        .set_name("postretro/sdk/entities/fog_volumes.luau")
-        .eval()
-        .map_err(|e| ScriptError::ScriptThrew {
-            msg: format!("failed to evaluate SDK prelude `entities/fog_volumes.luau`: {e}"),
-            source_name: "sdk/lib/entities/fog_volumes.luau".to_string(),
-        })?;
-    let wrap_fog_volume_entity: mlua::Value =
-        fog_volumes_sdk
-            .get("wrapFogVolumeEntity")
-            .map_err(|e| ScriptError::InvalidArgument {
-                reason: format!("entities/fog_volumes.luau missing `wrapFogVolumeEntity`: {e}"),
-            })?;
-    globals
-        .set("wrapFogVolumeEntity", wrap_fog_volume_entity)
-        .map_err(|e| ScriptError::InvalidArgument {
-            reason: format!("failed to install temporary global `wrapFogVolumeEntity`: {e}"),
-        })?;
-    for field in FOG_VOLUMES_LUAU_FIELDS {
-        let value: mlua::Value =
-            fog_volumes_sdk
-                .get(*field)
-                .map_err(|e| ScriptError::InvalidArgument {
-                    reason: format!("entities/fog_volumes.luau missing `{field}`: {e}"),
-                })?;
-        globals
-            .set(*field, value)
-            .map_err(|e| ScriptError::InvalidArgument {
-                reason: format!("failed to install global `{field}`: {e}"),
-            })?;
-    }
-
-    // Step 3: evaluate `world.luau`. Its `query` closure captures
-    // `wrapLightEntity` and `wrapFogVolumeEntity` as upvalues at evaluation
-    // time, so step 4's nil-out does not break the closure.
-    let world: mlua::Value = lua
-        .load(WORLD_LUAU_SRC)
-        .set_name("postretro/sdk/world.luau")
-        .eval()
-        .map_err(|e| ScriptError::ScriptThrew {
-            msg: format!("failed to evaluate SDK prelude `world.luau`: {e}"),
-            source_name: "sdk/lib/world.luau".to_string(),
-        })?;
-    globals
-        .set("world", world)
-        .map_err(|e| ScriptError::InvalidArgument {
-            reason: format!("failed to install global `world`: {e}"),
-        })?;
-
-    // Step 4: nil out the temporary `wrapLightEntity` / `wrapFogVolumeEntity`
-    // bridges so author scripts never see them as bare globals once
-    // `sandbox(true)` freezes `_G`.
-    globals
-        .set("wrapLightEntity", mlua::Value::Nil)
-        .map_err(|e| ScriptError::InvalidArgument {
-            reason: format!("failed to clear temporary global `wrapLightEntity`: {e}"),
-        })?;
-    globals
-        .set("wrapFogVolumeEntity", mlua::Value::Nil)
-        .map_err(|e| ScriptError::InvalidArgument {
-            reason: format!("failed to clear temporary global `wrapFogVolumeEntity`: {e}"),
-        })?;
-
-    // Step 5: evaluate `util/keyframes.luau` and lift its fields to globals.
-    let keyframes_sdk: Table = lua
-        .load(KEYFRAMES_LUAU_SRC)
-        .set_name("postretro/sdk/util/keyframes.luau")
-        .eval()
-        .map_err(|e| ScriptError::ScriptThrew {
-            msg: format!("failed to evaluate SDK prelude `util/keyframes.luau`: {e}"),
-            source_name: "sdk/lib/util/keyframes.luau".to_string(),
-        })?;
-    for field in KEYFRAMES_LUAU_FIELDS {
-        let value: mlua::Value =
-            keyframes_sdk
-                .get(*field)
-                .map_err(|e| ScriptError::InvalidArgument {
-                    reason: format!("util/keyframes.luau missing `{field}`: {e}"),
-                })?;
-        globals
-            .set(*field, value)
-            .map_err(|e| ScriptError::InvalidArgument {
-                reason: format!("failed to install global `{field}`: {e}"),
-            })?;
-    }
-
-    // Step 6: evaluate `entities/emitters.luau` and lift its fields to globals.
-    let emitters_sdk: Table = lua
-        .load(EMITTERS_LUAU_SRC)
-        .set_name("postretro/sdk/entities/emitters.luau")
-        .eval()
-        .map_err(|e| ScriptError::ScriptThrew {
-            msg: format!("failed to evaluate SDK prelude `entities/emitters.luau`: {e}"),
-            source_name: "sdk/lib/entities/emitters.luau".to_string(),
-        })?;
-    for field in EMITTERS_LUAU_FIELDS {
-        let value: mlua::Value =
-            emitters_sdk
-                .get(*field)
-                .map_err(|e| ScriptError::InvalidArgument {
-                    reason: format!("entities/emitters.luau missing `{field}`: {e}"),
-                })?;
-        globals
-            .set(*field, value)
-            .map_err(|e| ScriptError::InvalidArgument {
-                reason: format!("failed to install global `{field}`: {e}"),
-            })?;
-    }
-
-    // Step 7: evaluate `data_script.luau` and lift its fields to globals.
-    let data_sdk: Table = lua
-        .load(DATA_SCRIPT_LUAU_SRC)
-        .set_name("postretro/sdk/data_script.luau")
-        .eval()
-        .map_err(|e| ScriptError::ScriptThrew {
-            msg: format!("failed to evaluate SDK prelude `data_script.luau`: {e}"),
-            source_name: "sdk/lib/data_script.luau".to_string(),
-        })?;
-    for field in DATA_SCRIPT_FIELDS {
-        let value: mlua::Value =
-            data_sdk
-                .get(*field)
-                .map_err(|e| ScriptError::InvalidArgument {
-                    reason: format!("data_script.luau missing `{field}`: {e}"),
-                })?;
-        globals
-            .set(*field, value)
-            .map_err(|e| ScriptError::InvalidArgument {
-                reason: format!("failed to install global `{field}`: {e}"),
-            })?;
-    }
-
-    // Step 7b: evaluate `ui/reactions.luau` and lift its fields to globals.
-    // Pure builders (no primitive dependency); ordering relative to the other
-    // steps is irrelevant.
-    let ui_reactions_sdk: Table = lua
-        .load(UI_REACTIONS_LUAU_SRC)
-        .set_name("postretro/sdk/ui/reactions.luau")
-        .eval()
-        .map_err(|e| ScriptError::ScriptThrew {
-            msg: format!("failed to evaluate SDK prelude `ui/reactions.luau`: {e}"),
-            source_name: "sdk/lib/ui/reactions.luau".to_string(),
-        })?;
-    for field in UI_REACTIONS_FIELDS {
-        let value: mlua::Value =
-            ui_reactions_sdk
-                .get(*field)
-                .map_err(|e| ScriptError::InvalidArgument {
-                    reason: format!("ui/reactions.luau missing `{field}`: {e}"),
-                })?;
-        globals
-            .set(*field, value)
-            .map_err(|e| ScriptError::InvalidArgument {
-                reason: format!("failed to install global `{field}`: {e}"),
-            })?;
-    }
-
-    // Step 7c–7f: evaluate the M13 G1a UI factory modules and lift their fields
-    // to globals. All are pure descriptor builders with no primitive dependency,
-    // so ordering relative to the other steps is irrelevant. Each module is
-    // self-contained (the Luau prelude has no cross-module loader), so they are
-    // evaluated independently rather than requiring one another.
-    for (src, name, fields) in [
-        (UI_WIDGETS_LUAU_SRC, "ui/widgets.luau", UI_WIDGETS_FIELDS),
-        (UI_LAYOUT_LUAU_SRC, "ui/layout.luau", UI_LAYOUT_FIELDS),
-        (UI_TREE_LUAU_SRC, "ui/tree.luau", UI_TREE_FIELDS),
-        (UI_STATE_LUAU_SRC, "ui/state.luau", UI_STATE_FIELDS),
-        (UI_THEME_LUAU_SRC, "ui/theme.luau", UI_THEME_FIELDS),
-    ] {
-        let module: Table = lua
-            .load(src)
-            .set_name(format!("postretro/sdk/{name}"))
-            .eval()
-            .map_err(|e| ScriptError::ScriptThrew {
-                msg: format!("failed to evaluate SDK prelude `{name}`: {e}"),
-                source_name: format!("sdk/lib/{name}"),
-            })?;
-        for field in fields {
-            let value: mlua::Value =
-                module
-                    .get(*field)
-                    .map_err(|e| ScriptError::InvalidArgument {
-                        reason: format!("{name} missing `{field}`: {e}"),
-                    })?;
-            globals
-                .set(*field, value)
-                .map_err(|e| ScriptError::InvalidArgument {
-                    reason: format!("failed to install global `{field}`: {e}"),
-                })?;
-        }
-    }
-
-    // Step 8: evaluate `runtime.luau` and promote its table to global `runtime`.
-    // The builders are pure (no primitive dependency), so ordering relative to
-    // the other steps is irrelevant.
-    let runtime: mlua::Value = lua
-        .load(RUNTIME_LUAU_SRC)
-        .set_name("postretro/sdk/runtime.luau")
-        .eval()
-        .map_err(|e| ScriptError::ScriptThrew {
-            msg: format!("failed to evaluate SDK prelude `runtime.luau`: {e}"),
-            source_name: "sdk/lib/runtime.luau".to_string(),
-        })?;
-    globals
-        .set("runtime", runtime)
-        .map_err(|e| ScriptError::InvalidArgument {
-            reason: format!("failed to install global `runtime`: {e}"),
-        })?;
-
-    Ok(())
-}
 
 /// Deny-list: global names (and `os.<sub>` fields) we clear before any script
 /// runs. `sandbox(true)` makes `_G` read-only but does NOT remove these
@@ -499,39 +43,6 @@ pub(crate) struct LuauSubsystem {
     definition_lua: Lua,
     primitives: Vec<ScriptPrimitive>,
     archetypes: ArchetypeAccumulator,
-}
-
-/// Opt-in dependency recorder for short-lived mod-init Luau builds.
-///
-/// `build_lua_state` (startup/data-script path) uses no tracker.
-/// `build_lua_state_with_require_tracking` (staged manifest builds) accepts
-/// one so only those `require` calls contribute to the hot-reload dependency
-/// set.
-#[derive(Clone, Debug)]
-pub(crate) struct LuauRequireTracker {
-    mod_root: PathBuf,
-    paths: Rc<RefCell<BTreeSet<PathBuf>>>,
-}
-
-impl LuauRequireTracker {
-    pub(crate) fn new(mod_root: &Path) -> Result<Self, ScriptError> {
-        let mod_root = mod_root
-            .canonicalize()
-            .map_err(|e| ScriptError::InvalidArgument {
-                reason: format!(
-                    "mod-init: failed to canonicalize `{}`: {e}",
-                    mod_root.display()
-                ),
-            })?;
-        Ok(Self {
-            mod_root,
-            paths: Rc::new(RefCell::new(BTreeSet::new())),
-        })
-    }
-
-    pub(crate) fn dependency_paths(&self) -> Vec<PathBuf> {
-        self.paths.borrow().iter().cloned().collect()
-    }
 }
 
 /// Scope selector passed to `run_source` and to the top-level dispatcher.
@@ -683,6 +194,11 @@ pub(crate) fn build_lua_state_with_require_tracking(
     require_tracker: Option<&LuauRequireTracker>,
 ) -> Result<Lua, ScriptError> {
     let lua = Lua::new();
+    let virtual_modules = if mod_root.is_some() {
+        Some(LuauVirtualModuleRegistry::new())
+    } else {
+        None
+    };
 
     // 1. Deny-list scrub.
     apply_denylist(&lua)?;
@@ -705,7 +221,10 @@ pub(crate) fn build_lua_state_with_require_tracking(
     //    correctly. Without a mod root, `require` stays nil — matching the
     //    definition-context contract.
     if let Some(root) = mod_root {
-        install_require_resolver(&lua, root, require_tracker)?;
+        let virtual_modules = virtual_modules
+            .as_ref()
+            .expect("mod-rooted Lua states always allocate virtual modules");
+        install_require_resolver(&lua, root, require_tracker, virtual_modules)?;
     }
 
     // 6. SDK prelude — installs `world`, `timeline`, `sequence`,
@@ -714,7 +233,7 @@ pub(crate) fn build_lua_state_with_require_tracking(
     //    returned by `world:query`; they are not bare globals.
     //    Must run before `sandbox(true)` because the prelude writes to `_G`,
     //    and after primitive install because the prelude calls them.
-    evaluate_prelude(&lua)?;
+    super::luau_prelude::evaluate_prelude(&lua, virtual_modules.as_ref())?;
 
     // 7. Freeze `_G`.
     lua.sandbox(true)
@@ -723,137 +242,6 @@ pub(crate) fn build_lua_state_with_require_tracking(
         })?;
 
     Ok(lua)
-}
-
-/// Install a `require` global rooted at `mod_root`.
-///
-/// # Resolution rules
-///
-/// - The path argument is treated as a relative path. A leading `./` is
-///   stripped; `../` segments are rejected (mods must not escape their root).
-/// - Absolute paths are rejected.
-/// - If the resolved path lacks a `.luau` extension, one is appended.
-/// - The resolved file is read, compiled with `mlua::Compiler`, and executed
-///   in the same Lua state. Its return value (typically a table) is the
-///   value of the `require` call.
-/// - File-not-found, IO failure, compile failure, and runtime error all
-///   surface as `mlua::Error::RuntimeError` so scripts can `pcall` them.
-///
-/// This is intentionally simpler than Luau's full `require()` semantics: no
-/// module caching, no upward path search, no init-file convention. It exists
-/// to wire `start-script.luau` to its sibling domain scripts. Richer semantics
-/// (caching, upward search) can be added when mods require them — see
-/// `context/lib/scripting.md` §2.
-fn install_require_resolver(
-    lua: &Lua,
-    mod_root: &Path,
-    require_tracker: Option<&LuauRequireTracker>,
-) -> Result<(), ScriptError> {
-    let mod_root: PathBuf = mod_root.to_path_buf();
-    let tracker = require_tracker.cloned();
-    let f = lua
-        .create_function(move |lua, path: String| -> mlua::Result<mlua::Value> {
-            let resolved =
-                resolve_require_path(&mod_root, &path).map_err(mlua::Error::RuntimeError)?;
-            if let Some(tracker) = &tracker {
-                let canonical = canonical_require_dependency(&tracker.mod_root, &resolved, &path)
-                    .map_err(mlua::Error::RuntimeError)?;
-                tracker.paths.borrow_mut().insert(canonical);
-            }
-            let source = std::fs::read_to_string(&resolved).map_err(|e| {
-                mlua::Error::RuntimeError(format!(
-                    "require(`{path}`): failed to read `{}`: {e}",
-                    resolved.display()
-                ))
-            })?;
-            let bytecode = Compiler::new().compile(&source).map_err(|e| {
-                mlua::Error::RuntimeError(format!("require(`{path}`): compile failed: {e}"))
-            })?;
-            lua.load(&bytecode)
-                .set_name(resolved.to_string_lossy().as_ref())
-                .set_mode(mlua::ChunkMode::Binary)
-                .eval::<mlua::Value>()
-        })
-        .map_err(|e| ScriptError::InvalidArgument {
-            reason: e.to_string(),
-        })?;
-    lua.globals()
-        .set("require", f)
-        .map_err(|e| ScriptError::InvalidArgument {
-            reason: e.to_string(),
-        })?;
-    Ok(())
-}
-
-fn canonical_require_dependency(
-    canonical_mod_root: &Path,
-    resolved: &Path,
-    request_path: &str,
-) -> Result<PathBuf, String> {
-    let canonical = resolved.canonicalize().map_err(|e| {
-        format!(
-            "require(`{request_path}`): failed to canonicalize `{}`: {e}",
-            resolved.display()
-        )
-    })?;
-    if !canonical.starts_with(canonical_mod_root) {
-        return Err(format!(
-            "require(`{request_path}`): resolved path `{}` is outside mod root `{}`",
-            canonical.display(),
-            canonical_mod_root.display()
-        ));
-    }
-    Ok(canonical)
-}
-
-/// Resolve a `require(...)` argument to an absolute path under `mod_root`.
-/// Rejects absolute paths and `..` traversal. Appends `.luau` if missing.
-fn resolve_require_path(mod_root: &Path, path: &str) -> Result<PathBuf, String> {
-    let trimmed = path.trim();
-    if trimmed.is_empty() {
-        return Err("require: empty path".to_string());
-    }
-    // Reject backslashes outright. On Unix `Path` treats `\` as an ordinary
-    // filename character, so a Windows-style `..\escape` would slip past the
-    // `Component::ParentDir` scan below. Rejecting at the string level keeps
-    // behavior consistent across platforms.
-    if trimmed.contains('\\') {
-        return Err(format!(
-            "require(`{path}`): backslashes are not permitted in require paths"
-        ));
-    }
-    // Belt-and-suspenders: also scan the raw string for `..` segments. The
-    // component-level check below is the canonical guard, but the platform
-    // divergence around path separators makes a string-level check cheap
-    // insurance against future regressions.
-    if trimmed.split('/').any(|seg| seg == "..") {
-        return Err(format!(
-            "require(`{path}`): `..` segments are not permitted (mod root escape)"
-        ));
-    }
-    let stripped = trimmed.strip_prefix("./").unwrap_or(trimmed);
-    let candidate = Path::new(stripped);
-    if candidate.is_absolute() {
-        return Err(format!(
-            "require(`{path}`): absolute paths are not permitted"
-        ));
-    }
-    if candidate
-        .components()
-        .any(|c| matches!(c, std::path::Component::ParentDir))
-    {
-        return Err(format!(
-            "require(`{path}`): `..` segments are not permitted (mod root escape)"
-        ));
-    }
-    let mut joined = mod_root.join(candidate);
-    if joined.extension().is_none() {
-        joined.set_extension("luau");
-    }
-    // This resolver is lexical: it rejects direct `..`/absolute traversal but
-    // leaves symlink containment to the dependency tracker path, where
-    // canonicalization is available for hot-reload dependency validation.
-    Ok(joined)
 }
 
 fn apply_denylist(lua: &Lua) -> Result<(), ScriptError> {
@@ -972,9 +360,9 @@ fn install_collect_definitions(
 mod tests {
     use super::*;
     use crate::scripting::ctx::ScriptCtx;
+    use crate::scripting::luau_prelude::{FOG_VOLUMES_LUAU_SRC, UI_REACTIONS_FIELDS};
     use crate::scripting::primitives::register_all;
     use crate::scripting::primitives_registry::ContextScope;
-    use std::fs;
 
     // 16 `type(...)` strings returned by `sdk_prelude_installs_globals`.
     type PreludeTypeNames = (
@@ -1002,35 +390,6 @@ mod tests {
         register_all(&mut registry, ctx.clone());
         let subsys = LuauSubsystem::new(&registry, &LuauConfig::default()).unwrap();
         (subsys, ctx)
-    }
-
-    struct TempModRoot(PathBuf);
-
-    impl std::ops::Deref for TempModRoot {
-        type Target = Path;
-        fn deref(&self) -> &Self::Target {
-            &self.0
-        }
-    }
-
-    impl Drop for TempModRoot {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
-
-    fn temp_mod_root(name: &str) -> TempModRoot {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let mut p = std::env::temp_dir();
-        p.push(format!(
-            "postretro_luau_test_{}_{}_{name}",
-            std::process::id(),
-            n,
-        ));
-        fs::create_dir_all(&p).unwrap();
-        TempModRoot(p)
     }
 
     #[test]
@@ -1475,66 +834,6 @@ mod tests {
         }
         assert!((densities[0] - from).abs() < 1e-6);
         assert!((densities[15] - to).abs() < 1e-6);
-    }
-
-    #[test]
-    fn resolve_require_path_rejects_backslash_path() {
-        // Backslashes never appear in valid mod-root-relative paths. Rejecting
-        // at the string level catches Windows-style `..\escape` traversals
-        // that the Unix `Component::ParentDir` scan would silently accept.
-        let mod_root = Path::new("/tmp/mod");
-        let err = resolve_require_path(mod_root, "..\\escape")
-            .expect_err("backslash path must be rejected");
-        assert!(err.contains("backslash"), "got: {err}");
-    }
-
-    #[test]
-    fn resolve_require_path_rejects_literal_dotdot_string() {
-        let mod_root = Path::new("/tmp/mod");
-        let err = resolve_require_path(mod_root, "../escape")
-            .expect_err("`..` traversal must be rejected");
-        assert!(err.contains(".."), "got: {err}");
-    }
-
-    #[test]
-    fn require_tracker_records_unique_sorted_canonical_paths() {
-        let dir = temp_mod_root("require_tracker");
-        fs::create_dir_all(dir.join("modules")).unwrap();
-        fs::write(dir.join("modules/a.luau"), "return { name = 'a' }\n").unwrap();
-        fs::write(dir.join("modules/b.luau"), "return { name = 'b' }\n").unwrap();
-
-        let tracker = LuauRequireTracker::new(&dir).unwrap();
-        let lua = build_lua_state_with_require_tracking(&[], None, Some(&dir), Some(&tracker))
-            .expect("lua state");
-        lua.load(
-            r#"
-            local a1 = require("./modules/a")
-            local b = require("./modules/b")
-            local a2 = require("./modules/a.luau")
-            assert(a1.name == "a")
-            assert(a2.name == "a")
-            assert(b.name == "b")
-            "#,
-        )
-        .exec()
-        .unwrap();
-
-        let expected_a = dir.join("modules/a.luau").canonicalize().unwrap();
-        let expected_b = dir.join("modules/b.luau").canonicalize().unwrap();
-        assert_eq!(tracker.dependency_paths(), vec![expected_a, expected_b]);
-    }
-
-    #[test]
-    fn require_tracker_rejects_canonical_path_outside_mod_root() {
-        let dir = temp_mod_root("require_tracker_root");
-        let outside = temp_mod_root("require_tracker_outside");
-        let outside_file = outside.join("module.luau");
-        fs::write(&outside_file, "return {}\n").unwrap();
-
-        let err =
-            canonical_require_dependency(&dir.canonicalize().unwrap(), &outside_file, "./module")
-                .expect_err("outside canonical path must be rejected");
-        assert!(err.contains("outside mod root"), "got: {err}");
     }
 
     #[test]

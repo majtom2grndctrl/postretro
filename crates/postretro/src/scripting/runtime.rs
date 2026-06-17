@@ -2152,12 +2152,13 @@ mod tests {
             assert(UI == UIAgain, "postretro/ui must be a singleton")
             assert(root.shadow == nil, "mod-root postretro.luau shadowed the engine module")
             assert(UI.shadow == nil, "mod-root postretro/ui.luau shadowed the engine module")
-            assert(root.Text({ content = "data-root" }).kind == "text", "root Text must be the SDK factory")
+            assert(root.Text == nil, "root module must not expose UI factories")
+            assert(root.showDialog == nil, "root module must not expose UI reactions")
             assert(UI.Text({ content = "data" }).kind == "text", "UI.Text must be the SDK factory")
             assert(UI.getGameState().player.health.slot == "player.health", "UI getGameState must expose refs")
-            assert(type(Text) == "function", "bare-global SDK Text must remain installed")
+            assert(type(Text) == "nil", "bare-global SDK Text must not be installed")
             assert(not pcall(function()
-                root.Text = nil
+                root.world = nil
             end), "postretro must reject writes")
             assert(not pcall(function()
                 UI.Text = nil
@@ -3570,7 +3571,7 @@ mod tests {
                                   root: { kind: "text", content: "hi", fontSize: 12.0, color: [1.0,1.0,1.0,1.0] } } },
                     ],
                     theme: { colors: { critical: [1.0, 0.0, 0.0, 1.0] }, spacing: { m: 8.0 } },
-                    fonts: { body: "fonts/inter.ttf" },
+                    fonts: { primary: "fonts/inter.ttf" },
                 };
             };
             "#,
@@ -3584,7 +3585,7 @@ mod tests {
         assert!(manifest.ui_trees[0].always_on);
         assert_eq!(manifest.theme.colors["critical"], [1.0, 0.0, 0.0, 1.0]);
         assert_eq!(manifest.theme.spacing["m"], 8.0);
-        assert_eq!(manifest.fonts.families["body"], "fonts/inter.ttf");
+        assert_eq!(manifest.fonts.families["primary"], "fonts/inter.ttf");
     }
 
     #[test]
@@ -3597,15 +3598,43 @@ mod tests {
             dir.join("start-script.js"),
             r#"
             globalThis.setupMod = function() {
+                const theme = defineTheme({
+                    color: {
+                        hud: {
+                            panel: [0.018, 0.026, 0.039, 0.82],
+                            health: {
+                                background: [0.035, 0.045, 0.060, 1.0],
+                            },
+                            text: [0.82, 0.95, 0.98, 1.0],
+                        },
+                        critical: [0.86, 0.06, 0.12, 1.0],
+                        warning: [0.95, 0.62, 0.12, 1.0],
+                        ok: [0.12, 0.72, 0.40, 1.0],
+                        panel: {
+                            default: [0.018, 0.026, 0.039, 0.92],
+                        },
+                    },
+                    font: {
+                        hud: { status: "JetBrains Mono" },
+                        primary: "JetBrains Mono",
+                        mono: "JetBrains Mono",
+                    },
+                    spacing: {
+                        hud: { gap: 8.0, padding: 14.0, rowGap: 6.0 },
+                        m: 8.0,
+                        l: 16.0,
+                    },
+                });
+                const tokens = getDesignTokens(theme);
                 const player = getGameState().player;
                 const healthTree = Tree(
                     { anchor: "bottomLeft", offset: [24.0, -24.0] },
-                    VStack({ gap: "hud.rowGap", padding: "hud.padding", align: "stretch", fill: "hud.panel" }, [
-                        HStack({ gap: "hud.gap", align: "center" }, [
+                    VStack({ gap: tokens.spacing.hud.rowGap, padding: tokens.spacing.hud.padding, align: "stretch", fill: tokens.color.hud.panel }, [
+                        HStack({ gap: tokens.spacing.hud.gap, align: "center" }, [
                             Text({
                                 content: "HP --",
-                                color: "hud.text",
-                                font: "hud.status",
+                                color: tokens.color.hud.text,
+                                font: tokens.font.hud.status,
                                 fontSize: 24.0,
                                 bind: bindState(player.health, { format: "HP {}" }),
                             }),
@@ -3615,14 +3644,14 @@ mod tests {
                                 tween: { durationMs: 180.0, easing: "easeOut" },
                             }),
                             max: player.maxHealth,
-                            fill: "ok",
-                            background: "hud.health.background",
+                            fill: tokens.color.ok,
+                            background: tokens.color.hud.health.background,
                             styleRanges: {
                                 max: 1.0,
                                 entries: [
-                                    { upTo: 0.25, color: "critical" },
-                                    { upTo: 0.5, color: "warning" },
-                                    { color: "ok" },
+                                    { upTo: 0.25, color: tokens.color.critical },
+                                    { upTo: 0.5, color: tokens.color.warning },
+                                    { color: tokens.color.ok },
                                 ],
                             },
                         }),
@@ -3630,7 +3659,7 @@ mod tests {
                 );
                 const reticleTree = Tree(
                     { anchor: "center", offset: [0.0, 0.0] },
-                    Text({ content: "+", font: "mono" }),
+                    Text({ content: "+", font: tokens.font.mono }),
                 );
                 const pauseMenu = Tree(
                     {
@@ -3642,13 +3671,13 @@ mod tests {
                         role: "group",
                     },
                     VStack({
-                        gap: "m",
-                        padding: "l",
+                        gap: tokens.spacing.m,
+                        padding: tokens.spacing.l,
                         align: "stretch",
                         focus: { policy: "linear", wrap: true },
-                        fill: "panel.default",
+                        fill: tokens.color.panel.default,
                     }, [
-                        Text({ content: "PAUSED", font: "mono", color: "ok" }),
+                        Text({ content: "PAUSED", font: tokens.font.mono, color: tokens.color.ok }),
                         Button({ id: "pauseResume", label: "RESUME", onPress: CLOSE_DIALOG_ACTION }),
                     ]),
                 );
@@ -3659,15 +3688,7 @@ mod tests {
                         defineUiTree({ name: "hud.reticle", tree: reticleTree, alwaysOn: true }),
                         defineUiTree({ name: "pauseMenu", tree: pauseMenu }),
                     ],
-                    theme: {
-                        colors: {
-                            "hud.panel": [0.018, 0.026, 0.039, 0.82],
-                            "hud.health.background": [0.035, 0.045, 0.060, 1.0],
-                            "hud.text": [0.82, 0.95, 0.98, 1.0],
-                        },
-                        fonts: { "hud.status": "JetBrains Mono" },
-                        spacing: { "hud.gap": 8.0, "hud.padding": 14.0, "hud.rowGap": 6.0 },
-                    },
+                    theme,
                 };
             };
             "#,
@@ -3843,7 +3864,7 @@ mod tests {
                                    root = { kind = "text", content = "hi", fontSize = 12, color = {1,1,1,1} } } },
                     },
                     theme = { colors = { critical = {1, 0, 0, 1} }, spacing = { m = 8 } },
-                    fonts = { body = "fonts/inter.ttf" },
+                    fonts = { primary = "fonts/inter.ttf" },
                 }
             end
             "#,
@@ -3857,7 +3878,7 @@ mod tests {
         assert!(manifest.ui_trees[0].always_on);
         assert_eq!(manifest.theme.colors["critical"], [1.0, 0.0, 0.0, 1.0]);
         assert_eq!(manifest.theme.spacing["m"], 8.0);
-        assert_eq!(manifest.fonts.families["body"], "fonts/inter.ttf");
+        assert_eq!(manifest.fonts.families["primary"], "fonts/inter.ttf");
     }
 
     /// Cold-boot Luau: a malformed `uiTrees` entry is logged and skipped.
@@ -3951,12 +3972,13 @@ mod tests {
             assert(UI == UIAgain, "postretro/ui must be a singleton")
             assert(root.shadow == nil, "mod-root postretro.luau shadowed the engine module")
             assert(UI.shadow == nil, "mod-root postretro/ui.luau shadowed the engine module")
-            assert(root.Text({ content = "mod-root" }).kind == "text", "root Text must be the SDK factory")
+            assert(root.Text == nil, "root module must not expose UI factories")
+            assert(root.showDialog == nil, "root module must not expose UI reactions")
             assert(UI.Text({ content = "mod" }).kind == "text", "UI.Text must be the SDK factory")
             assert(UI.getGameState().player.health.slot == "player.health", "UI getGameState must expose refs")
-            assert(type(Text) == "function", "bare-global SDK Text must remain installed")
+            assert(type(Text) == "nil", "bare-global SDK Text must not be installed")
             assert(not pcall(function()
-                root.Text = nil
+                root.world = nil
             end), "postretro must reject writes")
             assert(not pcall(function()
                 UI.Text = nil

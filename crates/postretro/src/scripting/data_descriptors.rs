@@ -5421,6 +5421,21 @@ mod tests {
         })
     }
 
+    fn install_ui_theme_token_validator(lua: &mlua::Lua) {
+        const THEME_SRC: &str = include_str!("../../../../sdk/lib/ui/theme.luau");
+        let theme: mlua::Table = lua
+            .load(THEME_SRC)
+            .set_name("theme.luau")
+            .eval()
+            .expect("theme.luau must evaluate to a module table");
+        let unwrap: mlua::Value = theme
+            .get("__unwrapThemeToken")
+            .expect("theme.luau must expose internal token validator");
+        lua.globals()
+            .set("__postretroUnwrapThemeToken", unwrap)
+            .expect("install temporary token validator");
+    }
+
     #[test]
     fn js_manifest_parses_progress_and_primitive_reactions() {
         let src = r#"({
@@ -8434,6 +8449,7 @@ mod tests {
         const TREE_SRC: &str = include_str!("../../../../sdk/lib/ui/tree.luau");
 
         let lua = mlua::Lua::new();
+        install_ui_theme_token_validator(&lua);
         let widgets: mlua::Table = lua.load(WIDGETS_SRC).eval().unwrap();
         let layout: mlua::Table = lua.load(LAYOUT_SRC).eval().unwrap();
         let tree_mod: mlua::Table = lua.load(TREE_SRC).eval().unwrap();
@@ -8487,6 +8503,7 @@ mod tests {
         const TREE_SRC: &str = include_str!("../../../../sdk/lib/ui/tree.luau");
 
         let lua = mlua::Lua::new();
+        install_ui_theme_token_validator(&lua);
         let widgets: mlua::Table = lua.load(WIDGETS_SRC).eval().unwrap();
         let layout: mlua::Table = lua.load(LAYOUT_SRC).eval().unwrap();
         let tree_mod: mlua::Table = lua.load(TREE_SRC).eval().unwrap();
@@ -8554,6 +8571,7 @@ mod tests {
         const LAYOUT_SRC: &str = include_str!("../../../../sdk/lib/ui/layout.luau");
         const TREE_SRC: &str = include_str!("../../../../sdk/lib/ui/tree.luau");
         let lua = mlua::Lua::new();
+        install_ui_theme_token_validator(&lua);
         let layout: mlua::Table = lua.load(LAYOUT_SRC).eval().unwrap();
         let tree_mod: mlua::Table = lua.load(TREE_SRC).eval().unwrap();
         lua.globals().set("L", layout).unwrap();
@@ -8615,6 +8633,7 @@ mod tests {
         const WIDGETS_SRC: &str = include_str!("../../../../sdk/lib/ui/widgets.luau");
         const TREE_SRC: &str = include_str!("../../../../sdk/lib/ui/tree.luau");
         let lua = mlua::Lua::new();
+        install_ui_theme_token_validator(&lua);
         let widgets: mlua::Table = lua.load(WIDGETS_SRC).eval().unwrap();
         let tree_mod: mlua::Table = lua.load(TREE_SRC).eval().unwrap();
         lua.globals().set("W", widgets).unwrap();
@@ -8733,6 +8752,7 @@ mod tests {
         const TREE_SRC: &str = include_str!("../../../../sdk/lib/ui/tree.luau");
 
         let lua = mlua::Lua::new();
+        install_ui_theme_token_validator(&lua);
         let widgets: mlua::Table = lua.load(WIDGETS_SRC).eval().unwrap();
         let tree_mod: mlua::Table = lua.load(TREE_SRC).eval().unwrap();
         lua.globals().set("W", widgets).unwrap();
@@ -8784,7 +8804,7 @@ mod tests {
             r#"({
                 theme: {
                     colors: 5,
-                    fonts: { body: "Inter" },
+                    fonts: { primary: "Inter" },
                     spacing: { m: 8 },
                 },
             })"#,
@@ -8798,7 +8818,7 @@ mod tests {
             "colors must degrade to empty when the sub-map is not an object"
         );
         assert_eq!(
-            tokens.fonts.get("body").map(String::as_str),
+            tokens.fonts.get("primary").map(String::as_str),
             Some("Inter"),
             "fonts must still be drained when colors is bad"
         );

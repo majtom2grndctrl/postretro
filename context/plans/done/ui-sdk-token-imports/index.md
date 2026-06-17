@@ -1,7 +1,7 @@
 # UI SDK Token Imports
 
-> **Status:** ready
-> **Depends on:** `context/plans/ready/luau-sdk-virtual-modules/`
+> **Status:** done
+> **Depends on:** `context/plans/done/luau-sdk-virtual-modules/`
 > **Related:** `context/lib/ui.md` · `context/lib/scripting.md` · `sdk/lib/ui/theme.ts` · `sdk/lib/ui/theme.luau`
 
 ## Goal
@@ -20,7 +20,9 @@ TypeScript and Luau can express that namespace with reasonable parity.
 - Old `colors` / `fonts` input to `defineTheme` is unsupported. Enumerable flat
   `colors` / `fonts` / `spacing` remain the manifest wire/output shape Rust
   accepts.
-- `getDesignTokens(theme)` returning nested token groups.
+- `getDesignTokens(theme)` returning nested token groups. TypeScript preserves
+  the exact authored token shape; Luau uses an open nested tree per category
+  because it cannot express the dependent return shape from `defineTheme`.
 - Category-branded token leaves so color, font, and spacing tokens cannot be
   mixed at widget call sites.
 - Runtime descriptors and Rust theme resolution still receive flat token names.
@@ -51,37 +53,39 @@ TypeScript and Luau can express that namespace with reasonable parity.
 
 ## Acceptance criteria
 
-- [ ] TypeScript authors can write `import { Text, defineTheme } from "postretro/ui"`.
-- [ ] Luau authors can write `local UI = require("postretro/ui")`.
-- [ ] Root `postretro` type declarations no longer expose UI factories, layout
+- [x] TypeScript authors can write `import { Text, defineTheme } from "postretro/ui"`.
+- [x] Luau authors can write `local UI = require("postretro/ui")`.
+- [x] Root `postretro` type declarations no longer expose UI factories, layout
       helpers, UI tree helpers, UI state helpers, UI reactions, or theme helpers.
-- [ ] `require("postretro")` no longer exposes UI factories, layout helpers, UI
+- [x] `require("postretro")` no longer exposes UI factories, layout helpers, UI
       tree helpers, UI state helpers, UI reactions, or theme helpers.
-- [ ] Luau UI bare globals such as `Text`, `VStack`, `defineTheme`, and
+- [x] Luau UI bare globals such as `Text`, `VStack`, `defineTheme`, and
       `showDialog` are absent; Luau authors reach them through `require("postretro/ui")`.
-- [ ] TypeScript aliased, default, or namespace bare SDK imports fail at
+- [x] TypeScript aliased, default, namespace, or import-assignment bare SDK imports fail at
       compile time with a clear diagnostic.
-- [ ] Existing runtime descriptor wire remains unchanged: token-capable fields
+- [x] Existing runtime descriptor wire remains unchanged: token-capable fields
       serialize as bare strings or literals.
-- [ ] `defineTheme({ color, font, spacing })` flattens nested authoring tokens
+- [x] `defineTheme({ color, font, spacing })` flattens nested authoring tokens
       into the existing manifest theme shape consumed by Rust.
-- [ ] `defineTheme({ colors, fonts })` is unsupported, while returned theme
+- [x] `defineTheme({ colors, fonts })` is unsupported, while returned theme
       objects still expose enumerable flat `colors`, `fonts`, and `spacing`
       manifest maps.
-- [ ] `getDesignTokens(theme)` returns nested groups matching the authored
-      theme shape.
-- [ ] `font.primary`, `color.panel.default`, and `spacing.m` are valid token
+- [x] `getDesignTokens(theme)` returns nested groups matching the authored
+      theme shape at runtime. TypeScript reflects that shape statically; Luau's
+      supported type surface preserves category safety but not exact path
+      existence.
+- [x] `font.primary`, `color.panel.default`, and `spacing.m` are valid token
       leaves in both TypeScript and Luau.
-- [ ] Passing a color token to `font`, a font token to `color`, or a spacing
+- [x] Passing a color token to `font`, a font token to `color`, or a spacing
       token to `color` is a static type error in TypeScript and in the supported
       Luau type-checking path.
-- [ ] One-off font family literals are rejected by SDK widget prop types and
+- [x] One-off font family literals are rejected by SDK widget prop types and
       Luau validation; font props accept font tokens only.
-- [ ] Unknown token degradation in Rust keeps the same visible behavior: unknown
+- [x] Unknown token degradation in Rust keeps the same visible behavior: unknown
       color becomes magenta, unknown font falls back to the primary font, unknown
       spacing becomes zero, each warning once per tree build. The fallback font
       token changes from `body` to `primary`.
-- [ ] Dev HUD, pause menu, reactive UI fixtures, and script-compiler tests use
+- [x] Dev HUD, pause menu, reactive UI fixtures, and script-compiler tests use
       `postretro/ui` for UI APIs.
 
 ## Tasks
@@ -145,14 +149,17 @@ Theme key rules:
 
 ### Task 4: Brand token leaves and update widget props
 
-TypeScript token leaves are branded strings whose runtime value is the flat token
-path. Luau token leaves are read-only branded records:
+TypeScript token leaves are type-branded read-only records whose runtime value
+carries the flat token path plus private SDK metadata. Luau token leaves are
+read-only records produced by `getDesignTokens(theme)` and validated against
+module-private SDK metadata:
 `{ __postretroToken = "color" | "font" | "spacing", token = "panel.default" }`.
-Widget and layout factories unwrap SDK token leaves into plain strings before
-returning descriptors. Literal colors and spacing numbers remain valid escape
+Widget and layout factories unwrap only SDK-produced token leaves into plain
+strings before returning descriptors. Hand-built token-shaped records are
+rejected in both runtimes. Literal colors and spacing numbers remain valid escape
 hatches. Font props accept font tokens only; one-off font family literals are not
-supported. Raw string tokens are rejected by SDK types and by Luau factory
-validation; direct string-token widget props are not supported.
+supported. Raw string tokens are rejected by SDK types and factory validation;
+direct string-token widget props are not supported.
 
 Update every current token-capable prop: text font/color; panel fill/border
 tint; stack gap/padding/fill/border.tint; grid gap/padding only; and
@@ -264,9 +271,9 @@ static SDK-lib type text before extending it.
 | UI SDK module | n/a | n/a | `postretro/ui` | `require("postretro/ui")` | n/a |
 | Theme authoring input | n/a | n/a | `ThemeDefinition.color/font/spacing` | `ThemeDefinition.color/font/spacing` | n/a |
 | Theme manifest output | `ModThemeTokens` / `ThemeDescriptor` | `colors` / `fonts` / `spacing` | enumerable `colors` / `fonts` / `spacing` | enumerable `colors` / `fonts` / `spacing` | n/a |
-| Color token leaf | descriptor string | bare string | `ColorToken` branded string | read-only `{ __postretroToken = "color", token = string }` | n/a |
-| Font token leaf | descriptor string | bare string | `FontToken` branded string | read-only `{ __postretroToken = "font", token = string }` | n/a |
-| Spacing token leaf | descriptor string | bare string | `SpacingToken` branded string | read-only `{ __postretroToken = "spacing", token = string }` | n/a |
+| Color token leaf | descriptor string | bare string | runtime-authenticated `ColorToken` record | read-only `{ __postretroToken = "color", token = string }` | n/a |
+| Font token leaf | descriptor string | bare string | runtime-authenticated `FontToken` record | read-only `{ __postretroToken = "font", token = string }` | n/a |
+| Spacing token leaf | descriptor string | bare string | runtime-authenticated `SpacingToken` record | read-only `{ __postretroToken = "spacing", token = string }` | n/a |
 | Primary font token | `primary` | `"primary"` | `font.primary` | `tokens.font.primary` | n/a |
 
 ## Open questions

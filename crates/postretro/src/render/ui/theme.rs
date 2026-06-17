@@ -33,7 +33,7 @@ impl UiTheme {
     /// cyberpunk-consistent values mirrored from the shipped splash constants
     /// (cyan accent, dark panel surface).
     ///
-    /// The `body`/`mono` font entries name plain font-family strings. `"Inter"`
+    /// The `primary`/`mono` font entries name plain font-family strings. `"Inter"`
     /// matches `text::UI_FONT_FAMILY` and `"JetBrains Mono"` matches
     /// `text::UI_MONO_FONT_FAMILY` — both embedded faces are registered together
     /// in `build_font_system`.
@@ -53,7 +53,7 @@ impl UiTheme {
         ]);
 
         let fonts = HashMap::from([
-            ("body".to_string(), "Inter".to_string()),
+            ("primary".to_string(), "Inter".to_string()),
             ("mono".to_string(), "JetBrains Mono".to_string()),
         ]);
 
@@ -144,9 +144,14 @@ mod tests {
         for name in ["critical", "warning", "ok", "panel.default", "focus.ring"] {
             assert!(theme.color(name).is_some(), "missing color token {name:?}");
         }
-        for name in ["body", "mono"] {
+        for name in ["primary", "mono"] {
             assert!(theme.font(name).is_some(), "missing font token {name:?}");
         }
+        assert_eq!(
+            theme.font("body"),
+            None,
+            "the old body font token must not remain in the engine default",
+        );
         for name in ["xs", "s", "m", "l"] {
             assert!(
                 theme.spacing(name).is_some(),
@@ -159,13 +164,13 @@ mod tests {
     fn default_font_tokens_name_the_coordinated_families() {
         // The embedded Inter and JetBrains Mono faces register these exact family names; the contract pins them.
         let theme = UiTheme::engine_default();
-        assert_eq!(theme.font("body"), Some("Inter"));
+        assert_eq!(theme.font("primary"), Some("Inter"));
         assert_eq!(theme.font("mono"), Some("JetBrains Mono"));
     }
 
     #[test]
     fn theme_descriptor_round_trips_through_serde_json() {
-        let json = r#"{"colors":{"critical":[1.0,0.0,0.0,1.0]},"fonts":{"body":"Inter"},"spacing":{"m":8.0}}"#;
+        let json = r#"{"colors":{"critical":[1.0,0.0,0.0,1.0]},"fonts":{"primary":"Inter"},"spacing":{"m":8.0}}"#;
         let desc: ThemeDescriptor = serde_json::from_str(json).expect("must deserialize");
         // Re-deserialize the re-serialized form rather than comparing JSON text:
         // HashMap iteration order is unspecified, so a byte-identical round-trip
@@ -175,7 +180,7 @@ mod tests {
             serde_json::from_str(&reserialized).expect("must re-deserialize");
         assert_eq!(desc, roundtripped);
         assert!(colors_close(desc.colors["critical"], [1.0, 0.0, 0.0, 1.0]));
-        assert_eq!(desc.fonts["body"], "Inter");
+        assert_eq!(desc.fonts["primary"], "Inter");
         assert_eq!(desc.spacing["m"], 8.0);
     }
 
@@ -215,7 +220,7 @@ mod tests {
             default.color("panel.default").unwrap()
         ));
         // Untouched categories survive entirely.
-        assert_eq!(merged.font("body"), default.font("body"));
+        assert_eq!(merged.font("primary"), default.font("primary"));
         assert_eq!(merged.spacing("l"), default.spacing("l"));
     }
 
@@ -247,13 +252,13 @@ mod tests {
         // over `engine_default`, and the merged theme is what `set_ui_theme`
         // installs. The known token takes the mod value; the mod primitive is
         // added; an unregistered token stays absent so the widget resolution site
-        // (not the table) owns the magenta/`body`/zero warn-once degradation.
+        // (not the table) owns the magenta/`primary`/zero warn-once degradation.
         let descriptor = ThemeDescriptor {
             colors: HashMap::from([
                 ("warning".to_string(), [0.0, 0.0, 1.0, 1.0]),
                 ("cyan.500".to_string(), [0.1, 0.55, 0.62, 1.0]),
             ]),
-            fonts: HashMap::from([("body".to_string(), "ModSans".to_string())]),
+            fonts: HashMap::from([("primary".to_string(), "ModSans".to_string())]),
             ..Default::default()
         };
         let merged = UiTheme::engine_default().with_override(&descriptor);
@@ -272,7 +277,7 @@ mod tests {
             merged.color("cyan.500").unwrap(),
             [0.1, 0.55, 0.62, 1.0]
         ));
-        assert_eq!(merged.font("body"), Some("ModSans"));
+        assert_eq!(merged.font("primary"), Some("ModSans"));
         // An unregistered token is absent — the resolution site degrades it.
         assert_eq!(merged.color("unregistered.token"), None);
     }

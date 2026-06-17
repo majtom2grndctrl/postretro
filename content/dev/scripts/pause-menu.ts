@@ -5,8 +5,29 @@ import {
   Text,
   Tree,
   VStack,
+  defineTheme,
   defineUiTree,
-} from "postretro";
+  getDesignTokens,
+} from "postretro/ui";
+
+const pauseTheme = defineTheme({
+  color: {
+    ok: [0.12, 0.72, 0.40, 1.0],
+    panel: {
+      default: [0.018, 0.026, 0.039, 0.92],
+    },
+  },
+  font: {
+    primary: "JetBrains Mono",
+    mono: "JetBrains Mono",
+  },
+  spacing: {
+    m: 8,
+    l: 16,
+  },
+});
+
+const { color, font, spacing } = getDesignTokens(pauseTheme);
 
 export const pauseMenu = defineUiTree({
   name: "pauseMenu",
@@ -21,17 +42,17 @@ export const pauseMenu = defineUiTree({
     },
     VStack(
       {
-        gap: "m",
-        padding: "l",
+        gap: spacing.m,
+        padding: spacing.l,
         align: "stretch",
         focus: { policy: "linear", wrap: true },
-        fill: "panel.default",
+        fill: color.panel.default,
       },
       [
         Text({
           content: "PAUSED",
-          font: "mono",
-          color: "ok",
+          font: font.mono,
+          color: color.ok,
         }),
         Button({
           id: "pauseResume",

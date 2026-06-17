@@ -505,9 +505,9 @@ mod tests {
     }
 
     #[test]
-    fn build_font_system_registers_both_body_and_mono_families() {
+    fn build_font_system_registers_both_primary_and_mono_families() {
         // `build_font_system` registers both faces, so a single FontSystem
-        // resolves both the body and mono token families — the shaping seam both
+        // resolves both the primary and mono token families — the shaping seam both
         // `shape_text` and `measure_run` select against.
         let fs = build_font_system();
         let has_family = |target: &str| {
@@ -517,7 +517,7 @@ mod tests {
         };
         assert!(
             has_family(UI_FONT_FAMILY),
-            "body family {UI_FONT_FAMILY:?} not registered",
+            "primary family {UI_FONT_FAMILY:?} not registered",
         );
         assert!(
             has_family(UI_MONO_FONT_FAMILY),
@@ -526,11 +526,11 @@ mod tests {
     }
 
     #[test]
-    fn mono_and_body_families_measure_to_different_widths() {
-        // The same content shaped against the proportional body face and the
+    fn mono_and_primary_families_measure_to_different_widths() {
+        // The same content shaped against the proportional primary face and the
         // monospace face produces different advances — proof that `measure_run`
         // honors the family and that the embedded mono face is actually selected
-        // (not silently falling back to the body face).
+        // (not silently falling back to the primary face).
         let mut fs = build_font_system();
         let content = "iiiiWWWW mmmm";
         let font_size = 24.0_f32;
@@ -541,8 +541,8 @@ mod tests {
         const EPS: f32 = 1.0;
         assert!(
             (body_w - mono_w).abs() > EPS,
-            "mono ({mono_w}) and body ({body_w}) widths should differ \
-             beyond {EPS}px; mono may have fallen back to the body face",
+            "mono ({mono_w}) and primary ({body_w}) widths should differ \
+             beyond {EPS}px; mono may have fallen back to the primary face",
         );
     }
 

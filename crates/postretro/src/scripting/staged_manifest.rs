@@ -872,7 +872,8 @@ mod tests {
             assert(UI.shadow == nil, "mod-root postretro/ui.luau shadowed the engine module")
             assert(UI.Text({ content = "staged" }).kind == "text", "UI.Text must be the SDK factory")
             assert(UI.getGameState().player.health.slot == "player.health", "UI getGameState must expose refs")
-            assert(root.Text({ content = "root" }).kind == "text", "root module must expose UI factories")
+            assert(root.Text == nil, "root module must not expose UI factories")
+            assert(root.showDialog == nil, "root module must not expose UI reactions")
             function setupMod()
                 return {
                     name = "VirtualDeps",
@@ -1082,7 +1083,7 @@ mod tests {
                                       root: { kind: "spacer", flexGrow: 1.0 } } },
                         ],
                         theme: { colors: { critical: [1.0, 0.0, 0.0, 1.0] } },
-                        fonts: { body: "fonts/inter.ttf" },
+                        fonts: { primary: "fonts/inter.ttf" },
                     })"#,
                 )
                 .unwrap();
@@ -1092,7 +1093,7 @@ mod tests {
             assert_eq!(manifest.ui_trees[0].name, "hud");
             assert!(manifest.ui_trees[0].always_on);
             assert_eq!(manifest.theme.colors["critical"], [1.0, 0.0, 0.0, 1.0]);
-            assert_eq!(manifest.fonts.families["body"], "fonts/inter.ttf");
+            assert_eq!(manifest.fonts.families["primary"], "fonts/inter.ttf");
         });
     }
 
@@ -1135,7 +1136,7 @@ mod tests {
                                    root = { kind = "spacer", flexGrow = 1 } } },
                     },
                     theme = { colors = { critical = {1, 0, 0, 1} } },
-                    fonts = { body = "fonts/inter.ttf" },
+                    fonts = { primary = "fonts/inter.ttf" },
                 }
             end
         "#;
@@ -1151,7 +1152,7 @@ mod tests {
         assert_eq!(manifest.ui_trees[0].name, "hud");
         assert!(manifest.ui_trees[0].always_on);
         assert_eq!(manifest.theme.colors["critical"], [1.0, 0.0, 0.0, 1.0]);
-        assert_eq!(manifest.fonts.families["body"], "fonts/inter.ttf");
+        assert_eq!(manifest.fonts.families["primary"], "fonts/inter.ttf");
     }
 
     /// Hot-reload Luau parser skips a malformed `uiTrees` entry.

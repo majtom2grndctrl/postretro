@@ -822,118 +822,6 @@ declare defineReaction: (
 --- descriptor as-is; its sole purpose is a typed construction site.
 declare function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor
 
---- Build a state-crossing watcher. Pure: returns a plain table, no FFI. Place
---- the result in `setupLevel`'s returned `crossings` array. On a crossing in
---- the condition's direction the engine fires every reaction in `fire` exactly
---- once, re-arming only after a crossing back; a registration against a
---- non-Number slot warns and is skipped at load. Each `fire` entry is a
---- `defineReaction` handle (typed) or a bare reaction-name string (the shipped
---- path); handles are reduced to their `.name`, so the wire `CrossingDescriptor.fire`
---- stays a `{string}`.
-declare function onStateCrossing(
-  ref: ReadonlyStateRef<number>,
-  condition: CrossingCondition,
-  fire: {NamedReactionDescriptor | string}
-): CrossingDescriptor
-
---- System-reaction body: play `sound` through the M12 audio module on the
---- optional named `bus` (omitted when nil -> engine default bus). Pure:
---- returns a `PrimitiveReactionDescriptor`, no FFI. Pass to
---- `defineReaction("name", playSound(...))`.
-declare function playSound(sound: string, bus: string?): PrimitiveReactionDescriptor
-
---- System-reaction body: drive gilrs gamepad force feedback. `strong` and the
---- optional `weak` (omitted when nil) are 0-1 motor intensities; `durationMs`
---- is the rumble length. Warn-once no-op without force-feedback hardware.
---- Pure: returns a `PrimitiveReactionDescriptor`, no FFI.
-declare function rumble(strong: number, durationMs: number, weak: number?): PrimitiveReactionDescriptor
-
---- System-reaction body: flash the screen by writing the engine-owned
---- `screen.flash` RGBA slot, which decays to transparent. `color` is
---- `{r, g, b, a}` (0-1); `durationMs` is the decay time. Pure: returns a
---- `PrimitiveReactionDescriptor`, no FFI.
-declare function flashScreen(color: {number}, durationMs: number): PrimitiveReactionDescriptor
-
---- System-reaction body: darken (or tint) the screen edges by writing the
---- engine-owned `screen.vignette` slot, which rises to peak then decays to rest.
---- `strength` is the peak edge-darken amount; `durationMs` is the total
---- rise-plus-decay time. Optional `color` is an `{r, g, b}` linear-RGB tint
---- (omitted when nil -> black, a pure strength-only edge-darken). Pure: returns
---- a `PrimitiveReactionDescriptor`, no FFI.
-declare function vignette(strength: number, durationMs: number, color: {number}?): PrimitiveReactionDescriptor
-
---- System-reaction body: shake the screen by writing the engine-owned
---- `screen.shake` offset slot, a decaying oscillation that fades to rest.
---- `amplitude` is the peak displacement in logical-reference px; `durationMs`
---- is the total decay time. Optional `frequency` is the oscillation rate in Hz
---- (omitted when nil -> the engine applies its default frequency). Pure: returns
---- a `PrimitiveReactionDescriptor`, no FFI.
-declare function screenShake(amplitude: number, durationMs: number, frequency: number?): PrimitiveReactionDescriptor
-
---- System-reaction body: push the dialog UI tree `tree` onto the modal stack,
---- with an optional `onCommit` reaction (omitted when nil). An unknown tree name
---- warns and no-ops at dispatch time. Pure: returns a `PrimitiveReactionDescriptor`,
---- no FFI.
-declare function showDialog(tree: string, onCommit: string?): PrimitiveReactionDescriptor
-
---- The engine-shipped on-screen keyboard's registry name (M13 Text Entry).
---- `openTextEntry` opens this tree; the engine loads its descriptor from
---- `content/base/ui/keyboard.json` at boot. Edits the `ui.textEntry` slot.
-declare KEYBOARD_TREE: "keyboard"
-
---- Reserved button `onPress` action that closes the active modal. The App
---- intercepts this exact wire value before named-reaction dispatch.
-declare CLOSE_DIALOG_ACTION: "ui.closeDialog"
-
---- Reserved button `onPress` action that requests a clean app shutdown. The App
---- intercepts this exact wire value before named-reaction dispatch.
-declare EXIT_TO_DESKTOP_ACTION: "ui.exitToDesktop"
-
---- System-reaction body (M13 Text Entry): open the engine-shipped on-screen
---- keyboard, a capturing modal that edits the `ui.textEntry` slot. Optional
---- `onCommit` (omitted when nil) names a reaction fired on commit (the on-screen
---- `done` key or hardware Enter); `nav.cancel` closes without firing it. The same
---- `ui.textEntry` slot also receives the hardware-keyboard path's edits. Wraps
---- `showDialog("keyboard", onCommit)`. Pure: returns a `PrimitiveReactionDescriptor`.
-declare function openTextEntry(onCommit: string?): PrimitiveReactionDescriptor
-
---- System-reaction body: push the menu UI tree `tree` onto the modal stack. A
---- v1 alias of `showDialog` (identical push behavior) without `onCommit`.
---- An unknown tree name warns and no-ops at dispatch time. Pure: returns a
---- `PrimitiveReactionDescriptor`, no FFI.
-declare function openMenu(tree: string): PrimitiveReactionDescriptor
-
---- System-reaction body: pop the top UI tree off the modal stack. An empty stack
---- warns and no-ops at dispatch time. Pure: returns a `PrimitiveReactionDescriptor`,
---- no FFI.
-declare function closeDialog(): PrimitiveReactionDescriptor
-
---- System-reaction body (M13 Goal F): write `value` to a writable state ref at
---- the game-logic stage. Emits the existing `setState` wire descriptor.
---- Readonly-gated at runtime -- a readonly slot warns and stays unchanged; an
---- engine-owned writable slot is valid. `value` is coerced to the slot's
---- declared type. Pure: returns a `PrimitiveReactionDescriptor`, no FFI.
-declare function updateState<T>(ref: WritableStateRef<T>, value: T): PrimitiveReactionDescriptor
-
---- System-reaction body (M13 Text Entry): append `text` to the current string
---- value of the writable String slot `slot` at the game-logic stage. Readonly-
---- gated through the same writable-slot gate as `setState` -- a readonly slot
---- warns and stays unchanged; an engine-owned writable slot (e.g. `ui.textEntry`)
---- is valid. Pure: returns a `PrimitiveReactionDescriptor`, no FFI.
-declare function appendText(ref: WritableStateRef<string>, text: string): PrimitiveReactionDescriptor
-
---- System-reaction body (M13 Text Entry): remove the last character -- one
---- Unicode scalar value (char-pop floor: never splits a UTF-8 sequence, but does
---- not segment grapheme clusters) -- from the writable String slot `slot` at the
---- game-logic stage. Empty is a no-op with no warning.
---- Readonly-gated like `setState`. Pure: returns a `PrimitiveReactionDescriptor`, no FFI.
-declare function backspaceText(ref: WritableStateRef<string>): PrimitiveReactionDescriptor
-
---- System-reaction body (M13 Text Entry): empty the writable String slot `slot`
---- at the game-logic stage. Readonly-gated like `setState`. Pure: returns a
---- `PrimitiveReactionDescriptor`, no FFI.
-declare function clearText(ref: WritableStateRef<string>): PrimitiveReactionDescriptor
-
 -- ---------------------------------------------------------------------------
 -- State-store declarations. `defineStore` is special-cased in the typedef
 -- generator (mirroring `worldQuery`): per-slot value types live only in the
@@ -969,37 +857,40 @@ export type StoreDefinition = {
 declare function defineStore(namespace: string, schema: { [string]: StoreSlotSchema }): StoreDefinition
 
 -- ---------------------------------------------------------------------------
--- UI theme helpers. `defineTheme` preserves the runtime wire shape (flat
--- colors/fonts/spacing maps) and adds token accessors for authoring sites.
--- Accessors return the token string, so widget descriptors stay byte-identical
--- to hand-authored strings.
+-- UI theme helpers. `defineTheme` accepts nested singular token groups and
+-- returns the manifest-compatible flat token maps consumed by Rust.
 
 --- Linear RGBA color token value. Components are in display-linear 0-1 space;
 --- alpha is the fourth element.
 export type ThemeColorValue = {number}
---- Theme override returned from `setupMod().theme`. Keys are flat token strings,
---- including dotted names such as `"hud.panel"`; categories stay separate so a
---- color token and spacing token may share a name.
+export type ThemeTokenTree<Leaf> = { [string]: Leaf | ThemeTokenTree<Leaf> }
+--- Nested singular token groups accepted by `defineTheme`.
 export type ThemeDefinition = {
-  colors: { [string]: ThemeColorValue }?,
-  fonts: { [string]: string }?,
-  spacing: { [string]: number }?,
+  color: ThemeTokenTree<ThemeColorValue>?,
+  font: ThemeTokenTree<string>?,
+  spacing: ThemeTokenTree<number>?,
 }
---- Token accessors added by `defineTheme`. Each function returns the token
---- string and warns when it was not present in the matching theme category.
-export type ThemeTokenAccessors = {
-  color: (string) -> string,
-  font: (string) -> string,
-  spacing: (string) -> string,
+--- Runtime-authenticated SDK token records. These Luau aliases are structural
+--- for type checking only; widget/layout factories accept only records produced
+--- by `getDesignTokens(theme)`.
+export type ColorToken = { __postretroToken: "color", token: string }
+export type FontToken = { __postretroToken: "font", token: string }
+export type SpacingToken = { __postretroToken: "spacing", token: string }
+--- Luau cannot express the exact nested token shape derived from a concrete
+--- `defineTheme` argument. This open tree preserves token category safety while
+--- runtime `getDesignTokens` remains authoritative for which paths exist.
+export type DesignTokenTree<Token> = Token & { [string]: DesignTokenTree<Token> }
+export type DesignTokens = {
+  color: DesignTokenTree<ColorToken>,
+  font: DesignTokenTree<FontToken>,
+  spacing: DesignTokenTree<SpacingToken>,
 }
---- A theme returned by `defineTheme`: the original flat theme object plus
---- `tokens` accessors for authoring. Pass this object directly as
---- `setupMod().theme`.
-export type DefinedTheme = ThemeDefinition & { tokens: ThemeTokenAccessors }
---- Define a custom theme while preserving the runtime theme shape. Use
---- `theme.tokens.color("hud.text")` / `.font(...)` / `.spacing(...)` at widget
---- call sites for warn-and-degrade unknown-token feedback.
-declare function defineTheme(theme: ThemeDefinition): DefinedTheme
+--- Manifest-compatible flat theme maps returned from `defineTheme`.
+export type DefinedTheme = {
+  colors: { [string]: ThemeColorValue },
+  fonts: { [string]: string },
+  spacing: { [string]: number },
+}
 
 -- ---------------------------------------------------------------------------
 -- Interactive UI widget descriptors (M13 Goal F, Task 4). Authored as data in a
@@ -1012,8 +903,8 @@ declare function defineTheme(theme: ThemeDefinition): DefinedTheme
 export type LocalizedText = string
 
 --- A widget color slot: either an inline linear-RGBA tuple `{r, g, b, a}` or a
---- color theme-token string.
-export type WidgetColor = {number} | string
+--- color token from `getDesignTokens(theme)`.
+export type WidgetColor = {number} | ColorToken
 
 --- A numeric state bind descriptor shared by low-level `slider`/`bar` wire
 --- shapes: a dotted slot name plus an optional number tween. Most authors should
@@ -1028,17 +919,17 @@ export type SliderBind = { slot: string, tween: { durationMs: number, easing: st
 export type WidgetStyleRanges = { max: number, entries: { upTo: number?, color: WidgetColor?, pulse: { periodMs: number }?, flash: { durationMs: number }? } }
 
 -- ---------------------------------------------------------------------------
--- UI widget / layout / tree / state factories (M13 G1a). Pure builders lifted
--- to bare globals by the Luau prelude: each returns the camelCase wire
+-- UI widget / layout / tree / state factories (M13 G1a). Pure builders are
+-- available through `require("postretro/ui")`: each returns the camelCase wire
 -- descriptor of the matching `render/ui/descriptor.rs` variant and errors with a
 -- field-named message on invalid props. Source of truth: sdk/lib/ui/{widgets,
 -- layout,tree,state}.luau. Containers and `Tree` take `children`/`root` as a
 -- POSITIONAL second argument (Compose/SwiftUI lineage), not a prop.
 
 --- A spacing slot for gaps and padding: either an inline logical-pixel number or
---- a spacing theme-token string. Theme spacing affects styling/layout rhythm,
+--- a spacing token from `getDesignTokens(theme)`. Theme spacing affects styling/layout rhythm,
 --- not anchored tree placement.
-export type WidgetSpacing = number | string
+export type WidgetSpacing = number | SpacingToken
 --- Cross-axis alignment inside a stack/grid. Valid values: `"start"`, `"center"`,
 --- `"end"`, `"stretch"`.
 export type WidgetAlign = "start" | "center" | "end" | "stretch"
@@ -1112,34 +1003,22 @@ export type ReactionHandleRef = { name: string }
 export type WidgetDescriptor = { [string]: any }
 
 --- Props for `Text`. `content` is `LocalizedText`. `fontSize` defaults to 12; `color` to opaque white.
-export type TextProps = { content: LocalizedText, fontSize: number?, color: WidgetColor?, font: string?, bind: TextBindProp?, styleRanges: StyleRangesProp?, id: string?, focusNeighbors: FocusNeighborsProp?, visibleWhen: Predicate?, role: WidgetRole? }
---- A `text` leaf. An optional `bind` resolves the rendered string from a store slot; `styleRanges` recolors by value.
-declare function Text(props: TextProps): WidgetDescriptor
+export type TextProps = { content: LocalizedText, fontSize: number?, color: WidgetColor?, font: FontToken?, bind: TextBindProp?, styleRanges: StyleRangesProp?, id: string?, focusNeighbors: FocusNeighborsProp?, visibleWhen: Predicate?, role: WidgetRole? }
 
 --- Props for `Panel`. `bind` is a `PanelBindProp` (color slot).
 export type PanelProps = { fill: WidgetColor, border: BorderProp?, bind: PanelBindProp?, styleRanges: StyleRangesProp?, id: string?, focusNeighbors: FocusNeighborsProp?, visibleWhen: Predicate?, role: WidgetRole? }
---- A `panel` leaf: a solid `fill` with an optional 9-slice `border`.
-declare function Panel(props: PanelProps): WidgetDescriptor
 
 --- Props for `Image`. No bind. Name-XOR-decorative (M13 G2): exactly one of `label` or `decorative = true` (the union narrows it; neither/both errors).
 export type ImageProps = { asset: string, id: string?, focusNeighbors: FocusNeighborsProp?, visibleWhen: Predicate?, role: WidgetRole? } & ({ label: string } | { decorative: true })
---- An `image` leaf referencing a texture asset by key; sizes from the asset's natural dimensions. Exactly one of `label` / `decorative = true` is required.
-declare function Image(props: ImageProps): WidgetDescriptor
 
 --- Props for `Spacer`. `flexGrow` defaults to 1. No bind.
 export type SpacerProps = { flexGrow: number?, id: string?, visibleWhen: Predicate?, role: WidgetRole? }
---- A `spacer` leaf claiming a proportional share of leftover space.
-declare function Spacer(props: SpacerProps?): WidgetDescriptor
 
 --- Props for `Button`. `onPress` is a reaction handle or a bare name string. Name-XOR (M13 G2): exactly one of `label` / `labelledBy`. `selected`/`checked` are reactive predicates; `bind`+`styleRanges` drive the highlight; `disabled` makes it non-interactive.
 export type ButtonProps = { id: string, onPress: ReactionHandleRef | string, repeatOnHold: RepeatPolicyProp?, focusNeighbors: FocusNeighborsProp?, selected: Predicate?, checked: Predicate?, bind: Predicate?, styleRanges: StyleRangesProp?, disabled: boolean?, visibleWhen: Predicate?, role: WidgetRole? } & ({ label: LocalizedText } | { labelledBy: string })
---- An interactive `button`. `id` is required. `onPress` accepts a `defineReaction` handle (its `.name` is read) or a bare reaction-name string, emitting the unchanged `onPress: string` wire form. Exactly one of `label` / `labelledBy` is required.
-declare function Button(props: ButtonProps): WidgetDescriptor
 
 --- Props for `Slider`. `bind` is a `SliderBindProp` (numeric slot); required. Name-XOR (M13 G2): exactly one of `label` / `labelledBy`. `disabled` makes it non-interactive.
 export type SliderProps = { id: string, bind: SliderBindProp, min: number, max: number, step: number, capturesNav: {string}?, focusNeighbors: FocusNeighborsProp?, disabled: boolean?, visibleWhen: Predicate?, role: WidgetRole? } & ({ label: LocalizedText } | { labelledBy: string })
---- An interactive `slider`. Nav wires in `capturesNav` step the bound value by `step` within `[min, max]`. Exactly one of `label` / `labelledBy` is required.
-declare function Slider(props: SliderProps): WidgetDescriptor
 
 --- State binding for a readonly numeric `Bar`. The value is displayed against
 --- `max`; it is not interactive and never writes state.
@@ -1149,13 +1028,9 @@ export type BarBindProp = (ReadonlyStateRef<number> | LocalBindRef) & { tween: N
 export type BarMaxProp = number | ReadonlyStateRef<number>
 --- Props for `Bar`. `bind` is a readonly numeric bind; `max` is a number or readonly numeric ref.
 export type BarProps = { bind: BarBindProp, max: BarMaxProp, fill: WidgetColor, background: WidgetColor, styleRanges: StyleRangesProp?, id: string?, visibleWhen: Predicate?, role: WidgetRole? }
---- A passive `bar`: fill fraction is `value/max` clamped to `[0, 1]`. `styleRanges` recolors the fill from that displayed fraction.
-declare function Bar(props: BarProps): WidgetDescriptor
 
 --- Props for `Announce`. `text` is the POSITIONAL second argument; `priority` defaults to `"polite"` (round-trips to omission).
 export type AnnounceProps = { priority: AnnouncePriority?, visibleWhen: Predicate? }
---- A non-visual `announce` widget (M13 G2): a live-region message routed to the platform a11y layer at the declared `priority`. `text` is a POSITIONAL second argument.
-declare function Announce(props: AnnounceProps, text: LocalizedText): WidgetDescriptor
 
 --- Container focus traversal kind. `"linear"` follows child order; `"spatial"`
 --- chooses by geometry in the requested nav direction.
@@ -1166,18 +1041,14 @@ export type FocusKind = "linear" | "spatial"
 export type FocusPolicyProp = FocusKind | { policy: FocusKind, wrap: boolean?, ["repeat"]: RepeatPolicyProp? }
 --- Props for `VStack`/`HStack`. `gap` and `padding` default to 0; `align`
 --- defaults to `"start"`; optional `fill`/`border` draw a backdrop behind the
---- arranged children.
-export type StackProps = { gap: WidgetSpacing?, padding: WidgetSpacing?, align: WidgetAlign?, id: string?, focusNeighbors: FocusNeighborsProp?, focus: FocusPolicyProp?, restoreOnReturn: boolean?, fill: WidgetColor?, border: BorderProp? }
+--- arranged children. Stack containers may declare `localState`; stack and grid
+--- containers both accept `visibleWhen` and `role`.
+export type StackProps = { gap: WidgetSpacing?, padding: WidgetSpacing?, align: WidgetAlign?, id: string?, focusNeighbors: FocusNeighborsProp?, focus: FocusPolicyProp?, restoreOnReturn: boolean?, fill: WidgetColor?, border: BorderProp?, localState: { scope: string, cells: { [string]: number | boolean | string | {number} } }?, visibleWhen: Predicate?, role: WidgetRole? }
 --- Props for `Grid`. `cols` is required and must be an integer >= 1. Children
---- flow row-major across columns; grid currently has no backdrop fill/border.
-export type GridProps = { gap: WidgetSpacing?, padding: WidgetSpacing?, align: WidgetAlign?, id: string?, focusNeighbors: FocusNeighborsProp?, focus: FocusPolicyProp?, restoreOnReturn: boolean?, cols: number }
+--- flow row-major across columns; grid currently has no backdrop fill/border
+--- and no `localState`.
+export type GridProps = { gap: WidgetSpacing?, padding: WidgetSpacing?, align: WidgetAlign?, id: string?, focusNeighbors: FocusNeighborsProp?, focus: FocusPolicyProp?, restoreOnReturn: boolean?, cols: number, visibleWhen: Predicate?, role: WidgetRole? }
 
---- A vertical stack (`vstack`): `children` is a POSITIONAL second argument.
-declare function VStack(props: StackProps?, children: {WidgetDescriptor}?): WidgetDescriptor
---- A horizontal stack (`hstack`): `children` is a POSITIONAL second argument.
-declare function HStack(props: StackProps?, children: {WidgetDescriptor}?): WidgetDescriptor
---- A `grid` container: flows `children` across `cols` columns. `children` is a POSITIONAL second argument.
-declare function Grid(props: GridProps, children: {WidgetDescriptor}?): WidgetDescriptor
 
 --- Tree viewport anchor. Valid values: `"topLeft"`, `"top"`, `"topRight"`,
 --- `"left"`, `"center"`, `"right"`, `"bottomLeft"`, `"bottom"`,
@@ -1194,17 +1065,11 @@ export type TreeProps = { anchor: WidgetAnchor, offset: {number}, captureMode: W
 --- The flat `AnchoredTree` envelope produced by `Tree(...)` and stored in UI
 --- registries. `textEntryTarget` is serialized to its dotted state-slot name.
 export type AnchoredTreeDescriptor = { anchor: WidgetAnchor, offset: {number}, root: WidgetDescriptor, captureMode: WidgetCaptureMode?, initialFocus: string?, textEntryTarget: string?, accessibleName: string?, role: WidgetRole? }
---- Wrap a root widget descriptor in the `AnchoredTree` placement envelope. `root` is a POSITIONAL second argument.
-declare function Tree(props: TreeProps, root: WidgetDescriptor): AnchoredTreeDescriptor
 --- Props accepted by `defineUiTree`. The returned object preserves the runtime
 --- manifest entry shape `{ name, tree, alwaysOn? }`.
 export type UiTreeRegistrationProps = { name: string, tree: AnchoredTreeDescriptor, alwaysOn: boolean? }
 --- A typed UI-tree registration entry for `setupMod().uiTrees` / `setupLevel().uiTrees`.
 export type UiTreeRegistration = ModUiTree
---- Pure helper for defining a named UI-tree registration. Registration still
---- happens only when the returned object is included in a manifest `uiTrees`
---- array.
-declare function defineUiTree(registration: UiTreeRegistrationProps): UiTreeRegistration
 
 --- Bind-only options for number refs (text/bar/slider-compatible number shape).
 export type NumberStateBindOptions = { format: string?, tween: NumberTween? }
@@ -1212,13 +1077,6 @@ export type NumberStateBindOptions = { format: string?, tween: NumberTween? }
 export type NumericArrayStateBindOptions = { tween: ColorTween? }
 --- Bind-only options for string/boolean scalar refs (text format only).
 export type ScalarStateBindOptions = { format: string? }
---- Compose bind-only options onto a state ref, emitting `{ slot, ...options }`.
-declare bindState: ((ReadonlyStateRef<number>, NumberStateBindOptions?) -> ReadonlyStateRef<number> & NumberStateBindOptions)
-  & ((ReadonlyStateRef<{number}>, NumericArrayStateBindOptions?) -> ReadonlyStateRef<{number}> & NumericArrayStateBindOptions)
-  & ((ReadonlyStateRef<string>, ScalarStateBindOptions?) -> ReadonlyStateRef<string> & ScalarStateBindOptions)
-  & ((ReadonlyStateRef<boolean>, ScalarStateBindOptions?) -> ReadonlyStateRef<boolean> & ScalarStateBindOptions)
---- Build `{ slot, equals }` for scalar state refs.
-declare function stateEquals<T>(ref: ReadonlyStateRef<T>, value: T): Predicate
 
 --- A presentation-cell handle (`ui.createLocalState`): `:get()` yields a `{ ["local"] }`
 --- bind ref; `:set(v)` emits a `cellWrite` reaction (NEVER `setState`); `:is(v)` produces
@@ -1228,12 +1086,7 @@ export type LocalStateHandle<T> = {
   set: (self: LocalStateHandle<T>, value: T) -> PrimitiveReactionDescriptor,
   is: (self: LocalStateHandle<T>, value: T) -> Predicate,
 }
---- Declare a presentation-cell scope (M13 G1b). SDK-lib function, not a registered primitive. Pure: no engine side effect. Returns a `{ scope, cells }` bundle.
-declare function createLocalState(init: { [string]: any }): { scope: any, cells: any }
---- `Switch(cell, map)` (M13 G2) — expand a string-valued cell's `map` of `value -> subtree` into an array, injecting `visibleWhen = cell:is(key)` onto each subtree in LEXICOGRAPHICALLY-SORTED key order (byte-identical TS/Luau). Splice the result into a container's `children`.
-declare function Switch(cell: LocalStateHandle<string>, map: { [string]: WidgetDescriptor }): {WidgetDescriptor}
 --- State-helper namespace (state helpers are namespaced; reactions stay bare).
-declare ui: { createLocalState: (init: { [string]: any }) -> { scope: any, cells: any } }
 
 -- ---------------------------------------------------------------------------
 -- Runtime-value vocabulary — the typed command buffer (scripting.md §11). The
@@ -1341,52 +1194,58 @@ declare runtime: Runtime
 -- See: context/research/ui-layer.md §16.
 export type NavIntent = "nav.up" | "nav.down" | "nav.left" | "nav.right" | "nav.next" | "nav.prev" | "nav.confirm" | "nav.cancel" | "nav.menu" | "nav.options"
 
+
 -- ---------------------------------------------------------------------------
 -- Luau SDK virtual modules. Runtime module tables contain values only; these
 -- structural aliases describe the read-only engine-owned singletons returned by
--- literal `require` calls while preserving bare-global SDK declarations.
+-- literal `require` calls. Root `postretro` excludes UI authoring APIs; `postretro/ui`
+-- is typed directly from SDK function signatures instead of bare globals.
 
 export type PostretroUiModule = {
-  Text: typeof(Text),
-  Panel: typeof(Panel),
-  Image: typeof(Image),
-  Spacer: typeof(Spacer),
-  Button: typeof(Button),
-  Slider: typeof(Slider),
-  Bar: typeof(Bar),
-  Announce: typeof(Announce),
-  VStack: typeof(VStack),
-  HStack: typeof(HStack),
-  Grid: typeof(Grid),
-  Tree: typeof(Tree),
-  defineUiTree: typeof(defineUiTree),
+  Text: (props: TextProps) -> WidgetDescriptor,
+  Panel: (props: PanelProps) -> WidgetDescriptor,
+  Image: (props: ImageProps) -> WidgetDescriptor,
+  Spacer: (props: SpacerProps?) -> WidgetDescriptor,
+  Button: (props: ButtonProps) -> WidgetDescriptor,
+  Slider: (props: SliderProps) -> WidgetDescriptor,
+  Bar: (props: BarProps) -> WidgetDescriptor,
+  Announce: (props: AnnounceProps, text: LocalizedText) -> WidgetDescriptor,
+  VStack: (props: StackProps?, children: {WidgetDescriptor}?) -> WidgetDescriptor,
+  HStack: (props: StackProps?, children: {WidgetDescriptor}?) -> WidgetDescriptor,
+  Grid: (props: GridProps, children: {WidgetDescriptor}?) -> WidgetDescriptor,
+  Tree: (props: TreeProps, root: WidgetDescriptor) -> AnchoredTreeDescriptor,
+  defineUiTree: (registration: UiTreeRegistrationProps) -> UiTreeRegistration,
   getGameState: typeof(getGameState),
-  bindState: typeof(bindState),
-  stateEquals: typeof(stateEquals),
+  bindState: ((ReadonlyStateRef<number>, NumberStateBindOptions?) -> ReadonlyStateRef<number> & NumberStateBindOptions)
+    & ((ReadonlyStateRef<{number}>, NumericArrayStateBindOptions?) -> ReadonlyStateRef<{number}> & NumericArrayStateBindOptions)
+    & ((ReadonlyStateRef<string>, ScalarStateBindOptions?) -> ReadonlyStateRef<string> & ScalarStateBindOptions)
+    & ((ReadonlyStateRef<boolean>, ScalarStateBindOptions?) -> ReadonlyStateRef<boolean> & ScalarStateBindOptions),
+  stateEquals: <T>(ref: ReadonlyStateRef<T>, value: T) -> Predicate,
   createLocalState: (init: { [string]: any }) -> { scope: any, cells: any },
-  ui: typeof(ui),
-  Switch: typeof(Switch),
-  defineTheme: typeof(defineTheme),
-  onStateCrossing: typeof(onStateCrossing),
-  playSound: typeof(playSound),
-  rumble: typeof(rumble),
-  flashScreen: typeof(flashScreen),
-  vignette: typeof(vignette),
-  screenShake: typeof(screenShake),
-  showDialog: typeof(showDialog),
-  openMenu: typeof(openMenu),
-  closeDialog: typeof(closeDialog),
-  openTextEntry: typeof(openTextEntry),
+  ui: { createLocalState: (init: { [string]: any }) -> { scope: any, cells: any } },
+  Switch: (cell: LocalStateHandle<string>, map: { [string]: WidgetDescriptor }) -> {WidgetDescriptor},
+  defineTheme: (theme: ThemeDefinition) -> DefinedTheme,
+  getDesignTokens: (theme: DefinedTheme) -> DesignTokens,
+  onStateCrossing: (ref: ReadonlyStateRef<number>, condition: CrossingCondition, fire: {NamedReactionDescriptor | string}) -> CrossingDescriptor,
+  playSound: (sound: string, bus: string?) -> PrimitiveReactionDescriptor,
+  rumble: (strong: number, durationMs: number, weak: number?) -> PrimitiveReactionDescriptor,
+  flashScreen: (color: {number}, durationMs: number) -> PrimitiveReactionDescriptor,
+  vignette: (strength: number, durationMs: number, color: {number}?) -> PrimitiveReactionDescriptor,
+  screenShake: (amplitude: number, durationMs: number, frequency: number?) -> PrimitiveReactionDescriptor,
+  showDialog: (tree: string, onCommit: string?) -> PrimitiveReactionDescriptor,
+  openMenu: (tree: string) -> PrimitiveReactionDescriptor,
+  closeDialog: () -> PrimitiveReactionDescriptor,
+  openTextEntry: (onCommit: string?) -> PrimitiveReactionDescriptor,
   KEYBOARD_TREE: "keyboard",
   CLOSE_DIALOG_ACTION: "ui.closeDialog",
   EXIT_TO_DESKTOP_ACTION: "ui.exitToDesktop",
-  updateState: typeof(updateState),
-  appendText: typeof(appendText),
-  backspaceText: typeof(backspaceText),
-  clearText: typeof(clearText),
+  updateState: <T>(ref: WritableStateRef<T>, value: T) -> PrimitiveReactionDescriptor,
+  appendText: (ref: WritableStateRef<string>, text: string) -> PrimitiveReactionDescriptor,
+  backspaceText: (ref: WritableStateRef<string>) -> PrimitiveReactionDescriptor,
+  clearText: (ref: WritableStateRef<string>) -> PrimitiveReactionDescriptor,
 }
 
-export type PostretroModule = PostretroUiModule & {
+export type PostretroModule = {
   world: World,
   runtime: Runtime,
   getGameState: typeof(getGameState),

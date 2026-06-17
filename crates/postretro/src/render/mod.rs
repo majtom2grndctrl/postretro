@@ -3569,7 +3569,7 @@ impl Renderer {
     }
 
     /// Install a runtime UI font face from owned TTF/OTF bytes (the net-new
-    /// runtime path behind `UiPass`/glyphon's `FontSystem`; the engine's body/mono
+    /// runtime path behind `UiPass`/glyphon's `FontSystem`; the engine's primary/mono
     /// faces are embedded at compile time). Renderer-owns-GPU: the glyphon
     /// `FontSystem` lives in the renderer, so the mod-init drain in `main.rs` reads
     /// the TTF bytes itself and hands them here. Returns `false` when the bytes

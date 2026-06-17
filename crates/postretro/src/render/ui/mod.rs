@@ -802,7 +802,7 @@ impl UiPass {
     }
 
     /// Install a runtime font face into the shaped-text `FontSystem` (the net-new
-    /// runtime path; the embedded body/mono faces are registered once at
+    /// runtime path; the embedded primary/mono faces are registered once at
     /// construction). Delegates to `text::UiTextRenderer::register_font`; returns
     /// `false` if the bytes register no face under `family`, so the renderer caller
     /// can surface a load-time diagnostic and skip rather than leave a `font` token

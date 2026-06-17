@@ -46,8 +46,8 @@ throws, returns a non-object, or returns an object without `name`.
 
 **Imports and `require`.**
 
-- TypeScript: standard ES module `import` of relative paths. The script compiler bundles all relative imports into `start-script.js` at build time. Bare-specifier imports of `"postretro"` symbols are stripped (the symbols arrive as runtime globals).
-- Luau: `require("./path")` resolves relative to the mod root. `require("./actors/player")` reads `<mod_root>/actors/player.luau` (the `.luau` extension is appended automatically). `..` traversal and absolute paths are rejected. Module caching, init-file conventions, and upward search are not implemented.
+- TypeScript: standard ES module `import` of relative paths. The script compiler bundles all relative imports into `start-script.js` at build time. Bare-specifier imports of `"postretro"` and `"postretro/ui"` symbols are stripped (the symbols arrive as runtime globals).
+- Luau: `require("./path")` resolves relative to the mod root. `require("./actors/player")` reads `<mod_root>/actors/player.luau` (the `.luau` extension is appended automatically). `require("postretro")` and `require("postretro/ui")` return engine-owned SDK module tables before file lookup. `..` traversal and absolute paths are rejected. Module caching, init-file conventions, and upward search are not implemented.
 
 **Lifecycle.** Entity types returned from `setupMod().entities` survive level
 loads — they live in the engine-global type registry. Reactions are not
@@ -735,7 +735,8 @@ The condition is `{ below: number, max?: number }` or `{ above: number, max?: nu
 The canonical HUD-dynamics pattern — flash red when health drops below 20%:
 
 ```typescript
-import { defineReaction, flashScreen, getGameState, onStateCrossing } from "postretro";
+import { defineReaction } from "postretro";
+import { flashScreen, getGameState, onStateCrossing } from "postretro/ui";
 
 export function setupLevel(): LevelManifest {
   const { player } = getGameState();
@@ -898,7 +899,8 @@ applies. This is the path a `slider`'s nav-capture step takes to publish its new
 value.
 
 ```typescript
-import { defineReaction, defineStore, updateState } from "postretro";
+import { defineReaction, defineStore } from "postretro";
+import { updateState } from "postretro/ui";
 
 const options = defineStore("options", {
   master: { type: "number", default: 1, range: [0, 1] },
@@ -1000,8 +1002,17 @@ import {
   Text,
   Tree,
   VStack,
+  defineTheme,
   defineUiTree,
-} from "postretro";
+  getDesignTokens,
+} from "postretro/ui";
+
+const pauseTheme = defineTheme({
+  color: { ok: [0.12, 0.72, 0.40, 1], panel: { default: [0.02, 0.03, 0.04, 0.92] } },
+  font: { primary: "JetBrains Mono", mono: "JetBrains Mono" },
+  spacing: { m: 8, l: 16 },
+});
+const { color, font, spacing } = getDesignTokens(pauseTheme);
 
 export const pauseMenu = defineUiTree({
   name: "pauseMenu",
@@ -1016,14 +1027,14 @@ export const pauseMenu = defineUiTree({
     },
     VStack(
       {
-        gap: "m",
-        padding: "l",
+        gap: spacing.m,
+        padding: spacing.l,
         align: "stretch",
         focus: { policy: "linear", wrap: true },
-        fill: "panel.default",
+        fill: color.panel.default,
       },
       [
-        Text({ content: "PAUSED", font: "mono", color: "ok" }),
+        Text({ content: "PAUSED", font: font.mono, color: color.ok }),
         Button({
           id: "pauseResume",
           label: "RESUME",
@@ -1091,14 +1102,21 @@ first** and **children as a positional second argument** (the Compose / SwiftUI
 shape); leaf widgets take only props. All factories return a plain descriptor.
 
 ```typescript
-import { Tree, VStack, HStack, Grid, Text, Panel, Bar, Button, Slider, Image, Spacer, getGameState } from "postretro";
+import { Tree, VStack, Text, Bar, defineTheme, getDesignTokens, getGameState } from "postretro/ui";
+
+const hudTheme = defineTheme({
+  color: { ok: [0.12, 0.72, 0.40, 1] },
+  font: { primary: "DisplaySans" },
+  spacing: { s: 4, m: 8 },
+});
+const { color, spacing } = getDesignTokens(hudTheme);
 
 const { player } = getGameState();
 const hud = Tree(
   { anchor: "topLeft", offset: [16, 16] },
-  VStack({ gap: "s", padding: "m" }, [
-    Text({ content: "HP", fontSize: 18, color: "ok" }),
-    Bar({ bind: player.health, max: player.maxHealth, fill: "ok", background: [0.1, 0.1, 0.1, 1] }),
+  VStack({ gap: spacing.s, padding: spacing.m }, [
+    Text({ content: "HP", fontSize: 18, color: color.ok }),
+    Bar({ bind: player.health, max: player.maxHealth, fill: color.ok, background: [0.1, 0.1, 0.1, 1] }),
   ]),
 );
 ```
@@ -1111,8 +1129,17 @@ const hud = Tree(
   defaults to `"passthrough"` (a HUD never captures input); `"capture"` routes
   UI input to the tree, suppresses player controls, and freezes lower UI trees.
 
-Color and spacing props accept either a **theme token** (a bare string like
-`"ok"` or `"m"`) or an inline literal (`[r, g, b, a]` / a number).
+Color props accept a color token from `getDesignTokens(theme)` or an inline
+literal `[r, g, b, a]`. Spacing props accept a spacing token or a number. Font
+props accept font tokens only.
+
+Token leaves are SDK-authenticated records. TypeScript gives exact path
+completion for a concrete theme; Luau exposes an open token tree for category
+checking, but runtime still verifies that each record came from
+`getDesignTokens(theme)`. Hand-built `{ __postretroToken, token }` records are
+rejected in both runtimes, and `tokens.color.missing` throws when authored
+through the SDK instead of falling back to widget defaults. Lower-level raw
+descriptor strings still use the engine's visible unknown-token fallback.
 
 ### Modder components are plain functions
 
@@ -1123,17 +1150,39 @@ SDK factory takes and nests inside SDK containers exactly like a factory call:
 
 ```typescript
 // A modder component: a plain function returning a subtree.
-import { type ReadonlyStateRef, HStack, Text, VStack, bindState, getGameState } from "postretro";
+import {
+  type ReadonlyStateRef,
+  Button,
+  HStack,
+  Text,
+  VStack,
+  bindState,
+  defineTheme,
+  getDesignTokens,
+  getGameState,
+  ui,
+} from "postretro/ui";
+
+const statsTheme = defineTheme({
+  color: {
+    ok: [0.12, 0.72, 0.40, 1],
+    panel: { default: [0.02, 0.03, 0.04, 0.92] },
+    text: [0.82, 0.95, 0.98, 1],
+  },
+  font: { primary: "JetBrains Mono" },
+  spacing: { s: 4, m: 8 },
+});
+const tokens = getDesignTokens(statsTheme);
 
 function StatRow(props: { label: string; ref: ReadonlyStateRef<number | string | boolean> }) {
-  return HStack({ gap: "s", align: "center" }, [
-    Text({ content: props.label, fontSize: 16, color: "body" as never }),
-    Text({ content: "", fontSize: 16, color: "ok", bind: bindState(props.ref, { format: "{}" }) }),
+  return HStack({ gap: tokens.spacing.s, align: "center" }, [
+    Text({ content: props.label, fontSize: 16, color: tokens.color.text }),
+    Text({ content: "", fontSize: 16, color: tokens.color.ok, bind: bindState(props.ref, { format: "{}" }) }),
   ]);
 }
 
 const { player } = getGameState();
-const panel = VStack({ gap: "s", padding: "m" }, [
+const panel = VStack({ gap: tokens.spacing.s, padding: tokens.spacing.m }, [
   StatRow({ label: "HP", ref: player.health }), // nests like any factory
   StatRow({ label: "MAX", ref: player.maxHealth }),
 ]);
@@ -1152,7 +1201,7 @@ container it returns:
 function Counter(props: { start: number }) {
   const { scope, cells } = ui.createLocalState({ count: props.start });
   return VStack({ localState: scope }, [               // scope declared on the root
-    Text({ content: "", fontSize: 18, color: "body" as never, bind: cells.count.get() }),
+    Text({ content: "", fontSize: 18, color: tokens.color.text, bind: cells.count.get() }),
     Button({ id: "inc", label: "+1", onPress: "counterInc" }),
   ]);
 }
@@ -1173,10 +1222,7 @@ export function setupMod() {
     uiTrees: [
       defineUiTree({ name: "hud", alwaysOn: true, tree: hud }), // alwaysOn = base layer
     ],
-    theme: {
-      colors: { ok: [0.1, 0.9, 0.4, 1], "cyan.500": [0.1, 0.55, 0.62, 1] },
-      fonts: { body: "DisplaySans" },                  // token → registered family
-    },
+    theme: hudTheme,
     fonts: { DisplaySans: "fonts/display.ttf" },       // family → TTF asset path (runtime-loaded)
   };
 }
@@ -1194,7 +1240,7 @@ export function setupMod() {
 - **`theme`** — per-token overrides merged over the engine default: only the
   tokens you name change; everything else keeps its default. Unknown tokens
   referenced by a widget degrade visibly (unknown color → magenta, unknown font →
-  `body`, unknown spacing → 0) with a one-time warning, never a crash.
+  `primary`, unknown spacing → 0) with a one-time warning, never a crash.
 - **`fonts`** — family name → TTF/OTF asset path (resolved under the mod content
   root). Loaded at runtime so a `text` widget's `font` token (via the `theme`
   `fonts` table) can name the family. A font that fails to load is logged and
@@ -1253,8 +1299,8 @@ Button({
   id: "t-loadout", label: "Loadout", role: "tab",
   bind: sel.cells.tab.is("loadout"),     // 0/1 → styleRanges
   styleRanges: { max: 1, entries: [
-    { upTo: 0, color: "panel.default" }, // value 0 (inactive) → dim
-    { color: "ok" },                      // value 1 (active)   → highlight
+    { upTo: 0, color: tokens.color.panel.default }, // value 0 (inactive) → dim
+    { color: tokens.color.ok },                      // value 1 (active)   → highlight
   ] },
   selected: sel.cells.tab.is("loadout"), // SAME predicate, a11y
   onPress: "selectLoadout",

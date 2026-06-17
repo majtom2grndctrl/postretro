@@ -13,16 +13,27 @@
 -- rather than required from `widgets.luau`.
 -- See: context/lib/ui.md · context/lib/scripting.md §7
 
---- A widget color slot: an inline `{r, g, b, a}` tuple (0-1) or a theme token.
-export type WidgetColor = { number } | string
+export type ColorToken = { __postretroToken: "color", token: string }
+export type SpacingToken = { __postretroToken: "spacing", token: string }
 
---- A spacing slot (gap/padding): an inline logical-px number or a theme token.
-export type WidgetSpacing = number | string
+--- A widget color slot: an inline `{r, g, b, a}` tuple (0-1) or a color token.
+export type WidgetColor = { number } | ColorToken
+
+--- A spacing slot (gap/padding): an inline logical-px number or a spacing token.
+export type WidgetSpacing = number | SpacingToken
+
+export type Predicate = { slot: string?, ["local"]: string?, equals: any? }
+export type WidgetRole = "tab" | "tablist" | "checkbox" | "radio" | "listitem" | "button" | "slider" | "progressbar" | "image" | "group" | "none"
 
 --- A flat descriptor table a container factory produces.
 export type WidgetDescriptor = { [string]: any }
 
 local UiLayoutSdk = {}
+local unwrapThemeToken = rawget(_G, "__postretroUnwrapThemeToken")
+if type(unwrapThemeToken) ~= "function" then
+  error("layout.luau: missing internal theme-token validator")
+end
+local unwrapThemeToken = unwrapThemeToken :: (any, string) -> string?
 
 -- --- Validation helpers -----------------------------------------------------
 
@@ -50,9 +61,27 @@ local function requireString(value: any, field: string, factory: string)
   end
 end
 
-local function validateSpacing(value: any, field: string, factory: string): WidgetSpacing
+local function unwrapToken(value: any, category: string, field: string, factory: string): string?
+  if type(value) ~= "table" or value.__postretroToken == nil then
+    return nil
+  end
+  local token = unwrapThemeToken(value, category)
+  if token == nil then
+    error(`{factory}: \`{field}\` must be a {category} token returned by getDesignTokens(theme)`)
+  end
+  return token
+end
+
+local function validateSpacing(value: any, field: string, factory: string): any
+  local token = unwrapToken(value, "spacing", field, factory)
+  if token ~= nil then
+    return token
+  end
   if type(value) == "string" then
-    return value
+    error(`{factory}: \`{field}\` must be a spacing token record, not a raw string`)
+  end
+  if type(value) == "table" and value.__postretroToken ~= nil then
+    error(`{factory}: \`{field}\` must be a spacing token returned by getDesignTokens(theme)`)
   end
   requireFiniteNumber(value, field, factory)
   return value
@@ -65,12 +94,19 @@ local function validateAlign(value: any, factory: string): string
   return value
 end
 
-local function validateColor(value: any, field: string, factory: string): WidgetColor
+local function validateColor(value: any, field: string, factory: string): any
+  local token = unwrapToken(value, "color", field, factory)
+  if token ~= nil then
+    return token
+  end
   if type(value) == "string" then
-    return value
+    error(`{factory}: \`{field}\` must be a color token record, not a raw string`)
+  end
+  if type(value) == "table" and value.__postretroToken ~= nil then
+    error(`{factory}: \`{field}\` must be a color token returned by getDesignTokens(theme)`)
   end
   if type(value) ~= "table" or #value ~= 4 then
-    error(`{factory}: \`{field}\` must be a \{r, g, b, a\} tuple or a theme-token string`)
+    error(`{factory}: \`{field}\` must be a \{r, g, b, a\} tuple or a color token`)
   end
   for i = 1, 4 do
     requireFiniteNumber(value[i], `{field}[{i}]`, factory)
@@ -91,8 +127,7 @@ local function validateBorder(value: any, factory: string): any
   for i = 1, 4 do
     requireFiniteNumber(value.slice[i], `border.slice[{i}]`, factory)
   end
-  requireColor(value.tint, "border.tint", factory)
-  return { texture = value.texture, slice = value.slice, tint = value.tint }
+  return { texture = value.texture, slice = value.slice, tint = validateColor(value.tint, "border.tint", factory) }
 end
 
 local function buildFocusNeighbors(value: any, factory: string): any?
@@ -157,6 +192,89 @@ local function buildFocusPolicy(value: any, factory: string): any?
   return out
 end
 
+local ROLES: { [string]: boolean } = {
+  tab = true,
+  tablist = true,
+  checkbox = true,
+  radio = true,
+  listitem = true,
+  button = true,
+  slider = true,
+  progressbar = true,
+  image = true,
+  group = true,
+  none = true,
+}
+
+local function applyRole(out: { [string]: any }, role: any, factory: string)
+  if role == nil then
+    return
+  end
+  if type(role) ~= "string" or not ROLES[role] then
+    error(
+      `{factory}: \`role\` must be one of "tab" | "tablist" | "checkbox" | "radio" | "listitem" | "button" | "slider" | "progressbar" | "image" | "group" | "none"`
+    )
+  end
+  out.role = role
+end
+
+local function buildPredicate(value: any, field: string, factory: string): any?
+  if value == nil then
+    return nil
+  end
+  if type(value) ~= "table" then
+    error(`{factory}: \`{field}\` must be a table`)
+  end
+  local out: { [string]: any }
+  if value.slot ~= nil then
+    requireNonemptyString(value.slot, `{field}.slot`, factory)
+    out = { slot = value.slot }
+  else
+    requireNonemptyString(value["local"], `{field}.local`, factory)
+    out = { ["local"] = value["local"] }
+  end
+  if value.equals ~= nil then
+    local e = value.equals
+    if type(e) ~= "number" and type(e) ~= "boolean" and type(e) ~= "string" then
+      error(`{factory}: \`{field}.equals\` must be a number, boolean, or string`)
+    end
+    if type(e) == "number" and (e ~= e or e == math.huge or e == -math.huge) then
+      error(`{factory}: \`{field}.equals\` number must be finite`)
+    end
+    out.equals = e
+  end
+  return out
+end
+
+local function validateLocalState(value: any, factory: string): any?
+  if value == nil then
+    return nil
+  end
+  if type(value) ~= "table" then
+    error(`{factory}: \`localState\` must be a table`)
+  end
+  requireNonemptyString(value.scope, "localState.scope", factory)
+  if type(value.cells) ~= "table" then
+    error(`{factory}: \`localState.cells\` must be a table`)
+  end
+  for name, cell in pairs(value.cells) do
+    if type(name) ~= "string" or #name == 0 then
+      error(`{factory}: \`localState.cells\` keys must be nonempty strings`)
+    end
+    if type(cell) == "number" then
+      requireFiniteNumber(cell, `localState.cells.{name}`, factory)
+    elseif type(cell) ~= "boolean" and type(cell) ~= "string" then
+      if type(cell) ~= "table" or #cell ~= 4 then
+        error(`{factory}: \`localState.cells.{name}\` must be a number, boolean, string, or color tuple`)
+      end
+      for i = 1, 4 do
+        requireFiniteNumber(cell[i], `localState.cells.{name}[{i}]`, factory)
+      end
+    end
+  end
+  return value
+end
+
 local function validateChildren(children: any, factory: string): { WidgetDescriptor }
   if type(children) ~= "table" then
     error(`{factory}: \`children\` must be an array of widget descriptors`)
@@ -171,7 +289,13 @@ end
 
 -- Append the shared container tail fields (`id`, `focusNeighbors`, `focus`,
 -- `restoreOnReturn`, then `children`) in place. `children` is always present.
-local function applyCommonTail(out: { [string]: any }, props: any, children: { WidgetDescriptor }, factory: string)
+local function applyCommonTail(
+  out: { [string]: any },
+  props: any,
+  children: { WidgetDescriptor },
+  factory: string,
+  localState: any?
+)
   if props.id ~= nil then
     requireNonemptyString(props.id, "id", factory)
     out.id = props.id
@@ -193,6 +317,14 @@ local function applyCommonTail(out: { [string]: any }, props: any, children: { W
       out.restoreOnReturn = true
     end
   end
+  if localState ~= nil then
+    out.localState = localState
+  end
+  local visibleWhen = buildPredicate(props.visibleWhen, "visibleWhen", factory)
+  if visibleWhen ~= nil then
+    out.visibleWhen = visibleWhen
+  end
+  applyRole(out, props.role, factory)
   out.children = children
 end
 
@@ -211,7 +343,7 @@ local function buildStack(kind: string, factory: string, props: any, children: a
   if props.border ~= nil then
     out.border = validateBorder(props.border, factory)
   end
-  applyCommonTail(out, props, kids, factory)
+  applyCommonTail(out, props, kids, factory, validateLocalState(props.localState, factory))
   return out
 end
 

@@ -47,34 +47,32 @@ const DATA_SCRIPT_LUAU_SRC: &str = include_str!("../../../../sdk/lib/data_script
 const RUNTIME_LUAU_SRC: &str = include_str!("../../../../sdk/lib/runtime.luau");
 
 /// SDK library prelude — `ui/reactions.luau` returns state-crossing, system
-/// reaction, UI-stack, and text-entry descriptor builders that are
-/// destructured into globals. Pure descriptor builders; no FFI until the
-/// script returns.
+/// reaction, UI-stack, and text-entry descriptor builders. These are evaluated
+/// for the `postretro/ui` virtual module only; Task 1 of the UI SDK split keeps
+/// them out of author-visible bare globals and out of `require("postretro")`.
 const UI_REACTIONS_LUAU_SRC: &str = include_str!("../../../../sdk/lib/ui/reactions.luau");
 
-/// SDK library prelude — `ui/widgets.luau` returns a table whose widget-factory
-/// fields are destructured into globals (the capitalized `Text`/`Panel`/… leaf
-/// constructors). Pure descriptor builders; the FFI boundary is the eventual
-/// `return` of the authored tree. The `validateBorder`/`resolveReactionName`
-/// helpers it also exports are internal and intentionally NOT lifted.
+/// SDK library prelude — `ui/widgets.luau` returns widget factories for the
+/// `postretro/ui` virtual module. The capitalized `Text`/`Panel`/… constructors
+/// are no longer promoted to bare Luau globals.
 const UI_WIDGETS_LUAU_SRC: &str = include_str!("../../../../sdk/lib/ui/widgets.luau");
 
-/// SDK library prelude — `ui/layout.luau` returns a table whose container-factory
-/// fields (`VStack`/`HStack`/`Grid`) are destructured into globals. Pure builders.
+/// SDK library prelude — `ui/layout.luau` returns container factories for
+/// `postretro/ui`; these are no longer promoted to bare Luau globals.
 const UI_LAYOUT_LUAU_SRC: &str = include_str!("../../../../sdk/lib/ui/layout.luau");
 
-/// SDK library prelude — `ui/tree.luau` returns pure UI tree helpers that are
-/// destructured into globals.
+/// SDK library prelude — `ui/tree.luau` returns pure UI tree helpers for
+/// `postretro/ui`; these are no longer promoted to bare Luau globals.
 const UI_TREE_LUAU_SRC: &str = include_str!("../../../../sdk/lib/ui/tree.luau");
 
 /// SDK library prelude — `ui/state.luau` returns state-reference helpers plus
-/// the presentation-local state namespace. Authoritative helpers are pure
-/// descriptor composers; local cell handles remain presentation-only.
+/// the presentation-local state namespace for `postretro/ui`. Authoritative
+/// helpers are pure descriptor composers; local cell handles remain
+/// presentation-only.
 const UI_STATE_LUAU_SRC: &str = include_str!("../../../../sdk/lib/ui/state.luau");
 
-/// SDK library prelude — `ui/theme.luau` returns `defineTheme`, a pure authoring
-/// helper that preserves the flat runtime theme shape while adding token
-/// accessors for clearer call sites.
+/// SDK library prelude — `ui/theme.luau` returns theme helpers for
+/// `postretro/ui`; they are no longer promoted to bare Luau globals.
 const UI_THEME_LUAU_SRC: &str = include_str!("../../../../sdk/lib/ui/theme.luau");
 
 /// SDK library prelude — `game_state.luau` captures the temporary frozen
@@ -107,8 +105,8 @@ const FOG_VOLUMES_LUAU_FIELDS: &[&str] = &[];
 /// `data_script.luau`.
 const DATA_SCRIPT_FIELDS: &[&str] = &["defineReaction", "defineEntity", "defineStore"];
 
-/// UI-reactions SDK fields lifted to globals after evaluating
-/// `ui/reactions.luau`. `onStateCrossing` builds a state-crossing watcher; the
+/// UI-reactions SDK fields exported through `require("postretro/ui")`.
+/// `onStateCrossing` builds a state-crossing watcher; the
 /// rest are system-reaction body constructors that pair with `defineReaction` to
 /// emit `playSound` / `rumble` / `flashScreen` / `vignette` / `screenShake`,
 /// the UI-stack (`showDialog` /
@@ -137,25 +135,19 @@ pub(super) const UI_REACTIONS_FIELDS: &[&str] = &[
     "clearText",
 ];
 
-/// UI widget-factory SDK fields lifted to globals after evaluating
-/// `ui/widgets.luau`. The capitalized leaf-widget constructors only —
+/// UI widget-factory SDK fields exported through `require("postretro/ui")`.
+/// The capitalized leaf-widget constructors only —
 /// `validateBorder` / `resolveReactionName` are internal helpers that
-/// `layout.luau` redeclares locally, so they stay off the global table.
+/// `layout.luau` redeclares locally, so they stay off the module table.
 const UI_WIDGETS_FIELDS: &[&str] = &[
     "Text", "Panel", "Image", "Spacer", "Button", "Slider", "Bar", "Announce",
 ];
 
-/// UI layout-factory SDK fields lifted to globals after evaluating
-/// `ui/layout.luau`.
+/// UI layout-factory SDK fields exported through `require("postretro/ui")`.
 const UI_LAYOUT_FIELDS: &[&str] = &["VStack", "HStack", "Grid"];
 
-/// UI tree SDK fields lifted to globals after evaluating `ui/tree.luau`.
+/// UI tree SDK fields exported through `require("postretro/ui")`.
 const UI_TREE_FIELDS: &[&str] = &["Tree", "defineUiTree"];
-
-/// UI state-helper SDK fields lifted to globals after evaluating
-/// `ui/state.luau`. `bindState`/`stateEquals` compose authoritative state refs;
-/// `ui` exposes presentation-local `ui.createLocalState` (G1b).
-const UI_STATE_FIELDS: &[&str] = &["bindState", "stateEquals", "ui", "Switch"];
 
 /// UI state-helper SDK fields exported through `require("postretro/ui")`.
 const UI_STATE_MODULE_FIELDS: &[&str] = &[
@@ -166,9 +158,8 @@ const UI_STATE_MODULE_FIELDS: &[&str] = &[
     "Switch",
 ];
 
-/// UI theme-helper SDK fields lifted to globals after evaluating
-/// `ui/theme.luau`.
-const UI_THEME_FIELDS: &[&str] = &["defineTheme"];
+/// UI theme-helper SDK fields exported through `require("postretro/ui")`.
+const UI_THEME_FIELDS: &[&str] = &["defineTheme", "getDesignTokens"];
 
 /// Engine-state SDK fields lifted to globals after evaluating
 /// `game_state.luau`.
@@ -196,6 +187,7 @@ pub(crate) const POSTRETRO_UI_MODULE_EXPORTS: &[&str] = &[
     "ui",
     "Switch",
     "defineTheme",
+    "getDesignTokens",
     "onStateCrossing",
     "playSound",
     "rumble",
@@ -229,42 +221,6 @@ pub(crate) const POSTRETRO_ROOT_MODULE_EXPORTS: &[&str] = &[
     "smokeEmitter",
     "sparkEmitter",
     "dustEmitter",
-    "Text",
-    "Panel",
-    "Image",
-    "Spacer",
-    "Button",
-    "Slider",
-    "Bar",
-    "Announce",
-    "VStack",
-    "HStack",
-    "Grid",
-    "Tree",
-    "defineUiTree",
-    "bindState",
-    "stateEquals",
-    "createLocalState",
-    "ui",
-    "Switch",
-    "defineTheme",
-    "onStateCrossing",
-    "playSound",
-    "rumble",
-    "flashScreen",
-    "vignette",
-    "screenShake",
-    "showDialog",
-    "openMenu",
-    "closeDialog",
-    "openTextEntry",
-    "KEYBOARD_TREE",
-    "CLOSE_DIALOG_ACTION",
-    "EXIT_TO_DESKTOP_ACTION",
-    "updateState",
-    "appendText",
-    "backspaceText",
-    "clearText",
 ];
 
 /// Evaluate the Luau SDK prelude in `lua` and promote the return values to
@@ -489,9 +445,9 @@ pub(crate) fn evaluate_prelude(
             })?;
     }
 
-    // Step 7b: evaluate `ui/reactions.luau` and lift its fields to globals.
-    // Pure builders (no primitive dependency); ordering relative to the other
-    // steps is irrelevant.
+    // Step 7b: evaluate `ui/reactions.luau` for the `postretro/ui` virtual
+    // module. Do not lift its fields to globals: Task 1 of the UI SDK split
+    // removes author-visible Luau UI bare globals.
     let ui_reactions_sdk: Table = lua
         .load(UI_REACTIONS_LUAU_SRC)
         .set_name("postretro/sdk/ui/reactions.luau")
@@ -500,69 +456,6 @@ pub(crate) fn evaluate_prelude(
             msg: format!("failed to evaluate SDK prelude `ui/reactions.luau`: {e}"),
             source_name: "sdk/lib/ui/reactions.luau".to_string(),
         })?;
-    for field in UI_REACTIONS_FIELDS {
-        let value: mlua::Value =
-            ui_reactions_sdk
-                .get(*field)
-                .map_err(|e| ScriptError::InvalidArgument {
-                    reason: format!("ui/reactions.luau missing `{field}`: {e}"),
-                })?;
-        globals
-            .set(*field, value)
-            .map_err(|e| ScriptError::InvalidArgument {
-                reason: format!("failed to install global `{field}`: {e}"),
-            })?;
-    }
-
-    // Step 7c–7f: evaluate the M13 G1a UI factory modules and lift their fields
-    // to globals. All are pure descriptor builders with no primitive dependency,
-    // so ordering relative to the other steps is irrelevant. Each module is
-    // self-contained (the Luau prelude has no cross-module loader), so they are
-    // evaluated independently rather than requiring one another.
-    let ui_widgets_sdk: Table = lua
-        .load(UI_WIDGETS_LUAU_SRC)
-        .set_name("postretro/sdk/ui/widgets.luau")
-        .eval()
-        .map_err(|e| ScriptError::ScriptThrew {
-            msg: format!("failed to evaluate SDK prelude `ui/widgets.luau`: {e}"),
-            source_name: "sdk/lib/ui/widgets.luau".to_string(),
-        })?;
-    lift_fields_to_globals(
-        &globals,
-        &ui_widgets_sdk,
-        UI_WIDGETS_FIELDS,
-        "ui/widgets.luau",
-    )?;
-
-    let ui_layout_sdk: Table = lua
-        .load(UI_LAYOUT_LUAU_SRC)
-        .set_name("postretro/sdk/ui/layout.luau")
-        .eval()
-        .map_err(|e| ScriptError::ScriptThrew {
-            msg: format!("failed to evaluate SDK prelude `ui/layout.luau`: {e}"),
-            source_name: "sdk/lib/ui/layout.luau".to_string(),
-        })?;
-    lift_fields_to_globals(&globals, &ui_layout_sdk, UI_LAYOUT_FIELDS, "ui/layout.luau")?;
-
-    let ui_tree_sdk: Table = lua
-        .load(UI_TREE_LUAU_SRC)
-        .set_name("postretro/sdk/ui/tree.luau")
-        .eval()
-        .map_err(|e| ScriptError::ScriptThrew {
-            msg: format!("failed to evaluate SDK prelude `ui/tree.luau`: {e}"),
-            source_name: "sdk/lib/ui/tree.luau".to_string(),
-        })?;
-    lift_fields_to_globals(&globals, &ui_tree_sdk, UI_TREE_FIELDS, "ui/tree.luau")?;
-
-    let ui_state_sdk: Table = lua
-        .load(UI_STATE_LUAU_SRC)
-        .set_name("postretro/sdk/ui/state.luau")
-        .eval()
-        .map_err(|e| ScriptError::ScriptThrew {
-            msg: format!("failed to evaluate SDK prelude `ui/state.luau`: {e}"),
-            source_name: "sdk/lib/ui/state.luau".to_string(),
-        })?;
-    lift_fields_to_globals(&globals, &ui_state_sdk, UI_STATE_FIELDS, "ui/state.luau")?;
 
     let ui_theme_sdk: Table = lua
         .load(UI_THEME_LUAU_SRC)
@@ -572,7 +465,62 @@ pub(crate) fn evaluate_prelude(
             msg: format!("failed to evaluate SDK prelude `ui/theme.luau`: {e}"),
             source_name: "sdk/lib/ui/theme.luau".to_string(),
         })?;
-    lift_fields_to_globals(&globals, &ui_theme_sdk, UI_THEME_FIELDS, "ui/theme.luau")?;
+    let unwrap_theme_token: mlua::Value =
+        ui_theme_sdk
+            .get("__unwrapThemeToken")
+            .map_err(|e| ScriptError::InvalidArgument {
+                reason: format!("ui/theme.luau missing internal token validator: {e}"),
+            })?;
+    globals
+        .set("__postretroUnwrapThemeToken", unwrap_theme_token)
+        .map_err(|e| ScriptError::InvalidArgument {
+            reason: format!("failed to install temporary theme-token validator: {e}"),
+        })?;
+
+    // Step 7c–7f: evaluate the M13 G1a UI factory modules for the
+    // `postretro/ui` virtual module. Widget/layout modules capture the
+    // temporary theme-token validator as an upvalue so token records cannot be
+    // forged structurally by author code.
+    let ui_widgets_sdk: Table = lua
+        .load(UI_WIDGETS_LUAU_SRC)
+        .set_name("postretro/sdk/ui/widgets.luau")
+        .eval()
+        .map_err(|e| ScriptError::ScriptThrew {
+            msg: format!("failed to evaluate SDK prelude `ui/widgets.luau`: {e}"),
+            source_name: "sdk/lib/ui/widgets.luau".to_string(),
+        })?;
+
+    let ui_layout_sdk: Table = lua
+        .load(UI_LAYOUT_LUAU_SRC)
+        .set_name("postretro/sdk/ui/layout.luau")
+        .eval()
+        .map_err(|e| ScriptError::ScriptThrew {
+            msg: format!("failed to evaluate SDK prelude `ui/layout.luau`: {e}"),
+            source_name: "sdk/lib/ui/layout.luau".to_string(),
+        })?;
+    globals
+        .set("__postretroUnwrapThemeToken", mlua::Value::Nil)
+        .map_err(|e| ScriptError::InvalidArgument {
+            reason: format!("failed to clear temporary theme-token validator: {e}"),
+        })?;
+
+    let ui_tree_sdk: Table = lua
+        .load(UI_TREE_LUAU_SRC)
+        .set_name("postretro/sdk/ui/tree.luau")
+        .eval()
+        .map_err(|e| ScriptError::ScriptThrew {
+            msg: format!("failed to evaluate SDK prelude `ui/tree.luau`: {e}"),
+            source_name: "sdk/lib/ui/tree.luau".to_string(),
+        })?;
+
+    let ui_state_sdk: Table = lua
+        .load(UI_STATE_LUAU_SRC)
+        .set_name("postretro/sdk/ui/state.luau")
+        .eval()
+        .map_err(|e| ScriptError::ScriptThrew {
+            msg: format!("failed to evaluate SDK prelude `ui/state.luau`: {e}"),
+            source_name: "sdk/lib/ui/state.luau".to_string(),
+        })?;
 
     // Step 8: evaluate `runtime.luau` and promote its table to global `runtime`.
     // The builders are pure (no primitive dependency), so ordering relative to
@@ -628,27 +576,6 @@ struct LuauSdkExportInventory {
     ui_tree_sdk: Table,
     ui_state_sdk: Table,
     ui_theme_sdk: Table,
-}
-
-fn lift_fields_to_globals(
-    globals: &Table,
-    module: &Table,
-    fields: &[&str],
-    module_name: &str,
-) -> Result<(), ScriptError> {
-    for field in fields {
-        let value: mlua::Value = module
-            .get(*field)
-            .map_err(|e| ScriptError::InvalidArgument {
-                reason: format!("{module_name} missing `{field}`: {e}"),
-            })?;
-        globals
-            .set(*field, value)
-            .map_err(|e| ScriptError::InvalidArgument {
-                reason: format!("failed to install global `{field}`: {e}"),
-            })?;
-    }
-    Ok(())
 }
 
 fn populate_virtual_modules(
@@ -743,42 +670,6 @@ fn populate_virtual_modules(
         &inventory.emitters_sdk,
         EMITTERS_LUAU_FIELDS,
         "entities/emitters.luau",
-    )?;
-    copy_fields_to_table(
-        &root_module,
-        &inventory.ui_widgets_sdk,
-        UI_WIDGETS_FIELDS,
-        "ui/widgets.luau",
-    )?;
-    copy_fields_to_table(
-        &root_module,
-        &inventory.ui_layout_sdk,
-        UI_LAYOUT_FIELDS,
-        "ui/layout.luau",
-    )?;
-    copy_fields_to_table(
-        &root_module,
-        &inventory.ui_tree_sdk,
-        UI_TREE_FIELDS,
-        "ui/tree.luau",
-    )?;
-    copy_fields_to_table(
-        &root_module,
-        &inventory.ui_state_sdk,
-        UI_STATE_MODULE_FIELDS,
-        "ui/state.luau",
-    )?;
-    copy_fields_to_table(
-        &root_module,
-        &inventory.ui_reactions_sdk,
-        UI_REACTIONS_FIELDS,
-        "ui/reactions.luau",
-    )?;
-    copy_fields_to_table(
-        &root_module,
-        &inventory.ui_theme_sdk,
-        UI_THEME_FIELDS,
-        "ui/theme.luau",
     )?;
     virtual_modules.register_from_table(lua, "postretro", root_module)?;
 

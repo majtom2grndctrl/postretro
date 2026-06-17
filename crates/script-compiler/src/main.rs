@@ -31,11 +31,11 @@
 //! scripts-build --prelude --sdk-root <DIR> --out <OUTPUT.js>
 //! ```
 //!
-//! In `--prelude` mode the bundler entry is `<DIR>/index.ts` and every named
+//! In `--prelude` mode the bundler entry is `<DIR>/prelude.ts` and every named
 //! export is rewritten as a `globalThis.<name> = <name>` assignment so the
 //! resulting script, when evaluated in a QuickJS context, installs the SDK
 //! library symbols as globals visible to subsequent user scripts. See
-//! `context/lib/scripting.md §7` for the prelude design.
+//! `context/lib/scripting.md §8` for the prelude design.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -121,7 +121,7 @@ enum CliMode {
 fn parse_args() -> Result<CliMode> {
     // Tiny hand-rolled parser. Two modes:
     //   * `--in <path> --out <path>` — bundle a user entry script.
-    //   * `--prelude --sdk-root <dir> --out <path>` — bundle `<dir>/index.ts`
+    //   * `--prelude --sdk-root <dir> --out <path>` — bundle `<dir>/prelude.ts`
     //     with named exports rewritten as `globalThis.<name> = <name>`.
     let mut input: Option<PathBuf> = None;
     let mut output: Option<PathBuf> = None;

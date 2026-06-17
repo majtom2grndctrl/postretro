@@ -16,11 +16,14 @@ import {
   type WidgetSpacing,
   type WidgetAlign,
   type WidgetColor,
+  type WidgetRole,
+  type Predicate,
   type BorderProp,
   type FocusNeighborsProp,
   type RepeatPolicyProp,
   validateBorder,
 } from "./widgets";
+import { __unwrapThemeToken } from "./theme";
 
 // --- Focus policy (container-only) ------------------------------------------
 
@@ -45,12 +48,15 @@ type ContainerCommonProps = {
   focusNeighbors?: FocusNeighborsProp;
   focus?: FocusPolicyProp;
   restoreOnReturn?: boolean;
+  visibleWhen?: Predicate;
+  role?: WidgetRole;
 };
 
 /** Props for `VStack`/`HStack`. A stack may carry a backdrop `fill`/`border`. */
 export type StackProps = ContainerCommonProps & {
   fill?: WidgetColor;
   border?: BorderProp;
+  localState?: { scope: string; cells: Record<string, number | boolean | string | [number, number, number, number]> };
 };
 
 /** Props for `Grid`. Adds the required `cols`; no backdrop fill/border. */
@@ -78,9 +84,32 @@ function requireNonemptyString(value: unknown, field: string, factory: string): 
   }
 }
 
+function unwrapToken(
+  value: unknown,
+  category: "color" | "spacing",
+  field: string,
+  factory: string,
+): string | undefined {
+  if (value === null || typeof value !== "object") {
+    return undefined;
+  }
+  const token = __unwrapThemeToken(value, category);
+  if (token !== undefined) {
+    return token;
+  }
+  if ("__postretroToken" in value) {
+    throw new Error(`${factory}: \`${field}\` must be a ${category} token returned by getDesignTokens(theme)`);
+  }
+  return undefined;
+}
+
 function validateSpacing(value: unknown, field: string, factory: string): WidgetSpacing {
+  const token = unwrapToken(value, "spacing", field, factory);
+  if (token !== undefined) {
+    return token as WidgetSpacing;
+  }
   if (typeof value === "string") {
-    return value;
+    throw new Error(`${factory}: \`${field}\` must be a spacing token object, not a raw string`);
   }
   requireFiniteNumber(value, field, factory);
   return value as number;
@@ -95,11 +124,15 @@ function validateAlign(value: unknown, factory: string): WidgetAlign {
 }
 
 function validateColor(value: unknown, field: string, factory: string): WidgetColor {
+  const token = unwrapToken(value, "color", field, factory);
+  if (token !== undefined) {
+    return token as WidgetColor;
+  }
   if (typeof value === "string") {
-    return value;
+    throw new Error(`${factory}: \`${field}\` must be a color token object, not a raw string`);
   }
   if (!Array.isArray(value) || value.length !== 4) {
-    throw new Error(`${factory}: \`${field}\` must be a [r, g, b, a] tuple or a theme-token string`);
+    throw new Error(`${factory}: \`${field}\` must be a [r, g, b, a] tuple or a color token`);
   }
   for (let i = 0; i < 4; i++) {
     requireFiniteNumber(value[i], `${field}[${i}]`, factory);
@@ -162,6 +195,85 @@ function buildFocusPolicy(value: unknown, factory: string): FocusPolicyProp | un
   return out;
 }
 
+const ROLES: ReadonlySet<string> = new Set([
+  "tab",
+  "tablist",
+  "checkbox",
+  "radio",
+  "listitem",
+  "button",
+  "slider",
+  "progressbar",
+  "image",
+  "group",
+  "none",
+]);
+
+function applyRole(out: WidgetDescriptor, role: unknown, factory: string): void {
+  if (role === undefined) return;
+  if (typeof role !== "string" || !ROLES.has(role)) {
+    throw new Error(
+      `${factory}: \`role\` must be one of "tab" | "tablist" | "checkbox" | "radio" | "listitem" | "button" | "slider" | "progressbar" | "image" | "group" | "none"`,
+    );
+  }
+  out.role = role;
+}
+
+function buildPredicate(value: unknown, field: string, factory: string): Predicate | undefined {
+  if (value === undefined) return undefined;
+  if (value === null || typeof value !== "object") {
+    throw new Error(`${factory}: \`${field}\` must be an object`);
+  }
+  const p = value as Record<string, unknown>;
+  let out: Predicate;
+  if (p.slot !== undefined) {
+    requireNonemptyString(p.slot, `${field}.slot`, factory);
+    out = { slot: p.slot as string } as Predicate;
+  } else {
+    requireNonemptyString(p.local, `${field}.local`, factory);
+    out = { local: p.local as string } as Predicate;
+  }
+  if (p.equals !== undefined) {
+    const e = p.equals;
+    if (typeof e !== "number" && typeof e !== "boolean" && typeof e !== "string") {
+      throw new Error(`${factory}: \`${field}.equals\` must be a number, boolean, or string`);
+    }
+    if (typeof e === "number" && !Number.isFinite(e)) {
+      throw new Error(`${factory}: \`${field}.equals\` number must be finite`);
+    }
+    out.equals = e;
+  }
+  return out;
+}
+
+function validateLocalState(value: unknown, factory: string): StackProps["localState"] | undefined {
+  if (value === undefined) return undefined;
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${factory}: \`localState\` must be an object`);
+  }
+  const localState = value as Record<string, unknown>;
+  requireNonemptyString(localState.scope, "localState.scope", factory);
+  if (localState.cells === null || typeof localState.cells !== "object" || Array.isArray(localState.cells)) {
+    throw new Error(`${factory}: \`localState.cells\` must be an object`);
+  }
+  for (const [name, cell] of Object.entries(localState.cells)) {
+    if (name.length === 0) {
+      throw new Error(`${factory}: \`localState.cells\` keys must be nonempty`);
+    }
+    if (typeof cell === "number") {
+      requireFiniteNumber(cell, `localState.cells.${name}`, factory);
+    } else if (typeof cell !== "boolean" && typeof cell !== "string") {
+      if (!Array.isArray(cell) || cell.length !== 4) {
+        throw new Error(`${factory}: \`localState.cells.${name}\` must be a number, boolean, string, or color tuple`);
+      }
+      for (let i = 0; i < 4; i++) {
+        requireFiniteNumber(cell[i], `localState.cells.${name}[${i}]`, factory);
+      }
+    }
+  }
+  return value as StackProps["localState"];
+}
+
 function validateChildren(children: unknown, factory: string): WidgetDescriptor[] {
   if (!Array.isArray(children)) {
     throw new Error(`${factory}: \`children\` must be an array of widget descriptors`);
@@ -187,6 +299,7 @@ function applyCommonTail(
   props: ContainerCommonProps,
   children: WidgetDescriptor[],
   factory: string,
+  localState?: StackProps["localState"],
 ): void {
   if (props.id !== undefined) {
     requireNonemptyString(props.id, "id", factory);
@@ -203,6 +316,10 @@ function applyCommonTail(
     // Skip-serializes when false (the default) — emit only true.
     if (props.restoreOnReturn) out.restoreOnReturn = true;
   }
+  if (localState !== undefined) out.localState = localState;
+  const visibleWhen = buildPredicate(props.visibleWhen, "visibleWhen", factory);
+  if (visibleWhen !== undefined) out.visibleWhen = visibleWhen;
+  applyRole(out, props.role, factory);
   out.children = children;
 }
 
@@ -243,7 +360,8 @@ function buildStack(
   // fill/border come before the common tail in the Rust struct order.
   if (props.fill !== undefined) out.fill = validateColor(props.fill, "fill", factory);
   if (props.border !== undefined) out.border = validateBorder(props.border, factory);
-  applyCommonTail(out, props, kids, factory);
+  const localState = validateLocalState(props.localState, factory);
+  applyCommonTail(out, props, kids, factory, localState);
   return out;
 }
 

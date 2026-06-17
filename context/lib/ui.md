@@ -28,7 +28,7 @@ Scripts author UI as the same descriptor trees, built by SDK factory functions (
 
 The production HUD is authored through the SDK, returned from `setupMod()`, and retained by Rust after mod init drops. Durable contract points are:
 
-- HUD authors import SDK factories, `bindState`, and `getGameState` from `"postretro"`.
+- HUD authors import UI SDK factories, `bindState`, and `getGameState` from `"postretro/ui"`.
 - A HUD module obtains `const { player } = getGameState()` when constructing its returned UI-tree registration.
 - `bindState(player.health, options)` decorates the readonly ref for display. It does not read HP during authoring.
 - The health bar uses `player.maxHealth` as a direct readonly max reference. There is no `player.healthFraction` slot; UI derives the displayed fill from `player.health / player.maxHealth`.
@@ -41,16 +41,18 @@ Tree anchors and offsets are literal placement data. Theme tokens drive styling 
 
 Theme is three category-scoped maps — colors (linear RGBA), fonts (registered family), spacing (logical px). The category is carried by the referencing field, not a name prefix.
 
-- **Semantic required set — the engine contract.** Colors `critical` / `warning` / `ok` / `panel.default` (a literal flat key, dot and all), fonts `body` / `mono`, spacing `xs` / `s` / `m` / `l`. Built-in screens and `styleRanges` resolve these names; a mod rethemes built-ins by overriding them.
+- **Semantic required set — the engine contract.** Colors `critical` / `warning` / `ok` / `panel.default` / `focus.ring` (`panel.default` and `focus.ring` are literal flat keys, dots and all), fonts `primary` / `mono`, spacing `xs` / `s` / `m` / `l`. Built-in screens, focus rings, and `styleRanges` resolve these names; a mod rethemes built-ins by overriding them.
 - **Open key space — the primitive tier.** Maps accept arbitrary additional keys and widgets may reference them; a mod-defined primitive palette (`cyan.500`) is supported, not just tolerated.
 - **Literal escape hatch.** Every token-capable field is an untagged union: a token name or an inline literal value. One-off treatments need no theme entry.
 - **Override merge** is per-token after the complete mod theme override is chosen: the current override replaces only the names it ships; everything else resolves from the engine default.
-- **Unknown tokens degrade visibly, never panic:** unknown color → opaque magenta, unknown font → `body`, unknown spacing → zero, each with a warning per tree build.
+- **Unknown tokens degrade visibly, never panic:** unknown color → opaque magenta, unknown font → `primary`, unknown spacing → zero, each with a warning per tree build.
 - **Token aliasing** (semantic → primitive references) is deferred; it widens theme entries additively when a consumer justifies it.
 
 Theme registration arrives through returned manifest data. Custom font asset replacement/removal is not hot-reloadable until the font system has an explicit replacement contract. Staged reload may replace the theme token override, but changing custom font declarations, replacing custom font assets, or removing them requires an engine restart.
 
-The TypeScript/Luau SDK ships `defineTheme(theme)` as authoring sugar for custom themes. It returns the same flat `colors` / `fonts` / `spacing` object that `setupMod().theme` already accepts, plus `tokens.color(...)`, `tokens.font(...)`, and `tokens.spacing(...)` helpers. The helpers capture category keys when `defineTheme` runs, return the token string, and warn on unknown or invalid names so UI resolution can degrade visibly instead of aborting mod init. The helper metadata is non-enumerable/non-retained: generic theme iteration and serialization see only the three category maps. In TypeScript, helpers are keyed from the concrete theme object, so editors autocomplete valid dotted token names at widget call sites. `defineTheme` is not a new runtime theme format; descriptors still carry plain strings, and the Rust theme drain still consumes only the three category maps.
+The TypeScript/Luau SDK ships `defineTheme(theme)` as authoring sugar for custom themes. It accepts nested singular `color` / `font` / `spacing` groups and returns the same flat `colors` / `fonts` / `spacing` object that `setupMod().theme` already accepts. `getDesignTokens(theme)` returns nested token leaves for the exact object returned by `defineTheme`; widget factories unwrap those leaves back into the flat token strings the descriptor wire already uses. The helper metadata is non-enumerable/non-retained: generic theme iteration and serialization see only the three category maps. Theme maps and token trees use prototype-safe tables/maps, and keys such as `__proto__`, `prototype`, and `constructor` are invalid authored token keys.
+
+In TypeScript, token leaves are keyed from the concrete theme object, so editors autocomplete valid nested token paths at widget call sites. Leaves are object records with private SDK metadata; a hand-built `{ __postretroToken, token }` record does not unwrap, even through `as any`. Luau cannot express the dependent authored shape; its supported type-checking contract is an open nested tree per category, so wrong-category token use is typed while exact path existence remains runtime-authenticated by `getDesignTokens(theme)`. Luau's exported token record types are structural for the type checker only. Runtime accepts token records only when they come from `getDesignTokens(theme)`, not when hand-built. Missing authored token paths throw at SDK access time in both runtimes. `defineTheme` is not a new runtime theme format; descriptors still carry plain strings, and the Rust theme drain still consumes only the three category maps.
 
 ## 3. Display vs. Authoritative Values
 

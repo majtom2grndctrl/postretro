@@ -3002,7 +3002,7 @@ impl App {
     /// Task 4. Both halves degrade per `ui.md` §5: a missing/unreadable font file
     /// or a non-registering face produces a named load-time diagnostic and is
     /// skipped; the theme merge tolerates unknown tokens (they degrade visibly at
-    /// widget-resolution time — magenta/`body`/zero, warn-once — never here).
+    /// widget-resolution time — magenta/`primary`/zero, warn-once — never here).
     /// Theme commit is snapshot-style: an empty override resets to engine default.
     fn install_mod_ui_theme_and_fonts(
         &mut self,

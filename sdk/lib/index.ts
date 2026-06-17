@@ -1,10 +1,14 @@
-// SDK library entry — re-exports every public symbol the prelude installs as
-// a global. Consumed at build time by `crates/postretro/build.rs` (via
-// `postretro-script-compiler`); also callable via `scripts-build --prelude`.
+// Public root SDK entry for `postretro`.
+//
+// The QuickJS prelude no longer bundles this file directly. It bundles
+// `prelude.ts`, which deliberately re-exports additional UI symbols as
+// implementation-only globals while imports are still stripped without alias
+// rewriting. Keep root public exports here non-UI; a later alias-rewrite plan
+// can remove the extra prelude globals without changing this module surface.
 // See: context/lib/scripting.md §7
 //
-// When adding exports here, also update TS_SDK_LIB_BLOCK and LUAU_SDK_LIB_BLOCK
-// in crates/postretro/src/scripting/typedef.rs.
+// When adding public root exports here, also update TS_SDK_LIB_BLOCK and
+// LUAU_SDK_LIB_BLOCK in crates/postretro/src/scripting/typedef.rs.
 
 export type { EntityForComponent, World } from "./world";
 export { world } from "./world";
@@ -42,101 +46,6 @@ export type {
   StoreSlotSchema,
 } from "./data_script";
 export { defineReaction, defineEntity, defineStore } from "./data_script";
-
-export type { LocalizedText } from "./ui/text";
-
-export type {
-  WidgetColor,
-  WidgetSpacing,
-  WidgetAlign,
-  WidgetEasing,
-  ScalarStateValue,
-  NumericArrayStateValue,
-  ReadonlyStateRef,
-  WritableStateRef,
-  NumberTween,
-  ColorTween,
-  TextBindProp,
-  PanelBindProp,
-  SliderBindProp,
-  BarBindProp,
-  BarMaxProp,
-  LocalBindRef,
-  PredicateValue,
-  Predicate,
-  WidgetRole,
-  AnnouncePriority,
-  StyleRangeEntry,
-  StyleRangesProp,
-  BorderProp,
-  FocusNeighborsProp,
-  RepeatPolicyProp,
-  ReactionHandleRef,
-  WidgetDescriptor,
-  TextProps,
-  PanelProps,
-  ImageProps,
-  SpacerProps,
-  ButtonProps,
-  SliderProps,
-  BarProps,
-  AnnounceProps,
-} from "./ui/widgets";
-export { Text, Panel, Image, Spacer, Button, Slider, Bar, Announce } from "./ui/widgets";
-
-export type {
-  FocusKind,
-  FocusPolicyProp,
-  StackProps,
-  GridProps,
-} from "./ui/layout";
-export { VStack, HStack, Grid } from "./ui/layout";
-
-export type {
-  WidgetAnchor,
-  WidgetCaptureMode,
-  TreeProps,
-  AnchoredTreeDescriptor,
-  UiTreeRegistrationProps,
-  UiTreeRegistration,
-} from "./ui/tree";
-export { Tree, defineUiTree } from "./ui/tree";
-
-export type {
-  LocalStateHandle,
-  LocalStateBundle,
-  StateBindOptionsFor,
-} from "./ui/state";
-export { bindState, stateEquals, createLocalState, ui, Switch } from "./ui/state";
-
-export type {
-  ThemeColorValue,
-  ThemeDefinition,
-  ThemeTokenAccessors,
-  DefinedTheme,
-} from "./ui/theme";
-export { defineTheme } from "./ui/theme";
-
-export type { CrossingCondition, CrossingDescriptor } from "./ui/reactions";
-export {
-  onStateCrossing,
-  playSound,
-  rumble,
-  flashScreen,
-  vignette,
-  screenShake,
-  showDialog,
-  openTextEntry,
-  KEYBOARD_TREE,
-  CLOSE_DIALOG_ACTION,
-  EXIT_TO_DESKTOP_ACTION,
-  openMenu,
-  closeDialog,
-  updateState,
-  appendText,
-  backspaceText,
-  clearText,
-} from "./ui/reactions";
 
 export type {
   BillboardEmitter,

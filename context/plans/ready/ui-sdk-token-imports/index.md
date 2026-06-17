@@ -1,7 +1,7 @@
 # UI SDK Token Imports
 
-> **Status:** draft
-> **Depends on:** `context/plans/drafts/luau-sdk-virtual-modules/`
+> **Status:** ready
+> **Depends on:** `context/plans/ready/luau-sdk-virtual-modules/`
 > **Related:** `context/lib/ui.md` · `context/lib/scripting.md` · `sdk/lib/ui/theme.ts` · `sdk/lib/ui/theme.luau`
 
 ## Goal
@@ -17,10 +17,16 @@ TypeScript and Luau can express that namespace with reasonable parity.
 - Clean breaking SDK refactor.
 - Singular theme groups: `color`, `font`, `spacing`.
 - Nested theme authoring in TypeScript and Luau.
+- Old `colors` / `fonts` input to `defineTheme` is unsupported. Enumerable flat
+  `colors` / `fonts` / `spacing` remain the manifest wire/output shape Rust
+  accepts.
 - `getDesignTokens(theme)` returning nested token groups.
 - Category-branded token leaves so color, font, and spacing tokens cannot be
   mixed at widget call sites.
 - Runtime descriptors and Rust theme resolution still receive flat token names.
+- SDK widget props no longer accept one-off font family literals. Authors define
+  font tokens; runtime descriptors still carry bare string token names after SDK
+  unwrapping.
 - TypeScript UI imports from `postretro/ui`.
 - Luau UI imports via `require("postretro/ui")`.
 - Remove UI symbols from the public root `postretro` runtime module and type
@@ -59,6 +65,9 @@ TypeScript and Luau can express that namespace with reasonable parity.
       serialize as bare strings or literals.
 - [ ] `defineTheme({ color, font, spacing })` flattens nested authoring tokens
       into the existing manifest theme shape consumed by Rust.
+- [ ] `defineTheme({ colors, fonts })` is unsupported, while returned theme
+      objects still expose enumerable flat `colors`, `fonts`, and `spacing`
+      manifest maps.
 - [ ] `getDesignTokens(theme)` returns nested groups matching the authored
       theme shape.
 - [ ] `font.primary`, `color.panel.default`, and `spacing.m` are valid token
@@ -66,6 +75,8 @@ TypeScript and Luau can express that namespace with reasonable parity.
 - [ ] Passing a color token to `font`, a font token to `color`, or a spacing
       token to `color` is a static type error in TypeScript and in the supported
       Luau type-checking path.
+- [ ] One-off font family literals are rejected by SDK widget prop types and
+      Luau validation; font props accept font tokens only.
 - [ ] Unknown token degradation in Rust keeps the same visible behavior: unknown
       color becomes magenta, unknown font falls back to the primary font, unknown
       spacing becomes zero, each warning once per tree build. The fallback font
@@ -83,19 +94,24 @@ prelude installation surface. The prelude may keep exporting UI names solely to
 install globals; `sdk/types/postretro.d.ts` should decide what the public
 `postretro` module exposes. Keep this split explicit in comments so a later
 compiler alias-rewrite plan can remove the extra globals safely. In Luau, remove
-UI globals from the author-visible surface in this plan; `postretro/ui` owns
-them.
+UI globals from the author-visible surface in this plan. The Luau implementation
+uses the internal export inventory produced by the virtual-module plan as the
+source for `postretro/ui`, and stops promoting UI entries into author-visible
+globals.
 
 ### Task 2: Add `postretro/ui` module declarations
 
 Generate a TypeScript `declare module "postretro/ui"` block containing the UI
 SDK surface. Extend Luau declarations from the virtual-module plan so
 `require("postretro/ui")` returns the UI module table. The module includes widget
-factories, layout factories, `Tree`, `defineUiTree`, UI state helpers, UI
-reactions, `getGameState`, `defineTheme`, and `getDesignTokens`. Update
-TypeScript path mappings in `content/dev/scripts/tsconfig.json`,
-`sdk/templates/tsconfig.json`, and relevant type-resolution docs so
-`postretro/ui` resolves beside `postretro`.
+factories, layout factories, `Tree`, `defineUiTree`, UI state helpers including
+`createLocalState` and `ui`, UI reactions, `getGameState`, `defineTheme`, and
+`getDesignTokens`. For Luau, bind the module surface to the internal export
+inventory, not author-visible globals.
+Update TypeScript path mappings in `content/dev/scripts/tsconfig.json`. Give
+`sdk/templates/tsconfig.json` equivalent resolution for `postretro/ui` only if
+ambient declarations are not enough for template consumers. Update relevant
+type-resolution docs so `postretro/ui` resolves beside `postretro`.
 
 ### Task 3: Replace theme authoring helpers
 
@@ -134,14 +150,15 @@ path. Luau token leaves are read-only branded records:
 `{ __postretroToken = "color" | "font" | "spacing", token = "panel.default" }`.
 Widget and layout factories unwrap SDK token leaves into plain strings before
 returning descriptors. Literal colors and spacing numbers remain valid escape
-hatches. Raw string tokens are rejected by SDK types and by Luau factory
+hatches. Font props accept font tokens only; one-off font family literals are not
+supported. Raw string tokens are rejected by SDK types and by Luau factory
 validation; direct string-token widget props are not supported.
 
 Update every current token-capable prop: text font/color; panel fill/border
 tint; stack gap/padding/fill/border.tint; grid gap/padding only; and
 `StyleRangeEntry.color` everywhere it appears, including
-`ButtonProps.styleRanges.entries[].color`. Update any current UI reaction or
-helper that accepts one of those token-capable UI values.
+`ButtonProps.styleRanges.entries[].color`; bar fill/background. Update any
+current UI reaction or helper that accepts one of those token-capable UI values.
 
 ### Task 5: Update engine default token names
 
@@ -154,10 +171,14 @@ except that dotted semantic names are now authored through nested groups.
 ### Task 6: Migrate content and tests
 
 Update shipped dev scripts and SDK fixtures to import UI APIs from
-`postretro/ui`, use `getDesignTokens`, and stop passing raw token strings. Add
-type-oriented fixtures for wrong-category token usage. Add script-compiler tests
+`postretro/ui`, use `getDesignTokens`, and stop passing raw token strings or
+font family literals. Add type-oriented fixtures for wrong-category token usage,
+font literal rejection, and bar fill/background tokens. Add script-compiler tests
 that prove `postretro/ui` bare imports are stripped like `postretro` imports and
-that aliased, default, and namespace bare SDK imports fail loudly.
+that aliased, default, and namespace bare SDK imports fail loudly. Run this
+diagnostic as an AST validation pass before `StripExternalImports`; scope it to
+bare SDK specifiers `"postretro"` and `"postretro/ui"`. Reject default imports,
+namespace imports, and aliased named imports before they are erased.
 
 ## Sequencing
 

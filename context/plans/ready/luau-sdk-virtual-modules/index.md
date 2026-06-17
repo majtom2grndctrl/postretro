@@ -1,6 +1,6 @@
 # Luau SDK Virtual Modules
 
-> **Status:** draft
+> **Status:** ready
 > **Related:** `context/lib/scripting.md` · `crates/postretro/src/scripting/luau.rs` · `sdk/types/postretro.d.luau`
 
 ## Goal
@@ -20,6 +20,8 @@ later UI import cleanup.
   require resolver. Long-lived definition state still has no `require`.
 - Virtual SDK modules are VM-local read-only singletons. Repeated requires return
   the same table; nested namespace tables are read-only too.
+- Module tables snapshot evaluated SDK return-table values from an internal
+  export inventory. Freezing module tables does not freeze or mutate bare globals.
 - Preserve current bare-global SDK behavior during this plan.
 - Resolve virtual modules before mod-root files. Mods cannot shadow them.
 - Exclude virtual modules from staged hot-reload dependency paths.
@@ -71,23 +73,26 @@ Introduce one per-VM registry owned by the Luau state construction path. The
 require resolver captures it. Prelude evaluation populates it before
 `sandbox(true)`. A virtual require performs an exact string lookup first and
 returns the registered read-only module singleton. The registry owns each module
-table and any nested namespace tables; callers cannot mutate module exports,
-globals, the registry, or a later require result.
+table and any nested namespace tables; callers cannot mutate module exports, the
+registry, or a later require result. Freezing module-owned tables must not freeze
+or mutate the current bare globals.
 
 ### Task 3: Populate `postretro` and `postretro/ui`
 
-Build the initial module tables from the same evaluated SDK values installed as
-globals today. `postretro` mirrors the current flat SDK surface for opt-in
-module use. `postretro/ui` contains UI factories, layout helpers, UI tree
-helpers, UI state helpers, UI reactions, `getGameState`, and theme helpers.
-Later plans may add `getDesignTokens` and remove UI from the root table.
+Build the initial module tables from evaluated SDK return tables recorded in an
+internal export inventory, not from author-visible globals. In this plan,
+`postretro` mirrors the current flat SDK surface for opt-in module use.
+`postretro/ui` contains UI factories, layout helpers, UI tree helpers, UI state
+helpers, UI reactions, `getGameState`, and theme helpers. Nested namespace
+tables copied into module tables are separately read-only. Later plans may add
+`getDesignTokens` and remove UI from the root table.
 
 Initial runtime export inventory:
 
 | Module | Exports |
 |---|---|
 | `postretro` | `world`, `runtime`, `getGameState`, `timeline`, `sequence`, `defineReaction`, `defineEntity`, `defineStore`, `emitter`, `smokeEmitter`, `sparkEmitter`, `dustEmitter`, plus every `postretro/ui` export below |
-| `postretro/ui` | `Text`, `Panel`, `Image`, `Spacer`, `Button`, `Slider`, `Bar`, `Announce`, `VStack`, `HStack`, `Grid`, `Tree`, `defineUiTree`, `bindState`, `stateEquals`, `ui`, `Switch`, `defineTheme`, `onStateCrossing`, `playSound`, `rumble`, `flashScreen`, `vignette`, `screenShake`, `showDialog`, `openMenu`, `closeDialog`, `openTextEntry`, `KEYBOARD_TREE`, `CLOSE_DIALOG_ACTION`, `EXIT_TO_DESKTOP_ACTION`, `updateState`, `appendText`, `backspaceText`, `clearText` |
+| `postretro/ui` | `Text`, `Panel`, `Image`, `Spacer`, `Button`, `Slider`, `Bar`, `Announce`, `VStack`, `HStack`, `Grid`, `Tree`, `defineUiTree`, `bindState`, `stateEquals`, `createLocalState`, `ui`, `Switch`, `defineTheme`, `onStateCrossing`, `playSound`, `rumble`, `flashScreen`, `vignette`, `screenShake`, `showDialog`, `openMenu`, `closeDialog`, `openTextEntry`, `KEYBOARD_TREE`, `CLOSE_DIALOG_ACTION`, `EXIT_TO_DESKTOP_ACTION`, `updateState`, `appendText`, `backspaceText`, `clearText` |
 
 Type-only declarations may name more helper types. Runtime module tables contain
 values only.

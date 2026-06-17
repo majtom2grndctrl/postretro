@@ -16,6 +16,10 @@ later UI import cleanup.
 
 - Exact-match virtual Luau modules resolved by `require(...)`.
 - Initial modules: `postretro` and `postretro/ui`.
+- Virtual SDK modules are available only in Luau contexts that install the
+  require resolver. Long-lived definition state still has no `require`.
+- Virtual SDK modules are VM-local read-only singletons. Repeated requires return
+  the same table; nested namespace tables are read-only too.
 - Preserve current bare-global SDK behavior during this plan.
 - Resolve virtual modules before mod-root files. Mods cannot shadow them.
 - Exclude virtual modules from staged hot-reload dependency paths.
@@ -33,8 +37,12 @@ later UI import cleanup.
 
 ## Acceptance criteria
 
-- [ ] `require("postretro")` returns a table with the current root SDK surface.
-- [ ] `require("postretro/ui")` returns a table with the current UI SDK surface.
+- [ ] `require("postretro")` returns the initial root export inventory listed in
+      Task 3.
+- [ ] `require("postretro/ui")` returns the initial UI export inventory listed in
+      Task 3.
+- [ ] Repeated `require("postretro/ui")` calls in one VM return the same
+      read-only table. Writes to the module table or nested namespace tables fail.
 - [ ] `require("postretro/ui")` works in mod-init and data-script Luau contexts.
 - [ ] `require("postretro/ui")` does not attempt to read
       `<mod_root>/postretro/ui.luau`.
@@ -52,17 +60,19 @@ later UI import cleanup.
 Behavior-preserving split before extension. Move SDK source constants, field
 lists, and `evaluate_prelude` out of the oversized Luau subsystem file. Move
 `LuauRequireTracker`, `install_require_resolver`, `resolve_require_path`, and
-dependency canonicalization into a require-focused sibling module. Keep
+`canonical_require_dependency` into a require-focused sibling module. Keep
 `build_lua_state` and `build_lua_state_with_require_tracking` as the construction
-entry points. Update tests only for module paths, not behavior.
+entry points, and keep virtual modules scoped to construction paths that install
+the require resolver. Update tests only for module paths, not behavior.
 
 ### Task 2: Add a virtual-module registry
 
 Introduce one per-VM registry owned by the Luau state construction path. The
 require resolver captures it. Prelude evaluation populates it before
 `sandbox(true)`. A virtual require performs an exact string lookup first and
-returns a fresh shallow table of the registered exports. Mutating that returned
-table must not mutate globals, the registry, or a later virtual require.
+returns the registered read-only module singleton. The registry owns each module
+table and any nested namespace tables; callers cannot mutate module exports,
+globals, the registry, or a later require result.
 
 ### Task 3: Populate `postretro` and `postretro/ui`
 
@@ -71,6 +81,16 @@ globals today. `postretro` mirrors the current flat SDK surface for opt-in
 module use. `postretro/ui` contains UI factories, layout helpers, UI tree
 helpers, UI state helpers, UI reactions, `getGameState`, and theme helpers.
 Later plans may add `getDesignTokens` and remove UI from the root table.
+
+Initial runtime export inventory:
+
+| Module | Exports |
+|---|---|
+| `postretro` | `world`, `runtime`, `getGameState`, `timeline`, `sequence`, `defineReaction`, `defineEntity`, `defineStore`, `emitter`, `smokeEmitter`, `sparkEmitter`, `dustEmitter`, plus every `postretro/ui` export below |
+| `postretro/ui` | `Text`, `Panel`, `Image`, `Spacer`, `Button`, `Slider`, `Bar`, `Announce`, `VStack`, `HStack`, `Grid`, `Tree`, `defineUiTree`, `bindState`, `stateEquals`, `ui`, `Switch`, `defineTheme`, `onStateCrossing`, `playSound`, `rumble`, `flashScreen`, `vignette`, `screenShake`, `showDialog`, `openMenu`, `closeDialog`, `openTextEntry`, `KEYBOARD_TREE`, `CLOSE_DIALOG_ACTION`, `EXIT_TO_DESKTOP_ACTION`, `updateState`, `appendText`, `backspaceText`, `clearText` |
+
+Type-only declarations may name more helper types. Runtime module tables contain
+values only.
 
 ### Task 4: Generate Luau module types
 
@@ -118,8 +138,8 @@ split SDK-lib typedef text into a focused helper module in the same change.
 
 | Name | Rust | Wire / serde | JS / TS | Luau | FGD KVP |
 |---|---|---|---|---|---|
-| Root SDK module | virtual require registry entry | n/a | n/a | `require("postretro")` | n/a |
-| UI SDK module | virtual require registry entry | n/a | n/a | `require("postretro/ui")` | n/a |
+| Root SDK module | read-only virtual require registry singleton | n/a | n/a | `require("postretro")` | n/a |
+| UI SDK module | read-only virtual require registry singleton | n/a | n/a | `require("postretro/ui")` | n/a |
 | Mod-root require | `resolve_require_path` file path | n/a | n/a | `require("./path")` / `require("path")` | n/a |
 | Dependency tracking | `LuauRequireTracker` paths | n/a | n/a | file-backed require only | n/a |
 

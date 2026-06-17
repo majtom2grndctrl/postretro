@@ -215,6 +215,12 @@ export const KEYBOARD_TREE = "keyboard";
 export const CLOSE_DIALOG_ACTION = "ui.closeDialog";
 
 /**
+ * Reserved button `onPress` action that requests a clean app shutdown. The App
+ * intercepts this exact wire value before named-reaction dispatch.
+ */
+export const EXIT_TO_DESKTOP_ACTION = "ui.exitToDesktop";
+
+/**
  * Open the engine-shipped on-screen keyboard for text entry (M13 Text Entry).
  * Pure — returns a primitive reaction body wrapping `showDialog`. The keyboard is
  * a capturing modal that edits the `ui.textEntry` slot; bind a `text` widget to

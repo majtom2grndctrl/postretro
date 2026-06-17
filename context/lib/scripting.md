@@ -275,7 +275,9 @@ Button `onPress` values split into two paths. Ordinary names dispatch through
 the named-reaction registry. Reserved `ui.*` values are closed engine actions
 intercepted before named-reaction dispatch; they are not reactions a mod
 registers. `CLOSE_DIALOG_ACTION` exports the exact wire value
-`"ui.closeDialog"` for the "close the active modal" button pattern.
+`"ui.closeDialog"` for the "close the active modal" button pattern, and
+`EXIT_TO_DESKTOP_ACTION` exports `"ui.exitToDesktop"` for UI-initiated clean
+shutdown.
 
 ### 10.5 Damage
 

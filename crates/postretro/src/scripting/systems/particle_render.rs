@@ -59,7 +59,6 @@ impl ParticleRenderCollector {
 
     /// Drop all per-level state (resolution map, default, warning record).
     /// Buffers are retained so capacity carries across reloads.
-    #[allow(dead_code)]
     pub(crate) fn reset_for_level(&mut self) {
         self.sprite_to_collection.clear();
         self.default_collection = None;

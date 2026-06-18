@@ -46,6 +46,11 @@ impl PresentationCellStore {
         self.cells.insert((scope, cell), value);
     }
 
+    pub(crate) fn clear(&mut self) {
+        self.cells.clear();
+        self.seeded.clear();
+    }
+
     /// Seed a scope's declared cells from `local_state` the FIRST time the scope is
     /// composed. Idempotent per scope id (tracked in `seeded`): a second compose of
     /// the same scope is a no-op, so a `.set()` value is never clobbered by a
@@ -320,6 +325,25 @@ mod tests {
                 .snapshot()
                 .get(&("counter".to_string(), "count".to_string())),
             Some(&SlotValue::Number(5.0)),
+        );
+    }
+
+    #[test]
+    fn clear_drops_cells_and_seed_marks_for_level_unload() {
+        let mut store = PresentationCellStore::new();
+        let tree = scoped_tree("counter", &[("count", CellInit::Number(0.0))]);
+        store.reconcile(&[&tree]);
+        store.write("counter".into(), "count".into(), SlotValue::Number(8.0));
+
+        store.clear();
+
+        assert!(store.snapshot().is_empty());
+        store.reconcile(&[&tree]);
+        assert_eq!(
+            store
+                .snapshot()
+                .get(&("counter".to_string(), "count".to_string())),
+            Some(&SlotValue::Number(0.0)),
         );
     }
 }

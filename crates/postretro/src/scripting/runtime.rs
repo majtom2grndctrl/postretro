@@ -51,8 +51,7 @@ pub(crate) struct ModManifestResult {
     /// UI trees registered via `setupMod()`'s `uiTrees` field (each a name +
     /// `AnchoredTree` + `alwaysOn`). Empty when absent. A malformed entry is
     /// logged and skipped at parse time (`ui.md` §1.1). Drained into the app-side
-    /// `UiTreeRegistry` at `ScopeTier::Mod` by the boot and level-load callers
-    /// in `main.rs`.
+    /// `UiTreeRegistry` at `ScopeTier::Mod` by the boot caller in `main.rs`.
     pub(crate) ui_trees: Vec<RegisteredUiTree>,
     /// Theme tokens from `setupMod()`'s `theme` field. Default (empty) when
     /// absent. Drained into the `ThemeDescriptor` merge by the boot caller.

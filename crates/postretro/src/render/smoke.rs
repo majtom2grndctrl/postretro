@@ -583,6 +583,12 @@ impl SmokePass {
         );
     }
 
+    /// Drop per-level sprite sheet textures and bind groups. The shared
+    /// instance buffer is renderer-lifetime scratch and stays allocated.
+    pub fn clear_collections(&mut self) {
+        self.sheets.clear();
+    }
+
     /// Whether any collection is registered. Used by the renderer to skip the
     /// pass entirely on levels with no emitters.
     pub fn has_any_sheet(&self) -> bool {

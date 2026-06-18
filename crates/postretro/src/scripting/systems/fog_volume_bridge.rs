@@ -457,6 +457,16 @@ impl FogVolumeBridge {
     pub(crate) fn active_aabbs(&self) -> &[(Vec3, Vec3)] {
         &self.active_aabbs
     }
+
+    #[cfg(test)]
+    pub(crate) fn entity_count(&self) -> usize {
+        self.entity_ids.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cached_aabb_count(&self) -> usize {
+        self.aabbs.len()
+    }
 }
 
 impl Default for FogVolumeBridge {

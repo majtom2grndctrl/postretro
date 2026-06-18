@@ -681,6 +681,27 @@ impl EntityRegistry {
         }
     }
 
+    /// Despawn every live entity while preserving slot-generation semantics.
+    /// Level unload uses this instead of replacing the registry wholesale so
+    /// stale `EntityId`s from the old level cannot become valid in a later load.
+    pub(crate) fn clear_for_level_unload(&mut self) {
+        let live_ids: Vec<EntityId> = self
+            .slots
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, slot)| {
+                if slot.live && !slot.retired {
+                    Some(EntityId::new(idx as u16, slot.generation))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for id in live_ids {
+            let _ = self.despawn(id);
+        }
+    }
+
     fn validate(&self, id: EntityId) -> Result<usize, RegistryError> {
         let index = id.index() as usize;
         let slot = self

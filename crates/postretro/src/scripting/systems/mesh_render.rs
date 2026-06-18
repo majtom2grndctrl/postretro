@@ -123,6 +123,13 @@ impl MeshRenderCollector {
         }
     }
 
+    pub(crate) fn clear(&mut self) {
+        self.instances.clear();
+        self.last_state.clear();
+        self.last_state_scratch.clear();
+        self.resample_count = 0;
+    }
+
     /// Walk `ComponentKind::Mesh` entities, cull each against the frame's
     /// visible set, and emit the survivors' draw inputs (handle, interpolated
     /// transform, resolved sample params, optional capture instruction).

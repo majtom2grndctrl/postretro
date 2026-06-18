@@ -67,6 +67,25 @@ use smoke::SmokePass;
 
 use crate::fx::smoke::SpriteFrame;
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ClearColor {
+    pub r: f64,
+    pub g: f64,
+    pub b: f64,
+    pub a: f64,
+}
+
+impl From<ClearColor> for wgpu::Color {
+    fn from(color: ClearColor) -> Self {
+        Self {
+            r: color.r,
+            g: color.g,
+            b: color.b,
+            a: color.a,
+        }
+    }
+}
+
 /// Derives the per-frame active fog-volume bitmask from the wider
 /// fog-reachable leaf set produced by portal traversal.
 ///
@@ -2861,8 +2880,56 @@ impl Renderer {
         );
     }
 
+    /// Release all level-owned GPU resources while keeping the device, queue,
+    /// surface, UI, and window-facing state alive for the no-level Frontend.
+    pub fn release_level_resources(&mut self) {
+        let empty_keys = TextureCacheKeysSection::default();
+        let empty_texture_names: Vec<String> = Vec::new();
+        let empty_materials: Vec<Material> = Vec::new();
+        self.install_textures(
+            &empty_texture_names,
+            &empty_keys,
+            Path::new(""),
+            &empty_materials,
+        );
+
+        let empty_bvh = BvhTree {
+            nodes: Vec::new(),
+            leaves: Vec::new(),
+            root_node_index: 0,
+        };
+        let empty_geometry = LevelGeometry {
+            vertices: &[],
+            indices: &[],
+            bvh: &empty_bvh,
+            lights: &[],
+            light_influences: &[],
+            sh_volume: None,
+            lightmap: None,
+            chunk_light_list: None,
+            animated_light_chunks: None,
+            animated_light_weight_maps: None,
+            delta_sh_volumes: None,
+            direct_sh_volume: None,
+            sdf_atlas: None,
+            lightmap_mode: crate::prl::LightmapMode::default(),
+            texture_materials: &empty_materials,
+        };
+        self.install_level_geometry(&empty_geometry);
+
+        self.smoke_pass.clear_collections();
+        self.mesh_pass.release_level_resources();
+        self.mesh_draws.clear();
+        self.bone_palette_scratch.clear();
+        self.fog_cell_masks = None;
+        self.active_fog_aabbs.clear();
+        self.upload_fog_volumes(&[], &[], 0);
+        self.upload_fog_points(&[]);
+        self.set_fog_pixel_scale(0);
+    }
+
     /// Replaces dummy buffers with real geometry; rebuilds lighting, SH, lightmap, and cull pipeline.
-    /// See: context/lib/boot_sequence.md §8
+    /// See: context/lib/boot_sequence.md §3 (Level Install Order)
     pub fn install_level_geometry(&mut self, geometry: &LevelGeometry<'_>) {
         let has_geometry = !geometry.vertices.is_empty() && !geometry.indices.is_empty();
 
@@ -3191,7 +3258,7 @@ impl Renderer {
     /// its length fall back to `Material::Default`. Caller drives the order:
     /// `install_textures` runs before `install_level_geometry` because the
     /// uploaded diffuse dimensions feed `normalize_world_uvs`.
-    /// See: context/lib/boot_sequence.md §8 · context/lib/build_pipeline.md
+    /// See: context/lib/boot_sequence.md §3 (Level Install Order) · context/lib/build_pipeline.md
     pub fn install_textures(
         &mut self,
         texture_names: &[String],
@@ -4750,6 +4817,8 @@ impl Renderer {
         view_proj: Mat4,
         particle_collections: &[(&str, &[u8])],
         now_seconds: f64,
+        clear_color: ClearColor,
+        render_world: bool,
     ) -> Result<Option<wgpu::SurfaceTexture>> {
         self.debug_frame = self.debug_frame.wrapping_add(1);
         let output = match self.surface.get_current_texture() {
@@ -4784,67 +4853,69 @@ impl Renderer {
             });
 
         // Same submission as render passes — no readback or GPU sync between cull and draw.
-        if let Some(cull) = &mut self.compute_cull {
-            let cull_ts = self
-                .frame_timing
-                .as_ref()
-                .map(|t| t.compute_pass_writes(TIMING_PAIR_CULL));
-            cull.dispatch(
-                &self.device,
-                &self.queue,
-                &mut encoder,
-                visible,
-                &view_proj,
-                cull_ts,
-            );
+        if render_world {
+            if let Some(cull) = &mut self.compute_cull {
+                let cull_ts = self
+                    .frame_timing
+                    .as_ref()
+                    .map(|t| t.compute_pass_writes(TIMING_PAIR_CULL));
+                cull.dispatch(
+                    &self.device,
+                    &self.queue,
+                    &mut encoder,
+                    visible,
+                    &view_proj,
+                    cull_ts,
+                );
 
-            if log::log_enabled!(log::Level::Debug) {
-                let f = self.debug_frame;
+                if log::log_enabled!(log::Level::Debug) {
+                    let f = self.debug_frame;
 
-                let bm = cull.debug_bitmask_fingerprint();
-                if bm != self.debug_prev_bitmask {
-                    log::debug!(
-                        "[cull f={f}] visible-cell bitmask changed: pop={} hash={:#010x} (was pop={} hash={:#010x})",
-                        bm.0,
-                        bm.1,
-                        self.debug_prev_bitmask.0,
-                        self.debug_prev_bitmask.1,
-                    );
-                    self.debug_prev_bitmask = bm;
-                }
+                    let bm = cull.debug_bitmask_fingerprint();
+                    if bm != self.debug_prev_bitmask {
+                        log::debug!(
+                            "[cull f={f}] visible-cell bitmask changed: pop={} hash={:#010x} (was pop={} hash={:#010x})",
+                            bm.0,
+                            bm.1,
+                            self.debug_prev_bitmask.0,
+                            self.debug_prev_bitmask.1,
+                        );
+                        self.debug_prev_bitmask = bm;
+                    }
 
-                let mut vp_hash = 0u32;
-                for i in 0..4 {
-                    let col = view_proj.col(i);
-                    vp_hash ^= col.x.to_bits();
-                    vp_hash ^= col.y.to_bits().rotate_left(7);
-                    vp_hash ^= col.z.to_bits().rotate_left(13);
-                    vp_hash ^= col.w.to_bits().rotate_left(19);
-                }
-                if vp_hash != self.debug_prev_vp_hash {
-                    log::debug!("[cull f={f}] view_proj changed: hash={:#010x}", vp_hash);
-                    self.debug_prev_vp_hash = vp_hash;
-                }
+                    let mut vp_hash = 0u32;
+                    for i in 0..4 {
+                        let col = view_proj.col(i);
+                        vp_hash ^= col.x.to_bits();
+                        vp_hash ^= col.y.to_bits().rotate_left(7);
+                        vp_hash ^= col.z.to_bits().rotate_left(13);
+                        vp_hash ^= col.w.to_bits().rotate_left(19);
+                    }
+                    if vp_hash != self.debug_prev_vp_hash {
+                        log::debug!("[cull f={f}] view_proj changed: hash={:#010x}", vp_hash);
+                        self.debug_prev_vp_hash = vp_hash;
+                    }
 
-                let cur_vis = match visible {
-                    VisibleCells::Culled(cells) => ("Culled", cells.len()),
-                    VisibleCells::DrawAll => ("DrawAll", 0),
-                };
-                if cur_vis != self.debug_prev_visible {
-                    log::debug!(
-                        "[cull f={f}] VisibleCells changed: {}(n={}) (was {}(n={}))",
-                        cur_vis.0,
-                        cur_vis.1,
-                        self.debug_prev_visible.0,
-                        self.debug_prev_visible.1,
-                    );
-                    self.debug_prev_visible = cur_vis;
+                    let cur_vis = match visible {
+                        VisibleCells::Culled(cells) => ("Culled", cells.len()),
+                        VisibleCells::DrawAll => ("DrawAll", 0),
+                    };
+                    if cur_vis != self.debug_prev_visible {
+                        log::debug!(
+                            "[cull f={f}] VisibleCells changed: {}(n={}) (was {}(n={}))",
+                            cur_vis.0,
+                            cur_vis.1,
+                            self.debug_prev_visible.0,
+                            self.debug_prev_visible.1,
+                        );
+                        self.debug_prev_visible = cur_vis;
+                    }
                 }
             }
         }
 
         // Before depth pre-pass: storage→sampled barrier must resolve before forward sampling.
-        if self.animated_lightmap.is_active() {
+        if render_world && self.animated_lightmap.is_active() {
             let animated_ts = self
                 .frame_timing
                 .as_ref()
@@ -4859,12 +4930,14 @@ impl Renderer {
         }
 
         // Before depth pre-pass: storage-write → sampled-read barrier for SH.
-        let sh_compose_ts = self
-            .frame_timing
-            .as_ref()
-            .map(|t| t.compute_pass_writes(TIMING_PAIR_SH_COMPOSE));
-        self.sh_compose
-            .dispatch(&mut encoder, &self.uniform_bind_group, sh_compose_ts);
+        if render_world {
+            let sh_compose_ts = self
+                .frame_timing
+                .as_ref()
+                .map(|t| t.compute_pass_writes(TIMING_PAIR_SH_COMPOSE));
+            self.sh_compose
+                .dispatch(&mut encoder, &self.uniform_bind_group, sh_compose_ts);
+        }
 
         // The readback copy is deliberately not encoded here. A
         // `copy_texture_to_buffer` in the same command buffer as the compose
@@ -4873,14 +4946,16 @@ impl Renderer {
         // blocking `poll(Wait)` below, once the compose submit has retired.
 
         // mem::take avoids a simultaneous borrow of self; returned after call to reuse the allocation.
-        let eff_brightness = std::mem::take(&mut self.light_effective_brightness);
-        self.update_dynamic_light_slots(
-            self.last_camera_position,
-            crate::lighting::spot_shadow::SHADOW_NEAR_CLIP,
-            &eff_brightness,
-            light_reachable_leaf_mask,
-        );
-        self.light_effective_brightness = eff_brightness;
+        if render_world {
+            let eff_brightness = std::mem::take(&mut self.light_effective_brightness);
+            self.update_dynamic_light_slots(
+                self.last_camera_position,
+                crate::lighting::spot_shadow::SHADOW_NEAR_CLIP,
+                &eff_brightness,
+                light_reachable_leaf_mask,
+            );
+            self.light_effective_brightness = eff_brightness;
+        }
 
         // --- Skinned-mesh pose/upload HOIST ----------------------------------
         // Plan + sample + upload the skinned-mesh palette/instance buffers HERE —
@@ -4891,7 +4966,7 @@ impl Renderer {
         // an entity and its shadow are sampled at the identical pose (no one-frame
         // lag). The plan is held in `mesh_frame_plan` and consumed by both passes.
         let mesh_frame_plan: Option<mesh_instances::MeshFramePlan> =
-            if self.mesh_pass.has_model() && !self.mesh_draws.is_empty() {
+            if render_world && self.mesh_pass.has_model() && !self.mesh_draws.is_empty() {
                 // Plan: group instances by model, assign each a contiguous palette
                 // run, drop any overflow past the fixed budget. GPU-free.
                 let plan = mesh_instances::plan_mesh_frame(&self.mesh_draws, &self.mesh_pass);
@@ -4924,7 +4999,7 @@ impl Renderer {
                 None
             };
 
-        if self.has_geometry && self.index_count > 0 {
+        if render_world && self.has_geometry && self.index_count > 0 {
             let stride = self.shadow_vs_stride;
             let slot_assignment = self.spot_shadow_pool.slot_assignment.clone();
             let mut used_slots: Vec<u32> = slot_assignment
@@ -5048,56 +5123,61 @@ impl Renderer {
         // the occluder draw is the only mesh-plan-gated step, mirroring the spot
         // path's "every occupied slot gets a Clear(1.0) baseline" invariant.
         self.cube_entity_occluders_submitted = 0;
-        if let Some(pool) = &self.cube_shadow_pool {
-            let stride = self.shadow_vs_stride;
-            for layer in 0..pool.face_matrices.len() {
-                let face_matrix_opt = pool.face_matrices[layer];
-                // Only occupied faces are touched; an occupied face ALWAYS gets
-                // its Clear(1.0) far-plane baseline this frame, mesh plan or not
-                // (the occluder draw below is the only mesh-plan-gated step). See
-                // `cube_shadow::cube_face_needs_clear` for why the clear must not
-                // be gated on the plan.
-                if !crate::lighting::cube_shadow::cube_face_needs_clear(face_matrix_opt.is_some()) {
-                    continue;
-                }
-                let face_matrix = face_matrix_opt.expect("face_needs_clear implies occupied");
-                let view = &pool.face_views[layer];
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("Cube Shadow Depth Pass"),
-                    color_attachments: &[],
-                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                        view,
-                        depth_ops: Some(wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(1.0),
-                            store: wgpu::StoreOp::Store,
+        if render_world {
+            if let Some(pool) = &self.cube_shadow_pool {
+                let stride = self.shadow_vs_stride;
+                for layer in 0..pool.face_matrices.len() {
+                    let face_matrix_opt = pool.face_matrices[layer];
+                    // Only occupied faces are touched; an occupied face ALWAYS gets
+                    // its Clear(1.0) far-plane baseline this frame, mesh plan or not
+                    // (the occluder draw below is the only mesh-plan-gated step). See
+                    // `cube_shadow::cube_face_needs_clear` for why the clear must not
+                    // be gated on the plan.
+                    if !crate::lighting::cube_shadow::cube_face_needs_clear(
+                        face_matrix_opt.is_some(),
+                    ) {
+                        continue;
+                    }
+                    let face_matrix = face_matrix_opt.expect("face_needs_clear implies occupied");
+                    let view = &pool.face_views[layer];
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("Cube Shadow Depth Pass"),
+                        color_attachments: &[],
+                        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                            view,
+                            depth_ops: Some(wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(1.0),
+                                store: wgpu::StoreOp::Store,
+                            }),
+                            stencil_ops: None,
                         }),
-                        stencil_ops: None,
-                    }),
-                    timestamp_writes: None,
-                    ..Default::default()
-                });
-                // Occluders are entity-only: submit skinned meshes ONLY when a
-                // mesh frame plan exists. With no plan the face still receives its
-                // Clear(1.0) far-plane baseline above, so an occluder-free eligible
-                // cube reads as fully lit (shadow factor 1.0) — matching the spot
-                // path and the off-camera (no-slot) path.
-                if let Some(plan) = &mesh_frame_plan {
-                    // Face frustum planes from the same matrix uploaded to the cube
-                    // VS uniform buffer — one source of truth for cull + projection.
-                    let face_planes =
-                        crate::lighting::cone_frustum::cone_frustum_planes(&face_matrix);
-                    self.cube_entity_occluders_submitted += self.mesh_pass.record_skinned_depth(
-                        &mut pass,
-                        plan,
-                        &self.cube_shadow_vs_bind_group,
-                        layer as u32 * stride,
-                        &face_planes,
-                    );
+                        timestamp_writes: None,
+                        ..Default::default()
+                    });
+                    // Occluders are entity-only: submit skinned meshes ONLY when a
+                    // mesh frame plan exists. With no plan the face still receives its
+                    // Clear(1.0) far-plane baseline above, so an occluder-free eligible
+                    // cube reads as fully lit (shadow factor 1.0) — matching the spot
+                    // path and the off-camera (no-slot) path.
+                    if let Some(plan) = &mesh_frame_plan {
+                        // Face frustum planes from the same matrix uploaded to the cube
+                        // VS uniform buffer — one source of truth for cull + projection.
+                        let face_planes =
+                            crate::lighting::cone_frustum::cone_frustum_planes(&face_matrix);
+                        self.cube_entity_occluders_submitted +=
+                            self.mesh_pass.record_skinned_depth(
+                                &mut pass,
+                                plan,
+                                &self.cube_shadow_vs_bind_group,
+                                layer as u32 * stride,
+                                &face_planes,
+                            );
+                    }
                 }
             }
         }
 
-        {
+        if render_world {
             let depth_ts = self
                 .frame_timing
                 .as_ref()
@@ -5137,7 +5217,7 @@ impl Renderer {
         // atlas is loaded; Task 6 will also gate on the mode selector. When
         // skipped, the half-res target retains its prior contents — Task 5's
         // forward multiply is responsible for gating on the same mode.
-        if self.sdf_atlas_resources.present {
+        if render_world && self.sdf_atlas_resources.present {
             let sdf_ts = self
                 .frame_timing
                 .as_ref()
@@ -5187,12 +5267,7 @@ impl Renderer {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.05,
-                            g: 0.05,
-                            b: 0.08,
-                            a: 1.0,
-                        }),
+                        load: wgpu::LoadOp::Clear(clear_color.into()),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -5214,7 +5289,7 @@ impl Renderer {
                 ..Default::default()
             });
 
-            if self.has_geometry && self.index_count > 0 {
+            if render_world && self.has_geometry && self.index_count > 0 {
                 render_pass.set_pipeline(&self.pipeline);
                 render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
                 render_pass.set_bind_group(2, &self.lighting_bind_group, &[]);
@@ -5252,57 +5327,59 @@ impl Renderer {
         // re-upload here — `record_draws` only records draws against the buffers
         // the hoist populated, the SAME buffers the skinned-depth shadow pass
         // read, so an entity and its shadow share one pose (no one-frame lag).
-        if let Some(plan) = &mesh_frame_plan {
-            // Mesh group-2 params uniform (binding 4): the dynamic-light count, the
-            // frame's render-clock time (the SAME value written to forward
-            // `Uniforms.time` this frame — cached in `update_per_frame_uniforms` —
-            // so the scripted-light curves the mesh loop evaluates stay
-            // phase-coherent), and the SAME `lighting_isolation` value written to
-            // forward `Uniforms.lighting_isolation` this frame, so the mesh
-            // dynamic-direct term participates in the lighting-isolation debug
-            // modes exactly as the world dynamic term does (the shader derives
-            // `use_dynamic` from it, mirroring forward.wgsl).
-            self.mesh_pass.write_light_params(
-                &self.queue,
-                self.light_count,
-                self.mesh_dynamic_time,
-                self.lighting_isolation as u32,
-                self.ambient_floor,
-            );
-            let mut mesh_enc = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Skinned Mesh Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: scene_color,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.depth_view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
+        if render_world {
+            if let Some(plan) = &mesh_frame_plan {
+                // Mesh group-2 params uniform (binding 4): the dynamic-light count, the
+                // frame's render-clock time (the SAME value written to forward
+                // `Uniforms.time` this frame — cached in `update_per_frame_uniforms` —
+                // so the scripted-light curves the mesh loop evaluates stay
+                // phase-coherent), and the SAME `lighting_isolation` value written to
+                // forward `Uniforms.lighting_isolation` this frame, so the mesh
+                // dynamic-direct term participates in the lighting-isolation debug
+                // modes exactly as the world dynamic term does (the shader derives
+                // `use_dynamic` from it, mirroring forward.wgsl).
+                self.mesh_pass.write_light_params(
+                    &self.queue,
+                    self.light_count,
+                    self.mesh_dynamic_time,
+                    self.lighting_isolation as u32,
+                    self.ambient_floor,
+                );
+                let mut mesh_enc = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Skinned Mesh Pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: scene_color,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &self.depth_view,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: None,
                     }),
-                    stencil_ops: None,
-                }),
-                timestamp_writes: None,
-                ..Default::default()
-            });
-            mesh_enc.set_bind_group(0, &self.uniform_bind_group, &[]);
-            // Group 4 = SH irradiance volume (baked indirect) + the mesh-only
-            // dynamic-direct params uniform (binding 16). The mesh SUPERSET bind
-            // group: shared SH entries the forward/billboard/fog passes hold PLUS
-            // the dynamic-direct knobs (group 3 = instance data; group 2
-            // unallocated).
-            mesh_enc.set_bind_group(4, &self.sh_volume_resources.mesh_bind_group, &[]);
-            self.mesh_pass.record_draws(&mut mesh_enc, plan);
+                    timestamp_writes: None,
+                    ..Default::default()
+                });
+                mesh_enc.set_bind_group(0, &self.uniform_bind_group, &[]);
+                // Group 4 = SH irradiance volume (baked indirect) + the mesh-only
+                // dynamic-direct params uniform (binding 16). The mesh SUPERSET bind
+                // group: shared SH entries the forward/billboard/fog passes hold PLUS
+                // the dynamic-direct knobs (group 3 = instance data; group 2
+                // unallocated).
+                mesh_enc.set_bind_group(4, &self.sh_volume_resources.mesh_bind_group, &[]);
+                self.mesh_pass.record_draws(&mut mesh_enc, plan);
+            }
         }
 
         // After opaque forward, before wireframe. Alpha additive; depth test on, write off.
-        if self.smoke_pass.has_any_sheet() && !particle_collections.is_empty() {
+        if render_world && self.smoke_pass.has_any_sheet() && !particle_collections.is_empty() {
             let smoke_ts = self
                 .frame_timing
                 .as_ref()
@@ -5345,14 +5422,16 @@ impl Renderer {
         // Volumetric fog: low-res compute raymarch + additive composite.
         // Skipped when no active volumes — scatter target need not be cleared.
         // See: context/lib/rendering_pipeline.md §7.5
-        let cell_mask = compute_fog_cell_mask(
-            fog_reachable,
-            self.fog_cell_masks.as_deref(),
-            self.fog.canonical_volume_count(),
-            camera_leaf,
-        );
-        self.fog.repack_active(&self.queue, cell_mask, now_seconds);
-        if self.fog.active() {
+        if render_world {
+            let cell_mask = compute_fog_cell_mask(
+                fog_reachable,
+                self.fog_cell_masks.as_deref(),
+                self.fog.canonical_volume_count(),
+                camera_leaf,
+            );
+            self.fog.repack_active(&self.queue, cell_mask, now_seconds);
+        }
+        if render_world && self.fog.active() {
             // Spots before params so FogParams.spot_count reflects this frame's count.
             let fog_spots = self.collect_fog_spot_lights();
             self.fog.upload_spots(&self.queue, &fog_spots);
@@ -5402,7 +5481,8 @@ impl Renderer {
             composite.draw(0..3, 0..1); // fullscreen triangle from vertex_index — no vertex buffer
         }
 
-        if self.wireframe_enabled
+        if render_world
+            && self.wireframe_enabled
             && self.has_geometry
             && self.wireframe_index_count > 0
             && !self.bvh_leaves.is_empty()
@@ -5460,7 +5540,7 @@ impl Renderer {
         }
 
         #[cfg(feature = "dev-tools")]
-        {
+        if render_world {
             self.debug_lines.render(
                 &self.queue,
                 &mut encoder,
@@ -5865,7 +5945,7 @@ fn slot_assignment_for_level_lights(
     out
 }
 
-/// See: context/lib/boot_sequence.md §8
+/// See: context/lib/boot_sequence.md §3 (Level Install Order)
 pub fn level_world_to_geometry<'a>(
     world: &'a crate::prl::LevelWorld,
     texture_materials: &'a [Material],

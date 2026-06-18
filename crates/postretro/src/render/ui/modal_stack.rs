@@ -16,17 +16,19 @@ use super::descriptor::AnchoredTree;
 use crate::input::UiCaptureMode;
 use crate::scripting::data_descriptors::RegisteredUiTree;
 
-/// Scope tier a registered tree belongs to. Precedence is **engine < mod**: a mod
-/// tree registered under a name already held by an engine built-in *shadows* the
-/// engine entry (the reskin path — last-wins, with a one-line warning at
-/// registration time). The per-level tier is DEFERRED (single-level lifetime, no
-/// runtime unload site today), so `setupLevel` trees register into `Mod` for now.
+/// Scope tier a registered tree belongs to. Precedence is
+/// **engine < mod < level**: a mod tree registered under a name already held by
+/// an engine built-in *shadows* the engine entry (the reskin path — last-wins,
+/// with a one-line warning at registration time), and a level tree can shadow
+/// both for that level's lifetime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ScopeTier {
     /// Engine built-in (HUD, pause menu, on-screen keyboard) registered at boot.
     Engine,
     /// Mod/script-registered tree. Shadows an engine entry of the same name.
     Mod,
+    /// Level data-script tree. Cleared on level unload.
+    Level,
 }
 
 /// One registered tree plus its registration attributes: whether it composes as
@@ -46,6 +48,7 @@ struct RegisteredTree {
 struct TieredRegisteredTree {
     engine: Option<RegisteredTree>,
     mod_scope: Option<RegisteredTree>,
+    level: Option<RegisteredTree>,
 }
 
 impl TieredRegisteredTree {
@@ -54,6 +57,7 @@ impl TieredRegisteredTree {
         match tier {
             ScopeTier::Engine => self.engine.as_ref(),
             ScopeTier::Mod => self.mod_scope.as_ref(),
+            ScopeTier::Level => self.level.as_ref(),
         }
     }
 
@@ -61,6 +65,7 @@ impl TieredRegisteredTree {
         match tier {
             ScopeTier::Engine => self.engine = Some(tree),
             ScopeTier::Mod => self.mod_scope = Some(tree),
+            ScopeTier::Level => self.level = Some(tree),
         }
     }
 
@@ -68,28 +73,31 @@ impl TieredRegisteredTree {
         match tier {
             ScopeTier::Engine => self.engine = None,
             ScopeTier::Mod => self.mod_scope = None,
+            ScopeTier::Level => self.level = None,
         }
     }
 
     fn resolved(&self) -> Option<(ScopeTier, &RegisteredTree)> {
-        self.mod_scope
+        self.level
             .as_ref()
-            .map(|tree| (ScopeTier::Mod, tree))
+            .map(|tree| (ScopeTier::Level, tree))
+            .or_else(|| self.mod_scope.as_ref().map(|tree| (ScopeTier::Mod, tree)))
             .or_else(|| self.engine.as_ref().map(|tree| (ScopeTier::Engine, tree)))
     }
 
     fn is_empty(&self) -> bool {
-        self.engine.is_none() && self.mod_scope.is_none()
+        self.engine.is_none() && self.mod_scope.is_none() && self.level.is_none()
     }
 }
 
 /// Named registry of UI trees: `name → tiered entries`. `PushTree` resolves a
 /// tree by name through this map; the per-frame compose step resolves the HUD
-/// and every always-on tree through it too. Tiered by scope (`engine < mod`): a
-/// mod registration under an existing engine name shadows it without destroying
-/// the engine fallback. Engine built-ins register at boot; script-side
-/// registration arrives with the UI SDK. An unknown name is a no-op-with-warning
-/// at push time, never a panic.
+/// and every always-on tree through it too. Tiered by scope
+/// (`engine < mod < level`): a mod registration under an existing engine name
+/// shadows it without destroying the engine fallback, and a level registration
+/// shadows both without destroying either longer-lived fallback. Engine built-ins
+/// register at boot; script-side registration arrives with the UI SDK. An
+/// unknown name is a no-op-with-warning at push time, never a panic.
 #[derive(Debug, Default)]
 pub(crate) struct UiTreeRegistry {
     trees: std::collections::HashMap<String, TieredRegisteredTree>,
@@ -101,7 +109,7 @@ impl UiTreeRegistry {
     /// `always_on = false`. When a `Mod` registration replaces an existing `Engine`
     /// entry under the same name, this is the deliberate reskin/shadow path — it
     /// warns once at registration time so the shadow is visible in the log. Any
-    /// other replacement (engine→engine, mod→mod) is silent.
+    /// other replacement (engine→engine, mod→mod, level→level) is silent.
     pub(crate) fn register(
         &mut self,
         name: impl Into<String>,
@@ -145,13 +153,16 @@ impl UiTreeRegistry {
     }
 
     /// Resolve a registered tree by name, or `None` if no such name is registered.
-    /// Tiered resolution picks the mod entry when present and falls back to the
-    /// engine entry otherwise.
+    /// Tiered resolution picks level, then mod, then engine.
     fn resolve(&self, name: &str) -> Option<&AnchoredTree> {
+        self.resolve_with_tier(name).map(|(_, tree)| tree)
+    }
+
+    fn resolve_with_tier(&self, name: &str) -> Option<(ScopeTier, &AnchoredTree)> {
         self.trees
             .get(name)
             .and_then(TieredRegisteredTree::resolved)
-            .map(|(_, t)| &t.descriptor)
+            .map(|(tier, t)| (tier, &t.descriptor))
     }
 
     /// The always-on trees, each as a base-layer snapshot entry. The compose step
@@ -160,11 +171,12 @@ impl UiTreeRegistry {
     /// input or takes focus (the pushed stack is the sole source for that), so the
     /// compose step does NOT feed these into `top_capture_mode`/`active_name`.
     ///
-    /// Ordering is engine-tier-first, then mod-tier, each group in a stable sort by
-    /// name so painter order is deterministic frame-over-frame (the HashMap's own
-    /// iteration order is not). A mod always-on tree under a NEW name layers above
-    /// the engine HUD; a mod tree under an EXISTING engine name already replaced it
-    /// in the map (shadow), so it composes in that one slot.
+    /// Ordering is engine-tier-first, then mod-tier, then level-tier; each group
+    /// sorts by name so painter order is deterministic frame-over-frame (the
+    /// HashMap's own iteration order is not). A higher-tier always-on tree under
+    /// a NEW name layers above lower tiers; a higher-tier tree under an EXISTING
+    /// name already replaced it in the map (shadow), so it composes in that one
+    /// slot.
     fn always_on_layers(&self) -> Vec<UiTreeEntry> {
         let mut entries: Vec<(ScopeTier, &String, &RegisteredTree)> = self
             .trees
@@ -174,8 +186,6 @@ impl UiTreeRegistry {
                 tree.always_on.then_some((tier, name, tree))
             })
             .collect();
-        // Engine tier first (base), then mod tier (overlays on top); within a tier,
-        // sort by name for a deterministic painter order across frames.
         entries.sort_by(|a, b| {
             tier_order(a.0)
                 .cmp(&tier_order(b.0))
@@ -206,11 +216,12 @@ impl UiTreeRegistry {
     }
 }
 
-/// Painter-order rank for a scope tier: engine (base) below mod (overlay).
+/// Painter-order rank for a scope tier: engine (base), mod, then level overlays.
 fn tier_order(tier: ScopeTier) -> u8 {
     match tier {
         ScopeTier::Engine => 0,
         ScopeTier::Mod => 1,
+        ScopeTier::Level => 2,
     }
 }
 
@@ -222,6 +233,7 @@ fn tier_order(tier: ScopeTier) -> u8 {
 struct StackedTree {
     name: String,
     descriptor: AnchoredTree,
+    tier: ScopeTier,
     on_commit: Option<String>,
 }
 
@@ -258,13 +270,9 @@ impl ModalStack {
     /// envelopes) into the tiered registry at the register→VM-drop lifecycle
     /// point — before the mod-init / data-script VM context drops.
     ///
-    /// Both mod-scope and level-scope trees register at `ScopeTier::Mod` today: a
-    /// mod-tier registration under an existing engine name shadows it (last-wins +
-    /// one-line warning, in `UiTreeRegistry::register`). The per-level tier is
-    /// DEFERRED — single-level lifetime with no runtime unload site — so level
-    /// trees go into the persistent (`Mod`) registry alongside mod trees. A
-    /// duplicate name follows the same last-wins behavior and never aborts boot or
-    /// level load.
+    /// Mod-scope trees register at `ScopeTier::Mod`; level-scope trees register
+    /// at `ScopeTier::Level` and are cleared on unload. A duplicate name follows
+    /// the same last-wins behavior and never aborts boot or level load.
     pub(crate) fn register_script_trees(
         &mut self,
         trees: impl IntoIterator<Item = RegisteredUiTree>,
@@ -288,6 +296,16 @@ impl ModalStack {
         self.registry.replace_tier(tier, trees);
     }
 
+    /// Clear a script-authored tier and any live stack entries opened from it.
+    /// Used for level unload: the registry fallback may reveal a mod/engine tree
+    /// under the same name, but pushed level instances must not survive because
+    /// they carry cloned descriptors from the previous level.
+    pub(crate) fn clear_script_tree_tier(&mut self, tier: ScopeTier) {
+        self.registry
+            .replace_tier(tier, std::iter::empty::<RegisteredUiTree>());
+        self.stack.retain(|entry| entry.tier != tier);
+    }
+
     /// Read a registered tree by `name`, or `None` if no such name is registered.
     /// Public `&self` read seam onto the registry's tiered resolution: keeps
     /// `UiTreeRegistry::resolve` private to `push_named`'s internal use. The
@@ -299,10 +317,11 @@ impl ModalStack {
         self.registry.resolve(name)
     }
 
-    /// The always-on base layers for this frame (the HUD and any mod-registered
-    /// always-on overlays), engine-tier first then mod-tier, each in a deterministic
-    /// per-name order. The compose step appends these as the bottom layers of the
-    /// per-frame snapshot, with pushed modal entries (`entries`) on top.
+    /// The always-on base layers for this frame (HUD plus script-registered
+    /// always-on overlays), engine-tier first, then mod-tier, then level-tier,
+    /// each in a deterministic per-name order. The compose step appends these as
+    /// the bottom layers of the per-frame snapshot, with pushed modal entries
+    /// (`entries`) on top.
     ///
     /// CAPTURE/FOCUS INVARIANT: these are draw-only base layers — they are NOT on
     /// the pushed modal stack, which is the SOLE source of `top_capture_mode` /
@@ -318,7 +337,11 @@ impl ModalStack {
     /// carried onto the entry so the App can fire it from the text-entry commit
     /// path.
     pub(crate) fn push_named(&mut self, name: &str, on_commit: Option<String>) {
-        let Some(descriptor) = self.registry.resolve(name).cloned() else {
+        let Some((tier, descriptor)) = self
+            .registry
+            .resolve_with_tier(name)
+            .map(|(tier, descriptor)| (tier, descriptor.clone()))
+        else {
             log::warn!(
                 "[UI] pushTree('{name}') — no tree registered under that name; ignoring (no panic)"
             );
@@ -327,6 +350,7 @@ impl ModalStack {
         self.stack.push(StackedTree {
             name: name.to_string(),
             descriptor,
+            tier,
             on_commit,
         });
     }
@@ -338,6 +362,7 @@ impl ModalStack {
         self.stack.push(StackedTree {
             name: name.into(),
             descriptor,
+            tier: ScopeTier::Engine,
             on_commit: None,
         });
     }
@@ -659,7 +684,7 @@ mod tests {
         assert_eq!(stack.top_capture_mode(), UiCaptureMode::Capture);
     }
 
-    // ----- Tiered registry (engine < mod) + always-on compose (Task 2) -----
+    // ----- Tiered registry (engine < mod < level) + always-on compose -----
 
     /// A tree carrying an `id` on its root so descriptor identity is observable
     /// across tier replacements (the bare helper trees are structurally equal).
@@ -891,21 +916,67 @@ mod tests {
     }
 
     #[test]
-    fn setup_level_trees_register_into_the_persistent_mod_tier() {
-        // Level-scope trees register into the persistent (`Mod`) tier today — the
-        // per-level tier is DEFERRED. After the level-load drain they are
-        // resolvable by name, exactly like mod-scope trees.
+    fn setup_level_trees_register_into_the_level_tier() {
+        // Level-scope trees live in the level tier so unload can clear them
+        // without disturbing mod-scope trees.
         let mut stack = ModalStack::new();
         stack.register_script_trees(
             vec![registered("levelBanner", "banner", true)],
-            ScopeTier::Mod,
+            ScopeTier::Level,
         );
 
-        assert_eq!(stack.registry.tier_of("levelBanner"), Some(ScopeTier::Mod));
+        assert_eq!(
+            stack.registry.tier_of("levelBanner"),
+            Some(ScopeTier::Level)
+        );
         assert_eq!(
             stack.tree("levelBanner").and_then(root_id),
             Some("banner"),
-            "a setupLevel tree is resolvable in the persistent tier after level load",
+            "a setupLevel tree is resolvable in the level tier after level load",
+        );
+    }
+
+    #[test]
+    fn clearing_level_tier_removes_level_trees_and_reveals_mod_fallback() {
+        let mut stack = ModalStack::new();
+        stack.register_script_trees(
+            vec![
+                registered("hud", "modHud", true),
+                registered("modDialog", "modDialog", false),
+            ],
+            ScopeTier::Mod,
+        );
+        stack.register_script_trees(
+            vec![
+                registered("hud", "levelHud", true),
+                registered("levelDialog", "levelDialog", false),
+            ],
+            ScopeTier::Level,
+        );
+        stack.push_named("levelDialog", None);
+        stack.push_named("modDialog", None);
+
+        stack.clear_script_tree_tier(ScopeTier::Level);
+
+        assert!(!stack.registry.has_tier("hud", ScopeTier::Level));
+        assert_eq!(
+            stack.tree("hud").and_then(root_id),
+            Some("modHud"),
+            "clearing the level tier reveals the mod HUD fallback",
+        );
+        assert!(
+            stack.tree("levelDialog").is_none(),
+            "level-only tree registration is removed",
+        );
+        let stack_names: Vec<String> = stack
+            .entries()
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect();
+        assert_eq!(
+            stack_names,
+            vec!["modDialog".to_string()],
+            "live stack entries opened from level trees are removed, mod entries survive",
         );
     }
 

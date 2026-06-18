@@ -61,6 +61,11 @@ pub enum DiagnosticAction {
     /// variant and its chord are absent.
     #[cfg(feature = "dev-tools")]
     ToggleNavOverlay,
+    /// Exercise the runtime level lifecycle by unloading the current level and
+    /// loading the second dev map. Bound to `Alt+Shift+L`. Feature-gated:
+    /// without `dev-tools`, this variant and its chord are absent.
+    #[cfg(feature = "dev-tools")]
+    CycleDevLevel,
 }
 
 /// A modifier+key combination bound to a diagnostic action.
@@ -183,6 +188,12 @@ pub fn default_diagnostic_chords() -> Vec<DiagnosticChord> {
             key: KeyCode::KeyN,
             action: DiagnosticAction::ToggleNavOverlay,
         },
+        #[cfg(feature = "dev-tools")]
+        DiagnosticChord {
+            modifiers: Modifiers::ALT_SHIFT,
+            key: KeyCode::KeyL,
+            action: DiagnosticAction::CycleDevLevel,
+        },
     ]
 }
 
@@ -274,6 +285,16 @@ mod tests {
         d.handle_key(KeyCode::AltLeft, true, false);
         let action = d.handle_key(KeyCode::KeyN, true, false);
         assert_eq!(action, Some(DiagnosticAction::ToggleNavOverlay));
+    }
+
+    #[cfg(feature = "dev-tools")]
+    #[test]
+    fn alt_shift_l_fires_cycle_dev_level() {
+        let mut d = fresh();
+        d.handle_key(KeyCode::ShiftLeft, true, false);
+        d.handle_key(KeyCode::AltLeft, true, false);
+        let action = d.handle_key(KeyCode::KeyL, true, false);
+        assert_eq!(action, Some(DiagnosticAction::CycleDevLevel));
     }
 
     #[test]

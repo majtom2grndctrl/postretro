@@ -1,22 +1,38 @@
-// Boot sequencing types: StartupTimings, BootState, SplashSource.
+// Boot sequencing types: StartupTimings, BootState, SplashSource, level requests.
 // See: context/lib/boot_sequence.md
 
 use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+pub(crate) mod lifecycle;
 pub(crate) mod worker;
 
+pub(crate) use lifecycle::FRONTEND_CLEAR_COLOR;
 pub(crate) use worker::{LoadOutcome, spawn_level_worker};
 
 /// `Booting` = before `App::resumed()` (no window, no renderer).
-/// `Splash` = worker channel polling + deferred `mod_init` (first paint guaranteed first).
+/// `Splash` = first paint, then deferred `mod_init` and boot load request.
+/// `Loading` = level worker in flight; main thread keeps painting while polling.
+/// `Frontend` = renderer + UI loop with no level installed.
 /// `Running` = steady-state level loop.
 #[derive(PartialEq, Eq)]
 pub(crate) enum BootState {
     Booting,
     Splash,
+    Loading,
+    Frontend,
     Running,
+}
+
+pub(crate) enum LevelRequest {
+    Load(LevelSource),
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    Unload,
+}
+
+pub(crate) enum LevelSource {
+    Path(PathBuf),
 }
 
 /// `Base` = built-in PNG at `content/base/textures/splash/`.

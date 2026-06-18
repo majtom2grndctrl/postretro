@@ -79,6 +79,7 @@ export type LevelManifest = {
   uiTrees?: import("postretro").ModUiTree[];
 };
 
+/** One slot inside a `defineStore` schema. Every slot needs `default`. `type: "number"` accepts a finite numeric default plus optional inclusive `range: [min, max]`; `"boolean"` and `"string"` require matching defaults; `"enum"` requires non-empty `values` and a default in that list; `"array"` is a finite-number array. `persist` saves on clean exit; `readonly` blocks script writes. */
 export type StoreSlotSchema = { type: "number" | "boolean" | "string" | "enum" | "array"; readonly?: boolean } & Record<string, unknown>;
 
 export type StoreDeclaration = {
@@ -147,10 +148,15 @@ function stableStringify(value: unknown): string {
 }
 
 /**
- * Returns a plain object — pure builder, no engine side effects. `name` is
- * optional: when omitted a deterministic, run-stable id is derived from the
- * body (see `autoReactionId`). The returned handle doubles as a typed reaction
- * reference for `Button`'s `onPress` and crossing `fire` entries.
+ * Build a named reaction descriptor. Pure: returns a plain object and performs
+ * no FFI. `descriptor` accepts exactly one body shape: `progress`, `primitive`,
+ * or `sequence`. `name` is optional; when omitted a deterministic, run-stable id
+ * is derived from the body. Use explicit names when TS and Luau scripts must
+ * agree. The returned handle can be passed to `Button.onPress` or crossing
+ * `fire` entries.
+ *
+ * @param name Stable event/reaction name consumed by dispatch. Optional.
+ * @param descriptor Reaction body data consumed later by Rust.
  */
 export function defineReaction(body: ReactionBody): NamedReactionDescriptor;
 export function defineReaction(
@@ -168,7 +174,7 @@ export function defineReaction(
   return { name, ...body } as NamedReactionDescriptor;
 }
 
-/** Stamp a shared level-tag scope onto each reaction in a plain list. */
+/** Stamp a shared map-tag scope onto each reaction in a plain list. `tags` are matched against `ModMapEntry.tags`; omit scoping for every level. */
 export function scopeReactions(
   tags: string[],
   list: NamedReactionDescriptor[],
@@ -176,23 +182,21 @@ export function scopeReactions(
   return list.map((reaction) => ({ ...reaction, levels: tags }));
 }
 
-/** Identity builder — gives authors a typed construction site for entity
- * type descriptors returned from `ModManifest.entities`. Pure: no engine side effects. */
+/** Identity builder for entity type descriptors returned from `ModManifest.entities`. `descriptor` is the full archetype object: optional `canonicalName`, optional `defaultWeapon`, and optional component presets. Pure: no engine side effects. */
 export function defineEntity(
   descriptor: import("postretro").EntityTypeDescriptor,
 ): import("postretro").EntityTypeDescriptor {
   return descriptor;
 }
 
-/** Identity builder for the mod manifest. Pure: no engine side effects; the
- * engine consumes the manifest only from the default export / chunk return. */
+/** Identity builder for the mod manifest consumed from the default export. `config.name` is required; optional arrays include `entities`, `maps`, `uiTrees`, `reactions`, `crossings`, and `stores`. Pure: no engine side effects until the manifest is returned and validated. */
 export function defineMod(
   config: import("postretro").ModManifest,
 ): import("postretro").ModManifest {
   return config;
 }
 
-/** Identity builder for a mod map catalog. Pure: no engine side effects. */
+/** Identity builder for a mod map catalog. `entries` are `ModMapEntry` objects with required `id`, `path`, and `name`; optional `tags` default to empty and drive filtering plus `levels` selectors. Pure: no engine side effects. */
 export function defineMapCatalog(
   entries: import("postretro").ModMapEntry[],
 ): import("postretro").ModMapEntry[] {
@@ -253,9 +257,7 @@ function cloneAndFreeze<T>(
   return Object.freeze(clone) as T;
 }
 
-/** Pure state-store builder. The engine consumes `declaration` only when it is
- * returned from `ModManifest.stores`; unreturned declarations are discarded with
- * the setup VM. */
+/** Pure state-store builder. `namespace` prefixes every returned state ref as `namespace.slotName`; `schema` declares the slot names and validation rules. The engine consumes `declaration` only when it is returned from `ModManifest.stores`; unreturned declarations are discarded with the setup VM. */
 export function defineStore<const S extends Record<string, StoreSlotSchema>>(
   namespace: string,
   schema: S,

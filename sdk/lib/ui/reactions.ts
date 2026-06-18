@@ -224,7 +224,9 @@ export const EXIT_TO_DESKTOP_ACTION = "ui.exitToDesktop";
 
 /**
  * Reserved button `onPress` action that returns to the frontend menu. The App
- * intercepts this exact wire value before named-reaction dispatch.
+ * intercepts this exact wire value before named-reaction dispatch. Same
+ * lifecycle path as `returnToFrontend()`: unload gameplay, show the declared
+ * frontend menu, and reload its optional backdrop level.
  */
 export const QUIT_TO_MENU_ACTION = "ui.quitToMenu";
 
@@ -269,8 +271,10 @@ export function closeDialog(): import("../data_script").PrimitiveReactionDescrip
 }
 
 /**
- * Load a map by catalog id. Pure — returns a primitive reaction body; the engine
- * queues the lifecycle load when the reaction fires.
+ * Load a map by catalog id. Pure — returns a primitive reaction body, no FFI.
+ * `id` must match a `ModMapEntry.id` committed from `ModManifest.maps`. The
+ * engine queues the lifecycle load when the reaction fires; unknown ids warn and
+ * no-op at dispatch time.
  */
 export function loadLevel(id: string): import("../data_script").PrimitiveReactionDescriptor {
   return { primitive: "loadLevel", args: { map: id } };
@@ -278,7 +282,8 @@ export function loadLevel(id: string): import("../data_script").PrimitiveReactio
 
 /**
  * Reload the currently-active map source. Pure — returns a primitive reaction
- * body; runtime no-ops when no level is active.
+ * body, no FFI. Uses the retained catalog id for catalog loads or the raw dev
+ * path for direct path loads; runtime no-ops when no level is active.
  */
 export function restartLevel(): import("../data_script").PrimitiveReactionDescriptor {
   return { primitive: "restartLevel", args: {} };
@@ -286,7 +291,9 @@ export function restartLevel(): import("../data_script").PrimitiveReactionDescri
 
 /**
  * Return to the frontend menu, including its optional declared backdrop level.
- * Pure — returns a primitive reaction body.
+ * Pure — returns a primitive reaction body, no FFI. Use from authored reactions;
+ * use `QUIT_TO_MENU_ACTION` for direct button `onPress` values that should take
+ * the same lifecycle path.
  */
 export function returnToFrontend(): import("../data_script").PrimitiveReactionDescriptor {
   return { primitive: "returnToFrontend", args: {} };

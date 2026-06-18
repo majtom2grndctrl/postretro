@@ -6,11 +6,23 @@ import { targetDummyEntity } from "./scripts/target-dummy";
 import { referenceEntities } from "../../sdk/behaviors/reference/entities";
 import { hud, hudTheme, reticle } from "./scripts/hud";
 import { pauseMenu } from "./scripts/pause-menu";
+import { frontendMenu, frontendReactions, mapCatalog } from "./scripts/frontend-menu";
 
 export default defineMod({
   name: "dev",
-  uiTrees: [hud, reticle, pauseMenu],
+  maps: mapCatalog,
+  frontend: {
+    menuTree: frontendMenu.name,
+    backgroundLevel: "combat-demo",
+    camera: {
+      position: [-3.25, 1.25, -0.25],
+      yaw: 0.0,
+      pitch: -0.08,
+    },
+  },
+  uiTrees: [hud, reticle, pauseMenu, frontendMenu],
   theme: hudTheme,
+  reactions: frontendReactions,
   entities: [
     playerEntity,
     referencePistolEntity,

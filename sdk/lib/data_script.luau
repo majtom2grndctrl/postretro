@@ -149,6 +149,12 @@ export type LevelManifest = {
   uiTrees: {ModUiTree}?,
 }
 
+--- One slot inside a `defineStore` schema. Every slot needs `default`.
+--- `type = "number"` accepts a finite numeric default plus optional inclusive
+--- `range = {min, max}`; `"boolean"` and `"string"` require matching defaults;
+--- `"enum"` requires non-empty `values` and a default in that list; `"array"` is
+--- a finite-number array. `persist` saves on clean exit; `readonly` blocks
+--- script writes.
 export type StoreSlotSchema = { type: string, readonly: boolean?, [string]: any }
 export type StoreDeclaration = {
   namespace: string,
@@ -221,11 +227,12 @@ local function autoReactionId(descriptor: any): string
   return string.format("reaction_%08x", hash)
 end
 
---- Build a named reaction descriptor. Pure: returns a plain table, does
---- not register anything in the engine. The engine consumes the table
---- when `setupLevel` returns. `name` is optional: when omitted a deterministic,
---- run-stable id is derived from the body (FNV-1a over an order-stable
---- serialization), so re-running registration yields the same auto-id.
+--- Build a named reaction descriptor. Pure: returns a plain table, no FFI.
+--- `descriptor` accepts exactly one body shape: `progress`, `primitive`, or
+--- `sequence`. `name` is optional; when omitted a deterministic, run-stable id
+--- is derived from the body. Use explicit names when TS and Luau scripts must
+--- agree. The returned handle can be passed to button `onPress` or crossing
+--- `fire` entries.
 function DataScriptSdk.defineReaction(
   nameOrBody: string | (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor),
   descriptor: (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)?
@@ -264,7 +271,8 @@ function DataScriptSdk.defineReaction(
   return out
 end
 
---- Stamp a shared level-tag scope onto each reaction in a plain list.
+--- Stamp a shared map-tag scope onto each reaction in a plain list. `tags` are
+--- matched against `ModMapEntry.tags`; omit scoping for every level.
 function DataScriptSdk.scopeReactions(tags: {string}, list: {NamedReactionDescriptor}): {NamedReactionDescriptor}
   local out = {}
   for i, reaction in ipairs(list) do
@@ -292,21 +300,25 @@ function DataScriptSdk.scopeReactions(tags: {string}, list: {NamedReactionDescri
   return out
 end
 
---- Identity builder for entity type descriptors returned from `ModManifest.entities`.
---- Pure: returns the descriptor as-is. Its sole purpose is to give authors
---- a typed construction site at the FFI boundary.
+--- Identity builder for entity type descriptors returned from
+--- `ModManifest.entities`. `descriptor` is the full archetype object: optional
+--- `canonicalName`, optional `defaultWeapon`, and optional component presets.
+--- Pure: no engine side effects.
 function DataScriptSdk.defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor
   return descriptor
 end
 
---- Identity builder for the mod manifest.
---- Pure: returns the manifest as-is. The engine consumes it only from the
---- default export / chunk return boundary.
+--- Identity builder for the mod manifest consumed from the chunk return.
+--- `config.name` is required; optional arrays include `entities`, `maps`,
+--- `uiTrees`, `reactions`, `crossings`, and `stores`. Pure: no engine side
+--- effects until the manifest is returned and validated.
 function DataScriptSdk.defineMod(config: ModManifest): ModManifest
   return config
 end
 
---- Identity builder for a mod map catalog. Pure: returns the array as-is.
+--- Identity builder for a mod map catalog. `entries` are `ModMapEntry` tables
+--- with required `id`, `path`, and `name`; optional `tags` default to empty and
+--- drive filtering plus `levels` selectors. Pure: no engine side effects.
 function DataScriptSdk.defineMapCatalog(entries: {ModMapEntry}): {ModMapEntry}
   return entries
 end
@@ -358,9 +370,10 @@ local function cloneAndFreeze(value: any, seenOrNil: any?, visitingOrNil: any?, 
   return table.freeze(clone)
 end
 
---- Pure state-store builder. The engine consumes `declaration` only when it is
---- returned from the mod manifest's `stores`; unreturned declarations disappear
---- with the setup VM.
+--- Pure state-store builder. `namespace` prefixes every returned state ref as
+--- `namespace.slotName`; `schema` declares the slot names and validation rules.
+--- The engine consumes `declaration` only when it is returned from the mod
+--- manifest's `stores`; unreturned declarations disappear with the setup VM.
 function DataScriptSdk.defineStore(namespace: string, schema: { [string]: StoreSlotSchema }): StoreDefinition
   local frozenSchema = cloneAndFreeze(schema)
   local state = {}

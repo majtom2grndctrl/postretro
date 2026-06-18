@@ -202,7 +202,9 @@ UiReactionsSdk.CLOSE_DIALOG_ACTION = "ui.closeDialog"
 UiReactionsSdk.EXIT_TO_DESKTOP_ACTION = "ui.exitToDesktop"
 
 --- Reserved button `onPress` action that returns to the frontend menu. The App
---- intercepts this exact wire value before named-reaction dispatch.
+--- intercepts this exact wire value before named-reaction dispatch. Same
+--- lifecycle path as `returnToFrontend()`: unload gameplay, show the declared
+--- frontend menu, and reload its optional backdrop level.
 UiReactionsSdk.QUIT_TO_MENU_ACTION = "ui.quitToMenu"
 
 --- Open the engine-shipped on-screen keyboard for text entry (M13 Text Entry).
@@ -230,20 +232,25 @@ function UiReactionsSdk.closeDialog(): PrimitiveReactionDescriptor
   return { primitive = "closeDialog", args = {} }
 end
 
---- Load a map by catalog id. Pure: returns a primitive reaction body; the engine
---- queues the lifecycle load when the reaction fires.
+--- Load a map by catalog id. Pure: returns a primitive reaction body, no FFI.
+--- `id` must match a `ModMapEntry.id` committed from `ModManifest.maps`. The
+--- engine queues the lifecycle load when the reaction fires; unknown ids warn
+--- and no-op at dispatch time.
 function UiReactionsSdk.loadLevel(id: string): PrimitiveReactionDescriptor
   return { primitive = "loadLevel", args = { map = id } }
 end
 
 --- Reload the currently-active map source. Pure: returns a primitive reaction
---- body; runtime no-ops when no level is active.
+--- body, no FFI. Uses the retained catalog id for catalog loads or the raw dev
+--- path for direct path loads; runtime no-ops when no level is active.
 function UiReactionsSdk.restartLevel(): PrimitiveReactionDescriptor
   return { primitive = "restartLevel", args = {} }
 end
 
 --- Return to the frontend menu, including its optional declared backdrop level.
---- Pure: returns a primitive reaction body.
+--- Pure: returns a primitive reaction body, no FFI. Use from authored reactions;
+--- use `QUIT_TO_MENU_ACTION` for direct button `onPress` values that should take
+--- the same lifecycle path.
 function UiReactionsSdk.returnToFrontend(): PrimitiveReactionDescriptor
   return { primitive = "returnToFrontend", args = {} }
 end

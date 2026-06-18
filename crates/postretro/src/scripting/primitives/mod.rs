@@ -417,23 +417,23 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("ModMapEntry")
-        .doc("One map listed in `ModManifest.maps`. `id` is the stable logical handle, `path` is authored relative to the content root, `name` is the display name, and optional `tags` are authoritative classification strings.")
-        .field("id", "String", "Stable logical map handle. Required.")
+        .doc("One map listed in `ModManifest.maps`. Use `defineMapCatalog([...])` for a typed construction site; the returned array keeps this exact wire shape. The catalog is committed during mod init and is available before any level loads.")
+        .field("id", "String", "Stable logical map handle used by `loadLevel(id)`, frontend `backgroundLevel`, and future references. Required; exact string match.")
         .field(
             "path",
             "String",
-            "PRL path authored relative to the content root. Required.",
+            "PRL path authored relative to the content root, such as `base/maps/e1m1.prl`. Required.",
         )
-        .field("name", "String", "Display name shown to players. Required.")
+        .field("name", "String", "Display name shown to players in catalog-driven UI. Required.")
         .field(
             "tags?",
             "Vec<String>",
-            "Authoritative classification tags for filtering and reaction composition. Optional; defaults to empty.",
+            "Authoritative classification tags for filtering plus `levels` selection on mod-global reactions and crossings. Optional; missing/null normalizes to empty.",
         )
         .finish();
     registry
         .register_type("MenuCamera")
-        .doc("Static camera pose used while a mod frontend menu is presented.")
+        .doc("Static camera pose used while a mod frontend menu is presented. All fields are required when `ModManifest.frontend` is present.")
         .field(
             "position",
             "[f32; 3]",
@@ -444,16 +444,16 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("Frontend")
-        .doc("Mod frontend declaration. Selects the menu UI tree, optional background map catalog id, and static menu camera pose.")
+        .doc("Mod frontend declaration. Selects the startup menu tree, optional background catalog map, and static menu camera pose. Omit `frontend` to use the engine fallback menu.")
         .field(
             "menuTree",
             "String",
-            "UI tree registry name presented as the frontend menu. Required.",
+            "UI tree registry name presented as the frontend menu. Required; if the name is not registered, the engine fallback frontend is shown.",
         )
         .field(
             "backgroundLevel?",
             "String",
-            "Map catalog id to load behind the frontend menu. Optional.",
+            "Map catalog id to load behind the frontend menu. Optional; omit for no backdrop level.",
         )
         .field("camera", "MenuCamera", "Static menu camera pose. Required.")
         .finish();
@@ -478,17 +478,17 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("ModManifest")
-        .doc("Mod manifest from `start-script.ts`'s default export or `start-script.luau`'s chunk return. Identifies the mod to the engine.")
-        .field("name", "String", "Human-readable mod name. Required.")
+        .doc("Mod manifest consumed from `start-script.ts`'s default export or `start-script.luau`'s chunk return. `defineMod(config)` is a pure typed identity helper for this object; the engine commits its data only after manifest validation succeeds.")
+        .field("name", "String", "Human-readable mod name used for diagnostics and UI. Required.")
         .field(
             "entities?",
             "Vec<EntityTypeDescriptor>",
-            "Engine-global entity-type registrations. Survive level unload.",
+            "Engine-global entity-type registrations. Optional; survive level unload and are committed only after the manifest validates.",
         )
         .field(
             "uiTrees?",
             "Vec<ModUiTree>",
-            "Script-registered UI trees (name + `AnchoredTree` + `alwaysOn`). Optional. Malformed entries are logged and skipped.",
+            "Script-registered UI trees (name + `AnchoredTree` + `alwaysOn`). Optional; malformed entries are logged and skipped without aborting boot.",
         )
         .field(
             "theme?",
@@ -498,32 +498,32 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field(
             "fonts?",
             "FontFamilyMap",
-            "Font assets: family name → TTF asset path. Optional.",
+            "Font assets: family name → TTF asset path. Optional; changing custom font assets requires an engine restart.",
         )
         .field(
             "maps?",
             "Vec<ModMapEntry>",
-            "Pre-load-discoverable map catalog. Optional.",
+            "Pre-load-discoverable map catalog. Optional; use catalog ids with `loadLevel(id)` and `frontend.backgroundLevel`.",
         )
         .field(
             "frontend?",
             "Frontend",
-            "Mod-defined frontend menu declaration. Optional.",
+            "Mod-defined frontend menu declaration. Optional; omission clears the mod frontend and presents the engine fallback menu.",
         )
         .field(
             "reactions?",
             "Vec<NamedReactionDescriptor>",
-            "Engine-global reaction definitions. Optional; survive level unload and compose into active level behavior by level tags.",
+            "Engine-global reaction definitions. Optional; survive level unload and compose into active level behavior by `levels` tag selectors.",
         )
         .field(
             "crossings?",
             "Vec<CrossingDescriptor>",
-            "Engine-global state-crossing watchers. Optional; survive level unload and compose into active level behavior by level tags.",
+            "Engine-global state-crossing watchers. Optional; survive level unload and compose into active level behavior by `levels` tag selectors.",
         )
         .field(
             "stores?",
             "Vec<StoreDeclaration>",
-            "Engine-global state-store declarations. Optional; commit atomically after the manifest validates.",
+            "Engine-global state-store declarations returned by `defineStore(...).declaration`. Optional; commit atomically after the manifest validates and preserve existing values when the schema is identical.",
         )
         .finish();
 }

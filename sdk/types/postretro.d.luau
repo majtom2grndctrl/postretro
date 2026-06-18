@@ -390,19 +390,19 @@ export type ModUiTree = {
   alwaysOn: boolean?,
 }
 
---- One map listed in `ModManifest.maps`. `id` is the stable logical handle, `path` is authored relative to the content root, `name` is the display name, and optional `tags` are authoritative classification strings.
+--- One map listed in `ModManifest.maps`. Use `defineMapCatalog([...])` for a typed construction site; the returned array keeps this exact wire shape. The catalog is committed during mod init and is available before any level loads.
 export type ModMapEntry = {
-  --- Stable logical map handle. Required.
+  --- Stable logical map handle used by `loadLevel(id)`, frontend `backgroundLevel`, and future references. Required; exact string match.
   id: string,
-  --- PRL path authored relative to the content root. Required.
+  --- PRL path authored relative to the content root, such as `base/maps/e1m1.prl`. Required.
   path: string,
-  --- Display name shown to players. Required.
+  --- Display name shown to players in catalog-driven UI. Required.
   name: string,
-  --- Authoritative classification tags for filtering and reaction composition. Optional; defaults to empty.
+  --- Authoritative classification tags for filtering plus `levels` selection on mod-global reactions and crossings. Optional; missing/null normalizes to empty.
   tags: {string}?,
 }
 
---- Static camera pose used while a mod frontend menu is presented.
+--- Static camera pose used while a mod frontend menu is presented. All fields are required when `ModManifest.frontend` is present.
 export type MenuCamera = {
   --- World-space camera position in metres as `[x, y, z]`. Required.
   position: {number},
@@ -412,11 +412,11 @@ export type MenuCamera = {
   pitch: number,
 }
 
---- Mod frontend declaration. Selects the menu UI tree, optional background map catalog id, and static menu camera pose.
+--- Mod frontend declaration. Selects the startup menu tree, optional background catalog map, and static menu camera pose. Omit `frontend` to use the engine fallback menu.
 export type Frontend = {
-  --- UI tree registry name presented as the frontend menu. Required.
+  --- UI tree registry name presented as the frontend menu. Required; if the name is not registered, the engine fallback frontend is shown.
   menuTree: string,
-  --- Map catalog id to load behind the frontend menu. Optional.
+  --- Map catalog id to load behind the frontend menu. Optional; omit for no backdrop level.
   backgroundLevel: string?,
   --- Static menu camera pose. Required.
   camera: MenuCamera,
@@ -432,27 +432,27 @@ export type ThemeTokens = {
   spacing: { [string]: number }?,
 }
 
---- Mod manifest from `start-script.ts`'s default export or `start-script.luau`'s chunk return. Identifies the mod to the engine.
+--- Mod manifest consumed from `start-script.ts`'s default export or `start-script.luau`'s chunk return. `defineMod(config)` is a pure typed identity helper for this object; the engine commits its data only after manifest validation succeeds.
 export type ModManifest = {
-  --- Human-readable mod name. Required.
+  --- Human-readable mod name used for diagnostics and UI. Required.
   name: string,
-  --- Engine-global entity-type registrations. Survive level unload.
+  --- Engine-global entity-type registrations. Optional; survive level unload and are committed only after the manifest validates.
   entities: {EntityTypeDescriptor}?,
-  --- Script-registered UI trees (name + `AnchoredTree` + `alwaysOn`). Optional. Malformed entries are logged and skipped.
+  --- Script-registered UI trees (name + `AnchoredTree` + `alwaysOn`). Optional; malformed entries are logged and skipped without aborting boot.
   uiTrees: {ModUiTree}?,
   --- Theme token overrides (colors/fonts/spacing). Optional; merged per-token into the engine default.
   theme: ThemeTokens?,
-  --- Font assets: family name → TTF asset path. Optional.
+  --- Font assets: family name → TTF asset path. Optional; changing custom font assets requires an engine restart.
   fonts: { [string]: string }?,
-  --- Pre-load-discoverable map catalog. Optional.
+  --- Pre-load-discoverable map catalog. Optional; use catalog ids with `loadLevel(id)` and `frontend.backgroundLevel`.
   maps: {ModMapEntry}?,
-  --- Mod-defined frontend menu declaration. Optional.
+  --- Mod-defined frontend menu declaration. Optional; omission clears the mod frontend and presents the engine fallback menu.
   frontend: Frontend?,
-  --- Engine-global reaction definitions. Optional; survive level unload and compose into active level behavior by level tags.
+  --- Engine-global reaction definitions. Optional; survive level unload and compose into active level behavior by `levels` tag selectors.
   reactions: {NamedReactionDescriptor}?,
-  --- Engine-global state-crossing watchers. Optional; survive level unload and compose into active level behavior by level tags.
+  --- Engine-global state-crossing watchers. Optional; survive level unload and compose into active level behavior by `levels` tag selectors.
   crossings: {CrossingDescriptor}?,
-  --- Engine-global state-store declarations. Optional; commit atomically after the manifest validates.
+  --- Engine-global state-store declarations returned by `defineStore(...).declaration`. Optional; commit atomically after the manifest validates and preserve existing values when the schema is identical.
   stores: {StoreDeclaration}?,
 }
 
@@ -851,25 +851,32 @@ export type LevelManifest = {
 }
 
 --- Build a named reaction descriptor. Pure: returns a plain table, no FFI.
---- The `name` argument is optional: when omitted a deterministic, run-stable id
---- is derived from the descriptor body (content-derived, so re-running
---- registration yields the same auto-id — crossings and the wire reference it).
---- The returned handle is a `NamedReactionDescriptor`; pass it directly to a
---- button's `onPress` or a crossing `fire` entry instead of repeating the name.
+--- `descriptor` accepts exactly one body shape: `progress` (kill-ratio trigger),
+--- `primitive` (named Rust primitive with optional entity `tag` and typed
+--- `args`), or `sequence` (ordered per-entity steps). `name` is optional; when
+--- omitted a deterministic, run-stable id is derived from the body. Use explicit
+--- names when TS and Luau scripts must agree. The returned handle can be passed
+--- to button `onPress` or crossing `fire` entries.
 declare defineReaction: (
   ((descriptor: ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor) -> NamedReactionDescriptor)
   & ((name: string, descriptor: ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor) -> NamedReactionDescriptor)
 )
 
---- Stamp a shared level-tag scope onto each reaction in a plain list.
+--- Stamp a shared map-tag scope onto each reaction in a plain list. `tags` are
+--- matched against `ModMapEntry.tags`; omit scoping for every level.
 declare function scopeReactions(tags: {string}, list: {NamedReactionDescriptor}): {NamedReactionDescriptor}
 
---- Pure identity builder for entity-type descriptors. Returns the
---- descriptor as-is; its sole purpose is a typed construction site.
+--- Pure identity builder for entity-type descriptors returned from
+--- `ModManifest.entities`. `descriptor` is the full archetype table: optional
+--- `canonicalName`, optional `defaultWeapon`, and optional component presets.
 declare function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor
---- Pure identity builder for the mod manifest.
+--- Pure identity builder for the mod manifest consumed from the chunk return.
+--- `config.name` is required; optional arrays include `entities`, `maps`,
+--- `uiTrees`, `reactions`, `crossings`, and `stores`.
 declare function defineMod(config: ModManifest): ModManifest
---- Pure identity builder for a mod map catalog.
+--- Pure identity builder for a mod map catalog. Entries require `id`, `path`,
+--- and `name`; optional `tags` default to empty and drive filtering plus
+--- `levels` selectors.
 declare function defineMapCatalog(entries: {ModMapEntry}): {ModMapEntry}
 
 -- ---------------------------------------------------------------------------
@@ -884,10 +891,12 @@ export type NumericArrayStateValue = {number}
 export type ReadonlyStateRef<T> = { slot: string, __stateRefValueBrand: T? }
 export type WritableStateRef<T> = ReadonlyStateRef<T> & { __writableStateRefBrand: T }
 
---- One slot inside a `defineStore` schema. `type` selects the stored value kind:
---- `"number"`, `"boolean"`, `"string"`, `"enum"`, or `"array"`. Numeric slots may
---- declare `default` and `range`; enum slots declare their valid `values`;
---- `readonly = true` makes the returned state ref display-only for script writes.
+--- One slot inside a `defineStore` schema. Every slot needs `default`.
+--- `type = "number"` accepts a finite numeric default plus optional inclusive
+--- `range = {min, max}`; `"boolean"` and `"string"` require matching defaults;
+--- `"enum"` requires non-empty `values` and a default in that list; `"array"` is
+--- a finite-number array. `persist` saves on clean exit; `readonly` blocks
+--- script writes.
 export type StoreSlotSchema = { type: string, readonly: boolean?, [string]: any }
 
 --- Plain declaration data returned through `ModManifest.stores`.
@@ -902,8 +911,9 @@ export type StoreDefinition = {
 }
 
 --- Build a state-store declaration. Pure: calling it performs no FFI and changes
---- no engine state. Returned declarations commit atomically only after
---- the mod manifest succeeds.
+--- no engine state. `namespace` prefixes returned refs as `namespace.slotName`;
+--- `schema` declares slot names and validation rules. Returned declarations
+--- commit atomically only after the mod manifest succeeds.
 declare function defineStore(namespace: string, schema: { [string]: StoreSlotSchema }): StoreDefinition
 
 -- ---------------------------------------------------------------------------
@@ -1252,47 +1262,79 @@ export type NavIntent = "nav.up" | "nav.down" | "nav.left" | "nav.right" | "nav.
 -- is typed directly from SDK function signatures instead of bare globals.
 
 export type PostretroUiModule = {
+  --- Build a `text` widget descriptor. `props.content` is fallback text; optional `bind` can replace rendered content from state.
   Text: (props: TextProps) -> WidgetDescriptor,
+  --- Build a solid panel descriptor. `fill` is required; optional `bind` can replace fill from RGBA state.
   Panel: (props: PanelProps) -> WidgetDescriptor,
+  --- Build an image descriptor from a UI texture key. Exactly one of `label` or `decorative = true` is required.
   Image: (props: ImageProps) -> WidgetDescriptor,
+  --- Build a spacer descriptor. `flexGrow` is finite and defaults to 1.
   Spacer: (props: SpacerProps?) -> WidgetDescriptor,
+  --- Build an interactive button descriptor. `onPress` accepts a reaction handle, bare reaction name, or reserved `ui.*` action.
   Button: (props: ButtonProps) -> WidgetDescriptor,
+  --- Build an interactive slider descriptor. `bind` is writable numeric state/local cell; writes clamp to `[min, max]`.
   Slider: (props: SliderProps) -> WidgetDescriptor,
+  --- Build a passive bar descriptor. Displayed fill is `value / max` clamped to `[0, 1]`.
   Bar: (props: BarProps) -> WidgetDescriptor,
+  --- Build a non-visual live-region announcement. `text` is positional display text.
   Announce: (props: AnnounceProps, text: LocalizedText) -> WidgetDescriptor,
+  --- Build a vertical stack. `children` is positional, not a prop.
   VStack: (props: StackProps?, children: {WidgetDescriptor}?) -> WidgetDescriptor,
+  --- Build a horizontal stack. `children` is positional, not a prop.
   HStack: (props: StackProps?, children: {WidgetDescriptor}?) -> WidgetDescriptor,
+  --- Build a grid. `props.cols` must be an integer >= 1; children flow row-major.
   Grid: (props: GridProps, children: {WidgetDescriptor}?) -> WidgetDescriptor,
+  --- Wrap a root widget in an anchored tree placement envelope.
   Tree: (props: TreeProps, root: WidgetDescriptor) -> AnchoredTreeDescriptor,
+  --- Build a UI-tree registration object for `ModManifest.uiTrees` or `setupLevel().uiTrees`.
   defineUiTree: (registration: UiTreeRegistrationProps) -> UiTreeRegistration,
   getGameState: typeof(getGameState),
+  --- Compose bind-only options onto a state ref; pure and never reads live state.
   bindState: ((ReadonlyStateRef<number>, NumberStateBindOptions?) -> ReadonlyStateRef<number> & NumberStateBindOptions)
     & ((ReadonlyStateRef<{number}>, NumericArrayStateBindOptions?) -> ReadonlyStateRef<{number}> & NumericArrayStateBindOptions)
     & ((ReadonlyStateRef<string>, ScalarStateBindOptions?) -> ReadonlyStateRef<string> & ScalarStateBindOptions)
     & ((ReadonlyStateRef<boolean>, ScalarStateBindOptions?) -> ReadonlyStateRef<boolean> & ScalarStateBindOptions),
+  --- Build a scalar equality predicate for visibility, selection, or checked state.
   stateEquals: <T>(ref: ReadonlyStateRef<T>, value: T) -> Predicate,
+  --- Declare presentation-local cells. Values may be number, boolean, string, or RGBA tuple.
   createLocalState: (init: { [string]: any }) -> { scope: any, cells: any },
   ui: { createLocalState: (init: { [string]: any }) -> { scope: any, cells: any } },
+  --- Expand a string cell into sorted visible subtrees keyed by cell value.
   Switch: (cell: LocalStateHandle<string>, map: { [string]: WidgetDescriptor }) -> {WidgetDescriptor},
   defineTheme: (theme: ThemeDefinition) -> DefinedTheme,
   getDesignTokens: (theme: DefinedTheme) -> DesignTokens,
+  --- Build a numeric state-crossing watcher. `condition` gives exactly one finite `below` or `above`; optional `max` is a finite denominator.
   onStateCrossing: (ref: ReadonlyStateRef<number>, condition: CrossingCondition, fire: {NamedReactionDescriptor | string}) -> CrossingDescriptor,
+  --- Play `sound` on optional mixer `bus`; nil bus uses the engine default.
   playSound: (sound: string, bus: string?) -> PrimitiveReactionDescriptor,
+  --- Trigger gamepad rumble. `strong` and optional `weak` are motor intensities in [0, 1]; `durationMs` is milliseconds.
   rumble: (strong: number, durationMs: number, weak: number?) -> PrimitiveReactionDescriptor,
+  --- Flash the screen with linear RGBA `color`; `durationMs` is the decay time in milliseconds.
   flashScreen: (color: {number}, durationMs: number) -> PrimitiveReactionDescriptor,
+  --- Apply a screen-edge vignette. `strength` is peak amount, `durationMs` is total rise+decay time, and optional `color` is linear RGB.
   vignette: (strength: number, durationMs: number, color: {number}?) -> PrimitiveReactionDescriptor,
+  --- Shake the screen. `amplitude` is logical-reference px, `durationMs` is milliseconds, and optional `frequency` is Hz.
   screenShake: (amplitude: number, durationMs: number, frequency: number?) -> PrimitiveReactionDescriptor,
+  --- Push UI tree `tree` as a modal; optional `onCommit` names a reaction fired on commit.
   showDialog: (tree: string, onCommit: string?) -> PrimitiveReactionDescriptor,
+  --- Push a menu tree by registry name. Unknown tree names warn and no-op.
   openMenu: (tree: string) -> PrimitiveReactionDescriptor,
+  --- Pop the active modal. Empty stack warns and no-ops.
   closeDialog: () -> PrimitiveReactionDescriptor,
+  --- Queue a catalog map load by committed `ModMapEntry.id`; unknown ids warn and no-op.
   loadLevel: (id: string) -> PrimitiveReactionDescriptor,
+  --- Reload the active level from retained catalog id or raw dev path. No active level means no-op.
   restartLevel: () -> PrimitiveReactionDescriptor,
+  --- Return to the frontend menu and reload its optional backdrop level.
   returnToFrontend: () -> PrimitiveReactionDescriptor,
+  --- Open the engine keyboard modal. Optional `onCommit` fires when text entry commits.
   openTextEntry: (onCommit: string?) -> PrimitiveReactionDescriptor,
   KEYBOARD_TREE: "keyboard",
   CLOSE_DIALOG_ACTION: "ui.closeDialog",
   EXIT_TO_DESKTOP_ACTION: "ui.exitToDesktop",
+  --- Reserved button `onPress` action for returning to the frontend; same lifecycle path as `returnToFrontend()`.
   QUIT_TO_MENU_ACTION: "ui.quitToMenu",
+  --- Write `value` to a writable state ref at game-logic time; runtime validates type/range and rejects readonly slots.
   updateState: <T>(ref: WritableStateRef<T>, value: T) -> PrimitiveReactionDescriptor,
   appendText: (ref: WritableStateRef<string>, text: string) -> PrimitiveReactionDescriptor,
   backspaceText: (ref: WritableStateRef<string>) -> PrimitiveReactionDescriptor,
@@ -1305,11 +1347,17 @@ export type PostretroModule = {
   getGameState: typeof(getGameState),
   timeline: typeof(timeline),
   sequence: typeof(sequence),
+  --- Build a named reaction descriptor. Accepts `progress`, `primitive`, or `sequence` body data.
   defineReaction: typeof(defineReaction),
+  --- Stamp a shared map-tag scope onto a reaction list.
   scopeReactions: typeof(scopeReactions),
+  --- Pure identity builder for entity type descriptors returned from `ModManifest.entities`.
   defineEntity: typeof(defineEntity),
+  --- Pure identity builder for the mod manifest. `config.name` is required.
   defineMod: typeof(defineMod),
+  --- Pure identity builder for map catalog entries with required `id`, `path`, and `name`.
   defineMapCatalog: typeof(defineMapCatalog),
+  --- Pure state-store builder returning `{ declaration, state }`.
   defineStore: typeof(defineStore),
   emitter: typeof(emitter),
   smokeEmitter: typeof(smokeEmitter),

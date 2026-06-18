@@ -53,7 +53,8 @@ For each phase in the sequencing section:
 2. The agent's **specific task** — description, acceptance criteria
 3. Instruction to read relevant `context/lib/` files for architectural guidance
 4. Instruction to follow `context/lib/development_guide.md` conventions
-5. Instruction to run `cargo check` and `cargo test` before considering the task complete
+5. Instruction to run `cargo check` before considering the task complete
+6. Instruction to run focused tests for the touched crate/module/behavior, not a full workspace `cargo test` by default. Full workspace tests are the coordinator's final gate.
 
 **Do NOT provide:**
 - Other tasks' details (the agent doesn't need them)
@@ -73,7 +74,7 @@ Between phases, check that prerequisites for the next phase are satisfied.
 ### 5. Complete
 
 When all phases are done:
-- Run preflight checks: `cargo fmt --check && cargo clippy -- -D warnings && cargo test`
+- Run the full preflight once after integration: `cargo fmt --check && cargo clippy -- -D warnings && cargo test`
 - Run a `/review-panel` on code edited in this session
 - Report review panel findings to user to discuss which feedback to act on
 
@@ -89,6 +90,7 @@ When the user says "land the plane":
 - **Agent fails a task:** Surface the error and acceptance criteria to the user. Ask whether to retry, skip, or abort.
 - **Merge conflict from concurrent agents:** Resolve if straightforward; escalate to user if the conflict involves architectural decisions.
 - **Preflight fails:** Fix if the issue is mechanical (formatting, simple clippy lint). Escalate if the fix requires design decisions.
+- **Targeted worker checks pass but final preflight fails:** Treat the final preflight as authoritative. Fix or escalate from the integrated state.
 
 ### Principles
 

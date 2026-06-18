@@ -12,7 +12,7 @@ Let a mod declare its frontend through a `frontend` manifest block (on the `defi
 
 - **`frontend` block on the `defineMod` manifest** — `defineMod`, `ModManifest`, and the `maps` catalog are already in source (`sdk/lib/data_script.ts:190`); this plan adds the `frontend` field and its types to the manifest the builder already types.
 - **`--mod <path|id>` boot flag:** select which mod the engine loads and enter its frontend (no map arg). `--mod` sets the content/mod root that `run_mod_init` already loads from (today derived from the map path via `content_root_from_map`, or set by the existing `--content-root` flag — there is no fixed mod root to replace); `--content-root` is the closest precedent to extend. A bare map-path argument remains the dev raw-path bypass (`LevelSource::Path`, owned by `mod-map-catalog`) that loads straight into a map under the selected mod. Mod-browser UI and persisted last-mod selection stay out of scope.
-- **`frontend` manifest block:** `{ menuTree, backgroundLevel?, camera }`. `menuTree` is a UI-registry name; `backgroundLevel` is a **catalog id** (resolved via `mod-map-catalog`). Drained into engine state like `uiTrees`/`theme`; inherits staged-reload semantics.
+- **`frontend` manifest block:** `{ menuTree, backgroundLevel?, camera }`. `menuTree` is a UI-registry name; `backgroundLevel` is a **catalog id** (resolved via `mod-map-catalog`). `camera` is required; missing or malformed camera fields make the frontend block structurally invalid. Drained into engine state like `uiTrees`/`theme`; inherits staged-reload semantics.
 - **Frontend population:** present the mod's `menuTree` — resolve it through the UI registry and push it as a capturing modal, apply the menu camera pose, and suppress player control. With a declared `backgroundLevel`, the menu is shown over that single loaded level; without one, over the world-less `Frontend` fallback.
 - **Menu camera as a declared pose:** position + yaw + pitch applied to the engine camera while the menu is presented. **Static pose only** — a declared/animated camera orbit is out of scope (see below). Not a general runtime camera-scripting API.
 - **Engine-default frontend fallback:** a minimal built-in menu when no mod registers one (mirrors the `hud`/`pauseMenu` fallback tier), so debug/no-map boot is usable.
@@ -58,7 +58,7 @@ Add the optional `frontend` field to the `ModManifest` **registered type** via `
 
 ### Task 2: Drain the `frontend` block into engine state
 
-Add `frontend: Option<Frontend>` to `ModManifestResult` (runtime.rs:56) and `StagedManifest` (staged_manifest.rs:57); the new `Frontend` type must derive at least `Clone, Debug, PartialEq` so both structs' existing derives still hold. Note `ui_trees`/`theme` are NOT committed by `commit_staged_manifest_result` (that commits entities/maps/reactions/crossings/store_declarations to the data registry) — they commit through the app-side `staged_ui_commit_payload` (main.rs:111) / `commit_staged_ui_manifest` (main.rs:2728) path, gated on `StagedManifestCommitOutcome`. Carry `frontend` on that same branch (extend `staged_ui_commit_payload` to return it alongside `ui_trees`/`theme`, replaced whole each staged commit — not a dedicated `replace_*` branch), storing it in a durable app-side field `self.frontend: Option<Frontend>`; the game-flow arms (Task 5) read `backgroundLevel` from it. Drain the field via a new `drain_frontend_js`/`drain_frontend_lua` helper pair added in `data_descriptors.rs` (the twins of `drain_ui_trees_js`:4565 / `drain_theme_js`:4622, which live there), called from `run_mod_init_quickjs` (runtime.rs:1629–1638) and `run_mod_init_luau` (runtime.rs:1709). A structurally-invalid `frontend` field aborts mod-init like `maps`/`theme`/`reactions` (the drain helpers set `out = Err(...); return;`); only sub-field degradation (e.g. a single bad `camera` sub-field) is logged-and-skipped.
+Add `frontend: Option<Frontend>` to `ModManifestResult` (runtime.rs:56) and `StagedManifest` (staged_manifest.rs:57); the new `Frontend` type must derive at least `Clone, Debug, PartialEq` so both structs' existing derives still hold. Note `ui_trees`/`theme` are NOT committed by `commit_staged_manifest_result` (that commits entities/maps/reactions/crossings/store_declarations to the data registry) — they commit through the app-side `staged_ui_commit_payload` (main.rs:111) / `commit_staged_ui_manifest` (main.rs:2728) path, gated on `StagedManifestCommitOutcome`. Carry `frontend` on that same branch (extend `staged_ui_commit_payload` to return it alongside `ui_trees`/`theme`, replaced whole each staged commit — not a dedicated `replace_*` branch), storing it in a durable app-side field `self.frontend: Option<Frontend>`; the game-flow arms (Task 5) read `backgroundLevel` from it. Drain the field via a new `drain_frontend_js`/`drain_frontend_lua` helper pair added in `data_descriptors.rs` (the twins of `drain_ui_trees_js`:4565 / `drain_theme_js`:4622, which live there), called from `run_mod_init_quickjs` (runtime.rs:1629–1638) and `run_mod_init_luau` (runtime.rs:1709). A structurally-invalid `frontend` field aborts mod-init like `maps`/`theme`/`reactions` (the drain helpers set `out = Err(...); return;`). Camera is required; bad camera subfields are fatal, not logged-and-skipped.
 
 ### Task 3: Mod boot handle (`--mod` flag)
 
@@ -66,7 +66,7 @@ Add a `--mod <path|id>` CLI argument that sets `content_root`, extending the exi
 
 ### Task 4: Frontend population + menu camera
 
-Present the committed `menuTree`: resolve it through the UI registry (`ModalStack`, modal_stack.rs) and push it as a capturing modal; fall back to the engine-default menu when absent (new tier entry alongside `hud`/`pauseMenu` fallbacks). Apply the declared static camera pose by writing `self.camera.{position,yaw,pitch}` (camera.rs:86) — the same public fields `install_level_payload` writes at spawn (startup/lifecycle.rs:638; camera writes at ~920-931), so no new camera fields or types. That install write is unconditional on every install, so a one-shot post-install pose write is insufficient: apply the menu pose per frame, gated on the frontend menu being the top modal, in the steady loop near `reconcile_ui_focus` (main.rs:3502) — the same place player control is suppressed via the capture-mode path. This keeps the install teleport and any later camera mutation from clobbering the pose. Camera orbit is out of scope — static pose only.
+Present the committed `menuTree`: resolve it through the UI registry (`ModalStack`, modal_stack.rs) and push it as a capturing modal; fall back to the engine-default menu when absent (new tier entry alongside `hud`/`pauseMenu` fallbacks). The fallback must be pushed before a backdrop load starts, so an unknown mod menu cannot leave a playable backdrop with no capturing modal. Apply the declared static camera pose by writing `self.camera.{position,yaw,pitch}` (camera.rs:86) — the same public fields `install_level_payload` writes at spawn (startup/lifecycle.rs:638; camera writes at ~920-931), so no new camera fields or types. That install write is unconditional on every install, so a one-shot post-install pose write is insufficient: apply the menu pose per frame, gated on the frontend menu being the top modal, in the steady loop near `reconcile_ui_focus` (main.rs:3502) — the same place player control is suppressed via the capture-mode path. This keeps the install teleport and any later camera mutation from clobbering the pose. Camera orbit is out of scope — static pose only.
 
 Background level — only one level is loaded at a time. Frontend population pushes the menu modal and (if `backgroundLevel` is present) enqueues its `LevelSource::Catalog` load; the engine transitions Frontend→Loading→Running with the pushed menu modal persisting across the state change (the modal stack is not per-level UI; the already-pushed menu keeps its cloned descriptor). The capturing menu modal + suppressed control + menu camera make it the player-facing frontend (the backdrop *is* the loaded level, not a second world). If no `backgroundLevel` is declared, the menu is shown over the world-less `Frontend` state (clear-color, no level installed — lifecycle.rs:151-155). Either way the background-level concept is preserved; it is realized as loaded-level-plus-menu-overlay, never as a level coexisting with `Frontend`.
 
@@ -74,7 +74,7 @@ Background level — only one level is loaded at a time. Frontend population pus
 
 Add the game-flow verbs as `SystemReactionCommand` variants (`system_commands.rs`, beside `PushTree`/`SetState`), registered in `register_system_reaction_primitives` (defined in `system_commands.rs:213`, called from main.rs:384) and drained in `dispatch_system_commands` (main.rs:3130, which holds `&mut self`) — the same queue/drain path as the `openMenu`/`showDialog` (`PushTree`) system reactions (`scripting.md` §10.4):
 
-- `loadLevel(map)` → `LoadLevel { map }` → arm calls `self.enqueue_level_request(LevelRequest::Load(LevelSource::Catalog(map)))` (catalog id resolved via the existing `maps` catalog). The SDK `loadLevel(id: string)` serializes to `{ name: "loadLevel", args: { map: id } }` (positional SDK call → named wire key `map`, matching the `openMenu` precedent); the drain in `system_commands.rs` reads the `"map"` key.
+- `loadLevel(map)` → `LoadLevel { map }` → arm calls `self.enqueue_level_request(LevelRequest::Load(LevelSource::Catalog(map)))` (catalog id resolved via the existing `maps` catalog). The SDK `loadLevel(id: string)` serializes to `{ primitive: "loadLevel", args: { map: id } }` (positional SDK call → named wire key `map`, matching the primitive reaction descriptor shape); the drain in `system_commands.rs` reads the `"map"` key.
 - `restartLevel()` → `RestartLevel` → arm re-enqueues the **retained active `LevelSource`**. Retain it by adding `active_level_source: Option<LevelSource>` to the App, set in `retain_active_level_tags_for_install` (lifecycle.rs:434, which already copies install-entry data into durable app state alongside `active_level_tags`), reconstructed from the install `LevelLoadEntry` — `catalog_id` → `LevelSource::Catalog(id)`, else `LevelSource::Path(PathBuf::from(entry.path))` (`entry.path` is a `String`; `LevelSource::Path` takes a `PathBuf`; entry fields at lifecycle.rs:482–489). It survives past install (`level_load` is cleared on unload), so restart does not read a live `level_load`.
 - `returnToFrontend()` → `ReturnToFrontend` → arm calls a shared `return_to_frontend` routine: `enqueue_level_request(LevelRequest::Unload)`, then if `self.frontend`'s `backgroundLevel` is set, re-enqueue its `Catalog` load so the menu returns over the backdrop.
 
@@ -83,6 +83,13 @@ Add the reserved `ui.quitToMenu` button action — a constant in `render/ui/acti
 ### Task 6: Tests, docs, manual verification
 
 CPU coverage: `defineMod` round-trip and import-no-FFI; `frontend` drain + staged replace/omit/fallback; `loadLevel`, `restartLevel` (re-enqueues the retained `LevelSource`), and `ui.quitToMenu` routing as pure logic; `--mod` argument parsing/selection. Manual launch checklist: `--mod <campaign>`→menu (camera pose, background level, suppressed controls)→start→play→quit-to-menu→menu→start-again; restart-on-death; no-mod fallback menu. At promotion, update `boot_sequence.md` (Frontend/Loading states, the `--mod` boot handle, the hub flow; record `--mod` (singular) as the now-shipped single-mod boot handle and narrow the existing §9 `--mods` future item to "mod browser + persisted selection," so the two flag names are not left undistinguished), `scripting.md` (`defineMod`, `loadLevel`/`restartLevel`/`returnToFrontend`, `frontend` manifest block), and `ui.md` (`ui.quitToMenu`, frontend fallback tier).
+
+### Manual launch checklist
+
+- `--mod <campaign>` → menu: confirm declared camera pose, background level when present, and suppressed player controls.
+- Start a catalog map → play → quit-to-menu → menu → start again.
+- Bind `playerDied` to `restartLevel()` in test content and confirm death reloads the active map.
+- Launch with no mod frontend and confirm the engine fallback frontend menu appears.
 
 ## Sequencing
 
@@ -104,9 +111,9 @@ CPU coverage: `defineMod` round-trip and import-no-FFI; `frontend` drain + stage
 | menu tree ref | registry name lookup | `"menuTree"` | `menuTree` | `menuTree` | resolves through `ModalStack` |
 | background level | catalog id → `PathBuf` | `"backgroundLevel"` | `backgroundLevel` | `backgroundLevel` | optional; resolved via the existing `maps` catalog |
 | menu camera | `Camera{position,yaw,pitch}` writer | `"camera"` | `camera` | `camera` | static pose (orbit out of scope) |
-| load verb | `loadLevel(map)` system reaction | `{name:"loadLevel",args:{map}}` | reaction name | reaction name | `map` is a catalog id (NOT a `ui.*` action) |
-| restart verb | `restartLevel` system reaction | `{name:"restartLevel"}` | reaction name | reaction name | reload the active map via its retained `LevelSource` |
-| return verb | `returnToFrontend` system reaction | `{name:"returnToFrontend"}` | reaction name | reaction name | unload → Frontend |
+| load verb | `loadLevel(map)` system reaction | `{ primitive: "loadLevel", args: { map } }` | reaction primitive | reaction primitive | `map` is a catalog id (NOT a `ui.*` action) |
+| restart verb | `restartLevel` system reaction | `{ primitive: "restartLevel", args: {} }` | reaction primitive | reaction primitive | reload the active map via its retained `LevelSource` |
+| return verb | `returnToFrontend` system reaction | `{ primitive: "returnToFrontend", args: {} }` | reaction primitive | reaction primitive | unload → Frontend |
 | quit button | `UiButtonAction::QuitToMenu` | `"ui.quitToMenu"` | `QUIT_TO_MENU_ACTION` | `QUIT_TO_MENU_ACTION` | reserved, argument-less; routes to the shared `return_to_frontend` routine (Unload + backdrop reload), as `returnToFrontend` |
 | mod boot handle | `--mod <path\|id>` CLI arg | n/a | n/a | n/a | selects the mod to load; bare map-path = dev bypass |
 
@@ -122,23 +129,21 @@ import { buildMainMenu } from "./ui/main-menu";
 
 // Launch into this mod's frontend (no map arg):
 //   cargo run -p postretro -- --mod content/mods/my-campaign
-export function setupMod() {
-  return defineMod({
-    name: "My Campaign",
-    entities,
-    theme,
-    // maps: [...] — already on the manifest; classifies levels and feeds level-select
-    uiTrees: [
-      ...buildMainMenu(),               // registers "mainMenu" tree
-      // hud, pauseMenu, ...
-    ],
-    frontend: {
-      menuTree: "mainMenu",
-      backgroundLevel: "menu_backdrop",  // a catalog id (see mod-map-catalog)
-      camera: { position: [4, 2, 8], yaw: -0.6, pitch: -0.1 },  // static pose (orbit out of scope)
-    },
-  });
-}
+export default defineMod({
+  name: "My Campaign",
+  entities,
+  theme,
+  // maps: [...] - already on the manifest; classifies levels and feeds level-select
+  uiTrees: [
+    ...buildMainMenu(),               // registers "mainMenu" tree
+    // hud, pauseMenu, ...
+  ],
+  frontend: {
+    menuTree: "mainMenu",
+    backgroundLevel: "menu_backdrop",  // a catalog id (see mod-map-catalog)
+    camera: { position: [4, 2, 8], yaw: -0.6, pitch: -0.1 },  // static pose (orbit out of scope)
+  },
+});
 
 // A menu "PLAY" button's onPress names this reaction:
 export const startCampaign = defineReaction({

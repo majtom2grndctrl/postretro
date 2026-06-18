@@ -1,7 +1,7 @@
 --!strict
 -- UI reaction vocabulary: pure builders for the HUD-dynamics reaction surface
 -- (M13 Goal E). `onStateCrossing` constructs a state-crossing watcher returned
--- through `setupLevel().crossings` or `setupMod().crossings`. It never calls
+-- through `setupLevel().crossings` or `ModManifest.crossings`. It never calls
 -- back into Rust -- the FFI boundary is the `return` statement of the script
 -- entry point.
 -- See: context/lib/scripting.md §10.4
@@ -15,7 +15,7 @@ export type CrossingCondition =
   | { below: nil?, above: number, max: number? }
 
 --- A state-crossing watcher entry as it appears in `setupLevel().crossings` or
---- `setupMod().crossings`. The condition fields are flattened in beside `slot`
+--- `ModManifest.crossings`. The condition fields are flattened in beside `slot`
 --- and `fire`; `fire` is the list of named reactions dispatched when the
 --- crossing occurs. `levels` scopes mod-global crossings by map-catalog tags;
 --- omit it for every level.
@@ -73,7 +73,7 @@ end
 
 --- Build a state-crossing watcher. Pure: returns a plain table, does not
 --- register anything in the engine. The engine consumes the table from
---- `setupLevel().crossings` or `setupMod().crossings` with optional `levels`
+--- `setupLevel().crossings` or `ModManifest.crossings` with optional `levels`
 --- scoping. On a crossing in the condition's direction the engine fires every
 --- reaction in `fire` exactly once, re-arming only after a crossing back. A
 --- registration against a non-Number slot warns and is skipped at load.
@@ -201,6 +201,10 @@ UiReactionsSdk.CLOSE_DIALOG_ACTION = "ui.closeDialog"
 --- App intercepts this exact wire value before named-reaction dispatch.
 UiReactionsSdk.EXIT_TO_DESKTOP_ACTION = "ui.exitToDesktop"
 
+--- Reserved button `onPress` action that returns to the frontend menu. The App
+--- intercepts this exact wire value before named-reaction dispatch.
+UiReactionsSdk.QUIT_TO_MENU_ACTION = "ui.quitToMenu"
+
 --- Open the engine-shipped on-screen keyboard for text entry (M13 Text Entry).
 --- Pure: returns a primitive reaction body wrapping `showDialog`. The keyboard is
 --- a capturing modal that edits the `ui.textEntry` slot; bind a `text` widget to
@@ -224,6 +228,24 @@ end
 --- body, no engine side effect. An empty stack warns and no-ops at dispatch time.
 function UiReactionsSdk.closeDialog(): PrimitiveReactionDescriptor
   return { primitive = "closeDialog", args = {} }
+end
+
+--- Load a map by catalog id. Pure: returns a primitive reaction body; the engine
+--- queues the lifecycle load when the reaction fires.
+function UiReactionsSdk.loadLevel(id: string): PrimitiveReactionDescriptor
+  return { primitive = "loadLevel", args = { map = id } }
+end
+
+--- Reload the currently-active map source. Pure: returns a primitive reaction
+--- body; runtime no-ops when no level is active.
+function UiReactionsSdk.restartLevel(): PrimitiveReactionDescriptor
+  return { primitive = "restartLevel", args = {} }
+end
+
+--- Return to the frontend menu, including its optional declared backdrop level.
+--- Pure: returns a primitive reaction body.
+function UiReactionsSdk.returnToFrontend(): PrimitiveReactionDescriptor
+  return { primitive = "returnToFrontend", args = {} }
 end
 
 --- Write `value` to the writable state reference at the game-logic stage.

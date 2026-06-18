@@ -1,6 +1,6 @@
 // Reference data-context entity descriptors for the rotator and damage-source
-// reference behaviors. Spread `referenceEntities` into the `entities` array
-// returned from `setupMod()` to register the archetypes.
+// reference behaviors. Spread `referenceEntities` into `ModManifest.entities`
+// to register the archetypes.
 //
 // See: context/lib/scripting.md §2
 
@@ -19,7 +19,7 @@ export const DAMAGE_SOURCE_CLASSNAME = "game_damage_source";
  * behaviors locate their work via `worldQuery` filters on tags authored on
  * the placement.
  *
- * Spread into the `entities` array returned from `setupMod()`.
+ * Spread into `ModManifest.entities`.
  */
 export const referenceEntities: EntityTypeDescriptor[] = [
   defineEntity({

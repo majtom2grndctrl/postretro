@@ -19,10 +19,10 @@ use rquickjs::{
 use super::ctx::ScriptCtx;
 use super::data_descriptors::{
     EntityTypeDescriptor, LevelManifest, ModFontAssets, ModThemeTokens, RegisteredUiTree,
-    drain_fonts_js, drain_fonts_lua, drain_global_crossings_js, drain_global_crossings_lua,
-    drain_global_reactions_js, drain_global_reactions_lua, drain_maps_js, drain_maps_lua,
-    drain_theme_js, drain_theme_lua, drain_ui_trees_js, drain_ui_trees_lua,
-    entity_descriptor_from_js, entity_descriptor_from_lua,
+    drain_fonts_js, drain_fonts_lua, drain_frontend_js, drain_frontend_lua,
+    drain_global_crossings_js, drain_global_crossings_lua, drain_global_reactions_js,
+    drain_global_reactions_lua, drain_maps_js, drain_maps_lua, drain_theme_js, drain_theme_lua,
+    drain_ui_trees_js, drain_ui_trees_lua, entity_descriptor_from_js, entity_descriptor_from_lua,
 };
 use super::data_registry::{ScopedCrossing, ScopedReaction};
 use super::error::ScriptError;
@@ -45,7 +45,7 @@ use super::staged_manifest::{StagedManifestBuildConfig, StagedManifestBuildLane}
 #[cfg(debug_assertions)]
 use super::staged_manifest::{StagedManifestBuildStatus, StagedManifestDiagnosticSeverity};
 
-/// Validated `setupMod()` return value. Construct via
+/// Validated mod manifest export/return value. Construct via
 /// [`ScriptRuntime::run_mod_init`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ModMapEntry {
@@ -56,32 +56,50 @@ pub(crate) struct ModMapEntry {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub(crate) struct MenuCamera {
+    pub(crate) position: [f32; 3],
+    pub(crate) yaw: f32,
+    pub(crate) pitch: f32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Frontend {
+    pub(crate) menu_tree: String,
+    pub(crate) background_level: Option<String>,
+    pub(crate) camera: MenuCamera,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ModManifestResult {
     pub(crate) name: String,
-    /// Entity-type descriptors returned by `setupMod()`. Empty when the
+    /// Entity-type descriptors returned by the mod manifest. Empty when the
     /// returned object omits the `entities` field. Drained into `DataRegistry`
     /// by the boot caller after `run_mod_init` returns.
     pub(crate) entities: Vec<EntityTypeDescriptor>,
-    /// UI trees registered via `setupMod()`'s `uiTrees` field (each a name +
+    /// UI trees registered via the mod manifest's `uiTrees` field (each a name +
     /// `AnchoredTree` + `alwaysOn`). Empty when absent. A malformed entry is
     /// logged and skipped at parse time (`ui.md` §1.1). Drained into the app-side
     /// `UiTreeRegistry` at `ScopeTier::Mod` by the boot caller in `main.rs`.
     pub(crate) ui_trees: Vec<RegisteredUiTree>,
-    /// Theme tokens from `setupMod()`'s `theme` field. Default (empty) when
+    /// Theme tokens from the mod manifest's `theme` field. Default (empty) when
     /// absent. Drained into the `ThemeDescriptor` merge by the boot caller.
     pub(crate) theme: ModThemeTokens,
-    /// Font assets (family → TTF path) from `setupMod()`'s `fonts` field.
+    /// Mod frontend declaration from the manifest's `frontend` field. A
+    /// successful staged mod-init commit replaces this snapshot whole; omission
+    /// returns the app to its fallback frontend.
+    pub(crate) frontend: Option<Frontend>,
+    /// Font assets (family → TTF path) from the mod manifest's `fonts` field.
     /// Default (empty) when absent. Installed via `register_ui_font` by the
     /// boot caller.
     pub(crate) fonts: ModFontAssets,
-    /// Map catalog entries from `setupMod()`'s `maps` field. Empty when absent.
+    /// Map catalog entries from the mod manifest's `maps` field. Empty when absent.
     /// Drained into `DataRegistry` by the boot caller after `run_mod_init`
     /// returns.
     pub(crate) maps: Vec<ModMapEntry>,
-    /// Engine-global reaction definitions from `setupMod()`'s `reactions`
+    /// Engine-global reaction definitions from the mod manifest's `reactions`
     /// field. Empty when absent. Drained into `DataRegistry` by the boot caller.
     pub(crate) reactions: Vec<ScopedReaction>,
-    /// Engine-global crossing definitions from `setupMod()`'s `crossings`
+    /// Engine-global crossing definitions from the mod manifest's `crossings`
     /// field. Empty when absent. Drained into `DataRegistry` by the boot caller.
     pub(crate) crossings: Vec<ScopedCrossing>,
     /// Validated state-store declarations collected during this mod-init
@@ -326,7 +344,7 @@ pub(crate) struct ScriptRuntimeConfig {
 pub(crate) struct ScriptRuntime {
     quickjs: QuickJsSubsystem,
     luau: LuauSubsystem,
-    /// Validated `setupMod()` return value, populated by `run_mod_init`.
+    /// Validated mod manifest value, populated by `run_mod_init`.
     /// `None` until `run_mod_init` succeeds; in debug builds may also remain
     /// `None` if no `start-script.{js,luau}` was found at the mod root.
     mod_manifest: Option<ModManifestResult>,
@@ -825,8 +843,8 @@ impl ScriptRuntime {
     /// the resulting `LevelManifest`. Errors are logged and converted to an
     /// empty manifest — the level loads with an empty reaction registry
     /// (per-level reactions are absent) rather than failing. The engine-global
-    /// entity-type registry, populated at mod-init from `setupMod()`'s
-    /// `entities` return field, is unaffected.
+    /// entity-type registry, populated at mod-init from the mod manifest's
+    /// `entities` field, is unaffected.
     ///
     /// `mod_root` is forwarded to the Luau VM so `require("./shared/loot")`
     /// inside data scripts resolves against the mod root, matching the
@@ -883,9 +901,10 @@ impl ScriptRuntime {
     /// Errors:
     /// - both `start-script.js` and `start-script.luau` exist
     /// - in release builds, no `start-script.{js,luau}` exists
-    /// - `setupMod` is not exported by the script
-    /// - `setupMod()` throws or returns a non-object value
-    /// - the returned object is missing the required `name` field
+    /// - `.js` default manifest export is missing or not an object
+    /// - `.luau` returned manifest is missing or not a table
+    /// - top-level manifest initialization throws
+    /// - the manifest object/table is missing the required `name` field
     ///
     /// On success, the validated manifest is stored on `self`; access it via
     /// [`ScriptRuntime::mod_manifest`]. In debug builds when no start-script
@@ -1500,7 +1519,7 @@ fn run_mod_init_quickjs(
 
     let primitives = subsys.primitives();
     let mut out: Result<ModManifestResult, ScriptError> = Err(ScriptError::InvalidArgument {
-        reason: "mod-init: setupMod did not produce a manifest".to_string(),
+        reason: "mod-init: default mod manifest export did not produce a manifest".to_string(),
     });
 
     ctx.with(|ctx| {
@@ -1518,43 +1537,66 @@ fn run_mod_init_quickjs(
             return;
         }
 
-        if let Err(e) = run_script::<()>(&ctx, source, source_path) {
-            out = Err(e);
+        let globals = ctx.globals();
+        if let Err(e) = globals.remove("__postretroModManifest") {
+            out = Err(ScriptError::InvalidArgument {
+                reason: format!(
+                    "mod-init: failed to clear default mod manifest export slot: {e}"
+                ),
+            });
             return;
         }
 
-        let globals = ctx.globals();
-        let func: JsFunction = match globals.get("setupMod") {
-            Ok(f) => f,
+        if let Err(e) = run_script::<()>(&ctx, source, source_path) {
+            out = Err(match e {
+                ScriptError::ScriptThrew { msg, source_name } => ScriptError::ScriptThrew {
+                    msg: format!("default mod manifest export initialization failed: {msg}"),
+                    source_name,
+                },
+                other => other,
+            });
+            return;
+        }
+
+        match globals.contains_key("__postretroModManifest") {
+            Ok(false) => {
+                out = Err(ScriptError::InvalidArgument {
+                    reason: format!(
+                        "mod-init: `{source_path}` missing default mod manifest export"
+                    ),
+                });
+                return;
+            }
+            Ok(true) => {}
             Err(e) => {
                 out = Err(ScriptError::InvalidArgument {
-                    reason: format!("mod-init: `{source_path}` did not export `setupMod`: {e}"),
+                    reason: format!(
+                        "mod-init: `{source_path}` default mod manifest export presence check failed: {e}"
+                    ),
+                });
+                return;
+            }
+        }
+
+        let manifest: JsValue = match globals.get::<_, JsValue>("__postretroModManifest") {
+            Ok(value) => value,
+            Err(e) => {
+                out = Err(ScriptError::InvalidArgument {
+                    reason: format!(
+                        "mod-init: `{source_path}` default mod manifest export lookup failed: {e}"
+                    ),
                 });
                 return;
             }
         };
 
-        let returned: JsValue = match func.call(()).catch(&ctx) {
-            Ok(v) => v,
-            Err(caught) => {
-                let msg = caught.to_string();
-                log::error!(
-                    target: "script/quickjs",
-                    "mod-init: `{source_path}` setupMod threw: {msg}",
-                );
-                out = Err(ScriptError::ScriptThrew {
-                    msg,
-                    source_name: source_path.to_string(),
-                });
-                return;
-            }
-        };
-
-        let obj = match JsObject::from_value(returned) {
+        let obj = match JsObject::from_value(manifest) {
             Ok(o) => o,
             Err(_) => {
                 out = Err(ScriptError::InvalidArgument {
-                    reason: format!("mod-init: `{source_path}` setupMod must return an object"),
+                    reason: format!(
+                        "mod-init: `{source_path}` default mod manifest export must be an object"
+                    ),
                 });
                 return;
             }
@@ -1565,7 +1607,7 @@ fn run_mod_init_quickjs(
             Err(e) => {
                 out = Err(ScriptError::InvalidArgument {
                     reason: format!(
-                        "mod-init: `{source_path}` setupMod return value missing `name`: {e}"
+                        "mod-init: `{source_path}` default mod manifest export missing `name`: {e}"
                     ),
                 });
                 return;
@@ -1587,7 +1629,7 @@ fn run_mod_init_quickjs(
                             Err(e) => {
                                 err = Some(ScriptError::InvalidArgument {
                                     reason: format!(
-                                        "mod-init: `{source_path}` setupMod `entities[{i}]` could not be read: {e}"
+                                        "mod-init: `{source_path}` default mod manifest export `entities[{i}]` could not be read: {e}"
                                     ),
                                 });
                                 break;
@@ -1598,7 +1640,7 @@ fn run_mod_init_quickjs(
                             Err(e) => {
                                 err = Some(ScriptError::InvalidArgument {
                                     reason: format!(
-                                        "mod-init: `{source_path}` setupMod `entities[{i}]` invalid: {e}"
+                                        "mod-init: `{source_path}` default mod manifest export `entities[{i}]` invalid: {e}"
                                     ),
                                 });
                                 break;
@@ -1614,7 +1656,7 @@ fn run_mod_init_quickjs(
                 Err(e) => {
                     out = Err(ScriptError::InvalidArgument {
                         reason: format!(
-                            "mod-init: `{source_path}` setupMod `entities` field must be an array: {e}"
+                            "mod-init: `{source_path}` default mod manifest export `entities` field must be an array: {e}"
                         ),
                     });
                     return;
@@ -1623,7 +1665,7 @@ fn run_mod_init_quickjs(
             Err(e) => {
                 out = Err(ScriptError::InvalidArgument {
                     reason: format!(
-                        "mod-init: `{source_path}` setupMod return value `entities` lookup failed: {e}"
+                        "mod-init: `{source_path}` default mod manifest export `entities` lookup failed: {e}"
                     ),
                 });
                 return;
@@ -1633,56 +1675,65 @@ fn run_mod_init_quickjs(
         // UI fields drain via the G1a bridge fns. Malformed entries are logged
         // and skipped inside the drains — a bad UI field never aborts mod-init
         // (ui.md §1.1). A structurally broken read still surfaces as InvalidArgument.
-        let ui_trees = match drain_ui_trees_js(&ctx, &obj, "setupMod") {
+        let ui_trees = match drain_ui_trees_js(&ctx, &obj, "default mod manifest export") {
             Ok(t) => t,
             Err(e) => {
                 out = Err(ScriptError::InvalidArgument {
-                    reason: format!("mod-init: `{source_path}` setupMod `uiTrees` invalid: {e}"),
+                    reason: format!("mod-init: `{source_path}` default mod manifest export `uiTrees` invalid: {e}"),
                 });
                 return;
             }
         };
-        let theme = match drain_theme_js(&obj, "setupMod") {
+        let theme = match drain_theme_js(&obj, "default mod manifest export") {
             Ok(t) => t,
             Err(e) => {
                 out = Err(ScriptError::InvalidArgument {
-                    reason: format!("mod-init: `{source_path}` setupMod `theme` invalid: {e}"),
+                    reason: format!("mod-init: `{source_path}` default mod manifest export `theme` invalid: {e}"),
                 });
                 return;
             }
         };
-        let fonts = match drain_fonts_js(&obj, "setupMod") {
+        let frontend = match drain_frontend_js(&obj, "default mod manifest export") {
+            Ok(frontend) => frontend,
+            Err(e) => {
+                out = Err(ScriptError::InvalidArgument {
+                    reason: format!("mod-init: `{source_path}` default mod manifest export `frontend` invalid: {e}"),
+                });
+                return;
+            }
+        };
+        let fonts = match drain_fonts_js(&obj, "default mod manifest export") {
             Ok(f) => f,
             Err(e) => {
                 out = Err(ScriptError::InvalidArgument {
-                    reason: format!("mod-init: `{source_path}` setupMod `fonts` invalid: {e}"),
+                    reason: format!("mod-init: `{source_path}` default mod manifest export `fonts` invalid: {e}"),
                 });
                 return;
             }
         };
-        let maps = match drain_maps_js(&obj, "setupMod") {
+        let maps = match drain_maps_js(&obj, "default mod manifest export") {
             Ok(m) => m,
             Err(e) => {
                 out = Err(ScriptError::InvalidArgument {
-                    reason: format!("mod-init: `{source_path}` setupMod `maps` invalid: {e}"),
+                    reason: format!("mod-init: `{source_path}` default mod manifest export `maps` invalid: {e}"),
                 });
                 return;
             }
         };
-        let reactions = match drain_global_reactions_js(&ctx, &obj, "setupMod") {
+        let reactions = match drain_global_reactions_js(&ctx, &obj, "default mod manifest export") {
             Ok(r) => r,
             Err(e) => {
                 out = Err(ScriptError::InvalidArgument {
-                    reason: format!("mod-init: `{source_path}` setupMod `reactions` invalid: {e}"),
+                    reason: format!("mod-init: `{source_path}` default mod manifest export `reactions` invalid: {e}"),
                 });
                 return;
             }
         };
-        let crossings = match drain_global_crossings_js(&obj, "setupMod") {
+        let crossings = match drain_global_crossings_js(&obj, "default mod manifest export") {
             Ok(c) => c,
             Err(e) => {
                 out = Err(ScriptError::InvalidArgument {
-                    reason: format!("mod-init: `{source_path}` setupMod `crossings` invalid: {e}"),
+                    reason: format!("mod-init: `{source_path}` default mod manifest export `crossings` invalid: {e}"),
                 });
                 return;
             }
@@ -1691,7 +1742,7 @@ fn run_mod_init_quickjs(
             Ok(stores) => stores,
             Err(e) => {
                 out = Err(ScriptError::InvalidArgument {
-                    reason: format!("mod-init: `{source_path}` setupMod `stores` invalid: {e}"),
+                    reason: format!("mod-init: `{source_path}` default mod manifest export `stores` invalid: {e}"),
                 });
                 return;
             }
@@ -1702,6 +1753,7 @@ fn run_mod_init_quickjs(
             entities,
             ui_trees,
             theme,
+            frontend,
             fonts,
             maps,
             reactions,
@@ -1729,33 +1781,27 @@ fn run_mod_init_luau(
             msg: e.to_string(),
             source_name: source_path.to_string(),
         })?;
-    lua.load(&bytecode)
+    let returned = lua
+        .load(&bytecode)
         .set_name(source_path)
         .set_mode(mlua::ChunkMode::Binary)
-        .exec()
+        .eval::<mlua::Value>()
         .map_err(|e| ScriptError::ScriptThrew {
-            msg: e.to_string(),
+            msg: format!("returned mod manifest initialization failed: {e}"),
             source_name: source_path.to_string(),
         })?;
 
-    let func: mlua::Function =
-        lua.globals()
-            .get("setupMod")
-            .map_err(|e| ScriptError::InvalidArgument {
-                reason: format!("mod-init: `{source_path}` did not export `setupMod`: {e}"),
-            })?;
-
-    let returned: mlua::Value = func.call(()).map_err(|e| ScriptError::ScriptThrew {
-        msg: e.to_string(),
-        source_name: source_path.to_string(),
-    })?;
-
     let table = match returned {
         mlua::Value::Table(t) => t,
+        mlua::Value::Nil => {
+            return Err(ScriptError::InvalidArgument {
+                reason: format!("mod-init: `{source_path}` missing returned mod manifest"),
+            });
+        }
         other => {
             return Err(ScriptError::InvalidArgument {
                 reason: format!(
-                    "mod-init: `{source_path}` setupMod must return a table, got {}",
+                    "mod-init: `{source_path}` returned mod manifest must be a table, got {}",
                     other.type_name()
                 ),
             });
@@ -1765,7 +1811,7 @@ fn run_mod_init_luau(
     let name: String = table
         .get("name")
         .map_err(|e| ScriptError::InvalidArgument {
-            reason: format!("mod-init: `{source_path}` setupMod return value missing `name`: {e}"),
+            reason: format!("mod-init: `{source_path}` returned mod manifest missing `name`: {e}"),
         })?;
 
     // Optional `entities` array. Missing key → empty Vec. Present-but-not-table
@@ -1774,7 +1820,7 @@ fn run_mod_init_luau(
     let entities: Vec<EntityTypeDescriptor> = if table.contains_key("entities").map_err(|e| {
         ScriptError::InvalidArgument {
             reason: format!(
-                "mod-init: `{source_path}` setupMod return value `entities` lookup failed: {e}"
+                "mod-init: `{source_path}` returned mod manifest `entities` lookup failed: {e}"
             ),
         }
     })? {
@@ -1782,7 +1828,7 @@ fn run_mod_init_luau(
             .get("entities")
             .map_err(|e| ScriptError::InvalidArgument {
                 reason: format!(
-                    "mod-init: `{source_path}` setupMod `entities` field could not be read: {e}"
+                    "mod-init: `{source_path}` returned mod manifest `entities` field could not be read: {e}"
                 ),
             })?;
         match raw {
@@ -1794,13 +1840,13 @@ fn run_mod_init_luau(
                     let item: mlua::Value =
                         arr.get(i).map_err(|e| ScriptError::InvalidArgument {
                             reason: format!(
-                                "mod-init: `{source_path}` setupMod `entities[{i}]` could not be read: {e}"
+                                "mod-init: `{source_path}` returned mod manifest `entities[{i}]` could not be read: {e}"
                             ),
                         })?;
                     let descriptor = entity_descriptor_from_lua(item).map_err(|e| {
                         ScriptError::InvalidArgument {
                             reason: format!(
-                                "mod-init: `{source_path}` setupMod `entities[{i}]` invalid: {e}"
+                                "mod-init: `{source_path}` returned mod manifest `entities[{i}]` invalid: {e}"
                             ),
                         }
                     })?;
@@ -1811,7 +1857,7 @@ fn run_mod_init_luau(
             other => {
                 return Err(ScriptError::InvalidArgument {
                     reason: format!(
-                        "mod-init: `{source_path}` setupMod `entities` field must be an array, got {}",
+                        "mod-init: `{source_path}` returned mod manifest `entities` field must be an array, got {}",
                         other.type_name()
                     ),
                 });
@@ -1823,32 +1869,54 @@ fn run_mod_init_luau(
 
     // UI fields drain via the G1a bridge fns; malformed entries log+skip inside
     // the drains (ui.md §1.1). Errors here are structural read failures only.
-    let ui_trees =
-        drain_ui_trees_lua(&table, "setupMod").map_err(|e| ScriptError::InvalidArgument {
-            reason: format!("mod-init: `{source_path}` setupMod `uiTrees` invalid: {e}"),
-        })?;
-    let theme = drain_theme_lua(&table, "setupMod").map_err(|e| ScriptError::InvalidArgument {
-        reason: format!("mod-init: `{source_path}` setupMod `theme` invalid: {e}"),
-    })?;
-    let fonts = drain_fonts_lua(&table, "setupMod").map_err(|e| ScriptError::InvalidArgument {
-        reason: format!("mod-init: `{source_path}` setupMod `fonts` invalid: {e}"),
-    })?;
-    let maps = drain_maps_lua(&table, "setupMod").map_err(|e| ScriptError::InvalidArgument {
-        reason: format!("mod-init: `{source_path}` setupMod `maps` invalid: {e}"),
-    })?;
-    let reactions = drain_global_reactions_lua(&table, "setupMod").map_err(|e| {
+    let ui_trees = drain_ui_trees_lua(&table, "returned mod manifest").map_err(|e| {
         ScriptError::InvalidArgument {
-            reason: format!("mod-init: `{source_path}` setupMod `reactions` invalid: {e}"),
+            reason: format!(
+                "mod-init: `{source_path}` returned mod manifest `uiTrees` invalid: {e}"
+            ),
         }
     })?;
-    let crossings = drain_global_crossings_lua(&table, "setupMod").map_err(|e| {
+    let theme = drain_theme_lua(&table, "returned mod manifest").map_err(|e| {
         ScriptError::InvalidArgument {
-            reason: format!("mod-init: `{source_path}` setupMod `crossings` invalid: {e}"),
+            reason: format!("mod-init: `{source_path}` returned mod manifest `theme` invalid: {e}"),
+        }
+    })?;
+    let frontend = drain_frontend_lua(&table, "returned mod manifest").map_err(|e| {
+        ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` returned mod manifest `frontend` invalid: {e}"
+            ),
+        }
+    })?;
+    let fonts = drain_fonts_lua(&table, "returned mod manifest").map_err(|e| {
+        ScriptError::InvalidArgument {
+            reason: format!("mod-init: `{source_path}` returned mod manifest `fonts` invalid: {e}"),
+        }
+    })?;
+    let maps = drain_maps_lua(&table, "returned mod manifest").map_err(|e| {
+        ScriptError::InvalidArgument {
+            reason: format!("mod-init: `{source_path}` returned mod manifest `maps` invalid: {e}"),
+        }
+    })?;
+    let reactions = drain_global_reactions_lua(&table, "returned mod manifest").map_err(|e| {
+        ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` returned mod manifest `reactions` invalid: {e}"
+            ),
+        }
+    })?;
+    let crossings = drain_global_crossings_lua(&table, "returned mod manifest").map_err(|e| {
+        ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` returned mod manifest `crossings` invalid: {e}"
+            ),
         }
     })?;
     let store_declarations =
         drain_store_declarations_lua(&table).map_err(|e| ScriptError::InvalidArgument {
-            reason: format!("mod-init: `{source_path}` setupMod `stores` invalid: {e}"),
+            reason: format!(
+                "mod-init: `{source_path}` returned mod manifest `stores` invalid: {e}"
+            ),
         })?;
 
     Ok(ModManifestResult {
@@ -1856,6 +1924,7 @@ fn run_mod_init_luau(
         entities,
         ui_trees,
         theme,
+        frontend,
         fonts,
         maps,
         reactions,
@@ -2047,6 +2116,7 @@ mod tests {
                 crossings: Vec::new(),
                 ui_trees: Vec::new(),
                 theme: ModThemeTokens::default(),
+                frontend: None,
                 store_declarations: StoreDeclarationSet::default(),
                 dependency_paths,
             })),
@@ -3222,17 +3292,15 @@ mod tests {
     fn mod_init_quickjs_manifest_carries_entity_descriptor() {
         let (mut rt, _ctx) = runtime();
         let dir = temp_mod_root("js_register");
-        // start-script.js: `setupMod` returns a player entity descriptor on
-        // the manifest's `entities` field. Boot-side ingestion drains
-        // the field into `DataRegistry`; this test asserts the manifest shape.
+        // start-script.js exports a default manifest carrying a player entity
+        // descriptor. Boot-side ingestion drains the field into
+        // `DataRegistry`; this test asserts the manifest shape.
         std::fs::write(
             dir.join("start-script.js"),
             r#"
-            globalThis.setupMod = function() {
-                return {
-                    name: "TestMod",
-                    entities: [{ canonicalName: "smoke_pillar" }],
-                };
+            globalThis.__postretroModManifest = {
+                name: "TestMod",
+                entities: [{ canonicalName: "smoke_pillar" }],
             };
             "#,
         )
@@ -3246,7 +3314,7 @@ mod tests {
                 .entities
                 .iter()
                 .any(|e| e.canonical_name.as_deref() == Some("smoke_pillar")),
-            "setupMod's `entities` field must carry the descriptor on the manifest"
+            "the default manifest export's `entities` field must carry the descriptor"
         );
     }
 
@@ -3257,29 +3325,27 @@ mod tests {
         fs::write(
             dir.join("start-script.js"),
             r#"
-            globalThis.setupMod = function() {
-                return {
-                    name: "GlobalBehavior",
-                    reactions: scopeReactions(["campaign"], [
-                        defineReaction("levelLoad", {
-                            primitive: "moveGeometry",
-                            tag: "reactor",
-                        }),
-                        defineReaction("objectiveLoad", {
-                            primitive: "playSound",
-                            args: { sound: "objective" },
-                        }),
-                    ]),
-                    crossings: [
-                        {
-                            slot: "player.health",
-                            below: 25,
-                            max: 100,
-                            fire: ["lowHealth"],
-                            levels: ["campaign"],
-                        },
-                    ],
-                };
+            globalThis.__postretroModManifest = {
+                name: "GlobalBehavior",
+                reactions: scopeReactions(["campaign"], [
+                    defineReaction("levelLoad", {
+                        primitive: "moveGeometry",
+                        tag: "reactor",
+                    }),
+                    defineReaction("objectiveLoad", {
+                        primitive: "playSound",
+                        args: { sound: "objective" },
+                    }),
+                ]),
+                crossings: [
+                    {
+                        slot: "player.health",
+                        below: 25,
+                        max: 100,
+                        fire: ["lowHealth"],
+                        levels: ["campaign"],
+                    },
+                ],
             };
             "#,
         )
@@ -3305,30 +3371,28 @@ mod tests {
         fs::write(
             dir.join("start-script.luau"),
             r#"
-            function setupMod()
-                return {
-                    name = "GlobalBehavior",
-                    reactions = scopeReactions({ "campaign" }, {
-                        defineReaction("levelLoad", {
-                            primitive = "moveGeometry",
-                            tag = "reactor",
-                        }),
-                        defineReaction("objectiveLoad", {
-                            primitive = "playSound",
-                            args = { sound = "objective" },
-                        }),
+            return {
+                name = "GlobalBehavior",
+                reactions = scopeReactions({ "campaign" }, {
+                    defineReaction("levelLoad", {
+                        primitive = "moveGeometry",
+                        tag = "reactor",
                     }),
-                    crossings = {
-                        {
-                            slot = "player.health",
-                            below = 25,
-                            max = 100,
-                            fire = { "lowHealth" },
-                            levels = { "campaign" },
-                        },
+                    defineReaction("objectiveLoad", {
+                        primitive = "playSound",
+                        args = { sound = "objective" },
+                    }),
+                }),
+                crossings = {
+                    {
+                        slot = "player.health",
+                        below = 25,
+                        max = 100,
+                        fire = { "lowHealth" },
+                        levels = { "campaign" },
                     },
-                }
-            end
+                },
+            }
             "#,
         )
         .unwrap();
@@ -3358,9 +3422,7 @@ mod tests {
             if (refs.player.health.slot !== "player.health") throw new Error("bad health slot");
             if (typeof globalThis.__postretroGameStateRefs !== "undefined")
                 throw new Error("bridge global leaked");
-            globalThis.setupMod = function() {
-                return { name: "GameStateMod" };
-            };
+            globalThis.__postretroModManifest = { name: "GameStateMod" };
             "#,
         )
         .unwrap();
@@ -3380,9 +3442,7 @@ mod tests {
             assert(getGameState() == refs, "getGameState must be idempotent")
             assert(refs.player.health.slot == "player.health", "bad health slot")
             assert(type(__postretroGameStateRefs) == "nil", "bridge global leaked")
-            function setupMod()
-                return { name = "GameStateMod" }
-            end
+            return { name = "GameStateMod" }
             "#,
         )
         .unwrap();
@@ -3413,9 +3473,7 @@ mod tests {
             if (defined !== manifest || defined.maps !== maps) {
                 throw new Error("defineMod or defineMapCatalog must be identity helpers");
             }
-            globalThis.setupMod = function() {
-                return defined;
-            };
+            globalThis.__postretroModManifest = defined;
             "#,
         )
         .unwrap();
@@ -3453,9 +3511,7 @@ mod tests {
             }
             local defined = defineMod(manifest)
             assert(defined == manifest and defined.maps == maps, "defineMod or defineMapCatalog must be identity helpers")
-            function setupMod()
-                return defined
-            end
+            return defined
             "#,
         )
         .unwrap();
@@ -3482,16 +3538,14 @@ mod tests {
         fs::write(
             dir.join("start-script.js"),
             r#"
-            globalThis.setupMod = function() {
-                return {
-                    name: "CatalogValidation",
-                    maps: [
-                        { id: "e1m1", path: "maps/e1m1.prl", name: "Entryway", tags: ["campaign"] },
-                        { id: "empty", path: "", name: "Empty", tags: ["broken"] },
-                        { id: "e1m1", path: "maps/duplicate.prl", name: "Duplicate", tags: ["duplicate"] },
-                        { id: "dm1", path: "maps/dm1.prl", name: "Arena", tags: ["deathmatch"] },
-                    ],
-                };
+            globalThis.__postretroModManifest = {
+                name: "CatalogValidation",
+                maps: [
+                    { id: "e1m1", path: "maps/e1m1.prl", name: "Entryway", tags: ["campaign"] },
+                    { id: "empty", path: "", name: "Empty", tags: ["broken"] },
+                    { id: "e1m1", path: "maps/duplicate.prl", name: "Duplicate", tags: ["duplicate"] },
+                    { id: "dm1", path: "maps/dm1.prl", name: "Arena", tags: ["deathmatch"] },
+                ],
             };
             "#,
         )
@@ -3526,17 +3580,15 @@ mod tests {
         fs::write(
             dir.join("start-script.luau"),
             r#"
-            function setupMod()
-                return {
-                    name = "CatalogValidation",
-                    maps = {
-                        { id = "e1m1", path = "maps/e1m1.prl", name = "Entryway", tags = { "campaign" } },
-                        { id = "empty", path = "", name = "Empty", tags = { "broken" } },
-                        { id = "e1m1", path = "maps/duplicate.prl", name = "Duplicate", tags = { "duplicate" } },
-                        { id = "dm1", path = "maps/dm1.prl", name = "Arena", tags = { "deathmatch" } },
-                    },
-                }
-            end
+            return {
+                name = "CatalogValidation",
+                maps = {
+                    { id = "e1m1", path = "maps/e1m1.prl", name = "Entryway", tags = { "campaign" } },
+                    { id = "empty", path = "", name = "Empty", tags = { "broken" } },
+                    { id = "e1m1", path = "maps/duplicate.prl", name = "Duplicate", tags = { "duplicate" } },
+                    { id = "dm1", path = "maps/dm1.prl", name = "Arena", tags = { "deathmatch" } },
+                },
+            }
             "#,
         )
         .unwrap();
@@ -3586,9 +3638,7 @@ mod tests {
               throw new Error("bridge global leaked");
             }
 
-            (globalThis as any).setupMod = function() {
-              return { name: "TypeScriptGameStateMod" };
-            };
+            export default { name: "TypeScriptGameStateMod" };
             "#,
         )
         .unwrap();
@@ -3617,7 +3667,7 @@ mod tests {
                 const attempt = defineStore("attempt", {
                     value: { type: "number", default: 1 },
                 });
-                globalThis.setupMod = function() { return { stores: [attempt.declaration] }; };
+                globalThis.__postretroModManifest = { stores: [attempt.declaration] };
                 "#,
             ),
             (
@@ -3627,7 +3677,7 @@ mod tests {
                 local attempt = defineStore("attempt", {
                     value = { type = "number", default = 1 },
                 })
-                function setupMod() return { stores = { attempt.declaration } } end
+                return { stores = { attempt.declaration } }
                 "#,
             ),
         ] {
@@ -3654,7 +3704,7 @@ mod tests {
             const attempt = defineStore("attempt", {
                 value: { type: "number", default: 1 },
             });
-            globalThis.setupMod = function() { return { name: "Unreturned" }; };
+            globalThis.__postretroModManifest = { name: "Unreturned" };
             "#,
         )
         .unwrap();
@@ -3673,9 +3723,7 @@ mod tests {
             const session = defineStore("session", {
                 volume: { type: "number", default: 1, persist: true },
             });
-            globalThis.setupMod = function() {
-                return { name: "RepeatStore", stores: [session.declaration] };
-            };
+            globalThis.__postretroModManifest = { name: "RepeatStore", stores: [session.declaration] };
             "#,
         )
         .unwrap();
@@ -3703,7 +3751,8 @@ mod tests {
         // after mod-init. `scripts-build` inlines all imports at build time,
         // so the fixture is a single JS file whose intent — a descriptor
         // exported from a bundled domain script and aggregated into the
-        // `setupMod` return — is made explicit by the inlined-comment markers.
+        // default manifest export — is made explicit by the inlined-comment
+        // markers.
         let (mut rt, _ctx) = runtime();
         let dir = temp_mod_root("js_imported_domain");
         std::fs::write(
@@ -3712,9 +3761,7 @@ mod tests {
             /* inlined from actors/player.ts */
             const playerEntity = { canonicalName: "smoke_pillar" };
             /* end inlined actors/player.ts */
-            globalThis.setupMod = function() {
-                return { name: "ImportedDomainMod", entities: [playerEntity] };
-            };
+            globalThis.__postretroModManifest = { name: "ImportedDomainMod", entities: [playerEntity] };
             "#,
         )
         .unwrap();
@@ -3738,12 +3785,10 @@ mod tests {
         std::fs::write(
             dir.join("start-script.luau"),
             r#"
-            function setupMod()
-                return {
-                    name = "TestMod",
-                    entities = { { canonicalName = "smoke_pillar" } },
-                }
-            end
+            return {
+                name = "TestMod",
+                entities = { { canonicalName = "smoke_pillar" } },
+            }
             "#,
         )
         .unwrap();
@@ -3756,31 +3801,31 @@ mod tests {
                 .entities
                 .iter()
                 .any(|e| e.canonical_name.as_deref() == Some("smoke_pillar")),
-            "setupMod's `entities` field must carry the descriptor on the manifest"
+            "the returned mod manifest's `entities` field must carry the descriptor"
         );
     }
 
     #[test]
-    fn mod_init_missing_setup_mod_errors() {
+    fn mod_init_quickjs_missing_default_manifest_export_errors() {
         let (mut rt, _ctx) = runtime();
         let dir = temp_mod_root("no_setup");
         std::fs::write(dir.join("start-script.js"), "var x = 1;\n").unwrap();
-        let err = rt.run_mod_init(&dir).expect_err("missing setupMod");
+        let err = rt.run_mod_init(&dir).expect_err("missing default export");
         match err {
             ScriptError::InvalidArgument { reason } => {
-                assert!(reason.contains("setupMod"), "{reason}");
+                assert!(reason.contains("default mod manifest export"), "{reason}");
             }
             other => panic!("expected InvalidArgument, got {other:?}"),
         }
     }
 
     #[test]
-    fn mod_init_setup_mod_missing_name_errors() {
+    fn mod_init_quickjs_default_manifest_missing_name_errors() {
         let (mut rt, _ctx) = runtime();
         let dir = temp_mod_root("no_name");
         std::fs::write(
             dir.join("start-script.js"),
-            "globalThis.setupMod = function() { return {}; };\n",
+            "globalThis.__postretroModManifest = {};\n",
         )
         .unwrap();
         let err = rt.run_mod_init(&dir).expect_err("missing name");
@@ -3793,30 +3838,29 @@ mod tests {
     }
 
     #[test]
-    fn mod_init_setup_mod_throws_errors() {
+    fn mod_init_quickjs_default_manifest_initialization_throws_errors() {
         let (mut rt, _ctx) = runtime();
         let dir = temp_mod_root("throws");
-        std::fs::write(
-            dir.join("start-script.js"),
-            "globalThis.setupMod = function() { throw new Error('boom'); };\n",
-        )
-        .unwrap();
-        let err = rt.run_mod_init(&dir).expect_err("setupMod throws");
+        std::fs::write(dir.join("start-script.js"), "throw new Error('boom');\n").unwrap();
+        let err = rt
+            .run_mod_init(&dir)
+            .expect_err("default export init throws");
         match err {
             ScriptError::ScriptThrew { msg, .. } => {
                 assert!(msg.contains("boom"), "{msg}");
+                assert!(msg.contains("default mod manifest export"), "{msg}");
             }
             other => panic!("expected ScriptThrew, got {other:?}"),
         }
     }
 
     #[test]
-    fn mod_init_setup_mod_non_object_return_errors() {
+    fn mod_init_quickjs_default_manifest_non_object_errors() {
         let (mut rt, _ctx) = runtime();
         let dir = temp_mod_root("non_obj");
         std::fs::write(
             dir.join("start-script.js"),
-            "globalThis.setupMod = function() { return 42; };\n",
+            "globalThis.__postretroModManifest = 42;\n",
         )
         .unwrap();
         let err = rt.run_mod_init(&dir).expect_err("non-object return");
@@ -3832,49 +3876,62 @@ mod tests {
     }
 
     #[test]
-    fn mod_init_luau_missing_setup_mod_errors() {
+    fn mod_init_quickjs_default_manifest_undefined_is_present_non_object() {
         let (mut rt, _ctx) = runtime();
-        let dir = temp_mod_root("luau_no_setup");
-        // Module-style script that returns a table with no `setupMod` key —
-        // and never assigns a global `setupMod` either.
-        std::fs::write(dir.join("start-script.luau"), "local x = 1\n").unwrap();
-        let err = rt.run_mod_init(&dir).expect_err("missing setupMod");
+        let dir = temp_mod_root("undefined_manifest");
+        std::fs::write(
+            dir.join("start-script.js"),
+            "globalThis.__postretroModManifest = undefined;\n",
+        )
+        .unwrap();
+        let err = rt.run_mod_init(&dir).expect_err("undefined manifest");
         match err {
             ScriptError::InvalidArgument { reason } => {
-                assert!(reason.contains("setupMod"), "{reason}");
+                assert!(reason.contains("object"), "{reason}");
+                assert!(!reason.contains("missing"), "{reason}");
             }
             other => panic!("expected InvalidArgument, got {other:?}"),
         }
     }
 
     #[test]
-    fn mod_init_luau_setup_mod_throws_errors() {
+    fn mod_init_luau_missing_returned_manifest_errors() {
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("luau_no_setup");
+        std::fs::write(dir.join("start-script.luau"), "local x = 1\n").unwrap();
+        let err = rt.run_mod_init(&dir).expect_err("missing manifest return");
+        match err {
+            ScriptError::InvalidArgument { reason } => {
+                assert!(reason.contains("returned mod manifest"), "{reason}");
+            }
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mod_init_luau_returned_manifest_initialization_throws_errors() {
         // Regression: mlua wraps Lua errors in a traceback whose format is
         // implementation-defined. Assert only the variant — not the message
         // text — so an mlua version bump can't break this test.
         let (mut rt, _ctx) = runtime();
         let dir = temp_mod_root("luau_throws");
-        std::fs::write(
-            dir.join("start-script.luau"),
-            "function setupMod() error(\"boom\") end\n",
-        )
-        .unwrap();
-        let err = rt.run_mod_init(&dir).expect_err("setupMod throws");
+        std::fs::write(dir.join("start-script.luau"), "error(\"boom\")\n").unwrap();
+        let err = rt
+            .run_mod_init(&dir)
+            .expect_err("returned manifest init throws");
         match err {
-            ScriptError::ScriptThrew { .. } => {}
+            ScriptError::ScriptThrew { msg, .. } => {
+                assert!(msg.contains("returned mod manifest"), "{msg}");
+            }
             other => panic!("expected ScriptThrew, got {other:?}"),
         }
     }
 
     #[test]
-    fn mod_init_luau_setup_mod_non_table_return_errors() {
+    fn mod_init_luau_returned_manifest_non_table_errors() {
         let (mut rt, _ctx) = runtime();
         let dir = temp_mod_root("luau_non_table");
-        std::fs::write(
-            dir.join("start-script.luau"),
-            "function setupMod() return 42 end\n",
-        )
-        .unwrap();
+        std::fs::write(dir.join("start-script.luau"), "return 42\n").unwrap();
         let err = rt.run_mod_init(&dir).expect_err("non-table return");
         match err {
             ScriptError::InvalidArgument { reason } => {
@@ -3888,14 +3945,10 @@ mod tests {
     }
 
     #[test]
-    fn mod_init_luau_setup_mod_missing_name_errors() {
+    fn mod_init_luau_returned_manifest_missing_name_errors() {
         let (mut rt, _ctx) = runtime();
         let dir = temp_mod_root("luau_no_name");
-        std::fs::write(
-            dir.join("start-script.luau"),
-            "function setupMod() return {} end\n",
-        )
-        .unwrap();
+        std::fs::write(dir.join("start-script.luau"), "return {}\n").unwrap();
         let err = rt.run_mod_init(&dir).expect_err("missing name");
         match err {
             ScriptError::InvalidArgument { reason } => {
@@ -3911,14 +3964,10 @@ mod tests {
         let dir = temp_mod_root("both");
         std::fs::write(
             dir.join("start-script.js"),
-            "globalThis.setupMod = function() { return { name: 'A' }; };\n",
+            "globalThis.__postretroModManifest = { name: 'A' };\n",
         )
         .unwrap();
-        std::fs::write(
-            dir.join("start-script.luau"),
-            "function setupMod() return { name = 'A' } end\n",
-        )
-        .unwrap();
+        std::fs::write(dir.join("start-script.luau"), "return { name = 'A' }\n").unwrap();
         let err = rt.run_mod_init(&dir).expect_err("both present");
         match err {
             ScriptError::InvalidArgument { reason } => {
@@ -3940,14 +3989,10 @@ mod tests {
         let dir = temp_mod_root("both_ts_luau");
         std::fs::write(
             dir.join("start-script.ts"),
-            "globalThis.setupMod = function() { return { name: 'A' }; };\n",
+            "export default { name: 'A' };\n",
         )
         .unwrap();
-        std::fs::write(
-            dir.join("start-script.luau"),
-            "function setupMod() return { name = 'A' } end\n",
-        )
-        .unwrap();
+        std::fs::write(dir.join("start-script.luau"), "return { name = 'A' }\n").unwrap();
 
         let err = rt.run_mod_init(&dir).expect_err("both present");
         match err {
@@ -3964,20 +4009,18 @@ mod tests {
 
     #[test]
     fn mod_init_quickjs_entities_field_parses_descriptor() {
-        // `setupMod()` returns an `entities` array; each element should parse
-        // into an `EntityTypeDescriptor` and be carried on the manifest. The
-        // Ingestion into `DataRegistry` is handled by the boot caller; this
-        // test covers only the parse path.
+        // The default manifest export carries an `entities` array; each
+        // element should parse into an `EntityTypeDescriptor`. Ingestion into
+        // `DataRegistry` is handled by the boot caller; this test covers only
+        // the parse path.
         let (mut rt, _ctx) = runtime();
         let dir = temp_mod_root("js_entities_field");
         std::fs::write(
             dir.join("start-script.js"),
             r#"
-            globalThis.setupMod = function() {
-                return {
-                    name: "EntitiesMod",
-                    entities: [{ canonicalName: "smoke_pillar" }],
-                };
+            globalThis.__postretroModManifest = {
+                name: "EntitiesMod",
+                entities: [{ canonicalName: "smoke_pillar" }],
             };
             "#,
         )
@@ -4000,7 +4043,7 @@ mod tests {
         std::fs::write(
             dir.join("start-script.js"),
             r#"
-            globalThis.setupMod = function() { return { name: "NoEntitiesMod" }; };
+            globalThis.__postretroModManifest = { name: "NoEntitiesMod" };
             "#,
         )
         .unwrap();
@@ -4017,9 +4060,7 @@ mod tests {
         std::fs::write(
             dir.join("start-script.js"),
             r#"
-            globalThis.setupMod = function() {
-                return { name: "Bad", entities: "bad" };
-            };
+            globalThis.__postretroModManifest = { name: "Bad", entities: "bad" };
             "#,
         )
         .unwrap();
@@ -4043,12 +4084,10 @@ mod tests {
         std::fs::write(
             dir.join("start-script.luau"),
             r#"
-            function setupMod()
-                return {
-                    name = "EntitiesMod",
-                    entities = { { canonicalName = "smoke_pillar" } },
-                }
-            end
+            return {
+                name = "EntitiesMod",
+                entities = { { canonicalName = "smoke_pillar" } },
+            }
             "#,
         )
         .unwrap();
@@ -4070,7 +4109,7 @@ mod tests {
         std::fs::write(
             dir.join("start-script.luau"),
             r#"
-            function setupMod() return { name = "NoEntitiesMod" } end
+            return { name = "NoEntitiesMod" }
             "#,
         )
         .unwrap();
@@ -4087,9 +4126,7 @@ mod tests {
         std::fs::write(
             dir.join("start-script.luau"),
             r#"
-            function setupMod()
-                return { name = "Bad", entities = "bad" }
-            end
+            return { name = "Bad", entities = "bad" }
             "#,
         )
         .unwrap();
@@ -4108,8 +4145,8 @@ mod tests {
 
     // --- G1b Task 1: mod-init UI field drains (cold-boot path) --------------
 
-    /// Cold-boot JS: `setupMod` returning `uiTrees`, `theme`, and `fonts` drains
-    /// each field via the G1a bridge fns onto the manifest.
+    /// Cold-boot JS: the default manifest export carrying `uiTrees`, `theme`,
+    /// and `fonts` drains each field via the G1a bridge fns onto the manifest.
     #[test]
     fn mod_init_quickjs_drains_ui_trees_theme_and_fonts() {
         let (mut rt, _ctx) = runtime();
@@ -4117,17 +4154,20 @@ mod tests {
         std::fs::write(
             dir.join("start-script.js"),
             r#"
-            globalThis.setupMod = function() {
-                return {
-                    name: "UiMod",
-                    uiTrees: [
-                        { name: "hud", alwaysOn: true,
-                          tree: { anchor: "topLeft", offset: [0.0, 0.0],
-                                  root: { kind: "text", content: "hi", fontSize: 12.0, color: [1.0,1.0,1.0,1.0] } } },
-                    ],
-                    theme: { colors: { critical: [1.0, 0.0, 0.0, 1.0] }, spacing: { m: 8.0 } },
-                    fonts: { primary: "fonts/inter.ttf" },
-                };
+            globalThis.__postretroModManifest = {
+                name: "UiMod",
+                uiTrees: [
+                    { name: "hud", alwaysOn: true,
+                      tree: { anchor: "topLeft", offset: [0.0, 0.0],
+                              root: { kind: "text", content: "hi", fontSize: 12.0, color: [1.0,1.0,1.0,1.0] } } },
+                ],
+                theme: { colors: { critical: [1.0, 0.0, 0.0, 1.0] }, spacing: { m: 8.0 } },
+                frontend: {
+                    menuTree: "mainMenu",
+                    backgroundLevel: "menu_backdrop",
+                    camera: { position: [4.0, 2.0, 8.0], yaw: -0.6, pitch: -0.1 },
+                },
+                fonts: { primary: "fonts/inter.ttf" },
             };
             "#,
         )
@@ -4140,6 +4180,12 @@ mod tests {
         assert!(manifest.ui_trees[0].always_on);
         assert_eq!(manifest.theme.colors["critical"], [1.0, 0.0, 0.0, 1.0]);
         assert_eq!(manifest.theme.spacing["m"], 8.0);
+        let frontend = manifest.frontend.as_ref().expect("frontend drained");
+        assert_eq!(frontend.menu_tree, "mainMenu");
+        assert_eq!(frontend.background_level.as_deref(), Some("menu_backdrop"));
+        assert_eq!(frontend.camera.position, [4.0, 2.0, 8.0]);
+        assert_eq!(frontend.camera.yaw, -0.6);
+        assert_eq!(frontend.camera.pitch, -0.1);
         assert_eq!(manifest.fonts.families["primary"], "fonts/inter.ttf");
     }
 
@@ -4152,7 +4198,7 @@ mod tests {
         std::fs::write(
             dir.join("start-script.js"),
             r#"
-            globalThis.setupMod = function() {
+            globalThis.__postretroModManifest = (() => {
                 const theme = defineTheme({
                     color: {
                         hud: {
@@ -4245,7 +4291,7 @@ mod tests {
                     ],
                     theme,
                 };
-            };
+            })();
             "#,
         )
         .unwrap();
@@ -4376,15 +4422,13 @@ mod tests {
         std::fs::write(
             dir.join("start-script.js"),
             r#"
-            globalThis.setupMod = function() {
-                return {
-                    name: "UiMod",
-                    uiTrees: [
-                        { name: "bad", tree: { anchor: "topLeft", offset: [0.0, 0.0], root: { kind: "carousel" } } },
-                        { name: "good", tree: { anchor: "topLeft", offset: [0.0, 0.0],
-                            root: { kind: "spacer", flexGrow: 1.0 } } },
-                    ],
-                };
+            globalThis.__postretroModManifest = {
+                name: "UiMod",
+                uiTrees: [
+                    { name: "bad", tree: { anchor: "topLeft", offset: [0.0, 0.0], root: { kind: "carousel" } } },
+                    { name: "good", tree: { anchor: "topLeft", offset: [0.0, 0.0],
+                        root: { kind: "spacer", flexGrow: 1.0 } } },
+                ],
             };
             "#,
         )
@@ -4401,8 +4445,8 @@ mod tests {
         assert_eq!(manifest.ui_trees[0].name, "good");
     }
 
-    /// Cold-boot Luau: `setupMod` returning `uiTrees`, `theme`, and `fonts`
-    /// drains each field via the G1a Luau bridge fns onto the manifest.
+    /// Cold-boot Luau: the returned mod manifest carrying `uiTrees`, `theme`,
+    /// and `fonts` drains each field via the G1a Luau bridge fns onto the manifest.
     #[test]
     fn mod_init_luau_drains_ui_trees_theme_and_fonts() {
         let (mut rt, _ctx) = runtime();
@@ -4410,18 +4454,21 @@ mod tests {
         std::fs::write(
             dir.join("start-script.luau"),
             r#"
-            function setupMod()
-                return {
-                    name = "UiMod",
-                    uiTrees = {
-                        { name = "hud", alwaysOn = true,
-                          tree = { anchor = "topLeft", offset = { 0, 0 },
-                                   root = { kind = "text", content = "hi", fontSize = 12, color = {1,1,1,1} } } },
-                    },
-                    theme = { colors = { critical = {1, 0, 0, 1} }, spacing = { m = 8 } },
-                    fonts = { primary = "fonts/inter.ttf" },
-                }
-            end
+            return {
+                name = "UiMod",
+                uiTrees = {
+                    { name = "hud", alwaysOn = true,
+                      tree = { anchor = "topLeft", offset = { 0, 0 },
+                               root = { kind = "text", content = "hi", fontSize = 12, color = {1,1,1,1} } } },
+                },
+                theme = { colors = { critical = {1, 0, 0, 1} }, spacing = { m = 8 } },
+                frontend = {
+                    menuTree = "mainMenu",
+                    backgroundLevel = "menu_backdrop",
+                    camera = { position = {4, 2, 8}, yaw = -0.6, pitch = -0.1 },
+                },
+                fonts = { primary = "fonts/inter.ttf" },
+            }
             "#,
         )
         .unwrap();
@@ -4433,6 +4480,12 @@ mod tests {
         assert!(manifest.ui_trees[0].always_on);
         assert_eq!(manifest.theme.colors["critical"], [1.0, 0.0, 0.0, 1.0]);
         assert_eq!(manifest.theme.spacing["m"], 8.0);
+        let frontend = manifest.frontend.as_ref().expect("frontend drained");
+        assert_eq!(frontend.menu_tree, "mainMenu");
+        assert_eq!(frontend.background_level.as_deref(), Some("menu_backdrop"));
+        assert_eq!(frontend.camera.position, [4.0, 2.0, 8.0]);
+        assert_eq!(frontend.camera.yaw, -0.6);
+        assert_eq!(frontend.camera.pitch, -0.1);
         assert_eq!(manifest.fonts.families["primary"], "fonts/inter.ttf");
     }
 
@@ -4444,16 +4497,14 @@ mod tests {
         std::fs::write(
             dir.join("start-script.luau"),
             r#"
-            function setupMod()
-                return {
-                    name = "UiMod",
-                    uiTrees = {
-                        { name = "bad", tree = { anchor = "topLeft", offset = { 0, 0 }, root = { kind = "carousel" } } },
-                        { name = "good", tree = { anchor = "topLeft", offset = { 0, 0 },
-                            root = { kind = "spacer", flexGrow = 1 } } },
-                    },
-                }
-            end
+            return {
+                name = "UiMod",
+                uiTrees = {
+                    { name = "bad", tree = { anchor = "topLeft", offset = { 0, 0 }, root = { kind = "carousel" } } },
+                    { name = "good", tree = { anchor = "topLeft", offset = { 0, 0 },
+                        root = { kind = "spacer", flexGrow = 1 } } },
+                },
+            }
             "#,
         )
         .unwrap();
@@ -4482,9 +4533,7 @@ mod tests {
             dir.join("start-script.luau"),
             r#"
             local m = require("./sub")
-            function setupMod()
-                return { name = "Imported", entities = { m.descriptor } }
-            end
+            return { name = "Imported", entities = { m.descriptor } }
             "#,
         )
         .unwrap();
@@ -4538,9 +4587,7 @@ mod tests {
             assert(not pcall(function()
                 UI.Text = nil
             end), "postretro/ui must reject writes")
-            function setupMod()
-                return { name = "VirtualUiMod" }
-            end
+            return { name = "VirtualUiMod" }
             "#,
         )
         .unwrap();
@@ -4559,9 +4606,7 @@ mod tests {
             r#"
             local ok, err = pcall(require, "../escape")
             if ok then error("expected require to reject ../") end
-            function setupMod()
-                return { name = "GuardedMod" }
-            end
+            return { name = "GuardedMod" }
             "#,
         )
         .unwrap();
@@ -4822,8 +4867,7 @@ mod tests {
         fs::write(
             dir.join("start-script.ts"),
             "import { NAME } from './helper.ts';\n\
-             // @ts-ignore\n\
-             globalThis.setupMod = function() { return { name: NAME }; };\n",
+             export default { name: NAME };\n",
         )
         .unwrap();
 

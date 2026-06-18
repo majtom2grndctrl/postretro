@@ -25,12 +25,14 @@ pub(crate) enum BootState {
     Running,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum LevelRequest {
     Load(LevelSource),
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
     Unload,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum LevelSource {
     #[allow(dead_code)]
     Catalog(String),

@@ -1,5 +1,5 @@
 // Data-archetype spawn path: walks `world.map_entities` against the
-// `DataRegistry.entities` table populated at `setupMod()` ingestion time,
+// `DataRegistry.entities` table populated at mod-manifest ingestion time,
 // materializing placeable descriptors into ECS entities with their component
 // presets attached. Weapon-only descriptors are equip targets, not map
 // placements.
@@ -1323,7 +1323,7 @@ mod tests {
     }
 
     /// Guards built-in priority over data-archetype dispatch end-to-end: a
-    /// classname registered both as a built-in AND via `setupMod()` ingestion
+    /// classname registered both as a built-in AND via mod-manifest ingestion
     /// must spawn through the built-in path only.
     /// Drives both dispatch sweeps in the same order `main.rs` does:
     /// `apply_classname_dispatch` first, then `apply_data_archetype_dispatch`

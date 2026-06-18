@@ -38,7 +38,7 @@ pub(super) const FOG_VOLUMES_LUAU_SRC: &str =
 /// SDK library prelude — `data_script.luau` returns a table whose fields
 /// (`defineReaction`, `defineEntity`, `defineMod`, `defineMapCatalog`, `defineStore`)
 /// are destructured into globals so data-script authors call them by bare name.
-/// Pure descriptor builders; no FFI happens until `setupMod` or `setupLevel`
+/// Pure descriptor builders; no FFI happens until the mod manifest or `setupLevel`
 /// returns.
 const DATA_SCRIPT_LUAU_SRC: &str = include_str!("../../../../sdk/lib/data_script.luau");
 
@@ -121,7 +121,8 @@ const DATA_SCRIPT_FIELDS: &[&str] = &[
 /// `openMenu` / `closeDialog`) primitives, the `updateState` slot write (Goal F),
 /// the text-entry helpers (`openTextEntry` wraps `showDialog` for the engine
 /// keyboard; `KEYBOARD_TREE` is its registry name constant), reserved button
-/// actions (`CLOSE_DIALOG_ACTION`, `EXIT_TO_DESKTOP_ACTION`), and the text-edit
+/// actions (`CLOSE_DIALOG_ACTION`, `EXIT_TO_DESKTOP_ACTION`,
+/// `QUIT_TO_MENU_ACTION`), and the text-edit
 /// reactions (`appendText` / `backspaceText` / `clearText`, M13 Text Entry).
 pub(super) const UI_REACTIONS_FIELDS: &[&str] = &[
     "onStateCrossing",
@@ -137,6 +138,10 @@ pub(super) const UI_REACTIONS_FIELDS: &[&str] = &[
     "KEYBOARD_TREE",
     "CLOSE_DIALOG_ACTION",
     "EXIT_TO_DESKTOP_ACTION",
+    "QUIT_TO_MENU_ACTION",
+    "loadLevel",
+    "restartLevel",
+    "returnToFrontend",
     "updateState",
     "appendText",
     "backspaceText",
@@ -209,6 +214,10 @@ pub(crate) const POSTRETRO_UI_MODULE_EXPORTS: &[&str] = &[
     "KEYBOARD_TREE",
     "CLOSE_DIALOG_ACTION",
     "EXIT_TO_DESKTOP_ACTION",
+    "QUIT_TO_MENU_ACTION",
+    "loadLevel",
+    "restartLevel",
+    "returnToFrontend",
     "updateState",
     "appendText",
     "backspaceText",

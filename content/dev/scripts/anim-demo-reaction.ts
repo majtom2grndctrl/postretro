@@ -1,7 +1,7 @@
 // DEMO CONTENT — data script for `anim-demo.map` (M10 skinned animation).
 //
 // Reactions are surfaced through `setupLevel`'s returned `LevelManifest`, NOT
-// through `setupMod`. The map wires this file in via its worldspawn
+// through the mod manifest. The map wires this file in via its worldspawn
 // `data_script` KVP; the engine runs `setupLevel(ctx)` at level load and drains
 // `{ reactions }` into the per-level reaction registry.
 //

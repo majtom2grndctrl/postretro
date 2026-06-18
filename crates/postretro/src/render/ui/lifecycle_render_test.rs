@@ -4,7 +4,7 @@
 //
 // What this file pins that the inline/sibling tests do not:
 //   - The full COLD-LAUNCH chain: a `RegisteredUiTree` drained into the tiered
-//     registry (as `setupMod` produces) resolves BY NAME and the resolved
+//     registry (as the mod manifest produces) resolves BY NAME and the resolved
 //     descriptor renders to draw data — proving the registry and the renderer
 //     meet, not just that each works alone.
 //   - The always-on COMPOSE -> render chain and its removal-next-frame behavior.
@@ -101,7 +101,7 @@ fn text_tree(content: &str, color: ColorValue, font: Option<String>) -> Anchored
     }
 }
 
-/// A `RegisteredUiTree` envelope as `setupMod`/`setupLevel` produce it.
+/// A `RegisteredUiTree` envelope as mod/level manifests produce it.
 fn registered(name: &str, tree: AnchoredTree, always_on: bool) -> RegisteredUiTree {
     RegisteredUiTree {
         name: name.to_string(),
@@ -193,10 +193,10 @@ fn run_dev_mod_init_from_bundled_entry(ctx: &ScriptCtx) -> ModManifestResult {
         let mut runtime = script_runtime(ctx);
         runtime
             .run_mod_init(&dir)
-            .expect("bundled development setupMod runs");
+            .expect("bundled development mod manifest runs");
         runtime
             .mod_manifest()
-            .expect("setupMod returns a manifest")
+            .expect("mod init returns a manifest")
             .clone()
     };
 
@@ -380,16 +380,14 @@ fn staged_text_tree_script(text: &str, critical: [f32; 4], include_hud: bool) ->
     };
     format!(
         r#"
-        globalThis.setupMod = function() {{
-            return {{
-                name: "Stage",
-                uiTrees: [{hud_entry}],
-                theme: {{
-                    colors: {{
-                        critical: [{}, {}, {}, {}]
-                    }}
+        globalThis.__postretroModManifest = {{
+            name: "Stage",
+            uiTrees: [{hud_entry}],
+            theme: {{
+                colors: {{
+                    critical: [{}, {}, {}, {}]
                 }}
-            }};
+            }}
         }};
         "#,
         critical[0], critical[1], critical[2], critical[3],
@@ -399,8 +397,8 @@ fn staged_text_tree_script(text: &str, critical: [f32; 4], include_hud: bool) ->
 // --- Cold-launch: drain -> resolve by name -> render -------------------------
 
 #[test]
-fn setup_mod_tree_resolves_by_name_and_renders_on_cold_launch() {
-    // The cold-boot chain end to end: a tree drained from a `setupMod` return
+fn mod_manifest_tree_resolves_by_name_and_renders_on_cold_launch() {
+    // The cold-boot chain end to end: a tree drained from a mod manifest
     // into the tiered registry (the `register_script_trees` drain `main.rs` runs
     // after `run_mod_init`) resolves BY NAME through the `&self` seam, and the
     // resolved descriptor renders to non-empty draw data carrying its content.
@@ -418,7 +416,7 @@ fn setup_mod_tree_resolves_by_name_and_renders_on_cold_launch() {
 
     let resolved = stack
         .tree("objectiveBoard")
-        .expect("a setupMod tree resolves by name after the drain");
+        .expect("a mod manifest tree resolves by name after the drain");
     let data = render(
         resolved,
         &UiTheme::engine_default(),
@@ -480,12 +478,12 @@ fn development_hud_cold_launch_and_staged_snapshots_build_retained_draw_data() {
         .ui_trees
         .iter()
         .find(|tree| tree.name == "hud")
-        .expect("setupMod returns the production HUD tree");
+        .expect("mod manifest returns the production HUD tree");
     let reticle = manifest
         .ui_trees
         .iter()
         .find(|tree| tree.name == "hud.reticle")
-        .expect("setupMod returns the reticle tree");
+        .expect("mod manifest returns the reticle tree");
     assert!(hud.always_on, "hud envelope is always-on");
     assert!(reticle.always_on, "reticle envelope is always-on");
     assert_eq!(hud.tree.anchor, Anchor::BottomLeft);
@@ -496,7 +494,7 @@ fn development_hud_cold_launch_and_staged_snapshots_build_retained_draw_data() {
     let mut stack = ModalStack::new();
     assert!(
         stack.always_on_layers().is_empty(),
-        "setupMod return data does not import-time-register UI layers",
+        "mod manifest data does not import-time-register UI layers",
     );
     stack.registry_mut().register(
         "hud",

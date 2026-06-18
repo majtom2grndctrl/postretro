@@ -151,6 +151,8 @@ fn rust_to_ts(ty_name: &str) -> String {
         "FogVolumeEntity" => "FogVolumeEntity".to_string(),
         "ModManifest" => "ModManifest".to_string(),
         "ModMapEntry" => "ModMapEntry".to_string(),
+        "MenuCamera" => "MenuCamera".to_string(),
+        "Frontend" => "Frontend".to_string(),
         "ModUiTree" => "ModUiTree".to_string(),
         "ThemeTokens" => "ThemeTokens".to_string(),
         // The `AnchoredTree` Rust type renders to the SDK's `AnchoredTreeDescriptor`
@@ -278,6 +280,8 @@ fn rust_to_luau(ty_name: &str) -> String {
         "FogVolumeEntity" => "FogVolumeEntity".to_string(),
         "ModManifest" => "ModManifest".to_string(),
         "ModMapEntry" => "ModMapEntry".to_string(),
+        "MenuCamera" => "MenuCamera".to_string(),
+        "Frontend" => "Frontend".to_string(),
         "ModUiTree" => "ModUiTree".to_string(),
         "ThemeTokens" => "ThemeTokens".to_string(),
         "AnchoredTree" => "AnchoredTreeDescriptor".to_string(),
@@ -857,7 +861,7 @@ const TS_SDK_LIB_BLOCK: &str = r#"
     | { below: number; above?: never; max?: number }
     | { above: number; below?: never; max?: number };
 
-  /** A state-crossing watcher entry as it appears in `setupLevel().crossings` or `setupMod().crossings`. The condition fields are flattened in beside `slot` and `fire`; `fire` lists the named reactions dispatched when the crossing occurs. `levels` scopes mod-global crossings by map-catalog tags; omit it for every level. */
+  /** A state-crossing watcher entry as it appears in `setupLevel().crossings` or `ModManifest.crossings`. The condition fields are flattened in beside `slot` and `fire`; `fire` lists the named reactions dispatched when the crossing occurs. `levels` scopes mod-global crossings by map-catalog tags; omit it for every level. */
   export type CrossingDescriptor = {
     slot: string;
     max?: number;
@@ -917,7 +921,7 @@ const TS_SDK_LIB_BLOCK: &str = r#"
   /** One slot inside a `defineStore` schema. `type` selects the stored value kind: `"number"`, `"boolean"`, `"string"`, `"enum"`, or `"array"`. Numeric slots may declare `default` and `range`; enum slots declare their valid `values`; `readonly: true` makes the returned state ref display-only for script writes. */
   export type StoreSlotSchema = { type: "number" | "boolean" | "string" | "enum" | "array"; readonly?: boolean } & Record<string, unknown>;
 
-  /** Plain declaration data returned through `setupMod().stores`. */
+  /** Plain declaration data returned through `ModManifest.stores`. */
   export type StoreDeclaration = { namespace: string; schema: Record<string, StoreSlotSchema> };
 
   /** Maps one schema slot's `type` discriminant to its handle value type:
@@ -934,13 +938,13 @@ const TS_SDK_LIB_BLOCK: &str = r#"
     Slot extends { type: "array" } ? StoreStateRefForSlot<Slot, ReadonlyArray<number>> :
     StoreStateRefForSlot<Slot, string>;
 
-  /** Result of a pure `defineStore` call. Return `declaration` from `setupMod().stores`; use `state` references in descriptors. */
+  /** Result of a pure `defineStore` call. Return `declaration` from `ModManifest.stores`; use `state` references in descriptors. */
   export type StoreDefinition<S extends Record<string, StoreSlotSchema>> = {
     readonly declaration: StoreDeclaration;
     readonly state: { readonly [K in keyof S]: StateValueForSlot<S[K]> };
   };
 
-  /** Build a state-store declaration. Pure: calling it performs no FFI and changes no engine state. Returned declarations commit atomically only after `setupMod()` succeeds. */
+  /** Build a state-store declaration. Pure: calling it performs no FFI and changes no engine state. Returned declarations commit atomically only after the mod manifest succeeds. */
   export function defineStore<const S extends Record<string, StoreSlotSchema>>(
     namespace: string,
     schema: S,
@@ -995,7 +999,7 @@ const TS_SDK_LIB_BLOCK: &str = r#"
     readonly spacing: ThemeDesignTokenGroup<T["spacing"], number, SpacingToken>;
   };
   declare const definedThemeBrand: unique symbol;
-  /** A theme returned by `defineTheme`: enumerable flat manifest maps plus SDK metadata for `getDesignTokens`. Pass this object directly as `setupMod().theme`. */
+  /** A theme returned by `defineTheme`: enumerable flat manifest maps plus SDK metadata for `getDesignTokens`. Pass this object directly as `ModManifest.theme`. */
   export type DefinedTheme<T extends ThemeDefinition> = {
     readonly colors: ThemeFlatTokenMap<T["color"], ThemeColorValue, ThemeColorValue>;
     readonly fonts: ThemeFlatTokenMap<T["font"], string, string>;
@@ -1144,7 +1148,7 @@ const TS_SDK_LIB_BLOCK: &str = r#"
   export function Tree(props: TreeProps, root: WidgetDescriptor): AnchoredTreeDescriptor;
   /** Props accepted by `defineUiTree`. The returned object preserves the runtime manifest entry shape `{ name, tree, alwaysOn? }`. */
   export type UiTreeRegistrationProps<Name extends string = string> = { name: Name; tree: AnchoredTreeDescriptor; alwaysOn?: boolean };
-  /** A typed UI-tree registration entry for `setupMod().uiTrees` / `setupLevel().uiTrees`. */
+  /** A typed UI-tree registration entry for `ModManifest.uiTrees` / `setupLevel().uiTrees`. */
   export type UiTreeRegistration<Name extends string = string> = ModUiTree & { readonly name: Name };
   /** Pure helper for defining a named UI-tree registration. Registration still happens only when the returned object is included in a manifest `uiTrees` array. */
   export function defineUiTree<const Name extends string>(registration: UiTreeRegistrationProps<Name>): UiTreeRegistration<Name>;
@@ -1176,7 +1180,7 @@ const TS_SDK_LIB_BLOCK: &str = r#"
 
   /** Pure identity builder for entity-type descriptors. Returns the descriptor as-is; its sole purpose is a typed construction site. */
   export function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor;
-  /** Pure identity builder for the manifest returned from `setupMod()`. */
+  /** Pure identity builder for the mod manifest. */
   export function defineMod(config: ModManifest): ModManifest;
   /** Pure identity builder for a mod map catalog. */
   export function defineMapCatalog(entries: ModMapEntry[]): ModMapEntry[];
@@ -1518,9 +1522,13 @@ declare module "postretro/ui" {
   export const KEYBOARD_TREE: "keyboard";
   export const CLOSE_DIALOG_ACTION: "ui.closeDialog";
   export const EXIT_TO_DESKTOP_ACTION: "ui.exitToDesktop";
+  export const QUIT_TO_MENU_ACTION: "ui.quitToMenu";
   export function openTextEntry(onCommit?: string | null): PrimitiveReactionDescriptor;
   export function openMenu(tree: string): PrimitiveReactionDescriptor;
   export function closeDialog(): PrimitiveReactionDescriptor;
+  export function loadLevel(id: string): PrimitiveReactionDescriptor;
+  export function restartLevel(): PrimitiveReactionDescriptor;
+  export function returnToFrontend(): PrimitiveReactionDescriptor;
   export function updateState<T>(ref: WritableStateRef<T>, value: T): PrimitiveReactionDescriptor;
   export function appendText(ref: WritableStateRef<string>, text: string): PrimitiveReactionDescriptor;
   export function backspaceText(ref: WritableStateRef<string>): PrimitiveReactionDescriptor;
@@ -2027,7 +2035,7 @@ export type CrossingCondition =
   | { below: nil?, above: number, max: number? }
 
 --- A state-crossing watcher entry as it appears in `setupLevel().crossings` or
---- `setupMod().crossings`. The condition fields are flattened in beside `slot`
+--- `ModManifest.crossings`. The condition fields are flattened in beside `slot`
 --- and `fire`; `fire` lists the named reactions dispatched when the crossing
 --- occurs. `levels` scopes mod-global crossings by map-catalog tags; omit it
 --- for every level.
@@ -2061,13 +2069,13 @@ declare function scopeReactions(tags: {string}, list: {NamedReactionDescriptor})
 --- Pure identity builder for entity-type descriptors. Returns the
 --- descriptor as-is; its sole purpose is a typed construction site.
 declare function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor
---- Pure identity builder for the manifest returned from `setupMod()`.
+--- Pure identity builder for the mod manifest.
 declare function defineMod(config: ModManifest): ModManifest
 --- Pure identity builder for a mod map catalog.
 declare function defineMapCatalog(entries: {ModMapEntry}): {ModMapEntry}
 
 --- Build a state-crossing watcher. Pure: returns a plain table, no FFI. Place
---- the result in `setupLevel().crossings` or `setupMod().crossings` with
+--- the result in `setupLevel().crossings` or `ModManifest.crossings` with
 --- optional `levels` scoping. On a crossing in the condition's direction the
 --- engine fires every reaction in `fire` exactly once, re-arming only after a
 --- crossing back; a registration against a non-Number slot warns and is skipped
@@ -2134,6 +2142,10 @@ declare CLOSE_DIALOG_ACTION: "ui.closeDialog"
 --- intercepts this exact wire value before named-reaction dispatch.
 declare EXIT_TO_DESKTOP_ACTION: "ui.exitToDesktop"
 
+--- Reserved button `onPress` action that returns to the frontend menu. The App
+--- intercepts this exact wire value before named-reaction dispatch.
+declare QUIT_TO_MENU_ACTION: "ui.quitToMenu"
+
 --- System-reaction body (M13 Text Entry): open the engine-shipped on-screen
 --- keyboard, a capturing modal that edits the `ui.textEntry` slot. Optional
 --- `onCommit` (omitted when nil) names a reaction fired on commit (the on-screen
@@ -2152,6 +2164,19 @@ declare function openMenu(tree: string): PrimitiveReactionDescriptor
 --- warns and no-ops at dispatch time. Pure: returns a `PrimitiveReactionDescriptor`,
 --- no FFI.
 declare function closeDialog(): PrimitiveReactionDescriptor
+
+--- System-reaction body: load a map by catalog id. Pure: returns a
+--- PrimitiveReactionDescriptor; the engine queues the lifecycle load when the
+--- reaction fires.
+declare function loadLevel(id: string): PrimitiveReactionDescriptor
+
+--- System-reaction body: reload the currently-active map source. Pure: returns a
+--- PrimitiveReactionDescriptor; runtime no-ops when no level is active.
+declare function restartLevel(): PrimitiveReactionDescriptor
+
+--- System-reaction body: return to the frontend menu, including its optional
+--- declared backdrop level. Pure: returns a PrimitiveReactionDescriptor.
+declare function returnToFrontend(): PrimitiveReactionDescriptor
 
 --- System-reaction body (M13 Goal F): write `value` to a writable state ref at
 --- the game-logic stage. Emits the existing `setState` wire descriptor.
@@ -2197,12 +2222,12 @@ export type WritableStateRef<T> = ReadonlyStateRef<T> & { __writableStateRefBran
 --- `readonly = true` makes the returned state ref display-only for script writes.
 export type StoreSlotSchema = { type: string, readonly: boolean?, [string]: any }
 
---- Plain declaration data returned through `setupMod().stores`.
+--- Plain declaration data returned through `ModManifest.stores`.
 export type StoreDeclaration = { namespace: string, schema: { [string]: StoreSlotSchema } }
 export type StoreStateRef<T> = ReadonlyStateRef<T> | WritableStateRef<T>
 
 --- Result of a pure `defineStore` call. Return `declaration` from
---- `setupMod().stores`; use `state` references in descriptors.
+--- `ModManifest.stores`; use `state` references in descriptors.
 export type StoreDefinition = {
   declaration: StoreDeclaration,
   state: { [string]: StoreStateRef<any> },
@@ -2210,7 +2235,7 @@ export type StoreDefinition = {
 
 --- Build a state-store declaration. Pure: calling it performs no FFI and changes
 --- no engine state. Returned declarations commit atomically only after
---- `setupMod()` succeeds.
+--- the mod manifest succeeds.
 declare function defineStore(namespace: string, schema: { [string]: StoreSlotSchema }): StoreDefinition
 
 -- ---------------------------------------------------------------------------
@@ -2451,7 +2476,7 @@ declare function Tree(props: TreeProps, root: WidgetDescriptor): AnchoredTreeDes
 --- Props accepted by `defineUiTree`. The returned object preserves the runtime
 --- manifest entry shape `{ name, tree, alwaysOn? }`.
 export type UiTreeRegistrationProps = { name: string, tree: AnchoredTreeDescriptor, alwaysOn: boolean? }
---- A typed UI-tree registration entry for `setupMod().uiTrees` / `setupLevel().uiTrees`.
+--- A typed UI-tree registration entry for `ModManifest.uiTrees` / `setupLevel().uiTrees`.
 export type UiTreeRegistration = ModUiTree
 --- Pure helper for defining a named UI-tree registration. Registration still
 --- happens only when the returned object is included in a manifest `uiTrees`
@@ -2636,10 +2661,14 @@ export type PostretroUiModule = {
   showDialog: (tree: string, onCommit: string?) -> PrimitiveReactionDescriptor,
   openMenu: (tree: string) -> PrimitiveReactionDescriptor,
   closeDialog: () -> PrimitiveReactionDescriptor,
+  loadLevel: (id: string) -> PrimitiveReactionDescriptor,
+  restartLevel: () -> PrimitiveReactionDescriptor,
+  returnToFrontend: () -> PrimitiveReactionDescriptor,
   openTextEntry: (onCommit: string?) -> PrimitiveReactionDescriptor,
   KEYBOARD_TREE: "keyboard",
   CLOSE_DIALOG_ACTION: "ui.closeDialog",
   EXIT_TO_DESKTOP_ACTION: "ui.exitToDesktop",
+  QUIT_TO_MENU_ACTION: "ui.quitToMenu",
   updateState: <T>(ref: WritableStateRef<T>, value: T) -> PrimitiveReactionDescriptor,
   appendText: (ref: WritableStateRef<string>, text: string) -> PrimitiveReactionDescriptor,
   backspaceText: (ref: WritableStateRef<string>) -> PrimitiveReactionDescriptor,
@@ -2870,7 +2899,7 @@ declare module "postretro" {
     defaultState?: string;
   };
 
-  /** Entity archetype registered through `ModManifest.entities` from `setupMod()`. `defineEntity()` is a typed identity helper for constructing this object. The descriptor is engine-global and survives level unloads. */
+  /** Entity archetype registered through `ModManifest.entities`. `defineEntity()` is a typed identity helper for constructing this object. The descriptor is engine-global and survives level unloads. */
   export type EntityTypeDescriptor = {
     /** Stable archetype name used by map classname routing and descriptor references. Required for direct map placement and for weapon descriptors referenced by `defaultWeapon`; omit only for archetypes that are never addressed by name. */
     canonicalName?: string;
@@ -2969,7 +2998,7 @@ declare module "postretro" {
     component: FogVolumeComponent;
   };
 
-  /** Component presets carried by `EntityTypeDescriptor.components`. Each key is optional and independent; present values are validated when `setupMod()` loads. */
+  /** Component presets carried by `EntityTypeDescriptor.components`. Each key is optional and independent; present values are validated when the mod manifest loads. */
   export type EntityTypeComponents = {
     /** Dynamic-light preset materialized on each spawned instance. */
     light?: LightDescriptor | null;
@@ -3217,6 +3246,26 @@ declare module "postretro" {
     tags?: ReadonlyArray<string>;
   };
 
+  /** Static camera pose used while a mod frontend menu is presented. */
+  export type MenuCamera = {
+    /** World-space camera position in metres as `[x, y, z]`. Required. */
+    position: readonly [number, number, number];
+    /** Camera yaw in radians. Required. */
+    yaw: number;
+    /** Camera pitch in radians. Required. */
+    pitch: number;
+  };
+
+  /** Mod frontend declaration. Selects the menu UI tree, optional background map catalog id, and static menu camera pose. */
+  export type Frontend = {
+    /** UI tree registry name presented as the frontend menu. Required. */
+    menuTree: string;
+    /** Map catalog id to load behind the frontend menu. Optional. */
+    backgroundLevel?: string;
+    /** Static menu camera pose. Required. */
+    camera: MenuCamera;
+  };
+
   /** Theme token maps supplied via `ModManifest.theme`. Three category-scoped maps: colors (linear-RGBA), fonts (registered family name), spacing (logical px). Each is optional; overrides merge per-token into the engine default. */
   export type ThemeTokens = {
     /** Color tokens: token name → linear-RGBA `[r, g, b, a]`. Optional. */
@@ -3227,7 +3276,7 @@ declare module "postretro" {
     spacing?: { readonly [token: string]: number };
   };
 
-  /** Object returned from `setupMod()` in `start-script.{ts,luau}`. Identifies the mod to the engine. */
+  /** Mod manifest from `start-script.ts`'s default export or `start-script.luau`'s chunk return. Identifies the mod to the engine. */
   export type ModManifest = {
     /** Human-readable mod name. Required. */
     name: string;
@@ -3241,10 +3290,14 @@ declare module "postretro" {
     fonts?: { readonly [token: string]: string };
     /** Pre-load-discoverable map catalog. Optional. */
     maps?: ReadonlyArray<ModMapEntry>;
+    /** Mod-defined frontend menu declaration. Optional. */
+    frontend?: Frontend;
     /** Engine-global reaction definitions. Optional; survive level unload and compose into active level behavior by level tags. */
     reactions?: ReadonlyArray<NamedReactionDescriptor>;
     /** Engine-global state-crossing watchers. Optional; survive level unload and compose into active level behavior by level tags. */
     crossings?: ReadonlyArray<CrossingDescriptor>;
+    /** Engine-global state-store declarations. Optional; commit atomically after the manifest validates. */
+    stores?: ReadonlyArray<StoreDeclaration>;
   };
 
   /** Returns true if the entity id refers to a live entity. */
@@ -3309,7 +3362,7 @@ export type MeshDescriptor = {
   defaultState: string?,
 }
 
---- Entity archetype registered through `ModManifest.entities` from `setupMod()`. `defineEntity()` is a typed identity helper for constructing this object. The descriptor is engine-global and survives level unloads.
+--- Entity archetype registered through `ModManifest.entities`. `defineEntity()` is a typed identity helper for constructing this object. The descriptor is engine-global and survives level unloads.
 export type EntityTypeDescriptor = {
   --- Stable archetype name used by map classname routing and descriptor references. Required for direct map placement and for weapon descriptors referenced by `defaultWeapon`; omit only for archetypes that are never addressed by name.
   canonicalName: string?,
@@ -3408,7 +3461,7 @@ export type FogVolumeEntity = {
   component: FogVolumeComponent,
 }
 
---- Component presets carried by `EntityTypeDescriptor.components`. Each key is optional and independent; present values are validated when `setupMod()` loads.
+--- Component presets carried by `EntityTypeDescriptor.components`. Each key is optional and independent; present values are validated when the mod manifest loads.
 export type EntityTypeComponents = {
   --- Dynamic-light preset materialized on each spawned instance.
   light: LightDescriptor?,
@@ -3656,6 +3709,26 @@ export type ModMapEntry = {
   tags: {string}?,
 }
 
+--- Static camera pose used while a mod frontend menu is presented.
+export type MenuCamera = {
+  --- World-space camera position in metres as `[x, y, z]`. Required.
+  position: {number},
+  --- Camera yaw in radians. Required.
+  yaw: number,
+  --- Camera pitch in radians. Required.
+  pitch: number,
+}
+
+--- Mod frontend declaration. Selects the menu UI tree, optional background map catalog id, and static menu camera pose.
+export type Frontend = {
+  --- UI tree registry name presented as the frontend menu. Required.
+  menuTree: string,
+  --- Map catalog id to load behind the frontend menu. Optional.
+  backgroundLevel: string?,
+  --- Static menu camera pose. Required.
+  camera: MenuCamera,
+}
+
 --- Theme token maps supplied via `ModManifest.theme`. Three category-scoped maps: colors (linear-RGBA), fonts (registered family name), spacing (logical px). Each is optional; overrides merge per-token into the engine default.
 export type ThemeTokens = {
   --- Color tokens: token name → linear-RGBA `[r, g, b, a]`. Optional.
@@ -3666,7 +3739,7 @@ export type ThemeTokens = {
   spacing: { [string]: number }?,
 }
 
---- Object returned from `setupMod()` in `start-script.{ts,luau}`. Identifies the mod to the engine.
+--- Mod manifest from `start-script.ts`'s default export or `start-script.luau`'s chunk return. Identifies the mod to the engine.
 export type ModManifest = {
   --- Human-readable mod name. Required.
   name: string,
@@ -3680,10 +3753,14 @@ export type ModManifest = {
   fonts: { [string]: string }?,
   --- Pre-load-discoverable map catalog. Optional.
   maps: {ModMapEntry}?,
+  --- Mod-defined frontend menu declaration. Optional.
+  frontend: Frontend?,
   --- Engine-global reaction definitions. Optional; survive level unload and compose into active level behavior by level tags.
   reactions: {NamedReactionDescriptor}?,
   --- Engine-global state-crossing watchers. Optional; survive level unload and compose into active level behavior by level tags.
   crossings: {CrossingDescriptor}?,
+  --- Engine-global state-store declarations. Optional; commit atomically after the manifest validates.
+  stores: {StoreDeclaration}?,
 }
 
 --- Returns true if the entity id refers to a live entity.
@@ -3939,7 +4016,7 @@ export type Event = {
                 "luau missing primitive {name}:\n{luau}"
             );
         }
-        // `registerEntity` was removed in favor of `setupMod`'s `entities`
+        // `registerEntity` was removed in favor of `ModManifest.entities`
         // return field; it must not appear as a primitive declaration.
         for line in ts.lines() {
             if line.trim_start().starts_with("//") || line.trim_start().starts_with("*") {
@@ -4160,8 +4237,15 @@ export type Event = {
 
         assert!(
             ts.contains("export type ModMapEntry = {")
+                && ts.contains("export type MenuCamera = {")
+                && ts.contains("position: readonly [number, number, number];")
+                && ts.contains("export type Frontend = {")
+                && ts.contains("menuTree: string;")
+                && ts.contains("backgroundLevel?: string;")
+                && ts.contains("camera: MenuCamera;")
                 && ts.contains("tags?: ReadonlyArray<string>;")
                 && ts.contains("maps?: ReadonlyArray<ModMapEntry>;")
+                && ts.contains("frontend?: Frontend;")
                 && ts.contains("reactions?: ReadonlyArray<NamedReactionDescriptor>;")
                 && ts.contains("crossings?: ReadonlyArray<CrossingDescriptor>;")
                 && ts.contains("export function defineMod(config: ModManifest): ModManifest;")
@@ -4172,8 +4256,15 @@ export type Event = {
         );
         assert!(
             luau.contains("export type ModMapEntry = {")
+                && luau.contains("export type MenuCamera = {")
+                && luau.contains("position: {number},")
+                && luau.contains("export type Frontend = {")
+                && luau.contains("menuTree: string,")
+                && luau.contains("backgroundLevel: string?,")
+                && luau.contains("camera: MenuCamera,")
                 && luau.contains("tags: {string}?")
                 && luau.contains("maps: {ModMapEntry}?")
+                && luau.contains("frontend: Frontend?")
                 && luau.contains("reactions: {NamedReactionDescriptor}?")
                 && luau.contains("crossings: {CrossingDescriptor}?")
                 && luau.contains("declare function defineMod(config: ModManifest): ModManifest")
@@ -4317,7 +4408,7 @@ export type Event = {
         );
         assert!(
             ts.contains("fire: string[];\n    levels?: string[];"),
-            "ts must expose crossing levels for setupMod().crossings:\n{ts}"
+            "ts must expose crossing levels for ModManifest.crossings:\n{ts}"
         );
         assert!(
             luau.contains("levels: {string}?")
@@ -4327,7 +4418,7 @@ export type Event = {
         );
         assert!(
             luau.contains("fire: {string}, levels: {string}?"),
-            "luau must expose crossing levels for setupMod().crossings:\n{luau}"
+            "luau must expose crossing levels for ModManifest.crossings:\n{luau}"
         );
         // Widened reaction-reference props still appear in the Luau UI module
         // prop types. TypeScript root no longer exposes UI prop types in Task 1.
@@ -4380,6 +4471,9 @@ export type Event = {
             "showDialog",
             "openMenu",
             "closeDialog",
+            "loadLevel",
+            "restartLevel",
+            "returnToFrontend",
             "openTextEntry",
             "updateState",
             "appendText",

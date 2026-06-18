@@ -111,7 +111,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("EntityTypeDescriptor")
-        .doc("Entity archetype registered through `ModManifest.entities` from `setupMod()`. `defineEntity()` is a typed identity helper for constructing this object. The descriptor is engine-global and survives level unloads.")
+        .doc("Entity archetype registered through `ModManifest.entities`. `defineEntity()` is a typed identity helper for constructing this object. The descriptor is engine-global and survives level unloads.")
         .field("canonicalName?", "String", "Stable archetype name used by map classname routing and descriptor references. Required for direct map placement and for weapon descriptors referenced by `defaultWeapon`; omit only for archetypes that are never addressed by name.")
         .field(
             "defaultWeapon?",
@@ -225,7 +225,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("EntityTypeComponents")
-        .doc("Component presets carried by `EntityTypeDescriptor.components`. Each key is optional and independent; present values are validated when `setupMod()` loads.")
+        .doc("Component presets carried by `EntityTypeDescriptor.components`. Each key is optional and independent; present values are validated when the mod manifest loads.")
         .field("light?", "Option<LightDescriptor>", "Dynamic-light preset materialized on each spawned instance.")
         .field("emitter?", "Option<BillboardEmitterComponent>", "Billboard-particle emitter preset materialized on each spawned instance.")
         .field("movement?", "Option<PlayerMovementDescriptor>", "Player movement, collision capsule, and first-person view-feel preset.")
@@ -432,6 +432,32 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         )
         .finish();
     registry
+        .register_type("MenuCamera")
+        .doc("Static camera pose used while a mod frontend menu is presented.")
+        .field(
+            "position",
+            "[f32; 3]",
+            "World-space camera position in metres as `[x, y, z]`. Required.",
+        )
+        .field("yaw", "f32", "Camera yaw in radians. Required.")
+        .field("pitch", "f32", "Camera pitch in radians. Required.")
+        .finish();
+    registry
+        .register_type("Frontend")
+        .doc("Mod frontend declaration. Selects the menu UI tree, optional background map catalog id, and static menu camera pose.")
+        .field(
+            "menuTree",
+            "String",
+            "UI tree registry name presented as the frontend menu. Required.",
+        )
+        .field(
+            "backgroundLevel?",
+            "String",
+            "Map catalog id to load behind the frontend menu. Optional.",
+        )
+        .field("camera", "MenuCamera", "Static menu camera pose. Required.")
+        .finish();
+    registry
         .register_type("ThemeTokens")
         .doc("Theme token maps supplied via `ModManifest.theme`. Three category-scoped maps: colors (linear-RGBA), fonts (registered family name), spacing (logical px). Each is optional; overrides merge per-token into the engine default.")
         .field(
@@ -452,7 +478,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("ModManifest")
-        .doc("Object returned from `setupMod()` in `start-script.{ts,luau}`. Identifies the mod to the engine.")
+        .doc("Mod manifest from `start-script.ts`'s default export or `start-script.luau`'s chunk return. Identifies the mod to the engine.")
         .field("name", "String", "Human-readable mod name. Required.")
         .field(
             "entities?",
@@ -480,6 +506,11 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
             "Pre-load-discoverable map catalog. Optional.",
         )
         .field(
+            "frontend?",
+            "Frontend",
+            "Mod-defined frontend menu declaration. Optional.",
+        )
+        .field(
             "reactions?",
             "Vec<NamedReactionDescriptor>",
             "Engine-global reaction definitions. Optional; survive level unload and compose into active level behavior by level tags.",
@@ -488,6 +519,11 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
             "crossings?",
             "Vec<CrossingDescriptor>",
             "Engine-global state-crossing watchers. Optional; survive level unload and compose into active level behavior by level tags.",
+        )
+        .field(
+            "stores?",
+            "Vec<StoreDeclaration>",
+            "Engine-global state-store declarations. Optional; commit atomically after the manifest validates.",
         )
         .finish();
 }
@@ -532,7 +568,7 @@ mod tests {
             assert!(names.contains(&expected), "missing primitive {expected}");
         }
         // `registerEntity` was removed; entity-type registration now flows
-        // through `setupMod()`'s `entities` return field.
+        // through `ModManifest.entities`.
         assert!(
             !names.contains(&"registerEntity"),
             "registerEntity primitive must be removed",
@@ -568,14 +604,16 @@ mod tests {
         use crate::scripting::primitives_registry::TypeShape;
         use crate::scripting::runtime::ModManifestResult;
 
-        // Compile-time anchor for script-visible fields. Store declarations
-        // are attempt-local engine metadata and do not belong in the
-        // generated `ModManifest` shape.
+        // Compile-time anchor for manifest fields. `stores` is authored as
+        // `ModManifest.stores` and lands in `store_declarations` after
+        // validation, so the expected field list below maps that Rust field
+        // back to its script-visible name.
         let _shape_anchor = ModManifestResult {
             name: String::new(),
             entities: Vec::new(),
             ui_trees: Vec::new(),
             theme: crate::scripting::data_descriptors::ModThemeTokens::default(),
+            frontend: None,
             fonts: crate::scripting::data_descriptors::ModFontAssets::default(),
             maps: Vec::new(),
             reactions: Vec::new(),
@@ -587,10 +625,12 @@ mod tests {
             "entities",
             "uiTrees",
             "theme",
+            "frontend",
             "fonts",
             "maps",
             "reactions",
             "crossings",
+            "stores",
         ];
 
         let mut r = PrimitiveRegistry::new();

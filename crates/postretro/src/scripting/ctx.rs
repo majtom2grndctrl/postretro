@@ -23,7 +23,7 @@ use super::slot_table::SlotTable;
 pub(crate) struct ScriptCtx {
     pub(crate) registry: Rc<RefCell<EntityRegistry>>,
     /// Engine-wide entity-type registry. Populated by the boot caller from
-    /// `setupMod()`'s `entities` return field after `run_mod_init` returns;
+    /// `ModManifest.entities` after `run_mod_init` returns;
     /// consumed by the level-load spawn sweep.
     /// Survives level unload — entity-type descriptors are global, not
     /// per-level. `App` reaches this registry via `script_ctx.data_registry`;

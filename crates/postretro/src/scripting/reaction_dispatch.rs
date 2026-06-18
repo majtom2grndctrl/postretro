@@ -293,7 +293,7 @@ pub(crate) fn validate_sequence_primitives(
         .collect()
 }
 
-/// Called before `setupMod().reactions` land in durable global storage.
+/// Called before `ModManifest.reactions` land in durable global storage.
 /// Preserves each surviving reaction's level scope.
 pub(crate) fn validate_scoped_sequence_primitives(
     reactions: Vec<ScopedReaction>,
@@ -302,7 +302,11 @@ pub(crate) fn validate_scoped_sequence_primitives(
     reactions
         .into_iter()
         .filter(|scoped| {
-            sequence_primitives_are_valid(&scoped.reaction, sequence_registry, "setupMod")
+            sequence_primitives_are_valid(
+                &scoped.reaction,
+                sequence_registry,
+                "ModManifest.reactions",
+            )
         })
         .collect()
 }

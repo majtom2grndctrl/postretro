@@ -56,7 +56,7 @@ const opts = defineStore("fixtureOpts", {
   curve: { type: "array", default: [0.0, 0.5, 1.0] },
 });
 
-// Correct shape: declarations are returned from `setupMod().stores`, while
+// Correct shape: declarations are returned from `ModManifest.stores`, while
 // state references are stable `{ slot }` objects keyed by schema field.
 const _fixtureStoreDeclaration = opts.declaration;
 const _volume: StateValue<number> = opts.state.volume;

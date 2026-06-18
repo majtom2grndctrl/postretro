@@ -71,7 +71,7 @@ export type AnchoredTreeDescriptor = {
   role?: WidgetRole;
 };
 
-/** A UI-tree registration entry returned through `setupMod().uiTrees` or
+/** A UI-tree registration entry returned through `ModManifest.uiTrees` or
  * `setupLevel().uiTrees`. This helper preserves the runtime manifest shape
  * while giving authors a typed construction site. */
 export type UiTreeRegistrationProps<Name extends string = string> = {
@@ -203,7 +203,7 @@ export function Tree(props: TreeProps, root: WidgetDescriptor): AnchoredTreeDesc
 /**
  * Define a named UI-tree registration while preserving the manifest wire shape:
  * `{ name, tree, alwaysOn? }`. Pure builder; registration still happens only
- * when the returned object is included in `setupMod().uiTrees`.
+ * when the returned object is included in `ModManifest.uiTrees`.
  */
 export function defineUiTree<const Name extends string>(
   registration: UiTreeRegistrationProps<Name>,

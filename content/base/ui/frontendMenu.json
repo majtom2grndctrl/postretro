@@ -1,0 +1,30 @@
+{
+  "anchor": "center",
+  "offset": [
+    0.0,
+    0.0
+  ],
+  "root": {
+    "kind": "vstack",
+    "gap": 10.0,
+    "padding": 16.0,
+    "align": "center",
+    "children": [
+      {
+        "kind": "text",
+        "content": "POSTRETRO",
+        "fontSize": 30.0,
+        "color": "ok",
+        "font": "mono"
+      },
+      {
+        "kind": "text",
+        "content": "NO MOD FRONTEND REGISTERED",
+        "fontSize": 16.0,
+        "color": "ok",
+        "font": "mono"
+      }
+    ]
+  },
+  "captureMode": "capture"
+}

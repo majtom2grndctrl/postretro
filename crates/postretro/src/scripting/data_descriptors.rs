@@ -16,7 +16,7 @@ use super::components::billboard_emitter::{
 use super::components::mesh::{AnimationState, InterruptPolicy};
 use super::data_registry::{ScopedCrossing, ScopedReaction};
 use super::registry::EntityId;
-use super::runtime::ModMapEntry;
+use super::runtime::{Frontend, MenuCamera, ModMapEntry};
 use crate::movement::MovementScope;
 use crate::render::ui::descriptor::{
     Align, AnchoredTree, AnnounceWidget, BarMax, BarMaxStateRef, BarWidget, BindSource, Border,
@@ -305,7 +305,7 @@ impl MeshDescriptor {
 }
 
 /// Author-side description of an entity type. Carried on `ModManifest.entities`
-/// and drained into `DataRegistry` after `setupMod()` returns.
+/// and drained into `DataRegistry` after the mod manifest commits.
 ///
 /// `canonical_name` is the FGD/map classname this descriptor is directly
 /// placeable as. When `None`, the descriptor has no map-placement form — it
@@ -825,7 +825,7 @@ impl SwayParams {
 }
 
 /// A script-registered UI tree: a named [`AnchoredTree`] plus the `alwaysOn`
-/// registration attribute. Drained from the `uiTrees` field of `setupMod()`
+/// registration attribute. Drained from `ModManifest.uiTrees`
 /// (mod scope) and `setupLevel()` (level scope) returns. Parsed and held on
 /// the manifest result; drained into the app-side `UiTreeRegistry` at the
 /// caller's scope tier before the authoring VM drops.
@@ -841,7 +841,7 @@ pub(crate) struct RegisteredUiTree {
     pub(crate) always_on: bool,
 }
 
-/// Theme tokens supplied by `setupMod()` (the `theme` field). Three
+/// Theme tokens supplied by `ModManifest.theme`. Three
 /// category-scoped maps mirroring the engine theme tables (colors linear-RGBA,
 /// fonts → registered family name, spacing → logical px). Drained into a
 /// `ThemeDescriptor`, merged over `engine_default`, and installed via
@@ -854,7 +854,7 @@ pub(crate) struct ModThemeTokens {
     pub(crate) spacing: HashMap<String, f32>,
 }
 
-/// Font assets declared by `setupMod()` (the `fonts` field): family name → TTF
+/// Font assets declared by `ModManifest.fonts`: family name → TTF
 /// asset path. Installed into the font system via `register_ui_font` by the
 /// boot/level-load callers in `main.rs`. See: context/lib/ui.md §2.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -865,7 +865,7 @@ pub(crate) struct ModFontAssets {
 /// The full bundle returned by a level's `setupLevel(ctx)` export.
 ///
 /// Entity-type descriptors are not part of this manifest — they arrive via
-/// `setupMod()`'s `entities` field (mod-init only) and are drained into
+/// `ModManifest.entities` (mod-init only) and are drained into
 /// `DataRegistry` before any level is loaded. `LevelManifest` carries
 /// per-level reactions and state-crossing watchers.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -4543,9 +4543,9 @@ fn children_from_lua(table: &Table) -> Result<Vec<Widget>, DescriptorError> {
 }
 
 // ===========================================================================
-// Manifest-level UI field drains for setupMod()/setupLevel().
+// Manifest-level UI field drains for ModManifest/setupLevel().
 //
-// `uiTrees` / `theme` / `fonts` are optional fields on the `setupMod()` return
+// `uiTrees` / `theme` / `fonts` are optional fields on the mod manifest
 // (mod scope); `uiTrees` is also optional on `setupLevel()` (level scope). Each
 // drain reads the field straight off the returned object/table via the per-
 // runtime field readers, building typed values held on the manifest result.
@@ -4560,7 +4560,7 @@ fn children_from_lua(table: &Table) -> Result<Vec<Widget>, DescriptorError> {
 // ===========================================================================
 
 /// Drain the `uiTrees` array from a QuickJS manifest object. `scope` is a short
-/// label ("setupMod" / "setupLevel") used in diagnostics. Malformed entries are
+/// label ("ModManifest" / "setupLevel") used in diagnostics. Malformed entries are
 /// logged and skipped; a non-array `uiTrees` field is logged and yields empty.
 pub(crate) fn drain_ui_trees_js<'js>(
     ctx: &Ctx<'js>,
@@ -4650,6 +4650,69 @@ pub(crate) fn drain_theme_js<'js>(
         colors,
         fonts,
         spacing,
+    })
+}
+
+/// Drain the optional mod frontend declaration from a QuickJS manifest object.
+/// Missing/null normalizes to `None`; a present malformed object is fatal so a
+/// bad frontend cannot partially replace the committed app-side snapshot.
+pub(crate) fn drain_frontend_js<'js>(
+    obj: &Object<'js>,
+    _scope: &str,
+) -> Result<Option<Frontend>, DescriptorError> {
+    if !obj.contains_key("frontend").map_err(js_err)? {
+        return Ok(None);
+    }
+    let raw: JsValue = obj.get("frontend").map_err(js_err)?;
+    if raw.is_null() || raw.is_undefined() {
+        return Ok(None);
+    }
+    let frontend_obj = Object::from_value(raw).map_err(|_| DescriptorError::InvalidShape {
+        reason: "`frontend` must be an object".to_string(),
+    })?;
+    Ok(Some(frontend_from_js(&frontend_obj)?))
+}
+
+fn frontend_from_js<'js>(obj: &Object<'js>) -> Result<Frontend, DescriptorError> {
+    let menu_tree = get_required_string_js(obj, "menuTree")?;
+    let background_level = get_optional_string_js(obj, "backgroundLevel")?;
+    let camera = menu_camera_from_js(obj)?;
+    Ok(Frontend {
+        menu_tree,
+        background_level,
+        camera,
+    })
+}
+
+fn menu_camera_from_js<'js>(obj: &Object<'js>) -> Result<MenuCamera, DescriptorError> {
+    if !obj.contains_key("camera").map_err(js_err)? {
+        return Err(DescriptorError::MissingField { field: "camera" });
+    }
+    let raw: JsValue = obj.get("camera").map_err(js_err)?;
+    if raw.is_null() || raw.is_undefined() {
+        return Err(DescriptorError::MissingField { field: "camera" });
+    }
+    let camera_obj = Object::from_value(raw).map_err(|_| DescriptorError::InvalidShape {
+        reason: "`frontend.camera` must be an object".to_string(),
+    })?;
+    if !camera_obj.contains_key("position").map_err(js_err)? {
+        return Err(DescriptorError::MissingField { field: "position" });
+    }
+    let raw_position: JsValue = camera_obj.get("position").map_err(js_err)?;
+    let position = validate_finite_array3(
+        read_f32_array_n_js::<3>(&raw_position, "frontend.camera.position")?,
+        "frontend.camera.position",
+    )?;
+    Ok(MenuCamera {
+        position,
+        yaw: validate_finite_f32(
+            get_required_f32_js(&camera_obj, "yaw")?,
+            "frontend.camera.yaw",
+        )?,
+        pitch: validate_finite_f32(
+            get_required_f32_js(&camera_obj, "pitch")?,
+            "frontend.camera.pitch",
+        )?,
     })
 }
 
@@ -4836,6 +4899,27 @@ fn is_catalog_path_relative_to_content_root(path: &str) -> bool {
         .all(|component| !matches!(component, Component::ParentDir | Component::Prefix(_)))
 }
 
+fn validate_finite_f32(value: f32, field: &str) -> Result<f32, DescriptorError> {
+    if value.is_finite() {
+        Ok(value)
+    } else {
+        Err(DescriptorError::InvalidShape {
+            reason: format!("`{field}` must be finite, got {value}"),
+        })
+    }
+}
+
+fn validate_finite_array3(value: [f32; 3], field: &str) -> Result<[f32; 3], DescriptorError> {
+    for (index, item) in value.iter().enumerate() {
+        if !item.is_finite() {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!("`{field}[{index}]` must be finite, got {item}"),
+            });
+        }
+    }
+    Ok(value)
+}
+
 /// Read an object-valued field as a `String → String` map. Absent/non-object →
 /// empty (with a `log::warn!` when present but not an object). Malformed tokens
 /// are logged and skipped (per-token degraded) so a single bad entry does not
@@ -4999,6 +5083,71 @@ pub(crate) fn drain_theme_lua(
         colors: f32_array4_map_from_lua(&theme_table, "colors")?,
         fonts: string_map_from_lua(&theme_table, "fonts")?,
         spacing: f32_map_from_lua(&theme_table, "spacing")?,
+    })
+}
+
+/// Drain the optional mod frontend declaration from a Luau manifest table.
+/// Mirrors [`drain_frontend_js`].
+pub(crate) fn drain_frontend_lua(
+    table: &Table,
+    _scope: &str,
+) -> Result<Option<Frontend>, DescriptorError> {
+    let raw: LuaValue = table.get("frontend").map_err(lua_err)?;
+    let frontend_table = match raw {
+        LuaValue::Nil => return Ok(None),
+        LuaValue::Table(t) => t,
+        other => {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!("`frontend` must be a table, got {}", other.type_name()),
+            });
+        }
+    };
+    Ok(Some(frontend_from_lua(&frontend_table)?))
+}
+
+fn frontend_from_lua(table: &Table) -> Result<Frontend, DescriptorError> {
+    let menu_tree = get_required_string_lua(table, "menuTree")?;
+    let background_level = get_optional_string_lua(table, "backgroundLevel")?;
+    let camera = menu_camera_from_lua(table)?;
+    Ok(Frontend {
+        menu_tree,
+        background_level,
+        camera,
+    })
+}
+
+fn menu_camera_from_lua(table: &Table) -> Result<MenuCamera, DescriptorError> {
+    let raw: LuaValue = table.get("camera").map_err(lua_err)?;
+    let camera_table = match raw {
+        LuaValue::Nil => return Err(DescriptorError::MissingField { field: "camera" }),
+        LuaValue::Table(t) => t,
+        other => {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "`frontend.camera` must be a table, got {}",
+                    other.type_name()
+                ),
+            });
+        }
+    };
+    let raw_position: LuaValue = camera_table.get("position").map_err(lua_err)?;
+    if matches!(raw_position, LuaValue::Nil) {
+        return Err(DescriptorError::MissingField { field: "position" });
+    }
+    let position = validate_finite_array3(
+        read_f32_array_n_lua::<3>(raw_position, "frontend.camera.position")?,
+        "frontend.camera.position",
+    )?;
+    Ok(MenuCamera {
+        position,
+        yaw: validate_finite_f32(
+            get_required_f32_lua(&camera_table, "yaw")?,
+            "frontend.camera.yaw",
+        )?,
+        pitch: validate_finite_f32(
+            get_required_f32_lua(&camera_table, "pitch")?,
+            "frontend.camera.pitch",
+        )?,
     })
 }
 
@@ -9575,5 +9724,71 @@ mod tests {
             matches!(err, DescriptorError::InvalidShape { ref reason } if reason.contains("announce.text")),
             "empty announce text must be a named InvalidShape error, got {err:?}"
         );
+    }
+
+    #[test]
+    fn drain_frontend_js_parses_menu_background_and_camera() {
+        let frontend = eval_js(
+            r#"({
+                frontend: {
+                    menuTree: "mainMenu",
+                    backgroundLevel: "menu_backdrop",
+                    camera: { position: [4, 2, 8], yaw: -0.6, pitch: -0.1 },
+                },
+            })"#,
+            |_ctx, v| {
+                let obj = Object::from_value(v).expect("must be an object");
+                drain_frontend_js(&obj, "test").expect("frontend must parse")
+            },
+        )
+        .expect("frontend present");
+
+        assert_eq!(frontend.menu_tree, "mainMenu");
+        assert_eq!(frontend.background_level.as_deref(), Some("menu_backdrop"));
+        assert_eq!(frontend.camera.position, [4.0, 2.0, 8.0]);
+        assert_eq!(frontend.camera.yaw, -0.6);
+        assert_eq!(frontend.camera.pitch, -0.1);
+    }
+
+    #[test]
+    fn drain_frontend_js_rejects_structurally_invalid_frontend() {
+        let result = eval_js(r#"({ frontend: 5 })"#, |_ctx, v| {
+            let obj = Object::from_value(v).expect("must be an object");
+            drain_frontend_js(&obj, "test")
+        });
+
+        assert!(
+            result.is_err(),
+            "a present non-object frontend block must abort mod-init"
+        );
+    }
+
+    #[test]
+    fn drain_frontend_lua_parses_menu_background_and_camera() {
+        let lua = mlua::Lua::new();
+        let value: mlua::Value = lua
+            .load(
+                r#"return {
+                    frontend = {
+                        menuTree = "mainMenu",
+                        backgroundLevel = "menu_backdrop",
+                        camera = { position = {4, 2, 8}, yaw = -0.6, pitch = -0.1 },
+                    },
+                }"#,
+            )
+            .eval()
+            .unwrap();
+        let LuaValue::Table(table) = value else {
+            panic!("expected table");
+        };
+        let frontend = drain_frontend_lua(&table, "test")
+            .expect("frontend must parse")
+            .expect("frontend present");
+
+        assert_eq!(frontend.menu_tree, "mainMenu");
+        assert_eq!(frontend.background_level.as_deref(), Some("menu_backdrop"));
+        assert_eq!(frontend.camera.position, [4.0, 2.0, 8.0]);
+        assert_eq!(frontend.camera.yaw, -0.6);
+        assert_eq!(frontend.camera.pitch, -0.1);
     }
 }

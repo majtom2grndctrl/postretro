@@ -11,7 +11,7 @@ reaction.
 - `content/dev/scripts/anim-demo-grunt.ts` — `defineEntity({ canonicalName:
   "anim_demo_grunt", components: { mesh: { ... } } })`. Declares the per-entity
   animation-state map (`idle`, `alert`) and `defaultState: "idle"`. Registered
-  into the mod via `content/dev/start-script.ts`'s `setupMod()` `entities` array.
+  into the mod via `content/dev/start-script.ts`'s `ModManifest.entities`.
 - `content/dev/scripts/anim-demo-reaction.ts` — the level **data script**
   (`setupLevel`). Returns a `levelLoad` Primitive reaction that fires
   `setAnimationState { state: "alert" }` against entities tagged `demo_grunt`.
@@ -131,7 +131,7 @@ state would differ visibly — restoring the animated-vs-control contrast.
   `sdk/TrenchBroom/postretro.fgd` and `build_pipeline.md` §Built-in Classname
   Routing, where it is in the engine-special exclusion set).
 - **Reaction trigger shape:** reactions are surfaced through `setupLevel`'s
-  returned `LevelManifest` (`{ reactions }`), NOT through `setupMod`. The body
+  returned `LevelManifest` (`{ reactions }`), NOT through the mod manifest. The body
   used here is a `PrimitiveReactionDescriptor`
   (`{ primitive, tag, args }`); the `levelLoad` reaction name mirrors
   `arena-lights.ts` and fires once at level load — before the first frame, hence

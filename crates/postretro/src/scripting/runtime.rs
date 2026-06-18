@@ -31,10 +31,13 @@ use super::primitives::store::{drain_store_declarations_js, drain_store_declarat
 use super::primitives_registry::{PrimitiveRegistry, ScriptPrimitive};
 use super::quickjs::{QuickJsConfig, QuickJsSubsystem, run_script};
 #[cfg(debug_assertions)]
+use super::reaction_dispatch::validate_scoped_sequence_primitives;
+#[cfg(debug_assertions)]
 use super::refresh_plan::{
     DescriptorRefreshAction, DescriptorRefreshPlan, apply_descriptor_refresh_plan,
     plan_descriptor_refresh,
 };
+use super::sequence::SequencedPrimitiveRegistry;
 use super::slot_table::StoreDeclarationSet;
 use super::staged_manifest::StagedManifestBuildResult;
 #[cfg(debug_assertions)]
@@ -485,6 +488,7 @@ impl ScriptRuntime {
         &mut self,
         result: &StagedManifestBuildResult,
         ctx: &ScriptCtx,
+        sequence_registry: &SequencedPrimitiveRegistry,
     ) -> StagedManifestCommitOutcome {
         #[cfg(debug_assertions)]
         {
@@ -581,6 +585,8 @@ impl ScriptRuntime {
             // the registry replace observe the same deduped snapshot.
             let next_descriptors =
                 super::data_registry::DataRegistry::dedup_entity_type_snapshot(next_descriptors);
+            let next_global_reactions =
+                validate_scoped_sequence_primitives(next_global_reactions, sequence_registry);
             let store_plan = match ctx
                 .slot_table
                 .borrow()
@@ -678,6 +684,7 @@ impl ScriptRuntime {
         {
             let _ = result;
             let _ = ctx;
+            let _ = sequence_registry;
             StagedManifestCommitOutcome::ReleaseNoop
         }
     }
@@ -1866,7 +1873,7 @@ mod tests {
     use crate::scripting::ctx::ScriptCtx;
     use crate::scripting::data_descriptors::{
         CrossingCondition, CrossingDescriptor, NamedReaction, PrimitiveDescriptor,
-        ReactionDescriptor,
+        ReactionDescriptor, SequenceStep,
     };
     use crate::scripting::data_registry::{ScopedCrossing, ScopedReaction};
     use crate::scripting::primitives::register_all;
@@ -1874,6 +1881,7 @@ mod tests {
         DescriptorComponentKind, DescriptorProvenance, DescriptorSpawnPath,
     };
     use crate::scripting::registry::{ComponentKind, RegistryError, Transform};
+    use crate::scripting::sequence::SequencedPrimitiveRegistry;
     use crate::scripting::slot_table::{
         SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue, StoreDeclaration,
     };
@@ -1921,6 +1929,20 @@ mod tests {
                 }),
             },
             levels: vec!["campaign".to_string()],
+        }
+    }
+
+    fn global_sequence_reaction(name: &str, primitive: &str, levels: &[&str]) -> ScopedReaction {
+        ScopedReaction {
+            reaction: NamedReaction {
+                name: name.to_string(),
+                descriptor: ReactionDescriptor::Sequence(vec![SequenceStep {
+                    id: crate::scripting::registry::EntityId::from_raw(0x0001_0000),
+                    primitive: primitive.to_string(),
+                    args: serde_json::Value::Null,
+                }]),
+            },
+            levels: levels.iter().map(|level| level.to_string()).collect(),
         }
     }
 
@@ -2746,6 +2768,7 @@ mod tests {
                 vec![dir.join("start-script.js")],
             ),
             &ctx,
+            &SequencedPrimitiveRegistry::new(),
         );
 
         assert_eq!(
@@ -2804,6 +2827,7 @@ mod tests {
                 diagnostics: Vec::new(),
             },
             &ctx,
+            &SequencedPrimitiveRegistry::new(),
         );
 
         assert_eq!(
@@ -2881,7 +2905,8 @@ mod tests {
         manifest.reactions = vec![replacement_reaction.clone()];
         manifest.crossings = vec![replacement_crossing.clone()];
 
-        let outcome = rt.commit_staged_manifest_result(&staged, &ctx);
+        let outcome =
+            rt.commit_staged_manifest_result(&staged, &ctx, &SequencedPrimitiveRegistry::new());
 
         assert_eq!(
             outcome,
@@ -2907,12 +2932,57 @@ mod tests {
 
     #[test]
     #[cfg(debug_assertions)]
+    fn staged_manifest_commit_filters_invalid_global_sequence_reactions() {
+        let (mut rt, ctx) = runtime();
+        let dir = temp_mod_root("commit_reaction_validation");
+        let entry = dir.join("start-script.js");
+        fs::write(&entry, "").unwrap();
+        set_latest_staged_generation(&mut rt, 6);
+        let mut sequence_registry = SequencedPrimitiveRegistry::new();
+        sequence_registry.register("knownSequence", |_id, _args| Ok(()));
+
+        let valid_primitive = global_reaction("primitiveGlobal");
+        let valid_sequence =
+            global_sequence_reaction("sequenceGlobal", "knownSequence", &["campaign", "boss"]);
+        let invalid_sequence =
+            global_sequence_reaction("invalidGlobal", "ghostSequence", &["boss"]);
+        let mut staged = built_result(
+            6,
+            &dir,
+            "ValidatedReactions",
+            Vec::new(),
+            vec![entry.clone()],
+        );
+        let StagedManifestBuildStatus::Built(manifest) = &mut staged.status else {
+            unreachable!()
+        };
+        manifest.reactions = vec![
+            valid_primitive.clone(),
+            valid_sequence.clone(),
+            invalid_sequence,
+        ];
+
+        let outcome = rt.commit_staged_manifest_result(&staged, &ctx, &sequence_registry);
+
+        assert!(matches!(
+            outcome,
+            StagedManifestCommitOutcome::Committed { generation: 6, .. }
+        ));
+        assert_eq!(
+            ctx.data_registry.borrow().global_reactions,
+            vec![valid_primitive, valid_sequence],
+        );
+        assert!(rt.changed_paths_affect_active_mod_init_manifest(&[entry]));
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
     fn staged_manifest_commit_preserves_compatible_store_values() {
         let (mut rt, ctx) = runtime();
         let dir = temp_mod_root("commit_store_compatible");
         let entry = dir.join("start-script.js");
         fs::write(&entry, "").unwrap();
-        set_latest_staged_generation(&mut rt, 6);
+        set_latest_staged_generation(&mut rt, 7);
 
         let declarations = number_store_declarations("session", 1.0);
         let plan = ctx
@@ -2928,7 +2998,7 @@ mod tests {
             .value = Some(SlotValue::Number(0.25));
 
         let mut result = built_result(
-            6,
+            7,
             &dir,
             "CompatibleStore",
             vec![descriptor("new")],
@@ -2940,8 +3010,8 @@ mod tests {
         manifest.store_declarations = number_store_declarations("session", 1.0);
 
         assert!(matches!(
-            rt.commit_staged_manifest_result(&result, &ctx),
-            StagedManifestCommitOutcome::Committed { generation: 6, .. }
+            rt.commit_staged_manifest_result(&result, &ctx, &SequencedPrimitiveRegistry::new()),
+            StagedManifestCommitOutcome::Committed { generation: 7, .. }
         ));
         assert_eq!(
             ctx.slot_table
@@ -2960,7 +3030,7 @@ mod tests {
         let dir = temp_mod_root("commit_store_changed");
         let entry = dir.join("start-script.js");
         fs::write(&entry, "").unwrap();
-        set_latest_staged_generation(&mut rt, 7);
+        set_latest_staged_generation(&mut rt, 8);
         ctx.data_registry
             .borrow_mut()
             .replace_entity_types(vec![descriptor("old")]);
@@ -2980,7 +3050,7 @@ mod tests {
             )
             .unwrap();
         let mut result = built_result(
-            7,
+            8,
             &dir,
             "ChangedStore",
             vec![descriptor("new")],
@@ -2992,8 +3062,8 @@ mod tests {
         manifest.store_declarations = changed;
 
         assert!(matches!(
-            rt.commit_staged_manifest_result(&result, &ctx),
-            StagedManifestCommitOutcome::Rejected { generation: 7, .. }
+            rt.commit_staged_manifest_result(&result, &ctx, &SequencedPrimitiveRegistry::new()),
+            StagedManifestCommitOutcome::Rejected { generation: 8, .. }
         ));
         assert_eq!(ctx.data_registry.borrow().entities, vec![descriptor("old")]);
         assert!(ctx.slot_table.borrow().get("new_namespace.value").is_none());
@@ -3044,6 +3114,7 @@ mod tests {
                 diagnostics: Vec::new(),
             },
             &ctx,
+            &SequencedPrimitiveRegistry::new(),
         );
 
         assert_eq!(

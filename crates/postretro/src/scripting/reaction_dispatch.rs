@@ -9,7 +9,7 @@ use super::ctx::ScriptCtx;
 use super::data_descriptors::{
     EntityTypeDescriptor, NamedReaction, PrimitiveDescriptor, ReactionDescriptor, SequenceStep,
 };
-use super::data_registry::DataRegistry;
+use super::data_registry::{DataRegistry, ScopedReaction};
 use super::reactions::registry::ReactionPrimitiveRegistry;
 use super::reactions::system_commands::SystemReactionRegistry;
 use super::registry::{ComponentKind, EntityId, EntityRegistry};
@@ -289,22 +289,42 @@ pub(crate) fn validate_sequence_primitives(
 ) -> Vec<NamedReaction> {
     reactions
         .into_iter()
-        .filter(|named| {
-            let ReactionDescriptor::Sequence(steps) = &named.descriptor else {
-                return true;
-            };
-            for (i, step) in steps.iter().enumerate() {
-                if !sequence_registry.contains(&step.primitive) {
-                    log::error!(
-                        "[Scripting] setupLevel: sequence step {i} names unknown primitive \"{}\"",
-                        step.primitive
-                    );
-                    return false;
-                }
-            }
-            true
+        .filter(|named| sequence_primitives_are_valid(named, sequence_registry, "setupLevel"))
+        .collect()
+}
+
+/// Called before `setupMod().reactions` land in durable global storage.
+/// Preserves each surviving reaction's level scope.
+pub(crate) fn validate_scoped_sequence_primitives(
+    reactions: Vec<ScopedReaction>,
+    sequence_registry: &SequencedPrimitiveRegistry,
+) -> Vec<ScopedReaction> {
+    reactions
+        .into_iter()
+        .filter(|scoped| {
+            sequence_primitives_are_valid(&scoped.reaction, sequence_registry, "setupMod")
         })
         .collect()
+}
+
+fn sequence_primitives_are_valid(
+    named: &NamedReaction,
+    sequence_registry: &SequencedPrimitiveRegistry,
+    source: &str,
+) -> bool {
+    let ReactionDescriptor::Sequence(steps) = &named.descriptor else {
+        return true;
+    };
+    for (i, step) in steps.iter().enumerate() {
+        if !sequence_registry.contains(&step.primitive) {
+            log::error!(
+                "[Scripting] {source}: sequence step {i} names unknown primitive \"{}\"",
+                step.primitive
+            );
+            return false;
+        }
+    }
+    true
 }
 
 /// Linear scan — entity-type counts per level are small and this runs at instantiation time, not in a hot loop.
@@ -644,6 +664,7 @@ mod tests {
 
     use crate::scripting::ctx::ScriptCtx;
     use crate::scripting::data_descriptors::SequenceStep;
+    use crate::scripting::data_registry::ScopedReaction;
     use crate::scripting::registry::EntityId;
     use crate::scripting::sequence::{SequenceError, SequencedPrimitiveRegistry};
     use std::sync::Arc;
@@ -957,5 +978,49 @@ mod tests {
         let surviving = validate_sequence_primitives(reactions, &seq_reg);
         assert_eq!(surviving.len(), 1);
         assert_eq!(surviving[0].name, "valid");
+    }
+
+    #[test]
+    fn validate_scoped_sequence_primitives_drops_invalid_sequences_and_preserves_levels() {
+        let mut seq_reg = SequencedPrimitiveRegistry::new();
+        seq_reg.register("known", |_id, _args| Ok(()));
+
+        let bogus_id = EntityId::from_raw(0x0001_0000);
+        let reactions = vec![
+            ScopedReaction {
+                reaction: primitive_reaction("non_sequence", "moveGeometry", "reactor", None),
+                levels: vec!["campaign".to_string()],
+            },
+            ScopedReaction {
+                reaction: sequence_reaction(
+                    "valid_sequence",
+                    vec![SequenceStep {
+                        id: bogus_id,
+                        primitive: "known".into(),
+                        args: serde_json::Value::Null,
+                    }],
+                ),
+                levels: vec!["campaign".to_string(), "boss".to_string()],
+            },
+            ScopedReaction {
+                reaction: sequence_reaction(
+                    "invalid_sequence",
+                    vec![SequenceStep {
+                        id: bogus_id,
+                        primitive: "ghost".into(),
+                        args: serde_json::Value::Null,
+                    }],
+                ),
+                levels: vec!["campaign".to_string()],
+            },
+        ];
+
+        let surviving = validate_scoped_sequence_primitives(reactions, &seq_reg);
+
+        assert_eq!(surviving.len(), 2);
+        assert_eq!(surviving[0].reaction.name, "non_sequence");
+        assert_eq!(surviving[0].levels, vec!["campaign"]);
+        assert_eq!(surviving[1].reaction.name, "valid_sequence");
+        assert_eq!(surviving[1].levels, vec!["campaign", "boss"]);
     }
 }

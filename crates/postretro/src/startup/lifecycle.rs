@@ -14,7 +14,8 @@ use crate::scripting::builtins::{
     spawn_from_player_starts,
 };
 use crate::scripting::reaction_dispatch::{
-    fire_named_event_with_sequences, validate_sequence_primitives,
+    fire_named_event_with_sequences, validate_scoped_sequence_primitives,
+    validate_sequence_primitives,
 };
 use crate::scripting::state_persistence::{
     STATE_FILE_PATH, load_persisted_state, overlay_persisted_state,
@@ -242,8 +243,11 @@ impl App {
                             data_registry.upsert_entity_type(desc);
                         }
                         data_registry.replace_maps(std::mem::take(&mut manifest.maps));
-                        data_registry
-                            .replace_global_reactions(std::mem::take(&mut manifest.reactions));
+                        let global_reactions = validate_scoped_sequence_primitives(
+                            std::mem::take(&mut manifest.reactions),
+                            &self.sequence_registry,
+                        );
+                        data_registry.replace_global_reactions(global_reactions);
                         data_registry
                             .replace_global_crossings(std::mem::take(&mut manifest.crossings));
                         drop(data_registry);

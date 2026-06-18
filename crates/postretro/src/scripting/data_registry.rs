@@ -258,8 +258,10 @@ mod tests {
     use super::*;
     use crate::scripting::data_descriptors::{
         CrossingCondition, CrossingDescriptor, EntityTypeDescriptor, NamedReaction,
-        PrimitiveDescriptor, ReactionDescriptor,
+        PrimitiveDescriptor, ReactionDescriptor, SequenceStep,
     };
+    use crate::scripting::registry::EntityId;
+    use crate::scripting::sequence::SequencedPrimitiveRegistry;
     use crate::scripting::{reaction_dispatch, reactions::log_capture};
 
     fn sample_manifest() -> LevelManifest {
@@ -322,6 +324,24 @@ mod tests {
                     on_complete: on_complete.map(str::to_string),
                     args: serde_json::Value::Object(Default::default()),
                 }),
+            },
+            levels: levels.iter().map(|level| level.to_string()).collect(),
+        }
+    }
+
+    fn sample_scoped_sequence_reaction(
+        name: &str,
+        primitive: &str,
+        levels: &[&str],
+    ) -> ScopedReaction {
+        ScopedReaction {
+            reaction: NamedReaction {
+                name: name.to_string(),
+                descriptor: ReactionDescriptor::Sequence(vec![SequenceStep {
+                    id: EntityId::from_raw(0x0001_0000),
+                    primitive: primitive.to_string(),
+                    args: serde_json::Value::Null,
+                }]),
             },
             levels: levels.iter().map(|level| level.to_string()).collect(),
         }
@@ -430,6 +450,35 @@ mod tests {
         assert_eq!(
             reaction_names(&r),
             vec!["globalLoad".to_string(), "wave1Complete".to_string()]
+        );
+    }
+
+    #[test]
+    fn startup_style_global_replace_drops_invalid_sequence_reactions_before_composition() {
+        let mut r = DataRegistry::new();
+        let mut seq_reg = SequencedPrimitiveRegistry::new();
+        seq_reg.register("knownSequence", |_id, _args| Ok(()));
+        let valid_primitive = sample_scoped_reaction("primitiveGlobal", &["campaign"]);
+        let valid_sequence =
+            sample_scoped_sequence_reaction("sequenceGlobal", "knownSequence", &["campaign"]);
+        let invalid_sequence =
+            sample_scoped_sequence_reaction("invalidGlobal", "ghostSequence", &["campaign"]);
+
+        let validated = reaction_dispatch::validate_scoped_sequence_primitives(
+            vec![
+                valid_primitive.clone(),
+                valid_sequence.clone(),
+                invalid_sequence,
+            ],
+            &seq_reg,
+        );
+        r.replace_global_reactions(validated);
+        r.populate_from_manifest(LevelManifest::default(), &tags(&["campaign"]));
+
+        assert_eq!(r.global_reactions, vec![valid_primitive, valid_sequence]);
+        assert_eq!(
+            reaction_names(&r),
+            vec!["primitiveGlobal".to_string(), "sequenceGlobal".to_string()]
         );
     }
 

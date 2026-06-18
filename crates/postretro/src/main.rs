@@ -2571,9 +2571,11 @@ impl ApplicationHandler for App {
                 }
 
                 for result in self.script_runtime.poll_staged_manifest_builds() {
-                    let outcome = self
-                        .script_runtime
-                        .commit_staged_manifest_result(&result, &self.script_ctx);
+                    let outcome = self.script_runtime.commit_staged_manifest_result(
+                        &result,
+                        &self.script_ctx,
+                        &self.sequence_registry,
+                    );
                     if matches!(
                         outcome,
                         scripting::runtime::StagedManifestCommitOutcome::Committed { .. }

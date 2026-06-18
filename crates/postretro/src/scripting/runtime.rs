@@ -19,10 +19,10 @@ use rquickjs::{
 use super::ctx::ScriptCtx;
 use super::data_descriptors::{
     EntityTypeDescriptor, LevelManifest, ModFontAssets, ModThemeTokens, RegisteredUiTree,
-    drain_fonts_js, drain_fonts_lua, drain_global_crossings_js, drain_global_crossings_lua,
-    drain_global_reactions_js, drain_global_reactions_lua, drain_maps_js, drain_maps_lua,
-    drain_theme_js, drain_theme_lua, drain_ui_trees_js, drain_ui_trees_lua,
-    entity_descriptor_from_js, entity_descriptor_from_lua,
+    drain_fonts_js, drain_fonts_lua, drain_frontend_js, drain_frontend_lua,
+    drain_global_crossings_js, drain_global_crossings_lua, drain_global_reactions_js,
+    drain_global_reactions_lua, drain_maps_js, drain_maps_lua, drain_theme_js, drain_theme_lua,
+    drain_ui_trees_js, drain_ui_trees_lua, entity_descriptor_from_js, entity_descriptor_from_lua,
 };
 use super::data_registry::{ScopedCrossing, ScopedReaction};
 use super::error::ScriptError;
@@ -56,6 +56,20 @@ pub(crate) struct ModMapEntry {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub(crate) struct MenuCamera {
+    pub(crate) position: [f32; 3],
+    pub(crate) yaw: f32,
+    pub(crate) pitch: f32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Frontend {
+    pub(crate) menu_tree: String,
+    pub(crate) background_level: Option<String>,
+    pub(crate) camera: MenuCamera,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ModManifestResult {
     pub(crate) name: String,
     /// Entity-type descriptors returned by the mod manifest. Empty when the
@@ -70,6 +84,10 @@ pub(crate) struct ModManifestResult {
     /// Theme tokens from the mod manifest's `theme` field. Default (empty) when
     /// absent. Drained into the `ThemeDescriptor` merge by the boot caller.
     pub(crate) theme: ModThemeTokens,
+    /// Mod frontend declaration from the manifest's `frontend` field. A
+    /// successful staged mod-init commit replaces this snapshot whole; omission
+    /// returns the app to its fallback frontend.
+    pub(crate) frontend: Option<Frontend>,
     /// Font assets (family → TTF path) from the mod manifest's `fonts` field.
     /// Default (empty) when absent. Installed via `register_ui_font` by the
     /// boot caller.
@@ -1675,6 +1693,15 @@ fn run_mod_init_quickjs(
                 return;
             }
         };
+        let frontend = match drain_frontend_js(&obj, "default mod manifest export") {
+            Ok(frontend) => frontend,
+            Err(e) => {
+                out = Err(ScriptError::InvalidArgument {
+                    reason: format!("mod-init: `{source_path}` default mod manifest export `frontend` invalid: {e}"),
+                });
+                return;
+            }
+        };
         let fonts = match drain_fonts_js(&obj, "default mod manifest export") {
             Ok(f) => f,
             Err(e) => {
@@ -1726,6 +1753,7 @@ fn run_mod_init_quickjs(
             entities,
             ui_trees,
             theme,
+            frontend,
             fonts,
             maps,
             reactions,
@@ -1853,6 +1881,13 @@ fn run_mod_init_luau(
             reason: format!("mod-init: `{source_path}` returned mod manifest `theme` invalid: {e}"),
         }
     })?;
+    let frontend = drain_frontend_lua(&table, "returned mod manifest").map_err(|e| {
+        ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` returned mod manifest `frontend` invalid: {e}"
+            ),
+        }
+    })?;
     let fonts = drain_fonts_lua(&table, "returned mod manifest").map_err(|e| {
         ScriptError::InvalidArgument {
             reason: format!("mod-init: `{source_path}` returned mod manifest `fonts` invalid: {e}"),
@@ -1889,6 +1924,7 @@ fn run_mod_init_luau(
         entities,
         ui_trees,
         theme,
+        frontend,
         fonts,
         maps,
         reactions,
@@ -2080,6 +2116,7 @@ mod tests {
                 crossings: Vec::new(),
                 ui_trees: Vec::new(),
                 theme: ModThemeTokens::default(),
+                frontend: None,
                 store_declarations: StoreDeclarationSet::default(),
                 dependency_paths,
             })),
@@ -4125,6 +4162,11 @@ mod tests {
                               root: { kind: "text", content: "hi", fontSize: 12.0, color: [1.0,1.0,1.0,1.0] } } },
                 ],
                 theme: { colors: { critical: [1.0, 0.0, 0.0, 1.0] }, spacing: { m: 8.0 } },
+                frontend: {
+                    menuTree: "mainMenu",
+                    backgroundLevel: "menu_backdrop",
+                    camera: { position: [4.0, 2.0, 8.0], yaw: -0.6, pitch: -0.1 },
+                },
                 fonts: { primary: "fonts/inter.ttf" },
             };
             "#,
@@ -4138,6 +4180,12 @@ mod tests {
         assert!(manifest.ui_trees[0].always_on);
         assert_eq!(manifest.theme.colors["critical"], [1.0, 0.0, 0.0, 1.0]);
         assert_eq!(manifest.theme.spacing["m"], 8.0);
+        let frontend = manifest.frontend.as_ref().expect("frontend drained");
+        assert_eq!(frontend.menu_tree, "mainMenu");
+        assert_eq!(frontend.background_level.as_deref(), Some("menu_backdrop"));
+        assert_eq!(frontend.camera.position, [4.0, 2.0, 8.0]);
+        assert_eq!(frontend.camera.yaw, -0.6);
+        assert_eq!(frontend.camera.pitch, -0.1);
         assert_eq!(manifest.fonts.families["primary"], "fonts/inter.ttf");
     }
 
@@ -4414,6 +4462,11 @@ mod tests {
                                root = { kind = "text", content = "hi", fontSize = 12, color = {1,1,1,1} } } },
                 },
                 theme = { colors = { critical = {1, 0, 0, 1} }, spacing = { m = 8 } },
+                frontend = {
+                    menuTree = "mainMenu",
+                    backgroundLevel = "menu_backdrop",
+                    camera = { position = {4, 2, 8}, yaw = -0.6, pitch = -0.1 },
+                },
                 fonts = { primary = "fonts/inter.ttf" },
             }
             "#,
@@ -4427,6 +4480,12 @@ mod tests {
         assert!(manifest.ui_trees[0].always_on);
         assert_eq!(manifest.theme.colors["critical"], [1.0, 0.0, 0.0, 1.0]);
         assert_eq!(manifest.theme.spacing["m"], 8.0);
+        let frontend = manifest.frontend.as_ref().expect("frontend drained");
+        assert_eq!(frontend.menu_tree, "mainMenu");
+        assert_eq!(frontend.background_level.as_deref(), Some("menu_backdrop"));
+        assert_eq!(frontend.camera.position, [4.0, 2.0, 8.0]);
+        assert_eq!(frontend.camera.yaw, -0.6);
+        assert_eq!(frontend.camera.pitch, -0.1);
         assert_eq!(manifest.fonts.families["primary"], "fonts/inter.ttf");
     }
 

@@ -151,6 +151,8 @@ fn rust_to_ts(ty_name: &str) -> String {
         "FogVolumeEntity" => "FogVolumeEntity".to_string(),
         "ModManifest" => "ModManifest".to_string(),
         "ModMapEntry" => "ModMapEntry".to_string(),
+        "MenuCamera" => "MenuCamera".to_string(),
+        "Frontend" => "Frontend".to_string(),
         "ModUiTree" => "ModUiTree".to_string(),
         "ThemeTokens" => "ThemeTokens".to_string(),
         // The `AnchoredTree` Rust type renders to the SDK's `AnchoredTreeDescriptor`
@@ -278,6 +280,8 @@ fn rust_to_luau(ty_name: &str) -> String {
         "FogVolumeEntity" => "FogVolumeEntity".to_string(),
         "ModManifest" => "ModManifest".to_string(),
         "ModMapEntry" => "ModMapEntry".to_string(),
+        "MenuCamera" => "MenuCamera".to_string(),
+        "Frontend" => "Frontend".to_string(),
         "ModUiTree" => "ModUiTree".to_string(),
         "ThemeTokens" => "ThemeTokens".to_string(),
         "AnchoredTree" => "AnchoredTreeDescriptor".to_string(),
@@ -1518,9 +1522,13 @@ declare module "postretro/ui" {
   export const KEYBOARD_TREE: "keyboard";
   export const CLOSE_DIALOG_ACTION: "ui.closeDialog";
   export const EXIT_TO_DESKTOP_ACTION: "ui.exitToDesktop";
+  export const QUIT_TO_MENU_ACTION: "ui.quitToMenu";
   export function openTextEntry(onCommit?: string | null): PrimitiveReactionDescriptor;
   export function openMenu(tree: string): PrimitiveReactionDescriptor;
   export function closeDialog(): PrimitiveReactionDescriptor;
+  export function loadLevel(id: string): PrimitiveReactionDescriptor;
+  export function restartLevel(): PrimitiveReactionDescriptor;
+  export function returnToFrontend(): PrimitiveReactionDescriptor;
   export function updateState<T>(ref: WritableStateRef<T>, value: T): PrimitiveReactionDescriptor;
   export function appendText(ref: WritableStateRef<string>, text: string): PrimitiveReactionDescriptor;
   export function backspaceText(ref: WritableStateRef<string>): PrimitiveReactionDescriptor;
@@ -2134,6 +2142,10 @@ declare CLOSE_DIALOG_ACTION: "ui.closeDialog"
 --- intercepts this exact wire value before named-reaction dispatch.
 declare EXIT_TO_DESKTOP_ACTION: "ui.exitToDesktop"
 
+--- Reserved button `onPress` action that returns to the frontend menu. The App
+--- intercepts this exact wire value before named-reaction dispatch.
+declare QUIT_TO_MENU_ACTION: "ui.quitToMenu"
+
 --- System-reaction body (M13 Text Entry): open the engine-shipped on-screen
 --- keyboard, a capturing modal that edits the `ui.textEntry` slot. Optional
 --- `onCommit` (omitted when nil) names a reaction fired on commit (the on-screen
@@ -2152,6 +2164,19 @@ declare function openMenu(tree: string): PrimitiveReactionDescriptor
 --- warns and no-ops at dispatch time. Pure: returns a `PrimitiveReactionDescriptor`,
 --- no FFI.
 declare function closeDialog(): PrimitiveReactionDescriptor
+
+--- System-reaction body: load a map by catalog id. Pure: returns a
+--- PrimitiveReactionDescriptor; the engine queues the lifecycle load when the
+--- reaction fires.
+declare function loadLevel(id: string): PrimitiveReactionDescriptor
+
+--- System-reaction body: reload the currently-active map source. Pure: returns a
+--- PrimitiveReactionDescriptor; runtime no-ops when no level is active.
+declare function restartLevel(): PrimitiveReactionDescriptor
+
+--- System-reaction body: return to the frontend menu, including its optional
+--- declared backdrop level. Pure: returns a PrimitiveReactionDescriptor.
+declare function returnToFrontend(): PrimitiveReactionDescriptor
 
 --- System-reaction body (M13 Goal F): write `value` to a writable state ref at
 --- the game-logic stage. Emits the existing `setState` wire descriptor.
@@ -2636,10 +2661,14 @@ export type PostretroUiModule = {
   showDialog: (tree: string, onCommit: string?) -> PrimitiveReactionDescriptor,
   openMenu: (tree: string) -> PrimitiveReactionDescriptor,
   closeDialog: () -> PrimitiveReactionDescriptor,
+  loadLevel: (id: string) -> PrimitiveReactionDescriptor,
+  restartLevel: () -> PrimitiveReactionDescriptor,
+  returnToFrontend: () -> PrimitiveReactionDescriptor,
   openTextEntry: (onCommit: string?) -> PrimitiveReactionDescriptor,
   KEYBOARD_TREE: "keyboard",
   CLOSE_DIALOG_ACTION: "ui.closeDialog",
   EXIT_TO_DESKTOP_ACTION: "ui.exitToDesktop",
+  QUIT_TO_MENU_ACTION: "ui.quitToMenu",
   updateState: <T>(ref: WritableStateRef<T>, value: T) -> PrimitiveReactionDescriptor,
   appendText: (ref: WritableStateRef<string>, text: string) -> PrimitiveReactionDescriptor,
   backspaceText: (ref: WritableStateRef<string>) -> PrimitiveReactionDescriptor,
@@ -3217,6 +3246,26 @@ declare module "postretro" {
     tags?: ReadonlyArray<string>;
   };
 
+  /** Static camera pose used while a mod frontend menu is presented. */
+  export type MenuCamera = {
+    /** World-space camera position in metres as `[x, y, z]`. Required. */
+    position: readonly [number, number, number];
+    /** Camera yaw in radians. Required. */
+    yaw: number;
+    /** Camera pitch in radians. Required. */
+    pitch: number;
+  };
+
+  /** Mod frontend declaration. Selects the menu UI tree, optional background map catalog id, and static menu camera pose. */
+  export type Frontend = {
+    /** UI tree registry name presented as the frontend menu. Required. */
+    menuTree: string;
+    /** Map catalog id to load behind the frontend menu. Optional. */
+    backgroundLevel?: string;
+    /** Static menu camera pose. Required. */
+    camera: MenuCamera;
+  };
+
   /** Theme token maps supplied via `ModManifest.theme`. Three category-scoped maps: colors (linear-RGBA), fonts (registered family name), spacing (logical px). Each is optional; overrides merge per-token into the engine default. */
   export type ThemeTokens = {
     /** Color tokens: token name → linear-RGBA `[r, g, b, a]`. Optional. */
@@ -3241,6 +3290,8 @@ declare module "postretro" {
     fonts?: { readonly [token: string]: string };
     /** Pre-load-discoverable map catalog. Optional. */
     maps?: ReadonlyArray<ModMapEntry>;
+    /** Mod-defined frontend menu declaration. Optional. */
+    frontend?: Frontend;
     /** Engine-global reaction definitions. Optional; survive level unload and compose into active level behavior by level tags. */
     reactions?: ReadonlyArray<NamedReactionDescriptor>;
     /** Engine-global state-crossing watchers. Optional; survive level unload and compose into active level behavior by level tags. */
@@ -3658,6 +3709,26 @@ export type ModMapEntry = {
   tags: {string}?,
 }
 
+--- Static camera pose used while a mod frontend menu is presented.
+export type MenuCamera = {
+  --- World-space camera position in metres as `[x, y, z]`. Required.
+  position: {number},
+  --- Camera yaw in radians. Required.
+  yaw: number,
+  --- Camera pitch in radians. Required.
+  pitch: number,
+}
+
+--- Mod frontend declaration. Selects the menu UI tree, optional background map catalog id, and static menu camera pose.
+export type Frontend = {
+  --- UI tree registry name presented as the frontend menu. Required.
+  menuTree: string,
+  --- Map catalog id to load behind the frontend menu. Optional.
+  backgroundLevel: string?,
+  --- Static menu camera pose. Required.
+  camera: MenuCamera,
+}
+
 --- Theme token maps supplied via `ModManifest.theme`. Three category-scoped maps: colors (linear-RGBA), fonts (registered family name), spacing (logical px). Each is optional; overrides merge per-token into the engine default.
 export type ThemeTokens = {
   --- Color tokens: token name → linear-RGBA `[r, g, b, a]`. Optional.
@@ -3682,6 +3753,8 @@ export type ModManifest = {
   fonts: { [string]: string }?,
   --- Pre-load-discoverable map catalog. Optional.
   maps: {ModMapEntry}?,
+  --- Mod-defined frontend menu declaration. Optional.
+  frontend: Frontend?,
   --- Engine-global reaction definitions. Optional; survive level unload and compose into active level behavior by level tags.
   reactions: {NamedReactionDescriptor}?,
   --- Engine-global state-crossing watchers. Optional; survive level unload and compose into active level behavior by level tags.
@@ -4164,8 +4237,15 @@ export type Event = {
 
         assert!(
             ts.contains("export type ModMapEntry = {")
+                && ts.contains("export type MenuCamera = {")
+                && ts.contains("position: readonly [number, number, number];")
+                && ts.contains("export type Frontend = {")
+                && ts.contains("menuTree: string;")
+                && ts.contains("backgroundLevel?: string;")
+                && ts.contains("camera: MenuCamera;")
                 && ts.contains("tags?: ReadonlyArray<string>;")
                 && ts.contains("maps?: ReadonlyArray<ModMapEntry>;")
+                && ts.contains("frontend?: Frontend;")
                 && ts.contains("reactions?: ReadonlyArray<NamedReactionDescriptor>;")
                 && ts.contains("crossings?: ReadonlyArray<CrossingDescriptor>;")
                 && ts.contains("export function defineMod(config: ModManifest): ModManifest;")
@@ -4176,8 +4256,15 @@ export type Event = {
         );
         assert!(
             luau.contains("export type ModMapEntry = {")
+                && luau.contains("export type MenuCamera = {")
+                && luau.contains("position: {number},")
+                && luau.contains("export type Frontend = {")
+                && luau.contains("menuTree: string,")
+                && luau.contains("backgroundLevel: string?,")
+                && luau.contains("camera: MenuCamera,")
                 && luau.contains("tags: {string}?")
                 && luau.contains("maps: {ModMapEntry}?")
+                && luau.contains("frontend: Frontend?")
                 && luau.contains("reactions: {NamedReactionDescriptor}?")
                 && luau.contains("crossings: {CrossingDescriptor}?")
                 && luau.contains("declare function defineMod(config: ModManifest): ModManifest")
@@ -4384,6 +4471,9 @@ export type Event = {
             "showDialog",
             "openMenu",
             "closeDialog",
+            "loadLevel",
+            "restartLevel",
+            "returnToFrontend",
             "openTextEntry",
             "updateState",
             "appendText",

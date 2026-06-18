@@ -86,7 +86,8 @@ use crate::scripting::reactions::system_commands::{
     SystemReactionCommand, SystemReactionRegistry, register_system_reaction_primitives,
 };
 use crate::scripting::runtime::{
-    ReloadSummary, ScriptRuntime, ScriptRuntimeConfig, StagedManifestCommitOutcome,
+    Frontend, MenuCamera, ReloadSummary, ScriptRuntime, ScriptRuntimeConfig,
+    StagedManifestCommitOutcome,
 };
 use crate::scripting::sequence::SequencedPrimitiveRegistry;
 use crate::scripting::staged_manifest::{StagedManifestBuildResult, StagedManifestBuildStatus};
@@ -95,8 +96,8 @@ use crate::scripting::state_persistence::{
     STATE_FILE_PATH, StateStoreLifecycle, collect_persisted_state, save_persisted_state,
 };
 use crate::startup::{
-    BootState, FRONTEND_CLEAR_COLOR, InFlightLevelLoad, LevelRequest, LoadOutcome, SplashSource,
-    StartupTimings,
+    BootState, FRONTEND_CLEAR_COLOR, InFlightLevelLoad, LevelRequest, LevelSource, LoadOutcome,
+    SplashSource, StartupTimings,
 };
 use crate::visibility::{VisibilityPath, VisibilityResult, VisibilityStats, VisibleCells};
 
@@ -114,28 +115,48 @@ fn staged_ui_commit_payload(
 ) -> Option<(
     Vec<crate::scripting::data_descriptors::RegisteredUiTree>,
     ModThemeTokens,
+    Option<Frontend>,
 )> {
     if !matches!(outcome, StagedManifestCommitOutcome::Committed { .. }) {
         return None;
     }
 
     match &result.status {
-        StagedManifestBuildStatus::Built(manifest) => {
-            Some((manifest.ui_trees.clone(), manifest.theme.clone()))
+        StagedManifestBuildStatus::Built(manifest) => Some((
+            manifest.ui_trees.clone(),
+            manifest.theme.clone(),
+            manifest.frontend.clone(),
+        )),
+        StagedManifestBuildStatus::NoStartScript => {
+            Some((Vec::new(), ModThemeTokens::default(), None))
         }
-        StagedManifestBuildStatus::NoStartScript => Some((Vec::new(), ModThemeTokens::default())),
         StagedManifestBuildStatus::Failed => None,
     }
 }
 
+fn apply_menu_camera_pose(
+    camera: &mut Camera,
+    frame_timing: &mut FrameTiming,
+    menu_camera: &MenuCamera,
+) {
+    let position = Vec3::from_array(menu_camera.position);
+    camera.position = position;
+    camera.yaw = menu_camera.yaw;
+    camera.pitch = menu_camera.pitch;
+    frame_timing.hold_state(InterpolableState::new(position));
+}
+
 fn resolve_map_path(args: &[String]) -> Option<String> {
-    let mut iter = args.iter().skip(1);
+    let mut iter = args.iter().skip(1).peekable();
     while let Some(arg) = iter.next() {
-        if arg == "--content-root" {
-            let _ = iter.next();
+        if arg == "--content-root" || arg == "--mod" {
+            if iter.peek().is_some_and(|value| !value.starts_with("--")) {
+                let _ = iter.next();
+            }
             continue;
         }
-        if arg.starts_with("--content-root=") || arg.starts_with("--") {
+        if arg.starts_with("--content-root=") || arg.starts_with("--mod=") || arg.starts_with("--")
+        {
             continue;
         }
         return Some(arg.clone());
@@ -143,17 +164,56 @@ fn resolve_map_path(args: &[String]) -> Option<String> {
     None
 }
 
-fn content_root_arg(args: &[String]) -> Option<PathBuf> {
-    let mut iter = args.iter().skip(1);
+fn mod_arg(args: &[String]) -> Option<PathBuf> {
+    let mut iter = args.iter().skip(1).peekable();
     while let Some(arg) = iter.next() {
         if arg == "--content-root" {
-            return iter.next().map(PathBuf::from);
+            if iter.peek().is_some_and(|value| !value.starts_with("--")) {
+                let _ = iter.next();
+            }
+            continue;
         }
-        if let Some(value) = arg.strip_prefix("--content-root=") {
-            return Some(PathBuf::from(value));
+        if arg == "--mod" {
+            return iter
+                .next_if(|value| !value.is_empty() && !value.starts_with("--"))
+                .map(PathBuf::from);
+        }
+        if let Some(value) = arg.strip_prefix("--mod=") {
+            if !value.is_empty() {
+                return Some(PathBuf::from(value));
+            }
         }
     }
     None
+}
+
+fn content_root_arg(args: &[String]) -> Option<PathBuf> {
+    let mut iter = args.iter().skip(1).peekable();
+    while let Some(arg) = iter.next() {
+        if arg == "--mod" {
+            if iter.peek().is_some_and(|value| !value.starts_with("--")) {
+                let _ = iter.next();
+            }
+            continue;
+        }
+        if arg == "--content-root" {
+            return iter
+                .next_if(|value| !value.is_empty() && !value.starts_with("--"))
+                .map(PathBuf::from);
+        }
+        if let Some(value) = arg.strip_prefix("--content-root=") {
+            if !value.is_empty() {
+                return Some(PathBuf::from(value));
+            }
+        }
+    }
+    None
+}
+
+fn resolve_content_root(args: &[String], map_path: Option<&str>) -> PathBuf {
+    mod_arg(args)
+        .or_else(|| content_root_arg(args))
+        .unwrap_or_else(|| content_root_from_map(map_path))
 }
 
 fn content_root_from_map(map_path: Option<&str>) -> PathBuf {
@@ -333,8 +393,7 @@ fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
 
     let map_path = resolve_map_path(&args);
-    let content_root =
-        content_root_arg(&args).unwrap_or_else(|| content_root_from_map(map_path.as_deref()));
+    let content_root = resolve_content_root(&args, map_path.as_deref());
     log::info!("[Engine] Content root: {}", content_root.display());
     boot_timings.record("args_parsed");
 
@@ -507,6 +566,12 @@ fn main() -> Result<()> {
             );
             render::ui::tree_asset::register_tree_from_disk(
                 registry,
+                render::ui::demo::FRONTEND_MENU_NAME,
+                "frontendMenu.json",
+                false,
+            );
+            render::ui::tree_asset::register_tree_from_disk(
+                registry,
                 render::ui::keyboard_asset::KEYBOARD_TREE_NAME,
                 "keyboard.json",
                 false,
@@ -514,6 +579,7 @@ fn main() -> Result<()> {
             stack
         },
         mod_theme_override: ModThemeTokens::default(),
+        frontend: None,
         ui_focus: input::UiFocusEngine::new(),
         ui_focus_rects: None,
         ui_input_mode: input::InputMode::default(),
@@ -557,6 +623,7 @@ fn main() -> Result<()> {
         mod_timings: StartupTimings::new(),
         level_timings: StartupTimings::new(),
         active_level_tags: Vec::new(),
+        active_level_source: None,
         level_load: None,
         level_rx: None,
         level_worker: None,
@@ -769,6 +836,11 @@ struct App {
     /// commits replace this complete snapshot before a fresh merge over engine
     /// defaults reaches the renderer.
     mod_theme_override: ModThemeTokens,
+
+    /// Currently committed mod frontend declaration. Successful staged mod-init
+    /// commits replace this complete snapshot; omission falls back to the
+    /// engine/default frontend behavior.
+    frontend: Option<Frontend>,
 
     /// App-side UI focus engine (M13 Goal F, Task 3). Runs in the game-logic
     /// phase: consumes the drained nav intents + tracked cursor, moves focus
@@ -996,6 +1068,10 @@ struct App {
     /// these from the resolved map entry; raw path/dev loads keep this empty.
     active_level_tags: Vec<String>,
 
+    /// Source for the installed level, retained after `level_load` is consumed so
+    /// `restartLevel()` can requeue the same catalog id or raw dev path.
+    active_level_source: Option<LevelSource>,
+
     /// Receives the active level worker's `LoadOutcome`. `None` when no load is
     /// in flight; consumed via `try_recv` by the `Loading` state.
     level_rx: Option<mpsc::Receiver<LoadOutcome>>,
@@ -1031,6 +1107,7 @@ enum UiButtonAction {
     CommitTextEntry,
     CloseDialog,
     ExitToDesktop,
+    QuitToMenu,
     NamedReaction,
 }
 
@@ -1039,8 +1116,23 @@ fn classify_ui_button_action(on_press: &str) -> UiButtonAction {
         render::ui::actions::COMMIT_TEXT_ENTRY_ACTION => UiButtonAction::CommitTextEntry,
         render::ui::actions::CLOSE_DIALOG_ACTION => UiButtonAction::CloseDialog,
         render::ui::actions::EXIT_TO_DESKTOP_ACTION => UiButtonAction::ExitToDesktop,
+        render::ui::actions::QUIT_TO_MENU_ACTION => UiButtonAction::QuitToMenu,
         _ => UiButtonAction::NamedReaction,
     }
+}
+
+fn frontend_background_level_source(frontend: Option<&Frontend>) -> Option<LevelSource> {
+    frontend
+        .and_then(|frontend| frontend.background_level.as_ref())
+        .map(|background_level| LevelSource::Catalog(background_level.clone()))
+}
+
+fn frontend_return_requests(frontend: Option<&Frontend>) -> Vec<LevelRequest> {
+    let mut requests = vec![LevelRequest::Unload];
+    if let Some(source) = frontend_background_level_source(frontend) {
+        requests.push(LevelRequest::Load(source));
+    }
+    requests
 }
 
 fn focused_button_on_press(
@@ -1557,6 +1649,9 @@ impl ApplicationHandler for App {
                 }
 
                 if self.boot_state == BootState::Frontend {
+                    if !self.run_frontend_ui_logic(event_loop, frame_dt) {
+                        return;
+                    }
                     self.render_frontend_frame(event_loop, now);
                     return;
                 }
@@ -2018,6 +2113,7 @@ impl ApplicationHandler for App {
                 // freezes lower UI layers, and releases the cursor (`InputFocus::Menu`);
                 // an empty/passthrough top hands input back to gameplay.
                 self.reconcile_ui_focus();
+                self.apply_frontend_menu_camera_pose_if_top();
 
                 // Audio step — third in frame order (Input → Game logic →
                 // Audio → Render → Present, development_guide.md §4.3). Runs after
@@ -2449,68 +2545,27 @@ impl ApplicationHandler for App {
                         // Game logic → Audio → Render). The renderer reads these
                         // cloned values, never the live `SlotTable`.
                         //
-                        // Modal stack compose: every registered ALWAYS-ON tree
-                        // composes as a base layer at the bottom of the snapshot
-                        // (`always_on_layers()`), engine-tier first, then mod-tier,
-                        // then level-tier in a deterministic per-name order — the HUD
-                        // (`content/base/ui/hud.json`) is the engine always-on layer.
-                        // Script-registered always-on overlays either shadow a lower
-                        // tier (same name) or layer on top (new higher-tier name).
-                        // Pushed modal trees stack ABOVE the base layers, drawn bottom→top.
-                        // The registry is the single seam
-                        // — no builder on the render path. The renderer's retained path
-                        // lays each layer out and resolves its binds against the
-                        // snapshot; each layer's descriptor is structurally stable, so
-                        // the retained tree per layer reuses it and only bound values
-                        // drive the diff.
-                        //
-                        // CAPTURE/FOCUS INVARIANT: base/always-on layers are appended to
-                        // `trees` but are NOT on the pushed modal stack, which is the
-                        // SOLE source of `top_capture_mode`/`active_name`/text-entry. So
-                        // an always-on layer never captures input or takes focus even if
-                        // its descriptor declares `captureMode: capture` — its
-                        // `capture_mode` rides the entry for diagnostics only. With no
-                        // modal pushed, the top mode is passthrough (gameplay keeps
-                        // input). A missing `hud.json` simply yields no engine always-on
-                        // layer that frame and the engine still boots.
-                        let slot_values =
-                            Self::build_ui_slot_snapshot(&self.script_ctx.slot_table.borrow());
-                        let mut trees: Vec<render::ui::UiTreeEntry> =
-                            self.modal_stack.always_on_layers();
-                        trees.extend(self.modal_stack.entries());
-                        // Presentation cells (M13 G1b, Task 5): reconcile the
-                        // app-side cell store against THIS frame's composed-scope-id
-                        // set — seed any newly-composed `localState` scope from its
-                        // declared initials and drop cells whose scope is no longer
-                        // present — then snapshot the live cell values for `{ local }`
-                        // bind resolution. The snapshot rides the read snapshot
-                        // (beside `slot_values`), so a cell write never changes the
-                        // descriptor the retained reuse gate compares.
-                        let composed_trees: Vec<&render::ui::descriptor::AnchoredTree> =
-                            trees.iter().map(|entry| &entry.descriptor).collect();
-                        self.presentation_cells.reconcile(&composed_trees);
-                        let cell_values = self.presentation_cells.snapshot();
-                        // Ring-visibility follows the interaction mode WHILE a
-                        // capturing tree is on the stack (M13 Goal F, Task 5):
-                        // `focus` mode shows the ring, `pointer` mode hides it (the
-                        // cursor is the indicator). Inert otherwise — with no
-                        // capturing tree the focused id always rides through (the
-                        // HUD has no focusable nodes, so it is `None` anyway).
-                        let ring_id = if self.modal_stack.top_capture_mode()
-                            == input::UiCaptureMode::Capture
-                            && !self.ui_input_mode.ring_visible()
-                        {
-                            None
-                        } else {
-                            self.ui_focused_id.clone()
-                        };
-                        renderer.set_ui_snapshot(render::ui::UiReadSnapshot::with_trees(
-                            trees,
-                            slot_values,
-                            cell_values,
+                        // Modal stack compose stays behind one helper so normal
+                        // gameplay gets always-on HUD/base layers, while a top
+                        // frontend menu suppresses those layers and presents only
+                        // the menu over its optional backdrop.
+                        let frontend_menu_name = self
+                            .frontend
+                            .as_ref()
+                            .map(|frontend| frontend.menu_tree.as_str())
+                            .unwrap_or(render::ui::demo::FRONTEND_MENU_NAME);
+                        let frontend_menu_is_top =
+                            self.modal_stack.active_name() == Some(frontend_menu_name);
+                        let ui_snapshot = Self::build_ui_read_snapshot(
+                            &self.modal_stack,
+                            &mut self.presentation_cells,
+                            &self.script_ctx.slot_table.borrow(),
                             self.script_time,
-                            ring_id,
-                        ));
+                            self.ui_input_mode,
+                            self.ui_focused_id.clone(),
+                            frontend_menu_is_top,
+                        );
+                        renderer.set_ui_snapshot(ui_snapshot);
 
                         let surface_texture = match renderer.render_frame_indirect(
                             &visible_cells,
@@ -2570,25 +2625,7 @@ impl ApplicationHandler for App {
                     }
                 }
 
-                for result in self.script_runtime.poll_staged_manifest_builds() {
-                    let outcome = self.script_runtime.commit_staged_manifest_result(
-                        &result,
-                        &self.script_ctx,
-                        &self.sequence_registry,
-                    );
-                    if matches!(
-                        outcome,
-                        scripting::runtime::StagedManifestCommitOutcome::Committed { .. }
-                    ) && self.has_installed_level()
-                    {
-                        self.script_ctx
-                            .data_registry
-                            .borrow_mut()
-                            .recompose_active_sets(&self.active_level_tags);
-                        self.rebuild_active_reaction_subscribers();
-                    }
-                    self.commit_staged_ui_manifest(&result, &outcome);
-                }
+                self.poll_staged_manifest_results();
 
                 if let VisibleCells::Culled(mut cells) = visible_cells {
                     cells.clear();
@@ -2732,13 +2769,18 @@ impl App {
         result: &StagedManifestBuildResult,
         outcome: &StagedManifestCommitOutcome,
     ) {
-        let Some((ui_trees, theme)) = staged_ui_commit_payload(result, outcome) else {
+        let Some((ui_trees, theme, frontend)) = staged_ui_commit_payload(result, outcome) else {
             return;
         };
+        let frontend_was_top = self.frontend_menu_is_top();
         let tree_count = ui_trees.len();
         self.modal_stack
             .replace_script_tree_tier(ui_trees, render::ui::modal_stack::ScopeTier::Mod);
         self.commit_mod_ui_theme(theme);
+        self.frontend = frontend;
+        if frontend_was_top || self.boot_state == BootState::Frontend {
+            self.present_frontend_menu();
+        }
         log::info!(
             "[UI] committed staged mod-init generation {} UI snapshot: {} tree(s)",
             result.generation,
@@ -2762,6 +2804,95 @@ impl App {
         };
         let merged = render::ui::theme::UiTheme::engine_default().with_override(&descriptor);
         renderer.set_ui_theme(merged);
+    }
+
+    fn frontend_menu_tree_name(&self) -> &str {
+        self.frontend
+            .as_ref()
+            .map(|frontend| frontend.menu_tree.as_str())
+            .unwrap_or(render::ui::demo::FRONTEND_MENU_NAME)
+    }
+
+    fn present_frontend_menu(&mut self) -> bool {
+        let menu_tree = self.frontend_menu_tree_name().to_string();
+        let presented = self
+            .modal_stack
+            .replace_with_frontend_menu(&menu_tree, render::ui::demo::FRONTEND_MENU_NAME);
+        self.apply_frontend_menu_camera_pose_if_top();
+        self.reconcile_ui_focus();
+        presented.is_some()
+    }
+
+    fn populate_frontend(&mut self) {
+        if self.present_frontend_menu()
+            && let Some(source) = frontend_background_level_source(self.frontend.as_ref())
+        {
+            self.enqueue_level_request(LevelRequest::Load(source));
+        }
+    }
+
+    fn return_to_frontend(&mut self) {
+        self.present_frontend_menu();
+        for request in frontend_return_requests(self.frontend.as_ref()) {
+            self.enqueue_level_request(request);
+        }
+    }
+
+    fn frontend_menu_is_top(&self) -> bool {
+        self.modal_stack.active_name().is_some_and(|active| {
+            active == self.frontend_menu_tree_name()
+                || active == render::ui::demo::FRONTEND_MENU_NAME
+        })
+    }
+
+    fn apply_frontend_menu_camera_pose_if_top(&mut self) {
+        let Some(frontend) = self.frontend.clone() else {
+            return;
+        };
+        if !self.frontend_menu_is_top() {
+            return;
+        }
+
+        apply_menu_camera_pose(&mut self.camera, &mut self.frame_timing, &frontend.camera);
+    }
+
+    fn build_ui_read_snapshot(
+        modal_stack: &render::ui::modal_stack::ModalStack,
+        presentation_cells: &mut scripting_systems::presentation_cells::PresentationCellStore,
+        slot_table: &scripting::slot_table::SlotTable,
+        script_time: f64,
+        ui_input_mode: input::InputMode,
+        ui_focused_id: Option<String>,
+        frontend_menu_is_top: bool,
+    ) -> render::ui::UiReadSnapshot {
+        let slot_values = Self::build_ui_slot_snapshot(slot_table);
+        let mut trees: Vec<render::ui::UiTreeEntry> = if frontend_menu_is_top {
+            Vec::new()
+        } else {
+            modal_stack.always_on_layers()
+        };
+        trees.extend(modal_stack.entries());
+
+        let composed_trees: Vec<&render::ui::descriptor::AnchoredTree> =
+            trees.iter().map(|entry| &entry.descriptor).collect();
+        presentation_cells.reconcile(&composed_trees);
+        let cell_values = presentation_cells.snapshot();
+
+        let ring_id = if modal_stack.top_capture_mode() == input::UiCaptureMode::Capture
+            && !ui_input_mode.ring_visible()
+        {
+            None
+        } else {
+            ui_focused_id
+        };
+
+        render::ui::UiReadSnapshot::with_trees(
+            trees,
+            slot_values,
+            cell_values,
+            script_time,
+            ring_id,
+        )
     }
 
     /// Install a mod manifest's theme tokens and font assets into the live UI
@@ -2844,7 +2975,134 @@ impl App {
         }
     }
 
+    fn run_frontend_ui_logic(&mut self, event_loop: &ActiveEventLoop, frame_dt: f32) -> bool {
+        if let Some(gp) = &mut self.gamepad_system {
+            let gp_nav = gp.update(&mut self.input_system, &mut self.nav_stick_tracker);
+            gp.tick_rumble(frame_dt);
+            if gp_nav.confirm_released {
+                self.ui_focus.release_confirm_repeat();
+            }
+            if gp_nav.directional_released {
+                self.ui_focus.release_repeat();
+            }
+            if !gp_nav.nav_intents.is_empty() {
+                self.record_mode_signal(scripting_systems::input_mode::ModeSignal::NavInput);
+            }
+            let capture = self.ui_dispatch.mode() == input::UiCaptureMode::Capture;
+            for intent in gp_nav.nav_intents {
+                if intent == input::NavIntent::Menu {
+                    self.pending_menu_toggle = false;
+                    continue;
+                }
+                if capture {
+                    self.ui_dispatch
+                        .enqueue_intent(input::UiIntentPayload::Nav(intent));
+                }
+            }
+        }
+
+        self.ui_input_mode = self
+            .input_mode_tracker
+            .update(self.pending_mode_signal.take(), frame_dt);
+
+        let ui_intents = self.ui_dispatch.take_ready();
+        self.ui_dispatch.advance_frame();
+        let text_entry_consumed_nav = self.resolve_text_entry_intents(&ui_intents);
+
+        let mut nav_intents: Vec<input::NavIntent> = Vec::new();
+        let mut click_positions: Vec<input::PointerPos> = Vec::new();
+        for intent in &ui_intents {
+            match &intent.payload {
+                input::UiIntentPayload::Nav(nav) => {
+                    if text_entry_consumed_nav
+                        && matches!(nav, input::NavIntent::Confirm | input::NavIntent::Cancel)
+                    {
+                        continue;
+                    }
+                    nav_intents.push(*nav);
+                }
+                input::UiIntentPayload::PointerClick { pos } => click_positions.push(*pos),
+                input::UiIntentPayload::Text(_) | input::UiIntentPayload::Backspace => {}
+            }
+        }
+        self.apply_slider_nav_capture(&mut nav_intents);
+
+        let active_key = self
+            .modal_stack
+            .active_name()
+            .map(str::to_string)
+            .unwrap_or_else(|| self.frontend_menu_tree_name().to_string());
+        let focus_result = self.ui_focus.tick(
+            Some(active_key.as_str()),
+            self.ui_focus_rects.as_ref(),
+            &nav_intents,
+            self.cursor_pos,
+            &click_positions,
+            self.ui_input_mode,
+            frame_dt,
+        );
+        self.ui_focused_id = focus_result.focused.clone();
+        if focus_result.confirmed {
+            self.fire_focused_button_activation(focus_result.focused.as_deref());
+        }
+        if focus_result.cancelled && !text_entry_consumed_nav {
+            self.modal_stack.pop();
+        }
+        self.pending_menu_toggle = false;
+
+        if self.pending_exit_to_desktop {
+            self.pending_exit_to_desktop = false;
+            self.release_cursor_for_exit();
+            log::info!("[Engine] Shutting down");
+            event_loop.exit();
+            return false;
+        }
+
+        if !self.script_ctx.system_commands.is_empty() {
+            self.dispatch_system_commands();
+        }
+        self.reconcile_ui_focus();
+        self.apply_frontend_menu_camera_pose_if_top();
+        self.poll_staged_manifest_results();
+        true
+    }
+
+    fn poll_staged_manifest_results(&mut self) {
+        for result in self.script_runtime.poll_staged_manifest_builds() {
+            let outcome = self.script_runtime.commit_staged_manifest_result(
+                &result,
+                &self.script_ctx,
+                &self.sequence_registry,
+            );
+            if matches!(
+                outcome,
+                scripting::runtime::StagedManifestCommitOutcome::Committed { .. }
+            ) && self.has_installed_level()
+            {
+                self.script_ctx
+                    .data_registry
+                    .borrow_mut()
+                    .recompose_active_sets(&self.active_level_tags);
+                self.rebuild_active_reaction_subscribers();
+            }
+            self.commit_staged_ui_manifest(&result, &outcome);
+        }
+    }
+
     fn render_frontend_frame(&mut self, event_loop: &ActiveEventLoop, frame_start: Instant) {
+        self.apply_frontend_menu_camera_pose_if_top();
+        self.reconcile_ui_focus();
+        let frontend_menu_is_top = self.frontend_menu_is_top();
+        let ui_snapshot = Self::build_ui_read_snapshot(
+            &self.modal_stack,
+            &mut self.presentation_cells,
+            &self.script_ctx.slot_table.borrow(),
+            self.script_time,
+            self.ui_input_mode,
+            self.ui_focused_id.clone(),
+            frontend_menu_is_top,
+        );
+
         let Some(renderer) = self.renderer.as_mut() else {
             return;
         };
@@ -2855,7 +3113,7 @@ impl App {
         #[cfg(feature = "dev-tools")]
         renderer.clear_debug_lines();
 
-        renderer.set_ui_snapshot(render::ui::UiReadSnapshot::default());
+        renderer.set_ui_snapshot(ui_snapshot);
         let surface_texture = match renderer.render_frame_indirect(
             &VisibleCells::DrawAll,
             &[],
@@ -2978,6 +3236,7 @@ impl App {
                 UiButtonAction::CommitTextEntry => self.commit_text_entry(),
                 UiButtonAction::CloseDialog => {}
                 UiButtonAction::ExitToDesktop => self.pending_exit_to_desktop = true,
+                UiButtonAction::QuitToMenu => self.return_to_frontend(),
                 UiButtonAction::NamedReaction => {
                     let _ = fire_named_event_with_sequences(
                         &on_press,
@@ -3192,6 +3451,19 @@ impl App {
                     // lives on the registered tree's envelope (read after the drain by
                     // `reconcile_ui_focus`), not on the command.
                     self.modal_stack.push_named(&tree, on_commit);
+                }
+                SystemReactionCommand::LoadLevel { map } => {
+                    self.modal_stack.clear_pushed();
+                    self.enqueue_level_request(LevelRequest::Load(LevelSource::Catalog(map)));
+                }
+                SystemReactionCommand::RestartLevel => {
+                    if let Some(source) = self.active_level_source.clone() {
+                        self.modal_stack.clear_pushed();
+                        self.enqueue_level_request(LevelRequest::Load(source));
+                    }
+                }
+                SystemReactionCommand::ReturnToFrontend => {
+                    self.return_to_frontend();
                 }
                 SystemReactionCommand::PopTree => {
                     self.modal_stack.pop();
@@ -3658,9 +3930,35 @@ mod tests {
             UiButtonAction::ExitToDesktop
         );
         assert_eq!(
+            classify_ui_button_action(render::ui::actions::QUIT_TO_MENU_ACTION),
+            UiButtonAction::QuitToMenu
+        );
+        assert_eq!(
             classify_ui_button_action("resumeGame"),
             UiButtonAction::NamedReaction,
             "ordinary button names must keep the named-reaction route",
+        );
+    }
+
+    #[test]
+    fn frontend_return_requests_enqueue_unload_then_optional_backdrop_load() {
+        assert_eq!(frontend_return_requests(None), vec![LevelRequest::Unload]);
+
+        let frontend = Frontend {
+            menu_tree: "mainMenu".to_string(),
+            background_level: Some("menuBackdrop".to_string()),
+            camera: MenuCamera {
+                position: [0.0, 0.0, 0.0],
+                yaw: 0.0,
+                pitch: 0.0,
+            },
+        };
+        assert_eq!(
+            frontend_return_requests(Some(&frontend)),
+            vec![
+                LevelRequest::Unload,
+                LevelRequest::Load(LevelSource::Catalog("menuBackdrop".to_string())),
+            ]
         );
     }
 
@@ -3803,6 +4101,30 @@ mod tests {
         assert_eq!(
             gameplay_snapshot.button(Action::Dash),
             ButtonState::Inactive
+        );
+    }
+
+    #[test]
+    fn menu_camera_pose_hold_replaces_interpolation_endpoints() {
+        let mut camera = Camera::new(Vec3::new(10.0, 20.0, 30.0), 1.0, 0.5);
+        let mut frame_timing =
+            FrameTiming::new(InterpolableState::new(Vec3::new(10.0, 20.0, 30.0)));
+        frame_timing.push_state(InterpolableState::new(Vec3::new(100.0, 200.0, 300.0)));
+        let pose = MenuCamera {
+            position: [4.0, 2.0, 8.0],
+            yaw: -0.6,
+            pitch: -0.1,
+        };
+
+        apply_menu_camera_pose(&mut camera, &mut frame_timing, &pose);
+
+        assert_eq!(camera.position, Vec3::new(4.0, 2.0, 8.0));
+        assert_eq!(camera.yaw, -0.6);
+        assert_eq!(camera.pitch, -0.1);
+        assert_eq!(
+            frame_timing.interpolated_state().position,
+            Vec3::new(4.0, 2.0, 8.0),
+            "render interpolation must not blend from the player spawn after the menu pose is reapplied",
         );
     }
 
@@ -4459,6 +4781,93 @@ mod tests {
     }
 
     #[test]
+    fn mod_arg_selects_content_root() {
+        let args = vec![
+            "postretro".to_string(),
+            "--mod".to_string(),
+            "content/mods/my-campaign".to_string(),
+        ];
+        assert_eq!(
+            mod_arg(&args),
+            Some(PathBuf::from("content/mods/my-campaign")),
+        );
+        assert_eq!(
+            resolve_content_root(&args, None),
+            PathBuf::from("content/mods/my-campaign"),
+        );
+    }
+
+    #[test]
+    fn mod_arg_accepts_equals_form_without_creating_a_map_arg() {
+        let args = vec![
+            "postretro".to_string(),
+            "--mod=content/mods/my-campaign".to_string(),
+        ];
+        assert_eq!(
+            mod_arg(&args),
+            Some(PathBuf::from("content/mods/my-campaign")),
+        );
+        assert_eq!(resolve_map_path(&args), None);
+        assert_eq!(
+            resolve_content_root(&args, None),
+            PathBuf::from("content/mods/my-campaign"),
+        );
+    }
+
+    #[test]
+    fn mod_arg_missing_value_does_not_consume_next_flag_or_corrupt_map_arg() {
+        let args = vec![
+            "postretro".to_string(),
+            "--mod".to_string(),
+            "--content-root".to_string(),
+            "content/base".to_string(),
+            "maps/dev.prl".to_string(),
+        ];
+
+        assert_eq!(mod_arg(&args), None);
+        assert_eq!(content_root_arg(&args), Some(PathBuf::from("content/base")));
+        assert_eq!(resolve_map_path(&args).as_deref(), Some("maps/dev.prl"));
+    }
+
+    #[test]
+    fn mod_arg_empty_equals_value_is_ignored() {
+        let args = vec![
+            "postretro".to_string(),
+            "--mod=".to_string(),
+            "maps/dev.prl".to_string(),
+        ];
+
+        assert_eq!(mod_arg(&args), None);
+        assert_eq!(resolve_map_path(&args).as_deref(), Some("maps/dev.prl"));
+    }
+
+    #[test]
+    fn resolve_map_path_skips_mod_value() {
+        let args = vec![
+            "postretro".to_string(),
+            "--mod".to_string(),
+            "content/mods/my-campaign".to_string(),
+        ];
+        assert_eq!(resolve_map_path(&args), None);
+    }
+
+    #[test]
+    fn resolve_map_path_returns_bare_map_after_selected_mod() {
+        let args = vec![
+            "postretro".to_string(),
+            "--mod".to_string(),
+            "content/mods/my-campaign".to_string(),
+            "maps/dev-bypass.prl".to_string(),
+        ];
+        let map_path = resolve_map_path(&args);
+        assert_eq!(map_path, Some("maps/dev-bypass.prl".to_string()));
+        assert_eq!(
+            resolve_content_root(&args, map_path.as_deref()),
+            PathBuf::from("content/mods/my-campaign"),
+        );
+    }
+
+    #[test]
     fn resolve_map_path_skips_content_root_value() {
         let args = vec![
             "postretro".to_string(),
@@ -4535,6 +4944,15 @@ mod tests {
                         colors: HashMap::from([("critical".to_string(), [0.25, 0.5, 0.75, 1.0])]),
                         ..Default::default()
                     },
+                    frontend: Some(Frontend {
+                        menu_tree: "mainMenu".to_string(),
+                        background_level: Some("backdrop".to_string()),
+                        camera: crate::scripting::runtime::MenuCamera {
+                            position: [1.0, 2.0, 3.0],
+                            yaw: 0.25,
+                            pitch: -0.5,
+                        },
+                    }),
                     store_declarations: Default::default(),
                     dependency_paths: Vec::new(),
                 },
@@ -4552,11 +4970,17 @@ mod tests {
             applied_actions: 0,
             dropped_missing_targets: 0,
         };
-        let (trees, theme) = staged_ui_commit_payload(&result, &committed)
-            .expect("successful current staged result commits UI/theme");
+        let (trees, theme, frontend) = staged_ui_commit_payload(&result, &committed)
+            .expect("successful current staged result commits UI/theme/frontend");
         assert_eq!(trees.len(), 1);
         assert_eq!(trees[0].name, "hud");
         assert_eq!(theme.colors["critical"], [0.25, 0.5, 0.75, 1.0]);
+        assert_eq!(
+            frontend
+                .as_ref()
+                .map(|frontend| frontend.menu_tree.as_str()),
+            Some("mainMenu")
+        );
 
         for outcome in [
             StagedManifestCommitOutcome::DiscardedStale {
@@ -4591,10 +5015,11 @@ mod tests {
             dropped_missing_targets: 0,
         };
 
-        let (trees, theme) =
+        let (trees, theme, frontend) =
             staged_ui_commit_payload(&result, &outcome).expect("no-start commit is a snapshot");
         assert!(trees.is_empty());
         assert_eq!(theme, ModThemeTokens::default());
+        assert_eq!(frontend, None);
     }
 
     // --- G1b drain-before-drop lifecycle invariant (Task 6) -----------------

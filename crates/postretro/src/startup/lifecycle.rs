@@ -36,6 +36,14 @@ pub(crate) const FRONTEND_CLEAR_COLOR: render::ClearColor = render::ClearColor {
 #[cfg(feature = "dev-tools")]
 const DEV_LEVEL_CYCLE_TARGET: &str = "content/dev/maps/combat-demo.prl";
 
+fn level_source_for_load_entry(entry: &LevelLoadEntry) -> LevelSource {
+    if let Some(id) = entry.catalog_id.as_ref() {
+        LevelSource::Catalog(id.clone())
+    } else {
+        LevelSource::Path(PathBuf::from(&entry.path))
+    }
+}
+
 enum LoadingPoll {
     Pending,
     Disconnected,
@@ -60,6 +68,7 @@ impl App {
         self.pending_level_log = false;
         self.level_load = None;
         self.active_level_tags.clear();
+        self.active_level_source = None;
         self.level_requests.clear();
         self.boot_load = false;
     }
@@ -111,6 +120,7 @@ impl App {
         self.crossing_detector.clear();
         self.script_ctx.data_registry.borrow_mut().clear();
         self.active_level_tags.clear();
+        self.active_level_source = None;
         self.script_ctx
             .registry
             .borrow_mut()
@@ -259,6 +269,7 @@ impl App {
                             render::ui::modal_stack::ScopeTier::Mod,
                         );
 
+                        self.frontend = manifest.frontend.take();
                         let mod_theme = std::mem::take(&mut manifest.theme);
                         let mod_fonts = std::mem::take(&mut manifest.fonts);
                         self.install_mod_ui_theme_and_fonts(mod_theme, mod_fonts);
@@ -326,6 +337,8 @@ impl App {
                         renderer.clear_splash();
                     }
                     self.boot_state = BootState::Frontend;
+                    self.populate_frontend();
+                    self.drain_level_requests();
                     self.splash_frame += 1;
                     log::info!("[Engine] no boot map supplied; entering frontend");
                     self.request_redraw();
@@ -351,28 +364,26 @@ impl App {
         }
     }
 
-    fn enqueue_level_request(&mut self, request: LevelRequest) {
-        if self.boot_state == BootState::Loading && self.level_load_in_flight() {
-            if self.boot_load {
-                log::warn!(
-                    "[Loader] ignoring runtime lifecycle request while boot map load is in flight"
-                );
-                return;
-            }
+    pub(crate) fn enqueue_level_request(&mut self, request: LevelRequest) {
+        if self.boot_state == BootState::Loading && self.level_load_in_flight() && self.boot_load {
+            log::warn!(
+                "[Loader] ignoring runtime lifecycle request while boot map load is in flight"
+            );
+            return;
+        }
 
-            match request {
-                LevelRequest::Load(_) => {
-                    self.level_requests
-                        .retain(|queued| !matches!(queued, LevelRequest::Load(_)));
-                }
-                LevelRequest::Unload => {
-                    if self
-                        .level_requests
-                        .iter()
-                        .any(|queued| matches!(queued, LevelRequest::Unload))
-                    {
-                        return;
-                    }
+        match &request {
+            LevelRequest::Load(_) => {
+                self.level_requests
+                    .retain(|queued| !matches!(queued, LevelRequest::Load(_)));
+            }
+            LevelRequest::Unload => {
+                if self
+                    .level_requests
+                    .iter()
+                    .any(|queued| matches!(queued, LevelRequest::Unload))
+                {
+                    return;
                 }
             }
         }
@@ -436,11 +447,13 @@ impl App {
     }
 
     fn retain_active_level_tags_for_install(&mut self) {
-        self.active_level_tags = self
-            .level_load
-            .as_ref()
-            .map(|load| load.entry.tags.clone())
-            .unwrap_or_default();
+        if let Some(load) = self.level_load.as_ref() {
+            self.active_level_tags = load.entry.tags.clone();
+            self.active_level_source = Some(level_source_for_load_entry(&load.entry));
+        } else {
+            self.active_level_tags.clear();
+            self.active_level_source = None;
+        }
     }
 
     pub(crate) fn has_installed_level(&self) -> bool {
@@ -1073,7 +1086,9 @@ mod tests {
     use crate::scripting::primitives::register_all;
     use crate::scripting::primitives_registry::PrimitiveRegistry;
     use crate::scripting::registry::Transform;
-    use crate::scripting::runtime::{ModMapEntry, ScriptRuntime, ScriptRuntimeConfig};
+    use crate::scripting::runtime::{
+        Frontend, MenuCamera, ModMapEntry, ScriptRuntime, ScriptRuntimeConfig,
+    };
     use crate::scripting::slot_table::{
         SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue,
     };
@@ -1135,6 +1150,7 @@ mod tests {
             presentation_cells: scripting_systems::presentation_cells::PresentationCellStore::new(),
             modal_stack: render::ui::modal_stack::ModalStack::new(),
             mod_theme_override: Default::default(),
+            frontend: None,
             ui_focus: input::UiFocusEngine::new(),
             ui_focus_rects: None,
             ui_input_mode: input::InputMode::default(),
@@ -1175,6 +1191,7 @@ mod tests {
             mod_timings: StartupTimings::new(),
             level_timings: StartupTimings::new(),
             active_level_tags: Vec::new(),
+            active_level_source: None,
             level_load: None,
             level_rx: None,
             level_worker: None,
@@ -1735,6 +1752,250 @@ mod tests {
     }
 
     #[test]
+    fn frontend_population_pushes_menu_and_enqueues_one_background_catalog_load() {
+        let mut app = test_app();
+        app.boot_state = BootState::Frontend;
+        app.modal_stack.registry_mut().register(
+            "mainMenu",
+            render::ui::demo::build_frontend_menu_descriptor(),
+            render::ui::modal_stack::ScopeTier::Mod,
+            false,
+        );
+        app.frontend = Some(Frontend {
+            menu_tree: "mainMenu".to_string(),
+            background_level: Some("menu_backdrop".to_string()),
+            camera: MenuCamera {
+                position: [4.0, 2.0, 8.0],
+                yaw: -0.6,
+                pitch: -0.1,
+            },
+        });
+
+        app.populate_frontend();
+        app.populate_frontend();
+
+        assert_eq!(app.modal_stack.active_name(), Some("mainMenu"));
+        assert_eq!(
+            app.modal_stack.top_capture_mode(),
+            input::UiCaptureMode::Capture,
+            "frontend menu must suppress gameplay through the capture-mode path",
+        );
+        assert_eq!(
+            app.level_requests.len(),
+            1,
+            "frontend population enqueues the declared backdrop exactly once",
+        );
+        let Some(LevelRequest::Load(LevelSource::Catalog(id))) = app.level_requests.front() else {
+            panic!("frontend backdrop request should be a catalog load");
+        };
+        assert_eq!(id, "menu_backdrop");
+    }
+
+    #[test]
+    fn frontend_population_falls_back_before_loading_backdrop_when_menu_is_unknown() {
+        let mut app = test_app();
+        app.boot_state = BootState::Frontend;
+        app.modal_stack.registry_mut().register(
+            render::ui::demo::FRONTEND_MENU_NAME,
+            render::ui::demo::build_frontend_menu_descriptor(),
+            render::ui::modal_stack::ScopeTier::Engine,
+            false,
+        );
+        app.frontend = Some(Frontend {
+            menu_tree: "missingMenu".to_string(),
+            background_level: Some("menu_backdrop".to_string()),
+            camera: MenuCamera {
+                position: [4.0, 2.0, 8.0],
+                yaw: -0.6,
+                pitch: -0.1,
+            },
+        });
+
+        app.populate_frontend();
+
+        assert_eq!(
+            app.modal_stack.active_name(),
+            Some(render::ui::demo::FRONTEND_MENU_NAME),
+            "unknown mod frontend menus must reveal the engine fallback",
+        );
+        assert_eq!(
+            app.modal_stack.top_capture_mode(),
+            input::UiCaptureMode::Capture
+        );
+        assert_eq!(
+            app.level_requests.pop_front(),
+            Some(LevelRequest::Load(LevelSource::Catalog(
+                "menu_backdrop".to_string()
+            ))),
+            "backdrops load only after a capturing frontend modal is present",
+        );
+    }
+
+    #[test]
+    fn staged_frontend_commit_replaces_active_frontend_modal() {
+        use crate::scripting::data_descriptors::RegisteredUiTree;
+        use crate::scripting::runtime::StagedManifestCommitOutcome;
+        use crate::scripting::staged_manifest::{StagedManifest, StagedManifestBuildResult};
+
+        let mut app = test_app();
+        app.boot_state = BootState::Frontend;
+        app.modal_stack.registry_mut().register(
+            render::ui::demo::FRONTEND_MENU_NAME,
+            render::ui::demo::build_frontend_menu_descriptor(),
+            render::ui::modal_stack::ScopeTier::Engine,
+            false,
+        );
+        app.modal_stack.registry_mut().register(
+            "oldMenu",
+            render::ui::demo::build_frontend_menu_descriptor(),
+            render::ui::modal_stack::ScopeTier::Mod,
+            false,
+        );
+        app.frontend = Some(Frontend {
+            menu_tree: "oldMenu".to_string(),
+            background_level: None,
+            camera: MenuCamera {
+                position: [0.0, 0.0, 0.0],
+                yaw: 0.0,
+                pitch: 0.0,
+            },
+        });
+        app.present_frontend_menu();
+        assert_eq!(app.modal_stack.active_name(), Some("oldMenu"));
+
+        let staged = StagedManifestBuildResult {
+            generation: 4,
+            mod_root: PathBuf::from("content/dev"),
+            status: crate::scripting::staged_manifest::StagedManifestBuildStatus::Built(Box::new(
+                StagedManifest {
+                    name: "Replacement".to_string(),
+                    entities: Vec::new(),
+                    maps: Vec::new(),
+                    reactions: Vec::new(),
+                    crossings: Vec::new(),
+                    ui_trees: vec![RegisteredUiTree {
+                        name: "newMenu".to_string(),
+                        tree: render::ui::demo::build_frontend_menu_descriptor(),
+                        always_on: false,
+                    }],
+                    theme: Default::default(),
+                    frontend: Some(Frontend {
+                        menu_tree: "newMenu".to_string(),
+                        background_level: None,
+                        camera: MenuCamera {
+                            position: [1.0, 2.0, 3.0],
+                            yaw: 0.25,
+                            pitch: -0.5,
+                        },
+                    }),
+                    store_declarations: Default::default(),
+                    dependency_paths: Vec::new(),
+                },
+            )),
+            diagnostics: Vec::new(),
+        };
+        let committed = StagedManifestCommitOutcome::Committed {
+            generation: 4,
+            descriptor_count: 0,
+            applied_actions: 0,
+            dropped_missing_targets: 0,
+        };
+
+        app.commit_staged_ui_manifest(&staged, &committed);
+        assert_eq!(
+            app.modal_stack.active_name(),
+            Some("newMenu"),
+            "staged replacement updates the active frontend modal clone",
+        );
+
+        let omitted = StagedManifestBuildResult {
+            generation: 5,
+            mod_root: PathBuf::from("content/dev"),
+            status: crate::scripting::staged_manifest::StagedManifestBuildStatus::NoStartScript,
+            diagnostics: Vec::new(),
+        };
+        let omitted_committed = StagedManifestCommitOutcome::Committed {
+            generation: 5,
+            descriptor_count: 0,
+            applied_actions: 0,
+            dropped_missing_targets: 0,
+        };
+
+        app.commit_staged_ui_manifest(&omitted, &omitted_committed);
+        assert_eq!(
+            app.modal_stack.active_name(),
+            Some(render::ui::demo::FRONTEND_MENU_NAME),
+            "staged omission replaces the active frontend modal with the engine fallback",
+        );
+        assert_eq!(
+            app.modal_stack.top_capture_mode(),
+            input::UiCaptureMode::Capture
+        );
+    }
+
+    #[test]
+    fn no_backdrop_frontend_button_activation_dispatches_load_command() {
+        use crate::render::ui::tree::{FocusNeighbors, FocusRect, FocusRectList, NodeInteraction};
+
+        let mut app = test_app();
+        app.boot_state = BootState::Frontend;
+        crate::scripting::reactions::system_commands::register_system_reaction_primitives(
+            &mut app.system_registry,
+        );
+        app.modal_stack.registry_mut().register(
+            render::ui::demo::FRONTEND_MENU_NAME,
+            render::ui::demo::build_frontend_menu_descriptor(),
+            render::ui::modal_stack::ScopeTier::Engine,
+            false,
+        );
+        app.present_frontend_menu();
+        app.ui_focus_rects = Some(FocusRectList {
+            rects: vec![FocusRect {
+                id: "play".to_string(),
+                rect: [0.0, 0.0, 100.0, 32.0],
+                z: 0,
+                group: None,
+                neighbors: FocusNeighbors::default(),
+                interaction: Some(NodeInteraction::Button {
+                    on_press: "startCampaign".to_string(),
+                    repeat_on_hold: None,
+                }),
+                selected: None,
+                checked: None,
+                disabled: false,
+            }],
+            groups: Vec::new(),
+            initial_focus: Some("play".to_string()),
+            restore_on_return: false,
+        });
+        app.script_ctx
+            .data_registry
+            .borrow_mut()
+            .reactions
+            .push(NamedReaction {
+                name: "startCampaign".to_string(),
+                descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                    primitive: "loadLevel".to_string(),
+                    tag: None,
+                    args: serde_json::json!({ "map": "e1m1" }),
+                    on_complete: None,
+                }),
+            });
+
+        app.fire_focused_button_activation(Some("play"));
+        app.dispatch_system_commands();
+
+        assert_eq!(
+            app.level_requests.pop_front(),
+            Some(LevelRequest::Load(LevelSource::Catalog("e1m1".to_string()))),
+        );
+        assert!(
+            app.modal_stack.is_empty(),
+            "frontend activation clears the menu before gameplay load starts",
+        );
+    }
+
+    #[test]
     fn catalog_tags_are_available_on_in_flight_load_before_data_script_runs() {
         let mut app = test_app();
         app.boot_state = BootState::Frontend;
@@ -1791,6 +2052,10 @@ mod tests {
         app.retain_active_level_tags_for_install();
 
         assert_eq!(app.active_level_tags, ["campaign", "intro"]);
+        assert_eq!(
+            app.active_level_source,
+            Some(LevelSource::Catalog("e1m1".to_string()))
+        );
 
         drop_in_flight_worker(&mut app);
     }
@@ -1808,8 +2073,124 @@ mod tests {
         app.retain_active_level_tags_for_install();
 
         assert!(app.active_level_tags.is_empty());
+        assert_eq!(
+            app.active_level_source,
+            Some(LevelSource::Path(PathBuf::from(
+                "content/dev/maps/raw-dev-map.prl"
+            )))
+        );
 
         drop_in_flight_worker(&mut app);
+    }
+
+    #[test]
+    fn queued_load_requests_coalesce_before_lifecycle_drain() {
+        let mut app = test_app();
+
+        app.enqueue_level_request(LevelRequest::Load(LevelSource::Catalog(
+            "intermediate".to_string(),
+        )));
+        app.enqueue_level_request(LevelRequest::Load(LevelSource::Catalog(
+            "final".to_string(),
+        )));
+
+        assert_eq!(app.level_requests.len(), 1);
+        assert_eq!(
+            app.level_requests.front(),
+            Some(&LevelRequest::Load(LevelSource::Catalog(
+                "final".to_string()
+            ))),
+            "rapid frontend activations should not install intermediate maps",
+        );
+    }
+
+    #[test]
+    fn load_level_system_command_queues_catalog_load_request() {
+        let mut app = test_app();
+        app.modal_stack.registry_mut().register(
+            "deathScreen",
+            render::ui::demo::build_frontend_menu_descriptor(),
+            render::ui::modal_stack::ScopeTier::Mod,
+            false,
+        );
+        app.modal_stack.push_named("deathScreen", None);
+
+        app.script_ctx.system_commands.push(
+            scripting::reactions::system_commands::SystemReactionCommand::LoadLevel {
+                map: "e1m1".to_string(),
+            },
+        );
+        app.dispatch_system_commands();
+
+        assert_eq!(
+            app.level_requests.pop_front(),
+            Some(LevelRequest::Load(LevelSource::Catalog("e1m1".to_string())))
+        );
+        assert!(app.level_requests.is_empty());
+        assert!(
+            app.modal_stack.is_empty(),
+            "starting gameplay clears the initiating modal before controls return",
+        );
+    }
+
+    #[test]
+    fn restart_level_system_command_requeues_retained_active_source() {
+        let mut app = test_app();
+        app.active_level_source = Some(LevelSource::Path(PathBuf::from(
+            "content/dev/maps/raw-dev-map.prl",
+        )));
+
+        app.script_ctx
+            .system_commands
+            .push(scripting::reactions::system_commands::SystemReactionCommand::RestartLevel);
+        app.dispatch_system_commands();
+
+        assert_eq!(
+            app.level_requests.pop_front(),
+            Some(LevelRequest::Load(LevelSource::Path(PathBuf::from(
+                "content/dev/maps/raw-dev-map.prl"
+            ))))
+        );
+        assert!(app.level_requests.is_empty());
+    }
+
+    #[test]
+    fn return_to_frontend_system_command_queues_unload_then_backdrop_load() {
+        let mut app = test_app();
+        app.modal_stack.registry_mut().register(
+            "mainMenu",
+            render::ui::demo::build_frontend_menu_descriptor(),
+            render::ui::modal_stack::ScopeTier::Mod,
+            false,
+        );
+        app.frontend = Some(Frontend {
+            menu_tree: "mainMenu".to_string(),
+            background_level: Some("menuBackdrop".to_string()),
+            camera: MenuCamera {
+                position: [0.0, 0.0, 0.0],
+                yaw: 0.0,
+                pitch: 0.0,
+            },
+        });
+
+        app.script_ctx
+            .system_commands
+            .push(scripting::reactions::system_commands::SystemReactionCommand::ReturnToFrontend);
+        app.dispatch_system_commands();
+
+        assert_eq!(
+            app.modal_stack.active_name(),
+            Some("mainMenu"),
+            "returning to frontend presents the menu before backdrop reload",
+        );
+        assert_eq!(app.level_requests.pop_front(), Some(LevelRequest::Unload));
+        assert_eq!(
+            app.level_requests.pop_front(),
+            Some(LevelRequest::Load(LevelSource::Catalog(
+                "menuBackdrop".to_string()
+            )))
+        );
+        assert!(app.level_requests.is_empty());
     }
 
     #[test]

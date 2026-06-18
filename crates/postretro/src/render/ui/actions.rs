@@ -9,3 +9,7 @@ pub(crate) const CLOSE_DIALOG_ACTION: &str = "ui.closeDialog";
 /// Reserved `Button.onPress` value for requesting a clean app shutdown. The App
 /// intercepts this before named-reaction dispatch.
 pub(crate) const EXIT_TO_DESKTOP_ACTION: &str = "ui.exitToDesktop";
+
+/// Reserved `Button.onPress` value for returning to the frontend menu. The App
+/// intercepts this before named-reaction dispatch.
+pub(crate) const QUIT_TO_MENU_ACTION: &str = "ui.quitToMenu";

@@ -105,6 +105,14 @@ impl FrameTiming {
         self.first_tick_done = true;
     }
 
+    /// Replace both interpolation endpoints with the same state. Used for camera
+    /// teleports/holds where rendering must not blend from the previous pose.
+    pub fn hold_state(&mut self, state: InterpolableState) {
+        self.previous_state = InterpolableState::new(state.position);
+        self.current_state = state;
+        self.first_tick_done = true;
+    }
+
     /// Compute the interpolated state for rendering.
     pub fn interpolated_state(&self) -> InterpolableState {
         self.previous_state

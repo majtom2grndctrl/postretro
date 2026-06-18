@@ -402,6 +402,26 @@ export type ModMapEntry = {
   tags: {string}?,
 }
 
+--- Static camera pose used while a mod frontend menu is presented.
+export type MenuCamera = {
+  --- World-space camera position in metres as `[x, y, z]`. Required.
+  position: {number},
+  --- Camera yaw in radians. Required.
+  yaw: number,
+  --- Camera pitch in radians. Required.
+  pitch: number,
+}
+
+--- Mod frontend declaration. Selects the menu UI tree, optional background map catalog id, and static menu camera pose.
+export type Frontend = {
+  --- UI tree registry name presented as the frontend menu. Required.
+  menuTree: string,
+  --- Map catalog id to load behind the frontend menu. Optional.
+  backgroundLevel: string?,
+  --- Static menu camera pose. Required.
+  camera: MenuCamera,
+}
+
 --- Theme token maps supplied via `ModManifest.theme`. Three category-scoped maps: colors (linear-RGBA), fonts (registered family name), spacing (logical px). Each is optional; overrides merge per-token into the engine default.
 export type ThemeTokens = {
   --- Color tokens: token name → linear-RGBA `[r, g, b, a]`. Optional.
@@ -426,6 +446,8 @@ export type ModManifest = {
   fonts: { [string]: string }?,
   --- Pre-load-discoverable map catalog. Optional.
   maps: {ModMapEntry}?,
+  --- Mod-defined frontend menu declaration. Optional.
+  frontend: Frontend?,
   --- Engine-global reaction definitions. Optional; survive level unload and compose into active level behavior by level tags.
   reactions: {NamedReactionDescriptor}?,
   --- Engine-global state-crossing watchers. Optional; survive level unload and compose into active level behavior by level tags.
@@ -1263,10 +1285,14 @@ export type PostretroUiModule = {
   showDialog: (tree: string, onCommit: string?) -> PrimitiveReactionDescriptor,
   openMenu: (tree: string) -> PrimitiveReactionDescriptor,
   closeDialog: () -> PrimitiveReactionDescriptor,
+  loadLevel: (id: string) -> PrimitiveReactionDescriptor,
+  restartLevel: () -> PrimitiveReactionDescriptor,
+  returnToFrontend: () -> PrimitiveReactionDescriptor,
   openTextEntry: (onCommit: string?) -> PrimitiveReactionDescriptor,
   KEYBOARD_TREE: "keyboard",
   CLOSE_DIALOG_ACTION: "ui.closeDialog",
   EXIT_TO_DESKTOP_ACTION: "ui.exitToDesktop",
+  QUIT_TO_MENU_ACTION: "ui.quitToMenu",
   updateState: <T>(ref: WritableStateRef<T>, value: T) -> PrimitiveReactionDescriptor,
   appendText: (ref: WritableStateRef<string>, text: string) -> PrimitiveReactionDescriptor,
   backspaceText: (ref: WritableStateRef<string>) -> PrimitiveReactionDescriptor,

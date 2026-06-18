@@ -34,9 +34,11 @@ The context is dropped after the data script completes. No live reference to the
 
 **Reaction composition.** `ModManifest.reactions` and `ModManifest.crossings` declare mod-global definitions. Each entry may carry `levels: string[]`, a tag selector matched against the loaded map's catalog tags. Empty or absent `levels` means every level. Non-empty `levels` match by exact, case-sensitive set intersection. At level install, active reactions and crossings are composed as `(matching mod-global definitions) + (setupLevel definitions)`. Composition is additive. Same-name reactions are not deduplicated; all matching entries fire, and the loader warns because the collision is usually an authoring mistake. Use disjoint `levels` scopes to separate campaign, deathmatch, or other mode-specific behavior. Crossings use the same tiering and scope selector.
 
-**Mod-init context lifecycle.** Engine init runs `start-script.{ts,luau}` at the mod root (the content root resolved from the loaded map's path). TypeScript authors write `export default defineMod({...})`; `scripts-build` lowers that default export to the engine-reserved script-mode slot `globalThis.__postretroModManifest` before stripping module declarations. Luau authors `return defineMod({...})` from `start-script.luau`. `defineMod` is a pure SDK identity helper whose parameter is the generated `ModManifest` type. Importing a module that defines manifest data performs no FFI; only the default export / chunk return crosses into Rust. Entity-type registrations arrive as `entities: EntityTypeDescriptor[]` on the manifest; the engine drains them into the engine-global type registry after manifest validation. Store declarations and UI trees arrive as manifest data, not import-time side effects, and commit only after script evaluation and manifest validation succeed. UI trees are plain descriptor data built with SDK factories; Rust clones and retains them before the VM drops. A failed attempt changes neither registry. Repeated init after platform resume accepts identical store schemas without resetting values. They survive level loads. Each descriptor declares an optional `canonicalName`; the second dispatch sweep (see `build_pipeline.md §Built-in Classname Routing`) matches map placements only when that value belongs to a descriptor with a placeable component. Absence, or a descriptor with no placeable component, means the archetype is not directly placeable from a map source. Weapon-only descriptors still use `canonicalName` as equip targets for player/default weapon selection. The engine errors at init if: both `.js` and `.lua[u]` start-scripts exist; in release builds, neither exists; the TypeScript default manifest export is missing or not an object; the Luau chunk returns no manifest or a non-table value; manifest initialization throws; or the manifest is missing `name`. In debug builds, an absent start-script is a no-op (no mod-init context is created). Domain scripts (actors, weapons, UI builders, map catalogs, etc.) are pulled in by the start-script via `import` (TS) or `require` (Luau) — there is no auto-scan.
+**Mod-init context lifecycle.** Engine init runs `start-script.{ts,luau}` at the selected mod root (`--mod` / `--content-root`, the loaded map's derived content root, or the default dev root). TypeScript authors write `export default defineMod({...})`; `scripts-build` lowers that default export to the engine-reserved script-mode slot `globalThis.__postretroModManifest` before stripping module declarations. Luau authors `return defineMod({...})` from `start-script.luau`. `defineMod` is a pure SDK identity helper whose parameter is the generated `ModManifest` type. Importing a module that defines manifest data performs no FFI; only the default export / chunk return crosses into Rust. Entity-type registrations arrive as `entities: EntityTypeDescriptor[]` on the manifest; the engine drains them into the engine-global type registry after manifest validation. Store declarations, UI trees, theme data, map catalog entries, and frontend declarations arrive as manifest data, not import-time side effects, and commit only after script evaluation and manifest validation succeeds. UI trees are plain descriptor data built with SDK factories; Rust clones and retains them before the VM drops. A failed attempt changes neither registry. Repeated init after platform resume accepts identical store schemas without resetting values. They survive level loads. Each descriptor declares an optional `canonicalName`; the second dispatch sweep (see `build_pipeline.md §Built-in Classname Routing`) matches map placements only when that value belongs to a descriptor with a placeable component. Absence, or a descriptor with no placeable component, means the archetype is not directly placeable from a map source. Weapon-only descriptors still use `canonicalName` as equip targets for player/default weapon selection. The engine errors at init if: both `.js` and `.lua[u]` start-scripts exist; in release builds, neither exists; the TypeScript default manifest export is missing or not an object; the Luau chunk returns no manifest or a non-table value; manifest initialization throws; or the manifest is missing `name`. In debug builds, an absent start-script is a no-op (no mod-init context is created). Domain scripts (actors, weapons, UI builders, map catalogs, etc.) are pulled in by the start-script via `import` (TS) or `require` (Luau) — there is no auto-scan.
 
 **Map catalog.** `ModManifest.maps` is the mod's pre-load-discoverable home for per-map metadata. Authors may inline it or build it with `defineMapCatalog(entries)`, another pure SDK identity helper that gives `ModMapEntry[]` type hints without changing the wire shape. Each entry has three required v1 fields plus optional classification: `id` is the stable logical handle used by catalog-driven loads and future references; `path` is authored relative to the content root; `name` is the display name; `tags`, when present, are authoritative classification strings for frontend filtering and reaction composition. Missing or `nil`/`null` tags normalize to an empty list. The engine validates and commits the catalog during mod init into `DataRegistry.maps`; it is engine-global, survives level unload and platform suspend, and is available before any level loads. Catalog id loads resolve `id` through this committed snapshot and carry the resolved entry on the in-flight load. Raw path dev loads bypass the catalog and synthesize non-catalog metadata (`catalog_id = None`, name from file stem, empty tags).
+
+**Frontend manifest block.** `ModManifest.frontend` declares the mod's startup menu surface. `menuTree` is the UI registry name to present; `backgroundLevel`, when present, is a map catalog id loaded behind the menu; `camera` is a required static pose (`position`, `yaw`, `pitch`) held while the frontend menu is topmost. Missing or malformed camera fields make the frontend block structurally invalid and abort mod init like a malformed map catalog or theme. The frontend block is replaced whole on successful staged mod init. Omission clears the mod frontend and presents the engine fallback menu.
 
 **Luau `require` resolver.** The mod-init Luau VM installs a `require` global rooted at the mod root. `require("./actors/player")` reads `<mod_root>/actors/player.luau`, compiles it, and returns its export. `..` segments and absolute paths are rejected (mods must not escape their root). Module caching, init-file conventions, and upward search are deliberately omitted — the resolver is the minimum needed to share descriptors across files. The long-lived definition Luau state has no `require` (the deny-list nil's it out); only short-lived VMs with a known mod root install the resolver.
 
@@ -294,23 +296,32 @@ Six tag-targeted reaction primitives operate on `FogVolumeComponent`: `setFogDen
 One event namespace, two execution arms (M13 HUD dynamics): entity-targeted
 primitives resolve tags and mutate the `EntityRegistry`; **system reactions**
 (`playSound`, `rumble`, `flashScreen`, `showDialog` / `openMenu` /
-`closeDialog`, `setState`, the text-edit reactions, `vignette`, and
-`screenShake`) carry no `tag` (the descriptor's `tag` is optional; absent =
-system-targeted) and push typed commands onto a queue drained once per frame
-by the app after the post-tick event drains — audio/input/UI subsystems
-consume their commands without threading engine services into scripting.
+`closeDialog`, `setState`, the text-edit reactions, `vignette`,
+`screenShake`, and the game-flow verbs) carry no `tag` (the descriptor's
+`tag` is optional; absent = system-targeted) and push typed commands onto a
+queue drained once per frame by the app after the post-tick event drains —
+audio/input/UI/lifecycle subsystems consume their commands without threading
+engine services into scripting.
 
 Crossing watchers (`onStateCrossing`) may return through `setupLevel`'s
 manifest or through `ModManifest.crossings`. Mod-global watchers compose into
 the active level by the same `levels` selector as reactions.
 
+Game-flow helpers are system reactions. `loadLevel(map)` carries a map catalog
+id and requests a lifecycle load. `restartLevel()` reloads the active map from
+the retained catalog id or raw dev path. `returnToFrontend()` unloads to the
+frontend menu and reloads the declared backdrop if the frontend has one. Mods
+bind `playerDied` to whichever game-flow policy they want; the engine has no
+built-in death policy.
+
 Button `onPress` values split into two paths. Ordinary names dispatch through
 the named-reaction registry. Reserved `ui.*` values are closed engine actions
 intercepted before named-reaction dispatch; they are not reactions a mod
 registers. `CLOSE_DIALOG_ACTION` exports the exact wire value
-`"ui.closeDialog"` for the "close the active modal" button pattern, and
+`"ui.closeDialog"` for the "close the active modal" button pattern,
 `EXIT_TO_DESKTOP_ACTION` exports `"ui.exitToDesktop"` for UI-initiated clean
-shutdown.
+shutdown, and `QUIT_TO_MENU_ACTION` exports `"ui.quitToMenu"` for returning to
+the frontend through the same path as `returnToFrontend()`.
 
 ### 10.5 Damage
 

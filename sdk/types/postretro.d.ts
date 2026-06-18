@@ -403,6 +403,26 @@ declare module "postretro" {
     tags?: ReadonlyArray<string>;
   };
 
+  /** Static camera pose used while a mod frontend menu is presented. */
+  export type MenuCamera = {
+    /** World-space camera position in metres as `[x, y, z]`. Required. */
+    position: readonly [number, number, number];
+    /** Camera yaw in radians. Required. */
+    yaw: number;
+    /** Camera pitch in radians. Required. */
+    pitch: number;
+  };
+
+  /** Mod frontend declaration. Selects the menu UI tree, optional background map catalog id, and static menu camera pose. */
+  export type Frontend = {
+    /** UI tree registry name presented as the frontend menu. Required. */
+    menuTree: string;
+    /** Map catalog id to load behind the frontend menu. Optional. */
+    backgroundLevel?: string;
+    /** Static menu camera pose. Required. */
+    camera: MenuCamera;
+  };
+
   /** Theme token maps supplied via `ModManifest.theme`. Three category-scoped maps: colors (linear-RGBA), fonts (registered family name), spacing (logical px). Each is optional; overrides merge per-token into the engine default. */
   export type ThemeTokens = {
     /** Color tokens: token name → linear-RGBA `[r, g, b, a]`. Optional. */
@@ -427,6 +447,8 @@ declare module "postretro" {
     fonts?: { readonly [token: string]: string };
     /** Pre-load-discoverable map catalog. Optional. */
     maps?: ReadonlyArray<ModMapEntry>;
+    /** Mod-defined frontend menu declaration. Optional. */
+    frontend?: Frontend;
     /** Engine-global reaction definitions. Optional; survive level unload and compose into active level behavior by level tags. */
     reactions?: ReadonlyArray<NamedReactionDescriptor>;
     /** Engine-global state-crossing watchers. Optional; survive level unload and compose into active level behavior by level tags. */
@@ -1145,9 +1167,13 @@ declare module "postretro/ui" {
   export const KEYBOARD_TREE: "keyboard";
   export const CLOSE_DIALOG_ACTION: "ui.closeDialog";
   export const EXIT_TO_DESKTOP_ACTION: "ui.exitToDesktop";
+  export const QUIT_TO_MENU_ACTION: "ui.quitToMenu";
   export function openTextEntry(onCommit?: string | null): PrimitiveReactionDescriptor;
   export function openMenu(tree: string): PrimitiveReactionDescriptor;
   export function closeDialog(): PrimitiveReactionDescriptor;
+  export function loadLevel(id: string): PrimitiveReactionDescriptor;
+  export function restartLevel(): PrimitiveReactionDescriptor;
+  export function returnToFrontend(): PrimitiveReactionDescriptor;
   export function updateState<T>(ref: WritableStateRef<T>, value: T): PrimitiveReactionDescriptor;
   export function appendText(ref: WritableStateRef<string>, text: string): PrimitiveReactionDescriptor;
   export function backspaceText(ref: WritableStateRef<string>): PrimitiveReactionDescriptor;

@@ -7,6 +7,10 @@
 /// `nav.menu`.
 pub(crate) const PAUSE_MENU_NAME: &str = "pauseMenu";
 
+/// Registry name for the engine fallback frontend menu. Mods may declare any
+/// registered tree as `frontend.menuTree`; this name is the no-mod fallback.
+pub(crate) const FRONTEND_MENU_NAME: &str = "frontendMenu";
+
 /// Read a committed UI descriptor JSON anchored to the repo root (NOT runtime
 /// cwd, so it passes under `cargo test`, which runs from the crate dir). Mirrors
 /// the `tree_asset`/keyboard precedent: `CARGO_MANIFEST_DIR` + `../..` reaches the
@@ -38,10 +42,18 @@ pub(crate) fn build_pause_menu_descriptor() -> super::descriptor::AnchoredTree {
     load_ui_fixture("pauseMenu.json")
 }
 
+/// The shipped frontend-menu descriptor (`content/base/ui/frontendMenu.json`).
+#[cfg(test)]
+pub(crate) fn build_frontend_menu_descriptor() -> super::descriptor::AnchoredTree {
+    load_ui_fixture("frontendMenu.json")
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::descriptor::{CaptureMode, Widget};
-    use super::{build_demo_descriptor, build_pause_menu_descriptor};
+    use super::{
+        build_demo_descriptor, build_frontend_menu_descriptor, build_pause_menu_descriptor,
+    };
 
     const FALLBACK_HUD_MARKER: &str = "FALLBACK HUD HP --";
     const FALLBACK_HUD_FORMAT: &str = "FALLBACK HUD HP {}";
@@ -166,6 +178,39 @@ mod tests {
             !json.contains(r#""kind":"button""#) && !json.contains(r#""kind":"slider""#),
             "fallback pause menu is text-only; the production mod owns controls",
         );
+    }
+
+    /// The frontend fallback is the no-mod/no-map boot surface. It must be a
+    /// capturing modal so it uses the same control suppression and cursor release
+    /// path as mod-authored frontend menus.
+    #[test]
+    fn fallback_frontend_menu_is_capturing_text_only() {
+        let tree = build_frontend_menu_descriptor();
+        assert_eq!(
+            tree.capture_mode,
+            CaptureMode::Capture,
+            "the frontend fallback captures input through the modal-stack path",
+        );
+        assert_eq!(
+            tree.initial_focus.as_deref(),
+            None,
+            "Task 4 fallback has no focusable controls",
+        );
+
+        let Widget::VStack(col) = &tree.root else {
+            panic!("frontend fallback root is a vstack column");
+        };
+        assert_eq!(col.children.len(), 2);
+
+        let Widget::Text(title) = &col.children[0] else {
+            panic!("first row is the title text");
+        };
+        assert_eq!(title.content, "POSTRETRO");
+
+        let Widget::Text(instruction) = &col.children[1] else {
+            panic!("second row is the status text");
+        };
+        assert_eq!(instruction.content, "NO MOD FRONTEND REGISTERED");
     }
 
     /// The `nav.menu` toggle pushes/pops the registered pause menu through the

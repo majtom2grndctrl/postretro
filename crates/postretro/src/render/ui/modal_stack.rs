@@ -12,7 +12,7 @@
 #[cfg(test)]
 use super::UiReadSnapshot;
 use super::UiTreeEntry;
-use super::descriptor::AnchoredTree;
+use super::descriptor::{AnchoredTree, CaptureMode};
 use crate::input::UiCaptureMode;
 use crate::scripting::data_descriptors::RegisteredUiTree;
 
@@ -306,6 +306,13 @@ impl ModalStack {
         self.stack.retain(|entry| entry.tier != tier);
     }
 
+    /// Clear every pushed modal instance while leaving registry tiers and
+    /// always-on layers intact. Runtime level starts use this to remove frontend,
+    /// pause, death, or dialog surfaces before gameplay takes control.
+    pub(crate) fn clear_pushed(&mut self) {
+        self.stack.clear();
+    }
+
     /// Read a registered tree by `name`, or `None` if no such name is registered.
     /// Public `&self` read seam onto the registry's tiered resolution: keeps
     /// `UiTreeRegistry::resolve` private to `push_named`'s internal use. The
@@ -353,6 +360,53 @@ impl ModalStack {
             tier,
             on_commit,
         });
+    }
+
+    /// Resolve a registered tree by `name`, force its cloned envelope to capture,
+    /// and push it as the top modal. Frontend presentation uses this so both mod
+    /// and engine fallback menus suppress gameplay through the existing modal
+    /// capture path even if an authored tree omitted `captureMode`.
+    pub(crate) fn push_named_capturing(&mut self, name: &str) -> bool {
+        let Some((tier, mut descriptor)) = self
+            .registry
+            .resolve_with_tier(name)
+            .map(|(tier, descriptor)| (tier, descriptor.clone()))
+        else {
+            log::warn!("[UI] frontend menu '{name}' is not registered; ignoring (no panic)");
+            return false;
+        };
+        descriptor.capture_mode = CaptureMode::Capture;
+        self.stack.push(StackedTree {
+            name: name.to_string(),
+            descriptor,
+            tier,
+            on_commit: None,
+        });
+        true
+    }
+
+    /// Replace the pushed stack with one capturing frontend menu. If the mod's
+    /// declared menu is absent, use the engine fallback instead so a backdrop
+    /// never becomes playable without a capturing modal.
+    pub(crate) fn replace_with_frontend_menu(
+        &mut self,
+        preferred_name: &str,
+        fallback_name: &str,
+    ) -> Option<String> {
+        let resolved_name = if self.registry.resolve(preferred_name).is_some() {
+            preferred_name
+        } else {
+            if preferred_name != fallback_name {
+                log::warn!(
+                    "[UI] frontend menu '{preferred_name}' is not registered; using '{fallback_name}'"
+                );
+            }
+            fallback_name
+        };
+
+        self.stack.clear();
+        self.push_named_capturing(resolved_name)
+            .then(|| resolved_name.to_string())
     }
 
     /// Engine push API: push a descriptor tree directly (pause/dialog opened from
@@ -529,6 +583,95 @@ mod tests {
         stack.push_named("pauseMenu", Some("resume".to_string()));
         assert_eq!(stack.len(), 1);
         assert_eq!(stack.active_name(), Some("pauseMenu"));
+    }
+
+    #[test]
+    fn push_named_capturing_forces_top_modal_capture_mode() {
+        let mut stack = ModalStack::new();
+        register_pushable(&mut stack, "mainMenu", passthrough());
+
+        stack.push_named_capturing("mainMenu");
+
+        assert_eq!(stack.active_name(), Some("mainMenu"));
+        assert_eq!(
+            stack.top_capture_mode(),
+            UiCaptureMode::Capture,
+            "frontend menus must suppress gameplay even if the registered tree was passthrough",
+        );
+        assert_eq!(
+            stack
+                .tree("mainMenu")
+                .expect("registered tree remains available")
+                .capture_mode,
+            CaptureMode::Passthrough,
+            "forcing capture mutates only the pushed clone, not the registry tier",
+        );
+    }
+
+    #[test]
+    fn replace_with_frontend_menu_uses_fallback_and_clears_old_stack() {
+        let mut stack = ModalStack::new();
+        register_pushable(&mut stack, "deathScreen", capturing());
+        register_pushable(
+            &mut stack,
+            crate::render::ui::demo::FRONTEND_MENU_NAME,
+            passthrough(),
+        );
+        stack.push_named("deathScreen", None);
+
+        let resolved = stack
+            .replace_with_frontend_menu("missingMenu", crate::render::ui::demo::FRONTEND_MENU_NAME);
+
+        assert_eq!(
+            resolved.as_deref(),
+            Some(crate::render::ui::demo::FRONTEND_MENU_NAME),
+        );
+        assert_eq!(stack.len(), 1, "frontend presentation replaces the stack");
+        assert_eq!(
+            stack.active_name(),
+            Some(crate::render::ui::demo::FRONTEND_MENU_NAME),
+        );
+        assert_eq!(stack.top_capture_mode(), UiCaptureMode::Capture);
+    }
+
+    #[test]
+    fn replacing_mod_tier_with_omission_reveals_engine_frontend_fallback() {
+        let mut stack = ModalStack::new();
+        stack.registry_mut().register(
+            crate::render::ui::demo::FRONTEND_MENU_NAME,
+            passthrough(),
+            ScopeTier::Engine,
+            false,
+        );
+        stack.registry_mut().register(
+            crate::render::ui::demo::FRONTEND_MENU_NAME,
+            capturing(),
+            ScopeTier::Mod,
+            false,
+        );
+        assert_eq!(
+            stack
+                .registry
+                .tier_of(crate::render::ui::demo::FRONTEND_MENU_NAME),
+            Some(ScopeTier::Mod),
+            "mod frontend tree shadows the engine fallback while present",
+        );
+
+        stack.replace_script_tree_tier(std::iter::empty::<RegisteredUiTree>(), ScopeTier::Mod);
+
+        assert_eq!(
+            stack
+                .registry
+                .tier_of(crate::render::ui::demo::FRONTEND_MENU_NAME),
+            Some(ScopeTier::Engine),
+            "omitting the mod tree reveals the engine frontend fallback",
+        );
+        assert!(
+            stack
+                .tree(crate::render::ui::demo::FRONTEND_MENU_NAME)
+                .is_some(),
+            "the fallback remains resolvable through the UI registry",
+        );
     }
 
     #[test]

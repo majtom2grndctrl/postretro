@@ -701,6 +701,9 @@ omitted from the emitted `args` entirely when not supplied — they are never se
 | `openTextEntry(onCommit?)` | `{ primitive: "showDialog", args: { tree: "keyboard", onCommit? } }` | Opens the engine-shipped on-screen keyboard (a capturing modal editing `ui.textEntry`). A `showDialog` wrapper targeting the `keyboard` tree. See the text-entry walkthrough below. |
 | `openMenu(tree)` | `{ primitive: "openMenu", args: { tree } }` | A v1 alias of `showDialog` (identical push behavior) without the `onCommit` hook. |
 | `closeDialog()` | `{ primitive: "closeDialog", args: {} }` | Pops the top UI tree off the modal stack. |
+| `loadLevel(id)` | `{ primitive: "loadLevel", args: { map: id } }` | Queues a catalog map load by id. |
+| `restartLevel()` | `{ primitive: "restartLevel", args: {} }` | Requeues the currently-active level source. No-ops when no level is active. |
+| `returnToFrontend()` | `{ primitive: "returnToFrontend", args: {} }` | Queues a return to the frontend menu, including its optional background level. |
 | `updateState(ref, value)` | `{ primitive: "setState", args: { slot: ref.slot, value } }` | Writes `value` to a writable state reference at the game-logic stage. Readonly-gated at runtime. |
 | `appendText(ref, text)` | `{ primitive: "appendText", args: { slot: ref.slot, text } }` | Appends `text` to the current string value of a writable String state reference. |
 | `backspaceText(ref)` | `{ primitive: "backspaceText", args: { slot: ref.slot } }` | Removes the last character (one Unicode scalar value — never splits a UTF-8 sequence, but does not segment grapheme clusters). Empty is a silent no-op. |
@@ -715,8 +718,27 @@ no-ops.
 Button `onPress` values have two paths. Ordinary strings are named reactions.
 Reserved `ui.*` strings are engine actions intercepted before named-reaction
 dispatch. Use `CLOSE_DIALOG_ACTION` for the reserved `"ui.closeDialog"` value
-or `EXIT_TO_DESKTOP_ACTION` for the reserved `"ui.exitToDesktop"` value instead
-of spelling either by hand.
+or `EXIT_TO_DESKTOP_ACTION` for `"ui.exitToDesktop"`, or
+`QUIT_TO_MENU_ACTION` for `"ui.quitToMenu"` instead of spelling them by hand.
+
+### Game-flow reactions
+
+`loadLevel(id)`, `restartLevel()`, and `returnToFrontend()` are engine-owned
+system reactions. They are still authored as named reactions, so a frontend menu
+button starts a catalog map by firing a named reaction:
+
+```typescript
+import { defineReaction } from "postretro";
+import { loadLevel } from "postretro/ui";
+
+defineReaction("startE1M1", loadLevel("e1m1"));
+```
+
+`returnToFrontend()` and the reserved `QUIT_TO_MENU_ACTION` button action land on
+the same engine routine. Use the reserved button action for fallback or engine
+menus that should quit without depending on a registered reaction; use
+`returnToFrontend()` when an authored event should route through the reaction
+system.
 
 ### Firing system reactions on a state crossing
 
@@ -777,7 +799,29 @@ When the player pawn's HP reaches zero, the death sweep fires the `playerDied`
 event **exactly once** — it is latched, so a pawn that lingers at zero HP never
 re-fires it. Unlike a non-player entity, the player is not despawned by the sweep.
 Bind a named reaction to `playerDied` to script the death sequence (a HUD fade, a
-respawn prompt, a level restart).
+respawn prompt, a level restart). The engine ships no default death policy.
+
+For a simple restart-on-death level script:
+
+```typescript
+import { defineReaction } from "postretro";
+import { restartLevel } from "postretro/ui";
+
+export function setupLevel(): LevelManifest {
+  return {
+    reactions: [
+      defineReaction("playerDied", restartLevel()),
+    ],
+  };
+}
+```
+
+For a death screen, bind `playerDied` to `openMenu("deathScreen")`, then put
+buttons in the registered `deathScreen` UI tree that fire `restartLevel()` or
+`returnToFrontend()` reactions. The tree must be registered like any other mod UI
+tree; an unknown tree name warns and no-ops. Level-complete flows use the same
+reaction vocabulary through `onStateCrossing`; there is no built-in
+`levelComplete` event.
 
 ### The readonly `player.health` slot
 

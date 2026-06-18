@@ -432,6 +432,32 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         )
         .finish();
     registry
+        .register_type("MenuCamera")
+        .doc("Static camera pose used while a mod frontend menu is presented.")
+        .field(
+            "position",
+            "[f32; 3]",
+            "World-space camera position in metres as `[x, y, z]`. Required.",
+        )
+        .field("yaw", "f32", "Camera yaw in radians. Required.")
+        .field("pitch", "f32", "Camera pitch in radians. Required.")
+        .finish();
+    registry
+        .register_type("Frontend")
+        .doc("Mod frontend declaration. Selects the menu UI tree, optional background map catalog id, and static menu camera pose.")
+        .field(
+            "menuTree",
+            "String",
+            "UI tree registry name presented as the frontend menu. Required.",
+        )
+        .field(
+            "backgroundLevel?",
+            "String",
+            "Map catalog id to load behind the frontend menu. Optional.",
+        )
+        .field("camera", "MenuCamera", "Static menu camera pose. Required.")
+        .finish();
+    registry
         .register_type("ThemeTokens")
         .doc("Theme token maps supplied via `ModManifest.theme`. Three category-scoped maps: colors (linear-RGBA), fonts (registered family name), spacing (logical px). Each is optional; overrides merge per-token into the engine default.")
         .field(
@@ -478,6 +504,11 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
             "maps?",
             "Vec<ModMapEntry>",
             "Pre-load-discoverable map catalog. Optional.",
+        )
+        .field(
+            "frontend?",
+            "Frontend",
+            "Mod-defined frontend menu declaration. Optional.",
         )
         .field(
             "reactions?",
@@ -582,6 +613,7 @@ mod tests {
             entities: Vec::new(),
             ui_trees: Vec::new(),
             theme: crate::scripting::data_descriptors::ModThemeTokens::default(),
+            frontend: None,
             fonts: crate::scripting::data_descriptors::ModFontAssets::default(),
             maps: Vec::new(),
             reactions: Vec::new(),
@@ -593,6 +625,7 @@ mod tests {
             "entities",
             "uiTrees",
             "theme",
+            "frontend",
             "fonts",
             "maps",
             "reactions",

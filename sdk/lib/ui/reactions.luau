@@ -201,6 +201,10 @@ UiReactionsSdk.CLOSE_DIALOG_ACTION = "ui.closeDialog"
 --- App intercepts this exact wire value before named-reaction dispatch.
 UiReactionsSdk.EXIT_TO_DESKTOP_ACTION = "ui.exitToDesktop"
 
+--- Reserved button `onPress` action that returns to the frontend menu. The App
+--- intercepts this exact wire value before named-reaction dispatch.
+UiReactionsSdk.QUIT_TO_MENU_ACTION = "ui.quitToMenu"
+
 --- Open the engine-shipped on-screen keyboard for text entry (M13 Text Entry).
 --- Pure: returns a primitive reaction body wrapping `showDialog`. The keyboard is
 --- a capturing modal that edits the `ui.textEntry` slot; bind a `text` widget to
@@ -224,6 +228,24 @@ end
 --- body, no engine side effect. An empty stack warns and no-ops at dispatch time.
 function UiReactionsSdk.closeDialog(): PrimitiveReactionDescriptor
   return { primitive = "closeDialog", args = {} }
+end
+
+--- Load a map by catalog id. Pure: returns a primitive reaction body; the engine
+--- queues the lifecycle load when the reaction fires.
+function UiReactionsSdk.loadLevel(id: string): PrimitiveReactionDescriptor
+  return { primitive = "loadLevel", args = { map = id } }
+end
+
+--- Reload the currently-active map source. Pure: returns a primitive reaction
+--- body; runtime no-ops when no level is active.
+function UiReactionsSdk.restartLevel(): PrimitiveReactionDescriptor
+  return { primitive = "restartLevel", args = {} }
+end
+
+--- Return to the frontend menu, including its optional declared backdrop level.
+--- Pure: returns a primitive reaction body.
+function UiReactionsSdk.returnToFrontend(): PrimitiveReactionDescriptor
+  return { primitive = "returnToFrontend", args = {} }
 end
 
 --- Write `value` to the writable state reference at the game-logic stage.

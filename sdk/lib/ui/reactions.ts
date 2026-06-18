@@ -223,6 +223,12 @@ export const CLOSE_DIALOG_ACTION = "ui.closeDialog";
 export const EXIT_TO_DESKTOP_ACTION = "ui.exitToDesktop";
 
 /**
+ * Reserved button `onPress` action that returns to the frontend menu. The App
+ * intercepts this exact wire value before named-reaction dispatch.
+ */
+export const QUIT_TO_MENU_ACTION = "ui.quitToMenu";
+
+/**
  * Open the engine-shipped on-screen keyboard for text entry (M13 Text Entry).
  * Pure — returns a primitive reaction body wrapping `showDialog`. The keyboard is
  * a capturing modal that edits the `ui.textEntry` slot; bind a `text` widget to
@@ -260,6 +266,30 @@ export function openMenu(
  */
 export function closeDialog(): import("../data_script").PrimitiveReactionDescriptor {
   return { primitive: "closeDialog", args: {} };
+}
+
+/**
+ * Load a map by catalog id. Pure — returns a primitive reaction body; the engine
+ * queues the lifecycle load when the reaction fires.
+ */
+export function loadLevel(id: string): import("../data_script").PrimitiveReactionDescriptor {
+  return { primitive: "loadLevel", args: { map: id } };
+}
+
+/**
+ * Reload the currently-active map source. Pure — returns a primitive reaction
+ * body; runtime no-ops when no level is active.
+ */
+export function restartLevel(): import("../data_script").PrimitiveReactionDescriptor {
+  return { primitive: "restartLevel", args: {} };
+}
+
+/**
+ * Return to the frontend menu, including its optional declared backdrop level.
+ * Pure — returns a primitive reaction body.
+ */
+export function returnToFrontend(): import("../data_script").PrimitiveReactionDescriptor {
+  return { primitive: "returnToFrontend", args: {} };
 }
 
 /**

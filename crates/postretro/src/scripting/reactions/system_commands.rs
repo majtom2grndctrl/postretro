@@ -52,6 +52,13 @@ pub(crate) enum SystemReactionCommand {
         tree: String,
         on_commit: Option<String>,
     },
+    /// Queue a catalog-map level load by id. The lifecycle drain resolves the id
+    /// through the committed map catalog before dispatching a worker load.
+    LoadLevel { map: String },
+    /// Queue a reload of the retained active level source, if a level is active.
+    RestartLevel,
+    /// Return to the committed frontend menu, including its optional backdrop.
+    ReturnToFrontend,
     /// Pop the top UI tree off the stack.
     PopTree,
     /// Write a value to a writable store slot at the game-logic stage (M13 Goal F,
@@ -207,6 +214,7 @@ const MAX_SHAKE_AMPLITUDE_PX: f32 = 1280.0;
 /// - Display/flash: `flashScreen`
 /// - Screen-space effects: `vignette`, `screenShake`
 /// - UI stack: `showDialog`, `openMenu`, `closeDialog` (push/pop `PushTree`/`PopTree`)
+/// - Game flow: `loadLevel`, `restartLevel`, `returnToFrontend`
 /// - Slot write: `setState`
 /// - Presentation-cell write: `cellWrite`
 /// - Text-edit: `appendText`, `backspaceText`, `clearText`
@@ -364,6 +372,22 @@ pub(crate) fn register_system_reaction_primitives(registry: &mut SystemReactionR
         queue.push(SystemReactionCommand::PopTree);
         Ok(())
     });
+    registry.register("loadLevel", |args, queue| {
+        let parsed: LoadLevelArgs =
+            serde_json::from_value(args.clone()).map_err(|e| ReactionError::InvalidArgument {
+                reason: format!("loadLevel: failed to deserialize args: {e}"),
+            })?;
+        queue.push(SystemReactionCommand::LoadLevel { map: parsed.map });
+        Ok(())
+    });
+    registry.register("restartLevel", |_args, queue| {
+        queue.push(SystemReactionCommand::RestartLevel);
+        Ok(())
+    });
+    registry.register("returnToFrontend", |_args, queue| {
+        queue.push(SystemReactionCommand::ReturnToFrontend);
+        Ok(())
+    });
     // `setState` writes a value to a writable store slot at the game-logic stage
     // (M13 Goal F, Task 4). It carries no `tag` (system-targeted); the drain
     // applies it through the readonly-gated JSON write. The slider widget emits
@@ -494,6 +518,12 @@ struct OpenMenuArgs {
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct LoadLevelArgs {
+    map: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct SetStateArgs {
     slot: String,
     value: serde_json::Value,
@@ -536,6 +566,9 @@ mod tests {
         assert!(r.contains("showDialog"));
         assert!(r.contains("openMenu"));
         assert!(r.contains("closeDialog"));
+        assert!(r.contains("loadLevel"));
+        assert!(r.contains("restartLevel"));
+        assert!(r.contains("returnToFrontend"));
         assert!(r.contains("setState"));
         assert!(r.contains("cellWrite"));
         assert!(r.contains("appendText"));
@@ -740,6 +773,48 @@ mod tests {
                 .unwrap()
         );
         assert_eq!(queue.take(), vec![SystemReactionCommand::PopTree]);
+    }
+
+    #[test]
+    fn load_level_dispatch_reads_map_key() {
+        let mut r = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut r);
+        let queue = SystemCommandQueue::new();
+
+        let args = serde_json::json!({ "map": "e1m1" });
+        assert!(r.dispatch("loadLevel", &args, &queue).unwrap());
+        assert_eq!(
+            queue.take(),
+            vec![SystemReactionCommand::LoadLevel {
+                map: "e1m1".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn restart_level_dispatch_enqueues_argumentless_command() {
+        let mut r = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut r);
+        let queue = SystemCommandQueue::new();
+
+        assert!(
+            r.dispatch("restartLevel", &serde_json::json!({}), &queue)
+                .unwrap()
+        );
+        assert_eq!(queue.take(), vec![SystemReactionCommand::RestartLevel]);
+    }
+
+    #[test]
+    fn return_to_frontend_dispatch_enqueues_argumentless_command() {
+        let mut r = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut r);
+        let queue = SystemCommandQueue::new();
+
+        assert!(
+            r.dispatch("returnToFrontend", &serde_json::json!({}), &queue)
+                .unwrap()
+        );
+        assert_eq!(queue.take(), vec![SystemReactionCommand::ReturnToFrontend]);
     }
 
     #[test]

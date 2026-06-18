@@ -116,6 +116,16 @@ impl LightBridge {
         }
     }
 
+    pub(crate) fn clear(&mut self) {
+        self.entity_ids.clear();
+        self.snapshots.clear();
+        self.shape.clear();
+        self.dirty = false;
+        self.cached_origins_f64.clear();
+        self.fgd_sample_float_count = 0;
+        self.scripted_sample_buf.clear();
+    }
+
     #[allow(dead_code)]
     pub(crate) fn light_count(&self) -> usize {
         self.entity_ids.len()

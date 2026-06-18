@@ -1516,6 +1516,16 @@ impl MeshPass {
         self.palette_cache.clear();
     }
 
+    /// Unload hook: drop per-level model GPU buffers and CPU mirrors. Renderer
+    /// lifetime buffers/pipelines stay resident so the next load can rebuild.
+    pub fn release_level_resources(&mut self) {
+        self.models.clear();
+        self.model_bounds.clear();
+        self.model_clips.clear();
+        self.capture_scratch.clear();
+        self.clear_for_level_load();
+    }
+
     /// Initialize the shared bone palette to identity (bind pose) before the
     /// first sampled frame, so any un-sampled run renders in bind pose rather
     /// than reading uninitialized buffer memory.

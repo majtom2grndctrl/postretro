@@ -97,6 +97,16 @@ impl CollisionWorld {
     pub fn clear(&mut self) {
         *self = Self::new();
     }
+
+    #[cfg(test)]
+    pub(crate) fn triangle_count(&self) -> usize {
+        self.mesh.triangles().len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn vertex_count(&self) -> usize {
+        self.mesh.vertices().len()
+    }
 }
 
 impl Default for CollisionWorld {

@@ -1,7 +1,7 @@
 # Boot Sequence
 
 > **Read this when:** wiring startup, splash, level-load, or shutdown code; or reasoning about where new init/teardown belongs.
-> **Key invariant:** the engine owns the schedule; mod code runs only inside phases the engine grants. The boot path is single-window, single-level-per-process — there is no runtime level-to-level transition.
+> **Key invariant:** the engine owns the schedule; mod code runs only inside phases the engine grants. The boot path is single-window; level load/unload is repeatable at runtime.
 > **Related:** [Architecture Index](./index.md) · [Scripting](./scripting.md) · [Entity Model](./entity_model.md) · [Build Pipeline](./build_pipeline.md)
 
 Boot code lives in `crates/postretro/src/main.rs` and `crates/postretro/src/startup/`.
@@ -10,26 +10,27 @@ Boot code lives in `crates/postretro/src/main.rs` and `crates/postretro/src/star
 
 ## 1. Boot Order
 
-Boot runs in two stages: a setup pass that builds session-lifetime state, then a winit-driven state machine (Booting → Splash → Running) that opens the window and loads the level. Mod init and level load are deliberately deferred out of the setup pass so the first splash frame paints before any user-authored work runs.
+Boot runs in two stages: a setup pass that builds session-lifetime state, then a winit-driven state machine (Booting → Splash → Frontend/Loading/Running). Mod init and first level work are deliberately deferred out of the setup pass so the first splash frame paints before any user-authored work runs.
 
 | # | Stage | Notes |
 |---|-------|-------|
 | 1 | Init logging and boot clock, parse args, resolve map path + content root | |
 | 2 | Build the script runtime: `ScriptCtx`, primitive registry (`register_all`), `ScriptRuntime` | Constructed ONCE, before the window. Primitive closures capture `ScriptCtx` clones. Held for the whole session, never recreated. |
 | 3 | Build the event loop and Rust-side registries (sequenced/reaction primitives, classname dispatch) | These survive level unload — they describe engine types, not per-level state. |
-| 4 | Construct the app in the Booting state | Mod init, hot-reload watcher, and worker spawn are NOT done here. |
+| 4 | Construct the app in the Booting state | Mod init, hot-reload watcher, and level worker spawn are NOT done here. |
 | 5 | On resume: create window, init the renderer (wgpu), build audio, enter Splash, request first redraw | Fires once on desktop; guarded against re-entry. Adapter requirement checks live in renderer init and fail fast with a named message (see `rendering_pipeline.md` §4). Audio init is fault-tolerant — failure logs and runs silent. No mod or level work. |
 | 6 | Redraw drives the splash state machine (below) | |
-| 7 | Install the level (§3) | Runs ONCE per process, on the main thread, on worker delivery. |
-| 8 | Steady per-frame loop: Input → Game logic → Audio → Render → Present | |
+| 7 | Enter Frontend or enqueue the boot map load | No CLI map → Frontend. CLI map → Loading. |
+| 8 | Loading polls worker, then installs the requested level (§3) | PRL parse off-thread; install on main thread. Repeats for runtime load requests. |
+| 9 | Steady per-frame loop: Input → Game logic → Audio → Render → Present | Running draws the level. Frontend draws a world-less frame and frontend-safe UI. |
 
 ### Splash state machine
 
 The splash advances one frame per redraw, deferring all CPU-heavy work behind visible pixels:
 
 - **First frame.** Paint a black frame so the OS window appears immediately (no splash texture bound yet). After present: decode and upload the splash image. No mod or level work.
-- **Second frame.** Paint the splash so it is visible before any user-authored work. After paint: recompile stale scripts (debug-only; release no-ops), then run mod init. On success the engine commits the validated entity descriptors and transactional mod-state declarations. Persistence overlays declared defaults only on the first successful commit in the process. All store initialization completes before level work and the first gameplay frame. Start the hot-reload watcher (debug-only). Then spawn the level worker — **PRL parse only** (§2).
-- **Remaining frames.** Non-blocking poll of the worker channel. Keep painting the splash while it runs. On a non-empty payload: install the level, clear the splash, enter Running. A delivered-but-empty payload or a worker error stays in Splash.
+- **Second frame.** Paint the splash so it is visible before any user-authored work. After paint: recompile stale scripts (debug-only; release no-ops), then run mod init. On success the engine commits the validated entity descriptors and transactional mod-state declarations. Persistence overlays declared defaults only on the first successful commit in the process. All store initialization completes before level work and the first gameplay frame. Start the hot-reload watcher (debug-only). With no CLI map, clear splash and enter Frontend. With a CLI map, enqueue a load request and enter Loading.
+- **Loading frames.** Non-blocking poll of the worker channel. Keep painting the splash while it runs. On a non-empty payload: install the level, clear the splash, enter Running. Runtime load failures log and return to Frontend. A failed CLI boot-map load exits non-zero.
 
 The two-frame delay is causal: pixels reach the user before any mod-supplied or level-load CPU work runs.
 
@@ -46,13 +47,13 @@ Textures are decoded from baked `.prm` mip sidecars, not from the PRL. The worke
 | Main thread | winit event loop, wgpu (device, queue, all GPU work), audio mixer, all script-VM execution, texture decode/upload, UV normalize, geometry upload. The script runtime and renderer are not `Send` — enforced by the types. |
 | Worker thread | PRL parse only. Output is plain `Send` POD — no engine handles, no GPU resources. |
 
-Handoff is an `mpsc` channel. One worker per load; no thread pool, no async runtime (`std::thread` + `mpsc`).
+Handoff is an `mpsc` channel. One worker per load request; no thread pool, no async runtime (`std::thread` + `mpsc`).
 
 ---
 
 ## 3. Level Install Order
 
-Level install runs once, on the main thread, after worker delivery. Texture upload precedes UV normalize: `.prm` slot dimensions drive UV normalization, so the renderer must produce loaded textures before texel-space UVs convert to `[0,1]`.
+Level install runs on the main thread after worker delivery. It is repeatable: every load request reaches this path after any active level has been unloaded. Texture upload precedes UV normalize: `.prm` slot dimensions drive UV normalization, so the renderer must produce loaded textures before texel-space UVs convert to `[0,1]`.
 
 | Order | Stage |
 |-------|-------|
@@ -81,47 +82,81 @@ Lights come from PRL data via the light bridge, not classname dispatch. Entity t
 
 ---
 
-## 4. Shutdown
+## 4. Runtime Load/Unload
 
-There is no in-engine level unload distinct from process exit: this engine runs one level per lifetime, so unload coincides with exit.
+Runtime level requests drain at the redraw boundary before gameplay/world work for that frame.
+
+| Request | State behavior |
+|---------|----------------|
+| Load from Frontend | Spawn worker, enter Loading, install payload, enter Running. |
+| Load from Running | Unload current level first, then spawn worker and enter Loading. |
+| Unload from Running | Clear per-level state, enter Frontend. |
+| Failed runtime load | Log diagnostic, clear splash if needed, enter Frontend. |
+| Failed CLI boot load | Log diagnostic and exit non-zero. |
+
+Clear-on-unload contract:
+
+| Cleared on unload | Kept across unload |
+|---|---|
+| Level world | Renderer device/queue, window |
+| Per-level GPU resources: textures, geometry, mesh-pass caches, smoke collections | Script runtime and script context |
+| Light bridge, fog bridge, collision world | Slot table |
+| Level sounds, sprite collections | Entity-type registry |
+| Per-level data reactions, crossings, and UI registrations | Persisted-state save path |
+| Progress tracker, active wieldable, camera pose | Rust-side primitive/classname registries |
+
+Frontend is a no-level steady state. Renderer and audio may exist, but world, collision, fog, level sounds, and per-level registries are empty. Frontend rendering uses a world-less clear and skips gameplay/HUD reads that require a level.
+
+## 5. Shutdown
 
 - A close request or Escape exits the event loop.
 - On clean exit, teardown saves persistent mod-state slots best-effort, releases level sounds (mirrors texture release on unload), then drops renderer and window.
 - Abnormal termination may lose writes made since the last successful save.
-- The app holds `script_ctx`/`data_registry` until the event loop returns and the process ends.
+- The app holds `script_ctx`/engine-global registries until the event loop returns and the process ends.
 
 Platform suspend is a separate path: it clears renderer/window/fog/collision and the in-flight worker, and resets state to Booting so resume rebuilds the surface. It does NOT clear `script_ctx`/`data_registry`.
 
 ---
 
-## 5. Lifetimes
+## 6. Lifetimes
 
 | Scope | Cleared on |
 |-------|-----------|
 | Engine init (preludes, primitive registry, `ScriptCtx`, `ScriptRuntime`, Rust-side registries) | Process exit only — built once at startup, never recreated. |
 | `data_registry.entities` (entity-type descriptors from `setupMod` return) | Engine-global. Survives level unload; survives platform suspend. |
-| Per-level reactions (`data_registry.reactions`) | Level unload. |
-| Renderer, window, audio, collision world, fog bridge | Dropped on exit; cleared on suspend and rebuilt on resume. |
+| Per-level reactions (`data_registry.reactions`) and level-scope UI trees | Level unload. |
+| Level world, collision world, fog bridge, light bridge, level sounds, sprite collections, per-level GPU resources | Level unload; also cleared/dropped by suspend or exit as applicable. |
+| Renderer device/queue, window, audio mixer | Dropped on exit; renderer/window cleared on suspend and rebuilt on resume. |
 
-Level install runs exactly once per process — there is no runtime path to swap levels. Hot reload (debug only) stages entity descriptors and store declarations off-thread, then reconciles both on the main thread. Compatible store schemas preserve live values; incompatible changes reject the staged result; removed declarations never clear committed stores.
+Hot reload (debug only) stages entity descriptors and store declarations off-thread, then reconciles both on the main thread. Compatible store schemas preserve live values; incompatible changes reject the staged result; removed declarations never clear committed stores.
 
 ---
 
-## 6. Non-Goals
+## 7. Manual Lifecycle Checklist
+
+- Launch with no map argument: engine reaches Frontend, paints a world-less frame, no panic.
+- Launch with a boot map: Splash → Loading → Running, first gameplay frame appears.
+- In a `dev-tools` build, trigger `Alt+Shift+L`: unload current level, load the second dev map, return to Running.
+- Confirm no wgpu validation errors during load → unload → load-different.
+- Confirm clean visuals after the second load: no stale world geometry, fog, lights, sprites, or level sounds.
+
+---
+
+## 8. Non-Goals
 
 - Per-entity script lifecycle callbacks (see `entity_model.md` §9)
-- Runtime level-to-level transition / level swap mid-process
+- Multiple simultaneously resident levels or streaming
 - Networked mod sync; runtime mod hot-swap mid-level
 - Sandboxing mods from each other (mods share VM contexts and `data_registry` by design)
 
 ---
 
-## 7. Planned (not implemented)
+## 9. Planned (not implemented)
 
 None of the following exists in code. Do not treat any of it as current behavior; it is recorded only to anchor future work.
 
-- **Mod discovery / `content/mods/`.** A scan of `content/base/` and `content/mods/*/` for manifests, a mod manifest format, and per-mod load-order resolution. Today there is a single content root derived from the map path; mod init runs against it directly.
-- **Mod browser UI and main menu.** Engine-native mod selection (`--mods` flag, persisted selection) and a mod-contributed main menu / level selector. Today the map is a CLI argument and the engine boots straight into it.
+- **Mod discovery / `content/mods/`.** A scan of `content/base/` and `content/mods/*/` for manifests, a mod manifest format, and per-mod load-order resolution. Today there is one active content root: `--content-root` when supplied, otherwise derived from the CLI map path, otherwise the default dev root. Mod init runs against that root directly.
+- **Mod browser UI and main menu.** Engine-native mod selection (`--mods` flag, persisted selection) and a mod-contributed main menu / level selector. Today the map argument is optional. No map enters Frontend after Splash. A supplied map enqueues Splash → Loading → Running.
 - **Mod-supplied splash override.** The frame-two override hook exists but is always absent until the mod system ships.
 - **Classname-driven world mesh spawn.** A classname handler replaces the hardwired single-mesh seam (§3 stage 5).
 - **Domain folder convention.** Fixed `start-script` entry, `actors/`, `weapons/`, `levels/<name>/<name>.{ts,luau}` auto-discovery, and moving the data script out of the PRL. Today the data script is bundled in the PRL.

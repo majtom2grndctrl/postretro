@@ -3,7 +3,7 @@
 // `load_splash` is CPU-only so the caller can decode before `Renderer::new`
 // completes. The actual splash *drawing* lives in the UI pass (`render/ui/`); the
 // old `SplashPipeline` quad pipeline was retired into it.
-// See: context/lib/rendering_pipeline.md · context/lib/boot_sequence.md §8
+// See: context/lib/rendering_pipeline.md · context/lib/boot_sequence.md §9 (Planned)
 
 use std::path::PathBuf;
 

@@ -95,6 +95,10 @@ impl EmitterBridge {
         }
     }
 
+    pub(crate) fn clear(&mut self) {
+        self.states.clear();
+    }
+
     /// Number of live tracked emitter entries. Exposed for tests asserting
     /// state cleanup; not used by production paths yet.
     #[allow(dead_code)]

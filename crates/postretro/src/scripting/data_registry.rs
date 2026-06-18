@@ -1,5 +1,5 @@
-// Data-script registries: per-level reactions, engine-global entity types, and
-// hot-reload descriptor replacement via replace_entity_types().
+// Data-script registries: active level definitions plus engine-global entity,
+// map, reaction, and crossing snapshots used by startup and staged reloads.
 // See: context/lib/scripting.md §2 (Data context lifecycle)
 //
 // Held inside `ScriptCtx` (not directly on `App`) so primitive closures can
@@ -40,10 +40,10 @@ pub(crate) struct DataRegistry {
     /// dynamics). Per-level — cleared on unload with `reactions`. The crossing
     /// detector reads these to know which slots to watch.
     pub(crate) crossings: Vec<CrossingDescriptor>,
-    /// Engine-global reaction definitions returned from `setupMod()`.
+    /// Engine-global reaction definitions from `ModManifest.reactions`.
     /// These are durable definitions, not the currently active per-level set.
     pub(crate) global_reactions: Vec<ScopedReaction>,
-    /// Engine-global crossing definitions returned from `setupMod()`.
+    /// Engine-global crossing definitions from `ModManifest.crossings`.
     /// These are durable definitions, not the currently active per-level set.
     pub(crate) global_crossings: Vec<ScopedCrossing>,
     /// Level-local reaction definitions from `setupLevel()`. Retained so a
@@ -55,12 +55,12 @@ pub(crate) struct DataRegistry {
     level_crossings: Vec<CrossingDescriptor>,
     /// Entity-type descriptors. Engine-global — survive level unload.
     /// Populated by the boot caller after `run_mod_init`: it drains the
-    /// `entities` field of the validated `setupMod()` return value into here
+    /// `entities` field of the validated mod manifest into here
     /// via [`Self::upsert_entity_type`]. Read by the data-archetype spawn
     /// sweep. Not populated from `setupLevel()`.
     pub(crate) entities: Vec<EntityTypeDescriptor>,
     /// Mod map catalog entries. Engine-global — survive level unload.
-    /// Populated by the boot caller from `setupMod()`'s `maps` field so the
+    /// Populated by the boot caller from `ModManifest.maps` so the
     /// frontend and catalog-id load path can discover maps before a level is
     /// loaded. Not populated from `setupLevel()`.
     pub(crate) maps: Vec<ModMapEntry>,
@@ -75,7 +75,7 @@ impl DataRegistry {
     /// per-level reaction/crossing sets from matching globals plus locals.
     /// Existing level-local definitions are preserved — call [`Self::clear`]
     /// first for a fresh population. Entity-type descriptors arrive separately
-    /// via `setupMod()`'s `entities` return field (they outlive level unload).
+    /// via `ModManifest.entities` (they outlive level unload).
     pub(crate) fn populate_from_manifest(&mut self, manifest: LevelManifest, tags: &[String]) {
         let LevelManifest {
             reactions,
@@ -141,7 +141,7 @@ impl DataRegistry {
     /// overwrite and log at `debug!`. Descriptors with `canonical_name = None`
     /// are always appended — they have no addressable name to dedup against.
     /// Survives level unload — only invoke from the mod-init path (after
-    /// `setupMod` returns), not during per-level data-script execution.
+    /// mod manifest commits), not during per-level data-script execution.
     pub(crate) fn upsert_entity_type(&mut self, descriptor: EntityTypeDescriptor) {
         let descriptor_name = descriptor.canonical_name.clone();
         if let Some(name) = descriptor_name.as_deref() {
@@ -167,7 +167,7 @@ impl DataRegistry {
     /// Dedup a complete entity descriptor snapshot before hot-reload commit,
     /// keeping the LAST occurrence per `canonical_name` so the result matches
     /// startup's `upsert_entity_type` last-write-wins (where a descriptor
-    /// spread later in `setupMod`'s `entities` array overwrites an earlier one
+    /// spread later in `ModManifest.entities` overwrites an earlier one
     /// with the same name). Each collision logs at `warn!`. Descriptors with
     /// no `canonical_name` pass through untouched. Surviving entries keep their
     /// last-appearance order.

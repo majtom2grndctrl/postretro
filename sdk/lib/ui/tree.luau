@@ -27,7 +27,7 @@ export type WidgetCaptureMode = "capture" | "passthrough"
 --- shape). Optional keys appear only when authored.
 export type WidgetDescriptor = { [string]: any }
 
---- A UI-tree registration entry returned through `setupMod().uiTrees` or
+--- A UI-tree registration entry returned through `ModManifest.uiTrees` or
 --- `setupLevel().uiTrees`. `defineUiTree` preserves this runtime manifest shape.
 export type UiTreeRegistration = {
   name: string,
@@ -152,7 +152,7 @@ end
 
 --- Define a named UI-tree registration while preserving the manifest wire shape:
 --- `{ name, tree, alwaysOn? }`. Pure builder; registration still happens only
---- when the returned table is included in `setupMod().uiTrees`.
+--- when the returned table is included in `ModManifest.uiTrees`.
 function UiTreeSdk.defineUiTree(registration: any): UiTreeRegistration
   requireObject(registration, "defineUiTree")
   requireNonemptyString(registration.name, "name", "defineUiTree")

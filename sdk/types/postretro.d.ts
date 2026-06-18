@@ -56,7 +56,7 @@ declare module "postretro" {
     defaultState?: string;
   };
 
-  /** Entity archetype registered through `ModManifest.entities` from `setupMod()`. `defineEntity()` is a typed identity helper for constructing this object. The descriptor is engine-global and survives level unloads. */
+  /** Entity archetype registered through `ModManifest.entities`. `defineEntity()` is a typed identity helper for constructing this object. The descriptor is engine-global and survives level unloads. */
   export type EntityTypeDescriptor = {
     /** Stable archetype name used by map classname routing and descriptor references. Required for direct map placement and for weapon descriptors referenced by `defaultWeapon`; omit only for archetypes that are never addressed by name. */
     canonicalName?: string;
@@ -155,7 +155,7 @@ declare module "postretro" {
     component: FogVolumeComponent;
   };
 
-  /** Component presets carried by `EntityTypeDescriptor.components`. Each key is optional and independent; present values are validated when `setupMod()` loads. */
+  /** Component presets carried by `EntityTypeDescriptor.components`. Each key is optional and independent; present values are validated when the mod manifest loads. */
   export type EntityTypeComponents = {
     /** Dynamic-light preset materialized on each spawned instance. */
     light?: LightDescriptor | null;
@@ -413,7 +413,7 @@ declare module "postretro" {
     spacing?: { readonly [token: string]: number };
   };
 
-  /** Object returned from `setupMod()` in `start-script.{ts,luau}`. Identifies the mod to the engine. */
+  /** Mod manifest from `start-script.ts`'s default export or `start-script.luau`'s chunk return. Identifies the mod to the engine. */
   export type ModManifest = {
     /** Human-readable mod name. Required. */
     name: string;
@@ -431,6 +431,8 @@ declare module "postretro" {
     reactions?: ReadonlyArray<NamedReactionDescriptor>;
     /** Engine-global state-crossing watchers. Optional; survive level unload and compose into active level behavior by level tags. */
     crossings?: ReadonlyArray<CrossingDescriptor>;
+    /** Engine-global state-store declarations. Optional; commit atomically after the manifest validates. */
+    stores?: ReadonlyArray<StoreDeclaration>;
   };
 
   /** Valid values: `Point`, `Spot`, `Directional`. */
@@ -734,7 +736,7 @@ declare module "postretro" {
     | { below: number; above?: never; max?: number }
     | { above: number; below?: never; max?: number };
 
-  /** A state-crossing watcher entry as it appears in `setupLevel().crossings` or `setupMod().crossings`. The condition fields are flattened in beside `slot` and `fire`; `fire` lists the named reactions dispatched when the crossing occurs. `levels` scopes mod-global crossings by map-catalog tags; omit it for every level. */
+  /** A state-crossing watcher entry as it appears in `setupLevel().crossings` or `ModManifest.crossings`. The condition fields are flattened in beside `slot` and `fire`; `fire` lists the named reactions dispatched when the crossing occurs. `levels` scopes mod-global crossings by map-catalog tags; omit it for every level. */
   export type CrossingDescriptor = {
     slot: string;
     max?: number;
@@ -794,7 +796,7 @@ declare module "postretro" {
   /** One slot inside a `defineStore` schema. `type` selects the stored value kind: `"number"`, `"boolean"`, `"string"`, `"enum"`, or `"array"`. Numeric slots may declare `default` and `range`; enum slots declare their valid `values`; `readonly: true` makes the returned state ref display-only for script writes. */
   export type StoreSlotSchema = { type: "number" | "boolean" | "string" | "enum" | "array"; readonly?: boolean } & Record<string, unknown>;
 
-  /** Plain declaration data returned through `setupMod().stores`. */
+  /** Plain declaration data returned through `ModManifest.stores`. */
   export type StoreDeclaration = { namespace: string; schema: Record<string, StoreSlotSchema> };
 
   /** Maps one schema slot's `type` discriminant to its handle value type:
@@ -811,13 +813,13 @@ declare module "postretro" {
     Slot extends { type: "array" } ? StoreStateRefForSlot<Slot, ReadonlyArray<number>> :
     StoreStateRefForSlot<Slot, string>;
 
-  /** Result of a pure `defineStore` call. Return `declaration` from `setupMod().stores`; use `state` references in descriptors. */
+  /** Result of a pure `defineStore` call. Return `declaration` from `ModManifest.stores`; use `state` references in descriptors. */
   export type StoreDefinition<S extends Record<string, StoreSlotSchema>> = {
     readonly declaration: StoreDeclaration;
     readonly state: { readonly [K in keyof S]: StateValueForSlot<S[K]> };
   };
 
-  /** Build a state-store declaration. Pure: calling it performs no FFI and changes no engine state. Returned declarations commit atomically only after `setupMod()` succeeds. */
+  /** Build a state-store declaration. Pure: calling it performs no FFI and changes no engine state. Returned declarations commit atomically only after the mod manifest succeeds. */
   export function defineStore<const S extends Record<string, StoreSlotSchema>>(
     namespace: string,
     schema: S,
@@ -855,7 +857,7 @@ declare module "postretro" {
   };
   /** Pure identity builder for entity-type descriptors. Returns the descriptor as-is; its sole purpose is a typed construction site. */
   export function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor;
-  /** Pure identity builder for the manifest returned from `setupMod()`. */
+  /** Pure identity builder for the mod manifest. */
   export function defineMod(config: ModManifest): ModManifest;
   /** Pure identity builder for a mod map catalog. */
   export function defineMapCatalog(entries: ModMapEntry[]): ModMapEntry[];

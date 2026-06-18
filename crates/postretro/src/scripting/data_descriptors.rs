@@ -305,7 +305,7 @@ impl MeshDescriptor {
 }
 
 /// Author-side description of an entity type. Carried on `ModManifest.entities`
-/// and drained into `DataRegistry` after `setupMod()` returns.
+/// and drained into `DataRegistry` after the mod manifest commits.
 ///
 /// `canonical_name` is the FGD/map classname this descriptor is directly
 /// placeable as. When `None`, the descriptor has no map-placement form — it
@@ -825,7 +825,7 @@ impl SwayParams {
 }
 
 /// A script-registered UI tree: a named [`AnchoredTree`] plus the `alwaysOn`
-/// registration attribute. Drained from the `uiTrees` field of `setupMod()`
+/// registration attribute. Drained from `ModManifest.uiTrees`
 /// (mod scope) and `setupLevel()` (level scope) returns. Parsed and held on
 /// the manifest result; drained into the app-side `UiTreeRegistry` at the
 /// caller's scope tier before the authoring VM drops.
@@ -841,7 +841,7 @@ pub(crate) struct RegisteredUiTree {
     pub(crate) always_on: bool,
 }
 
-/// Theme tokens supplied by `setupMod()` (the `theme` field). Three
+/// Theme tokens supplied by `ModManifest.theme`. Three
 /// category-scoped maps mirroring the engine theme tables (colors linear-RGBA,
 /// fonts → registered family name, spacing → logical px). Drained into a
 /// `ThemeDescriptor`, merged over `engine_default`, and installed via
@@ -854,7 +854,7 @@ pub(crate) struct ModThemeTokens {
     pub(crate) spacing: HashMap<String, f32>,
 }
 
-/// Font assets declared by `setupMod()` (the `fonts` field): family name → TTF
+/// Font assets declared by `ModManifest.fonts`: family name → TTF
 /// asset path. Installed into the font system via `register_ui_font` by the
 /// boot/level-load callers in `main.rs`. See: context/lib/ui.md §2.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -865,7 +865,7 @@ pub(crate) struct ModFontAssets {
 /// The full bundle returned by a level's `setupLevel(ctx)` export.
 ///
 /// Entity-type descriptors are not part of this manifest — they arrive via
-/// `setupMod()`'s `entities` field (mod-init only) and are drained into
+/// `ModManifest.entities` (mod-init only) and are drained into
 /// `DataRegistry` before any level is loaded. `LevelManifest` carries
 /// per-level reactions and state-crossing watchers.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -4543,9 +4543,9 @@ fn children_from_lua(table: &Table) -> Result<Vec<Widget>, DescriptorError> {
 }
 
 // ===========================================================================
-// Manifest-level UI field drains for setupMod()/setupLevel().
+// Manifest-level UI field drains for ModManifest/setupLevel().
 //
-// `uiTrees` / `theme` / `fonts` are optional fields on the `setupMod()` return
+// `uiTrees` / `theme` / `fonts` are optional fields on the mod manifest
 // (mod scope); `uiTrees` is also optional on `setupLevel()` (level scope). Each
 // drain reads the field straight off the returned object/table via the per-
 // runtime field readers, building typed values held on the manifest result.
@@ -4560,7 +4560,7 @@ fn children_from_lua(table: &Table) -> Result<Vec<Widget>, DescriptorError> {
 // ===========================================================================
 
 /// Drain the `uiTrees` array from a QuickJS manifest object. `scope` is a short
-/// label ("setupMod" / "setupLevel") used in diagnostics. Malformed entries are
+/// label ("ModManifest" / "setupLevel") used in diagnostics. Malformed entries are
 /// logged and skipped; a non-array `uiTrees` field is logged and yields empty.
 pub(crate) fn drain_ui_trees_js<'js>(
     ctx: &Ctx<'js>,

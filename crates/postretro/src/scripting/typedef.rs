@@ -857,7 +857,7 @@ const TS_SDK_LIB_BLOCK: &str = r#"
     | { below: number; above?: never; max?: number }
     | { above: number; below?: never; max?: number };
 
-  /** A state-crossing watcher entry as it appears in `setupLevel().crossings` or `setupMod().crossings`. The condition fields are flattened in beside `slot` and `fire`; `fire` lists the named reactions dispatched when the crossing occurs. `levels` scopes mod-global crossings by map-catalog tags; omit it for every level. */
+  /** A state-crossing watcher entry as it appears in `setupLevel().crossings` or `ModManifest.crossings`. The condition fields are flattened in beside `slot` and `fire`; `fire` lists the named reactions dispatched when the crossing occurs. `levels` scopes mod-global crossings by map-catalog tags; omit it for every level. */
   export type CrossingDescriptor = {
     slot: string;
     max?: number;
@@ -917,7 +917,7 @@ const TS_SDK_LIB_BLOCK: &str = r#"
   /** One slot inside a `defineStore` schema. `type` selects the stored value kind: `"number"`, `"boolean"`, `"string"`, `"enum"`, or `"array"`. Numeric slots may declare `default` and `range`; enum slots declare their valid `values`; `readonly: true` makes the returned state ref display-only for script writes. */
   export type StoreSlotSchema = { type: "number" | "boolean" | "string" | "enum" | "array"; readonly?: boolean } & Record<string, unknown>;
 
-  /** Plain declaration data returned through `setupMod().stores`. */
+  /** Plain declaration data returned through `ModManifest.stores`. */
   export type StoreDeclaration = { namespace: string; schema: Record<string, StoreSlotSchema> };
 
   /** Maps one schema slot's `type` discriminant to its handle value type:
@@ -934,13 +934,13 @@ const TS_SDK_LIB_BLOCK: &str = r#"
     Slot extends { type: "array" } ? StoreStateRefForSlot<Slot, ReadonlyArray<number>> :
     StoreStateRefForSlot<Slot, string>;
 
-  /** Result of a pure `defineStore` call. Return `declaration` from `setupMod().stores`; use `state` references in descriptors. */
+  /** Result of a pure `defineStore` call. Return `declaration` from `ModManifest.stores`; use `state` references in descriptors. */
   export type StoreDefinition<S extends Record<string, StoreSlotSchema>> = {
     readonly declaration: StoreDeclaration;
     readonly state: { readonly [K in keyof S]: StateValueForSlot<S[K]> };
   };
 
-  /** Build a state-store declaration. Pure: calling it performs no FFI and changes no engine state. Returned declarations commit atomically only after `setupMod()` succeeds. */
+  /** Build a state-store declaration. Pure: calling it performs no FFI and changes no engine state. Returned declarations commit atomically only after the mod manifest succeeds. */
   export function defineStore<const S extends Record<string, StoreSlotSchema>>(
     namespace: string,
     schema: S,
@@ -995,7 +995,7 @@ const TS_SDK_LIB_BLOCK: &str = r#"
     readonly spacing: ThemeDesignTokenGroup<T["spacing"], number, SpacingToken>;
   };
   declare const definedThemeBrand: unique symbol;
-  /** A theme returned by `defineTheme`: enumerable flat manifest maps plus SDK metadata for `getDesignTokens`. Pass this object directly as `setupMod().theme`. */
+  /** A theme returned by `defineTheme`: enumerable flat manifest maps plus SDK metadata for `getDesignTokens`. Pass this object directly as `ModManifest.theme`. */
   export type DefinedTheme<T extends ThemeDefinition> = {
     readonly colors: ThemeFlatTokenMap<T["color"], ThemeColorValue, ThemeColorValue>;
     readonly fonts: ThemeFlatTokenMap<T["font"], string, string>;
@@ -1144,7 +1144,7 @@ const TS_SDK_LIB_BLOCK: &str = r#"
   export function Tree(props: TreeProps, root: WidgetDescriptor): AnchoredTreeDescriptor;
   /** Props accepted by `defineUiTree`. The returned object preserves the runtime manifest entry shape `{ name, tree, alwaysOn? }`. */
   export type UiTreeRegistrationProps<Name extends string = string> = { name: Name; tree: AnchoredTreeDescriptor; alwaysOn?: boolean };
-  /** A typed UI-tree registration entry for `setupMod().uiTrees` / `setupLevel().uiTrees`. */
+  /** A typed UI-tree registration entry for `ModManifest.uiTrees` / `setupLevel().uiTrees`. */
   export type UiTreeRegistration<Name extends string = string> = ModUiTree & { readonly name: Name };
   /** Pure helper for defining a named UI-tree registration. Registration still happens only when the returned object is included in a manifest `uiTrees` array. */
   export function defineUiTree<const Name extends string>(registration: UiTreeRegistrationProps<Name>): UiTreeRegistration<Name>;
@@ -1176,7 +1176,7 @@ const TS_SDK_LIB_BLOCK: &str = r#"
 
   /** Pure identity builder for entity-type descriptors. Returns the descriptor as-is; its sole purpose is a typed construction site. */
   export function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor;
-  /** Pure identity builder for the manifest returned from `setupMod()`. */
+  /** Pure identity builder for the mod manifest. */
   export function defineMod(config: ModManifest): ModManifest;
   /** Pure identity builder for a mod map catalog. */
   export function defineMapCatalog(entries: ModMapEntry[]): ModMapEntry[];
@@ -2027,7 +2027,7 @@ export type CrossingCondition =
   | { below: nil?, above: number, max: number? }
 
 --- A state-crossing watcher entry as it appears in `setupLevel().crossings` or
---- `setupMod().crossings`. The condition fields are flattened in beside `slot`
+--- `ModManifest.crossings`. The condition fields are flattened in beside `slot`
 --- and `fire`; `fire` lists the named reactions dispatched when the crossing
 --- occurs. `levels` scopes mod-global crossings by map-catalog tags; omit it
 --- for every level.
@@ -2061,13 +2061,13 @@ declare function scopeReactions(tags: {string}, list: {NamedReactionDescriptor})
 --- Pure identity builder for entity-type descriptors. Returns the
 --- descriptor as-is; its sole purpose is a typed construction site.
 declare function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor
---- Pure identity builder for the manifest returned from `setupMod()`.
+--- Pure identity builder for the mod manifest.
 declare function defineMod(config: ModManifest): ModManifest
 --- Pure identity builder for a mod map catalog.
 declare function defineMapCatalog(entries: {ModMapEntry}): {ModMapEntry}
 
 --- Build a state-crossing watcher. Pure: returns a plain table, no FFI. Place
---- the result in `setupLevel().crossings` or `setupMod().crossings` with
+--- the result in `setupLevel().crossings` or `ModManifest.crossings` with
 --- optional `levels` scoping. On a crossing in the condition's direction the
 --- engine fires every reaction in `fire` exactly once, re-arming only after a
 --- crossing back; a registration against a non-Number slot warns and is skipped
@@ -2197,12 +2197,12 @@ export type WritableStateRef<T> = ReadonlyStateRef<T> & { __writableStateRefBran
 --- `readonly = true` makes the returned state ref display-only for script writes.
 export type StoreSlotSchema = { type: string, readonly: boolean?, [string]: any }
 
---- Plain declaration data returned through `setupMod().stores`.
+--- Plain declaration data returned through `ModManifest.stores`.
 export type StoreDeclaration = { namespace: string, schema: { [string]: StoreSlotSchema } }
 export type StoreStateRef<T> = ReadonlyStateRef<T> | WritableStateRef<T>
 
 --- Result of a pure `defineStore` call. Return `declaration` from
---- `setupMod().stores`; use `state` references in descriptors.
+--- `ModManifest.stores`; use `state` references in descriptors.
 export type StoreDefinition = {
   declaration: StoreDeclaration,
   state: { [string]: StoreStateRef<any> },
@@ -2210,7 +2210,7 @@ export type StoreDefinition = {
 
 --- Build a state-store declaration. Pure: calling it performs no FFI and changes
 --- no engine state. Returned declarations commit atomically only after
---- `setupMod()` succeeds.
+--- the mod manifest succeeds.
 declare function defineStore(namespace: string, schema: { [string]: StoreSlotSchema }): StoreDefinition
 
 -- ---------------------------------------------------------------------------
@@ -2451,7 +2451,7 @@ declare function Tree(props: TreeProps, root: WidgetDescriptor): AnchoredTreeDes
 --- Props accepted by `defineUiTree`. The returned object preserves the runtime
 --- manifest entry shape `{ name, tree, alwaysOn? }`.
 export type UiTreeRegistrationProps = { name: string, tree: AnchoredTreeDescriptor, alwaysOn: boolean? }
---- A typed UI-tree registration entry for `setupMod().uiTrees` / `setupLevel().uiTrees`.
+--- A typed UI-tree registration entry for `ModManifest.uiTrees` / `setupLevel().uiTrees`.
 export type UiTreeRegistration = ModUiTree
 --- Pure helper for defining a named UI-tree registration. Registration still
 --- happens only when the returned object is included in a manifest `uiTrees`
@@ -2870,7 +2870,7 @@ declare module "postretro" {
     defaultState?: string;
   };
 
-  /** Entity archetype registered through `ModManifest.entities` from `setupMod()`. `defineEntity()` is a typed identity helper for constructing this object. The descriptor is engine-global and survives level unloads. */
+  /** Entity archetype registered through `ModManifest.entities`. `defineEntity()` is a typed identity helper for constructing this object. The descriptor is engine-global and survives level unloads. */
   export type EntityTypeDescriptor = {
     /** Stable archetype name used by map classname routing and descriptor references. Required for direct map placement and for weapon descriptors referenced by `defaultWeapon`; omit only for archetypes that are never addressed by name. */
     canonicalName?: string;
@@ -2969,7 +2969,7 @@ declare module "postretro" {
     component: FogVolumeComponent;
   };
 
-  /** Component presets carried by `EntityTypeDescriptor.components`. Each key is optional and independent; present values are validated when `setupMod()` loads. */
+  /** Component presets carried by `EntityTypeDescriptor.components`. Each key is optional and independent; present values are validated when the mod manifest loads. */
   export type EntityTypeComponents = {
     /** Dynamic-light preset materialized on each spawned instance. */
     light?: LightDescriptor | null;
@@ -3227,7 +3227,7 @@ declare module "postretro" {
     spacing?: { readonly [token: string]: number };
   };
 
-  /** Object returned from `setupMod()` in `start-script.{ts,luau}`. Identifies the mod to the engine. */
+  /** Mod manifest from `start-script.ts`'s default export or `start-script.luau`'s chunk return. Identifies the mod to the engine. */
   export type ModManifest = {
     /** Human-readable mod name. Required. */
     name: string;
@@ -3245,6 +3245,8 @@ declare module "postretro" {
     reactions?: ReadonlyArray<NamedReactionDescriptor>;
     /** Engine-global state-crossing watchers. Optional; survive level unload and compose into active level behavior by level tags. */
     crossings?: ReadonlyArray<CrossingDescriptor>;
+    /** Engine-global state-store declarations. Optional; commit atomically after the manifest validates. */
+    stores?: ReadonlyArray<StoreDeclaration>;
   };
 
   /** Returns true if the entity id refers to a live entity. */
@@ -3309,7 +3311,7 @@ export type MeshDescriptor = {
   defaultState: string?,
 }
 
---- Entity archetype registered through `ModManifest.entities` from `setupMod()`. `defineEntity()` is a typed identity helper for constructing this object. The descriptor is engine-global and survives level unloads.
+--- Entity archetype registered through `ModManifest.entities`. `defineEntity()` is a typed identity helper for constructing this object. The descriptor is engine-global and survives level unloads.
 export type EntityTypeDescriptor = {
   --- Stable archetype name used by map classname routing and descriptor references. Required for direct map placement and for weapon descriptors referenced by `defaultWeapon`; omit only for archetypes that are never addressed by name.
   canonicalName: string?,
@@ -3408,7 +3410,7 @@ export type FogVolumeEntity = {
   component: FogVolumeComponent,
 }
 
---- Component presets carried by `EntityTypeDescriptor.components`. Each key is optional and independent; present values are validated when `setupMod()` loads.
+--- Component presets carried by `EntityTypeDescriptor.components`. Each key is optional and independent; present values are validated when the mod manifest loads.
 export type EntityTypeComponents = {
   --- Dynamic-light preset materialized on each spawned instance.
   light: LightDescriptor?,
@@ -3666,7 +3668,7 @@ export type ThemeTokens = {
   spacing: { [string]: number }?,
 }
 
---- Object returned from `setupMod()` in `start-script.{ts,luau}`. Identifies the mod to the engine.
+--- Mod manifest from `start-script.ts`'s default export or `start-script.luau`'s chunk return. Identifies the mod to the engine.
 export type ModManifest = {
   --- Human-readable mod name. Required.
   name: string,
@@ -3684,6 +3686,8 @@ export type ModManifest = {
   reactions: {NamedReactionDescriptor}?,
   --- Engine-global state-crossing watchers. Optional; survive level unload and compose into active level behavior by level tags.
   crossings: {CrossingDescriptor}?,
+  --- Engine-global state-store declarations. Optional; commit atomically after the manifest validates.
+  stores: {StoreDeclaration}?,
 }
 
 --- Returns true if the entity id refers to a live entity.
@@ -3939,7 +3943,7 @@ export type Event = {
                 "luau missing primitive {name}:\n{luau}"
             );
         }
-        // `registerEntity` was removed in favor of `setupMod`'s `entities`
+        // `registerEntity` was removed in favor of `ModManifest.entities`
         // return field; it must not appear as a primitive declaration.
         for line in ts.lines() {
             if line.trim_start().starts_with("//") || line.trim_start().starts_with("*") {
@@ -4317,7 +4321,7 @@ export type Event = {
         );
         assert!(
             ts.contains("fire: string[];\n    levels?: string[];"),
-            "ts must expose crossing levels for setupMod().crossings:\n{ts}"
+            "ts must expose crossing levels for ModManifest.crossings:\n{ts}"
         );
         assert!(
             luau.contains("levels: {string}?")
@@ -4327,7 +4331,7 @@ export type Event = {
         );
         assert!(
             luau.contains("fire: {string}, levels: {string}?"),
-            "luau must expose crossing levels for setupMod().crossings:\n{luau}"
+            "luau must expose crossing levels for ModManifest.crossings:\n{luau}"
         );
         // Widened reaction-reference props still appear in the Luau UI module
         // prop types. TypeScript root no longer exposes UI prop types in Task 1.

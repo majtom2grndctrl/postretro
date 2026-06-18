@@ -266,7 +266,7 @@ impl ModalStack {
 
     /// Drain script-authored trees parsed off a manifest result into the registry
     /// at the given scope tier, carrying each entry's `always_on` attribute. It
-    /// feeds the trees `setupMod` / `setupLevel` returned (as `RegisteredUiTree`
+    /// feeds the trees `ModManifest` / `setupLevel` returned (as `RegisteredUiTree`
     /// envelopes) into the tiered registry at the register→VM-drop lifecycle
     /// point — before the mod-init / data-script VM context drops.
     ///
@@ -859,7 +859,7 @@ mod tests {
 
     /// A `RegisteredUiTree` envelope as the manifest parsers produce it: a named,
     /// identified tree plus its `always_on` registration attribute. Mirrors what
-    /// `setupMod` / `setupLevel` return through `RegisteredUiTree` (Task 1).
+    /// `ModManifest` / `setupLevel` return through `RegisteredUiTree` (Task 1).
     fn registered(name: &str, root_id: &str, always_on: bool) -> RegisteredUiTree {
         RegisteredUiTree {
             name: name.to_string(),
@@ -869,8 +869,8 @@ mod tests {
     }
 
     #[test]
-    fn setup_mod_tree_is_resolvable_at_mod_tier_after_registration() {
-        // A `setupMod`-registered tree resolves by name through the tiered
+    fn mod_manifest_tree_is_resolvable_at_mod_tier_after_registration() {
+        // A `ModManifest.uiTrees` tree resolves by name through the tiered
         // registry after mod-init, at the mod tier — the cold-boot drain point
         // feeding the by-name render resolution seam.
         let mut stack = ModalStack::new();
@@ -886,14 +886,15 @@ mod tests {
         assert_eq!(
             stack.tree("objectiveBoard").and_then(root_id),
             Some("modBoard"),
-            "a setupMod tree resolves by name through the registry after the drain",
+            "a ModManifest tree resolves by name through the registry after the drain",
         );
     }
 
     #[test]
     fn mod_tree_under_engine_hud_name_shadows_the_engine_hud() {
         // The reskin path: an engine HUD registered at boot, then a mod tree
-        // drained under the SAME name from `setupMod`, shadows it (last-wins).
+        // drained under the SAME name from `ModManifest.uiTrees`, shadows it
+        // (last-wins).
         // The shadow warning is emitted by `UiTreeRegistry::register` (Task 2);
         // here we prove the drain actually registers the mod tree at `Mod` tier
         // under that name so the shadow takes effect.

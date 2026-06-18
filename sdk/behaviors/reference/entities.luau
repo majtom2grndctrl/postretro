@@ -1,7 +1,7 @@
 --!strict
 -- Reference data-context entity descriptors for the rotator and
 -- damage-source reference behaviors. Spread `M.referenceEntities` into the
--- `entities` array returned from `setupMod()` to register the archetypes.
+-- `ModManifest.entities` array to register the archetypes.
 --
 -- See: context/lib/scripting.md §2
 

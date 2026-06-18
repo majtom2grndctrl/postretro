@@ -2764,7 +2764,7 @@ impl App {
         renderer.set_ui_theme(merged);
     }
 
-    /// Install a mod's `setupMod()` theme tokens and font assets into the live UI
+    /// Install a mod manifest's theme tokens and font assets into the live UI
     /// runtime, at the mod-init drain (before the authoring VM context drops). G1b
     /// Task 4. Both halves degrade per `ui.md` §5: a missing/unreadable font file
     /// or a non-registering face produces a named load-time diagnostic and is
@@ -3950,7 +3950,7 @@ mod tests {
             .ui_trees
             .iter()
             .find(|tree| tree.name == render::ui::demo::PAUSE_MENU_NAME)
-            .expect("dev setupMod returns the pauseMenu tree")
+            .expect("dev mod manifest exports the pauseMenu tree")
             .clone();
         assert!(
             !pause_entry.always_on,
@@ -4648,15 +4648,13 @@ mod tests {
         std::fs::write(
             dir.join("start-script.js"),
             r#"
-            globalThis.setupMod = function() {
-                return {
-                    name: "DrainMod",
-                    uiTrees: [
-                        { name: "banner", alwaysOn: true,
-                          tree: { anchor: "top", offset: [0.0, 0.0],
-                                  root: { kind: "text", content: "REGISTERED", fontSize: 18.0, color: [1.0,1.0,1.0,1.0] } } },
-                    ],
-                };
+            globalThis.__postretroModManifest = {
+                name: "DrainMod",
+                uiTrees: [
+                    { name: "banner", alwaysOn: true,
+                      tree: { anchor: "top", offset: [0.0, 0.0],
+                              root: { kind: "text", content: "REGISTERED", fontSize: 18.0, color: [1.0,1.0,1.0,1.0] } } },
+                ],
             };
             "#,
         )
@@ -4713,11 +4711,9 @@ mod tests {
         std::fs::write(
             dir.join("start-script.js"),
             r#"
-            globalThis.setupMod = function() {
-                return {
-                    name: "BadThemeMod",
-                    theme: { colors: { critical: "not-an-rgba-array", ok: [1, 0, 0, 1] } },
-                };
+            globalThis.__postretroModManifest = {
+                name: "BadThemeMod",
+                theme: { colors: { critical: "not-an-rgba-array", ok: [1, 0, 0, 1] } },
             };
             "#,
         )

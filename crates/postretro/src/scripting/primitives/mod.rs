@@ -111,7 +111,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("EntityTypeDescriptor")
-        .doc("Entity archetype registered through `ModManifest.entities` from `setupMod()`. `defineEntity()` is a typed identity helper for constructing this object. The descriptor is engine-global and survives level unloads.")
+        .doc("Entity archetype registered through `ModManifest.entities`. `defineEntity()` is a typed identity helper for constructing this object. The descriptor is engine-global and survives level unloads.")
         .field("canonicalName?", "String", "Stable archetype name used by map classname routing and descriptor references. Required for direct map placement and for weapon descriptors referenced by `defaultWeapon`; omit only for archetypes that are never addressed by name.")
         .field(
             "defaultWeapon?",
@@ -225,7 +225,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("EntityTypeComponents")
-        .doc("Component presets carried by `EntityTypeDescriptor.components`. Each key is optional and independent; present values are validated when `setupMod()` loads.")
+        .doc("Component presets carried by `EntityTypeDescriptor.components`. Each key is optional and independent; present values are validated when the mod manifest loads.")
         .field("light?", "Option<LightDescriptor>", "Dynamic-light preset materialized on each spawned instance.")
         .field("emitter?", "Option<BillboardEmitterComponent>", "Billboard-particle emitter preset materialized on each spawned instance.")
         .field("movement?", "Option<PlayerMovementDescriptor>", "Player movement, collision capsule, and first-person view-feel preset.")
@@ -452,7 +452,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("ModManifest")
-        .doc("Object returned from `setupMod()` in `start-script.{ts,luau}`. Identifies the mod to the engine.")
+        .doc("Mod manifest from `start-script.ts`'s default export or `start-script.luau`'s chunk return. Identifies the mod to the engine.")
         .field("name", "String", "Human-readable mod name. Required.")
         .field(
             "entities?",
@@ -488,6 +488,11 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
             "crossings?",
             "Vec<CrossingDescriptor>",
             "Engine-global state-crossing watchers. Optional; survive level unload and compose into active level behavior by level tags.",
+        )
+        .field(
+            "stores?",
+            "Vec<StoreDeclaration>",
+            "Engine-global state-store declarations. Optional; commit atomically after the manifest validates.",
         )
         .finish();
 }
@@ -532,7 +537,7 @@ mod tests {
             assert!(names.contains(&expected), "missing primitive {expected}");
         }
         // `registerEntity` was removed; entity-type registration now flows
-        // through `setupMod()`'s `entities` return field.
+        // through `ModManifest.entities`.
         assert!(
             !names.contains(&"registerEntity"),
             "registerEntity primitive must be removed",
@@ -568,9 +573,10 @@ mod tests {
         use crate::scripting::primitives_registry::TypeShape;
         use crate::scripting::runtime::ModManifestResult;
 
-        // Compile-time anchor for script-visible fields. Store declarations
-        // are attempt-local engine metadata and do not belong in the
-        // generated `ModManifest` shape.
+        // Compile-time anchor for manifest fields. `stores` is authored as
+        // `ModManifest.stores` and lands in `store_declarations` after
+        // validation, so the expected field list below maps that Rust field
+        // back to its script-visible name.
         let _shape_anchor = ModManifestResult {
             name: String::new(),
             entities: Vec::new(),
@@ -591,6 +597,7 @@ mod tests {
             "maps",
             "reactions",
             "crossings",
+            "stores",
         ];
 
         let mut r = PrimitiveRegistry::new();

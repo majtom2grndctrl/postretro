@@ -235,8 +235,8 @@ impl App {
                     let has_manifest = self.script_runtime.mod_manifest().is_some();
                     if let Some(manifest) = self.script_runtime.mod_manifest_mut() {
                         // Drain entity-type descriptors from the validated
-                        // `setupMod()` return value into the engine-global
-                        // `DataRegistry`. Runtime parses; caller owns lifecycle.
+                        // mod manifest into the engine-global `DataRegistry`.
+                        // Runtime parses; caller owns lifecycle.
                         // See: context/lib/boot_sequence.md §3.
                         let mut data_registry = self.script_ctx.data_registry.borrow_mut();
                         for desc in std::mem::take(&mut manifest.entities) {
@@ -853,8 +853,8 @@ impl App {
         self.level_timings.record("data_script");
 
         // Data-archetype sweep: `data_registry.entities` was populated from
-        // `setupMod()`'s return value at mod-init. Materialize every matching
-        // map placement that the built-in dispatch did not already handle.
+        // `ModManifest.entities` at mod-init. Materialize every matching map
+        // placement that the built-in dispatch did not already handle.
         if self.level.is_some() {
             let handled = self.builtin_handled.take().unwrap_or_default();
             let descriptors = self.script_ctx.data_registry.borrow().entities.clone();

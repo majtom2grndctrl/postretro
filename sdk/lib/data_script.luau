@@ -1,5 +1,5 @@
 --!strict
--- Data-script vocabulary: pure descriptor builders for `setupMod` and
+-- Data-script vocabulary: pure descriptor builders for `ModManifest` and
 -- `setupLevel`. `defineReaction` and `defineEntity` construct
 -- typed plain tables that the engine deserializes from the script's
 -- return value. They never call back into Rust -- the FFI boundary is the
@@ -7,23 +7,21 @@
 -- See: context/lib/scripting.md §2 (Data context lifecycle)
 --
 -- ---------------------------------------------------------------------
--- Canonical author example -- entity types registered via `setupMod`,
+-- Canonical author example -- entity types registered via the mod manifest,
 -- per-level reactions via `setupLevel`.
 --
 -- ```lua
--- function setupMod()
---   -- Entity types are returned from `setupMod` (definition context) and
---   -- survive level unload. Use `defineEntity` for a typed construction
---   -- site at the FFI boundary.
---   return {
---     entities = {
---       defineEntity({
---         classname = "light_dynamic",
---         components = { light = { color = { x = 1, y = 0.8, z = 0.6 }, intensity = 1.0, range = 6.0, is_dynamic = true } },
---       }),
---     },
---   }
--- end
+-- return defineMod({
+--   -- Entity types are returned from the mod manifest and survive level
+--   -- unload. Use `defineEntity` for a typed construction site at the FFI
+--   -- boundary.
+--   entities = {
+--     defineEntity({
+--       classname = "light_dynamic",
+--       components = { light = { color = { x = 1, y = 0.8, z = 0.6 }, intensity = 1.0, range = 6.0, is_dynamic = true } },
+--     }),
+--   },
+-- })
 --
 -- function setupLevel(_ctx)
 --   -- The manifest carries only per-level reactions.
@@ -137,8 +135,8 @@ export type NamedReactionDescriptor = {
 --- Bundle returned from `setupLevel`. The engine deserializes
 --- this shape in one pass at level load and drops the data-script VM
 --- context after the return.
---- `entities` is absent: entity-type registrations belong in the
---- `entities` field of `setupMod`'s return value, not here.
+--- `entities` is absent: entity-type registrations belong in
+--- `ModManifest.entities`, not here.
 export type LevelManifest = {
   reactions: {NamedReactionDescriptor},
   -- State-crossing watchers (HUD dynamics). `CrossingDescriptor` is declared
@@ -294,16 +292,16 @@ function DataScriptSdk.scopeReactions(tags: {string}, list: {NamedReactionDescri
   return out
 end
 
---- Identity builder for entity type descriptors returned from `setupMod`.
+--- Identity builder for entity type descriptors returned from `ModManifest.entities`.
 --- Pure: returns the descriptor as-is. Its sole purpose is to give authors
 --- a typed construction site at the FFI boundary.
 function DataScriptSdk.defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor
   return descriptor
 end
 
---- Identity builder for the object returned from `setupMod`.
---- Pure: returns the manifest as-is. The engine consumes it only at the
---- setup return boundary.
+--- Identity builder for the mod manifest.
+--- Pure: returns the manifest as-is. The engine consumes it only from the
+--- default export / chunk return boundary.
 function DataScriptSdk.defineMod(config: ModManifest): ModManifest
   return config
 end
@@ -361,8 +359,8 @@ local function cloneAndFreeze(value: any, seenOrNil: any?, visitingOrNil: any?, 
 end
 
 --- Pure state-store builder. The engine consumes `declaration` only when it is
---- returned from `setupMod().stores`; unreturned declarations disappear with
---- the setup VM.
+--- returned from the mod manifest's `stores`; unreturned declarations disappear
+--- with the setup VM.
 function DataScriptSdk.defineStore(namespace: string, schema: { [string]: StoreSlotSchema }): StoreDefinition
   local frozenSchema = cloneAndFreeze(schema)
   local state = {}

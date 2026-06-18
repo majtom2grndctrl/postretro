@@ -74,7 +74,7 @@ Level install runs on the main thread after worker delivery. It is repeatable: e
 | 15 | Mesh model sweep: upload each distinct mesh model once, then resolve every animated mesh entity's clip indices (see mesh-sweep note below) |
 | 16 | Fire the `levelLoad` named event |
 
-Lights come from PRL data via the light bridge, not classname dispatch. Entity types and mod-global reaction/crossing definitions arrive at mod-init via `setupMod`. `setupLevel`/the data script contributes level-local reactions and crossings only (see `scripting.md` §2). Level install composes active behavior after the data script returns and before progress/crossing initialization, so both systems see the final active set.
+Lights come from PRL data via the light bridge, not classname dispatch. Entity types and mod-global reaction/crossing definitions arrive at mod-init via the mod manifest. `setupLevel`/the data script contributes level-local reactions and crossings only (see `scripting.md` §2). Level install composes active behavior after the data script returns and before progress/crossing initialization, so both systems see the final active set.
 
 **Mesh-spawn seam.** World mesh spawning is its own install stage, distinct from classname dispatch. The durable contract: map geometry becomes renderable mesh entities here, after geometry upload and before the light/fog bridges. (The current implementation hardwires a single world mesh; a classname-driven handler is planned — see §7.)
 
@@ -125,9 +125,9 @@ Platform suspend is a separate path: it clears renderer/window/fog/collision and
 | Scope | Cleared on |
 |-------|-----------|
 | Engine init (preludes, primitive registry, `ScriptCtx`, `ScriptRuntime`, Rust-side registries) | Process exit only — built once at startup, never recreated. |
-| `data_registry.entities` (entity-type descriptors from `setupMod` return) | Engine-global. Survives level unload; survives platform suspend. |
-| `data_registry.maps` (mod map catalog from `setupMod().maps`) | Engine-global. Survives level unload; survives platform suspend. |
-| `data_registry.global_reactions` / `global_crossings` (definitions from `setupMod` return) | Engine-global. Survive level unload; survive platform suspend. |
+| `data_registry.entities` (entity-type descriptors from `ModManifest.entities`) | Engine-global. Survives level unload; survives platform suspend. |
+| `data_registry.maps` (mod map catalog from `ModManifest.maps`) | Engine-global. Survives level unload; survives platform suspend. |
+| `data_registry.global_reactions` / `global_crossings` (definitions from `ModManifest.reactions` / `crossings`) | Engine-global. Survive level unload; survive platform suspend. |
 | Active per-level reactions/crossings (`data_registry.reactions` / `crossings`) and level-scope UI trees | Level unload. Active sets recompose on the next level load from current globals plus that level's catalog tags. |
 | Level world, collision world, fog bridge, light bridge, level sounds, sprite collections, per-level GPU resources | Level unload; also cleared/dropped by suspend or exit as applicable. |
 | Renderer device/queue, window, audio mixer | Dropped on exit; renderer/window cleared on suspend and rebuilt on resume. |

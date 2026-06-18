@@ -236,9 +236,9 @@ struct SlotSchemaInput {
     values: Option<Value>,
 }
 
-const DEFINE_STORE_DOC: &str = "Build a typed state-store declaration for setupMod().stores. \
+const DEFINE_STORE_DOC: &str = "Build a typed state-store declaration for ModManifest.stores. \
      Every mod-owned slot requires a default. Supported types are number, boolean, string, enum, and array. \
-     Calling this builder does not mutate engine state. Returned declarations commit atomically after setupMod succeeds. \
+     Calling this builder does not mutate engine state. Returned declarations commit atomically after the mod manifest succeeds. \
      Returns { declaration, state }, where state leaves are stable { slot } references. Definition context.";
 
 const STORE_READ_DOC: &str = "Read the current value of an engine-global state slot by stable dotted name. \

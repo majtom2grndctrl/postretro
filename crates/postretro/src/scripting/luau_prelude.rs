@@ -38,7 +38,7 @@ pub(super) const FOG_VOLUMES_LUAU_SRC: &str =
 /// SDK library prelude — `data_script.luau` returns a table whose fields
 /// (`defineReaction`, `defineEntity`, `defineMod`, `defineMapCatalog`, `defineStore`)
 /// are destructured into globals so data-script authors call them by bare name.
-/// Pure descriptor builders; no FFI happens until `setupMod` or `setupLevel`
+/// Pure descriptor builders; no FFI happens until the mod manifest or `setupLevel`
 /// returns.
 const DATA_SCRIPT_LUAU_SRC: &str = include_str!("../../../../sdk/lib/data_script.luau");
 

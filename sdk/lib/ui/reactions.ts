@@ -1,6 +1,6 @@
 // UI reaction vocabulary: pure builders for the HUD-dynamics reaction surface
 // (M13 Goal E). `onStateCrossing` constructs a state-crossing watcher returned
-// through `setupLevel().crossings` or `setupMod().crossings` — it never calls
+// through `setupLevel().crossings` or `ModManifest.crossings` — it never calls
 // back into Rust; the FFI boundary is the `return` statement.
 // See: context/lib/scripting.md §10.4
 
@@ -18,7 +18,7 @@ export type CrossingCondition =
 
 /**
  * A state-crossing watcher entry as it appears in `setupLevel().crossings` or
- * `setupMod().crossings`. `slot` is the dotted state-slot name; the condition
+ * `ModManifest.crossings`. `slot` is the dotted state-slot name; the condition
  * is flattened in (`below`/`above` plus optional `max`); `fire` is the list of
  * named reactions dispatched when the crossing occurs. `levels` scopes
  * mod-global crossings by map-catalog tags; omit it for every level.
@@ -70,7 +70,7 @@ function crossingThreshold(condition: CrossingCondition): { key: "below" | "abov
 /**
  * Build a state-crossing watcher. Pure — returns a plain object, no engine side
  * effect. Place the result in `setupLevel().crossings` or in
- * `setupMod().crossings` with optional `levels` scoping. The engine watches
+ * `ModManifest.crossings` with optional `levels` scoping. The engine watches
  * `slot` after each frame's slot writes and, on a crossing in the condition's
  * direction (from at-or-past the threshold to across it), fires every reaction
  * in `fire` exactly once; it re-arms only after a crossing back. A registration

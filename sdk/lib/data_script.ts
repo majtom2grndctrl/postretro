@@ -1,4 +1,4 @@
-// Data-script vocabulary: pure descriptor builders for `setupMod` and `setupLevel`.
+// Data-script vocabulary: pure descriptor builders for `ModManifest` and `setupLevel`.
 // FFI boundary is the `return` statement — these functions never call back into Rust.
 // See: context/lib/scripting.md §2 (Data context lifecycle)
 
@@ -65,9 +65,9 @@ export type NamedReactionDescriptor = { name: string; levels?: string[] } & (
 /**
  * Deserialized once at level load; the data-script VM is dropped immediately after.
  *
- * Entity-type registrations are not part of `LevelManifest`. Return them in
- * `setupMod`'s `entities` field instead — entity types are mod-level, not
- * level-level.
+ * Entity-type registrations are not part of `LevelManifest`. Export them from
+ * the mod manifest's `entities` field instead — entity types are mod-level,
+ * not level-level.
  */
 export type LevelManifest = {
   reactions: NamedReactionDescriptor[];
@@ -177,16 +177,15 @@ export function scopeReactions(
 }
 
 /** Identity builder — gives authors a typed construction site for entity
- * type descriptors returned from `setupMod()`. Pure: no engine side effects. */
+ * type descriptors returned from `ModManifest.entities`. Pure: no engine side effects. */
 export function defineEntity(
   descriptor: import("postretro").EntityTypeDescriptor,
 ): import("postretro").EntityTypeDescriptor {
   return descriptor;
 }
 
-/** Identity builder for the object returned from `setupMod()`. Pure: no engine
- * side effects; the engine consumes the returned manifest only at the setup
- * return boundary. */
+/** Identity builder for the mod manifest. Pure: no engine side effects; the
+ * engine consumes the manifest only from the default export / chunk return. */
 export function defineMod(
   config: import("postretro").ModManifest,
 ): import("postretro").ModManifest {
@@ -255,7 +254,7 @@ function cloneAndFreeze<T>(
 }
 
 /** Pure state-store builder. The engine consumes `declaration` only when it is
- * returned from `setupMod().stores`; unreturned declarations are discarded with
+ * returned from `ModManifest.stores`; unreturned declarations are discarded with
  * the setup VM. */
 export function defineStore<const S extends Record<string, StoreSlotSchema>>(
   namespace: string,

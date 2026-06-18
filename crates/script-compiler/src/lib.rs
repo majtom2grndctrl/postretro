@@ -16,9 +16,10 @@ use swc_atoms::Atom;
 use swc_bundler::{Bundler, Config, Hook, Load, ModuleData, ModuleRecord, Resolve};
 use swc_common::{FileName, GLOBALS, Globals, Mark, SourceMap, Span, errors::Handler, sync::Lrc};
 use swc_ecma_ast::{
-    AssignExpr, AssignOp, AssignTarget, BindingIdent, ComputedPropName, Decl, EsVersion, Expr,
-    ExprStmt, Ident, ImportSpecifier, KeyValueProp, MemberExpr, MemberProp, ModuleDecl,
-    ModuleExportName, ModuleItem, Pass, Pat, Program, SimpleAssignTarget, Stmt, TsModuleRef,
+    AssignExpr, AssignOp, AssignTarget, BindingIdent, ComputedPropName, Decl, EsVersion,
+    ExportSpecifier, Expr, ExprStmt, Ident, ImportSpecifier, KeyValueProp, MemberExpr, MemberProp,
+    ModuleDecl, ModuleExportName, ModuleItem, Pass, Pat, Program, SimpleAssignTarget, Stmt,
+    TsModuleRef,
 };
 use swc_ecma_codegen::{Emitter, text_writer::JsWriter};
 use swc_ecma_loader::resolve::Resolution;
@@ -137,6 +138,12 @@ fn bundle_with_dependencies(entry: &Path, prelude: bool) -> Result<BundleWithDep
             // declarations. Order matters: `ExportToGlobal` reads exports;
             // `StripExternalImports` then deletes the husks.
             module.visit_mut_with(&mut ExportToGlobal);
+        } else {
+            // User entries run as plain scripts, but a mod start-script's
+            // default export is the manifest handoff slot. Lower it before
+            // the final module-declaration strip removes all import/export
+            // syntax.
+            module.visit_mut_with(&mut DefaultExportToManifestSlot);
         }
         module.visit_mut_with(&mut StripExternalImports);
 
@@ -628,6 +635,77 @@ fn global_assignment(exported: &str, local: &str) -> ModuleItem {
     }))
 }
 
+/// Lowers a user-entry `export default <expr>` into the engine-reserved
+/// script-mode slot consumed by mod init. `scripts-build` has no entry-kind
+/// mode, so this applies to every user bundle; non-mod-init consumers simply
+/// ignore the slot.
+struct DefaultExportToManifestSlot;
+
+impl VisitMut for DefaultExportToManifestSlot {
+    fn visit_mut_module_items(&mut self, items: &mut Vec<ModuleItem>) {
+        let mut lowered = Vec::with_capacity(items.len());
+        for item in std::mem::take(items) {
+            match item {
+                ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultExpr(default)) => {
+                    lowered.push(manifest_assignment_stmt(*default.expr));
+                }
+                ModuleItem::ModuleDecl(ModuleDecl::ExportNamed(named)) if named.src.is_none() => {
+                    let mut consumed_default = false;
+                    for specifier in &named.specifiers {
+                        if let ExportSpecifier::Named(specifier) = specifier {
+                            let exported = specifier.exported.as_ref().map(export_name_to_string);
+                            if exported.as_deref() == Some("default") {
+                                let local = match &specifier.orig {
+                                    ModuleExportName::Ident(ident) => ident.sym.clone(),
+                                    ModuleExportName::Str(_) => continue,
+                                };
+                                lowered.push(manifest_assignment_stmt(Expr::Ident(Ident::new(
+                                    local,
+                                    specifier.span,
+                                    Default::default(),
+                                ))));
+                                consumed_default = true;
+                            }
+                        }
+                    }
+                    if !consumed_default {
+                        lowered.push(ModuleItem::ModuleDecl(ModuleDecl::ExportNamed(named)));
+                    }
+                }
+                other => lowered.push(other),
+            }
+        }
+        *items = lowered;
+    }
+}
+
+fn manifest_assignment_stmt(expr: Expr) -> ModuleItem {
+    ModuleItem::Stmt(Stmt::Expr(ExprStmt {
+        span: swc_common::DUMMY_SP,
+        expr: Box::new(Expr::Assign(AssignExpr {
+            span: swc_common::DUMMY_SP,
+            op: AssignOp::Assign,
+            left: AssignTarget::Simple(SimpleAssignTarget::Member(MemberExpr {
+                span: swc_common::DUMMY_SP,
+                obj: Box::new(Expr::Ident(Ident::new(
+                    "globalThis".into(),
+                    swc_common::DUMMY_SP,
+                    Default::default(),
+                ))),
+                prop: MemberProp::Computed(ComputedPropName {
+                    span: swc_common::DUMMY_SP,
+                    expr: Box::new(Expr::Lit(swc_ecma_ast::Lit::Str(swc_ecma_ast::Str {
+                        span: swc_common::DUMMY_SP,
+                        value: "__postretroModManifest".into(),
+                        raw: None,
+                    }))),
+                }),
+            })),
+            right: Box::new(expr),
+        })),
+    }))
+}
+
 /// Removes `ImportDecl` and `ExportDecl`/re-export nodes left in the bundled
 /// output. Anything that reaches this visitor is necessarily a bare specifier
 /// (relative imports were inlined by the bundler), and bare specifiers map to
@@ -846,6 +924,54 @@ mod tests {
         assert!(
             js.contains("Text"),
             "bundled output dropped the UI call site: {js}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bundle_lowers_default_export_to_mod_manifest_slot() {
+        let dir = unique_tempdir("default-export");
+        let entry = dir.join("entry.ts");
+        let catalog = dir.join("catalog.ts");
+
+        fs::write(
+            &catalog,
+            r#"
+            export const maps = defineMapCatalog([
+                { id: "e1m1", path: "maps/e1m1.prl", name: "Entryway" },
+            ]);
+            "#,
+        )
+        .unwrap();
+        fs::write(
+            &entry,
+            r#"
+            import { defineMod, defineMapCatalog } from "postretro";
+            import { maps } from "./catalog";
+            export default defineMod({ name: "DefaultExport", maps });
+            "#,
+        )
+        .unwrap();
+
+        let canonical_entry = fs::canonicalize(&entry).unwrap();
+        let js = bundle_entry(&canonical_entry).expect("bundle should succeed");
+
+        assert!(
+            js.contains("__postretroModManifest"),
+            "default export was not lowered to the manifest slot: {js}"
+        );
+        assert!(
+            js.contains("defineMod"),
+            "default export expression should remain the assigned value: {js}"
+        );
+        assert!(
+            !js.contains("import "),
+            "bundled output still contains an `import` statement: {js}"
+        );
+        assert!(
+            !js.contains("export "),
+            "bundled output still contains an `export` declaration: {js}"
         );
 
         let _ = fs::remove_dir_all(&dir);

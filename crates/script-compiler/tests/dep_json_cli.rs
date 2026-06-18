@@ -98,15 +98,14 @@ function buildHud() {
   };
 }
 
-export function setupMod() {
-  const hud = buildHud();
-  return {
-    name: "hud-fixture",
-    uiTrees: hud.uiTrees,
-    theme: hud.theme,
-    entities: [],
-  };
-}
+const hud = buildHud();
+
+export default defineMod({
+  name: "hud-fixture",
+  uiTrees: hud.uiTrees,
+  theme: hud.theme,
+  entities: [],
+});
 "#,
     )
     .expect("write SDK HUD fixture");

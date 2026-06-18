@@ -13,7 +13,7 @@ player, so the player's HP (and the readonly `player.health` HUD slot) drops.
   "target_dummy", components: { mesh, health: { max, hitbox, zoneMultipliers } } })`.
   The `max` HP ceiling makes it shootable; `zoneMultipliers` scales damage by
   where the ray lands. Registered into the mod via `content/dev/start-script.ts`'s
-  `setupMod()` `entities` array.
+  `ModManifest.entities`.
 - `content/dev/models/decraniated_low_poly_retro_pixel/scene.gltf` — the skinned
   body. Its joint nodes carry `extras` zone tags (`head`, `torso`, `arm`, `leg`
   with per-joint `hitZoneRadius`), making `target_dummy` a **zone-bearing** entity:
@@ -114,7 +114,7 @@ named retaliation reaction.
   `try_spawn(transform, &entity.tags)`), so `"_tags" "player"` lands on the pawn
   and the `applyDamage` reaction's `tag: "player"` resolves to it.
 - **Reaction trigger shape:** reactions are surfaced through `setupLevel`'s
-  returned `LevelManifest` (`{ reactions }`), NOT through `setupMod`. This file
+  returned `LevelManifest` (`{ reactions }`), NOT through the mod manifest. This file
   uses a `ProgressReactionDescriptor` (`{ progress: { tag, at, fire } }`) and a
   `PrimitiveReactionDescriptor` (`{ primitive, tag, args }`).
 - **Descriptor placement:** a descriptor carrying `components.health` is directly

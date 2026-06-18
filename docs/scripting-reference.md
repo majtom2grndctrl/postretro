@@ -13,46 +13,46 @@ If both `start-script.js` and `start-script.luau` exist, the engine errors at in
 
 If neither exists: in debug builds, the engine boots normally with no mod-declared types. In release builds, the engine errors at init.
 
-**`setupMod()` contract.** The script must export a `setupMod()` function that takes no arguments and returns a `ModManifest`:
+**Mod manifest contract.** The start script must provide a `ModManifest`:
+TypeScript uses `export default defineMod({...})`; Luau returns `defineMod({...})`
+from the chunk.
 
 ```typescript
 // start-script.ts
-import { defineEntity } from "postretro";
+import { defineEntity, defineMod } from "postretro";
 import { playerDescriptor } from "./actors/player";
 
-export function setupMod() {
-  return {
-    name: "MyMod",
-    entities: [defineEntity(playerDescriptor)],
-  };
-}
+export default defineMod({
+  name: "MyMod",
+  entities: [defineEntity(playerDescriptor)],
+});
 ```
 
 ```lua
 -- start-script.luau
 local player = require("./actors/player")
 
-function setupMod()
-  return {
-    name = "MyMod",
-    entities = { defineEntity(player.descriptor) },
-  }
-end
+return defineMod({
+  name = "MyMod",
+  entities = { defineEntity(player.descriptor) },
+})
 ```
 
 `ModManifest` requires a `name` field (string). Entity types belong in the
-optional `entities` array. The engine errors at init if `setupMod` is missing,
-throws, returns a non-object, or returns an object without `name`.
+optional `entities` array. The engine errors at init if the TypeScript default
+manifest export is missing or not an object, the Luau chunk returns no manifest
+or a non-table value, manifest initialization throws, or the manifest lacks
+`name`.
 
 **Imports and `require`.**
 
 - TypeScript: standard ES module `import` of relative paths. The script compiler bundles all relative imports into `start-script.js` at build time. Bare-specifier imports of `"postretro"` and `"postretro/ui"` symbols are stripped (the symbols arrive as runtime globals).
 - Luau: `require("./path")` resolves relative to the mod root. `require("./actors/player")` reads `<mod_root>/actors/player.luau` (the `.luau` extension is appended automatically). `require("postretro")` and `require("postretro/ui")` return engine-owned SDK module tables before file lookup. `..` traversal and absolute paths are rejected. Module caching, init-file conventions, and upward search are not implemented.
 
-**Lifecycle.** Entity types returned from `setupMod().entities` survive level
+**Lifecycle.** Entity types returned from `ModManifest.entities` survive level
 loads — they live in the engine-global type registry. Reactions are not
 registered here; those belong in per-level data scripts via `setupLevel(ctx)`.
-The mod-init VM is dropped after `setupMod` returns; no script state persists
+The mod-init VM is dropped after the manifest commits; no script state persists
 past that point.
 
 ---
@@ -60,7 +60,7 @@ past that point.
 ## `defineEntity` and entity descriptors
 
 `defineEntity(descriptor)` is a typed identity helper for entity archetypes.
-Return its result from `setupMod().entities` to register the archetype for use
+Return its result from `ModManifest.entities` to register the archetype for use
 across all levels.
 
 | Field | Type | Description |
@@ -70,7 +70,7 @@ across all levels.
 | `components.light` | `{ color: [r, g, b], range: number, intensity: number, is_dynamic: boolean }` (optional) | Light component attached at spawn. Descriptor-spawned lights are always treated as dynamic regardless of `is_dynamic`. |
 
 **Manifest commit:** returned descriptors validate as a group after
-`setupMod()` succeeds. A failed mod init changes neither the entity registry nor
+the mod manifest succeeds. A failed mod init changes neither the entity registry nor
 the state-store registry.
 
 **Archetype spawn order:** after built-in classname dispatch runs at level load,
@@ -899,16 +899,14 @@ applies. This is the path a `slider`'s nav-capture step takes to publish its new
 value.
 
 ```typescript
-import { defineReaction, defineStore } from "postretro";
+import { defineMod, defineReaction, defineStore } from "postretro";
 import { updateState } from "postretro/ui";
 
 const options = defineStore("options", {
   master: { type: "number", default: 1, range: [0, 1] },
 });
 
-export function setupMod() {
-  return { name: "MyMod", stores: [options.declaration] };
-}
+export default defineMod({ name: "MyMod", stores: [options.declaration] });
 
 defineReaction("resetVolume", updateState(options.state.master, 1));
 ```
@@ -989,7 +987,7 @@ to reach the shared commit seam.
 ### Pause menu
 
 Register a mod pause menu by returning a pushed-only tree named `pauseMenu` from
-`setupMod().uiTrees`. The engine keeps a minimal fallback with the same name, so
+`ModManifest.uiTrees`. The engine keeps a minimal fallback with the same name, so
 Escape / gamepad Start still opens and closes a menu when a mod omits it. A mod
 tree shadows that fallback; removing the mod tree reveals the fallback on the next
 open.
@@ -1050,12 +1048,10 @@ export const pauseMenu = defineUiTree({
   ),
 });
 
-export function setupMod() {
-  return {
-    name: "MyMod",
-    uiTrees: [pauseMenu],
-  };
-}
+export default defineMod({
+  name: "MyMod",
+  uiTrees: [pauseMenu],
+});
 ```
 
 `CLOSE_DIALOG_ACTION` is the reserved `"ui.closeDialog"` button action.
@@ -1090,7 +1086,7 @@ scripts** — the engine is its sole producer.
 ## Authoring UI with the SDK
 
 Scripts build UI as **descriptor trees** using SDK factory functions, register
-them by name from `setupMod` / `setupLevel`, and theme them. The scripting VM
+them by name from `ModManifest` / `setupLevel`, and theme them. The scripting VM
 drops after each registration pass — the engine then owns the live UI every
 frame, with no script callback running at draw time. You describe the UI; Rust
 renders it.
@@ -1212,20 +1208,18 @@ independent counts.
 
 ### Registering trees, theme, and fonts
 
-`setupMod` (mod scope) and `setupLevel` (level scope) return UI registrations
+`ModManifest` (mod scope) and `setupLevel` (level scope) return UI registrations
 alongside their other fields:
 
 ```typescript
-export function setupMod() {
-  return {
-    name: "MyMod",
-    uiTrees: [
-      defineUiTree({ name: "hud", alwaysOn: true, tree: hud }), // alwaysOn = base layer
-    ],
-    theme: hudTheme,
-    fonts: { DisplaySans: "fonts/display.ttf" },       // family → TTF asset path (runtime-loaded)
-  };
-}
+export default defineMod({
+  name: "MyMod",
+  uiTrees: [
+    defineUiTree({ name: "hud", alwaysOn: true, tree: hud }), // alwaysOn = base layer
+  ],
+  theme: hudTheme,
+  fonts: { DisplaySans: "fonts/display.ttf" },       // family → TTF asset path (runtime-loaded)
+});
 ```
 
 - **`uiTrees`** — each entry is `{ name, tree, alwaysOn? }`. `name` is how the

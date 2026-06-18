@@ -39,9 +39,8 @@ impl IntoLua for NullableString {
 
 /// Register the entity-domain primitives (everything except `worldQuery`,
 /// which lives in `mod.rs` because it spans multiple component domains).
-/// Entity-type registration is not a primitive — it flows through the
-/// `entities` field on `setupMod()`'s return value and is drained into
-/// `DataRegistry` by the boot path.
+/// Entity-type registration is not a primitive — it flows through
+/// `ModManifest.entities` and is drained into `DataRegistry` by the boot path.
 pub(crate) fn register_entity_primitives(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
     // entityExists ---------------------------------------------------------
     registry

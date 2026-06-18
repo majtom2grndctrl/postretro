@@ -55,7 +55,7 @@ export type MeshDescriptor = {
   defaultState: string?,
 }
 
---- Entity archetype registered through `ModManifest.entities` from `setupMod()`. `defineEntity()` is a typed identity helper for constructing this object. The descriptor is engine-global and survives level unloads.
+--- Entity archetype registered through `ModManifest.entities`. `defineEntity()` is a typed identity helper for constructing this object. The descriptor is engine-global and survives level unloads.
 export type EntityTypeDescriptor = {
   --- Stable archetype name used by map classname routing and descriptor references. Required for direct map placement and for weapon descriptors referenced by `defaultWeapon`; omit only for archetypes that are never addressed by name.
   canonicalName: string?,
@@ -154,7 +154,7 @@ export type FogVolumeEntity = {
   component: FogVolumeComponent,
 }
 
---- Component presets carried by `EntityTypeDescriptor.components`. Each key is optional and independent; present values are validated when `setupMod()` loads.
+--- Component presets carried by `EntityTypeDescriptor.components`. Each key is optional and independent; present values are validated when the mod manifest loads.
 export type EntityTypeComponents = {
   --- Dynamic-light preset materialized on each spawned instance.
   light: LightDescriptor?,
@@ -412,7 +412,7 @@ export type ThemeTokens = {
   spacing: { [string]: number }?,
 }
 
---- Object returned from `setupMod()` in `start-script.{ts,luau}`. Identifies the mod to the engine.
+--- Mod manifest from `start-script.ts`'s default export or `start-script.luau`'s chunk return. Identifies the mod to the engine.
 export type ModManifest = {
   --- Human-readable mod name. Required.
   name: string,
@@ -430,6 +430,8 @@ export type ModManifest = {
   reactions: {NamedReactionDescriptor}?,
   --- Engine-global state-crossing watchers. Optional; survive level unload and compose into active level behavior by level tags.
   crossings: {CrossingDescriptor}?,
+  --- Engine-global state-store declarations. Optional; commit atomically after the manifest validates.
+  stores: {StoreDeclaration}?,
 }
 
 --- Valid values: `Point`, `Spot`, `Directional`.
@@ -809,7 +811,7 @@ export type CrossingCondition =
   | { below: nil?, above: number, max: number? }
 
 --- A state-crossing watcher entry as it appears in `setupLevel().crossings` or
---- `setupMod().crossings`. The condition fields are flattened in beside `slot`
+--- `ModManifest.crossings`. The condition fields are flattened in beside `slot`
 --- and `fire`; `fire` lists the named reactions dispatched when the crossing
 --- occurs. `levels` scopes mod-global crossings by map-catalog tags; omit it
 --- for every level.
@@ -843,7 +845,7 @@ declare function scopeReactions(tags: {string}, list: {NamedReactionDescriptor})
 --- Pure identity builder for entity-type descriptors. Returns the
 --- descriptor as-is; its sole purpose is a typed construction site.
 declare function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor
---- Pure identity builder for the manifest returned from `setupMod()`.
+--- Pure identity builder for the mod manifest.
 declare function defineMod(config: ModManifest): ModManifest
 --- Pure identity builder for a mod map catalog.
 declare function defineMapCatalog(entries: {ModMapEntry}): {ModMapEntry}
@@ -866,12 +868,12 @@ export type WritableStateRef<T> = ReadonlyStateRef<T> & { __writableStateRefBran
 --- `readonly = true` makes the returned state ref display-only for script writes.
 export type StoreSlotSchema = { type: string, readonly: boolean?, [string]: any }
 
---- Plain declaration data returned through `setupMod().stores`.
+--- Plain declaration data returned through `ModManifest.stores`.
 export type StoreDeclaration = { namespace: string, schema: { [string]: StoreSlotSchema } }
 export type StoreStateRef<T> = ReadonlyStateRef<T> | WritableStateRef<T>
 
 --- Result of a pure `defineStore` call. Return `declaration` from
---- `setupMod().stores`; use `state` references in descriptors.
+--- `ModManifest.stores`; use `state` references in descriptors.
 export type StoreDefinition = {
   declaration: StoreDeclaration,
   state: { [string]: StoreStateRef<any> },
@@ -879,7 +881,7 @@ export type StoreDefinition = {
 
 --- Build a state-store declaration. Pure: calling it performs no FFI and changes
 --- no engine state. Returned declarations commit atomically only after
---- `setupMod()` succeeds.
+--- the mod manifest succeeds.
 declare function defineStore(namespace: string, schema: { [string]: StoreSlotSchema }): StoreDefinition
 
 -- ---------------------------------------------------------------------------
@@ -1094,7 +1096,7 @@ export type AnchoredTreeDescriptor = { anchor: WidgetAnchor, offset: {number}, r
 --- Props accepted by `defineUiTree`. The returned object preserves the runtime
 --- manifest entry shape `{ name, tree, alwaysOn? }`.
 export type UiTreeRegistrationProps = { name: string, tree: AnchoredTreeDescriptor, alwaysOn: boolean? }
---- A typed UI-tree registration entry for `setupMod().uiTrees` / `setupLevel().uiTrees`.
+--- A typed UI-tree registration entry for `ModManifest.uiTrees` / `setupLevel().uiTrees`.
 export type UiTreeRegistration = ModUiTree
 
 --- Bind-only options for number refs (text/bar/slider-compatible number shape).

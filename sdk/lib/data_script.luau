@@ -122,6 +122,7 @@ export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogSca
 --- both the event name and the descriptor body from a single flat table.
 export type NamedReactionDescriptor = {
   name: string,
+  levels: {string}?,
   -- progress shape
   progress: { tag: string, at: number, fire: string }?,
   -- primitive shape
@@ -261,6 +262,34 @@ function DataScriptSdk.defineReaction(
   end
   if d.sequence ~= nil then
     out.sequence = d.sequence
+  end
+  return out
+end
+
+--- Stamp a shared level-tag scope onto each reaction in a plain list.
+function DataScriptSdk.scopeReactions(tags: {string}, list: {NamedReactionDescriptor}): {NamedReactionDescriptor}
+  local out = {}
+  for i, reaction in ipairs(list) do
+    local scoped: NamedReactionDescriptor = { name = reaction.name, levels = tags }
+    if reaction.progress ~= nil then
+      scoped.progress = reaction.progress
+    end
+    if reaction.primitive ~= nil then
+      scoped.primitive = reaction.primitive
+    end
+    if reaction.tag ~= nil then
+      scoped.tag = reaction.tag
+    end
+    if reaction.args ~= nil then
+      scoped.args = reaction.args
+    end
+    if reaction.onComplete ~= nil then
+      scoped.onComplete = reaction.onComplete
+    end
+    if reaction.sequence ~= nil then
+      scoped.sequence = reaction.sequence
+    end
+    out[i] = scoped
   end
   return out
 end

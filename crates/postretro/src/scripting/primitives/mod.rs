@@ -479,6 +479,16 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
             "Vec<ModMapEntry>",
             "Pre-load-discoverable map catalog. Optional.",
         )
+        .field(
+            "reactions?",
+            "Vec<NamedReactionDescriptor>",
+            "Engine-global reaction definitions. Optional; survive level unload and compose into active level behavior by level tags.",
+        )
+        .field(
+            "crossings?",
+            "Vec<CrossingDescriptor>",
+            "Engine-global state-crossing watchers. Optional; survive level unload and compose into active level behavior by level tags.",
+        )
         .finish();
 }
 
@@ -568,9 +578,20 @@ mod tests {
             theme: crate::scripting::data_descriptors::ModThemeTokens::default(),
             fonts: crate::scripting::data_descriptors::ModFontAssets::default(),
             maps: Vec::new(),
+            reactions: Vec::new(),
+            crossings: Vec::new(),
             store_declarations: crate::scripting::slot_table::StoreDeclarationSet::default(),
         };
-        let expected_fields: &[&str] = &["name", "entities", "uiTrees", "theme", "fonts", "maps"];
+        let expected_fields: &[&str] = &[
+            "name",
+            "entities",
+            "uiTrees",
+            "theme",
+            "fonts",
+            "maps",
+            "reactions",
+            "crossings",
+        ];
 
         let mut r = PrimitiveRegistry::new();
         register_shared_types(&mut r);

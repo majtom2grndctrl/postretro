@@ -106,6 +106,7 @@ const FOG_VOLUMES_LUAU_FIELDS: &[&str] = &[];
 /// `data_script.luau`.
 const DATA_SCRIPT_FIELDS: &[&str] = &[
     "defineReaction",
+    "scopeReactions",
     "defineEntity",
     "defineMod",
     "defineMapCatalog",
@@ -222,6 +223,7 @@ pub(crate) const POSTRETRO_ROOT_MODULE_EXPORTS: &[&str] = &[
     "timeline",
     "sequence",
     "defineReaction",
+    "scopeReactions",
     "defineEntity",
     "defineMod",
     "defineMapCatalog",

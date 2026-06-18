@@ -217,9 +217,8 @@ mod tests {
         let mut publisher = PlayerHudStatePublisher::new(ctx.clone());
         publisher.tick();
 
-        ctx.data_registry
-            .borrow_mut()
-            .populate_from_manifest(LevelManifest {
+        ctx.data_registry.borrow_mut().populate_from_manifest(
+            LevelManifest {
                 reactions: Vec::new(),
                 ui_trees: Vec::new(),
                 crossings: vec![CrossingDescriptor {
@@ -228,7 +227,9 @@ mod tests {
                     max: 100.0,
                     fire: vec!["lowHealth".to_string()],
                 }],
-            });
+            },
+            &[],
+        );
         let mut detector = CrossingDetector::new();
         detector.initialize(&ctx.data_registry.borrow(), &ctx.slot_table.borrow());
 

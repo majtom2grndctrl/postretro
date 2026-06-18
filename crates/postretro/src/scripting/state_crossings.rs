@@ -1,9 +1,9 @@
-// State-crossing detector (M13 HUD dynamics): engine-side watchers declared at
-// level load via `onStateCrossing`, returned through `setupLevel`'s manifest,
-// and checked against the authoritative slot table after each frame's slot
-// writes. On a threshold crossing in the declared direction the detector fires
-// a reaction list synchronously through the shared named-reaction vocabulary
-// (Task 2's `fire_named_event_with_sequences`).
+// State-crossing detector (M13 HUD dynamics): engine-side watchers composed in
+// `DataRegistry` from matching mod-global crossings plus level-local
+// `setupLevel().crossings`, then checked against the authoritative slot table
+// after each frame's slot writes. On a threshold crossing in the declared
+// direction the detector fires a reaction list synchronously through the shared
+// named-reaction vocabulary (Task 2's `fire_named_event_with_sequences`).
 // See: context/lib/scripting.md §10.4
 
 use super::data_descriptors::{CrossingCondition, CrossingDescriptor};
@@ -219,11 +219,14 @@ mod tests {
 
     fn registry_with(crossings: Vec<CrossingDescriptor>) -> DataRegistry {
         let mut reg = DataRegistry::new();
-        reg.populate_from_manifest(LevelManifest {
-            reactions: Vec::new(),
-            crossings,
-            ui_trees: Vec::new(),
-        });
+        reg.populate_from_manifest(
+            LevelManifest {
+                reactions: Vec::new(),
+                crossings,
+                ui_trees: Vec::new(),
+            },
+            &[],
+        );
         reg
     }
 

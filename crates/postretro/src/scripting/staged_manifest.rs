@@ -12,9 +12,11 @@ use rquickjs::{
 
 use super::data_descriptors::{
     EntityTypeDescriptor, ModThemeTokens, RegisteredUiTree, drain_fonts_js, drain_fonts_lua,
-    drain_maps_js, drain_maps_lua, drain_theme_js, drain_theme_lua, drain_ui_trees_js,
-    drain_ui_trees_lua, entity_descriptor_from_js,
+    drain_global_crossings_js, drain_global_crossings_lua, drain_global_reactions_js,
+    drain_global_reactions_lua, drain_maps_js, drain_maps_lua, drain_theme_js, drain_theme_lua,
+    drain_ui_trees_js, drain_ui_trees_lua, entity_descriptor_from_js,
 };
+use super::data_registry::{ScopedCrossing, ScopedReaction};
 use super::error::ScriptError;
 use super::luau::LuauConfig;
 use super::luau_require::LuauRequireTracker;
@@ -56,6 +58,8 @@ pub(crate) struct StagedManifest {
     pub(crate) name: String,
     pub(crate) entities: Vec<EntityTypeDescriptor>,
     pub(crate) maps: Vec<ModMapEntry>,
+    pub(crate) reactions: Vec<ScopedReaction>,
+    pub(crate) crossings: Vec<ScopedCrossing>,
     pub(crate) ui_trees: Vec<RegisteredUiTree>,
     pub(crate) theme: ModThemeTokens,
     pub(crate) store_declarations: StoreDeclarationSet,
@@ -366,6 +370,8 @@ fn run_staged_manifest_build(
         name: manifest.name,
         entities: manifest.entities,
         maps: manifest.maps,
+        reactions: manifest.reactions,
+        crossings: manifest.crossings,
         ui_trees: manifest.ui_trees,
         theme: manifest.theme,
         store_declarations: manifest.store_declarations,
@@ -505,6 +511,15 @@ fn manifest_from_js_value<'js>(
     let maps = drain_maps_js(&obj, "setupMod").map_err(|e| ScriptError::InvalidArgument {
         reason: format!("mod-init: `{source_path}` setupMod `maps` invalid: {e}"),
     })?;
+    let reactions = drain_global_reactions_js(ctx, &obj, "setupMod").map_err(|e| {
+        ScriptError::InvalidArgument {
+            reason: format!("mod-init: `{source_path}` setupMod `reactions` invalid: {e}"),
+        }
+    })?;
+    let crossings =
+        drain_global_crossings_js(&obj, "setupMod").map_err(|e| ScriptError::InvalidArgument {
+            reason: format!("mod-init: `{source_path}` setupMod `crossings` invalid: {e}"),
+        })?;
     let store_declarations =
         drain_store_declarations_js(ctx, &obj).map_err(|e| ScriptError::InvalidArgument {
             reason: format!("mod-init: `{source_path}` setupMod `stores` invalid: {e}"),
@@ -517,6 +532,8 @@ fn manifest_from_js_value<'js>(
         theme,
         fonts,
         maps,
+        reactions,
+        crossings,
         store_declarations,
     })
 }
@@ -644,6 +661,16 @@ fn run_staged_mod_init_luau(
     let maps = drain_maps_lua(&table, "setupMod").map_err(|e| ScriptError::InvalidArgument {
         reason: format!("mod-init: `{source_path}` setupMod `maps` invalid: {e}"),
     })?;
+    let reactions = drain_global_reactions_lua(&table, "setupMod").map_err(|e| {
+        ScriptError::InvalidArgument {
+            reason: format!("mod-init: `{source_path}` setupMod `reactions` invalid: {e}"),
+        }
+    })?;
+    let crossings = drain_global_crossings_lua(&table, "setupMod").map_err(|e| {
+        ScriptError::InvalidArgument {
+            reason: format!("mod-init: `{source_path}` setupMod `crossings` invalid: {e}"),
+        }
+    })?;
     let store_declarations =
         drain_store_declarations_lua(&table).map_err(|e| ScriptError::InvalidArgument {
             reason: format!("mod-init: `{source_path}` setupMod `stores` invalid: {e}"),
@@ -656,6 +683,8 @@ fn run_staged_mod_init_luau(
         theme,
         fonts,
         maps,
+        reactions,
+        crossings,
         store_declarations,
     })
 }

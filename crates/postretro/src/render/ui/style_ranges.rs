@@ -471,16 +471,19 @@ mod tests {
 
         // A `below: 20` (of max 100) crossing watching the authoritative slot.
         let mut data_registry = DataRegistry::new();
-        data_registry.populate_from_manifest(LevelManifest {
-            reactions: Vec::new(),
-            crossings: vec![CrossingDescriptor {
-                slot: "hud.health".to_string(),
-                condition: CrossingCondition::Below { threshold: 0.2 },
-                max: 100.0,
-                fire: vec!["lowHealth".to_string()],
-            }],
-            ui_trees: Vec::new(),
-        });
+        data_registry.populate_from_manifest(
+            LevelManifest {
+                reactions: Vec::new(),
+                crossings: vec![CrossingDescriptor {
+                    slot: "hud.health".to_string(),
+                    condition: CrossingCondition::Below { threshold: 0.2 },
+                    max: 100.0,
+                    fire: vec!["lowHealth".to_string()],
+                }],
+                ui_trees: Vec::new(),
+            },
+            &[],
+        );
         let mut detector = CrossingDetector::new();
         detector.initialize(&data_registry, &slot_table);
 

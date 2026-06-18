@@ -427,6 +427,10 @@ declare module "postretro" {
     fonts?: { readonly [token: string]: string };
     /** Pre-load-discoverable map catalog. Optional. */
     maps?: ReadonlyArray<ModMapEntry>;
+    /** Engine-global reaction definitions. Optional; survive level unload and compose into active level behavior by level tags. */
+    reactions?: ReadonlyArray<NamedReactionDescriptor>;
+    /** Engine-global state-crossing watchers. Optional; survive level unload and compose into active level behavior by level tags. */
+    crossings?: ReadonlyArray<CrossingDescriptor>;
   };
 
   /** Valid values: `Point`, `Spot`, `Directional`. */
@@ -719,7 +723,7 @@ declare module "postretro" {
   };
 
   /** Descriptor produced by `defineReaction`. The `name` field is merged into the descriptor at the top level so the Rust deserializer reads both fields from one flat object. */
-  export type NamedReactionDescriptor = { name: string } & (
+  export type NamedReactionDescriptor = { name: string; levels?: string[] } & (
     | ProgressReactionDescriptor
     | PrimitiveReactionDescriptor
     | SequenceReactionDescriptor
@@ -730,11 +734,12 @@ declare module "postretro" {
     | { below: number; above?: never; max?: number }
     | { above: number; below?: never; max?: number };
 
-  /** A state-crossing watcher entry as it appears in `setupLevel`'s manifest `crossings` array. The condition fields are flattened in beside `slot` and `fire`; `fire` lists the named reactions dispatched (through the shared named-reaction vocabulary) when the crossing occurs. */
+  /** A state-crossing watcher entry as it appears in `setupLevel().crossings` or `setupMod().crossings`. The condition fields are flattened in beside `slot` and `fire`; `fire` lists the named reactions dispatched when the crossing occurs. `levels` scopes mod-global crossings by map-catalog tags; omit it for every level. */
   export type CrossingDescriptor = {
     slot: string;
     max?: number;
     fire: string[];
+    levels?: string[];
   } & ({ below: number } | { above: number });
 
   /** Bundle returned from `setupLevel`. The engine deserializes this shape in one pass at level load. */
@@ -765,6 +770,12 @@ declare module "postretro" {
       | PrimitiveReactionDescriptor
       | SequenceReactionDescriptor,
   ): NamedReactionDescriptor;
+
+  /** Stamp a shared level-tag scope onto each reaction in a plain list. */
+  export function scopeReactions(
+    tags: string[],
+    list: NamedReactionDescriptor[],
+  ): NamedReactionDescriptor[];
 
   // -------------------------------------------------------------------------
   // State-store declarations. `defineStore` is special-cased in the typedef

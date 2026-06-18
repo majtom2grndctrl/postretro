@@ -426,6 +426,10 @@ export type ModManifest = {
   fonts: { [string]: string }?,
   --- Pre-load-discoverable map catalog. Optional.
   maps: {ModMapEntry}?,
+  --- Engine-global reaction definitions. Optional; survive level unload and compose into active level behavior by level tags.
+  reactions: {NamedReactionDescriptor}?,
+  --- Engine-global state-crossing watchers. Optional; survive level unload and compose into active level behavior by level tags.
+  crossings: {CrossingDescriptor}?,
 }
 
 --- Valid values: `Point`, `Spot`, `Directional`.
@@ -791,9 +795,9 @@ export type SequenceReactionDescriptor = {
 --- Descriptor produced by `defineReaction`. The `name` field is merged
 --- into the descriptor at the top level so the Rust deserializer reads
 --- both fields from one flat table.
-export type ProgressNamedReactionDescriptor = { name: string, progress: { tag: string, at: number, fire: string } }
-export type PrimitiveNamedReactionDescriptor = { name: string, primitive: string, tag: string?, args: { [string]: any }?, onComplete: string? }
-export type SequenceNamedReactionDescriptor = { name: string, sequence: {SequenceStep} }
+export type ProgressNamedReactionDescriptor = { name: string, levels: {string}?, progress: { tag: string, at: number, fire: string } }
+export type PrimitiveNamedReactionDescriptor = { name: string, levels: {string}?, primitive: string, tag: string?, args: { [string]: any }?, onComplete: string? }
+export type SequenceNamedReactionDescriptor = { name: string, levels: {string}?, sequence: {SequenceStep} }
 export type NamedReactionDescriptor = ProgressNamedReactionDescriptor | PrimitiveNamedReactionDescriptor | SequenceNamedReactionDescriptor
 
 --- Crossing condition: fires when the watched slot crosses the threshold in
@@ -804,11 +808,12 @@ export type CrossingCondition =
   { below: number, above: nil?, max: number? }
   | { below: nil?, above: number, max: number? }
 
---- A state-crossing watcher entry as it appears in `setupLevel`'s manifest
---- `crossings` array. The condition fields are flattened in beside `slot` and
---- `fire`; `fire` lists the named reactions dispatched (through the shared
---- named-reaction vocabulary) when the crossing occurs.
-export type CrossingDescriptor = { slot: string, below: number?, above: number?, max: number?, fire: {string} }
+--- A state-crossing watcher entry as it appears in `setupLevel().crossings` or
+--- `setupMod().crossings`. The condition fields are flattened in beside `slot`
+--- and `fire`; `fire` lists the named reactions dispatched when the crossing
+--- occurs. `levels` scopes mod-global crossings by map-catalog tags; omit it
+--- for every level.
+export type CrossingDescriptor = { slot: string, below: number?, above: number?, max: number?, fire: {string}, levels: {string}? }
 
 --- Bundle returned from `setupLevel`. The engine deserializes
 --- this shape in one pass at level load.
@@ -831,6 +836,9 @@ declare defineReaction: (
   ((descriptor: ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor) -> NamedReactionDescriptor)
   & ((name: string, descriptor: ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor) -> NamedReactionDescriptor)
 )
+
+--- Stamp a shared level-tag scope onto each reaction in a plain list.
+declare function scopeReactions(tags: {string}, list: {NamedReactionDescriptor}): {NamedReactionDescriptor}
 
 --- Pure identity builder for entity-type descriptors. Returns the
 --- descriptor as-is; its sole purpose is a typed construction site.
@@ -1270,6 +1278,7 @@ export type PostretroModule = {
   timeline: typeof(timeline),
   sequence: typeof(sequence),
   defineReaction: typeof(defineReaction),
+  scopeReactions: typeof(scopeReactions),
   defineEntity: typeof(defineEntity),
   defineMod: typeof(defineMod),
   defineMapCatalog: typeof(defineMapCatalog),

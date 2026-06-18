@@ -1,9 +1,9 @@
 --!strict
 -- UI reaction vocabulary: pure builders for the HUD-dynamics reaction surface
 -- (M13 Goal E). `onStateCrossing` constructs a state-crossing watcher returned
--- through `setupLevel`'s manifest in the `crossings` field. It never calls back
--- into Rust -- the FFI boundary is the `return` statement of the script entry
--- point.
+-- through `setupLevel().crossings` or `setupMod().crossings`. It never calls
+-- back into Rust -- the FFI boundary is the `return` statement of the script
+-- entry point.
 -- See: context/lib/scripting.md §10.4
 
 --- Crossing condition: fires when the watched slot crosses the threshold in one
@@ -14,16 +14,18 @@ export type CrossingCondition =
   { below: number, above: nil?, max: number? }
   | { below: nil?, above: number, max: number? }
 
---- A state-crossing watcher entry as it appears in `setupLevel`'s manifest
---- `crossings` array. The condition fields are flattened in beside `slot` and
---- `fire`; `fire` is the list of named reactions dispatched (through the shared
---- named-reaction vocabulary) when the crossing occurs.
+--- A state-crossing watcher entry as it appears in `setupLevel().crossings` or
+--- `setupMod().crossings`. The condition fields are flattened in beside `slot`
+--- and `fire`; `fire` is the list of named reactions dispatched when the
+--- crossing occurs. `levels` scopes mod-global crossings by map-catalog tags;
+--- omit it for every level.
 export type CrossingDescriptor = {
   slot: string,
   below: number?,
   above: number?,
   max: number?,
   fire: {string},
+  levels: {string}?,
 }
 
 --- Primitive reaction body produced by the system-reaction constructors below.
@@ -70,11 +72,11 @@ local function crossingThreshold(condition: any): (string, number, number?)
 end
 
 --- Build a state-crossing watcher. Pure: returns a plain table, does not
---- register anything in the engine. The engine consumes the table when
---- `setupLevel` returns its `crossings` array. On a crossing in the condition's
---- direction the engine fires every reaction in `fire` exactly once, re-arming
---- only after a crossing back. A registration against a non-Number slot warns
---- and is skipped at load.
+--- register anything in the engine. The engine consumes the table from
+--- `setupLevel().crossings` or `setupMod().crossings` with optional `levels`
+--- scoping. On a crossing in the condition's direction the engine fires every
+--- reaction in `fire` exactly once, re-arming only after a crossing back. A
+--- registration against a non-Number slot warns and is skipped at load.
 function UiReactionsSdk.onStateCrossing(
   ref: any,
   condition: CrossingCondition,

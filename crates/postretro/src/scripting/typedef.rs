@@ -846,7 +846,7 @@ const TS_SDK_LIB_BLOCK: &str = r#"
   };
 
   /** Descriptor produced by `defineReaction`. The `name` field is merged into the descriptor at the top level so the Rust deserializer reads both fields from one flat object. */
-  export type NamedReactionDescriptor = { name: string } & (
+  export type NamedReactionDescriptor = { name: string; levels?: string[] } & (
     | ProgressReactionDescriptor
     | PrimitiveReactionDescriptor
     | SequenceReactionDescriptor
@@ -857,11 +857,12 @@ const TS_SDK_LIB_BLOCK: &str = r#"
     | { below: number; above?: never; max?: number }
     | { above: number; below?: never; max?: number };
 
-  /** A state-crossing watcher entry as it appears in `setupLevel`'s manifest `crossings` array. The condition fields are flattened in beside `slot` and `fire`; `fire` lists the named reactions dispatched (through the shared named-reaction vocabulary) when the crossing occurs. */
+  /** A state-crossing watcher entry as it appears in `setupLevel().crossings` or `setupMod().crossings`. The condition fields are flattened in beside `slot` and `fire`; `fire` lists the named reactions dispatched when the crossing occurs. `levels` scopes mod-global crossings by map-catalog tags; omit it for every level. */
   export type CrossingDescriptor = {
     slot: string;
     max?: number;
     fire: string[];
+    levels?: string[];
   } & ({ below: number } | { above: number });
 
   /** Bundle returned from `setupLevel`. The engine deserializes this shape in one pass at level load. */
@@ -892,6 +893,12 @@ const TS_SDK_LIB_BLOCK: &str = r#"
       | PrimitiveReactionDescriptor
       | SequenceReactionDescriptor,
   ): NamedReactionDescriptor;
+
+  /** Stamp a shared level-tag scope onto each reaction in a plain list. */
+  export function scopeReactions(
+    tags: string[],
+    list: NamedReactionDescriptor[],
+  ): NamedReactionDescriptor[];
 
   // -------------------------------------------------------------------------
   // State-store declarations. `defineStore` is special-cased in the typedef
@@ -2006,9 +2013,9 @@ export type SequenceReactionDescriptor = {
 --- Descriptor produced by `defineReaction`. The `name` field is merged
 --- into the descriptor at the top level so the Rust deserializer reads
 --- both fields from one flat table.
-export type ProgressNamedReactionDescriptor = { name: string, progress: { tag: string, at: number, fire: string } }
-export type PrimitiveNamedReactionDescriptor = { name: string, primitive: string, tag: string?, args: { [string]: any }?, onComplete: string? }
-export type SequenceNamedReactionDescriptor = { name: string, sequence: {SequenceStep} }
+export type ProgressNamedReactionDescriptor = { name: string, levels: {string}?, progress: { tag: string, at: number, fire: string } }
+export type PrimitiveNamedReactionDescriptor = { name: string, levels: {string}?, primitive: string, tag: string?, args: { [string]: any }?, onComplete: string? }
+export type SequenceNamedReactionDescriptor = { name: string, levels: {string}?, sequence: {SequenceStep} }
 export type NamedReactionDescriptor = ProgressNamedReactionDescriptor | PrimitiveNamedReactionDescriptor | SequenceNamedReactionDescriptor
 
 --- Crossing condition: fires when the watched slot crosses the threshold in
@@ -2019,11 +2026,12 @@ export type CrossingCondition =
   { below: number, above: nil?, max: number? }
   | { below: nil?, above: number, max: number? }
 
---- A state-crossing watcher entry as it appears in `setupLevel`'s manifest
---- `crossings` array. The condition fields are flattened in beside `slot` and
---- `fire`; `fire` lists the named reactions dispatched (through the shared
---- named-reaction vocabulary) when the crossing occurs.
-export type CrossingDescriptor = { slot: string, below: number?, above: number?, max: number?, fire: {string} }
+--- A state-crossing watcher entry as it appears in `setupLevel().crossings` or
+--- `setupMod().crossings`. The condition fields are flattened in beside `slot`
+--- and `fire`; `fire` lists the named reactions dispatched when the crossing
+--- occurs. `levels` scopes mod-global crossings by map-catalog tags; omit it
+--- for every level.
+export type CrossingDescriptor = { slot: string, below: number?, above: number?, max: number?, fire: {string}, levels: {string}? }
 
 --- Bundle returned from `setupLevel`. The engine deserializes
 --- this shape in one pass at level load.
@@ -2047,6 +2055,9 @@ declare defineReaction: (
   & ((name: string, descriptor: ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor) -> NamedReactionDescriptor)
 )
 
+--- Stamp a shared level-tag scope onto each reaction in a plain list.
+declare function scopeReactions(tags: {string}, list: {NamedReactionDescriptor}): {NamedReactionDescriptor}
+
 --- Pure identity builder for entity-type descriptors. Returns the
 --- descriptor as-is; its sole purpose is a typed construction site.
 declare function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor
@@ -2056,10 +2067,11 @@ declare function defineMod(config: ModManifest): ModManifest
 declare function defineMapCatalog(entries: {ModMapEntry}): {ModMapEntry}
 
 --- Build a state-crossing watcher. Pure: returns a plain table, no FFI. Place
---- the result in `setupLevel`'s returned `crossings` array. On a crossing in
---- the condition's direction the engine fires every reaction in `fire` exactly
---- once, re-arming only after a crossing back; a registration against a
---- non-Number slot warns and is skipped at load. Each `fire` entry is a
+--- the result in `setupLevel().crossings` or `setupMod().crossings` with
+--- optional `levels` scoping. On a crossing in the condition's direction the
+--- engine fires every reaction in `fire` exactly once, re-arming only after a
+--- crossing back; a registration against a non-Number slot warns and is skipped
+--- at load. Each `fire` entry is a
 --- `defineReaction` handle (typed) or a bare reaction-name string (the shipped
 --- path); handles are reduced to their `.name`, so the wire `CrossingDescriptor.fire`
 --- stays a `{string}`.
@@ -2641,6 +2653,7 @@ export type PostretroModule = {
   timeline: typeof(timeline),
   sequence: typeof(sequence),
   defineReaction: typeof(defineReaction),
+  scopeReactions: typeof(scopeReactions),
   defineEntity: typeof(defineEntity),
   defineMod: typeof(defineMod),
   defineMapCatalog: typeof(defineMapCatalog),
@@ -3228,6 +3241,10 @@ declare module "postretro" {
     fonts?: { readonly [token: string]: string };
     /** Pre-load-discoverable map catalog. Optional. */
     maps?: ReadonlyArray<ModMapEntry>;
+    /** Engine-global reaction definitions. Optional; survive level unload and compose into active level behavior by level tags. */
+    reactions?: ReadonlyArray<NamedReactionDescriptor>;
+    /** Engine-global state-crossing watchers. Optional; survive level unload and compose into active level behavior by level tags. */
+    crossings?: ReadonlyArray<CrossingDescriptor>;
   };
 
   /** Returns true if the entity id refers to a live entity. */
@@ -3663,6 +3680,10 @@ export type ModManifest = {
   fonts: { [string]: string }?,
   --- Pre-load-discoverable map catalog. Optional.
   maps: {ModMapEntry}?,
+  --- Engine-global reaction definitions. Optional; survive level unload and compose into active level behavior by level tags.
+  reactions: {NamedReactionDescriptor}?,
+  --- Engine-global state-crossing watchers. Optional; survive level unload and compose into active level behavior by level tags.
+  crossings: {CrossingDescriptor}?,
 }
 
 --- Returns true if the entity id refers to a live entity.
@@ -4141,6 +4162,8 @@ export type Event = {
             ts.contains("export type ModMapEntry = {")
                 && ts.contains("tags?: ReadonlyArray<string>;")
                 && ts.contains("maps?: ReadonlyArray<ModMapEntry>;")
+                && ts.contains("reactions?: ReadonlyArray<NamedReactionDescriptor>;")
+                && ts.contains("crossings?: ReadonlyArray<CrossingDescriptor>;")
                 && ts.contains("export function defineMod(config: ModManifest): ModManifest;")
                 && ts.contains(
                     "export function defineMapCatalog(entries: ModMapEntry[]): ModMapEntry[];"
@@ -4151,6 +4174,8 @@ export type Event = {
             luau.contains("export type ModMapEntry = {")
                 && luau.contains("tags: {string}?")
                 && luau.contains("maps: {ModMapEntry}?")
+                && luau.contains("reactions: {NamedReactionDescriptor}?")
+                && luau.contains("crossings: {CrossingDescriptor}?")
                 && luau.contains("declare function defineMod(config: ModManifest): ModManifest")
                 && luau.contains(
                     "declare function defineMapCatalog(entries: {ModMapEntry}): {ModMapEntry}"
@@ -4283,6 +4308,26 @@ export type Event = {
             ts.matches("export function defineReaction(").count(),
             2,
             "ts must declare both defineReaction overloads"
+        );
+        assert!(
+            ts.contains("levels?: string[]")
+                && ts.contains("export function scopeReactions(")
+                && ts.contains("list: NamedReactionDescriptor[]"),
+            "ts must expose reaction levels and scopeReactions:\n{ts}"
+        );
+        assert!(
+            ts.contains("fire: string[];\n    levels?: string[];"),
+            "ts must expose crossing levels for setupMod().crossings:\n{ts}"
+        );
+        assert!(
+            luau.contains("levels: {string}?")
+                && luau.contains("declare function scopeReactions(tags: {string}, list: {NamedReactionDescriptor}): {NamedReactionDescriptor}")
+                && luau.contains("scopeReactions: typeof(scopeReactions),"),
+            "luau must expose reaction levels and scopeReactions:\n{luau}"
+        );
+        assert!(
+            luau.contains("fire: {string}, levels: {string}?"),
+            "luau must expose crossing levels for setupMod().crossings:\n{luau}"
         );
         // Widened reaction-reference props still appear in the Luau UI module
         // prop types. TypeScript root no longer exposes UI prop types in Task 1.

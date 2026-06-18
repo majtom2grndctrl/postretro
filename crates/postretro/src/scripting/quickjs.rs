@@ -541,6 +541,41 @@ mod tests {
     }
 
     #[test]
+    fn scope_reactions_stamps_levels_on_each_quickjs_reaction() {
+        let (subsys, _ctx) = setup();
+        subsys.definition_ctx().with(|ctx| {
+            let json: String = ctx
+                .eval(
+                    r#"
+                    JSON.stringify(scopeReactions(["campaign", "intro"], [
+                      defineReaction("globalLoad", {
+                        primitive: "playSound",
+                        args: { sound: "boot" },
+                      }),
+                      defineReaction("scopedAlready", {
+                        primitive: "playSound",
+                        args: { sound: "old" },
+                        levels: ["old"],
+                      }),
+                    ]))
+                    "#,
+                )
+                .unwrap();
+            let reactions: serde_json::Value = serde_json::from_str(&json).unwrap();
+            let arr = reactions
+                .as_array()
+                .expect("scopeReactions returns an array");
+            assert_eq!(arr.len(), 2);
+            for reaction in arr {
+                assert_eq!(
+                    reaction.get("levels").unwrap(),
+                    &serde_json::json!(["campaign", "intro"])
+                );
+            }
+        });
+    }
+
+    #[test]
     fn define_theme_flattens_nested_tokens_and_returns_design_tokens() {
         let (subsys, _ctx) = setup();
         subsys.definition_ctx().with(|ctx| {

@@ -19,10 +19,12 @@ use rquickjs::{
 use super::ctx::ScriptCtx;
 use super::data_descriptors::{
     EntityTypeDescriptor, LevelManifest, ModFontAssets, ModThemeTokens, RegisteredUiTree,
-    drain_fonts_js, drain_fonts_lua, drain_maps_js, drain_maps_lua, drain_theme_js,
-    drain_theme_lua, drain_ui_trees_js, drain_ui_trees_lua, entity_descriptor_from_js,
-    entity_descriptor_from_lua,
+    drain_fonts_js, drain_fonts_lua, drain_global_crossings_js, drain_global_crossings_lua,
+    drain_global_reactions_js, drain_global_reactions_lua, drain_maps_js, drain_maps_lua,
+    drain_theme_js, drain_theme_lua, drain_ui_trees_js, drain_ui_trees_lua,
+    entity_descriptor_from_js, entity_descriptor_from_lua,
 };
+use super::data_registry::{ScopedCrossing, ScopedReaction};
 use super::error::ScriptError;
 use super::luau::{LuauConfig, LuauSubsystem, Which as LuauWhich};
 use super::primitives::store::{drain_store_declarations_js, drain_store_declarations_lua};
@@ -73,6 +75,12 @@ pub(crate) struct ModManifestResult {
     /// Drained into `DataRegistry` by the boot caller after `run_mod_init`
     /// returns.
     pub(crate) maps: Vec<ModMapEntry>,
+    /// Engine-global reaction definitions from `setupMod()`'s `reactions`
+    /// field. Empty when absent. Drained into `DataRegistry` by the boot caller.
+    pub(crate) reactions: Vec<ScopedReaction>,
+    /// Engine-global crossing definitions from `setupMod()`'s `crossings`
+    /// field. Empty when absent. Drained into `DataRegistry` by the boot caller.
+    pub(crate) crossings: Vec<ScopedCrossing>,
     /// Validated state-store declarations collected during this mod-init
     /// attempt. This is engine metadata, not a `ModManifest` script field.
     pub(crate) store_declarations: StoreDeclarationSet,
@@ -498,6 +506,8 @@ impl ScriptRuntime {
             let (
                 next_descriptors,
                 next_maps,
+                next_global_reactions,
+                next_global_crossings,
                 next_store_declarations,
                 next_dependencies,
                 descriptor_label,
@@ -522,6 +532,8 @@ impl ScriptRuntime {
                     (
                         manifest.entities.clone(),
                         manifest.maps.clone(),
+                        manifest.reactions.clone(),
+                        manifest.crossings.clone(),
                         manifest.store_declarations.clone(),
                         dependencies,
                         format!("mod `{}`", manifest.name),
@@ -544,6 +556,8 @@ impl ScriptRuntime {
                         }
                     };
                     (
+                        Vec::new(),
+                        Vec::new(),
                         Vec::new(),
                         Vec::new(),
                         StoreDeclarationSet::default(),
@@ -637,6 +651,12 @@ impl ScriptRuntime {
                 .borrow_mut()
                 .replace_entity_types(next_descriptors);
             ctx.data_registry.borrow_mut().replace_maps(next_maps);
+            ctx.data_registry
+                .borrow_mut()
+                .replace_global_reactions(next_global_reactions);
+            ctx.data_registry
+                .borrow_mut()
+                .replace_global_crossings(next_global_crossings);
             let dependency_count = next_dependencies.len();
             self.active_mod_init_dependencies = Some(next_dependencies);
             log::info!(
@@ -1642,6 +1662,24 @@ fn run_mod_init_quickjs(
                 return;
             }
         };
+        let reactions = match drain_global_reactions_js(&ctx, &obj, "setupMod") {
+            Ok(r) => r,
+            Err(e) => {
+                out = Err(ScriptError::InvalidArgument {
+                    reason: format!("mod-init: `{source_path}` setupMod `reactions` invalid: {e}"),
+                });
+                return;
+            }
+        };
+        let crossings = match drain_global_crossings_js(&obj, "setupMod") {
+            Ok(c) => c,
+            Err(e) => {
+                out = Err(ScriptError::InvalidArgument {
+                    reason: format!("mod-init: `{source_path}` setupMod `crossings` invalid: {e}"),
+                });
+                return;
+            }
+        };
         let store_declarations = match drain_store_declarations_js(&ctx, &obj) {
             Ok(stores) => stores,
             Err(e) => {
@@ -1659,6 +1697,8 @@ fn run_mod_init_quickjs(
             theme,
             fonts,
             maps,
+            reactions,
+            crossings,
             store_declarations,
         });
     });
@@ -1789,6 +1829,16 @@ fn run_mod_init_luau(
     let maps = drain_maps_lua(&table, "setupMod").map_err(|e| ScriptError::InvalidArgument {
         reason: format!("mod-init: `{source_path}` setupMod `maps` invalid: {e}"),
     })?;
+    let reactions = drain_global_reactions_lua(&table, "setupMod").map_err(|e| {
+        ScriptError::InvalidArgument {
+            reason: format!("mod-init: `{source_path}` setupMod `reactions` invalid: {e}"),
+        }
+    })?;
+    let crossings = drain_global_crossings_lua(&table, "setupMod").map_err(|e| {
+        ScriptError::InvalidArgument {
+            reason: format!("mod-init: `{source_path}` setupMod `crossings` invalid: {e}"),
+        }
+    })?;
     let store_declarations =
         drain_store_declarations_lua(&table).map_err(|e| ScriptError::InvalidArgument {
             reason: format!("mod-init: `{source_path}` setupMod `stores` invalid: {e}"),
@@ -1801,6 +1851,8 @@ fn run_mod_init_luau(
         theme,
         fonts,
         maps,
+        reactions,
+        crossings,
         store_declarations,
     })
 }
@@ -1812,6 +1864,11 @@ mod tests {
 
     use crate::scripting::components::billboard_emitter::BillboardEmitterComponent;
     use crate::scripting::ctx::ScriptCtx;
+    use crate::scripting::data_descriptors::{
+        CrossingCondition, CrossingDescriptor, NamedReaction, PrimitiveDescriptor,
+        ReactionDescriptor,
+    };
+    use crate::scripting::data_registry::{ScopedCrossing, ScopedReaction};
     use crate::scripting::primitives::register_all;
     use crate::scripting::provenance::{
         DescriptorComponentKind, DescriptorProvenance, DescriptorSpawnPath,
@@ -1849,6 +1906,33 @@ mod tests {
             path: format!("maps/{id}.prl"),
             name: id.to_string(),
             tags: vec!["campaign".to_string()],
+        }
+    }
+
+    fn global_reaction(name: &str) -> ScopedReaction {
+        ScopedReaction {
+            reaction: NamedReaction {
+                name: name.to_string(),
+                descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                    primitive: "moveGeometry".to_string(),
+                    tag: Some("reactor".to_string()),
+                    on_complete: None,
+                    args: serde_json::Value::Object(Default::default()),
+                }),
+            },
+            levels: vec!["campaign".to_string()],
+        }
+    }
+
+    fn global_crossing(slot: &str) -> ScopedCrossing {
+        ScopedCrossing {
+            crossing: CrossingDescriptor {
+                slot: slot.to_string(),
+                condition: CrossingCondition::Below { threshold: 0.25 },
+                max: 100.0,
+                fire: vec!["lowHealth".to_string()],
+            },
+            levels: vec!["campaign".to_string()],
         }
     }
 
@@ -1937,6 +2021,8 @@ mod tests {
                 name: name.to_string(),
                 entities,
                 maps,
+                reactions: Vec::new(),
+                crossings: Vec::new(),
                 ui_trees: Vec::new(),
                 theme: ModThemeTokens::default(),
                 store_declarations: StoreDeclarationSet::default(),
@@ -2644,6 +2730,12 @@ mod tests {
         ctx.data_registry
             .borrow_mut()
             .replace_maps(vec![map_entry("old_map")]);
+        ctx.data_registry
+            .borrow_mut()
+            .replace_global_reactions(vec![global_reaction("oldLoad")]);
+        ctx.data_registry
+            .borrow_mut()
+            .replace_global_crossings(vec![global_crossing("old.health")]);
 
         let outcome = rt.commit_staged_manifest_result(
             &built_result(
@@ -2673,6 +2765,16 @@ mod tests {
             vec![map_entry("old_map")],
             "stale result must leave committed map catalog active",
         );
+        assert_eq!(
+            ctx.data_registry.borrow().global_reactions,
+            vec![global_reaction("oldLoad")],
+            "stale result must leave committed global reactions active",
+        );
+        assert_eq!(
+            ctx.data_registry.borrow().global_crossings,
+            vec![global_crossing("old.health")],
+            "stale result must leave committed global crossings active",
+        );
     }
 
     #[test]
@@ -2687,6 +2789,12 @@ mod tests {
         ctx.data_registry
             .borrow_mut()
             .replace_maps(vec![map_entry("old_map")]);
+        ctx.data_registry
+            .borrow_mut()
+            .replace_global_reactions(vec![global_reaction("oldLoad")]);
+        ctx.data_registry
+            .borrow_mut()
+            .replace_global_crossings(vec![global_crossing("old.health")]);
 
         let outcome = rt.commit_staged_manifest_result(
             &StagedManifestBuildResult {
@@ -2704,6 +2812,14 @@ mod tests {
         );
         assert_eq!(ctx.data_registry.borrow().entities, vec![descriptor("old")]);
         assert_eq!(ctx.data_registry.borrow().maps, vec![map_entry("old_map")]);
+        assert_eq!(
+            ctx.data_registry.borrow().global_reactions,
+            vec![global_reaction("oldLoad")]
+        );
+        assert_eq!(
+            ctx.data_registry.borrow().global_crossings,
+            vec![global_crossing("old.health")]
+        );
     }
 
     // Regression: a failed seed build left the dependency set None silently, so
@@ -2741,20 +2857,31 @@ mod tests {
         ctx.data_registry
             .borrow_mut()
             .replace_maps(vec![map_entry("old_map")]);
+        ctx.data_registry
+            .borrow_mut()
+            .replace_global_reactions(vec![global_reaction("oldLoad")]);
+        ctx.data_registry
+            .borrow_mut()
+            .replace_global_crossings(vec![global_crossing("old.health")]);
         let replacement = descriptor("kept_new_shape");
         let replacement_map = map_entry("new_map");
-
-        let outcome = rt.commit_staged_manifest_result(
-            &built_result_with_maps(
-                5,
-                &dir,
-                "Replacement",
-                vec![replacement.clone()],
-                vec![replacement_map.clone()],
-                vec![entry.clone()],
-            ),
-            &ctx,
+        let replacement_reaction = global_reaction("newLoad");
+        let replacement_crossing = global_crossing("new.health");
+        let mut staged = built_result_with_maps(
+            5,
+            &dir,
+            "Replacement",
+            vec![replacement.clone()],
+            vec![replacement_map.clone()],
+            vec![entry.clone()],
         );
+        let StagedManifestBuildStatus::Built(manifest) = &mut staged.status else {
+            unreachable!()
+        };
+        manifest.reactions = vec![replacement_reaction.clone()];
+        manifest.crossings = vec![replacement_crossing.clone()];
+
+        let outcome = rt.commit_staged_manifest_result(&staged, &ctx);
 
         assert_eq!(
             outcome,
@@ -2767,6 +2894,14 @@ mod tests {
         );
         assert_eq!(ctx.data_registry.borrow().entities, vec![replacement]);
         assert_eq!(ctx.data_registry.borrow().maps, vec![replacement_map]);
+        assert_eq!(
+            ctx.data_registry.borrow().global_reactions,
+            vec![replacement_reaction]
+        );
+        assert_eq!(
+            ctx.data_registry.borrow().global_crossings,
+            vec![replacement_crossing]
+        );
         assert!(rt.changed_paths_affect_active_mod_init_manifest(&[entry]));
     }
 
@@ -3042,6 +3177,102 @@ mod tests {
                 .any(|e| e.canonical_name.as_deref() == Some("smoke_pillar")),
             "setupMod's `entities` field must carry the descriptor on the manifest"
         );
+    }
+
+    #[test]
+    fn mod_init_quickjs_manifest_carries_global_reactions_and_crossings() {
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("js_global_reactions");
+        fs::write(
+            dir.join("start-script.js"),
+            r#"
+            globalThis.setupMod = function() {
+                return {
+                    name: "GlobalBehavior",
+                    reactions: scopeReactions(["campaign"], [
+                        defineReaction("levelLoad", {
+                            primitive: "moveGeometry",
+                            tag: "reactor",
+                        }),
+                        defineReaction("objectiveLoad", {
+                            primitive: "playSound",
+                            args: { sound: "objective" },
+                        }),
+                    ]),
+                    crossings: [
+                        {
+                            slot: "player.health",
+                            below: 25,
+                            max: 100,
+                            fire: ["lowHealth"],
+                            levels: ["campaign"],
+                        },
+                    ],
+                };
+            };
+            "#,
+        )
+        .unwrap();
+
+        rt.run_mod_init(&dir).unwrap();
+        let manifest = rt.mod_manifest().expect("Some manifest");
+        assert_eq!(manifest.reactions.len(), 2);
+        assert_eq!(manifest.reactions[0].reaction.name, "levelLoad");
+        assert_eq!(manifest.reactions[0].levels, vec!["campaign"]);
+        assert_eq!(manifest.reactions[1].reaction.name, "objectiveLoad");
+        assert_eq!(manifest.reactions[1].levels, vec!["campaign"]);
+        assert_eq!(manifest.crossings.len(), 1);
+        assert_eq!(manifest.crossings[0].crossing.slot, "player.health");
+        assert_eq!(manifest.crossings[0].crossing.fire, vec!["lowHealth"]);
+        assert_eq!(manifest.crossings[0].levels, vec!["campaign"]);
+    }
+
+    #[test]
+    fn mod_init_luau_manifest_carries_global_reactions_and_crossings() {
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("luau_global_reactions");
+        fs::write(
+            dir.join("start-script.luau"),
+            r#"
+            function setupMod()
+                return {
+                    name = "GlobalBehavior",
+                    reactions = scopeReactions({ "campaign" }, {
+                        defineReaction("levelLoad", {
+                            primitive = "moveGeometry",
+                            tag = "reactor",
+                        }),
+                        defineReaction("objectiveLoad", {
+                            primitive = "playSound",
+                            args = { sound = "objective" },
+                        }),
+                    }),
+                    crossings = {
+                        {
+                            slot = "player.health",
+                            below = 25,
+                            max = 100,
+                            fire = { "lowHealth" },
+                            levels = { "campaign" },
+                        },
+                    },
+                }
+            end
+            "#,
+        )
+        .unwrap();
+
+        rt.run_mod_init(&dir).unwrap();
+        let manifest = rt.mod_manifest().expect("Some manifest");
+        assert_eq!(manifest.reactions.len(), 2);
+        assert_eq!(manifest.reactions[0].reaction.name, "levelLoad");
+        assert_eq!(manifest.reactions[0].levels, vec!["campaign"]);
+        assert_eq!(manifest.reactions[1].reaction.name, "objectiveLoad");
+        assert_eq!(manifest.reactions[1].levels, vec!["campaign"]);
+        assert_eq!(manifest.crossings.len(), 1);
+        assert_eq!(manifest.crossings[0].crossing.slot, "player.health");
+        assert_eq!(manifest.crossings[0].crossing.fire, vec!["lowHealth"]);
+        assert_eq!(manifest.crossings[0].levels, vec!["campaign"]);
     }
 
     #[test]

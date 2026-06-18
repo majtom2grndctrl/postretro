@@ -58,6 +58,7 @@ impl App {
         self.splash_frame = 0;
         self.pending_level_log = false;
         self.level_load = None;
+        self.active_level_tags.clear();
         self.level_requests.clear();
         self.boot_load = false;
     }
@@ -108,6 +109,7 @@ impl App {
         self.progress_tracker.clear();
         self.crossing_detector.clear();
         self.script_ctx.data_registry.borrow_mut().clear();
+        self.active_level_tags.clear();
         self.script_ctx
             .registry
             .borrow_mut()
@@ -240,6 +242,10 @@ impl App {
                             data_registry.upsert_entity_type(desc);
                         }
                         data_registry.replace_maps(std::mem::take(&mut manifest.maps));
+                        data_registry
+                            .replace_global_reactions(std::mem::take(&mut manifest.reactions));
+                        data_registry
+                            .replace_global_crossings(std::mem::take(&mut manifest.crossings));
                         drop(data_registry);
 
                         // Register mod-scope UI trees into the tiered registry
@@ -425,6 +431,31 @@ impl App {
         self.level_rx.is_some() || self.level_worker.is_some()
     }
 
+    fn retain_active_level_tags_for_install(&mut self) {
+        self.active_level_tags = self
+            .level_load
+            .as_ref()
+            .map(|load| load.entry.tags.clone())
+            .unwrap_or_default();
+    }
+
+    pub(crate) fn has_installed_level(&self) -> bool {
+        self.boot_state == BootState::Running && self.level.is_some()
+    }
+
+    pub(crate) fn rebuild_active_reaction_subscribers(&mut self) {
+        self.progress_tracker.clear();
+        self.progress_tracker.initialize(
+            &self.script_ctx.data_registry.borrow(),
+            &self.script_ctx.registry.borrow(),
+        );
+        self.crossing_detector.clear();
+        self.crossing_detector.initialize(
+            &self.script_ctx.data_registry.borrow(),
+            &self.script_ctx.slot_table.borrow(),
+        );
+    }
+
     fn resolve_level_source(&self, source: LevelSource) -> Option<InFlightLevelLoad> {
         match source {
             LevelSource::Catalog(id) => {
@@ -605,6 +636,7 @@ impl App {
     /// Called after a level worker delivers a payload; assumes `self.renderer`
     /// is `Some` and `world` is populated.
     fn install_level_payload(&mut self, mut world: prl::LevelWorld, prm_cache_root: PathBuf) {
+        self.retain_active_level_tags_for_install();
         // Reset world gravity to the freshly-loaded level's authored value
         // before the data script runs, so any `world.getGravity()` call inside
         // `setupLevel` / `levelLoad` reactions sees the new value.
@@ -789,12 +821,16 @@ impl App {
         }
 
         // Data script runs once at level open. Errors surface as an empty
-        // manifest so the level still loads.
+        // manifest so the level still loads. Even levels without a data script
+        // compose against mod-global reactions/crossings.
         if let Some(world) = &self.level {
-            if let Some(data_script) = &world.data_script {
-                let mut manifest = self
-                    .script_runtime
-                    .run_data_script(data_script, &self.content_root);
+            let mut manifest = if let Some(data_script) = &world.data_script {
+                self.script_runtime
+                    .run_data_script(data_script, &self.content_root)
+            } else {
+                crate::scripting::data_descriptors::LevelManifest::default()
+            };
+            if world.data_script.is_some() {
                 manifest.reactions =
                     validate_sequence_primitives(manifest.reactions, &self.sequence_registry);
                 // Register level-scope UI trees before the data-script VM context
@@ -803,23 +839,12 @@ impl App {
                     std::mem::take(&mut manifest.ui_trees),
                     render::ui::modal_stack::ScopeTier::Level,
                 );
-                self.script_ctx
-                    .data_registry
-                    .borrow_mut()
-                    .populate_from_manifest(manifest);
-                self.progress_tracker.initialize(
-                    &self.script_ctx.data_registry.borrow(),
-                    &self.script_ctx.registry.borrow(),
-                );
-                // Build the crossing watchers from this level's `crossings`.
-                // Clear first so a re-load (or hot reload) does not stack
-                // duplicate watchers.
-                self.crossing_detector.clear();
-                self.crossing_detector.initialize(
-                    &self.script_ctx.data_registry.borrow(),
-                    &self.script_ctx.slot_table.borrow(),
-                );
             }
+            self.script_ctx
+                .data_registry
+                .borrow_mut()
+                .populate_from_manifest(manifest, &self.active_level_tags);
+            self.rebuild_active_reaction_subscribers();
         }
         self.level_timings.record("data_script");
 
@@ -1038,10 +1063,12 @@ mod tests {
     use crate::input::InputFocus;
     use crate::scripting::ctx::ScriptCtx;
     use crate::scripting::data_descriptors::{
-        EntityTypeDescriptor, NamedReaction, PrimitiveDescriptor, ReactionDescriptor,
+        CrossingCondition, CrossingDescriptor, EntityTypeDescriptor, NamedReaction,
+        PrimitiveDescriptor, ProgressDescriptor, ReactionDescriptor,
     };
     use crate::scripting::primitives::register_all;
     use crate::scripting::primitives_registry::PrimitiveRegistry;
+    use crate::scripting::registry::Transform;
     use crate::scripting::runtime::{ModMapEntry, ScriptRuntime, ScriptRuntimeConfig};
     use crate::scripting::slot_table::{
         SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue,
@@ -1143,6 +1170,7 @@ mod tests {
             boot_timings: StartupTimings::new(),
             mod_timings: StartupTimings::new(),
             level_timings: StartupTimings::new(),
+            active_level_tags: Vec::new(),
             level_load: None,
             level_rx: None,
             level_worker: None,
@@ -1193,6 +1221,53 @@ mod tests {
                 args: serde_json::Value::Object(Default::default()),
             }),
         }
+    }
+
+    fn progress_reaction(name: &str, tag: &str, at: f32, fire: &str) -> NamedReaction {
+        NamedReaction {
+            name: name.to_string(),
+            descriptor: ReactionDescriptor::Progress(ProgressDescriptor {
+                tag: tag.to_string(),
+                at,
+                fire: fire.to_string(),
+            }),
+        }
+    }
+
+    fn scoped_global_progress(
+        name: &str,
+        tag: &str,
+        fire: &str,
+    ) -> scripting::data_registry::ScopedReaction {
+        scripting::data_registry::ScopedReaction {
+            reaction: progress_reaction(name, tag, 1.0, fire),
+            levels: Vec::new(),
+        }
+    }
+
+    fn scoped_global_crossing(slot: &str, fire: &str) -> scripting::data_registry::ScopedCrossing {
+        scripting::data_registry::ScopedCrossing {
+            crossing: CrossingDescriptor {
+                slot: slot.to_string(),
+                condition: CrossingCondition::Below { threshold: 0.5 },
+                max: 100.0,
+                fire: vec![fire.to_string()],
+            },
+            levels: Vec::new(),
+        }
+    }
+
+    fn number_slot(value: f32) -> SlotRecord {
+        let mut record = SlotRecord::new(SlotSchema {
+            slot_type: SlotType::Number,
+            default: None,
+            range: None,
+            persist: false,
+            readonly: false,
+            ownership: SlotOwnership::Mod,
+        });
+        record.value = Some(SlotValue::Number(value));
+        record
     }
 
     fn catalog_map(id: &str, path: &str, name: &str, tags: &[&str]) -> ModMapEntry {
@@ -1346,11 +1421,14 @@ mod tests {
         app.script_ctx
             .data_registry
             .borrow_mut()
-            .populate_from_manifest(crate::scripting::data_descriptors::LevelManifest {
-                reactions: vec![named_reaction(fixture.reaction_name)],
-                crossings: Vec::new(),
-                ui_trees: Vec::new(),
-            });
+            .populate_from_manifest(
+                crate::scripting::data_descriptors::LevelManifest {
+                    reactions: vec![named_reaction(fixture.reaction_name)],
+                    crossings: Vec::new(),
+                    ui_trees: Vec::new(),
+                },
+                &[],
+            );
 
         let lights = (0..fixture.light_count)
             .map(|i| map_light(fixture.light_tag, [i as f64, 2.0, 3.0]))
@@ -1687,6 +1765,132 @@ mod tests {
         );
 
         drop_in_flight_worker(&mut app);
+    }
+
+    #[test]
+    fn catalog_level_install_retains_active_tags_from_in_flight_load() {
+        let mut app = test_app();
+        app.boot_state = BootState::Frontend;
+        app.content_root = PathBuf::from("content/mod");
+        app.script_ctx
+            .data_registry
+            .borrow_mut()
+            .replace_maps(vec![catalog_map(
+                "e1m1",
+                "maps/e1m1.prl",
+                "Entryway",
+                &["campaign", "intro"],
+            )]);
+
+        app.enqueue_level_request(LevelRequest::Load(LevelSource::Catalog("e1m1".to_string())));
+        app.drain_level_requests();
+        app.retain_active_level_tags_for_install();
+
+        assert_eq!(app.active_level_tags, ["campaign", "intro"]);
+
+        drop_in_flight_worker(&mut app);
+    }
+
+    #[test]
+    fn raw_path_level_install_retains_empty_active_tags() {
+        let mut app = test_app();
+        app.boot_state = BootState::Frontend;
+        app.content_root = PathBuf::from("content/dev");
+
+        app.enqueue_level_request(LevelRequest::Load(LevelSource::Path(PathBuf::from(
+            "content/dev/maps/raw-dev-map.prl",
+        ))));
+        app.drain_level_requests();
+        app.retain_active_level_tags_for_install();
+
+        assert!(app.active_level_tags.is_empty());
+
+        drop_in_flight_worker(&mut app);
+    }
+
+    #[test]
+    fn staged_commit_guard_does_not_recompose_when_no_level_is_installed() {
+        let mut app = test_app();
+        app.boot_state = BootState::Frontend;
+        app.level = None;
+        app.active_level_tags.clear();
+        app.script_ctx
+            .data_registry
+            .borrow_mut()
+            .replace_global_reactions(vec![scoped_global_progress("waveDone", "wave1", "powerOn")]);
+        app.script_ctx
+            .data_registry
+            .borrow_mut()
+            .replace_global_crossings(vec![scoped_global_crossing("test.health", "healthLow")]);
+
+        if app.has_installed_level() {
+            app.script_ctx
+                .data_registry
+                .borrow_mut()
+                .recompose_active_sets(&app.active_level_tags);
+            app.rebuild_active_reaction_subscribers();
+        }
+
+        let registry = app.script_ctx.data_registry.borrow();
+        assert!(
+            registry.reactions.is_empty(),
+            "unscoped globals must not repopulate active reactions after unload",
+        );
+        assert!(
+            registry.crossings.is_empty(),
+            "unscoped globals must not repopulate active crossings after unload",
+        );
+    }
+
+    #[test]
+    fn staged_commit_rebuilds_active_subscribers_for_installed_raw_path_level() {
+        let mut app = test_app();
+        app.boot_state = BootState::Running;
+        app.level = Some(level_world("raw_dev_level", 1));
+        app.active_level_tags.clear();
+        app.script_ctx
+            .data_registry
+            .borrow_mut()
+            .replace_global_reactions(vec![scoped_global_progress("waveDone", "wave1", "powerOn")]);
+        app.script_ctx
+            .data_registry
+            .borrow_mut()
+            .replace_global_crossings(vec![scoped_global_crossing("test.health", "healthLow")]);
+        {
+            let mut entities = app.script_ctx.registry.borrow_mut();
+            let id = entities.spawn(Transform::default());
+            entities.set_tags(id, vec!["wave1".to_string()]).unwrap();
+        }
+        app.script_ctx
+            .slot_table
+            .borrow_mut()
+            .insert("test.health".to_string(), number_slot(75.0))
+            .expect("test slot should be vacant");
+
+        if app.has_installed_level() {
+            app.script_ctx
+                .data_registry
+                .borrow_mut()
+                .recompose_active_sets(&app.active_level_tags);
+            app.rebuild_active_reaction_subscribers();
+        }
+
+        assert_eq!(
+            app.progress_tracker
+                .on_entity_killed(&["wave1".to_string()]),
+            vec!["powerOn".to_string()],
+        );
+        app.script_ctx
+            .slot_table
+            .borrow_mut()
+            .get_mut("test.health")
+            .expect("test slot should exist")
+            .value = Some(SlotValue::Number(25.0));
+        assert_eq!(
+            app.crossing_detector
+                .detect(&app.script_ctx.slot_table.borrow()),
+            vec!["healthLow".to_string()],
+        );
     }
 
     #[cfg(feature = "dev-tools")]

@@ -338,11 +338,14 @@ mod tests {
         assert_eq!(validated.len(), 1, "fog steps survived validation");
 
         let mut data = DataRegistry::new();
-        data.populate_from_manifest(LevelManifest {
-            reactions: validated,
-            crossings: Vec::new(),
-            ui_trees: Vec::new(),
-        });
+        data.populate_from_manifest(
+            LevelManifest {
+                reactions: validated,
+                crossings: Vec::new(),
+                ui_trees: Vec::new(),
+            },
+            &[],
+        );
 
         let reaction_reg = ReactionPrimitiveRegistry::new();
         let system_reg =

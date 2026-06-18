@@ -56,7 +56,7 @@ export type SequenceReactionDescriptor = {
 };
 
 /** `name` is merged into the descriptor at the top level so the Rust deserializer reads event name and body from one flat object. */
-export type NamedReactionDescriptor = { name: string } & (
+export type NamedReactionDescriptor = { name: string; levels?: string[] } & (
   | ProgressReactionDescriptor
   | PrimitiveReactionDescriptor
   | SequenceReactionDescriptor
@@ -166,6 +166,14 @@ export function defineReaction(
       ? [nameOrBody, descriptor as ReactionBody]
       : [autoReactionId(nameOrBody), nameOrBody];
   return { name, ...body } as NamedReactionDescriptor;
+}
+
+/** Stamp a shared level-tag scope onto each reaction in a plain list. */
+export function scopeReactions(
+  tags: string[],
+  list: NamedReactionDescriptor[],
+): NamedReactionDescriptor[] {
+  return list.map((reaction) => ({ ...reaction, levels: tags }));
 }
 
 /** Identity builder — gives authors a typed construction site for entity

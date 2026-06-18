@@ -47,6 +47,7 @@ export type {
 } from "./data_script";
 export {
   defineReaction,
+  scopeReactions,
   defineEntity,
   defineMod,
   defineMapCatalog,

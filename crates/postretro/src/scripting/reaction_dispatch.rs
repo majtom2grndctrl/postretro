@@ -364,11 +364,14 @@ mod tests {
     #[test]
     fn progress_threshold_fires_when_all_dead_at_full_ratio() {
         let mut data = DataRegistry::new();
-        data.populate_from_manifest(LevelManifest {
-            reactions: vec![progress_reaction("waveDone", "wave1", 1.0, "powerOn")],
-            crossings: Vec::new(),
-            ui_trees: Vec::new(),
-        });
+        data.populate_from_manifest(
+            LevelManifest {
+                reactions: vec![progress_reaction("waveDone", "wave1", 1.0, "powerOn")],
+                crossings: Vec::new(),
+                ui_trees: Vec::new(),
+            },
+            &[],
+        );
 
         let mut entities = EntityRegistry::new();
         spawn_with_tags(&mut entities, &["wave1"]);
@@ -383,11 +386,14 @@ mod tests {
     #[test]
     fn progress_does_not_fire_before_threshold() {
         let mut data = DataRegistry::new();
-        data.populate_from_manifest(LevelManifest {
-            reactions: vec![progress_reaction("waveDone", "wave1", 1.0, "powerOn")],
-            crossings: Vec::new(),
-            ui_trees: Vec::new(),
-        });
+        data.populate_from_manifest(
+            LevelManifest {
+                reactions: vec![progress_reaction("waveDone", "wave1", 1.0, "powerOn")],
+                crossings: Vec::new(),
+                ui_trees: Vec::new(),
+            },
+            &[],
+        );
 
         let mut entities = EntityRegistry::new();
         spawn_with_tags(&mut entities, &["wave1"]);
@@ -406,11 +412,14 @@ mod tests {
     #[test]
     fn progress_fires_at_partial_ratio_when_at_below_one() {
         let mut data = DataRegistry::new();
-        data.populate_from_manifest(LevelManifest {
-            reactions: vec![progress_reaction("half", "wave1", 0.5, "midwave")],
-            crossings: Vec::new(),
-            ui_trees: Vec::new(),
-        });
+        data.populate_from_manifest(
+            LevelManifest {
+                reactions: vec![progress_reaction("half", "wave1", 0.5, "midwave")],
+                crossings: Vec::new(),
+                ui_trees: Vec::new(),
+            },
+            &[],
+        );
 
         let mut entities = EntityRegistry::new();
         for _ in 0..4 {
@@ -429,14 +438,17 @@ mod tests {
     #[test]
     fn multi_tag_entity_decrements_both_buckets_independently() {
         let mut data = DataRegistry::new();
-        data.populate_from_manifest(LevelManifest {
-            reactions: vec![
-                progress_reaction("waveDone", "wave1", 1.0, "powerOn"),
-                progress_reaction("reactorDown", "reactorMonster", 1.0, "reactorOff"),
-            ],
-            crossings: Vec::new(),
-            ui_trees: Vec::new(),
-        });
+        data.populate_from_manifest(
+            LevelManifest {
+                reactions: vec![
+                    progress_reaction("waveDone", "wave1", 1.0, "powerOn"),
+                    progress_reaction("reactorDown", "reactorMonster", 1.0, "reactorOff"),
+                ],
+                crossings: Vec::new(),
+                ui_trees: Vec::new(),
+            },
+            &[],
+        );
 
         let mut entities = EntityRegistry::new();
         spawn_with_tags(&mut entities, &["wave1", "reactorMonster"]);
@@ -456,14 +468,17 @@ mod tests {
     #[test]
     fn multi_tag_entity_fires_both_subscriptions() {
         let mut data = DataRegistry::new();
-        data.populate_from_manifest(LevelManifest {
-            reactions: vec![
-                progress_reaction("waveDone", "wave1", 0.5, "powerOn"),
-                progress_reaction("reactorDown", "reactorMonster", 0.5, "reactorOff"),
-            ],
-            crossings: Vec::new(),
-            ui_trees: Vec::new(),
-        });
+        data.populate_from_manifest(
+            LevelManifest {
+                reactions: vec![
+                    progress_reaction("waveDone", "wave1", 0.5, "powerOn"),
+                    progress_reaction("reactorDown", "reactorMonster", 0.5, "reactorOff"),
+                ],
+                crossings: Vec::new(),
+                ui_trees: Vec::new(),
+            },
+            &[],
+        );
 
         let mut entities = EntityRegistry::new();
         spawn_with_tags(&mut entities, &["wave1", "reactorMonster"]);
@@ -487,11 +502,14 @@ mod tests {
     #[test]
     fn clear_drops_all_subscriptions() {
         let mut data = DataRegistry::new();
-        data.populate_from_manifest(LevelManifest {
-            reactions: vec![progress_reaction("waveDone", "wave1", 1.0, "powerOn")],
-            crossings: Vec::new(),
-            ui_trees: Vec::new(),
-        });
+        data.populate_from_manifest(
+            LevelManifest {
+                reactions: vec![progress_reaction("waveDone", "wave1", 1.0, "powerOn")],
+                crossings: Vec::new(),
+                ui_trees: Vec::new(),
+            },
+            &[],
+        );
         let mut entities = EntityRegistry::new();
         spawn_with_tags(&mut entities, &["wave1"]);
 
@@ -508,11 +526,14 @@ mod tests {
     fn progress_with_zero_total_never_fires() {
         // `total == 0` at init: no division-by-zero and threshold never fires.
         let mut data = DataRegistry::new();
-        data.populate_from_manifest(LevelManifest {
-            reactions: vec![progress_reaction("waveDone", "ghosts", 1.0, "spooky")],
-            crossings: Vec::new(),
-            ui_trees: Vec::new(),
-        });
+        data.populate_from_manifest(
+            LevelManifest {
+                reactions: vec![progress_reaction("waveDone", "ghosts", 1.0, "spooky")],
+                crossings: Vec::new(),
+                ui_trees: Vec::new(),
+            },
+            &[],
+        );
         let entities = EntityRegistry::new();
 
         let mut tracker = ProgressTracker::new();
@@ -560,16 +581,19 @@ mod tests {
     #[test]
     fn fire_named_event_on_primitive_returns_on_complete_chain() {
         let mut data = DataRegistry::new();
-        data.populate_from_manifest(LevelManifest {
-            reactions: vec![primitive_reaction(
-                "wave1Complete",
-                "moveGeometry",
-                "reactorChambers",
-                Some("wave2Revealed"),
-            )],
-            crossings: Vec::new(),
-            ui_trees: Vec::new(),
-        });
+        data.populate_from_manifest(
+            LevelManifest {
+                reactions: vec![primitive_reaction(
+                    "wave1Complete",
+                    "moveGeometry",
+                    "reactorChambers",
+                    Some("wave2Revealed"),
+                )],
+                crossings: Vec::new(),
+                ui_trees: Vec::new(),
+            },
+            &[],
+        );
 
         let chained = fire_named_event("wave1Complete", &data);
         assert_eq!(chained, vec!["wave2Revealed".to_string()]);
@@ -578,16 +602,19 @@ mod tests {
     #[test]
     fn fire_named_event_on_primitive_without_on_complete_returns_empty() {
         let mut data = DataRegistry::new();
-        data.populate_from_manifest(LevelManifest {
-            reactions: vec![primitive_reaction(
-                "wave2Revealed",
-                "activateGroup",
-                "reactorWave2Monsters",
-                None,
-            )],
-            crossings: Vec::new(),
-            ui_trees: Vec::new(),
-        });
+        data.populate_from_manifest(
+            LevelManifest {
+                reactions: vec![primitive_reaction(
+                    "wave2Revealed",
+                    "activateGroup",
+                    "reactorWave2Monsters",
+                    None,
+                )],
+                crossings: Vec::new(),
+                ui_trees: Vec::new(),
+            },
+            &[],
+        );
 
         let chained = fire_named_event("wave2Revealed", &data);
         assert!(chained.is_empty());
@@ -596,11 +623,14 @@ mod tests {
     #[test]
     fn fire_named_event_on_progress_is_a_noop() {
         let mut data = DataRegistry::new();
-        data.populate_from_manifest(LevelManifest {
-            reactions: vec![progress_reaction("waveDone", "wave1", 1.0, "powerOn")],
-            crossings: Vec::new(),
-            ui_trees: Vec::new(),
-        });
+        data.populate_from_manifest(
+            LevelManifest {
+                reactions: vec![progress_reaction("waveDone", "wave1", 1.0, "powerOn")],
+                crossings: Vec::new(),
+                ui_trees: Vec::new(),
+            },
+            &[],
+        );
         let chained = fire_named_event("waveDone", &data);
         assert!(chained.is_empty());
     }
@@ -638,20 +668,23 @@ mod tests {
         let script_ctx = ScriptCtx::new();
 
         let mut data = DataRegistry::new();
-        data.populate_from_manifest(LevelManifest {
-            reactions: vec![NamedReaction {
-                name: "lowHealth".to_string(),
-                descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
-                    primitive: "playSound".to_string(),
-                    // No tag ⇒ system-targeted.
-                    tag: None,
-                    on_complete: None,
-                    args: serde_json::json!({ "sound": "alarm", "bus": "sfx" }),
-                }),
-            }],
-            crossings: Vec::new(),
-            ui_trees: Vec::new(),
-        });
+        data.populate_from_manifest(
+            LevelManifest {
+                reactions: vec![NamedReaction {
+                    name: "lowHealth".to_string(),
+                    descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                        primitive: "playSound".to_string(),
+                        // No tag ⇒ system-targeted.
+                        tag: None,
+                        on_complete: None,
+                        args: serde_json::json!({ "sound": "alarm", "bus": "sfx" }),
+                    }),
+                }],
+                crossings: Vec::new(),
+                ui_trees: Vec::new(),
+            },
+            &[],
+        );
 
         let seq_reg = SequencedPrimitiveRegistry::new();
         let reaction_reg = ReactionPrimitiveRegistry::new();
@@ -695,25 +728,28 @@ mod tests {
         });
 
         let mut data = DataRegistry::new();
-        data.populate_from_manifest(LevelManifest {
-            reactions: vec![sequence_reaction(
-                "go",
-                vec![
-                    SequenceStep {
-                        id: id_a,
-                        primitive: "noteValue".into(),
-                        args: serde_json::json!({ "v": 1 }),
-                    },
-                    SequenceStep {
-                        id: id_b,
-                        primitive: "noteValue".into(),
-                        args: serde_json::json!({ "v": 2 }),
-                    },
-                ],
-            )],
-            crossings: Vec::new(),
-            ui_trees: Vec::new(),
-        });
+        data.populate_from_manifest(
+            LevelManifest {
+                reactions: vec![sequence_reaction(
+                    "go",
+                    vec![
+                        SequenceStep {
+                            id: id_a,
+                            primitive: "noteValue".into(),
+                            args: serde_json::json!({ "v": 1 }),
+                        },
+                        SequenceStep {
+                            id: id_b,
+                            primitive: "noteValue".into(),
+                            args: serde_json::json!({ "v": 2 }),
+                        },
+                    ],
+                )],
+                crossings: Vec::new(),
+                ui_trees: Vec::new(),
+            },
+            &[],
+        );
 
         let reaction_reg = ReactionPrimitiveRegistry::new();
         let system_reg = SystemReactionRegistry::new();
@@ -751,30 +787,33 @@ mod tests {
         });
 
         let mut data = DataRegistry::new();
-        data.populate_from_manifest(LevelManifest {
-            reactions: vec![sequence_reaction(
-                "go",
-                vec![
-                    SequenceStep {
-                        id: id_a,
-                        primitive: "tick".into(),
-                        args: serde_json::Value::Null,
-                    },
-                    SequenceStep {
-                        id: id_dead,
-                        primitive: "tick".into(),
-                        args: serde_json::Value::Null,
-                    },
-                    SequenceStep {
-                        id: id_b,
-                        primitive: "tick".into(),
-                        args: serde_json::Value::Null,
-                    },
-                ],
-            )],
-            crossings: Vec::new(),
-            ui_trees: Vec::new(),
-        });
+        data.populate_from_manifest(
+            LevelManifest {
+                reactions: vec![sequence_reaction(
+                    "go",
+                    vec![
+                        SequenceStep {
+                            id: id_a,
+                            primitive: "tick".into(),
+                            args: serde_json::Value::Null,
+                        },
+                        SequenceStep {
+                            id: id_dead,
+                            primitive: "tick".into(),
+                            args: serde_json::Value::Null,
+                        },
+                        SequenceStep {
+                            id: id_b,
+                            primitive: "tick".into(),
+                            args: serde_json::Value::Null,
+                        },
+                    ],
+                )],
+                crossings: Vec::new(),
+                ui_trees: Vec::new(),
+            },
+            &[],
+        );
 
         let reaction_reg = ReactionPrimitiveRegistry::new();
         let system_reg = SystemReactionRegistry::new();
@@ -810,25 +849,28 @@ mod tests {
         });
 
         let mut data = DataRegistry::new();
-        data.populate_from_manifest(LevelManifest {
-            reactions: vec![sequence_reaction(
-                "go",
-                vec![
-                    SequenceStep {
-                        id: id_a,
-                        primitive: "boom".into(),
-                        args: serde_json::Value::Null,
-                    },
-                    SequenceStep {
-                        id: id_b,
-                        primitive: "ok".into(),
-                        args: serde_json::Value::Null,
-                    },
-                ],
-            )],
-            crossings: Vec::new(),
-            ui_trees: Vec::new(),
-        });
+        data.populate_from_manifest(
+            LevelManifest {
+                reactions: vec![sequence_reaction(
+                    "go",
+                    vec![
+                        SequenceStep {
+                            id: id_a,
+                            primitive: "boom".into(),
+                            args: serde_json::Value::Null,
+                        },
+                        SequenceStep {
+                            id: id_b,
+                            primitive: "ok".into(),
+                            args: serde_json::Value::Null,
+                        },
+                    ],
+                )],
+                crossings: Vec::new(),
+                ui_trees: Vec::new(),
+            },
+            &[],
+        );
 
         let reaction_reg = ReactionPrimitiveRegistry::new();
         let system_reg = SystemReactionRegistry::new();

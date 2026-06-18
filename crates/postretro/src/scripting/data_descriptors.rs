@@ -14,6 +14,7 @@ use super::components::billboard_emitter::{
     BillboardEmitterComponent, BillboardEmitterComponentLit,
 };
 use super::components::mesh::{AnimationState, InterruptPolicy};
+use super::data_registry::{ScopedCrossing, ScopedReaction};
 use super::registry::EntityId;
 use super::runtime::ModMapEntry;
 use crate::movement::MovementScope;
@@ -4709,6 +4710,79 @@ pub(crate) fn drain_maps_js<'js>(
     Ok(out)
 }
 
+/// Drain mod-global reaction definitions from a QuickJS manifest object.
+/// Missing/null `reactions` normalizes to empty; present entries use the same
+/// descriptor parser as level-local reactions plus an optional `levels` scope.
+pub(crate) fn drain_global_reactions_js<'js>(
+    ctx: &Ctx<'js>,
+    obj: &Object<'js>,
+    scope: &str,
+) -> Result<Vec<ScopedReaction>, DescriptorError> {
+    let Some(arr) = optional_manifest_array_js(obj, "reactions", scope)? else {
+        return Ok(Vec::new());
+    };
+
+    let mut out = Vec::with_capacity(arr.len());
+    for i in 0..arr.len() {
+        let item: JsValue = arr.get(i).map_err(js_err)?;
+        let item_obj =
+            Object::from_value(item.clone()).map_err(|_| DescriptorError::InvalidShape {
+                reason: "reaction entry must be an object".to_string(),
+            })?;
+        out.push(ScopedReaction {
+            reaction: named_reaction_from_js(ctx, item)?,
+            levels: string_array_from_js(&item_obj, "levels")?,
+        });
+    }
+    Ok(out)
+}
+
+/// Drain mod-global crossing definitions from a QuickJS manifest object.
+/// Missing/null `crossings` normalizes to empty; present entries use the same
+/// descriptor parser as level-local crossings plus an optional `levels` scope.
+pub(crate) fn drain_global_crossings_js<'js>(
+    obj: &Object<'js>,
+    scope: &str,
+) -> Result<Vec<ScopedCrossing>, DescriptorError> {
+    let Some(arr) = optional_manifest_array_js(obj, "crossings", scope)? else {
+        return Ok(Vec::new());
+    };
+
+    let mut out = Vec::with_capacity(arr.len());
+    for i in 0..arr.len() {
+        let item: JsValue = arr.get(i).map_err(js_err)?;
+        let item_obj =
+            Object::from_value(item.clone()).map_err(|_| DescriptorError::InvalidShape {
+                reason: "crossing entry must be an object".to_string(),
+            })?;
+        out.push(ScopedCrossing {
+            crossing: crossing_descriptor_from_js(&item)?,
+            levels: string_array_from_js(&item_obj, "levels")?,
+        });
+    }
+    Ok(out)
+}
+
+fn optional_manifest_array_js<'js>(
+    obj: &Object<'js>,
+    field: &'static str,
+    scope: &str,
+) -> Result<Option<Array<'js>>, DescriptorError> {
+    if !obj.contains_key(field).map_err(js_err)? {
+        return Ok(None);
+    }
+    let raw: JsValue = obj.get(field).map_err(js_err)?;
+    if raw.is_null() || raw.is_undefined() {
+        return Ok(None);
+    }
+    let Some(arr) = raw.as_array() else {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!("{scope}: `{field}` must be an array"),
+        });
+    };
+    Ok(Some(arr.clone()))
+}
+
 fn mod_map_entry_from_js<'js>(value: JsValue<'js>) -> Result<ModMapEntry, DescriptorError> {
     let obj = Object::from_value(value).map_err(|_| DescriptorError::InvalidShape {
         reason: "map catalog entry must be an object".to_string(),
@@ -4986,6 +5060,68 @@ pub(crate) fn drain_maps_lua(
         }
     }
     Ok(out)
+}
+
+/// Drain mod-global reaction definitions from a Luau manifest table. Mirrors
+/// [`drain_global_reactions_js`].
+pub(crate) fn drain_global_reactions_lua(
+    table: &Table,
+    scope: &str,
+) -> Result<Vec<ScopedReaction>, DescriptorError> {
+    let Some(arr) = optional_manifest_array_lua(table, "reactions", scope)? else {
+        return Ok(Vec::new());
+    };
+    let len = validate_dense_lua_array(&arr, "`reactions` field")?;
+    let mut out = Vec::with_capacity(len);
+    for i in 1..=(len as i64) {
+        let item: LuaValue = arr.get(i).map_err(lua_err)?;
+        let item_table = lua_table(item.clone(), "reaction entry")?;
+        out.push(ScopedReaction {
+            reaction: named_reaction_from_lua(item)?,
+            levels: string_array_from_lua(&item_table, "levels")?,
+        });
+    }
+    Ok(out)
+}
+
+/// Drain mod-global crossing definitions from a Luau manifest table. Mirrors
+/// [`drain_global_crossings_js`].
+pub(crate) fn drain_global_crossings_lua(
+    table: &Table,
+    scope: &str,
+) -> Result<Vec<ScopedCrossing>, DescriptorError> {
+    let Some(arr) = optional_manifest_array_lua(table, "crossings", scope)? else {
+        return Ok(Vec::new());
+    };
+    let len = validate_dense_lua_array(&arr, "`crossings` field")?;
+    let mut out = Vec::with_capacity(len);
+    for i in 1..=(len as i64) {
+        let item: LuaValue = arr.get(i).map_err(lua_err)?;
+        let item_table = lua_table(item.clone(), "crossing entry")?;
+        out.push(ScopedCrossing {
+            crossing: crossing_descriptor_from_lua(item)?,
+            levels: string_array_from_lua(&item_table, "levels")?,
+        });
+    }
+    Ok(out)
+}
+
+fn optional_manifest_array_lua(
+    table: &Table,
+    field: &'static str,
+    scope: &str,
+) -> Result<Option<Table>, DescriptorError> {
+    let raw: LuaValue = table.get(field).map_err(lua_err)?;
+    match raw {
+        LuaValue::Nil => Ok(None),
+        LuaValue::Table(t) => Ok(Some(t)),
+        other => Err(DescriptorError::InvalidShape {
+            reason: format!(
+                "{scope}: `{field}` must be an array, got {}",
+                other.type_name()
+            ),
+        }),
+    }
 }
 
 fn mod_map_entry_from_lua(value: LuaValue) -> Result<ModMapEntry, DescriptorError> {

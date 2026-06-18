@@ -556,6 +556,7 @@ fn main() -> Result<()> {
         boot_timings,
         mod_timings: StartupTimings::new(),
         level_timings: StartupTimings::new(),
+        active_level_tags: Vec::new(),
         level_load: None,
         level_rx: None,
         level_worker: None,
@@ -990,6 +991,10 @@ struct App {
     /// entry so install code can read consistent map metadata before data
     /// scripts run.
     level_load: Option<InFlightLevelLoad>,
+
+    /// Catalog classification tags for the installed level. Catalog loads copy
+    /// these from the resolved map entry; raw path/dev loads keep this empty.
+    active_level_tags: Vec<String>,
 
     /// Receives the active level worker's `LoadOutcome`. `None` when no load is
     /// in flight; consumed via `try_recv` by the `Loading` state.
@@ -2569,6 +2574,17 @@ impl ApplicationHandler for App {
                     let outcome = self
                         .script_runtime
                         .commit_staged_manifest_result(&result, &self.script_ctx);
+                    if matches!(
+                        outcome,
+                        scripting::runtime::StagedManifestCommitOutcome::Committed { .. }
+                    ) && self.has_installed_level()
+                    {
+                        self.script_ctx
+                            .data_registry
+                            .borrow_mut()
+                            .recompose_active_sets(&self.active_level_tags);
+                        self.rebuild_active_reaction_subscribers();
+                    }
                     self.commit_staged_ui_manifest(&result, &outcome);
                 }
 
@@ -4510,6 +4526,8 @@ mod tests {
                     name: "UiCommit".to_string(),
                     entities: Vec::new(),
                     maps: Vec::new(),
+                    reactions: Vec::new(),
+                    crossings: Vec::new(),
                     ui_trees: vec![staged_tree("hud")],
                     theme: ModThemeTokens {
                         colors: HashMap::from([("critical".to_string(), [0.25, 0.5, 0.75, 1.0])]),

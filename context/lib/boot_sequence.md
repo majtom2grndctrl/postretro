@@ -68,13 +68,13 @@ Level install runs on the main thread after worker delivery. It is repeatable: e
 | 9 | Level sound loading from `sounds/` (fault-tolerant; silent if audio init failed) |
 | 10 | Built-in classname dispatch (player spawns partitioned out; remainder dispatched, handled set stashed) |
 | 11 | Sprite-collection registration for map-spawned emitters |
-| 12 | Data script run → per-level reactions into `data_registry`; progress tracker init |
+| 12 | Data script run → compose active reactions/crossings from matching mod-global definitions plus level-local definitions; progress tracker and crossing detector init from the composed active sets |
 | 13 | Data-archetype sweep (match map placements against registered entity types not already handled), player spawn, camera teleport to first player spawn (or geometry center) |
 | 14 | Second sprite pass for descriptor-spawned emitters |
 | 15 | Mesh model sweep: upload each distinct mesh model once, then resolve every animated mesh entity's clip indices (see mesh-sweep note below) |
 | 16 | Fire the `levelLoad` named event |
 
-Lights come from PRL data via the light bridge, not classname dispatch. Entity types are engine-global and arrive at mod-init via `setupMod` — `setupLevel`/the data script contributes only per-level reactions (see `scripting.md` §2).
+Lights come from PRL data via the light bridge, not classname dispatch. Entity types and mod-global reaction/crossing definitions arrive at mod-init via `setupMod`. `setupLevel`/the data script contributes level-local reactions and crossings only (see `scripting.md` §2). Level install composes active behavior after the data script returns and before progress/crossing initialization, so both systems see the final active set.
 
 **Mesh-spawn seam.** World mesh spawning is its own install stage, distinct from classname dispatch. The durable contract: map geometry becomes renderable mesh entities here, after geometry upload and before the light/fog bridges. (The current implementation hardwires a single world mesh; a classname-driven handler is planned — see §7.)
 
@@ -104,7 +104,7 @@ Clear-on-unload contract:
 | Per-level GPU resources: textures, geometry, mesh-pass caches, smoke collections | Script runtime and script context |
 | Light bridge, fog bridge, collision world | Slot table |
 | Level sounds, sprite collections | Entity-type registry and mod map catalog |
-| Per-level data reactions, crossings, UI registrations, and presentation cells | Persisted-state save path |
+| Active per-level reactions/crossings, level-local reaction/crossing definitions, UI registrations, and presentation cells | Mod-global reaction/crossing definitions and persisted-state save path |
 | Progress tracker, active wieldable, camera pose | Rust-side primitive/classname registries |
 
 Frontend is a no-level steady state. Renderer and audio may exist, but world, collision, fog, level sounds, and per-level registries are empty. Frontend rendering uses a world-less clear and skips gameplay/HUD reads that require a level.
@@ -127,11 +127,12 @@ Platform suspend is a separate path: it clears renderer/window/fog/collision and
 | Engine init (preludes, primitive registry, `ScriptCtx`, `ScriptRuntime`, Rust-side registries) | Process exit only — built once at startup, never recreated. |
 | `data_registry.entities` (entity-type descriptors from `setupMod` return) | Engine-global. Survives level unload; survives platform suspend. |
 | `data_registry.maps` (mod map catalog from `setupMod().maps`) | Engine-global. Survives level unload; survives platform suspend. |
-| Per-level reactions (`data_registry.reactions`) and level-scope UI trees | Level unload. |
+| `data_registry.global_reactions` / `global_crossings` (definitions from `setupMod` return) | Engine-global. Survive level unload; survive platform suspend. |
+| Active per-level reactions/crossings (`data_registry.reactions` / `crossings`) and level-scope UI trees | Level unload. Active sets recompose on the next level load from current globals plus that level's catalog tags. |
 | Level world, collision world, fog bridge, light bridge, level sounds, sprite collections, per-level GPU resources | Level unload; also cleared/dropped by suspend or exit as applicable. |
 | Renderer device/queue, window, audio mixer | Dropped on exit; renderer/window cleared on suspend and rebuilt on resume. |
 
-Hot reload (debug only) stages entity descriptors, store declarations, and the map catalog off-thread, then reconciles them on the main thread. Compatible store schemas preserve live values; incompatible changes reject the staged result and preserve the previous descriptors/catalog. A successful staged commit atomically replaces the committed catalog snapshot; stale or failed staged results leave it unchanged. Removed store declarations never clear committed stores.
+Hot reload (debug only) stages entity descriptors, store declarations, the map catalog, and mod-global reaction/crossing definitions off-thread, then reconciles them on the main thread. Compatible store schemas preserve live values; incompatible changes reject the staged result and preserve the previous descriptors/catalog/globals. A successful staged commit atomically replaces the committed catalog and global reaction/crossing snapshots, then recomposes the active sets for the current level tags. Stale or failed staged results leave committed globals and active sets unchanged. Removed store declarations never clear committed stores.
 
 ---
 

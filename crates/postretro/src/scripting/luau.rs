@@ -1026,6 +1026,48 @@ mod tests {
     }
 
     #[test]
+    fn scope_reactions_stamps_levels_on_each_luau_reaction() {
+        const DATA_SCRIPT_SRC: &str = include_str!("../../../../sdk/lib/data_script.luau");
+        let lua = mlua::Lua::new();
+        let data_script: mlua::Table = lua
+            .load(DATA_SCRIPT_SRC)
+            .set_name("data_script.luau")
+            .eval()
+            .unwrap();
+        lua.globals().set("D", data_script).unwrap();
+
+        let value: mlua::Value = lua
+            .load(
+                r#"
+                return D.scopeReactions({ "campaign", "intro" }, {
+                    D.defineReaction("globalLoad", {
+                        primitive = "playSound",
+                        args = { sound = "boot" },
+                    }),
+                    D.defineReaction("scopedAlready", {
+                        primitive = "playSound",
+                        args = { sound = "old" },
+                        levels = { "old" },
+                    }),
+                })
+                "#,
+            )
+            .eval()
+            .unwrap();
+        let reactions = super::super::conv::lua_to_json(value).unwrap();
+        let arr = reactions
+            .as_array()
+            .expect("scopeReactions returns an array");
+        assert_eq!(arr.len(), 2);
+        for reaction in arr {
+            assert_eq!(
+                reaction.get("levels").unwrap(),
+                &serde_json::json!(["campaign", "intro"])
+            );
+        }
+    }
+
+    #[test]
     fn sdk_prelude_does_not_install_ui_create_local_state_global() {
         let (subsys, _ctx) = setup();
         let (ui_ty, create_ty): (String, String) = subsys

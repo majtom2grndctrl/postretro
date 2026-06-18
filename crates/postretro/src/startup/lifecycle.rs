@@ -374,8 +374,8 @@ impl App {
 
     #[cfg(feature = "dev-tools")]
     fn enqueue_dev_level_cycle_target(&mut self, target: PathBuf) {
-        if self.boot_state == BootState::Loading && self.boot_load && self.level_load_in_flight() {
-            log::info!("[Loader] dev level lifecycle cycle ignored during boot map load");
+        if self.boot_state == BootState::Loading && self.level_load_in_flight() {
+            log::info!("[Loader] dev level lifecycle cycle ignored while level load is in flight");
             return;
         }
 
@@ -1496,5 +1496,31 @@ mod tests {
         );
         assert!(app.level_requests.is_empty());
         assert!(matches!(app.boot_state, BootState::Running));
+    }
+
+    #[cfg(feature = "dev-tools")]
+    #[test]
+    fn dev_level_cycle_ignores_runtime_load_in_flight_without_queueing_duplicate() {
+        let mut app = test_app();
+        let (_tx, rx) = std::sync::mpsc::channel();
+        app.boot_state = BootState::Loading;
+        app.boot_load = false;
+        app.level_rx = Some(rx);
+
+        let target = std::env::temp_dir().join(format!(
+            "postretro-existing-dev-level-cycle-target-{}.prl",
+            std::process::id()
+        ));
+        std::fs::write(&target, b"test target exists").expect("create dev cycle test target");
+
+        app.enqueue_dev_level_cycle_target(target.clone());
+
+        let _ = std::fs::remove_file(&target);
+        assert!(
+            app.level_requests.is_empty(),
+            "duplicate dev lifecycle cycle must not queue behind an active runtime load",
+        );
+        assert!(matches!(app.boot_state, BootState::Loading));
+        assert!(app.level_rx.is_some());
     }
 }

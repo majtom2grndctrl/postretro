@@ -36,9 +36,10 @@ pub(super) const FOG_VOLUMES_LUAU_SRC: &str =
     include_str!("../../../../sdk/lib/entities/fog_volumes.luau");
 
 /// SDK library prelude — `data_script.luau` returns a table whose fields
-/// (`defineReaction`, `defineEntity`, `defineStore`) are destructured into globals so
-/// data-script authors call them by bare name. Pure descriptor builders;
-/// no FFI happens until `setupMod` or `setupLevel` returns.
+/// (`defineReaction`, `defineEntity`, `defineMod`, `defineMapCatalog`, `defineStore`)
+/// are destructured into globals so data-script authors call them by bare name.
+/// Pure descriptor builders; no FFI happens until `setupMod` or `setupLevel`
+/// returns.
 const DATA_SCRIPT_LUAU_SRC: &str = include_str!("../../../../sdk/lib/data_script.luau");
 
 /// SDK library prelude — `runtime.luau` returns the runtime-value builder table,
@@ -103,7 +104,13 @@ const FOG_VOLUMES_LUAU_FIELDS: &[&str] = &[];
 
 /// Data-script SDK fields lifted to globals after evaluating
 /// `data_script.luau`.
-const DATA_SCRIPT_FIELDS: &[&str] = &["defineReaction", "defineEntity", "defineStore"];
+const DATA_SCRIPT_FIELDS: &[&str] = &[
+    "defineReaction",
+    "defineEntity",
+    "defineMod",
+    "defineMapCatalog",
+    "defineStore",
+];
 
 /// UI-reactions SDK fields exported through `require("postretro/ui")`.
 /// `onStateCrossing` builds a state-crossing watcher; the
@@ -216,6 +223,8 @@ pub(crate) const POSTRETRO_ROOT_MODULE_EXPORTS: &[&str] = &[
     "sequence",
     "defineReaction",
     "defineEntity",
+    "defineMod",
+    "defineMapCatalog",
     "defineStore",
     "emitter",
     "smokeEmitter",

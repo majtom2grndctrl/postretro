@@ -32,7 +32,24 @@ pub(crate) enum LevelRequest {
 }
 
 pub(crate) enum LevelSource {
+    #[allow(dead_code)]
+    Catalog(String),
     Path(PathBuf),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LevelLoadEntry {
+    pub(crate) catalog_id: Option<String>,
+    pub(crate) path: String,
+    pub(crate) name: String,
+    pub(crate) tags: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct InFlightLevelLoad {
+    pub(crate) map_path: PathBuf,
+    pub(crate) content_root: PathBuf,
+    pub(crate) entry: LevelLoadEntry,
 }
 
 /// `Base` = built-in PNG at `content/base/textures/splash/`.

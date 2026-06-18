@@ -20,8 +20,8 @@ use crate::scripting::state_persistence::{
     STATE_FILE_PATH, load_persisted_state, overlay_persisted_state,
 };
 use crate::startup::{
-    BootState, LevelRequest, LevelSource, LoadOutcome, SplashSource, StartupTimings,
-    spawn_level_worker,
+    BootState, InFlightLevelLoad, LevelLoadEntry, LevelRequest, LevelSource, LoadOutcome,
+    SplashSource, StartupTimings, spawn_level_worker,
 };
 use crate::{App, fx, prl, weapon};
 
@@ -57,6 +57,7 @@ impl App {
         self.boot_state = BootState::Booting;
         self.splash_frame = 0;
         self.pending_level_log = false;
+        self.level_load = None;
         self.level_requests.clear();
         self.boot_load = false;
     }
@@ -80,7 +81,7 @@ impl App {
     /// | `self.level` (LevelWorld) | renderer device/queue, window |
     /// | per-level GPU resources (textures, geometry) | `script_ctx`, `ScriptRuntime` |
     /// | light bridge, fog bridge, collision world | slot table (no clear method — engine-global) |
-    /// | level sounds, sprite collections | entity-type registry (`data_registry.entities`) |
+    /// | level sounds, sprite collections | entity-type registry (`data_registry.entities`), mod map catalog (`data_registry.maps`) |
     /// | `data_registry` reactions + crossings, presentation cells | persisted-state save path |
     /// | progress tracker, active wieldable, camera pose | |
     pub(crate) fn unload_level(&mut self) {
@@ -238,6 +239,7 @@ impl App {
                         for desc in std::mem::take(&mut manifest.entities) {
                             data_registry.upsert_entity_type(desc);
                         }
+                        data_registry.replace_maps(std::mem::take(&mut manifest.maps));
                         drop(data_registry);
 
                         // Register mod-scope UI trees into the tiered registry
@@ -401,10 +403,13 @@ impl App {
         while let Some(request) = self.level_requests.pop_front() {
             match request {
                 LevelRequest::Load(source) => {
+                    let Some(load) = self.resolve_level_source(source) else {
+                        continue;
+                    };
                     if self.boot_state == BootState::Running {
                         self.unload_level();
                     }
-                    self.begin_level_load(source);
+                    self.begin_level_load(load);
                     return;
                 }
                 LevelRequest::Unload => {
@@ -420,11 +425,62 @@ impl App {
         self.level_rx.is_some() || self.level_worker.is_some()
     }
 
-    fn begin_level_load(&mut self, source: LevelSource) {
-        let LevelSource::Path(map_path) = source;
+    fn resolve_level_source(&self, source: LevelSource) -> Option<InFlightLevelLoad> {
+        match source {
+            LevelSource::Catalog(id) => {
+                let entry = {
+                    let data_registry = self.script_ctx.data_registry.borrow();
+                    data_registry
+                        .maps
+                        .iter()
+                        .find(|entry| entry.id == id)
+                        .cloned()
+                };
+
+                let Some(entry) = entry else {
+                    log::warn!(
+                        "[Loader] catalog level load ignored: map id `{id}` is not registered"
+                    );
+                    return None;
+                };
+
+                let map_path = self.content_root.join(&entry.path);
+                Some(InFlightLevelLoad {
+                    map_path,
+                    content_root: self.content_root.clone(),
+                    entry: LevelLoadEntry {
+                        catalog_id: Some(entry.id),
+                        path: entry.path,
+                        name: entry.name,
+                        tags: entry.tags,
+                    },
+                })
+            }
+            LevelSource::Path(map_path) => {
+                let name = map_path
+                    .file_stem()
+                    .map(|stem| stem.to_string_lossy().into_owned())
+                    .filter(|stem| !stem.is_empty())
+                    .unwrap_or_else(|| map_path.display().to_string());
+                Some(InFlightLevelLoad {
+                    content_root: self.content_root.clone(),
+                    entry: LevelLoadEntry {
+                        catalog_id: None,
+                        path: map_path.to_string_lossy().into_owned(),
+                        name,
+                        tags: Vec::new(),
+                    },
+                    map_path,
+                })
+            }
+        }
+    }
+
+    fn begin_level_load(&mut self, load: InFlightLevelLoad) {
         self.level_timings = StartupTimings::new();
         let (tx, rx) = mpsc::channel();
-        let handle = spawn_level_worker(map_path, self.content_root.clone(), tx);
+        let handle = spawn_level_worker(load.map_path.clone(), load.content_root.clone(), tx);
+        self.level_load = Some(load);
         self.level_rx = Some(rx);
         self.level_worker = Some(handle);
         // Recorded after the spawn call so the delta covers channel creation
@@ -495,6 +551,7 @@ impl App {
         match payload.level {
             Some(world) => {
                 self.install_level_payload(world, payload.prm_cache_root);
+                self.level_load = None;
                 if let Some(renderer) = self.renderer.as_mut() {
                     renderer.clear_splash();
                 }
@@ -517,6 +574,7 @@ impl App {
     }
 
     fn finish_level_failure(&mut self, reason: String, event_loop: &ActiveEventLoop) {
+        self.level_load = None;
         let was_boot_load = std::mem::take(&mut self.boot_load);
         if was_boot_load {
             log::error!("[Loader] {reason}; boot map load failed");
@@ -984,7 +1042,7 @@ mod tests {
     };
     use crate::scripting::primitives::register_all;
     use crate::scripting::primitives_registry::PrimitiveRegistry;
-    use crate::scripting::runtime::{ScriptRuntime, ScriptRuntimeConfig};
+    use crate::scripting::runtime::{ModMapEntry, ScriptRuntime, ScriptRuntimeConfig};
     use crate::scripting::slot_table::{
         SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue,
     };
@@ -1085,6 +1143,7 @@ mod tests {
             boot_timings: StartupTimings::new(),
             mod_timings: StartupTimings::new(),
             level_timings: StartupTimings::new(),
+            level_load: None,
             level_rx: None,
             level_worker: None,
             level_requests: VecDeque::new(),
@@ -1134,6 +1193,25 @@ mod tests {
                 args: serde_json::Value::Object(Default::default()),
             }),
         }
+    }
+
+    fn catalog_map(id: &str, path: &str, name: &str, tags: &[&str]) -> ModMapEntry {
+        ModMapEntry {
+            id: id.to_string(),
+            path: path.to_string(),
+            name: name.to_string(),
+            tags: tags.iter().map(|tag| tag.to_string()).collect(),
+        }
+    }
+
+    fn drop_in_flight_worker(app: &mut App) {
+        app.level_rx = None;
+        if let Some(handle) = app.level_worker.take() {
+            handle
+                .join()
+                .expect("level worker should not panic during lifecycle test");
+        }
+        app.level_load = None;
     }
 
     fn map_light(tag: &str, origin: [f64; 3]) -> prl::MapLight {
@@ -1339,15 +1417,28 @@ mod tests {
         assert!(!app.presentation_cells.snapshot().is_empty());
 
         let slots_before = slot_snapshot(&app);
-        let entities_before = app.script_ctx.data_registry.borrow().entities.clone();
+        app.script_ctx
+            .data_registry
+            .borrow_mut()
+            .replace_maps(vec![ModMapEntry {
+                id: "e1m1".to_string(),
+                path: "maps/e1m1.prl".to_string(),
+                name: "Entryway".to_string(),
+                tags: vec!["campaign".to_string()],
+            }]);
+        let data_before = {
+            let data_registry = app.script_ctx.data_registry.borrow();
+            (data_registry.entities.clone(), data_registry.maps.clone())
+        };
 
         app.unload_level();
 
         assert_eq!(slot_snapshot(&app), slots_before);
-        assert_eq!(
-            app.script_ctx.data_registry.borrow().entities,
-            entities_before
-        );
+        let data_after = {
+            let data_registry = app.script_ctx.data_registry.borrow();
+            (data_registry.entities.clone(), data_registry.maps.clone())
+        };
+        assert_eq!(data_after, data_before);
         assert!(app.boot_state == BootState::Frontend);
         assert!(app.level.is_none());
         assert_eq!(app.script_time, 0.0);
@@ -1469,6 +1560,133 @@ mod tests {
             app.boot_load,
             "boot fatality marker stays with the active load"
         );
+    }
+
+    #[test]
+    fn catalog_level_load_resolves_path_and_stores_in_flight_entry() {
+        let mut app = test_app();
+        app.boot_state = BootState::Frontend;
+        app.content_root = PathBuf::from("content/mod");
+        app.script_ctx
+            .data_registry
+            .borrow_mut()
+            .replace_maps(vec![catalog_map(
+                "e1m1",
+                "maps/e1m1.prl",
+                "Entryway",
+                &["campaign", "intro"],
+            )]);
+
+        app.enqueue_level_request(LevelRequest::Load(LevelSource::Catalog("e1m1".to_string())));
+        app.drain_level_requests();
+
+        let load = app
+            .level_load
+            .as_ref()
+            .expect("catalog load should start and store in-flight metadata");
+        assert_eq!(load.map_path, PathBuf::from("content/mod/maps/e1m1.prl"));
+        assert_eq!(load.content_root, PathBuf::from("content/mod"));
+        assert_eq!(load.entry.catalog_id.as_deref(), Some("e1m1"));
+        assert_eq!(load.entry.path, "maps/e1m1.prl");
+        assert_eq!(load.entry.name, "Entryway");
+        assert_eq!(load.entry.tags, ["campaign", "intro"]);
+        assert!(matches!(app.boot_state, BootState::Loading));
+        assert!(app.level_load_in_flight());
+
+        drop_in_flight_worker(&mut app);
+    }
+
+    #[test]
+    fn missing_catalog_level_load_is_rejected_without_unloading_running_level() {
+        let mut app = test_app();
+        app.boot_state = BootState::Running;
+        app.level = Some(level_world(FIXTURE_MAP_A, 1));
+        app.script_ctx
+            .data_registry
+            .borrow_mut()
+            .replace_maps(vec![catalog_map(
+                "known",
+                "maps/known.prl",
+                "Known Map",
+                &["campaign"],
+            )]);
+
+        app.enqueue_level_request(LevelRequest::Load(LevelSource::Catalog(
+            "missing".to_string(),
+        )));
+        app.drain_level_requests();
+
+        assert!(
+            app.level.is_some(),
+            "missing id must not unload active level"
+        );
+        assert!(app.level_load.is_none());
+        assert!(app.level_rx.is_none());
+        assert!(app.level_worker.is_none());
+        assert!(app.level_requests.is_empty());
+        assert!(matches!(app.boot_state, BootState::Running));
+    }
+
+    #[test]
+    fn raw_path_level_load_synthesizes_non_catalog_metadata() {
+        let mut app = test_app();
+        app.boot_state = BootState::Frontend;
+        app.content_root = PathBuf::from("content/dev");
+        let raw_path = PathBuf::from("content/dev/maps/raw-dev-map.prl");
+
+        app.enqueue_level_request(LevelRequest::Load(LevelSource::Path(raw_path.clone())));
+        app.drain_level_requests();
+
+        let load = app
+            .level_load
+            .as_ref()
+            .expect("raw path load should start with synthesized metadata");
+        assert_eq!(load.map_path, raw_path);
+        assert_eq!(load.content_root, PathBuf::from("content/dev"));
+        assert_eq!(load.entry.catalog_id, None);
+        assert_eq!(load.entry.path, "content/dev/maps/raw-dev-map.prl");
+        assert_eq!(load.entry.name, "raw-dev-map");
+        assert!(load.entry.tags.is_empty());
+        assert!(matches!(app.boot_state, BootState::Loading));
+
+        drop_in_flight_worker(&mut app);
+    }
+
+    #[test]
+    fn catalog_tags_are_available_on_in_flight_load_before_data_script_runs() {
+        let mut app = test_app();
+        app.boot_state = BootState::Frontend;
+        app.content_root = PathBuf::from("content/mod");
+        app.script_ctx
+            .data_registry
+            .borrow_mut()
+            .replace_maps(vec![catalog_map(
+                "arena",
+                "maps/arena.prl",
+                "Arena",
+                &["deathmatch", "night"],
+            )]);
+
+        app.enqueue_level_request(LevelRequest::Load(LevelSource::Catalog(
+            "arena".to_string(),
+        )));
+        app.drain_level_requests();
+
+        assert_eq!(
+            app.level_load
+                .as_ref()
+                .expect("catalog load should be in flight before install")
+                .entry
+                .tags,
+            ["deathmatch", "night"],
+            "catalog tags must be present before worker delivery and data-script install",
+        );
+        assert!(
+            app.script_ctx.data_registry.borrow().reactions.is_empty(),
+            "data script has not run while load metadata is already available",
+        );
+
+        drop_in_flight_worker(&mut app);
     }
 
     #[cfg(feature = "dev-tools")]

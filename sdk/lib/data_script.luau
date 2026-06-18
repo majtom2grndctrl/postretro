@@ -272,6 +272,18 @@ function DataScriptSdk.defineEntity(descriptor: EntityTypeDescriptor): EntityTyp
   return descriptor
 end
 
+--- Identity builder for the object returned from `setupMod`.
+--- Pure: returns the manifest as-is. The engine consumes it only at the
+--- setup return boundary.
+function DataScriptSdk.defineMod(config: ModManifest): ModManifest
+  return config
+end
+
+--- Identity builder for a mod map catalog. Pure: returns the array as-is.
+function DataScriptSdk.defineMapCatalog(entries: {ModMapEntry}): {ModMapEntry}
+  return entries
+end
+
 local MAGIC_SCHEMA_KEYS = {
   __proto__ = true,
   constructor = true,

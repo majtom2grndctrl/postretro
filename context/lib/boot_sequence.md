@@ -29,7 +29,7 @@ Boot runs in two stages: a setup pass that builds session-lifetime state, then a
 The splash advances one frame per redraw, deferring all CPU-heavy work behind visible pixels:
 
 - **First frame.** Paint a black frame so the OS window appears immediately (no splash texture bound yet). After present: decode and upload the splash image. No mod or level work.
-- **Second frame.** Paint the splash so it is visible before any user-authored work. After paint: recompile stale scripts (debug-only; release no-ops), then run mod init. On success the engine commits the validated entity descriptors and transactional mod-state declarations. Persistence overlays declared defaults only on the first successful commit in the process. All store initialization completes before level work and the first gameplay frame. Start the hot-reload watcher (debug-only). With no CLI map, clear splash and enter Frontend. With a CLI map, enqueue a load request and enter Loading.
+- **Second frame.** Paint the splash so it is visible before any user-authored work. After paint: recompile stale scripts (debug-only; release no-ops), then run mod init. On success the engine commits the validated entity descriptors, transactional mod-state declarations, and the mod map catalog from `ModManifest.maps`. Persistence overlays declared defaults only on the first successful commit in the process. Store initialization and catalog commit complete before level work and the first gameplay frame. Start the hot-reload watcher (debug-only). With no CLI map, clear splash and enter Frontend. With a CLI map, enqueue a raw-path load request and enter Loading.
 - **Loading frames.** Non-blocking poll of the worker channel. Keep painting the splash while it runs. On a non-empty payload: install the level, clear the splash, enter Running. Runtime load failures log and return to Frontend. A failed CLI boot-map load exits non-zero.
 
 The two-frame delay is causal: pixels reach the user before any mod-supplied or level-load CPU work runs.
@@ -94,6 +94,8 @@ Runtime level requests drain at the redraw boundary before gameplay/world work f
 | Failed runtime load | Log diagnostic, clear splash if needed, enter Frontend. |
 | Failed CLI boot load | Log diagnostic and exit non-zero. |
 
+`LevelSource::Catalog(id)` resolves against the engine-global `DataRegistry.maps` snapshot before a worker is spawned. A found entry contributes `content_root.join(entry.path)` to the worker and stores `{ catalog_id, path, name, tags }` on the in-flight load so catalog metadata is available before the data script runs. A missing id logs a diagnostic and no-ops; it must not unload an active level. Raw path loads (`LevelSource::Path`, including the CLI map path and dev tooling) bypass the catalog and synthesize non-catalog metadata: no catalog id, `tags = []`, and `name` from the file stem.
+
 Clear-on-unload contract:
 
 | Cleared on unload | Kept across unload |
@@ -101,7 +103,7 @@ Clear-on-unload contract:
 | Level world | Renderer device/queue, window |
 | Per-level GPU resources: textures, geometry, mesh-pass caches, smoke collections | Script runtime and script context |
 | Light bridge, fog bridge, collision world | Slot table |
-| Level sounds, sprite collections | Entity-type registry |
+| Level sounds, sprite collections | Entity-type registry and mod map catalog |
 | Per-level data reactions, crossings, UI registrations, and presentation cells | Persisted-state save path |
 | Progress tracker, active wieldable, camera pose | Rust-side primitive/classname registries |
 
@@ -124,11 +126,12 @@ Platform suspend is a separate path: it clears renderer/window/fog/collision and
 |-------|-----------|
 | Engine init (preludes, primitive registry, `ScriptCtx`, `ScriptRuntime`, Rust-side registries) | Process exit only — built once at startup, never recreated. |
 | `data_registry.entities` (entity-type descriptors from `setupMod` return) | Engine-global. Survives level unload; survives platform suspend. |
+| `data_registry.maps` (mod map catalog from `setupMod().maps`) | Engine-global. Survives level unload; survives platform suspend. |
 | Per-level reactions (`data_registry.reactions`) and level-scope UI trees | Level unload. |
 | Level world, collision world, fog bridge, light bridge, level sounds, sprite collections, per-level GPU resources | Level unload; also cleared/dropped by suspend or exit as applicable. |
 | Renderer device/queue, window, audio mixer | Dropped on exit; renderer/window cleared on suspend and rebuilt on resume. |
 
-Hot reload (debug only) stages entity descriptors and store declarations off-thread, then reconciles both on the main thread. Compatible store schemas preserve live values; incompatible changes reject the staged result; removed declarations never clear committed stores.
+Hot reload (debug only) stages entity descriptors, store declarations, and the map catalog off-thread, then reconciles them on the main thread. Compatible store schemas preserve live values; incompatible changes reject the staged result and preserve the previous descriptors/catalog. A successful staged commit atomically replaces the committed catalog snapshot; stale or failed staged results leave it unchanged. Removed store declarations never clear committed stores.
 
 ---
 

@@ -95,7 +95,8 @@ use crate::scripting::state_persistence::{
     STATE_FILE_PATH, StateStoreLifecycle, collect_persisted_state, save_persisted_state,
 };
 use crate::startup::{
-    BootState, FRONTEND_CLEAR_COLOR, LevelRequest, LoadOutcome, SplashSource, StartupTimings,
+    BootState, FRONTEND_CLEAR_COLOR, InFlightLevelLoad, LevelRequest, LoadOutcome, SplashSource,
+    StartupTimings,
 };
 use crate::visibility::{VisibilityPath, VisibilityResult, VisibilityStats, VisibleCells};
 
@@ -555,6 +556,7 @@ fn main() -> Result<()> {
         boot_timings,
         mod_timings: StartupTimings::new(),
         level_timings: StartupTimings::new(),
+        level_load: None,
         level_rx: None,
         level_worker: None,
         level_requests: VecDeque::new(),
@@ -983,6 +985,12 @@ struct App {
     /// `StartupTimings` doc comment.
     level_timings: StartupTimings,
 
+    /// Metadata for the active Loading-state request. Catalog loads retain the
+    /// resolved catalog entry here; raw dev-path loads synthesize a non-catalog
+    /// entry so install code can read consistent map metadata before data
+    /// scripts run.
+    level_load: Option<InFlightLevelLoad>,
+
     /// Receives the active level worker's `LoadOutcome`. `None` when no load is
     /// in flight; consumed via `try_recv` by the `Loading` state.
     level_rx: Option<mpsc::Receiver<LoadOutcome>>,
@@ -1189,6 +1197,7 @@ impl ApplicationHandler for App {
         // state machine starts over from frame 0 and will spawn a fresh
         // worker; holding a stale receiver/handle would either block install
         // forever or deliver into the wrong boot phase.
+        self.level_load = None;
         self.level_rx = None;
         self.level_worker = None;
         self.reset_boot_state_after_suspend();
@@ -4500,6 +4509,7 @@ mod tests {
                 crate::scripting::staged_manifest::StagedManifest {
                     name: "UiCommit".to_string(),
                     entities: Vec::new(),
+                    maps: Vec::new(),
                     ui_trees: vec![staged_tree("hud")],
                     theme: ModThemeTokens {
                         colors: HashMap::from([("critical".to_string(), [0.25, 0.5, 0.75, 1.0])]),

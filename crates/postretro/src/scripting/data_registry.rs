@@ -10,9 +10,10 @@ use std::collections::HashMap;
 use super::data_descriptors::{
     CrossingDescriptor, EntityTypeDescriptor, LevelManifest, NamedReaction,
 };
+use super::runtime::ModMapEntry;
 
-/// Data registries collected from data-context script execution.
-/// `reactions` are per-level and cleared on unload; `entities` are
+/// Data registries collected from script execution.
+/// `reactions` are per-level and cleared on unload; `entities` and `maps` are
 /// engine-global (populated via the mod-init path) and survive level unload.
 #[derive(Debug, Default)]
 pub(crate) struct DataRegistry {
@@ -29,6 +30,11 @@ pub(crate) struct DataRegistry {
     /// via [`Self::upsert_entity_type`]. Read by the data-archetype spawn
     /// sweep. Not populated from `setupLevel()`.
     pub(crate) entities: Vec<EntityTypeDescriptor>,
+    /// Mod map catalog entries. Engine-global — survive level unload.
+    /// Populated by the boot caller from `setupMod()`'s `maps` field so the
+    /// frontend and catalog-id load path can discover maps before a level is
+    /// loaded. Not populated from `setupLevel()`.
+    pub(crate) maps: Vec<ModMapEntry>,
 }
 
 impl DataRegistry {
@@ -127,9 +133,15 @@ impl DataRegistry {
         self.entities = Self::dedup_entity_type_snapshot(descriptors);
     }
 
+    /// Replace the engine-global map catalog snapshot as one complete commit.
+    /// Used by startup and successful staged mod-init commits.
+    pub(crate) fn replace_maps(&mut self, maps: Vec<ModMapEntry>) {
+        self.maps = maps;
+    }
+
     /// Drop every registered reaction. `entities` outlives the clear
-    /// (engine-global; set via the mod-init path); only `reactions` are
-    /// per-level and wiped here. Called on level unload.
+    /// and so does `maps` (engine-global; set via the mod-init path); only
+    /// per-level collections are wiped here. Called on level unload.
     /// See [`Self::upsert_entity_type`].
     pub(crate) fn clear(&mut self) {
         self.reactions.clear();
@@ -137,11 +149,14 @@ impl DataRegistry {
     }
 
     /// Returns `true` only when both collections are empty. After level unload,
-    /// `entities` is still populated, so this returns `false` — production code
-    /// should use `reactions.is_empty()` for level-unload checks.
+    /// `entities` or `maps` may still be populated, so this returns `false` —
+    /// production code should use `reactions.is_empty()` for level-unload checks.
     #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
-        self.reactions.is_empty() && self.crossings.is_empty() && self.entities.is_empty()
+        self.reactions.is_empty()
+            && self.crossings.is_empty()
+            && self.entities.is_empty()
+            && self.maps.is_empty()
     }
 }
 
@@ -181,6 +196,15 @@ mod tests {
         }
     }
 
+    fn sample_map(id: &str) -> ModMapEntry {
+        ModMapEntry {
+            id: id.to_string(),
+            path: format!("maps/{id}.prl"),
+            name: id.to_string(),
+            tags: vec!["campaign".to_string()],
+        }
+    }
+
     #[test]
     fn new_registry_is_empty() {
         let r = DataRegistry::new();
@@ -203,6 +227,18 @@ mod tests {
         r.clear();
         assert_eq!(r.reactions.len(), 0);
         assert_eq!(r.entities.len(), 1, "entities survive level unload");
+    }
+
+    #[test]
+    fn clear_drops_reactions_but_keeps_map_catalog() {
+        let mut r = DataRegistry::new();
+        r.populate_from_manifest(sample_manifest());
+        r.replace_maps(vec![sample_map("e1m1")]);
+
+        r.clear();
+
+        assert_eq!(r.reactions.len(), 0);
+        assert_eq!(r.maps, vec![sample_map("e1m1")]);
     }
 
     #[test]

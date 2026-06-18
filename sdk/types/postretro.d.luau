@@ -390,6 +390,18 @@ export type ModUiTree = {
   alwaysOn: boolean?,
 }
 
+--- One map listed in `ModManifest.maps`. `id` is the stable logical handle, `path` is authored relative to the content root, `name` is the display name, and `tags` are authoritative classification strings.
+export type ModMapEntry = {
+  --- Stable logical map handle. Required.
+  id: string,
+  --- PRL path authored relative to the content root. Required.
+  path: string,
+  --- Display name shown to players. Required.
+  name: string,
+  --- Authoritative classification tags for filtering and reaction composition. Required.
+  tags: {string},
+}
+
 --- Theme token maps supplied via `ModManifest.theme`. Three category-scoped maps: colors (linear-RGBA), fonts (registered family name), spacing (logical px). Each is optional; overrides merge per-token into the engine default.
 export type ThemeTokens = {
   --- Color tokens: token name → linear-RGBA `[r, g, b, a]`. Optional.
@@ -412,6 +424,8 @@ export type ModManifest = {
   theme: ThemeTokens?,
   --- Font assets: family name → TTF asset path. Optional.
   fonts: { [string]: string }?,
+  --- Pre-load-discoverable map catalog. Optional.
+  maps: {ModMapEntry}?,
 }
 
 --- Valid values: `Point`, `Spot`, `Directional`.
@@ -821,6 +835,10 @@ declare defineReaction: (
 --- Pure identity builder for entity-type descriptors. Returns the
 --- descriptor as-is; its sole purpose is a typed construction site.
 declare function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor
+--- Pure identity builder for the manifest returned from `setupMod()`.
+declare function defineMod(config: ModManifest): ModManifest
+--- Pure identity builder for a mod map catalog.
+declare function defineMapCatalog(entries: {ModMapEntry}): {ModMapEntry}
 
 -- ---------------------------------------------------------------------------
 -- State-store declarations. `defineStore` is special-cased in the typedef
@@ -1253,6 +1271,8 @@ export type PostretroModule = {
   sequence: typeof(sequence),
   defineReaction: typeof(defineReaction),
   defineEntity: typeof(defineEntity),
+  defineMod: typeof(defineMod),
+  defineMapCatalog: typeof(defineMapCatalog),
   defineStore: typeof(defineStore),
   emitter: typeof(emitter),
   smokeEmitter: typeof(smokeEmitter),

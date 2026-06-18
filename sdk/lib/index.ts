@@ -45,7 +45,13 @@ export type {
   StoreDefinition,
   StoreSlotSchema,
 } from "./data_script";
-export { defineReaction, defineEntity, defineStore } from "./data_script";
+export {
+  defineReaction,
+  defineEntity,
+  defineMod,
+  defineMapCatalog,
+  defineStore,
+} from "./data_script";
 
 export type {
   BillboardEmitter,

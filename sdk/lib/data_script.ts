@@ -176,6 +176,22 @@ export function defineEntity(
   return descriptor;
 }
 
+/** Identity builder for the object returned from `setupMod()`. Pure: no engine
+ * side effects; the engine consumes the returned manifest only at the setup
+ * return boundary. */
+export function defineMod(
+  config: import("postretro").ModManifest,
+): import("postretro").ModManifest {
+  return config;
+}
+
+/** Identity builder for a mod map catalog. Pure: no engine side effects. */
+export function defineMapCatalog(
+  entries: import("postretro").ModMapEntry[],
+): import("postretro").ModMapEntry[] {
+  return entries;
+}
+
 const MAGIC_SCHEMA_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 
 function schemaPath(parent: string, key: string): string {

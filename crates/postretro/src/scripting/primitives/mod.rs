@@ -416,6 +416,22 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         )
         .finish();
     registry
+        .register_type("ModMapEntry")
+        .doc("One map listed in `ModManifest.maps`. `id` is the stable logical handle, `path` is authored relative to the content root, `name` is the display name, and `tags` are authoritative classification strings.")
+        .field("id", "String", "Stable logical map handle. Required.")
+        .field(
+            "path",
+            "String",
+            "PRL path authored relative to the content root. Required.",
+        )
+        .field("name", "String", "Display name shown to players. Required.")
+        .field(
+            "tags",
+            "Vec<String>",
+            "Authoritative classification tags for filtering and reaction composition. Required.",
+        )
+        .finish();
+    registry
         .register_type("ThemeTokens")
         .doc("Theme token maps supplied via `ModManifest.theme`. Three category-scoped maps: colors (linear-RGBA), fonts (registered family name), spacing (logical px). Each is optional; overrides merge per-token into the engine default.")
         .field(
@@ -457,6 +473,11 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
             "fonts?",
             "FontFamilyMap",
             "Font assets: family name → TTF asset path. Optional.",
+        )
+        .field(
+            "maps?",
+            "Vec<ModMapEntry>",
+            "Pre-load-discoverable map catalog. Optional.",
         )
         .finish();
 }
@@ -546,9 +567,10 @@ mod tests {
             ui_trees: Vec::new(),
             theme: crate::scripting::data_descriptors::ModThemeTokens::default(),
             fonts: crate::scripting::data_descriptors::ModFontAssets::default(),
+            maps: Vec::new(),
             store_declarations: crate::scripting::slot_table::StoreDeclarationSet::default(),
         };
-        let expected_fields: &[&str] = &["name", "entities", "uiTrees", "theme", "fonts"];
+        let expected_fields: &[&str] = &["name", "entities", "uiTrees", "theme", "fonts", "maps"];
 
         let mut r = PrimitiveRegistry::new();
         register_shared_types(&mut r);

@@ -150,6 +150,7 @@ fn rust_to_ts(ty_name: &str) -> String {
         "FogVolumeComponent" => "FogVolumeComponent".to_string(),
         "FogVolumeEntity" => "FogVolumeEntity".to_string(),
         "ModManifest" => "ModManifest".to_string(),
+        "ModMapEntry" => "ModMapEntry".to_string(),
         "ModUiTree" => "ModUiTree".to_string(),
         "ThemeTokens" => "ThemeTokens".to_string(),
         // The `AnchoredTree` Rust type renders to the SDK's `AnchoredTreeDescriptor`
@@ -276,6 +277,7 @@ fn rust_to_luau(ty_name: &str) -> String {
         "FogVolumeComponent" => "FogVolumeComponent".to_string(),
         "FogVolumeEntity" => "FogVolumeEntity".to_string(),
         "ModManifest" => "ModManifest".to_string(),
+        "ModMapEntry" => "ModMapEntry".to_string(),
         "ModUiTree" => "ModUiTree".to_string(),
         "ThemeTokens" => "ThemeTokens".to_string(),
         "AnchoredTree" => "AnchoredTreeDescriptor".to_string(),
@@ -1167,6 +1169,10 @@ const TS_SDK_LIB_BLOCK: &str = r#"
 
   /** Pure identity builder for entity-type descriptors. Returns the descriptor as-is; its sole purpose is a typed construction site. */
   export function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor;
+  /** Pure identity builder for the manifest returned from `setupMod()`. */
+  export function defineMod(config: ModManifest): ModManifest;
+  /** Pure identity builder for a mod map catalog. */
+  export function defineMapCatalog(entries: ModMapEntry[]): ModMapEntry[];
 
   // -------------------------------------------------------------------------
   // Runtime-value vocabulary — the typed command buffer (scripting.md §11). The
@@ -2044,6 +2050,10 @@ declare defineReaction: (
 --- Pure identity builder for entity-type descriptors. Returns the
 --- descriptor as-is; its sole purpose is a typed construction site.
 declare function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor
+--- Pure identity builder for the manifest returned from `setupMod()`.
+declare function defineMod(config: ModManifest): ModManifest
+--- Pure identity builder for a mod map catalog.
+declare function defineMapCatalog(entries: {ModMapEntry}): {ModMapEntry}
 
 --- Build a state-crossing watcher. Pure: returns a plain table, no FFI. Place
 --- the result in `setupLevel`'s returned `crossings` array. On a crossing in
@@ -2632,6 +2642,8 @@ export type PostretroModule = {
   sequence: typeof(sequence),
   defineReaction: typeof(defineReaction),
   defineEntity: typeof(defineEntity),
+  defineMod: typeof(defineMod),
+  defineMapCatalog: typeof(defineMapCatalog),
   defineStore: typeof(defineStore),
   emitter: typeof(emitter),
   smokeEmitter: typeof(smokeEmitter),
@@ -3180,6 +3192,18 @@ declare module "postretro" {
     alwaysOn?: boolean;
   };
 
+  /** One map listed in `ModManifest.maps`. `id` is the stable logical handle, `path` is authored relative to the content root, `name` is the display name, and `tags` are authoritative classification strings. */
+  export type ModMapEntry = {
+    /** Stable logical map handle. Required. */
+    id: string;
+    /** PRL path authored relative to the content root. Required. */
+    path: string;
+    /** Display name shown to players. Required. */
+    name: string;
+    /** Authoritative classification tags for filtering and reaction composition. Required. */
+    tags: ReadonlyArray<string>;
+  };
+
   /** Theme token maps supplied via `ModManifest.theme`. Three category-scoped maps: colors (linear-RGBA), fonts (registered family name), spacing (logical px). Each is optional; overrides merge per-token into the engine default. */
   export type ThemeTokens = {
     /** Color tokens: token name → linear-RGBA `[r, g, b, a]`. Optional. */
@@ -3202,6 +3226,8 @@ declare module "postretro" {
     theme?: ThemeTokens;
     /** Font assets: family name → TTF asset path. Optional. */
     fonts?: { readonly [token: string]: string };
+    /** Pre-load-discoverable map catalog. Optional. */
+    maps?: ReadonlyArray<ModMapEntry>;
   };
 
   /** Returns true if the entity id refers to a live entity. */
@@ -3601,6 +3627,18 @@ export type ModUiTree = {
   alwaysOn: boolean?,
 }
 
+--- One map listed in `ModManifest.maps`. `id` is the stable logical handle, `path` is authored relative to the content root, `name` is the display name, and `tags` are authoritative classification strings.
+export type ModMapEntry = {
+  --- Stable logical map handle. Required.
+  id: string,
+  --- PRL path authored relative to the content root. Required.
+  path: string,
+  --- Display name shown to players. Required.
+  name: string,
+  --- Authoritative classification tags for filtering and reaction composition. Required.
+  tags: {string},
+}
+
 --- Theme token maps supplied via `ModManifest.theme`. Three category-scoped maps: colors (linear-RGBA), fonts (registered family name), spacing (logical px). Each is optional; overrides merge per-token into the engine default.
 export type ThemeTokens = {
   --- Color tokens: token name → linear-RGBA `[r, g, b, a]`. Optional.
@@ -3623,6 +3661,8 @@ export type ModManifest = {
   theme: ThemeTokens?,
   --- Font assets: family name → TTF asset path. Optional.
   fonts: { [string]: string }?,
+  --- Pre-load-discoverable map catalog. Optional.
+  maps: {ModMapEntry}?,
 }
 
 --- Returns true if the entity id refers to a live entity.
@@ -4084,6 +4124,38 @@ export type Event = {
                 "export type StoreStateRef<T> = ReadonlyStateRef<T> | WritableStateRef<T>"
             ) && luau.contains("state: { [string]: StoreStateRef<any> },"),
             "luau StoreDefinition must not type every store slot as writable:\n{luau}"
+        );
+    }
+
+    #[test]
+    fn mod_manifest_catalog_helpers_are_covered_by_typedefs() {
+        use crate::scripting::ctx::ScriptCtx;
+        use crate::scripting::primitives::register_all;
+
+        let mut r = PrimitiveRegistry::new();
+        register_all(&mut r, ScriptCtx::new());
+        let ts = generate_typescript(&r);
+        let luau = generate_luau(&r);
+
+        assert!(
+            ts.contains("export type ModMapEntry = {")
+                && ts.contains("maps?: ReadonlyArray<ModMapEntry>;")
+                && ts.contains("export function defineMod(config: ModManifest): ModManifest;")
+                && ts.contains(
+                    "export function defineMapCatalog(entries: ModMapEntry[]): ModMapEntry[];"
+                ),
+            "ts output missing mod map catalog helper/type coverage:\n{ts}"
+        );
+        assert!(
+            luau.contains("export type ModMapEntry = {")
+                && luau.contains("maps: {ModMapEntry}?")
+                && luau.contains("declare function defineMod(config: ModManifest): ModManifest")
+                && luau.contains(
+                    "declare function defineMapCatalog(entries: {ModMapEntry}): {ModMapEntry}"
+                )
+                && luau.contains("defineMod: typeof(defineMod),")
+                && luau.contains("defineMapCatalog: typeof(defineMapCatalog),"),
+            "luau output missing mod map catalog helper/type coverage:\n{luau}"
         );
     }
 

@@ -19,8 +19,9 @@ use rquickjs::{
 use super::ctx::ScriptCtx;
 use super::data_descriptors::{
     EntityTypeDescriptor, LevelManifest, ModFontAssets, ModThemeTokens, RegisteredUiTree,
-    drain_fonts_js, drain_fonts_lua, drain_theme_js, drain_theme_lua, drain_ui_trees_js,
-    drain_ui_trees_lua, entity_descriptor_from_js, entity_descriptor_from_lua,
+    drain_fonts_js, drain_fonts_lua, drain_maps_js, drain_maps_lua, drain_theme_js,
+    drain_theme_lua, drain_ui_trees_js, drain_ui_trees_lua, entity_descriptor_from_js,
+    entity_descriptor_from_lua,
 };
 use super::error::ScriptError;
 use super::luau::{LuauConfig, LuauSubsystem, Which as LuauWhich};
@@ -41,6 +42,14 @@ use super::staged_manifest::{StagedManifestBuildStatus, StagedManifestDiagnostic
 
 /// Validated `setupMod()` return value. Construct via
 /// [`ScriptRuntime::run_mod_init`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ModMapEntry {
+    pub(crate) id: String,
+    pub(crate) path: String,
+    pub(crate) name: String,
+    pub(crate) tags: Vec<String>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ModManifestResult {
     pub(crate) name: String,
@@ -60,6 +69,10 @@ pub(crate) struct ModManifestResult {
     /// Default (empty) when absent. Installed via `register_ui_font` by the
     /// boot caller.
     pub(crate) fonts: ModFontAssets,
+    /// Map catalog entries from `setupMod()`'s `maps` field. Empty when absent.
+    /// Drained into `DataRegistry` by the boot caller after `run_mod_init`
+    /// returns.
+    pub(crate) maps: Vec<ModMapEntry>,
     /// Validated state-store declarations collected during this mod-init
     /// attempt. This is engine metadata, not a `ModManifest` script field.
     pub(crate) store_declarations: StoreDeclarationSet,
@@ -482,65 +495,72 @@ impl ScriptRuntime {
 
             self.log_staged_manifest_diagnostics(result);
 
-            let (next_descriptors, next_store_declarations, next_dependencies, descriptor_label) =
-                match &result.status {
-                    StagedManifestBuildStatus::Built(manifest) => {
-                        let dependencies = match ActiveModInitDependencies::from_dependencies(
-                            &result.mod_root,
-                            manifest.dependency_paths.iter(),
-                        ) {
-                            Ok(dependencies) => dependencies,
-                            Err(err) => {
-                                log::error!(
-                                    "[Scripting] staged mod-init generation {} rejected before commit: {err}",
-                                    result.generation,
-                                );
-                                return StagedManifestCommitOutcome::Rejected {
-                                    generation: result.generation,
-                                    reason: err,
-                                };
-                            }
-                        };
-                        (
-                            manifest.entities.clone(),
-                            manifest.store_declarations.clone(),
-                            dependencies,
-                            format!("mod `{}`", manifest.name),
-                        )
-                    }
-                    StagedManifestBuildStatus::NoStartScript => {
-                        let dependencies = match ActiveModInitDependencies::no_start_script(
-                            &result.mod_root,
-                        ) {
-                            Ok(dependencies) => dependencies,
-                            Err(err) => {
-                                log::error!(
-                                    "[Scripting] staged mod-init generation {} rejected before commit: {err}",
-                                    result.generation,
-                                );
-                                return StagedManifestCommitOutcome::Rejected {
-                                    generation: result.generation,
-                                    reason: err,
-                                };
-                            }
-                        };
-                        (
-                            Vec::new(),
-                            StoreDeclarationSet::default(),
-                            dependencies,
-                            "debug no-start-script state".to_string(),
-                        )
-                    }
-                    StagedManifestBuildStatus::Failed => {
-                        log::error!(
-                            "[Scripting] staged mod-init generation {} failed; keeping current descriptor registry",
-                            result.generation,
-                        );
-                        return StagedManifestCommitOutcome::FailedBuild {
-                            generation: result.generation,
-                        };
-                    }
-                };
+            let (
+                next_descriptors,
+                next_maps,
+                next_store_declarations,
+                next_dependencies,
+                descriptor_label,
+            ) = match &result.status {
+                StagedManifestBuildStatus::Built(manifest) => {
+                    let dependencies = match ActiveModInitDependencies::from_dependencies(
+                        &result.mod_root,
+                        manifest.dependency_paths.iter(),
+                    ) {
+                        Ok(dependencies) => dependencies,
+                        Err(err) => {
+                            log::error!(
+                                "[Scripting] staged mod-init generation {} rejected before commit: {err}",
+                                result.generation,
+                            );
+                            return StagedManifestCommitOutcome::Rejected {
+                                generation: result.generation,
+                                reason: err,
+                            };
+                        }
+                    };
+                    (
+                        manifest.entities.clone(),
+                        manifest.maps.clone(),
+                        manifest.store_declarations.clone(),
+                        dependencies,
+                        format!("mod `{}`", manifest.name),
+                    )
+                }
+                StagedManifestBuildStatus::NoStartScript => {
+                    let dependencies = match ActiveModInitDependencies::no_start_script(
+                        &result.mod_root,
+                    ) {
+                        Ok(dependencies) => dependencies,
+                        Err(err) => {
+                            log::error!(
+                                "[Scripting] staged mod-init generation {} rejected before commit: {err}",
+                                result.generation,
+                            );
+                            return StagedManifestCommitOutcome::Rejected {
+                                generation: result.generation,
+                                reason: err,
+                            };
+                        }
+                    };
+                    (
+                        Vec::new(),
+                        Vec::new(),
+                        StoreDeclarationSet::default(),
+                        dependencies,
+                        "debug no-start-script state".to_string(),
+                    )
+                }
+                StagedManifestBuildStatus::Failed => {
+                    log::error!(
+                        "[Scripting] staged mod-init generation {} failed; keeping current descriptor registry",
+                        result.generation,
+                    );
+                    return StagedManifestCommitOutcome::FailedBuild {
+                        generation: result.generation,
+                    };
+                }
+            };
 
             // Dedup once up front (last-write-wins, matching startup's upsert)
             // so the warning fires a single time and both the refresh plan and
@@ -616,6 +636,7 @@ impl ScriptRuntime {
             ctx.data_registry
                 .borrow_mut()
                 .replace_entity_types(next_descriptors);
+            ctx.data_registry.borrow_mut().replace_maps(next_maps);
             let dependency_count = next_dependencies.len();
             self.active_mod_init_dependencies = Some(next_dependencies);
             log::info!(
@@ -1612,6 +1633,15 @@ fn run_mod_init_quickjs(
                 return;
             }
         };
+        let maps = match drain_maps_js(&obj, "setupMod") {
+            Ok(m) => m,
+            Err(e) => {
+                out = Err(ScriptError::InvalidArgument {
+                    reason: format!("mod-init: `{source_path}` setupMod `maps` invalid: {e}"),
+                });
+                return;
+            }
+        };
         let store_declarations = match drain_store_declarations_js(&ctx, &obj) {
             Ok(stores) => stores,
             Err(e) => {
@@ -1628,6 +1658,7 @@ fn run_mod_init_quickjs(
             ui_trees,
             theme,
             fonts,
+            maps,
             store_declarations,
         });
     });
@@ -1755,6 +1786,9 @@ fn run_mod_init_luau(
     let fonts = drain_fonts_lua(&table, "setupMod").map_err(|e| ScriptError::InvalidArgument {
         reason: format!("mod-init: `{source_path}` setupMod `fonts` invalid: {e}"),
     })?;
+    let maps = drain_maps_lua(&table, "setupMod").map_err(|e| ScriptError::InvalidArgument {
+        reason: format!("mod-init: `{source_path}` setupMod `maps` invalid: {e}"),
+    })?;
     let store_declarations =
         drain_store_declarations_lua(&table).map_err(|e| ScriptError::InvalidArgument {
             reason: format!("mod-init: `{source_path}` setupMod `stores` invalid: {e}"),
@@ -1766,6 +1800,7 @@ fn run_mod_init_luau(
         ui_trees,
         theme,
         fonts,
+        maps,
         store_declarations,
     })
 }
@@ -1805,6 +1840,15 @@ mod tests {
             weapon: None,
             mesh: None,
             health: None,
+        }
+    }
+
+    fn map_entry(id: &str) -> ModMapEntry {
+        ModMapEntry {
+            id: id.to_string(),
+            path: format!("maps/{id}.prl"),
+            name: id.to_string(),
+            tags: vec!["campaign".to_string()],
         }
     }
 
@@ -1867,12 +1911,32 @@ mod tests {
         entities: Vec<EntityTypeDescriptor>,
         dependency_paths: Vec<PathBuf>,
     ) -> StagedManifestBuildResult {
+        built_result_with_maps(
+            generation,
+            mod_root,
+            name,
+            entities,
+            Vec::new(),
+            dependency_paths,
+        )
+    }
+
+    #[cfg(debug_assertions)]
+    fn built_result_with_maps(
+        generation: u64,
+        mod_root: &Path,
+        name: &str,
+        entities: Vec<EntityTypeDescriptor>,
+        maps: Vec<ModMapEntry>,
+        dependency_paths: Vec<PathBuf>,
+    ) -> StagedManifestBuildResult {
         StagedManifestBuildResult {
             generation,
             mod_root: mod_root.to_path_buf(),
             status: StagedManifestBuildStatus::Built(Box::new(StagedManifest {
                 name: name.to_string(),
                 entities,
+                maps,
                 ui_trees: Vec::new(),
                 theme: ModThemeTokens::default(),
                 store_declarations: StoreDeclarationSet::default(),
@@ -2577,6 +2641,9 @@ mod tests {
         ctx.data_registry
             .borrow_mut()
             .replace_entity_types(vec![descriptor("old")]);
+        ctx.data_registry
+            .borrow_mut()
+            .replace_maps(vec![map_entry("old_map")]);
 
         let outcome = rt.commit_staged_manifest_result(
             &built_result(
@@ -2601,6 +2668,11 @@ mod tests {
             vec![descriptor("old")],
             "stale result must leave committed descriptors active",
         );
+        assert_eq!(
+            ctx.data_registry.borrow().maps,
+            vec![map_entry("old_map")],
+            "stale result must leave committed map catalog active",
+        );
     }
 
     #[test]
@@ -2612,6 +2684,9 @@ mod tests {
         ctx.data_registry
             .borrow_mut()
             .replace_entity_types(vec![descriptor("old")]);
+        ctx.data_registry
+            .borrow_mut()
+            .replace_maps(vec![map_entry("old_map")]);
 
         let outcome = rt.commit_staged_manifest_result(
             &StagedManifestBuildResult {
@@ -2628,6 +2703,7 @@ mod tests {
             StagedManifestCommitOutcome::FailedBuild { generation: 3 }
         );
         assert_eq!(ctx.data_registry.borrow().entities, vec![descriptor("old")]);
+        assert_eq!(ctx.data_registry.borrow().maps, vec![map_entry("old_map")]);
     }
 
     // Regression: a failed seed build left the dependency set None silently, so
@@ -2662,14 +2738,19 @@ mod tests {
         ctx.data_registry
             .borrow_mut()
             .replace_entity_types(vec![descriptor("removed"), descriptor("kept_old_shape")]);
+        ctx.data_registry
+            .borrow_mut()
+            .replace_maps(vec![map_entry("old_map")]);
         let replacement = descriptor("kept_new_shape");
+        let replacement_map = map_entry("new_map");
 
         let outcome = rt.commit_staged_manifest_result(
-            &built_result(
+            &built_result_with_maps(
                 5,
                 &dir,
                 "Replacement",
                 vec![replacement.clone()],
+                vec![replacement_map.clone()],
                 vec![entry.clone()],
             ),
             &ctx,
@@ -2685,6 +2766,7 @@ mod tests {
             }
         );
         assert_eq!(ctx.data_registry.borrow().entities, vec![replacement]);
+        assert_eq!(ctx.data_registry.borrow().maps, vec![replacement_map]);
         assert!(rt.changed_paths_affect_active_mod_init_manifest(&[entry]));
     }
 
@@ -3005,6 +3087,178 @@ mod tests {
 
         rt.run_mod_init(&dir).unwrap();
         assert_eq!(rt.mod_manifest().unwrap().name, "GameStateMod");
+    }
+
+    #[test]
+    fn mod_init_quickjs_define_mod_and_map_catalog_are_identity_helpers() {
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("js_define_mod");
+        fs::write(
+            dir.join("start-script.js"),
+            r#"
+            const maps = defineMapCatalog([
+                { id: "e1m1", path: "maps/e1m1.prl", name: "Entryway", tags: ["campaign"] },
+            ]);
+            if (maps[0].id !== "e1m1" || maps[0].tags[0] !== "campaign") {
+                throw new Error("defineMapCatalog changed entry wire data");
+            }
+            const manifest = {
+                name: "CatalogMod",
+                fonts: { primary: "fonts/inter.ttf" },
+                maps,
+            };
+            const defined = defineMod(manifest);
+            if (defined !== manifest || defined.maps !== maps) {
+                throw new Error("defineMod or defineMapCatalog must be identity helpers");
+            }
+            globalThis.setupMod = function() {
+                return defined;
+            };
+            "#,
+        )
+        .unwrap();
+
+        rt.run_mod_init(&dir).unwrap();
+        let manifest = rt.mod_manifest().expect("Some manifest");
+        assert_eq!(manifest.name, "CatalogMod");
+        assert_eq!(manifest.fonts.families["primary"], "fonts/inter.ttf");
+        assert_eq!(
+            manifest.maps,
+            vec![ModMapEntry {
+                id: "e1m1".to_string(),
+                path: "maps/e1m1.prl".to_string(),
+                name: "Entryway".to_string(),
+                tags: vec!["campaign".to_string()],
+            }]
+        );
+    }
+
+    #[test]
+    fn mod_init_luau_define_mod_and_map_catalog_are_identity_helpers() {
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("luau_define_mod");
+        fs::write(
+            dir.join("start-script.luau"),
+            r#"
+            local maps = defineMapCatalog({
+                { id = "e1m1", path = "maps/e1m1.prl", name = "Entryway", tags = { "campaign" } },
+            })
+            assert(maps[1].id == "e1m1" and maps[1].tags[1] == "campaign", "defineMapCatalog changed entry wire data")
+            local manifest = {
+                name = "CatalogMod",
+                fonts = { primary = "fonts/inter.ttf" },
+                maps = maps,
+            }
+            local defined = defineMod(manifest)
+            assert(defined == manifest and defined.maps == maps, "defineMod or defineMapCatalog must be identity helpers")
+            function setupMod()
+                return defined
+            end
+            "#,
+        )
+        .unwrap();
+
+        rt.run_mod_init(&dir).unwrap();
+        let manifest = rt.mod_manifest().expect("Some manifest");
+        assert_eq!(manifest.name, "CatalogMod");
+        assert_eq!(manifest.fonts.families["primary"], "fonts/inter.ttf");
+        assert_eq!(
+            manifest.maps,
+            vec![ModMapEntry {
+                id: "e1m1".to_string(),
+                path: "maps/e1m1.prl".to_string(),
+                name: "Entryway".to_string(),
+                tags: vec!["campaign".to_string()],
+            }]
+        );
+    }
+
+    #[test]
+    fn mod_init_map_catalog_skips_empty_paths_and_duplicate_ids() {
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("js_map_catalog_validation");
+        fs::write(
+            dir.join("start-script.js"),
+            r#"
+            globalThis.setupMod = function() {
+                return {
+                    name: "CatalogValidation",
+                    maps: [
+                        { id: "e1m1", path: "maps/e1m1.prl", name: "Entryway", tags: ["campaign"] },
+                        { id: "empty", path: "", name: "Empty", tags: ["broken"] },
+                        { id: "e1m1", path: "maps/duplicate.prl", name: "Duplicate", tags: ["duplicate"] },
+                        { id: "dm1", path: "maps/dm1.prl", name: "Arena", tags: ["deathmatch"] },
+                    ],
+                };
+            };
+            "#,
+        )
+        .unwrap();
+
+        rt.run_mod_init(&dir).unwrap();
+
+        let manifest = rt.mod_manifest().expect("Some manifest");
+        assert_eq!(
+            manifest.maps,
+            vec![
+                ModMapEntry {
+                    id: "e1m1".to_string(),
+                    path: "maps/e1m1.prl".to_string(),
+                    name: "Entryway".to_string(),
+                    tags: vec!["campaign".to_string()],
+                },
+                ModMapEntry {
+                    id: "dm1".to_string(),
+                    path: "maps/dm1.prl".to_string(),
+                    name: "Arena".to_string(),
+                    tags: vec!["deathmatch".to_string()],
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn mod_init_luau_map_catalog_skips_empty_paths_and_duplicate_ids() {
+        let (mut rt, _ctx) = runtime();
+        let dir = temp_mod_root("luau_map_catalog_validation");
+        fs::write(
+            dir.join("start-script.luau"),
+            r#"
+            function setupMod()
+                return {
+                    name = "CatalogValidation",
+                    maps = {
+                        { id = "e1m1", path = "maps/e1m1.prl", name = "Entryway", tags = { "campaign" } },
+                        { id = "empty", path = "", name = "Empty", tags = { "broken" } },
+                        { id = "e1m1", path = "maps/duplicate.prl", name = "Duplicate", tags = { "duplicate" } },
+                        { id = "dm1", path = "maps/dm1.prl", name = "Arena", tags = { "deathmatch" } },
+                    },
+                }
+            end
+            "#,
+        )
+        .unwrap();
+
+        rt.run_mod_init(&dir).unwrap();
+
+        let manifest = rt.mod_manifest().expect("Some manifest");
+        assert_eq!(
+            manifest.maps,
+            vec![
+                ModMapEntry {
+                    id: "e1m1".to_string(),
+                    path: "maps/e1m1.prl".to_string(),
+                    name: "Entryway".to_string(),
+                    tags: vec!["campaign".to_string()],
+                },
+                ModMapEntry {
+                    id: "dm1".to_string(),
+                    path: "maps/dm1.prl".to_string(),
+                    name: "Arena".to_string(),
+                    tags: vec!["deathmatch".to_string()],
+                },
+            ]
+        );
     }
 
     #[test]

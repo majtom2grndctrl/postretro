@@ -12,15 +12,15 @@ use rquickjs::{
 
 use super::data_descriptors::{
     EntityTypeDescriptor, ModThemeTokens, RegisteredUiTree, drain_fonts_js, drain_fonts_lua,
-    drain_theme_js, drain_theme_lua, drain_ui_trees_js, drain_ui_trees_lua,
-    entity_descriptor_from_js,
+    drain_maps_js, drain_maps_lua, drain_theme_js, drain_theme_lua, drain_ui_trees_js,
+    drain_ui_trees_lua, entity_descriptor_from_js,
 };
 use super::error::ScriptError;
 use super::luau::LuauConfig;
 use super::luau_require::LuauRequireTracker;
 use super::primitives::store::{drain_store_declarations_js, drain_store_declarations_lua};
 use super::quickjs::{QuickJsConfig, run_script};
-use super::runtime::ModManifestResult;
+use super::runtime::{ModManifestResult, ModMapEntry};
 use super::slot_table::StoreDeclarationSet;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -55,6 +55,7 @@ impl StagedManifestDiagnostic {
 pub(crate) struct StagedManifest {
     pub(crate) name: String,
     pub(crate) entities: Vec<EntityTypeDescriptor>,
+    pub(crate) maps: Vec<ModMapEntry>,
     pub(crate) ui_trees: Vec<RegisteredUiTree>,
     pub(crate) theme: ModThemeTokens,
     pub(crate) store_declarations: StoreDeclarationSet,
@@ -364,6 +365,7 @@ fn run_staged_manifest_build(
     Ok(Some(StagedManifest {
         name: manifest.name,
         entities: manifest.entities,
+        maps: manifest.maps,
         ui_trees: manifest.ui_trees,
         theme: manifest.theme,
         store_declarations: manifest.store_declarations,
@@ -500,6 +502,9 @@ fn manifest_from_js_value<'js>(
     let fonts = drain_fonts_js(&obj, "setupMod").map_err(|e| ScriptError::InvalidArgument {
         reason: format!("mod-init: `{source_path}` setupMod `fonts` invalid: {e}"),
     })?;
+    let maps = drain_maps_js(&obj, "setupMod").map_err(|e| ScriptError::InvalidArgument {
+        reason: format!("mod-init: `{source_path}` setupMod `maps` invalid: {e}"),
+    })?;
     let store_declarations =
         drain_store_declarations_js(ctx, &obj).map_err(|e| ScriptError::InvalidArgument {
             reason: format!("mod-init: `{source_path}` setupMod `stores` invalid: {e}"),
@@ -511,6 +516,7 @@ fn manifest_from_js_value<'js>(
         ui_trees,
         theme,
         fonts,
+        maps,
         store_declarations,
     })
 }
@@ -635,6 +641,9 @@ fn run_staged_mod_init_luau(
     let fonts = drain_fonts_lua(&table, "setupMod").map_err(|e| ScriptError::InvalidArgument {
         reason: format!("mod-init: `{source_path}` setupMod `fonts` invalid: {e}"),
     })?;
+    let maps = drain_maps_lua(&table, "setupMod").map_err(|e| ScriptError::InvalidArgument {
+        reason: format!("mod-init: `{source_path}` setupMod `maps` invalid: {e}"),
+    })?;
     let store_declarations =
         drain_store_declarations_lua(&table).map_err(|e| ScriptError::InvalidArgument {
             reason: format!("mod-init: `{source_path}` setupMod `stores` invalid: {e}"),
@@ -646,6 +655,7 @@ fn run_staged_mod_init_luau(
         ui_trees,
         theme,
         fonts,
+        maps,
         store_declarations,
     })
 }
@@ -706,6 +716,7 @@ mod tests {
                 return {
                     name: "StagedMod",
                     entities: [{ canonicalName: "smoke_pillar" }],
+                    maps: [{ id: "e1m1", path: "maps/e1m1.prl", name: "Entryway", tags: ["campaign"] }],
                     stores: [staged.declaration],
                 };
             };
@@ -720,6 +731,9 @@ mod tests {
         };
         assert_eq!(manifest.name, "StagedMod");
         assert_eq!(manifest.entities.len(), 1);
+        assert_eq!(manifest.maps.len(), 1);
+        assert_eq!(manifest.maps[0].id, "e1m1");
+        assert_eq!(manifest.maps[0].path, "maps/e1m1.prl");
         assert!(manifest.ui_trees.is_empty());
         assert_eq!(manifest.theme, ModThemeTokens::default());
         assert_eq!(manifest.store_declarations.len(), 1);

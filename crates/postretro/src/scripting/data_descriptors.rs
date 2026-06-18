@@ -8,12 +8,14 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use std::collections::{BTreeSet, HashMap};
+use std::path::{Component, Path};
 
 use super::components::billboard_emitter::{
     BillboardEmitterComponent, BillboardEmitterComponentLit,
 };
 use super::components::mesh::{AnimationState, InterruptPolicy};
 use super::registry::EntityId;
+use super::runtime::ModMapEntry;
 use crate::movement::MovementScope;
 use crate::render::ui::descriptor::{
     Align, AnchoredTree, AnnounceWidget, BarMax, BarMaxStateRef, BarWidget, BindSource, Border,
@@ -4672,6 +4674,108 @@ pub(crate) fn drain_fonts_js<'js>(
     })
 }
 
+/// Drain the optional mod map catalog from a QuickJS manifest object. Malformed
+/// entries, duplicate ids, and entries with empty paths are logged and skipped.
+pub(crate) fn drain_maps_js<'js>(
+    obj: &Object<'js>,
+    scope: &str,
+) -> Result<Vec<ModMapEntry>, DescriptorError> {
+    if !obj.contains_key("maps").map_err(js_err)? {
+        return Ok(Vec::new());
+    }
+    let raw: JsValue = obj.get("maps").map_err(js_err)?;
+    if raw.is_null() || raw.is_undefined() {
+        return Ok(Vec::new());
+    }
+    let Some(arr) = raw.as_array() else {
+        log::warn!(
+            "[Scripting] {scope}: `maps` must be an array of map catalog entries; ignoring the field"
+        );
+        return Ok(Vec::new());
+    };
+
+    let mut out = Vec::with_capacity(arr.len());
+    let mut seen_ids = BTreeSet::new();
+    for i in 0..arr.len() {
+        let item: JsValue = arr.get(i).map_err(js_err)?;
+        match mod_map_entry_from_js(item) {
+            Ok(entry) => push_valid_map_entry(entry, &mut seen_ids, &mut out, scope, i),
+            Err(e) => {
+                log::warn!("[Scripting] {scope}: `maps[{i}]` is malformed and was skipped: {e}")
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn mod_map_entry_from_js<'js>(value: JsValue<'js>) -> Result<ModMapEntry, DescriptorError> {
+    let obj = Object::from_value(value).map_err(|_| DescriptorError::InvalidShape {
+        reason: "map catalog entry must be an object".to_string(),
+    })?;
+    let tags = read_required_string_array_js(&obj, "tags")?;
+    Ok(ModMapEntry {
+        id: get_required_string_js(&obj, "id")?,
+        path: get_required_string_js(&obj, "path")?,
+        name: get_required_string_js(&obj, "name")?,
+        tags,
+    })
+}
+
+fn read_required_string_array_js<'js>(
+    obj: &Object<'js>,
+    field: &'static str,
+) -> Result<Vec<String>, DescriptorError> {
+    if !obj.contains_key(field).map_err(js_err)? {
+        return Err(DescriptorError::MissingField { field });
+    }
+    let raw: JsValue = obj.get(field).map_err(js_err)?;
+    if raw.is_null() || raw.is_undefined() {
+        return Err(DescriptorError::MissingField { field });
+    }
+    string_array_from_js(obj, field)
+}
+
+fn push_valid_map_entry(
+    entry: ModMapEntry,
+    seen_ids: &mut BTreeSet<String>,
+    out: &mut Vec<ModMapEntry>,
+    scope: &str,
+    index: usize,
+) {
+    if entry.id.is_empty() {
+        log::warn!("[Scripting] {scope}: `maps[{index}]` has an empty `id` and was skipped");
+        return;
+    }
+    if entry.path.is_empty() {
+        log::warn!("[Scripting] {scope}: `maps[{index}]` has an empty `path` and was skipped");
+        return;
+    }
+    if !is_catalog_path_relative_to_content_root(&entry.path) {
+        log::warn!(
+            "[Scripting] {scope}: `maps[{index}]` path `{}` escapes the content root and was skipped",
+            entry.path,
+        );
+        return;
+    }
+    if !seen_ids.insert(entry.id.clone()) {
+        log::warn!(
+            "[Scripting] {scope}: duplicate map catalog id `{}` at `maps[{index}]`; keeping the first entry",
+            entry.id,
+        );
+        return;
+    }
+    out.push(entry);
+}
+
+fn is_catalog_path_relative_to_content_root(path: &str) -> bool {
+    let path = Path::new(path);
+    if path.is_absolute() {
+        return false;
+    }
+    path.components()
+        .all(|component| !matches!(component, Component::ParentDir | Component::Prefix(_)))
+}
+
 /// Read an object-valued field as a `String → String` map. Absent/non-object →
 /// empty (with a `log::warn!` when present but not an object). Malformed tokens
 /// are logged and skipped (per-token degraded) so a single bad entry does not
@@ -4857,6 +4961,70 @@ pub(crate) fn drain_fonts_lua(
             Ok(ModFontAssets::default())
         }
     }
+}
+
+/// Drain the optional mod map catalog from a Luau manifest table. Mirrors
+/// [`drain_maps_js`].
+pub(crate) fn drain_maps_lua(
+    table: &Table,
+    scope: &str,
+) -> Result<Vec<ModMapEntry>, DescriptorError> {
+    let raw: LuaValue = table.get("maps").map_err(lua_err)?;
+    let arr = match raw {
+        LuaValue::Nil => return Ok(Vec::new()),
+        LuaValue::Table(t) => t,
+        _ => {
+            log::warn!(
+                "[Scripting] {scope}: `maps` must be an array of map catalog entries; ignoring the field"
+            );
+            return Ok(Vec::new());
+        }
+    };
+
+    let len = match validate_dense_lua_array(&arr, "`maps` field") {
+        Ok(len) => len,
+        Err(e) => {
+            log::warn!("[Scripting] {scope}: `maps` is malformed and was ignored: {e}");
+            return Ok(Vec::new());
+        }
+    };
+    let mut out = Vec::with_capacity(len);
+    let mut seen_ids = BTreeSet::new();
+    for i in 1..=(len as i64) {
+        let item: LuaValue = arr.get(i).map_err(lua_err)?;
+        match mod_map_entry_from_lua(item) {
+            Ok(entry) => push_valid_map_entry(entry, &mut seen_ids, &mut out, scope, i as usize),
+            Err(e) => {
+                log::warn!("[Scripting] {scope}: `maps[{i}]` is malformed and was skipped: {e}")
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn mod_map_entry_from_lua(value: LuaValue) -> Result<ModMapEntry, DescriptorError> {
+    let table = lua_table(value, "map catalog entry")?;
+    let tags = read_required_string_array_lua(&table, "tags")?;
+    Ok(ModMapEntry {
+        id: get_required_string_lua(&table, "id")?,
+        path: get_required_string_lua(&table, "path")?,
+        name: get_required_string_lua(&table, "name")?,
+        tags,
+    })
+}
+
+fn read_required_string_array_lua(
+    table: &Table,
+    field: &'static str,
+) -> Result<Vec<String>, DescriptorError> {
+    if !table.contains_key(field).map_err(lua_err)? {
+        return Err(DescriptorError::MissingField { field });
+    }
+    let raw: LuaValue = table.get(field).map_err(lua_err)?;
+    if matches!(raw, LuaValue::Nil) {
+        return Err(DescriptorError::MissingField { field });
+    }
+    string_array_from_lua(table, field)
 }
 
 /// Read a table-valued field as a `String → String` map. Absent → empty.
@@ -5192,7 +5360,7 @@ fn string_array_from_lua(
             });
         }
     };
-    let len = arr.raw_len();
+    let len = validate_dense_lua_array(&arr, &format!("`{field}`"))?;
     let mut out = Vec::with_capacity(len);
     for i in 1..=(len as i64) {
         match arr.get::<LuaValue>(i).map_err(lua_err)? {
@@ -5874,6 +6042,114 @@ mod tests {
                 "{label} produced unexpected error: {err}"
             );
         }
+    }
+
+    #[test]
+    fn drain_maps_js_skips_escape_paths_empty_ids_and_null_tags() {
+        let maps = eval_js(
+            r#"({
+                maps: [
+                    { id: "valid", path: "maps/valid.prl", name: "Valid", tags: ["campaign"] },
+                    { id: "", path: "maps/empty-id.prl", name: "Empty Id", tags: ["broken"] },
+                    { id: "absolute", path: "/tmp/escape.prl", name: "Absolute", tags: ["broken"] },
+                    { id: "parent", path: "../escape.prl", name: "Parent", tags: ["broken"] },
+                    { id: "nestedParent", path: "maps/../escape.prl", name: "Nested Parent", tags: ["broken"] },
+                    { id: "nullTags", path: "maps/null-tags.prl", name: "Null Tags", tags: null },
+                    { id: "alsoValid", path: "maps/also-valid.prl", name: "Also Valid", tags: [] },
+                ],
+            })"#,
+            |_ctx, v| {
+                let obj = Object::from_value(v).expect("manifest must be an object");
+                drain_maps_js(&obj, "test").expect("malformed map entries should degrade")
+            },
+        );
+
+        assert_eq!(
+            maps,
+            vec![
+                ModMapEntry {
+                    id: "valid".to_string(),
+                    path: "maps/valid.prl".to_string(),
+                    name: "Valid".to_string(),
+                    tags: vec!["campaign".to_string()],
+                },
+                ModMapEntry {
+                    id: "alsoValid".to_string(),
+                    path: "maps/also-valid.prl".to_string(),
+                    name: "Also Valid".to_string(),
+                    tags: Vec::new(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn drain_maps_lua_ignores_keyed_and_sparse_catalog_tables() {
+        // Regression: keyed/sparse Luau catalog tables used to drain as empty
+        // without being recognized as malformed.
+        let cases = [
+            r#"return {
+                maps = {
+                    named = { id = "e1m1", path = "maps/e1m1.prl", name = "Entryway", tags = { "campaign" } },
+                },
+            }"#,
+            r#"return {
+                maps = {
+                    [2] = { id = "e1m1", path = "maps/e1m1.prl", name = "Entryway", tags = { "campaign" } },
+                },
+            }"#,
+            r#"return {
+                maps = {
+                    { id = "e1m1", path = "maps/e1m1.prl", name = "Entryway", tags = { "campaign" } },
+                    extra = { id = "dm1", path = "maps/dm1.prl", name = "Arena", tags = { "deathmatch" } },
+                },
+            }"#,
+        ];
+
+        for source in cases {
+            let maps = eval_lua(source, |v| {
+                let table = lua_table(v, "manifest").expect("manifest must be a table");
+                drain_maps_lua(&table, "test").expect("malformed maps field should degrade")
+            });
+            assert!(maps.is_empty(), "malformed maps field must be ignored");
+        }
+    }
+
+    #[test]
+    fn drain_maps_lua_skips_keyed_sparse_and_nil_tags() {
+        let maps = eval_lua(
+            r#"return {
+                maps = {
+                    { id = "valid", path = "maps/valid.prl", name = "Valid", tags = { "campaign" } },
+                    { id = "keyedTags", path = "maps/keyed.prl", name = "Keyed", tags = { named = "campaign" } },
+                    { id = "sparseTags", path = "maps/sparse.prl", name = "Sparse", tags = { [2] = "campaign" } },
+                    { id = "nilTags", path = "maps/nil.prl", name = "Nil", tags = nil },
+                    { id = "alsoValid", path = "maps/also-valid.prl", name = "Also Valid", tags = {} },
+                },
+            }"#,
+            |v| {
+                let table = lua_table(v, "manifest").expect("manifest must be a table");
+                drain_maps_lua(&table, "test").expect("malformed map entries should degrade")
+            },
+        );
+
+        assert_eq!(
+            maps,
+            vec![
+                ModMapEntry {
+                    id: "valid".to_string(),
+                    path: "maps/valid.prl".to_string(),
+                    name: "Valid".to_string(),
+                    tags: vec!["campaign".to_string()],
+                },
+                ModMapEntry {
+                    id: "alsoValid".to_string(),
+                    path: "maps/also-valid.prl".to_string(),
+                    name: "Also Valid".to_string(),
+                    tags: Vec::new(),
+                },
+            ]
+        );
     }
 
     // --- EntityTypeDescriptor (passed as ModManifest.entities) ---------------

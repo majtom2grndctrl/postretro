@@ -391,7 +391,7 @@ declare module "postretro" {
     alwaysOn?: boolean;
   };
 
-  /** One map listed in `ModManifest.maps`. `id` is the stable logical handle, `path` is authored relative to the content root, `name` is the display name, and `tags` are authoritative classification strings. */
+  /** One map listed in `ModManifest.maps`. `id` is the stable logical handle, `path` is authored relative to the content root, `name` is the display name, and optional `tags` are authoritative classification strings. */
   export type ModMapEntry = {
     /** Stable logical map handle. Required. */
     id: string;
@@ -399,8 +399,8 @@ declare module "postretro" {
     path: string;
     /** Display name shown to players. Required. */
     name: string;
-    /** Authoritative classification tags for filtering and reaction composition. Required. */
-    tags: ReadonlyArray<string>;
+    /** Authoritative classification tags for filtering and reaction composition. Optional; defaults to empty. */
+    tags?: ReadonlyArray<string>;
   };
 
   /** Theme token maps supplied via `ModManifest.theme`. Three category-scoped maps: colors (linear-RGBA), fonts (registered family name), spacing (logical px). Each is optional; overrides merge per-token into the engine default. */

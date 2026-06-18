@@ -417,7 +417,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("ModMapEntry")
-        .doc("One map listed in `ModManifest.maps`. `id` is the stable logical handle, `path` is authored relative to the content root, `name` is the display name, and `tags` are authoritative classification strings.")
+        .doc("One map listed in `ModManifest.maps`. `id` is the stable logical handle, `path` is authored relative to the content root, `name` is the display name, and optional `tags` are authoritative classification strings.")
         .field("id", "String", "Stable logical map handle. Required.")
         .field(
             "path",
@@ -426,9 +426,9 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         )
         .field("name", "String", "Display name shown to players. Required.")
         .field(
-            "tags",
+            "tags?",
             "Vec<String>",
-            "Authoritative classification tags for filtering and reaction composition. Required.",
+            "Authoritative classification tags for filtering and reaction composition. Optional; defaults to empty.",
         )
         .finish();
     registry

@@ -3192,7 +3192,7 @@ declare module "postretro" {
     alwaysOn?: boolean;
   };
 
-  /** One map listed in `ModManifest.maps`. `id` is the stable logical handle, `path` is authored relative to the content root, `name` is the display name, and `tags` are authoritative classification strings. */
+  /** One map listed in `ModManifest.maps`. `id` is the stable logical handle, `path` is authored relative to the content root, `name` is the display name, and optional `tags` are authoritative classification strings. */
   export type ModMapEntry = {
     /** Stable logical map handle. Required. */
     id: string;
@@ -3200,8 +3200,8 @@ declare module "postretro" {
     path: string;
     /** Display name shown to players. Required. */
     name: string;
-    /** Authoritative classification tags for filtering and reaction composition. Required. */
-    tags: ReadonlyArray<string>;
+    /** Authoritative classification tags for filtering and reaction composition. Optional; defaults to empty. */
+    tags?: ReadonlyArray<string>;
   };
 
   /** Theme token maps supplied via `ModManifest.theme`. Three category-scoped maps: colors (linear-RGBA), fonts (registered family name), spacing (logical px). Each is optional; overrides merge per-token into the engine default. */
@@ -3627,7 +3627,7 @@ export type ModUiTree = {
   alwaysOn: boolean?,
 }
 
---- One map listed in `ModManifest.maps`. `id` is the stable logical handle, `path` is authored relative to the content root, `name` is the display name, and `tags` are authoritative classification strings.
+--- One map listed in `ModManifest.maps`. `id` is the stable logical handle, `path` is authored relative to the content root, `name` is the display name, and optional `tags` are authoritative classification strings.
 export type ModMapEntry = {
   --- Stable logical map handle. Required.
   id: string,
@@ -3635,8 +3635,8 @@ export type ModMapEntry = {
   path: string,
   --- Display name shown to players. Required.
   name: string,
-  --- Authoritative classification tags for filtering and reaction composition. Required.
-  tags: {string},
+  --- Authoritative classification tags for filtering and reaction composition. Optional; defaults to empty.
+  tags: {string}?,
 }
 
 --- Theme token maps supplied via `ModManifest.theme`. Three category-scoped maps: colors (linear-RGBA), fonts (registered family name), spacing (logical px). Each is optional; overrides merge per-token into the engine default.
@@ -4139,6 +4139,7 @@ export type Event = {
 
         assert!(
             ts.contains("export type ModMapEntry = {")
+                && ts.contains("tags?: ReadonlyArray<string>;")
                 && ts.contains("maps?: ReadonlyArray<ModMapEntry>;")
                 && ts.contains("export function defineMod(config: ModManifest): ModManifest;")
                 && ts.contains(
@@ -4148,6 +4149,7 @@ export type Event = {
         );
         assert!(
             luau.contains("export type ModMapEntry = {")
+                && luau.contains("tags: {string}?")
                 && luau.contains("maps: {ModMapEntry}?")
                 && luau.contains("declare function defineMod(config: ModManifest): ModManifest")
                 && luau.contains(

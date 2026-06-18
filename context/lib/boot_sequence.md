@@ -94,7 +94,7 @@ Runtime level requests drain at the redraw boundary before gameplay/world work f
 | Failed runtime load | Log diagnostic, clear splash if needed, enter Frontend. |
 | Failed CLI boot load | Log diagnostic and exit non-zero. |
 
-`LevelSource::Catalog(id)` resolves against the engine-global `DataRegistry.maps` snapshot before a worker is spawned. A found entry contributes `content_root.join(entry.path)` to the worker and stores `{ catalog_id, path, name, tags }` on the in-flight load so catalog metadata is available before the data script runs. A missing id logs a diagnostic and no-ops; it must not unload an active level. Raw path loads (`LevelSource::Path`, including the CLI map path and dev tooling) bypass the catalog and synthesize non-catalog metadata: no catalog id, `tags = []`, and `name` from the file stem.
+`LevelSource::Catalog(id)` resolves against the engine-global `DataRegistry.maps` snapshot before a worker is spawned. A found entry contributes `content_root.join(entry.path)` to the worker and stores `{ catalog_id, path, name, tags }` on the in-flight load so catalog metadata is available before the data script runs; omitted catalog tags are stored as `[]`. A missing id logs a diagnostic and no-ops; it must not unload an active level. Raw path loads (`LevelSource::Path`, including the CLI map path and dev tooling) bypass the catalog and synthesize non-catalog metadata: no catalog id, `tags = []`, and `name` from the file stem.
 
 Clear-on-unload contract:
 

@@ -4675,7 +4675,8 @@ pub(crate) fn drain_fonts_js<'js>(
 }
 
 /// Drain the optional mod map catalog from a QuickJS manifest object. Malformed
-/// entries, duplicate ids, and entries with empty paths are logged and skipped.
+/// entries, duplicate ids, entries with empty ids, and entries with invalid
+/// paths are logged and skipped.
 pub(crate) fn drain_maps_js<'js>(
     obj: &Object<'js>,
     scope: &str,
@@ -4712,27 +4713,12 @@ fn mod_map_entry_from_js<'js>(value: JsValue<'js>) -> Result<ModMapEntry, Descri
     let obj = Object::from_value(value).map_err(|_| DescriptorError::InvalidShape {
         reason: "map catalog entry must be an object".to_string(),
     })?;
-    let tags = read_required_string_array_js(&obj, "tags")?;
     Ok(ModMapEntry {
         id: get_required_string_js(&obj, "id")?,
         path: get_required_string_js(&obj, "path")?,
         name: get_required_string_js(&obj, "name")?,
-        tags,
+        tags: string_array_from_js(&obj, "tags")?,
     })
-}
-
-fn read_required_string_array_js<'js>(
-    obj: &Object<'js>,
-    field: &'static str,
-) -> Result<Vec<String>, DescriptorError> {
-    if !obj.contains_key(field).map_err(js_err)? {
-        return Err(DescriptorError::MissingField { field });
-    }
-    let raw: JsValue = obj.get(field).map_err(js_err)?;
-    if raw.is_null() || raw.is_undefined() {
-        return Err(DescriptorError::MissingField { field });
-    }
-    string_array_from_js(obj, field)
 }
 
 fn push_valid_map_entry(
@@ -5004,27 +4990,12 @@ pub(crate) fn drain_maps_lua(
 
 fn mod_map_entry_from_lua(value: LuaValue) -> Result<ModMapEntry, DescriptorError> {
     let table = lua_table(value, "map catalog entry")?;
-    let tags = read_required_string_array_lua(&table, "tags")?;
     Ok(ModMapEntry {
         id: get_required_string_lua(&table, "id")?,
         path: get_required_string_lua(&table, "path")?,
         name: get_required_string_lua(&table, "name")?,
-        tags,
+        tags: string_array_from_lua(&table, "tags")?,
     })
-}
-
-fn read_required_string_array_lua(
-    table: &Table,
-    field: &'static str,
-) -> Result<Vec<String>, DescriptorError> {
-    if !table.contains_key(field).map_err(lua_err)? {
-        return Err(DescriptorError::MissingField { field });
-    }
-    let raw: LuaValue = table.get(field).map_err(lua_err)?;
-    if matches!(raw, LuaValue::Nil) {
-        return Err(DescriptorError::MissingField { field });
-    }
-    string_array_from_lua(table, field)
 }
 
 /// Read a table-valued field as a `String → String` map. Absent → empty.
@@ -6045,7 +6016,7 @@ mod tests {
     }
 
     #[test]
-    fn drain_maps_js_skips_escape_paths_empty_ids_and_null_tags() {
+    fn drain_maps_js_defaults_absent_and_null_tags_to_empty() {
         let maps = eval_js(
             r#"({
                 maps: [
@@ -6055,6 +6026,7 @@ mod tests {
                     { id: "parent", path: "../escape.prl", name: "Parent", tags: ["broken"] },
                     { id: "nestedParent", path: "maps/../escape.prl", name: "Nested Parent", tags: ["broken"] },
                     { id: "nullTags", path: "maps/null-tags.prl", name: "Null Tags", tags: null },
+                    { id: "absentTags", path: "maps/absent-tags.prl", name: "Absent Tags" },
                     { id: "alsoValid", path: "maps/also-valid.prl", name: "Also Valid", tags: [] },
                 ],
             })"#,
@@ -6072,6 +6044,18 @@ mod tests {
                     path: "maps/valid.prl".to_string(),
                     name: "Valid".to_string(),
                     tags: vec!["campaign".to_string()],
+                },
+                ModMapEntry {
+                    id: "nullTags".to_string(),
+                    path: "maps/null-tags.prl".to_string(),
+                    name: "Null Tags".to_string(),
+                    tags: Vec::new(),
+                },
+                ModMapEntry {
+                    id: "absentTags".to_string(),
+                    path: "maps/absent-tags.prl".to_string(),
+                    name: "Absent Tags".to_string(),
+                    tags: Vec::new(),
                 },
                 ModMapEntry {
                     id: "alsoValid".to_string(),
@@ -6116,7 +6100,7 @@ mod tests {
     }
 
     #[test]
-    fn drain_maps_lua_skips_keyed_sparse_and_nil_tags() {
+    fn drain_maps_lua_defaults_absent_and_nil_tags_to_empty() {
         let maps = eval_lua(
             r#"return {
                 maps = {
@@ -6124,6 +6108,7 @@ mod tests {
                     { id = "keyedTags", path = "maps/keyed.prl", name = "Keyed", tags = { named = "campaign" } },
                     { id = "sparseTags", path = "maps/sparse.prl", name = "Sparse", tags = { [2] = "campaign" } },
                     { id = "nilTags", path = "maps/nil.prl", name = "Nil", tags = nil },
+                    { id = "absentTags", path = "maps/absent-tags.prl", name = "Absent Tags" },
                     { id = "alsoValid", path = "maps/also-valid.prl", name = "Also Valid", tags = {} },
                 },
             }"#,
@@ -6141,6 +6126,18 @@ mod tests {
                     path: "maps/valid.prl".to_string(),
                     name: "Valid".to_string(),
                     tags: vec!["campaign".to_string()],
+                },
+                ModMapEntry {
+                    id: "nilTags".to_string(),
+                    path: "maps/nil.prl".to_string(),
+                    name: "Nil".to_string(),
+                    tags: Vec::new(),
+                },
+                ModMapEntry {
+                    id: "absentTags".to_string(),
+                    path: "maps/absent-tags.prl".to_string(),
+                    name: "Absent Tags".to_string(),
+                    tags: Vec::new(),
                 },
                 ModMapEntry {
                     id: "alsoValid".to_string(),

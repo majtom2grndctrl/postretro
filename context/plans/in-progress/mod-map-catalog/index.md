@@ -4,15 +4,15 @@
 
 ## Goal
 
-Introduce `defineMod()` and the mod's **map catalog** — the consolidated, pre-load-discoverable home for per-map metadata (id, path, display name, classification tags). The catalog is declared in `defineMod` and committed at mod-init, so it is available **before any level loads**. The frontend discovers maps from it; reaction composition reads a level's tags from it; level scripts keep only map-specific behavior (`{reactions, crossings}`). This is the manifest spine both the reaction and frontend plans extend.
+Introduce `defineMod()` and the mod's **map catalog** — the consolidated, pre-load-discoverable home for per-map metadata (id, path, display name, optional classification tags). The catalog is declared in `defineMod` and committed at mod-init, so it is available **before any level loads**. The frontend discovers maps from it; reaction composition reads a level's tags from it when present; level scripts keep only map-specific behavior (`{reactions, crossings}`). This is the manifest spine both the reaction and frontend plans extend.
 
 ## Scope
 
 ### In scope
 
 - **`defineMod(config: ModManifest): ModManifest`** — a pure typed identity helper (pattern of `defineEntity`) returned from `setupMod()`. Its parameter *is* the generated `ModManifest` type, so it types every field the manifest accepts today (`name`, `entities`, `uiTrees`, `theme`, `fonts`) plus the new `maps` catalog, and widens automatically as later plans add fields (`reactions`, `frontend`) — no edit to the builder. TypeScript + Luau + generated typedef. `setupMod()` stays the engine-called entry point — `defineMod()` is what it returns, preserving the return-based FFI crossing (`scripting.md` §12).
-- **`maps` catalog** on the manifest — a list of entries `{ id, path, name, tags }`, authored via the `defineMapCatalog([...])` identity helper so the listing can live in its own file (`maps/catalog.ts`) with per-entry type hints, then imported into `defineMod({ maps })`. `id` is the stable logical handle every reference uses (`loadLevel`, `backgroundLevel`, future saves), decoupled from `path` (where the bytes live) so files can move without breaking references — `path`'s incidental filesystem uniqueness is not the identity. Lean and extensible. Drained at mod-init and held **engine-global**, surviving level unload, mirroring entity types.
-- **Tags are the classification source.** A catalog entry's `tags` are the authoritative classification of that map — the input reaction composition (`reaction-composition`) reads and the frontend filters on. No tags on the `setupLevel` return.
+- **`maps` catalog** on the manifest — a list of entries `{ id, path, name, tags? }`, authored via the `defineMapCatalog([...])` identity helper so the listing can live in its own file (`maps/catalog.ts`) with per-entry type hints, then imported into `defineMod({ maps })`. `id` is the stable logical handle every reference uses (`loadLevel`, `backgroundLevel`, future saves), decoupled from `path` (where the bytes live) so files can move without breaking references — `path`'s incidental filesystem uniqueness is not the identity. Lean and extensible. Drained at mod-init and held **engine-global**, surviving level unload, mirroring entity types. Missing tags normalize to `[]`.
+- **Tags are the classification source when authored.** A catalog entry's optional `tags` are the authoritative classification of that map — the input reaction composition (`reaction-composition`) reads and the frontend filters on. No tags on the `setupLevel` return.
 - **Id-centric load via the lifecycle seam.** This plan adds the `LevelSource::Catalog(MapId)` arm to the lifecycle's `LevelRequest` (the `Path` arm shipped in `runtime-level-lifecycle` is the dev bypass). The state-machine drain resolves a `Catalog(id)` against the engine-global catalog — exactly like the install-time entity-registry lookup — and the resolved entry becomes install state for that load, so its `tags` are available at install with no extra plumbing. An id absent from the catalog is rejected with a logged diagnostic — no load.
 - **Dev raw-path bypass.** The CLI map-path flow (`runtime-level-lifecycle`'s `LevelSource::Path`) loads with no catalog entry, synthesizing a default entry — `tags = []`, `name = file stem`, no catalog id — so dev iteration does not require catalog registration (and such a load never appears in a catalog-driven level-select).
 - **Staged hot reload.** The catalog replaces atomically at the staged-commit boundary, like entity types; failed/stale results preserve the prior catalog.
@@ -78,7 +78,7 @@ CPU coverage: catalog survival across unload, id→path resolution, missing-id r
 | map id | `id: String` | `"id"` | `id` | `id` |
 | map path | `path: PathBuf` | `"path"` | `path` | `path` |
 | display name | `name: String` | `"name"` | `name` | `name` |
-| classification tags | `tags: Vec<String>` | `"tags"` | `tags` | `tags` |
+| classification tags | `tags: Vec<String>` | `"tags"` optional, defaults to `[]` | `tags?` | `tags?` |
 
 > `path` is authored relative to the mod/content root and resolved to an absolute `PathBuf` as `content_root.join(entry.path)` at load (Task 3) — one resolution, no double-join. The id→load crossing is the engine-internal `LevelSource::Catalog(MapId)` arm added to `runtime-level-lifecycle`'s `LevelRequest` (`MapId` = `String`) — not a script-facing wire field.
 

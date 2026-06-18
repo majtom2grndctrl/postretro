@@ -2437,12 +2437,13 @@ impl ApplicationHandler for App {
                         //
                         // Modal stack compose: every registered ALWAYS-ON tree
                         // composes as a base layer at the bottom of the snapshot
-                        // (`always_on_layers()`), engine-tier first then mod-tier in a
-                        // deterministic per-name order — the HUD (`content/base/ui/
-                        // hud.json`) is the engine always-on layer, and a mod-registered
-                        // always-on overlay either shadows it (same name) or layers on
-                        // top (new mod-tier name). Pushed modal trees stack ABOVE the
-                        // base layers, drawn bottom→top. The registry is the single seam
+                        // (`always_on_layers()`), engine-tier first, then mod-tier,
+                        // then level-tier in a deterministic per-name order — the HUD
+                        // (`content/base/ui/hud.json`) is the engine always-on layer.
+                        // Script-registered always-on overlays either shadow a lower
+                        // tier (same name) or layer on top (new higher-tier name).
+                        // Pushed modal trees stack ABOVE the base layers, drawn bottom→top.
+                        // The registry is the single seam
                         // — no builder on the render path. The renderer's retained path
                         // lays each layer out and resolves its binds against the
                         // snapshot; each layer's descriptor is structurally stable, so

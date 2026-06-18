@@ -317,10 +317,11 @@ impl ModalStack {
         self.registry.resolve(name)
     }
 
-    /// The always-on base layers for this frame (the HUD and any mod-registered
-    /// always-on overlays), engine-tier first then mod-tier, each in a deterministic
-    /// per-name order. The compose step appends these as the bottom layers of the
-    /// per-frame snapshot, with pushed modal entries (`entries`) on top.
+    /// The always-on base layers for this frame (HUD plus script-registered
+    /// always-on overlays), engine-tier first, then mod-tier, then level-tier,
+    /// each in a deterministic per-name order. The compose step appends these as
+    /// the bottom layers of the per-frame snapshot, with pushed modal entries
+    /// (`entries`) on top.
     ///
     /// CAPTURE/FOCUS INVARIANT: these are draw-only base layers — they are NOT on
     /// the pushed modal stack, which is the SOLE source of `top_capture_mode` /
@@ -683,7 +684,7 @@ mod tests {
         assert_eq!(stack.top_capture_mode(), UiCaptureMode::Capture);
     }
 
-    // ----- Tiered registry (engine < mod) + always-on compose (Task 2) -----
+    // ----- Tiered registry (engine < mod < level) + always-on compose -----
 
     /// A tree carrying an `id` on its root so descriptor identity is observable
     /// across tier replacements (the bare helper trees are structurally equal).

@@ -102,7 +102,7 @@ Clear-on-unload contract:
 | Per-level GPU resources: textures, geometry, mesh-pass caches, smoke collections | Script runtime and script context |
 | Light bridge, fog bridge, collision world | Slot table |
 | Level sounds, sprite collections | Entity-type registry |
-| Per-level data reactions, crossings, and UI registrations | Persisted-state save path |
+| Per-level data reactions, crossings, UI registrations, and presentation cells | Persisted-state save path |
 | Progress tracker, active wieldable, camera pose | Rust-side primitive/classname registries |
 
 Frontend is a no-level steady state. Renderer and audio may exist, but world, collision, fog, level sounds, and per-level registries are empty. Frontend rendering uses a world-less clear and skips gameplay/HUD reads that require a level.
@@ -136,7 +136,9 @@ Hot reload (debug only) stages entity descriptors and store declarations off-thr
 
 - Launch with no map argument: engine reaches Frontend, paints a world-less frame, no panic.
 - Launch with a boot map: Splash → Loading → Running, first gameplay frame appears.
-- In a `dev-tools` build, trigger `Alt+Shift+L`: unload current level, load the second dev map, return to Running.
+- Fresh checkout setup for the `dev-tools` lifecycle trigger: build the generated second dev map first:
+  `cargo run -p postretro-level-compiler -- content/dev/maps/combat-demo.map -o content/dev/maps/combat-demo.prl`
+- In a `dev-tools` build, trigger `Alt+Shift+L`: unload current level, load `content/dev/maps/combat-demo.prl`, return to Running.
 - Confirm no wgpu validation errors during load → unload → load-different.
 - Confirm clean visuals after the second load: no stale world geometry, fog, lights, sprites, or level sounds.
 

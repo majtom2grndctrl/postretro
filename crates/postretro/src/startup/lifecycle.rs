@@ -81,7 +81,7 @@ impl App {
     /// | per-level GPU resources (textures, geometry) | `script_ctx`, `ScriptRuntime` |
     /// | light bridge, fog bridge, collision world | slot table (no clear method — engine-global) |
     /// | level sounds, sprite collections | entity-type registry (`data_registry.entities`) |
-    /// | `data_registry` reactions + crossings | persisted-state save path |
+    /// | `data_registry` reactions + crossings, presentation cells | persisted-state save path |
     /// | progress tracker, active wieldable, camera pose | |
     pub(crate) fn unload_level(&mut self) {
         if let Some(renderer) = self.renderer.as_mut() {
@@ -111,6 +111,7 @@ impl App {
             .registry
             .borrow_mut()
             .clear_for_level_unload();
+        self.presentation_cells.clear();
         self.modal_stack
             .clear_script_tree_tier(render::ui::modal_stack::ScopeTier::Level);
 
@@ -368,16 +369,28 @@ impl App {
 
     #[cfg(feature = "dev-tools")]
     pub(crate) fn enqueue_dev_level_cycle(&mut self) {
+        self.enqueue_dev_level_cycle_target(PathBuf::from(DEV_LEVEL_CYCLE_TARGET));
+    }
+
+    #[cfg(feature = "dev-tools")]
+    fn enqueue_dev_level_cycle_target(&mut self, target: PathBuf) {
         if self.boot_state == BootState::Loading && self.boot_load && self.level_load_in_flight() {
             log::info!("[Loader] dev level lifecycle cycle ignored during boot map load");
             return;
         }
 
+        if !target.is_file() {
+            log::warn!(
+                "[Loader] dev level lifecycle cycle ignored: target does not exist: {}",
+                target.display()
+            );
+            return;
+        }
+
         self.enqueue_level_request(LevelRequest::Unload);
-        self.enqueue_level_request(LevelRequest::Load(LevelSource::Path(PathBuf::from(
-            DEV_LEVEL_CYCLE_TARGET,
-        ))));
-        log::info!("[Loader] queued dev level lifecycle cycle: {DEV_LEVEL_CYCLE_TARGET}");
+        let target_display = target.display().to_string();
+        self.enqueue_level_request(LevelRequest::Load(LevelSource::Path(target)));
+        log::info!("[Loader] queued dev level lifecycle cycle: {target_display}");
     }
 
     fn drain_level_requests(&mut self) {
@@ -1318,6 +1331,12 @@ mod tests {
         );
         app.script_time = 12.5;
         app.anim_time = 3.25;
+        app.presentation_cells.write(
+            "level_panel".to_string(),
+            "count".to_string(),
+            SlotValue::Number(11.0),
+        );
+        assert!(!app.presentation_cells.snapshot().is_empty());
 
         let slots_before = slot_snapshot(&app);
         let entities_before = app.script_ctx.data_registry.borrow().entities.clone();
@@ -1333,6 +1352,7 @@ mod tests {
         assert!(app.level.is_none());
         assert_eq!(app.script_time, 0.0);
         assert_eq!(app.anim_time, 0.0);
+        assert!(app.presentation_cells.snapshot().is_empty());
     }
 
     #[test]
@@ -1449,5 +1469,32 @@ mod tests {
             app.boot_load,
             "boot fatality marker stays with the active load"
         );
+    }
+
+    #[cfg(feature = "dev-tools")]
+    #[test]
+    fn dev_level_cycle_ignores_missing_target_without_unloading() {
+        let mut app = test_app();
+        app.level = Some(level_world(FIXTURE_MAP_A, 1));
+        app.boot_state = BootState::Running;
+
+        let mut missing_target =
+            std::env::temp_dir().join("postretro-missing-dev-level-cycle-target.prl");
+        let mut salt = 0;
+        while missing_target.exists() {
+            salt += 1;
+            missing_target = std::env::temp_dir().join(format!(
+                "postretro-missing-dev-level-cycle-target-{salt}.prl"
+            ));
+        }
+
+        app.enqueue_dev_level_cycle_target(missing_target);
+
+        assert!(
+            app.level.is_some(),
+            "missing generated dev PRL must not unload the active level",
+        );
+        assert!(app.level_requests.is_empty());
+        assert!(matches!(app.boot_state, BootState::Running));
     }
 }

@@ -9,6 +9,7 @@ Make UI focus a first-class accessibility state and a designer-controlled visual
 ### In scope
 
 - Internal accessibility snapshot for the active UI tree.
+- AccessKit projection behind an app-side adapter seam.
 - Focus state included in accessibility metadata.
 - Resolved names, roles, bounds, disabled, selected, checked, and live-region announcements in the accessibility snapshot.
 - Author-facing focus visual descriptors for focusable widgets.
@@ -23,6 +24,7 @@ Make UI focus a first-class accessibility state and a designer-controlled visual
 - DOM/CSS-style cascade.
 - Per-frame script callbacks for focus or accessibility.
 - Runtime writes from UI presentation state back into game state.
+- AccessKit types in script descriptors or SDK authoring APIs.
 - Browser or HTML UI.
 - Rich accessibility actions beyond the existing button activation and slider stepping.
 - Localization beyond the current `LocalizedText` string shape.
@@ -84,7 +86,7 @@ Fold `content/dev/scripts/theme.ts` into the dev mod theme path and update `cont
 
 ### Task 9: Accessibility Backend Seam
 
-Add an app-side accessibility adapter boundary that consumes the internal accessibility snapshot. The first implementation may be a no-op backend when no platform adapter is linked, but the data flow must be real: the active snapshot is produced each frame, focus changes are observable at the boundary, and live-region entries are delivered once per visibility activation.
+Add an app-side accessibility adapter boundary that consumes the internal accessibility snapshot. Prefer AccessKit through the winit adapter unless version or platform constraints block it. The first implementation may be a no-op backend when no platform adapter is linked, but the data flow must be real: the active snapshot is produced each frame, focus changes are observable at the boundary, and live-region entries are delivered once per visibility activation.
 
 ### Task 10: Tests And Regression Coverage
 
@@ -117,6 +119,20 @@ Proposed model:
 - Accessibility snapshot builds from the active laid-out tree and the same slot/cell values used for draw and focus export.
 - Accessibility snapshot is internal engine data first. A platform adapter can project it later without changing script authoring.
 - Designer-authored visuals never affect focus behavior or accessibility state.
+- AccessKit is a backend projection target, not PostRetro's UI model.
+- Assistive-technology actions re-enter the existing app-side activation/value-step paths. They do not mutate game or UI state directly.
+
+Integration rules:
+
+- Do build accessibility from descriptors, focus export, layout bounds, and resolved frame state.
+- Do keep AccessKit behind a narrow adapter. The rest of the engine talks in PostRetro accessibility snapshot terms.
+- Do keep platform accessibility calls out of GPU/render-pass code.
+- Do preserve frame ordering. Assistive-technology actions are an input source that reaches gameplay through the same queued seams as other UI actions.
+- Do require stable authored ids for interactive widgets and any node referenced by `labelledBy`.
+- Do not infer semantics from draw lists, glyph runs, colors, or focus visuals.
+- Do not make AccessKit types part of the scripting surface.
+- Do not let visual focus style decide whether a node is focusable or exposed to assistive technology.
+- Do not add a platform-specific authoring vocabulary.
 
 Implementation notes:
 
@@ -126,6 +142,14 @@ Implementation notes:
 - Keep descriptor fields additive and skip-serialized when omitted.
 - Treat `focusVisual: "none"` as a visual override only. It must not remove the node from focus export or the accessibility snapshot.
 - For `textColor`, prefer carrying enough node/run identity in draw data to mutate only the focused node's own text run. Do not recolor every matching string.
+
+Promotion notes:
+
+- Add a durable UI principle: accessibility is semantic, not visual.
+- Capture that UI descriptors declare names, roles, state, focus behavior, and announcements.
+- Capture that rendering chooses presentation, including focus visuals.
+- Capture that accessibility adapters project engine-owned semantics to OS APIs.
+- Capture that assistive-technology actions obey the same frame-order and reaction seams as keyboard/gamepad/pointer UI input.
 
 ## Boundary Inventory
 
@@ -147,6 +171,6 @@ Implementation notes:
 
 ## Open Questions
 
-- Which platform accessibility backend should be linked first. AccessKit is the likely candidate because the engine already uses `winit`, but the implementation task should confirm version compatibility before adding the dependency.
+- Whether AccessKit through `accesskit_winit` can be linked at the current workspace dependency versions without expanding platform support or binary size beyond the feature's budget. It is the preferred first backend unless implementation research finds a blocker.
 - Whether `focusVisual` should be allowed on passive id-bearing widgets only as authored overrides, or only on widgets that can receive focus through a focus group. The initial implementation should accept it on all focusable-capable widget descriptors and apply it only when the node is actually focusable.
 - Whether the default focus visual should remain an outline for all widgets, or use text color for text-bearing buttons once `text.default` and `focus.text` exist. The conservative default is outline for backward visibility.

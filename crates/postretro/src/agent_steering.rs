@@ -21,9 +21,9 @@ use crate::scripting::registry::{
     ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform,
 };
 
-// Re-export the one-shot path query so the steering API and its consumer
-// (`scripting/systems/ai.rs`) import it from one place rather than reaching into
-// `nav` directly.
+// Re-export the one-shot path query as part of the steering module's surface, so
+// a caller that wants a path without owning an agent imports it from here rather
+// than reaching into `nav` directly.
 pub(crate) use crate::nav::find_path;
 
 /// Maximum number of agents that may recompute a path in a single tick. Bounds

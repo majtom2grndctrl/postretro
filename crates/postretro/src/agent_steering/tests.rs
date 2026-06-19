@@ -344,7 +344,7 @@ fn two_agents_to_same_destination_separate_from_overlap() {
 
 #[test]
 fn steering_api_exposes_set_clear_destination_path_state_and_find_path() {
-    // The plan-2 API surface: set/clear destination mutate the component;
+    // The steering API surface: set/clear destination mutate the component;
     // path_state reads it back; the re-exported find_path runs the one-shot
     // query. One test exercises all four entry points.
     let wall = LWall::fixture();

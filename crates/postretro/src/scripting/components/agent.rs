@@ -78,9 +78,12 @@ pub(crate) struct AgentComponent {
     /// one) cannot re-qualify for a replan every tick. Decremented each tick.
     /// See the steering tick.
     pub(crate) replan_cooldown_ticks: u32,
-    /// `true` once the agent has reached its destination (within the arrival
-    /// radius of the final waypoint). Cleared on a successful replan or when the
-    /// destination is cleared.
+    /// `true` once the agent has reached the end of its current path (within the
+    /// arrival radius of the final waypoint). Cleared on a successful replan or
+    /// when the destination is cleared. If the destination moves after arrival,
+    /// the agent waits at the old goal until its next budget-gated replan routes
+    /// to the new target — a bounded pause (served within the replan budget /
+    /// staleness window), not a freeze.
     pub(crate) arrived: bool,
     /// `true` when the agent has a destination but pathfinding found no route
     /// to it (an empty path that survived a replan attempt). The agent holds

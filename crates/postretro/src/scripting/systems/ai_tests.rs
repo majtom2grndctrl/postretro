@@ -810,11 +810,12 @@ fn zero_death_despawn_ms_still_gives_one_death_tick_before_despawn() {
 // ::tick, mirroring main.rs's run_agent_tick) must not freeze chasers beyond
 // the replan budget, and a stationary target must not force a replan per tick.
 //
-// Bug: `set_destination` unconditionally wiped the path and forced
-// `destination_moved` every tick. The FSM re-issues the player's position every
-// chase tick, so with more than REPLAN_BUDGET_PER_TICK chasers only the budget
-// replanned each tick and the rest had their path wiped → ZERO velocity →
-// silent freeze. The fix makes an unchanged re-issue a planning no-op.
+// Bug: `set_destination` wiped the path on every call. The FSM re-issues the
+// player's position every chase tick, so with more than REPLAN_BUDGET_PER_TICK
+// chasers, the overflow chasers ended each tick with an empty path → goal_velocity
+// ZERO → permanent freeze. Fix: `set_destination` only records the target; the
+// path is (re)built solely inside `tick`'s budget-gated replan block, so a
+// budget-deferred agent keeps its stale-but-valid path and keeps moving.
 // ---------------------------------------------------------------------------
 
 const STEER_DT: f32 = 1.0 / 60.0;
@@ -1005,16 +1006,15 @@ fn move_player_to(reg: &mut EntityRegistry, pawn: EntityId, x: f32, z: f32) {
 #[test]
 fn integrated_chase_loop_closes_distance_for_all_chasers_when_player_moves() {
     // Regression (the bug the stationary-player test missed): the FSM re-issues
-    // the player's position to `set_destination` EVERY chase tick. With a MOVING
-    // player whose per-tick step exceeds the old `DESTINATION_MOVED_EPSILON`
-    // (0.1), the old `set_destination` wiped each chaser's path every tick; the
-    // per-tick replan budget then only replanned REPLAN_BUDGET_PER_TICK of them,
-    // so the OVERFLOW chasers ended every tick with an empty path → goal_velocity
-    // ZERO → permanent freeze. The fix preserves the path on re-issue and lets a
-    // budget-loss chaser keep following its stale-but-valid route. This test
-    // spawns MORE chasers than the budget and a player that moves ~0.12 u/tick
-    // (above that epsilon), and asserts EVERY chaser — overflow included — closes
-    // real distance to the player. It FAILS pre-fix: overflow chasers freeze.
+    // the player's position to `set_destination` EVERY chase tick. The old
+    // `set_destination` wiped each chaser's path on every call; the per-tick
+    // replan budget then only replanned REPLAN_BUDGET_PER_TICK of them, so the
+    // OVERFLOW chasers ended every tick with an empty path → goal_velocity ZERO →
+    // permanent freeze. The fix preserves the path and lets a budget-loss chaser
+    // keep following its stale-but-valid route. This test spawns MORE chasers than
+    // the budget and a player that moves ~0.12 u/tick (a real per-tick step), and
+    // asserts EVERY chaser — overflow included — keeps moving (the load-bearing
+    // `moved > 1.0` check). It FAILS pre-fix: overflow chasers freeze (~0.27 u).
     let floor = OpenFloor::new();
     let world = floor.collision_world();
     let graph = floor.nav_graph();
@@ -1045,9 +1045,9 @@ fn integrated_chase_loop_closes_distance_for_all_chasers_when_player_moves() {
         .map(|&p| distance_xz(p, player_start))
         .collect();
 
-    // Per-tick player step: ~0.12 u/tick — comfortably above the old
-    // DESTINATION_MOVED_EPSILON (0.1) so it would have wiped the path each tick
-    // under the bug, yet small enough that the cluster stays inside detection.
+    // Per-tick player step: ~0.12 u/tick — a real per-tick move (the old
+    // path-wiping set_destination cleared on any change), yet small enough that
+    // the cluster stays inside detection range.
     const PLAYER_STEP_PER_TICK: f32 = 0.12;
     let ticks = 200u32;
 
@@ -1065,10 +1065,12 @@ fn integrated_chase_loop_closes_distance_for_all_chasers_when_player_moves() {
     let player_end = reg.get_component::<Transform>(player).unwrap().position;
 
     // EVERY chaser — including the overflow ones beyond the budget — must have
-    // moved a real amount (well above the gravity/separation settle noise floor)
-    // AND closed real distance to the player. A frozen overflow chaser (path
-    // wiped, goal_velocity ZERO) advances essentially zero and its distance to
-    // the now-closer player would NOT shrink by a meaningful margin.
+    // moved a real amount (well above the gravity/separation settle noise floor).
+    // The `moved > 1.0` check is the load-bearing freeze guard: a frozen overflow
+    // chaser (path wiped, goal_velocity ZERO) advances essentially zero (~0.27 u
+    // of settle). The distance-closed check is a secondary sanity assert (with the
+    // player advancing toward the cluster it is weaker than `moved`, but it pins
+    // that the chasers track the live target rather than wandering).
     for (idx, &id) in chasers.iter().enumerate() {
         let state = agent_steering::path_state(&reg, id).unwrap();
         let moved = distance_xz(start_pos[idx], state.position);

@@ -124,7 +124,7 @@ Movement and weapon events are collected across all ticks in a frame and drained
 
 ### Ownership
 
-Game logic owns entities exclusively. No other subsystem creates, modifies, or destroys entities directly.
+Game logic owns entities exclusively. No other subsystem creates, modifies, or destroys entities directly. Networked replication (Milestone 15) preserves this: a server snapshot is applied through a game-logic-owned apply step — the net subsystem produces typed snapshots and never mutates the registry directly.
 
 | Subsystem | Interaction with entities |
 |-----------|--------------------------|
@@ -191,7 +191,7 @@ The parent emitter entity carries `BillboardEmitterComponent`. Particles back-re
 - Full ECS (archetype storage, query planner, system scheduler)
 - Entity inheritance hierarchies
 - Per-entity script lifecycle callbacks (entity types don't have script attachment points; scripts manipulate entities through registered primitives)
-- Networked entity replication
+- Client-authoritative entity state; deterministic-lockstep replication. (Server-authoritative replication — server owns entities, clients receive replicated `ComponentValue` deltas — is the Milestone 15 direction; see `context/research/netcode/`.)
 - Entity serialization (save/load)
 - Spatial partitioning for entity-entity queries (octree, grid)
 - Physics engine integration (rigid body, joints, constraints)

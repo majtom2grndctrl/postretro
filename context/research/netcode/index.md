@@ -1,9 +1,9 @@
 # Multiplayer Netcode (Epic)
 
-> **Epic-level spec.** Defines the networking model, stack, architectural seams, and
-> a six-phase build order. Per-phase implementation specs are **reserved** — each
-> phase below gets its own `/draft-spec` → review → `/orchestrate` cycle once this
-> epic is reviewed and promoted. Rationale and the codebase seam map live in
+> **Milestone 15 design reference** (`plans/roadmap.md`). Defines the networking model,
+> stack, architectural seams, and a six-phase build order. Per-phase implementation
+> specs are **reserved** — each phase gets its own `/draft-spec` → review →
+> `/orchestrate` cycle as it opens. Rationale and the codebase seam map live in
 > `research.md`.
 
 ## Goal
@@ -216,27 +216,21 @@ may run alongside the Phase 1.5 design gate. Movement prediction owns only the
 respawn-as-teleport *mechanism* (Phase 1.5 owns co-op respawn *policy*), so it does not
 depend on set-piece semantics.
 
-### Non-goal reconciliation (apply at promotion, not during drafting)
-Per the documentation lifecycle, `context/lib/` is updated at promotion, not in the
-draft session. At promotion, reconcile:
-- **`index.md` §4 Non-Goals:** replace the blanket "Multiplayer / networking" entry
-  with the narrowed set this epic still excludes — deterministic lockstep/rollback,
-  full server-rewind lag compensation, competitive PvP/matchmaking/anti-cheat,
-  peer-to-peer — and point to the (then-promoted) epic for the direction taken.
-- **`entity_model.md` §9 Non-Goals:** replace "Networked entity replication" with the
-  authoritative-replication direction (server owns entities; clients receive
-  replicated `ComponentValue` deltas), narrowing the remaining non-goal to
+### Promotion status (landed at Milestone 15 registration)
+Durable capture that landed when this epic was promoted to a milestone:
+- **Registered as Milestone 15** in `context/plans/roadmap.md` (detail-on-open phases,
+  the M10/M13/M14 pattern); this doc is the milestone's design reference.
+- **`index.md` §4 Non-Goals** reconciled: "Multiplayer / networking" narrowed to the set
+  this epic still excludes (lockstep/rollback, full server-rewind, competitive
+  PvP/matchmaking/anti-cheat, peer-to-peer), pointing here for the direction taken.
+- **`entity_model.md` §9 Non-Goals** reconciled: "Networked entity replication" replaced
+  with the authoritative-replication direction; remaining non-goal narrowed to
   client-authoritative state and deterministic-lockstep replication.
-- **`entity_model.md` §6 Ownership:** note that the replication apply step preserves
-  exclusive ownership — snapshot application and predicted spawn/despawn run through a
-  game-logic-owned apply pass; the net crate emits typed snapshots and never mutates the
-  registry directly.
-- A `networking.md` context doc + Agent Router entry is the natural durable home;
-  create it at the promotion of Phase 1 (the first phase that lands a real contract),
-  not at this epic's promotion.
-- **Register as a roadmap milestone** (detail-on-open phases, the M10/M13/M14
-  precedent) in `context/plans/roadmap.md` — the epic's sequencing is milestone-shaped,
-  and the per-phase specs become individual plans under it.
+- **`entity_model.md` §6 Ownership** annotated: snapshot application runs through a
+  game-logic-owned apply step, preserving exclusive ownership.
+
+Still deferred by design: the durable `networking.md` context/lib doc + its Agent Router
+entry land at **Phase 1** promotion (the first phase with a real contract), not here.
 
 ## Rough sketch
 

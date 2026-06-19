@@ -317,6 +317,30 @@ Plans ship in this sequence:
 
 ---
 
+## Milestone 15: Multiplayer (Co-op Netcode)
+
+Authoritative client-server multiplayer: a host runs the world and up to 16 players share a campaign level, co-op campaign first. **North star:** two-plus players join a host's level (one mid-game), move and fight together against shared server-authoritative enemies and set-pieces, with local-player movement and projectiles client-predicted so the game stays responsive under latency. The model is **authoritative server + snapshot replication** (Quake/Source/Overwatch lineage), deliberately **not** deterministic lockstep — the engine simulates in f32 (glam, parry3d) and cross-architecture f32 is not bit-identical, so lockstep would desync; snapshots tolerate that drift by construction. This reverses the standing "Multiplayer / networking" non-goal (`index.md` §4, `entity_model.md` §9, reconciled).
+
+**Stack.** `renet`/`renetcode` transport, hand-rolled replication (`lightyear` as design blueprint, not a dependency — it is Bevy-coupled; the registry is bespoke), `bitcode` serialization, custom snapshot delta. A new `crates/net/` sibling crate owns transport + replication; the headless simulation seam (Phase 0) is what lets a dedicated server split out from the listen-server later.
+
+**Epic milestone**, realized as detail-on-open phases — each its own `/draft-spec` → `/orchestrate` cycle (the M10/M13/M14 pattern). The full design — model, stack, architectural-invariant reconciliations, risk ledger, codebase seam map — lives in `context/research/netcode/`. Per-phase implementation specs are drafted against it as each phase opens.
+
+**Prerequisite:** Milestone 6 (entity model + scripting) ✓, Milestone 7 (grounded movement + collision world) ✓, and **Milestone 10 (animated enemies)** — co-op combat needs server-authoritative enemies; M10's `Agent` + AI-brain components replicate as ordinary entities. Phases 0–2 are enemy-free and need only M6/M7; the combat-bearing phases (1.5, 3–5) build on M10.
+
+Phases ship in this sequence (detail-on-open):
+
+- [ ] **Phase 0 — Headless simulation seam + cross-arch reconciliation spike.** Extract the fixed-tick game logic out of the render-interleaved frame loop into a headless `simulate` seam (no wgpu/winit) — the shared server+client tick path. Spike: measure same-input cross-arch f32 divergence to set the reconciliation tolerance (a measured finding, not a gate). Split-before-extend `main.rs` (5,593 lines) and `movement/mod.rs` (6,055 lines) first.
+- [ ] **Phase 1 — Transport + replication foundation.** renet/renetcode + hand-rolled replication + bitcode + custom delta; folds in time-sync, snapshot ack + delta baseline, join-in-progress, a latency-sim harness, and a protocol/version handshake. Host + client (incl. mid-level joiner) over loopback/LAN, remote pawns interpolating. `networking.md` context doc lands here (first real contract).
+- [ ] **Phase 1.5 — N-player set-piece design (gating).** Design milestone: trigger ownership, reveal/spawn fan-out, progress tracking, co-op respawn policy, set-piece-progress replication for joiners — proven by one playable co-op set-piece. Gates the combat phases ("is co-op fun"). Phase 2 may run in parallel.
+- [ ] **Phase 2 — Local-player movement prediction + reconciliation.** Client predicts its own pawn from buffered input; reconciles against authoritative snapshots; respawn reconciles as a teleport (snap, don't interpolate). Movement-only (dash included).
+- [ ] **Phase 3 — Server-authoritative hitscan combat.** Fire is server-authoritative with immediate cosmetic feedback; favor-the-shooter validation against a short single-entity history — explicitly not full server-rewind.
+- [ ] **Phase 4 — Predicted projectiles.** Client-predicted projectiles with predicted-entity → server-confirmed handoff, for rocket/grenade feel.
+- [ ] **Phase 5 — Scale + dedicated-server readiness.** Validate 16 players within a host-upstream bandwidth budget; prove the headless server entry point (dedicated-server split).
+
+**Testable outcome:** two-plus players connect to a host (one joining mid-level), move together with predicted local movement that stays responsive under simulated latency, fight shared server-authoritative enemies through a co-op set-piece, and fire predicted projectiles — all reconciling to the host's authority with no full server-rewind. A headless server entry point compiles, confirming dedicated-server readiness.
+
+---
+
 ## Future / Speculative
 
 Features below are intended but not yet sequenced. Rough priority ordering within each group.

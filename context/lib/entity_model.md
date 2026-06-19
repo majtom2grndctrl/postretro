@@ -41,7 +41,7 @@ Capabilities attach via component columns in the registry. Current engine compon
 | MeshComponent | Skinned model handle (`model: String`) plus optional declared animation states and per-entity animation state; spawned via `prop_mesh` or a descriptor carrying a mesh component |
 | Health | Hit points (`max`, `current`) plus optional hitscan hitbox (one world-aligned AABB, fixed per archetype); declared via the `components.health` descriptor block. Hitscan-targetable iff health **and** (an authored AABB hitbox **or** a zone-bearing skinned model, §7) — a zone-bearing model is tested against bone-posed capsules rather than the AABB. |
 
-Type-specific data lives in the component. An entity is "a player" by virtue of carrying `PlayerMovement`, not by belonging to a typed collection. Future entity types (enemies, doors, projectiles, pickups) follow the same pattern — illustrative, not current scope.
+Type-specific data lives in the component. An entity is "a player" by virtue of carrying `PlayerMovement`, not by belonging to a typed collection. Future entity types (enemies, doors, projectiles, pickups) follow the same pattern — illustrative, not current scope. The M10 enemy wave (specced, awaiting build) adds two engine-internal components on this pattern: a movable **Agent** (navmesh path-following plus a `parry3d`-backed collide-and-slide harness, distinct from the player movement substrate) and an **AI brain** (engine-owned idle/alert/attack/death FSM with declarative descriptor tuning, the `movement.md` §2 engine-owned-behavior precedent). See `plans/ready/M10--pathfinding-path-following/` and `plans/ready/M10--enemy-ai-behavior/`.
 
 ---
 
@@ -67,7 +67,7 @@ All entities update each fixed-timestep game logic tick. See section 5 for updat
 Entities are destroyed when:
 
 - A scripted or engine bridge condition fires (expired particle, emitter despawn, level unload).
-- Health reaches zero: a per-tick death sweep despawns non-player entities at zero HP (and reports kills to the progress tracker). The player pawn never despawns from damage — HP latches at zero and a one-shot death event fires.
+- Health reaches zero: a per-tick death sweep despawns non-player entities at zero HP (and reports kills to the progress tracker). The player pawn never despawns from damage — HP latches at zero and a one-shot death event fires. (M10 enemy AI, specced: brain-bearing entities are a third case — the sweep counts the kill once via a latch but defers despawn to the AI tick so a death clip can play out, then the AI tick despawns; see `plans/ready/M10--enemy-ai-behavior/`.)
 - Level unloads (all entities destroyed).
 
 Destruction is immediate: the entity's slot is cleared and its generation bumped (or the slot retired on generation overflow) in the same call that removes the entity. Callers must not hold entity IDs across points where destruction can occur.

@@ -635,6 +635,8 @@ fn main() -> Result<()> {
         boot_load: false,
         #[cfg(feature = "dev-tools")]
         debug_ui: None,
+        #[cfg(feature = "dev-tools")]
+        debug_chase_agent: None,
     };
 
     event_loop
@@ -1099,6 +1101,13 @@ struct App {
     /// first panel open.
     #[cfg(feature = "dev-tools")]
     debug_ui: Option<render::debug_ui::DebugUi>,
+
+    /// The dev-tools "chase me" demo agent (spawned by `Alt+Shift+G`). `None`
+    /// until first spawned; spawned at most once per level (cleared on level
+    /// unload). Each tick the agent re-targets the player pawn's `Transform`
+    /// (or the camera when no pawn exists) so it pathfinds toward the player.
+    #[cfg(feature = "dev-tools")]
+    debug_chase_agent: Option<crate::scripting::registry::EntityId>,
 }
 
 struct WindowState {
@@ -2545,6 +2554,30 @@ impl ApplicationHandler for App {
                             if let Some(nav_graph) = self.nav_graph.as_ref() {
                                 renderer.emit_nav_diagnostics(nav_graph);
                             }
+                            // Chase-agent path overlay: corridor + funnel
+                            // waypoints for the `Alt+Shift+G` demo agent. Reads
+                            // the live agent component and hands plain geometry to
+                            // the renderer (no wgpu outside the renderer module).
+                            // Same toggle as the navmesh overlay.
+                            if let Some(agent) = self.debug_chase_agent {
+                                use crate::scripting::components::agent::AgentComponent;
+                                use crate::scripting::registry::Transform;
+                                let registry = self.script_ctx.registry.borrow();
+                                if let Ok(component) =
+                                    registry.get_component::<AgentComponent>(agent)
+                                {
+                                    let position = registry
+                                        .get_component::<Transform>(agent)
+                                        .map(|t| t.position)
+                                        .unwrap_or(Vec3::ZERO);
+                                    renderer.emit_agent_path_overlay(
+                                        position,
+                                        &component.path,
+                                        component.waypoint_cursor,
+                                        component.radius,
+                                    );
+                                }
+                            }
                             out
                         };
 
@@ -3632,6 +3665,27 @@ impl App {
         let gravity = self.script_ctx.gravity.get();
         let nav_graph = self.nav_graph.as_ref();
         let mut registry = self.script_ctx.registry.borrow_mut();
+
+        // dev-tools "chase me" demo: each tick, re-aim the debug chase agent at
+        // the player pawn's `Transform` (the pawn-discovery idiom) — or the
+        // camera when no pawn exists — so it continuously pathfinds toward the
+        // player. Setting the destination every tick is intentional: the
+        // steering replan policy reacts to a moved destination by replanning.
+        #[cfg(feature = "dev-tools")]
+        if let Some(agent) = self.debug_chase_agent {
+            use crate::scripting::registry::{ComponentKind, ComponentValue, Transform};
+
+            let target = registry
+                .iter_with_kind(ComponentKind::PlayerMovement)
+                .find_map(|(id, value)| {
+                    matches!(value, ComponentValue::PlayerMovement(_)).then_some(id)
+                })
+                .and_then(|id| registry.get_component::<Transform>(id).ok())
+                .map(|t| t.position)
+                .unwrap_or(self.camera.position);
+            agent_steering::set_destination(&mut registry, agent, target);
+        }
+
         let _ = agent_steering::tick(
             &mut registry,
             &self.collision_world,
@@ -3920,6 +3974,61 @@ impl App {
             #[cfg(feature = "dev-tools")]
             DiagnosticAction::CycleDevLevel => {
                 self.enqueue_dev_level_cycle();
+            }
+            #[cfg(feature = "dev-tools")]
+            DiagnosticAction::SpawnChaseAgent => {
+                self.spawn_debug_chase_agent();
+            }
+        }
+    }
+
+    /// Spawn the dev-tools "chase me" demo agent at the camera position, seeded
+    /// from the loaded navmesh's baked agent params. Idempotent per level: a
+    /// second press re-targets the existing agent instead of stacking spawns.
+    /// No-op when the map carries no navmesh (`agent_params` needs the graph).
+    ///
+    /// The `NavGraph::agent_params()` read and `attach_agent` happen HERE at the
+    /// spawn call site (not inside the component constructor): the baked params
+    /// describe the capsule the floor was eroded for. The per-tick destination
+    /// is then driven by `run_agent_tick`.
+    #[cfg(feature = "dev-tools")]
+    fn spawn_debug_chase_agent(&mut self) {
+        use crate::scripting::components::agent::attach_agent;
+        use crate::scripting::registry::Transform;
+
+        let Some(nav_graph) = self.nav_graph.as_ref() else {
+            log::warn!("[dev-tools] chase agent: map has no navmesh; cannot spawn");
+            return;
+        };
+        if self.debug_chase_agent.is_some() {
+            log::info!("[dev-tools] chase agent already spawned; re-targeting each tick");
+            return;
+        }
+
+        // Top speed for the demo pursuer (world-units/sec). A brisk-but-readable
+        // chase; the capsule itself comes from the baked params below.
+        const CHASE_MOVE_SPEED: f32 = 4.0;
+
+        let params = nav_graph.agent_params();
+        let spawn_pos = self.camera.position;
+
+        let mut registry = self.script_ctx.registry.borrow_mut();
+        let entity = registry.spawn(Transform {
+            position: spawn_pos,
+            ..Transform::default()
+        });
+        match attach_agent(&mut registry, entity, &params, CHASE_MOVE_SPEED) {
+            Ok(()) => {
+                drop(registry);
+                self.debug_chase_agent = Some(entity);
+                log::info!(
+                    "[dev-tools] spawned chase agent {:?} at {:?} (chasing player/camera)",
+                    entity,
+                    spawn_pos,
+                );
+            }
+            Err(err) => {
+                log::warn!("[dev-tools] chase agent attach failed: {err:?}");
             }
         }
     }

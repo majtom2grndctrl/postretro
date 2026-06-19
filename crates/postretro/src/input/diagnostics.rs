@@ -66,6 +66,12 @@ pub enum DiagnosticAction {
     /// without `dev-tools`, this variant and its chord are absent.
     #[cfg(feature = "dev-tools")]
     CycleDevLevel,
+    /// Spawn (once) a navmesh chase agent that chases the player pawn — or the
+    /// camera when no pawn exists — re-targeting every tick. Bound to
+    /// `Alt+Shift+G`. The "chase me" pathfinding demo. Feature-gated: without
+    /// `dev-tools`, this variant and its chord are absent.
+    #[cfg(feature = "dev-tools")]
+    SpawnChaseAgent,
 }
 
 /// A modifier+key combination bound to a diagnostic action.
@@ -194,6 +200,12 @@ pub fn default_diagnostic_chords() -> Vec<DiagnosticChord> {
             key: KeyCode::KeyL,
             action: DiagnosticAction::CycleDevLevel,
         },
+        #[cfg(feature = "dev-tools")]
+        DiagnosticChord {
+            modifiers: Modifiers::ALT_SHIFT,
+            key: KeyCode::KeyG,
+            action: DiagnosticAction::SpawnChaseAgent,
+        },
     ]
 }
 
@@ -295,6 +307,16 @@ mod tests {
         d.handle_key(KeyCode::AltLeft, true, false);
         let action = d.handle_key(KeyCode::KeyL, true, false);
         assert_eq!(action, Some(DiagnosticAction::CycleDevLevel));
+    }
+
+    #[cfg(feature = "dev-tools")]
+    #[test]
+    fn alt_shift_g_fires_spawn_chase_agent() {
+        let mut d = fresh();
+        d.handle_key(KeyCode::ShiftLeft, true, false);
+        d.handle_key(KeyCode::AltLeft, true, false);
+        let action = d.handle_key(KeyCode::KeyG, true, false);
+        assert_eq!(action, Some(DiagnosticAction::SpawnChaseAgent));
     }
 
     #[test]

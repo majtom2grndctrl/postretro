@@ -3882,6 +3882,31 @@ impl Renderer {
         nav_diagnostics::emit(graph, &mut self.debug_lines);
     }
 
+    /// Emit agent path/corridor diagnostic debug lines: the corridor from the
+    /// agent's `position` through its remaining funnel waypoints (from `cursor`),
+    /// plus a per-waypoint cross marker sized to the capsule `radius`. Gated by
+    /// the same navmesh overlay toggle (`Alt+Shift+N`) so the path draws
+    /// alongside the region/portal overlay. Must run after `clear_debug_lines`
+    /// and before the frame's debug-line pass, mirroring `emit_nav_diagnostics`.
+    ///
+    /// Keeps all wgpu renderer-side (Renderer-owns-GPU): the call site hands in
+    /// plain agent geometry, never a debug-line / wgpu handle. The render-private
+    /// `nav_diagnostics::emit_agent_path` (it is `pub(super)`) is reached only
+    /// through this wrapper.
+    #[cfg(feature = "dev-tools")]
+    pub fn emit_agent_path_overlay(
+        &mut self,
+        position: Vec3,
+        path: &[Vec3],
+        cursor: usize,
+        radius: f32,
+    ) {
+        if !self.show_navmesh {
+            return;
+        }
+        nav_diagnostics::emit_agent_path(position, path, cursor, radius, &mut self.debug_lines);
+    }
+
     /// Flip the navmesh overlay on/off. Bound to `Alt+Shift+N`.
     #[cfg(feature = "dev-tools")]
     pub fn toggle_navmesh_overlay(&mut self) -> bool {

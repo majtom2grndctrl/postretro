@@ -110,6 +110,12 @@ impl App {
         self.mesh_clip_tables.clear();
         self.hit_zone_store.clear();
         self.nav_graph = None;
+        // The registry is cleared below, retiring the chase agent's entity slot;
+        // drop the handle so a stale id is never re-targeted after unload.
+        #[cfg(feature = "dev-tools")]
+        {
+            self.debug_chase_agent = None;
+        }
         self.mesh_render.clear();
         self.particle_live_counts.clear();
         self.emitter_bridge.clear();
@@ -1192,6 +1198,8 @@ mod tests {
             boot_load: false,
             #[cfg(feature = "dev-tools")]
             debug_ui: None,
+            #[cfg(feature = "dev-tools")]
+            debug_chase_agent: None,
         }
     }
 

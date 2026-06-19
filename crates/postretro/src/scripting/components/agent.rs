@@ -123,7 +123,17 @@ impl AgentComponent {
     /// player movement capsule (`height / 2.0 - radius`). The collide-and-slide
     /// harness builds its `parry3d::shape::Capsule` from this.
     pub(crate) fn half_height(&self) -> f32 {
-        self.height / 2.0 - self.radius
+        // A well-baked agent has `radius < height / 2`, so the cylinder section is
+        // non-negative. A bad bake (`radius >= height / 2`) would invert the parry
+        // capsule endpoints and silently mis-shape collide-and-slide; clamp at 0 so
+        // the worst case degrades to a sphere rather than an inverted capsule.
+        debug_assert!(
+            self.height / 2.0 - self.radius >= 0.0,
+            "agent capsule radius {} >= height/2 {} (bad navmesh bake)",
+            self.radius,
+            self.height / 2.0
+        );
+        (self.height / 2.0 - self.radius).max(0.0)
     }
 }
 

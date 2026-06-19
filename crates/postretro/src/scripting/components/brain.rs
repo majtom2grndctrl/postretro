@@ -5,8 +5,8 @@
 // tuning materialized from the `components.ai` descriptor.
 //
 // This module ships the brain DATA and its spawn-time state-map validation. The
-// FSM tick (transition evaluation, steering, damage, animation switching) is a
-// later task and is NOT built here.
+// FSM tick (transition evaluation, steering, damage, animation switching) lives
+// in `scripting/systems/ai.rs`.
 //
 // See: context/lib/entity_model.md §2 (engine components), §7b (engine-internal
 //      component, no script surface)
@@ -33,7 +33,8 @@ pub(crate) enum LogicalState {
     /// The target is in attack range; the brain applies damage on cooldown.
     Attack,
     /// The brain's entity reached zero HP; it plays the death clip and the AI
-    /// tick despawns it after `death_despawn_ms` (a later task owns the despawn).
+    /// tick despawns it after `death_despawn_ms` (the despawn is owned by
+    /// `scripting/systems/ai.rs`).
     Death,
 }
 
@@ -125,7 +126,7 @@ impl AiTuning {
 
 /// Engine-internal AI brain. Live FSM state plus resolved tuning. Seeded at
 /// spawn in the [`LogicalState::Idle`] state with timers at rest; the FSM tick
-/// (a later task) drives the rest.
+/// (`scripting/systems/ai.rs`) drives the rest.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct BrainComponent {
     /// Current logical FSM state. Starts [`LogicalState::Idle`].

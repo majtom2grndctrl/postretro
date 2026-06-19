@@ -16,11 +16,23 @@ use super::{NavGraph, distance_xz};
 /// between region centroids), reconstructs the exact portal corridor A* chose,
 /// then funnels it to the tightest waypoint list within the corridor.
 ///
-/// Returns `None` when `start` or `goal` lies outside every region, or when no
-/// corridor connects their regions. A reachable goal always yields a path whose
-/// first waypoint is `start` and last is `goal`; a goal in the start region is a
-/// trivial two-point `[start, goal]`.
+/// Returns `None` when `start` or `goal` lies outside every region, when either
+/// endpoint is non-finite, or when no corridor connects their regions. A
+/// reachable goal always yields a path whose first waypoint is `start` and last
+/// is `goal`; a goal in the start region is a trivial two-point `[start, goal]`.
 pub fn find_path(graph: &NavGraph, start: Vec3, goal: Vec3) -> Option<Vec<Vec3>> {
+    // Finiteness guard: a NaN/inf endpoint makes every funnel area comparison
+    // false, silently collapsing the result to a straight `[start, goal]` line
+    // that may cross solid geometry. Reject it rather than emit a path through a
+    // wall. (`region_at` would also fail on NaN, but inf could resolve a region.)
+    debug_assert!(
+        start.is_finite() && goal.is_finite(),
+        "find_path called with non-finite start/goal"
+    );
+    if !start.is_finite() || !goal.is_finite() {
+        return None;
+    }
+
     let start_region = graph.region_at(start)?;
     let goal_region = graph.region_at(goal)?;
 

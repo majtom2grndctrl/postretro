@@ -1,5 +1,5 @@
 // Runtime navigation graph: region records + per-region portals, the query
-// surface that the future baked-pathfinding plan extends.
+// surface that the pathfinding query (`nav/path.rs`) and steering sit on.
 // See: context/lib/build_pipeline.md §Navigation bake
 
 mod path;
@@ -69,7 +69,7 @@ impl NavRegionRecord {
 /// records carry world-space footprints decoded from the grid header, and a
 /// per-region adjacency list flattens the section's portal array for O(1)
 /// per-region portal iteration. The query surface (point→region lookup, portal
-/// iteration, header/agent read-back) is what pathfinding will sit on top of.
+/// iteration, header/agent read-back) is what pathfinding sits on top of.
 #[derive(Debug, Clone)]
 pub struct NavGraph {
     grid: NavGrid,
@@ -154,9 +154,9 @@ impl NavGraph {
         self.grid.cell_size
     }
 
-    /// Canonical-agent parameter read-back. Navmesh query surface; no production
-    /// caller in the default build (agent-aware path-following will consume it).
-    #[allow(dead_code)]
+    /// Canonical-agent parameter read-back. Called at level load to seed
+    /// descriptor-spawned agent capsules (`startup/lifecycle.rs`) and by the
+    /// dev-tools chase-agent spawner.
     pub fn agent_params(&self) -> NavAgentParams {
         self.agent
     }

@@ -232,7 +232,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("weapon?", "Option<WeaponDescriptor>", "Weapon tuning preset. Weapon archetypes are instantiated as wieldable entities when referenced by `defaultWeapon`.")
         .field("mesh?", "Option<MeshDescriptor>", "Animated skinned-mesh preset: model handle plus an optional per-state animation map. A descriptor carrying this is directly map-placeable by canonicalName.")
         .field("health?", "Option<HealthDescriptor>", "Hit points plus an optional hitscan hitbox. A descriptor carrying this is directly map-placeable by canonicalName.")
-        .field("ai?", "Option<AiDescriptor>", "AI brain preset: detection/attack/leash ranges, attack tuning, move speed, despawn delay, EXP reward, and the logical-state → mesh animation-state map. Materializes a brain plus a navigation agent at spawn. Rides on health+mesh for map placement; it does not itself make a descriptor placeable.")
+        .field("ai?", "Option<AiDescriptor>", "AI brain preset: detection/attack/leash ranges, attack tuning, move speed, despawn delay, and the logical-state → mesh animation-state map. Materializes a brain plus a navigation agent at spawn. Rides on health+mesh for map placement; it does not itself make a descriptor placeable.")
         .finish();
     registry
         .register_enum("FireMode")

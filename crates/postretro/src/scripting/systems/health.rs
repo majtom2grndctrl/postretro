@@ -67,7 +67,11 @@ pub(crate) fn sweep_deaths(registry: &mut EntityRegistry) -> DeathReport {
         let ComponentValue::Health(health) = value else {
             continue;
         };
-        if health.current == 0.0 {
+        // `<= 0.0`, not `== 0.0`: `apply_damage` floors HP at exactly `0.0` (the
+        // sole damage chokepoint), but a direct/negative write elsewhere must not
+        // let a dead entity slip the sweep — the AI tick's death check (`ai.rs`)
+        // also keys on `<= 0.0`, so the kill-latch and despawn agree on "dead".
+        if health.current <= 0.0 {
             dead.push(id);
         }
     }

@@ -169,7 +169,7 @@ declare module "postretro" {
     mesh?: MeshDescriptor | null;
     /** Hit points plus an optional hitscan hitbox. A descriptor carrying this is directly map-placeable by canonicalName. */
     health?: HealthDescriptor | null;
-    /** AI brain preset: detection/attack/leash ranges, attack tuning, move speed, despawn delay, EXP reward, and the logical-state → mesh animation-state map. Materializes a brain plus a navigation agent at spawn. Rides on health+mesh for map placement; it does not itself make a descriptor placeable. */
+    /** AI brain preset: detection/attack/leash ranges, attack tuning, move speed, despawn delay, and the logical-state → mesh animation-state map. Materializes a brain plus a navigation agent at spawn. Rides on health+mesh for map placement; it does not itself make a descriptor placeable. */
     ai?: AiDescriptor | null;
   };
 

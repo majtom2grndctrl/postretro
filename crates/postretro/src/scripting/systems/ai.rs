@@ -238,7 +238,10 @@ struct EnemyOutcome {
 ///
 /// Ordering inside the tick, PER enemy:
 /// 1. Tick the attack cooldown down (every tick).
-/// 2. Zero-HP → `Death` (every tick, regardless of stride).
+/// 2. Zero-HP → `Death` (every tick, regardless of stride). Conversely, a brain
+///    still in `Death` whose HP was restored above zero recovers to `Idle` (and
+///    clears the despawn countdown) before the normal FSM runs, so it re-engages
+///    instead of staying a frozen zombie.
 /// 3. Otherwise evaluate the transition core, with acquisition gated by the
 ///    think stride (distance-derived). Attack-range edges + the cooldown check
 ///    are NOT strided.
@@ -342,40 +345,62 @@ pub(crate) fn run_ai_tick(
                     }
                 }
             }
-        } else if let Some(player_pos) = player_pos {
-            // The think stride is derived from the CURRENT player distance; the
-            // gate fires when the per-enemy counter aligns with the band's
-            // divisor. Acquisition (detection/leash) is evaluated only on a
-            // think tick; attack-range edges + the cooldown check are not.
-            let distance = distance_xz(player_pos, snap.position);
-            let stride = think_stride_for_distance(distance);
-            let evaluate_acquisition = stride <= 1 || brain.think_stride_counter % stride == 0;
-
-            let result = evaluate_transition(
-                player_pos,
-                snap.position,
-                &brain.tuning,
-                brain.state,
-                evaluate_acquisition,
-            );
-            brain.state = result.next_state;
-            steering = result.steering;
-
-            // (4) Attack: in `Attack` with the cooldown elapsed AND the player
-            // still alive, apply the configured damage once and arm the cooldown.
-            // Checked every tick. Gating on `player_alive` stops attack/event spam
-            // against an already-dead but still-present player.
-            if brain.state == LogicalState::Attack
-                && brain.attack_cooldown_remaining_ms <= 0.0
-                && player_alive
-            {
-                attacked = true;
-                brain.attack_cooldown_remaining_ms = brain.tuning.attack_cooldown_ms;
-            }
         } else {
-            // No player to target: idle and clear any stale steering.
-            brain.state = LogicalState::Idle;
-            steering = SteeringIntent::Clear;
+            // Not dead. Recover from a stale `Death` state BEFORE the normal FSM
+            // runs: if HP was restored above zero (and finite) while the brain
+            // still reads `Death`, reset it to `Idle` and clear the despawn
+            // countdown so the entity re-engages instead of staying a frozen
+            // zombie. `evaluate_transition` treats `Death` as terminal and has no
+            // HP input, so this HP-driven recovery is the tick's responsibility.
+            // Placed before the player-presence split so it runs for BOTH the
+            // player and the no-player branch: with a player the normal
+            // transition below re-acquires to `Alert` (or `Attack`) this same
+            // tick if it is in range; with no player the `else` branch resolves
+            // to `Idle`. The kill was already counted once at the death sweep's
+            // `death_handled` latch; recovery touches only the FSM state, never
+            // the kill accounting (the sweep remains the sole kill authority).
+            if brain.state == LogicalState::Death {
+                brain.state = LogicalState::Idle;
+                brain.death_despawn_remaining_ms = None;
+            }
+
+            if let Some(player_pos) = player_pos {
+                // The think stride is derived from the CURRENT player distance;
+                // the gate fires when the per-enemy counter aligns with the
+                // band's divisor. Acquisition (detection/leash) is evaluated only
+                // on a think tick; attack-range edges + the cooldown check are
+                // not.
+                let distance = distance_xz(player_pos, snap.position);
+                let stride = think_stride_for_distance(distance);
+                let evaluate_acquisition = stride <= 1 || brain.think_stride_counter % stride == 0;
+
+                let result = evaluate_transition(
+                    player_pos,
+                    snap.position,
+                    &brain.tuning,
+                    brain.state,
+                    evaluate_acquisition,
+                );
+                brain.state = result.next_state;
+                steering = result.steering;
+
+                // (4) Attack: in `Attack` with the cooldown elapsed AND the
+                // player still alive, apply the configured damage once and arm
+                // the cooldown. Checked every tick. Gating on `player_alive`
+                // stops attack/event spam against an already-dead but
+                // still-present player.
+                if brain.state == LogicalState::Attack
+                    && brain.attack_cooldown_remaining_ms <= 0.0
+                    && player_alive
+                {
+                    attacked = true;
+                    brain.attack_cooldown_remaining_ms = brain.tuning.attack_cooldown_ms;
+                }
+            } else {
+                // No player to target: idle and clear any stale steering.
+                brain.state = LogicalState::Idle;
+                steering = SteeringIntent::Clear;
+            }
         }
 
         outcomes.push(EnemyOutcome {

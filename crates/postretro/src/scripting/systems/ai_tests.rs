@@ -197,6 +197,23 @@ fn enemy_state(reg: &EntityRegistry, enemy: EntityId) -> LogicalState {
     reg.get_component::<BrainComponent>(enemy).unwrap().state
 }
 
+/// The brain's death-despawn countdown — `None` until the brain enters `Death`,
+/// reset back to `None` when it recovers.
+fn enemy_despawn_remaining(reg: &EntityRegistry, enemy: EntityId) -> Option<f32> {
+    reg.get_component::<BrainComponent>(enemy)
+        .unwrap()
+        .death_despawn_remaining_ms
+}
+
+/// Overwrite an entity's current HP (the recovery tests heal a dead enemy back
+/// above zero between ticks; the live damage chokepoint floors at zero, so a
+/// direct write is the only way to restore HP).
+fn set_hp(reg: &mut EntityRegistry, id: EntityId, current: f32) {
+    let mut h = reg.get_component::<HealthComponent>(id).unwrap().clone();
+    h.current = current;
+    reg.set_component(id, h).unwrap();
+}
+
 fn enemy_animation(reg: &EntityRegistry, enemy: EntityId) -> String {
     reg.get_component::<MeshComponent>(enemy)
         .unwrap()
@@ -802,6 +819,136 @@ fn zero_death_despawn_ms_still_gives_one_death_tick_before_despawn() {
     assert!(
         !reg.exists(enemy),
         "despawned on the tick after the single Death tick"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Acceptance: an enemy that recovers HP before the despawn timer elapses leaves
+// the terminal `Death` state and re-engages (forward-looking heal/revive
+// robustness — no heal path exists in the engine today). The recovery runs in
+// the not-dead path before the player-presence split, so it fires WITH a player
+// (re-acquiring) and WITHOUT one (resolving to Idle); the control confirms an
+// un-healed enemy still despawns on the timer.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn healed_enemy_recovers_from_death_and_reacquires_player() {
+    let mut reg = EntityRegistry::new();
+    let mut warned = HashSet::new();
+
+    // Player inside detection (10 units) but outside attack range (2): a
+    // recovered enemy re-acquires to Alert, not Attack.
+    let pawn = spawn_player(&mut reg, Vec3::new(10.0, 0.0, 0.0));
+    let enemy = spawn_enemy(
+        &mut reg,
+        Vec3::ZERO,
+        brain_with(tuning(), LogicalState::Alert),
+        0.0, // dead at spawn
+    );
+
+    // Tick 1: zero HP → Death, despawn countdown seeded (death_despawn_ms 1500).
+    run_ai_tick(&mut reg, &mut warned, 0.016);
+    assert_eq!(enemy_state(&reg, enemy), LogicalState::Death);
+    assert_eq!(
+        enemy_despawn_remaining(&reg, enemy),
+        Some(1500.0),
+        "entering Death seeds the despawn countdown",
+    );
+
+    // Heal the enemy back above zero BEFORE the timer elapses.
+    set_hp(&mut reg, enemy, 30.0);
+
+    // Tick 2: recovers from Death and, with the player in detection range,
+    // re-acquires to Alert this same tick (recovery resets to Idle, then the
+    // normal transition runs).
+    run_ai_tick(&mut reg, &mut warned, 0.016);
+    assert_ne!(
+        enemy_state(&reg, enemy),
+        LogicalState::Death,
+        "a healed enemy must leave the terminal Death state",
+    );
+    assert_eq!(
+        enemy_state(&reg, enemy),
+        LogicalState::Alert,
+        "with a player in detection range the recovered enemy re-acquires",
+    );
+    assert_eq!(
+        enemy_despawn_remaining(&reg, enemy),
+        None,
+        "recovery clears the despawn countdown",
+    );
+    assert!(reg.exists(enemy), "the recovered enemy is not despawned");
+
+    // Sanity: the recovered enemy is the live chase target again.
+    let _ = player_hp(&reg, pawn);
+}
+
+#[test]
+fn healed_enemy_recovers_from_death_with_no_player() {
+    // Recovery must run even with no player to target: the not-dead path resets
+    // Death → Idle before the player-presence split, and the no-player `else`
+    // branch then resolves the enemy to Idle (not stuck in Death).
+    let mut reg = EntityRegistry::new();
+    let mut warned = HashSet::new();
+
+    let enemy = spawn_enemy(
+        &mut reg,
+        Vec3::ZERO,
+        brain_with(tuning(), LogicalState::Alert),
+        0.0, // dead at spawn
+    );
+
+    // Tick 1 (no player): zero HP → Death, countdown seeded.
+    run_ai_tick(&mut reg, &mut warned, 0.016);
+    assert_eq!(enemy_state(&reg, enemy), LogicalState::Death);
+    assert_eq!(enemy_despawn_remaining(&reg, enemy), Some(1500.0));
+
+    // Heal before the timer elapses.
+    set_hp(&mut reg, enemy, 30.0);
+
+    // Tick 2 (still no player): recovers to Idle, countdown cleared, alive.
+    run_ai_tick(&mut reg, &mut warned, 0.016);
+    assert_eq!(
+        enemy_state(&reg, enemy),
+        LogicalState::Idle,
+        "with no player the recovered enemy resolves to Idle",
+    );
+    assert_eq!(
+        enemy_despawn_remaining(&reg, enemy),
+        None,
+        "recovery clears the despawn countdown even with no player",
+    );
+    assert!(reg.exists(enemy), "the recovered enemy is not despawned");
+}
+
+#[test]
+fn unhealed_dead_enemy_still_despawns_on_timer() {
+    // Control: an enemy left at zero HP (never healed) still despawns when the
+    // death-despawn timer elapses — the recovery path does not affect the
+    // existing despawn behavior. dt = 0.5s, death_despawn_ms = 1500: seed on
+    // tick 1, 1500→1000→500→0 (despawn) on tick 4.
+    let mut reg = EntityRegistry::new();
+    let mut warned = HashSet::new();
+    let enemy = spawn_enemy(
+        &mut reg,
+        Vec3::ZERO,
+        brain_with(tuning(), LogicalState::Alert),
+        0.0,
+    );
+
+    let dt = 0.5;
+    for _ in 0..3 {
+        run_ai_tick(&mut reg, &mut warned, dt);
+        assert!(
+            reg.exists(enemy),
+            "un-healed enemy alive while the timer runs"
+        );
+        assert_eq!(enemy_state(&reg, enemy), LogicalState::Death);
+    }
+    run_ai_tick(&mut reg, &mut warned, dt);
+    assert!(
+        !reg.exists(enemy),
+        "an un-healed enemy still despawns on the timer as before",
     );
 }
 

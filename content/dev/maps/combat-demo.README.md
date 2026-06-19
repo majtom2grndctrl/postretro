@@ -9,43 +9,51 @@ DEMO CONTENT exercising two M10 loops end to end:
    reaction on the player, so the player's HP (and the readonly `player.health`
    HUD slot) drops.
 
-2. **Enemy AI + pathfinding.** The `reference_enemy` and the `player_spawn` sit in
-   DIFFERENT walkable bays separated by two full-height interior walls with
-   **offset doorways**. The straight line from the enemy to the player is blocked,
-   so the enemy must route around corners — A* over the baked navmesh regions,
-   then a Simple-Stupid-Funnel string-pull through the doorway portals (the funnel
-   waypoints). Walk out from spawn and the enemy dog-legs through door A then door
-   B to reach you, instead of charging in a straight line.
+2. **Enemy AI + pathfinding.** The `reference_enemy` (far east) and the
+   `player_spawn` (far west) sit at opposite ends of one large open arena, with
+   three free-standing full-height pillars strung along the centerline between
+   them. The straight line from the enemy to the player is blocked by the center
+   pillar, so the enemy must route AROUND it — A* over the baked navmesh regions,
+   then a Simple-Stupid-Funnel string-pull (the funnel waypoints). Walk out from
+   spawn and the enemy detours around the obstacle to reach you, instead of
+   charging straight through it. There is wide open floor (~208 units) north AND
+   south of the center pillar, so the agent rounds it in the open and never gets
+   stuck.
 
 ## Floor plan
 
-Interior `x 0..512`, `y 0..256`, floor `z=0`, ceiling `z=128` (top-down; x east,
-y north). Two interior wall brushes (`x[176,192] y[0,176]` and `x[320,336]
-y[80,256]`, both floor-to-ceiling) carve the room into three bays. Each wall
-leaves an ~80-unit doorway, and the two doorways are on OPPOSITE sides, forcing an
-S-shaped dog-leg.
+Interior `x 0..1024`, `y 0..512`, floor `z=0`, ceiling `z=128` (top-down; x east,
+y north) — one large arena, ~4× the open floor area of the old ~512×256 room
+(each horizontal dimension doubled). Three free-standing, floor-to-ceiling pillars
+(`x[256,320] y[200,296]`, `x[480,544] y[208,304]`, `x[704,768] y[216,312]`) sit
+near the centerline. Every gap — pillar to wall and pillar to pillar — is **≥160
+units** wide, so there are no narrow doorways, no S-turns, and no concave pockets
+the agent capsule can wedge into.
 
 ```
-  y=256  ......................................................
-         ...........#.............BAY 2.....#................E.
-         ..P..d.....#..door A..............#####.door B......
-         .....d.....#...(top gap)...........#................
-         .....d.....#..WALL A..............WALL B............
-         .....d.....#######.....(bottom gap)#................
-  y=0    ......................................................
-         x=0       176 192        320 336              512
+  y=512  ################################################################
+         #..............................................................#
+         #..............................................................#
+         #..........##..........##..........##..........................#
+         #...P..d.d..##....d.....##..........##.....................E....#
+         #...........##..........##..........##.........................#
+         #..............................................................#
+         #..............................................................#
+  y=0    ################################################################
+         x=0    256 320   480 544   704 768                          1024
 
-  # = wall   . = floor   P = player_spawn   E = reference_enemy   d = dummy
-  WALL A doorway = TOP gap (y 176..256);  WALL B doorway = BOTTOM gap (y 0..80)
-  Route: P -> up through door A -> across BAY 2 -> down through door B -> E.
+  # = wall / pillar   . = floor   P = player_spawn   E = reference_enemy   d = dummy
+  WEST pillar x[256,320]   CENTER pillar x[480,544] (on the P->E line)   EAST pillar x[704,768]
+  Route: P -> detour north OR south of the center pillar (~208 units clear) -> E.
 ```
 
-The bake reports **NavMesh: 9 regions, 8 portals** (53×27 cell grid @ 0.25 m) —
-a multi-region, multi-portal corridor (the prior single-room layout baked to
-1 region / 0 portals, a straight-line chase). Player (bay 1) and enemy (bay 3) are
-in different regions; the 8 portals join all 9 regions into one connected
-walkable component, so `find_path` always connects the two. Toggle the in-game nav
-overlay with **Alt+Shift+N** to see the regions, portals, and the routed path.
+The bake reports **NavMesh: 18 regions, 22 portals** (53×105 cell grid @ 0.25 m) —
+a genuinely multi-region, multi-portal mesh (the old single-room layout baked to
+1 region / 0 portals, a straight-line chase). The floor is a single connected
+walkable component (no area sealed off), so `find_path` always connects the two
+spawns. Toggle the in-game nav overlay with **Alt+Shift+N** to see the regions,
+portals, and the routed path: walk out and the enemy detours around the obstacle
+to reach you.
 
 ## Files
 
@@ -68,13 +76,14 @@ overlay with **Alt+Shift+N** to see the regions, portals, and the routed path.
   (`setupLevel`). Returns a `progress` reaction over the `dummy` tag firing
   `dummiesCleared`, and an `applyDamage` reaction NAMED `dummiesCleared` targeting
   the `player` tag. Wired into the map via the worldspawn `data_script` KVP.
-- `content/dev/maps/combat-demo.map` — a three-bay walled room (axis-aligned box
+- `content/dev/maps/combat-demo.map` — one large open arena (axis-aligned box
   brushes, plane style mirrored from `campaign-test.map`) with a `player_spawn`
-  tagged `player` (bay 1), four `target_dummy` instances tagged `dummy` (bay 1, in
-  front of the player), a `reference_enemy` tagged `enemy` (bay 3, behind the two
-  offset walls), and three `light`s (one per bay). The two interior walls with
-  offset doorways are what make the navmesh multi-region/multi-portal so the
-  pathfinding has to route around corners. See the floor plan above.
+  tagged `player` (far west), four `target_dummy` instances tagged `dummy` (just
+  east of the player, in front of it), a `reference_enemy` tagged `enemy` (far
+  east), three free-standing full-height pillars near the centerline, and seven
+  `light`s spread across the enlarged space. The center pillar blocks the straight
+  player→enemy line, so the pathfinding has to route around it; the wide ≥160-unit
+  clearance on every side keeps the agent from wedging. See the floor plan above.
 
 ## Compile
 

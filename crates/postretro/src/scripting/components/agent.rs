@@ -64,19 +64,23 @@ pub(crate) struct AgentComponent {
     /// Where the agent is trying to go. `None` when idle (no destination set);
     /// the steering system plans a path to it when `Some`.
     pub(crate) destination: Option<Vec3>,
-    /// The destination the current `path` was planned for. Lets the steering
-    /// system detect a destination move (replan immediately) versus a stale
-    /// path to the same goal (replan only after the staleness window). `None`
-    /// when no plan has been attempted for the live destination yet.
+    /// The destination the current `path` was planned for. The steering tick
+    /// replans when the live `destination` drifts beyond a threshold from THIS
+    /// position (cumulative drift-from-the-plan, not the per-call delta), so a
+    /// goal that creeps each tick keeps the existing path until the drift adds
+    /// up; a stale path to the same goal is otherwise refreshed only after the
+    /// staleness window. `None` when no plan has been attempted for the live
+    /// destination yet (forces the first plan).
     pub(crate) planned_destination: Option<Vec3>,
     /// Ticks remaining before the agent may re-spend a replan-budget slot. The
     /// staleness gate: after a successful or FAILED plan, this is set to the
     /// staleness window so a single agent (and especially a permanently-blocked
-    /// one) cannot re-qualify for a replan every tick. Decremented each tick;
-    /// a destination move resets it to 0 (replan now). See the steering tick.
+    /// one) cannot re-qualify for a replan every tick. Decremented each tick.
+    /// See the steering tick.
     pub(crate) replan_cooldown_ticks: u32,
     /// `true` once the agent has reached its destination (within the arrival
-    /// radius of the final waypoint). Cleared when a new destination is set.
+    /// radius of the final waypoint). Cleared on a successful replan or when the
+    /// destination is cleared.
     pub(crate) arrived: bool,
     /// `true` when the agent has a destination but pathfinding found no route
     /// to it (an empty path that survived a replan attempt). The agent holds

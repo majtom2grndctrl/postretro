@@ -331,6 +331,7 @@ pub(crate) struct EntityTypeDescriptor {
     pub(crate) weapon: Option<WeaponDescriptor>,
     pub(crate) mesh: Option<MeshDescriptor>,
     pub(crate) health: Option<HealthDescriptor>,
+    pub(crate) ai: Option<AiDescriptor>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -460,6 +461,97 @@ impl HealthDescriptor {
                 return Err(DescriptorError::InvalidShape {
                     reason: format!(
                         "`components.health.zoneMultipliers.{tag}` must be a finite value >= 0.0, got {factor}"
+                    ),
+                });
+            }
+        }
+        Ok(self)
+    }
+}
+
+/// The closed `components.ai.states` block: the four logical-state → animation-
+/// state name mappings. `#[serde(deny_unknown_fields)]` makes an UNRECOGNIZED
+/// key a parse error (the closed-set requirement), and every field is required
+/// (no `#[serde(default)]`), so a MISSING key is also a parse error. Both
+/// outcomes funnel through serde, so the QuickJS and Luau parse twins (which
+/// both deserialize via `serde_json`) cannot diverge.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AiStateNames {
+    pub(crate) idle: String,
+    pub(crate) alert: String,
+    pub(crate) attack: String,
+    pub(crate) death: String,
+}
+
+/// Authored AI brain component preset attached to an [`EntityTypeDescriptor`].
+/// Descriptor-owned tuning (entity_model.md §4): maps never override these. The
+/// data-archetype spawn path materializes this into a
+/// [`super::components::brain::BrainComponent`] (logical state + timers +
+/// resolved [`super::components::brain::AiTuning`]).
+///
+/// Wire keys are camelCase (boundary inventory): `detectionRange`,
+/// `attackRange`, `leashRange`, `attackDamage`, `attackCooldownMs`, `moveSpeed`,
+/// `deathDespawnMs`, `expReward`, and the closed `states` block. The
+/// logical-state → animation-state mapping cannot be validated at parse (the ai
+/// block cannot see the mesh block — cross-component); it is validated at SPAWN
+/// (`components::brain::validate_brain_animation_states`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AiDescriptor {
+    pub(crate) detection_range: f32,
+    pub(crate) attack_range: f32,
+    pub(crate) leash_range: f32,
+    pub(crate) attack_damage: f32,
+    pub(crate) attack_cooldown_ms: f32,
+    pub(crate) move_speed: f32,
+    pub(crate) death_despawn_ms: f32,
+    /// EXP awarded to the player when this enemy is killed. Carried through to
+    /// the resolved tuning; the kill latch reads it later (EXP-on-kill feature).
+    pub(crate) exp_reward: f32,
+    pub(crate) states: AiStateNames,
+}
+
+impl AiDescriptor {
+    /// The shared parse-time validator both runtimes funnel through, so QuickJS
+    /// and Luau cannot diverge. Bounds serde cannot enforce
+    /// (`LightDescriptor::validate` / `HealthDescriptor::validate` precedent):
+    ///
+    /// - every range field (`detectionRange`, `attackRange`, `leashRange`,
+    ///   `attackCooldownMs`, `moveSpeed`, `deathDespawnMs`) must be finite and
+    ///   strictly positive;
+    /// - `attackDamage` and `expReward` must be finite and non-negative (a
+    ///   negative `attackDamage` would HEAL the player through `apply_damage`'s
+    ///   subtraction; a negative `expReward` is meaningless), same discipline.
+    ///
+    /// The closed `states` key set is enforced upstream by
+    /// `#[serde(deny_unknown_fields)]` on [`AiStateNames`]; the logical-state →
+    /// animation-state name mapping is validated at spawn (cross-component).
+    pub(crate) fn validate(self) -> Result<Self, DescriptorError> {
+        for (field, value) in [
+            ("detectionRange", self.detection_range),
+            ("attackRange", self.attack_range),
+            ("leashRange", self.leash_range),
+            ("attackCooldownMs", self.attack_cooldown_ms),
+            ("moveSpeed", self.move_speed),
+            ("deathDespawnMs", self.death_despawn_ms),
+        ] {
+            if !value.is_finite() || value <= 0.0 {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "`components.ai.{field}` must be a finite value > 0.0, got {value}"
+                    ),
+                });
+            }
+        }
+        for (field, value) in [
+            ("attackDamage", self.attack_damage),
+            ("expReward", self.exp_reward),
+        ] {
+            if !value.is_finite() || value < 0.0 {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "`components.ai.{field}` must be a finite value >= 0.0, got {value}"
                     ),
                 });
             }
@@ -1340,6 +1432,7 @@ pub(crate) fn entity_descriptor_from_js<'js>(
     let mut weapon = None;
     let mut mesh = None;
     let mut health = None;
+    let mut ai = None;
 
     if obj.contains_key("components").map_err(js_err)? {
         let components_val: JsValue = obj.get("components").map_err(js_err)?;
@@ -1394,6 +1487,18 @@ pub(crate) fn entity_descriptor_from_js<'js>(
                     health = Some(descriptor.validate()?);
                 }
             }
+            if components_obj.contains_key("ai").map_err(js_err)? {
+                let raw: JsValue = components_obj.get("ai").map_err(js_err)?;
+                if !raw.is_null() && !raw.is_undefined() {
+                    let json = super::conv::js_to_json(ctx, raw).map_err(js_err)?;
+                    let descriptor: AiDescriptor = serde_json::from_value(json).map_err(|e| {
+                        DescriptorError::InvalidShape {
+                            reason: format!("`components.ai` invalid: {e}"),
+                        }
+                    })?;
+                    ai = Some(descriptor.validate()?);
+                }
+            }
             if components_obj.contains_key("light").map_err(js_err)? {
                 let raw: JsValue = components_obj.get("light").map_err(js_err)?;
                 if !raw.is_null() && !raw.is_undefined() {
@@ -1437,6 +1542,7 @@ pub(crate) fn entity_descriptor_from_js<'js>(
         weapon,
         mesh,
         health,
+        ai,
     })
 }
 
@@ -2502,6 +2608,7 @@ pub(crate) fn entity_descriptor_from_lua(
     let mut weapon = None;
     let mut mesh = None;
     let mut health = None;
+    let mut ai = None;
 
     if table.contains_key("components").map_err(lua_err)? {
         let raw: LuaValue = table.get("components").map_err(lua_err)?;
@@ -2574,6 +2681,18 @@ pub(crate) fn entity_descriptor_from_lua(
                     health = Some(descriptor.validate()?);
                 }
             }
+            if components_table.contains_key("ai").map_err(lua_err)? {
+                let raw: LuaValue = components_table.get("ai").map_err(lua_err)?;
+                if !matches!(raw, LuaValue::Nil) {
+                    let json = super::conv::lua_to_json(raw).map_err(lua_err)?;
+                    let descriptor: AiDescriptor = serde_json::from_value(json).map_err(|e| {
+                        DescriptorError::InvalidShape {
+                            reason: format!("`components.ai` invalid: {e}"),
+                        }
+                    })?;
+                    ai = Some(descriptor.validate()?);
+                }
+            }
             if components_table.contains_key("light").map_err(lua_err)? {
                 let raw: LuaValue = components_table.get("light").map_err(lua_err)?;
                 if !matches!(raw, LuaValue::Nil) {
@@ -2617,6 +2736,7 @@ pub(crate) fn entity_descriptor_from_lua(
         weapon,
         mesh,
         health,
+        ai,
     })
 }
 
@@ -8939,6 +9059,223 @@ mod tests {
     #[test]
     fn lua_health_non_finite_zone_multiplier_is_rejected() {
         let src = r#"return { components = { health = { max = 50, zoneMultipliers = { head = 1/0 } } } }"#;
+        let err = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    // --- ai component (both parsers) ----------------------------------------
+    //
+    // Parse-time acceptance: range fields finite+positive, attackDamage/expReward
+    // non-negative+finite, and an unknown `states` key all abort at parse —
+    // twinned across QuickJS and Luau (identical outcome). Tested on a bare
+    // descriptor value with NO entity materialized. The logical-state →
+    // animation-state name mapping is validated at SPAWN (cross-component), not
+    // here; see `components::brain` tests.
+
+    /// A well-formed `components.ai` block (JS source body) with placeholder
+    /// overrides applied via string substitution for the negative-case tests.
+    fn js_ai(extra: &str) -> String {
+        format!(
+            r#"({{ components: {{ ai: {{
+                detectionRange: 18, attackRange: 2.2, leashRange: 26,
+                attackDamage: 8, attackCooldownMs: 1200, moveSpeed: 3.5,
+                deathDespawnMs: 1500, expReward: 25,
+                states: {{ idle: "idle", alert: "walk", attack: "attack", death: "die" }}{extra}
+            }} }} }})"#
+        )
+    }
+
+    /// Luau twin of [`js_ai`].
+    fn lua_ai(extra: &str) -> String {
+        format!(
+            r#"return {{ components = {{ ai = {{
+                detectionRange = 18, attackRange = 2.2, leashRange = 26,
+                attackDamage = 8, attackCooldownMs = 1200, moveSpeed = 3.5,
+                deathDespawnMs = 1500, expReward = 25,
+                states = {{ idle = "idle", alert = "walk", attack = "attack", death = "die" }}{extra}
+            }} }} }}"#
+        )
+    }
+
+    #[test]
+    fn js_entity_descriptor_parses_ai_block() {
+        let d = eval_js(&js_ai(""), |ctx, v| {
+            entity_descriptor_from_js(ctx, v).unwrap()
+        });
+        let ai = d.ai.expect("ai parsed");
+        assert_eq!(ai.detection_range, 18.0);
+        assert_eq!(ai.attack_range, 2.2);
+        assert_eq!(ai.leash_range, 26.0);
+        assert_eq!(ai.attack_damage, 8.0);
+        assert_eq!(ai.attack_cooldown_ms, 1200.0);
+        assert_eq!(ai.move_speed, 3.5);
+        assert_eq!(ai.death_despawn_ms, 1500.0);
+        assert_eq!(ai.exp_reward, 25.0);
+        assert_eq!(ai.states.idle, "idle");
+        assert_eq!(ai.states.alert, "walk");
+        assert_eq!(ai.states.attack, "attack");
+        assert_eq!(ai.states.death, "die");
+    }
+
+    #[test]
+    fn lua_entity_descriptor_parses_ai_block() {
+        // Luau parity: a missing arm would silently drop `ai`. Assert the arm
+        // exists and the same shape parses identically.
+        let d = eval_lua(&lua_ai(""), |v| entity_descriptor_from_lua(v).unwrap());
+        let ai = d.ai.expect("ai parsed by the Luau arm");
+        assert_eq!(ai.detection_range, 18.0);
+        assert_eq!(ai.exp_reward, 25.0);
+        assert_eq!(ai.states.death, "die");
+    }
+
+    #[test]
+    fn js_ai_non_positive_range_is_rejected() {
+        // A zero range field aborts (must be finite AND strictly positive).
+        let src = r#"({ components: { ai: {
+            detectionRange: 0, attackRange: 2.2, leashRange: 26,
+            attackDamage: 8, attackCooldownMs: 1200, moveSpeed: 3.5,
+            deathDespawnMs: 1500, expReward: 25,
+            states: { idle: "idle", alert: "walk", attack: "attack", death: "die" }
+        } } })"#;
+        let err = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn lua_ai_non_positive_range_is_rejected() {
+        // Twin of the JS non-positive-range case: identical abort outcome.
+        let src = r#"return { components = { ai = {
+            detectionRange = 0, attackRange = 2.2, leashRange = 26,
+            attackDamage = 8, attackCooldownMs = 1200, moveSpeed = 3.5,
+            deathDespawnMs = 1500, expReward = 25,
+            states = { idle = "idle", alert = "walk", attack = "attack", death = "die" }
+        } } }"#;
+        let err = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn js_ai_non_finite_range_is_rejected() {
+        let src = r#"({ components: { ai: {
+            detectionRange: 18, attackRange: 2.2, leashRange: 1/0,
+            attackDamage: 8, attackCooldownMs: 1200, moveSpeed: 3.5,
+            deathDespawnMs: 1500, expReward: 25,
+            states: { idle: "idle", alert: "walk", attack: "attack", death: "die" }
+        } } })"#;
+        let err = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn lua_ai_non_finite_range_is_rejected() {
+        let src = r#"return { components = { ai = {
+            detectionRange = 18, attackRange = 2.2, leashRange = 1/0,
+            attackDamage = 8, attackCooldownMs = 1200, moveSpeed = 3.5,
+            deathDespawnMs = 1500, expReward = 25,
+            states = { idle = "idle", alert = "walk", attack = "attack", death = "die" }
+        } } }"#;
+        let err = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn js_ai_negative_attack_damage_is_rejected() {
+        // A negative attackDamage would HEAL the player through `apply_damage`'s
+        // subtraction; aborted at parse.
+        let src = r#"({ components: { ai: {
+            detectionRange: 18, attackRange: 2.2, leashRange: 26,
+            attackDamage: -1, attackCooldownMs: 1200, moveSpeed: 3.5,
+            deathDespawnMs: 1500, expReward: 25,
+            states: { idle: "idle", alert: "walk", attack: "attack", death: "die" }
+        } } })"#;
+        let err = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn lua_ai_negative_attack_damage_is_rejected() {
+        let src = r#"return { components = { ai = {
+            detectionRange = 18, attackRange = 2.2, leashRange = 26,
+            attackDamage = -1, attackCooldownMs = 1200, moveSpeed = 3.5,
+            deathDespawnMs = 1500, expReward = 25,
+            states = { idle = "idle", alert = "walk", attack = "attack", death = "die" }
+        } } }"#;
+        let err = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn js_ai_negative_exp_reward_is_rejected() {
+        let src = r#"({ components: { ai: {
+            detectionRange: 18, attackRange: 2.2, leashRange: 26,
+            attackDamage: 8, attackCooldownMs: 1200, moveSpeed: 3.5,
+            deathDespawnMs: 1500, expReward: -5,
+            states: { idle: "idle", alert: "walk", attack: "attack", death: "die" }
+        } } })"#;
+        let err = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn lua_ai_negative_exp_reward_is_rejected() {
+        let src = r#"return { components = { ai = {
+            detectionRange = 18, attackRange = 2.2, leashRange = 26,
+            attackDamage = 8, attackCooldownMs = 1200, moveSpeed = 3.5,
+            deathDespawnMs = 1500, expReward = -5,
+            states = { idle = "idle", alert = "walk", attack = "attack", death = "die" }
+        } } }"#;
+        let err = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn js_ai_unknown_states_key_is_rejected() {
+        // The four logical-state keys are a closed set: an extra key
+        // (`deny_unknown_fields`) is a parse error.
+        let src = r#"({ components: { ai: {
+            detectionRange: 18, attackRange: 2.2, leashRange: 26,
+            attackDamage: 8, attackCooldownMs: 1200, moveSpeed: 3.5,
+            deathDespawnMs: 1500, expReward: 25,
+            states: { idle: "idle", alert: "walk", attack: "attack", death: "die", flee: "run" }
+        } } })"#;
+        let err = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn lua_ai_unknown_states_key_is_rejected() {
+        let src = r#"return { components = { ai = {
+            detectionRange = 18, attackRange = 2.2, leashRange = 26,
+            attackDamage = 8, attackCooldownMs = 1200, moveSpeed = 3.5,
+            deathDespawnMs = 1500, expReward = 25,
+            states = { idle = "idle", alert = "walk", attack = "attack", death = "die", flee = "run" }
+        } } }"#;
+        let err = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn js_ai_missing_states_key_is_rejected() {
+        // Every logical-state key is required (no serde default): a missing
+        // `death` aborts. Twins with the Luau case below.
+        let src = r#"({ components: { ai: {
+            detectionRange: 18, attackRange: 2.2, leashRange: 26,
+            attackDamage: 8, attackCooldownMs: 1200, moveSpeed: 3.5,
+            deathDespawnMs: 1500, expReward: 25,
+            states: { idle: "idle", alert: "walk", attack: "attack" }
+        } } })"#;
+        let err = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap_err());
+        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+    }
+
+    #[test]
+    fn lua_ai_missing_states_key_is_rejected() {
+        let src = r#"return { components = { ai = {
+            detectionRange = 18, attackRange = 2.2, leashRange = 26,
+            attackDamage = 8, attackCooldownMs = 1200, moveSpeed = 3.5,
+            deathDespawnMs = 1500, expReward = 25,
+            states = { idle = "idle", alert = "walk", attack = "attack" }
+        } } }"#;
         let err = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap_err());
         assert!(matches!(err, DescriptorError::InvalidShape { .. }));
     }

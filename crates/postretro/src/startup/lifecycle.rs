@@ -871,10 +871,24 @@ impl App {
         if self.level.is_some() {
             let handled = self.builtin_handled.take().unwrap_or_default();
             let descriptors = self.script_ctx.data_registry.borrow().entities.clone();
+            // Read the baked navmesh agent params into a local BEFORE borrowing
+            // the registry: `agent_params()` borrows `self.nav_graph`, and the
+            // dispatch borrows `self.script_ctx.registry` mutably — both off the
+            // same `self`. Reading into an owned `Option<NavAgentParams>` first
+            // keeps the two borrows disjoint. `None` when the map has no navmesh
+            // (the agent then falls back to an engine-default capsule and cannot
+            // path). The descriptor-spawned agent's capsule is seeded from this.
+            let agent_params: Option<crate::nav::NavAgentParams> =
+                self.nav_graph.as_ref().map(|g| g.agent_params());
             let mut registry = self.script_ctx.registry.borrow_mut();
             let map_entities = self.pending_map_entities.take().unwrap_or_default();
-            let descriptor_handled =
-                apply_data_archetype_dispatch(&map_entities, &descriptors, &handled, &mut registry);
+            let descriptor_handled = apply_data_archetype_dispatch(
+                &map_entities,
+                &descriptors,
+                &handled,
+                &mut registry,
+                agent_params,
+            );
             if !descriptor_handled.is_empty() {
                 log::info!(
                     "[Loader] dispatched {} map entities through descriptor archetypes",
@@ -895,8 +909,12 @@ impl App {
             let (active_wieldable, active_wieldable_descriptor) =
                 match self.pending_spawn_points.take() {
                     Some(spawn_points) if !spawn_points.is_empty() => {
-                        let result =
-                            spawn_from_player_starts(&spawn_points, &descriptors, &mut registry);
+                        let result = spawn_from_player_starts(
+                            &spawn_points,
+                            &descriptors,
+                            &mut registry,
+                            agent_params,
+                        );
                         (result.active_wieldable, result.active_wieldable_descriptor)
                     }
                     _ => {
@@ -1230,6 +1248,7 @@ mod tests {
             weapon: None,
             mesh: None,
             health: None,
+            ai: None,
         }
     }
 

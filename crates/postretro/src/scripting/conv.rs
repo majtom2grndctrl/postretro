@@ -296,6 +296,7 @@ fn component_kind_name(k: ComponentKind) -> &'static str {
         ComponentKind::Mesh => "mesh",
         ComponentKind::Health => "health",
         ComponentKind::Agent => "agent",
+        ComponentKind::Brain => "brain",
     }
 }
 
@@ -570,6 +571,10 @@ impl<'js> IntoJs<'js> for ComponentValue {
                 ctx,
                 "Agent component is engine-managed and not exposed to scripts",
             )),
+            ComponentValue::Brain(_) => Err(rquickjs::Exception::throw_type(
+                ctx,
+                "Brain component is engine-managed and not exposed to scripts",
+            )),
         }
     }
 }
@@ -739,6 +744,9 @@ impl IntoLua for ComponentValue {
             )),
             ComponentValue::Agent(_) => Err(mlua::Error::RuntimeError(
                 "Agent component is engine-managed and not exposed to scripts".to_string(),
+            )),
+            ComponentValue::Brain(_) => Err(mlua::Error::RuntimeError(
+                "Brain component is engine-managed and not exposed to scripts".to_string(),
             )),
         }
     }

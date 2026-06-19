@@ -10,6 +10,7 @@ use thiserror::Error;
 
 use super::components::agent::AgentComponent;
 use super::components::billboard_emitter::BillboardEmitterComponent;
+use super::components::brain::BrainComponent;
 use super::components::fog_volume::FogAnimation;
 use super::components::health::HealthComponent;
 use super::components::light::LightComponent;
@@ -103,6 +104,10 @@ pub(crate) enum ComponentKind {
     /// Movable navigation agent (engine-internal, like `PlayerMovement` — never
     /// reachable through `worldQuery`). See `components::agent`.
     Agent = 11,
+    /// Engine-owned AI brain: enemy FSM logical state, timers, and resolved
+    /// `components.ai` tuning (engine-internal, like `PlayerMovement`/`Agent` —
+    /// never reachable through `worldQuery`). See `components::brain`.
+    Brain = 12,
 }
 
 impl ComponentKind {
@@ -124,6 +129,7 @@ impl ComponentKind {
             ComponentKind::Mesh,
             ComponentKind::Health,
             ComponentKind::Agent,
+            ComponentKind::Brain,
         ];
         VARIANTS.len()
     };
@@ -176,6 +182,7 @@ pub(crate) enum ComponentValue {
     Mesh(MeshComponent),
     Health(HealthComponent),
     Agent(AgentComponent),
+    Brain(BrainComponent),
 }
 
 impl ComponentValue {
@@ -193,6 +200,7 @@ impl ComponentValue {
             ComponentValue::Mesh(_) => ComponentKind::Mesh,
             ComponentValue::Health(_) => ComponentKind::Health,
             ComponentValue::Agent(_) => ComponentKind::Agent,
+            ComponentValue::Brain(_) => ComponentKind::Brain,
         }
     }
 }
@@ -445,6 +453,21 @@ impl Component for AgentComponent {
 
     fn into_value(self) -> ComponentValue {
         ComponentValue::Agent(self)
+    }
+}
+
+impl Component for BrainComponent {
+    const KIND: ComponentKind = ComponentKind::Brain;
+
+    fn from_value(value: &ComponentValue) -> Option<&Self> {
+        match value {
+            ComponentValue::Brain(b) => Some(b),
+            _ => None,
+        }
+    }
+
+    fn into_value(self) -> ComponentValue {
+        ComponentValue::Brain(self)
     }
 }
 

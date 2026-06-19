@@ -235,14 +235,16 @@ fn enemy_anim_entered_at(reg: &EntityRegistry, enemy: EntityId) -> Option<f64> {
         .entered_at
 }
 
-/// The enemy's yaw-only forward vector in the XZ plane, derived from its
-/// `Transform.rotation`. Mirrors the camera/player facing convention
-/// (`forward(yaw) = (-sin yaw, 0, -cos yaw)`) by rotating that base forward with
-/// the stored quaternion — lets a facing test assert WHERE the model points
-/// without re-deriving the yaw math.
+/// The enemy MESH's yaw-only VISUAL forward vector in the XZ plane, derived from
+/// its `Transform.rotation`. The skinned reference characters are authored facing
+/// `+Z` in model space (`MESH_FORWARD` in `ai.rs`), and the renderer applies the
+/// Transform rotation straight to the model matrix with no axis flip — so the
+/// model's front points wherever `rotation * (+Z)` points. Rotating that base
+/// model-forward by the stored quaternion gives WHERE the model's FACE looks,
+/// letting a facing test assert the enemy looks AT the target (not away from it).
 fn enemy_forward_xz(reg: &EntityRegistry, enemy: EntityId) -> Vec3 {
     let rot = reg.get_component::<Transform>(enemy).unwrap().rotation;
-    let fwd = rot * Vec3::new(0.0, 0.0, -1.0);
+    let fwd = rot * Vec3::Z;
     Vec3::new(fwd.x, 0.0, fwd.z).normalize()
 }
 
@@ -1310,6 +1312,47 @@ fn stopped_engaged_enemy_faces_the_player() {
         enemy_forward_xz(&reg, enemy),
         to_player,
         "stopped engaged enemy faces the player",
+    );
+}
+
+#[test]
+fn stopped_engaged_enemy_front_meets_player_not_its_back() {
+    // Regression for the 180°-backward facing bug: the facing rotation must point
+    // the model's VISUAL FRONT (`+Z` in model space) at the player, not its back.
+    // The earlier helper measured the camera-forward axis (`-Z`), so a model that
+    // was actually facing AWAY still "passed". This test pins the model-forward
+    // axis directly and explicitly rejects the back-facing case, so a regression
+    // to the old `-Z` (camera-forward) convention fails here.
+    let mut reg = EntityRegistry::new();
+    let mut warned = HashSet::new();
+
+    // Player off to +X within attack range so the enemy reaches `Attack`.
+    spawn_player(&mut reg, Vec3::new(1.5, 0.0, 0.0));
+    let enemy = spawn_enemy(
+        &mut reg,
+        Vec3::ZERO,
+        brain_with(tuning(), LogicalState::Idle),
+        50.0,
+    );
+    set_agent_velocity(&mut reg, enemy, Vec3::ZERO);
+
+    run_ai_tick(&mut reg, &mut warned, 0.016);
+    assert_eq!(enemy_state(&reg, enemy), LogicalState::Attack);
+
+    // The model's authored front (`+Z` rotated by the stored quaternion) points at
+    // the player (+X): dot ≈ +1.
+    let to_player = Vec3::new(1.0, 0.0, 0.0);
+    let front = enemy_forward_xz(&reg, enemy);
+    let dot = front.dot(to_player);
+    assert!(
+        dot > 0.999,
+        "the model's FRONT must meet the player, dot {dot} (front {front:?})",
+    );
+    // And it is NOT facing away (the precise failure mode of the old bug): the
+    // back would give dot ≈ -1.
+    assert!(
+        dot > 0.0,
+        "the enemy must not show the player its BACK (dot {dot} ⇒ ~180° error)",
     );
 }
 

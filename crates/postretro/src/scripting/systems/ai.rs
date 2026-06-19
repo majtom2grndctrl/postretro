@@ -78,16 +78,33 @@ pub(crate) fn think_stride_for_distance(distance: f32) -> u32 {
 /// than jittering toward steering noise.
 const FACING_MOVE_SPEED_EPSILON: f32 = 0.05;
 
-/// A yaw-only rotation that orients the model toward a horizontal direction,
-/// matching the engine's facing convention. The camera/player forward at yaw `y`
-/// is `(-sin y, 0, -cos y)` (`camera.rs`), and `Transform.rotation` is built from
-/// yaw via the same `EulerRot::YXZ` / `Quat::from_rotation_y` convention
-/// (`scripting/conv.rs`); inverting `forward(y) = dir` gives `y = atan2(-dx, -dz)`.
+/// The reference enemy mesh's VISUAL forward axis in model space. The skinned
+/// glTF characters (`content/dev/models/reference_enemy_kaykit_knight`) are
+/// authored facing `+Z` in model space — the KayKit/glTF/Blender convention, and
+/// confirmed by this rig: the knee/toe IK control bones sit in front of the body
+/// at `+Z` (`kneeIK` ≈ `+0.576`, `control-toe-roll` ≈ `+0.246`). The renderer
+/// applies `Transform.rotation` straight to the model matrix with no import-time
+/// axis flip (`mesh_render.rs`, `Mat4::from_scale_rotation_translation`), so a
+/// rotation that aims the model's `+Z` at the target makes its FACE meet the
+/// target.
+///
+/// Note this is the OPPOSITE of the engine's camera/view forward, which is `-Z`
+/// (`camera.rs`: `forward(yaw) = (-sin yaw, 0, -cos yaw)`). Facing code orients a
+/// rendered MESH, so it must aim the mesh's authored front (`+Z`), not the view
+/// forward — aiming the view forward at the target would leave the model's back
+/// to it (a clean 180° error).
+const MESH_FORWARD: Vec3 = Vec3::Z;
+
+/// A yaw-only rotation that aims the model's visual forward ([`MESH_FORWARD`],
+/// `+Z`) at a horizontal direction. `Quat::from_rotation_y(yaw) * (+Z)` is
+/// `(sin yaw, 0, cos yaw)`; solving `that == dir_xz` gives `yaw = atan2(dx, dz)`,
+/// so the rotation turns the model's authored FRONT to face `dir`.
 ///
 /// Returns `None` for a direction with negligible XZ length (the squared XZ
-/// magnitude is at or below `EPSILON`), so a zero-length steering/aim vector never
-/// produces a NaN yaw — the caller then leaves the existing facing untouched. The
-/// Y component is ignored: facing is yaw-only, keeping the model upright.
+/// magnitude is at or below `MIN_XZ_LEN_SQ`), so a zero-length steering/aim vector
+/// never produces a NaN yaw — the caller then leaves the existing facing
+/// untouched. The Y component is ignored: facing is yaw-only, keeping the model
+/// upright.
 fn yaw_rotation_toward(dir: Vec3) -> Option<Quat> {
     // Squared XZ length guard: below this the direction is too short to derive a
     // stable heading (and `atan2(0, 0)` would be meaningless), so report "no
@@ -96,7 +113,14 @@ fn yaw_rotation_toward(dir: Vec3) -> Option<Quat> {
     if dir.x * dir.x + dir.z * dir.z <= MIN_XZ_LEN_SQ {
         return None;
     }
-    let yaw = (-dir.x).atan2(-dir.z);
+    // Aim MESH_FORWARD at `dir` in the XZ plane: the yaw that rotates the model's
+    // authored forward heading onto the target heading. `Quat::from_rotation_y`
+    // measures yaw from `+Z` (its heading is `atan2(x, z)`), so subtract the
+    // model-forward's own heading — for `MESH_FORWARD == +Z` this term is `0`,
+    // leaving `atan2(dir.x, dir.z)`. Keeping the term keeps `MESH_FORWARD` the
+    // single source of truth: re-authoring the mesh-forward axis updates the result
+    // without touching this math.
+    let yaw = dir.x.atan2(dir.z) - MESH_FORWARD.x.atan2(MESH_FORWARD.z);
     Some(Quat::from_rotation_y(yaw))
 }
 

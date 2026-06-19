@@ -3795,6 +3795,11 @@ impl App {
     ///   `progress` reaction crossing its declared fraction) join the drain.
     /// - A player death contributes the `playerDied` event exactly once (the
     ///   sweep's `death_handled` latch guarantees the single report).
+    /// - Each brain-bearing enemy kill latched this sweep contributes one
+    ///   `enemyKilled` event (again single-reported via `death_handled`). The
+    ///   enemy itself is NOT despawned here — the AI tick despawns it after
+    ///   `death_despawn_ms`. The named-event mechanism is payload-less, so
+    ///   `enemyKilled` carries no `exp_reward`.
     ///
     /// The returned names are accumulated by the caller and drained after the
     /// tick loop via `fire_named_event_with_sequences`.
@@ -3810,6 +3815,14 @@ impl App {
         }
         if report.player_died {
             events.push(scripting_systems::health::PLAYER_DIED_EVENT.to_string());
+        }
+        // One `enemyKilled` per brain-bearing enemy whose kill latched this
+        // sweep (the single authoritative kill report; the AI tick owns the
+        // later despawn but never re-reports). The named-event mechanism is
+        // payload-less, so the event carries no `exp_reward` — the EXP feature
+        // (M10 Task 5) sources the reward another way.
+        for _ in 0..report.brain_kills {
+            events.push(scripting_systems::health::ENEMY_KILLED_EVENT.to_string());
         }
         events
     }

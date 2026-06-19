@@ -143,6 +143,15 @@ pub(crate) struct BrainComponent {
     /// against a distance-derived stride to time-slice target acquisition for
     /// distant enemies. Seeded to `0` at spawn.
     pub(crate) think_stride_counter: u32,
+    /// Death-despawn countdown in milliseconds. `None` until the brain enters
+    /// [`LogicalState::Death`], at which point the FSM tick seeds it from
+    /// `tuning.death_despawn_ms` (clamped to `>= 0`) and decrements it by the
+    /// tick delta each subsequent tick. When it reaches `0.0` the AI tick
+    /// despawns the entity. The TIMER is authoritative: the entity despawns after
+    /// `death_despawn_ms` whether or not the death animation clip ever resolved.
+    /// Seeded `None` at spawn and never set outside the Death state.
+    #[serde(default)]
+    pub(crate) death_despawn_remaining_ms: Option<f32>,
     /// Resolved descriptor tuning the FSM reads each tick.
     pub(crate) tuning: AiTuning,
 }
@@ -155,6 +164,7 @@ impl BrainComponent {
             state: LogicalState::Idle,
             attack_cooldown_remaining_ms: 0.0,
             think_stride_counter: 0,
+            death_despawn_remaining_ms: None,
             tuning: AiTuning::from_descriptor(desc),
         }
     }
@@ -271,6 +281,7 @@ mod tests {
         assert_eq!(brain.state, LogicalState::Idle);
         assert_eq!(brain.attack_cooldown_remaining_ms, 0.0);
         assert_eq!(brain.think_stride_counter, 0);
+        assert_eq!(brain.death_despawn_remaining_ms, None);
         assert_eq!(brain.tuning.detection_range, 18.0);
         assert_eq!(brain.tuning.attack_range, 2.2);
         assert_eq!(brain.tuning.leash_range, 26.0);

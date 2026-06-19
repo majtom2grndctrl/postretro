@@ -55,6 +55,7 @@ fn brain_with(tuning: AiTuning, state: LogicalState) -> BrainComponent {
         state,
         attack_cooldown_remaining_ms: 0.0,
         think_stride_counter: 0,
+        death_despawn_remaining_ms: None,
         tuning,
     }
 }
@@ -642,5 +643,126 @@ fn no_player_pawn_leaves_enemy_idle_and_clears_steering() {
             .expect("agent present")
             .has_destination,
         "no pawn clears any stale destination",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Acceptance: brain death despawn — the AI tick owns the despawn, timer is
+// authoritative, and despawn happens after `death_despawn_ms`.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn dead_enemy_is_despawned_after_death_despawn_ms_timer_authoritative() {
+    // A killed enemy enters Death, plays its death clip, and is despawned by the
+    // AI tick only AFTER `death_despawn_ms` elapses: alive just before the timer,
+    // gone just after. `death_despawn_ms = 1500` (from `tuning()`), `dt = 0.5s`
+    // (500ms): seed on tick 1, 1500→1000 on tick 2, →500 on tick 3, →0 on tick 4
+    // (despawn). The entity survives ticks 1–3 and is gone after tick 4.
+    let mut reg = EntityRegistry::new();
+    let mut warned = HashSet::new();
+    let enemy = spawn_enemy(
+        &mut reg,
+        Vec3::ZERO,
+        brain_with(tuning(), LogicalState::Alert),
+        0.0, // dead at spawn
+    );
+    // No player needed; the zero-HP death check runs regardless.
+
+    let dt = 0.5; // 500ms per tick
+
+    // Tick 1: enters Death, seeds the countdown to 1500ms, plays death anim.
+    run_ai_tick(&mut reg, &mut warned, dt);
+    assert!(reg.exists(enemy), "alive on the Death-entry (seed) tick");
+    assert_eq!(enemy_state(&reg, enemy), LogicalState::Death);
+    assert_eq!(
+        enemy_animation(&reg, enemy),
+        "death",
+        "the death animation is requested on entering Death",
+    );
+
+    // Ticks 2 and 3: countdown 1500→1000→500. Still alive.
+    run_ai_tick(&mut reg, &mut warned, dt);
+    assert!(
+        reg.exists(enemy),
+        "alive while the timer counts down (1000ms left)"
+    );
+    run_ai_tick(&mut reg, &mut warned, dt);
+    assert!(
+        reg.exists(enemy),
+        "alive just before the timer (500ms left)"
+    );
+
+    // Tick 4: countdown 500→0 → despawn.
+    run_ai_tick(&mut reg, &mut warned, dt);
+    assert!(
+        !reg.exists(enemy),
+        "despawned by the AI tick after death_despawn_ms elapsed",
+    );
+}
+
+#[test]
+fn dead_enemy_despawns_on_timer_even_with_unresolved_death_clip() {
+    // The TIMER is authoritative: an enemy whose death animation name is NOT
+    // declared on its mesh (an unresolved death clip — `switch_animation_state`
+    // returns UnknownState and plays nothing) is STILL despawned after
+    // `death_despawn_ms`. Here the mesh is stateless (no animation block), so
+    // every state name is unresolved.
+    let mut reg = EntityRegistry::new();
+    let mut warned = HashSet::new();
+    let enemy = spawn_enemy(
+        &mut reg,
+        Vec3::ZERO,
+        brain_with(tuning(), LogicalState::Alert),
+        0.0,
+    );
+    // Replace the four-state mesh with a stateless one: the death clip can never
+    // resolve, so animation playback is a no-op — but the timer still fires.
+    reg.set_component(enemy, MeshComponent::stateless("grunt".into()))
+        .unwrap();
+
+    let dt = 0.5;
+    // 1500ms / 500ms = seed + 3 decrements → despawn on the 4th tick.
+    run_ai_tick(&mut reg, &mut warned, dt); // seed
+    run_ai_tick(&mut reg, &mut warned, dt); // 1000
+    run_ai_tick(&mut reg, &mut warned, dt); // 500
+    assert!(reg.exists(enemy), "alive until the timer elapses");
+    run_ai_tick(&mut reg, &mut warned, dt); // 0 → despawn
+    assert!(
+        !reg.exists(enemy),
+        "the despawn timer is authoritative even with an unresolved death clip",
+    );
+}
+
+#[test]
+fn zero_death_despawn_ms_still_gives_one_death_tick_before_despawn() {
+    // A zero (or negative) configured death-despawn delay is clamped to >= 0 so
+    // the enemy still gets ONE Death tick (death animation requested) before the
+    // despawn pass removes it: seeded to 0 on the entry tick (no despawn), then
+    // despawned on the next tick when the decrement keeps it at 0.
+    let mut reg = EntityRegistry::new();
+    let mut warned = HashSet::new();
+    let mut t = tuning();
+    t.death_despawn_ms = 0.0;
+    let enemy = spawn_enemy(
+        &mut reg,
+        Vec3::ZERO,
+        brain_with(t, LogicalState::Alert),
+        0.0,
+    );
+
+    // Tick 1: enters Death, seeds countdown to 0 — but the SEED tick never
+    // despawns, so the entity survives this tick and plays the death anim.
+    run_ai_tick(&mut reg, &mut warned, 0.016);
+    assert!(
+        reg.exists(enemy),
+        "the entity gets one Death tick before despawn"
+    );
+    assert_eq!(enemy_state(&reg, enemy), LogicalState::Death);
+
+    // Tick 2: the countdown is already 0; the decrement keeps it at 0 → despawn.
+    run_ai_tick(&mut reg, &mut warned, 0.016);
+    assert!(
+        !reg.exists(enemy),
+        "despawned on the tick after the single Death tick"
     );
 }

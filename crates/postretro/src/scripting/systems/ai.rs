@@ -218,6 +218,11 @@ struct EnemyOutcome {
     state_changed: bool,
     /// `true` when an attack landed this tick (damage applied, event raised).
     attacked: bool,
+    /// `true` when this dead enemy's death-despawn countdown has elapsed and the
+    /// AI tick should despawn it. Collected in the apply pass and despawned in a
+    /// final two-pass step (collect-then-despawn) so the registry is never
+    /// written mid-iteration (entity_model.md §3).
+    despawn: bool,
 }
 
 /// Drive every enemy brain one tick. Returns the event names raised this tick
@@ -240,6 +245,17 @@ struct EnemyOutcome {
 /// 4. On an attack (in `Attack` with the cooldown elapsed) apply the configured
 ///    damage to the player through the chokepoint and raise the attack event.
 /// 5. On a state CHANGE, request the mapped animation state.
+///
+/// Death + despawn: a zero-HP enemy enters `Death` (step 2), which seeds a
+/// per-instance death-despawn countdown from `tuning.death_despawn_ms` (clamped
+/// `>= 0`) on the entry tick and decrements it by the tick delta thereafter. The
+/// TIMER is authoritative — the entity despawns after `death_despawn_ms`
+/// regardless of whether the death clip ever resolved (an unresolved death clip
+/// yields `UnknownState` and plays nothing). The despawn itself runs in a final
+/// two-pass collect-then-despawn step so the registry is never written
+/// mid-iteration. The kill was already counted ONCE at the death sweep's
+/// authoritative `death_handled` latch (`systems/health.rs`); this tick owns
+/// only the despawn, never the kill report.
 pub(crate) fn run_ai_tick(
     registry: &mut EntityRegistry,
     warned: &mut HashSet<String>,
@@ -293,10 +309,32 @@ pub(crate) fn run_ai_tick(
             .unwrap_or(false);
 
         let mut attacked = false;
+        let mut despawn = false;
         let steering;
         if is_dead {
             brain.state = LogicalState::Death;
             steering = SteeringIntent::Hold;
+
+            // Death despawn countdown. Seeded once on entering Death (the
+            // countdown is `None` until now), then decremented by the tick delta
+            // each subsequent tick. The TIMER is authoritative — the entity
+            // despawns after `death_despawn_ms` whether or not the death clip
+            // resolved. A zero/negative configured value is clamped to `0` so the
+            // entity still gets THIS one Death tick (death animation requested on
+            // the state change below) before the despawn pass takes it: the
+            // SEEDING tick never despawns, only a later decrement-to-zero does.
+            match brain.death_despawn_remaining_ms {
+                None => {
+                    brain.death_despawn_remaining_ms = Some(brain.tuning.death_despawn_ms.max(0.0));
+                }
+                Some(remaining) => {
+                    let next = (remaining - dt_ms).max(0.0);
+                    brain.death_despawn_remaining_ms = Some(next);
+                    if next <= 0.0 {
+                        despawn = true;
+                    }
+                }
+            }
         } else if let Some(player_pos) = player_pos {
             // The think stride is derived from the CURRENT player distance; the
             // gate fires when the per-enemy counter aligns with the band's
@@ -332,15 +370,23 @@ pub(crate) fn run_ai_tick(
             id: snap.id,
             state_changed: brain.state != prior_state,
             attacked,
+            despawn,
             steering,
             brain,
         });
     }
 
     // Pass 3 (apply): write back brains, drive steering, apply damage, switch
-    // animation. Mutable borrow only; no iterator held.
+    // animation. Mutable borrow only; no iterator held. Death despawns are NOT
+    // applied here — they are collected and run in a final two-pass step below
+    // so the registry is never written mid-iteration (entity_model.md §3, the
+    // `sweep_deaths`/particle-sim precedent).
     let mut events: Vec<&'static str> = Vec::new();
+    let mut to_despawn: Vec<EntityId> = Vec::new();
     for outcome in outcomes {
+        if outcome.despawn {
+            to_despawn.push(outcome.id);
+        }
         // Persist the brain (state + timers + stride counter).
         let _ = registry.set_component(outcome.id, outcome.brain.clone());
 
@@ -417,6 +463,15 @@ pub(crate) fn run_ai_tick(
                 }
             }
         }
+    }
+
+    // Pass 4 (despawn): two-pass collect-then-despawn. The despawn ids were
+    // collected under the mutable apply walk above (never despawned mid-walk);
+    // here, after that walk completes, each dead enemy whose death-despawn timer
+    // elapsed is removed. The kill was already counted at the sweep's
+    // authoritative latch, so despawning here never re-reports it.
+    for id in to_despawn {
+        let _ = registry.despawn(id);
     }
 
     events

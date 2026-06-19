@@ -5,6 +5,14 @@
 // half of that split, mirroring the components/systems separation of
 // `particle_sim`.
 //
+// Brain-bearing enemies are a THIRD case, layered between player and plain
+// non-player: at zero HP they latch (reusing `HealthComponent.death_handled`)
+// and report the kill exactly ONCE — at the false→true latch transition — but
+// are NOT despawned here. The AI tick (`systems/ai.rs`) owns the brain death:
+// it plays the death animation on entering Death and despawns the entity after
+// `death_despawn_ms`. This is the single authoritative kill latch for a brain;
+// the FSM never re-reports the kill, so a brain death is counted exactly once.
+//
 // See: context/lib/entity_model.md §3 (Destruction)
 
 use crate::scripting::components::health::HealthComponent;
@@ -14,6 +22,15 @@ use crate::scripting::registry::{ComponentKind, ComponentValue, EntityId, Entity
 /// `HealthComponent::death_handled` so a persisting zero-HP pawn never re-fires.
 pub(crate) const PLAYER_DIED_EVENT: &str = "playerDied";
 
+/// Event name fired once per brain-bearing enemy kill, at the authoritative
+/// `death_handled` false→true latch transition in [`sweep_deaths`]. Latched by
+/// `HealthComponent::death_handled` so a persisting zero-HP enemy (awaiting the
+/// AI tick's despawn-after-`death_despawn_ms`) never re-fires. The named-event
+/// mechanism (`reaction_dispatch::fire_named_event`) is payload-less — it
+/// dispatches by NAME only — so this event carries no `exp_reward`; the EXP
+/// feature (M10 Task 5) sources the reward another way.
+pub(crate) const ENEMY_KILLED_EVENT: &str = "enemyKilled";
+
 /// What one death sweep observed, returned to the caller because the sweep
 /// cannot reach the progress tracker or the event-dispatch path itself. The
 /// caller feeds `killed_tags` through `ProgressTracker::on_entity_killed` and
@@ -22,24 +39,38 @@ pub(crate) const PLAYER_DIED_EVENT: &str = "playerDied";
 /// latched) inside the sweep, so no `EntityId` crosses the boundary.
 #[derive(Debug, Default, PartialEq)]
 pub(crate) struct DeathReport {
-    /// Tags of every non-player entity despawned this sweep, one entry per
-    /// killed entity (tag lists are not deduplicated across entities). Empty
-    /// when no non-player died.
+    /// Tags of every entity KILLED this sweep, one entry per killed entity (tag
+    /// lists are not deduplicated across entities). A non-brain non-player is
+    /// despawned in this sweep and its tags captured first; a brain-bearing
+    /// enemy's tags are captured at its kill latch (it is NOT despawned here —
+    /// the AI tick despawns it later) so the kill is counted by the progress
+    /// tracker exactly once. Empty when no non-player died.
     pub(crate) killed_tags: Vec<Vec<String>>,
     /// Set once on the tick the player pawn first reaches zero HP. The
     /// `death_handled` latch guarantees later sweeps leave this `false`.
     pub(crate) player_died: bool,
+    /// Count of brain-bearing enemies whose kill LATCHED this sweep (the
+    /// `death_handled` false→true transition). One [`ENEMY_KILLED_EVENT`] is
+    /// fired per count by the caller. The latch guarantees a given enemy
+    /// contributes exactly one, never re-counted on a later sweep while it
+    /// awaits the AI tick's despawn.
+    pub(crate) brain_kills: usize,
 }
 
 /// Resolve every entity at zero HP. Two-pass like `particle_sim`: collect the
 /// dead ids under an immutable borrow, then mutate (despawn / latch) so the
 /// registry is never written mid-walk.
 ///
-/// - **Non-player** (no `PlayerMovement` component): capture its tags, despawn
-///   it, and record the tags in `killed_tags`.
 /// - **Player** (carries `PlayerMovement`): never despawn. If `death_handled`
 ///   is already set, skip entirely (the one-shot latch). Otherwise set the
 ///   latch and report `player_died`.
+/// - **Brain enemy** (carries `Brain`, not `PlayerMovement`): never despawn
+///   here. If `death_handled` is already set, skip (the one-shot latch holds
+///   while the AI tick counts down to despawn). Otherwise set the latch, capture
+///   its tags into `killed_tags`, and increment `brain_kills` — the single
+///   authoritative kill report. The AI tick owns the eventual despawn.
+/// - **Plain non-player** (neither `PlayerMovement` nor `Brain`): capture its
+///   tags, despawn it immediately, and record the tags in `killed_tags`.
 ///
 /// Frame ordering: runs in the game-logic stage after the weapon fire tick, so
 /// damage applied this frame is resolved before render reads entity state.
@@ -79,16 +110,48 @@ pub(crate) fn sweep_deaths(registry: &mut EntityRegistry) -> DeathReport {
             updated.death_handled = true;
             let _ = registry.set_component(id, updated);
             report.player_died = true;
-        } else {
-            // Capture tags before despawn clears them. Stale-id reads default to
-            // no tags rather than aborting the sweep.
+            continue;
+        }
+
+        // A brain-bearing enemy is the single authoritative kill latch: it
+        // latches and reports the kill once here, but is NOT despawned by the
+        // sweep — the AI tick despawns it after `death_despawn_ms`. The FSM
+        // never re-reports the kill, so a brain death is counted exactly once.
+        let is_brain = registry
+            .has_component_kind(id, ComponentKind::Brain)
+            .unwrap_or(false);
+        if is_brain {
+            let Ok(health) = registry.get_component::<HealthComponent>(id) else {
+                continue;
+            };
+            if health.death_handled {
+                // Latch holds: the enemy persists at zero HP while the AI tick
+                // counts down to despawn. Do not re-count or re-despawn.
+                continue;
+            }
+            let mut updated = health.clone();
+            updated.death_handled = true;
+            let _ = registry.set_component(id, updated);
+            // Capture tags for the progress tracker; the entity lives on, so the
+            // tags are still readable next sweep but the latch suppresses a
+            // re-report.
             let tags = registry
                 .get_tags(id)
                 .map(|t| t.to_vec())
                 .unwrap_or_default();
-            let _ = registry.despawn(id);
             report.killed_tags.push(tags);
+            report.brain_kills += 1;
+            continue;
         }
+
+        // Plain non-player: capture tags before despawn clears them. Stale-id
+        // reads default to no tags rather than aborting the sweep.
+        let tags = registry
+            .get_tags(id)
+            .map(|t| t.to_vec())
+            .unwrap_or_default();
+        let _ = registry.despawn(id);
+        report.killed_tags.push(tags);
     }
 
     report
@@ -97,12 +160,41 @@ pub(crate) fn sweep_deaths(registry: &mut EntityRegistry) -> DeathReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scripting::components::brain::attach_brain;
     use crate::scripting::components::player_movement::PlayerMovementComponent;
     use crate::scripting::data_descriptors::{
-        AirParams, CapsuleParams, FallParams, GroundParams, HealthDescriptor,
-        PlayerMovementDescriptor, SpeedParams,
+        AiDescriptor, AiStateNames, AirParams, CapsuleParams, FallParams, GroundParams,
+        HealthDescriptor, PlayerMovementDescriptor, SpeedParams,
     };
     use crate::scripting::registry::Transform;
+
+    /// A minimal valid AI descriptor so a brain can be attached to mark an
+    /// entity as brain-bearing for the sweep's branch. The tuning values are not
+    /// read by the sweep — only the Brain component's *presence* matters.
+    fn ai_descriptor() -> AiDescriptor {
+        AiDescriptor {
+            detection_range: 18.0,
+            attack_range: 2.0,
+            leash_range: 26.0,
+            attack_damage: 8.0,
+            attack_cooldown_ms: 1000.0,
+            move_speed: 3.5,
+            death_despawn_ms: 1500.0,
+            exp_reward: 25.0,
+            states: AiStateNames {
+                idle: "idle".into(),
+                alert: "walk".into(),
+                attack: "attack".into(),
+                death: "die".into(),
+            },
+        }
+    }
+
+    /// Attach a Brain component, marking the entity as brain-bearing for the
+    /// sweep. Mirrors `make_player`: the sweep branches on component *presence*.
+    fn make_brain(registry: &mut EntityRegistry, id: EntityId) {
+        attach_brain(registry, id, &ai_descriptor()).unwrap();
+    }
 
     fn health(max: f32) -> HealthDescriptor {
         HealthDescriptor {
@@ -262,5 +354,86 @@ mod tests {
 
         assert!(!reg.exists(id));
         assert_eq!(report.killed_tags, vec![Vec::<String>::new()]);
+    }
+
+    #[test]
+    fn brain_at_zero_latches_reports_kill_once_and_is_not_despawned() {
+        // A brain-bearing enemy at zero HP is the single authoritative kill
+        // latch: latched and counted ONCE, tags reported (so progress counts
+        // it), but NOT despawned — the AI tick owns the despawn.
+        let mut reg = EntityRegistry::new();
+        let id = spawn_health_entity(&mut reg, 30.0, 0.0, &["grunt", "wave1"]);
+        make_brain(&mut reg, id);
+
+        let first = sweep_deaths(&mut reg);
+        assert!(
+            reg.exists(id),
+            "a brain enemy is not despawned by the sweep; the AI tick owns that"
+        );
+        assert_eq!(first.brain_kills, 1, "the kill is counted exactly once");
+        assert_eq!(
+            first.killed_tags,
+            vec![vec!["grunt".to_string(), "wave1".to_string()]],
+            "the kill's tags flow to the progress tracker once"
+        );
+        assert!(!first.player_died);
+        assert!(
+            reg.get_component::<HealthComponent>(id)
+                .unwrap()
+                .death_handled,
+            "the death_handled latch must be set after reporting"
+        );
+
+        // The enemy persists at zero HP (awaiting the AI tick's despawn). A
+        // later sweep must NOT re-count or re-report the kill (latch holds).
+        let second = sweep_deaths(&mut reg);
+        assert_eq!(
+            second,
+            DeathReport::default(),
+            "a latched brain kill must not re-report on a later sweep"
+        );
+        assert!(reg.exists(id), "still awaiting the AI tick's despawn");
+    }
+
+    #[test]
+    fn brain_kill_yields_exactly_one_enemy_killed_event() {
+        // Mirrors `App::run_death_sweep`'s event mapping: one `enemyKilled` per
+        // latched brain kill. The named-event mechanism is payload-less, so the
+        // event is the bare name with no `exp_reward` rider. Two brain enemies
+        // die this sweep → exactly two events, one per kill, fired once.
+        let mut reg = EntityRegistry::new();
+        let a = spawn_health_entity(&mut reg, 30.0, 0.0, &["grunt"]);
+        make_brain(&mut reg, a);
+        let b = spawn_health_entity(&mut reg, 30.0, 0.0, &["grunt"]);
+        make_brain(&mut reg, b);
+
+        let report = sweep_deaths(&mut reg);
+        let events: Vec<&str> = std::iter::repeat(ENEMY_KILLED_EVENT)
+            .take(report.brain_kills)
+            .collect();
+        assert_eq!(
+            events,
+            vec![ENEMY_KILLED_EVENT, ENEMY_KILLED_EVENT],
+            "exactly one enemyKilled per brain kill",
+        );
+
+        // A second sweep (both still awaiting AI-tick despawn) fires NONE — the
+        // latch guarantees the single report per kill.
+        let second = sweep_deaths(&mut reg);
+        assert_eq!(second.brain_kills, 0, "no re-fire while latched");
+    }
+
+    #[test]
+    fn nonbrain_nonplayer_still_despawns_immediately() {
+        // Regression guard: an entity with neither PlayerMovement nor Brain at
+        // zero HP keeps the original immediate-despawn behavior.
+        let mut reg = EntityRegistry::new();
+        let id = spawn_health_entity(&mut reg, 10.0, 0.0, &["barrel"]);
+
+        let report = sweep_deaths(&mut reg);
+
+        assert!(!reg.exists(id), "plain non-player despawns in the sweep");
+        assert_eq!(report.brain_kills, 0, "no brain kill counted");
+        assert_eq!(report.killed_tags, vec![vec!["barrel".to_string()]]);
     }
 }

@@ -15,6 +15,15 @@ not deterministic lockstep — sidestepping the cross-architecture `f32` determi
 trap (`research.md` §1–2). This reverses the standing "Multiplayer / networking"
 non-goal; it is a deliberate strategic direction, not incremental polish.
 
+## Prerequisites
+
+**M10 (animated enemies)** — co-op combat needs enemies to fight, and M10's `Agent` +
+AI-brain components are what replicate as server-authoritative NPCs. M10 is in final
+code review and lands before netcode begins. Phases 0–2 (extraction, transport,
+movement prediction) are enemy-free and depend on nothing in M10; the combat-bearing
+phases (1.5, 3–5) build on its components. The per-phase combat specs are drafted
+against merged M10 code, so enemy-replication detail is grounded, not assumed.
+
 ## Scope
 
 ### In scope
@@ -45,16 +54,23 @@ non-goal; it is a deliberate strategic direction, not incremental polish.
   server-authoritative with cosmetic local feedback only.
 - **Competitive PvP, matchmaking, ranked, anti-cheat hardening.** Co-op PvE frame.
 - **Peer-to-peer / mesh topologies.** Single authoritative host only.
-- **Networked scripting VMs / replicated script execution.** Scripts run on the
-  server; clients receive the resulting replicated state, not script callbacks.
+- **Networked scripting VMs / replicated script execution.** The server runs the
+  engine-owned tick systems and the IR evaluator; per-tick script *callbacks* were
+  removed with the live VM (`done/remove-live-vm/`), so there is no script execution to
+  replicate. Clients receive replicated state, never script callbacks.
+- **Replicated audio-event channel.** Entity-emitted sound events are client-local —
+  derived from replicated state plus local input. Server-confirmed outcomes (damage,
+  kills) drive their own client-side event on confirmation; no sound rides the wire.
 - **Save/load of networked sessions, voice chat, server browser / NAT punchthrough
-  matchmaking service.** Direct connect (IP/invite) only for this epic.
+  matchmaking service.** Direct connect (IP/invite) only for this epic. A networked
+  session disables the single-player save/persist path.
 
 ## Acceptance criteria
 
 Epic-level, observable, and durable across implementation rewrites. Each maps to a
-phase (parenthetical). Phase 0 spike items are **measured findings**, not gates
-(`experimental_spikes.md`).
+phase (parenthetical). Phase 0's items split per `experimental_spikes.md`: the
+extracted-seam-runs-correctly item is an **honesty gate**; the divergence number is a
+**measured finding** (recorded, not threshold-gated).
 
 - [ ] The fixed-tick game logic advances one tick through the full order (transform
   snapshot → movement → weapon → death sweep) with **no wgpu/winit dependency**; a
@@ -66,7 +82,8 @@ phase (parenthetical). Phase 0 spike items are **measured findings**, not gates
   authoritative snapshots; a **remote pawn renders smoothly via interpolation**.
   (Phase 1)
 - [ ] A client connecting **after level start** receives a full baseline, then
-  deltas, and converges to the host's world state (**join-in-progress**). (Phase 1)
+  deltas, and converges to the host's **entity/registry state** (**join-in-progress**);
+  set-piece-progress convergence for mid-piece joiners is a Phase 1.5 concern. (Phase 1)
 - [ ] A client built against a **mismatched protocol/version is rejected** at
   handshake with a logged reason; no partial-state application. (Phase 1, honesty gate)
 - [ ] The **latency-sim harness** injects configurable RTT / jitter / loss; remote
@@ -119,17 +136,22 @@ network ids to local `EntityId`s. Remote entities render through the existing
 previous/current interpolation path. **Folded essentials, all in this phase:**
 time-sync (client tick clock ↔ server), snapshot ack + delta baselines,
 join-in-progress (baseline-then-delta for a mid-level joiner), a latency-sim harness
-(artificial RTT/jitter/loss for single-machine testing), and a protocol+version
-handshake that rejects mismatched builds. **Outcome:** host + client (incl. a
+(artificial RTT/jitter/loss for single-machine testing — durable dev tooling reused by
+Phases 2–4 for reconciliation and projectile-feel tuning, not a Phase 1 throwaway), and
+a protocol+version handshake that rejects mismatched builds. **Outcome:** host + client (incl. a
 mid-level joiner) over loopback/LAN, remote pawns interpolating smoothly.
 
 ### Phase 1.5: N-player set-piece design milestone (gating)
 **Design-first, pulled forward.** Resolve how the engine's first-class set-pieces —
 scripted reveals, monster closets, triggers, waves — behave with N players: trigger
-ownership (any-player vs. all-players vs. host), reveal/spawn fan-out, progress and
-death/respawn semantics in co-op. Deliverable is a short design note **plus** one
-playable co-op set-piece proving the chosen semantics. This **gates** the combat
-phases: it answers "is co-op fun" before Phases 3–4 commit to a combat shape.
+ownership (any-player vs. all-players vs. host), reveal/spawn fan-out, progress
+tracking, and co-op death/respawn **policy** (where/when players respawn, shared lives,
+spectate-on-death — the *mechanism* of reconciling a respawned pawn is Phase 2's).
+Includes **set-piece-progress replication** so a mid-piece joiner converges (Phase 1's
+join-in-progress delivers entity state; set-piece progress rides on top). Deliverable is
+a short design note **plus** one playable co-op set-piece proving the chosen semantics.
+This **gates** the combat phases: it answers "is co-op fun" before Phases 3–4 commit to
+a combat shape.
 
 ### Phase 2: Local-player movement prediction + reconciliation
 The client predicts its own pawn immediately from local input (the `MovementInput`
@@ -138,7 +160,10 @@ buffering inputs by tick. The server is authoritative. On each authoritative sna
 the client reconciles: rewind to the acked tick, re-apply buffered inputs, and snap
 only when divergence exceeds the Phase 0 tolerance. Movement-only (dash included,
 since dash is a movement state). Replication targets the **mutable tick subset** of
-`PlayerMovementComponent`, never the descriptor params both sides hold.
+`PlayerMovementComponent`, never the descriptor params both sides hold. An authoritative
+respawn (or any large position jump) reconciles as a **teleport** — snap, do not
+interpolate, reusing the `FrameTiming::hold_state` teleport path — distinct from the
+co-op respawn *policy* Phase 1.5 owns.
 
 ### Phase 3: Server-authoritative hitscan combat
 Weapon fire becomes server-authoritative. The client sends a fire intent (with aim
@@ -146,9 +171,11 @@ pitch carried into the tick command) and shows immediate cosmetic muzzle/impact
 feedback; the server runs `weapon::tick`/`fire_hitscan` and is the sole authority on
 damage. **Favor-the-shooter** validation tests the shot against a **short
 single-entity history** of the target (cheap, generous tolerance) — explicitly **not**
-full server-rewind. HP on all clients changes only on server confirmation.
-Non-movement abilities with heavy world side-effects follow the same rule:
-server-authoritative, cosmetic local feedback.
+full server-rewind. Render-rate look (yaw/pitch) is sampled into the per-tick fire
+command at fire time; favor-the-shooter tolerance must absorb the render-vs-tick
+aim-quantization gap, not only target-position history. HP on all clients changes only
+on server confirmation. Non-movement abilities with heavy world side-effects follow the
+same rule: server-authoritative, cosmetic local feedback.
 
 ### Phase 4: Predicted projectiles (predicted-entity → confirmed handoff)
 Client-side predicted projectiles for weapon feel: a locally-fired rocket/grenade
@@ -185,8 +212,9 @@ combat path and Phase 2's prediction/reconciliation machinery.
 validates the whole at 16 players.
 
 The chain is mostly sequential by dependency. The one parallelism: Phase 2 (movement)
-may run alongside the Phase 1.5 design gate, since movement prediction does not depend
-on set-piece semantics.
+may run alongside the Phase 1.5 design gate. Movement prediction owns only the
+respawn-as-teleport *mechanism* (Phase 1.5 owns co-op respawn *policy*), so it does not
+depend on set-piece semantics.
 
 ### Non-goal reconciliation (apply at promotion, not during drafting)
 Per the documentation lifecycle, `context/lib/` is updated at promotion, not in the
@@ -199,9 +227,16 @@ draft session. At promotion, reconcile:
   authoritative-replication direction (server owns entities; clients receive
   replicated `ComponentValue` deltas), narrowing the remaining non-goal to
   client-authoritative state and deterministic-lockstep replication.
+- **`entity_model.md` §6 Ownership:** note that the replication apply step preserves
+  exclusive ownership — snapshot application and predicted spawn/despawn run through a
+  game-logic-owned apply pass; the net crate emits typed snapshots and never mutates the
+  registry directly.
 - A `networking.md` context doc + Agent Router entry is the natural durable home;
   create it at the promotion of Phase 1 (the first phase that lands a real contract),
   not at this epic's promotion.
+- **Register as a roadmap milestone** (detail-on-open phases, the M10/M13/M14
+  precedent) in `context/plans/roadmap.md` — the epic's sequencing is milestone-shaped,
+  and the per-phase specs become individual plans under it.
 
 ## Rough sketch
 
@@ -219,7 +254,21 @@ received snapshots to the registry (reconcile predicted pawn) → run the headle
 for predicted entities → render. Server (host) per tick: drain client input commands →
 run the headless tick → serialize delta snapshots per client → send. The headless
 `simulate` seam from Phase 0 is the shared core; the listen-server host runs both
-halves, a dedicated server runs only the server half.
+halves, a dedicated server runs only the server half. Four invariants this must hold:
+
+- **Entity-ownership stays exclusive.** Snapshot application and predicted-entity
+  spawn/despawn run through a **game-logic-owned apply step** — the net crate emits
+  typed snapshots; engine-side game logic applies them and owns every spawn/despawn. The
+  net crate never mutates the registry directly, so `entity_model.md` §6 still holds.
+- **Server runs a sanctioned frame-order subset.** The dedicated/headless server runs
+  Input→Game logic only (no Audio/Render/Present) — not a violation of the frame-order
+  invariant, since the dropped stages are read-only consumers of game state.
+- **No `RefCell` borrow across the network encode.** Serialization captures one **owned
+  post-tick snapshot buffer** (single borrow, released before the per-client encode
+  loop), from which all per-client deltas are computed.
+- **Network runtime never blocks the event loop.** `renet` is **polled non-blocking**
+  within the frame loop — its transport is synchronously pollable, no `tokio` — honoring
+  `development_guide.md` §4.2 (winit owns the loop; never block it).
 
 **Replication granularity.** Replicate the mutable tick subset of components, not
 descriptor-immutable params (both sides load those from the same descriptor at level
@@ -282,5 +331,6 @@ Resolved as **decisions during the relevant phase's spec**, not blockers for thi
 - **Library versions / current APIs** — Phase 1 pins `renet`/`renetcode`/`bitcode`
   versions and confirms current channel APIs via Context7 at implementation time.
 - **AI/enemy replication** — M10 enemies (`Agent` + AI brain) are server-authoritative
-  and replicate as ordinary entities; any prediction of them is explicitly out of
-  scope. Confirm the M10 components serialize cleanly when Phase 1 lands.
+  and replicate as ordinary entities; any prediction of them is out of scope. M10 is a
+  stated prerequisite (above); the combat-phase specs ground enemy-component
+  serialization against merged M10 code.

@@ -69,7 +69,7 @@ wgpu/winit dependency) is precisely the seam that lets a dedicated server be spl
 out later by running the host half without the client half. Designing to that seam
 now costs little; retrofitting it later is the expensive path.
 
-## 5. Risk ledger (the four things most likely to bite)
+## 5. Risk ledger (the things most likely to bite)
 
 | Risk | Why it bites | De-risk in plan |
 |------|--------------|-----------------|
@@ -77,6 +77,8 @@ now costs little; retrofitting it later is the expensive path.
 | Cross-arch reconciliation tuning | The whole snapshot model rests on drift being small and correctable. | Phase 0 spike measures it before Phase 2 depends on it. |
 | Host-upstream bandwidth (listen server) | The host uploads N per-client snapshot streams on a home connection. | Phase 5 budgets it explicitly; delta compression + (if needed) interest management. |
 | N-player set-piece *fun* | Monster-closet / scripted-reveal set-pieces are the product's first-class gameplay; their semantics with N players are undesigned. | Pulled forward as a gating design milestone (Phase 1.5) before combat phases commit. |
+| Server-tick throughput | The server runs the full engine tick (scripting bridges + IR eval × entity count × 16 players) on a listen-server host that also renders. | Phase 5 budgets it. The live-VM removal means no per-tick script *callbacks* — the tick is engine-Rust + IR eval, cheaper and more deterministic than retained scripts. |
+| Entity-slot exhaustion | `EntityId` index is `u16`; slots retire (not reuse) on generation overflow. Phase 4's predicted+confirmed projectiles double the local-id allocation rate; sustained churn over a long session climbs generations toward retirement. | Named for the Phase 4/5 specs: measure churn rate, revisit id width if the budget demands it. |
 
 ## 6. Codebase seam map (grounded)
 
@@ -93,7 +95,9 @@ Confirmed against source — the contracts the epic builds on.
 
 ### Entity registry
 - `scripting/registry.rs` (1,328 lines). `EntityRegistry` (line 449) owned by
-  `ScriptCtx` as `RefCell<EntityRegistry>`.
+  `ScriptCtx` as `Rc<RefCell<EntityRegistry>>` (`scripting/ctx.rs:24`; `ScriptCtx`
+  is `Clone`, so the registry is shared by handle — the snapshot-apply glue
+  interacts with this).
 - `EntityId(u32)` = packed `index: u16` + `generation: u16`; 65,536 live-entity cap;
   generation retires a slot on overflow (despawned IDs never become valid again).
 - `ComponentKind` (line 90, `#[repr(u16)]`): `Transform`, `PlayerMovement`, `Weapon`,
@@ -104,8 +108,11 @@ Confirmed against source — the contracts the epic builds on.
   render interpolation).
 
 ### Movement / weapon / health tick
-- `movement::tick` (`movement/mod.rs:1797`): `tick(registry, component, input:
-  MovementInput, world: &CollisionWorld, dt) -> MovementEvents`.
+- `movement::tick` (`movement/mod.rs:1797`): `tick(component: &mut
+  PlayerMovementComponent, input: &MovementInput, collision_world: &CollisionWorld,
+  gravity: f32, dt: f32, position: Vec3) -> (Vec3, MovementEvents)`. Operates on a
+  single component — the per-tick registry walk lives in `main.rs::run_movement_tick`
+  (`main.rs:3545`), which is the wrapper the headless seam must hoist.
 - `MovementInput` (`movement/mod.rs:86`): `{ wish_dir: Vec2, jump_pressed,
   dash_pressed (edge), running, crouch_intent, facing_yaw: f32 }` — a compact,
   already-quantizable per-tick command. **This is the networked input command shape**
@@ -114,8 +121,10 @@ Confirmed against source — the contracts the epic builds on.
   tick state (`position` via Transform, `velocity`, `is_grounded`, `air_ticks`,
   `movement_state`, ability budgets) *plus* descriptor-immutable params (capsule,
   ground/air/fall) and render-only fields (`view_feel`) and compiled IR
-  (`dash_programs`). Replication targets the **mutable tick subset**, not the params
-  both sides already hold from the descriptor, nor the render-only/IR fields.
+  (`dash_programs`, `#[serde(skip)]`). Replication targets the **mutable tick subset**,
+  not the params both sides already hold from the descriptor, nor the render-only/IR
+  fields. `ComponentValue::PlayerMovement` wraps `Box<PlayerMovementComponent>` — the
+  snapshot/delta envelope must account for the boxing.
 - `weapon::tick` (`weapon/mod.rs:81`) → `fire_hitscan(...)`: ray from camera, resolves
   world-vs-entity hit + zone. Server-authoritative target for Phase 3. Weapon aim
   needs camera pitch (render-rate today) carried into the tick command.
@@ -125,7 +134,9 @@ Confirmed against source — the contracts the epic builds on.
 
 ### Serialization today
 - Engine: `serde` + `serde_json` (scripting FFI, state persistence). `postcard` lives
-  in the level-format/compiler path. `bitcode` and `renet`/`tokio` are **net-new**.
+  in the level-format/compiler path. `bitcode` and `renet`/`renetcode` are **net-new**.
+  (`renet`'s transport is synchronously pollable — no `tokio`/async runtime required;
+  it is polled within the frame loop.)
 - Components carry serde derives already; the replication layer adds bitcode encoding,
   not new derives on the component types.
 

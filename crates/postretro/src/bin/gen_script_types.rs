@@ -19,6 +19,14 @@ mod scripting;
 #[path = "../weapon/damage.rs"]
 mod weapon;
 
+// The scripting tree's agent component (`scripting::components::agent`)
+// references `crate::nav::NavAgentParams` to seed its capsule. `nav.rs` is a
+// GPU-free runtime query surface (glam + level-format only), so include it
+// verbatim — it name-resolves the agent component without pulling in
+// renderer/collision modules this generator bin lacks.
+#[path = "../nav.rs"]
+mod nav;
+
 // `scripting::data_descriptors` binds dash value expressions against
 // `crate::movement::MovementScope` (movement owns its binding scope). Pull in
 // only the scope module — its sole dependencies are the IR substrate and the

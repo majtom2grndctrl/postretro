@@ -13,7 +13,7 @@ Make UI focus a first-class accessibility state and a designer-controlled visual
 - Focus state included in accessibility metadata.
 - Resolved names, roles, bounds, disabled, selected, checked, and live-region announcements in the accessibility snapshot.
 - Author-facing focus visual descriptors for focusable widgets.
-- Theme tokens for default text, focus-highlight text, panel background, and fallback outline.
+- New theme tokens for default text and focus-highlight text; updated panel background; preserved fallback outline semantics.
 - Default interactive label color changed from literal white to the default text token.
 - Renderer support for at least outline and text-color focus visuals.
 - Demo frontend menu rethemed to use a dark translucent panel, near-white default text, and pure-white focused button text.
@@ -43,7 +43,8 @@ Make UI focus a first-class accessibility state and a designer-controlled visual
 - [ ] A widget can author a focus visual that changes text color on focus without drawing an outline.
 - [ ] A widget can author an outline focus visual using authored color, thickness, and inset.
 - [ ] Omitted focus visual uses the engine fallback outline so existing menus remain navigable and visible.
-- [ ] Unknown focus visual color or spacing tokens degrade through the existing visible fallback path.
+- [ ] Unknown focus visual color tokens degrade to opaque magenta.
+- [ ] Unknown focus visual spacing tokens resolve to zero.
 - [ ] The engine default theme includes near-white default text, white focus-highlight text, dark translucent panel, and fallback outline tokens.
 - [ ] The demo frontend menu uses tokenized panel fill and text colors, and its focused level buttons highlight by text color rather than a heavy outline.
 - [ ] TypeScript and Luau SDK helpers expose the same focus visual fields and reject malformed focus visual descriptors.
@@ -66,15 +67,15 @@ Resolve `label`, `labelledBy`, and tree `accessibleName` into strings during acc
 
 ### Task 4: Add Focus Visual Descriptor
 
-Add an authored `focusVisual` descriptor to focusable widgets. The initial variants are `outline`, `textColor`, and `none`. `outline` carries color, thickness, and inset fields. `textColor` carries a focused text color. `none` suppresses visual drawing but does not suppress focus or accessibility metadata.
+Add an authored `focusVisual` descriptor to focusable widgets. The initial variants are `outline`, `textColor`, and `none`. `outline` carries color, thickness, and inset fields. `textColor` carries a focused text color. `none` suppresses visual drawing but does not suppress focus or accessibility metadata. Descriptor factories may accept it on focusable-capable widgets; it applies only when the node is actually focusable.
 
 ### Task 5: Render Authored Focus Visuals
 
-Replace the hardcoded top-layer focus-ring append with a focus-visual resolver. The resolver reads the focused node id, finds that node's exported visual descriptor, and appends the chosen presentation to the same top-layer draw data. `outline` uses the existing quad path. `textColor` updates the focused text run color for text-bearing widgets.
+Replace the hardcoded top-layer focus-ring append with a focus-visual resolver. The resolver reads the focused node id, finds that node's exported visual descriptor, and appends the chosen presentation to the same top-layer draw data. `outline` uses the existing quad path. `textColor` recolors the focused widget's own text run. If the widget has no owned text run, use the fallback outline.
 
 ### Task 6: Broaden Theme Tokens
 
-Add default theme tokens for `text.default`, `focus.text`, `panel.default`, and `focus.ring`. `text.default` is very light gray. `focus.text` is white. `panel.default` is very dark gray with opacity. Existing required tokens remain valid. Default `Text` color and interactive button/slider label color resolve through `text.default`.
+Add default theme tokens for `text.default` and `focus.text`. `text.default` is very light gray. `focus.text` is white. Update `panel.default` to very dark gray with opacity. Preserve `focus.ring` and its fallback outline semantics. Existing required tokens remain valid. Default `Text` color and interactive button/slider label color resolve through `text.default`. TypeScript and Luau `Text` factories and interactive button/slider label construction must emit or resolve `text.default` rather than literal white.
 
 ### Task 7: SDK And Typedef Parity
 
@@ -82,7 +83,7 @@ Expose `focusVisual` in TypeScript and Luau widget factories. Add validation for
 
 ### Task 8: Demo Theme And Menu Update
 
-Fold `content/dev/scripts/theme.ts` into the dev mod theme path and update `content/dev/scripts/frontend-menu.ts` to use `getDesignTokens`. Level-select buttons author `focusVisual: { kind: "textColor", color: color.focus.text }`, use the default near-white label color when not focused, and place content on `color.panel.default`.
+Consolidate the active `hudTheme` from `content/dev/scripts/hud.ts` into `content/dev/scripts/theme.ts`. Export one dev theme. Update `content/dev/start-script.ts`, `content/dev/scripts/hud.ts`, and `content/dev/scripts/frontend-menu.ts` imports/usages accordingly. Level-select buttons author `focusVisual: { kind: "textColor", color: color.focus.text }`, use the default near-white label color when not focused, and place content on `color.panel.default`.
 
 ### Task 9: Accessibility Backend Seam
 
@@ -115,7 +116,7 @@ Current state:
 Proposed model:
 
 - Focus truth stays app-side. Renderer receives only the focused id and draws presentation.
-- Focus export gains resolved visual metadata. The focused node's visual, not a global hardcoded ring, chooses what is drawn.
+- Focus visual metadata is renderer-local resolver data. `FocusRectList` remains app-side focus readback, not visual metadata export.
 - Accessibility snapshot builds from the active laid-out tree and the same slot/cell values used for draw and focus export.
 - Accessibility snapshot is internal engine data first. A platform adapter can project it later without changing script authoring.
 - Designer-authored visuals never affect focus behavior or accessibility state.
@@ -141,7 +142,8 @@ Implementation notes:
 - Preserve the N to N+1 focus latency. Accessibility focus may trail the same way as rendering; do not introduce a new timing path.
 - Keep descriptor fields additive and skip-serialized when omitted.
 - Treat `focusVisual: "none"` as a visual override only. It must not remove the node from focus export or the accessibility snapshot.
-- For `textColor`, prefer carrying enough node/run identity in draw data to mutate only the focused node's own text run. Do not recolor every matching string.
+- For `textColor`, carry enough node/run identity in draw data to mutate only the focused widget's own text run. Do not recolor external `labelledBy` text or unrelated matching strings. If no owned text run exists, fall back to outline.
+- Changing default focus visuals from outline to text color can be future work.
 
 Promotion notes:
 
@@ -167,10 +169,13 @@ Promotion notes:
 | Focus text token | `focus.text` | `focus.text` | `color.focus.text` via `getDesignTokens` | `color.focus.text` via `getDesignTokens` | n/a |
 | Panel token | `panel.default` | `panel.default` | `color.panel.default` via `getDesignTokens` | `color.panel.default` via `getDesignTokens` | n/a |
 | Fallback outline token | `focus.ring` | `focus.ring` | `color.focus.ring` via `getDesignTokens` | `color.focus.ring` via `getDesignTokens` | n/a |
+| Accessible name | `accessible_name` | `accessibleName` | `accessibleName` | `accessibleName` | n/a |
+| Labelled by | `labelled_by` | `labelledBy` | `labelledBy` | `labelledBy` | n/a |
+| Role | `role` | `role` | `role` | `role` | n/a |
+| Announce widget | `Announce` | `announce` | `announce` | `announce` | n/a |
+| Announce priority | `priority` | `priority` | `priority` | `priority` (`polite` default, `assertive` authored) | n/a |
 | Accessibility snapshot | internal app/renderer type | not serialized to scripts | not exposed | not exposed | n/a |
 
 ## Open Questions
 
 - Whether AccessKit through `accesskit_winit` can be linked at the current workspace dependency versions without expanding platform support or binary size beyond the feature's budget. It is the preferred first backend unless implementation research finds a blocker.
-- Whether `focusVisual` should be allowed on passive id-bearing widgets only as authored overrides, or only on widgets that can receive focus through a focus group. The initial implementation should accept it on all focusable-capable widget descriptors and apply it only when the node is actually focusable.
-- Whether the default focus visual should remain an outline for all widgets, or use text color for text-bearing buttons once `text.default` and `focus.text` exist. The conservative default is outline for backward visibility.

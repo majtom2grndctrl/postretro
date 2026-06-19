@@ -492,7 +492,7 @@ pub(crate) struct AiStateNames {
 ///
 /// Wire keys are camelCase (boundary inventory): `detectionRange`,
 /// `attackRange`, `leashRange`, `attackDamage`, `attackCooldownMs`, `moveSpeed`,
-/// `deathDespawnMs`, `expReward`, and the closed `states` block. The
+/// `deathDespawnMs`, and the closed `states` block. The
 /// logical-state → animation-state mapping cannot be validated at parse (the ai
 /// block cannot see the mesh block — cross-component); it is validated at SPAWN
 /// (`components::brain::validate_brain_animation_states`).
@@ -506,9 +506,6 @@ pub(crate) struct AiDescriptor {
     pub(crate) attack_cooldown_ms: f32,
     pub(crate) move_speed: f32,
     pub(crate) death_despawn_ms: f32,
-    /// EXP awarded to the player when this enemy is killed. Carried through to
-    /// the resolved tuning; the kill latch reads it later (EXP-on-kill feature).
-    pub(crate) exp_reward: f32,
     pub(crate) states: AiStateNames,
 }
 
@@ -520,9 +517,9 @@ impl AiDescriptor {
     /// - every range field (`detectionRange`, `attackRange`, `leashRange`,
     ///   `attackCooldownMs`, `moveSpeed`, `deathDespawnMs`) must be finite and
     ///   strictly positive;
-    /// - `attackDamage` and `expReward` must be finite and non-negative (a
-    ///   negative `attackDamage` would HEAL the player through `apply_damage`'s
-    ///   subtraction; a negative `expReward` is meaningless), same discipline.
+    /// - `attackDamage` must be finite and non-negative (a negative
+    ///   `attackDamage` would HEAL the player through `apply_damage`'s
+    ///   subtraction).
     ///
     /// The closed `states` key set is enforced upstream by
     /// `#[serde(deny_unknown_fields)]` on [`AiStateNames`]; the logical-state →
@@ -544,10 +541,7 @@ impl AiDescriptor {
                 });
             }
         }
-        for (field, value) in [
-            ("attackDamage", self.attack_damage),
-            ("expReward", self.exp_reward),
-        ] {
+        for (field, value) in [("attackDamage", self.attack_damage)] {
             if !value.is_finite() || value < 0.0 {
                 return Err(DescriptorError::InvalidShape {
                     reason: format!(
@@ -9065,7 +9059,7 @@ mod tests {
 
     // --- ai component (both parsers) ----------------------------------------
     //
-    // Parse-time acceptance: range fields finite+positive, attackDamage/expReward
+    // Parse-time acceptance: range fields finite+positive, attackDamage
     // non-negative+finite, and an unknown `states` key all abort at parse —
     // twinned across QuickJS and Luau (identical outcome). Tested on a bare
     // descriptor value with NO entity materialized. The logical-state →
@@ -9079,7 +9073,7 @@ mod tests {
             r#"({{ components: {{ ai: {{
                 detectionRange: 18, attackRange: 2.2, leashRange: 26,
                 attackDamage: 8, attackCooldownMs: 1200, moveSpeed: 3.5,
-                deathDespawnMs: 1500, expReward: 25,
+                deathDespawnMs: 1500,
                 states: {{ idle: "idle", alert: "walk", attack: "attack", death: "die" }}{extra}
             }} }} }})"#
         )
@@ -9091,7 +9085,7 @@ mod tests {
             r#"return {{ components = {{ ai = {{
                 detectionRange = 18, attackRange = 2.2, leashRange = 26,
                 attackDamage = 8, attackCooldownMs = 1200, moveSpeed = 3.5,
-                deathDespawnMs = 1500, expReward = 25,
+                deathDespawnMs = 1500,
                 states = {{ idle = "idle", alert = "walk", attack = "attack", death = "die" }}{extra}
             }} }} }}"#
         )
@@ -9110,7 +9104,6 @@ mod tests {
         assert_eq!(ai.attack_cooldown_ms, 1200.0);
         assert_eq!(ai.move_speed, 3.5);
         assert_eq!(ai.death_despawn_ms, 1500.0);
-        assert_eq!(ai.exp_reward, 25.0);
         assert_eq!(ai.states.idle, "idle");
         assert_eq!(ai.states.alert, "walk");
         assert_eq!(ai.states.attack, "attack");
@@ -9124,7 +9117,6 @@ mod tests {
         let d = eval_lua(&lua_ai(""), |v| entity_descriptor_from_lua(v).unwrap());
         let ai = d.ai.expect("ai parsed by the Luau arm");
         assert_eq!(ai.detection_range, 18.0);
-        assert_eq!(ai.exp_reward, 25.0);
         assert_eq!(ai.states.death, "die");
     }
 
@@ -9134,7 +9126,7 @@ mod tests {
         let src = r#"({ components: { ai: {
             detectionRange: 0, attackRange: 2.2, leashRange: 26,
             attackDamage: 8, attackCooldownMs: 1200, moveSpeed: 3.5,
-            deathDespawnMs: 1500, expReward: 25,
+            deathDespawnMs: 1500,
             states: { idle: "idle", alert: "walk", attack: "attack", death: "die" }
         } } })"#;
         let err = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap_err());
@@ -9147,7 +9139,7 @@ mod tests {
         let src = r#"return { components = { ai = {
             detectionRange = 0, attackRange = 2.2, leashRange = 26,
             attackDamage = 8, attackCooldownMs = 1200, moveSpeed = 3.5,
-            deathDespawnMs = 1500, expReward = 25,
+            deathDespawnMs = 1500,
             states = { idle = "idle", alert = "walk", attack = "attack", death = "die" }
         } } }"#;
         let err = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap_err());
@@ -9159,7 +9151,7 @@ mod tests {
         let src = r#"({ components: { ai: {
             detectionRange: 18, attackRange: 2.2, leashRange: 1/0,
             attackDamage: 8, attackCooldownMs: 1200, moveSpeed: 3.5,
-            deathDespawnMs: 1500, expReward: 25,
+            deathDespawnMs: 1500,
             states: { idle: "idle", alert: "walk", attack: "attack", death: "die" }
         } } })"#;
         let err = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap_err());
@@ -9171,7 +9163,7 @@ mod tests {
         let src = r#"return { components = { ai = {
             detectionRange = 18, attackRange = 2.2, leashRange = 1/0,
             attackDamage = 8, attackCooldownMs = 1200, moveSpeed = 3.5,
-            deathDespawnMs = 1500, expReward = 25,
+            deathDespawnMs = 1500,
             states = { idle = "idle", alert = "walk", attack = "attack", death = "die" }
         } } }"#;
         let err = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap_err());
@@ -9185,7 +9177,7 @@ mod tests {
         let src = r#"({ components: { ai: {
             detectionRange: 18, attackRange: 2.2, leashRange: 26,
             attackDamage: -1, attackCooldownMs: 1200, moveSpeed: 3.5,
-            deathDespawnMs: 1500, expReward: 25,
+            deathDespawnMs: 1500,
             states: { idle: "idle", alert: "walk", attack: "attack", death: "die" }
         } } })"#;
         let err = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap_err());
@@ -9197,31 +9189,7 @@ mod tests {
         let src = r#"return { components = { ai = {
             detectionRange = 18, attackRange = 2.2, leashRange = 26,
             attackDamage = -1, attackCooldownMs = 1200, moveSpeed = 3.5,
-            deathDespawnMs = 1500, expReward = 25,
-            states = { idle = "idle", alert = "walk", attack = "attack", death = "die" }
-        } } }"#;
-        let err = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap_err());
-        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
-    }
-
-    #[test]
-    fn js_ai_negative_exp_reward_is_rejected() {
-        let src = r#"({ components: { ai: {
-            detectionRange: 18, attackRange: 2.2, leashRange: 26,
-            attackDamage: 8, attackCooldownMs: 1200, moveSpeed: 3.5,
-            deathDespawnMs: 1500, expReward: -5,
-            states: { idle: "idle", alert: "walk", attack: "attack", death: "die" }
-        } } })"#;
-        let err = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap_err());
-        assert!(matches!(err, DescriptorError::InvalidShape { .. }));
-    }
-
-    #[test]
-    fn lua_ai_negative_exp_reward_is_rejected() {
-        let src = r#"return { components = { ai = {
-            detectionRange = 18, attackRange = 2.2, leashRange = 26,
-            attackDamage = 8, attackCooldownMs = 1200, moveSpeed = 3.5,
-            deathDespawnMs = 1500, expReward = -5,
+            deathDespawnMs = 1500,
             states = { idle = "idle", alert = "walk", attack = "attack", death = "die" }
         } } }"#;
         let err = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap_err());
@@ -9235,7 +9203,7 @@ mod tests {
         let src = r#"({ components: { ai: {
             detectionRange: 18, attackRange: 2.2, leashRange: 26,
             attackDamage: 8, attackCooldownMs: 1200, moveSpeed: 3.5,
-            deathDespawnMs: 1500, expReward: 25,
+            deathDespawnMs: 1500,
             states: { idle: "idle", alert: "walk", attack: "attack", death: "die", flee: "run" }
         } } })"#;
         let err = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap_err());
@@ -9247,7 +9215,7 @@ mod tests {
         let src = r#"return { components = { ai = {
             detectionRange = 18, attackRange = 2.2, leashRange = 26,
             attackDamage = 8, attackCooldownMs = 1200, moveSpeed = 3.5,
-            deathDespawnMs = 1500, expReward = 25,
+            deathDespawnMs = 1500,
             states = { idle = "idle", alert = "walk", attack = "attack", death = "die", flee = "run" }
         } } }"#;
         let err = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap_err());
@@ -9261,7 +9229,7 @@ mod tests {
         let src = r#"({ components: { ai: {
             detectionRange: 18, attackRange: 2.2, leashRange: 26,
             attackDamage: 8, attackCooldownMs: 1200, moveSpeed: 3.5,
-            deathDespawnMs: 1500, expReward: 25,
+            deathDespawnMs: 1500,
             states: { idle: "idle", alert: "walk", attack: "attack" }
         } } })"#;
         let err = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap_err());
@@ -9273,7 +9241,7 @@ mod tests {
         let src = r#"return { components = { ai = {
             detectionRange = 18, attackRange = 2.2, leashRange = 26,
             attackDamage = 8, attackCooldownMs = 1200, moveSpeed = 3.5,
-            deathDespawnMs = 1500, expReward = 25,
+            deathDespawnMs = 1500,
             states = { idle = "idle", alert = "walk", attack = "attack" }
         } } }"#;
         let err = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap_err());

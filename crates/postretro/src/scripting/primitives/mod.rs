@@ -286,7 +286,6 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("attackCooldownMs", "f32", "Minimum interval between attacks, in milliseconds. Must be finite and > 0.")
         .field("moveSpeed", "f32", "Pursuit movement speed in metres/sec, seeding the navigation agent. Must be finite and > 0.")
         .field("deathDespawnMs", "f32", "Delay between death and despawn, in milliseconds (lets the death animation play out). Must be finite and > 0.")
-        .field("expReward", "f32", "Experience points awarded to the player when this enemy is killed. Must be finite and >= 0.")
         .field("states", "AiStateNames", "Closed logical-state → mesh animation-state name mapping (idle / alert / attack / death). Each value must name a state declared in `components.mesh.animations`; validated at spawn.")
         .finish();
     registry

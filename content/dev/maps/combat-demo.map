@@ -118,11 +118,10 @@
 // "reference_enemy"` because its descriptor (sdk/behaviors/reference/entities.ts,
 // spread into the dev mod through `...referenceEntities`) carries health + mesh.
 // It also carries the `ai` brain (detection/attack/leash, attackDamage,
-// attackCooldownMs, moveSpeed, deathDespawnMs, expReward, and the idle/alert/
-// attack/death -> mesh-state map). The CC0 KayKit Knight model animates the four
-// FSM states. Placed past the dummy line so the player walks up to it; the
-// shipped reference pistol's hitscan kills it (health max 60 + hitbox), firing
-// the `enemyKilled` event the EXP store (Task 5) will react to.
+// attackCooldownMs, moveSpeed, deathDespawnMs, and the idle/alert/attack/death
+// -> mesh-state map). The CC0 KayKit Knight model animates the four FSM states.
+// Placed past the dummy line so the player walks up to it; the shipped reference
+// pistol's hitscan kills it (health max 60 + hitbox).
 {
 "classname" "reference_enemy"
 "origin" "224 128 16"

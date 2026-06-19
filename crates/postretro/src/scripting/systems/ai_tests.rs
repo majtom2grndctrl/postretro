@@ -40,7 +40,6 @@ fn tuning() -> AiTuning {
         attack_cooldown_ms: 1000.0,
         move_speed: 3.5,
         death_despawn_ms: 1500.0,
-        exp_reward: 25.0,
         states: AiStateMap {
             idle: "idle".into(),
             alert: "locomotion".into(),

@@ -75,9 +75,8 @@ M.referenceEnemyEntity = defineEntity({
       defaultState = "idle",
     },
     -- The AI brain. Ranges are in metres; cooldown/despawn in ms; moveSpeed in
-    -- m/s. `expReward` is the EXP granted on kill (read later by the
-    -- EXP-on-kill feature; 10 is a reasonable baseline). `states` maps the
-    -- brain's four logical states onto the mesh state names above.
+    -- m/s. `states` maps the brain's four logical states onto the mesh state
+    -- names above.
     ai = {
       detectionRange = 16,
       attackRange = 2,
@@ -86,7 +85,6 @@ M.referenceEnemyEntity = defineEntity({
       attackCooldownMs = 1200,
       moveSpeed = 3,
       deathDespawnMs = 4000,
-      expReward = 10,
       states = {
         idle = "idle",
         alert = "walk",

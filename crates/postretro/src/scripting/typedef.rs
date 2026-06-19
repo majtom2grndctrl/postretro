@@ -3192,8 +3192,6 @@ declare module "postretro" {
     moveSpeed: number;
     /** Delay between death and despawn, in milliseconds (lets the death animation play out). Must be finite and > 0. */
     deathDespawnMs: number;
-    /** Experience points awarded to the player when this enemy is killed. Must be finite and >= 0. */
-    expReward: number;
     /** Closed logical-state → mesh animation-state name mapping (idle / alert / attack / death). Each value must name a state declared in `components.mesh.animations`; validated at spawn. */
     states: AiStateNames;
   };
@@ -3691,8 +3689,6 @@ export type AiDescriptor = {
   moveSpeed: number,
   --- Delay between death and despawn, in milliseconds (lets the death animation play out). Must be finite and > 0.
   deathDespawnMs: number,
-  --- Experience points awarded to the player when this enemy is killed. Must be finite and >= 0.
-  expReward: number,
   --- Closed logical-state → mesh animation-state name mapping (idle / alert / attack / death). Each value must name a state declared in `components.mesh.animations`; validated at spawn.
   states: AiStateNames,
 }
@@ -4371,12 +4367,7 @@ export type Event = {
         for (label, generated, committed) in
             [("ts", &ts, &committed_ts), ("luau", &luau, &committed_luau)]
         {
-            for needle in [
-                "AiDescriptor",
-                "AiStateNames",
-                "detectionRange",
-                "expReward",
-            ] {
+            for needle in ["AiDescriptor", "AiStateNames", "detectionRange"] {
                 assert!(
                     generated.contains(needle),
                     "{label} generator output missing `{needle}` — AiDescriptor not registered?"

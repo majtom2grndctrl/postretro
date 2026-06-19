@@ -86,11 +86,9 @@ impl AiStateMap {
 }
 
 /// Resolved AI tuning materialized from the [`AiDescriptor`] at spawn. Mirrors
-/// the descriptor's authored fields (ranges, attack params, despawn delay,
-/// `exp_reward`) plus the logical-state → animation-state name map. Descriptor-
-/// owned tuning (entity_model.md §4): maps never override these, the FSM reads
-/// them each tick. `exp_reward` is carried for the EXP-on-kill feature (a later
-/// task reads `tuning.exp_reward` at the kill latch); it is not consumed here.
+/// the descriptor's authored fields (ranges, attack params, despawn delay) plus
+/// the logical-state → animation-state name map. Descriptor-owned tuning
+/// (entity_model.md §4): maps never override these, the FSM reads them each tick.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct AiTuning {
     pub(crate) detection_range: f32,
@@ -100,9 +98,6 @@ pub(crate) struct AiTuning {
     pub(crate) attack_cooldown_ms: f32,
     pub(crate) move_speed: f32,
     pub(crate) death_despawn_ms: f32,
-    /// EXP awarded to the player when this enemy is killed. Carried here for the
-    /// EXP-on-kill feature; the kill latch reads `tuning.exp_reward` later.
-    pub(crate) exp_reward: f32,
     pub(crate) states: AiStateMap,
 }
 
@@ -118,7 +113,6 @@ impl AiTuning {
             attack_cooldown_ms: desc.attack_cooldown_ms,
             move_speed: desc.move_speed,
             death_despawn_ms: desc.death_despawn_ms,
-            exp_reward: desc.exp_reward,
             states: AiStateMap {
                 idle: desc.states.idle.clone(),
                 alert: desc.states.alert.clone(),
@@ -255,7 +249,6 @@ mod tests {
             attack_cooldown_ms: 1200.0,
             move_speed: 3.5,
             death_despawn_ms: 1500.0,
-            exp_reward: 25.0,
             states: AiStateNames {
                 idle: "idle".into(),
                 alert: "walk".into(),
@@ -289,7 +282,6 @@ mod tests {
         assert_eq!(brain.tuning.attack_cooldown_ms, 1200.0);
         assert_eq!(brain.tuning.move_speed, 3.5);
         assert_eq!(brain.tuning.death_despawn_ms, 1500.0);
-        assert_eq!(brain.tuning.exp_reward, 25.0);
         assert_eq!(brain.tuning.states.alert, "walk");
         assert_eq!(brain.tuning.states.death, "die");
     }
@@ -301,7 +293,6 @@ mod tests {
         attach_brain(&mut reg, id, &sample_descriptor()).unwrap();
         let brain = reg.get_component::<BrainComponent>(id).unwrap();
         assert_eq!(brain.state, LogicalState::Idle);
-        assert_eq!(brain.tuning.exp_reward, 25.0);
     }
 
     #[test]

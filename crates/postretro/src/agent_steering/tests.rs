@@ -456,7 +456,10 @@ fn blocked_agents_do_not_starve_reachable_agent_replan() {
 /// via staleness, never drift. The path is non-empty so it has something to keep
 /// following if it loses the budget race.
 fn make_staleness_only(registry: &mut EntityRegistry, id: EntityId, dest: Vec3) {
-    let mut agent = registry.get_component::<AgentComponent>(id).unwrap().clone();
+    let mut agent = registry
+        .get_component::<AgentComponent>(id)
+        .unwrap()
+        .clone();
     agent.destination = Some(dest);
     agent.planned_destination = Some(dest); // drift == 0, ≤ threshold.
     agent.path = vec![dest];

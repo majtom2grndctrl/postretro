@@ -2347,6 +2347,28 @@ impl ApplicationHandler for App {
                     }
                 };
 
+                // AABBs of the fog/light-reachable leaves — the WIDER
+                // portal-reachable set (same source as `light_reachable_leaf_mask`,
+                // built from `fog_reachable`), which deliberately includes empty
+                // `face_count == 0` leaves. Feeds the dynamic-light shadow-slot
+                // eligibility test: a light is shadow-eligible when its influence
+                // sphere reaches one of these reachable leaves — NOT when its own
+                // leaf is in the camera PVS (see
+                // `lighting::light_reaches_visible_cell`). Intentionally the wider
+                // set, not the narrower drawable `visible_cells`, so a light in an
+                // empty reachable leaf still counts. Empty = DrawAll sentinel
+                // (fallback visibility paths): every light eligible.
+                let reachable_leaf_aabbs: Vec<(glam::Vec3, glam::Vec3)> = match self.level.as_ref()
+                {
+                    None => Vec::new(),
+                    Some(_) if fog_reachable.is_empty() => Vec::new(),
+                    Some(world) => fog_reachable
+                        .iter()
+                        .filter_map(|&id| world.leaves.get(id as usize))
+                        .map(|leaf| (leaf.bounds_min, leaf.bounds_max))
+                        .collect(),
+                };
+
                 if let Some(renderer) = self.renderer.as_mut() {
                     // Emitter bridge — after script `tick` handler, before particle
                     // sim. Spawns new particles; the sim advances them the same
@@ -2636,6 +2658,7 @@ impl ApplicationHandler for App {
                         let surface_texture = match renderer.render_frame_indirect(
                             &visible_cells,
                             &light_reachable_leaf_mask,
+                            &reachable_leaf_aabbs,
                             &fog_reachable,
                             Some(stats.camera_leaf),
                             view_proj,
@@ -3182,6 +3205,7 @@ impl App {
         renderer.set_ui_snapshot(ui_snapshot);
         let surface_texture = match renderer.render_frame_indirect(
             &VisibleCells::DrawAll,
+            &[],
             &[],
             &[],
             None,

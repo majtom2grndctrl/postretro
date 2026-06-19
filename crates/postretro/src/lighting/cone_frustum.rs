@@ -152,6 +152,12 @@ pub(crate) fn aabb_intersects_frustum(aabb: &Aabb, planes: &[Vec4; 6]) -> bool {
 /// `perspective_rh` (Vulkan/D3D/Metal depth range), matching the cube corners
 /// below. A non-invertible matrix (degenerate light) yields a point AABB at the
 /// origin, which the AABB-vs-frustum predicate handles without panicking.
+///
+/// Retained as a cone-cull helper and exercised by the cone-frustum and
+/// shadow-ranking regression tests; the camera-frustum pre-filter that once
+/// called it in the forward path was removed (it could wrongly drop a shadow
+/// whose cone reached a camera-visible receiver — see `SpotShadowPool::rank_lights`).
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn cone_enclosing_aabb(light_space_matrix: &Mat4) -> Aabb {
     let inv = light_space_matrix.inverse();
 

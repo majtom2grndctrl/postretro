@@ -134,6 +134,13 @@ parse .map → BSP construction → brush-side projection → portal generation 
 
 ### PRL section IDs
 
+Version fields are exact-match format epochs unless a format explicitly adopts
+full semver. Use semver only when the bytes encode major/minor/patch and the
+loader has compatibility or migration behavior. PRL and section-internal
+versions reject mismatches today, so integer epochs are the honest contract.
+Section-internal epochs advance independently when their section payload
+changes.
+
 PRL header `version` is 4. Loading a file with any other version fails.
 
 | Section | ID | When present |
@@ -219,10 +226,10 @@ Disk-backed content-hash cache that lets `prl-build` skip the two expensive bake
 | Component | Form |
 |-----------|------|
 | `stage_id` | string literal — `"lightmap_layer"` (per-light), `"lightmap_section"` (composited-section memo), `"sh_group"` (per-probe-group), `"animated_lm_weight_maps"`, `"sdf_atlas"`, or `"navmesh"` |
-| `stage_version` | `u32` constant in each stage's module, bumped manually when that stage's algorithm or payload format changes. Each stage owns its own constant and version-bumps independently — the per-light-layer and per-group-SH formats version separately from each other and from the legacy whole-stage bakes |
+| `stage_version` | `u32` cache epoch in each stage's module, bumped manually when that stage's algorithm or payload format changes. Each stage owns its own epoch and version-bumps independently — the per-light-layer and per-group-SH formats version separately from each other and from the legacy whole-stage bakes |
 | `input_hash` | `blake3(postcard(StageInputs) || postcard(StageConfig))` — covers the serialized data the stage reads |
 
-**Stage version bump rule.** Bump a stage's `STAGE_VERSION` when its output computation changes (algorithm, sampling, formula, or atlas packing). The substrate invalidates every entry for that stage on the next build. Do not bump for unrelated changes. Each stage's current value lives as a `u32` constant in its own module — the source is authoritative; this doc does not pin the number.
+**Stage version bump rule.** Bump a stage's epoch when its output computation changes (algorithm, sampling, formula, or atlas packing). The substrate invalidates every entry for that stage on the next build. Do not bump for unrelated changes. Each stage's current epoch lives as a `u32` constant in its own module — the source is authoritative; this doc does not pin the number.
 
 **Determinism invariant.** Byte-identical output for identical inputs — with two scoped carve-outs. The guarantee holds for the direct lightmap before compression and for the cold whole-volume SH bake (the ship path). New code in `lightmap_bake.rs` or `sh_bake.rs` must preserve it. Avoid common non-determinism sources: `HashMap` iteration feeding output ordering, non-order-preserving parallel reductions. **Exempt:** (1) lossy compressed output (BC6H irradiance) — correctness is round-trip within tolerance, not byte-equality; (2) indirect SH baked finer than the whole volume (warm incremental builds) — a deliberate bounded approximation; the cold whole-volume bake stays exact. Either way the cache stays correct: it keys on inputs, not outputs. Every bake is self-consistent — same inputs, same bytes.
 
@@ -248,11 +255,11 @@ Per-texture mip-chain sidecars live alongside the stage-output cache. prl-build 
 
 **`.prm` files.** Each sidecar bundles up to three material slots — diffuse, specular, and normal — each optional. Content-addressed by `blake3(diffuse PNG content)` when a diffuse slot is present; otherwise `blake3(tag_byte || first_present_PNG)`. The `tag_byte` prevents hash collisions between specular-only and normal-only single-slot textures. Stored at `<workspace>/.build-caches/prm-cache/<hex>.prm`. Cross-mod dedupe is intended: identical PNG bytes produce the same `.prm` regardless of which mod authored them.
 
-**Wire format.** Header + per-slot blocks + packed mip payload. Wire layout lives in `postretro-level-format::prm`. Note: `.prm` uses a `u8` `STAGE_VERSION` (not the stage-cache `u32` convention) — the header owns its own version semantics.
+**Wire format.** Header + per-slot blocks + packed mip payload. Wire layout lives in `postretro-level-format::prm`. Note: `.prm` uses a `u8` exact-match format epoch (not the stage-cache `u32` convention) — the header owns its own version semantics.
 
 **Filtering.** Mitchell-Netravali separable filter (B = C = 1/3) in linear space throughout. sRGB diffuse decoded via 256-entry LUT before filtering, re-encoded via IEC 61966-2-1. Specular filtered as linear R8. Normal filtered linearly then renormalised per output texel; `(0, 0, 1)` substituted when magnitude < 1e-4. Output is then BC5-encoded (RG channels only; the shader reconstructs Z).
 
-**Cache invalidation.** Filename keys on diffuse content only (stable addressing). `bundle_hash` in the header covers `slot_mask` + every present slot's raw PNG bytes. A world-material cache hit requires a matching bundle hash and structurally valid payload for every declared slot; truncated or corrupt declared slots trigger a full rebake and atomic overwrite (tempfile `<hex>.prm.tmp.<pid>` → `std::fs::rename`). Model baking preserves a structurally valid richer world bundle at the shared diffuse address even though its bundle hash includes sibling slots. A `stage_version` mismatch in the header triggers rebake. To force a full retexture rebuild, delete `.build-caches/prm-cache/`.
+**Cache invalidation.** Filename keys on diffuse content only (stable addressing). `bundle_hash` in the header covers `slot_mask` + every present slot's raw PNG bytes. A world-material cache hit requires a matching bundle hash and structurally valid payload for every declared slot; truncated or corrupt declared slots trigger a full rebake and atomic overwrite (tempfile `<hex>.prm.tmp.<pid>` → `std::fs::rename`). Model baking preserves a structurally valid richer world bundle at the shared diffuse address even though its bundle hash includes sibling slots. A version mismatch in the header triggers rebake. To force a full retexture rebuild, delete `.build-caches/prm-cache/`.
 
 **Runtime.** Level load resolves each `TextureNamesSection` entry's blake3 key from `TextureCacheKeysSection`, opens the corresponding `.prm`, and uploads each slot's mip chain directly. A zero key (`[0u8; 32]`) substitutes per-slot placeholders silently. A corrupt or missing `.prm` substitutes per-slot placeholders and logs a `warn!`; load continues. Sampler `lod_max_clamp` is set to `mip_count - 1` per texture.
 

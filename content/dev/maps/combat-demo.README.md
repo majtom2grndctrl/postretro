@@ -1,11 +1,51 @@
-# combat-demo — M10 entity health + damage demo
+# combat-demo — M10 entity health + damage AND enemy AI / pathfinding demo
 
-DEMO CONTENT exercising the entity health + damage loop end to end: a
-descriptor-declared health+hitbox entity is placed in a map, shot by the shipped
-weapon's hitscan ray, takes damage per hit through the `apply_damage`
-chokepoint, and despawns at zero HP — and killing a fraction of the tagged
-dummies fires a `progress` event that drives an `applyDamage` reaction on the
-player, so the player's HP (and the readonly `player.health` HUD slot) drops.
+DEMO CONTENT exercising two M10 loops end to end:
+
+1. **Health + damage.** A descriptor-declared health+hitbox entity is placed in a
+   map, shot by the shipped weapon's hitscan ray, takes damage per hit through the
+   `apply_damage` chokepoint, and despawns at zero HP — and killing a fraction of
+   the tagged dummies fires a `progress` event that drives an `applyDamage`
+   reaction on the player, so the player's HP (and the readonly `player.health`
+   HUD slot) drops.
+
+2. **Enemy AI + pathfinding.** The `reference_enemy` and the `player_spawn` sit in
+   DIFFERENT walkable bays separated by two full-height interior walls with
+   **offset doorways**. The straight line from the enemy to the player is blocked,
+   so the enemy must route around corners — A* over the baked navmesh regions,
+   then a Simple-Stupid-Funnel string-pull through the doorway portals (the funnel
+   waypoints). Walk out from spawn and the enemy dog-legs through door A then door
+   B to reach you, instead of charging in a straight line.
+
+## Floor plan
+
+Interior `x 0..512`, `y 0..256`, floor `z=0`, ceiling `z=128` (top-down; x east,
+y north). Two interior wall brushes (`x[176,192] y[0,176]` and `x[320,336]
+y[80,256]`, both floor-to-ceiling) carve the room into three bays. Each wall
+leaves an ~80-unit doorway, and the two doorways are on OPPOSITE sides, forcing an
+S-shaped dog-leg.
+
+```
+  y=256  ......................................................
+         ...........#.............BAY 2.....#................E.
+         ..P..d.....#..door A..............#####.door B......
+         .....d.....#...(top gap)...........#................
+         .....d.....#..WALL A..............WALL B............
+         .....d.....#######.....(bottom gap)#................
+  y=0    ......................................................
+         x=0       176 192        320 336              512
+
+  # = wall   . = floor   P = player_spawn   E = reference_enemy   d = dummy
+  WALL A doorway = TOP gap (y 176..256);  WALL B doorway = BOTTOM gap (y 0..80)
+  Route: P -> up through door A -> across BAY 2 -> down through door B -> E.
+```
+
+The bake reports **NavMesh: 9 regions, 8 portals** (53×27 cell grid @ 0.25 m) —
+a multi-region, multi-portal corridor (the prior single-room layout baked to
+1 region / 0 portals, a straight-line chase). Player (bay 1) and enemy (bay 3) are
+in different regions; the 8 portals join all 9 regions into one connected
+walkable component, so `find_path` always connects the two. Toggle the in-game nav
+overlay with **Alt+Shift+N** to see the regions, portals, and the routed path.
 
 ## Files
 
@@ -28,9 +68,13 @@ player, so the player's HP (and the readonly `player.health` HUD slot) drops.
   (`setupLevel`). Returns a `progress` reaction over the `dummy` tag firing
   `dummiesCleared`, and an `applyDamage` reaction NAMED `dummiesCleared` targeting
   the `player` tag. Wired into the map via the worldspawn `data_script` KVP.
-- `content/dev/maps/combat-demo.map` — a minimal walkable room (geometry mirrors
-  `anim-demo.map`) with a `player_spawn` tagged `player`, four `target_dummy`
-  instances tagged `dummy`, and one `light`.
+- `content/dev/maps/combat-demo.map` — a three-bay walled room (axis-aligned box
+  brushes, plane style mirrored from `campaign-test.map`) with a `player_spawn`
+  tagged `player` (bay 1), four `target_dummy` instances tagged `dummy` (bay 1, in
+  front of the player), a `reference_enemy` tagged `enemy` (bay 3, behind the two
+  offset walls), and three `light`s (one per bay). The two interior walls with
+  offset doorways are what make the navmesh multi-region/multi-portal so the
+  pathfinding has to route around corners. See the floor plan above.
 
 ## Compile
 

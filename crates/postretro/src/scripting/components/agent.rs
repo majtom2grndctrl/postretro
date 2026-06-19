@@ -139,8 +139,9 @@ impl AgentComponent {
 
 /// Public spawn seam: insert an [`AgentComponent`] on an existing entity, with
 /// its capsule and `step_height` seeded from the passed `NavAgentParams`. This
-/// is the single attach point both the `dev-tools` debug spawner and plan 2's
-/// data-archetype attach call — the baked-params read happens at the call site
+/// is the single attach point both the `dev-tools` debug spawner and the
+/// data-archetype attach call (`scripting/builtins/data_archetype.rs`) use —
+/// the baked-params read happens at the call site
 /// (`NavGraph::agent_params()`), never inside the component or the harness.
 ///
 /// Returns `GenerationMismatch` / `EntityNotFound` for a stale or unknown

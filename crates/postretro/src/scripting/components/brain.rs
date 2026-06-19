@@ -22,7 +22,7 @@ use super::mesh::MeshComponent;
 /// The closed set of logical FSM states the engine-owned brain evaluates. The
 /// transition set (idle → alert → attack → death) is sized to these four and is
 /// engine-closed; scripts tune thresholds and the animation mapping but cannot
-/// add states. See entity_model.md §2 and the M10 enemy-AI plan.
+/// add states. See entity_model.md §2 and `scripting/systems/ai.rs` (the FSM tick).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum LogicalState {

@@ -176,7 +176,7 @@ pub(crate) fn evaluate_transition(
             }
         }
         // Terminal: the caller owns the zero-HP transition into death; once here
-        // the FSM holds (the despawn deferral is a later task).
+        // the FSM holds (despawn is owned by `run_ai_tick`'s death-countdown pass).
         LogicalState::Death => TransitionResult {
             next_state: LogicalState::Death,
             steering: SteeringIntent::Hold,

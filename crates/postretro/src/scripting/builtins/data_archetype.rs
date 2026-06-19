@@ -365,9 +365,9 @@ fn attach_descriptor_components(
         let _ = attach_agent(registry, id, &params, ai_desc.move_speed);
 
         // Warn-once per undeclared animation-state name; the FSM keeps the prior
-        // animation for those logical states (return value consumed by the FSM
-        // tick in a later task). Called for its spawn-time validation side
-        // effect here.
+        // animation for those logical states. Called here for its spawn-time
+        // validation side effect — the return value (unmapped logical states) is
+        // not consumed; the FSM handles `UnknownState` at tick time.
         let _ = validate_brain_animation_states(registry, id);
     }
 

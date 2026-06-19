@@ -8,6 +8,10 @@
 
 #![deny(unsafe_code)]
 #![allow(dead_code)]
+// This generator re-uses engine module trees via `#[path]` only to name-resolve
+// the scripting types; many re-exports (e.g. `nav::find_path`) have no caller in
+// this bin even though they have a live caller in the engine binary.
+#![allow(unused_imports)]
 
 #[path = "../scripting/mod.rs"]
 mod scripting;

@@ -3,9 +3,8 @@
 // See: context/lib/build_pipeline.md §Navigation bake
 
 mod path;
-// One-shot path query. Gains its production caller when path-following lands;
-// re-exported now so that caller imports `crate::nav::find_path`.
-#[allow(unused_imports)]
+// One-shot path query. Re-exported so callers import `crate::nav::find_path`;
+// the production caller is the agent steering tick (`agent_steering`).
 pub use path::find_path;
 
 use glam::Vec3;

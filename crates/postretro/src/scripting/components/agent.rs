@@ -64,6 +64,25 @@ pub(crate) struct AgentComponent {
     /// Where the agent is trying to go. `None` when idle (no destination set);
     /// the steering system plans a path to it when `Some`.
     pub(crate) destination: Option<Vec3>,
+    /// The destination the current `path` was planned for. Lets the steering
+    /// system detect a destination move (replan immediately) versus a stale
+    /// path to the same goal (replan only after the staleness window). `None`
+    /// when no plan has been attempted for the live destination yet.
+    pub(crate) planned_destination: Option<Vec3>,
+    /// Ticks remaining before the agent may re-spend a replan-budget slot. The
+    /// staleness gate: after a successful or FAILED plan, this is set to the
+    /// staleness window so a single agent (and especially a permanently-blocked
+    /// one) cannot re-qualify for a replan every tick. Decremented each tick;
+    /// a destination move resets it to 0 (replan now). See the steering tick.
+    pub(crate) replan_cooldown_ticks: u32,
+    /// `true` once the agent has reached its destination (within the arrival
+    /// radius of the final waypoint). Cleared when a new destination is set.
+    pub(crate) arrived: bool,
+    /// `true` when the agent has a destination but pathfinding found no route
+    /// to it (an empty path that survived a replan attempt). The agent holds
+    /// position rather than walking into geometry. Cleared on a new
+    /// destination or a successful plan.
+    pub(crate) blocked: bool,
 }
 
 impl AgentComponent {
@@ -84,6 +103,10 @@ impl AgentComponent {
             path: Vec::new(),
             waypoint_cursor: 0,
             destination: None,
+            planned_destination: None,
+            replan_cooldown_ticks: 0,
+            arrived: false,
+            blocked: false,
         }
     }
 
@@ -149,6 +172,10 @@ mod tests {
         assert!(agent.path.is_empty());
         assert_eq!(agent.waypoint_cursor, 0);
         assert_eq!(agent.destination, None);
+        assert_eq!(agent.planned_destination, None);
+        assert_eq!(agent.replan_cooldown_ticks, 0);
+        assert!(!agent.arrived);
+        assert!(!agent.blocked);
     }
 
     #[test]

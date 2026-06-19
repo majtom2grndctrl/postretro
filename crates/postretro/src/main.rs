@@ -1,13 +1,13 @@
 // Postretro engine entry point, boot state machine, and level-load orchestration.
 // See: context/lib/boot_sequence.md §3 · context/lib/index.md
 
-// Movable navigation agent collide-and-slide harness. The per-tick steering
-// system that drives it lands alongside the agent component's other consumers;
-// until then the harness is exercised only by its own unit tests, so allow dead
-// code to keep shipping builds warning-free.
+// Movable navigation agent collide-and-slide harness, driven each tick by the
+// steering system in `agent_steering`.
 // See: context/lib/movement.md §1, context/lib/entity_model.md §7
-#[allow(dead_code)]
 mod agent;
+// Per-tick navigation-agent steering: replan budget, waypoint following, and
+// separation, built on the `agent` harness and `nav::find_path`.
+mod agent_steering;
 mod audio;
 mod camera;
 mod collision;
@@ -2010,6 +2010,14 @@ impl ApplicationHandler for App {
                             }
                         }
 
+                        // Order 1b: navigation-agent steering. Drives every
+                        // entity carrying an `AgentComponent` toward its
+                        // destination — replan under budget, follow waypoints,
+                        // separate from neighbors, move via the collide-and-slide
+                        // harness. Reads the nav graph and collision world
+                        // read-only alongside `registry.borrow_mut()`.
+                        self.run_agent_tick(tick_dt);
+
                         // Order 2: weapon fire tick.
                         let weapon_events = self.run_weapon_fire_tick(snapshot, tick_dt);
                         pending_weapon_events.extend(weapon_events);
@@ -3614,6 +3622,23 @@ impl App {
         }
 
         events_out
+    }
+
+    /// Drive the navigation-agent steering tick. The nav graph and collision
+    /// world are borrowed read-only alongside `registry.borrow_mut()` (the same
+    /// borrow pattern `run_movement_tick` uses for the collision world). Thin
+    /// wrapper: all steering logic lives in `agent_steering::tick`.
+    fn run_agent_tick(&mut self, tick_dt: f32) {
+        let gravity = self.script_ctx.gravity.get();
+        let nav_graph = self.nav_graph.as_ref();
+        let mut registry = self.script_ctx.registry.borrow_mut();
+        let _ = agent_steering::tick(
+            &mut registry,
+            &self.collision_world,
+            nav_graph,
+            gravity,
+            tick_dt,
+        );
     }
 
     fn run_weapon_fire_tick(

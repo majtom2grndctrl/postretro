@@ -20,7 +20,6 @@ use super::{NavGraph, distance_xz};
 /// corridor connects their regions. A reachable goal always yields a path whose
 /// first waypoint is `start` and last is `goal`; a goal in the start region is a
 /// trivial two-point `[start, goal]`.
-#[allow(dead_code)]
 pub fn find_path(graph: &NavGraph, start: Vec3, goal: Vec3) -> Option<Vec<Vec3>> {
     let start_region = graph.region_at(start)?;
     let goal_region = graph.region_at(goal)?;

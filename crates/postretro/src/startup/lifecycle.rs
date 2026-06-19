@@ -109,10 +109,7 @@ impl App {
         self.particle_render.reset_for_level();
         self.mesh_clip_tables.clear();
         self.hit_zone_store.clear();
-        #[cfg(feature = "dev-tools")]
-        {
-            self.nav_graph = None;
-        }
+        self.nav_graph = None;
         self.mesh_render.clear();
         self.particle_live_counts.clear();
         self.emitter_bridge.clear();
@@ -728,13 +725,10 @@ impl App {
 
         // Build the runtime navigation graph once, from the baked navmesh
         // section. `None` when the map has no navmesh bake.
-        #[cfg(feature = "dev-tools")]
-        {
-            self.nav_graph = world
-                .navmesh
-                .as_ref()
-                .map(crate::nav::NavGraph::from_section);
-        }
+        self.nav_graph = world
+            .navmesh
+            .as_ref()
+            .map(crate::nav::NavGraph::from_section);
 
         // Stash the world after the mutations so downstream code paths that
         // read from `self.level` see the normalized vertices.
@@ -1113,7 +1107,6 @@ mod tests {
             audio: None,
             window_state: None,
             level: None,
-            #[cfg(feature = "dev-tools")]
             nav_graph: None,
             map_path: None,
             content_root: PathBuf::from("content/dev"),

@@ -13,10 +13,8 @@ mod lighting;
 mod material;
 mod model;
 mod movement;
-// The runtime nav query surface is consumed only by the dev-tools navmesh
-// overlay today; the future baked-pathfinding plan extends it. Allow dead code
-// so shipping (non-`dev-tools`) builds stay warning-free until that lands.
-#[allow(dead_code)]
+// The runtime nav graph is built in every build whenever a level carries a
+// baked navmesh; pathfinding consumes its query surface.
 mod nav;
 mod options;
 mod weapon;
@@ -500,7 +498,6 @@ fn main() -> Result<()> {
         audio: None,
         window_state: None,
         level: None,
-        #[cfg(feature = "dev-tools")]
         nav_graph: None,
         map_path: map_path.map(PathBuf::from),
         content_root,
@@ -684,10 +681,9 @@ struct App {
     window_state: Option<WindowState>,
     level: Option<prl::LevelWorld>,
     /// Runtime navigation graph, built once when a level with a baked navmesh
-    /// loads. The future pathfinding plan reads this; today only the
-    /// `Alt+Shift+N` debug overlay consumes it, so it is dev-tools-gated to
-    /// stay dead-code-free in shipping builds.
-    #[cfg(feature = "dev-tools")]
+    /// loads. `None` when the map has no navmesh bake. Pathfinding reads this in
+    /// every build; the `Alt+Shift+N` debug overlay (dev-tools-only) also
+    /// consumes it.
     nav_graph: Option<nav::NavGraph>,
 
     /// Optional map path resolved from CLI args. When absent, boot lands in

@@ -4418,7 +4418,6 @@ impl Renderer {
             camera_position,
             camera_near_clip,
             &visible_lights,
-            &self.last_view_proj,
         );
 
         // Rank dynamic POINT lights into the cube pool and upload their per-face

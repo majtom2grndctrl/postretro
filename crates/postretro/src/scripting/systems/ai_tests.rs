@@ -424,6 +424,40 @@ fn no_damage_when_player_below_attack_range() {
     assert_eq!(player_hp(&reg, pawn), 100.0, "no damage out of range");
 }
 
+#[test]
+fn no_attack_or_event_when_player_already_dead() {
+    let mut reg = EntityRegistry::new();
+    let mut warned = HashSet::new();
+
+    // Player inside attack range but already dead (HP 0, still present — the
+    // respawn flow is owned elsewhere). The enemy must not keep swinging at it
+    // or spamming the attack event.
+    let pawn = spawn_player(&mut reg, Vec3::new(1.0, 0.0, 0.0));
+    reg.set_component(
+        pawn,
+        HealthComponent {
+            max: 100.0,
+            current: 0.0,
+            hitbox: None,
+            death_handled: false,
+            zone_multipliers: std::collections::HashMap::new(),
+        },
+    )
+    .unwrap();
+    spawn_enemy(
+        &mut reg,
+        Vec3::ZERO,
+        brain_with(tuning(), LogicalState::Idle),
+        50.0,
+    );
+
+    for _ in 0..5 {
+        let events = run_ai_tick(&mut reg, &mut warned, 0.1);
+        assert!(events.is_empty(), "no attack event against a dead player");
+        assert_eq!(player_hp(&reg, pawn), 0.0, "a dead player takes no damage");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Acceptance: each logical state selects the mapped animation name
 // ---------------------------------------------------------------------------

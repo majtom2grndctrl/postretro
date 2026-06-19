@@ -268,7 +268,12 @@ pub(crate) fn run_ai_tick(
     // The DAMAGE TARGET id (distinct from the position pawn): the health
     // chokepoint addresses this id. Resolved once; `None` when the pawn carries
     // no health (damage then no-ops, matching `apply_damage`'s contract).
-    let damage_target: Option<EntityId> = pawn_with_health(registry).map(|(id, _)| id);
+    // `player_alive` gates the attack so enemies do not keep swinging at — and
+    // spamming `enemyAttack` for — an already-dead (HP <= 0) but still-present
+    // player; the player-death/respawn flow is owned elsewhere.
+    let player_pawn = pawn_with_health(registry);
+    let damage_target: Option<EntityId> = player_pawn.as_ref().map(|(id, _)| *id);
+    let player_alive = player_pawn.map(|(_, h)| h.current > 0.0).unwrap_or(false);
 
     let dt_ms = tick_dt.max(0.0) * 1000.0;
 
@@ -354,9 +359,14 @@ pub(crate) fn run_ai_tick(
             brain.state = result.next_state;
             steering = result.steering;
 
-            // (4) Attack: in `Attack` with the cooldown elapsed, apply the
-            // configured damage once and arm the cooldown. Checked every tick.
-            if brain.state == LogicalState::Attack && brain.attack_cooldown_remaining_ms <= 0.0 {
+            // (4) Attack: in `Attack` with the cooldown elapsed AND the player
+            // still alive, apply the configured damage once and arm the cooldown.
+            // Checked every tick. Gating on `player_alive` stops attack/event spam
+            // against an already-dead but still-present player.
+            if brain.state == LogicalState::Attack
+                && brain.attack_cooldown_remaining_ms <= 0.0
+                && player_alive
+            {
                 attacked = true;
                 brain.attack_cooldown_remaining_ms = brain.tuning.attack_cooldown_ms;
             }

@@ -1296,6 +1296,19 @@ pub struct Renderer {
     debug_prev_vp_hash: u32,
     debug_prev_visible: (&'static str, usize),
 
+    /// `POSTRETRO_SHADOW_DEBUG=1`: env-gated shadow-pipeline diagnostics. Cached
+    /// at construction so the hot path pays one bool test, not a `getenv`, per
+    /// frame. When set, `emit_shadow_debug` logs (via `log::info!`) a compact
+    /// per-frame line tracing which shadow decision flips as the camera pitches —
+    /// camera pose + per-candidate-light shadow-slot status + the entity
+    /// shadow-caster keep/drop tally. Read-only: it never changes culling or
+    /// selection behavior. See `context/lib/rendering_pipeline.md` §4, §7.1.
+    shadow_debug_enabled: bool,
+    /// Last `emit_shadow_debug` fingerprint, so the diagnostic logs on CHANGE
+    /// (and every ~120 frames as a heartbeat) instead of spamming every frame.
+    /// `(slot-occupancy bits, off-PVS-caster count, in-PVS-caster count)`.
+    shadow_debug_prev: (u128, u32, u32),
+
     /// Idle (no draw) on maps with no registered collections. See §7.4.
     smoke_pass: SmokePass,
 
@@ -2834,6 +2847,11 @@ impl Renderer {
             debug_prev_bitmask: (u32::MAX, u32::MAX),
             debug_prev_vp_hash: u32::MAX,
             debug_prev_visible: ("init", usize::MAX),
+            shadow_debug_enabled: std::env::var("POSTRETRO_SHADOW_DEBUG")
+                .ok()
+                .as_deref()
+                == Some("1"),
+            shadow_debug_prev: (u128::MAX, u32::MAX, u32::MAX),
             smoke_pass,
             mesh_pass,
             mesh_draws: Vec::new(),
@@ -4543,6 +4561,175 @@ impl Renderer {
         self.spot_shadow_pool.slot_assignment = slot_assignment;
     }
 
+    /// Env-gated shadow-pipeline diagnostics (`POSTRETRO_SHADOW_DEBUG=1`).
+    ///
+    /// READ-ONLY: logs the per-frame shadow decisions so a non-author can watch
+    /// which one flips as the camera pitches down until an entity shadow vanishes.
+    /// It changes no culling/selection state — it re-reads the values
+    /// `update_dynamic_light_slots` just computed (the pool's `slot_assignment`,
+    /// the candidate lights, the live `effective_brightness`, the per-instance
+    /// `forward_visible` flags) and renders them human-readable.
+    ///
+    /// Throttled: emits the full per-light table only when the decision
+    /// fingerprint changes (slot occupancy or the in-PVS/off-PVS caster split),
+    /// plus a heartbeat every ~120 frames, so normal play with the flag on still
+    /// stays quiet between transitions. Off by default → zero overhead.
+    ///
+    /// Field guide (match these against the symptom):
+    /// - `pitch` / `fwd` — camera look direction; `pitch` negative = looking down.
+    /// - `leaf` / `vis_leaves` — camera BSP leaf + the count of portal-reachable
+    ///   (light-eligible) leaves. `vis_leaves` shrinking on pitch-down is the
+    ///   portal-PVS signal the prior rounds under-weighted.
+    /// - Per light `Lk`: `pos`, `range`, `dyn`, `leaf`, `leaf_ok` (its leaf is in
+    ///   the light-reachable mask), `bright` (live animated brightness), `elig`
+    ///   (passed the visibility+brightness gate feeding `rank_lights`), and `slot`
+    ///   (assigned shadow slot, or `NONE:<reason>`). NOTE these read the STATIC
+    ///   load-time `shadow_candidate_lights` — a scripted sweep light's animated
+    ///   position/cone is NOT reflected here (that is itself a finding).
+    /// - `casters`: `in_pvs` (drawn + shadowed normally) vs `off_pvs` (kept ONLY
+    ///   by the light-volume union — the `1354fdc` path) vs the total emitted.
+    fn emit_shadow_debug(
+        &mut self,
+        view_proj: Mat4,
+        visible: &VisibleCells,
+        light_reachable_leaf_mask: &[bool],
+        effective_brightness: &[f32],
+        camera_leaf: Option<u32>,
+    ) {
+        use crate::lighting::spot_shadow::NO_SHADOW_SLOT;
+        use crate::prl::LightType;
+
+        const BRIGHTNESS_SUPPRESSION_THRESHOLD: f32 = 0.01;
+        let f = self.debug_frame;
+
+        // Camera forward = -Z row of the view matrix recovered from view_proj is
+        // awkward; instead read the cached eye + derive a forward proxy from the
+        // inverse view-projection (project a point down the -Z clip axis). Cheap
+        // and only runs under the flag.
+        let eye = self.last_camera_position;
+        let inv = view_proj.inverse();
+        let near_pt = inv.project_point3(glam::Vec3::new(0.0, 0.0, 0.0));
+        let far_pt = inv.project_point3(glam::Vec3::new(0.0, 0.0, 1.0));
+        let fwd = (far_pt - near_pt).normalize_or_zero();
+        let pitch_deg = fwd.y.clamp(-1.0, 1.0).asin().to_degrees();
+
+        let vis_leaves = match visible {
+            VisibleCells::DrawAll => light_reachable_leaf_mask
+                .iter()
+                .filter(|&&b| b)
+                .count(),
+            VisibleCells::Culled(_) => {
+                light_reachable_leaf_mask.iter().filter(|&&b| b).count()
+            }
+        };
+
+        // Per-candidate-light shadow status. Mirrors the eligibility logic in
+        // `update_dynamic_light_slots` WITHOUT mutating anything — pure read.
+        let mut slot_occupancy: u128 = 0;
+        let mut light_lines: Vec<String> = Vec::new();
+        for (i, light) in self.shadow_candidate_lights.iter().enumerate() {
+            let leaf_ok = if light.leaf_index == ALPHA_LIGHT_LEAF_UNASSIGNED {
+                false
+            } else if light_reachable_leaf_mask.is_empty() {
+                true
+            } else {
+                let li = light.leaf_index as usize;
+                li < light_reachable_leaf_mask.len() && light_reachable_leaf_mask[li]
+            };
+            let bright = level_brightness_for_candidate(
+                &self.level_lights,
+                light,
+                effective_brightness,
+            )
+            .unwrap_or(1.0);
+            let is_spot = light.light_type == LightType::Spot;
+            let elig = leaf_ok && bright >= BRIGHTNESS_SUPPRESSION_THRESHOLD;
+
+            // Slot assigned to this candidate by the spot pool (slot_assignment is
+            // candidate-indexed). Reason codes explain a NONE.
+            let slot = self
+                .spot_shadow_pool
+                .slot_assignment
+                .get(i)
+                .copied()
+                .unwrap_or(NO_SHADOW_SLOT);
+            let slot_str = if slot != NO_SHADOW_SLOT {
+                if (slot as usize) < 128 {
+                    slot_occupancy |= 1u128 << slot;
+                }
+                format!("slot={slot}")
+            } else if !light.is_dynamic {
+                "NONE:baked".to_string()
+            } else if !is_spot {
+                "NONE:not_spot".to_string()
+            } else if !leaf_ok {
+                "NONE:leaf_off_pvs".to_string()
+            } else if bright < BRIGHTNESS_SUPPRESSION_THRESHOLD {
+                "NONE:dark".to_string()
+            } else {
+                "NONE:pool_overflow_or_unranked".to_string()
+            };
+
+            light_lines.push(format!(
+                "L{i}[pos({:.0},{:.0},{:.0}) range={:.0} dyn={} ent={} leaf={} leaf_ok={} bright={:.2} elig={} {}]",
+                light.origin[0],
+                light.origin[1],
+                light.origin[2],
+                light.falloff_range,
+                light.is_dynamic as u8,
+                light.casts_entity_shadows as u8,
+                light.leaf_index as i64,
+                leaf_ok as u8,
+                bright,
+                elig as u8,
+                slot_str,
+            ));
+        }
+
+        // Entity shadow-caster split. `forward_visible` instances are in the
+        // camera PVS (drawn + shadowed normally); the rest were kept ONLY by the
+        // light-volume union (`caster_in_shadow_light_volume`, the `1354fdc`
+        // path) — i.e. off-PVS shadow-only casters.
+        let in_pvs = self
+            .mesh_draws
+            .iter()
+            .filter(|m| m.forward_visible)
+            .count() as u32;
+        let off_pvs = self
+            .mesh_draws
+            .iter()
+            .filter(|m| !m.forward_visible)
+            .count() as u32;
+
+        // Throttle: emit on a decision change, plus a ~2s heartbeat.
+        let fingerprint = (slot_occupancy, in_pvs, off_pvs);
+        let heartbeat = f % 120 == 0;
+        if fingerprint == self.shadow_debug_prev && !heartbeat {
+            return;
+        }
+        let changed = fingerprint != self.shadow_debug_prev;
+        self.shadow_debug_prev = fingerprint;
+
+        let leaf_str = camera_leaf
+            .map(|l| l.to_string())
+            .unwrap_or_else(|| "?".to_string());
+        log::info!(
+            "[shadow_dbg f={f}{}] cam: pitch={:.1}deg fwd({:.2},{:.2},{:.2}) eye({:.0},{:.0},{:.0}) leaf={leaf_str} vis_leaves={vis_leaves} | casters: in_pvs={in_pvs} off_pvs={off_pvs} total={} | occupied_slots={} | lights[{}]: {}",
+            if changed { " CHANGED" } else { " (hb)" },
+            pitch_deg,
+            fwd.x,
+            fwd.y,
+            fwd.z,
+            eye.x,
+            eye.y,
+            eye.z,
+            self.mesh_draws.len(),
+            slot_occupancy.count_ones(),
+            light_lines.len(),
+            light_lines.join(" "),
+        );
+    }
+
     /// Rank dynamic POINT lights into the cube pool and write each occupied
     /// slot's 6 per-face light-space matrices into the cube VS uniform buffer.
     /// Returns the candidate-indexed cube slot assignment so the caller can
@@ -4953,6 +5140,18 @@ impl Renderer {
                 &eff_brightness,
                 light_reachable_leaf_mask,
             );
+            // Env-gated diagnostics (POSTRETRO_SHADOW_DEBUG=1) — read-only, runs
+            // right after slot assignment so it sees this frame's decisions. No
+            // effect on culling/selection. Skipped entirely when disabled.
+            if self.shadow_debug_enabled {
+                self.emit_shadow_debug(
+                    view_proj,
+                    visible,
+                    light_reachable_leaf_mask,
+                    &eff_brightness,
+                    camera_leaf,
+                );
+            }
             self.light_effective_brightness = eff_brightness;
         }
 

@@ -1,6 +1,13 @@
 // Postretro engine entry point, boot state machine, and level-load orchestration.
 // See: context/lib/boot_sequence.md §3 · context/lib/index.md
 
+// Movable navigation agent collide-and-slide harness. The per-tick steering
+// system that drives it lands alongside the agent component's other consumers;
+// until then the harness is exercised only by its own unit tests, so allow dead
+// code to keep shipping builds warning-free.
+// See: context/lib/movement.md §1, context/lib/entity_model.md §7
+#[allow(dead_code)]
+mod agent;
 mod audio;
 mod camera;
 mod collision;

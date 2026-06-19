@@ -4657,6 +4657,14 @@ impl Renderer {
         // `update_dynamic_light_slots` WITHOUT mutating anything — pure read.
         let mut slot_occupancy: u128 = 0;
         let mut cube_occupancy: u128 = 0;
+        // Pool-saturation tallies (read-only): how many candidates passed the
+        // reach/eligibility gate per pool, and how many of those were dropped
+        // by ranking because the pool was full (the over-inclusion signal from
+        // the looser shadow-eligibility gate, commit 3fef618).
+        let mut elig_spot: usize = 0;
+        let mut elig_cube: usize = 0;
+        let mut spot_overflow: usize = 0;
+        let mut cube_overflow: usize = 0;
         let mut light_lines: Vec<String> = Vec::new();
         for (i, light) in self.shadow_candidate_lights.iter().enumerate() {
             // Legacy own-leaf-PVS membership (no longer the gate; kept so a reader
@@ -4718,8 +4726,14 @@ impl Renderer {
             } else if bright < BRIGHTNESS_SUPPRESSION_THRESHOLD {
                 "NONE:dark".to_string()
             } else {
+                spot_overflow += 1;
                 "NONE:pool_overflow_or_unranked".to_string()
             };
+            // A spot that passed the gate is an eligible candidate for the spot
+            // pool whether or not it won a slot.
+            if elig && is_spot {
+                elig_spot += 1;
+            }
 
             // CUBE (point-light) slot — closes the prior blind spot. The cube
             // pool's `slot_assignment` is candidate-indexed (same as spot).
@@ -4748,10 +4762,17 @@ impl Renderer {
                     } else if bright < BRIGHTNESS_SUPPRESSION_THRESHOLD {
                         "NONE:dark".to_string()
                     } else {
+                        cube_overflow += 1;
                         "NONE:pool_overflow_or_unranked".to_string()
                     }
                 }
             };
+            // A point light that passed the gate is an eligible candidate for the
+            // cube pool (only counted when the pool exists; with the pool off the
+            // reason is `cube_pool_off`, not overflow).
+            if elig && is_point && self.cube_shadow_pool.is_some() {
+                elig_cube += 1;
+            }
 
             light_lines.push(format!(
                 "L{i}[pos({:.0},{:.0},{:.0}) range={:.0} dyn={} ent={} leaf={} leaf_ok={} reach={} bright={:.2} elig={} {} {}]",
@@ -4802,8 +4823,18 @@ impl Renderer {
         let leaf_str = camera_leaf
             .map(|l| l.to_string())
             .unwrap_or_else(|| "?".to_string());
+        // Compact pool-saturation summary. `spot_overflow`/`cube_overflow` are
+        // THE over-inclusion signal: > 0 means more lights cleared the reach gate
+        // than the capped pool can shadow, so some were dropped by ranking.
+        let spot_used = slot_occupancy.count_ones() as usize;
+        let cube_used = cube_occupancy.count_ones() as usize;
+        let cube_pool_size = if self.cube_shadow_pool.is_some() {
+            crate::lighting::cube_shadow::CUBE_COUNT
+        } else {
+            0
+        };
         log::info!(
-            "[shadow_dbg f={f}{}] cam: pitch={:.1}deg fwd({:.2},{:.2},{:.2}) eye({:.0},{:.0},{:.0}) leaf={leaf_str} vis_leaves={vis_leaves} | casters: in_pvs={in_pvs} off_pvs={off_pvs} total={} | occupied_spot_slots={} occupied_cube_slots={} | lights[{}]: {}",
+            "[shadow_dbg f={f}{}] cam: pitch={:.1}deg fwd({:.2},{:.2},{:.2}) eye({:.0},{:.0},{:.0}) leaf={leaf_str} vis_leaves={vis_leaves} | pools: spot={spot_used}/{} cube={cube_used}/{cube_pool_size} elig_spot={elig_spot} elig_cube={elig_cube} spot_overflow={spot_overflow} cube_overflow={cube_overflow} | casters: in_pvs={in_pvs} off_pvs={off_pvs} total={} | occupied_spot_slots={} occupied_cube_slots={} | lights[{}]: {}",
             if changed { " CHANGED" } else { " (hb)" },
             pitch_deg,
             fwd.x,
@@ -4812,6 +4843,7 @@ impl Renderer {
             eye.x,
             eye.y,
             eye.z,
+            crate::lighting::spot_shadow::SHADOW_POOL_SIZE,
             self.mesh_draws.len(),
             slot_occupancy.count_ones(),
             cube_occupancy.count_ones(),

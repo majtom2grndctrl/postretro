@@ -1707,13 +1707,11 @@ impl MeshPass {
     /// caller before recording — the renderer owns those bind groups (camera is
     /// shared across passes; SH uses the mesh-superset `mesh_bind_group`).
     ///
-    /// The plan can carry OFF-PVS shadow casters (`forward_visible == false`)
-    /// alongside the camera-visible set — they share the posed buffers so the
-    /// shadow depth passes draw them, but the FORWARD pass must NOT (they are
-    /// outside the camera's portal PVS; drawing them would violate the
-    /// portal-visibility contract). This pass draws only the `forward_visible`
-    /// instances, batching contiguous visible runs into one instanced draw so the
-    /// common all-visible frame still issues one draw per group/submesh.
+    /// The plan can carry off-PVS shadow casters (`forward_visible == false`) that
+    /// share the posed buffers with the camera-visible set. The shadow depth passes
+    /// draw them; this forward pass must not — they are outside the camera's portal
+    /// PVS. It draws only `forward_visible` instances, batching contiguous runs so
+    /// the common all-visible frame still issues one draw per group/submesh.
     pub fn record_draws(&self, pass: &mut wgpu::RenderPass<'_>, plan: &MeshFramePlan) {
         if plan.groups.is_empty() {
             return;
@@ -1747,12 +1745,10 @@ impl MeshPass {
 
             pass.set_vertex_buffer(0, model.vertex_buffer.slice(..));
             pass.set_index_buffer(model.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-            // Draw each maximal contiguous run of `forward_visible` instances as
-            // one instanced draw. Off-PVS shadow casters (`forward_visible ==
-            // false`) interleave the dense SSBO, so a run breaks at each one; the
-            // common all-visible group collapses to a single run (one draw per
-            // submesh, identical to before this two-tier split). The base instance
-            // is the run's absolute SSBO offset — the palette base still rides each
+            // One instanced draw per maximal contiguous run of `forward_visible`
+            // instances. Off-PVS casters interleave the dense SSBO and break a run;
+            // an all-visible group collapses to a single run. The base instance is
+            // the run's absolute SSBO offset — the palette base still rides each
             // SSBO entry, never `first_instance` (DX12 reads it as 0,
             // gfx-rs/wgpu#2471), addressed by `@builtin(instance_index)`.
             let mut run_start: Option<u32> = None;
@@ -1871,10 +1867,9 @@ impl MeshPass {
     }
 }
 
-/// Record one instanced forward draw per submesh over a contiguous `range` of
-/// `forward_visible` instances. Group 1 (material) is set per submesh; group 3
-/// (palette + instance SSBO) is already bound once by the caller for the frame.
-/// Shared by the contiguous-run loop in [`MeshPass::record_draws`].
+/// One instanced draw per submesh over a contiguous `range` of `forward_visible`
+/// instances. Sets group 1 (material) per submesh; group 3 (palette + instance
+/// SSBO) is bound once per frame by the caller.
 fn draw_forward_run(
     pass: &mut wgpu::RenderPass<'_>,
     model: &UploadedModel,

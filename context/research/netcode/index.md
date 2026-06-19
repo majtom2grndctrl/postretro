@@ -1,28 +1,29 @@
 # Multiplayer Netcode (Epic)
 
 > **Milestone 15 design reference** (`plans/roadmap.md`). Defines the networking model,
-> stack, architectural seams, and a six-phase build order. Per-phase implementation
-> specs are **reserved** — each phase gets its own `/draft-spec` → review →
-> `/orchestrate` cycle as it opens. Rationale and the codebase seam map live in
-> `research.md`.
+> stack, architectural seams, and an **eight-phase, horizontal** build order. Per-phase
+> implementation specs are **reserved** — each gets its own `/draft-spec` → review →
+> `/orchestrate` cycle as it opens. Rationale + codebase seam map: `research.md`.
+> Verified crate landscape + named-pattern references: `crate-pattern-research.md`.
 
 ## Goal
 
 Add **co-op multiplayer** to PostRetro: an authoritative client-server engine where
 a host runs the world and up to 16 players share a campaign level. The model is
-**authoritative server + snapshot replication** (Quake/Source/Overwatch lineage),
-not deterministic lockstep — sidestepping the cross-architecture `f32` determinism
-trap (`research.md` §1–2). This reverses the standing "Multiplayer / networking"
-non-goal; it is a deliberate strategic direction, not incremental polish.
+**authoritative server + snapshot replication** (the model CS2 / Valorant / Overwatch 2
+ship today, not deterministic lockstep) — sidestepping the cross-architecture `f32`
+determinism trap (`research.md` §1–2). This reverses the standing "Multiplayer /
+networking" non-goal; it is a deliberate strategic direction, not incremental polish.
 
 ## Prerequisites
 
 **M10 (animated enemies)** — co-op combat needs enemies to fight, and M10's `Agent` +
 AI-brain components are what replicate as server-authoritative NPCs. M10 is in final
-code review and lands before netcode begins. Phases 0–2 (extraction, transport,
-movement prediction) are enemy-free and depend on nothing in M10; the combat-bearing
-phases (1.5, 3–5) build on its components. The per-phase combat specs are drafted
-against merged M10 code, so enemy-replication detail is grounded, not assumed.
+code review and lands before netcode begins. **Phases 0–3 are enemy-free** (extraction,
+transport, replication, movement prediction) and depend on nothing in M10 — Phase 2's
+on-the-wire test entity is a dumb AI-less path-walker. The **combat-bearing phases
+(4–7)** build on M10's components; their per-phase specs are drafted against merged M10
+code, so enemy-replication detail is grounded, not assumed.
 
 ## Scope
 
@@ -32,17 +33,17 @@ against merged M10 code, so enemy-replication detail is grounded, not assumed.
 - **Listen-server architecture**, built to a seam that lets a headless **dedicated
   server** be split out later without re-architecting authority.
 - **Up to 16 players**, co-op campaign first.
-- **Transport + replication stack**: `renet`/`renetcode` transport, hand-rolled
+- **Transport + replication stack**: `renet` 2.0 + `renet_netcode` transport, hand-rolled
   replication (`lightyear` as design blueprint), `bitcode` serialization, custom
-  snapshot delta.
+  per-entity snapshot delta. See **Stack & implementation references**.
 - **Client-side prediction** for local-player **movement** (including dash) and
   **projectiles** (predicted-entity → server-confirmed handoff).
 - **Favor-the-shooter hitscan** validation against a short single-entity history.
 - A **headless simulation seam**: the fixed-tick game logic runs with no
   wgpu/winit dependency, so server and client share one tick path.
-- The supporting essentials: **time-sync**, **snapshot ack + delta baseline**,
-  **join-in-progress**, a **latency-simulation harness**, and a **protocol/version
-  handshake**.
+- The supporting essentials: **time-sync**, **snapshot ack + per-entity delta baseline**,
+  **join-in-progress AND player-leave/disconnect**, a **latency-simulation harness**, and
+  a **protocol/version handshake**.
 - **N-player set-piece design**: how scripted reveals / monster closets / waves
   behave with multiple players — a gating design milestone.
 
@@ -65,266 +66,329 @@ against merged M10 code, so enemy-replication detail is grounded, not assumed.
   matchmaking service.** Direct connect (IP/invite) only for this epic. A networked
   session disables the single-player save/persist path.
 
+## Build shape: horizontal, not a vertical slice
+
+Phases are **horizontal layers**, each ending in a runnable, observable checkpoint with
+a **crisp single-contract acceptance bar**. A vertical slice (one thin thread through
+every subsystem at once) was rejected: it forces fuzzy "the whole thing kind of works"
+AC, and for netcode the integration truth it buys is recoverable more cheaply by
+**deciding the timing parameters up front** (snapshot rate, interpolation delay,
+tick-clock mapping) and **speccing each layer's data structures contracts-first against
+the next layer's stated needs**. The one genuinely empirical question — *does basic
+predict/reconcile feel right* — lives in the **Phase 0 spike**, where fuzzy
+measured-finding AC is correct (`experimental_spikes.md`), not smeared across feature
+phases.
+
 ## Acceptance criteria
 
-Epic-level, observable, and durable across implementation rewrites. Each maps to a
-phase (parenthetical). Phase 0's items split per `experimental_spikes.md`: the
-extracted-seam-runs-correctly item is an **honesty gate**; the divergence number is a
-**measured finding** (recorded, not threshold-gated).
+Observable, durable across implementation rewrites, each mapped to a phase. Phase 0
+items split per `experimental_spikes.md` into an **honesty gate** (the seam runs
+correctly) and **measured findings** (recorded numbers, not thresholds).
 
 - [ ] The fixed-tick game logic advances one tick through the full order (transform
   snapshot → movement → weapon → death sweep) with **no wgpu/winit dependency**; a
-  headless harness ticks N pawns from a recorded input stream. (Phase 0)
-- [ ] **Measured finding:** same-input simulation divergence over N ticks is recorded
-  under forced-divergence conditions, feeding the Phase 2 reconciliation tolerance.
-  (Phase 0)
-- [ ] Two engine instances (one host, one client) over loopback/LAN exchange
-  authoritative snapshots; a **remote pawn renders smoothly via interpolation**.
-  (Phase 1)
-- [ ] A client connecting **after level start** receives a full baseline, then
-  deltas, and converges to the host's **entity/registry state** (**join-in-progress**);
-  set-piece-progress convergence for mid-piece joiners is a Phase 1.5 concern. (Phase 1)
-- [ ] A client built against a **mismatched protocol/version is rejected** at
-  handshake with a logged reason; no partial-state application. (Phase 1, honesty gate)
-- [ ] The **latency-sim harness** injects configurable RTT / jitter / loss; remote
-  interpolation stays smooth at a stated baseline (e.g. 100 ms RTT, 5% loss). (Phase 1)
-- [ ] **Design milestone:** a playable co-op set-piece where a scripted reveal/wave
-  triggers correctly with 2+ players present, with documented trigger-ownership
-  semantics. Gates the combat phases. (Phase 1.5)
-- [ ] The **local pawn responds to input with no perceptible delay** at 100 ms RTT;
-  on a corrected snapshot it reconciles without visible rubber-banding under normal
-  conditions. (Phase 2)
-- [ ] A client's **hitscan shot registers damage on a moving remote target** with
-  favor-the-shooter tolerance; **HP changes only on server confirmation** while the
-  client shows immediate cosmetic feedback. (Phase 3)
-- [ ] A client-fired **projectile appears instantly** and its predicted entity
-  **hands off to the server-confirmed entity** with no visible duplicate or pop under
-  normal latency. (Phase 4)
+  headless determinism test ticks N pawns from a recorded input stream and **stays green
+  across runs**. (Phase 0, honesty gate)
+- [ ] **Measured finding:** same-input cross-arch divergence over N ticks is recorded,
+  feeding the Phase 3 reconciliation tolerance. (Phase 0)
+- [ ] **Measured finding:** a throwaway predict/reconcile feel-prototype runs; a recorded
+  read on whether basic reconciliation feels acceptable. (Phase 0 spike — fuzzy AC lives
+  here by design)
+- [ ] Two instances exchange a **versioned handshake**; a mismatched protocol/version is
+  rejected with a logged reason and **no state applied**. A hand-built snapshot struct
+  **round-trips over the bitcode wire**; a remote pawn appears and moves. (Phase 1)
+- [ ] A server-authoritative entity on a fixed path **interpolates smoothly at 150 ms RTT
+  + 5% loss + jitter** (the exit gate — bad network is the definition of done). (Phase 2)
+- [ ] A client connecting after level start **converges** (baseline-then-delta); a client
+  that **drops is cleaned up** (timeout + clean disconnect, slot freed); the client tick
+  clock tracks the server within a stated bound. (Phase 2)
+- [ ] The **local pawn responds to input with no perceptible delay** at 100 ms RTT; a
+  corrected snapshot reconciles **without visible rubber-banding** under normal
+  conditions, including a **mispredicted dash** (no snap-teleport under normal latency).
+  (Phase 3)
+- [ ] **Design milestone:** a playable co-op set-piece (real M10 enemies) where a
+  scripted reveal/wave triggers correctly with 2+ players; trigger-ownership, co-op
+  respawn policy, and **player-leave policy** documented; set-piece progress converges
+  for a mid-piece joiner. Gates the combat phases. (Phase 4)
+- [ ] A client's **hitscan shot registers damage on a moving remote enemy** with
+  favor-the-shooter (short single-entity-history) tolerance; **HP changes only on server
+  confirmation** while the client shows immediate cosmetic feedback. (Phase 5)
+- [ ] A client-fired **projectile appears instantly** and its predicted entity **hands off
+  to the server-confirmed entity** with no visible duplicate or pop under normal latency.
+  (Phase 6)
 - [ ] **16 players** on one listen-server host stay within a stated host-upstream
-  **bandwidth budget**; the sim/host boundary exposes a **headless server entry
-  point** (dedicated-server readiness). (Phase 5)
-- [ ] `context/lib/index.md` §4 and `entity_model.md` §9 non-goals are reconciled with
-  the new direction (see Tasks). (At promotion)
+  **bandwidth budget**; the sim/host boundary exposes a **headless server entry point**
+  (dedicated-server readiness). (Phase 7)
 
 ## Tasks
 
-Each task is a **phase** with its own observable bar. Phases are the unit of the
-later per-phase spec cycle; this epic does not break them into sub-tasks.
+Each task is a **phase** with its own observable bar — the unit of the later per-phase
+spec cycle. This epic does not break them into sub-tasks.
 
-### Phase 0: Headless simulation seam + cross-arch reconciliation spike
+### Phase 0: Headless simulation seam + determinism harness + spike
 Extract the fixed-tick game logic out of `main.rs`'s render-interleaved
-`RedrawRequested` handler into a headless `simulate`-style seam that advances one
-tick from `(registry, per-tick input, &CollisionWorld, dt)` with **no GPU/window
-dependency** — the same function the server and the client both call. Today the tick
-order (`snapshot_transforms` → `run_movement_tick` → `run_weapon_fire_tick` →
-`run_death_sweep` → `push_state`) is inlined in `main.rs` (5,593 lines); the movement
-tick lives in `movement/mod.rs` (6,055 lines). **Split-before-extend** both files
-along seams already visible (boot/frame-loop orchestration vs. the tick step; the
-movement substrate vs. its host glue) before adding the seam. Then the **spike**:
-stand up a headless harness that runs the extracted tick over a recorded input
-stream and measures same-input position divergence under forced-divergence conditions
-(forced intermediate rounding and/or a second CI architecture) — a measured finding
-that sets the reconciliation premise. Deliverable: the extracted seam + the
-divergence number.
+`RedrawRequested` handler into a headless `simulate`-style seam that advances one tick
+from `(registry, per-tick input, &CollisionWorld, dt)` with **no GPU/window dependency**
+— the shared server+client tick path. Today the order (`snapshot_transforms` →
+`run_movement_tick` → `run_weapon_fire_tick` → `run_death_sweep` → `push_state`) is
+inlined in `main.rs` (5,593 lines); the per-component movement tick lives in
+`movement/mod.rs` (6,055 lines), walked by `main.rs::run_movement_tick`.
+**Split-before-extend** both files before adding the seam. **Write the determinism test
+first** (recorded input → deterministic tick within tolerance) and do not call the phase
+done until it is green and stays green — a leaky seam poisons reconciliation forever.
+Then the **spike**: measure same-input cross-arch divergence (forced intermediate
+rounding and/or a second CI architecture) to set the reconciliation tolerance, and stand
+up a **throwaway predict/reconcile feel-prototype** to answer empirically whether basic
+reconciliation feels acceptable. Deliverables: the extracted seam, the green determinism
+test, the divergence number, the feel read. *Budget 2–3× the obvious estimate* — this is
+untangling render/sim coupling across ~11.6k lines, not a file split.
 
-### Phase 1: Transport + replication foundation
-Stand up `renet`/`renetcode` transport and the hand-rolled replication layer
-(`lightyear` as blueprint) with `bitcode` serialization and a custom snapshot delta.
-The server serializes post-tick entity state (`ComponentValue` deltas against an
-acked baseline); the client deserializes and applies to its local registry, mapping
-network ids to local `EntityId`s. Remote entities render through the existing
-previous/current interpolation path. **Folded essentials, all in this phase:**
-time-sync (client tick clock ↔ server), snapshot ack + delta baselines,
-join-in-progress (baseline-then-delta for a mid-level joiner), a latency-sim harness
-(artificial RTT/jitter/loss for single-machine testing — durable dev tooling reused by
-Phases 2–4 for reconciliation and projectile-feel tuning, not a Phase 1 throwaway), and
-a protocol+version handshake that rejects mismatched builds. **Outcome:** host + client (incl. a
-mid-level joiner) over loopback/LAN, remote pawns interpolating smoothly.
+### Phase 1: Transport + wire + handshake
+Stand up `renet` 2.0 + `renet_netcode` transport in a new `crates/net/` sibling crate
+(polled non-blocking in the frame loop — no tokio), the protocol/version handshake (a
+mismatch rejects with a logged reason, applies no state), and the `bitcode` wire codec.
+A hand-built snapshot struct round-trips end to end; two instances connect over
+loopback/LAN and a remote pawn appears and moves (full-state, ugly-but-connected is the
+bar — delta/interpolation are Phase 2). **Resolve the wire-enum encoding here** (see
+Wire format): internally-tagged serde enums (`ComponentValue`) cannot deserialize on any
+binary format, so the wire-bound component types carry native `bitcode::Encode/Decode`.
+The latency-sim harness lands here as durable dev tooling (in-process packet conditioner
++ `tc netem` for soak; **not** turmoil — it only sees tokio sockets). `networking.md`
+context/lib doc + its Agent Router entry land at this phase's promotion.
 
-### Phase 1.5: N-player set-piece design milestone (gating)
-**Design-first, pulled forward.** Resolve how the engine's first-class set-pieces —
-scripted reveals, monster closets, triggers, waves — behave with N players: trigger
-ownership (any-player vs. all-players vs. host), reveal/spawn fan-out, progress
-tracking, and co-op death/respawn **policy** (where/when players respawn, shared lives,
-spectate-on-death — the *mechanism* of reconciling a respawned pawn is Phase 2's).
-Includes **set-piece-progress replication** so a mid-piece joiner converges (Phase 1's
-join-in-progress delivers entity state; set-piece progress rides on top). Deliverable is
-a short design note **plus** one playable co-op set-piece proving the chosen semantics.
-This **gates** the combat phases: it answers "is co-op fun" before Phases 3–4 commit to
-a combat shape.
+### Phase 2: Replication — delta/baseline/ack + time-sync + interpolation + lifecycle
+The replication brain. The server serializes post-tick entity state as a set of
+`(NetworkId, ComponentValue-delta)` plus spawn/despawn, delta-encoded against a
+**per-entity acked baseline** (eventual-consistency state sync, lightyear-style — a
+dropped packet re-sends only affected entities, not a global snapshot). The client maps
+`NetworkId ↔ local EntityId` and applies through the game-logic-owned apply step. Folds
+in **time-sync** (client tick clock ↔ server, the substrate prediction stands on),
+**join-in-progress** (baseline-then-delta), and **player-leave/disconnect** (timeout +
+clean disconnect, slot freed). Remote entities interpolate via the existing
+previous/current Transform path with an **interpolation delay sized from measured
+jitter**. Proves out on a **dumb AI-less server-authoritative mover** on the wire — which
+de-risks both the set-piece fun-gate (Phase 4) and the moving-target combat (Phase 5)
+without waiting on M10. **Exit gate: smooth at 150 ms RTT + 5% loss + jitter.**
 
-### Phase 2: Local-player movement prediction + reconciliation
+### Phase 3: Local-player movement prediction + reconciliation
 The client predicts its own pawn immediately from local input (the `MovementInput`
-command — `wish_dir`, jump, dash edge, sprint, crouch intent, `facing_yaw`),
-buffering inputs by tick. The server is authoritative. On each authoritative snapshot
-the client reconciles: rewind to the acked tick, re-apply buffered inputs, and snap
-only when divergence exceeds the Phase 0 tolerance. Movement-only (dash included,
-since dash is a movement state). Replication targets the **mutable tick subset** of
-`PlayerMovementComponent`, never the descriptor params both sides hold. An authoritative
-respawn (or any large position jump) reconciles as a **teleport** — snap, do not
-interpolate, reusing the `FrameTiming::hold_state` teleport path — distinct from the
-co-op respawn *policy* Phase 1.5 owns.
+command — `wish_dir`, jump, dash edge, sprint, crouch intent, `facing_yaw`), buffering
+inputs by tick (command frames). On each authoritative snapshot it reconciles: rewind to
+the acked tick, re-apply buffered inputs, snap only past the Phase 0 tolerance.
+**Reconciliation *smoothing* is the hard part, not the rewind-replay** — and dash (high
+instantaneous velocity, edge-triggered) makes a mispredicted correction brutal to hide;
+budget accordingly. Movement-only (dash included). Replication targets the **mutable tick
+subset** of `PlayerMovementComponent`, never the descriptor params both sides hold. An
+authoritative respawn (or any large position jump) reconciles as a **teleport** — snap,
+do not interpolate, reusing `FrameTiming::hold_state` — the *mechanism*; the co-op
+respawn *policy* is Phase 4's. May run in parallel with Phase 4.
 
-### Phase 3: Server-authoritative hitscan combat
-Weapon fire becomes server-authoritative. The client sends a fire intent (with aim
-pitch carried into the tick command) and shows immediate cosmetic muzzle/impact
-feedback; the server runs `weapon::tick`/`fire_hitscan` and is the sole authority on
-damage. **Favor-the-shooter** validation tests the shot against a **short
-single-entity history** of the target (cheap, generous tolerance) — explicitly **not**
-full server-rewind. Render-rate look (yaw/pitch) is sampled into the per-tick fire
-command at fire time; favor-the-shooter tolerance must absorb the render-vs-tick
-aim-quantization gap, not only target-position history. HP on all clients changes only
-on server confirmation. Non-movement abilities with heavy world side-effects follow the
-same rule: server-authoritative, cosmetic local feedback.
+### Phase 4: Co-op set-piece design milestone (gating)
+**Design-first.** Resolve how the engine's first-class set-pieces — scripted reveals,
+monster closets, triggers, waves — behave with N players: trigger ownership (any-player
+vs. all-players vs. host), reveal/spawn fan-out, progress tracking, co-op death/respawn
+**policy** (where/when players respawn, shared lives, spectate-on-death), and
+**player-leave policy** (what happens to the level/set-piece when a player drops
+mid-piece). Includes **set-piece-progress replication** so a mid-piece joiner converges.
+Deliverable: a short design note **plus** one playable co-op set-piece proving the chosen
+semantics with **real M10 enemies** (the Phase 2 dumb mover proved the wire; the fun-gate
+needs real combat). **Gates** the combat phases — answers "is co-op fun" before Phases
+5–6 commit. May run in parallel with Phase 3.
 
-### Phase 4: Predicted projectiles (predicted-entity → confirmed handoff)
-Client-side predicted projectiles for weapon feel: a locally-fired rocket/grenade
-spawns a **predicted entity** instantly; when the server's confirmed projectile
-arrives, the client rebinds the predicted entity's network id to the confirmed one
-with no visible duplicate or pop. This is the bug-prone reconciliation/de-dup
-machinery, accepted deliberately for the weapon feel it buys. Playtest bar: "do
-projectiles feel crisp." Server stays authoritative on projectile outcomes (damage,
-despawn).
+### Phase 5: Server-authoritative hitscan combat
+Weapon fire becomes server-authoritative. The client sends a fire intent (render-rate
+look sampled into the per-tick fire command at fire time) and shows immediate cosmetic
+muzzle/impact feedback; the server runs `weapon::tick`/`fire_hitscan` and is the sole
+authority on damage. **Favor-the-shooter** validation tests the shot against a **short
+single-entity history** of the target — explicitly **not** full server-rewind. Tolerance
+must absorb the render-vs-tick aim-quantization gap *and* the client-sees-enemies-in-the-
+past interpolation gap. HP on all clients changes only on server confirmation.
+Non-movement abilities with heavy world side-effects follow the same rule:
+server-authoritative, cosmetic local feedback. (Whether to refine to CS2-style sub-tick
+timestamping vs. tick-aligned rewind is a Phase 5 spec decision — see Open questions.)
 
-### Phase 5: Scale + dedicated-server readiness
+### Phase 6: Predicted projectiles (predicted-entity → confirmed handoff)
+Client-side predicted projectiles for weapon feel: a locally-fired rocket/grenade spawns
+a **predicted entity** instantly; when the server's confirmed projectile arrives, the
+client rebinds the predicted entity's network id to the confirmed one (the
+predicted/confirmed/interpolated classification) with no visible duplicate or pop. The
+bug-prone reconciliation/de-dup machinery, accepted deliberately for the weapon feel.
+Playtest bar: "do projectiles feel crisp." Server stays authoritative on outcomes.
+
+### Phase 7: Scale + dedicated-server readiness
 Validate **16 players** on one listen-server host within a stated **host-upstream
-bandwidth budget**; tune delta compression and add interest management only if the
-budget demands it. Prove the **dedicated-server seam**: the host/sim boundary
-compiles and runs as a **headless server entry point** (no client half), confirming
-the Phase 0 extraction delivered the split-later promise.
+bandwidth budget** (state-sync + priority-accumulator budgeting); add interest management
+(reuse the portal/PVS visibility) only if the budget demands it. Prove the
+**dedicated-server seam**: the host/sim boundary compiles and runs as a **headless server
+entry point** (no client half), confirming the Phase 0 extraction delivered the
+split-later promise.
 
 ## Sequencing
 
-**Phase 0 (sequential):** headless seam + spike — blocks everything. Nothing networks
-until the tick runs headless and the divergence premise is measured.
-**Phase 1 (sequential):** transport + replication foundation — consumes the Phase 0
-seam; every later phase rides this wire.
-**Phase 1.5 (sequential gate):** N-player set-piece design — consumes Phase 1's
-multi-client substrate; gates the combat phases. Phase 2 may begin in parallel (it
-does not depend on set-piece semantics), but Phases 3–4 wait on this gate.
-**Phase 2 (sequential):** movement prediction — consumes Phase 1 replication and the
-Phase 0 tolerance number.
-**Phase 3 (sequential):** hitscan combat — consumes Phase 2 (predicted local pawn +
-reconciliation) and the Phase 1.5 gate.
-**Phase 4 (sequential):** predicted projectiles — consumes Phase 3's authoritative
-combat path and Phase 2's prediction/reconciliation machinery.
-**Phase 5 (sequential):** scale + dedicated readiness — consumes the full stack;
-validates the whole at 16 players.
+**Critical path:** `0 → 1 → 2 → (3 ‖ 4) → 5 → 6 → 7`. Eight phases, ~six deep, with a
+concurrent middle band.
 
-The chain is mostly sequential by dependency. The one parallelism: Phase 2 (movement)
-may run alongside the Phase 1.5 design gate. Movement prediction owns only the
-respawn-as-teleport *mechanism* (Phase 1.5 owns co-op respawn *policy*), so it does not
-depend on set-piece semantics.
+**Phase 0** blocks everything — nothing networks until the tick runs headless and the
+divergence + feel premises are measured.
+**Phase 1** consumes the Phase 0 seam; every later phase rides this wire.
+**Phase 2** consumes Phase 1; the replication brain every gameplay phase reads.
+**Phase 3** (movement prediction) consumes Phase 2 (snapshots to reconcile against) + the
+Phase 0 tolerance. **Phase 4** (set-piece design) consumes Phase 2 (multi-client + the
+dumb mover) + M10. **3 and 4 run concurrently** (merge-coordinate on the net-crate
+boundary, the M13 D/F precedent); 3 owns the respawn *mechanism*, 4 the respawn *policy*.
+**Phase 5** (hitscan) consumes Phase 3 (predicted pawn), Phase 2 (enemy replication), the
+Phase 4 gate, and M10.
+**Phase 6** (projectiles) consumes Phase 5 + Phase 3's prediction/reconciliation
+machinery.
+**Phase 7** (scale + dedicated) consumes the full stack.
 
 ### Promotion status (landed at Milestone 15 registration)
-Durable capture that landed when this epic was promoted to a milestone:
 - **Registered as Milestone 15** in `context/plans/roadmap.md` (detail-on-open phases,
   the M10/M13/M14 pattern); this doc is the milestone's design reference.
 - **`index.md` §4 Non-Goals** reconciled: "Multiplayer / networking" narrowed to the set
-  this epic still excludes (lockstep/rollback, full server-rewind, competitive
-  PvP/matchmaking/anti-cheat, peer-to-peer), pointing here for the direction taken.
-- **`entity_model.md` §9 Non-Goals** reconciled: "Networked entity replication" replaced
-  with the authoritative-replication direction; remaining non-goal narrowed to
-  client-authoritative state and deterministic-lockstep replication.
-- **`entity_model.md` §6 Ownership** annotated: snapshot application runs through a
-  game-logic-owned apply step, preserving exclusive ownership.
+  this epic still excludes; co-op direction points here.
+- **`entity_model.md` §9 Non-Goals** reconciled to the authoritative-replication
+  direction; **§6 Ownership** annotated (snapshot apply runs through a game-logic-owned
+  step, preserving exclusive ownership).
+- **Crate landscape + named-pattern/reference currency** captured in
+  `crate-pattern-research.md` (verified mid-2026).
 
 Still deferred by design: the durable `networking.md` context/lib doc + its Agent Router
-entry land at **Phase 1** promotion (the first phase with a real contract), not here.
+entry land at **Phase 1** promotion, not here.
+
+## Stack & implementation references
+
+Full verified detail (maturity, sources, gotchas) in `crate-pattern-research.md`.
+
+**Depend, don't hand-roll:**
+
+| Concern | Decision |
+|---|---|
+| UDP transport / connection / encryption | **renet 2.0 + renet_netcode** (Bevy-free since 2.0, sync frame-poll, no tokio) |
+| Steam relay / P2P (Steam release) | **steamworks-rs** behind a feature flag |
+| Reliability (seq / ack / fragmentation) | **renet channels** — no separate crate |
+| Wire serialization | **bitcode** (compact bit-packing; pin the version, never persist its bytes) |
+
+**Hand-roll** (no good non-Bevy crate fits the bespoke registry): replication,
+prediction, interpolation, per-entity delta, float quantization, time-sync, the
+latency-sim harness, interest management (reuse portal/PVS). `lightyear` is the **primary
+blueprint** (Bevy-locked, not a dependency); `naia`'s core is a secondary non-Bevy
+blueprint. **Avoid:** turmoil (tokio-only sim), bincode (unmaintained, RUSTSEC-2025-0141),
+laminar / numquant / speedy / bitvec (abandoned).
+
+**Named patterns → phase → contemporary anchor** (every hand-rolled part maps to a
+documented technique; the classics remain canonical, paired with a current source):
+
+| Pattern | Phase | Reference |
+|---|---|---|
+| Client prediction & server reconciliation | 3 | Gambetta; Valve Source; **lightyear book**; **Riot "Peeking into VALORANT's Netcode"** (2020) |
+| Snapshot interpolation + interpolation delay | 2 | Fiedler; Gambetta Pt. III; **SnapNet "Netcode Architectures" Pt. 3** (2023) |
+| Per-entity delta + eventual-consistency state sync | 2 | **lightyear** (component-level) — supersedes Quake-3 monolithic baseline |
+| State sync + priority accumulator (bandwidth) | 7 | Fiedler "State Synchronization"; **lightyear** interest management |
+| Input command buffering / command frames | 3 | **Overwatch GDC 2017** (still the reference talk); lightyear input handling |
+| Predicted / confirmed / interpolated classification | 6 | **lightyear** (the modern formulation) |
+| Favor-the-shooter, bounded short-history rewind | 5 | Valve Lag Compensation; **Riot Valorant** (victim-cost framing); CS2 sub-tick (footnote) |
+| Float quantization / bounded serialization | 1 | Fiedler "Serialization Strategies" |
+| Fixed timestep + ring buffers | 0 | Fiedler "Fix Your Timestep" (already in `frame_timing.rs`) |
+| Bounded extrapolation on packet starvation | 2 | snapshot-interp refs above — **not** IEEE DIS dead reckoning (wrong fit for a corridor FPS; dropped) |
 
 ## Rough sketch
 
-**Crate topology.** A new library crate `crates/net/` (`postretro-net`) owns transport
-+ replication + wire types, depended on by the `postretro` binary. It depends on
-`renet`/`renetcode`, `bitcode`, and reuses serde derives on engine component types
-(no new derives on the components themselves; the net crate defines the snapshot/delta
-envelopes). Keeping it a sibling crate (not a `postretro` module) enforces the
-boundary and is what makes the headless server entry point cheap. Engine-side glue —
-where the frame loop calls into the net crate, where snapshots apply to the registry —
-lives in `postretro`.
+**Crate topology.** A new library crate `crates/net/` (`postretro-net`) owns transport +
+replication + wire types, depended on by the `postretro` binary. It depends on `renet`
+2.0 + `renet_netcode`, `bitcode`, and `steamworks-rs` (feature-flagged). It defines the
+snapshot/delta/command envelopes. The wire-bound component types carry native
+`bitcode::Encode/Decode` (serde derives stay for JSON/SDK/persistence — see Wire format).
+The sibling-crate boundary (not a `postretro` module) is what makes the headless server
+entry point cheap. Engine-side glue — frame-loop calls into the net crate, the
+game-logic-owned snapshot apply — lives in `postretro`.
 
 **Frame-loop integration.** Client per frame: send buffered input command(s) → apply
-received snapshots to the registry (reconcile predicted pawn) → run the headless tick
-for predicted entities → render. Server (host) per tick: drain client input commands →
-run the headless tick → serialize delta snapshots per client → send. The headless
-`simulate` seam from Phase 0 is the shared core; the listen-server host runs both
-halves, a dedicated server runs only the server half. Four invariants this must hold:
+received snapshots to the registry (reconcile predicted pawn) → run the headless tick for
+predicted entities → render. Server (host) per tick: drain client input commands → run
+the headless tick → serialize per-entity delta snapshots per client → send. The headless
+`simulate` seam from Phase 0 is the shared core; the listen-server host runs both halves,
+a dedicated server runs only the server half. Four invariants:
 
 - **Entity-ownership stays exclusive.** Snapshot application and predicted-entity
-  spawn/despawn run through a **game-logic-owned apply step** — the net crate emits
-  typed snapshots; engine-side game logic applies them and owns every spawn/despawn. The
-  net crate never mutates the registry directly, so `entity_model.md` §6 still holds.
-- **Server runs a sanctioned frame-order subset.** The dedicated/headless server runs
-  Input→Game logic only (no Audio/Render/Present) — not a violation of the frame-order
-  invariant, since the dropped stages are read-only consumers of game state.
+  spawn/despawn run through a **game-logic-owned apply step** — the net crate emits typed
+  snapshots; engine-side game logic applies them and owns every spawn/despawn, so
+  `entity_model.md` §6 holds.
+- **Server runs a sanctioned frame-order subset.** Input→Game logic only (no
+  Audio/Render/Present) — not a violation; the dropped stages are read-only consumers.
 - **No `RefCell` borrow across the network encode.** Serialization captures one **owned
-  post-tick snapshot buffer** (single borrow, released before the per-client encode
-  loop), from which all per-client deltas are computed.
-- **Network runtime never blocks the event loop.** `renet` is **polled non-blocking**
-  within the frame loop — its transport is synchronously pollable, no `tokio` — honoring
-  `development_guide.md` §4.2 (winit owns the loop; never block it).
+  post-tick snapshot buffer** (single borrow, released before the per-client encode loop).
+- **Network runtime never blocks the event loop.** `renet` is **polled non-blocking** in
+  the frame loop (sync transport, no tokio), honoring `development_guide.md` §4.2.
 
 **Replication granularity.** Replicate the mutable tick subset of components, not
-descriptor-immutable params (both sides load those from the same descriptor at level
-load). `ComponentValue`'s existing `#[serde(tag = "kind")]` shape is the per-component
-unit; the snapshot is a set of `(network_id, ComponentValue-delta)` plus
-spawn/despawn events. Network-id ↔ local-`EntityId` mapping is a client side table
+descriptor-immutable params (both sides load those from the descriptor). The snapshot is
+a set of `(NetworkId, ComponentValue-delta)` plus spawn/despawn, delta-encoded against a
+**per-entity acked baseline** (eventual consistency — each entity converges
+independently). `NetworkId ↔ local EntityId` mapping is a client side table
 (`research.md` §6).
 
-**Determinism substrate.** Movement prediction leans on both sides holding an
-identical `CollisionWorld` (parry3d trimesh from the same PRL) and stepping the same
+**Determinism substrate.** Movement prediction leans on both sides holding an identical
+`CollisionWorld` (parry3d trimesh from the same PRL) and stepping the same
 `movement::tick`. Divergence is bounded, measured (Phase 0), and corrected
 (reconciliation), never assumed zero.
 
 ## Boundary inventory
 
-Netcode is engine-internal: it crosses **Rust ↔ wire**, not into JS/Lua or FGD. The
-framework-level names below are pinned here; **per-message field layouts are reserved
-for the Phase 1 implementation spec** (state the constraint, not the byte layout).
+Netcode is engine-internal: it crosses **Rust ↔ wire**, not into JS/Lua or FGD.
+Per-message field layouts are reserved for the Phase 1/2 specs (state the constraint, not
+the byte layout).
 
-| Name | Rust | Wire (bitcode/serde) | JS/TS | Luau | FGD KVP |
+| Name | Rust | Wire | JS/TS | Luau | FGD KVP |
 |---|---|---|---|---|---|
 | Network entity id | `NetworkId(u32)` (net crate) | bitcode u32 | n/a | n/a | n/a |
 | Local entity id | `EntityId` (`scripting/registry.rs`) | not sent raw; mapped to `NetworkId` | n/a | n/a | n/a |
-| Component snapshot unit | `ComponentValue` | `#[serde(tag = "kind", rename_all = "snake_case")]` | n/a | n/a | n/a |
+| Component snapshot unit | `ComponentValue` | **native `bitcode::Encode/Decode`** (NOT serde-tagged — see Wire format) | n/a | n/a | n/a |
 | Input command | mirrors `MovementInput` + fire/aim | bitcode struct | n/a | n/a | n/a |
 
-Scripts never observe the wire; FGD never configures replication. If a future phase
-exposes a server/listen-config KVP, it joins this inventory then.
+Scripts never observe the wire; FGD never configures replication.
 
 ## Wire format
 
 Netcode adds a binary wire surface. **Epic-level invariants pinned now; per-message
-layouts deferred to Phase 1.**
+layouts deferred to the Phase 1/2 specs.**
 
-- **Encoding owner:** `bitcode` owns endianness and field packing — the wire is not a
-  hand-rolled byte format. Snapshot/command structs derive serde; bitcode encodes.
-- **Channel model (`renet`):** reliable-ordered for control (handshake, spawn/despawn,
-  ack negotiation); unreliable-sequenced for snapshots (latest-wins, drop stale);
-  the input-command stream is its own channel. Exact channel assignment per message
-  type lands in Phase 1.
+- **Encoding owner:** `bitcode` owns endianness and bit-packing. **Critical:** an
+  internally-tagged serde enum (`#[serde(tag = "kind")]`, which `ComponentValue` is)
+  **cannot deserialize on any non-self-describing binary format** — bitcode, postcard, and
+  bincode all fail with `DeserializeAnyNotSupported`. The wire-bound component types
+  therefore carry **native `#[derive(bitcode::Encode, bitcode::Decode)]`**; the serde
+  derives stay for JSON/SDK/persistence (one type, two representations). This amends the
+  earlier "reuse serde derives, no new derives" assumption — the addition is bounded
+  (the known component-type set) and buys best wire compactness.
+- **bitcode version stability:** the format is unstable across major versions (by design).
+  Fine for co-op (host + client ship together); **pin the version exactly, never persist
+  bitcode bytes, gate every connection on the version handshake.**
+- **Channel model (`renet`):** reliable-ordered for control (handshake, spawn/despawn);
+  unreliable for snapshots (latest-wins); the input-command stream its own channel. Exact
+  assignment lands in the Phase 1/2 specs.
 - **Protocol/version handshake:** a version/protocol stamp gates every connection;
-  mismatch rejects with a logged reason and applies no state. Mirrors the existing
-  `BakedIr`/persist version-stamp discipline (`scripting.md` §11).
-- **Snapshot protocol:** delta against a per-client acked baseline; baseline advances
-  on ack; a joiner with no baseline gets a full snapshot first. Empty-delta and
-  spawn/despawn encoding are pinned in the Phase 1 spec.
+  mismatch rejects with a logged reason and applies no state. Mirrors the `BakedIr`/persist
+  version-stamp discipline (`scripting.md` §11).
+- **Snapshot protocol:** per-entity delta against a per-entity acked baseline (eventual
+  consistency); a joiner with no baseline gets a full snapshot first.
 
 ## Open questions
 
 Resolved as **decisions during the relevant phase's spec**, not blockers for this epic:
 
-- **Reconciliation tolerance value** — set by the Phase 0 spike's measured divergence.
-- **Network-id allocation** — server-assigned monotonic vs. recycled; and how
-  predicted-spawn local ids reconcile to confirmed network ids (Phase 1 / Phase 4).
-- **Interest management** — whether 16-player bandwidth needs per-client culling
-  (likely portal/PVS-derived, reusing the existing visibility) or whether delta
-  compression alone fits the budget (Phase 5, measured).
-- **Tick-rate decoupling** — whether the network send rate equals the 60 Hz sim tick
-  or a lower snapshot rate with client interpolation buffering (Phase 1).
-- **Library versions / current APIs** — Phase 1 pins `renet`/`renetcode`/`bitcode`
-  versions and confirms current channel APIs via Context7 at implementation time.
-- **AI/enemy replication** — M10 enemies (`Agent` + AI brain) are server-authoritative
-  and replicate as ordinary entities; any prediction of them is out of scope. M10 is a
-  stated prerequisite (above); the combat-phase specs ground enemy-component
-  serialization against merged M10 code.
+- **Reconciliation tolerance + smoothing curve** — tolerance set by the Phase 0 spike;
+  the smoothing curve (esp. dash corrections) is empirical, tuned in Phase 3.
+- **Snapshot send rate vs. 60 Hz sim tick** — decided **up front** at the Phase 1/2 specs
+  (the no-slice discipline: timing parameters first), with client interpolation buffering.
+- **Network-id allocation** — server-assigned monotonic vs. recycled; predicted-spawn →
+  confirmed reconciliation (Phase 1 / Phase 6).
+- **Hitreg precision** — tick-aligned rewind (simpler, Valorant-style) vs. CS2 sub-tick
+  timestamping (exact shot moment). Phase 5 spec, after a prototype.
+- **Interest management** — whether 16-player bandwidth needs per-client portal/PVS
+  culling or delta compression alone fits (Phase 7, measured).
+- **Wire-enum representation** — resolved: native `bitcode::Encode/Decode` on wire types
+  (see Wire format). The Phase 1 spec pins the exact derive set.
+- **AI/enemy replication** — M10 enemies replicate as ordinary entities; any prediction of
+  them is out of scope. M10 is a stated prerequisite; combat-phase specs ground
+  enemy-component serialization against merged M10 code.

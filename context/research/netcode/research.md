@@ -41,17 +41,17 @@ headless tick over a recorded input stream twice under conditions that force
 divergence (forced intermediate rounding, or a second architecture in CI), and
 record the position delta over N ticks. This is a **measured finding**
 (`experimental_spikes.md`), not a pass/fail gate — the number feeds the
-reconciliation-tolerance design in Phase 2, and confirms (or refutes) the
+reconciliation-tolerance design in Phase 3, and confirms (or refutes) the
 snapshots-over-determinism premise before the epic commits to it.
 
 ## 3. Stack rationale
 
 | Layer | Choice | Why |
 |-------|--------|-----|
-| Transport | `renet` + `renetcode` | De-facto Rust game transport: reliable-ordered / unreliable / unreliable-sequenced channels over UDP, with `renetcode` providing the netcode.io-style encrypted connection handshake. Not Bevy-coupled. |
-| Replication | Hand-rolled, `lightyear` as blueprint | `lightyear` is the most complete Rust reference for prediction / interpolation / snapshot replication — but it is built on `bevy_ecs`. PostRetro's registry is a bespoke generational-index store, not Bevy. We borrow lightyear's *structure* (predicted vs. confirmed entities, input buffering, snapshot interpolation), not its code. |
-| Serialization | `bitcode` | Compact binary, serde-compatible. Components already derive `Serialize`/`Deserialize` and `ComponentValue` is `#[serde(tag = "kind")]`, so the replication layer reuses existing derives. Tighter on the wire than `bincode`/`postcard`. |
-| Delta | Custom | Snapshot delta against an acked baseline is replication-specific; no off-the-shelf crate fits the bespoke registry. Small, owned, tunable. |
+| Transport | `renet` 2.0 + `renet_netcode` | De-facto Rust game transport: reliable / unreliable channels over UDP, with `renet_netcode` providing the netcode.io-style encrypted connection handshake. Bevy dependency removed in the 2.0 bump; synchronously frame-pollable (`update(dt)`, blocking `std::net::UdpSocket`), no tokio. |
+| Replication | Hand-rolled, `lightyear` as blueprint | `lightyear` is the most complete Rust reference for prediction / interpolation / snapshot replication — but it is built on `bevy_ecs`. PostRetro's registry is a bespoke generational-index store, not Bevy. We borrow lightyear's *structure* (predicted vs. confirmed entities, command-frame input, per-component eventual-consistency replication, snapshot interpolation), not its code. `naia`'s core is a secondary, genuinely non-Bevy blueprint (but bursty maintenance — blueprint only). |
+| Serialization | `bitcode` (native, not serde-tagged on the wire) | Compact bit-packing. **Gotcha:** `ComponentValue` is `#[serde(tag = "kind")]`, and internally-tagged serde enums fail to deserialize on *every* non-self-describing binary format (`DeserializeAnyNotSupported` — bitcode, postcard, bincode alike). The wire-bound component types therefore carry native `#[derive(bitcode::Encode, bitcode::Decode)]`; serde derives stay for JSON/SDK/persistence. This refutes the original "reuse serde derives untouched" assumption for the wire. |
+| Delta | Custom, per-entity baseline | Per-entity delta against a per-entity acked baseline (eventual consistency — lightyear's component-level model, not a Quake-3 monolithic snapshot). No off-the-shelf crate fits the bespoke registry. |
 
 **Why not an all-in-one (lightyear, bevy_replicon, naia).** Every mature Rust
 replication crate assumes `bevy_ecs` archetype storage and the Bevy schedule.
@@ -74,11 +74,11 @@ now costs little; retrofitting it later is the expensive path.
 | Risk | Why it bites | De-risk in plan |
 |------|--------------|-----------------|
 | Phase 0 extraction effort | The tick loop is interleaved with render inside `main.rs` (5,593 lines); `movement/mod.rs` is 6,055 lines. No headless seam exists today. | Phase 0 is sized as a real refactor, sequenced first, with a split-before-extend pass on the affected files. |
-| Cross-arch reconciliation tuning | The whole snapshot model rests on drift being small and correctable. | Phase 0 spike measures it before Phase 2 depends on it. |
-| Host-upstream bandwidth (listen server) | The host uploads N per-client snapshot streams on a home connection. | Phase 5 budgets it explicitly; delta compression + (if needed) interest management. |
-| N-player set-piece *fun* | Monster-closet / scripted-reveal set-pieces are the product's first-class gameplay; their semantics with N players are undesigned. | Pulled forward as a gating design milestone (Phase 1.5) before combat phases commit. |
-| Server-tick throughput | The server runs the full engine tick (scripting bridges + IR eval × entity count × 16 players) on a listen-server host that also renders. | Phase 5 budgets it. The live-VM removal means no per-tick script *callbacks* — the tick is engine-Rust + IR eval, cheaper and more deterministic than retained scripts. |
-| Entity-slot exhaustion | `EntityId` index is `u16`; slots retire (not reuse) on generation overflow. Phase 4's predicted+confirmed projectiles double the local-id allocation rate; sustained churn over a long session climbs generations toward retirement. | Named for the Phase 4/5 specs: measure churn rate, revisit id width if the budget demands it. |
+| Cross-arch reconciliation tuning | The whole snapshot model rests on drift being small and correctable. | Phase 0 spike measures it before Phase 3 depends on it. |
+| Host-upstream bandwidth (listen server) | The host uploads N per-client snapshot streams on a home connection. | Phase 7 budgets it explicitly; delta compression + (if needed) interest management. |
+| N-player set-piece *fun* | Monster-closet / scripted-reveal set-pieces are the product's first-class gameplay; their semantics with N players are undesigned. | Pulled forward as a gating design milestone (Phase 4) before combat phases commit. |
+| Server-tick throughput | The server runs the full engine tick (scripting bridges + IR eval × entity count × 16 players) on a listen-server host that also renders. | Phase 7 budgets it. The live-VM removal means no per-tick script *callbacks* — the tick is engine-Rust + IR eval, cheaper and more deterministic than retained scripts. |
+| Entity-slot exhaustion | `EntityId` index is `u16`; slots retire (not reuse) on generation overflow. Phase 6's predicted+confirmed projectiles double the local-id allocation rate; sustained churn over a long session climbs generations toward retirement. | Named for the Phase 6/7 specs: measure churn rate, revisit id width if the budget demands it. |
 
 ## 6. Codebase seam map (grounded)
 
@@ -126,7 +126,7 @@ Confirmed against source — the contracts the epic builds on.
   fields. `ComponentValue::PlayerMovement` wraps `Box<PlayerMovementComponent>` — the
   snapshot/delta envelope must account for the boxing.
 - `weapon::tick` (`weapon/mod.rs:81`) → `fire_hitscan(...)`: ray from camera, resolves
-  world-vs-entity hit + zone. Server-authoritative target for Phase 3. Weapon aim
+  world-vs-entity hit + zone. Server-authoritative target for Phase 5. Weapon aim
   needs camera pitch (render-rate today) carried into the tick command.
 - `CollisionWorld` (`collision/mod.rs:32`): parry3d trimesh from PRL static geometry.
   Identical on server and client once the same level loads — the shared deterministic
@@ -134,14 +134,18 @@ Confirmed against source — the contracts the epic builds on.
 
 ### Serialization today
 - Engine: `serde` + `serde_json` (scripting FFI, state persistence). `postcard` lives
-  in the level-format/compiler path. `bitcode` and `renet`/`renetcode` are **net-new**.
+  in the level-format/compiler path. `bitcode` and `renet` 2.0/`renet_netcode` are **net-new**.
   (`renet`'s transport is synchronously pollable — no `tokio`/async runtime required;
   it is polled within the frame loop.)
-- Components carry serde derives already; the replication layer adds bitcode encoding,
-  not new derives on the component types.
+- Components carry serde derives already, **but those do not round-trip on a binary
+  wire**: `ComponentValue` is `#[serde(tag = "kind")]`, and internally-tagged serde enums
+  fail to deserialize on bitcode/postcard/bincode (`DeserializeAnyNotSupported`). The wire
+  adds **native `bitcode::Encode/Decode`** on the wire-bound component types (serde stays
+  for JSON/persistence). Bounded, known set — not the open-ended churn the rejected
+  "reuse serde untouched" path implied. Full detail: `crate-pattern-research.md`.
 
 ### Entity-id mapping (design consequence)
 Server and client `EntityId`s do not coincide: client-predicted spawns get local IDs;
 the server assigns its own. Replication needs a network-id ↔ local-`EntityId` mapping
-on the client (a side table), resolved per Phase 1. Predicted-entity handoff (Phase 4)
+on the client (a side table), resolved per Phase 1. Predicted-entity handoff (Phase 6)
 rebinds a locally-predicted projectile's network id to the server-confirmed one.

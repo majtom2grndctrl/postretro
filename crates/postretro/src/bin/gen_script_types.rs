@@ -24,7 +24,7 @@ mod weapon;
 // GPU-free runtime query surface (glam + level-format only), so include it
 // verbatim — it name-resolves the agent component without pulling in
 // renderer/collision modules this generator bin lacks.
-#[path = "../nav.rs"]
+#[path = "../nav/mod.rs"]
 mod nav;
 
 // `scripting::data_descriptors` binds dash value expressions against

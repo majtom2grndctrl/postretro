@@ -224,6 +224,36 @@ fn enemy_animation(reg: &EntityRegistry, enemy: EntityId) -> String {
         .clone()
 }
 
+/// The enemy's current entry stamp (`entered_at`) — `None` when pending (a fresh
+/// switch/restart re-stamps it pending until the resolve pass fills it).
+fn enemy_anim_entered_at(reg: &EntityRegistry, enemy: EntityId) -> Option<f64> {
+    reg.get_component::<MeshComponent>(enemy)
+        .unwrap()
+        .animation
+        .as_ref()
+        .unwrap()
+        .entered_at
+}
+
+/// The enemy's yaw-only forward vector in the XZ plane, derived from its
+/// `Transform.rotation`. Mirrors the camera/player facing convention
+/// (`forward(yaw) = (-sin yaw, 0, -cos yaw)`) by rotating that base forward with
+/// the stored quaternion — lets a facing test assert WHERE the model points
+/// without re-deriving the yaw math.
+fn enemy_forward_xz(reg: &EntityRegistry, enemy: EntityId) -> Vec3 {
+    let rot = reg.get_component::<Transform>(enemy).unwrap().rotation;
+    let fwd = rot * Vec3::new(0.0, 0.0, -1.0);
+    Vec3::new(fwd.x, 0.0, fwd.z).normalize()
+}
+
+/// Force the enemy agent's live velocity (what `path_state` reports), so a facing
+/// test can stage a "moving" agent without running the steering tick.
+fn set_agent_velocity(reg: &mut EntityRegistry, enemy: EntityId, velocity: Vec3) {
+    let mut agent = reg.get_component::<AgentComponent>(enemy).unwrap().clone();
+    agent.velocity = velocity;
+    reg.set_component(enemy, agent).unwrap();
+}
+
 // ---------------------------------------------------------------------------
 // Pure transition core
 // ---------------------------------------------------------------------------
@@ -1236,4 +1266,261 @@ fn integrated_chase_loop_closes_distance_for_all_chasers_when_player_moves() {
             start_dist_to_player[idx],
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Facing: the enemy orients believably. Nothing else writes the enemy's
+// `Transform` rotation, so the AI tick owns yaw — face velocity when moving,
+// face the player when stopped-but-engaged, leave Idle facing untouched, and
+// never write a NaN yaw from a zero-length direction.
+// ---------------------------------------------------------------------------
+
+/// Assert two normalized XZ directions point the same way (dot ≈ 1).
+fn assert_faces(actual: Vec3, expected: Vec3, ctx: &str) {
+    let dot = actual.normalize().dot(expected.normalize());
+    assert!(
+        dot > 0.999,
+        "{ctx}: expected facing {expected:?}, got {actual:?} (dot {dot})"
+    );
+}
+
+#[test]
+fn stopped_engaged_enemy_faces_the_player() {
+    // An enemy in attack range (so it reaches `Attack`) with near-zero velocity
+    // must face the player, not its spawn heading. Player off to +X.
+    let mut reg = EntityRegistry::new();
+    let mut warned = HashSet::new();
+
+    let player = spawn_player(&mut reg, Vec3::new(1.5, 0.0, 0.0));
+    let enemy = spawn_enemy(
+        &mut reg,
+        Vec3::ZERO,
+        brain_with(tuning(), LogicalState::Idle),
+        50.0,
+    );
+    // Stopped (arrived/swinging): zero velocity.
+    set_agent_velocity(&mut reg, enemy, Vec3::ZERO);
+
+    run_ai_tick(&mut reg, &mut warned, 0.016);
+    assert_eq!(enemy_state(&reg, enemy), LogicalState::Attack);
+
+    // Player is at +X from the enemy → the enemy faces +X.
+    let to_player = reg.get_component::<Transform>(player).unwrap().position - Vec3::ZERO;
+    assert_faces(
+        enemy_forward_xz(&reg, enemy),
+        to_player,
+        "stopped engaged enemy faces the player",
+    );
+}
+
+#[test]
+fn moving_enemy_faces_its_velocity_direction() {
+    // A moving enemy (XZ speed above the epsilon) faces where it is going — its
+    // velocity direction — even if that differs from the bee-line to the player.
+    let mut reg = EntityRegistry::new();
+    let mut warned = HashSet::new();
+
+    // Player inside detection (so the enemy is engaged/Alert) along +X.
+    spawn_player(&mut reg, Vec3::new(10.0, 0.0, 0.0));
+    let enemy = spawn_enemy(
+        &mut reg,
+        Vec3::ZERO,
+        brain_with(tuning(), LogicalState::Alert),
+        50.0,
+    );
+    // Velocity points toward +Z (routing around an obstacle), NOT toward the
+    // player at +X — the facing must follow the velocity.
+    let vel = Vec3::new(0.0, 0.0, 4.0);
+    set_agent_velocity(&mut reg, enemy, vel);
+
+    run_ai_tick(&mut reg, &mut warned, 0.016);
+    assert_faces(
+        enemy_forward_xz(&reg, enemy),
+        vel,
+        "moving enemy faces its velocity, not the player bee-line",
+    );
+}
+
+#[test]
+fn idle_enemy_facing_is_left_unchanged() {
+    // An Idle enemy (no target) must not have its facing written: the spawn
+    // rotation is preserved.
+    let mut reg = EntityRegistry::new();
+    let mut warned = HashSet::new();
+
+    // No player in detection range → stays Idle.
+    spawn_player(&mut reg, Vec3::new(100.0, 0.0, 0.0));
+    let enemy = spawn_enemy(
+        &mut reg,
+        Vec3::ZERO,
+        brain_with(tuning(), LogicalState::Idle),
+        50.0,
+    );
+    // Give it a distinctive non-identity spawn rotation, and a velocity that
+    // WOULD turn it if Idle facing were (incorrectly) written.
+    let spawn_rot = glam::Quat::from_rotation_y(1.2);
+    let mut t = *reg.get_component::<Transform>(enemy).unwrap();
+    t.rotation = spawn_rot;
+    reg.set_component(enemy, t).unwrap();
+    set_agent_velocity(&mut reg, enemy, Vec3::new(3.0, 0.0, 0.0));
+
+    run_ai_tick(&mut reg, &mut warned, 0.016);
+    assert_eq!(enemy_state(&reg, enemy), LogicalState::Idle);
+    let rot_after = reg.get_component::<Transform>(enemy).unwrap().rotation;
+    assert!(
+        rot_after.angle_between(spawn_rot) < 1e-5,
+        "an Idle enemy's facing must be left unchanged (was {spawn_rot:?}, now {rot_after:?})",
+    );
+}
+
+#[test]
+fn stopped_engaged_enemy_on_top_of_player_writes_no_nan_facing() {
+    // Degenerate: a stopped engaged enemy at the SAME XZ as the player → the
+    // to-player direction is zero-length. The facing guard must skip the write,
+    // leaving the prior rotation finite (no NaN quaternion).
+    let mut reg = EntityRegistry::new();
+    let mut warned = HashSet::new();
+
+    // Player co-located (within attack range, distance 0) → enemy reaches Attack.
+    spawn_player(&mut reg, Vec3::ZERO);
+    let enemy = spawn_enemy(
+        &mut reg,
+        Vec3::ZERO,
+        brain_with(tuning(), LogicalState::Idle),
+        50.0,
+    );
+    set_agent_velocity(&mut reg, enemy, Vec3::ZERO);
+
+    run_ai_tick(&mut reg, &mut warned, 0.016);
+    assert_eq!(enemy_state(&reg, enemy), LogicalState::Attack);
+    let rot = reg.get_component::<Transform>(enemy).unwrap().rotation;
+    assert!(
+        rot.x.is_finite() && rot.y.is_finite() && rot.z.is_finite() && rot.w.is_finite(),
+        "zero-length facing direction must not write a NaN rotation (got {rot:?})",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Attack replay: the one-shot attack clip re-fires each in-state swing. The
+// entry tick into `Attack` plays the clip via the `state_changed` switch; every
+// later in-state swing restarts the clip from frame 0. Damage cadence is
+// unchanged (cooldown-gated, not frame-synced).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn repeated_in_attack_swing_restarts_the_attack_clip() {
+    // Drive the enemy into `Attack`, let the cooldown elapse, and confirm the
+    // SECOND swing (an in-state swing, not the entry tick) restarts the attack
+    // clip — observed as the entry stamp going pending again after a resolve had
+    // filled it. The entry tick must NOT double-restart.
+    let mut reg = EntityRegistry::new();
+    let mut warned = HashSet::new();
+
+    let pawn = spawn_player(&mut reg, Vec3::new(1.0, 0.0, 0.0));
+    let enemy = spawn_enemy(
+        &mut reg,
+        Vec3::ZERO,
+        brain_with(tuning(), LogicalState::Idle),
+        50.0,
+    );
+
+    let dt = 0.1; // 100ms/tick; cooldown 1000ms → 10 ticks between swings.
+
+    // Tick 1: Idle→Attack (state change), first swing via the `state_changed`
+    // switch. The switch leaves the new `attack` entry stamp pending.
+    let events = run_ai_tick(&mut reg, &mut warned, dt);
+    assert_eq!(events, vec![ENEMY_ATTACK_EVENT], "first swing lands");
+    assert_eq!(enemy_state(&reg, enemy), LogicalState::Attack);
+    assert_eq!(enemy_animation(&reg, enemy), "attack");
+    assert!(
+        enemy_anim_entered_at(&reg, enemy).is_none(),
+        "entry switch leaves the attack clip stamp pending (frame 0)",
+    );
+
+    // Resolve the animation stamps (the per-frame resolve pass) so the attack
+    // clip's entry stamp is filled — steady state, clip playing.
+    crate::scripting::components::mesh::resolve_pending_animation_stamps(&mut reg, 5.0);
+    assert_eq!(
+        enemy_anim_entered_at(&reg, enemy),
+        Some(5.0),
+        "resolve pass fills the attack clip's entry stamp",
+    );
+
+    // Ticks 2..=10: still in `Attack`, cooldown not elapsed → NO swing, so NO
+    // restart. The resolved stamp must remain (no double/spurious restart).
+    for _ in 0..9 {
+        let events = run_ai_tick(&mut reg, &mut warned, dt);
+        assert!(events.is_empty(), "no swing during cooldown");
+    }
+    assert_eq!(
+        enemy_anim_entered_at(&reg, enemy),
+        Some(5.0),
+        "no in-state restart while the cooldown gates the swing",
+    );
+
+    // Tick 11: cooldown elapsed → the second (in-state) swing fires AND restarts
+    // the attack clip. The enemy stays in `Attack` (no state change), so this is
+    // the restart path, not the entry switch.
+    let events = run_ai_tick(&mut reg, &mut warned, dt);
+    assert_eq!(events, vec![ENEMY_ATTACK_EVENT], "second swing lands");
+    assert_eq!(
+        enemy_state(&reg, enemy),
+        LogicalState::Attack,
+        "still in Attack — this is an in-state swing, not a re-entry",
+    );
+    assert!(
+        enemy_anim_entered_at(&reg, enemy).is_none(),
+        "the in-state swing restarts the attack clip (stamp re-stamped pending)",
+    );
+
+    // Damage cadence is unchanged: two hits across the two swings, 8 each.
+    assert_eq!(
+        player_hp(&reg, pawn),
+        84.0,
+        "exactly two cooldown-gated hits — restart did not change damage timing",
+    );
+}
+
+#[test]
+fn attack_entry_tick_does_not_double_restart_the_clip() {
+    // The entry tick into `Attack` plays the clip via the `state_changed` switch
+    // ONLY — the restart path is guarded off on that tick. Observed: after the
+    // entry tick the fade bookkeeping reflects a single switch (no
+    // `previous_state` from a redundant restart-over-switch), and a subsequent
+    // resolve cleanly fills one entry stamp.
+    let mut reg = EntityRegistry::new();
+    let mut warned = HashSet::new();
+
+    // Player inside attack range so Idle→Attack happens on tick 1 WITH a swing.
+    spawn_player(&mut reg, Vec3::new(1.0, 0.0, 0.0));
+    let enemy = spawn_enemy(
+        &mut reg,
+        Vec3::ZERO,
+        brain_with(tuning(), LogicalState::Idle),
+        50.0,
+    );
+
+    let events = run_ai_tick(&mut reg, &mut warned, 0.1);
+    assert_eq!(events, vec![ENEMY_ATTACK_EVENT]);
+    assert_eq!(enemy_state(&reg, enemy), LogicalState::Attack);
+
+    let anim = reg
+        .get_component::<MeshComponent>(enemy)
+        .unwrap()
+        .animation
+        .as_ref()
+        .unwrap()
+        .clone();
+    // Idle→Attack is a hard cut here (test clips use crossfade 0), so the switch
+    // records no `previous_state`. The key invariant: the entry tick produced one
+    // clean pending entry stamp and no half-applied restart state on top of it.
+    assert_eq!(anim.current_state, "attack");
+    assert!(
+        anim.entered_at.is_none(),
+        "entry switch leaves a single pending stamp (frame 0)",
+    );
+    assert_eq!(
+        anim.previous_state, None,
+        "the entry tick switches once; the restart path is guarded off",
+    );
 }

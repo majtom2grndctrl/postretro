@@ -23,13 +23,15 @@
 
 use std::collections::HashSet;
 
-use glam::Vec3;
+use glam::{Quat, Vec3};
 
 use crate::agent_steering;
 use crate::nav::distance_xz;
 use crate::scripting::components::brain::{AiTuning, BrainComponent, LogicalState};
 use crate::scripting::components::health::{HealthComponent, apply_damage, pawn_with_health};
-use crate::scripting::components::mesh::{SwitchResult, switch_animation_state};
+use crate::scripting::components::mesh::{
+    SwitchResult, restart_animation_clip, switch_animation_state,
+};
 use crate::scripting::registry::{
     ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform,
 };
@@ -67,6 +69,35 @@ pub(crate) fn think_stride_for_distance(distance: f32) -> u32 {
     } else {
         STRIDE_FAR
     }
+}
+
+/// Minimum XZ speed (units/sec) the agent must exceed for "moving" facing: above
+/// it the enemy orients to its velocity (where it is going), at or below it the
+/// enemy is treated as stopped and orients to the player instead. A small epsilon
+/// so a near-stationary agent (arrived/blocked/swinging) faces the player rather
+/// than jittering toward steering noise.
+const FACING_MOVE_SPEED_EPSILON: f32 = 0.05;
+
+/// A yaw-only rotation that orients the model toward a horizontal direction,
+/// matching the engine's facing convention. The camera/player forward at yaw `y`
+/// is `(-sin y, 0, -cos y)` (`camera.rs`), and `Transform.rotation` is built from
+/// yaw via the same `EulerRot::YXZ` / `Quat::from_rotation_y` convention
+/// (`scripting/conv.rs`); inverting `forward(y) = dir` gives `y = atan2(-dx, -dz)`.
+///
+/// Returns `None` for a direction with negligible XZ length (the squared XZ
+/// magnitude is at or below `EPSILON`), so a zero-length steering/aim vector never
+/// produces a NaN yaw — the caller then leaves the existing facing untouched. The
+/// Y component is ignored: facing is yaw-only, keeping the model upright.
+fn yaw_rotation_toward(dir: Vec3) -> Option<Quat> {
+    // Squared XZ length guard: below this the direction is too short to derive a
+    // stable heading (and `atan2(0, 0)` would be meaningless), so report "no
+    // facing change".
+    const MIN_XZ_LEN_SQ: f32 = 1e-8;
+    if dir.x * dir.x + dir.z * dir.z <= MIN_XZ_LEN_SQ {
+        return None;
+    }
+    let yaw = (-dir.x).atan2(-dir.z);
+    Some(Quat::from_rotation_y(yaw))
 }
 
 /// What the FSM wants the steering layer to do this tick. Decoupled from the
@@ -461,6 +492,43 @@ pub(crate) fn run_ai_tick(
             SteeringIntent::Hold => {}
         }
 
+        // Facing (yaw-only): nothing else writes the enemy's `Transform` rotation,
+        // so without this the model keeps its spawn heading and moonwalks toward
+        // the player. Orient it believably each tick it is engaged:
+        //   - Moving (XZ speed above the epsilon): face the velocity direction, so
+        //     it faces where it is going even when routing around obstacles. The
+        //     velocity is read from `path_state` (last tick's resolved velocity) —
+        //     a one-tick lag on facing that is imperceptible.
+        //   - Stopped but engaged (`Alert`/`Attack` with near-zero XZ speed —
+        //     arrived/blocked/swinging): face the player.
+        //   - `Idle` (no target) and `Death`: leave facing untouched.
+        // Yaw only (model stays upright); a zero-length direction yields `None` and
+        // writes nothing (never a NaN yaw).
+        if matches!(
+            outcome.brain.state,
+            LogicalState::Alert | LogicalState::Attack
+        ) {
+            if let Some(path) = agent_steering::path_state(registry, outcome.id) {
+                let vel_xz_sq =
+                    path.velocity.x * path.velocity.x + path.velocity.z * path.velocity.z;
+                let facing = if vel_xz_sq > FACING_MOVE_SPEED_EPSILON * FACING_MOVE_SPEED_EPSILON {
+                    // Moving: face the direction of travel.
+                    yaw_rotation_toward(path.velocity)
+                } else {
+                    // Stopped but engaged: face the player (if one exists).
+                    player_pos.and_then(|p| yaw_rotation_toward(p - path.position))
+                };
+                if let Some(rotation) = facing {
+                    if let Ok(mut transform) =
+                        registry.get_component::<Transform>(outcome.id).cloned()
+                    {
+                        transform.rotation = rotation;
+                        let _ = registry.set_component(outcome.id, transform);
+                    }
+                }
+            }
+        }
+
         // Damage: route the configured amount through the chokepoint to the
         // DAMAGE-TARGET id (distinct from the position pawn), and raise the
         // attack event. `apply_damage` no-ops on a non-health / stale target.
@@ -475,6 +543,28 @@ pub(crate) fn run_ai_tick(
                 );
             }
             events.push(ENEMY_ATTACK_EVENT);
+
+            // Replay the attack clip on every IN-STATE swing. The attack clip is
+            // one-shot (`loop:false`) and animation is otherwise switched only on
+            // `state_changed`, so a repeated cooldown-gated swing while the enemy
+            // STAYS in `Attack` would leave the clip clamped on its last frame —
+            // the player cannot tell they are being hit. Restarting it from frame 0
+            // re-fires the swing visually. This is purely cosmetic: damage stays
+            // cooldown-gated above (NOT frame-synced).
+            //
+            // Guard on `!state_changed`: on the entry tick INTO `Attack` the
+            // `state_changed` switch below already plays the clip from zero, so a
+            // restart here would double-fire (it would be a harmless re-stamp of a
+            // just-stamped pending clip, but skipping it keeps the seam explicit:
+            // first swing via the switch, every later in-state swing via restart).
+            if !outcome.state_changed {
+                let name = outcome
+                    .brain
+                    .tuning
+                    .states
+                    .animation_for(outcome.brain.state);
+                let _ = restart_animation_clip(registry, outcome.id, name);
+            }
         }
 
         // Animation: on a state change, request the brain-mapped animation name

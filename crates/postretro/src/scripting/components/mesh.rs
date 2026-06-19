@@ -400,6 +400,78 @@ pub(crate) fn switch_animation_state(
     SwitchResult::Switched
 }
 
+/// Outcome of a restart attempt. Mirrors the [`SwitchResult`] shape so callers
+/// can distinguish a real restart from the no-op reasons (mostly for tests; the
+/// AI tick ignores the variant).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RestartResult {
+    /// The clip was re-stamped from frame 0 (entry stamp set pending, any fade
+    /// bookkeeping cleared).
+    Restarted,
+    /// The entity is not in `target`, so there is no in-state clip to restart.
+    /// Use [`switch_animation_state`] to enter the state first.
+    NotInState,
+    /// The entity carries no animation block, or `target` is unusable
+    /// (undeclared / unresolved clip).
+    NotAnimated,
+}
+
+/// Restart the entity's CURRENT animation clip from frame 0, but only when it is
+/// already in `target`. This is the in-state replay seam for a one-shot clip that
+/// must re-fire on a repeated action (e.g. an enemy swinging again while it stays
+/// in `Attack`): `switch_animation_state` reports `AlreadyInState` and changes
+/// nothing, so a fresh playthrough needs an explicit re-stamp.
+///
+/// A same-state restart has NO distinct outgoing pose — the clip being restarted
+/// IS the current pose — so this is a hard cut, never a self-crossfade. It
+/// mirrors `switch_animation_state`'s pending-stamp / no-outgoing-pose handling:
+/// `entered_at` is set pending (`None`) so the resolve pass refills it from the
+/// frame's post-advance clock (clip-local time `anim_time - entered_at` then
+/// restarts at 0), and every fade bookkeeping field is cleared so no stale
+/// `previous_state` blends a ghost of the prior playthrough.
+///
+/// No-ops (returns without writing) when the entity is not animated, `target` is
+/// unusable, or the entity is not currently in `target` — restarting a clip the
+/// entity is not playing is meaningless; the caller enters the state via
+/// `switch_animation_state` first.
+pub(crate) fn restart_animation_clip(
+    registry: &mut EntityRegistry,
+    id: EntityId,
+    target: &str,
+) -> RestartResult {
+    let mut component = match registry.get_component::<MeshComponent>(id) {
+        Ok(c) => c.clone(),
+        Err(_) => return RestartResult::NotAnimated,
+    };
+
+    let Some(anim) = component.animation.as_mut() else {
+        return RestartResult::NotAnimated;
+    };
+
+    if !anim.is_state_usable(target) {
+        return RestartResult::NotAnimated;
+    }
+
+    if anim.current_state != target {
+        return RestartResult::NotInState;
+    }
+
+    // Hard cut to frame 0: re-stamp the entry pending and drop every fade field.
+    // No `previous_state`/snapshot — a same-state restart has no distinct
+    // outgoing pose to crossfade from (mirrors the same-tick-collapse / hard-cut
+    // path in `switch_animation_state`).
+    anim.entered_at = None;
+    anim.previous_state = None;
+    anim.previous_entered_at = None;
+    anim.fade_source = FadeSourceKind::Clip;
+    anim.interrupted_outgoing = None;
+
+    // The id was just read successfully, so a write failure would be a logic
+    // error, not a recoverable script condition.
+    let _: Result<(), RegistryError> = registry.set_component(id, component);
+    RestartResult::Restarted
+}
+
 /// Resolve every mesh entity's pending entry stamps from the frame's
 /// post-advance animation-clock value, and clear fades that have completed.
 /// Runs in the render-frame collection sub-stage, immediately before the mesh
@@ -1002,6 +1074,157 @@ mod tests {
                 .unwrap()
                 .entered_at,
             Some(4.25)
+        );
+    }
+
+    #[test]
+    fn restart_clip_in_state_resets_entry_stamp_pending() {
+        // The entity is in `attack` with a resolved stamp; restarting it re-stamps
+        // the entry pending (frame 0) without changing the current state.
+        let mut reg = EntityRegistry::new();
+        let id = spawn_animated(&mut reg);
+        resolve_pending_animation_stamps(&mut reg, 1.0);
+        switch_animation_state(&mut reg, id, "attack");
+        resolve_pending_animation_stamps(&mut reg, 2.0);
+        // Now in `attack`, stamp resolved at 2.0, fade window (0.15s) elapsed by
+        // the time we restart so steady state.
+        resolve_pending_animation_stamps(&mut reg, 2.5);
+        let before = reg
+            .get_component::<MeshComponent>(id)
+            .unwrap()
+            .animation
+            .as_ref()
+            .unwrap()
+            .clone();
+        assert_eq!(before.current_state, "attack");
+        assert_eq!(before.entered_at, Some(2.0));
+
+        assert_eq!(
+            restart_animation_clip(&mut reg, id, "attack"),
+            RestartResult::Restarted
+        );
+        let after = reg
+            .get_component::<MeshComponent>(id)
+            .unwrap()
+            .animation
+            .as_ref()
+            .unwrap()
+            .clone();
+        assert_eq!(after.current_state, "attack", "state is unchanged");
+        assert!(
+            after.entered_at.is_none(),
+            "restart re-stamps the entry pending (frame 0)"
+        );
+        assert_eq!(
+            after.previous_state, None,
+            "a same-state restart records no fade (hard cut)"
+        );
+        assert_eq!(after.previous_entered_at, None);
+        assert_eq!(after.fade_source, FadeSourceKind::Clip);
+    }
+
+    #[test]
+    fn restart_clip_clears_in_flight_fade_no_self_crossfade() {
+        // Restarting mid-fade (idle→attack still crossfading) must hard-cut: clear
+        // the `previous_state`/fade bookkeeping so no ghost of the prior pose blends
+        // into the restarted clip.
+        let mut reg = EntityRegistry::new();
+        let id = spawn_animated(&mut reg);
+        resolve_pending_animation_stamps(&mut reg, 1.0);
+        switch_animation_state(&mut reg, id, "attack"); // idle→attack fade
+        resolve_pending_animation_stamps(&mut reg, 1.0);
+        // Mid-window: fade is still in flight (previous_state == idle).
+        let during = reg
+            .get_component::<MeshComponent>(id)
+            .unwrap()
+            .animation
+            .as_ref()
+            .unwrap()
+            .clone();
+        assert_eq!(during.previous_state.as_deref(), Some("idle"));
+
+        assert_eq!(
+            restart_animation_clip(&mut reg, id, "attack"),
+            RestartResult::Restarted
+        );
+        let after = reg
+            .get_component::<MeshComponent>(id)
+            .unwrap()
+            .animation
+            .as_ref()
+            .unwrap()
+            .clone();
+        assert_eq!(
+            after.previous_state, None,
+            "restart hard-cuts: the in-flight fade is dropped (no self-crossfade)"
+        );
+        assert_eq!(after.previous_entered_at, None);
+        assert_eq!(after.interrupted_outgoing, None);
+        assert!(after.entered_at.is_none());
+    }
+
+    #[test]
+    fn restart_clip_not_in_target_state_is_noop() {
+        // Restarting a state the entity is NOT currently in is a no-op: the caller
+        // must enter the state via `switch_animation_state` first.
+        let mut reg = EntityRegistry::new();
+        let id = spawn_animated(&mut reg);
+        resolve_pending_animation_stamps(&mut reg, 1.0);
+        // Currently in `idle`; ask to restart `attack`.
+        assert_eq!(
+            restart_animation_clip(&mut reg, id, "attack"),
+            RestartResult::NotInState
+        );
+        let anim = reg
+            .get_component::<MeshComponent>(id)
+            .unwrap()
+            .animation
+            .as_ref()
+            .unwrap();
+        assert_eq!(anim.current_state, "idle", "no state change");
+        assert_eq!(anim.entered_at, Some(1.0), "entry stamp untouched");
+    }
+
+    #[test]
+    fn restart_clip_on_stateless_entity_reports_not_animated() {
+        let mut reg = EntityRegistry::new();
+        let id = reg.spawn(Transform::default());
+        reg.set_component(id, MeshComponent::stateless("prop".into()))
+            .unwrap();
+        assert_eq!(
+            restart_animation_clip(&mut reg, id, "idle"),
+            RestartResult::NotAnimated
+        );
+    }
+
+    #[test]
+    fn restart_clip_unusable_target_reports_not_animated() {
+        // An unresolved (clip_index None) current state is unusable: restart is a
+        // no-op NotAnimated, never a NaN-producing re-stamp of a dead clip.
+        let mut reg = EntityRegistry::new();
+        let id = reg.spawn(Transform::default());
+        let mut states = HashMap::new();
+        states.insert(
+            "idle".into(),
+            AnimationState {
+                clip: "idle_clip".into(),
+                looping: true,
+                crossfade_ms: DEFAULT_CROSSFADE_MS,
+                interrupt: InterruptPolicy::Smooth,
+                clip_index: None,
+            },
+        );
+        reg.set_component(
+            id,
+            MeshComponent {
+                model: "m".into(),
+                animation: Some(MeshAnimation::new(states, "idle".into())),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            restart_animation_clip(&mut reg, id, "idle"),
+            RestartResult::NotAnimated
         );
     }
 

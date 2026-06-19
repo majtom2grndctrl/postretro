@@ -21,8 +21,9 @@ use crate::scripting::registry::{
     ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform,
 };
 
-// Re-export the one-shot path query so the steering API and its consumers
-// (plan 2) import it from one place rather than reaching into `nav` directly.
+// Re-export the one-shot path query so the steering API and its consumer
+// (`scripting/systems/ai.rs`) import it from one place rather than reaching into
+// `nav` directly.
 pub(crate) use crate::nav::find_path;
 
 /// Maximum number of agents that may recompute a path in a single tick. Bounds
@@ -47,6 +48,18 @@ pub(crate) const REPLAN_STALENESS_TICKS: u32 = 30;
 /// so a fatter agent gets a proportionally wider acceptance window.
 const ARRIVAL_RADIUS_FACTOR: f32 = 1.5;
 
+/// World-space XZ distance below which a re-issued destination counts as the
+/// SAME target: [`set_destination`] then refreshes only `destination` and leaves
+/// the plan intact (no path wipe, no forced replan). Sized well under the
+/// arrival band (`ARRIVAL_RADIUS_FACTOR * radius`, ~0.5 m for the canonical
+/// agent) — a move this small cannot change which waypoint the agent steers
+/// toward, so replanning for it would be wasted work. A move beyond it is
+/// genuine: the plan is cleared so `tick` replans promptly. The primary consumer
+/// (`scripting/systems/ai.rs`) re-issues the player's position EVERY tick while
+/// chasing; this epsilon stops a near-stationary player from forcing a replan
+/// each tick and defeating the per-tick replan budget.
+const DESTINATION_MOVED_EPSILON: f32 = 0.1;
+
 /// Separation radius as a multiple of the agent capsule radius, measured between
 /// capsule centers. Two agents push apart when their center distance is below
 /// `radius_a + radius_b` (capsules overlap) OR below this comfort band — a soft
@@ -66,14 +79,19 @@ pub(crate) struct AgentTickResult {
     pub(crate) replans: u32,
 }
 
-/// Read-back of one agent's path-following state. The steering API plan 2 drives
-/// reads this to decide AI behavior; every field is derived from the live
-/// component, never recomputed here.
+/// Read-back of one agent's path-following state. The enemy-AI FSM tick
+/// (`scripting/systems/ai.rs`) reads this to decide AI behavior; every field is
+/// derived from the live component, never recomputed here.
 ///
 /// The steering-API surface (`set_destination`/`clear_destination`/`path_state`
-/// and this struct) is consumed by the enemy-AI FSM tick
-/// (`scripting/systems/ai.rs`), which drives `set_destination`/`clear_destination`
-/// per chasing enemy and reads `path_state` for arrival/blocked.
+/// and this struct) is consumed by that FSM tick, which drives
+/// `set_destination`/`clear_destination` per chasing enemy and reads
+/// `path_state` for arrival/blocked.
+///
+/// Plan-pending state: `has_destination && !has_path && !blocked && !arrived`
+/// means the agent wants a path but is WAITING for a replan-budget slot (the
+/// per-tick budget is full this tick) — not stuck. A genuinely unroutable agent
+/// reads `blocked`; an idle one reads `!has_destination`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct AgentPathState {
     /// The agent currently has a destination set (`Some`).
@@ -93,22 +111,47 @@ pub(crate) struct AgentPathState {
     pub(crate) velocity: Vec3,
 }
 
-/// Set (or replace) an agent's destination. Clears the prior plan so the next
-/// tick replans immediately toward the new goal: the path is dropped, the
-/// replan cooldown is reset to 0, and the `arrived`/`blocked` status is cleared.
+/// Set (or replace) an agent's destination.
+///
+/// A GENUINE move (the new `pos` is farther than [`DESTINATION_MOVED_EPSILON`]
+/// in XZ from the current `destination`, or there was none) clears the prior
+/// plan so the next tick replans immediately toward the new goal: the path is
+/// dropped, the cursor reset, the replan cooldown reset to 0, and
+/// `arrived`/`blocked` cleared.
+///
+/// An UNCHANGED (or barely-changed) re-issue — within the epsilon of the current
+/// destination — refreshes only `destination` and PRESERVES the plan
+/// (`path`, `planned_destination`, `waypoint_cursor`, `replan_cooldown_ticks`,
+/// `arrived`, `blocked`). The primary consumer (`scripting/systems/ai.rs`)
+/// re-issues the player's position every tick while chasing; without this the
+/// path would be wiped each tick and `tick`'s destination-moved detection would
+/// fire every tick, defeating the per-tick replan budget (chasers beyond the
+/// budget would freeze) and clearing `blocked` before the FSM's blocked-warn
+/// could observe it. `tick`'s `planned_destination` comparison stays the sole
+/// authority for WHEN to replan; this function just stops stomping it.
+///
 /// No-op (silently) when the entity has no agent component.
 pub(crate) fn set_destination(registry: &mut EntityRegistry, agent: EntityId, pos: Vec3) {
     let Ok(component) = registry.get_component::<AgentComponent>(agent) else {
         return;
     };
+    // Same target re-issued: refresh `destination` only, leave the plan intact.
+    // An unchanged order must not force a replan or wipe the path.
+    let unchanged = component
+        .destination
+        .is_some_and(|current| distance_xz(current, pos) <= DESTINATION_MOVED_EPSILON);
+
     let mut updated = component.clone();
     updated.destination = Some(pos);
-    updated.planned_destination = None;
-    updated.path.clear();
-    updated.waypoint_cursor = 0;
-    updated.replan_cooldown_ticks = 0;
-    updated.arrived = false;
-    updated.blocked = false;
+    if !unchanged {
+        // Genuine move: drop the plan so `tick` replans promptly toward the goal.
+        updated.planned_destination = None;
+        updated.path.clear();
+        updated.waypoint_cursor = 0;
+        updated.replan_cooldown_ticks = 0;
+        updated.arrived = false;
+        updated.blocked = false;
+    }
     let _ = registry.set_component(agent, updated);
 }
 

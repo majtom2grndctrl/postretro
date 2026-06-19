@@ -8,9 +8,14 @@
 use std::collections::HashSet;
 
 use glam::Vec3;
+use parry3d::math::{Isometry, Point};
+use parry3d::shape::TriMesh;
+use postretro_level_format::navmesh::{NAVMESH_VERSION, NavMeshSection, NavRegion};
 
 use super::*;
 use crate::agent_steering;
+use crate::collision::CollisionWorld;
+use crate::nav::NavGraph;
 use crate::scripting::components::agent::AgentComponent;
 use crate::scripting::components::brain::{AiStateMap, AiTuning, BrainComponent, LogicalState};
 use crate::scripting::components::health::HealthComponent;
@@ -798,4 +803,193 @@ fn zero_death_despawn_ms_still_gives_one_death_tick_before_despawn() {
         !reg.exists(enemy),
         "despawned on the tick after the single Death tick"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Regression: the integrated FSM-steering loop (run_ai_tick + agent_steering
+// ::tick, mirroring main.rs's run_agent_tick) must not freeze chasers beyond
+// the replan budget, and a stationary target must not force a replan per tick.
+//
+// Bug: `set_destination` unconditionally wiped the path and forced
+// `destination_moved` every tick. The FSM re-issues the player's position every
+// chase tick, so with more than REPLAN_BUDGET_PER_TICK chasers only the budget
+// replanned each tick and the rest had their path wiped → ZERO velocity →
+// silent freeze. The fix makes an unchanged re-issue a planning no-op.
+// ---------------------------------------------------------------------------
+
+const STEER_DT: f32 = 1.0 / 60.0;
+const STEER_GRAVITY: f32 = -20.0;
+
+/// Open flat floor `[0,40] x [0,40]` at y=0, covered by a single navmesh region
+/// so any in-bounds destination is routable. One description drives both the
+/// collision trimesh and the navmesh, matching the agent_steering fixture
+/// precedent (geometry and navmesh agree).
+struct OpenFloor {
+    extent: f32,
+}
+
+impl OpenFloor {
+    fn new() -> Self {
+        OpenFloor { extent: 40.0 }
+    }
+
+    /// Collision world: the single floor quad (two triangles), so agents are
+    /// grounded and slide freely across it.
+    fn collision_world(&self) -> CollisionWorld {
+        let points = vec![
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(self.extent, 0.0, 0.0),
+            Point::new(self.extent, 0.0, self.extent),
+            Point::new(0.0, 0.0, self.extent),
+        ];
+        let tris = vec![[0u32, 1, 2], [0, 2, 3]];
+        CollisionWorld {
+            mesh: TriMesh::new(points, tris),
+            isometry: Isometry::identity(),
+        }
+    }
+
+    /// Single navmesh region covering the whole floor. Unit cells, origin at
+    /// world zero, so cell coords equal world coords.
+    fn navmesh(&self) -> NavMeshSection {
+        NavMeshSection {
+            version: NAVMESH_VERSION,
+            origin: [0.0, 0.0, 0.0],
+            cell_size: 1.0,
+            dim_x: 64,
+            dim_z: 64,
+            agent_radius: 0.35,
+            agent_height: 1.8,
+            step_height: 0.4,
+            max_slope_deg: 45.0,
+            regions: vec![NavRegion {
+                x0: 0,
+                z0: 0,
+                x1: self.extent as u32,
+                z1: self.extent as u32,
+                floor_y_min: 0.0,
+                floor_y_max: 0.25,
+            }],
+            portals: vec![],
+        }
+    }
+
+    fn nav_graph(&self) -> NavGraph {
+        NavGraph::from_section(&self.navmesh())
+    }
+}
+
+/// Resting capsule-center height above the floor for the canonical agent, so a
+/// spawned chaser starts grounded and gravity does not dominate the first ticks.
+fn chaser_rest_y() -> f32 {
+    use crate::collision::SKIN_DISTANCE;
+    let (radius, height) = (0.35_f32, 1.8_f32);
+    let half_height = height / 2.0 - radius;
+    half_height + radius + SKIN_DISTANCE
+}
+
+/// Spawn a grounded enemy already in `Alert` (chasing) at world `(x, _, z)`. The
+/// agent capsule matches the navmesh's baked agent so it routes cleanly.
+fn spawn_chaser(reg: &mut EntityRegistry, x: f32, z: f32) -> EntityId {
+    let pos = Vec3::new(x, chaser_rest_y(), z);
+    spawn_enemy(reg, pos, brain_with(tuning(), LogicalState::Alert), 50.0)
+}
+
+#[test]
+fn integrated_chase_loop_keeps_all_chasers_moving_past_replan_budget() {
+    // Regression: set_destination wiped the path and forced a replan every tick,
+    // so chasers beyond REPLAN_BUDGET_PER_TICK froze and a stationary target
+    // replanned each tick. This drives the real loop (FSM tick + steering tick)
+    // and proves (a) every chaser keeps moving and (b) the path is preserved /
+    // replans stay bounded for a near-stationary player.
+    let floor = OpenFloor::new();
+    let world = floor.collision_world();
+    let graph = floor.nav_graph();
+
+    let mut reg = EntityRegistry::new();
+    let mut warned = HashSet::new();
+
+    // A (near-)stationary player at one end of the floor, inside detection range
+    // of the cluster so all chasers stay in Alert and pursue.
+    let player = spawn_player(&mut reg, Vec3::new(20.0, 0.0, 8.0));
+
+    // More chasers than the per-tick replan budget, clustered near the far end.
+    let chaser_count = agent_steering::REPLAN_BUDGET_PER_TICK + 3;
+    let mut chasers: Vec<EntityId> = Vec::new();
+    for i in 0..chaser_count {
+        let id = spawn_chaser(&mut reg, 14.0 + i as f32 * 0.6, 30.0);
+        chasers.push(id);
+    }
+
+    // Record each chaser's start position to prove forward progress later.
+    let start_pos: Vec<Vec3> = chasers
+        .iter()
+        .map(|&id| agent_steering::path_state(&reg, id).unwrap().position)
+        .collect();
+
+    // Run the integrated loop for many ticks, mirroring main.rs's run_agent_tick:
+    // FSM tick (issues set_destination to the player) then the steering tick.
+    let mut total_replans = 0u32;
+    let mut path_present_ticks = 0u32;
+    let ticks = 200;
+    for tick_index in 0..ticks {
+        run_ai_tick(&mut reg, &mut warned, STEER_DT);
+        let result = agent_steering::tick(&mut reg, &world, Some(&graph), STEER_GRAVITY, STEER_DT);
+        total_replans += result.replans;
+
+        // After the first few ticks every chaser should hold a live path toward
+        // the stationary player (the path is preserved, not wiped each tick).
+        if tick_index >= 5 {
+            let all_have_path = chasers.iter().all(|&id| {
+                agent_steering::path_state(&reg, id)
+                    .map(|s| s.has_path)
+                    .unwrap_or(false)
+            });
+            if all_have_path {
+                path_present_ticks += 1;
+            }
+        }
+    }
+
+    // (a) No chaser froze: every one moved measurably toward the player. A frozen
+    // agent (path wiped, goal_velocity == ZERO) would not advance at all.
+    for (&id, &start) in chasers.iter().zip(start_pos.iter()) {
+        let state = agent_steering::path_state(&reg, id).unwrap();
+        let moved = distance_xz(start, state.position);
+        assert!(
+            moved > 0.5,
+            "chaser {id} should have advanced toward the player, moved only {moved} \
+             (start {start:?}, end {:?}) — frozen by a wiped path?",
+            state.position
+        );
+        // It moved toward, not away from, the (stationary) player.
+        let player_xz = Vec3::new(20.0, 0.0, 8.0);
+        assert!(
+            distance_xz(state.position, player_xz) < distance_xz(start, player_xz),
+            "chaser {id} should be closer to the player than at start",
+        );
+    }
+
+    // (b) A stationary target does not force a replan every tick. Without the fix,
+    // every chaser would replan up to the budget EVERY tick — ~budget * ticks
+    // total. With the fix, after the initial plan each chaser only replans on the
+    // staleness window (REPLAN_STALENESS_TICKS), so the total is far lower.
+    let unbounded = (agent_steering::REPLAN_BUDGET_PER_TICK * ticks) as u32;
+    let staleness_bound =
+        chaser_count * (ticks as u32 / agent_steering::REPLAN_STALENESS_TICKS + 2);
+    assert!(
+        total_replans <= staleness_bound,
+        "stationary target replanned too often: {total_replans} replans over {ticks} ticks \
+         (staleness bound {staleness_bound}, per-tick-budget unbounded would be {unbounded})",
+    );
+
+    // And the preserved path held across the run for the stationary target.
+    assert!(
+        path_present_ticks > 0,
+        "chasers should hold a live path across ticks toward a stationary player",
+    );
+
+    // Sanity: the player took damage or stayed put — either way it is still the
+    // chase target and the loop ran without panicking.
+    let _ = player_hp(&reg, player);
 }

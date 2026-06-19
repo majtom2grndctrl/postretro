@@ -81,9 +81,11 @@ pub(crate) struct AgentComponent {
     /// `true` once the agent has reached the end of its current path (within the
     /// arrival radius of the final waypoint). Cleared on a successful replan or
     /// when the destination is cleared. If the destination moves after arrival,
-    /// the agent waits at the old goal until its next budget-gated replan routes
-    /// to the new target — a bounded pause (served within the replan budget /
-    /// staleness window), not a freeze.
+    /// the move is a DRIFT-driven replan: the steering tick prioritizes drift over
+    /// staleness-only refreshes, so the agent re-acquires the moved target the
+    /// same tick rather than waiting behind no-op refreshers. It can be deferred
+    /// only in a true overload — MORE than the replan budget of agents genuinely
+    /// drifting the same tick — never crowded out by a staleness refresh.
     pub(crate) arrived: bool,
     /// `true` when the agent has a destination but pathfinding found no route
     /// to it (an empty path that survived a replan attempt). The agent holds

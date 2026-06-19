@@ -252,6 +252,21 @@ pub(crate) fn tick(
         })
         .collect();
 
+    // Admission pass: decide which agents may replan this tick, BEFORE any agent
+    // moves. The per-tick budget is contended, so admit DRIFT-driven replans (the
+    // target genuinely moved or was never planned) ahead of STALENESS-only ones
+    // (a refresh of an essentially-unchanged plan whose cooldown merely elapsed).
+    // Without this priority a staleness refresher earlier in slot order could
+    // consume a budget slot on a no-op re-plan that a genuinely-drifted agent
+    // needed this tick — crowding out the agent whose target actually moved.
+    //
+    // Reads each agent's LIVE component (set/clear destination may have mutated it
+    // after the snapshot) with the cooldown decremented exactly as the apply loop
+    // will, so the two passes agree on each agent's drift/staleness verdict.
+    // Admitted ids are collected in slot order; total admissions stay ≤
+    // REPLAN_BUDGET_PER_TICK.
+    let admitted = admit_replans(registry, &snapshot);
+
     let mut replans = 0u32;
 
     // Drive each agent. The snapshot holds the ids in slot order; we mutate one
@@ -276,26 +291,12 @@ pub(crate) fn tick(
             continue;
         };
 
-        // Replan policy — the ONLY place the path is (re)built. The agent
-        // qualifies for a fresh path when:
-        //   - the live destination has drifted more than `REPLAN_DEST_THRESHOLD`
-        //     (XZ) from the position the current plan was built for — CUMULATIVE
-        //     drift against `planned_destination`, never the per-call delta — or
-        //     there is no plan yet (`planned_destination` is `None`), OR
-        //   - the cooldown has elapsed (staleness refresh / failed-plan retry).
-        // The cooldown gate covers BOTH a live path going stale AND a failed
-        // (empty) plan — a permanently-blocked agent therefore re-spends a
-        // budget slot at most once per `REPLAN_STALENESS_TICKS`, never every
-        // tick (the replan-starvation gate). Drift-from-plan (not per-call delta)
-        // is what lets a moving target keep agents on a stale-but-valid path
-        // instead of replanning every tick.
-        let wants_replan = agent
-            .planned_destination
-            .is_none_or(|planned| distance_xz(planned, destination) > REPLAN_DEST_THRESHOLD)
-            || agent.replan_cooldown_ticks == 0;
-
-        if wants_replan && replans < REPLAN_BUDGET_PER_TICK {
-            // A budget slot is available: rebuild the path now.
+        // Whether this agent replans this tick was decided by the prioritized
+        // admission pass above (drift-driven before staleness-only, capped at the
+        // budget) — the ONLY place the path is (re)built. An agent that WANTED a
+        // replan but lost the prioritized race is simply not in `admitted`.
+        if admitted.contains(&current.id) {
+            // Admitted: rebuild the path now.
             replans += 1;
             agent.replan_cooldown_ticks = REPLAN_STALENESS_TICKS;
             agent.planned_destination = Some(destination);
@@ -317,12 +318,12 @@ pub(crate) fn tick(
                 }
             }
         }
-        // An agent that WANTED a replan but lost the budget race this tick keeps
-        // its existing `path` and `planned_destination` untouched (the path is
-        // only ever mutated inside the budget-gated block above), so it follows
-        // its last route — stale-but-moving — instead of freezing. It stays
-        // eligible: `planned_destination` is unchanged, so the drift test (or the
-        // cooldown) still fires next tick until a slot frees up.
+        // An agent that WANTED a replan but lost the prioritized budget race this
+        // tick keeps its existing `path` and `planned_destination` untouched (the
+        // path is only ever mutated inside the admitted-replan block above), so it
+        // follows its last route — stale-but-moving — instead of freezing. It
+        // stays eligible: `planned_destination` is unchanged, so the drift test
+        // (or the cooldown) still fires next tick until a slot frees up.
 
         // Compute the goal-seeking steering velocity from the current waypoint.
         let arrival_radius = ARRIVAL_RADIUS_FACTOR * agent.radius;
@@ -371,6 +372,63 @@ pub(crate) fn tick(
     }
 
     AgentTickResult { replans }
+}
+
+/// Decide which agents replan this tick under the per-tick budget, prioritizing
+/// DRIFT-driven replans over STALENESS-only refreshes when the budget is
+/// contended. Returns the admitted ids in slot order.
+///
+/// A wants-replan agent is DRIFT-driven when it has no plan yet
+/// (`planned_destination` is `None`) OR its live destination has drifted more
+/// than [`REPLAN_DEST_THRESHOLD`] (XZ) from the position the current plan was
+/// built for — the target genuinely moved (or was never planned). It is
+/// STALENESS-only when it qualifies ONLY because the cooldown elapsed
+/// (`replan_cooldown_ticks == 0` after this tick's decrement) while drift ≤ the
+/// threshold — a refresh of an essentially-unchanged plan.
+///
+/// Two passes over the snapshot: first admit drift-driven agents up to the
+/// budget, then admit staleness-only agents with whatever budget remains. A
+/// staleness refresher therefore never crowds out a genuinely-drifted agent; an
+/// arrived agent whose destination then moved is drift-driven and re-acquires
+/// promptly. Total admissions stay ≤ [`REPLAN_BUDGET_PER_TICK`]. Reads live
+/// components only — no component writes happen here.
+fn admit_replans(registry: &EntityRegistry, snapshot: &[AgentSnapshot]) -> Vec<EntityId> {
+    // Classify each snapshot agent once: drift-driven, staleness-only, or not
+    // wanting a replan at all. The cooldown is decremented exactly as the apply
+    // loop will, so both passes see the same verdict.
+    let mut drift_driven: Vec<EntityId> = Vec::new();
+    let mut staleness_only: Vec<EntityId> = Vec::new();
+
+    for current in snapshot {
+        let Ok(agent) = registry.get_component::<AgentComponent>(current.id) else {
+            continue;
+        };
+        let Some(destination) = agent.destination else {
+            continue;
+        };
+
+        let drifted = agent
+            .planned_destination
+            .is_none_or(|planned| distance_xz(planned, destination) > REPLAN_DEST_THRESHOLD);
+        // The apply loop decrements before the `== 0` test, so a cooldown of 1
+        // (or 0) this tick reaches 0 after the decrement and counts as stale.
+        let cooldown_elapsed = agent.replan_cooldown_ticks.saturating_sub(1) == 0;
+
+        if drifted {
+            drift_driven.push(current.id);
+        } else if cooldown_elapsed {
+            staleness_only.push(current.id);
+        }
+    }
+
+    // First pass: drift-driven, up to the budget. Second pass: staleness-only,
+    // with the remaining budget. Slot order is preserved within each pass.
+    let budget = REPLAN_BUDGET_PER_TICK as usize;
+    let mut admitted = drift_driven;
+    admitted.truncate(budget);
+    let remaining = budget - admitted.len();
+    admitted.extend(staleness_only.into_iter().take(remaining));
+    admitted
 }
 
 /// Goal-seeking steering velocity toward the current waypoint, advancing the

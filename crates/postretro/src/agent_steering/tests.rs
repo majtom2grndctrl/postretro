@@ -450,6 +450,153 @@ fn blocked_agents_do_not_starve_reachable_agent_replan() {
     );
 }
 
+/// Force an agent into a staleness-only-eligible state: it already holds a plan
+/// to (essentially) its current destination, and its cooldown is one tick from
+/// elapsing — so the steering tick's decrement reaches 0 and it qualifies ONLY
+/// via staleness, never drift. The path is non-empty so it has something to keep
+/// following if it loses the budget race.
+fn make_staleness_only(registry: &mut EntityRegistry, id: EntityId, dest: Vec3) {
+    let mut agent = registry.get_component::<AgentComponent>(id).unwrap().clone();
+    agent.destination = Some(dest);
+    agent.planned_destination = Some(dest); // drift == 0, ≤ threshold.
+    agent.path = vec![dest];
+    agent.waypoint_cursor = 0;
+    agent.replan_cooldown_ticks = 1; // decrements to 0 this tick → stale.
+    agent.arrived = false;
+    agent.blocked = false;
+    registry.set_component(id, agent).unwrap();
+}
+
+#[test]
+fn drift_driven_replan_beats_staleness_refreshers_for_budget() {
+    // Budget-contention priority: MORE than the budget of staleness-only-eligible
+    // agents sit EARLIER in slot order than one drift-driven agent. First-come
+    // allocation would spend the whole budget on the no-op refreshers and crowd
+    // out the genuinely-moved agent. Drift priority must admit it THIS tick.
+    let wall = LWall::fixture();
+    let world = wall.collision_world();
+    let graph = wall.nav_graph();
+    let params = agent_params();
+
+    let mut registry = EntityRegistry::new();
+
+    // Staleness-only agents FIRST in slot order, more than the whole budget, each
+    // already planned to its own current spot (drift == 0, cooldown about to
+    // elapse). All sit in region 1 (top strip) so a refresh would route fine.
+    let staleness_count = REPLAN_BUDGET_PER_TICK + 1;
+    for i in 0..staleness_count {
+        let x = 1.0 + i as f32 * 0.5;
+        let id = spawn_agent(&mut registry, x, 6.0, &params);
+        make_staleness_only(&mut registry, id, Vec3::new(x, rest_y(&params), 6.0));
+    }
+
+    // One drift-driven agent LAST in slot order: it has a plan to an OLD spot, but
+    // its live destination has since moved far past the drift threshold.
+    let drifter = spawn_agent(&mut registry, 1.0, 5.0, &params);
+    let old_dest = Vec3::new(1.0, rest_y(&params), 5.0);
+    let new_dest = Vec3::new(6.0, rest_y(&params), 6.0); // > REPLAN_DEST_THRESHOLD away.
+    {
+        let mut agent = registry
+            .get_component::<AgentComponent>(drifter)
+            .unwrap()
+            .clone();
+        agent.destination = Some(new_dest);
+        agent.planned_destination = Some(old_dest); // stale plan to the OLD spot.
+        agent.path = vec![old_dest];
+        agent.waypoint_cursor = 0;
+        agent.replan_cooldown_ticks = REPLAN_STALENESS_TICKS; // NOT staleness-eligible.
+        registry.set_component(drifter, agent).unwrap();
+    }
+    assert!(
+        distance_xz(old_dest, new_dest) > REPLAN_DEST_THRESHOLD,
+        "test setup: destination must have drifted past the threshold"
+    );
+
+    let result = tick(&mut registry, &world, Some(&graph), GRAVITY, DT);
+    assert_eq!(
+        result.replans, REPLAN_BUDGET_PER_TICK,
+        "the budget is fully spent ({REPLAN_BUDGET_PER_TICK} replans)"
+    );
+
+    // The drift-driven agent replanned THIS tick: its plan now targets the moved
+    // destination, not the old one it was crowded out toward.
+    let drifter_agent = registry.get_component::<AgentComponent>(drifter).unwrap();
+    let planned = drifter_agent
+        .planned_destination
+        .expect("drifter should have a plan after replanning");
+    assert!(
+        distance_xz(planned, new_dest) <= EPS,
+        "drift-driven agent must replan to the moved destination this tick, planned {planned:?}"
+    );
+    assert!(
+        distance_xz(planned, old_dest) > REPLAN_DEST_THRESHOLD,
+        "drift-driven agent's plan must no longer target the old destination"
+    );
+}
+
+#[test]
+fn arrived_agent_reacquires_moved_destination_this_tick() {
+    // An agent that has ARRIVED at D_old; its destination then moves to D_new
+    // (past the drift threshold). With budget pressure from staleness-only agents
+    // ahead of it in slot order, drift priority must still admit it THIS tick:
+    // arrived cleared, plan now targets D_new — prompt re-acquisition, not a pause.
+    let wall = LWall::fixture();
+    let world = wall.collision_world();
+    let graph = wall.nav_graph();
+    let params = agent_params();
+
+    let mut registry = EntityRegistry::new();
+
+    // Fill the budget with staleness-only refreshers ahead of the arrived agent.
+    let staleness_count = REPLAN_BUDGET_PER_TICK + 1;
+    for i in 0..staleness_count {
+        let x = 1.0 + i as f32 * 0.5;
+        let id = spawn_agent(&mut registry, x, 7.0, &params);
+        make_staleness_only(&mut registry, id, Vec3::new(x, rest_y(&params), 7.0));
+    }
+
+    // The arrived agent, last in slot order. It reached D_old; D_new is far away.
+    let arrived = spawn_agent(&mut registry, 2.0, 6.0, &params);
+    let d_old = Vec3::new(2.0, rest_y(&params), 6.0);
+    let d_new = Vec3::new(6.0, rest_y(&params), 6.0);
+    {
+        let mut agent = registry
+            .get_component::<AgentComponent>(arrived)
+            .unwrap()
+            .clone();
+        agent.destination = Some(d_new); // already moved past the threshold.
+        agent.planned_destination = Some(d_old);
+        agent.path = vec![d_old];
+        agent.waypoint_cursor = 0;
+        agent.arrived = true; // sitting at the old goal.
+        agent.replan_cooldown_ticks = REPLAN_STALENESS_TICKS;
+        registry.set_component(arrived, agent).unwrap();
+    }
+    assert!(
+        distance_xz(d_old, d_new) > REPLAN_DEST_THRESHOLD,
+        "test setup: destination must have moved past the threshold"
+    );
+
+    tick(&mut registry, &world, Some(&graph), GRAVITY, DT);
+
+    let agent = registry.get_component::<AgentComponent>(arrived).unwrap();
+    assert!(
+        !agent.arrived,
+        "arrived must clear once the agent replans toward the moved destination"
+    );
+    let planned = agent
+        .planned_destination
+        .expect("arrived agent should have replanned to the new destination");
+    assert!(
+        distance_xz(planned, d_new) <= EPS,
+        "arrived agent must re-acquire the moved destination this tick, planned {planned:?}"
+    );
+    assert!(
+        !agent.path.is_empty(),
+        "arrived agent's path should target the new destination, not be empty"
+    );
+}
+
 #[test]
 fn set_and_clear_run_without_dev_tools_feature() {
     // DEFAULT-features proof (no dev-tools): the steering API entry points

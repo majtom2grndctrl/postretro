@@ -74,6 +74,18 @@ pub(crate) struct MeshInstanceInput {
     /// upgrades a miss to a resample regardless of this flag). A `Copy` bool —
     /// no per-instance heap.
     pub(crate) resample: bool,
+    /// Whether this instance is in the camera's portal PVS (the forward-visibility
+    /// cull). `true` → drawn by both the FORWARD mesh pass and the shadow depth
+    /// passes; `false` → an OFF-PVS shadow caster, drawn into shadow maps ONLY
+    /// (its leaf left the camera PVS — e.g. pitching down — but it still sits in a
+    /// dynamic shadow light's influence volume and must keep casting). The
+    /// collector emits an off-PVS instance only when it is inside that light-volume
+    /// union, so the off-screen pose cost stays bounded. `record_draws` skips
+    /// `false` instances; the shadow passes draw the whole plan.
+    ///
+    /// Regression: entity shadow caster dropped when its leaf left the camera PVS
+    /// (pitch-down) — the forward cull pre-removed the caster before the depth pass.
+    pub(crate) forward_visible: bool,
 }
 
 /// One instance's resolved placement in the frame plan: its world transform, the
@@ -107,6 +119,13 @@ pub(crate) struct PlannedInstance {
     /// so a culled instance re-entering view never shows a stale pose. `Copy`
     /// bool — no per-instance heap.
     pub(crate) resample: bool,
+    /// Carried verbatim from [`MeshInstanceInput::forward_visible`]. `true` → in
+    /// the camera PVS, drawn by the forward mesh pass; `false` → an off-PVS shadow
+    /// caster, drawn into shadow maps only. The combined plan poses + budgets BOTH
+    /// kinds together (shared posed buffers, one budget), so the shadow depth pass
+    /// and the forward pass read the identical palette/instance buffers; the
+    /// forward `record_draws` then filters out `false` instances.
+    pub(crate) forward_visible: bool,
 }
 
 /// All instances of one model, batched for a single instanced `draw_indexed` per
@@ -171,6 +190,15 @@ pub(crate) trait JointCounts {
 /// model is absent from `joints` (never uploaded) is silently skipped and not
 /// counted as a budget drop.
 ///
+/// COMBINED budget over forward + shadow casters: `instances` carries BOTH the
+/// camera-PVS-visible instances (`forward_visible == true`) AND the off-PVS
+/// shadow casters (`forward_visible == false`) the collector emitted. They share
+/// one plan — one posed palette/instance buffer, one budget — so an off-screen
+/// caster draws down the SAME `MAX_INSTANCES`/palette pool as the on-screen
+/// forward set (off-PVS casters can never silently evict on-screen forward
+/// instances by being budgeted separately). The shadow depth passes draw the
+/// whole plan; the forward pass filters to `forward_visible` instances.
+///
 /// The returned plan's groups carry dense instance offsets so the GPU layer can
 /// write one flat instance SSBO and issue one instanced draw per group.
 pub(crate) fn plan_mesh_frame(
@@ -182,7 +210,17 @@ pub(crate) fn plan_mesh_frame(
     let mut instance_count: usize = 0;
     let mut dropped: u32 = 0;
 
-    for inst in instances {
+    // Budget the FORWARD-visible (camera-PVS) set first, then the OFF-PVS shadow
+    // casters, so an off-screen caster can only consume budget the on-screen set
+    // left behind — it can never evict a forward instance under contention
+    // (reviewer guard: combined budget must not let off-screen casters silently
+    // drop on-screen draws). Two-pass `filter` over the input slice, no clone.
+    let forward_first = instances
+        .iter()
+        .filter(|i| i.forward_visible)
+        .chain(instances.iter().filter(|i| !i.forward_visible));
+
+    for inst in forward_first {
         let Some(joint_count) = joints.joint_count(&inst.model) else {
             // Model not in the cache (never uploaded) — skip, not a budget drop.
             continue;
@@ -210,6 +248,7 @@ pub(crate) fn plan_mesh_frame(
             sample: inst.sample,
             capture: inst.capture,
             resample: inst.resample,
+            forward_visible: inst.forward_visible,
         };
 
         // Append to the existing group for this model, or start a new one.
@@ -299,6 +338,7 @@ mod tests {
             sample: MeshSampleParams::stateless(0.0),
             capture: None,
             resample: true,
+            forward_visible: true,
         }
     }
 
@@ -412,6 +452,51 @@ mod tests {
         assert_eq!(total, MAX_INSTANCES, "surviving instances match the count");
     }
 
+    /// An off-PVS shadow caster (`forward_visible == false`) for the same model.
+    fn shadow_caster(model: &str, x: f32, seed: u32) -> MeshInstanceInput {
+        let mut i = instance(model, x, seed);
+        i.forward_visible = false;
+        i
+    }
+
+    #[test]
+    fn plan_budgets_forward_visible_before_off_pvs_casters() {
+        // Reviewer guard: the COMBINED budget must not let off-screen shadow casters
+        // evict on-screen forward instances. With a budget of exactly 2 instances
+        // and the off-PVS caster listed FIRST in the input, both forward-visible
+        // instances must still survive (the planner budgets the forward set first);
+        // the off-PVS caster is the one dropped.
+        let per = (MAX_PALETTE_ENTRIES / 2) as u32; // two runs fill the palette budget
+        let joints = joints(&[("grunt", per)]);
+        let instances = [
+            shadow_caster("grunt", 99.0, 2), // off-PVS, listed first
+            instance("grunt", 1.0, 0),       // forward-visible
+            instance("grunt", 2.0, 1),       // forward-visible
+        ];
+        let plan = plan_mesh_frame(&instances, &joints);
+
+        assert_eq!(plan.instance_count, 2, "two instances fit the budget");
+        assert_eq!(plan.dropped, 1, "the off-PVS caster is dropped, not a forward one");
+        // Both survivors are the forward-visible instances (seeds 0 and 1); the
+        // off-PVS caster (seed 2) was evicted despite being listed first.
+        let seeds: Vec<u32> = plan
+            .groups
+            .iter()
+            .flat_map(|g| g.instances.iter().map(|i| i.phase_seed))
+            .collect();
+        assert!(
+            seeds.contains(&0) && seeds.contains(&1) && !seeds.contains(&2),
+            "forward-visible instances survive over the off-PVS caster: {seeds:?}",
+        );
+        assert!(
+            plan.groups
+                .iter()
+                .flat_map(|g| &g.instances)
+                .all(|i| i.forward_visible),
+            "only forward-visible instances survived the budget squeeze",
+        );
+    }
+
     #[test]
     fn plan_skips_uncached_model_without_counting_as_dropped() {
         // "ghost" is not in the joint map (never uploaded) → skipped, not dropped.
@@ -473,6 +558,7 @@ mod tests {
             sample: MeshSampleParams::stateless(0.0),
             capture: None,
             resample: true,
+            forward_visible: true,
         };
         assert!(
             instance_casts_into_cone(&inside, &planes),
@@ -489,6 +575,7 @@ mod tests {
             sample: MeshSampleParams::stateless(0.0),
             capture: None,
             resample: true,
+            forward_visible: true,
         };
         assert!(
             !instance_casts_into_cone(&outside, &planes),
@@ -543,6 +630,7 @@ mod tests {
             sample: MeshSampleParams::stateless(0.0),
             capture: None,
             resample: true,
+            forward_visible: true,
         };
         assert!(
             instance_casts_into_cone(&inst, &planes),

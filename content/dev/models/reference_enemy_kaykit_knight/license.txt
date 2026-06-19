@@ -1,0 +1,42 @@
+Model Information:
+* title:   KayKit : Adventurers Character Pack — Knight
+* source:  https://github.com/KayKit-Game-Assets/KayKit-Character-Pack-Adventures-1.0
+* author:  Kay Lousberg (https://www.kaylousberg.com)
+
+Model License:
+* license type: CC0 1.0 Universal (Creative Commons Zero, public domain)
+* license url:  https://creativecommons.org/publicdomain/zero/1.0/
+* requirements: None. Free for personal, educational, and commercial use; no
+                attribution required. Crediting Kay Lousberg (www.kaylousberg.com)
+                is appreciated but not mandatory.
+
+Upstream license text (verbatim, from the pack's LICENSE.txt):
+
+    KayKit : Adventurers Character Pack (1.0)
+
+    Created/distributed by Kay Lousberg (www.kaylousberg.com)
+    Creation date: 13/03/2023 09:00
+
+    License: (Creative Commons Zero, CC0)
+    http://creativecommons.org/publicdomain/zero/1.0/
+
+    This content is free to use in personal, educational and commercial projects.
+
+    Support me by using a brand resource provided in this pack or by crediting
+    Kay Lousberg, www.kaylousberg.com (this is not mandatory)
+
+Packaging notes (PostRetro):
+* Sourced as a single `Knight.glb` from the upstream repository at
+  addons/kaykit_character_pack_adventures/Characters/gltf/Knight.glb (main branch).
+* Converted GLB -> external glTF layout (scene.gltf + scene.bin + textures/*.png)
+  with @gltf-transform (NodeIO) to ride the engine's existing external-glTF model
+  pipeline (mirrors content/dev/models/decraniated_low_poly_retro_pixel/).
+* The pack ships ~76 animation clips; the clip set was PRUNED to the four used by
+  the reference enemy to keep the committed binary small:
+    - Idle
+    - Walking_A
+    - 1H_Melee_Attack_Slice_Horizontal
+    - Death_A
+* Geometry, skeleton, and textures were NOT altered. Pruning removed only the
+  unused animation clips and their now-orphaned keyframe accessors; the base-color
+  texture was relocated into textures/ and the glTF JSON was minified.

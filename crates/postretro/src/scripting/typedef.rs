@@ -117,6 +117,8 @@ fn rust_to_ts(ty_name: &str) -> String {
         "MeshDescriptor" => "MeshDescriptor".to_string(),
         "HealthDescriptor" => "HealthDescriptor".to_string(),
         "HitboxDescriptor" => "HitboxDescriptor".to_string(),
+        "AiDescriptor" => "AiDescriptor".to_string(),
+        "AiStateNames" => "AiStateNames".to_string(),
         "AnimationStateDescriptor" => "AnimationStateDescriptor".to_string(),
         "InterruptPolicy" => "InterruptPolicy".to_string(),
         "MeshAnimationStates" => {
@@ -250,6 +252,8 @@ fn rust_to_luau(ty_name: &str) -> String {
         "MeshDescriptor" => "MeshDescriptor".to_string(),
         "HealthDescriptor" => "HealthDescriptor".to_string(),
         "HitboxDescriptor" => "HitboxDescriptor".to_string(),
+        "AiDescriptor" => "AiDescriptor".to_string(),
+        "AiStateNames" => "AiStateNames".to_string(),
         "AnimationStateDescriptor" => "AnimationStateDescriptor".to_string(),
         "InterruptPolicy" => "InterruptPolicy".to_string(),
         "MeshAnimationStates" => "{ [string]: AnimationStateDescriptor }".to_string(),
@@ -3112,6 +3116,8 @@ declare module "postretro" {
     mesh?: MeshDescriptor | null;
     /** Hit points plus an optional hitscan hitbox. A descriptor carrying this is directly map-placeable by canonicalName. */
     health?: HealthDescriptor | null;
+    /** AI brain preset: detection/attack/leash ranges, attack tuning, move speed, despawn delay, EXP reward, and the logical-state → mesh animation-state map. Materializes a brain plus a navigation agent at spawn. Rides on health+mesh for map placement; it does not itself make a descriptor placeable. */
+    ai?: AiDescriptor | null;
   };
 
   /** Valid values: `semi`, `auto`. */
@@ -3156,6 +3162,40 @@ declare module "postretro" {
     hitbox?: HitboxDescriptor;
     /** Per-skeletal-zone damage multipliers, tag → factor (e.g. `{ head: 1.5 }`). A shot on a tagged zone scales the weapon's payload by this factor; an absent zone or unlisted tag applies 1.0. Each factor must be finite and >= 0. Optional; defaults to empty. */
     zoneMultipliers?: { readonly [tag: string]: number };
+  };
+
+  /** The closed logical-state → animation-state name mapping carried by `AiDescriptor.states`. Each value names a state declared in the entity's `components.mesh.animations`; the brain switches the mesh to the matching state when it enters that logical state. All four keys are required and the set is closed (no other keys allowed). */
+  export type AiStateNames = {
+    /** Mesh state played while the brain is idle (no target). Must name a declared mesh animation state. */
+    idle: string;
+    /** Mesh state played while the brain is alerted and pursuing a target (the chase/locomotion state). Must name a declared mesh animation state. */
+    alert: string;
+    /** Mesh state played while the brain attacks. Must name a declared mesh animation state. */
+    attack: string;
+    /** Mesh state played when the brain dies. Must name a declared mesh animation state. */
+    death: string;
+  };
+
+  /** Authored AI brain component preset attached to `EntityTypeDescriptor.components.ai`. Descriptor-owned tuning: maps never override these. Materializes the engine-owned brain (logical state + timers) and a movable navigation agent at spawn. Distances are in metres, times in milliseconds, `moveSpeed` in metres/sec. The `states` block links the brain's logical states to mesh animation states; that cross-component mapping is validated at spawn (the ai block cannot see the mesh block at its own parse). */
+  export type AiDescriptor = {
+    /** Distance at which the brain notices a target and leaves idle, in metres. Must be finite and > 0. */
+    detectionRange: number;
+    /** Distance within which the brain attacks rather than pursues, in metres. Must be finite and > 0. */
+    attackRange: number;
+    /** Distance from its origin past which the brain disengages and returns, in metres. Must be finite and > 0. */
+    leashRange: number;
+    /** Damage dealt per attack. Must be finite and >= 0 (a negative value would heal the target through the damage chokepoint). */
+    attackDamage: number;
+    /** Minimum interval between attacks, in milliseconds. Must be finite and > 0. */
+    attackCooldownMs: number;
+    /** Pursuit movement speed in metres/sec, seeding the navigation agent. Must be finite and > 0. */
+    moveSpeed: number;
+    /** Delay between death and despawn, in milliseconds (lets the death animation play out). Must be finite and > 0. */
+    deathDespawnMs: number;
+    /** Experience points awarded to the player when this enemy is killed. Must be finite and >= 0. */
+    expReward: number;
+    /** Closed logical-state → mesh animation-state name mapping (idle / alert / attack / death). Each value must name a state declared in `components.mesh.animations`; validated at spawn. */
+    states: AiStateNames;
   };
 
   /** Authored player-movement preset. `capsule`, `ground`, `air`, and `fall` are required. `dash`, `crouch`, and `viewFeel` are opt-in features; `forgiveness` has engine defaults when omitted. Distances use metres and time uses seconds unless a key is suffixed `Ms`. */
@@ -3575,6 +3615,8 @@ export type EntityTypeComponents = {
   mesh: MeshDescriptor?,
   --- Hit points plus an optional hitscan hitbox. A descriptor carrying this is directly map-placeable by canonicalName.
   health: HealthDescriptor?,
+  --- AI brain preset: detection/attack/leash ranges, attack tuning, move speed, despawn delay, EXP reward, and the logical-state → mesh animation-state map. Materializes a brain plus a navigation agent at spawn. Rides on health+mesh for map placement; it does not itself make a descriptor placeable.
+  ai: AiDescriptor?,
 }
 
 --- Valid values: `semi`, `auto`.
@@ -3619,6 +3661,40 @@ export type HealthDescriptor = {
   hitbox: HitboxDescriptor?,
   --- Per-skeletal-zone damage multipliers, tag → factor (e.g. `{ head: 1.5 }`). A shot on a tagged zone scales the weapon's payload by this factor; an absent zone or unlisted tag applies 1.0. Each factor must be finite and >= 0. Optional; defaults to empty.
   zoneMultipliers: { [string]: number }?,
+}
+
+--- The closed logical-state → animation-state name mapping carried by `AiDescriptor.states`. Each value names a state declared in the entity's `components.mesh.animations`; the brain switches the mesh to the matching state when it enters that logical state. All four keys are required and the set is closed (no other keys allowed).
+export type AiStateNames = {
+  --- Mesh state played while the brain is idle (no target). Must name a declared mesh animation state.
+  idle: string,
+  --- Mesh state played while the brain is alerted and pursuing a target (the chase/locomotion state). Must name a declared mesh animation state.
+  alert: string,
+  --- Mesh state played while the brain attacks. Must name a declared mesh animation state.
+  attack: string,
+  --- Mesh state played when the brain dies. Must name a declared mesh animation state.
+  death: string,
+}
+
+--- Authored AI brain component preset attached to `EntityTypeDescriptor.components.ai`. Descriptor-owned tuning: maps never override these. Materializes the engine-owned brain (logical state + timers) and a movable navigation agent at spawn. Distances are in metres, times in milliseconds, `moveSpeed` in metres/sec. The `states` block links the brain's logical states to mesh animation states; that cross-component mapping is validated at spawn (the ai block cannot see the mesh block at its own parse).
+export type AiDescriptor = {
+  --- Distance at which the brain notices a target and leaves idle, in metres. Must be finite and > 0.
+  detectionRange: number,
+  --- Distance within which the brain attacks rather than pursues, in metres. Must be finite and > 0.
+  attackRange: number,
+  --- Distance from its origin past which the brain disengages and returns, in metres. Must be finite and > 0.
+  leashRange: number,
+  --- Damage dealt per attack. Must be finite and >= 0 (a negative value would heal the target through the damage chokepoint).
+  attackDamage: number,
+  --- Minimum interval between attacks, in milliseconds. Must be finite and > 0.
+  attackCooldownMs: number,
+  --- Pursuit movement speed in metres/sec, seeding the navigation agent. Must be finite and > 0.
+  moveSpeed: number,
+  --- Delay between death and despawn, in milliseconds (lets the death animation play out). Must be finite and > 0.
+  deathDespawnMs: number,
+  --- Experience points awarded to the player when this enemy is killed. Must be finite and >= 0.
+  expReward: number,
+  --- Closed logical-state → mesh animation-state name mapping (idle / alert / attack / death). Each value must name a state declared in `components.mesh.animations`; validated at spawn.
+  states: AiStateNames,
 }
 
 --- Authored player-movement preset. `capsule`, `ground`, `air`, and `fall` are required. `dash`, `crouch`, and `viewFeel` are opt-in features; `forgiveness` has engine defaults when omitted. Distances use metres and time uses seconds unless a key is suffixed `Ms`.
@@ -4260,6 +4336,67 @@ export type Event = {
         assert_eq!(
             committed_luau, luau,
             "sdk/types/postretro.d.luau is out of date — re-run `cargo run -p postretro --bin gen-script-types` and commit the result"
+        );
+    }
+
+    /// Positive-content guard for the `AiDescriptor` typedef registration.
+    /// The drift test (`committed_sdk_types_match_current_registry`) only proves
+    /// the committed files MATCH the generator — it would pass vacuously if
+    /// `AiDescriptor` were never registered and therefore never emitted on
+    /// either side. This test asserts the type, its closed `states` block, and
+    /// the `ai` component slot are actually present in the committed typedefs and
+    /// in fresh generator output, so a regression that drops the registration
+    /// fails loudly rather than silently passing.
+    #[test]
+    fn committed_sdk_types_contain_ai_descriptor() {
+        use crate::scripting::ctx::ScriptCtx;
+        use crate::scripting::primitives::register_all;
+
+        let mut r = PrimitiveRegistry::new();
+        register_all(&mut r, ScriptCtx::new());
+        let ts = generate_typescript(&r);
+        let luau = generate_luau(&r);
+
+        let committed_ts = fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../sdk/types/postretro.d.ts"
+        ))
+        .expect("read committed postretro.d.ts");
+        let committed_luau = fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../sdk/types/postretro.d.luau"
+        ))
+        .expect("read committed postretro.d.luau");
+
+        for (label, generated, committed) in
+            [("ts", &ts, &committed_ts), ("luau", &luau, &committed_luau)]
+        {
+            for needle in [
+                "AiDescriptor",
+                "AiStateNames",
+                "detectionRange",
+                "expReward",
+            ] {
+                assert!(
+                    generated.contains(needle),
+                    "{label} generator output missing `{needle}` — AiDescriptor not registered?"
+                );
+                assert!(
+                    committed.contains(needle),
+                    "committed {label} typedefs missing `{needle}` — regenerate and commit"
+                );
+            }
+        }
+
+        // The `ai` component slot must be wired into EntityTypeComponents on
+        // both surfaces (TS uses `?:`, Luau uses a trailing `?`).
+        assert!(
+            committed_ts.contains("ai?: AiDescriptor | null;"),
+            "committed TS typedefs missing the `ai` component slot"
+        );
+        assert!(
+            committed_luau.contains("ai: AiDescriptor?,"),
+            "committed Luau typedefs missing the `ai` component slot"
         );
     }
 

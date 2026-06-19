@@ -61,6 +61,57 @@ pub fn entity_occluder_eligible(light: &MapLight) -> bool {
     light.casts_entity_shadows && light.is_dynamic
 }
 
+/// Shadow-slot eligibility predicate: does this light's influence volume reach
+/// any leaf the camera can pull geometry from this frame?
+///
+/// A dynamic light is shadow-eligible when its influence sphere (`origin`,
+/// radius `falloff_range`) overlaps any AABB in `reachable_leaf_aabbs`. That set
+/// is the AABBs of the **fog/light-reachable leaves** — the *wider*
+/// portal-reachable set (the same one behind `light_reachable_leaf_mask`), which
+/// deliberately INCLUDES empty `face_count == 0` leaves (see
+/// `visibility.rs`). It is NOT the narrower `VisibleCells` drawable set; using
+/// the wider set is intentional, because we are bounding light *influence* (an
+/// empty reachable leaf still bounds it) — narrowing it to the drawable set
+/// would re-drop lights in empty reachable leaves and reintroduce a variant of
+/// the bug below.
+///
+/// This is the same principle the WORLD occluder cull already uses
+/// (`shadow_cull.rs`): a shadow caster — here the LIGHT — does not need its OWN
+/// leaf to be in the camera PVS; it only needs to be able to reach a receiver
+/// the camera sees.
+///
+/// Replaces the prior over-strict gate that tested whether the light's own leaf
+/// was in the portal-reachable set. That gate dropped a light whose own leaf was
+/// occluded from the camera even though the light still illuminated (and
+/// shadowed) geometry directly in view, so entity shadows vanished as the camera
+/// pitched down and the light's leaf left the shrinking PVS.
+///
+/// Still a real cull: a light whose influence sphere reaches NONE of the
+/// reachable leaves returns `false` (distant lights that cannot affect the view
+/// are skipped), so eligibility is not made unconditional.
+///
+/// `reachable_leaf_aabbs` empty = DrawAll sentinel (fallback visibility paths) →
+/// always eligible, matching the empty-mask DrawAll contract the caller relies
+/// on. The test is a cheap sphere-vs-AABB squared-distance check per leaf with
+/// an early-out on the first hit.
+pub fn light_reaches_visible_cell(
+    origin: glam::Vec3,
+    falloff_range: f32,
+    reachable_leaf_aabbs: &[(glam::Vec3, glam::Vec3)],
+) -> bool {
+    // DrawAll sentinel: no per-leaf set supplied → keep every light eligible.
+    if reachable_leaf_aabbs.is_empty() {
+        return true;
+    }
+    let r = falloff_range.max(0.0);
+    let r_sq = r * r;
+    reachable_leaf_aabbs.iter().any(|(min, max)| {
+        // Closest point on the AABB to the light origin, then squared distance.
+        let closest = origin.clamp(*min, *max);
+        closest.distance_squared(origin) <= r_sq
+    })
+}
+
 /// Encode the `LightType` discriminant the way the shader expects it:
 /// a `u32` bit-cast into the `w` slot of the `position_and_type` vec4.
 fn light_type_u32(ty: LightType) -> u32 {
@@ -653,5 +704,98 @@ mod tests {
         // in the renderer detects the change and issues a write_buffer.
         assert!(bytes.len() < len_two);
         assert_eq!(bytes.len(), GPU_LIGHT_SIZE);
+    }
+
+    // --- Shadow-slot eligibility: influence reaches visible cell --------------
+
+    use glam::Vec3;
+
+    /// Regression: light denied shadow slot because its own leaf left the camera
+    /// PVS, even though its light reaches visible receivers (shadows vanished on
+    /// pitch-down).
+    ///
+    /// The light sits inside a cell the camera can NO LONGER see (its own leaf is
+    /// not among `visible_aabbs`), but its influence sphere still overlaps a cell
+    /// the camera DOES see — the receiver geometry directly in view. Eligibility
+    /// must track that reachable receiver, not the light's own-leaf PVS
+    /// membership.
+    #[test]
+    fn light_with_off_pvs_leaf_but_reachable_receiver_is_eligible() {
+        // Camera-visible cell: a small room near the origin.
+        let visible_aabbs = vec![(Vec3::new(-5.0, 0.0, -5.0), Vec3::new(5.0, 4.0, 5.0))];
+        // Light sits at x=-10 — OUTSIDE the visible cell (its own occluded leaf),
+        // but with a 10 m influence range its sphere reaches into the visible
+        // cell (nearest visible-cell point is x=-5, distance 5 < 10).
+        let origin = Vec3::new(-10.0, 2.0, 0.0);
+        let falloff_range = 10.0;
+        assert!(
+            light_reaches_visible_cell(origin, falloff_range, &visible_aabbs),
+            "a light whose influence reaches a visible cell must be shadow-eligible \
+             even when its own leaf is off the camera PVS"
+        );
+    }
+
+    /// Guard (the fix must not make eligibility unconditional): a light whose
+    /// influence sphere reaches NONE of the visible cells is still correctly
+    /// skipped, so a genuine distance cull survives.
+    #[test]
+    fn light_too_far_from_every_visible_cell_is_not_eligible() {
+        let visible_aabbs = vec![(Vec3::new(-5.0, 0.0, -5.0), Vec3::new(5.0, 4.0, 5.0))];
+        // Light 100 m away with only a 10 m range cannot reach the visible cell
+        // (nearest visible-cell point is x=5, distance 95 > 10).
+        let origin = Vec3::new(100.0, 2.0, 0.0);
+        let falloff_range = 10.0;
+        assert!(
+            !light_reaches_visible_cell(origin, falloff_range, &visible_aabbs),
+            "a light whose influence cannot reach any visible cell must be skipped"
+        );
+    }
+
+    /// Orientation/PVS-invariance property: for a fixed light whose influence
+    /// reaches a fixed visible receiver cell, eligibility is invariant as the
+    /// camera-reachable leaf set shrinks or grows around that receiver. This pins
+    /// the symptom directly — the shadow vanished purely because the PVS shrank
+    /// on pitch-down, dropping the light's own leaf.
+    #[test]
+    fn eligibility_invariant_as_pvs_set_shrinks_around_fixed_receiver() {
+        // The fixed receiver cell the camera always sees and the light reaches.
+        let receiver = (Vec3::new(-5.0, 0.0, -5.0), Vec3::new(5.0, 4.0, 5.0));
+        // The light's own cell — far off to the side, which the PVS may or may
+        // not include depending on camera pitch.
+        let light_own_cell = (Vec3::new(-20.0, 0.0, -5.0), Vec3::new(-12.0, 4.0, 5.0));
+        // Other distant cells that drift in and out of the PVS as the camera
+        // sweeps; none of these change whether the light reaches `receiver`.
+        let distant_a = (Vec3::new(200.0, 0.0, 0.0), Vec3::new(210.0, 4.0, 10.0));
+        let distant_b = (Vec3::new(-200.0, 0.0, 0.0), Vec3::new(-190.0, 4.0, 10.0));
+
+        let origin = Vec3::new(-10.0, 2.0, 0.0);
+        let falloff_range = 10.0; // reaches `receiver` (nearest point x=-5, d=5).
+
+        // Sweep a family of PVS sets that all CONTAIN the fixed receiver but vary
+        // in which other cells (including the light's own cell) are reachable.
+        let pvs_variants: Vec<Vec<(Vec3, Vec3)>> = vec![
+            vec![receiver],
+            vec![receiver, light_own_cell],
+            vec![receiver, distant_a],
+            vec![receiver, distant_b, distant_a],
+            vec![receiver, light_own_cell, distant_a, distant_b],
+        ];
+        for pvs in &pvs_variants {
+            assert!(
+                light_reaches_visible_cell(origin, falloff_range, pvs),
+                "eligibility must hold for any PVS set containing the reachable receiver, \
+                 regardless of whether the light's own cell is in the set"
+            );
+        }
+    }
+
+    /// Empty `visible_aabbs` is the DrawAll sentinel (fallback visibility paths)
+    /// — every light stays eligible, matching the caller's empty-mask contract.
+    #[test]
+    fn empty_visible_set_treats_every_light_as_eligible() {
+        assert!(
+            light_reaches_visible_cell(Vec3::new(9999.0, 9999.0, 9999.0), 0.1, &[]),
+            "empty visible set = DrawAll sentinel → light stays eligible"
+        );
     }
 }

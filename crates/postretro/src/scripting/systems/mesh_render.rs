@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use super::mesh_anim::{self, MeshClipTables};
 use crate::model::ModelHandle;
 use crate::model::sample_params::MeshSampleParams;
-use crate::prl::LevelWorld;
+use crate::prl::{LevelWorld, LightType, MapLight};
 use crate::render::mesh_instances::MeshInstanceInput;
 use crate::render::mesh_pass::mesh_visible;
 use crate::scripting::registry::{ComponentKind, ComponentValue, EntityRegistry, Transform};
@@ -194,7 +194,17 @@ impl MeshRenderCollector {
             let Ok(current) = registry.get_component::<Transform>(id) else {
                 continue;
             };
-            if !mesh_visible(world, visible, current.position) {
+            // Two-tier visibility. `forward_visible` is the camera portal-PVS test
+            // that gates the forward draw. An instance that fails it is still kept
+            // as an off-PVS shadow caster when it sits in a dynamic shadow light's
+            // influence volume — its leaf may have left the PVS (e.g. pitching down)
+            // while a receiver the camera still sees needs its shadow. In neither
+            // set → dropped, as before.
+            //
+            // Regression: entity shadow caster dropped when its leaf left the camera
+            // PVS (pitch-down) — the forward cull pre-removed it before the depth pass.
+            let forward_visible = mesh_visible(world, visible, current.position);
+            if !forward_visible && !caster_in_shadow_light_volume(world, current.position) {
                 continue;
             }
             // Draw at the interpolated transform (smooth between ticks). Fall
@@ -242,6 +252,7 @@ impl MeshRenderCollector {
                 sample,
                 capture,
                 resample,
+                forward_visible,
             });
         }
 
@@ -271,6 +282,40 @@ impl MeshRenderCollector {
     pub(crate) fn resample_count(&self) -> u32 {
         self.resample_count
     }
+}
+
+/// Whether `pos` falls inside the union of active dynamic shadow-light influence
+/// volumes — the cull that bounds the off-PVS shadow-caster set. Each qualifying
+/// light's influence is the parallel `light_influences[i]` sphere; a missing slice
+/// treats the light as infinite-bound, matching the GPU early-out's "no record =
+/// always active" convention.
+///
+/// Pure data logic — no GPU, no camera. Called for an entity whose leaf left the
+/// camera PVS: a hit keeps it as a shadow-only caster, a miss drops it, bounding
+/// off-screen pose cost to entities a dynamic shadow light could project. The final
+/// per-light cone/face trim happens later in `record_skinned_depth`.
+fn caster_in_shadow_light_volume(world: &LevelWorld, pos: glam::Vec3) -> bool {
+    world.lights.iter().enumerate().any(|(i, light)| {
+        if !shadow_casting_dynamic_light(light) {
+            return false;
+        }
+        match world.light_influences.get(i) {
+            // Inside iff within the influence radius. An `f32::MAX` radius
+            // (always-active) trivially passes.
+            Some(inf) => pos.distance_squared(inf.center) <= inf.radius * inf.radius,
+            // No influence record → treat as infinite-bound.
+            None => true,
+        }
+    })
+}
+
+/// Whether a light owns a runtime entity-shadow map: a dynamic-tier spot (spot
+/// pool) or point (cube pool). Baked lights freeze their shadows into the lightmap
+/// and directional lights cast no dynamic shadow, so neither projects a moving
+/// entity (`rendering_pipeline.md` §4). Mirrors the tier gate in
+/// `SpotShadowPool::rank_lights`, kept GPU-free for the collector seam.
+fn shadow_casting_dynamic_light(light: &MapLight) -> bool {
+    light.is_dynamic && matches!(light.light_type, LightType::Spot | LightType::Point)
 }
 
 /// The state fingerprint for an animated entity: its current entered-state stamp
@@ -1024,6 +1069,244 @@ mod tests {
             assert!(
                 inst.resample,
                 "a distant instance resamples while a crossfade is in flight (t={anim_time})",
+            );
+        }
+    }
+
+    // --- Off-PVS shadow casters (decouple shadow collection from camera PVS) ----
+
+    use crate::lighting::influence::LightInfluence;
+    use crate::prl::{FalloffModel, LightType, MapLight, ShadowType};
+
+    /// A dynamic shadow-casting light of `light_type` at `origin` (`is_dynamic`
+    /// forced on so the tier gate passes for spot/point types).
+    fn shadow_light(light_type: LightType, origin: [f64; 3]) -> MapLight {
+        MapLight {
+            origin,
+            light_type,
+            intensity: 1.0,
+            color: [1.0, 1.0, 1.0],
+            falloff_model: FalloffModel::Linear,
+            falloff_range: 20.0,
+            cone_angle_inner: 0.3,
+            cone_angle_outer: 0.6,
+            cone_direction: [0.0, 0.0, -1.0],
+            is_dynamic: true,
+            casts_entity_shadows: true,
+            animated_slot: None,
+            tags: vec![],
+            leaf_index: 0,
+            shadow_type: ShadowType::StaticLightMap,
+        }
+    }
+
+    /// Single-leaf world carrying one light + its parallel influence sphere, so a
+    /// test can place an entity out of the camera PVS but inside the light's volume.
+    fn world_with_light(light: MapLight, influence: LightInfluence) -> LevelWorld {
+        let mut world = single_leaf_world();
+        world.lights = vec![light];
+        world.light_influences = vec![influence];
+        world
+    }
+
+    #[test]
+    fn caster_in_volume_keeps_off_pvs_caster_drops_outside_all_volumes() {
+        // Dynamic spot light at the origin with a 20 m influence sphere: a point
+        // 5 m away is inside (kept), 100 m away is outside every volume (dropped).
+        let world = world_with_light(
+            shadow_light(LightType::Spot, [0.0, 0.0, 0.0]),
+            LightInfluence {
+                center: Vec3::ZERO,
+                radius: 20.0,
+            },
+        );
+        assert!(
+            caster_in_shadow_light_volume(&world, Vec3::new(5.0, 0.0, 0.0)),
+            "an in-volume point is kept as an off-PVS caster candidate",
+        );
+        assert!(
+            !caster_in_shadow_light_volume(&world, Vec3::new(100.0, 0.0, 0.0)),
+            "a point outside every shadow-light volume is dropped",
+        );
+    }
+
+    #[test]
+    fn caster_in_volume_ignores_baked_and_directional_lights() {
+        // Only dynamic-tier spot/point lights own a runtime shadow map. A baked
+        // spot (is_dynamic = false) and a dynamic directional light must not pull
+        // an off-PVS entity into the caster set, even with a covering sphere.
+        let mut baked = shadow_light(LightType::Spot, [0.0, 0.0, 0.0]);
+        baked.is_dynamic = false;
+        let world = world_with_light(
+            baked,
+            LightInfluence {
+                center: Vec3::ZERO,
+                radius: 50.0,
+            },
+        );
+        assert!(
+            !caster_in_shadow_light_volume(&world, Vec3::ZERO),
+            "a baked light does not project moving entities — no off-PVS caster",
+        );
+
+        let world = world_with_light(
+            shadow_light(LightType::Directional, [0.0, 0.0, 0.0]),
+            LightInfluence {
+                center: Vec3::ZERO,
+                radius: 50.0,
+            },
+        );
+        assert!(
+            !caster_in_shadow_light_volume(&world, Vec3::ZERO),
+            "a directional light casts no dynamic shadow — no off-PVS caster",
+        );
+    }
+
+    #[test]
+    fn collect_emits_off_pvs_entity_as_shadow_only_caster() {
+        // Regression: entity shadow caster dropped when its leaf left the camera
+        // PVS (pitch-down). Entity in leaf 0, camera PVS holds only leaf 1 → fails
+        // the forward cull, but sits in a dynamic spot light's volume, so the
+        // collector still emits it flagged `forward_visible = false`.
+        let mut registry = EntityRegistry::new();
+        let mut collector = MeshRenderCollector::new();
+        let world = world_with_light(
+            shadow_light(LightType::Spot, [0.0, 0.0, 0.0]),
+            LightInfluence {
+                center: Vec3::ZERO,
+                radius: 20.0,
+            },
+        );
+        // Entity at the origin (well within the 20 m sphere), leaf 0.
+        spawn_mesh(&mut registry, "decraniated", Vec3::new(1.0, 0.0, 0.0));
+
+        // PVS holds only leaf 1 → the entity's leaf 0 is NOT visible (pitch-down).
+        collector.collect(
+            &registry,
+            &world,
+            &VisibleCells::Culled(vec![1]),
+            1.0,
+            0.0,
+            &MeshClipTables::new(),
+            glam::Vec3::ZERO,
+        );
+        assert_eq!(
+            collector.instances().len(),
+            1,
+            "off-PVS entity in a shadow-light volume is emitted as a caster",
+        );
+        assert!(
+            !collector.instances()[0].forward_visible,
+            "an off-PVS caster is flagged shadow-only (not drawn by the forward pass)",
+        );
+    }
+
+    #[test]
+    fn collect_drops_off_pvs_entity_outside_all_light_volumes() {
+        // The complement: an entity out of the PVS AND outside every dynamic
+        // shadow-light volume is dropped (off-screen pose cost stays bounded). The
+        // light's 1 m sphere does not reach the entity at x = 50.
+        let mut registry = EntityRegistry::new();
+        let mut collector = MeshRenderCollector::new();
+        let world = world_with_light(
+            shadow_light(LightType::Spot, [0.0, 0.0, 0.0]),
+            LightInfluence {
+                center: Vec3::ZERO,
+                radius: 1.0,
+            },
+        );
+        spawn_mesh(&mut registry, "decraniated", Vec3::new(50.0, 0.0, 0.0));
+
+        collector.collect(
+            &registry,
+            &world,
+            &VisibleCells::Culled(vec![1]),
+            1.0,
+            0.0,
+            &MeshClipTables::new(),
+            glam::Vec3::ZERO,
+        );
+        assert!(
+            collector.instances().is_empty(),
+            "off-PVS entity outside every shadow-light volume is dropped",
+        );
+    }
+
+    #[test]
+    fn collect_flags_in_pvs_entity_forward_visible() {
+        // A normal in-PVS entity is flagged `forward_visible = true` (drawn by both
+        // the forward pass and the shadow passes), independent of any light volume.
+        let mut registry = EntityRegistry::new();
+        let mut collector = MeshRenderCollector::new();
+        let world = single_leaf_world();
+        spawn_mesh(&mut registry, "decraniated", Vec3::new(1.0, 0.0, 0.0));
+
+        collector.collect(
+            &registry,
+            &world,
+            &VisibleCells::Culled(vec![0]),
+            1.0,
+            0.0,
+            &MeshClipTables::new(),
+            glam::Vec3::ZERO,
+        );
+        assert_eq!(collector.instances().len(), 1);
+        assert!(
+            collector.instances()[0].forward_visible,
+            "an in-PVS entity is forward-visible",
+        );
+    }
+
+    // --- Orientation-invariance property ---------------------------------------
+
+    use proptest::prelude::*;
+
+    proptest! {
+        /// The shadow-caster decision must not depend on the camera. For a fixed
+        /// caster + light, sweep camera eye positions and confirm the off-PVS
+        /// emission always tracks the pure volume test — pinning the root cause:
+        /// the caster set is decoupled from where the camera looks.
+        ///
+        /// Regression: pitching the camera down shrank the PVS and dropped a
+        /// floor-standing entity's shadow.
+        #[test]
+        fn shadow_caster_decision_is_camera_orientation_independent(
+            px in -30.0f32..30.0,
+            py in -30.0f32..30.0,
+            pz in -30.0f32..30.0,
+            cam_x in -100.0f32..100.0,
+            cam_y in -100.0f32..100.0,
+            cam_z in -100.0f32..100.0,
+        ) {
+            let world = world_with_light(
+                shadow_light(LightType::Spot, [0.0, 0.0, 0.0]),
+                LightInfluence { center: Vec3::ZERO, radius: 20.0 },
+            );
+            let pos = Vec3::new(px, py, pz);
+            let expected = caster_in_shadow_light_volume(&world, pos);
+
+            // Collector run with the entity's leaf out of the PVS, at any camera
+            // eye, must agree with the pure predicate.
+            let mut registry = EntityRegistry::new();
+            let mut collector = MeshRenderCollector::new();
+            spawn_mesh(&mut registry, "decraniated", pos);
+            collector.collect(
+                &registry,
+                &world,
+                &VisibleCells::Culled(vec![1]),
+                1.0,
+                0.0,
+                &MeshClipTables::new(),
+                Vec3::new(cam_x, cam_y, cam_z),
+            );
+            let emitted_as_caster = collector
+                .instances()
+                .first()
+                .map(|i| !i.forward_visible)
+                .unwrap_or(false);
+            prop_assert_eq!(
+                emitted_as_caster, expected,
+                "off-PVS caster emission must track the volume test, not the camera",
             );
         }
     }

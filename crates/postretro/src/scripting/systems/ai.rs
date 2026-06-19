@@ -307,10 +307,12 @@ pub(crate) fn run_ai_tick(
 
         // (2) Zero-HP death check runs EVERY tick, regardless of stride and
         // regardless of whether a player exists. A dead enemy short-circuits all
-        // targeting/attack logic.
+        // targeting/attack logic. Non-finite HP counts as dead too (same predicate
+        // as the death sweep), so a corrupt `current` cannot leave an enemy
+        // immortal — `NaN <= 0.0` is false on its own.
         let is_dead = registry
             .get_component::<HealthComponent>(snap.id)
-            .map(|h| h.current <= 0.0)
+            .map(|h| h.current <= 0.0 || !h.current.is_finite())
             .unwrap_or(false);
 
         let mut attacked = false;

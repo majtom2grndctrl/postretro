@@ -68,11 +68,12 @@ pub(crate) fn sweep_deaths(registry: &mut EntityRegistry) -> DeathReport {
             continue;
         };
         // `<= 0.0`, not `== 0.0`: `apply_damage` floors HP at exactly `0.0` (the
-        // sole damage chokepoint), so today HP never goes negative. The `<=`
-        // defends against any future direct write that could; the AI tick's death
-        // check (`ai.rs`) also keys on `<= 0.0`, so the kill-latch and despawn
-        // agree on "dead".
-        if health.current <= 0.0 {
+        // sole damage chokepoint), so today HP never goes negative or non-finite.
+        // The guard defends against a future direct write that could: a negative
+        // OR a NaN `current` (`NaN <= 0.0` is false, which would otherwise leave a
+        // corrupt entity immortal). The AI tick's death check (`ai.rs`) uses the
+        // same predicate, so the kill-latch and despawn agree on "dead".
+        if health.current <= 0.0 || !health.current.is_finite() {
             dead.push(id);
         }
     }
@@ -418,6 +419,20 @@ mod tests {
         let report = sweep_deaths(&mut reg);
 
         assert!(!reg.exists(id), "plain non-player despawns in the sweep");
+        assert_eq!(report.killed_tags, vec![vec!["barrel".to_string()]]);
+    }
+
+    #[test]
+    fn non_finite_hp_is_treated_as_dead_by_the_sweep() {
+        // Defensive: a corrupt NaN `current` (`NaN <= 0.0` is false on its own)
+        // must not leave an entity immortal — the sweep's finiteness guard
+        // collects it as dead.
+        let mut reg = EntityRegistry::new();
+        let id = spawn_health_entity(&mut reg, 10.0, f32::NAN, &["barrel"]);
+
+        let report = sweep_deaths(&mut reg);
+
+        assert!(!reg.exists(id), "a NaN-HP entity is swept as dead");
         assert_eq!(report.killed_tags, vec![vec!["barrel".to_string()]]);
     }
 }

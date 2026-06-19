@@ -43,6 +43,20 @@ pub fn find_path(graph: &NavGraph, start: Vec3, goal: Vec3) -> Option<Vec<Vec3>>
 
     let corridor = astar_corridor(graph, start_region, goal_region)?;
     let portals = oriented_portals(graph, &corridor);
+    // The start/goal guard above does not cover the corridor's own geometry: a
+    // corrupt baked portal endpoint (NaN/inf) makes the funnel's area tests false
+    // and collapses the corridor to a straight `[start, goal]` line through walls,
+    // exactly as a non-finite endpoint would. Bail rather than emit that path.
+    if portals
+        .iter()
+        .any(|(l, r)| !l.is_finite() || !r.is_finite())
+    {
+        debug_assert!(
+            false,
+            "find_path: corridor has a non-finite portal endpoint"
+        );
+        return None;
+    }
     Some(funnel(start, goal, &portals))
 }
 

@@ -1139,6 +1139,7 @@ mod tests {
             input_system: input::InputSystem::new(input::default_bindings()),
             gameplay_input_latch: input::GameplayInputLatch::new(),
             crouch_toggle_active: false,
+            ai_warned: std::collections::HashSet::new(),
             player_options: options::PlayerOptions::default(),
             settings_path: None,
             input_focus: InputFocus::Gameplay,

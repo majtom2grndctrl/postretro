@@ -513,6 +513,7 @@ fn main() -> Result<()> {
         input_system,
         gameplay_input_latch: input::GameplayInputLatch::new(),
         crouch_toggle_active: false,
+        ai_warned: std::collections::HashSet::new(),
         player_options,
         settings_path,
         input_focus: InputFocus::Gameplay,
@@ -715,6 +716,14 @@ struct App {
     /// the movement component. Inert in `CrouchMode::Hold` (hold tracks the
     /// button level directly). See: context/lib/input.md, context/lib/player_options.md
     crouch_toggle_active: bool,
+
+    /// Warn-once latch for the enemy-AI tick. Keyed, namespaced diagnostics fire
+    /// exactly once across the run rather than each tick: `anim:<name>` for an
+    /// animation state that fails to switch (`UnknownState`/`NotAnimated`, prior
+    /// animation kept) and `blocked:<id>` for a chasing enemy whose agent found
+    /// no path. Lives on `App` (the AI tick owner), threaded into
+    /// `scripting_systems::ai::run_ai_tick`. See: scripting/systems/ai.rs.
+    ai_warned: std::collections::HashSet<String>,
 
     /// Per-human runtime preferences loaded at boot. Seeds input look
     /// preferences during init; `crouch_mode` is read each input tick by
@@ -1906,6 +1915,7 @@ impl ApplicationHandler for App {
                 // with ongoing physics simulation. See:
                 // context/lib/entity_model.md §5
                 let mut pending_movement_events: Vec<&'static str> = Vec::new();
+                let mut pending_ai_events: Vec<&'static str> = Vec::new();
                 let mut pending_weapon_events: Vec<&'static str> = Vec::new();
                 // Death-event names accumulate here and drain through the
                 // sequence-aware dispatcher (a separate sibling loop below), so a
@@ -2019,6 +2029,15 @@ impl ApplicationHandler for App {
                             }
                         }
 
+                        // Order 1a-ai: enemy-AI FSM tick. Runs BEFORE the agent
+                        // steering tick so this tick's destination/clear orders
+                        // (set per chasing enemy) are honored by the same-frame
+                        // steering pass. Evaluates the closed transition set,
+                        // applies damage on the attack cooldown (raising
+                        // `enemyAttack`), and switches the mapped animation.
+                        let ai_events = self.run_ai_tick(tick_dt);
+                        pending_ai_events.extend(ai_events);
+
                         // Order 1b: navigation-agent steering. Drives every
                         // entity carrying an `AgentComponent` toward its
                         // destination — replan under budget, follow waypoints,
@@ -2049,6 +2068,9 @@ impl ApplicationHandler for App {
                 // complete so reactions observe the final post-tick state of
                 // every entity.
                 for event_name in &pending_movement_events {
+                    let _ = fire_named_event(event_name, &self.script_ctx.data_registry.borrow());
+                }
+                for event_name in &pending_ai_events {
                     let _ = fire_named_event(event_name, &self.script_ctx.data_registry.borrow());
                 }
                 for event_name in &pending_weapon_events {
@@ -3655,6 +3677,18 @@ impl App {
         }
 
         events_out
+    }
+
+    /// Drive the enemy-AI FSM tick. Thin wrapper following the
+    /// `run_movement_tick`/`run_weapon_fire_tick` precedent: borrows
+    /// `self.script_ctx.registry` mutably and threads the warn-once animation
+    /// latch through. All FSM logic (transition core, steering drive, damage,
+    /// animation switching) lives in `scripting_systems::ai::run_ai_tick`.
+    /// Returns the event names raised this tick (`enemyAttack` per attack) for
+    /// the post-tick event drain.
+    fn run_ai_tick(&mut self, tick_dt: f32) -> Vec<&'static str> {
+        let mut registry = self.script_ctx.registry.borrow_mut();
+        scripting_systems::ai::run_ai_tick(&mut registry, &mut self.ai_warned, tick_dt)
     }
 
     /// Drive the navigation-agent steering tick. The nav graph and collision

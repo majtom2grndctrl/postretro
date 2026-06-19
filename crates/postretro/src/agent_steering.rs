@@ -71,10 +71,9 @@ pub(crate) struct AgentTickResult {
 /// component, never recomputed here.
 ///
 /// The steering-API surface (`set_destination`/`clear_destination`/`path_state`
-/// and this struct) has no production caller until plan 2's AI behaviors land;
-/// it is exercised now by this module's tests. The `allow` is accurate, not
-/// stale — the live `tick` caller is unaffected.
-#[allow(dead_code)]
+/// and this struct) is consumed by the enemy-AI FSM tick
+/// (`scripting/systems/ai.rs`), which drives `set_destination`/`clear_destination`
+/// per chasing enemy and reads `path_state` for arrival/blocked.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct AgentPathState {
     /// The agent currently has a destination set (`Some`).
@@ -98,7 +97,6 @@ pub(crate) struct AgentPathState {
 /// tick replans immediately toward the new goal: the path is dropped, the
 /// replan cooldown is reset to 0, and the `arrived`/`blocked` status is cleared.
 /// No-op (silently) when the entity has no agent component.
-#[allow(dead_code)] // plan-2 seam; see `AgentPathState`.
 pub(crate) fn set_destination(registry: &mut EntityRegistry, agent: EntityId, pos: Vec3) {
     let Ok(component) = registry.get_component::<AgentComponent>(agent) else {
         return;
@@ -117,7 +115,6 @@ pub(crate) fn set_destination(registry: &mut EntityRegistry, agent: EntityId, po
 /// Clear an agent's destination: drops the path and stops the agent (it keeps
 /// its grounded state but no longer steers). No-op when the entity has no agent
 /// component.
-#[allow(dead_code)] // plan-2 seam; see `AgentPathState`.
 pub(crate) fn clear_destination(registry: &mut EntityRegistry, agent: EntityId) {
     let Ok(component) = registry.get_component::<AgentComponent>(agent) else {
         return;
@@ -136,7 +133,6 @@ pub(crate) fn clear_destination(registry: &mut EntityRegistry, agent: EntityId) 
 /// Read one agent's path-following state. Returns `None` when the entity has no
 /// agent component (or is stale). The position is read from the agent's
 /// `Transform`; the rest from the agent component.
-#[allow(dead_code)] // plan-2 seam; see `AgentPathState`.
 pub(crate) fn path_state(registry: &EntityRegistry, agent: EntityId) -> Option<AgentPathState> {
     let component = registry.get_component::<AgentComponent>(agent).ok()?;
     let position = registry

@@ -993,3 +993,98 @@ fn integrated_chase_loop_keeps_all_chasers_moving_past_replan_budget() {
     // chase target and the loop ran without panicking.
     let _ = player_hp(&reg, player);
 }
+
+/// Set the player pawn's XZ position (keeps Y), so a test can walk the target a
+/// fixed step each tick.
+fn move_player_to(reg: &mut EntityRegistry, pawn: EntityId, x: f32, z: f32) {
+    let mut t = *reg.get_component::<Transform>(pawn).unwrap();
+    t.position = Vec3::new(x, t.position.y, z);
+    reg.set_component(pawn, t).unwrap();
+}
+
+#[test]
+fn integrated_chase_loop_closes_distance_for_all_chasers_when_player_moves() {
+    // Regression (the bug the stationary-player test missed): the FSM re-issues
+    // the player's position to `set_destination` EVERY chase tick. With a MOVING
+    // player whose per-tick step exceeds the old `DESTINATION_MOVED_EPSILON`
+    // (0.1), the old `set_destination` wiped each chaser's path every tick; the
+    // per-tick replan budget then only replanned REPLAN_BUDGET_PER_TICK of them,
+    // so the OVERFLOW chasers ended every tick with an empty path → goal_velocity
+    // ZERO → permanent freeze. The fix preserves the path on re-issue and lets a
+    // budget-loss chaser keep following its stale-but-valid route. This test
+    // spawns MORE chasers than the budget and a player that moves ~0.12 u/tick
+    // (above that epsilon), and asserts EVERY chaser — overflow included — closes
+    // real distance to the player. It FAILS pre-fix: overflow chasers freeze.
+    let floor = OpenFloor::new();
+    let world = floor.collision_world();
+    let graph = floor.nav_graph();
+
+    let mut reg = EntityRegistry::new();
+    let mut warned = HashSet::new();
+
+    // Player starts far down the floor; it will walk TOWARD the chaser cluster so
+    // both sides converge regardless of relative speed — what we assert is that
+    // no chaser is frozen, not a fleeing-race outcome.
+    let player_start = Vec3::new(20.0, 0.0, 8.0);
+    let player = spawn_player(&mut reg, player_start);
+
+    // More chasers than the per-tick replan budget, clustered at the far end.
+    let chaser_count = agent_steering::REPLAN_BUDGET_PER_TICK + 3;
+    let mut chasers: Vec<EntityId> = Vec::new();
+    for i in 0..chaser_count {
+        let id = spawn_chaser(&mut reg, 14.0 + i as f32 * 0.6, 30.0);
+        chasers.push(id);
+    }
+
+    let start_pos: Vec<Vec3> = chasers
+        .iter()
+        .map(|&id| agent_steering::path_state(&reg, id).unwrap().position)
+        .collect();
+    let start_dist_to_player: Vec<f32> = start_pos
+        .iter()
+        .map(|&p| distance_xz(p, player_start))
+        .collect();
+
+    // Per-tick player step: ~0.12 u/tick — comfortably above the old
+    // DESTINATION_MOVED_EPSILON (0.1) so it would have wiped the path each tick
+    // under the bug, yet small enough that the cluster stays inside detection.
+    const PLAYER_STEP_PER_TICK: f32 = 0.12;
+    let ticks = 200u32;
+
+    for _ in 0..ticks {
+        // Walk the player in +Z toward the cluster, clamped to the floor bounds so
+        // it stays on the navmesh (the chasers' destination must stay routable).
+        let p = reg.get_component::<Transform>(player).unwrap().position;
+        let next_z = (p.z + PLAYER_STEP_PER_TICK).min(floor.extent - 2.0);
+        move_player_to(&mut reg, player, p.x, next_z);
+
+        run_ai_tick(&mut reg, &mut warned, STEER_DT);
+        agent_steering::tick(&mut reg, &world, Some(&graph), STEER_GRAVITY, STEER_DT);
+    }
+
+    let player_end = reg.get_component::<Transform>(player).unwrap().position;
+
+    // EVERY chaser — including the overflow ones beyond the budget — must have
+    // moved a real amount (well above the gravity/separation settle noise floor)
+    // AND closed real distance to the player. A frozen overflow chaser (path
+    // wiped, goal_velocity ZERO) advances essentially zero and its distance to
+    // the now-closer player would NOT shrink by a meaningful margin.
+    for (idx, &id) in chasers.iter().enumerate() {
+        let state = agent_steering::path_state(&reg, id).unwrap();
+        let moved = distance_xz(start_pos[idx], state.position);
+        assert!(
+            moved > 1.0,
+            "chaser {id} (index {idx}) barely moved ({moved} u) — frozen by a wiped \
+             path? start {:?}, end {:?}",
+            start_pos[idx],
+            state.position
+        );
+        let end_dist = distance_xz(state.position, player_end);
+        assert!(
+            end_dist + 1.0 < start_dist_to_player[idx],
+            "chaser {id} (index {idx}) did not close distance to the moving player: \
+             start dist {}, end dist {end_dist}",
+            start_dist_to_player[idx],
+        );
+    }
+}

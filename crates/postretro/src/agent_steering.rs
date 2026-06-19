@@ -48,17 +48,23 @@ pub(crate) const REPLAN_STALENESS_TICKS: u32 = 30;
 /// so a fatter agent gets a proportionally wider acceptance window.
 const ARRIVAL_RADIUS_FACTOR: f32 = 1.5;
 
-/// World-space XZ distance below which a re-issued destination counts as the
-/// SAME target: [`set_destination`] then refreshes only `destination` and leaves
-/// the plan intact (no path wipe, no forced replan). Sized well under the
-/// arrival band (`ARRIVAL_RADIUS_FACTOR * radius`, ~0.5 m for the canonical
-/// agent) — a move this small cannot change which waypoint the agent steers
-/// toward, so replanning for it would be wasted work. A move beyond it is
-/// genuine: the plan is cleared so `tick` replans promptly. The primary consumer
-/// (`scripting/systems/ai.rs`) re-issues the player's position EVERY tick while
-/// chasing; this epsilon stops a near-stationary player from forcing a replan
-/// each tick and defeating the per-tick replan budget.
-const DESTINATION_MOVED_EPSILON: f32 = 0.1;
+/// World-space XZ distance the LIVE destination may drift from the position the
+/// current plan was built for (`planned_destination`) before [`tick`] wants a
+/// fresh path. The comparison is CUMULATIVE drift-from-the-plan, never a
+/// successive per-call delta: a destination that creeps a little each tick (a
+/// chased, moving player) accrues drift against the one stored plan and only
+/// crosses this band after several ticks, so a moving target cannot force a
+/// replan EVERY tick and defeat the per-tick replan budget.
+///
+/// Sized to roughly the agent's arrival band (`ARRIVAL_RADIUS_FACTOR * radius`,
+/// ~0.5 m for the canonical 0.35 m agent): a plan stays valid while the goal is
+/// within about one acceptance radius of where it was planned for — close enough
+/// that the existing waypoints still lead the agent to the goal. The staleness
+/// window ([`REPLAN_STALENESS_TICKS`]) refreshes the path regardless; this only
+/// governs how promptly a genuinely-moved goal earns an earlier replan. Replaces
+/// the former successive-delta epsilon, which wiped the path on every change and
+/// froze chasers beyond the budget when the target moved.
+const REPLAN_DEST_THRESHOLD: f32 = 0.5;
 
 /// Separation radius as a multiple of the agent capsule radius, measured between
 /// capsule centers. Two agents push apart when their center distance is below
@@ -88,10 +94,17 @@ pub(crate) struct AgentTickResult {
 /// `set_destination`/`clear_destination` per chasing enemy and reads
 /// `path_state` for arrival/blocked.
 ///
+/// A re-issued destination NEVER wipes the path: [`set_destination`] only
+/// records the new target, and [`tick`] is the sole place the path is rebuilt,
+/// under the per-tick replan budget. An agent that wants a fresh route but loses
+/// the budget race keeps `has_path` true and keeps following its last (stale)
+/// route — stale-but-moving, not frozen.
+///
 /// Plan-pending state: `has_destination && !has_path && !blocked && !arrived`
-/// means the agent wants a path but is WAITING for a replan-budget slot (the
-/// per-tick budget is full this tick) — not stuck. A genuinely unroutable agent
-/// reads `blocked`; an idle one reads `!has_destination`.
+/// therefore means the agent has a destination but has not yet landed its FIRST
+/// plan (it is waiting for a replan-budget slot) — not stuck, and not a chaser
+/// mid-pursuit (which retains its path). A genuinely unroutable agent reads
+/// `blocked`; an idle one reads `!has_destination`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct AgentPathState {
     /// The agent currently has a destination set (`Some`).
@@ -113,45 +126,38 @@ pub(crate) struct AgentPathState {
 
 /// Set (or replace) an agent's destination.
 ///
-/// A GENUINE move (the new `pos` is farther than [`DESTINATION_MOVED_EPSILON`]
-/// in XZ from the current `destination`, or there was none) clears the prior
-/// plan so the next tick replans immediately toward the new goal: the path is
-/// dropped, the cursor reset, the replan cooldown reset to 0, and
-/// `arrived`/`blocked` cleared.
+/// Records `destination = pos` and NOTHING destructive. The path, waypoint
+/// cursor, `planned_destination`, replan cooldown, and the `arrived`/`blocked`
+/// flags are all PRESERVED — the path is the only thing keeping an agent moving
+/// between replans, so re-issuing the destination must never wipe it. WHEN to
+/// replan is decided solely by [`tick`], which compares the live `destination`
+/// against the position the current plan was built for (`planned_destination`)
+/// and rebuilds the path under the per-tick replan budget. This function only
+/// updates the target; it does not touch the plan.
 ///
-/// An UNCHANGED (or barely-changed) re-issue — within the epsilon of the current
-/// destination — refreshes only `destination` and PRESERVES the plan
-/// (`path`, `planned_destination`, `waypoint_cursor`, `replan_cooldown_ticks`,
-/// `arrived`, `blocked`). The primary consumer (`scripting/systems/ai.rs`)
-/// re-issues the player's position every tick while chasing; without this the
-/// path would be wiped each tick and `tick`'s destination-moved detection would
-/// fire every tick, defeating the per-tick replan budget (chasers beyond the
-/// budget would freeze) and clearing `blocked` before the FSM's blocked-warn
-/// could observe it. `tick`'s `planned_destination` comparison stays the sole
-/// authority for WHEN to replan; this function just stops stomping it.
+/// This decoupling is the crux of the chase loop: the primary consumer
+/// (`scripting/systems/ai.rs`) re-issues the player's position EVERY tick while
+/// chasing. If this wiped the path on each change, chasers beyond the per-tick
+/// replan budget would end the tick with an empty path and freeze; preserving
+/// the path lets them keep following their last route (stale-but-moving) until
+/// a budget slot frees up. It also stops a transient call from clearing
+/// `blocked` before the FSM's blocked-warn can observe it.
 ///
-/// No-op (silently) when the entity has no agent component.
+/// A non-finite `pos` is rejected as a silent no-op (matching `find_path`'s
+/// finiteness guard) so a NaN/inf target never enters the steering state. Also a
+/// silent no-op when the entity has no agent component.
 pub(crate) fn set_destination(registry: &mut EntityRegistry, agent: EntityId, pos: Vec3) {
+    if !pos.is_finite() {
+        return;
+    }
     let Ok(component) = registry.get_component::<AgentComponent>(agent) else {
         return;
     };
-    // Same target re-issued: refresh `destination` only, leave the plan intact.
-    // An unchanged order must not force a replan or wipe the path.
-    let unchanged = component
-        .destination
-        .is_some_and(|current| distance_xz(current, pos) <= DESTINATION_MOVED_EPSILON);
-
+    // Record the target only; the plan (path/cursor/planned_destination/cooldown/
+    // arrived/blocked) is left intact. `tick` owns the replan decision and is the
+    // sole place the path is rebuilt.
     let mut updated = component.clone();
     updated.destination = Some(pos);
-    if !unchanged {
-        // Genuine move: drop the plan so `tick` replans promptly toward the goal.
-        updated.planned_destination = None;
-        updated.path.clear();
-        updated.waypoint_cursor = 0;
-        updated.replan_cooldown_ticks = 0;
-        updated.arrived = false;
-        updated.blocked = false;
-    }
     let _ = registry.set_component(agent, updated);
 }
 
@@ -270,20 +276,26 @@ pub(crate) fn tick(
             continue;
         };
 
-        // Replan policy. The agent qualifies for a fresh path when:
-        //   - the destination moved since the last plan (immediate), OR
+        // Replan policy — the ONLY place the path is (re)built. The agent
+        // qualifies for a fresh path when:
+        //   - the live destination has drifted more than `REPLAN_DEST_THRESHOLD`
+        //     (XZ) from the position the current plan was built for — CUMULATIVE
+        //     drift against `planned_destination`, never the per-call delta — or
+        //     there is no plan yet (`planned_destination` is `None`), OR
         //   - the cooldown has elapsed (staleness refresh / failed-plan retry).
         // The cooldown gate covers BOTH a live path going stale AND a failed
         // (empty) plan — a permanently-blocked agent therefore re-spends a
         // budget slot at most once per `REPLAN_STALENESS_TICKS`, never every
-        // tick (the replan-starvation gate).
-        let destination_moved = agent.planned_destination != Some(destination);
-        if destination_moved {
-            agent.replan_cooldown_ticks = 0;
-        }
-        let wants_replan = destination_moved || agent.replan_cooldown_ticks == 0;
+        // tick (the replan-starvation gate). Drift-from-plan (not per-call delta)
+        // is what lets a moving target keep agents on a stale-but-valid path
+        // instead of replanning every tick.
+        let wants_replan = agent
+            .planned_destination
+            .is_none_or(|planned| distance_xz(planned, destination) > REPLAN_DEST_THRESHOLD)
+            || agent.replan_cooldown_ticks == 0;
 
         if wants_replan && replans < REPLAN_BUDGET_PER_TICK {
+            // A budget slot is available: rebuild the path now.
             replans += 1;
             agent.replan_cooldown_ticks = REPLAN_STALENESS_TICKS;
             agent.planned_destination = Some(destination);
@@ -291,18 +303,26 @@ pub(crate) fn tick(
                 Some(path) => {
                     agent.path = path;
                     agent.waypoint_cursor = 0;
+                    agent.arrived = false;
                     agent.blocked = false;
                 }
                 None => {
-                    // No route: blocked. Hold position; do NOT walk toward the
-                    // raw destination. The cooldown (set above) keeps this from
-                    // re-qualifying every tick.
+                    // No route: a genuine no-route stop (distinct from a budget
+                    // loss). Drop the path and hold position; do NOT walk toward
+                    // the raw destination. The cooldown (set above) keeps this
+                    // from re-qualifying every tick.
                     agent.path.clear();
                     agent.waypoint_cursor = 0;
                     agent.blocked = true;
                 }
             }
         }
+        // An agent that WANTED a replan but lost the budget race this tick keeps
+        // its existing `path` and `planned_destination` untouched (the path is
+        // only ever mutated inside the budget-gated block above), so it follows
+        // its last route — stale-but-moving — instead of freezing. It stays
+        // eligible: `planned_destination` is unchanged, so the drift test (or the
+        // cooldown) still fires next tick until a slot frees up.
 
         // Compute the goal-seeking steering velocity from the current waypoint.
         let arrival_radius = ARRIVAL_RADIUS_FACTOR * agent.radius;

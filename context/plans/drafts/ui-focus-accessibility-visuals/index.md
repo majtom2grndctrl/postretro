@@ -13,10 +13,10 @@ Make UI focus a first-class accessibility state and a designer-controlled visual
 - Focus state included in accessibility metadata.
 - Resolved names, roles, bounds, disabled, selected, checked, and live-region announcements in the accessibility snapshot.
 - Author-facing focus visual descriptors for focusable widgets.
-- New theme tokens for default text and focus-highlight text; updated panel background; preserved fallback outline semantics.
+- New theme tokens for default/highlight text, button backgrounds, dark translucent panels, and contrast outline fallback.
 - Default interactive label color changed from literal white to the default text token.
-- Renderer support for at least outline and text-color focus visuals.
-- Demo frontend menu rethemed to use a dark translucent panel, near-white default text, and pure-white focused button text.
+- Renderer support for at least background-color, text-color, and outline focus visuals.
+- Demo frontend menu rethemed to use a dark translucent panel, near-white default text, and focused button background highlights.
 - Tests for focus navigation, accessibility snapshot contents, theme fallback, and focus visual rendering data.
 
 ### Out of scope
@@ -29,6 +29,7 @@ Make UI focus a first-class accessibility state and a designer-controlled visual
 - Rich accessibility actions beyond the existing button activation and slider stepping.
 - Localization beyond the current `LocalizedText` string shape.
 - Full screen-reader parity testing on every OS in CI.
+- Full increased-contrast settings UI. This plan defines the contrast outline token and resolver hook; preference plumbing can land in a separate player-options plan if it does not already exist.
 
 ## Acceptance criteria
 
@@ -40,13 +41,15 @@ Make UI focus a first-class accessibility state and a designer-controlled visual
 - [ ] Hidden widgets and their descendants are absent from both focus export and accessibility snapshot output.
 - [ ] Focus navigation and activation behavior does not change: disabled nodes remain unreachable by nav/pointer focus and do not activate.
 - [ ] An app-side accessibility adapter receives the active snapshot, focus changes, and live-region entries; a no-op adapter preserves behavior when no platform backend is linked.
+- [ ] A widget can author a focus visual that changes background color on focus without drawing an outline.
 - [ ] A widget can author a focus visual that changes text color on focus without drawing an outline.
 - [ ] A widget can author an outline focus visual using authored color, thickness, and inset.
-- [ ] Omitted focus visual uses the engine fallback outline so existing menus remain navigable and visible.
+- [ ] Buttons can author an optional default background color without changing focus, activation, or accessibility behavior.
+- [ ] Omitted focus visual uses the engine contrast outline fallback so existing menus remain navigable and visible.
 - [ ] Unknown focus visual color tokens degrade to opaque magenta.
 - [ ] Unknown focus visual spacing tokens resolve to zero.
-- [ ] The engine default theme includes near-white default text, white focus-highlight text, dark translucent panel, and fallback outline tokens.
-- [ ] The demo frontend menu uses tokenized panel fill and text colors, and its focused level buttons highlight by text color rather than a heavy outline.
+- [ ] The engine default theme includes near-white default text, white highlighted text, default/highlight button backgrounds, dark translucent panel, and contrast outline tokens.
+- [ ] The demo frontend menu uses tokenized panel fill, text colors, and button backgrounds; focused level buttons highlight by background color rather than a heavy outline.
 - [ ] TypeScript and Luau SDK helpers expose the same focus visual fields and reject malformed focus visual descriptors.
 - [ ] Generated SDK typedefs match the Rust wire shape.
 - [ ] `cargo check` passes.
@@ -67,23 +70,23 @@ Resolve `label`, `labelledBy`, and tree `accessibleName` into strings during acc
 
 ### Task 4: Add Focus Visual Descriptor
 
-Add an authored `focusVisual` descriptor to focusable widgets. The initial variants are `outline`, `textColor`, and `none`. `outline` carries color, thickness, and inset fields. `textColor` carries a focused text color. `none` suppresses visual drawing but does not suppress focus or accessibility metadata. Descriptor factories may accept it on focusable-capable widgets; it applies only when the node is actually focusable.
+Add authored visual descriptors to focusable widgets. Buttons gain an optional `background` color field for their normal surface. Widgets gain an optional `focusVisual` field. The initial focus visual variants are `backgroundColor`, `textColor`, `outline`, and `none`. `backgroundColor` carries a focused background color. `textColor` carries a focused text color. `outline` carries color, thickness, and inset fields. `none` suppresses visual drawing but does not suppress focus or accessibility metadata. Descriptor factories may accept `focusVisual` on focusable-capable widgets; it applies only when the node is actually focusable.
 
 ### Task 5: Render Authored Focus Visuals
 
-Replace the hardcoded top-layer focus-ring append with a focus-visual resolver. The resolver reads the focused node id, finds that node's exported visual descriptor, and appends the chosen presentation to the same top-layer draw data. `outline` uses the existing quad path. `textColor` recolors the focused widget's own text run. If the widget has no owned text run, use the fallback outline.
+Replace the hardcoded top-layer focus-ring append with a focus-visual resolver. The resolver reads the focused node id, finds that node's exported visual descriptor, and emits the chosen presentation with correct layer ordering. Button `background` draws behind the button label in the normal state. `backgroundColor` draws behind the focused widget content or recolors its owned background quad. `textColor` recolors the focused widget's own text run. `outline` uses the existing quad path above content. If a visual cannot be applied to the focused widget, use the contrast outline fallback.
 
 ### Task 6: Broaden Theme Tokens
 
-Add default theme tokens for `text.default` and `focus.text`. `text.default` is very light gray. `focus.text` is white. Update `panel.default` to very dark gray with opacity. Preserve `focus.ring` and its fallback outline semantics. Existing required tokens remain valid. Default `Text` color and interactive button/slider label color resolve through `text.default`. TypeScript and Luau `Text` factories and interactive button/slider label construction must emit or resolve `text.default` rather than literal white.
+Add default theme tokens for `text.default`, `text.highlight`, `button.background.default`, `button.background.highlight`, and `controlOutline.contrast`. `text.default` is very light gray. `text.highlight` is white. `button.background.default` is the normal button surface. `button.background.highlight` is the focused button surface. `controlOutline.contrast` is the high-contrast and fallback focus outline color. Update `panel.default` to very dark gray with opacity. Migrate required-token tests and focus fallback call sites from `focus.ring` to `controlOutline.contrast`. Default `Text` color and interactive button/slider label color resolve through `text.default`. TypeScript and Luau `Text` factories and interactive button/slider label construction must emit or resolve `text.default` rather than literal white.
 
 ### Task 7: SDK And Typedef Parity
 
-Expose `focusVisual` in TypeScript and Luau widget factories. Add validation for each variant and token-capable fields. Regenerate typedefs so `sdk/types/postretro.d.ts` and the Luau typedef output match the SDK and Rust descriptors.
+Expose button `background` and widget `focusVisual` in TypeScript and Luau widget factories. Add validation for each focus visual variant and token-capable field. Regenerate typedefs so `sdk/types/postretro.d.ts` and the Luau typedef output match the SDK and Rust descriptors.
 
 ### Task 8: Demo Theme And Menu Update
 
-Consolidate the active `hudTheme` from `content/dev/scripts/hud.ts` into `content/dev/scripts/theme.ts`. Export one dev theme. Update `content/dev/start-script.ts`, `content/dev/scripts/hud.ts`, and `content/dev/scripts/frontend-menu.ts` imports/usages accordingly. Level-select buttons author `focusVisual: { kind: "textColor", color: color.focus.text }`, use the default near-white label color when not focused, and place content on `color.panel.default`.
+Consolidate the active `hudTheme` from `content/dev/scripts/hud.ts` into `content/dev/scripts/theme.ts`. Export one dev theme. Update `content/dev/start-script.ts`, `content/dev/scripts/hud.ts`, and `content/dev/scripts/frontend-menu.ts` imports/usages accordingly. Level-select buttons author `focusVisual: { kind: "backgroundColor", color: color.button.background.highlight }`, use `color.button.background.default` when not focused, use the default near-white label color, and place content on `color.panel.default`.
 
 ### Task 9: Accessibility Backend Seam
 
@@ -120,6 +123,8 @@ Proposed model:
 - Accessibility snapshot builds from the active laid-out tree and the same slot/cell values used for draw and focus export.
 - Accessibility snapshot is internal engine data first. A platform adapter can project it later without changing script authoring.
 - Designer-authored visuals never affect focus behavior or accessibility state.
+- Normal focus styling is a design treatment. Increased-contrast focus styling may augment or override it with `controlOutline.contrast`.
+- Theme token names do not decide accessibility mode. User preferences or engine fallback policy choose when contrast outline is applied.
 - AccessKit is a backend projection target, not PostRetro's UI model.
 - Assistive-technology actions re-enter the existing app-side activation/value-step paths. They do not mutate game or UI state directly.
 
@@ -142,8 +147,10 @@ Implementation notes:
 - Preserve the N to N+1 focus latency. Accessibility focus may trail the same way as rendering; do not introduce a new timing path.
 - Keep descriptor fields additive and skip-serialized when omitted.
 - Treat `focusVisual: "none"` as a visual override only. It must not remove the node from focus export or the accessibility snapshot.
+- For `backgroundColor`, draw or mutate only the focused widget's own background surface. Do not recolor parent panels or sibling button surfaces. If no owned background surface exists, use a rect fill behind the focused widget content.
 - For `textColor`, carry enough node/run identity in draw data to mutate only the focused widget's own text run. Do not recolor external `labelledBy` text or unrelated matching strings. If no owned text run exists, fall back to outline.
-- Changing default focus visuals from outline to text color can be future work.
+- Keep a renderer hook that can add or substitute the `controlOutline.contrast` outline when an increased-contrast preference is active. If that preference does not exist yet, leave the hook driven by the existing fallback path and do not add a settings UI in this plan.
+- Changing global default focus visuals from contrast outline to a design treatment can be future work.
 
 Promotion notes:
 
@@ -158,17 +165,22 @@ Promotion notes:
 | Name | Rust | Wire / serde | JS / TS | Luau | FGD KVP |
 |---|---|---|---|---|---|
 | Focus visual field | `focus_visual` | `focusVisual` | `focusVisual` | `focusVisual` | n/a |
+| Button background field | `background` | `background` | `background` | `background` | n/a |
+| Background-color visual | `FocusVisual::BackgroundColor` | `{ "kind": "backgroundColor", ... }` | `{ kind: "backgroundColor", ... }` | `{ kind = "backgroundColor", ... }` | n/a |
 | Outline visual | `FocusVisual::Outline` | `{ "kind": "outline", ... }` | `{ kind: "outline", ... }` | `{ kind = "outline", ... }` | n/a |
 | Text-color visual | `FocusVisual::TextColor` | `{ "kind": "textColor", ... }` | `{ kind: "textColor", ... }` | `{ kind = "textColor", ... }` | n/a |
 | No visual | `FocusVisual::None` | `{ "kind": "none" }` | `{ kind: "none" }` | `{ kind = "none" }` | n/a |
+| Background visual color | `color` | `color` | `color` | `color` | n/a |
 | Outline color | `color` | `color` | `color` | `color` | n/a |
 | Outline thickness | `thickness` | `thickness` | `thickness` | `thickness` | n/a |
 | Outline inset | `inset` | `inset` | `inset` | `inset` | n/a |
 | Focus text color | `color` | `color` | `color` | `color` | n/a |
 | Default text token | `text.default` | `text.default` | `color.text.default` via `getDesignTokens` | `color.text.default` via `getDesignTokens` | n/a |
-| Focus text token | `focus.text` | `focus.text` | `color.focus.text` via `getDesignTokens` | `color.focus.text` via `getDesignTokens` | n/a |
+| Highlight text token | `text.highlight` | `text.highlight` | `color.text.highlight` via `getDesignTokens` | `color.text.highlight` via `getDesignTokens` | n/a |
+| Default button background token | `button.background.default` | `button.background.default` | `color.button.background.default` via `getDesignTokens` | `color.button.background.default` via `getDesignTokens` | n/a |
+| Highlight button background token | `button.background.highlight` | `button.background.highlight` | `color.button.background.highlight` via `getDesignTokens` | `color.button.background.highlight` via `getDesignTokens` | n/a |
 | Panel token | `panel.default` | `panel.default` | `color.panel.default` via `getDesignTokens` | `color.panel.default` via `getDesignTokens` | n/a |
-| Fallback outline token | `focus.ring` | `focus.ring` | `color.focus.ring` via `getDesignTokens` | `color.focus.ring` via `getDesignTokens` | n/a |
+| Contrast outline token | `controlOutline.contrast` | `controlOutline.contrast` | `color.controlOutline.contrast` via `getDesignTokens` | `color.controlOutline.contrast` via `getDesignTokens` | n/a |
 | Accessible name | `accessible_name` | `accessibleName` | `accessibleName` | `accessibleName` | n/a |
 | Labelled by | `labelled_by` | `labelledBy` | `labelledBy` | `labelledBy` | n/a |
 | Role | `role` | `role` | `role` | `role` | n/a |

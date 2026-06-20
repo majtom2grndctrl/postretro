@@ -8,8 +8,9 @@
 
 Extract PostRetro's per-tick **core game-state advance** out of the render-interleaved
 frame loop into a headless `simulate_tick` seam — one tick of `snapshot-transforms →
-movement → weapon-fire → death-sweep`, returning the tick's event names — that runs with
-**no wgpu/winit/renderer/audio/input dependency**. The seam is the per-tick body a server
+movement → AI brain → agent steering → weapon-fire → death-sweep`, returning an ordered
+`Vec<String>` of event names — that runs with **no wgpu/winit/renderer/audio/input
+dependency**. The seam is the per-tick body a server
 and a client will both call (Phases 1+); the *caller* owns the multi-tick loop and the
 render/host work around it. Prove it with a **determinism harness** (the honesty gate)
 and, as a build-to-learn spike, **measure the cross-architecture `f32` divergence** that
@@ -23,7 +24,8 @@ here poisons reconciliation forever.
 - **Behavior-preserving split** of `movement/mod.rs` (substrate / intent / dispatch /
   public API) and of `main.rs`'s game-tick assembly — *before* extending either.
 - A headless `simulate_tick` seam covering the **core per-tick advance**: order 0
-  transform-snapshot → order 1 movement → order 3 weapon-fire → death-sweep, returning the
+  transform-snapshot → order 1 movement → order 1a AI brain → order 1b agent steering →
+  order 2 weapon-fire → order 3 death-sweep, returning an ordered `Vec<String>` of the
   tick's **event names**. The seam neither fires events nor dispatches commands nor pushes
   interpolation state — those stay with the caller.
 - **Severing the render/window reaches** from the seam: the *caller* owns the
@@ -31,23 +33,27 @@ here poisons reconciliation forever.
   it accumulates the seam's returned event names and, **post-loop**, fires them and runs
   the existing `dispatch_system_commands` **unchanged** (preserving the accumulate-then-
   drain timing and the post-crossing re-dispatch).
-- A **determinism harness + test written first** (recorded input stream → deterministic
-  tick) with teeth: pinned N/pawns/epsilon, run-to-run identical, plus spawn-order
-  invariance and a `proptest` over input streams.
+- A **determinism harness + test written first** (recorded sim-command stream → deterministic
+  tick) with teeth: 600 ticks, 2 pawns, position epsilon `0.001 m`, velocity epsilon
+  `0.001 m/s`, exact ordered event-name sequences, run-to-run identical, plus spawn-order
+  invariance and a `proptest` over sim-command streams.
 - **Spike (build-to-learn):** measured `f32` divergence over N ticks under forced-
   divergence conditions; a throwaway predict/reconcile feel-prototype.
 
 ### Out of scope
 - Any transport, wire format, serialization, or networking (Phase 1+).
+- Enemy replication, co-op set-piece policy, and enemy combat validation. Phase 0 extracts
+  the enemy-capable tick stages; enemy-bearing multiplayer acceptance starts in Phase 4.
 - The **scripting-bridge stage** (order 4: emitter / particle sim / light / fog bridges,
   `entity_model.md` §5) — those run after the core tick and are partly render-collectors;
   bringing them under a seam is a later phase. A server's handling of order 4 is deferred.
-- **Camera-follow (order 2)** stays render/caller-side; it is not in the seam.
+- **Camera-follow** stays render/caller-side; it is not in the seam.
 - The **headless gating partition** of `dispatch_system_commands` (which command arms a
   no-renderer server may apply) — Phase 0 keeps the existing dispatch host-side, unchanged;
   partitioning it is a server-phase concern.
-- Changing any movement, weapon, or death-sweep **behavior** — the splits and the seam are
-  behavior-preserving (the spike's feel-prototype is throwaway, not shipped).
+- Changing any movement, AI, agent-steering, weapon, or death-sweep **behavior** — the
+  splits and the seam are behavior-preserving (the spike's feel-prototype is throwaway,
+  not shipped).
 - A standalone headless-server binary / dedicated-server entry point (Phase 7).
 - Hardening the divergence result into a pass/fail threshold — it is a recorded finding
   (`experimental_spikes.md`), not a gate.
@@ -59,27 +65,34 @@ here poisons reconciliation forever.
   test suite passes unchanged** and `movement::tick`'s public signature
   (`-> (Vec3, MovementEvents)`) is unchanged. (Task 1)
 - [ ] The game-tick assembly is extracted from `main.rs` into a dedicated module the frame
-  loop calls; the engine plays with **identical gameplay** including across a **multi-tick
-  catch-up frame** (a frame hitch must not change interpolation or reaction timing), and
-  the build + existing tests are green. (Task 2)
+  loop calls; movement, AI brain, agent steering, weapon fire, and death sweep run in the
+  same relative order as before extraction; the engine plays with **identical gameplay**
+  including across a **multi-tick catch-up frame** (a frame hitch must not change
+  interpolation or reaction timing), and the build + existing tests are green. (Task 2)
 - [ ] **Honesty gate:** `simulate_tick` advances one tick (transform-snapshot → movement →
-  weapon → death) and returns the tick's event names, **constructed and called with no
-  renderer, audio, window, input-system, wgpu, or winit in scope** — demonstrated by a
-  harness that builds the game state + a resolved input command and ticks it with no
-  window/GPU context. Event firing, command dispatch, `push_state`, and camera-follow are
-  not inside the seam. (Task 3)
+  AI brain → agent steering → weapon → death) and returns an ordered `Vec<String>`
+  preserving duplicate event names, **constructed and called with no renderer, audio,
+  window, input-system, wgpu, or winit in scope** — demonstrated by a harness that builds
+  the game state + a resolved sim command and ticks it with no window/GPU context. Event
+  firing, command dispatch, `push_state`, and camera-follow are not inside the seam.
+  (Task 3)
 - [ ] **Honesty gate (determinism, with teeth):** a test ticks a fixed pawn count from a
-  recorded input stream over a pinned N ticks and asserts the outcome (positions,
-  velocities, event names) is **identical within epsilon** (a) run-to-run, (b) when the
-  same entities are spawned in a different order, and (c) across a `proptest` of randomized
-  input streams. Green and stays green. (Task 3)
+  recorded sim-command stream over 600 ticks and asserts the outcome (positions, velocities,
+  event names) is **identical within epsilon**: 2 pawns, position epsilon `0.001 m`,
+  velocity epsilon `0.001 m/s`, event names as exact ordered sequences, (a) run-to-run,
+  (b) when the same entities are spawned in a different order and compared by stable
+  test roles/labels, and (c) across a `proptest` of randomized sim-command streams. Green and
+  stays green. (Task 3)
 - [ ] **Measured finding:** same-input divergence over N ticks is **recorded** (a logged
   value) under forced-divergence conditions (forced-rounding baseline; a second
   architecture if a runner is available), with a recommended Phase 3 reconciliation
-  tolerance. Not a pass/fail gate. (Task 4)
+  tolerance. Record it in
+  `context/plans/drafts/M15--p0-headless-sim-seam/findings.md`. Not a pass/fail gate.
+  (Task 4)
 - [ ] **Measured finding:** a throwaway predict/reconcile feel-prototype runs and yields a
   **recorded read** on whether basic reconciliation feels acceptable; it is clearly marked
-  throwaway and ships nothing into the engine path. (Task 5)
+  throwaway and ships nothing into the engine path. Record it in
+  `context/plans/drafts/M15--p0-headless-sim-seam/findings.md`. (Task 5)
 
 ## Tasks
 
@@ -101,53 +114,76 @@ file Phase 3 will extend.
 
 ### Task 2: Extract the game-tick assembly from `main.rs`
 Move the per-tick logic out of the `RedrawRequested` handler and the `run_movement_tick`
-/ `run_weapon_fire_tick` / `run_death_sweep` `impl App` methods into a new engine module
-(working name `sim`). The extracted per-tick function takes **explicit game-state
-parameters** (the `Rc<RefCell<EntityRegistry>>` + `ScriptCtx` handles, `&CollisionWorld`,
-`&HitZoneStore`, gravity, `active_wieldable`, `anim_time`, `&mut ProgressTracker`) and a
-resolved per-tick **input command** — never `&mut App`. The inline input-intent resolution
-(axes, jump/dash/crouch edges, `MovementInput` construction) moves with it. **The frame
-loop keeps ownership of the `for _ in 0..ticks` loop** and, per tick, runs: build command →
-`sim::simulate_tick` → camera-follow → `frame_timing.push_state`, accumulating the returned
-event names; **post-loop** it fires the accumulated events and runs `dispatch_system_commands`
-unchanged (the accumulate-then-drain timing and the post-crossing re-dispatch are
-preserved). The **no-pawn fly-cam branch stays host-side**, run per tick before the seam
-call when no pawn exists; its `up_axis`/`Action::MoveUp` input is host-only (fly-cam) and is
+/ `run_ai_tick` / `run_agent_tick` / `run_weapon_fire_tick` / `run_death_sweep` `impl App`
+methods into a new engine module (working name `sim`). The extracted per-tick function
+takes **explicit game-state parameters** (the `Rc<RefCell<EntityRegistry>>` + `ScriptCtx`
+handles, `&CollisionWorld`, `&HitZoneStore`, navigation graph access, gravity,
+`active_wieldable`, `anim_time`, `&mut ProgressTracker`, and the AI animation warning
+latch) and a resolved per-tick **sim command** — never `&mut App`. The inline
+input-intent resolution (axes, jump/dash/crouch edges, `MovementInput` construction) moves
+to the host-side command builder. **The frame loop keeps ownership of the `for _ in
+0..ticks` loop** and, per tick, runs: build command → `sim::simulate_tick` →
+camera-follow → `frame_timing.push_state`, accumulating the returned event names;
+**post-loop** it fires the accumulated events and runs `dispatch_system_commands` unchanged
+(the accumulate-then-drain timing and the post-crossing re-dispatch are preserved). In a
+multi-tick catch-up frame, frame-edge actions (`Pressed`-style dash, shoot, and any other
+rising-edge action) are consumed by the first simulated tick for that frame; later catch-up
+ticks see held/level state only. This preserves current behavior and avoids replayed
+edges. The **no-pawn fly-cam branch stays host-side**, run per tick before the seam call
+when no pawn exists; its `up_axis`/`Action::MoveUp` input is host-only (fly-cam) and is
 **not** part of the resolved command. Crouch-toggle resolution stays in the input layer
-(`resolve_crouch_intent`, `main.rs:662`), producing the `crouch_intent` bit. For Phase 0,
-the command carries the inputs `weapon::tick` needs (the `ActionSnapshot` and the
-camera-derived aim ray) so `weapon::tick`'s signature is **unchanged** — resolving a
-networked fire-intent is Phase 3's job, not this extraction's.
+(`resolve_crouch_intent`, `main.rs:669`), producing the `crouch_intent` bit.
+
+The host builds a resolved sim command from input and view state. The command contains
+movement intent plus a weapon fire intent: the fire button state the weapon system needs
+and the resolved aim origin/direction. It contains no `ActionSnapshot`, winit, gilrs, or
+input-system types. Split the weapon-fire entry as needed so the sim consumes resolved
+fire/aim data while the host remains the only code that reads input snapshots and camera
+objects. Resolving a networked fire-intent is Phase 3's job, not this extraction's.
 
 ### Task 3: Define the headless `simulate_tick` seam + determinism harness (test first)
 Define a single entry — working name `sim::simulate_tick` (no existing symbol collides) —
-that advances exactly **one** game-logic tick from `(game-state bundle, resolved input
-command, dt)` and **returns the tick's event names** (the union of what `run_movement_tick`
-/ `run_weapon_fire_tick` / `run_death_sweep` return today). It runs `snapshot_transforms` →
-movement → weapon-fire → death-sweep and touches **no** renderer/audio/window/input-system,
-and **no** render/window types appear in its signature. It does not fire events, dispatch
-commands, push interpolation, or follow the camera — those are the caller's (Task 2).
-**Write the determinism test first** (extending the movement-test harness pattern — build a
-registry, spawn a player + weapon, a `CollisionWorld` from a parry3d `TriMesh`, a
-`HitZoneStore`, and a recorded input-command stream at `DT = 1.0/60.0`) and do not call the
-seam done until the determinism AC holds: pinned N/pawns/epsilon, run-to-run identical,
-spawn-order invariant, and a `proptest` over input streams — green and staying green. The
-seam's exact bundle/struct shapes are the implementer's call (the constraint: no
-render/window types in the signature; the command is the shape Phases 2–3 will network).
+that advances exactly **one** game-logic tick from `(game-state bundle, resolved sim
+command, dt)` and returns an ordered `Vec<String>` preserving duplicates. Append movement,
+AI, weapon, and death-sweep event names in the existing order. Agent steering emits no
+event names today; if that changes, append its names after AI and before weapon fire. It
+runs `snapshot_transforms` → movement → AI brain → agent steering → weapon-fire →
+death-sweep and touches **no** renderer/audio/window/input-system, and **no**
+render/window/input-system types appear in its signature. It does not fire events,
+dispatch commands, push interpolation, or follow the camera — those are the caller's
+(Task 2). **Write the determinism test first** (extending the movement-test harness pattern
+— build a registry, spawn player + weapon entities, a `CollisionWorld` from a parry3d
+`TriMesh`, a `HitZoneStore`, and a recorded sim-command stream at `DT = 1.0/60.0`) and do
+not call the seam done until the determinism AC holds: `tick_count = 600`, `pawn_count =
+2`, position epsilon `0.001 m`, velocity epsilon `0.001 m/s`, event names compared as
+exact ordered sequences, run-to-run identical, spawn-order invariant, and a `proptest` over
+sim-command streams — green and staying green. The harness may use no enemy entities, but it
+must call the full seam so absent AI/Agent components no-op through the same path. For
+spawn-order invariance, the harness assigns stable test roles/labels and compares entities
+by those labels, never by allocated `EntityId`. The seam's exact bundle/struct shapes are
+the implementer's call (the constraint: no render/window/input-system types in the
+signature; the command is the shape Phases 2–3 will network).
 
 ### Task 4 (spike): cross-arch divergence measurement
-Run the seam over a recorded input stream twice under conditions that force `f32`
+Run the seam over a recorded sim-command stream twice under conditions that force `f32`
 divergence — forced intermediate rounding (always available, single-machine) and, if a
 runner exists, a second CI architecture (e.g. ARM) — and **record** the per-axis / total
 position divergence over N ticks. Report it as a measured finding with a recommended Phase
 3 reconciliation tolerance. Not a pass/fail gate; forced-rounding is the baseline method, a
-real second arch strengthens it.
+real second arch strengthens it. Forced intermediate rounding must live behind a
+test-only/spike-only wrapper or hook gated under tests/dev-tools. It must not compile into
+or be called by the normal engine path. Write
+`context/plans/drafts/M15--p0-headless-sim-seam/findings.md` with: divergence table,
+recommended Phase 3 tolerance, predict/reconcile feel read, dash-correction observation,
+and recommendation.
 
 ### Task 5 (spike): throwaway predict/reconcile feel-prototype
-Stand up a minimal in-process two-sim loop (a "client" that predicts locally from the input
+Stand up a minimal in-process two-sim loop (a "client" that predicts locally from the sim-command
 stream and a "server" that is authoritative, both calling the seam — no transport) that
 applies a basic rewind-to-acked-tick + replay reconciliation, and record an empirical read
 on whether basic reconciliation feels acceptable (and how the dash case behaves).
+Include a manual dev harness or replay mode with injected RTT/jitter. Record the observed
+predict/reconcile feel and the dash-correction observation in `findings.md`.
 **Throwaway** — a dev-tools-gated harness or an `#[ignore]`-able test, not wired into the
 engine path; its value is the recorded read, deleted or parked after.
 
@@ -169,42 +205,49 @@ the existing `mod.rs`/`carry.rs`/`scope.rs`. The tick assembly lands in a new `s
 `dispatch_system_commands` (unchanged).
 
 **The seam contract.** Input: a game-state bundle (`Rc<RefCell<EntityRegistry>>` +
-`ScriptCtx` handles, `&CollisionWorld`, `&HitZoneStore`, gravity, `active_wieldable`,
-`anim_time`, `&mut ProgressTracker`) + a resolved per-tick command (the existing
-`MovementInput` — `wish_dir`, jump, dash edge, running, `crouch_intent`, `facing_yaw` —
-plus the `ActionSnapshot` and camera-derived aim ray weapon fire needs) + `dt`. Output: the
-tick's event names. The command is exactly what Phases 2–3 will network; building it as a
-first-class value now (sampled from the local snapshot + camera on the host) is the seam's
-forward-looking shape. `Camera` is already GPU-free (`research.md`), so aim/facing enter as
-data — this is plumbing, not a GPU decoupling.
+`ScriptCtx` handles, `&CollisionWorld`, `&HitZoneStore`, navigation graph access, gravity,
+`active_wieldable`, `anim_time`, `&mut ProgressTracker`, AI warning latch) + a resolved
+per-tick command (the existing `MovementInput` — `wish_dir`, jump, dash edge, running,
+`crouch_intent`, `facing_yaw` — plus a sim/game-owned weapon command carrying fire state
+and resolved aim ray) + `dt`. The host command builder may read `ActionSnapshot` and
+`Camera`, but neither crosses into `simulate_tick`. Output: ordered `Vec<String>`,
+preserving duplicates, with movement, AI, weapon, and death-sweep event names appended in
+existing order. The command is exactly what Phases 2–3 will network; building it as a
+first-class value now (sampled from local input state + camera on the host) is the seam's
+forward-looking shape. Aim/facing enter as data — this is plumbing, not a GPU decoupling.
 
 **Why the caller owns the loop.** `push_state` (`frame_timing.rs:102`) shifts
 current→previous **every tick**; camera-follow feeds the position it snapshots; events are
 **accumulated across ticks and drained once** so reactions observe the settled post-tick
 world (`main.rs` comment ~1891). Keeping all three per-tick/post-loop in the caller makes
 the extraction behavior-identical on multi-tick catch-up frames — the determinism the seam
-itself must not break.
+itself must not break. Frame-edge actions are one-shot per rendered frame: the first
+simulated tick consumes `Pressed`-style dash/shoot/rising-edge actions, and later catch-up
+ticks receive only held/level state.
 
 **Determinism test.** Extend the movement-test harness pattern (no App/window/GPU): a
-recorded input-command stream + fixed `DT = 1.0/60.0` + a small parry3d `TriMesh` world,
-ticked N times. Assert outcome identical within epsilon (never exact-float equality —
-`testing_guide.md` §3) run-to-run, **and** under a permuted spawn order (catches
-iteration-order / `HashMap`-order nondeterminism, the real netcode risk a single-machine
-re-run misses), **and** via a `proptest` over input streams.
+recorded sim-command stream + fixed `DT = 1.0/60.0` + a small parry3d `TriMesh` world,
+ticked 600 times with 2 pawns. Assert positions within `0.001 m`, velocities within
+`0.001 m/s`, and event-name sequences exact and ordered. Assert the same outcome
+run-to-run, **and** under a permuted spawn order using stable test roles/labels instead of
+allocated `EntityId` (catches iteration-order / `HashMap`-order nondeterminism, the real
+netcode risk a single-machine re-run misses), **and** via a `proptest` over sim-command streams.
 
 **Cross-arch spike.** Forced intermediate rounding (quantize intermediate `f32`s to a
 coarser grid between sub-steps to mimic cross-ISA rounding) is the portable method; record
 the divergence with vs. without it. If an ARM CI runner exists, run the identical recorded
-stream on both and diff the final state.
+stream on both and diff the final state. The rounding path is test-only/spike-only under
+tests/dev-tools and never part of the normal engine path.
 
-**Feel spike.** Two `simulate_tick` instances over one input stream, client predicting +
-reconciling against the server's delayed authoritative state, with an injected RTT. Output:
-a recorded judgment + the dash-correction observation, feeding Phase 3.
+**Feel spike.** Two `simulate_tick` instances over one sim-command stream, client predicting +
+reconciling against the server's delayed authoritative state, with injected RTT/jitter.
+Drive it through a manual dev harness or replay mode. Output: a recorded judgment + the
+dash-correction observation in `findings.md`, feeding Phase 3.
 
 ## Open questions
 
-- **`sim` module vs. `main.rs`-local.** Sibling `sim/` is cleaner for the eventual headless
-  server; an implementer call.
+- **`sim.rs` vs. `sim/`.** Sibling `sim/` is cleaner for the eventual headless server; an
+  implementer call.
 - **Cross-arch method availability.** Whether CI offers a second architecture; if not,
   forced-rounding alone carries the finding (the AC accepts that).
 - **Feel-prototype lifetime.** Parked behind `#[ignore]` vs. deleted after the read — decide

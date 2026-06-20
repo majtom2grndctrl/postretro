@@ -206,8 +206,10 @@ clone/restore), and record an empirical read
 on whether basic reconciliation feels acceptable (and how the dash case behaves).
 Include a manual dev harness or replay mode with injected RTT/jitter. Record the observed
 predict/reconcile feel and the dash-correction observation in `findings.md`.
-**Throwaway** — a dev-tools-gated harness or an `#[ignore]`-able test, not wired into the
-engine path; its value is the recorded read, deleted or parked after.
+**Spike-quality, dev-tools-gated** — not wired into the engine path; its value is the
+recorded read. Don't delete or orphan it behind `#[ignore]`: the in-process two-sim
+predict/reconcile loop is the seed of Phase 2's reconciliation dev harness, so park it
+dev-tools-gated and hand it forward (see Resolved decisions).
 
 ## Sequencing
 
@@ -221,7 +223,7 @@ headless seam and its determinism gate.
 
 **Module layout.** `movement/` gains `substrate.rs` + `intents.rs` + `dispatch.rs` beside
 the existing `mod.rs`/`carry.rs`/`scope.rs`. The tick assembly lands in a new `sim` module
-(`crates/postretro/src/sim/` or `sim.rs`); `simulate_tick` is its entry. The frame loop in
+(`crates/postretro/src/sim/`, a directory — see Resolved decisions); `simulate_tick` is its entry. The frame loop in
 `main.rs` keeps the `for _ in 0..ticks` loop, now: `[no pawn → host fly-cam]` build command
 → `simulate_tick` → camera-follow → `push_state` (per tick); then post-loop fire events +
 `dispatch_system_commands` (unchanged).
@@ -267,11 +269,17 @@ reconciling against the server's delayed authoritative state, with injected RTT/
 Drive it through a manual dev harness or replay mode. Output: a recorded judgment + the
 dash-correction observation in `findings.md`, feeding Phase 3.
 
-## Open questions
+## Resolved decisions
 
-- **`sim.rs` vs. `sim/`.** Sibling `sim/` is cleaner for the eventual headless server; an
-  implementer call.
-- **Cross-arch method availability.** Whether CI offers a second architecture; if not,
-  forced-rounding alone carries the finding (the AC accepts that).
-- **Feel-prototype lifetime.** Parked behind `#[ignore]` vs. deleted after the read — decide
-  at the spike; it must not ship into the engine path either way.
+- **Module layout → `sim/` directory.** Not a leaf helper — the shared server+client core
+  grows every netcode phase (Phase 1 adds the host/server split that calls it). Land it in the
+  target layout now (`sim/mod.rs` holding the seam + the bundle/command/event-group types), the
+  M10/M13 no-dump-and-split precedent. The name is free (no existing `sim` module).
+- **Cross-arch method → forced-rounding only.** The repo has no CI matrix (no
+  `.github/workflows`), so no second-architecture runner exists. Forced intermediate rounding
+  (single-machine, test-only) is the method; a real second arch is a future bonus if a runner is
+  ever added.
+- **Feel-prototype lifetime → dev-tools-gated, handed to Phase 2.** Phase 2 (movement
+  prediction + reconciliation) needs exactly this in-process two-sim predict/reconcile loop, so
+  it is parked dev-tools-gated as Phase 2's reconciliation-harness seed — not deleted, not
+  orphaned behind `#[ignore]`.

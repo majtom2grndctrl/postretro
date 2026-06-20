@@ -63,6 +63,115 @@ fn aabb_edges(min: Vec3, max: Vec3) -> [(Vec3, Vec3); 12] {
     ]
 }
 
+/// Number of segments per ring in [`capsule_edges`]. Low on purpose — an honest
+/// debug wireframe, not a smooth capsule. 12 reads as a recognizable circle
+/// while keeping the segment budget tiny.
+const CAPSULE_RING_SEGMENTS: usize = 12;
+
+/// Number of vertical connectors between the two cylinder rings, and the number
+/// of meridian half-circles drawn over each hemisphere cap.
+const CAPSULE_VERTICAL_SEGMENTS: usize = 4;
+
+/// Number of straight segments approximating each cap meridian half-circle (a
+/// quarter-turn from the ring plane up to the pole).
+const CAPSULE_CAP_ARC_SEGMENTS: usize = 4;
+
+/// Total segment count emitted by [`capsule_edges`]: two horizontal rings, the
+/// vertical connectors between them, and two meridian half-arcs per vertical
+/// (one over the top cap, one under the bottom cap).
+const CAPSULE_SEGMENT_COUNT: usize = 2 * CAPSULE_RING_SEGMENTS
+    + CAPSULE_VERTICAL_SEGMENTS
+    + 2 * CAPSULE_VERTICAL_SEGMENTS * CAPSULE_CAP_ARC_SEGMENTS;
+
+/// An upright (Y-axis) capsule wireframe as `(start, end)` segment pairs,
+/// centered on `center`. The `center` convention matches the player pawn's
+/// `Transform.position`, which the collision capsule is symmetric about (see
+/// `movement/substrate.rs`: the capsule spans `-half_height..+half_height` in
+/// local space, so the lowest point is `center.y - (half_height + radius)` —
+/// the feet — and the highest is `center.y + (half_height + radius)` — the head).
+///
+/// Topology (an honest low-poly wireframe, not a smooth capsule):
+/// - a top ring and a bottom ring of the cylinder section (at
+///   `center.y ± half_height`, radius `radius`),
+/// - [`CAPSULE_VERTICAL_SEGMENTS`] vertical connectors joining the two rings,
+/// - over each cap, a meridian half-circle per vertical connector, swept from
+///   the ring up/down to the pole as [`CAPSULE_CAP_ARC_SEGMENTS`] chords.
+///
+/// Pure function — no GPU/state dependency — so the wire topology can be
+/// asserted by tests without constructing a `DebugLineRenderer`.
+fn capsule_edges(center: Vec3, radius: f32, half_height: f32) -> Vec<(Vec3, Vec3)> {
+    let mut segments = Vec::with_capacity(CAPSULE_SEGMENT_COUNT);
+
+    let top_y = center.y + half_height;
+    let bottom_y = center.y + -half_height;
+
+    // A point on a horizontal ring of `radius` at height `y`, at ring angle `a`.
+    let ring_point =
+        |a: f32, y: f32| Vec3::new(center.x + radius * a.cos(), y, center.z + radius * a.sin());
+
+    // Two horizontal rings (top + bottom of the cylinder section).
+    for i in 0..CAPSULE_RING_SEGMENTS {
+        let a0 = std::f32::consts::TAU * (i as f32) / (CAPSULE_RING_SEGMENTS as f32);
+        let a1 = std::f32::consts::TAU * ((i + 1) as f32) / (CAPSULE_RING_SEGMENTS as f32);
+        segments.push((ring_point(a0, top_y), ring_point(a1, top_y)));
+        segments.push((ring_point(a0, bottom_y), ring_point(a1, bottom_y)));
+    }
+
+    // Vertical connectors + cap meridian half-circles, sharing the same set of
+    // ring angles so each vertical's caps meet the cylinder seam cleanly.
+    for v in 0..CAPSULE_VERTICAL_SEGMENTS {
+        let a = std::f32::consts::TAU * (v as f32) / (CAPSULE_VERTICAL_SEGMENTS as f32);
+        let dir = Vec3::new(a.cos(), 0.0, a.sin());
+
+        let top_ring = Vec3::new(center.x, top_y, center.z) + dir * radius;
+        let bottom_ring = Vec3::new(center.x, bottom_y, center.z) + dir * radius;
+        // Cylinder-wall vertical connector.
+        segments.push((bottom_ring, top_ring));
+
+        // Cap meridians: sweep a quarter-circle from the ring plane (`t = 0`,
+        // out along `dir` at the ring height) to the pole (`t = π/2`, straight
+        // up/down by `radius`), as a chain of chords.
+        let top_pole = Vec3::new(center.x, top_y + radius, center.z);
+        let bottom_pole = Vec3::new(center.x, bottom_y + -radius, center.z);
+        for s in 0..CAPSULE_CAP_ARC_SEGMENTS {
+            let t0 = std::f32::consts::FRAC_PI_2 * (s as f32) / (CAPSULE_CAP_ARC_SEGMENTS as f32);
+            let t1 =
+                std::f32::consts::FRAC_PI_2 * ((s + 1) as f32) / (CAPSULE_CAP_ARC_SEGMENTS as f32);
+
+            // Top cap: out-component shrinks as `cos`, up-component grows as `sin`.
+            let top0 = Vec3::new(center.x, top_y, center.z)
+                + dir * (radius * t0.cos())
+                + Vec3::Y * (radius * t0.sin());
+            let top1 = Vec3::new(center.x, top_y, center.z)
+                + dir * (radius * t1.cos())
+                + Vec3::Y * (radius * t1.sin());
+            // The final chord must land exactly on the pole.
+            let top1 = if s + 1 == CAPSULE_CAP_ARC_SEGMENTS {
+                top_pole
+            } else {
+                top1
+            };
+            segments.push((top0, top1));
+
+            // Bottom cap: mirror downward.
+            let bot0 = Vec3::new(center.x, bottom_y, center.z)
+                + dir * (radius * t0.cos())
+                + Vec3::NEG_Y * (radius * t0.sin());
+            let bot1 = Vec3::new(center.x, bottom_y, center.z)
+                + dir * (radius * t1.cos())
+                + Vec3::NEG_Y * (radius * t1.sin());
+            let bot1 = if s + 1 == CAPSULE_CAP_ARC_SEGMENTS {
+                bottom_pole
+            } else {
+                bot1
+            };
+            segments.push((bot0, bot1));
+        }
+    }
+
+    segments
+}
+
 /// Three axis-aligned segments forming an `+` marker of total length `size`
 /// centered at `center`. Pure function — no GPU/state dependency.
 fn marker_segments(center: Vec3, size: f32) -> [(Vec3, Vec3); 3] {
@@ -263,6 +372,25 @@ impl DebugLineRenderer {
         }
     }
 
+    /// Push an upright capsule wireframe through the always-on-top overlay path
+    /// (see [`capsule_edges`] for the topology and the `center`-is-pawn-position
+    /// convention). Like [`push_aabb_overlay`](Self::push_aabb_overlay), it feeds
+    /// `push_line_overlay`, so the capsule draws with `CompareFunction::Always` and
+    /// stays visible through walls — the right behavior for a "where is the other
+    /// player" marker, which must be locatable from anywhere rather than vanish
+    /// behind world geometry.
+    pub fn push_capsule_overlay(
+        &mut self,
+        center: Vec3,
+        radius: f32,
+        half_height: f32,
+        color_rgba: [u8; 4],
+    ) {
+        for (a, b) in capsule_edges(center, radius, half_height) {
+            self.push_line_overlay(a, b, color_rgba);
+        }
+    }
+
     pub fn render(
         &self,
         queue: &wgpu::Queue,
@@ -410,5 +538,93 @@ mod tests {
             axes_seen[axis] = true;
         }
         assert!(axes_seen.iter().all(|&s| s), "marker missed an axis");
+    }
+
+    /// Topology contract: a capsule emits exactly [`CAPSULE_SEGMENT_COUNT`]
+    /// segments — two rings, the vertical connectors, and two cap arcs per
+    /// vertical.
+    #[test]
+    fn capsule_edges_emit_expected_segment_count() {
+        let edges = capsule_edges(Vec3::new(1.0, 2.0, 3.0), 0.4, 0.8);
+        assert_eq!(edges.len(), CAPSULE_SEGMENT_COUNT);
+    }
+
+    /// Capacity contract for the remote-entity marker fix (M15 Phase 1): the
+    /// always-on-top overlay buffer must hold the per-frame capsule load without
+    /// truncating. Remote-entity capsules route through the overlay path
+    /// (`push_capsule_overlay`) so they draw through walls; each capsule costs
+    /// [`CAPSULE_SEGMENT_COUNT`] (60) segments. A generous co-op remote-entity
+    /// count must fit alongside the handful of SH/nav AABB overlays (12 segments
+    /// each) under [`MAX_DEBUG_OVERLAY_SEGMENTS`], so a busy frame never silently
+    /// drops a player marker.
+    #[test]
+    fn overlay_cap_holds_many_remote_entity_capsules() {
+        // Phase 1 replicates the full Transform-bearing set, so the client can
+        // see many ghosts on a populated map; 256 capsules is a comfortable
+        // upper bound for a co-op scene and is the headroom this fix relies on.
+        const REMOTE_CAPSULES: usize = 256;
+        // A few AABB overlays may coexist (SH/delta diagnostics, 12 each).
+        const COEXISTING_AABB_OVERLAYS: usize = 8;
+
+        let segments = REMOTE_CAPSULES * CAPSULE_SEGMENT_COUNT + COEXISTING_AABB_OVERLAYS * 12;
+        assert!(
+            segments <= MAX_DEBUG_OVERLAY_SEGMENTS,
+            "overlay segment budget {MAX_DEBUG_OVERLAY_SEGMENTS} must hold \
+             {REMOTE_CAPSULES} remote-entity capsules ({CAPSULE_SEGMENT_COUNT} segs each) \
+             plus {COEXISTING_AABB_OVERLAYS} AABB overlays; needed {segments}"
+        );
+    }
+
+    /// Extent contract: the wireframe spans `[center.y - (half_height + radius),
+    /// center.y + (half_height + radius)]` vertically (feet to head, matching the
+    /// pawn capsule), reaches exactly `radius` horizontally from the center axis,
+    /// and is centered on the given `center` x/z.
+    #[test]
+    fn capsule_edges_span_full_height_and_radius_centered() {
+        // Tight epsilon: endpoints are computed from cos/sin, so compare
+        // approximately rather than for bit-equality (testing_guide
+        // §Floating-point).
+        const EPSILON: f32 = 1e-5;
+
+        let center = Vec3::new(2.0, 5.0, -3.0);
+        let radius = 0.4;
+        let half_height = 0.8;
+        let edges = capsule_edges(center, radius, half_height);
+
+        let mut min_y = f32::INFINITY;
+        let mut max_y = f32::NEG_INFINITY;
+        let mut max_horiz = 0.0_f32;
+        for (a, b) in &edges {
+            for p in [a, b] {
+                min_y = min_y.min(p.y);
+                max_y = max_y.max(p.y);
+                let horiz = ((p.x - center.x).powi(2) + (p.z - center.z).powi(2)).sqrt();
+                max_horiz = max_horiz.max(horiz);
+            }
+        }
+
+        let total_half = half_height + radius;
+        assert!(
+            (min_y - (center.y - total_half)).abs() < EPSILON,
+            "bottom (feet) should sit at center.y - (half_height + radius), got {min_y}"
+        );
+        assert!(
+            (max_y - (center.y + total_half)).abs() < EPSILON,
+            "top (head) should sit at center.y + (half_height + radius), got {max_y}"
+        );
+        // The widest point is the cylinder ring at exactly `radius`; the caps
+        // curve inward, so no point exceeds it.
+        assert!(
+            (max_horiz - radius).abs() < EPSILON,
+            "max horizontal extent should equal radius, got {max_horiz}"
+        );
+
+        // The vertical span is symmetric about center.y, confirming center (not
+        // feet or head) is the convention.
+        let mid_y = (min_y + max_y) * 0.5;
+        assert!(
+            (mid_y - center.y).abs() < EPSILON,
+            "vertical extent should be centered on center.y, got mid {mid_y}"
+        );
     }
 }

@@ -3923,6 +3923,34 @@ impl Renderer {
         nav_diagnostics::emit_agent_path(position, path, cursor, radius, &mut self.debug_lines);
     }
 
+    /// Draw an "ugly-but-honest" wireframe capsule at each replicated remote
+    /// entity position (M15 Phase 1 netcode visibility aid). `centers` are the
+    /// pawn `Transform.position`s collected client-side by
+    /// `netcode::remote_entity_positions`; `radius`/`half_height` size the
+    /// capsule to the standing player volume. Cyan so it reads clearly against
+    /// the world. No-op when `centers` is empty (single-player and host).
+    ///
+    /// Routed through the **overlay (always-on-top)** debug-line path
+    /// (`push_capsule_overlay`), NOT the depth-tested `push_capsule`: the marker's
+    /// whole job is "where is the other player," so it must stay visible when the
+    /// remote pawn moves behind world geometry. The depth-tested path culls the
+    /// capsule's fragments against the opaque world depth buffer, which made the
+    /// capsule vanish whenever a wall came between the client camera and the host
+    /// pawn — the "gets lost after moving around" symptom.
+    ///
+    /// Renderer-owns-GPU: the call site hands in plain `Vec3` positions and
+    /// capsule dims — never a debug-line / wgpu handle. Must run after
+    /// `clear_debug_lines` and before the frame's debug-line pass, mirroring the
+    /// other per-frame overlay emitters.
+    #[cfg(feature = "dev-tools")]
+    pub fn emit_remote_entity_markers(&mut self, centers: &[Vec3], radius: f32, half_height: f32) {
+        const REMOTE_ENTITY_COLOR: [u8; 4] = [0, 255, 255, 255]; // cyan
+        for &center in centers {
+            self.debug_lines
+                .push_capsule_overlay(center, radius, half_height, REMOTE_ENTITY_COLOR);
+        }
+    }
+
     /// Flip the navmesh overlay on/off. Bound to `Alt+Shift+N`.
     #[cfg(feature = "dev-tools")]
     pub fn toggle_navmesh_overlay(&mut self) -> bool {

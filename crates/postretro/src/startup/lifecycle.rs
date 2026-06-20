@@ -1215,6 +1215,7 @@ mod tests {
             level_worker: None,
             level_requests: VecDeque::new(),
             boot_load: false,
+            net_endpoint: None,
             #[cfg(feature = "dev-tools")]
             debug_ui: None,
             #[cfg(feature = "dev-tools")]

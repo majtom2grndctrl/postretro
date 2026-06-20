@@ -15,9 +15,7 @@ use crate::nav::NavGraph;
 use crate::scripting::components::health::apply_damage;
 use crate::scripting::components::player_movement::PlayerMovementComponent;
 use crate::scripting::reaction_dispatch::ProgressTracker;
-use crate::scripting::registry::{
-    ComponentKind, EntityId, EntityRegistry, Transform,
-};
+use crate::scripting::registry::{ComponentKind, EntityId, EntityRegistry, Transform};
 use crate::scripting_systems;
 use crate::scripting_systems::hit_zones::HitZoneStore;
 use crate::weapon::{self, FireButtonState, WeaponFireCommand};

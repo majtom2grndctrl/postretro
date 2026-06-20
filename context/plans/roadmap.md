@@ -317,6 +317,33 @@ Plans ship in this sequence:
 
 ---
 
+## Milestone 15: Multiplayer (Co-op Netcode)
+
+Authoritative client-server multiplayer: a host runs the world and up to 16 players share a campaign level, co-op campaign first. **North star:** two-plus players join a host's level (one mid-game), move and fight together against shared server-authoritative enemies and set-pieces, with local-player movement and projectiles client-predicted so the game stays responsive under latency. The model is **authoritative server + snapshot replication** (Quake/Source/Overwatch lineage), deliberately **not** deterministic lockstep — the engine simulates in f32 (glam, parry3d) and cross-architecture f32 is not bit-identical, so lockstep would desync; snapshots tolerate that drift by construction. This reverses the standing "Multiplayer / networking" non-goal (`index.md` §4, `entity_model.md` §9, reconciled).
+
+**Stack.** `renet` 2.0 + `renet_netcode` transport (Bevy-free since 2.0, synchronously frame-polled, no tokio), hand-rolled replication (`lightyear` as design blueprint, not a dependency — it is Bevy-coupled; the registry is bespoke), `bitcode` serialization, custom per-entity snapshot delta. A new `crates/net/` sibling crate owns transport + replication; the headless simulation seam (Phase 0) is what lets a dedicated server split out from the listen-server later.
+
+**Build shape:** horizontal phases, each ending in a runnable checkpoint with a crisp single-contract acceptance bar — deliberately **not** a vertical slice (a slice forces fuzzy "it all kind of works" AC). The one empirical question — does basic predict/reconcile *feel* right — lives in the Phase 0 spike, where fuzzy measured-finding AC belongs.
+
+**Epic milestone**, realized as detail-on-open phases — each its own `/draft-spec` → `/orchestrate` cycle (the M10/M13/M14 pattern). The full design — model, stack, crate decisions, named-pattern references, architectural-invariant reconciliations, risk ledger, seam map — lives in `context/research/netcode/`. Per-phase specs are drafted against it as each phase opens.
+
+**Prerequisite:** Milestone 6 (entity model + scripting) ✓, Milestone 7 (grounded movement + collision world) ✓, and **Milestone 10 (animated enemies)** — co-op combat needs server-authoritative enemies; M10's `Agent` + AI-brain components replicate as ordinary entities. Phases 0–3 are enemy-free and need only M6/M7 (Phase 2's on-the-wire test entity is a dumb AI-less mover); the combat-bearing phases (4–7) build on M10.
+
+Phases ship in this sequence (detail-on-open; critical path `0 → 1 → 2 → (3 ‖ 4) → 5 → 6 → 7`):
+
+- [ ] **Phase 0 — Headless seam + determinism harness + spike.** Extract the fixed-tick game logic out of the render-interleaved frame loop into a headless `simulate` seam (no wgpu/winit) — the shared server+client tick path; write the determinism test first (green-and-stays-green gate). Spike: measure cross-arch f32 divergence (sets the reconciliation tolerance) + a throwaway predict/reconcile feel-prototype. Split-before-extend `main.rs` (5,593 lines) and `movement/mod.rs` (6,055 lines) first; budget 2–3×.
+- [ ] **Phase 1 — Transport + wire + handshake.** renet 2.0 + renet_netcode in a new `crates/net/` (polled non-blocking, no tokio) + protocol/version handshake (mismatch rejected, no state) + bitcode wire (native `Encode/Decode` on wire-bound component types — serde-tagged enums can't round-trip on a binary format). A snapshot struct round-trips; a remote pawn appears and moves. Latency-sim harness lands here (in-process conditioner + `tc netem`, not turmoil). `networking.md` context doc lands at this phase's promotion.
+- [ ] **Phase 2 — Replication: delta/baseline/ack + time-sync + interpolation + lifecycle.** Per-entity delta vs. per-entity acked baseline (eventual consistency, lightyear-style); time-sync; join-in-progress AND player-leave/disconnect; remote interpolation with jitter-sized delay. Proven on a dumb AI-less server-authoritative mover (no M10). Exit gate: smooth at 150 ms RTT + 5% loss + jitter.
+- [ ] **Phase 3 — Movement prediction + reconciliation.** Client predicts its own pawn from buffered input (command frames); reconciles against snapshots; respawn reconciles as a teleport (snap). Reconciliation *smoothing* (esp. dash corrections) is the hard part. May run in parallel with Phase 4.
+- [ ] **Phase 4 — Co-op set-piece design (gating).** Trigger ownership, reveal/spawn fan-out, progress, co-op respawn + player-leave policy, set-piece-progress replication for joiners — proven by one playable co-op set-piece with real M10 enemies. Gates the combat phases ("is co-op fun"). Parallel with Phase 3.
+- [ ] **Phase 5 — Server-authoritative hitscan combat.** Fire server-authoritative with immediate cosmetic feedback; favor-the-shooter against a short single-entity history — not full server-rewind. HP changes only on confirmation.
+- [ ] **Phase 6 — Predicted projectiles.** Client-predicted projectiles with predicted-entity → server-confirmed handoff, for rocket/grenade feel.
+- [ ] **Phase 7 — Scale + dedicated-server readiness.** Validate 16 players within a host-upstream bandwidth budget (priority-accumulator; interest management via portal/PVS if needed); prove the headless server entry point (dedicated-server split).
+
+**Testable outcome:** two-plus players connect to a host (one joining mid-level, another dropping with the session surviving), move together with predicted local movement that stays responsive at 150 ms + loss + jitter, fight shared server-authoritative enemies through a co-op set-piece, and fire predicted projectiles — all reconciling to the host's authority with no full server-rewind. A headless server entry point compiles, confirming dedicated-server readiness.
+
+---
+
 ## Future / Speculative
 
 Features below are intended but not yet sequenced. Rough priority ordering within each group.

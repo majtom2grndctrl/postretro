@@ -169,6 +169,8 @@ declare module "postretro" {
     mesh?: MeshDescriptor | null;
     /** Hit points plus an optional hitscan hitbox. A descriptor carrying this is directly map-placeable by canonicalName. */
     health?: HealthDescriptor | null;
+    /** AI brain preset: detection/attack/leash ranges, attack tuning, move speed, despawn delay, and the logical-state → mesh animation-state map. Materializes a brain plus a navigation agent at spawn. Rides on health+mesh for map placement; it does not itself make a descriptor placeable. */
+    ai?: AiDescriptor | null;
   };
 
   /** Valid values: `semi`, `auto`. */
@@ -213,6 +215,38 @@ declare module "postretro" {
     hitbox?: HitboxDescriptor;
     /** Per-skeletal-zone damage multipliers, tag → factor (e.g. `{ head: 1.5 }`). A shot on a tagged zone scales the weapon's payload by this factor; an absent zone or unlisted tag applies 1.0. Each factor must be finite and >= 0. Optional; defaults to empty. */
     zoneMultipliers?: { readonly [tag: string]: number };
+  };
+
+  /** The closed logical-state → animation-state name mapping carried by `AiDescriptor.states`. Each value names a state declared in the entity's `components.mesh.animations`; the brain switches the mesh to the matching state when it enters that logical state. All four keys are required and the set is closed (no other keys allowed). */
+  export type AiStateNames = {
+    /** Mesh state played while the brain is idle (no target). Must name a declared mesh animation state. */
+    idle: string;
+    /** Mesh state played while the brain is alerted and pursuing a target (the chase/locomotion state). Must name a declared mesh animation state. */
+    alert: string;
+    /** Mesh state played while the brain attacks. Must name a declared mesh animation state. */
+    attack: string;
+    /** Mesh state played when the brain dies. Must name a declared mesh animation state. */
+    death: string;
+  };
+
+  /** Authored AI brain component preset attached to `EntityTypeDescriptor.components.ai`. Descriptor-owned tuning: maps never override these. Materializes the engine-owned brain (logical state + timers) and a movable navigation agent at spawn. Distances are in metres, times in milliseconds, `moveSpeed` in metres/sec. The `states` block links the brain's logical states to mesh animation states; that cross-component mapping is validated at spawn (the ai block cannot see the mesh block at its own parse). */
+  export type AiDescriptor = {
+    /** Distance at which the brain notices a target and leaves idle, in metres. Must be finite and > 0. */
+    detectionRange: number;
+    /** Distance within which the brain attacks rather than pursues, in metres. Must be finite and > 0. */
+    attackRange: number;
+    /** Distance from its origin past which the brain disengages and returns, in metres. Must be finite and > 0. */
+    leashRange: number;
+    /** Damage dealt per attack. Must be finite and >= 0 (a negative value would heal the target through the damage chokepoint). */
+    attackDamage: number;
+    /** Minimum interval between attacks, in milliseconds. Must be finite and > 0. */
+    attackCooldownMs: number;
+    /** Pursuit movement speed in metres/sec, seeding the navigation agent. Must be finite and > 0. */
+    moveSpeed: number;
+    /** Delay between death and despawn, in milliseconds (lets the death animation play out). Must be finite and > 0. */
+    deathDespawnMs: number;
+    /** Closed logical-state → mesh animation-state name mapping (idle / alert / attack / death). Each value must name a state declared in `components.mesh.animations`; validated at spawn. */
+    states: AiStateNames;
   };
 
   /** Authored player-movement preset. `capsule`, `ground`, `air`, and `fall` are required. `dash`, `crouch`, and `viewFeel` are opt-in features; `forgiveness` has engine defaults when omitted. Distances use metres and time uses seconds unless a key is suffixed `Ms`. */

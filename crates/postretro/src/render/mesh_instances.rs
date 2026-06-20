@@ -464,7 +464,10 @@ mod tests {
         let plan = plan_mesh_frame(&instances, &joints);
 
         assert_eq!(plan.instance_count, 2, "two instances fit the budget");
-        assert_eq!(plan.dropped, 1, "the off-PVS caster is dropped, not a forward one");
+        assert_eq!(
+            plan.dropped, 1,
+            "the off-PVS caster is dropped, not a forward one"
+        );
         // Survivors are seeds 0 and 1 (forward); seed 2 (off-PVS) was evicted.
         let seeds: Vec<u32> = plan
             .groups

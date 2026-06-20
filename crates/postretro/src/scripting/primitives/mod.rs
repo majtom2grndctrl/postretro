@@ -232,6 +232,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("weapon?", "Option<WeaponDescriptor>", "Weapon tuning preset. Weapon archetypes are instantiated as wieldable entities when referenced by `defaultWeapon`.")
         .field("mesh?", "Option<MeshDescriptor>", "Animated skinned-mesh preset: model handle plus an optional per-state animation map. A descriptor carrying this is directly map-placeable by canonicalName.")
         .field("health?", "Option<HealthDescriptor>", "Hit points plus an optional hitscan hitbox. A descriptor carrying this is directly map-placeable by canonicalName.")
+        .field("ai?", "Option<AiDescriptor>", "AI brain preset: detection/attack/leash ranges, attack tuning, move speed, despawn delay, and the logical-state → mesh animation-state map. Materializes a brain plus a navigation agent at spawn. Rides on health+mesh for map placement; it does not itself make a descriptor placeable.")
         .finish();
     registry
         .register_enum("FireMode")
@@ -266,6 +267,26 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("max", "f32", "Maximum hit points. Must be finite and >= 1.0; `current` initializes to this value at spawn.")
         .field("hitbox?", "HitboxDescriptor", "Optional hitscan hitbox. Present ⇒ the entity can be ray-targeted by weapons; absent ⇒ it cannot.")
         .field("zoneMultipliers?", "ZoneMultipliers", "Per-skeletal-zone damage multipliers, tag → factor (e.g. `{ head: 1.5 }`). A shot on a tagged zone scales the weapon's payload by this factor; an absent zone or unlisted tag applies 1.0. Each factor must be finite and >= 0. Optional; defaults to empty.")
+        .finish();
+    registry
+        .register_type("AiStateNames")
+        .doc("The closed logical-state → animation-state name mapping carried by `AiDescriptor.states`. Each value names a state declared in the entity's `components.mesh.animations`; the brain switches the mesh to the matching state when it enters that logical state. All four keys are required and the set is closed (no other keys allowed).")
+        .field("idle", "String", "Mesh state played while the brain is idle (no target). Must name a declared mesh animation state.")
+        .field("alert", "String", "Mesh state played while the brain is alerted and pursuing a target (the chase/locomotion state). Must name a declared mesh animation state.")
+        .field("attack", "String", "Mesh state played while the brain attacks. Must name a declared mesh animation state.")
+        .field("death", "String", "Mesh state played when the brain dies. Must name a declared mesh animation state.")
+        .finish();
+    registry
+        .register_type("AiDescriptor")
+        .doc("Authored AI brain component preset attached to `EntityTypeDescriptor.components.ai`. Descriptor-owned tuning: maps never override these. Materializes the engine-owned brain (logical state + timers) and a movable navigation agent at spawn. Distances are in metres, times in milliseconds, `moveSpeed` in metres/sec. The `states` block links the brain's logical states to mesh animation states; that cross-component mapping is validated at spawn (the ai block cannot see the mesh block at its own parse).")
+        .field("detectionRange", "f32", "Distance at which the brain notices a target and leaves idle, in metres. Must be finite and > 0.")
+        .field("attackRange", "f32", "Distance within which the brain attacks rather than pursues, in metres. Must be finite and > 0.")
+        .field("leashRange", "f32", "Distance from its origin past which the brain disengages and returns, in metres. Must be finite and > 0.")
+        .field("attackDamage", "f32", "Damage dealt per attack. Must be finite and >= 0 (a negative value would heal the target through the damage chokepoint).")
+        .field("attackCooldownMs", "f32", "Minimum interval between attacks, in milliseconds. Must be finite and > 0.")
+        .field("moveSpeed", "f32", "Pursuit movement speed in metres/sec, seeding the navigation agent. Must be finite and > 0.")
+        .field("deathDespawnMs", "f32", "Delay between death and despawn, in milliseconds (lets the death animation play out). Must be finite and > 0.")
+        .field("states", "AiStateNames", "Closed logical-state → mesh animation-state name mapping (idle / alert / attack / death). Each value must name a state declared in `components.mesh.animations`; validated at spawn.")
         .finish();
     registry
         .register_type("PlayerMovementDescriptor")

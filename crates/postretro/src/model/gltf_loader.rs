@@ -1034,6 +1034,83 @@ mod tests {
         );
     }
 
+    fn reference_enemy_model_path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../content/dev/models/reference_enemy_kaykit_knight/scene.gltf")
+    }
+
+    #[test]
+    fn reference_enemy_model_loads_four_clips_used_by_the_brain() {
+        // The CC0 KayKit Knight is packaged as the map-placeable reference enemy.
+        // It must load through the same external-glTF path the engine uses at
+        // level load, expose a skinned mesh + skeleton, and carry exactly the
+        // four animation clips the `mesh`/`ai` state maps name. Guards the asset
+        // and the GLB->glTF conversion (clip prune + body-part mesh merge)
+        // against regression. Gated on the asset existing so a stripped checkout
+        // skips rather than fails.
+        let path = reference_enemy_model_path();
+        if !path.exists() {
+            eprintln!("skipping: model asset not present at {}", path.display());
+            return;
+        }
+        let model = load_model(&path).expect("reference enemy (KayKit Knight) model loads");
+
+        assert!(!model.mesh.vertices.is_empty(), "mesh has vertices");
+        assert!(!model.mesh.indices.is_empty(), "mesh has indices");
+        assert_eq!(
+            model.mesh.indices.len() % 3,
+            0,
+            "triangle list index count divisible by 3"
+        );
+        let vcount = model.mesh.vertices.len() as u32;
+        assert!(
+            model.mesh.indices.iter().all(|&i| i < vcount),
+            "all indices in range"
+        );
+
+        // Skinned skeleton, parent-before-child topo order.
+        assert!(
+            !model.skeleton.joints.is_empty(),
+            "Knight skin contributes joints"
+        );
+        for (i, joint) in model.skeleton.joints.iter().enumerate() {
+            if let Some(parent) = joint.parent {
+                assert!(parent < i, "joint {i} parent {parent} precedes it");
+            }
+        }
+
+        // The six body-part primitives were merged into one mesh; each is a
+        // submesh of the single loaded mesh.
+        assert_eq!(
+            model.submeshes.len(),
+            6,
+            "six merged body-part primitives -> six submeshes"
+        );
+
+        // Exactly the four clips named by the reference enemy's mesh/ai maps.
+        let mut clip_names: Vec<&str> = model.clips.iter().map(|c| c.name.as_str()).collect();
+        clip_names.sort_unstable();
+        assert_eq!(
+            clip_names,
+            vec![
+                "1H_Melee_Attack_Slice_Horizontal",
+                "Death_A",
+                "Idle",
+                "Walking_A",
+            ],
+            "pruned to the four clips the brain/mesh state maps reference"
+        );
+        for clip in &model.clips {
+            assert!(clip.duration > 0.0, "clip `{}` has duration", clip.name);
+            assert_eq!(
+                clip.joints.len(),
+                model.skeleton.joints.len(),
+                "clip `{}` tracks parallel to skeleton joints",
+                clip.name
+            );
+        }
+    }
+
     // --- Submesh range partition (multi-primitive split bookkeeping) -------
 
     #[test]

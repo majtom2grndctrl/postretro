@@ -1,6 +1,30 @@
 // Game: Postretro
 // Format: Standard
-// DEMO MAP — M10 entity health + damage runtime.
+// DEMO MAP — M10 entity health + damage runtime AND M10 enemy AI / pathfinding.
+// One large open arena (top-down; x is east, y is north; interior x 0..1024,
+// y 0..512, floor z=0, ceiling z=128). Three free-standing full-height pillars
+// sit along the centerline between the player (west) and the enemy (east), so the
+// straight line is blocked, but there is wide open floor (>=160 units) on BOTH
+// sides of every pillar -- the agent rounds them in the open, never wedges.
+// Legend: # = wall/pillar, . = floor, P = player_spawn, E = reference_enemy, d = dummy.
+//   y=512  ################################################################
+//          #..............................................................#
+//          #..............................................................#
+//          #..........##..........##..........##..........................#
+//          #...P..d.d..##....d.....##..........##.....................E....#
+//          #...........##..........##..........##.........................#
+//          #..............................................................#
+//          #..............................................................#
+//   y=0    ################################################################
+//          x=0    256 320   480 544   704 768                          1024
+// Pillars (free-standing, full-height z[0,128]):
+//   WEST   x[256,320] y[200,296]
+//   CENTER x[480,544] y[208,304]  -- blocks the straight P->E line (both at y=256)
+//   EAST   x[704,768] y[216,312]
+// Every gap (pillar->wall, pillar->pillar) is >=160 units wide -- no narrow
+// passages, no S-turns, no capsule-wedging pockets. The agent detours north or
+// south of the center pillar (~208 units clear each way) to reach the player.
+// Toggle the nav overlay in-game with Alt+Shift+N.
 // Compile: cargo run -p postretro-level-compiler -- content/dev/maps/combat-demo.map -o content/dev/maps/combat-demo.prl
 // Run:     cargo run -p postretro -- content/dev/maps/combat-demo.prl
 // See content/dev/maps/combat-demo.README.md for what to look for.
@@ -11,91 +35,125 @@
 "wad" ""
 "data_script" "../scripts/combat-demo-reaction.ts"
 "_tb_mod" "dev"
-// floor
+// floor (interior x[0,1024] y[0,512], top at z=0)
 {
-( 272 -16 -16 ) ( 272 272 0 ) ( 272 272 -16 ) concrete_pavement_036 0 0 0 1 1
-( -16 272 -16 ) ( -16 -16 0 ) ( -16 -16 -16 ) concrete_pavement_036 0 0 0 1 1
-( 272 272 -16 ) ( -16 272 0 ) ( -16 272 -16 ) concrete_pavement_036 0 0 0 1 1
-( -16 -16 -16 ) ( 272 -16 0 ) ( 272 -16 -16 ) concrete_pavement_036 0 0 0 1 1
-( -16 272 0 ) ( 272 -16 0 ) ( -16 -16 0 ) concrete_pavement_036 0 0 0 1 1
-( -16 -16 -16 ) ( 272 272 -16 ) ( -16 272 -16 ) concrete_pavement_036 0 0 0 1 1
+( 1040 -16 -16 ) ( 1040 528 0 ) ( 1040 528 -16 ) concrete_pavement_036 0 0 0 1 1
+( -16 528 -16 ) ( -16 -16 0 ) ( -16 -16 -16 ) concrete_pavement_036 0 0 0 1 1
+( 1040 528 -16 ) ( -16 528 0 ) ( -16 528 -16 ) concrete_pavement_036 0 0 0 1 1
+( -16 -16 -16 ) ( 1040 -16 0 ) ( 1040 -16 -16 ) concrete_pavement_036 0 0 0 1 1
+( -16 528 0 ) ( 1040 -16 0 ) ( -16 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( -16 -16 -16 ) ( 1040 528 -16 ) ( -16 528 -16 ) concrete_pavement_036 0 0 0 1 1
 }
-// ceiling
+// ceiling (z=128)
 {
-( 272 -16 128 ) ( 272 272 144 ) ( 272 272 128 ) concrete_pavement_036 0 0 0 1 1
-( -16 272 128 ) ( -16 -16 144 ) ( -16 -16 128 ) concrete_pavement_036 0 0 0 1 1
-( 272 272 128 ) ( -16 272 144 ) ( -16 272 128 ) concrete_pavement_036 0 0 0 1 1
-( -16 -16 128 ) ( 272 -16 144 ) ( 272 -16 128 ) concrete_pavement_036 0 0 0 1 1
-( -16 272 144 ) ( 272 -16 144 ) ( -16 -16 144 ) concrete_pavement_036 0 0 0 1 1
-( -16 -16 128 ) ( 272 272 128 ) ( -16 272 128 ) concrete_pavement_036 0 0 0 1 1
+( 1040 -16 128 ) ( 1040 528 144 ) ( 1040 528 128 ) concrete_pavement_036 0 0 0 1 1
+( -16 528 128 ) ( -16 -16 144 ) ( -16 -16 128 ) concrete_pavement_036 0 0 0 1 1
+( 1040 528 128 ) ( -16 528 144 ) ( -16 528 128 ) concrete_pavement_036 0 0 0 1 1
+( -16 -16 128 ) ( 1040 -16 144 ) ( 1040 -16 128 ) concrete_pavement_036 0 0 0 1 1
+( -16 528 144 ) ( 1040 -16 144 ) ( -16 -16 144 ) concrete_pavement_036 0 0 0 1 1
+( -16 -16 128 ) ( 1040 528 128 ) ( -16 528 128 ) concrete_pavement_036 0 0 0 1 1
 }
-// west wall
+// west wall (x[-16,0])
 {
-( 0 -16 0 ) ( 0 272 128 ) ( 0 272 0 ) concrete_pavement_036 0 0 0 1 1
-( -16 272 0 ) ( -16 -16 128 ) ( -16 -16 0 ) concrete_pavement_036 0 0 0 1 1
-( 0 272 0 ) ( -16 272 128 ) ( -16 272 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 -16 0 ) ( 0 528 128 ) ( 0 528 0 ) concrete_pavement_036 0 0 0 1 1
+( -16 528 0 ) ( -16 -16 128 ) ( -16 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 528 0 ) ( -16 528 128 ) ( -16 528 0 ) concrete_pavement_036 0 0 0 1 1
 ( -16 -16 0 ) ( 0 -16 128 ) ( 0 -16 0 ) concrete_pavement_036 0 0 0 1 1
-( -16 272 128 ) ( 0 -16 128 ) ( -16 -16 128 ) concrete_pavement_036 0 0 0 1 1
-( -16 -16 0 ) ( 0 272 0 ) ( -16 272 0 ) concrete_pavement_036 0 0 0 1 1
+( -16 528 128 ) ( 0 -16 128 ) ( -16 -16 128 ) concrete_pavement_036 0 0 0 1 1
+( -16 -16 0 ) ( 0 528 0 ) ( -16 528 0 ) concrete_pavement_036 0 0 0 1 1
 }
-// east wall
+// east wall (x[1024,1040])
 {
-( 272 -16 0 ) ( 272 272 128 ) ( 272 272 0 ) concrete_pavement_036 0 0 0 1 1
-( 256 272 0 ) ( 256 -16 128 ) ( 256 -16 0 ) concrete_pavement_036 0 0 0 1 1
-( 272 272 0 ) ( 256 272 128 ) ( 256 272 0 ) concrete_pavement_036 0 0 0 1 1
-( 256 -16 0 ) ( 272 -16 128 ) ( 272 -16 0 ) concrete_pavement_036 0 0 0 1 1
-( 256 272 128 ) ( 272 -16 128 ) ( 256 -16 128 ) concrete_pavement_036 0 0 0 1 1
-( 256 -16 0 ) ( 272 272 0 ) ( 256 272 0 ) concrete_pavement_036 0 0 0 1 1
+( 1040 -16 0 ) ( 1040 528 128 ) ( 1040 528 0 ) concrete_pavement_036 0 0 0 1 1
+( 1024 528 0 ) ( 1024 -16 128 ) ( 1024 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 1040 528 0 ) ( 1024 528 128 ) ( 1024 528 0 ) concrete_pavement_036 0 0 0 1 1
+( 1024 -16 0 ) ( 1040 -16 128 ) ( 1040 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 1024 528 128 ) ( 1040 -16 128 ) ( 1024 -16 128 ) concrete_pavement_036 0 0 0 1 1
+( 1024 -16 0 ) ( 1040 528 0 ) ( 1024 528 0 ) concrete_pavement_036 0 0 0 1 1
 }
-// south wall
+// south wall (y[-16,0])
 {
-( 256 -16 0 ) ( 256 0 128 ) ( 256 0 0 ) concrete_pavement_036 0 0 0 1 1
+( 1024 -16 0 ) ( 1024 0 128 ) ( 1024 0 0 ) concrete_pavement_036 0 0 0 1 1
 ( 0 0 0 ) ( 0 -16 128 ) ( 0 -16 0 ) concrete_pavement_036 0 0 0 1 1
-( 256 0 0 ) ( 0 0 128 ) ( 0 0 0 ) concrete_pavement_036 0 0 0 1 1
-( 0 -16 0 ) ( 256 -16 128 ) ( 256 -16 0 ) concrete_pavement_036 0 0 0 1 1
-( 0 0 128 ) ( 256 -16 128 ) ( 0 -16 128 ) concrete_pavement_036 0 0 0 1 1
-( 0 -16 0 ) ( 256 0 0 ) ( 0 0 0 ) concrete_pavement_036 0 0 0 1 1
+( 1024 0 0 ) ( 0 0 128 ) ( 0 0 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 -16 0 ) ( 1024 -16 128 ) ( 1024 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 128 ) ( 1024 -16 128 ) ( 0 -16 128 ) concrete_pavement_036 0 0 0 1 1
+( 0 -16 0 ) ( 1024 0 0 ) ( 0 0 0 ) concrete_pavement_036 0 0 0 1 1
 }
-// north wall
+// north wall (y[512,528])
 {
-( 256 256 0 ) ( 256 272 128 ) ( 256 272 0 ) concrete_pavement_036 0 0 0 1 1
-( 0 272 0 ) ( 0 256 128 ) ( 0 256 0 ) concrete_pavement_036 0 0 0 1 1
-( 256 272 0 ) ( 0 272 128 ) ( 0 272 0 ) concrete_pavement_036 0 0 0 1 1
-( 0 256 0 ) ( 256 256 128 ) ( 256 256 0 ) concrete_pavement_036 0 0 0 1 1
-( 0 272 128 ) ( 256 256 128 ) ( 0 256 128 ) concrete_pavement_036 0 0 0 1 1
-( 0 256 0 ) ( 256 272 0 ) ( 0 272 0 ) concrete_pavement_036 0 0 0 1 1
+( 1024 512 0 ) ( 1024 528 128 ) ( 1024 528 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 528 0 ) ( 0 512 128 ) ( 0 512 0 ) concrete_pavement_036 0 0 0 1 1
+( 1024 528 0 ) ( 0 528 128 ) ( 0 528 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 512 0 ) ( 1024 512 128 ) ( 1024 512 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 528 128 ) ( 1024 512 128 ) ( 0 512 128 ) concrete_pavement_036 0 0 0 1 1
+( 0 512 0 ) ( 1024 528 0 ) ( 0 528 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// CENTER pillar — x[480,544] y[208,304], full height z[0,128]. Sits on the
+// player<->enemy line (both at y=256), so the straight shot is blocked. ~208
+// units of open floor north AND south to round it.
+{
+( 544 208 0 ) ( 544 304 128 ) ( 544 304 0 ) concrete_pavement_036 0 0 0 1 1
+( 480 304 0 ) ( 480 208 128 ) ( 480 208 0 ) concrete_pavement_036 0 0 0 1 1
+( 544 304 0 ) ( 480 304 128 ) ( 480 304 0 ) concrete_pavement_036 0 0 0 1 1
+( 480 208 0 ) ( 544 208 128 ) ( 544 208 0 ) concrete_pavement_036 0 0 0 1 1
+( 480 304 128 ) ( 544 208 128 ) ( 480 208 128 ) concrete_pavement_036 0 0 0 1 1
+( 480 208 0 ) ( 544 304 0 ) ( 480 304 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// WEST pillar — x[256,320] y[200,296], full height z[0,128]. Free-standing;
+// >=160 units clear to every wall and to the center pillar.
+{
+( 320 200 0 ) ( 320 296 128 ) ( 320 296 0 ) concrete_pavement_036 0 0 0 1 1
+( 256 296 0 ) ( 256 200 128 ) ( 256 200 0 ) concrete_pavement_036 0 0 0 1 1
+( 320 296 0 ) ( 256 296 128 ) ( 256 296 0 ) concrete_pavement_036 0 0 0 1 1
+( 256 200 0 ) ( 320 200 128 ) ( 320 200 0 ) concrete_pavement_036 0 0 0 1 1
+( 256 296 128 ) ( 320 200 128 ) ( 256 200 128 ) concrete_pavement_036 0 0 0 1 1
+( 256 200 0 ) ( 320 296 0 ) ( 256 296 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// EAST pillar — x[704,768] y[216,312], full height z[0,128]. Free-standing;
+// >=160 units clear to every wall and to the center pillar.
+{
+( 768 216 0 ) ( 768 312 128 ) ( 768 312 0 ) concrete_pavement_036 0 0 0 1 1
+( 704 312 0 ) ( 704 216 128 ) ( 704 216 0 ) concrete_pavement_036 0 0 0 1 1
+( 768 312 0 ) ( 704 312 128 ) ( 704 312 0 ) concrete_pavement_036 0 0 0 1 1
+( 704 216 0 ) ( 768 216 128 ) ( 768 216 0 ) concrete_pavement_036 0 0 0 1 1
+( 704 312 128 ) ( 768 216 128 ) ( 704 216 128 ) concrete_pavement_036 0 0 0 1 1
+( 704 216 0 ) ( 768 312 0 ) ( 704 312 0 ) concrete_pavement_036 0 0 0 1 1
 }
 }
-// entity 1 — player spawn (facing +X toward the dummy line). Tagged `player`,
-// the EXCLUSIVE target of the combat-demo-reaction.ts `applyDamage` reaction.
-// The player archetype declares health (max 100) but NO hitbox, so this tag is
-// never matched by a weapon ray — only by the named retaliation reaction.
+// entity 1 — player spawn (far west, facing +X toward the dummy line and the
+// enemy). Tagged `player`, the EXCLUSIVE target of the combat-demo-reaction.ts
+// `applyDamage` reaction. The player archetype declares health (max 100) but NO
+// hitbox, so this tag is never matched by a weapon ray — only by the named
+// retaliation reaction. The enemy (entity 7) is far east behind the center
+// pillar, so reaching the player requires routing around it (A* + funnel).
 {
 "classname" "player_spawn"
-"origin" "48 128 24"
+"origin" "80 256 24"
 "angles" "0 0 0"
 "_tags" "player"
 }
-// entity 2 — target dummy. Carries health (max 30) + hitbox, so the reference
-// pistol's hitscan ray can target it; three 12-damage hits despawn it. Tagged
-// `dummy` (EXCLUSIVE to the dummies) so it counts toward the progress threshold.
+// entity 2 — target dummy (in front of the player so the reference pistol's
+// hitscan ray can reach it). Carries health (max 30) + hitbox; three 12-damage
+// hits despawn it. Tagged `dummy` (EXCLUSIVE to the dummies) so it counts toward
+// the progress threshold.
 {
 "classname" "target_dummy"
-"origin" "176 64 16"
+"origin" "200 200 16"
 "angles" "0 180 0"
 "_tags" "dummy"
 }
 // entity 3 — target dummy.
 {
 "classname" "target_dummy"
-"origin" "176 112 16"
+"origin" "200 240 16"
 "angles" "0 180 0"
 "_tags" "dummy"
 }
 // entity 4 — target dummy.
 {
 "classname" "target_dummy"
-"origin" "176 160 16"
+"origin" "200 280 16"
 "angles" "0 180 0"
 "_tags" "dummy"
 }
@@ -103,14 +161,71 @@
 // `dummiesCleared`, which routes 35 damage to the `player` tag.
 {
 "classname" "target_dummy"
-"origin" "176 208 16"
+"origin" "200 320 16"
 "angles" "0 180 0"
 "_tags" "dummy"
 }
-// entity 6 — light so the dummies are visible
+// entity 6 — light over the west (player + dummies)
 {
 "classname" "light"
-"origin" "128 128 100"
+"origin" "160 256 100"
 "light" "300"
 "_falloff_range" "2048"
+}
+// entity 8 — light over the west-center
+{
+"classname" "light"
+"origin" "384 160 100"
+"light" "300"
+"_falloff_range" "2048"
+}
+// entity 9 — light over the center
+{
+"classname" "light"
+"origin" "512 384 100"
+"light" "300"
+"_falloff_range" "2048"
+}
+// entity 10 — light over the east-center
+{
+"classname" "light"
+"origin" "640 160 100"
+"light" "300"
+"_falloff_range" "2048"
+}
+// entity 11 — light over the east (enemy)
+{
+"classname" "light"
+"origin" "896 256 100"
+"light" "300"
+"_falloff_range" "2048"
+}
+// entity 12 — light over the north-west
+{
+"classname" "light"
+"origin" "256 448 100"
+"light" "300"
+"_falloff_range" "2048"
+}
+// entity 13 — light over the north-east
+{
+"classname" "light"
+"origin" "768 448 100"
+"light" "300"
+"_falloff_range" "2048"
+}
+// entity 7 — M10 reference enemy (far east). Map-placeable via `"classname"
+// "reference_enemy"` because its descriptor (sdk/behaviors/reference/entities.ts,
+// spread into the dev mod through `...referenceEntities`) carries health + mesh.
+// It also carries the `ai` brain (detection/attack/leash, attackDamage,
+// attackCooldownMs, moveSpeed, deathDespawnMs, and the idle/alert/attack/death
+// -> mesh-state map). The CC0 KayKit Knight model animates the four FSM states.
+// Placed far east behind the center pillar so reaching the player requires the
+// A* + funnel detour; the shipped reference pistol's hitscan kills it
+// (health max 60 + hitbox).
+{
+"classname" "reference_enemy"
+"origin" "944 256 16"
+"angles" "0 180 0"
+"_tags" "enemy"
 }

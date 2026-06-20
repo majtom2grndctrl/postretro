@@ -10,6 +10,7 @@ use crate::model::sample_params::MeshSampleParams;
 use crate::prl::{LevelWorld, LightType, MapLight};
 use crate::render::mesh_instances::MeshInstanceInput;
 use crate::render::mesh_pass::mesh_visible;
+use crate::scripting::components::agent::AgentComponent;
 use crate::scripting::registry::{ComponentKind, ComponentValue, EntityRegistry, Transform};
 use crate::visibility::VisibleCells;
 
@@ -219,6 +220,20 @@ impl MeshRenderCollector {
             let (sample, capture) =
                 resolve_sample(mesh.animation.as_ref(), &handle, tables, anim_time, seed);
 
+            // Capsule-center → mesh-feet vertical correction. A navmesh agent's
+            // `Transform.position` is its capsule CENTER (the steering tick writes
+            // `collide_and_slide`'s resolved center back to the transform); the
+            // skinned models are authored FEET-AT-ORIGIN (y=0 at the soles —
+            // verified on the reference KayKit knight, whose leg geometry bottoms
+            // out at y≈0). Drawing the model origin at the capsule center would
+            // float the feet `half_height + radius` above the floor (the classic
+            // "hovering enemy" tell). Offset the rendered origin DOWN by the
+            // capsule's center-to-sole distance so the feet meet the ground.
+            // Expressed against the named capsule dimensions, never a magic
+            // number. Non-agent meshes (static `prop_mesh`) carry no agent
+            // component and keep their authored feet-at-origin placement.
+            let feet_offset = agent_feet_offset(registry, id);
+
             // Time-slicing decision. Distance from the CURRENT-TICK position (the
             // same stable per-tick value the cull used). For an ANIMATED entity a
             // state change this frame (entered-stamp fingerprint moved vs. last
@@ -246,7 +261,7 @@ impl MeshRenderCollector {
                 transform: glam::Mat4::from_scale_rotation_translation(
                     transform.scale,
                     transform.rotation,
-                    transform.position,
+                    transform.position + glam::Vec3::new(0.0, feet_offset, 0.0),
                 ),
                 phase_seed: seed,
                 sample,
@@ -281,6 +296,23 @@ impl MeshRenderCollector {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn resample_count(&self) -> u32 {
         self.resample_count
+    }
+}
+
+/// Vertical render offset that drops an agent-driven mesh from its capsule
+/// CENTER down to its FEET, in world units (negative = down). Returns `0.0` for
+/// any entity that carries no [`AgentComponent`] (static `prop_mesh` entities
+/// keep their authored feet-at-origin placement).
+///
+/// A navmesh agent's `Transform.position` is the capsule center; the skinned
+/// models are authored feet-at-origin. The capsule's lowest point sits
+/// `half_height + radius` below its center, so offsetting the model origin down
+/// by exactly that distance plants the feet on the floor the capsule rests on.
+/// Both terms are named capsule dimensions — no magic constant.
+fn agent_feet_offset(registry: &EntityRegistry, id: crate::scripting::registry::EntityId) -> f32 {
+    match registry.get_component::<AgentComponent>(id) {
+        Ok(agent) => -(agent.half_height() + agent.radius),
+        Err(_) => 0.0,
     }
 }
 
@@ -491,6 +523,86 @@ mod tests {
         assert_eq!(inst.model.as_str(), "decraniated");
         let t = inst.transform.w_axis;
         assert_eq!([t.x, t.y, t.z], [1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn collect_stateless_mesh_renders_at_transform_without_feet_offset() {
+        // A non-agent mesh (e.g. a static prop) is authored feet-at-origin and
+        // must render with its origin exactly at `Transform.position` — no
+        // capsule-center correction is applied to entities with no agent.
+        let mut registry = EntityRegistry::new();
+        let mut collector = MeshRenderCollector::new();
+        let world = single_leaf_world();
+        spawn_mesh(&mut registry, "prop", Vec3::new(2.0, 4.0, 6.0));
+
+        collector.collect(
+            &registry,
+            &world,
+            &VisibleCells::DrawAll,
+            1.0,
+            0.0,
+            &MeshClipTables::new(),
+            glam::Vec3::ZERO,
+        );
+        assert_eq!(collector.instances().len(), 1);
+        let t = collector.instances()[0].transform.w_axis;
+        assert_eq!(
+            [t.x, t.y, t.z],
+            [2.0, 4.0, 6.0],
+            "a non-agent mesh renders at its raw transform (feet at origin)"
+        );
+    }
+
+    #[test]
+    fn collect_agent_mesh_drops_origin_from_capsule_center_to_feet() {
+        // An agent-driven mesh has `Transform.position` at its capsule CENTER but
+        // is authored feet-at-origin. The collector must drop the rendered origin
+        // by the capsule's center-to-sole distance (`half_height + radius`) so the
+        // feet meet the floor instead of floating half a capsule above it.
+        use crate::nav::NavAgentParams;
+        use crate::scripting::components::agent::attach_agent;
+
+        let mut registry = EntityRegistry::new();
+        let mut collector = MeshRenderCollector::new();
+        let world = single_leaf_world();
+
+        // Spawn a mesh and attach an agent capsule (radius 0.35, height 1.8 →
+        // half_height = 1.8/2 - 0.35 = 0.55; center-to-sole = 0.55 + 0.35 = 0.9).
+        let center_y = 0.9_f32;
+        let id = registry.spawn(Transform {
+            position: Vec3::new(1.0, center_y, 2.0),
+            ..Transform::default()
+        });
+        registry
+            .set_component(id, MeshComponent::stateless("knight".into()))
+            .unwrap();
+        let params = NavAgentParams {
+            radius: 0.35,
+            height: 1.8,
+            step_height: 0.4,
+            max_slope_deg: 45.0,
+        };
+        attach_agent(&mut registry, id, &params, 5.0).unwrap();
+
+        collector.collect(
+            &registry,
+            &world,
+            &VisibleCells::DrawAll,
+            1.0,
+            0.0,
+            &MeshClipTables::new(),
+            glam::Vec3::ZERO,
+        );
+        assert_eq!(collector.instances().len(), 1);
+        let t = collector.instances()[0].transform.w_axis;
+        // XZ unchanged; Y dropped by half_height + radius = 0.9 → feet at y≈0.
+        assert!((t.x - 1.0).abs() < 1.0e-6);
+        assert!((t.z - 2.0).abs() < 1.0e-6);
+        assert!(
+            (t.y - (center_y - 0.9)).abs() < 1.0e-5,
+            "agent mesh feet should sit at capsule center minus (half_height + radius); got y={}",
+            t.y
+        );
     }
 
     #[test]

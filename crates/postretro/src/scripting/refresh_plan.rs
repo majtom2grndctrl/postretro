@@ -786,6 +786,7 @@ mod tests {
             }),
             mesh: None,
             health: None,
+            ai: None,
         }
     }
 
@@ -804,6 +805,7 @@ mod tests {
             weapon: None,
             mesh: None,
             health: None,
+            ai: None,
         }
     }
 
@@ -835,6 +837,7 @@ mod tests {
             weapon: None,
             mesh: None,
             health: None,
+            ai: None,
         }
     }
 
@@ -892,6 +895,7 @@ mod tests {
             weapon: None,
             mesh: None,
             health: None,
+            ai: None,
         }
     }
 
@@ -941,6 +945,7 @@ mod tests {
                 hitbox: None,
                 zone_multipliers: std::collections::HashMap::new(),
             }),
+            ai: None,
         }
     }
 
@@ -1568,6 +1573,7 @@ mod tests {
             weapon: None,
             mesh: Some(mesh_descriptor.clone()),
             health: None,
+            ai: None,
         };
 
         let old = vec![make_descriptor("robot")];

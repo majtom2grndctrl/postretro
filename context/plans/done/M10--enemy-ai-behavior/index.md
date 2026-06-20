@@ -62,12 +62,17 @@ Coordinate enemy death with the death sweep (`scripting/systems/health.rs`). Tod
 
 Author the reference enemy in `sdk/behaviors/reference/entities.{ts,luau}` (health + mesh animation states + the `ai` block), with Luau parity. Regenerate SDK typedefs (`gen-script-types`) to include the `ai` descriptor types; register `AiDescriptor` (and the `EntityTypeDescriptor.components.ai` shape) in the typedef generator's descriptor arms in `typedef.rs` where `MeshDescriptor` / `HealthDescriptor` are special-cased — a type the generator does not emit passes the drift test vacuously. Regenerate and commit the updated typedefs; keep the drift test green. The archetype is map-placeable via the data-archetype `canonicalName` dispatch (`find_descriptor` / `apply_data_archetype_dispatch` in `data_archetype.rs`) — `prop_mesh` is the precedent for a stateless-mesh component, not the routing precedent. Placeability rides on the enemy carrying `health` and `mesh` components: `is_directly_map_placeable` already checks for health/mesh/movement/light/emitter — no extension of `is_directly_map_placeable` is needed for an enemy archetype (it would only be needed for a hypothetical ai-only archetype, which is not in scope). The existing `decraniated` test model carries a single clip (`mixamo.com`), so this task **sources a rigged enemy character with distinct idle / walk / attack / death clips** (a permissively-licensed Mixamo-or-similar character, owner-approved) under `content/dev/models/`, its PNG textures riding the existing `.prm` pipeline; the `mesh` block's animation states map to its four clip names. Place a reference enemy on a dev map so the north-star play-through runs; the end-to-end AC depends on this 4-clip asset. Depends on Tasks 1–3.
 
+### Task 5: EXP store + on-kill reward reaction — DEFERRED (not built in this wave)
+
+Deferred by owner decision during implementation. The design (a mod-declared `progress.exp` store via `defineStore`, plus a mod-authored reaction bound to a typed `enemyKilled` event that increments it via a new additive `addState(slot, amount)` one-instruction command buffer) is recorded here for a future follow-up. A key constraint surfaced during Task 3: named events are **payload-less** (`fire_named_event` dispatches reactions by name only), so a per-enemy reward amount cannot ride the event — a future build must either use a fixed reward constant in the reaction, stage the reward in a store slot for an IR-valued reaction (the deferred `setState`-IR write path, `scripting.md` §11), or have the engine apply the reward at the kill latch. The `expReward` descriptor field and the `enemyKilled` event emission that were folded into Tasks 1/3 for this feature are **removed** in a cleanup pass, since they have no consumer once this task is deferred.
+
 ## Sequencing
 
 **Phase 1 (sequential):** Task 1 — the brain component + descriptor the system reads.
 **Phase 2 (sequential):** Task 2 — the FSM tick consumes Task 1 and plan 1's steering API.
 **Phase 3 (sequential):** Task 3 — death coordination consumes the Death state (Task 2) and the brain (Task 1).
 **Phase 4 (sequential):** Task 4 — the reference archetype + SDK + placement is the integrated outcome consuming Tasks 1–3.
+**Phase 5:** Task 5 (EXP store + on-kill reward) — DEFERRED, not built in this wave.
 
 ## Rough sketch
 

@@ -8,6 +8,10 @@
 
 #![deny(unsafe_code)]
 #![allow(dead_code)]
+// This generator re-uses engine module trees via `#[path]` only to name-resolve
+// the scripting types; many re-exports (e.g. `nav::find_path`) have no caller in
+// this bin even though they have a live caller in the engine binary.
+#![allow(unused_imports)]
 
 #[path = "../scripting/mod.rs"]
 mod scripting;
@@ -18,6 +22,14 @@ mod scripting;
 // bin lacks.
 #[path = "../weapon/damage.rs"]
 mod weapon;
+
+// The scripting tree's agent component (`scripting::components::agent`)
+// references `crate::nav::NavAgentParams` to seed its capsule. `nav.rs` is a
+// GPU-free runtime query surface (glam + level-format only), so include it
+// verbatim — it name-resolves the agent component without pulling in
+// renderer/collision modules this generator bin lacks.
+#[path = "../nav/mod.rs"]
+mod nav;
 
 // `scripting::data_descriptors` binds dash value expressions against
 // `crate::movement::MovementScope` (movement owns its binding scope). Pull in

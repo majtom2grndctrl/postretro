@@ -17,7 +17,10 @@ use std::collections::{BTreeSet, HashSet};
 use glam::Vec3;
 
 use super::MapEntity;
+use crate::nav::NavAgentParams;
+use crate::scripting::components::agent::attach_agent;
 use crate::scripting::components::billboard_emitter::BillboardEmitterComponent;
+use crate::scripting::components::brain::{attach_brain, validate_brain_animation_states};
 use crate::scripting::components::health::HealthComponent;
 use crate::scripting::components::light::{FalloffKind, LightComponent, LightKind};
 use crate::scripting::components::mesh::{MeshAnimation, MeshComponent};
@@ -29,6 +32,18 @@ use crate::scripting::provenance::{
     parse_bool,
 };
 use crate::scripting::registry::{EntityId, EntityRegistry, Transform};
+
+/// Capsule fallback for a descriptor-spawned agent when the map has no navmesh
+/// (`agent_params == None`). The agent still materializes — it simply cannot
+/// path until a navmesh is present. Values mirror the canonical human-ish agent
+/// the navmesh bake targets (`NavAgentParams` defaults), so a fallback capsule
+/// is plausibly sized even with no bake to read from.
+const DEFAULT_AGENT_PARAMS: NavAgentParams = NavAgentParams {
+    radius: 0.35,
+    height: 1.8,
+    step_height: 0.4,
+    max_slope_deg: 45.0,
+};
 
 /// Apply the `initial_<field>` KVP override convention to the descriptor's
 /// component presets. Each scalar field (`f32`, `u32`) parses via `FromStr`;
@@ -256,6 +271,7 @@ fn attach_descriptor_components(
     entity: &MapEntity,
     attach_weapon: bool,
     spawn_path: DescriptorSpawnPath,
+    agent_params: Option<NavAgentParams>,
 ) {
     let mut owned_components = BTreeSet::new();
     let mut map_overrides = BTreeSet::new();
@@ -332,6 +348,29 @@ fn attach_descriptor_components(
         owned_components.insert(DescriptorComponentKind::Health);
     }
 
+    // An `ai` descriptor materializes the engine-owned brain AND a movable
+    // navigation agent (the FSM drives the agent each tick). The agent's capsule
+    // is seeded from the navmesh's baked `NavAgentParams` (passed down from the
+    // attach call site — never read inside the component). When the map has no
+    // navmesh (`agent_params == None`), the capsule falls back to an engine
+    // default and the agent simply cannot path. Move speed comes from the `ai`
+    // descriptor. After both components land, the brain's logical-state →
+    // animation-state map is validated against the entity's mesh (cross-component:
+    // the ai block could not see the mesh at its own parse).
+    if let Some(ai_desc) = descriptor.ai.as_ref() {
+        // `set_component`/`attach_*` only fail on a stale id — just returned.
+        let _ = attach_brain(registry, id, ai_desc);
+
+        let params = agent_params.unwrap_or(DEFAULT_AGENT_PARAMS);
+        let _ = attach_agent(registry, id, &params, ai_desc.move_speed);
+
+        // Warn-once per undeclared animation-state name; the FSM keeps the prior
+        // animation for those logical states. Called here for its spawn-time
+        // validation side effect — the return value (unmapped logical states) is
+        // not consumed; the FSM handles `UnknownState` at tick time.
+        let _ = validate_brain_animation_states(registry, id);
+    }
+
     if attach_weapon {
         if let Some(weapon_desc) = descriptor.weapon.as_ref() {
             let component = WeaponComponent::from_descriptor(weapon_desc);
@@ -357,6 +396,7 @@ fn spawn_descriptor_instance(
     entity: &MapEntity,
     attach_weapon: bool,
     spawn_path: DescriptorSpawnPath,
+    agent_params: Option<NavAgentParams>,
 ) -> Option<EntityId> {
     let transform = Transform {
         position: entity.origin,
@@ -366,7 +406,15 @@ fn spawn_descriptor_instance(
 
     let id = registry.try_spawn(transform, &entity.tags)?;
 
-    attach_descriptor_components(registry, id, descriptor, entity, attach_weapon, spawn_path);
+    attach_descriptor_components(
+        registry,
+        id,
+        descriptor,
+        entity,
+        attach_weapon,
+        spawn_path,
+        agent_params,
+    );
     Some(id)
 }
 
@@ -396,6 +444,7 @@ pub(crate) fn apply_data_archetype_dispatch(
     descriptors: &[EntityTypeDescriptor],
     handled_by_builtin: &HashSet<String>,
     registry: &mut EntityRegistry,
+    agent_params: Option<NavAgentParams>,
 ) -> HashSet<String> {
     // Warn-once tracking for descriptor/built-in collisions and for placements
     // referencing a classname that has no descriptor match.
@@ -450,6 +499,7 @@ pub(crate) fn apply_data_archetype_dispatch(
             entity,
             false,
             DescriptorSpawnPath::MapPlacement,
+            agent_params,
         ) else {
             log::warn!(
                 "[Loader] {origin}: entity registry exhausted; dropping descriptor-spawned `{cls}`",
@@ -495,6 +545,7 @@ pub(crate) fn spawn_from_player_starts(
     spawn_points: &[MapEntity],
     descriptors: &[EntityTypeDescriptor],
     registry: &mut EntityRegistry,
+    agent_params: Option<NavAgentParams>,
 ) -> PlayerSpawnResult {
     let mut spawned = 0usize;
     let mut active_wieldable = None;
@@ -521,6 +572,7 @@ pub(crate) fn spawn_from_player_starts(
             entity,
             true,
             DescriptorSpawnPath::PlayerSpawn,
+            agent_params,
         ) else {
             log::warn!(
                 "[Loader] {origin}: entity registry exhausted; dropping player spawn `{entity_class}`",
@@ -567,6 +619,8 @@ pub(crate) fn spawn_from_player_starts(
                 &weapon_entity,
                 true,
                 DescriptorSpawnPath::DefaultWeapon,
+                // A wieldable instance never carries an `ai` block, so no agent.
+                None,
             ) {
                 Some(weapon_id) => {
                     let _ = registry.set_map_kvps(weapon_id, Default::default());
@@ -636,6 +690,7 @@ mod tests {
             weapon: None,
             mesh: None,
             health: None,
+            ai: None,
         }
     }
 
@@ -686,6 +741,7 @@ mod tests {
                 default_state,
             }),
             health: None,
+            ai: None,
         }
     }
 
@@ -694,8 +750,13 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let descriptors = vec![mesh_descriptor("prop", false)];
         let placements = vec![placement("prop", &[])];
-        let handled =
-            apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg);
+        let handled = apply_data_archetype_dispatch(
+            &placements,
+            &descriptors,
+            &HashSet::new(),
+            &mut reg,
+            None,
+        );
         assert_eq!(handled.len(), 1, "mesh-only descriptor is map-placeable");
 
         let (id, _) = reg
@@ -718,7 +779,7 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let descriptors = vec![mesh_descriptor("decraniated_mob", true)];
         let placements = vec![placement("decraniated_mob", &[])];
-        apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg);
+        apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg, None);
 
         let (id, _) = reg
             .iter_with_kind(crate::scripting::registry::ComponentKind::Mesh)
@@ -748,7 +809,7 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let descriptors = vec![mesh_descriptor("mob", true)];
         let placements = vec![placement("mob", &[])];
-        apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg);
+        apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg, None);
 
         let model = reg
             .iter_with_kind(ComponentKind::Mesh)
@@ -782,10 +843,16 @@ mod tests {
                 }),
                 zone_multipliers: std::collections::HashMap::new(),
             }),
+            ai: None,
         }];
         let placements = vec![placement("target_dummy", &[])];
-        let handled =
-            apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg);
+        let handled = apply_data_archetype_dispatch(
+            &placements,
+            &descriptors,
+            &HashSet::new(),
+            &mut reg,
+            None,
+        );
         assert_eq!(handled.len(), 1, "health-only descriptor is map-placeable");
 
         let (id, _) = reg
@@ -806,8 +873,13 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let descriptors = vec![light_descriptor("torch", true)];
         let placements = vec![placement("torch", &[])];
-        let handled =
-            apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg);
+        let handled = apply_data_archetype_dispatch(
+            &placements,
+            &descriptors,
+            &HashSet::new(),
+            &mut reg,
+            None,
+        );
         assert_eq!(handled.len(), 1);
 
         let (id, _) = reg
@@ -848,7 +920,7 @@ mod tests {
                 ("initial_burst", "not-a-u32"),
             ],
         )];
-        apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg);
+        apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg, None);
 
         let (id, _) = reg
             .iter_with_kind(crate::scripting::registry::ComponentKind::DescriptorProvenance)
@@ -883,8 +955,13 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let descriptors = vec![weapon_descriptor("reference_pistol")];
         let placements = vec![placement("reference_pistol", &[])];
-        let handled =
-            apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg);
+        let handled = apply_data_archetype_dispatch(
+            &placements,
+            &descriptors,
+            &HashSet::new(),
+            &mut reg,
+            None,
+        );
         assert_eq!(handled.len(), 0);
         assert!(
             reg.iter_with_kind(crate::scripting::registry::ComponentKind::Weapon)
@@ -901,8 +978,13 @@ mod tests {
         descriptor.light = light_descriptor("weapon_torch", true).light;
         let descriptors = vec![descriptor];
         let placements = vec![placement("weapon_torch", &[])];
-        let handled =
-            apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg);
+        let handled = apply_data_archetype_dispatch(
+            &placements,
+            &descriptors,
+            &HashSet::new(),
+            &mut reg,
+            None,
+        );
         assert_eq!(handled.len(), 1);
 
         assert!(
@@ -927,7 +1009,7 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let descriptors = vec![light_descriptor("torch", false)];
         let placements = vec![placement("torch", &[])];
-        apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg);
+        apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg, None);
         let (id, _) = reg
             .iter_with_kind(crate::scripting::registry::ComponentKind::Light)
             .next()
@@ -942,7 +1024,8 @@ mod tests {
         let placements = vec![placement("torch", &[])];
         let mut handled = HashSet::new();
         handled.insert("torch".to_string());
-        let result = apply_data_archetype_dispatch(&placements, &descriptors, &handled, &mut reg);
+        let result =
+            apply_data_archetype_dispatch(&placements, &descriptors, &handled, &mut reg, None);
         assert_eq!(result.len(), 0);
     }
 
@@ -954,7 +1037,7 @@ mod tests {
             "torch",
             &[("initial_intensity", "5.5"), ("initial_range", "20")],
         )];
-        apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg);
+        apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg, None);
         let (id, _) = reg
             .iter_with_kind(crate::scripting::registry::ComponentKind::Light)
             .next()
@@ -969,7 +1052,7 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let descriptors = vec![light_descriptor("torch", true)];
         let placements = vec![placement("torch", &[("initial_color", "1.0 0.5 0.25")])];
-        apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg);
+        apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg, None);
         let (id, _) = reg
             .iter_with_kind(crate::scripting::registry::ComponentKind::Light)
             .next()
@@ -994,7 +1077,13 @@ mod tests {
             let mut reg = EntityRegistry::new();
             let descriptors = vec![light_descriptor("torch", false)];
             let placements = vec![placement("torch", &[("initial_is_dynamic", raw)])];
-            apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg);
+            apply_data_archetype_dispatch(
+                &placements,
+                &descriptors,
+                &HashSet::new(),
+                &mut reg,
+                None,
+            );
             // The descriptor light is forced dynamic at spawn regardless of the
             // descriptor's `is_dynamic`. To verify the parse landed on the
             // descriptor field itself, we exercise `apply_light_kvp_overrides`
@@ -1038,7 +1127,7 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let descriptors = vec![light_descriptor("torch", true)];
         let placements = vec![placement("torch", &[("initial_intensity", "-5.0")])];
-        apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg);
+        apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg, None);
         let (id, _) = reg
             .iter_with_kind(crate::scripting::registry::ComponentKind::Light)
             .next()
@@ -1053,7 +1142,7 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let descriptors = vec![light_descriptor("torch", true)];
         let placements = vec![placement("torch", &[("initial_range", "-2.0")])];
-        apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg);
+        apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg, None);
         let (id, _) = reg
             .iter_with_kind(crate::scripting::registry::ComponentKind::Light)
             .next()
@@ -1067,7 +1156,7 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let descriptors = vec![light_descriptor("torch", true)];
         let placements = vec![placement("torch", &[("initial_intensity", "not-a-number")])];
-        apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg);
+        apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg, None);
         let (id, _) = reg
             .iter_with_kind(crate::scripting::registry::ComponentKind::Light)
             .next()
@@ -1096,7 +1185,8 @@ mod tests {
         let mut handled = HashSet::new();
         handled.insert("torch".to_string());
 
-        let result = apply_data_archetype_dispatch(&placements, &descriptors, &handled, &mut reg);
+        let result =
+            apply_data_archetype_dispatch(&placements, &descriptors, &handled, &mut reg, None);
 
         assert_eq!(
             result.len(),
@@ -1113,7 +1203,7 @@ mod tests {
         // Second invocation: the dedup state is per-call, so the guard must
         // continue to drop colliding placements on a fresh dispatch pass.
         let more = vec![placement("torch", &[])];
-        let result2 = apply_data_archetype_dispatch(&more, &descriptors, &handled, &mut reg);
+        let result2 = apply_data_archetype_dispatch(&more, &descriptors, &handled, &mut reg, None);
         assert_eq!(result2.len(), 0);
     }
 
@@ -1146,12 +1236,13 @@ mod tests {
             weapon: None,
             mesh: None,
             health: None,
+            ai: None,
         }];
         let placements = vec![placement(
             "campfire",
             &[("initial_velocity", "1.0 2.0 3.0")],
         )];
-        apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg);
+        apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg, None);
         let (id, _) = reg
             .iter_with_kind(crate::scripting::registry::ComponentKind::BillboardEmitter)
             .next()
@@ -1189,9 +1280,10 @@ mod tests {
             weapon: None,
             mesh: None,
             health: None,
+            ai: None,
         }];
         let placements = vec![placement("campfire", &[("velocity", "9.0 9.0 9.0")])];
-        apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg);
+        apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg, None);
         let (id, _) = reg
             .iter_with_kind(crate::scripting::registry::ComponentKind::BillboardEmitter)
             .next()
@@ -1229,9 +1321,10 @@ mod tests {
             weapon: None,
             mesh: None,
             health: None,
+            ai: None,
         }];
         let placements = vec![placement("campfire", &[("initial_rate", "20.5")])];
-        apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg);
+        apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg, None);
         let (id, _) = reg
             .iter_with_kind(crate::scripting::registry::ComponentKind::BillboardEmitter)
             .next()
@@ -1266,9 +1359,10 @@ mod tests {
             weapon: None,
             mesh: None,
             health: None,
+            ai: None,
         }];
         let placements = vec![placement("burstfire", &[("initial_burst", "24")])];
-        apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg);
+        apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg, None);
         let (id, _) = reg
             .iter_with_kind(crate::scripting::registry::ComponentKind::BillboardEmitter)
             .next()
@@ -1305,12 +1399,13 @@ mod tests {
             weapon: None,
             mesh: None,
             health: None,
+            ai: None,
         }];
         let placements = vec![placement(
             "smolder",
             &[("initial_rate", "not-a-float"), ("initial_burst", "noisy")],
         )];
-        apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg);
+        apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg, None);
         let (id, _) = reg
             .iter_with_kind(crate::scripting::registry::ComponentKind::BillboardEmitter)
             .next()
@@ -1354,6 +1449,7 @@ mod tests {
             weapon: None,
             mesh: None,
             health: None,
+            ai: None,
         }];
 
         let placements = vec![placement("billboard_emitter", &[])];
@@ -1361,7 +1457,7 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let handled = apply_classname_dispatch(&placements, &dispatch, &mut reg);
         let descriptor_handled =
-            apply_data_archetype_dispatch(&placements, &descriptors, &handled, &mut reg);
+            apply_data_archetype_dispatch(&placements, &descriptors, &handled, &mut reg, None);
 
         assert_eq!(
             descriptor_handled.len(),
@@ -1387,8 +1483,13 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let descriptors = vec![light_descriptor("torch", true)];
         let placements = vec![placement("ungoverned", &[])];
-        let handled =
-            apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg);
+        let handled = apply_data_archetype_dispatch(
+            &placements,
+            &descriptors,
+            &HashSet::new(),
+            &mut reg,
+            None,
+        );
         assert_eq!(handled.len(), 0);
     }
 
@@ -1415,10 +1516,16 @@ mod tests {
             weapon: None,
             mesh: None,
             health: None,
+            ai: None,
         }];
         let placements = vec![placement("ghost", &[]), placement("ghost", &[])];
-        let handled =
-            apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg);
+        let handled = apply_data_archetype_dispatch(
+            &placements,
+            &descriptors,
+            &HashSet::new(),
+            &mut reg,
+            None,
+        );
         assert_eq!(handled.len(), 0);
         assert!(
             reg.iter_with_kind(crate::scripting::registry::ComponentKind::Light)
@@ -1435,8 +1542,13 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let descriptors = vec![light_descriptor("foo", true)];
         let placements = vec![placement("foo", &[])];
-        let handled =
-            apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg);
+        let handled = apply_data_archetype_dispatch(
+            &placements,
+            &descriptors,
+            &HashSet::new(),
+            &mut reg,
+            None,
+        );
         assert_eq!(handled.len(), 1);
         assert!(handled.contains("foo"));
         assert!(
@@ -1455,7 +1567,7 @@ mod tests {
         let descriptors = vec![stub_descriptor("player")];
         let points = vec![spawn_point(&[])];
 
-        spawn_from_player_starts(&points, &descriptors, &mut reg);
+        spawn_from_player_starts(&points, &descriptors, &mut reg, None);
 
         assert_eq!(live_count(&reg), 1);
     }
@@ -1469,7 +1581,7 @@ mod tests {
         ];
         let points = vec![spawn_point(&[])];
 
-        let result = spawn_from_player_starts(&points, &descriptors, &mut reg);
+        let result = spawn_from_player_starts(&points, &descriptors, &mut reg, None);
 
         let player_id = reg
             .iter_with_kind(crate::scripting::registry::ComponentKind::Transform)
@@ -1513,6 +1625,7 @@ mod tests {
             weapon: None,
             mesh: None,
             health: None,
+            ai: None,
         }
     }
 
@@ -1532,6 +1645,7 @@ mod tests {
             }),
             mesh: None,
             health: None,
+            ai: None,
         }
     }
 
@@ -1545,6 +1659,7 @@ mod tests {
             weapon: None,
             mesh: None,
             health: None,
+            ai: None,
         }
     }
 
@@ -1583,7 +1698,7 @@ mod tests {
         );
         let points = vec![spawn_point_at(origin, angles, &[])];
 
-        spawn_from_player_starts(&points, &descriptors, &mut reg);
+        spawn_from_player_starts(&points, &descriptors, &mut reg, None);
 
         assert_eq!(live_count(&reg), 1);
         let (id, _) = reg
@@ -1618,7 +1733,7 @@ mod tests {
         let descriptors = vec![stub_descriptor("player")];
         let points = vec![spawn_point(&[]), spawn_point(&[]), spawn_point(&[])];
 
-        spawn_from_player_starts(&points, &descriptors, &mut reg);
+        spawn_from_player_starts(&points, &descriptors, &mut reg, None);
 
         assert_eq!(live_count(&reg), 3);
     }
@@ -1629,7 +1744,7 @@ mod tests {
         let descriptors = vec![stub_descriptor("player")];
         let points = vec![spawn_point(&[])];
 
-        spawn_from_player_starts(&points, &descriptors, &mut reg);
+        spawn_from_player_starts(&points, &descriptors, &mut reg, None);
 
         assert_eq!(live_count(&reg), 1);
     }
@@ -1643,7 +1758,7 @@ mod tests {
         ];
         let points = vec![spawn_point(&[])];
 
-        let result = spawn_from_player_starts(&points, &descriptors, &mut reg);
+        let result = spawn_from_player_starts(&points, &descriptors, &mut reg, None);
 
         assert_eq!(result.spawned, 1);
         let weapon_id = result.active_wieldable.expect("active wieldable");
@@ -1665,7 +1780,7 @@ mod tests {
         ];
         let points = vec![spawn_point(&[])];
 
-        let result = spawn_from_player_starts(&points, &descriptors, &mut reg);
+        let result = spawn_from_player_starts(&points, &descriptors, &mut reg, None);
 
         assert_eq!(result.spawned, 1);
         assert!(result.active_wieldable.is_none());
@@ -1692,7 +1807,7 @@ mod tests {
             spawn_point(&[("entity_class", "spectator")]),
         ];
 
-        spawn_from_player_starts(&points, &descriptors, &mut reg);
+        spawn_from_player_starts(&points, &descriptors, &mut reg, None);
 
         // Both spawn — exactly one per spawn point regardless of routing.
         assert_eq!(live_count(&reg), 2);
@@ -1707,7 +1822,7 @@ mod tests {
             spawn_point(&[]), // defaults to "player" — should still spawn
         ];
 
-        spawn_from_player_starts(&points, &descriptors, &mut reg);
+        spawn_from_player_starts(&points, &descriptors, &mut reg, None);
 
         assert_eq!(
             live_count(&reg),
@@ -1720,7 +1835,7 @@ mod tests {
     fn empty_spawn_points_list_is_a_noop() {
         let mut reg = EntityRegistry::new();
         let descriptors = vec![stub_descriptor("player")];
-        spawn_from_player_starts(&[], &descriptors, &mut reg);
+        spawn_from_player_starts(&[], &descriptors, &mut reg, None);
         assert_eq!(live_count(&reg), 0);
     }
 
@@ -1732,7 +1847,7 @@ mod tests {
         sp.tags = vec!["co-op".to_string(), "team-red".to_string()];
         let points = vec![sp];
 
-        spawn_from_player_starts(&points, &descriptors, &mut reg);
+        spawn_from_player_starts(&points, &descriptors, &mut reg, None);
 
         let (id, _) = reg
             .iter_with_kind(crate::scripting::registry::ComponentKind::Transform)
@@ -1751,7 +1866,7 @@ mod tests {
             ("loadout", "shotgun"),
         ])];
 
-        spawn_from_player_starts(&points, &descriptors, &mut reg);
+        spawn_from_player_starts(&points, &descriptors, &mut reg, None);
 
         let (id, _) = reg
             .iter_with_kind(crate::scripting::registry::ComponentKind::Transform)
@@ -1774,7 +1889,7 @@ mod tests {
         let descriptors = vec![light_descriptor("player", true)];
         let points = vec![spawn_point_at(Vec3::new(7.0, 0.0, 0.0), Vec3::ZERO, &[])];
 
-        spawn_from_player_starts(&points, &descriptors, &mut reg);
+        spawn_from_player_starts(&points, &descriptors, &mut reg, None);
 
         let (id, _) = reg
             .iter_with_kind(crate::scripting::registry::ComponentKind::Light)

@@ -47,3 +47,57 @@ pub(super) fn emit(graph: &NavGraph, lines: &mut DebugLineRenderer) {
         );
     }
 }
+
+/// Corridor segment from the agent toward each remaining waypoint.
+const COLOR_AGENT_PATH: [u8; 4] = [120, 255, 120, 255];
+/// Waypoint marker (a small cross) at each funnel waypoint.
+const COLOR_AGENT_WAYPOINT: [u8; 4] = [255, 120, 220, 255];
+
+/// Emit one frame of agent path/corridor diagnostic lines: the corridor from the
+/// agent's current `position` through its remaining funnel waypoints (starting at
+/// `cursor`), plus a small cross marker at each remaining waypoint. The marker
+/// arm length scales with the agent `radius` so a fatter agent reads larger.
+///
+/// Like [`emit`], this is purely additive over the already-cleared debug-line
+/// buffer and depth-tested (`push_line`), so the corridor reads as in-world.
+/// No-op when the path is empty.
+pub(super) fn emit_agent_path(
+    position: Vec3,
+    path: &[Vec3],
+    cursor: usize,
+    radius: f32,
+    lines: &mut DebugLineRenderer,
+) {
+    let remaining = path.get(cursor..).unwrap_or(&[]);
+    if remaining.is_empty() {
+        return;
+    }
+
+    // Corridor: agent → first remaining waypoint → … → destination.
+    let mut prev = position;
+    for &waypoint in remaining {
+        lines.push_line(prev, waypoint, COLOR_AGENT_PATH);
+        prev = waypoint;
+    }
+
+    // Waypoint markers: an axis cross sized to the agent capsule radius so each
+    // funnel corner is visible against the corridor line.
+    let arm = radius.max(0.05);
+    for &waypoint in remaining {
+        lines.push_line(
+            waypoint - Vec3::new(arm, 0.0, 0.0),
+            waypoint + Vec3::new(arm, 0.0, 0.0),
+            COLOR_AGENT_WAYPOINT,
+        );
+        lines.push_line(
+            waypoint - Vec3::new(0.0, 0.0, arm),
+            waypoint + Vec3::new(0.0, 0.0, arm),
+            COLOR_AGENT_WAYPOINT,
+        );
+        lines.push_line(
+            waypoint - Vec3::new(0.0, arm, 0.0),
+            waypoint + Vec3::new(0.0, arm, 0.0),
+            COLOR_AGENT_WAYPOINT,
+        );
+    }
+}

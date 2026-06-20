@@ -1,9 +1,23 @@
 // Runtime navigation graph: region records + per-region portals, the query
-// surface that the future baked-pathfinding plan extends.
+// surface that the pathfinding query (`nav/path.rs`) and steering sit on.
 // See: context/lib/build_pipeline.md §Navigation bake
+
+mod path;
+// One-shot path query. Re-exported so callers import `crate::nav::find_path`;
+// the production caller is the agent steering tick (`agent_steering`).
+pub use path::find_path;
 
 use glam::Vec3;
 use postretro_level_format::navmesh::{NavMeshSection, NavPortal, NavRegion};
+
+/// XZ-plane (ground) distance between two world positions, ignoring Y. Shared by
+/// the pathfinding query (edge cost, heuristic) and downstream steering/AI so the
+/// engine has one definition of "ground distance".
+pub(crate) fn distance_xz(a: Vec3, b: Vec3) -> f32 {
+    let dx = a.x - b.x;
+    let dz = a.z - b.z;
+    (dx * dx + dz * dz).sqrt()
+}
 
 /// Read-back of the navigation grid header. Regions are stored in cell space;
 /// the grid header decodes a cell index to a world coordinate via
@@ -55,7 +69,7 @@ impl NavRegionRecord {
 /// records carry world-space footprints decoded from the grid header, and a
 /// per-region adjacency list flattens the section's portal array for O(1)
 /// per-region portal iteration. The query surface (point→region lookup, portal
-/// iteration, header/agent read-back) is what pathfinding will sit on top of.
+/// iteration, header/agent read-back) is what pathfinding sits on top of.
 #[derive(Debug, Clone)]
 pub struct NavGraph {
     grid: NavGrid,
@@ -126,17 +140,23 @@ impl NavGraph {
         }
     }
 
-    /// Grid header read-back.
+    /// Grid header read-back. Navmesh query surface; no production caller in the
+    /// default build (the navmesh debug overlay and tests read it).
+    #[allow(dead_code)]
     pub fn grid(&self) -> NavGrid {
         self.grid
     }
 
-    /// Cell size read-back (convenience; also on `grid()`).
+    /// Cell size read-back (convenience; also on `grid()`). Navmesh query
+    /// surface; no production caller in the default build.
+    #[allow(dead_code)]
     pub fn cell_size(&self) -> f32 {
         self.grid.cell_size
     }
 
-    /// Canonical-agent parameter read-back.
+    /// Canonical-agent parameter read-back. Called at level load to seed
+    /// descriptor-spawned agent capsules (`startup/lifecycle.rs`) and by the
+    /// dev-tools chase-agent spawner.
     pub fn agent_params(&self) -> NavAgentParams {
         self.agent
     }
@@ -145,7 +165,9 @@ impl NavGraph {
         self.regions.len()
     }
 
-    /// All region records (world-space footprints).
+    /// All region records (world-space footprints). Read by the navmesh debug
+    /// overlay (dev-tools) and tests; no production caller in the default build.
+    #[allow(dead_code)]
     pub fn regions(&self) -> &[NavRegionRecord] {
         &self.regions
     }
@@ -190,13 +212,25 @@ impl NavGraph {
 
     /// Iterate the portals touching `region_index` (the per-region adjacency
     /// built at load). Empty when the region is isolated or the index is out of
-    /// range.
+    /// range. Navmesh query surface; pathfinding uses `region_portal_indices`
+    /// (it needs the index), so this convenience iterator has no production
+    /// caller in the default build.
+    #[allow(dead_code)]
     pub fn region_portal_iter(&self, region_index: usize) -> impl Iterator<Item = &NavPortal> + '_ {
+        self.region_portal_indices(region_index)
+            .iter()
+            .filter_map(move |&idx| self.portals.get(idx))
+    }
+
+    /// Portal indices touching `region_index`, into `portals()`. The index (not
+    /// just the `&NavPortal`) is what pathfinding records per A* hop so a region
+    /// pair joined by two distinct portals resolves to the exact portal chosen.
+    /// Empty when the region is isolated or the index is out of range.
+    pub(crate) fn region_portal_indices(&self, region_index: usize) -> &[usize] {
         self.region_portals
             .get(region_index)
-            .into_iter()
-            .flatten()
-            .filter_map(move |&idx| self.portals.get(idx))
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
     }
 }
 

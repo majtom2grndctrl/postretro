@@ -1,6 +1,13 @@
 // Postretro engine entry point, boot state machine, and level-load orchestration.
 // See: context/lib/boot_sequence.md §3 · context/lib/index.md
 
+// Movable navigation agent collide-and-slide harness, driven each tick by the
+// steering system in `agent_steering`.
+// See: context/lib/movement.md §1, context/lib/entity_model.md §7
+mod agent;
+// Per-tick navigation-agent steering: replan budget, waypoint following, and
+// separation, built on the `agent` harness and `nav::find_path`.
+mod agent_steering;
 mod audio;
 mod camera;
 mod collision;
@@ -13,10 +20,8 @@ mod lighting;
 mod material;
 mod model;
 mod movement;
-// The runtime nav query surface is consumed only by the dev-tools navmesh
-// overlay today; the future baked-pathfinding plan extends it. Allow dead code
-// so shipping (non-`dev-tools`) builds stay warning-free until that lands.
-#[allow(dead_code)]
+// The runtime nav graph is built in every build whenever a level carries a
+// baked navmesh; pathfinding consumes its query surface.
 mod nav;
 mod options;
 mod weapon;
@@ -500,7 +505,6 @@ fn main() -> Result<()> {
         audio: None,
         window_state: None,
         level: None,
-        #[cfg(feature = "dev-tools")]
         nav_graph: None,
         map_path: map_path.map(PathBuf::from),
         content_root,
@@ -509,6 +513,7 @@ fn main() -> Result<()> {
         input_system,
         gameplay_input_latch: input::GameplayInputLatch::new(),
         crouch_toggle_active: false,
+        ai_warned: std::collections::HashSet::new(),
         player_options,
         settings_path,
         input_focus: InputFocus::Gameplay,
@@ -631,6 +636,8 @@ fn main() -> Result<()> {
         boot_load: false,
         #[cfg(feature = "dev-tools")]
         debug_ui: None,
+        #[cfg(feature = "dev-tools")]
+        debug_chase_agent: None,
     };
 
     event_loop
@@ -684,10 +691,9 @@ struct App {
     window_state: Option<WindowState>,
     level: Option<prl::LevelWorld>,
     /// Runtime navigation graph, built once when a level with a baked navmesh
-    /// loads. The future pathfinding plan reads this; today only the
-    /// `Alt+Shift+N` debug overlay consumes it, so it is dev-tools-gated to
-    /// stay dead-code-free in shipping builds.
-    #[cfg(feature = "dev-tools")]
+    /// loads. `None` when the map has no navmesh bake. Pathfinding reads this in
+    /// every build; the `Alt+Shift+N` debug overlay (dev-tools-only) also
+    /// consumes it.
     nav_graph: Option<nav::NavGraph>,
 
     /// Optional map path resolved from CLI args. When absent, boot lands in
@@ -710,6 +716,14 @@ struct App {
     /// the movement component. Inert in `CrouchMode::Hold` (hold tracks the
     /// button level directly). See: context/lib/input.md, context/lib/player_options.md
     crouch_toggle_active: bool,
+
+    /// Warn-once latch for the enemy-AI tick. Keyed, namespaced diagnostics fire
+    /// exactly once across the run rather than each tick: `anim:<name>` for an
+    /// animation state that fails to switch (`UnknownState`/`NotAnimated`, prior
+    /// animation kept) and `blocked:<id>` for a chasing enemy whose agent found
+    /// no path. Lives on `App` (the AI tick owner), threaded into
+    /// `scripting_systems::ai::run_ai_tick`. See: scripting/systems/ai.rs.
+    ai_warned: std::collections::HashSet<String>,
 
     /// Per-human runtime preferences loaded at boot. Seeds input look
     /// preferences during init; `crouch_mode` is read each input tick by
@@ -1096,6 +1110,13 @@ struct App {
     /// first panel open.
     #[cfg(feature = "dev-tools")]
     debug_ui: Option<render::debug_ui::DebugUi>,
+
+    /// The dev-tools "chase me" demo agent (spawned by `Alt+Shift+G`). `None`
+    /// until first spawned; spawned at most once per level (cleared on level
+    /// unload). Each tick the agent re-targets the player pawn's `Transform`
+    /// (or the camera when no pawn exists) so it pathfinds toward the player.
+    #[cfg(feature = "dev-tools")]
+    debug_chase_agent: Option<crate::scripting::registry::EntityId>,
 }
 
 struct WindowState {
@@ -1894,6 +1915,7 @@ impl ApplicationHandler for App {
                 // with ongoing physics simulation. See:
                 // context/lib/entity_model.md §5
                 let mut pending_movement_events: Vec<&'static str> = Vec::new();
+                let mut pending_ai_events: Vec<&'static str> = Vec::new();
                 let mut pending_weapon_events: Vec<&'static str> = Vec::new();
                 // Death-event names accumulate here and drain through the
                 // sequence-aware dispatcher (a separate sibling loop below), so a
@@ -2007,6 +2029,23 @@ impl ApplicationHandler for App {
                             }
                         }
 
+                        // Order 1a-ai: enemy-AI FSM tick. Runs BEFORE the agent
+                        // steering tick so this tick's destination/clear orders
+                        // (set per chasing enemy) are honored by the same-frame
+                        // steering pass. Evaluates the closed transition set,
+                        // applies damage on the attack cooldown (raising
+                        // `enemyAttack`), and switches the mapped animation.
+                        let ai_events = self.run_ai_tick(tick_dt);
+                        pending_ai_events.extend(ai_events);
+
+                        // Order 1b: navigation-agent steering. Drives every
+                        // entity carrying an `AgentComponent` toward its
+                        // destination — replan under budget, follow waypoints,
+                        // separate from neighbors, move via the collide-and-slide
+                        // harness. Reads the nav graph and collision world
+                        // read-only alongside `registry.borrow_mut()`.
+                        self.run_agent_tick(tick_dt);
+
                         // Order 2: weapon fire tick.
                         let weapon_events = self.run_weapon_fire_tick(snapshot, tick_dt);
                         pending_weapon_events.extend(weapon_events);
@@ -2029,6 +2068,9 @@ impl ApplicationHandler for App {
                 // complete so reactions observe the final post-tick state of
                 // every entity.
                 for event_name in &pending_movement_events {
+                    let _ = fire_named_event(event_name, &self.script_ctx.data_registry.borrow());
+                }
+                for event_name in &pending_ai_events {
                     let _ = fire_named_event(event_name, &self.script_ctx.data_registry.borrow());
                 }
                 for event_name in &pending_weapon_events {
@@ -2316,16 +2358,16 @@ impl ApplicationHandler for App {
                 // set, not the narrower drawable `visible_cells`, so a light in an
                 // empty reachable leaf still counts. Empty = DrawAll sentinel
                 // (fallback visibility paths): every light eligible.
-                let reachable_leaf_aabbs: Vec<(glam::Vec3, glam::Vec3)> =
-                    match self.level.as_ref() {
-                        None => Vec::new(),
-                        Some(_) if fog_reachable.is_empty() => Vec::new(),
-                        Some(world) => fog_reachable
-                            .iter()
-                            .filter_map(|&id| world.leaves.get(id as usize))
-                            .map(|leaf| (leaf.bounds_min, leaf.bounds_max))
-                            .collect(),
-                    };
+                let reachable_leaf_aabbs: Vec<(glam::Vec3, glam::Vec3)> = match self.level.as_ref()
+                {
+                    None => Vec::new(),
+                    Some(_) if fog_reachable.is_empty() => Vec::new(),
+                    Some(world) => fog_reachable
+                        .iter()
+                        .filter_map(|&id| world.leaves.get(id as usize))
+                        .map(|leaf| (leaf.bounds_min, leaf.bounds_max))
+                        .collect(),
+                };
 
                 if let Some(renderer) = self.renderer.as_mut() {
                     // Emitter bridge — after script `tick` handler, before particle
@@ -2555,6 +2597,30 @@ impl ApplicationHandler for App {
                             // and the map carried a baked navmesh.
                             if let Some(nav_graph) = self.nav_graph.as_ref() {
                                 renderer.emit_nav_diagnostics(nav_graph);
+                            }
+                            // Chase-agent path overlay: corridor + funnel
+                            // waypoints for the `Alt+Shift+G` demo agent. Reads
+                            // the live agent component and hands plain geometry to
+                            // the renderer (no wgpu outside the renderer module).
+                            // Same toggle as the navmesh overlay.
+                            if let Some(agent) = self.debug_chase_agent {
+                                use crate::scripting::components::agent::AgentComponent;
+                                use crate::scripting::registry::Transform;
+                                let registry = self.script_ctx.registry.borrow();
+                                if let Ok(component) =
+                                    registry.get_component::<AgentComponent>(agent)
+                                {
+                                    let position = registry
+                                        .get_component::<Transform>(agent)
+                                        .map(|t| t.position)
+                                        .unwrap_or(Vec3::ZERO);
+                                    renderer.emit_agent_path_overlay(
+                                        position,
+                                        &component.path,
+                                        component.waypoint_cursor,
+                                        component.radius,
+                                    );
+                                }
                             }
                             out
                         };
@@ -3637,6 +3703,56 @@ impl App {
         events_out
     }
 
+    /// Drive the enemy-AI FSM tick. Thin wrapper following the
+    /// `run_movement_tick`/`run_weapon_fire_tick` precedent: borrows
+    /// `self.script_ctx.registry` mutably and threads the warn-once animation
+    /// latch through. All FSM logic (transition core, steering drive, damage,
+    /// animation switching) lives in `scripting_systems::ai::run_ai_tick`.
+    /// Returns the event names raised this tick (`enemyAttack` per attack) for
+    /// the post-tick event drain.
+    fn run_ai_tick(&mut self, tick_dt: f32) -> Vec<&'static str> {
+        let mut registry = self.script_ctx.registry.borrow_mut();
+        scripting_systems::ai::run_ai_tick(&mut registry, &mut self.ai_warned, tick_dt)
+    }
+
+    /// Drive the navigation-agent steering tick. The nav graph and collision
+    /// world are borrowed read-only alongside `registry.borrow_mut()` (the same
+    /// borrow pattern `run_movement_tick` uses for the collision world). Thin
+    /// wrapper: all steering logic lives in `agent_steering::tick`.
+    fn run_agent_tick(&mut self, tick_dt: f32) {
+        let gravity = self.script_ctx.gravity.get();
+        let nav_graph = self.nav_graph.as_ref();
+        let mut registry = self.script_ctx.registry.borrow_mut();
+
+        // dev-tools "chase me" demo: each tick, re-aim the debug chase agent at
+        // the player pawn's `Transform` (the pawn-discovery idiom) — or the
+        // camera when no pawn exists — so it continuously pathfinds toward the
+        // player. Setting the destination every tick is intentional: the
+        // steering replan policy reacts to a moved destination by replanning.
+        #[cfg(feature = "dev-tools")]
+        if let Some(agent) = self.debug_chase_agent {
+            use crate::scripting::registry::{ComponentKind, ComponentValue, Transform};
+
+            let target = registry
+                .iter_with_kind(ComponentKind::PlayerMovement)
+                .find_map(|(id, value)| {
+                    matches!(value, ComponentValue::PlayerMovement(_)).then_some(id)
+                })
+                .and_then(|id| registry.get_component::<Transform>(id).ok())
+                .map(|t| t.position)
+                .unwrap_or(self.camera.position);
+            agent_steering::set_destination(&mut registry, agent, target);
+        }
+
+        let _ = agent_steering::tick(
+            &mut registry,
+            &self.collision_world,
+            nav_graph,
+            gravity,
+            tick_dt,
+        );
+    }
+
     fn run_weapon_fire_tick(
         &mut self,
         snapshot: &input::ActionSnapshot,
@@ -3703,6 +3819,10 @@ impl App {
     ///   `progress` reaction crossing its declared fraction) join the drain.
     /// - A player death contributes the `playerDied` event exactly once (the
     ///   sweep's `death_handled` latch guarantees the single report).
+    ///
+    /// A brain-bearing enemy kill is latched and reported through `killed_tags`
+    /// (the progress path above), but is NOT despawned here — the AI tick
+    /// despawns it after `death_despawn_ms`.
     ///
     /// The returned names are accumulated by the caller and drained after the
     /// tick loop via `fire_named_event_with_sequences`.
@@ -3916,6 +4036,61 @@ impl App {
             #[cfg(feature = "dev-tools")]
             DiagnosticAction::CycleDevLevel => {
                 self.enqueue_dev_level_cycle();
+            }
+            #[cfg(feature = "dev-tools")]
+            DiagnosticAction::SpawnChaseAgent => {
+                self.spawn_debug_chase_agent();
+            }
+        }
+    }
+
+    /// Spawn the dev-tools "chase me" demo agent at the camera position, seeded
+    /// from the loaded navmesh's baked agent params. Idempotent per level: a
+    /// second press re-targets the existing agent instead of stacking spawns.
+    /// No-op when the map carries no navmesh (`agent_params` needs the graph).
+    ///
+    /// The `NavGraph::agent_params()` read and `attach_agent` happen HERE at the
+    /// spawn call site (not inside the component constructor): the baked params
+    /// describe the capsule the floor was eroded for. The per-tick destination
+    /// is then driven by `run_agent_tick`.
+    #[cfg(feature = "dev-tools")]
+    fn spawn_debug_chase_agent(&mut self) {
+        use crate::scripting::components::agent::attach_agent;
+        use crate::scripting::registry::Transform;
+
+        let Some(nav_graph) = self.nav_graph.as_ref() else {
+            log::warn!("[dev-tools] chase agent: map has no navmesh; cannot spawn");
+            return;
+        };
+        if self.debug_chase_agent.is_some() {
+            log::info!("[dev-tools] chase agent already spawned; re-targeting each tick");
+            return;
+        }
+
+        // Top speed for the demo pursuer (world-units/sec). A brisk-but-readable
+        // chase; the capsule itself comes from the baked params below.
+        const CHASE_MOVE_SPEED: f32 = 4.0;
+
+        let params = nav_graph.agent_params();
+        let spawn_pos = self.camera.position;
+
+        let mut registry = self.script_ctx.registry.borrow_mut();
+        let entity = registry.spawn(Transform {
+            position: spawn_pos,
+            ..Transform::default()
+        });
+        match attach_agent(&mut registry, entity, &params, CHASE_MOVE_SPEED) {
+            Ok(()) => {
+                drop(registry);
+                self.debug_chase_agent = Some(entity);
+                log::info!(
+                    "[dev-tools] spawned chase agent {:?} at {:?} (chasing player/camera)",
+                    entity,
+                    spawn_pos,
+                );
+            }
+            Err(err) => {
+                log::warn!("[dev-tools] chase agent attach failed: {err:?}");
             }
         }
     }

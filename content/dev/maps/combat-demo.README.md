@@ -1,11 +1,59 @@
-# combat-demo — M10 entity health + damage demo
+# combat-demo — M10 entity health + damage AND enemy AI / pathfinding demo
 
-DEMO CONTENT exercising the entity health + damage loop end to end: a
-descriptor-declared health+hitbox entity is placed in a map, shot by the shipped
-weapon's hitscan ray, takes damage per hit through the `apply_damage`
-chokepoint, and despawns at zero HP — and killing a fraction of the tagged
-dummies fires a `progress` event that drives an `applyDamage` reaction on the
-player, so the player's HP (and the readonly `player.health` HUD slot) drops.
+DEMO CONTENT exercising two M10 loops end to end:
+
+1. **Health + damage.** A descriptor-declared health+hitbox entity is placed in a
+   map, shot by the shipped weapon's hitscan ray, takes damage per hit through the
+   `apply_damage` chokepoint, and despawns at zero HP — and killing a fraction of
+   the tagged dummies fires a `progress` event that drives an `applyDamage`
+   reaction on the player, so the player's HP (and the readonly `player.health`
+   HUD slot) drops.
+
+2. **Enemy AI + pathfinding.** The `reference_enemy` (far east) and the
+   `player_spawn` (far west) sit at opposite ends of one large open arena, with
+   three free-standing full-height pillars strung along the centerline between
+   them. The straight line from the enemy to the player is blocked by the center
+   pillar, so the enemy must route AROUND it — A* over the baked navmesh regions,
+   then a Simple-Stupid-Funnel string-pull (the funnel waypoints). Walk out from
+   spawn and the enemy detours around the obstacle to reach you, instead of
+   charging straight through it. There is wide open floor (~208 units) north AND
+   south of the center pillar, so the agent rounds it in the open and never gets
+   stuck.
+
+## Floor plan
+
+Interior `x 0..1024`, `y 0..512`, floor `z=0`, ceiling `z=128` (top-down; x east,
+y north) — one large arena, ~4× the open floor area of the old ~512×256 room
+(each horizontal dimension doubled). Three free-standing, floor-to-ceiling pillars
+(`x[256,320] y[200,296]`, `x[480,544] y[208,304]`, `x[704,768] y[216,312]`) sit
+near the centerline. Every gap — pillar to wall and pillar to pillar — is **≥160
+units** wide, so there are no narrow doorways, no S-turns, and no concave pockets
+the agent capsule can wedge into.
+
+```
+  y=512  ################################################################
+         #..............................................................#
+         #..............................................................#
+         #..........##..........##..........##..........................#
+         #...P..d.d..##....d.....##..........##.....................E....#
+         #...........##..........##..........##.........................#
+         #..............................................................#
+         #..............................................................#
+  y=0    ################################################################
+         x=0    256 320   480 544   704 768                          1024
+
+  # = wall / pillar   . = floor   P = player_spawn   E = reference_enemy   d = dummy
+  WEST pillar x[256,320]   CENTER pillar x[480,544] (on the P->E line)   EAST pillar x[704,768]
+  Route: P -> detour north OR south of the center pillar (~208 units clear) -> E.
+```
+
+The bake reports **NavMesh: 18 regions, 22 portals** (53×105 cell grid @ 0.25 m) —
+a genuinely multi-region, multi-portal mesh (the old single-room layout baked to
+1 region / 0 portals, a straight-line chase). The floor is a single connected
+walkable component (no area sealed off), so `find_path` always connects the two
+spawns. Toggle the in-game nav overlay with **Alt+Shift+N** to see the regions,
+portals, and the routed path: walk out and the enemy detours around the obstacle
+to reach you.
 
 ## Files
 
@@ -28,9 +76,14 @@ player, so the player's HP (and the readonly `player.health` HUD slot) drops.
   (`setupLevel`). Returns a `progress` reaction over the `dummy` tag firing
   `dummiesCleared`, and an `applyDamage` reaction NAMED `dummiesCleared` targeting
   the `player` tag. Wired into the map via the worldspawn `data_script` KVP.
-- `content/dev/maps/combat-demo.map` — a minimal walkable room (geometry mirrors
-  `anim-demo.map`) with a `player_spawn` tagged `player`, four `target_dummy`
-  instances tagged `dummy`, and one `light`.
+- `content/dev/maps/combat-demo.map` — one large open arena (axis-aligned box
+  brushes, plane style mirrored from `campaign-test.map`) with a `player_spawn`
+  tagged `player` (far west), four `target_dummy` instances tagged `dummy` (just
+  east of the player, in front of it), a `reference_enemy` tagged `enemy` (far
+  east), three free-standing full-height pillars near the centerline, and seven
+  `light`s spread across the enlarged space. The center pillar blocks the straight
+  player→enemy line, so the pathfinding has to route around it; the wide ≥160-unit
+  clearance on every side keeps the agent from wedging. See the floor plan above.
 
 ## Compile
 

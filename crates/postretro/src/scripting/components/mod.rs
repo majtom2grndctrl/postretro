@@ -4,7 +4,9 @@
 //
 // See: context/lib/scripting.md
 
+pub(crate) mod agent;
 pub(crate) mod billboard_emitter;
+pub(crate) mod brain;
 pub(crate) mod fog_volume;
 pub(crate) mod health;
 pub(crate) mod light;

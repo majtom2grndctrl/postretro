@@ -681,8 +681,7 @@ mod tests {
 
     #[test]
     fn empty_light_list_produces_empty_assignment() {
-        let assignment =
-            SpotShadowPool::rank_lights(&[], Vec3::ZERO, 0.1, &[]);
+        let assignment = SpotShadowPool::rank_lights(&[], Vec3::ZERO, 0.1, &[]);
         assert!(assignment.is_empty());
     }
 
@@ -694,8 +693,7 @@ mod tests {
             test_light(0, [0.0, 0.0, 0.0], 10.0, false),
             test_light(1, [10.0, 0.0, 0.0], 10.0, false),
         ];
-        let assignment =
-            SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[]);
+        let assignment = SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[]);
         assert_eq!(assignment[0], NO_SHADOW_SLOT);
         assert_eq!(assignment[1], NO_SHADOW_SLOT);
     }
@@ -707,8 +705,7 @@ mod tests {
     #[test]
     fn dynamic_spot_qualifies_for_pool() {
         let lights = vec![test_light(0, [0.0, 0.0, 0.0], 10.0, true)];
-        let assignment =
-            SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[]);
+        let assignment = SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[]);
         assert_ne!(assignment[0], NO_SHADOW_SLOT);
     }
 
@@ -722,8 +719,7 @@ mod tests {
         let mut light = test_light(0, [0.0, 0.0, 0.0], 10.0, true);
         light.light_type = LightType::Point;
         let lights = vec![light];
-        let assignment =
-            SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[]);
+        let assignment = SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[]);
         assert_eq!(assignment[0], NO_SHADOW_SLOT);
     }
 
@@ -732,8 +728,7 @@ mod tests {
         let mut light = test_light(0, [0.0, 0.0, 0.0], 10.0, true);
         light.light_type = LightType::Point;
         let lights = vec![light];
-        let assignment =
-            SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[]);
+        let assignment = SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[]);
         assert_eq!(assignment[0], NO_SHADOW_SLOT);
     }
 
@@ -743,8 +738,7 @@ mod tests {
             test_light(0, [0.0, 0.0, 0.0], 10.0, true),
             test_light(1, [10.0, 0.0, 0.0], 10.0, true),
         ];
-        let assignment =
-            SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[]);
+        let assignment = SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[]);
         assert_ne!(assignment[0], NO_SHADOW_SLOT);
         assert_ne!(assignment[1], NO_SHADOW_SLOT);
         // Should be different slots.
@@ -762,8 +756,7 @@ mod tests {
                 true,
             ));
         }
-        let assignment =
-            SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[]);
+        let assignment = SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[]);
 
         let assigned_count = assignment.iter().filter(|&&s| s != NO_SHADOW_SLOT).count();
         assert_eq!(assigned_count, 9, "all 9 lights fit within pool capacity");
@@ -779,8 +772,7 @@ mod tests {
             test_light(0, [0.0, 0.0, 0.0], 10.0, true),
             test_light(1, [100.0, 0.0, 0.0], 10.0, true),
         ];
-        let assignment =
-            SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[]);
+        let assignment = SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[]);
         // Light 0 should get slot 0 (lower index = higher rank).
         assert_eq!(assignment[0], 0);
         assert_eq!(assignment[1], 1);
@@ -793,8 +785,7 @@ mod tests {
             test_light(0, [0.0, 0.0, -10.0], 20.0, true),
             test_light(1, [0.0, 0.0, -10.0], 10.0, true),
         ];
-        let assignment =
-            SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[]);
+        let assignment = SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[]);
         // Light 0 (larger range) should get slot 0.
         assert_eq!(assignment[0], 0);
         assert_eq!(assignment[1], 1);
@@ -807,8 +798,7 @@ mod tests {
             test_light(0, [10.0, 0.0, 0.0], 10.0, true),
             test_light(1, [10.0, 0.0, 0.0], 10.0, true),
         ];
-        let assignment =
-            SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[]);
+        let assignment = SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[]);
         // Light 0 (lower index) should get slot 0; light 1 gets slot 1.
         assert_eq!(assignment[0], 0);
         assert_eq!(assignment[1], 1);
@@ -865,8 +855,7 @@ mod tests {
             test_light(1, [10.0, 0.0, -10.0], 10.0, true),
             test_light(2, [20.0, 0.0, -10.0], 10.0, true),
         ];
-        let assignment =
-            SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[]);
+        let assignment = SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[]);
         assert_ne!(assignment[0], NO_SHADOW_SLOT);
         assert_ne!(assignment[1], NO_SHADOW_SLOT);
         assert_ne!(assignment[2], NO_SHADOW_SLOT);
@@ -877,8 +866,7 @@ mod tests {
         // Light very close to camera (distance < near_clip). Heuristic should clamp.
         let lights = vec![test_light(0, [0.001, 0.0, 0.0], 10.0, true)];
         let camera_near_clip = 0.1;
-        let assignment =
-            SpotShadowPool::rank_lights(&lights, Vec3::ZERO, camera_near_clip, &[]);
+        let assignment = SpotShadowPool::rank_lights(&lights, Vec3::ZERO, camera_near_clip, &[]);
         // Should still be assigned.
         assert_eq!(assignment[0], 0);
     }
@@ -901,9 +889,8 @@ mod tests {
         let pitched_down = camera_view_proj(camera_eye, -std::f32::consts::FRAC_PI_2 + 0.2, 0.0);
         // Sanity: the cone AABB really is outside this frustum (otherwise the
         // test wouldn't exercise the bug).
-        let cone_aabb = crate::lighting::cone_frustum::cone_enclosing_aabb(&light_space_matrix(
-            &lights[0],
-        ));
+        let cone_aabb =
+            crate::lighting::cone_frustum::cone_enclosing_aabb(&light_space_matrix(&lights[0]));
         let planes: [glam::Vec4; 6] =
             crate::compute_cull::extract_frustum_planes_for_gpu(&pitched_down)
                 .map(|p| glam::Vec4::new(p[0], p[1], p[2], p[3]));
@@ -999,22 +986,24 @@ mod tests {
 
         // And under genuine pool overflow (capacity 1 via the shared core), only
         // the closer light survives — proving the drop is distance-driven.
-        let score =
-            |light: &MapLight, cam: Vec3| -> f32 {
-                let p = Vec3::new(
-                    light.origin[0] as f32,
-                    light.origin[1] as f32,
-                    light.origin[2] as f32,
-                );
-                (light.falloff_range / (p - cam).length().max(0.1)).powi(2)
-            };
+        let score = |light: &MapLight, cam: Vec3| -> f32 {
+            let p = Vec3::new(
+                light.origin[0] as f32,
+                light.origin[1] as f32,
+                light.origin[2] as f32,
+            );
+            (light.falloff_range / (p - cam).length().max(0.1)).powi(2)
+        };
         let cands_a: Vec<(usize, f32)> = lights
             .iter()
             .enumerate()
             .map(|(i, l)| (i, score(l, near_a)))
             .collect();
         let overflow_a = assign_ranked_slots(cands_a, 1, lights.len());
-        assert_eq!(overflow_a[0], 0, "with capacity 1, closest-to-A wins the slot");
+        assert_eq!(
+            overflow_a[0], 0,
+            "with capacity 1, closest-to-A wins the slot"
+        );
         assert_eq!(overflow_a[1], NO_SHADOW_SLOT);
     }
 }

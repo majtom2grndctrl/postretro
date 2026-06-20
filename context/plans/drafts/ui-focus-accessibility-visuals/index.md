@@ -67,7 +67,7 @@ Add renderer-side data types for an internal accessibility snapshot. It should b
 
 ### Task 3: Resolve Accessible Names
 
-Resolve `label`, `labelledBy`, and tree `accessibleName` into strings during accessibility snapshot build. `labelledBy` names an authored node id whose text content supplies the name. Missing or hidden label targets warn once and degrade to an empty name; they do not panic or block rendering.
+Resolve `label`, `labelledBy`, and tree `accessibleName` into strings during accessibility snapshot build. `labelledBy` names an authored node id whose text content supplies the name; the target must resolve to a text-bearing node, otherwise the name warns once and degrades to empty. When both `label` and `labelledBy` are authored on the same node, inline `label` wins. Missing or hidden label targets warn once and degrade to an empty name; they do not panic or block rendering.
 
 ### Task 4: Add Focus Visual Descriptor
 

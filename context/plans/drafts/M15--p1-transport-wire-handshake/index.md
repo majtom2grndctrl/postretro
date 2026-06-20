@@ -29,7 +29,7 @@ time-sync, and lifecycle are Phase 2; prediction is Phase 3.
   per-entity component payloads) that round-trips byte-identical through the codec.
 - A **protocol/version handshake**: the netcode `protocol_id` gates the connection, and an
   app-level version stamp is the first reliable message; a mismatch rejects the join with a
-  **logged reason** and **no replicated state applied** (the client registry stays empty; the server sends none after rejecting).
+  **logged reason** and **no replicated state applied** (the server sends none after rejecting; the client applies nothing).
 - **Non-blocking transport integration** in the existing frame loop: poll renet via
   `update(dt)` + drain once per frame, before the catch-up tick loop. Honors
   `development_guide.md` §4.2 (never block the event loop).
@@ -74,9 +74,7 @@ time-sync, and lifecycle are Phase 2; prediction is Phase 3.
 - [ ] Two engine instances launched `--host` and `--connect <addr>` connect over loopback;
   a pawn that **moves on the host appears as a remote entity on the client and moves there**,
   full-state. Observable in two running processes. (Tasks 3–4)
-- [ ] A version/protocol **mismatch is rejected**: the joining client is refused, the reason
-  is **logged**, and **no replicated state is applied on the client** (asserted: empty client registry delta) while the server sends no entity state after rejecting — proven by a test that
-  connects two instances with divergent version stamps and asserts the empty client delta + the logged rejection. (Tasks 2–3)
+- [ ] A version/protocol **mismatch is rejected**: the joining client is refused with a **logged reason** (expected vs received), the server sends **no entity-state messages** after rejecting, and no apply runs client-side — proven by an in-process test that connects two instances with divergent `ProtocolVersion` stamps and asserts the logged rejection and that no state message crosses. (Task 3)
 - [ ] The transport is **polled non-blocking** in the frame loop (`update(dt)` + drain, no
   spawned runtime); the window stays responsive while connected; the dependency tree adds no
   async executor. (Tasks 3–4)
@@ -90,8 +88,7 @@ time-sync, and lifecycle are Phase 2; prediction is Phase 3.
 ## Tasks
 
 ### Task 1: Scaffold `crates/net` (`postretro-net`)
-Add `crates/net` to the workspace `members`; name the package `postretro-net`. Pin `renet = "2"`,
-`renet_netcode`, and `bitcode = "0.6"` (exact patch pins, with a comment: bitcode format is
+Add `crates/net` to the workspace `members`; name the package `postretro-net`. Pin all three with exact `=x.y.z` versions — `renet`, `renet_netcode` (matching renet's release line), and `bitcode` — resolving the current patch at scaffold time (comment: bitcode format is
 unstable across majors — never persist its bytes, gate every connection on the handshake).
 Add `glam` (workspace) only if a wire-mirror needs vector math; prefer plain `[f32; N]` in
 wire types to keep the codec glam-free. In the new crate's `[package]`, inherit shared fields via `version.workspace = true` / `edition.workspace = true` / `rust-version.workspace = true` / `license.workspace = true`. Add `postretro-net = { path = "crates/net" }` to the root `[workspace.dependencies]` (path-only, mirroring `postretro-level-format`), and reference it from `crates/postretro/Cargo.toml [dependencies]` as `postretro-net = { workspace = true }`. Stub the lib with the
@@ -107,20 +104,19 @@ payload — replacing serde's internal `"kind"` tag, which is the thing that can
 on bitcode. Phase 1 binds **only** the Transform variant; the discriminant + envelope shape
 must extend to more variants without reshaping (Phase 2). Define the **full-state snapshot
 envelope** (server tick stamp + a count-prefixed list of `(NetworkId, component payload)`),
-the **input-command envelope** (mirrors `SimCommand`'s `MovementInput` fields + fire button —
+the **input-command envelope** (mirrors `SimCommand`'s fields — `movement: MovementInput` + `fire_button: FireButtonState` —
 defined and round-tripped now, gameplay-applied in Phase 2), and the **handshake message**
-(a `ProtocolVersion` stamp: a `u32` protocol id + the wire-format version). Provide
+(a `ProtocolVersion` stamp: `app_protocol_id: u32` + `wire_version: u32`). Provide
 `encode`/`decode` helpers over `bitcode`. Tests: every envelope round-trips byte-identical;
 a deliberately-corrupted/short buffer decodes to a clean `Err`, never a panic.
 
 ### Task 3: Transport + handshake
 In `postretro-net::transport`, wrap `renet` 2.0 + `renet_netcode` into a `NetServer` and
 `NetClient` with a **synchronous, non-blocking** surface: `update(dt)` (drives renet +
-transport), typed `send`/`drain` over named channels, and connection-state queries. Configure
+transport), typed `send`/`drain` over named channels, connection-state queries, and packet-level relay accessors (renet's `get_packets_to_send` / `process_packet` passthrough) that the Task 5 harness drives. Configure
 the `ConnectionConfig` channels: **reliable-ordered** for control (the version handshake +,
 later, spawn/despawn), **unreliable** for snapshots (latest-wins), a third channel reserved
-for input commands. Implement the two-gate handshake: renet_netcode's `protocol_id` (derived
-from the build's protocol/version) is the transport-level gate. Pin `PROTOCOL_ID` and `WIRE_VERSION` as explicit hand-bumped `const`s in `postretro-net`; the reject test forces divergence by overriding the client's `ProtocolVersion` stamp. On top, the client sends the
+for input commands. Implement the two-gate handshake: renet_netcode's transport `protocol_id` (`u64`) is the transport-level gate, computed `((PROTOCOL_ID as u64) << 32) | (WIRE_VERSION as u64)` from two hand-bumped `const`s in `postretro-net`; the app-level `ProtocolVersion` carries the same values as `app_protocol_id`/`wire_version`. The reject test forces divergence by overriding the client's `ProtocolVersion` stamp. On top, the client sends the
 `ProtocolVersion` handshake message as its first reliable control message, and the server
 **validates it before applying or sending any entity state** — a mismatch disconnects the
 client, logs the reason (expected vs received), and leaves both registries untouched. No
@@ -129,13 +125,13 @@ in-process (two transports over loopback `UdpSocket`s).
 
 ### Task 4: Engine glue + roles (`crate::netcode`)
 Add a new `crate::netcode` module (engine-side glue — **keep `main.rs` additions to thin
-delegating calls**, `main.rs` is already ~5.9k lines). It owns: role selection parsed at
+delegating calls**, `main.rs` is already ~6.0k lines). It owns: role selection parsed at
 startup (default single-player, `--host`, `--connect`), an optional `NetServer`/`NetClient`
 held by `App`, the `NetworkId ↔ EntityId` client-side map, a host-side `EntityId → NetworkId` allocator (a monotonic `u32` counter + map; the serialize step stamps each replicable entity through it), and two game-logic-owned steps —
 **serialize** (host: walk the replicable set — entities carrying `ComponentValue::Transform`, the host pawn in Phase 1 — from the shared registry handle (`script_ctx.registry`) into a snapshot
 envelope) and **apply** (client: for each `(NetworkId, payload)`, `spawn` on first sight
-recording the map, else `set_component_value` on the mapped `EntityId`). Wire the per-frame
-poll into the `RedrawRequested` handler **before** the catch-up tick loop (`main.rs:~2023`):
+recording the map, else `set_component_value` on the mapped `EntityId`). Both steps take the registry handle as a parameter (`netcode::serialize(&script_ctx.registry, …)`, `netcode::apply(&script_ctx.registry, …)`); the `RedrawRequested` handler threads it in and `crate::netcode` never reaches into `App`. Phase 1 apply never despawns — a `NetworkId` absent from a later snapshot is left untouched (remove-missing reconciliation is Phase 2). Wire the per-frame
+poll into the `RedrawRequested` handler **before** the catch-up tick loop (`main.rs:~2040`; the `simulate_tick` call is ~2091, the `RedrawRequested` handler ~1738):
 client applies received snapshots before render; host serializes + sends after the tick loop,
 beside the existing post-loop drains. The net crate is never handed an `EntityRegistry`;
 `crate::netcode` is the only code that touches it. Phase 1 demo: host's local pawn,
@@ -143,7 +139,7 @@ driven by host input through the existing sim, replicated down; client renders t
 pawn moving. No prediction, no client→server gameplay input.
 
 ### Task 5: Latency-sim harness
-In `postretro-net::harness`, a dev-tools-gated (`#[cfg(any(test, feature = "dev-tools"))]`) in-process conditioner that sits on an **in-memory packet relay** between an already-connected `NetServer`/`NetClient` — driving renet's packet-level API (`get_packets_to_send` / `process_packet`), bypassing the renet_netcode UDP transport — and applies configurable one-way delay, jitter, and loss to the relayed packet buffers (deterministic seed for tests). This is why it is **not** turmoil (which conditions only tokio sockets) and needs no socket interception. An automated test relays a handshake + one snapshot through the conditioner at non-zero delay/loss and asserts the snapshot **decodes correctly after conditioned delivery** (codec/transport level, in-crate — the engine-side apply lives in `crate::netcode`, a different crate, and is not exercised here). The real-socket soak path runs renet_netcode over loopback shaped by `tc netem` (recipe documented in Task 6).
+In `postretro-net::harness`, a dev-tools-gated (`#[cfg(any(test, feature = "dev-tools"))]`) in-process conditioner that sits on an **in-memory packet relay** between an already-connected `NetServer`/`NetClient` — driving renet's packet-level API (`get_packets_to_send` / `process_packet`), bypassing the renet_netcode UDP transport — and applies configurable one-way delay, jitter, and loss to the relayed packet buffers (deterministic seed for tests). This is why it is **not** turmoil (which conditions only tokio sockets) and needs no socket interception. An automated test relays a handshake + one snapshot through the conditioner at non-zero delay, with loss applied to separate decoy packets so the asserted snapshot is deterministically delivered, and asserts the snapshot **decodes correctly after conditioned delivery** while a dropped decoy does not arrive (codec/transport level, in-crate — the engine-side apply lives in `crate::netcode`, a different crate, and is not exercised here). The real-socket soak path runs renet_netcode over loopback shaped by `tc netem` (recipe documented in Task 6).
 
 ### Task 6: `networking.md` context doc + Agent Router entry
 At promotion, write `context/lib/networking.md`: the durable shape — `postretro-net` crate
@@ -171,8 +167,8 @@ Netcode crosses **Rust ↔ wire** only — never JS/Lua/FGD. Wire encoding is `b
 | Local entity id | — | not sent raw | `EntityId(u32)` (`scripting/registry.rs`) |
 | Component payload | `WireTransform` + `u16` kind tag | native `Encode/Decode`, explicit `u16` discriminant | converted from/to `ComponentValue::Transform` |
 | Snapshot envelope | `Snapshot { tick, entries }` | tick `u32` + count-prefixed entries | built in serialize step, consumed in apply step |
-| Input command | mirrors `SimCommand` (`MovementInput` + fire) | bitcode struct | built host-side (Phase 2 gameplay use) |
-| Handshake | `ProtocolVersion { protocol_id: u32, wire_version: u32 }` | bitcode struct, first reliable msg | compared before any state applied, distinct from the renet_netcode transport `protocol_id` (`u64`) |
+| Input command | mirrors `SimCommand` (`movement: MovementInput` + `fire_button: FireButtonState`) | bitcode struct | built host-side (Phase 2 gameplay use) |
+| Handshake | `ProtocolVersion { app_protocol_id: u32, wire_version: u32 }` | bitcode struct, first reliable msg | compared before any state applied, distinct from the renet_netcode transport `protocol_id` (`u64`) |
 
 Scripts never observe the wire; FGD never configures replication.
 
@@ -184,7 +180,7 @@ implementer's call (`context_style_guide.md` — constraints, not offsets); the 
 - **No serde-internally-tagged enum on the wire.** The engine `ComponentValue`
   (`#[serde(tag = "kind")]`) fails `deserialize_any` on bitcode. The wire carries an explicit
   `u16` kind discriminant (numeric-equal to engine `ComponentKind`) + the inner payload, on
-  dedicated `bitcode::Encode/Decode` wire-mirror types. Map the discriminant via an explicit `ComponentKind → u16` conversion in `crate::netcode` (`ComponentKind` is `#[repr(u16)]`, `Transform = 0`), not a reliance on enum layout.
+  dedicated `bitcode::Encode/Decode` wire-mirror types. Map the discriminant via an exhaustive `ComponentKind → u16` `match` in `crate::netcode` (a renamed/missing variant is a compile error), not a reliance on enum layout; a test pins `Transform`'s wire discriminant to `ComponentKind::Transform as u16` (= 0).
 - **bitcode version pinned exactly; bytes never persisted.** Co-op host+client ship together;
   every connection is gated on the version handshake.
 - **Snapshot envelope:** a server tick stamp (`u32`) + a count-prefixed list of

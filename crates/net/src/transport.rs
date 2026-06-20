@@ -1,5 +1,5 @@
 // renet/renet_netcode transport: polled, non-blocking UDP server/client over std sockets.
-// See: context/research/netcode/
+// See: context/lib/networking.md
 //
 // renet 2.0 separates the *connection layer* (`RenetServer`/`RenetClient`, which
 // own channels and produce/consume opaque packet payloads) from the *netcode
@@ -8,8 +8,8 @@
 // both into `NetServer`/`NetClient` with a synchronous `update(dt)` surface: no
 // spawned runtime, no threads — the caller polls each frame (development_guide
 // §4.2). The connection-layer packet I/O (`get_packets_to_send` /
-// `process_packet*`) is re-exposed for the Task 5 in-memory relay, which drives
-// the same payloads without touching UDP.
+// `process_packet*`) is re-exposed for the in-memory harness (`harness.rs`),
+// which drives the same payloads without touching UDP.
 
 use std::net::{SocketAddr, UdpSocket};
 use std::time::Duration;
@@ -243,6 +243,7 @@ impl NetServer {
     ///
     /// Non-blocking: the netcode transport drains the socket to `WouldBlock` and
     /// returns. Never blocks the caller.
+    #[must_use = "handshake outcomes report client accept/reject; handle or explicitly ignore"]
     pub fn update(&mut self, dt: Duration) -> Result<Vec<HandshakeOutcome>, NetcodeTransportError> {
         self.server.update(dt);
         self.transport.update(dt, &mut self.server)?;
@@ -373,8 +374,8 @@ impl NetServer {
     }
 
     /// Connection-level packets renet wants delivered to `client_id`, *bypassing*
-    /// the netcode UDP transport. The Task 5 in-memory relay hands these straight
-    /// to the peer's `process_packet`. Returns `Vec<Vec<u8>>` (renet's
+    /// the netcode UDP transport. The in-memory harness (`harness.rs`) hands these
+    /// straight to the peer's `process_packet`. Returns `Vec<Vec<u8>>` (renet's
     /// `Vec<Payload>`); an unknown client yields an empty `Vec`.
     pub fn packets_to_send(&mut self, client_id: ClientId) -> Vec<Vec<u8>> {
         self.server
@@ -516,8 +517,8 @@ impl NetClient {
     }
 
     /// Connection-level packets renet wants delivered to the server, bypassing the
-    /// netcode UDP transport. The Task 5 in-memory relay hands these to the
-    /// server's `process_packet_from`.
+    /// netcode UDP transport. The in-memory harness (`harness.rs`) hands these to
+    /// the server's `process_packet_from`.
     pub fn packets_to_send(&mut self) -> Vec<Vec<u8>> {
         self.client.get_packets_to_send()
     }

@@ -3747,8 +3747,25 @@ impl App {
             Some(netcode::NetEndpoint::Host { server, .. }) => {
                 // Drive the listen server (accept handshakes, drain the socket).
                 // Snapshots are sent post-loop in `net_serialize_and_send`.
-                if let Err(err) = server.update(dt) {
-                    log::error!("[Net] host update failed: {err}");
+                match server.update(dt) {
+                    // Log this frame's handshake verdicts. The per-frame snapshot
+                    // send re-queries `accepted_clients()`, so this logging is
+                    // purely observational; Phase 2's spawn/slot logic will be the
+                    // consumer that acts on these outcomes.
+                    Ok(outcomes) => {
+                        use postretro_net::transport::HandshakeOutcome;
+                        for outcome in outcomes {
+                            match outcome {
+                                HandshakeOutcome::Accepted { client_id } => {
+                                    log::info!("[Net] client {client_id} accepted");
+                                }
+                                HandshakeOutcome::Rejected { client_id, reason } => {
+                                    log::warn!("[Net] client {client_id} rejected: {reason}");
+                                }
+                            }
+                        }
+                    }
+                    Err(err) => log::error!("[Net] host update failed: {err}"),
                 }
             }
             Some(netcode::NetEndpoint::Client { client, map }) => {

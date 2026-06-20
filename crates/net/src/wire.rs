@@ -1,5 +1,5 @@
 // Wire codec: bitcode-serialized message types and the protocol/version handshake.
-// See: context/research/netcode/
+// See: context/lib/networking.md
 //
 // Every type that crosses the wire derives native `bitcode::Encode`/`Decode`.
 // These are dedicated *wire-mirror* types: the engine's `ComponentValue` is a

@@ -1,6 +1,7 @@
 // Engine-side netcode glue (M15 Phase 1). The ONLY engine code that touches the
 // `EntityRegistry` on behalf of replication: `postretro-net` emits typed
-// snapshots and never mutates the registry (entity_model.md §6). This module
+// snapshots and never mutates the registry (entity_model.md §6; netcode
+// contracts in context/lib/networking.md). This module
 // owns role selection, the optional endpoint held by `App`, the
 // `NetworkId <-> EntityId` maps, and the two game-logic-owned steps (host
 // `serialize`, client `apply`) plus the `WireTransform <-> Transform` and
@@ -287,6 +288,24 @@ pub(crate) fn wire_to_transform(wire: &WireTransform) -> Transform {
     }
 }
 
+/// Every position/rotation component of a wire `Transform` is finite (no NaN, no
+/// ±Inf). A snapshot arrives from an untrusted peer; a non-finite pose
+/// round-trips byte-faithfully through the codec and would poison downstream
+/// interpolation and camera/culling math if stored. The apply path drops any
+/// entry that fails this check.
+fn wire_transform_is_finite(t: &WireTransform) -> bool {
+    t.position.iter().all(|c| c.is_finite()) && t.rotation.iter().all(|c| c.is_finite())
+}
+
+/// A wire `ComponentPayload` is safe to apply: all f32 fields are finite. Phase 1
+/// binds only `Transform`; adding a payload variant (Phase 2) is a compile error
+/// here until the arm is added.
+fn payload_is_finite(payload: &ComponentPayload) -> bool {
+    match payload {
+        ComponentPayload::Transform(wire) => wire_transform_is_finite(wire),
+    }
+}
+
 /// Convert a wire `ComponentPayload` to the engine `ComponentValue` via an
 /// exhaustive match over the payload — Phase 1 binds only `Transform`; adding a
 /// payload variant (Phase 2) is a compile error here until the arm is added.
@@ -297,12 +316,19 @@ fn payload_to_component_value(payload: &ComponentPayload) -> ComponentValue {
 }
 
 /// Host serialize step (game-logic-owned). Walk the replicable set — every live
-/// entity carrying a `Transform` (the host pawn in Phase 1) — stamp each
-/// `EntityId` to its `NetworkId`, convert the `Transform` to its wire mirror, and
-/// build the `Snapshot` envelope stamped with `tick`.
+/// entity carrying a `Transform` — stamp each `EntityId` to its `NetworkId`,
+/// convert the `Transform` to its wire mirror, and build the `Snapshot` envelope
+/// stamped with `tick`.
 ///
 /// Borrows the registry immutably; never mutates it (the apply step is the only
 /// registry-touching path, and only on the client).
+///
+/// Phase 1 boundary: every entity gets a `Transform` at spawn, so this set is
+/// effectively the whole entity table. Since only `Transform` is wire-bound and
+/// apply never despawns, non-renderable/non-pawn entities replicate as inert
+/// bare-`Transform` ghosts on the client. The authoritative-vs-cosmetic-vs-static
+/// replicable-set policy and interest management are Phase 2 (with the full
+/// component set and entity lifecycle); see `context/lib/networking.md`.
 pub(crate) fn serialize(
     registry: &EntityRegistry,
     allocator: &mut NetworkIdAllocator,
@@ -340,6 +366,14 @@ pub(crate) fn apply(
     map: &mut HashMap<NetworkId, EntityId>,
 ) {
     for (net_id, payload) in &snapshot.entries {
+        // Untrusted-wire guard: a non-finite pose (NaN/±Inf in position or
+        // rotation) is dropped at the boundary before it can reach the registry
+        // — never spawned, never set. This covers both first-sight spawn and
+        // subsequent set paths because the skip precedes the branch below.
+        if !payload_is_finite(payload) {
+            log::warn!("[Net] dropping snapshot entry for {net_id:?}: non-finite transform");
+            continue;
+        }
         let value = payload_to_component_value(payload);
         match map.get(net_id).copied() {
             Some(existing) => {
@@ -409,27 +443,50 @@ mod tests {
 
     #[test]
     fn discriminant_mapping_matches_enum_layout() {
-        // Every variant's mapped discriminant equals its `as u16` value. This
-        // keeps the exhaustive match honest without relying on layout in the
-        // production conversion. (Listed explicitly — the match in
-        // `component_kind_discriminant` is the compile-time exhaustiveness gate.)
-        for kind in [
-            ComponentKind::Transform,
-            ComponentKind::Light,
-            ComponentKind::BillboardEmitter,
-            ComponentKind::ParticleState,
-            ComponentKind::SpriteVisual,
-            ComponentKind::FogVolume,
-            ComponentKind::PlayerMovement,
-            ComponentKind::Weapon,
-            ComponentKind::DescriptorProvenance,
-            ComponentKind::Mesh,
-            ComponentKind::Health,
-            ComponentKind::Agent,
-            ComponentKind::Brain,
-        ] {
-            assert_eq!(component_kind_discriminant(kind), kind as u16);
+        // Drift guard (testing_guide §"Drift guards derive from the source"):
+        // every `ComponentKind` variant must satisfy
+        // `component_kind_discriminant(variant) == variant as u16`. The variant
+        // sequence is produced by an exhaustive `match` with NO `_` arm
+        // (`next_kind`, mirroring the production `component_kind_discriminant`
+        // match), so a newly-added `ComponentKind` variant is a compile error
+        // here — not a silently-passing stale hand-written list. The successor
+        // walk then guarantees the assertion runs for every variant.
+        fn next_kind(kind: ComponentKind) -> Option<ComponentKind> {
+            match kind {
+                ComponentKind::Transform => Some(ComponentKind::Light),
+                ComponentKind::Light => Some(ComponentKind::BillboardEmitter),
+                ComponentKind::BillboardEmitter => Some(ComponentKind::ParticleState),
+                ComponentKind::ParticleState => Some(ComponentKind::SpriteVisual),
+                ComponentKind::SpriteVisual => Some(ComponentKind::FogVolume),
+                ComponentKind::FogVolume => Some(ComponentKind::PlayerMovement),
+                ComponentKind::PlayerMovement => Some(ComponentKind::Weapon),
+                ComponentKind::Weapon => Some(ComponentKind::DescriptorProvenance),
+                ComponentKind::DescriptorProvenance => Some(ComponentKind::Mesh),
+                ComponentKind::Mesh => Some(ComponentKind::Health),
+                ComponentKind::Health => Some(ComponentKind::Agent),
+                ComponentKind::Agent => Some(ComponentKind::Brain),
+                ComponentKind::Brain => None,
+            }
         }
+
+        // Walk the full chain from the first variant, asserting each.
+        let mut current = Some(ComponentKind::Transform);
+        let mut visited = 0usize;
+        while let Some(kind) = current {
+            assert_eq!(
+                component_kind_discriminant(kind),
+                kind as u16,
+                "discriminant must equal enum layout for {kind:?}"
+            );
+            visited += 1;
+            current = next_kind(kind);
+        }
+        // The successor chain visited every variant exactly once.
+        assert_eq!(
+            visited,
+            ComponentKind::COUNT,
+            "the successor walk must cover every ComponentKind variant"
+        );
     }
 
     // --- Round-trip: Transform -> WireTransform -> ComponentValue::Transform
@@ -556,6 +613,75 @@ mod tests {
             "omitted NetworkId is NOT despawned in Phase 1"
         );
         assert!(map.contains_key(&NetworkId(2)), "mapping is retained");
+    }
+
+    // --- Apply: a non-finite wire Transform (NaN/Inf) is dropped at the
+    // boundary — never spawned, never set — while finite entries in the same
+    // snapshot still apply. Guards downstream interpolation/camera/culling math
+    // from a hostile or buggy host. ---
+    #[test]
+    fn apply_skips_non_finite_transform_entry() {
+        let mut registry = EntityRegistry::new();
+        let mut map: HashMap<NetworkId, EntityId> = HashMap::new();
+
+        // Entry A: position carries NaN — must be skipped. Build the wire mirror
+        // directly so the non-finite value survives to the apply boundary.
+        let poisoned = WireTransform {
+            position: [f32::NAN, 0.0, 0.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+        };
+        // Entry B: a finite transform in the same snapshot — must still apply.
+        let finite_pos = Vec3::new(4.0, 5.0, 6.0);
+        let snapshot = Snapshot {
+            tick: 1,
+            entries: vec![
+                (NetworkId(1), ComponentPayload::Transform(poisoned)),
+                (
+                    NetworkId(2),
+                    ComponentPayload::Transform(transform_to_wire(&Transform {
+                        position: finite_pos,
+                        rotation: Quat::IDENTITY,
+                        scale: Vec3::ONE,
+                    })),
+                ),
+            ],
+        };
+        apply(&mut registry, &snapshot, &mut map);
+
+        // The poisoned entry never spawned and never recorded a mapping.
+        assert!(
+            !map.contains_key(&NetworkId(1)),
+            "non-finite entry must not spawn or map"
+        );
+        // The finite entry in the same snapshot applied normally.
+        assert_eq!(map.len(), 1, "only the finite entry maps");
+        let spawned = *map.get(&NetworkId(2)).expect("finite entry mapped");
+        let applied = registry
+            .get_component::<Transform>(spawned)
+            .expect("finite entry carries a Transform");
+        assert!((applied.position - finite_pos).length() < EPSILON);
+
+        // A second snapshot resending the poison for an already-mapped id must
+        // not overwrite the good state with a non-finite pose (skip applies on
+        // the set path too).
+        let snapshot2 = Snapshot {
+            tick: 2,
+            entries: vec![(
+                NetworkId(2),
+                ComponentPayload::Transform(WireTransform {
+                    position: [f32::INFINITY, 0.0, 0.0],
+                    rotation: [0.0, 0.0, 0.0, 1.0],
+                }),
+            )],
+        };
+        apply(&mut registry, &snapshot2, &mut map);
+        let unchanged = registry
+            .get_component::<Transform>(spawned)
+            .expect("entity still live");
+        assert!(
+            (unchanged.position - finite_pos).length() < EPSILON,
+            "non-finite set must not overwrite a good pose"
+        );
     }
 
     // --- Serialize: stamps each replicable EntityId to a stable NetworkId. ---

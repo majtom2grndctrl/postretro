@@ -1,13 +1,14 @@
 // Dev-only latency-sim harness: an in-memory packet relay conditioner. Gated on
 // `dev-tools` (and always built under `test`).
-// See: context/research/netcode/
+// See: context/lib/networking.md
 //
-// This is the in-process latency simulator for the Task 3 relay accessors. It
-// sits between an already-connected `NetServer`/`NetClient` pair, pulling the
-// connection-level packet buffers each side wants to send
-// (`packets_to_send`), holding them on a *virtual* clock, and delivering them
-// to the peer (`process_packet` / `process_packet_from`) once their scheduled
-// arrival time has passed — applying one-way delay, bounded jitter, and loss.
+// This is the in-process latency simulator for the transport's
+// connection-level relay accessors. It sits between an already-connected
+// `NetServer`/`NetClient` pair, pulling the connection-level packet buffers
+// each side wants to send (`packets_to_send`), holding them on a *virtual*
+// clock, and delivering them to the peer (`process_packet` /
+// `process_packet_from`) once their scheduled arrival time has passed —
+// applying one-way delay, bounded jitter, and loss.
 //
 // It is deliberately NOT turmoil: turmoil conditions tokio sockets, but this
 // path bypasses the renet_netcode UDP transport entirely and conditions opaque

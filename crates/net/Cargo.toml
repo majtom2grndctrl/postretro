@@ -25,6 +25,6 @@ bitcode = "=0.6.9"
 log.workspace = true
 
 [features]
-# Gates the in-crate net test harness (Task 5). The engine forwards this via
+# Gates the in-crate latency-sim harness module. The engine forwards this via
 # its own `dev-tools` feature.
 dev-tools = []

@@ -18,9 +18,9 @@ The engine owns the other half of the contract in `crate::netcode`. That module 
 
 ## Transport contract — polled, non-blocking
 
-The transport is **synchronous and frame-polled** — no async runtime, no tokio, no spawned threads. It builds on renet 2.0 + renet_netcode over a non-blocking `std::net::UdpSocket`. The crate pins `default-features = false` on both renet deps specifically to keep tokio/async-std/smol out of the dependency tree; a `cargo tree` gate enforces the no-async-runtime invariant.
+The transport is **synchronous and frame-polled** — no async runtime, no tokio, no spawned threads. It builds on renet 2.0 + renet_netcode over a non-blocking `std::net::UdpSocket`. The crate pins `default-features = false` on both renet deps specifically to keep the dependency tree free of tokio/async-std/smol; `cargo tree` verifies the no-async-runtime invariant.
 
-The caller advances the transport once per frame with `update(dt)`: it drives renet, drains the socket to `WouldBlock`, processes events, and flushes outbound packets — then returns. It never blocks. This honors the event-loop ownership invariant (`development_guide.md` §4.2): winit owns the loop, and the netcode poll slots into the frame's Game-logic stage without stalling it.
+The caller advances the transport once per frame: it drives renet, drains the socket to `WouldBlock`, processes events, and flushes outbound packets — then returns. It never blocks. This honors the event-loop ownership invariant (`development_guide.md` §4.2): winit owns the loop, and the netcode poll slots into the frame's Game-logic stage without stalling it.
 
 renet 2.0 separates two layers, and the transport wraps both: a **connection layer** (owns channels, produces/consumes opaque packet payloads) and a **netcode transport** (encrypts payloads, moves them over UDP). The connection-layer packet I/O is also re-exposed directly so the in-memory harness can drive the same payloads without a socket.
 
@@ -108,6 +108,7 @@ sudo tc qdisc del dev lo root netem
 Phase 1 ships the durable shape above. The following are **deferred** and must not be read into the Phase 1 contracts:
 
 - **Phase 2:** delta encoding, snapshot interpolation, time-sync, entity lifecycle (spawn/despawn over the control channel, remove-missing reconciliation), and the client→server input stream over the reserved Input channel.
+  - **Replicable-set policy and interest management** are deferred here: which entities are authoritative networked objects vs. client-cosmetic (particles/sprites) vs. static (baked lights/fog). Phase 1 replicates the full `Transform`-bearing set.
 - **Phase 3:** client-side prediction and reconciliation.
 
 Phase 1 explicitly **never despawns:** a `NetworkId` absent from a later snapshot is left untouched; remove-missing is Phase 2's job. The component payload binds **only `Transform`** in Phase 1; other components join in the same `ComponentKind` numeric order without changing the envelope shape.

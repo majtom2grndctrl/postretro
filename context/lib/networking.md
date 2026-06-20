@@ -108,7 +108,7 @@ sudo tc qdisc del dev lo root netem
 Phase 1 ships the durable shape above. The following are **deferred** and must not be read into the Phase 1 contracts:
 
 - **Phase 2:** delta encoding, snapshot interpolation, time-sync, entity lifecycle (spawn/despawn over the control channel, remove-missing reconciliation), and the client→server input stream over the reserved Input channel.
-  - **Replicable-set policy and interest management** are deferred here: which entities are authoritative networked objects vs. client-cosmetic (particles/sprites) vs. static (baked lights/fog). Phase 1 replicates the full `Transform`-bearing set.
+  - **Replicable-set policy and interest management** are deferred here: which entities are authoritative networked objects vs. client-cosmetic (particles/sprites) vs. static (baked lights/fog). Phase 1 replicates the full `Transform`-bearing set, which floods snapshots on FX-heavy maps — the campaign-test smoke emitters (each a `BillboardEmitter`/`ParticleState` entity) drowned the moving pawn in the two-process demo. The Phase 2 predicate scopes the wire to entities carrying an authoritative gameplay component (`PlayerMovement`/`Agent`/`Brain`/`Health`/movers); `BillboardEmitter`/`ParticleState`/`SpriteVisual`/`Light`/`FogVolume` are deterministic client-local or baked, identical on both ends from the shared `.prl`, and must stay off the wire.
 - **Phase 3:** client-side prediction and reconciliation.
 
 Phase 1 explicitly **never despawns:** a `NetworkId` absent from a later snapshot is left untouched; remove-missing is Phase 2's job. The component payload binds **only `Transform`** in Phase 1; other components join in the same `ComponentKind` numeric order without changing the envelope shape.

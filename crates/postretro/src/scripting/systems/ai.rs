@@ -239,13 +239,11 @@ pub(crate) fn evaluate_transition(
     }
 }
 
-/// Locate the local player pawn's POSITION via its `Transform`. The Phase 0 sim
-/// command drives one local pawn, so the registry marker wins; older
-/// fixtures/maps with no marker fall back to the first entity carrying
-/// `PlayerMovement`. This is the FSM's TARGETING input and is a DISTINCT id from
-/// the damage target (`pawn_with_health`): the pawn is targeted by position but
-/// damaged through the health chokepoint. `None` when there is no resolved pawn
-/// or it carries no `Transform`.
+/// Locate the local player pawn's position via its `Transform`. Registry marker
+/// first, then first `PlayerMovement` entity. See also `local_movement_pawn`
+/// (sim/mod.rs) and `followed_player_pawn` (main.rs). This is the FSM's targeting
+/// input, distinct from the damage target (`pawn_with_health`): targeted by
+/// position, damaged through the health chokepoint.
 fn player_position(registry: &EntityRegistry) -> Option<Vec3> {
     if let Some(pawn) = registry.local_player_pawn() {
         if matches!(

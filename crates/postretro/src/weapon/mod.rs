@@ -1,4 +1,4 @@
-// Weapon fire system: resolves equipped wieldables and runs Rust-side shot logic.
+// Weapon fire tick (`tick_resolved`) and hitscan resolution; owns `WeaponFireCommand` and `FireButtonState`.
 // See: context/lib/entity_model.md §5, §7
 
 use glam::Vec3;

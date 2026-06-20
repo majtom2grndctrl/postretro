@@ -76,10 +76,15 @@ impl HealthComponent {
 }
 
 /// Locate the local player pawn and return it paired with its live `Health`
-/// component, when both are present. The Phase 0 sim command drives one local
-/// pawn, so the registry marker wins; older fixtures/maps with no marker fall
-/// back to the first entity carrying `PlayerMovement`.
+/// component, when both are present. The registry marker wins; older
+/// fixtures/maps with no marker fall back to the first entity carrying
+/// `PlayerMovement`.
 /// `None` when there is no resolved pawn or it carries no `Health` component.
+/// Note: when the registry marker resolves a pawn that carries `PlayerMovement`
+/// but lacks `Health`, this function returns `None` immediately — it does NOT
+/// fall through to the legacy `PlayerMovement` iteration. The early return is
+/// intentional: the marker is authoritative, so a different pawn is not
+/// substituted when the marked pawn simply has no health component.
 ///
 /// Shared by the `player.health` slot-range producers: the level-install path
 /// (attaching `[0, max]` at materialization) and the hot-reload range-follow

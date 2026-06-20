@@ -1,5 +1,6 @@
 // Headless fixed-tick game-state advance seam.
 // See: context/lib/entity_model.md §5
+// See: context/plans/in-progress/M15--p0-headless-sim-seam/index.md  (command shapes, four-bucket event return, host-callback protocol)
 
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -15,7 +16,7 @@ use crate::scripting::components::health::apply_damage;
 use crate::scripting::components::player_movement::PlayerMovementComponent;
 use crate::scripting::reaction_dispatch::ProgressTracker;
 use crate::scripting::registry::{
-    ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform,
+    ComponentKind, EntityId, EntityRegistry, Transform,
 };
 use crate::scripting_systems;
 use crate::scripting_systems::hit_zones::HitZoneStore;
@@ -31,7 +32,7 @@ pub(crate) struct PostMovementCommand {
     pub(crate) aim_direction: Vec3,
 }
 
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct TickEvents {
     pub(crate) movement: Vec<&'static str>,
     pub(crate) ai: Vec<&'static str>,
@@ -72,6 +73,7 @@ pub(crate) fn simulate_tick(
 
     {
         let mut registry = registry.borrow_mut();
+        // AgentTickResult only carries a diagnostic `replans` counter, not observable sim state, so the return value is intentionally discarded.
         let _ = agent_steering::tick(&mut registry, collision_world, nav_graph, gravity, tick_dt);
     }
 
@@ -150,6 +152,9 @@ fn run_movement_tick(
     events_out
 }
 
+/// Resolve the local movement pawn: registry marker first, then first
+/// `PlayerMovement` entity. See also `followed_player_pawn` (main.rs)
+/// and `player_position` (scripting/systems/ai.rs).
 fn local_movement_pawn(registry: &EntityRegistry) -> Option<EntityId> {
     if let Some(id) = registry.local_player_pawn() {
         if matches!(
@@ -162,13 +167,17 @@ fn local_movement_pawn(registry: &EntityRegistry) -> Option<EntityId> {
 
     registry
         .iter_with_kind(ComponentKind::PlayerMovement)
-        .find_map(|(id, value)| matches!(value, ComponentValue::PlayerMovement(_)).then_some(id))
+        .next()
+        .map(|(id, _)| id)
 }
 
 fn weapon_fire_command(
     button: FireButtonState,
     post_movement: PostMovementCommand,
 ) -> WeaponFireCommand {
+    // The aim normalization and `can_fire` gate below are degenerate-input guards.
+    // `camera.aim_ray()` already returns normalized, finite values in normal operation;
+    // these checks protect against NaN/zero vectors from headless or mocked callers.
     if post_movement.aim_origin.is_finite()
         && let Some(aim_direction) = normalize_aim_direction(post_movement.aim_direction)
     {

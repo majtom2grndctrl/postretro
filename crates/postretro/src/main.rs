@@ -1261,17 +1261,21 @@ fn build_post_movement_command(camera: &Camera) -> sim::PostMovementCommand {
 }
 
 fn has_player_pawn(registry: &scripting::registry::EntityRegistry) -> bool {
-    use crate::scripting::registry::{ComponentKind, ComponentValue};
+    use crate::scripting::registry::ComponentKind;
 
     registry
         .iter_with_kind(ComponentKind::PlayerMovement)
-        .any(|(_, value)| matches!(value, ComponentValue::PlayerMovement(_)))
+        .next()
+        .is_some()
 }
 
+/// Resolve the followed player pawn: registry marker first, then first
+/// `PlayerMovement` entity. See also `local_movement_pawn` (sim/mod.rs)
+/// and `player_position` (scripting/systems/ai.rs).
 fn followed_player_pawn(
     registry: &scripting::registry::EntityRegistry,
 ) -> Option<scripting::registry::EntityId> {
-    use crate::scripting::registry::{ComponentKind, ComponentValue};
+    use crate::scripting::registry::ComponentKind;
 
     if let Some(id) = registry.local_player_pawn() {
         if matches!(
@@ -1284,7 +1288,8 @@ fn followed_player_pawn(
 
     registry
         .iter_with_kind(ComponentKind::PlayerMovement)
-        .find_map(|(id, value)| matches!(value, ComponentValue::PlayerMovement(_)).then_some(id))
+        .next()
+        .map(|(id, _)| id)
 }
 
 fn follow_camera_to_local_pawn(

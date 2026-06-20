@@ -101,25 +101,6 @@ impl RecordedCommand {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct StageEvents {
-    movement: Vec<&'static str>,
-    ai: Vec<&'static str>,
-    weapon: Vec<&'static str>,
-    death: Vec<String>,
-}
-
-impl From<TickEvents> for StageEvents {
-    fn from(events: TickEvents) -> Self {
-        Self {
-            movement: events.movement,
-            ai: events.ai,
-            weapon: events.weapon,
-            death: events.death,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy)]
 struct PawnOutcome {
     position: Vec3,
@@ -131,7 +112,7 @@ struct SimRun {
     pawns: Vec<(Role, PawnOutcome)>,
     selected_player_health: f32,
     enemy_state: LogicalState,
-    events: Vec<StageEvents>,
+    events: Vec<TickEvents>,
 }
 
 struct SimHarness {
@@ -186,7 +167,7 @@ impl SimHarness {
         }
     }
 
-    fn tick(&mut self, command: RecordedCommand) -> StageEvents {
+    fn tick(&mut self, command: RecordedCommand) -> TickEvents {
         let sim_command = command.to_sim_command();
         simulate_tick(
             self.registry.clone(),
@@ -202,7 +183,6 @@ impl SimHarness {
             |_| command.to_post_movement_command(),
             DT,
         )
-        .into()
     }
 
     fn role_outcomes(&self) -> Vec<(Role, PawnOutcome)> {
@@ -469,8 +449,12 @@ fn assert_runs_match(actual: &SimRun, expected: &SimRun) {
         actual.enemy_state, expected.enemy_state,
         "AI state must resolve from the same selected local pawn label"
     );
-    assert!(
-        (actual.selected_player_health - expected.selected_player_health).abs() <= f32::EPSILON,
+    // Exact equality is safe here: health deltas are integer damage values (10.0)
+    // applied via integer-path arithmetic with no per-frame interpolation, so
+    // deterministic runs must produce bit-identical results.
+    assert_eq!(
+        actual.selected_player_health,
+        expected.selected_player_health,
         "selected player health must match exactly"
     );
     assert_eq!(
@@ -1033,7 +1017,7 @@ fn simulate_tick_noops_weapon_fire_for_non_finite_callback_aim_origin() {
 
 proptest! {
     #![proptest_config(ProptestConfig {
-        cases: 8,
+        cases: 32,
         ..ProptestConfig::default()
     })]
 

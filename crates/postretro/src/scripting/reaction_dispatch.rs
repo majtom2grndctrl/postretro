@@ -61,7 +61,7 @@ impl ProgressTracker {
         }
     }
 
-    /// Returns event names to fire; caller orders them through the sequence-aware event drain.
+    /// Returns event names to fire; caller passes each name to [`fire_named_event_with_sequences`].
     pub(crate) fn on_entity_killed(&mut self, tags: &[String]) -> Vec<String> {
         let mut to_fire = Vec::new();
         for tag in tags {

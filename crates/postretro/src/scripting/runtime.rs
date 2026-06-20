@@ -1093,12 +1093,13 @@ impl ScriptRuntime {
 /// hot-reload, when (and only when) the refresh replaced the pawn's `Health`
 /// component.
 ///
-/// "The pawn" is the first entity carrying `PlayerMovement` (entity_model.md).
+/// "The pawn" is the marked local player pawn, falling back to the first entity
+/// carrying `PlayerMovement` for older fixtures/maps (entity_model.md).
 /// The function inspects `plan` for a `Replace` action carrying a `Health`
 /// component on that pawn's entity; if found, it reads the post-apply `max`
 /// from the live component and re-sets the range unconditionally (idempotent —
 /// no `max`-delta detection). A plan that did not touch the pawn's health (or a
-/// world with no pawn / no pawn health) leaves the range unchanged.
+/// world with no resolved pawn / no pawn health) leaves the range unchanged.
 ///
 /// Factored as a standalone function taking only the pieces it needs — the
 /// plan, a read-only registry, and a mutable slot table — so the range-follow
@@ -5124,10 +5125,11 @@ mod tests {
     #[test]
     fn range_follow_leaves_range_unchanged_when_pawn_health_untouched() {
         // A plan that replaced some OTHER entity's health (not the resolved
-        // pawn) must not move the pawn's slot range. `pawn_with_health` resolves
-        // the first `PlayerMovement` entity (the lower slot index); the plan
-        // here targets the SECOND pawn-shaped entity, so the hook finds no match
-        // for the resolved pawn and leaves the range as previously set.
+        // pawn) must not move the pawn's slot range. This fixture does not mark
+        // a local player pawn, so `pawn_with_health` falls back to the first
+        // `PlayerMovement` entity (the lower slot index); the plan here targets
+        // the SECOND pawn-shaped entity, so the hook finds no match for the
+        // resolved pawn and leaves the range as previously set.
         let mut registry = EntityRegistry::new();
         let _first_pawn = spawn_pawn(&mut registry, 100.0);
         let second = spawn_pawn(&mut registry, 30.0);

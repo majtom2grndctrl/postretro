@@ -1,16 +1,19 @@
-// Weapon fire system: resolves equipped wieldables and runs Rust-side shot logic.
+// Weapon fire tick (`tick_resolved`) and hitscan resolution; owns `WeaponFireCommand` and `FireButtonState`.
 // See: context/lib/entity_model.md §5, §7
 
 use glam::Vec3;
 use parry3d::math::{Point, Vector};
 
-use crate::camera::Camera;
 use crate::collision::{CollisionWorld, cast_ray};
-use crate::input::{Action, ActionSnapshot, ButtonState};
 use crate::scripting::components::weapon::WeaponComponent;
 use crate::scripting::data_descriptors::{FireMode, ResolutionMode};
 use crate::scripting::registry::{EntityId, EntityRegistry};
 use crate::scripting_systems::hit_zones::{EntityRayHit, HitZoneStore, nearest_entity_hit};
+#[cfg(test)]
+use crate::{
+    camera::Camera,
+    input::{Action, ActionSnapshot, ButtonState},
+};
 
 mod damage;
 mod impact;
@@ -34,6 +37,20 @@ pub(crate) struct WeaponActivation {
     pub(crate) direction: Vec3,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct FireButtonState {
+    pub(crate) pressed: bool,
+    pub(crate) active: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct WeaponFireCommand {
+    pub(crate) button: FireButtonState,
+    pub(crate) aim_origin: Vec3,
+    pub(crate) aim_direction: Vec3,
+    pub(crate) can_fire: bool,
+}
+
 // Not `Copy`: `zone: Option<String>` carries a heap-backed tag for skeletal
 // hit-zone hits, so `WeaponImpact` (and `WeaponFireEvents`, which embeds it)
 // move/borrow rather than copy. Audited call sites: `fire_hitscan` constructs it
@@ -46,9 +63,10 @@ pub(crate) struct WeaponImpact {
     pub(crate) normal: Vec3,
     /// The entity struck, when the nearest hit along the ray is an entity
     /// hitbox rather than world geometry. `None` for a world-only hit or when
-    /// no hitbox entity lies along the ray within range. Spatial targeting
-    /// rides here, beside the payload — never inside [`DamagePayload`]. The
-    /// caller (the death/damage sweep) consumes this to route `apply_damage`.
+    /// no targetable entity lies along the ray within range. Spatial targeting
+    /// rides here, beside the payload — never inside [`DamagePayload`]. The sim
+    /// weapon stage consumes this to route `apply_damage` before the death
+    /// sweep handles zero-HP entities.
     pub(crate) target: Option<EntityId>,
     /// The authored skeletal hit-zone tag the shot landed on (e.g. "head"),
     /// surfaced for an entity hit that struck a bone-posed capsule. `None` for a
@@ -78,11 +96,44 @@ impl WeaponFireEvents {
 }
 
 #[allow(clippy::too_many_arguments)] // weapon fire genuinely needs all of these inputs.
+#[cfg(test)]
 pub(crate) fn tick(
     registry: &mut EntityRegistry,
     active_wieldable: Option<EntityId>,
     snapshot: &ActionSnapshot,
     camera: &Camera,
+    collision_world: &CollisionWorld,
+    hit_zone_store: &HitZoneStore,
+    anim_time: f64,
+    tick_dt: f32,
+) -> WeaponFireEvents {
+    let shoot = snapshot.button(Action::Shoot);
+    let (aim_origin, aim_direction) = camera.aim_ray();
+    let command = WeaponFireCommand {
+        button: FireButtonState {
+            pressed: shoot == ButtonState::Pressed,
+            active: shoot.is_active(),
+        },
+        aim_origin,
+        aim_direction,
+        can_fire: true,
+    };
+    tick_resolved(
+        registry,
+        active_wieldable,
+        &command,
+        collision_world,
+        hit_zone_store,
+        anim_time,
+        tick_dt,
+    )
+}
+
+#[allow(clippy::too_many_arguments)] // weapon fire genuinely needs all of these inputs.
+pub(crate) fn tick_resolved(
+    registry: &mut EntityRegistry,
+    active_wieldable: Option<EntityId>,
+    command: &WeaponFireCommand,
     collision_world: &CollisionWorld,
     hit_zone_store: &HitZoneStore,
     anim_time: f64,
@@ -101,21 +152,21 @@ pub(crate) fn tick(
     weapon.cooldown_remaining_ms = (weapon.cooldown_remaining_ms - dt_ms).max(0.0);
 
     let stats = weapon.effective();
-    let shoot = snapshot.button(Action::Shoot);
     let wants_fire = match stats.fire_mode {
-        FireMode::Semi => shoot == ButtonState::Pressed && !weapon.shoot_press_consumed,
-        FireMode::Auto => shoot.is_active(),
+        FireMode::Semi => command.button.pressed && !weapon.shoot_press_consumed,
+        FireMode::Auto => command.button.active,
     };
-    if stats.fire_mode == FireMode::Semi && shoot == ButtonState::Pressed {
+    if stats.fire_mode == FireMode::Semi && command.button.pressed {
         weapon.shoot_press_consumed = true;
-    } else if !shoot.is_active() {
+    } else if !command.button.active {
         weapon.shoot_press_consumed = false;
     }
 
-    let events = if wants_fire && weapon.cooldown_remaining_ms <= 0.0 {
+    let events = if command.can_fire && wants_fire && weapon.cooldown_remaining_ms <= 0.0 {
         weapon.cooldown_remaining_ms = stats.cooldown_ms;
         fire_hitscan(
-            camera,
+            command.aim_origin,
+            command.aim_direction,
             collision_world,
             registry,
             hit_zone_store,
@@ -134,7 +185,8 @@ pub(crate) fn tick(
 
 #[allow(clippy::too_many_arguments)] // weapon fire genuinely needs all of these inputs.
 fn fire_hitscan(
-    camera: &Camera,
+    origin: Vec3,
+    direction: Vec3,
     collision_world: &CollisionWorld,
     registry: &EntityRegistry,
     hit_zone_store: &HitZoneStore,
@@ -143,7 +195,6 @@ fn fire_hitscan(
     range: f32,
     resolution: ResolutionMode,
 ) -> WeaponFireEvents {
-    let (origin, direction) = camera.aim_ray();
     let mut events = WeaponFireEvents {
         activate: Some(WeaponActivation { origin, direction }),
         impact: None,

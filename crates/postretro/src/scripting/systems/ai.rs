@@ -239,12 +239,24 @@ pub(crate) fn evaluate_transition(
     }
 }
 
-/// Locate the player pawn's POSITION — the first entity carrying
-/// `PlayerMovement`, via its `Transform`. This is the FSM's TARGETING input and
-/// is a DISTINCT id from the damage target (`pawn_with_health`): the pawn is
-/// targeted by position but damaged through the health chokepoint. `None` when
-/// there is no pawn or it carries no `Transform`.
+/// Locate the local player pawn's position via its `Transform`. Registry marker
+/// first, then first `PlayerMovement` entity. See also `local_movement_pawn`
+/// (sim/mod.rs) and `followed_player_pawn` (main.rs). This is the FSM's targeting
+/// input, distinct from the damage target (`pawn_with_health`): targeted by
+/// position, damaged through the health chokepoint.
 fn player_position(registry: &EntityRegistry) -> Option<Vec3> {
+    if let Some(pawn) = registry.local_player_pawn() {
+        if matches!(
+            registry.has_component_kind(pawn, ComponentKind::PlayerMovement),
+            Ok(true)
+        ) {
+            return registry
+                .get_component::<Transform>(pawn)
+                .ok()
+                .map(|t| t.position);
+        }
+    }
+
     let (pawn, _) = registry
         .iter_with_kind(ComponentKind::PlayerMovement)
         .next()?;

@@ -345,21 +345,6 @@ impl DebugLineRenderer {
         }
     }
 
-    /// Push an upright capsule wireframe centered on `center` (see
-    /// [`capsule_edges`] for the topology and the `center`-is-pawn-position
-    /// convention).
-    pub fn push_capsule(
-        &mut self,
-        center: Vec3,
-        radius: f32,
-        half_height: f32,
-        color_rgba: [u8; 4],
-    ) {
-        for (a, b) in capsule_edges(center, radius, half_height) {
-            self.push_line(a, b, color_rgba);
-        }
-    }
-
     pub fn push_line_overlay(&mut self, start: Vec3, end: Vec3, color_rgba: [u8; 4]) {
         if self.overlay_cpu_vertices.len() + 2 > MAX_DEBUG_OVERLAY_SEGMENTS * 2 {
             if !self.overlay_overflowed_this_frame {
@@ -383,6 +368,25 @@ impl DebugLineRenderer {
 
     pub fn push_aabb_overlay(&mut self, min: Vec3, max: Vec3, color_rgba: [u8; 4]) {
         for (a, b) in aabb_edges(min, max) {
+            self.push_line_overlay(a, b, color_rgba);
+        }
+    }
+
+    /// Push an upright capsule wireframe through the always-on-top overlay path
+    /// (see [`capsule_edges`] for the topology and the `center`-is-pawn-position
+    /// convention). Like [`push_aabb_overlay`](Self::push_aabb_overlay), it feeds
+    /// `push_line_overlay`, so the capsule draws with `CompareFunction::Always` and
+    /// stays visible through walls — the right behavior for a "where is the other
+    /// player" marker, which must be locatable from anywhere rather than vanish
+    /// behind world geometry.
+    pub fn push_capsule_overlay(
+        &mut self,
+        center: Vec3,
+        radius: f32,
+        half_height: f32,
+        color_rgba: [u8; 4],
+    ) {
+        for (a, b) in capsule_edges(center, radius, half_height) {
             self.push_line_overlay(a, b, color_rgba);
         }
     }
@@ -543,6 +547,32 @@ mod tests {
     fn capsule_edges_emit_expected_segment_count() {
         let edges = capsule_edges(Vec3::new(1.0, 2.0, 3.0), 0.4, 0.8);
         assert_eq!(edges.len(), CAPSULE_SEGMENT_COUNT);
+    }
+
+    /// Capacity contract for the remote-entity marker fix (M15 Phase 1): the
+    /// always-on-top overlay buffer must hold the per-frame capsule load without
+    /// truncating. Remote-entity capsules route through the overlay path
+    /// (`push_capsule_overlay`) so they draw through walls; each capsule costs
+    /// [`CAPSULE_SEGMENT_COUNT`] (60) segments. A generous co-op remote-entity
+    /// count must fit alongside the handful of SH/nav AABB overlays (12 segments
+    /// each) under [`MAX_DEBUG_OVERLAY_SEGMENTS`], so a busy frame never silently
+    /// drops a player marker.
+    #[test]
+    fn overlay_cap_holds_many_remote_entity_capsules() {
+        // Phase 1 replicates the full Transform-bearing set, so the client can
+        // see many ghosts on a populated map; 256 capsules is a comfortable
+        // upper bound for a co-op scene and is the headroom this fix relies on.
+        const REMOTE_CAPSULES: usize = 256;
+        // A few AABB overlays may coexist (SH/delta diagnostics, 12 each).
+        const COEXISTING_AABB_OVERLAYS: usize = 8;
+
+        let segments = REMOTE_CAPSULES * CAPSULE_SEGMENT_COUNT + COEXISTING_AABB_OVERLAYS * 12;
+        assert!(
+            segments <= MAX_DEBUG_OVERLAY_SEGMENTS,
+            "overlay segment budget {MAX_DEBUG_OVERLAY_SEGMENTS} must hold \
+             {REMOTE_CAPSULES} remote-entity capsules ({CAPSULE_SEGMENT_COUNT} segs each) \
+             plus {COEXISTING_AABB_OVERLAYS} AABB overlays; needed {segments}"
+        );
     }
 
     /// Extent contract: the wireframe spans `[center.y - (half_height + radius),

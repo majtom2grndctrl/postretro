@@ -22,8 +22,8 @@ time-sync, and lifecycle are Phase 2; prediction is Phase 3.
   and the latency-sim harness. Depends on `renet` 2.0, `renet_netcode`, `bitcode`; **no**
   wgpu/winit/tokio. `postretro` depends on it (never the reverse).
 - A `bitcode` wire codec on dedicated **wire-mirror** types (native
-  `#[derive(bitcode::Encode, bitcode::Decode)]`) — see Resolved decisions for why mirror types,
-  not derives on the engine `ComponentValue`. Phase 1 wire-binds the **Transform** payload
+  `#[derive(bitcode::Encode, bitcode::Decode)]`), converted from the engine `ComponentValue`
+  in `postretro::netcode` (Resolved decisions). Phase 1 wire-binds the **Transform** payload
   only (enough for "a remote pawn appears and moves"); Phase 2 grows the replicable set.
 - A hand-built **full-state snapshot envelope** (`NetworkId` + a count-prefixed list of
   per-entity component payloads) that round-trips byte-identical through the codec.
@@ -209,31 +209,22 @@ implementer's call (`context_style_guide.md` — constraints, not offsets); the 
 
 ## Resolved decisions
 
-Reflected against the project's architecture principles (subsystem boundaries, the
-engine-closed component vocabulary, a lean dependency graph) and the milestone's spine — a
-sibling net crate clean enough to split a headless dedicated server out of (Phase 7) — all
-three prior open items settle.
-
-- **Wire-component representation → dedicated wire-mirror types in `postretro-net`.** The epic's
-  boundary inventory phrased this as native `bitcode::Encode/Decode` *on* `ComponentValue`, but
-  `ComponentValue`/`Transform` are `pub(crate)` and glam-typed, and the net crate must stay
-  `postretro`-free so a dedicated server never drags in the render half. Wire-mirror types
-  (plain `[f32; N]` fields, native bitcode derives) with conversion in `postretro::netcode`
-  satisfy the epic's actual intent — no serde-tagged enum on the wire, serde retained for
-  persistence — while keeping the crate boundary clean, which is the property the
-  dedicated-server split depends on. The cost (one conversion per replicable component) is
-  bounded *because* the component vocabulary is engine-closed (a finite, stable set) and is
-  guarded by the round-trip tests. Reconcile the epic's boundary-inventory wording at promotion.
-- **`NetworkId` allocation → server-assigned monotonic `u32`, never recycled within a session.**
-  Simplest (no free-list/generation), and a never-reused id lets a delayed packet referencing a
-  despawned entity be dropped unambiguously — the same stale-handle safety the engine's
-  generational `EntityId` buys, here free at `u32` width. Co-op campaign sessions are bounded (a
-  level/sitting, not a persistent world), so overflow is a non-issue; the slot-exhaustion risk
-  in the epic's ledger is the local `u16` `EntityId`, not this. Predicted-spawn → confirmed
-  *reconciliation* (Phase 6) layers on top; it does not change allocation.
-- **Snapshot cadence → per-tick full-state in Phase 1; send-rate + interpolation-delay tuning is
-  Phase 2.** Not a deferral: the send rate is only meaningful paired with the client
-  interpolation buffer it feeds, and interpolation is Phase 2's deliverable. Deciding the rate
-  here — with no interpolation to absorb it — would invent a parameter without its consumer.
-  Per-tick full-state is the honest Phase 1 answer; Phase 2 pins the decoupled rate against its
-  interpolation design (the epic's contracts-first-against-the-next-layer discipline).
+- **Wire-component representation → wire-mirror types in `postretro-net`.** The wire-bound
+  component set is dedicated mirror types — plain `[f32; N]` fields, native
+  `bitcode::Encode/Decode` — converted to/from the engine `ComponentValue` in
+  `postretro::netcode`. This keeps `ComponentValue` `pub(crate)` and the net crate both glam-
+  and `postretro`-free, the boundary the dedicated-server split (Phase 7) rides; serde stays on
+  the engine structs for JSON/persistence, bitcode lives only on the wire. The per-component
+  conversion cost is bounded by the engine-closed component vocabulary and guarded by the
+  round-trip tests. (Supersedes the epic boundary-inventory shorthand of native bitcode *on*
+  `ComponentValue`; reconcile that wording at promotion.)
+- **`NetworkId` allocation → server-assigned monotonic `u32`, never recycled within a
+  session.** No free-list or generation field: a never-reused id lets a delayed packet naming a
+  despawned entity be dropped unambiguously — the stale-handle safety the engine's generational
+  `EntityId` provides, free at `u32` width. Bounded co-op sessions never approach overflow (the
+  slot-exhaustion risk in the epic's ledger is the local `u16` `EntityId`, not this). Phase 6
+  layers predicted-spawn → confirmed reconciliation on top without changing allocation.
+- **Snapshot cadence → per-tick full-state.** The host serializes the full replicable set every
+  server tick. The send-rate and interpolation-delay decoupling that governs bandwidth and
+  remote-motion smoothness is Phase 2's, alongside the client interpolation buffer that consumes
+  it.

@@ -7,7 +7,7 @@
 pub mod wire;
 pub mod transport;
 
-#[cfg(feature = "dev-tools")]
+#[cfg(any(test, feature = "dev-tools"))]
 pub mod harness;
 
 #[cfg(test)]

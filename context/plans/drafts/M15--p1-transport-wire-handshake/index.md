@@ -22,7 +22,7 @@ time-sync, and lifecycle are Phase 2; prediction is Phase 3.
   and the latency-sim harness. Depends on `renet` 2.0, `renet_netcode`, `bitcode`; **no**
   wgpu/winit/tokio. `postretro` depends on it (never the reverse).
 - A `bitcode` wire codec on dedicated **wire-mirror** types (native
-  `#[derive(bitcode::Encode, bitcode::Decode)]`) — see Open questions for why mirror types,
+  `#[derive(bitcode::Encode, bitcode::Decode)]`) — see Resolved decisions for why mirror types,
   not derives on the engine `ComponentValue`. Phase 1 wire-binds the **Transform** payload
   only (enough for "a remote pawn appears and moves"); Phase 2 grows the replicable set.
 - A hand-built **full-state snapshot envelope** (`NetworkId` + a count-prefixed list of
@@ -207,23 +207,33 @@ implementer's call (`context_style_guide.md` — constraints, not offsets); the 
 - **Handshake:** `ProtocolVersion` is the first reliable control message; the server rejects a
   mismatch (logged reason, no state) — mirrors the `BakedIr` persist version-stamp discipline.
 
-## Open questions
+## Resolved decisions
 
-- **Wire-component representation — wire-mirror types vs. dual-derive on the engine structs.**
-  The epic's boundary inventory names `ComponentValue` carrying "native `bitcode::Encode/Decode`"
-  ("one type, two representations"). But: (1) `ComponentValue`/`Transform` are `pub(crate)` in
-  `postretro`, unnameable from a sibling crate that must stay `postretro`-free; (2) their fields
-  are glam `Vec3`/`Quat`, which have no bitcode derives. This spec therefore plans **dedicated
-  wire-mirror types in `postretro-net`** (plain `[f32; N]` fields, native bitcode derives) with
-  conversion in `postretro::netcode`, rather than dual-deriving the engine structs. This keeps
-  the net crate glam-free and dependency-clean and still honors "serde stays for persistence."
-  **Decision needed before promotion:** confirm the wire-mirror approach (recommended), or
-  require dual-derive (which forces either a glam-bitcode shim or relocating the component
-  types into a shared lower crate — larger blast radius). *Recommend wire-mirror.*
-- **`NetworkId` allocation** — server-assigned monotonic vs. recycled. Phase 1 only needs the
-  host to stamp its own entities; the allocation policy + predicted-spawn reconciliation is
-  pinned in Phase 2/6. Phase 1 uses a simple server-monotonic `u32`.
-- **Snapshot send rate vs. 60 Hz tick** — Phase 1 sends full-state **every server tick**
-  (simplest for the demo). The decoupled send-rate + interpolation-delay decision is Phase 2's
-  (the epic's "timing parameters up front" applies at the Phase 2 spec, where interpolation
-  consumes it).
+Reflected against the project's architecture principles (subsystem boundaries, the
+engine-closed component vocabulary, a lean dependency graph) and the milestone's spine — a
+sibling net crate clean enough to split a headless dedicated server out of (Phase 7) — all
+three prior open items settle.
+
+- **Wire-component representation → dedicated wire-mirror types in `postretro-net`.** The epic's
+  boundary inventory phrased this as native `bitcode::Encode/Decode` *on* `ComponentValue`, but
+  `ComponentValue`/`Transform` are `pub(crate)` and glam-typed, and the net crate must stay
+  `postretro`-free so a dedicated server never drags in the render half. Wire-mirror types
+  (plain `[f32; N]` fields, native bitcode derives) with conversion in `postretro::netcode`
+  satisfy the epic's actual intent — no serde-tagged enum on the wire, serde retained for
+  persistence — while keeping the crate boundary clean, which is the property the
+  dedicated-server split depends on. The cost (one conversion per replicable component) is
+  bounded *because* the component vocabulary is engine-closed (a finite, stable set) and is
+  guarded by the round-trip tests. Reconcile the epic's boundary-inventory wording at promotion.
+- **`NetworkId` allocation → server-assigned monotonic `u32`, never recycled within a session.**
+  Simplest (no free-list/generation), and a never-reused id lets a delayed packet referencing a
+  despawned entity be dropped unambiguously — the same stale-handle safety the engine's
+  generational `EntityId` buys, here free at `u32` width. Co-op campaign sessions are bounded (a
+  level/sitting, not a persistent world), so overflow is a non-issue; the slot-exhaustion risk
+  in the epic's ledger is the local `u16` `EntityId`, not this. Predicted-spawn → confirmed
+  *reconciliation* (Phase 6) layers on top; it does not change allocation.
+- **Snapshot cadence → per-tick full-state in Phase 1; send-rate + interpolation-delay tuning is
+  Phase 2.** Not a deferral: the send rate is only meaningful paired with the client
+  interpolation buffer it feeds, and interpolation is Phase 2's deliverable. Deciding the rate
+  here — with no interpolation to absorb it — would invent a parameter without its consumer.
+  Per-tick full-state is the honest Phase 1 answer; Phase 2 pins the decoupled rate against its
+  interpolation design (the epic's contracts-first-against-the-next-layer discipline).

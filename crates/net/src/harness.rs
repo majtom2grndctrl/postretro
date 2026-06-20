@@ -166,7 +166,8 @@ impl PacketConditioner {
     /// draw only when the packet survives and `jitter > 0` — so the stream
     /// position is a deterministic function of the enqueue sequence.
     pub fn enqueue(&mut self, packet: Vec<u8>) -> bool {
-        if self.config.loss_probability > 0.0 && self.rng.next_unit_f64() < self.config.loss_probability
+        if self.config.loss_probability > 0.0
+            && self.rng.next_unit_f64() < self.config.loss_probability
         {
             self.dropped += 1;
             return false;
@@ -188,7 +189,8 @@ impl PacketConditioner {
     /// without consuming twice. Clones only the surviving buffer.
     fn enqueue_one(&mut self, packet: &[u8]) -> bool {
         // Mirror `enqueue` but avoid cloning a dropped buffer.
-        if self.config.loss_probability > 0.0 && self.rng.next_unit_f64() < self.config.loss_probability
+        if self.config.loss_probability > 0.0
+            && self.rng.next_unit_f64() < self.config.loss_probability
         {
             self.dropped += 1;
             return false;
@@ -314,7 +316,10 @@ mod tests {
         cond.advance(32); // now = 64 >= 50
         let ready = cond.take_ready();
         assert_eq!(ready, vec![b"hello".to_vec()]);
-        assert!(cond.take_ready().is_empty(), "delivered packet is not re-delivered");
+        assert!(
+            cond.take_ready().is_empty(),
+            "delivered packet is not re-delivered"
+        );
     }
 
     #[test]
@@ -327,7 +332,9 @@ mod tests {
                 loss_probability: 0.5,
                 seed,
             });
-            (0..32).map(|i| cond.enqueue(vec![i as u8])).collect::<Vec<_>>()
+            (0..32)
+                .map(|i| cond.enqueue(vec![i as u8]))
+                .collect::<Vec<_>>()
         };
         assert_eq!(run(0x1234_5678), run(0x1234_5678));
     }
@@ -475,7 +482,11 @@ mod tests {
         assert!(cond.take_ready().is_empty(), "not yet due");
         cond.advance(16); // now = 32 >= 30
         let delivered = cond.take_ready();
-        assert_eq!(delivered.len(), 1, "exactly one buffer survives the conditioner");
+        assert_eq!(
+            delivered.len(),
+            1,
+            "exactly one buffer survives the conditioner"
+        );
         assert_ne!(delivered[0], decoy, "the dropped decoy must not arrive");
 
         // The surviving buffer decodes to the expected snapshot.

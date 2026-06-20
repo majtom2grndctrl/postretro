@@ -4,8 +4,8 @@
 // This crate is glam-free and postretro-free: wire-mirror types use plain
 // `[f32; N]`, and the dependency arrow only ever points postretro -> postretro-net.
 
-pub mod wire;
 pub mod transport;
+pub mod wire;
 
 #[cfg(any(test, feature = "dev-tools"))]
 pub mod harness;

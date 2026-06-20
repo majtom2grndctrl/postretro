@@ -206,7 +206,10 @@ mod tests {
         let snapshot = Snapshot {
             tick: 42,
             entries: vec![
-                (NetworkId(1), ComponentPayload::Transform(sample_transform())),
+                (
+                    NetworkId(1),
+                    ComponentPayload::Transform(sample_transform()),
+                ),
                 (
                     NetworkId(7),
                     ComponentPayload::Transform(WireTransform {
@@ -244,7 +247,10 @@ mod tests {
     fn truncated_buffer_decodes_to_err_not_panic() {
         let snapshot = Snapshot {
             tick: 9,
-            entries: vec![(NetworkId(3), ComponentPayload::Transform(sample_transform()))],
+            entries: vec![(
+                NetworkId(3),
+                ComponentPayload::Transform(sample_transform()),
+            )],
         };
         let bytes = encode(&snapshot);
         // Drop the final byte — a short buffer must be a clean Err, never a panic.

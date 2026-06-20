@@ -582,7 +582,8 @@ mod tests {
             app_protocol_id: expected.app_protocol_id,
             wire_version: expected.wire_version + 1,
         };
-        let err = validate_handshake(expected, received).expect_err("divergent version must reject");
+        let err =
+            validate_handshake(expected, received).expect_err("divergent version must reject");
         assert_eq!(err.expected, expected);
         assert_eq!(err.received, received);
     }
@@ -642,9 +643,7 @@ mod tests {
     /// outcomes. `client_version` is the app-level `ProtocolVersion` the client
     /// sends — diverging it (while the transport `protocol_id` stays equal) lets
     /// the connection establish and then be app-rejected.
-    fn run_handshake(
-        client_version: ProtocolVersion,
-    ) -> (NetServer, Vec<HandshakeOutcome>, bool) {
+    fn run_handshake(client_version: ProtocolVersion) -> (NetServer, Vec<HandshakeOutcome>, bool) {
         let (server_sock, server_addr) = bound_socket();
         let (client_sock, _client_addr) = bound_socket();
 
@@ -715,7 +714,10 @@ mod tests {
     #[test]
     fn loopback_matching_version_is_accepted() {
         let (server, outcomes, connected) = run_handshake(protocol_version());
-        assert!(connected, "transport connection should establish over loopback");
+        assert!(
+            connected,
+            "transport connection should establish over loopback"
+        );
         let accepted = outcomes
             .iter()
             .find_map(|o| match o {
@@ -758,7 +760,9 @@ mod tests {
 
         // And the send_snapshot guard refuses any post-reject entity state.
         assert!(
-            !outcomes.iter().any(|o| matches!(o, HandshakeOutcome::Accepted { .. })),
+            !outcomes
+                .iter()
+                .any(|o| matches!(o, HandshakeOutcome::Accepted { .. })),
             "diverged client must never be accepted"
         );
     }

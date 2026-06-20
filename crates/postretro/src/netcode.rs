@@ -88,9 +88,7 @@ pub(crate) fn parse_net_config(args: &[String]) -> Result<NetConfig, NetArgError
             }
             let port = if let Some(value) = host_inline {
                 parse_port(value)?
-            } else if let Some(value) =
-                iter.next_if(|v| !v.is_empty() && !v.starts_with("--"))
-            {
+            } else if let Some(value) = iter.next_if(|v| !v.is_empty() && !v.starts_with("--")) {
                 parse_port(value)?
             } else {
                 DEFAULT_HOST_PORT
@@ -112,9 +110,7 @@ pub(crate) fn parse_net_config(args: &[String]) -> Result<NetConfig, NetArgError
             } else {
                 iter.next_if(|v| !v.is_empty() && !v.starts_with("--"))
                     .cloned()
-                    .ok_or_else(|| {
-                        NetArgError("--connect requires an <ip:port> address".into())
-                    })?
+                    .ok_or_else(|| NetArgError("--connect requires an <ip:port> address".into()))?
             };
             let addr: SocketAddr = value
                 .parse()
@@ -189,8 +185,8 @@ impl NetEndpoint {
             NetRole::Connect { addr } => {
                 // Bind an ephemeral local socket on the same address family.
                 let bind_addr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0));
-                let socket = UdpSocket::bind(bind_addr)
-                    .map_err(|e| format!("client bind failed: {e}"))?;
+                let socket =
+                    UdpSocket::bind(bind_addr).map_err(|e| format!("client bind failed: {e}"))?;
                 // Client id is arbitrary under unsecure auth; use the wall clock
                 // so two clients on one host do not collide.
                 let client_id = now().as_nanos() as u64;
@@ -296,9 +292,7 @@ pub(crate) fn wire_to_transform(wire: &WireTransform) -> Transform {
 /// payload variant (Phase 2) is a compile error here until the arm is added.
 fn payload_to_component_value(payload: &ComponentPayload) -> ComponentValue {
     match payload {
-        ComponentPayload::Transform(wire) => {
-            ComponentValue::Transform(wire_to_transform(wire))
-        }
+        ComponentPayload::Transform(wire) => ComponentValue::Transform(wire_to_transform(wire)),
     }
 }
 
@@ -349,7 +343,10 @@ pub(crate) fn apply(
         let value = payload_to_component_value(payload);
         match map.get(net_id).copied() {
             Some(existing) => {
-                if registry.set_component_value(existing, value.clone()).is_err() {
+                if registry
+                    .set_component_value(existing, value.clone())
+                    .is_err()
+                {
                     // The mapped entity is gone (should not happen in Phase 1,
                     // which never despawns) — re-spawn from this payload so the
                     // remote entity stays visible rather than silently vanishing.
@@ -393,13 +390,8 @@ mod tests {
         Transform {
             position: Vec3::new(1.5, -2.0, 3.25),
             // A non-axis-aligned unit quaternion.
-            rotation: Quat::from_xyzw(
-                0.182_574_2,
-                0.365_148_4,
-                0.547_722_6,
-                0.730_296_8,
-            )
-            .normalize(),
+            rotation: Quat::from_xyzw(0.182_574_2, 0.365_148_4, 0.547_722_6, 0.730_296_8)
+                .normalize(),
             scale: Vec3::splat(2.0),
         }
     }
@@ -513,7 +505,10 @@ mod tests {
 
         assert_eq!(map.len(), 1, "second snapshot does not add a new mapping");
         let same = *map.get(&NetworkId(42)).expect("mapping unchanged");
-        assert_eq!(same, spawned, "same NetworkId must map to the same EntityId");
+        assert_eq!(
+            same, spawned,
+            "same NetworkId must map to the same EntityId"
+        );
         let after_second = registry
             .get_component::<Transform>(same)
             .expect("entity still live");
@@ -584,10 +579,7 @@ mod tests {
         // The id stamped for `a` is stable across snapshots.
         let a_net_id = allocator.stamp(a);
         let snap2 = serialize(&registry, &mut allocator, 8);
-        let a_in_snap2 = snap2
-            .entries
-            .iter()
-            .find(|(net_id, _)| *net_id == a_net_id);
+        let a_in_snap2 = snap2.entries.iter().find(|(net_id, _)| *net_id == a_net_id);
         assert!(
             a_in_snap2.is_some(),
             "the same EntityId stamps to the same NetworkId across snapshots"
@@ -611,7 +603,12 @@ mod tests {
     #[test]
     fn parse_host_without_port_uses_default() {
         let config = parse_net_config(&argv(&["--host"])).unwrap();
-        assert_eq!(config.role, NetRole::Host { port: DEFAULT_HOST_PORT });
+        assert_eq!(
+            config.role,
+            NetRole::Host {
+                port: DEFAULT_HOST_PORT
+            }
+        );
     }
 
     #[test]
@@ -668,6 +665,9 @@ mod tests {
                 addr: "127.0.0.1:27015".parse().unwrap()
             }
         );
-        assert_eq!(crate::resolve_map_path(&args).as_deref(), Some("maps/e1m1.prl"));
+        assert_eq!(
+            crate::resolve_map_path(&args).as_deref(),
+            Some("maps/e1m1.prl")
+        );
     }
 }

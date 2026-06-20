@@ -343,7 +343,7 @@ the byte layout).
 |---|---|---|---|---|---|
 | Network entity id | `NetworkId(u32)` (net crate) | bitcode u32 | n/a | n/a | n/a |
 | Local entity id | `EntityId` (`scripting/registry.rs`) | not sent raw; mapped to `NetworkId` | n/a | n/a | n/a |
-| Component snapshot unit | `ComponentValue` | **native `bitcode::Encode/Decode`** (NOT serde-tagged — see Wire format) | n/a | n/a | n/a |
+| Component snapshot unit | wire-mirror types in the net crate (`WireTransform`, …), converted from `ComponentValue` | **native `bitcode::Encode/Decode`** (NOT serde-tagged — see Wire format) | n/a | n/a | n/a |
 | Input command | mirrors `MovementInput` + fire/aim | bitcode struct | n/a | n/a | n/a |
 
 Scripts never observe the wire; FGD never configures replication.
@@ -356,11 +356,14 @@ layouts deferred to the Phase 1/2 specs.**
 - **Encoding owner:** `bitcode` owns endianness and bit-packing. **Critical:** an
   internally-tagged serde enum (`#[serde(tag = "kind")]`, which `ComponentValue` is)
   **cannot deserialize on any non-self-describing binary format** — bitcode, postcard, and
-  bincode all fail with `DeserializeAnyNotSupported`. The wire-bound component types
-  therefore carry **native `#[derive(bitcode::Encode, bitcode::Decode)]`**; the serde
-  derives stay for JSON/SDK/persistence (one type, two representations). This amends the
-  earlier "reuse serde derives, no new derives" assumption — the addition is bounded
-  (the known component-type set) and buys best wire compactness.
+  bincode all fail with `DeserializeAnyNotSupported`. The wire-bound component data
+  therefore carries **native `#[derive(bitcode::Encode, bitcode::Decode)]`**; the engine
+  `ComponentValue` keeps its serde derives for JSON/SDK/persistence. The Phase 1 spec
+  resolves the wire side as **dedicated wire-mirror types in the net crate** (keeping the net
+  crate `postretro`-free), converted at the `crate::netcode` boundary — not bitcode derives on
+  `ComponentValue` itself. This amends the earlier "reuse serde derives, no new derives"
+  assumption — the addition is bounded (the known component-type set) and buys best wire
+  compactness.
 - **bitcode version stability:** the format is unstable across major versions (by design).
   Fine for co-op (host + client ship together); **pin the version exactly, never persist
   bitcode bytes, gate every connection on the version handshake.**

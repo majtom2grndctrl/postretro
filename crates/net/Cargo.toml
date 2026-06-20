@@ -20,6 +20,10 @@ renet_netcode = { version = "=2.0.0", default-features = false }
 # version mismatch is rejected before any bitcode payload is decoded.
 bitcode = "=0.6.9"
 
+# Logging. `[Net]`-tagged actionable failures (handshake rejects, transport
+# errors) — see development_guide §6.1.
+log.workspace = true
+
 [features]
 # Gates the in-crate net test harness (Task 5). The engine forwards this via
 # its own `dev-tools` feature.

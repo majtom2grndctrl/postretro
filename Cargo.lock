@@ -3638,6 +3638,7 @@ name = "postretro-net"
 version = "0.1.0"
 dependencies = [
  "bitcode",
+ "log",
  "renet",
  "renet_netcode",
 ]

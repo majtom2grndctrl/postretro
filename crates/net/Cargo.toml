@@ -1,0 +1,30 @@
+[package]
+name = "postretro-net"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Netcode transport and wire codec for the Postretro engine"
+license.workspace = true
+
+[dependencies]
+# renet 2.0 + renet_netcode: sync, polled (`update(dt)`) UDP transport with no
+# async runtime. `default-features = false` keeps the dependency tree free of
+# tokio/async-std/smol — the no-async-runtime `cargo tree` gate depends on it.
+# renetcode (the netcode transport core) is pulled in transitively by
+# renet_netcode. Pinned exact: renet/renet_netcode share a release line.
+renet = { version = "=2.0.0", default-features = false }
+renet_netcode = { version = "=2.0.0", default-features = false }
+
+# bitcode wire codec. The bitcode byte format is unstable across majors — never
+# persist its bytes, and gate every connection on the app-level handshake so a
+# version mismatch is rejected before any bitcode payload is decoded.
+bitcode = "=0.6.9"
+
+# Logging. `[Net]`-tagged actionable failures (handshake rejects, transport
+# errors) — see development_guide §6.1.
+log.workspace = true
+
+[features]
+# Gates the in-crate latency-sim harness module. The engine forwards this via
+# its own `dev-tools` feature.
+dev-tools = []

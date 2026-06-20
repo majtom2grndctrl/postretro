@@ -4,6 +4,7 @@ members = [
     "crates/level-format",
     "crates/level-compiler",
     "crates/script-compiler",
+    "crates/net",
 ]
 resolver = "2"
 
@@ -138,6 +139,7 @@ proptest = "1"
 
 # Workspace members
 postretro-level-format = { path = "crates/level-format" }
+postretro-net = { path = "crates/net" }
 
 [profile.release]
 opt-level = 3

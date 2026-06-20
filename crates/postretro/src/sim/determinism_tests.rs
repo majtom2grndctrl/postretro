@@ -453,8 +453,7 @@ fn assert_runs_match(actual: &SimRun, expected: &SimRun) {
     // applied via integer-path arithmetic with no per-frame interpolation, so
     // deterministic runs must produce bit-identical results.
     assert_eq!(
-        actual.selected_player_health,
-        expected.selected_player_health,
+        actual.selected_player_health, expected.selected_player_health,
         "selected player health must match exactly"
     );
     assert_eq!(

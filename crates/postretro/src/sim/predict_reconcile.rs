@@ -26,7 +26,7 @@ use crate::scripting::data_descriptors::{
 use crate::scripting::reaction_dispatch::ProgressTracker;
 use crate::scripting::registry::{EntityId, EntityRegistry, Transform};
 use crate::scripting_systems::hit_zones::HitZoneStore;
-use crate::weapon::{FireButtonState, WeaponFireCommand};
+use crate::weapon::FireButtonState;
 
 const DT: f32 = 1.0 / 60.0;
 const GRAVITY: f32 = -20.0;
@@ -65,12 +65,9 @@ impl PrototypeCommand {
 
     fn to_post_movement_command(self) -> super::PostMovementCommand {
         super::PostMovementCommand {
-            weapon_fire: WeaponFireCommand {
-                button: self.to_sim_command().fire_button,
-                aim_origin: Vec3::new(0.0, 2.0, 0.0),
-                aim_direction: Vec3::new(self.facing_yaw.sin(), 0.0, -self.facing_yaw.cos())
-                    .normalize(),
-            },
+            aim_origin: Vec3::new(0.0, 2.0, 0.0),
+            aim_direction: Vec3::new(self.facing_yaw.sin(), 0.0, -self.facing_yaw.cos())
+                .normalize(),
         }
     }
 }

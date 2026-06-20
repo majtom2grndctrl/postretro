@@ -515,6 +515,10 @@ pub(crate) struct EntityRegistry {
     /// `getEntityProperty` primitive. Sparsely populated — entities spawned
     /// outside the map-load path have no entry here.
     kvp_table: HashMap<EntityId, HashMap<String, String>>,
+    /// Engine-internal selection for the one local player pawn driven by the
+    /// Phase 0 sim command. Not script-visible and not a tag/KVP, so it cannot
+    /// affect world queries or authored entity properties.
+    local_player_pawn: Option<EntityId>,
 }
 
 impl EntityRegistry {
@@ -526,7 +530,23 @@ impl EntityRegistry {
             previous_transforms: Vec::new(),
             tags: Vec::new(),
             kvp_table: HashMap::new(),
+            local_player_pawn: None,
         }
+    }
+
+    /// Mark the pawn driven by the single local Phase 0 sim command. Systems
+    /// that need "the player" prefer this marker, then fall back to the legacy
+    /// first-`PlayerMovement` lookup for older fixtures and maps.
+    pub(crate) fn mark_local_player_pawn(&mut self, id: EntityId) -> Result<(), RegistryError> {
+        let _ = self.validate(id)?;
+        self.local_player_pawn = Some(id);
+        Ok(())
+    }
+
+    /// Return the marked local player pawn when it is still live.
+    pub(crate) fn local_player_pawn(&self) -> Option<EntityId> {
+        self.local_player_pawn
+            .filter(|id| self.validate(*id).is_ok())
     }
 
     /// Attach the per-placement KVP bag (authored on the source `.map` entity)
@@ -703,6 +723,9 @@ impl EntityRegistry {
         self.previous_transforms[index] = None;
         self.tags[index].clear();
         self.kvp_table.remove(&id);
+        if self.local_player_pawn == Some(id) {
+            self.local_player_pawn = None;
+        }
         slot.live = false;
 
         // Generation-wrap retirement: reusing the slot after wrap would let a

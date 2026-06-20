@@ -159,6 +159,12 @@ fn spawn_player(reg: &mut EntityRegistry, pos: Vec3) -> EntityId {
     id
 }
 
+fn spawn_player_without_health(reg: &mut EntityRegistry, pos: Vec3) -> EntityId {
+    let id = spawn_player(reg, pos);
+    reg.remove_component::<HealthComponent>(id).unwrap();
+    id
+}
+
 /// Spawn an enemy at `pos` carrying a Brain, an Agent (steering target), a Mesh,
 /// and its own Health. Returns the enemy id.
 fn spawn_enemy(
@@ -457,6 +463,34 @@ fn attack_applies_configured_damage_once_per_cooldown() {
         "attack resumes after cooldown"
     );
     assert_eq!(player_hp(&reg, pawn), 84.0, "second hit lands once");
+}
+
+#[test]
+fn attack_does_not_damage_remote_health_when_marked_local_pawn_lacks_health() {
+    let mut reg = EntityRegistry::new();
+    let mut warned = HashSet::new();
+
+    let remote = spawn_player(&mut reg, Vec3::new(100.0, 0.0, 0.0));
+    let local = spawn_player_without_health(&mut reg, Vec3::new(1.0, 0.0, 0.0));
+    reg.mark_local_player_pawn(local).unwrap();
+    spawn_enemy(
+        &mut reg,
+        Vec3::ZERO,
+        brain_with(tuning(), LogicalState::Attack),
+        50.0,
+    );
+
+    let events = run_ai_tick(&mut reg, &mut warned, 1.0 / 60.0);
+
+    assert!(
+        events.is_empty(),
+        "enemy should target the marked pawn's position but not attack a different pawn's health"
+    );
+    assert_eq!(
+        player_hp(&reg, remote),
+        100.0,
+        "remote pawn health must not be used as fallback damage target"
+    );
 }
 
 #[test]

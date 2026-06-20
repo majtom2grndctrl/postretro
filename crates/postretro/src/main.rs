@@ -1252,17 +1252,11 @@ fn build_sim_command(
     }
 }
 
-fn build_post_movement_command(
-    fire_button: weapon::FireButtonState,
-    camera: &Camera,
-) -> sim::PostMovementCommand {
+fn build_post_movement_command(camera: &Camera) -> sim::PostMovementCommand {
     let (aim_origin, aim_direction) = camera.aim_ray();
     sim::PostMovementCommand {
-        weapon_fire: weapon::WeaponFireCommand {
-            button: fire_button,
-            aim_origin,
-            aim_direction,
-        },
+        aim_origin,
+        aim_direction,
     }
 }
 
@@ -1274,20 +1268,41 @@ fn has_player_pawn(registry: &scripting::registry::EntityRegistry) -> bool {
         .any(|(_, value)| matches!(value, ComponentValue::PlayerMovement(_)))
 }
 
-fn follow_camera_to_first_pawn(
+fn followed_player_pawn(
+    registry: &scripting::registry::EntityRegistry,
+) -> Option<scripting::registry::EntityId> {
+    use crate::scripting::registry::{ComponentKind, ComponentValue};
+
+    if let Some(id) = registry.local_player_pawn() {
+        if matches!(
+            registry.has_component_kind(id, ComponentKind::PlayerMovement),
+            Ok(true)
+        ) {
+            return Some(id);
+        }
+    }
+
+    registry
+        .iter_with_kind(ComponentKind::PlayerMovement)
+        .find_map(|(id, value)| matches!(value, ComponentValue::PlayerMovement(_)).then_some(id))
+}
+
+fn follow_camera_to_local_pawn(
     camera: &mut Camera,
     registry: &scripting::registry::EntityRegistry,
 ) {
-    use crate::scripting::registry::{ComponentKind, ComponentValue, Transform};
+    use crate::scripting::registry::Transform;
 
-    for (id, value) in registry.iter_with_kind(ComponentKind::PlayerMovement) {
-        let ComponentValue::PlayerMovement(component) = value else {
-            continue;
-        };
-        if let Ok(transform) = registry.get_component::<Transform>(id) {
+    if let Some(id) = followed_player_pawn(registry) {
+        if let (Ok(component), Ok(transform)) = (
+            registry
+                .get_component::<scripting::components::player_movement::PlayerMovementComponent>(
+                    id,
+                ),
+            registry.get_component::<Transform>(id),
+        ) {
             camera.position =
                 transform.position + Vec3::new(0.0, component.capsule.eye_height, 0.0);
-            break;
         }
     }
 }
@@ -1298,14 +1313,12 @@ fn update_debug_chase_agent_destination(
     debug_chase_agent: Option<scripting::registry::EntityId>,
     fallback_target: Vec3,
 ) {
-    use crate::scripting::registry::{ComponentKind, ComponentValue, Transform};
+    use crate::scripting::registry::Transform;
 
     let Some(agent) = debug_chase_agent else {
         return;
     };
-    let target = registry
-        .iter_with_kind(ComponentKind::PlayerMovement)
-        .find_map(|(id, value)| matches!(value, ComponentValue::PlayerMovement(_)).then_some(id))
+    let target = followed_player_pawn(registry)
         .and_then(|id| registry.get_component::<Transform>(id).ok())
         .map(|t| t.position)
         .unwrap_or(fallback_target);
@@ -1999,10 +2012,9 @@ impl ApplicationHandler for App {
                     .frame
                     .set(self.script_ctx.frame.get().wrapping_add(1));
 
-                // Accumulate movement and weapon events across all ticks; drain
-                // after the tick loop completes so reactions see fully-settled
-                // post-tick world state and event order is never interleaved
-                // with ongoing physics simulation. See:
+                // Accumulate post-tick events across all ticks; drain after the
+                // tick loop completes so reactions see fully-settled world state
+                // and event order is never interleaved with ongoing physics. See:
                 // context/lib/entity_model.md §5
                 let mut pending_movement_events: Vec<&'static str> = Vec::new();
                 let mut pending_ai_events: Vec<&'static str> = Vec::new();
@@ -2083,11 +2095,11 @@ impl ApplicationHandler for App {
                             &mut self.ai_warned,
                             &command,
                             |registry| {
-                                // Camera follows the first pawn's position
-                                // before weapon fire resolves its aim ray.
+                                // Camera follows the selected local pawn before
+                                // weapon fire resolves its aim ray.
                                 if has_player_pawn {
                                     let registry_ref = registry.borrow();
-                                    follow_camera_to_first_pawn(&mut self.camera, &registry_ref);
+                                    follow_camera_to_local_pawn(&mut self.camera, &registry_ref);
                                 }
 
                                 #[cfg(feature = "dev-tools")]
@@ -2100,7 +2112,7 @@ impl ApplicationHandler for App {
                                     );
                                 }
 
-                                build_post_movement_command(command.fire_button, &self.camera)
+                                build_post_movement_command(&self.camera)
                             },
                             tick_dt,
                         );
@@ -2114,9 +2126,8 @@ impl ApplicationHandler for App {
                     }
                 }
 
-                // Drain collected movement and weapon events after all ticks
-                // complete so reactions observe the final post-tick state of
-                // every entity.
+                // Drain collected post-tick events after all ticks complete so
+                // reactions observe the final state of every entity.
                 for event_name in &pending_movement_events {
                     let _ = fire_named_event(event_name, &self.script_ctx.data_registry.borrow());
                 }
@@ -2142,7 +2153,7 @@ impl ApplicationHandler for App {
                 }
 
                 // System-reaction command drain — runs AFTER every post-tick
-                // event drain so commands enqueued by movement/weapon/death
+                // event drain so commands enqueued by movement/AI/weapon/death
                 // reactions (and, later, crossing watchers) are taken in one
                 // batch. The typed queue keeps audio/input/UI services out of
                 // the scripting surface; the dispatcher routes each command to
@@ -2278,30 +2289,25 @@ impl ApplicationHandler for App {
                 // is the yaw-derived, Y-free, unit-length right vector the
                 // `view_feel_inputs`/`map_output_to_camera` helpers expect.
                 let camera_right = self.camera.right();
-                // Match the camera-follow loop above, which drives the camera
-                // from the first `PlayerMovement` pawn that ALSO has a
-                // `Transform`: select that same pawn here (same
-                // `get_component::<Transform>(id).is_ok()` predicate) and run
-                // view feel only when IT carries `view_feel`. Selecting on the
-                // identical predicate keeps the two readers from diverging — a
-                // `PlayerMovement` without a `Transform` ordered first would
-                // otherwise drive view feel while the camera follows a different
-                // pawn. A later pawn's `view_feel` must not leak onto a camera
-                // the driving pawn owns either.
+                // Match the camera-follow resolver above: marked local pawn
+                // first, then the legacy first PlayerMovement+Transform
+                // fallback. View feel only runs when that driving pawn carries
+                // `view_feel`; another pawn's preset must not leak onto the
+                // selected camera.
                 let view_feel_inputs = {
-                    use crate::scripting::registry::{ComponentKind, ComponentValue, Transform};
                     let registry = self.script_ctx.registry.borrow();
-                    registry
-                        .iter_with_kind(ComponentKind::PlayerMovement)
-                        .find(|(id, _value)| registry.get_component::<Transform>(*id).is_ok())
-                        .and_then(|(_id, value)| match value {
-                            ComponentValue::PlayerMovement(component) => {
+                    followed_player_pawn(&registry).and_then(|id| {
+                        registry
+                            .get_component::<
+                                scripting::components::player_movement::PlayerMovementComponent,
+                            >(id)
+                            .ok()
+                            .and_then(|component| {
                                 component.view_feel.as_ref().map(|params| {
                                     (params.clone(), component.velocity, component.is_grounded)
                                 })
-                            }
-                            _ => None,
-                        })
+                            })
+                    })
                 };
                 let (vf_roll, vf_yaw_offset, vf_pitch_offset, vf_eye_offset) =
                     if let Some((params, velocity, is_grounded)) = view_feel_inputs {
@@ -4273,8 +4279,8 @@ mod tests {
                 &mut ai_warned,
                 &command,
                 |registry| {
-                    follow_camera_to_first_pawn(&mut camera, &registry.borrow());
-                    build_post_movement_command(command.fire_button, &camera)
+                    follow_camera_to_local_pawn(&mut camera, &registry.borrow());
+                    build_post_movement_command(&camera)
                 },
                 TICK_DURATION.as_secs_f32(),
             );
@@ -4291,6 +4297,105 @@ mod tests {
         assert_eq!(
             frame_timing.previous_state.position, pushed_states[0],
             "the second push must shift the first tick's camera state into previous_state",
+        );
+    }
+
+    #[test]
+    fn camera_follow_does_not_fallback_when_marked_movement_pawn_lacks_transform() {
+        use crate::scripting::components::player_movement::PlayerMovementComponent;
+        use crate::scripting::registry::{EntityRegistry, Transform};
+
+        let mut registry = EntityRegistry::new();
+        let descriptor = minimal_player_descriptor();
+        let marked = registry.spawn(Transform {
+            position: Vec3::new(1.0, 2.0, 3.0),
+            ..Transform::default()
+        });
+        registry
+            .set_component(
+                marked,
+                PlayerMovementComponent::from_descriptor(&descriptor),
+            )
+            .expect("marked pawn receives movement");
+        registry
+            .remove_component::<Transform>(marked)
+            .expect("test strips transform from marked pawn");
+        registry.mark_local_player_pawn(marked).unwrap();
+
+        let fallback = registry.spawn(Transform {
+            position: Vec3::new(50.0, 0.0, 0.0),
+            ..Transform::default()
+        });
+        registry
+            .set_component(
+                fallback,
+                PlayerMovementComponent::from_descriptor(&descriptor),
+            )
+            .expect("fallback pawn receives movement");
+
+        let mut camera = Camera::new(Vec3::new(9.0, 8.0, 7.0), 0.0, 0.0);
+
+        assert_eq!(
+            followed_player_pawn(&registry),
+            Some(marked),
+            "valid marked movement pawn remains selected even without transform"
+        );
+        follow_camera_to_local_pawn(&mut camera, &registry);
+        let post = build_post_movement_command(&camera);
+
+        assert_eq!(
+            camera.position,
+            Vec3::new(9.0, 8.0, 7.0),
+            "camera must not silently follow a different pawn"
+        );
+        assert_eq!(
+            post.aim_origin, camera.position,
+            "aim resolves from the unchanged camera when selected pawn lacks transform"
+        );
+    }
+
+    #[test]
+    fn camera_follow_no_marker_fallback_does_not_skip_transformless_first_pawn() {
+        use crate::scripting::components::player_movement::PlayerMovementComponent;
+        use crate::scripting::registry::{EntityRegistry, Transform};
+
+        let mut registry = EntityRegistry::new();
+        let descriptor = minimal_player_descriptor();
+        let first = registry.spawn(Transform {
+            position: Vec3::new(1.0, 2.0, 3.0),
+            ..Transform::default()
+        });
+        registry
+            .set_component(first, PlayerMovementComponent::from_descriptor(&descriptor))
+            .expect("first pawn receives movement");
+        registry
+            .remove_component::<Transform>(first)
+            .expect("test strips transform from first pawn");
+
+        let fallback = registry.spawn(Transform {
+            position: Vec3::new(50.0, 0.0, 0.0),
+            ..Transform::default()
+        });
+        registry
+            .set_component(
+                fallback,
+                PlayerMovementComponent::from_descriptor(&descriptor),
+            )
+            .expect("fallback pawn receives movement");
+
+        let mut camera = Camera::new(Vec3::new(9.0, 8.0, 7.0), 0.0, 0.0);
+
+        assert_eq!(
+            followed_player_pawn(&registry),
+            Some(first),
+            "legacy no-marker fallback must pick the same first movement pawn as sim systems"
+        );
+        follow_camera_to_local_pawn(&mut camera, &registry);
+
+        assert_eq!(
+            camera.position,
+            Vec3::new(9.0, 8.0, 7.0),
+            "camera must not silently follow a later pawn"
         );
     }
 
@@ -4451,9 +4556,9 @@ mod tests {
             &mut ai_warned,
             &command,
             |registry| {
-                follow_camera_to_first_pawn(&mut camera, &registry.borrow());
-                let post = build_post_movement_command(command.fire_button, &camera);
-                resolved_aim_origin = Some(post.weapon_fire.aim_origin);
+                follow_camera_to_local_pawn(&mut camera, &registry.borrow());
+                let post = build_post_movement_command(&camera);
+                resolved_aim_origin = Some(post.aim_origin);
                 post
             },
             TICK_DURATION.as_secs_f32(),

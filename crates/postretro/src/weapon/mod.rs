@@ -48,6 +48,7 @@ pub(crate) struct WeaponFireCommand {
     pub(crate) button: FireButtonState,
     pub(crate) aim_origin: Vec3,
     pub(crate) aim_direction: Vec3,
+    pub(crate) can_fire: bool,
 }
 
 // Not `Copy`: `zone: Option<String>` carries a heap-backed tag for skeletal
@@ -62,9 +63,10 @@ pub(crate) struct WeaponImpact {
     pub(crate) normal: Vec3,
     /// The entity struck, when the nearest hit along the ray is an entity
     /// hitbox rather than world geometry. `None` for a world-only hit or when
-    /// no hitbox entity lies along the ray within range. Spatial targeting
-    /// rides here, beside the payload — never inside [`DamagePayload`]. The
-    /// caller (the death/damage sweep) consumes this to route `apply_damage`.
+    /// no targetable entity lies along the ray within range. Spatial targeting
+    /// rides here, beside the payload — never inside [`DamagePayload`]. The sim
+    /// weapon stage consumes this to route `apply_damage` before the death
+    /// sweep handles zero-HP entities.
     pub(crate) target: Option<EntityId>,
     /// The authored skeletal hit-zone tag the shot landed on (e.g. "head"),
     /// surfaced for an entity hit that struck a bone-posed capsule. `None` for a
@@ -114,6 +116,7 @@ pub(crate) fn tick(
         },
         aim_origin,
         aim_direction,
+        can_fire: true,
     };
     tick_resolved(
         registry,
@@ -159,7 +162,7 @@ pub(crate) fn tick_resolved(
         weapon.shoot_press_consumed = false;
     }
 
-    let events = if wants_fire && weapon.cooldown_remaining_ms <= 0.0 {
+    let events = if command.can_fire && wants_fire && weapon.cooldown_remaining_ms <= 0.0 {
         weapon.cooldown_remaining_ms = stats.cooldown_ms;
         fire_hitscan(
             command.aim_origin,

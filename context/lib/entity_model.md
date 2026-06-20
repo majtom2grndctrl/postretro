@@ -41,7 +41,7 @@ Capabilities attach via component columns in the registry. Current engine compon
 | MeshComponent | Skinned model handle (`model: String`) plus optional declared animation states and per-entity animation state; spawned via `prop_mesh` or a descriptor carrying a mesh component |
 | Health | Hit points (`max`, `current`) plus optional hitscan hitbox (one world-aligned AABB, fixed per archetype); declared via the `components.health` descriptor block. Hitscan-targetable iff health **and** (an authored AABB hitbox **or** a zone-bearing skinned model, §7) — a zone-bearing model is tested against bone-posed capsules rather than the AABB. |
 
-Type-specific data lives in the component. An entity is "a player" by virtue of carrying `PlayerMovement`, not by belonging to a typed collection. Future entity types (enemies, doors, projectiles, pickups) follow the same pattern — illustrative, not current scope. The M10 enemy wave (specced, awaiting build) adds two engine-internal components on this pattern: a movable **Agent** (navmesh path-following plus a `parry3d`-backed collide-and-slide harness, distinct from the player movement substrate) and an **AI brain** (engine-owned idle/alert/attack/death FSM with declarative descriptor tuning, the `movement.md` §2 engine-owned-behavior precedent). See `plans/ready/M10--pathfinding-path-following/` and `plans/ready/M10--enemy-ai-behavior/`.
+Type-specific data lives in the component. An entity is "a player" by virtue of carrying `PlayerMovement`, not by belonging to a typed collection. Other entity types follow the same pattern: enemies use an **Agent** component for navmesh path-following and collide-and-slide movement, plus an **AI brain** component for engine-owned combat behavior. Doors, projectiles, and pickups should attach their behavior through components instead of typed collections.
 
 ---
 
@@ -67,7 +67,7 @@ All entities update each fixed-timestep game logic tick. See section 5 for updat
 Entities are destroyed when:
 
 - A scripted or engine bridge condition fires (expired particle, emitter despawn, level unload).
-- Health reaches zero: a per-tick death sweep despawns non-player entities at zero HP (and reports kills to the progress tracker). The player pawn never despawns from damage — HP latches at zero and a one-shot death event fires. (M10 enemy AI, specced: brain-bearing entities are a third case — the sweep counts the kill once via a latch but defers despawn to the AI tick so a death clip can play out, then the AI tick despawns; see `plans/ready/M10--enemy-ai-behavior/`.)
+- Health reaches zero: a per-tick death sweep despawns non-player entities at zero HP (and reports kills to the progress tracker). The player pawn never despawns from damage — HP latches at zero and a one-shot death event fires. Brain-bearing entities are a third case: the sweep counts the kill once via a latch, then defers despawn to the AI tick so a death clip can play out.
 - Level unloads (all entities destroyed).
 
 Destruction is immediate: the entity's slot is cleared and its generation bumped (or the slot retired on generation overflow) in the same call that removes the entity. Callers must not hold entity IDs across points where destruction can occur.
@@ -104,11 +104,15 @@ Game logic runs at a fixed tick rate, decoupled from render framerate. Renderer 
 |-------|-------|-----------|
 | 0 | Transform snapshot | Copies current→previous transform for every already-live entity before any movement system runs. Entities spawned this tick skip the snapshot and initialize previous == current at construction (no pop on spawn). |
 | 1 | Player movement tick | Input-driven; resolves capsule physics and position before anything reads player state |
-| 2 | Camera follow | Camera position follows the resolved player pawn before aim-dependent systems run |
-| 3 | Weapon fire tick | Reads input and active wieldable state after movement/camera settle; may spawn impact effects |
-| 4 | Scripting bridges | Emitter, particle sim, light, and fog-volume bridges each walk their component columns and may spawn or despawn entities |
+| 2 | AI brain tick | Updates engine-owned combat/behavior state after player movement settles |
+| 3 | Host camera callback | Host-side camera/aim work runs after movement and AI, before aim-dependent steering and weapon systems |
+| 4 | Agent steering tick | Applies navigation steering after AI decisions and host camera work |
+| 5 | Weapon fire tick | Consumes resolved fire and aim data; may spawn impact effects and apply damage |
+| 6 | Death sweep | Processes entities whose health reached zero after same-tick damage |
 
-The camera follows the player pawn after movement resolves. When no player pawn exists (no `PlayerMovement` entity), a fly-camera moves directly from input.
+Scripting bridges run later, outside the core simulation seam. Emitter, particle sim, light, and fog-volume bridges each walk their component columns and may spawn or despawn entities.
+
+The host camera follows the player pawn after movement and AI resolve. When no player pawn exists (no `PlayerMovement` entity), a fly-camera moves directly from input.
 
 ### Per-Entity Transform Interpolation
 
@@ -116,7 +120,7 @@ The renderer interpolates each entity's visual transform between the previous- a
 
 ### Events
 
-Movement and weapon events are collected across all ticks in a frame and drained after the tick loop completes, so reactions observe the fully-settled post-tick world state. Audio is not yet implemented; event categories listed above are illustrative of the intended model, not current consumers.
+Movement, AI, weapon, and death event names are collected across all catch-up ticks in stage buckets and drained after the tick loop completes. Death events use the sequence-aware drain path. Reactions observe the fully-settled post-tick world state.
 
 ---
 
@@ -145,7 +149,7 @@ The camera's current BSP leaf is computed each frame for portal-visibility culli
 
 Entities collide against static world geometry. At level load, PRL static geometry is built into a `parry3d` trimesh held by `CollisionWorld`. Queries use `parry3d::query::*` free functions against this collider — no `QueryPipeline`.
 
-**Skeletal hit zones (M10).** An entity is hitscan-targetable iff it has health **and** (an authored AABB hitbox **or** a zone-bearing skinned model — a glTF whose joints carry hit-zone `extras`). A zone-bearing model is tested against bone-posed capsules, not the AABB. The standalone entity-raycast facility (`scripting_systems::hit_zones::nearest_entity_hit`) resolves the nearest targetable entity for any ray: broad phase is the authored AABB for AABB-only entities and a clip-swept derived bound for zone-bearing ones; narrow phase is the AABB slab test or, per tagged joint, a `parry3d` ray-vs-capsule test (segment from the joint's posed origin to its first child's, a sphere for a tagged leaf; radius = the joint's authored `hitZoneRadius` or the engine default 0.12 m). The model→world transform uses the entity's game-tick position + yaw only (no pitch/roll/scale). The weapon's hitscan delegates to this facility and keeps only world-vs-entity nearest-of resolution; the struck zone tag rides on `WeaponImpact.zone`. General division: **spatial structure rides on the asset** (per-joint hit-zone tags in the glTF), **balance rides in the script** (per-zone damage multipliers in `health.zoneMultipliers`, applied at the weapon damage site). See `plans/in-progress/M10--skeletal-hit-zones/`.
+**Skeletal hit zones.** An entity is hitscan-targetable iff it has health **and** (an authored AABB hitbox **or** a zone-bearing skinned model — a glTF whose joints carry hit-zone `extras`). A zone-bearing model is tested against bone-posed capsules, not the AABB. The standalone entity-raycast facility (`scripting_systems::hit_zones::nearest_entity_hit`) resolves the nearest targetable entity for any ray: broad phase is the authored AABB for AABB-only entities and a clip-swept derived bound for zone-bearing ones; narrow phase is the AABB slab test or, per tagged joint, a `parry3d` ray-vs-capsule test (segment from the joint's posed origin to its first child's, a sphere for a tagged leaf; radius = the joint's authored `hitZoneRadius` or the engine default 0.12 m). The model→world transform uses the entity's game-tick position + yaw only (no pitch/roll/scale). The weapon's hitscan delegates to this facility and keeps only world-vs-entity nearest-of resolution; the struck zone tag rides on `WeaponImpact.zone`. General division: **spatial structure rides on the asset** (per-joint hit-zone tags in the glTF), **balance rides in the script** (per-zone damage multipliers in `health.zoneMultipliers`, applied at the weapon damage site).
 
 ### Entity-Entity Collision
 

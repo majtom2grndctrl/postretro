@@ -23,6 +23,11 @@ mod movement;
 // The runtime nav graph is built in every build whenever a level carries a
 // baked navmesh; pathfinding consumes its query surface.
 mod nav;
+// Engine-side netcode glue (M15 Phase 1): role selection, the optional endpoint
+// held by `App`, and the game-logic-owned serialize/apply steps. The ONLY engine
+// code that touches the registry on behalf of replication. See
+// `context/lib/entity_model.md` §6.
+mod netcode;
 mod options;
 mod weapon;
 
@@ -62,6 +67,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use glam::Vec3;
+use postretro_net::wire;
 use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, DeviceId, KeyEvent, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
@@ -400,6 +406,36 @@ fn main() -> Result<()> {
     let map_path = resolve_map_path(&args);
     let content_root = resolve_content_root(&args, map_path.as_deref());
     log::info!("[Engine] Content root: {}", content_root.display());
+
+    // M15 Phase 1 net role (default single-player). A malformed flag or a failed
+    // transport construction degrades to single-player (net inert) rather than
+    // blocking boot — the engine is playable without networking.
+    let net_role = match netcode::parse_net_config(&args) {
+        Ok(config) => config.role,
+        Err(err) => {
+            log::error!("[Net] CLI parse failed ({err}); starting single-player");
+            netcode::NetRole::SinglePlayer
+        }
+    };
+    let net_endpoint = match netcode::NetEndpoint::from_role(&net_role) {
+        Ok(endpoint) => {
+            match &net_role {
+                netcode::NetRole::SinglePlayer => {}
+                netcode::NetRole::Host { port } => {
+                    log::info!("[Net] hosting (listen server) on port {port}");
+                }
+                netcode::NetRole::Connect { addr } => {
+                    log::info!("[Net] connecting to {addr}");
+                }
+            }
+            endpoint
+        }
+        Err(err) => {
+            log::error!("[Net] endpoint setup failed ({err}); starting single-player");
+            None
+        }
+    };
+
     boot_timings.record("args_parsed");
 
     // Camera starts at a placeholder; `install_level_payload` repositions it
@@ -634,6 +670,7 @@ fn main() -> Result<()> {
         level_worker: None,
         level_requests: VecDeque::new(),
         boot_load: false,
+        net_endpoint,
         #[cfg(feature = "dev-tools")]
         debug_ui: None,
         #[cfg(feature = "dev-tools")]
@@ -1103,6 +1140,13 @@ struct App {
     /// back to Frontend; this boot load exits non-zero if the worker fails or
     /// returns an empty payload.
     boot_load: bool,
+
+    /// Optional network endpoint (M15 Phase 1). `None` for single-player (net
+    /// inert); `Host`/`Client` once a `--host`/`--connect` role's transport is
+    /// constructed. Polled once per frame in `RedrawRequested` before the
+    /// catch-up tick loop; the host serializes + sends after the loop. The net
+    /// subsystem never touches the registry — `crate::netcode` owns that seam.
+    net_endpoint: Option<netcode::NetEndpoint>,
 
     /// CPU-side egui state. `None` until `resumed()` initialises the renderer
     /// (the constructor needs the device's `max_texture_dimension_2d` limit).
@@ -2017,6 +2061,15 @@ impl ApplicationHandler for App {
                     .frame
                     .set(self.script_ctx.frame.get().wrapping_add(1));
 
+                // Net poll (M15 Phase 1): non-blocking, once per frame, BEFORE
+                // the catch-up tick loop. The client applies received
+                // host-authoritative snapshots into the registry here so the
+                // render below reflects this frame's replicated state. The host's
+                // serialize + send runs AFTER the tick loop (post-loop, beside
+                // the other drains). Single-player → inert no-op. See
+                // `context/lib/entity_model.md` §6, development_guide §4.3.
+                self.net_poll_and_apply(frame_dt);
+
                 // Accumulate post-tick events across all ticks; drain after the
                 // tick loop completes so reactions see fully-settled world state
                 // and event order is never interleaved with ongoing physics. See:
@@ -2130,6 +2183,12 @@ impl ApplicationHandler for App {
                             .push_state(InterpolableState::new(self.camera.position));
                     }
                 }
+
+                // Host serialize + send (M15 Phase 1): after the catch-up tick
+                // loop, beside the post-loop drains, so the snapshot carries this
+                // frame's fully-settled host-authoritative state. No-op for the
+                // client and single-player. See `context/lib/entity_model.md` §6.
+                self.net_serialize_and_send();
 
                 // Drain collected post-tick events after all ticks complete so
                 // reactions observe the final state of every entity.
@@ -3671,6 +3730,81 @@ impl App {
                     }
                 }
             }
+        }
+    }
+
+    /// Net poll plus client apply (M15 Phase 1). Thin delegation to
+    /// `crate::netcode`. Drives the endpoint's transport (`update`) once per
+    /// frame, then, on the client, applies received host snapshots into the
+    /// registry through the game-logic-owned `netcode::apply`. The mutable
+    /// registry borrow is threaded in here, so `crate::netcode` never reaches
+    /// into `App`. This is a no-op for single-player and for the host, which
+    /// serializes post-loop instead.
+    fn net_poll_and_apply(&mut self, frame_dt: f32) {
+        let dt = std::time::Duration::from_secs_f32(frame_dt);
+        match self.net_endpoint.as_mut() {
+            None => {}
+            Some(netcode::NetEndpoint::Host { server, .. }) => {
+                // Drive the listen server (accept handshakes, drain the socket).
+                // Snapshots are sent post-loop in `net_serialize_and_send`.
+                if let Err(err) = server.update(dt) {
+                    log::error!("[Net] host update failed: {err}");
+                }
+            }
+            Some(netcode::NetEndpoint::Client { client, map }) => {
+                if let Err(err) = client.update(dt) {
+                    log::error!("[Net] client update failed: {err}");
+                }
+                // Apply every snapshot received this frame, latest last, so the
+                // registry reflects the most recent host-authoritative state.
+                let snapshots = client.drain_snapshots();
+                if !snapshots.is_empty() {
+                    let mut registry = self.script_ctx.registry.borrow_mut();
+                    for bytes in snapshots {
+                        match wire::decode::<wire::Snapshot>(&bytes) {
+                            Ok(snapshot) => netcode::apply(&mut registry, &snapshot, map),
+                            Err(err) => {
+                                log::warn!("[Net] dropping undecodable snapshot: {err}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Host serialize plus send (M15 Phase 1). Thin delegation to
+    /// `crate::netcode`. Serializes the replicable set from the registry
+    /// (immutable borrow) into a tick-stamped `Snapshot`, then sends it to every
+    /// accepted client over the snapshot channel. No-op for single-player and the
+    /// client.
+    fn net_serialize_and_send(&mut self) {
+        let Some(netcode::NetEndpoint::Host {
+            server,
+            allocator,
+            tick,
+        }) = self.net_endpoint.as_mut()
+        else {
+            return;
+        };
+
+        let accepted = server.accepted_clients();
+        if accepted.is_empty() {
+            // Still advance the tick stamp so a late-joining client never sees a
+            // stalled monotonic clock once it is accepted.
+            *tick = tick.wrapping_add(1);
+            return;
+        }
+
+        let snapshot = {
+            let registry = self.script_ctx.registry.borrow();
+            netcode::serialize(&registry, allocator, *tick)
+        };
+        *tick = tick.wrapping_add(1);
+
+        let bytes = wire::encode(&snapshot);
+        for client_id in accepted {
+            let _ = server.send_snapshot(client_id, bytes.clone());
         }
     }
 

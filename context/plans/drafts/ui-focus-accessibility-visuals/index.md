@@ -33,7 +33,7 @@ Make UI focus a first-class accessibility state and a designer-controlled visual
 
 ## Acceptance criteria
 
-- [ ] Focused UI node is exported in an accessibility snapshot with its role, resolved accessible name, bounds, focus state, disabled state, and interaction state.
+- [ ] Focused UI node is exported in an accessibility snapshot with its role, resolved accessible name, bounds, focus state, disabled state, and interaction kind.
 - [ ] Active tree `accessibleName` and role are present on the accessibility snapshot root.
 - [ ] Button and slider accessible names resolve from either inline `label` or `labelledBy`.
 - [ ] `selected`, `checked`, and `disabled` states still resolve from the existing descriptor fields and are present in the accessibility snapshot.
@@ -53,6 +53,7 @@ Make UI focus a first-class accessibility state and a designer-controlled visual
 - [ ] TypeScript and Luau SDK helpers expose the same focus visual fields and reject malformed focus visual descriptors.
 - [ ] Generated SDK typedefs match the Rust wire shape.
 - [ ] `cargo check` passes.
+- [ ] New and migrated tests pass (`cargo test -p postretro` and SDK validation tests green).
 
 ## Tasks
 
@@ -62,15 +63,15 @@ Move focus-rect export types and traversal helpers out of the oversized `crates/
 
 ### Task 2: Define Accessibility Snapshot
 
-Add renderer-side data types for an internal accessibility snapshot. It should be built from the same laid-out active tree and frame snapshot used for focus export. Nodes include stable id, role, resolved name, bounds, focus state, disabled state, selected/checked state, and interaction kind. Live-region entries come from visible `Announce` widgets.
+Add renderer-side data types for an internal accessibility snapshot. It should be built from the same laid-out active tree and frame snapshot used for focus export. Nodes include stable id, role, resolved name, bounds, focus state, disabled state, selected/checked state, and interaction kind (the existing `NodeInteraction` carried on `FocusRect`). Live-region entries come from visible `Announce` widgets.
 
 ### Task 3: Resolve Accessible Names
 
-Resolve `label`, `labelledBy`, and tree `accessibleName` into strings during accessibility snapshot build. `labelledBy` names an authored node id whose text content supplies the name. Missing or hidden label targets warn once and degrade to an empty name; they do not panic or block rendering.
+Resolve `label`, `labelledBy`, and tree `accessibleName` into strings during accessibility snapshot build. `labelledBy` names an authored node id whose text content supplies the name; the target must resolve to a text-bearing node, otherwise the name warns once and degrades to empty. When both `label` and `labelledBy` are authored on the same node, inline `label` wins. Missing or hidden label targets warn once and degrade to an empty name; they do not panic or block rendering.
 
 ### Task 4: Add Focus Visual Descriptor
 
-Add authored visual descriptors to focusable widgets. Buttons gain an optional `background` color field for their normal surface. Widgets gain an optional `focusVisual` field. The initial focus visual variants are `backgroundColor`, `textColor`, `outline`, and `none`. `backgroundColor` carries a focused background color. `textColor` carries a focused text color. `outline` carries color, thickness, and inset fields. `none` suppresses visual drawing but does not suppress focus or accessibility metadata. Descriptor factories may accept `focusVisual` on focusable-capable widgets; it applies only when the node is actually focusable.
+Add authored visual descriptors to focusable widgets. Buttons gain an optional `background` color field for their normal surface. Widgets gain an optional `focusVisual` field. The initial focus visual variants are `backgroundColor`, `textColor`, `outline`, and `none`. `backgroundColor` carries a focused background color. `textColor` carries a focused text color. `outline` carries `color`, `thickness`, and `inset` fields. `color` is a color-token-capable untagged union (token name or literal RGBA); `thickness` and `inset` are spacing-token-capable untagged unions (token name or literal logical px), so an unknown spacing token resolves to zero and an unknown color token to opaque magenta per the theme degrade rules. `none` suppresses visual drawing but does not suppress focus or accessibility metadata. Descriptor factories may accept `focusVisual` on focusable-capable widgets; it applies only when the node is actually focusable.
 
 ### Task 5: Render Authored Focus Visuals
 
@@ -78,11 +79,11 @@ Replace the hardcoded top-layer focus-ring append with a focus-visual resolver. 
 
 ### Task 6: Broaden Theme Tokens
 
-Add default theme tokens for `text.default`, `text.highlight`, `button.background.default`, `button.background.highlight`, and `controlOutline.contrast`. `text.default` is very light gray. `text.highlight` is white. `button.background.default` is the normal button surface. `button.background.highlight` is the focused button surface. `controlOutline.contrast` is the high-contrast and fallback focus outline color. Update `panel.default` to very dark gray with opacity. Migrate required-token tests and focus fallback call sites from `focus.ring` to `controlOutline.contrast`. Default `Text` color and interactive button/slider label color resolve through `text.default`. TypeScript and Luau `Text` factories and interactive button/slider label construction must emit or resolve `text.default` rather than literal white.
+Add default theme tokens for `text.default`, `text.highlight`, `button.background.default`, `button.background.highlight`, and `controlOutline.contrast`. `text.default` is very light gray. `text.highlight` is white; it is an author-available convenience token — this plan defines it in the default theme but does not wire an engine consumer for it. `button.background.default` is the normal button surface. `button.background.highlight` is the focused button surface. `controlOutline.contrast` is the high-contrast and fallback focus outline color. Update `panel.default` to very dark gray with opacity. Migrate the required-token set from `focus.ring` to `controlOutline.contrast`: there is no token-validation function, so update the required-token assertion in `render/ui/theme.rs` (the `engine_default` token list test) and the sole runtime fallback site in `render/mod.rs` (`push_focus_ring`, which currently resolves `color("focus.ring")`). `focus.ring` is retired from the required set; update the semantic required set in `context/lib/ui.md` §2 on promotion. Default `Text` color and interactive button/slider label color resolve through `text.default`. TypeScript and Luau `Text` factories and interactive button/slider label construction must emit or resolve `text.default` rather than literal white.
 
 ### Task 7: SDK And Typedef Parity
 
-Expose button `background` and widget `focusVisual` in TypeScript and Luau widget factories. Add validation for each focus visual variant and token-capable field. Regenerate typedefs so `sdk/types/postretro.d.ts` and the Luau typedef output match the SDK and Rust descriptors.
+Expose button `background` and widget `focusVisual` in TypeScript and Luau widget factories. Add validation for each focus visual variant and token-capable field. Validation rejects only structural malformations (unknown variant kind, missing or wrong-typed sub-field); it does not reject unknown token names — those remain valid authored input and degrade visibly at tree build per the theme contract. Regenerate typedefs so `sdk/types/postretro.d.ts` and the Luau typedef output match the SDK and Rust descriptors.
 
 ### Task 8: Demo Theme And Menu Update
 
@@ -90,18 +91,18 @@ Consolidate the active `hudTheme` from `content/dev/scripts/hud.ts` into `conten
 
 ### Task 9: Accessibility Backend Seam
 
-Add an app-side accessibility adapter boundary that consumes the internal accessibility snapshot. Prefer AccessKit through the winit adapter unless version or platform constraints block it. The first implementation may be a no-op backend when no platform adapter is linked, but the data flow must be real: the active snapshot is produced each frame, focus changes are observable at the boundary, and live-region entries are delivered once per visibility activation.
+Add an app-side accessibility adapter boundary that consumes the internal accessibility snapshot. Prefer AccessKit through the winit adapter unless version or platform constraints block it. The first implementation may be a no-op backend when no platform adapter is linked, but the data flow must be real: the active snapshot is produced each frame, focus changes are observable at the boundary, and live-region entries are delivered once per visibility activation. The app-side adapter holds the prior-frame announce visibility to compute the visible edge, since the per-frame snapshot is stateless.
 
 ### Task 10: Tests And Regression Coverage
 
-Add tests for wire round-trip, SDK validation, accessibility snapshot name/state resolution, hidden node exclusion, disabled focus behavior preservation, focus visual fallback, and demo theme token use. Keep GPU work out of unit tests; assert draw-list/text-run data instead.
+Add tests for wire round-trip, SDK validation, accessibility snapshot name/state resolution, hidden node exclusion, disabled focus behavior preservation, render-data assertions for each focus visual variant (`backgroundColor`, `textColor`, `outline`), focus visual fallback (both omitted and present-but-inapplicable), and demo theme token use. Keep GPU work out of unit tests; assert draw-list/text-run data instead.
 
 ## Sequencing
 
 **Phase 1 (sequential):** Task 1 — isolates focus export before adding more behavior to the oversized UI tree file.
 **Phase 2 (concurrent):** Task 2, Task 3, Task 4 — snapshot shape, name resolution, and descriptor shape are independent after the split.
 **Phase 3 (sequential):** Task 5 — consumes the focus visual descriptor and focus export from Tasks 1 and 4.
-**Phase 4 (concurrent):** Task 6, Task 7 — theme token expansion and SDK parity can proceed once descriptor names are fixed.
+**Phase 4 (concurrent):** Task 6, Task 7 — theme token expansion and SDK parity can proceed once descriptor names are fixed. Both edit the TS/Luau widget factories: Task 6 owns default text/label color resolution, Task 7 owns the `focusVisual`/`background` fields — partition by field so the concurrent edits do not collide.
 **Phase 5 (concurrent):** Task 8, Task 9 — demo authoring and backend seam consume the settled snapshot/theme contracts.
 **Phase 6 (sequential):** Task 10 — closes coverage across the final contracts.
 
@@ -120,7 +121,7 @@ Proposed model:
 
 - Focus truth stays app-side. Renderer receives only the focused id and draws presentation.
 - Focus visual metadata is renderer-local resolver data. `FocusRectList` remains app-side focus readback, not visual metadata export.
-- Accessibility snapshot builds from the active laid-out tree and the same slot/cell values used for draw and focus export.
+- Accessibility snapshot builds from the active laid-out tree and the same slot/cell values used for draw and focus export. It is produced renderer-side and returned to the app as a per-frame readback alongside `FocusRectList`, not serialized to scripts.
 - Accessibility snapshot is internal engine data first. A platform adapter can project it later without changing script authoring.
 - Designer-authored visuals never affect focus behavior or accessibility state.
 - Normal focus styling is a design treatment. Increased-contrast focus styling may augment or override it with `controlOutline.contrast`.
@@ -181,7 +182,8 @@ Promotion notes:
 | Highlight button background token | `button.background.highlight` | `button.background.highlight` | `color.button.background.highlight` via `getDesignTokens` | `color.button.background.highlight` via `getDesignTokens` | n/a |
 | Panel token | `panel.default` | `panel.default` | `color.panel.default` via `getDesignTokens` | `color.panel.default` via `getDesignTokens` | n/a |
 | Contrast outline token | `controlOutline.contrast` | `controlOutline.contrast` | `color.controlOutline.contrast` via `getDesignTokens` | `color.controlOutline.contrast` via `getDesignTokens` | n/a |
-| Accessible name | `accessible_name` | `accessibleName` | `accessibleName` | `accessibleName` | n/a |
+| Accessible name (tree envelope) | `accessible_name` | `accessibleName` | `accessibleName` | `accessibleName` | n/a |
+| Label (widget) | `label` | `label` | `label` | `label` | n/a |
 | Labelled by | `labelled_by` | `labelledBy` | `labelledBy` | `labelledBy` | n/a |
 | Role | `role` | `role` | `role` | `role` | n/a |
 | Announce widget | `Announce` | `announce` | `announce` | `announce` | n/a |
@@ -190,4 +192,4 @@ Promotion notes:
 
 ## Open Questions
 
-- Whether AccessKit through `accesskit_winit` can be linked at the current workspace dependency versions without expanding platform support or binary size beyond the feature's budget. It is the preferred first backend unless implementation research finds a blocker.
+- Whether AccessKit through `accesskit_winit` can be linked at the current workspace dependency versions without expanding platform support or binary size beyond the feature's budget. It is the preferred first backend unless implementation research finds a blocker. Note `accesskit` core is already present transitively via egui's dev-tools feature; no postretro crate depends on `accesskit` or `accesskit_winit` directly today.

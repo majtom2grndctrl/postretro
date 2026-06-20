@@ -13,6 +13,8 @@ use proptest::prelude::*;
 use super::{SimCommand, TickEvents, simulate_tick};
 use crate::collision::CollisionWorld;
 use crate::movement::MovementInput;
+use crate::scripting::components::brain::{AiStateMap, AiTuning, BrainComponent, LogicalState};
+use crate::scripting::components::health::{HealthComponent, Hitbox};
 use crate::scripting::components::player_movement::PlayerMovementComponent;
 use crate::scripting::components::weapon::WeaponComponent;
 use crate::scripting::data_descriptors::{
@@ -22,7 +24,7 @@ use crate::scripting::data_descriptors::{
 use crate::scripting::reaction_dispatch::ProgressTracker;
 use crate::scripting::registry::{EntityId, EntityRegistry, Transform};
 use crate::scripting_systems::hit_zones::HitZoneStore;
-use crate::weapon::{FireButtonState, WeaponFireCommand};
+use crate::weapon::FireButtonState;
 
 const TICK_COUNT: usize = 600;
 const DT: f32 = 1.0 / 60.0;
@@ -92,31 +94,9 @@ impl RecordedCommand {
 
     fn to_post_movement_command(self) -> super::PostMovementCommand {
         super::PostMovementCommand {
-            weapon_fire: WeaponFireCommand {
-                button: self.to_sim_command().fire_button,
-                aim_origin: Vec3::new(0.0, 2.0, -20.0),
-                aim_direction: Vec3::new(self.facing_yaw.sin(), 0.0, -self.facing_yaw.cos())
-                    .normalize(),
-            },
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct StageEvents {
-    movement: Vec<&'static str>,
-    ai: Vec<&'static str>,
-    weapon: Vec<&'static str>,
-    death: Vec<String>,
-}
-
-impl From<TickEvents> for StageEvents {
-    fn from(events: TickEvents) -> Self {
-        Self {
-            movement: events.movement,
-            ai: events.ai,
-            weapon: events.weapon,
-            death: events.death,
+            aim_origin: Vec3::new(0.0, 2.0, -20.0),
+            aim_direction: Vec3::new(self.facing_yaw.sin(), 0.0, -self.facing_yaw.cos())
+                .normalize(),
         }
     }
 }
@@ -130,7 +110,9 @@ struct PawnOutcome {
 #[derive(Debug)]
 struct SimRun {
     pawns: Vec<(Role, PawnOutcome)>,
-    events: Vec<StageEvents>,
+    selected_player_health: f32,
+    enemy_state: LogicalState,
+    events: Vec<TickEvents>,
 }
 
 struct SimHarness {
@@ -141,20 +123,36 @@ struct SimHarness {
     progress: ProgressTracker,
     ai_warned: HashSet<String>,
     role_ids: Vec<(Role, EntityId)>,
+    selected_player: EntityId,
+    enemy: EntityId,
 }
 
 impl SimHarness {
     fn new(spawn_order: SpawnOrder) -> Self {
         let registry = Rc::new(RefCell::new(EntityRegistry::new()));
         let mut role_ids = Vec::new();
-        let active_wieldable = {
+        let (active_wieldable, enemy) = {
             let mut registry = registry.borrow_mut();
             for role in spawn_order.roles() {
                 let id = spawn_player(&mut registry, role.start_position());
+                if role == Role::Alpha {
+                    // Phase 0 still has one local sim command, not keyed
+                    // per-pawn commands. Mark Alpha as the local pawn so
+                    // full-seam AI/health paths remain order-observable while
+                    // comparing outcomes by stable test role.
+                    registry
+                        .mark_local_player_pawn(id)
+                        .expect("alpha role can be marked as local player");
+                }
                 role_ids.push((role, id));
             }
-            spawn_weapon(&mut registry)
+            let enemy = spawn_enemy(&mut registry, Vec3::new(-1.0, 1.0, 0.0));
+            (spawn_weapon(&mut registry), enemy)
         };
+        let selected_player = role_ids
+            .iter()
+            .find_map(|(role, id)| (*role == Role::Alpha).then_some(*id))
+            .expect("alpha role is always spawned");
 
         Self {
             registry,
@@ -164,10 +162,12 @@ impl SimHarness {
             progress: ProgressTracker::new(),
             ai_warned: HashSet::new(),
             role_ids,
+            selected_player,
+            enemy,
         }
     }
 
-    fn tick(&mut self, command: RecordedCommand) -> StageEvents {
+    fn tick(&mut self, command: RecordedCommand) -> TickEvents {
         let sim_command = command.to_sim_command();
         simulate_tick(
             self.registry.clone(),
@@ -183,7 +183,6 @@ impl SimHarness {
             |_| command.to_post_movement_command(),
             DT,
         )
-        .into()
     }
 
     fn role_outcomes(&self) -> Vec<(Role, PawnOutcome)> {
@@ -210,6 +209,22 @@ impl SimHarness {
         outcomes.sort_by_key(|(role, _)| *role);
         outcomes
     }
+
+    fn selected_player_health(&self) -> f32 {
+        self.registry
+            .borrow()
+            .get_component::<HealthComponent>(self.selected_player)
+            .expect("selected player keeps health")
+            .current
+    }
+
+    fn enemy_state(&self) -> LogicalState {
+        self.registry
+            .borrow()
+            .get_component::<BrainComponent>(self.enemy)
+            .expect("enemy keeps brain")
+            .state
+    }
 }
 
 fn spawn_player(registry: &mut EntityRegistry, position: Vec3) -> EntityId {
@@ -223,6 +238,93 @@ fn spawn_player(registry: &mut EntityRegistry, position: Vec3) -> EntityId {
             PlayerMovementComponent::from_descriptor(&player_descriptor()),
         )
         .expect("player movement component should attach");
+    registry
+        .set_component(
+            id,
+            HealthComponent {
+                max: 100.0,
+                current: 100.0,
+                hitbox: Some(Hitbox {
+                    half_extents: Vec3::splat(0.5),
+                    offset: Vec3::ZERO,
+                }),
+                death_handled: false,
+                zone_multipliers: Default::default(),
+            },
+        )
+        .expect("player health component should attach");
+    id
+}
+
+fn spawn_enemy(registry: &mut EntityRegistry, position: Vec3) -> EntityId {
+    let id = registry.spawn(Transform {
+        position,
+        ..Transform::default()
+    });
+    registry
+        .set_component(
+            id,
+            BrainComponent {
+                state: LogicalState::Idle,
+                attack_cooldown_remaining_ms: 0.0,
+                think_stride_counter: 0,
+                death_despawn_remaining_ms: None,
+                tuning: AiTuning {
+                    detection_range: 8.0,
+                    attack_range: 2.0,
+                    leash_range: 12.0,
+                    attack_damage: 7.0,
+                    attack_cooldown_ms: 1000.0,
+                    move_speed: 0.0,
+                    death_despawn_ms: 1000.0,
+                    states: AiStateMap {
+                        idle: "idle".to_string(),
+                        alert: "alert".to_string(),
+                        attack: "attack".to_string(),
+                        death: "death".to_string(),
+                    },
+                },
+            },
+        )
+        .expect("enemy brain component should attach");
+    registry
+        .set_component(
+            id,
+            HealthComponent {
+                max: 20.0,
+                current: 20.0,
+                hitbox: Some(Hitbox {
+                    half_extents: Vec3::splat(0.5),
+                    offset: Vec3::ZERO,
+                }),
+                death_handled: false,
+                zone_multipliers: Default::default(),
+            },
+        )
+        .expect("enemy health component should attach");
+    id
+}
+
+fn spawn_target(registry: &mut EntityRegistry, position: Vec3) -> EntityId {
+    let id = registry.spawn(Transform {
+        position,
+        ..Transform::default()
+    });
+    registry
+        .set_component(
+            id,
+            HealthComponent {
+                max: 20.0,
+                current: 20.0,
+                hitbox: Some(Hitbox {
+                    half_extents: Vec3::splat(0.5),
+                    offset: Vec3::ZERO,
+                }),
+                death_handled: false,
+                zone_multipliers: Default::default(),
+            },
+        )
+        .expect("target health component should attach");
     id
 }
 
@@ -332,6 +434,8 @@ fn run_stream(commands: &[RecordedCommand], spawn_order: SpawnOrder) -> SimRun {
         .collect();
     SimRun {
         pawns: harness.role_outcomes(),
+        selected_player_health: harness.selected_player_health(),
+        enemy_state: harness.enemy_state(),
         events,
     }
 }
@@ -340,6 +444,18 @@ fn assert_runs_match(actual: &SimRun, expected: &SimRun) {
     assert_eq!(
         actual.events, expected.events,
         "stage-grouped event names must match exactly"
+    );
+    assert_eq!(
+        actual.enemy_state, expected.enemy_state,
+        "AI state must resolve from the same selected local pawn label"
+    );
+    // Exact equality is safe here: health deltas are integer damage values (10.0)
+    // applied via integer-path arithmetic with no per-frame interpolation, so
+    // deterministic runs must produce bit-identical results.
+    assert_eq!(
+        actual.selected_player_health,
+        expected.selected_player_health,
+        "selected player health must match exactly"
     );
     assert_eq!(
         actual.pawns.len(),
@@ -403,6 +519,7 @@ fn command_strategy() -> impl Strategy<Value = RecordedCommand> {
         any::<bool>(),
         any::<bool>(),
         any::<bool>(),
+        any::<bool>(),
         yaw,
         any::<bool>(),
         any::<bool>(),
@@ -411,6 +528,7 @@ fn command_strategy() -> impl Strategy<Value = RecordedCommand> {
             |(
                 right,
                 forward,
+                jump_pressed,
                 dash_pressed,
                 running,
                 crouch_intent,
@@ -419,7 +537,7 @@ fn command_strategy() -> impl Strategy<Value = RecordedCommand> {
                 fire_held,
             )| RecordedCommand {
                 wish_dir: Vec2::new(right, forward),
-                jump_pressed: false,
+                jump_pressed,
                 dash_pressed,
                 running,
                 crouch_intent,
@@ -443,9 +561,463 @@ fn simulate_tick_determinism_harness_matches_run_to_run_and_spawn_order() {
     assert_runs_match(&reversed_spawn, &baseline);
 }
 
+#[test]
+fn run_movement_tick_applies_local_command_only_to_marked_pawn() {
+    let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+    let (beta, alpha) = {
+        let mut registry = registry.borrow_mut();
+        let beta = spawn_player(&mut registry, Role::Beta.start_position());
+        let alpha = spawn_player(&mut registry, Role::Alpha.start_position());
+        registry.mark_local_player_pawn(alpha).unwrap();
+        for id in [alpha, beta] {
+            let mut movement = registry
+                .get_component::<PlayerMovementComponent>(id)
+                .unwrap()
+                .clone();
+            movement.is_grounded = true;
+            registry.set_component(id, movement).unwrap();
+        }
+        (beta, alpha)
+    };
+    let beta_start = registry
+        .borrow()
+        .get_component::<Transform>(beta)
+        .unwrap()
+        .position;
+    let input = MovementInput {
+        wish_dir: Vec2::ZERO,
+        jump_pressed: true,
+        dash_pressed: false,
+        running: false,
+        crouch_intent: false,
+        facing_yaw: 0.0,
+    };
+
+    let events = super::run_movement_tick(&registry, &floor_world(), GRAVITY, &input, DT);
+
+    assert_eq!(
+        events,
+        vec!["jumped"],
+        "only the marked local pawn may emit movement outcomes"
+    );
+    let registry = registry.borrow();
+    assert!(
+        registry
+            .get_component::<PlayerMovementComponent>(alpha)
+            .unwrap()
+            .velocity
+            .y
+            > 0.0,
+        "marked local pawn should consume the jump command"
+    );
+    assert_eq!(
+        registry.get_component::<Transform>(beta).unwrap().position,
+        beta_start,
+        "unmarked additional pawn must not move from local input"
+    );
+    assert_eq!(
+        registry
+            .get_component::<PlayerMovementComponent>(beta)
+            .unwrap()
+            .velocity,
+        Vec3::ZERO,
+        "unmarked additional pawn velocity must remain untouched"
+    );
+}
+
+#[test]
+fn run_movement_tick_no_marker_fallback_drives_first_movement_pawn_only() {
+    let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+    let (first, second) = {
+        let mut registry = registry.borrow_mut();
+        let first = spawn_player(&mut registry, Role::Alpha.start_position());
+        let second = spawn_player(&mut registry, Role::Beta.start_position());
+        for id in [first, second] {
+            let mut movement = registry
+                .get_component::<PlayerMovementComponent>(id)
+                .unwrap()
+                .clone();
+            movement.is_grounded = true;
+            registry.set_component(id, movement).unwrap();
+        }
+        (first, second)
+    };
+    let second_start = registry
+        .borrow()
+        .get_component::<Transform>(second)
+        .unwrap()
+        .position;
+    let input = MovementInput {
+        wish_dir: Vec2::ZERO,
+        jump_pressed: true,
+        dash_pressed: false,
+        running: false,
+        crouch_intent: false,
+        facing_yaw: 0.0,
+    };
+
+    let events = super::run_movement_tick(&registry, &floor_world(), GRAVITY, &input, DT);
+
+    assert_eq!(
+        events,
+        vec!["jumped"],
+        "no-marker fallback applies the local command to one deterministic pawn"
+    );
+    let registry = registry.borrow();
+    assert!(
+        registry
+            .get_component::<PlayerMovementComponent>(first)
+            .unwrap()
+            .velocity
+            .y
+            > 0.0,
+        "first fallback pawn should consume the jump command"
+    );
+    assert_eq!(
+        registry
+            .get_component::<Transform>(second)
+            .unwrap()
+            .position,
+        second_start,
+        "second pawn must not move from the single local command"
+    );
+}
+
+#[test]
+fn run_movement_tick_invalid_marker_fallback_drives_first_movement_pawn_only() {
+    let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+    let (first, second) = {
+        let mut registry = registry.borrow_mut();
+        let invalid_marker = registry.spawn(Transform::default());
+        registry.mark_local_player_pawn(invalid_marker).unwrap();
+        let first = spawn_player(&mut registry, Role::Alpha.start_position());
+        let second = spawn_player(&mut registry, Role::Beta.start_position());
+        for id in [first, second] {
+            let mut movement = registry
+                .get_component::<PlayerMovementComponent>(id)
+                .unwrap()
+                .clone();
+            movement.is_grounded = true;
+            registry.set_component(id, movement).unwrap();
+        }
+        (first, second)
+    };
+    let second_start = registry
+        .borrow()
+        .get_component::<Transform>(second)
+        .unwrap()
+        .position;
+    let input = MovementInput {
+        wish_dir: Vec2::ZERO,
+        jump_pressed: true,
+        dash_pressed: false,
+        running: false,
+        crouch_intent: false,
+        facing_yaw: 0.0,
+    };
+
+    let events = super::run_movement_tick(&registry, &floor_world(), GRAVITY, &input, DT);
+
+    assert_eq!(
+        events,
+        vec!["jumped"],
+        "invalid marker fallback applies the local command to one deterministic pawn"
+    );
+    let registry = registry.borrow();
+    assert!(
+        registry
+            .get_component::<PlayerMovementComponent>(first)
+            .unwrap()
+            .velocity
+            .y
+            > 0.0,
+        "first fallback pawn should consume the jump command"
+    );
+    assert_eq!(
+        registry
+            .get_component::<Transform>(second)
+            .unwrap()
+            .position,
+        second_start,
+        "second pawn must not move from an invalid local marker fallback"
+    );
+}
+
+#[test]
+fn simulate_tick_uses_sim_command_fire_button_with_callback_aim() {
+    let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+    let (weapon, target) = {
+        let mut registry = registry.borrow_mut();
+        (
+            spawn_weapon(&mut registry),
+            spawn_target(&mut registry, Vec3::new(0.0, 2.0, -10.0)),
+        )
+    };
+    let world = CollisionWorld::new();
+    let hit_zones = HitZoneStore::new();
+    let mut progress = ProgressTracker::new();
+    let mut ai_warned = HashSet::new();
+    let command = SimCommand {
+        movement: MovementInput {
+            wish_dir: Vec2::ZERO,
+            jump_pressed: false,
+            dash_pressed: false,
+            running: false,
+            crouch_intent: false,
+            facing_yaw: 0.0,
+        },
+        fire_button: FireButtonState {
+            pressed: false,
+            active: false,
+        },
+    };
+
+    let events = simulate_tick(
+        registry.clone(),
+        &world,
+        &hit_zones,
+        None,
+        GRAVITY,
+        Some(weapon),
+        0.0,
+        &mut progress,
+        &mut ai_warned,
+        &command,
+        |_| super::PostMovementCommand {
+            aim_origin: Vec3::new(0.0, 2.0, -20.0),
+            aim_direction: Vec3::Z,
+        },
+        DT,
+    );
+
+    assert!(
+        events.weapon.is_empty(),
+        "valid callback aim must not fire when SimCommand.fire_button is inactive"
+    );
+    assert_eq!(
+        registry
+            .borrow()
+            .get_component::<HealthComponent>(target)
+            .expect("target keeps health")
+            .current,
+        20.0,
+        "inactive fire button must leave the valid target undamaged"
+    );
+}
+
+#[test]
+fn simulate_tick_normalizes_callback_aim_direction_before_weapon_fire() {
+    let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+    let (weapon, target) = {
+        let mut registry = registry.borrow_mut();
+        (
+            spawn_weapon(&mut registry),
+            spawn_target(&mut registry, Vec3::new(0.0, 2.0, -45.0)),
+        )
+    };
+    let world = CollisionWorld::new();
+    let hit_zones = HitZoneStore::new();
+    let mut progress = ProgressTracker::new();
+    let mut ai_warned = HashSet::new();
+    let command = SimCommand {
+        movement: MovementInput {
+            wish_dir: Vec2::ZERO,
+            jump_pressed: false,
+            dash_pressed: false,
+            running: false,
+            crouch_intent: false,
+            facing_yaw: 0.0,
+        },
+        fire_button: FireButtonState {
+            pressed: true,
+            active: true,
+        },
+    };
+
+    let events = simulate_tick(
+        registry.clone(),
+        &world,
+        &hit_zones,
+        None,
+        GRAVITY,
+        Some(weapon),
+        0.0,
+        &mut progress,
+        &mut ai_warned,
+        &command,
+        |_| super::PostMovementCommand {
+            aim_origin: Vec3::new(0.0, 2.0, 0.0),
+            aim_direction: Vec3::new(0.0, 0.0, -2.0),
+        },
+        DT,
+    );
+
+    assert_eq!(
+        events.weapon,
+        vec!["activate"],
+        "valid non-unit aim still fires, but range is measured after normalization"
+    );
+    assert_eq!(
+        registry
+            .borrow()
+            .get_component::<HealthComponent>(target)
+            .expect("target keeps health")
+            .current,
+        20.0,
+        "non-unit aim must not extend hitscan range in metres"
+    );
+}
+
+#[test]
+fn simulate_tick_noops_weapon_fire_for_invalid_callback_aim_direction() {
+    let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+    let (weapon, target) = {
+        let mut registry = registry.borrow_mut();
+        let weapon = spawn_weapon(&mut registry);
+        let mut component = registry
+            .get_component::<WeaponComponent>(weapon)
+            .expect("weapon keeps component")
+            .clone();
+        component.cooldown_remaining_ms = 100.0;
+        registry.set_component(weapon, component).unwrap();
+        let target = spawn_target(&mut registry, Vec3::new(0.0, 2.0, -10.0));
+        (weapon, target)
+    };
+    let world = CollisionWorld::new();
+    let hit_zones = HitZoneStore::new();
+    let mut progress = ProgressTracker::new();
+    let mut ai_warned = HashSet::new();
+    let command = SimCommand {
+        movement: MovementInput {
+            wish_dir: Vec2::ZERO,
+            jump_pressed: false,
+            dash_pressed: false,
+            running: false,
+            crouch_intent: false,
+            facing_yaw: 0.0,
+        },
+        fire_button: FireButtonState {
+            pressed: true,
+            active: true,
+        },
+    };
+
+    let events = simulate_tick(
+        registry.clone(),
+        &world,
+        &hit_zones,
+        None,
+        GRAVITY,
+        Some(weapon),
+        0.0,
+        &mut progress,
+        &mut ai_warned,
+        &command,
+        |_| super::PostMovementCommand {
+            aim_origin: Vec3::new(0.0, 2.0, 0.0),
+            aim_direction: Vec3::ZERO,
+        },
+        DT,
+    );
+
+    assert!(
+        events.weapon.is_empty(),
+        "zero aim should suppress shot events"
+    );
+    let registry = registry.borrow();
+    let weapon_component = registry
+        .get_component::<WeaponComponent>(weapon)
+        .expect("weapon keeps component");
+    assert!(
+        (weapon_component.cooldown_remaining_ms - (100.0 - DT * 1000.0)).abs() < 1.0e-4,
+        "invalid aim must still advance weapon cooldown"
+    );
+    assert!(
+        weapon_component.shoot_press_consumed,
+        "invalid aim must still advance semi-auto press state"
+    );
+    assert_eq!(
+        registry
+            .get_component::<HealthComponent>(target)
+            .expect("target keeps health")
+            .current,
+        20.0,
+        "invalid aim must not damage a target"
+    );
+}
+
+#[test]
+fn simulate_tick_noops_weapon_fire_for_non_finite_callback_aim_origin() {
+    let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+    let (weapon, target) = {
+        let mut registry = registry.borrow_mut();
+        (
+            spawn_weapon(&mut registry),
+            spawn_target(&mut registry, Vec3::new(0.0, 2.0, -10.0)),
+        )
+    };
+    let world = CollisionWorld::new();
+    let hit_zones = HitZoneStore::new();
+    let mut progress = ProgressTracker::new();
+    let mut ai_warned = HashSet::new();
+    let command = SimCommand {
+        movement: MovementInput {
+            wish_dir: Vec2::ZERO,
+            jump_pressed: false,
+            dash_pressed: false,
+            running: false,
+            crouch_intent: false,
+            facing_yaw: 0.0,
+        },
+        fire_button: FireButtonState {
+            pressed: true,
+            active: true,
+        },
+    };
+
+    let events = simulate_tick(
+        registry.clone(),
+        &world,
+        &hit_zones,
+        None,
+        GRAVITY,
+        Some(weapon),
+        0.0,
+        &mut progress,
+        &mut ai_warned,
+        &command,
+        |_| super::PostMovementCommand {
+            aim_origin: Vec3::new(f32::NAN, 2.0, 0.0),
+            aim_direction: Vec3::NEG_Z,
+        },
+        DT,
+    );
+
+    assert!(
+        events.weapon.is_empty(),
+        "non-finite aim origin should suppress shot events"
+    );
+    let registry = registry.borrow();
+    assert!(
+        registry
+            .get_component::<WeaponComponent>(weapon)
+            .expect("weapon keeps component")
+            .shoot_press_consumed,
+        "non-finite origin must still advance semi-auto press state"
+    );
+    assert_eq!(
+        registry
+            .get_component::<HealthComponent>(target)
+            .expect("target keeps health")
+            .current,
+        20.0,
+        "non-finite origin must not damage a target"
+    );
+}
+
 proptest! {
     #![proptest_config(ProptestConfig {
-        cases: 8,
+        cases: 32,
         ..ProptestConfig::default()
     })]
 

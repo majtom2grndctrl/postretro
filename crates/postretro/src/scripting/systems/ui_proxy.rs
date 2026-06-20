@@ -8,11 +8,11 @@ use crate::scripting::primitives::store::write_store_slot;
 use crate::scripting::registry::{EntityId, EntityRegistry};
 use crate::scripting::slot_table::SlotValue;
 
-/// Read the current and maximum HP of the player pawn — the first entity carrying
-/// `PlayerMovement` (entity_model.md: "a player by virtue of carrying
-/// `PlayerMovement`"). Returns `None` when there is no pawn or the pawn carries
-/// no `Health` component; the caller then skips the `player.*Health` writes and
-/// the slots keep their last values (accepted slot-staleness contract).
+/// Read the current and maximum HP of the player pawn resolved by the local
+/// player marker, with legacy fallback to the first entity carrying
+/// `PlayerMovement`. Returns `None` when there is no pawn or the pawn carries no
+/// `Health` component; the caller then skips the `player.*Health` writes and the
+/// slots keep their last values (accepted slot-staleness contract).
 ///
 /// Pure read against the registry: no slot table, no GPU, so it is unit-testable
 /// without the publisher's `ScriptCtx`.

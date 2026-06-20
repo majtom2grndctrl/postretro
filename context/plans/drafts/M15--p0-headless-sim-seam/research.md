@@ -33,15 +33,17 @@
 
 ## The leaks to sever (the only non-pure reaches)
 
-1. **`frame_timing.push_state`** (2024) — render interpolation. Seam returns the resolved positions; the host updates `frame_timing`.
-2. **Camera-follow** (2003) + **fly-cam** (1954) — render-side; the host does these after the seam from the seam's output.
-3. **`dispatch_system_commands`** (3391–3490) tail: `PlaySound → audio` (3395), `Rumble → gamepad` (3415), `PushTree/PopTree/ReturnToFrontend → modal_stack/frontend` (3453/3466/3469). The pure commands (`FlashScreen`, `Vignette`, `ScreenShake`, `SetState`, `CellWrite`, `LoadLevel`, `RestartLevel`) are game state. Decision: the seam **fires events + enqueues** `system_commands` (pure); the **host drains+dispatches** with the audio/gamepad/UI arms gated. A headless server applies only the game-state arms.
+1. **`frame_timing.push_state`** (2024) — render interpolation; shifts current→previous **every tick**. Stays **per-tick in the caller loop** (not the seam), or interpolation breaks on multi-tick catch-up frames.
+2. **Camera-follow** (2003) + **fly-cam** (1954) — render-side, **per tick** in the caller; camera-follow feeds the position `push_state` snapshots.
+3. **`dispatch_system_commands`** (3391–**3524**): audio/gamepad/UI reaches — `PlaySound → audio` (3395), `Rumble → gamepad` (3415), `PushTree/PopTree/ReturnToFrontend → modal_stack/frontend` (3453/3466/3469). The pure (game-state) arms are `FlashScreen`, `Vignette`, `ScreenShake`, `SetState`, `CellWrite`, `AppendText` (3497), `BackspaceText` (3508), `ClearText` (3516), `LoadLevel`, `RestartLevel`. **Phase-0 decision:** the seam neither fires events nor dispatches commands — it **returns the tick's event names**; the caller accumulates them across ticks and, post-loop, fires them and runs the existing `dispatch_system_commands` **unchanged** (the audio/UI gating partition for a headless server is a later phase).
 
 Everything else the tick touches is pure: `script_ctx.{registry, gravity, system_commands, data_registry}`, `collision_world`, `hit_zone_store`, `anim_time`, `active_wieldable`, `progress_tracker`, the reaction/sequence/system registries, `player_options.crouch_mode`, `crouch_toggle_active`. (`registry` is `Rc<RefCell<EntityRegistry>>` per `ctx.rs:24`.)
 
-## `movement/mod.rs` split seams (logic ≈ 1,875 lines; tests 1910–6055 ≈ 4,145)
+## `movement/mod.rs` split seams (logic ≈ 1,875 lines; tests 1910–6055)
 
-Maps onto the `movement.md` §4 substrate / intent / dispatch seam:
+`movement/` is **already a directory** (`mod.rs` 6,055 ln, `carry.rs`, `scope.rs`); the
+split adds `substrate.rs`/`intents.rs`/`dispatch.rs` from `mod.rs`'s content and leaves
+`carry.rs`/`scope.rs` alone. Maps onto the `movement.md` §4 substrate / intent / dispatch seam:
 
 | Lines | Section | Split target |
 |---|---|---|
@@ -59,10 +61,10 @@ Maps onto the `movement.md` §4 substrate / intent / dispatch seam:
 | 1625–1709 | standup/decay/boost-carry helpers | **dispatch** |
 | 1746–1795 | `dispatch_state_intent` (50 ln) | **dispatch** |
 | 1797–1875 | `pub(crate) fn tick` (79 ln, orchestrator) | **public API** |
-| 1910–6055 | `#[cfg(test)] mod tests` (~145 cases) | co-locate or sibling (exempt from size rule) |
+| 1910–6055 | `#[cfg(test)] mod tests` (~72 cases) | co-locate or sibling (exempt from size rule) |
 
 `movement::tick`'s public signature stays unchanged across the split (behavior-preserving).
 
 ## Existing harness pattern (reuse for the determinism test)
 
-No headless server entry, no `tests/` dir. `bin/` holds only `gen_script_types.rs`. The movement test block (1910+) already ticks game logic with **no App/window/GPU**: build a `PlayerMovementDescriptor` → `PlayerMovementComponent::from_descriptor` → `CollisionWorld` from a parry3d `TriMesh` → call `movement::tick(...)` directly with `DT = 1.0/60.0`. The determinism harness extends this to the full seam: registry + spawned player/weapon entities + `HitZoneStore` + a recorded input-command stream, ticked through `simulate_tick`. Tests run with no GPU (`testing_guide.md` §3); sandbox uses `CARGO_PROFILE_TEST_SPLIT_DEBUGINFO=off cargo test`.
+No headless server entry; `crates/postretro/tests/` holds only `fixtures/` (gltf assets), no integration `.rs` harness. `bin/` holds only `gen_script_types.rs`. The movement test block (1910+) already ticks game logic with **no App/window/GPU**: build a `PlayerMovementDescriptor` → `PlayerMovementComponent::from_descriptor` → `CollisionWorld` from a parry3d `TriMesh` → call `movement::tick(...)` directly with `DT = 1.0/60.0`. The determinism harness extends this to the full seam: registry + spawned player/weapon entities + `HitZoneStore` + a recorded input-command stream, ticked through `simulate_tick`. Tests run with no GPU (`testing_guide.md` §3); sandbox uses `CARGO_PROFILE_TEST_SPLIT_DEBUGINFO=off cargo test`.

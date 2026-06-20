@@ -13,9 +13,10 @@ use crate::scripting::data_descriptors::HealthDescriptor;
 use crate::scripting::registry::{ComponentKind, EntityId, EntityRegistry};
 use crate::weapon::DamagePayload;
 
-/// One world-aligned AABB hitbox, fixed per archetype. An entity is
-/// hitscan-targetable iff it carries one. `offset` shifts the box center from
-/// the entity's `Transform.position`; entity rotation is ignored.
+/// One world-aligned AABB hitbox, fixed per archetype. Health-bearing entities
+/// are hitscan-targetable when they carry this hitbox or use a zone-bearing
+/// skinned model. `offset` shifts the box center from the entity's
+/// `Transform.position`; entity rotation is ignored.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Hitbox {
     pub(crate) half_extents: Vec3,
@@ -74,15 +75,28 @@ impl HealthComponent {
     }
 }
 
-/// Locate the player pawn — the first entity carrying `PlayerMovement`
-/// (entity_model.md: "a player by virtue of carrying `PlayerMovement`") — and
-/// return it paired with its live `Health` component, when both are present.
-/// `None` when there is no pawn or the pawn carries no `Health` component.
+/// Locate the local player pawn and return it paired with its live `Health`
+/// component, when both are present. The Phase 0 sim command drives one local
+/// pawn, so the registry marker wins; older fixtures/maps with no marker fall
+/// back to the first entity carrying `PlayerMovement`.
+/// `None` when there is no resolved pawn or it carries no `Health` component.
 ///
 /// Shared by the `player.health` slot-range producers: the level-install path
 /// (attaching `[0, max]` at materialization) and the hot-reload range-follow
 /// hook both resolve the pawn the same way.
 pub(crate) fn pawn_with_health(registry: &EntityRegistry) -> Option<(EntityId, HealthComponent)> {
+    if let Some(pawn) = registry.local_player_pawn() {
+        if matches!(
+            registry.has_component_kind(pawn, ComponentKind::PlayerMovement),
+            Ok(true)
+        ) {
+            return registry
+                .get_component::<HealthComponent>(pawn)
+                .ok()
+                .map(|health| (pawn, health.clone()));
+        }
+    }
+
     let (pawn, _) = registry
         .iter_with_kind(ComponentKind::PlayerMovement)
         .next()?;
@@ -256,5 +270,76 @@ mod tests {
         apply_damage(&mut reg, id, &DamagePayload { amount: 25.0 });
 
         assert!(reg.get_component::<HealthComponent>(id).is_err());
+    }
+
+    #[test]
+    fn pawn_with_health_does_not_fallback_when_marked_movement_pawn_lacks_health() {
+        use crate::scripting::components::player_movement::PlayerMovementComponent;
+        use crate::scripting::data_descriptors::{
+            AirParams, CapsuleParams, FallParams, GroundParams, PlayerMovementDescriptor,
+            SpeedParams,
+        };
+
+        fn movement_descriptor() -> PlayerMovementDescriptor {
+            PlayerMovementDescriptor {
+                capsule: CapsuleParams {
+                    radius: 0.35,
+                    half_height: 0.9,
+                    eye_height: 1.1,
+                },
+                ground: GroundParams {
+                    speed: SpeedParams {
+                        walk: 7.0,
+                        run: 11.0,
+                        crouch: 3.0,
+                    },
+                    accel: 12.0,
+                    step_height: 0.35,
+                    max_slope: 45.0,
+                },
+                air: AirParams {
+                    forward_steer: 0.3,
+                    accel: 2.0,
+                    max_control_speed: 4.0,
+                    bunny_hop: true,
+                    jumps: 1,
+                    jump_velocity: 5.0,
+                    jump_ceiling: 2.0,
+                },
+                fall: FallParams {
+                    terminal_velocity: 50.0,
+                },
+                stuck_stop_enabled: true,
+                stuck_stop_threshold: 0.001,
+                dash: None,
+                forgiveness: None,
+                crouch: None,
+                view_feel: None,
+            }
+        }
+
+        let mut reg = EntityRegistry::new();
+        let local = reg.spawn(Transform::default());
+        reg.set_component(
+            local,
+            PlayerMovementComponent::from_descriptor(&movement_descriptor()),
+        )
+        .unwrap();
+        reg.mark_local_player_pawn(local).unwrap();
+
+        let remote = reg.spawn(Transform::default());
+        reg.set_component(
+            remote,
+            PlayerMovementComponent::from_descriptor(&movement_descriptor()),
+        )
+        .unwrap();
+        reg.set_component(remote, HealthComponent::from_descriptor(&descriptor(100.0)))
+            .unwrap();
+
+        assert_eq!(
+            pawn_with_health(&reg),
+            None,
+            "a marked local movement pawn without Health must not fall back to a remote pawn"
+        );
     }
 }

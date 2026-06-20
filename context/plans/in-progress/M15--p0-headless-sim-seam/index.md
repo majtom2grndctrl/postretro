@@ -8,13 +8,14 @@
 
 Extract PostRetro's per-tick **core game-state advance** out of the render-interleaved
 frame loop into a headless `simulate_tick` seam — one tick of `snapshot-transforms →
-movement → AI brain → agent steering → weapon-fire → death-sweep`, returning the tick's
-event names **grouped by stage** (so the caller reproduces today's four-bucket drain) — that
+movement → AI brain → host callback → agent steering → weapon-fire → death-sweep`,
+returning the tick's event names **grouped by stage** (so the caller reproduces today's
+four-bucket drain) — that
 runs with **no wgpu/winit/renderer/audio/input dependency**. The seam is the per-tick body a server
 and a client will both call (Phases 1+); the *caller* owns the multi-tick loop and the
 render/host work around it. Prove it with a **determinism harness** (the honesty gate)
-and, as a build-to-learn spike, **measure the cross-architecture `f32` divergence** that
-sets the reconciliation tolerance and get an empirical **feel** read on basic
+and, as a build-to-learn spike, **measure post-tick forced-rounding sensitivity** that
+informs Phase 2 reconciliation work and get an empirical **feel** read on basic
 predict/reconcile. This is the foundation every later netcode phase rides; a leaky seam
 here poisons reconciliation forever.
 
@@ -24,8 +25,8 @@ here poisons reconciliation forever.
 - **Behavior-preserving split** of `movement/mod.rs` (substrate / intent / dispatch /
   public API) and of `main.rs`'s game-tick assembly — *before* extending either.
 - A headless `simulate_tick` seam covering the **core per-tick advance**: order 0
-  transform-snapshot → order 1 movement → order 1a AI brain → order 1b agent steering →
-  order 2 weapon-fire → order 3 death-sweep, returning the tick's **event names grouped by
+  transform-snapshot → order 1 movement → order 1a AI brain → host callback →
+  order 1b agent steering → order 2 weapon-fire → order 3 death-sweep, returning the tick's **event names grouped by
   stage** (movement / AI / weapon / death) — the grouping the caller needs to reproduce the
   existing four-bucket post-loop drain. The seam neither fires events nor dispatches commands
   nor pushes interpolation state — those stay with the caller.
@@ -73,7 +74,7 @@ here poisons reconciliation forever.
   interpolation states), not once per frame, so a hitch cannot silently break interpolation;
   build + existing tests green. (Task 2)
 - [ ] **Honesty gate:** `simulate_tick` advances one tick (transform-snapshot → movement →
-  AI brain → agent steering → weapon → death) and returns the tick's event names **grouped
+  AI brain → host callback → agent steering → weapon → death) and returns the tick's event names **grouped
   by stage** (movement / AI / weapon / death, duplicates preserved), **constructed and called with no renderer, audio,
   window, input-system, wgpu, or winit in scope** — demonstrated by a harness that builds
   the game state + a resolved sim command and ticks it with no window/GPU context. Event
@@ -87,15 +88,15 @@ here poisons reconciliation forever.
   test roles/labels, and (c) across a `proptest` of randomized sim-command streams. Green and
   stays green. (Task 3)
 - [ ] **Measured finding:** same-input divergence over N ticks is **recorded** (a logged
-  value) under forced-divergence conditions (forced-rounding baseline; a second
-  architecture if a runner is available), with a recommended Phase 3 reconciliation
-  tolerance. Record it in
-  `context/plans/drafts/M15--p0-headless-sim-seam/findings.md`. Not a pass/fail gate.
+  value) under forced-divergence conditions (post-tick forced-rounding baseline; a second
+  architecture if a runner is available), with a recommended Phase 2 reconciliation
+  starting threshold. Record it in
+  `context/plans/in-progress/M15--p0-headless-sim-seam/findings.md`. Not a pass/fail gate.
   (Task 4)
 - [ ] **Measured finding:** a throwaway predict/reconcile feel-prototype runs and yields a
   **recorded read** on whether basic reconciliation feels acceptable; it is clearly marked
   throwaway and ships nothing into the engine path. Record it in
-  `context/plans/drafts/M15--p0-headless-sim-seam/findings.md`. (Task 5)
+  `context/plans/in-progress/M15--p0-headless-sim-seam/findings.md`. (Task 5)
 
 ## Tasks
 
@@ -126,28 +127,27 @@ handles, `&CollisionWorld`, `&HitZoneStore`, navigation graph access, gravity,
 latch) and a resolved per-tick **sim command** — never `&mut App`. The inline
 input-intent resolution (axes, jump/dash/crouch edges, `MovementInput` construction) moves
 to the host-side command builder. **The frame loop keeps ownership of the `for _ in
-0..ticks` loop** and, per tick, runs: build command → `sim::simulate_tick` →
-camera-follow → `frame_timing.push_state`, accumulating the returned event names;
+0..ticks` loop** and, per tick, runs: build command → `sim::simulate_tick` with a host
+callback after movement and AI for camera-follow/aim → `frame_timing.push_state`, accumulating the returned event names;
 **post-loop** it fires the accumulated events and runs `dispatch_system_commands` unchanged
 (the accumulate-then-drain timing and the post-crossing re-dispatch are preserved). On a
 multi-tick catch-up frame, current behavior feeds **one** resolved snapshot to every tick
-(`GameplayInputLatch::snapshot_for_ticks`, `input/mod.rs:120`); re-fire is prevented
-downstream by per-system consumed-latches — weapon `shoot_press_consumed`, movement
-`jump_spent`/forgiveness edges, dash cooldown — **not** by stripping edges per tick. The
-host command builder reproduces that single-snapshot-per-frame edge-collapse; do not invent
-a per-tick edge-stripping layer. The **no-pawn fly-cam branch stays host-side**, run per tick before the seam call
+(`GameplayInputLatch::snapshot_for_ticks`, `input/mod.rs:120`). The host command builder
+collapses frame-edge actions: one physical dash press produces a dash edge on the first
+simulated tick only, while level/held state remains reusable. The **no-pawn fly-cam branch stays host-side**, run per tick before the seam call
 when no pawn exists; its `up_axis`/`Action::MoveUp` input is host-only (fly-cam) and is
 **not** part of the resolved command. Crouch-toggle resolution stays in the input layer
 (`resolve_crouch_intent`, `main.rs:669`), producing the `crouch_intent` bit. The dev-tools
-`debug_chase_agent` re-aim inside `run_agent_tick` reads the camera — it stays host-side,
-run before the seam's agent stage.
+`debug_chase_agent` re-aim reads the camera — it stays host-side, after movement and AI,
+then before the seam's agent stage.
 
 The host builds a resolved sim command from input and view state. The command contains
-movement intent plus a weapon fire intent: the fire button state the weapon system needs
-and the resolved aim origin/direction. It contains no `ActionSnapshot`, winit, gilrs, or
-input-system types. Split the weapon-fire entry as needed so the sim consumes resolved
-fire/aim data while the host remains the only code that reads input snapshots and camera
-objects. The weapon stage must also pull in the post-fire work currently in
+movement intent plus the fire button state the weapon system needs. The host callback
+builds a post-movement command with the resolved aim origin/direction after camera-follow.
+Neither command contains `ActionSnapshot`, winit, gilrs, or input-system types. Split the
+weapon-fire entry as needed so the sim consumes resolved fire/aim data while the host
+remains the only code that reads input snapshots and camera objects. The weapon stage must
+also pull in the post-fire work currently in
 `run_weapon_fire_tick`'s body (`main.rs` ~3772–3808) — impact-effect spawn, zone-multiplier
 lookup, and `apply_damage` — so the same-tick death-sweep observes this tick's damage
 (`spawn_impact_effect_at`, `apply_damage`, `sweep_deaths` all take only
@@ -165,8 +165,8 @@ catch-up ticks, then drain movement/AI/weapon via `fire_named_event` and death v
 `fire_named_event_with_sequences` — never collapse to one cross-tick stream, which reorders
 reactions on multi-tick frames. Agent steering emits no event names today; if that changes,
 its names join after AI and before weapon. It
-runs `snapshot_transforms` → movement → AI brain → agent steering → weapon-fire →
-death-sweep and touches **no** renderer/audio/window/input-system, and **no**
+runs `snapshot_transforms` → movement → AI brain → host callback → agent steering →
+weapon-fire → death-sweep and touches **no** renderer/audio/window/input-system, and **no**
 render/window/input-system types appear in its signature. It does not fire events,
 dispatch commands, push interpolation, or follow the camera — those are the caller's
 (Task 2). **Write the determinism test first** (extending the movement-test harness pattern
@@ -184,18 +184,19 @@ member list; their exact form is the implementer's call (the constraint: no
 render/window/input-system types in the signature; the command is the shape Phases 2–3 will
 network).
 
-### Task 4 (spike): cross-arch divergence measurement
+### Task 4 (spike): forced-divergence measurement
 Run the seam over a recorded sim-command stream twice under conditions that force `f32`
-divergence — forced intermediate rounding (always available, single-machine) and, if a
+divergence — post-tick state rounding (always available, single-machine) and, if a
 runner exists, a second CI architecture (e.g. ARM) — and **record** the per-axis / total
 position divergence over N ticks. Report it as a measured finding with a recommended Phase
-3 reconciliation tolerance. Not a pass/fail gate; forced-rounding is the baseline method, a
-real second arch strengthens it. Forced intermediate rounding must live behind a
+2 reconciliation starting threshold. Not a pass/fail gate; forced-rounding is the baseline method, a
+real second arch strengthens it. The shipped spike rounds pawn transform position and
+movement velocity after each tick. It does not round every intermediate/sub-step value, so
+the finding is a stress signal, not a precise cross-ISA tolerance bound. Forced rounding must live behind a
 test-only/spike-only wrapper or hook gated under tests/dev-tools. It must not compile into
 or be called by the normal engine path. Write
-`context/plans/drafts/M15--p0-headless-sim-seam/findings.md` with: divergence table,
-recommended Phase 3 tolerance, predict/reconcile feel read, dash-correction observation,
-and recommendation.
+`context/plans/in-progress/M15--p0-headless-sim-seam/findings.md` with: divergence table,
+recommended Phase 2 starting threshold, and recommendation.
 
 ### Task 5 (spike): throwaway predict/reconcile feel-prototype
 Stand up a minimal in-process two-sim loop (a "client" that predicts locally from the sim-command
@@ -205,7 +206,8 @@ bundle at the acked tick and re-advance; the seam is forward-only, so the protot
 clone/restore), and record an empirical read
 on whether basic reconciliation feels acceptable (and how the dash case behaves).
 Include a manual dev harness or replay mode with injected RTT/jitter. Record the observed
-predict/reconcile feel and the dash-correction observation in `findings.md`.
+predict/reconcile feel and the dash-correction observation in
+`context/plans/in-progress/M15--p0-headless-sim-seam/findings.md`.
 **Spike-quality, dev-tools-gated** — not wired into the engine path; its value is the
 recorded read. Don't delete or orphan it behind `#[ignore]`: the in-process two-sim
 predict/reconcile loop is the seed of Phase 2's reconciliation dev harness, so park it
@@ -225,16 +227,18 @@ headless seam and its determinism gate.
 the existing `mod.rs`/`carry.rs`/`scope.rs`. The tick assembly lands in a new `sim` module
 (`crates/postretro/src/sim/`, a directory — see Resolved decisions); `simulate_tick` is its entry. The frame loop in
 `main.rs` keeps the `for _ in 0..ticks` loop, now: `[no pawn → host fly-cam]` build command
-→ `simulate_tick` → camera-follow → `push_state` (per tick); then post-loop fire events +
+→ `simulate_tick` with host camera-follow/aim callback after movement and AI → `push_state` (per tick); then post-loop fire events +
 `dispatch_system_commands` (unchanged).
 
 **The seam contract.** Input: a game-state bundle (`Rc<RefCell<EntityRegistry>>` +
 `ScriptCtx` handles, `&CollisionWorld`, `&HitZoneStore`, navigation graph access, gravity,
 `active_wieldable`, `anim_time`, `&mut ProgressTracker`, AI warning latch) + a resolved
 per-tick command (the existing `MovementInput` — `wish_dir`, jump, dash edge, running,
-`crouch_intent`, `facing_yaw` — plus a sim/game-owned weapon command carrying fire state
-and resolved aim ray) + `dt`. The host command builder may read `ActionSnapshot` and
-`Camera`, but neither crosses into `simulate_tick`. Output: the tick's event names grouped
+`crouch_intent`, `facing_yaw` — plus weapon fire-button state) + `dt`; the host
+callback runs after movement and AI, follows the camera, and supplies a post-movement
+command with the resolved aim ray. The seam then runs agent steering, weapon fire, and
+death sweep. The host may read `ActionSnapshot` and `Camera`, but neither crosses into
+`simulate_tick`. Output: the tick's event names grouped
 by stage (movement / AI / weapon as `Vec<&'static str>`, death as `Vec<String>`), so the
 caller reproduces the existing four-bucket post-loop drain rather than a collapsed cross-tick
 stream. The command is exactly what Phases 2–3 will network; building it as a
@@ -258,16 +262,19 @@ run-to-run, **and** under a permuted spawn order using stable test roles/labels 
 allocated `EntityId` (catches iteration-order / `HashMap`-order nondeterminism, the real
 netcode risk a single-machine re-run misses), **and** via a `proptest` over sim-command streams.
 
-**Cross-arch spike.** Forced intermediate rounding (quantize intermediate `f32`s to a
-coarser grid between sub-steps to mimic cross-ISA rounding) is the portable method; record
-the divergence with vs. without it. If an ARM CI runner exists, run the identical recorded
-stream on both and diff the final state. The rounding path is test-only/spike-only under
-tests/dev-tools and never part of the normal engine path.
+**Forced-divergence spike.** Post-tick forced rounding is the portable shipped method: after each
+tick, round pawn transform position and movement velocity to a coarser grid, then record
+the divergence against the unrounded baseline. If an ARM CI runner exists, run the
+identical recorded stream on both and diff the final state. This does not prove an
+intermediate/sub-step cross-ISA bound; it records a stress signal for Phase 2
+predict/reconcile. The rounding path is test-only/spike-only under tests/dev-tools and
+never part of the normal engine path.
 
 **Feel spike.** Two `simulate_tick` instances over one sim-command stream, client predicting +
 reconciling against the server's delayed authoritative state, with injected RTT/jitter.
 Drive it through a manual dev harness or replay mode. Output: a recorded judgment + the
-dash-correction observation in `findings.md`, feeding Phase 3.
+dash-correction observation in
+`context/plans/in-progress/M15--p0-headless-sim-seam/findings.md`, feeding Phase 2.
 
 ## Resolved decisions
 
@@ -275,10 +282,10 @@ dash-correction observation in `findings.md`, feeding Phase 3.
   grows every netcode phase (Phase 1 adds the host/server split that calls it). Land it in the
   target layout now (`sim/mod.rs` holding the seam + the bundle/command/event-group types), the
   M10/M13 no-dump-and-split precedent. The name is free (no existing `sim` module).
-- **Cross-arch method → forced-rounding only.** The repo has no CI matrix (no
-  `.github/workflows`), so no second-architecture runner exists. Forced intermediate rounding
-  (single-machine, test-only) is the method; a real second arch is a future bonus if a runner is
-  ever added.
+- **Forced-divergence method → post-tick forced-rounding only.** The repo has no CI matrix (no
+  `.github/workflows`), so no second-architecture runner exists. The shipped spike rounds pawn
+  transform position and movement velocity after each tick on one machine. A real second arch is
+  a future bonus if a runner is ever added. Intermediate/sub-step rounding remains unmeasured.
 - **Feel-prototype lifetime → dev-tools-gated, handed to Phase 2.** Phase 2 (movement
   prediction + reconciliation) needs exactly this in-process two-sim predict/reconcile loop, so
   it is parked dev-tools-gated as Phase 2's reconciliation-harness seed — not deleted, not

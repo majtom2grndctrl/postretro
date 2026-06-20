@@ -31,6 +31,7 @@ mod prl;
 mod render;
 mod scripting;
 mod shadow_cull;
+mod sim;
 mod startup;
 mod ui_texture;
 mod view_feel;
@@ -74,7 +75,6 @@ use crate::render::Renderer;
 use crate::scripting::builtins::{
     ClassnameDispatch, register_builtins as register_builtin_classnames,
 };
-use crate::scripting::components::health::apply_damage;
 use crate::scripting::ctx::ScriptCtx;
 use crate::scripting::data_descriptors::ModThemeTokens;
 use crate::scripting::primitives::light::register_sequenced_light_primitives;
@@ -1222,6 +1222,109 @@ fn gameplay_capture_gate_for_frame(
         || modal_stack.top_capture_mode() == input::UiCaptureMode::Capture
 }
 
+fn build_sim_command(
+    snapshot: &input::ActionSnapshot,
+    camera: &Camera,
+    crouch_intent: bool,
+    dash_pressed: bool,
+    shoot_pressed: bool,
+) -> sim::SimCommand {
+    let jump_pressed = snapshot.button(Action::Jump).is_active();
+    let sprint = snapshot.button(Action::Sprint).is_active();
+    let shoot = snapshot.button(Action::Shoot);
+
+    sim::SimCommand {
+        movement: movement::MovementInput {
+            wish_dir: glam::Vec2::new(
+                snapshot.axis_value(Action::MoveRight),
+                snapshot.axis_value(Action::MoveForward),
+            ),
+            jump_pressed,
+            dash_pressed,
+            running: sprint,
+            crouch_intent,
+            facing_yaw: camera.yaw,
+        },
+        fire_button: weapon::FireButtonState {
+            pressed: shoot_pressed,
+            active: shoot.is_active(),
+        },
+    }
+}
+
+fn build_post_movement_command(camera: &Camera) -> sim::PostMovementCommand {
+    let (aim_origin, aim_direction) = camera.aim_ray();
+    sim::PostMovementCommand {
+        aim_origin,
+        aim_direction,
+    }
+}
+
+fn has_player_pawn(registry: &scripting::registry::EntityRegistry) -> bool {
+    use crate::scripting::registry::{ComponentKind, ComponentValue};
+
+    registry
+        .iter_with_kind(ComponentKind::PlayerMovement)
+        .any(|(_, value)| matches!(value, ComponentValue::PlayerMovement(_)))
+}
+
+fn followed_player_pawn(
+    registry: &scripting::registry::EntityRegistry,
+) -> Option<scripting::registry::EntityId> {
+    use crate::scripting::registry::{ComponentKind, ComponentValue};
+
+    if let Some(id) = registry.local_player_pawn() {
+        if matches!(
+            registry.has_component_kind(id, ComponentKind::PlayerMovement),
+            Ok(true)
+        ) {
+            return Some(id);
+        }
+    }
+
+    registry
+        .iter_with_kind(ComponentKind::PlayerMovement)
+        .find_map(|(id, value)| matches!(value, ComponentValue::PlayerMovement(_)).then_some(id))
+}
+
+fn follow_camera_to_local_pawn(
+    camera: &mut Camera,
+    registry: &scripting::registry::EntityRegistry,
+) {
+    use crate::scripting::registry::Transform;
+
+    if let Some(id) = followed_player_pawn(registry) {
+        if let (Ok(component), Ok(transform)) = (
+            registry
+                .get_component::<scripting::components::player_movement::PlayerMovementComponent>(
+                    id,
+                ),
+            registry.get_component::<Transform>(id),
+        ) {
+            camera.position =
+                transform.position + Vec3::new(0.0, component.capsule.eye_height, 0.0);
+        }
+    }
+}
+
+#[cfg(feature = "dev-tools")]
+fn update_debug_chase_agent_destination(
+    registry: &mut scripting::registry::EntityRegistry,
+    debug_chase_agent: Option<scripting::registry::EntityId>,
+    fallback_target: Vec3,
+) {
+    use crate::scripting::registry::Transform;
+
+    let Some(agent) = debug_chase_agent else {
+        return;
+    };
+    let target = followed_player_pawn(registry)
+        .and_then(|id| registry.get_component::<Transform>(id).ok())
+        .map(|t| t.position)
+        .unwrap_or(fallback_target);
+    agent_steering::set_destination(registry, agent, target);
+}
+
 // --- ApplicationHandler ---
 
 impl ApplicationHandler for App {
@@ -1909,10 +2012,9 @@ impl ApplicationHandler for App {
                     .frame
                     .set(self.script_ctx.frame.get().wrapping_add(1));
 
-                // Accumulate movement and weapon events across all ticks; drain
-                // after the tick loop completes so reactions see fully-settled
-                // post-tick world state and event order is never interleaved
-                // with ongoing physics simulation. See:
+                // Accumulate post-tick events across all ticks; drain after the
+                // tick loop completes so reactions see fully-settled world state
+                // and event order is never interleaved with ongoing physics. See:
                 // context/lib/entity_model.md §5
                 let mut pending_movement_events: Vec<&'static str> = Vec::new();
                 let mut pending_ai_events: Vec<&'static str> = Vec::new();
@@ -1924,16 +2026,13 @@ impl ApplicationHandler for App {
                 let mut pending_death_events: Vec<String> = Vec::new();
 
                 if let Some(snapshot) = gameplay_snapshot.as_ref() {
-                    for _ in 0..ticks {
-                        // Order 0: transform snapshot. Copy current→previous for
-                        // every already-live entity before any movement/behavior
-                        // system mutates transforms this tick, so the renderer can
-                        // interpolate each entity between its start-of-tick and
-                        // post-tick pose. Entities spawned later this tick seed
-                        // previous == current at construction and are skipped here
-                        // (no pop on spawn). See: context/lib/entity_model.md §5.
-                        self.script_ctx.registry.borrow_mut().snapshot_transforms();
+                    let crouch_intent = resolve_crouch_intent(
+                        self.player_options.crouch_mode,
+                        snapshot.button(Action::Crouch),
+                        &mut self.crouch_toggle_active,
+                    );
 
+                    for tick_index in 0..ticks {
                         let forward_axis = snapshot.axis_value(Action::MoveForward);
                         let right_axis = snapshot.axis_value(Action::MoveRight);
                         let up_axis = snapshot.axis_value(Action::MoveUp);
@@ -1953,12 +2052,8 @@ impl ApplicationHandler for App {
                         //     engine is navigable without a player spawn (dev maps,
                         //     levels without a player descriptor).
                         let has_player_pawn = {
-                            use crate::scripting::registry::ComponentKind;
                             let registry = self.script_ctx.registry.borrow();
-                            registry
-                                .iter_with_kind(ComponentKind::PlayerMovement)
-                                .next()
-                                .is_some()
+                            has_player_pawn(&registry)
                         };
 
                         if !has_player_pawn {
@@ -1976,97 +2071,63 @@ impl ApplicationHandler for App {
                             self.camera.position += move_dir * speed * tick_dt;
                         }
 
-                        // Order 1: movement-component tick (all entities carrying
-                        // PlayerMovementComponent, per entity_model.md §5).
-                        let jump_pressed = snapshot.button(Action::Jump).is_active();
-                        // Dash is a true rising edge (only `Pressed`, not
-                        // `Held`): a held dash would re-fire every cooldown-ready
-                        // tick. This intentionally differs from `jump_pressed`'s
-                        // level signal. See `MovementInput::dash_pressed`.
-                        let dash_pressed =
-                            matches!(snapshot.button(Action::Dash), ButtonState::Pressed);
-                        // Crouch toggle-vs-hold is resolved HERE, in the input
-                        // layer, from `PlayerOptions.crouch_mode`. The movement
-                        // intent receives only the single resolved bit and never
-                        // sees the raw button or the mode. The toggle latch lives
-                        // on `App` (`crouch_toggle_active`), never on the movement
-                        // component. See `MovementInput::crouch_intent`.
-                        let crouch_intent = resolve_crouch_intent(
-                            self.player_options.crouch_mode,
-                            snapshot.button(Action::Crouch),
-                            &mut self.crouch_toggle_active,
-                        );
-                        let movement_events = self.run_movement_tick(
-                            forward_axis,
-                            right_axis,
-                            jump_pressed,
-                            dash_pressed,
+                        let dash_pressed = tick_index == 0
+                            && matches!(snapshot.button(Action::Dash), ButtonState::Pressed);
+                        let shoot_pressed = tick_index == 0
+                            && matches!(snapshot.button(Action::Shoot), ButtonState::Pressed);
+                        let command = build_sim_command(
+                            snapshot,
+                            &self.camera,
                             crouch_intent,
-                            sprint,
+                            dash_pressed,
+                            shoot_pressed,
+                        );
+
+                        let tick_events = sim::simulate_tick(
+                            self.script_ctx.registry.clone(),
+                            &self.collision_world,
+                            &self.hit_zone_store,
+                            self.nav_graph.as_ref(),
+                            self.script_ctx.gravity.get(),
+                            self.active_wieldable,
+                            self.anim_time,
+                            &mut self.progress_tracker,
+                            &mut self.ai_warned,
+                            &command,
+                            |registry| {
+                                // Camera follows the selected local pawn before
+                                // weapon fire resolves its aim ray.
+                                if has_player_pawn {
+                                    let registry_ref = registry.borrow();
+                                    follow_camera_to_local_pawn(&mut self.camera, &registry_ref);
+                                }
+
+                                #[cfg(feature = "dev-tools")]
+                                {
+                                    let mut registry_ref = registry.borrow_mut();
+                                    update_debug_chase_agent_destination(
+                                        &mut registry_ref,
+                                        self.debug_chase_agent,
+                                        self.camera.position,
+                                    );
+                                }
+
+                                build_post_movement_command(&self.camera)
+                            },
                             tick_dt,
                         );
-                        pending_movement_events.extend(movement_events);
-
-                        // Camera follows the first pawn's position (eye-height
-                        // offset above the capsule center). Yaw/pitch are owned by
-                        // the mouse-driven look path and are not touched here.
-                        if has_player_pawn {
-                            use crate::scripting::registry::{
-                                ComponentKind, ComponentValue, Transform,
-                            };
-                            let registry = self.script_ctx.registry.borrow();
-                            for (id, value) in
-                                registry.iter_with_kind(ComponentKind::PlayerMovement)
-                            {
-                                let ComponentValue::PlayerMovement(component) = value else {
-                                    continue;
-                                };
-                                if let Ok(transform) = registry.get_component::<Transform>(id) {
-                                    self.camera.position = transform.position
-                                        + Vec3::new(0.0, component.capsule.eye_height, 0.0);
-                                    break;
-                                }
-                            }
-                        }
-
-                        // Order 1a-ai: enemy-AI FSM tick. Runs BEFORE the agent
-                        // steering tick so this tick's destination/clear orders
-                        // (set per chasing enemy) are honored by the same-frame
-                        // steering pass. Evaluates the closed transition set,
-                        // applies damage on the attack cooldown (raising
-                        // `enemyAttack`), and switches the mapped animation.
-                        let ai_events = self.run_ai_tick(tick_dt);
-                        pending_ai_events.extend(ai_events);
-
-                        // Order 1b: navigation-agent steering. Drives every
-                        // entity carrying an `AgentComponent` toward its
-                        // destination — replan under budget, follow waypoints,
-                        // separate from neighbors, move via the collide-and-slide
-                        // harness. Reads the nav graph and collision world
-                        // read-only alongside `registry.borrow_mut()`.
-                        self.run_agent_tick(tick_dt);
-
-                        // Order 2: weapon fire tick.
-                        let weapon_events = self.run_weapon_fire_tick(snapshot, tick_dt);
-                        pending_weapon_events.extend(weapon_events);
-
-                        // Order 3: death sweep — resolve every entity at zero HP
-                        // after this tick's damage has settled. Reports kills and
-                        // player death back as owned data; we feed kill tags
-                        // through the progress tracker (which returns any events
-                        // that crossed their threshold) and accumulate those plus
-                        // `playerDied` for the sequence-aware drain below.
-                        let death_events = self.run_death_sweep();
-                        pending_death_events.extend(death_events);
+                        pending_movement_events.extend(tick_events.movement);
+                        pending_ai_events.extend(tick_events.ai);
+                        pending_weapon_events.extend(tick_events.weapon);
+                        pending_death_events.extend(tick_events.death);
 
                         self.frame_timing
                             .push_state(InterpolableState::new(self.camera.position));
                     }
                 }
 
-                // Drain collected movement and weapon events after all ticks
-                // complete so reactions observe the final post-tick state of
-                // every entity.
+                // Drain collected post-tick events after all ticks complete so
+                // reactions observe the final state of every entity.
                 for event_name in &pending_movement_events {
                     let _ = fire_named_event(event_name, &self.script_ctx.data_registry.borrow());
                 }
@@ -2092,7 +2153,7 @@ impl ApplicationHandler for App {
                 }
 
                 // System-reaction command drain — runs AFTER every post-tick
-                // event drain so commands enqueued by movement/weapon/death
+                // event drain so commands enqueued by movement/AI/weapon/death
                 // reactions (and, later, crossing watchers) are taken in one
                 // batch. The typed queue keeps audio/input/UI services out of
                 // the scripting surface; the dispatcher routes each command to
@@ -2228,30 +2289,25 @@ impl ApplicationHandler for App {
                 // is the yaw-derived, Y-free, unit-length right vector the
                 // `view_feel_inputs`/`map_output_to_camera` helpers expect.
                 let camera_right = self.camera.right();
-                // Match the camera-follow loop above, which drives the camera
-                // from the first `PlayerMovement` pawn that ALSO has a
-                // `Transform`: select that same pawn here (same
-                // `get_component::<Transform>(id).is_ok()` predicate) and run
-                // view feel only when IT carries `view_feel`. Selecting on the
-                // identical predicate keeps the two readers from diverging — a
-                // `PlayerMovement` without a `Transform` ordered first would
-                // otherwise drive view feel while the camera follows a different
-                // pawn. A later pawn's `view_feel` must not leak onto a camera
-                // the driving pawn owns either.
+                // Match the camera-follow resolver above: marked local pawn
+                // first, then the legacy first PlayerMovement+Transform
+                // fallback. View feel only runs when that driving pawn carries
+                // `view_feel`; another pawn's preset must not leak onto the
+                // selected camera.
                 let view_feel_inputs = {
-                    use crate::scripting::registry::{ComponentKind, ComponentValue, Transform};
                     let registry = self.script_ctx.registry.borrow();
-                    registry
-                        .iter_with_kind(ComponentKind::PlayerMovement)
-                        .find(|(id, _value)| registry.get_component::<Transform>(*id).is_ok())
-                        .and_then(|(_id, value)| match value {
-                            ComponentValue::PlayerMovement(component) => {
+                    followed_player_pawn(&registry).and_then(|id| {
+                        registry
+                            .get_component::<
+                                scripting::components::player_movement::PlayerMovementComponent,
+                            >(id)
+                            .ok()
+                            .and_then(|component| {
                                 component.view_feel.as_ref().map(|params| {
                                     (params.clone(), component.velocity, component.is_grounded)
                                 })
-                            }
-                            _ => None,
-                        })
+                            })
+                    })
                 };
                 let (vf_roll, vf_yaw_offset, vf_pitch_offset, vf_eye_offset) =
                     if let Some((params, velocity, is_grounded)) = view_feel_inputs {
@@ -3622,226 +3678,6 @@ impl App {
         prev + frame_dt * scale
     }
 
-    /// Drive `movement::tick` for every entity carrying a
-    /// `PlayerMovementComponent`. Returns the list of event names to fire.
-    /// Each entity contributes at most one `landed` and one `jumped` entry per
-    /// tick; multiple entities each contribute independently (no cross-entity
-    /// deduplication). The caller accumulates these across ticks and drains
-    /// them after the tick loop so reactions see the fully-settled post-tick
-    /// world state.
-    // Threads the per-tick movement inputs (axes + edge/level bits) into the
-    // movement substrate; each is an independent signal, not a bundle worth a struct.
-    #[allow(clippy::too_many_arguments)]
-    fn run_movement_tick(
-        &mut self,
-        forward_axis: f32,
-        right_axis: f32,
-        jump_pressed: bool,
-        dash_pressed: bool,
-        crouch_intent: bool,
-        running: bool,
-        tick_dt: f32,
-    ) -> Vec<&'static str> {
-        use crate::movement::{MovementInput, tick as movement_tick};
-        use crate::scripting::components::player_movement::PlayerMovementComponent;
-        use crate::scripting::registry::{ComponentKind, ComponentValue, EntityId, Transform};
-
-        let mut events_out: Vec<&'static str> = Vec::new();
-        let mut snapshots: Vec<(EntityId, PlayerMovementComponent, Vec3)> = Vec::new();
-        {
-            let registry = self.script_ctx.registry.borrow();
-            for (id, value) in registry.iter_with_kind(ComponentKind::PlayerMovement) {
-                let ComponentValue::PlayerMovement(component) = value else {
-                    continue;
-                };
-                let position = match registry.get_component::<Transform>(id) {
-                    Ok(t) => t.position,
-                    Err(_) => continue,
-                };
-                snapshots.push((id, (**component).clone(), position));
-            }
-        }
-
-        if snapshots.is_empty() {
-            return events_out;
-        }
-
-        let gravity = self.script_ctx.gravity.get();
-        let input = MovementInput {
-            wish_dir: glam::Vec2::new(right_axis, forward_axis),
-            jump_pressed,
-            dash_pressed,
-            running,
-            crouch_intent,
-            facing_yaw: self.camera.yaw,
-        };
-
-        let mut registry = self.script_ctx.registry.borrow_mut();
-        for (id, mut component, position) in snapshots {
-            let (new_pos, events) = movement_tick(
-                &mut component,
-                &input,
-                &self.collision_world,
-                gravity,
-                tick_dt,
-                position,
-            );
-            if let Ok(transform) = registry.get_component::<Transform>(id) {
-                let mut t = *transform;
-                t.position = new_pos;
-                let _ = registry.set_component(id, t);
-            }
-            let _ = registry.set_component(id, component);
-            if events.landed {
-                events_out.push("landed");
-            }
-            if events.jumped {
-                events_out.push("jumped");
-            }
-        }
-
-        events_out
-    }
-
-    /// Drive the enemy-AI FSM tick. Thin wrapper following the
-    /// `run_movement_tick`/`run_weapon_fire_tick` precedent: borrows
-    /// `self.script_ctx.registry` mutably and threads the warn-once animation
-    /// latch through. All FSM logic (transition core, steering drive, damage,
-    /// animation switching) lives in `scripting_systems::ai::run_ai_tick`.
-    /// Returns the event names raised this tick (`enemyAttack` per attack) for
-    /// the post-tick event drain.
-    fn run_ai_tick(&mut self, tick_dt: f32) -> Vec<&'static str> {
-        let mut registry = self.script_ctx.registry.borrow_mut();
-        scripting_systems::ai::run_ai_tick(&mut registry, &mut self.ai_warned, tick_dt)
-    }
-
-    /// Drive the navigation-agent steering tick. The nav graph and collision
-    /// world are borrowed read-only alongside `registry.borrow_mut()` (the same
-    /// borrow pattern `run_movement_tick` uses for the collision world). Thin
-    /// wrapper: all steering logic lives in `agent_steering::tick`.
-    fn run_agent_tick(&mut self, tick_dt: f32) {
-        let gravity = self.script_ctx.gravity.get();
-        let nav_graph = self.nav_graph.as_ref();
-        let mut registry = self.script_ctx.registry.borrow_mut();
-
-        // dev-tools "chase me" demo: each tick, re-aim the debug chase agent at
-        // the player pawn's `Transform` (the pawn-discovery idiom) — or the
-        // camera when no pawn exists — so it continuously pathfinds toward the
-        // player. Setting the destination every tick is intentional: the
-        // steering replan policy reacts to a moved destination by replanning.
-        #[cfg(feature = "dev-tools")]
-        if let Some(agent) = self.debug_chase_agent {
-            use crate::scripting::registry::{ComponentKind, ComponentValue, Transform};
-
-            let target = registry
-                .iter_with_kind(ComponentKind::PlayerMovement)
-                .find_map(|(id, value)| {
-                    matches!(value, ComponentValue::PlayerMovement(_)).then_some(id)
-                })
-                .and_then(|id| registry.get_component::<Transform>(id).ok())
-                .map(|t| t.position)
-                .unwrap_or(self.camera.position);
-            agent_steering::set_destination(&mut registry, agent, target);
-        }
-
-        let _ = agent_steering::tick(
-            &mut registry,
-            &self.collision_world,
-            nav_graph,
-            gravity,
-            tick_dt,
-        );
-    }
-
-    fn run_weapon_fire_tick(
-        &mut self,
-        snapshot: &input::ActionSnapshot,
-        tick_dt: f32,
-    ) -> Vec<&'static str> {
-        let mut registry = self.script_ctx.registry.borrow_mut();
-        let events = weapon::tick(
-            &mut registry,
-            self.active_wieldable,
-            snapshot,
-            &self.camera,
-            &self.collision_world,
-            &self.hit_zone_store,
-            self.anim_time,
-            tick_dt,
-        );
-        // Borrow the impact rather than move it out: `WeaponImpact` is no longer
-        // `Copy` (it carries a `zone: Option<String>` for skeletal hit-zone
-        // hits), and `event_names()` below still needs `events`.
-        if let Some(impact) = events.impact.as_ref() {
-            weapon::spawn_impact_effect_at(&mut registry, impact.point, impact.normal);
-            // Additive to the impact burst: when the nearest hit was an entity
-            // hitbox, route the payload through the damage chokepoint. Spatial
-            // targeting (`target`) and zone identity (`zone`) ride on the impact,
-            // never inside the payload. The death sweep (run after this tick)
-            // resolves any kill.
-            //
-            // Per-zone scaling: a FRESH payload's `amount` is multiplied by the
-            // target's `HealthComponent.zone_multipliers` entry for the struck
-            // tag before the chokepoint. An absent zone OR an absent entry
-            // applies 1.0. `DamagePayload` stays amount-only — the zone never
-            // enters the payload (established invariant).
-            if let (Some(target), weapon::ActivationOutcome::Hit(payload)) =
-                (impact.target, impact.outcome)
-            {
-                let multiplier = impact
-                    .zone
-                    .as_deref()
-                    .and_then(|tag| {
-                        registry
-                            .get_component::<crate::scripting::components::health::HealthComponent>(
-                                target,
-                            )
-                            .ok()
-                            .and_then(|health| health.zone_multipliers.get(tag).copied())
-                    })
-                    .unwrap_or(1.0);
-                let scaled = weapon::DamagePayload {
-                    amount: payload.amount * multiplier,
-                };
-                apply_damage(&mut registry, target, &scaled);
-            }
-        }
-        events.event_names()
-    }
-
-    /// Resolve every zero-HP entity for this tick and surface the events its
-    /// deaths trigger. The sweep itself only mutates the registry (despawn /
-    /// latch) and returns owned data — it cannot reach the progress tracker or
-    /// the event-dispatch path. Here on the app side we close that loop:
-    ///
-    /// - Each killed non-player's tags flow through
-    ///   `ProgressTracker::on_entity_killed`, whose returned event names (a
-    ///   `progress` reaction crossing its declared fraction) join the drain.
-    /// - A player death contributes the `playerDied` event exactly once (the
-    ///   sweep's `death_handled` latch guarantees the single report).
-    ///
-    /// A brain-bearing enemy kill is latched and reported through `killed_tags`
-    /// (the progress path above), but is NOT despawned here — the AI tick
-    /// despawns it after `death_despawn_ms`.
-    ///
-    /// The returned names are accumulated by the caller and drained after the
-    /// tick loop via `fire_named_event_with_sequences`.
-    fn run_death_sweep(&mut self) -> Vec<String> {
-        let report = {
-            let mut registry = self.script_ctx.registry.borrow_mut();
-            scripting_systems::health::sweep_deaths(&mut registry)
-        };
-
-        let mut events = Vec::new();
-        for tags in &report.killed_tags {
-            events.extend(self.progress_tracker.on_entity_killed(tags));
-        }
-        if report.player_died {
-            events.push(scripting_systems::health::PLAYER_DIED_EVENT.to_string());
-        }
-        events
-    }
-
     /// Transition input focus, acquiring or releasing the cursor as required
     /// and clearing carry-over input state so keys/mouse held during the
     /// transition do not stick in the new mode.
@@ -4113,6 +3949,51 @@ mod tests {
     use crate::frame_timing::TICK_DURATION;
     use crate::input::{InputSystem, default_bindings};
     use crate::options::CrouchMode;
+    use crate::scripting::data_descriptors::{
+        AirParams, CapsuleParams, FallParams, ForgivenessParams, GroundParams,
+        PlayerMovementDescriptor, SpeedParams,
+    };
+
+    fn minimal_player_descriptor() -> PlayerMovementDescriptor {
+        PlayerMovementDescriptor {
+            capsule: CapsuleParams {
+                radius: 0.4,
+                half_height: 0.8,
+                eye_height: 0.5,
+            },
+            ground: GroundParams {
+                speed: SpeedParams {
+                    walk: 7.0,
+                    run: 11.0,
+                    crouch: 3.0,
+                },
+                accel: 10.0,
+                step_height: 0.3,
+                max_slope: 45.0,
+            },
+            air: AirParams {
+                forward_steer: 0.0,
+                accel: 0.7,
+                max_control_speed: 0.5,
+                bunny_hop: false,
+                jumps: 0,
+                jump_velocity: 5.5,
+                jump_ceiling: 0.0,
+            },
+            fall: FallParams {
+                terminal_velocity: 40.0,
+            },
+            stuck_stop_enabled: PlayerMovementDescriptor::DEFAULT_STUCK_STOP_ENABLED,
+            stuck_stop_threshold: PlayerMovementDescriptor::DEFAULT_STUCK_STOP_THRESHOLD,
+            dash: None,
+            forgiveness: Some(ForgivenessParams {
+                coyote_ms: 0.0,
+                jump_buffer_ms: 0.0,
+            }),
+            crouch: None,
+            view_feel: None,
+        }
+    }
 
     #[test]
     fn ui_button_action_classifier_reserves_ui_actions_before_named_reactions() {
@@ -4324,6 +4205,370 @@ mod tests {
             frame_timing.interpolated_state().position,
             Vec3::new(4.0, 2.0, 8.0),
             "render interpolation must not blend from the player spawn after the menu pose is reapplied",
+        );
+    }
+
+    #[test]
+    fn sim_catchup_pushes_interpolation_state_per_tick() {
+        use std::cell::RefCell;
+        use std::collections::HashSet;
+        use std::rc::Rc;
+
+        use crate::collision::CollisionWorld;
+        use crate::scripting::components::player_movement::PlayerMovementComponent;
+        use crate::scripting::registry::{EntityRegistry, Transform};
+
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let descriptor = minimal_player_descriptor();
+        let start_position = Vec3::new(
+            0.0,
+            descriptor.capsule.half_height + descriptor.capsule.radius + 0.5,
+            0.0,
+        );
+        {
+            let mut registry = registry.borrow_mut();
+            let player = registry.spawn(Transform {
+                position: start_position,
+                ..Transform::default()
+            });
+            registry
+                .set_component(
+                    player,
+                    PlayerMovementComponent::from_descriptor(&descriptor),
+                )
+                .expect("player movement component attaches to spawned entity");
+        }
+
+        let mut camera = Camera::new(
+            start_position + Vec3::new(0.0, descriptor.capsule.eye_height, 0.0),
+            0.0,
+            0.0,
+        );
+        let mut frame_timing = FrameTiming::new(InterpolableState::new(camera.position));
+        let initial = frame_timing.current_state.position;
+        let world = CollisionWorld::new();
+        let hit_zones = scripting_systems::hit_zones::HitZoneStore::new();
+        let mut progress = ProgressTracker::new();
+        let mut ai_warned = HashSet::new();
+        let command = sim::SimCommand {
+            movement: movement::MovementInput {
+                wish_dir: glam::Vec2::ZERO,
+                jump_pressed: false,
+                dash_pressed: false,
+                running: false,
+                crouch_intent: false,
+                facing_yaw: 0.0,
+            },
+            fire_button: weapon::FireButtonState {
+                pressed: false,
+                active: false,
+            },
+        };
+
+        let mut pushed_states = Vec::new();
+        for _ in 0..2 {
+            let _events = sim::simulate_tick(
+                registry.clone(),
+                &world,
+                &hit_zones,
+                None,
+                -9.81,
+                None,
+                0.0,
+                &mut progress,
+                &mut ai_warned,
+                &command,
+                |registry| {
+                    follow_camera_to_local_pawn(&mut camera, &registry.borrow());
+                    build_post_movement_command(&camera)
+                },
+                TICK_DURATION.as_secs_f32(),
+            );
+            frame_timing.push_state(InterpolableState::new(camera.position));
+            pushed_states.push(frame_timing.current_state.position);
+        }
+
+        assert_eq!(pushed_states.len(), 2);
+        assert_ne!(pushed_states[0], initial);
+        assert_ne!(
+            pushed_states[1], pushed_states[0],
+            "catch-up frames must push interpolation state after each simulated tick",
+        );
+        assert_eq!(
+            frame_timing.previous_state.position, pushed_states[0],
+            "the second push must shift the first tick's camera state into previous_state",
+        );
+    }
+
+    #[test]
+    fn camera_follow_does_not_fallback_when_marked_movement_pawn_lacks_transform() {
+        use crate::scripting::components::player_movement::PlayerMovementComponent;
+        use crate::scripting::registry::{EntityRegistry, Transform};
+
+        let mut registry = EntityRegistry::new();
+        let descriptor = minimal_player_descriptor();
+        let marked = registry.spawn(Transform {
+            position: Vec3::new(1.0, 2.0, 3.0),
+            ..Transform::default()
+        });
+        registry
+            .set_component(
+                marked,
+                PlayerMovementComponent::from_descriptor(&descriptor),
+            )
+            .expect("marked pawn receives movement");
+        registry
+            .remove_component::<Transform>(marked)
+            .expect("test strips transform from marked pawn");
+        registry.mark_local_player_pawn(marked).unwrap();
+
+        let fallback = registry.spawn(Transform {
+            position: Vec3::new(50.0, 0.0, 0.0),
+            ..Transform::default()
+        });
+        registry
+            .set_component(
+                fallback,
+                PlayerMovementComponent::from_descriptor(&descriptor),
+            )
+            .expect("fallback pawn receives movement");
+
+        let mut camera = Camera::new(Vec3::new(9.0, 8.0, 7.0), 0.0, 0.0);
+
+        assert_eq!(
+            followed_player_pawn(&registry),
+            Some(marked),
+            "valid marked movement pawn remains selected even without transform"
+        );
+        follow_camera_to_local_pawn(&mut camera, &registry);
+        let post = build_post_movement_command(&camera);
+
+        assert_eq!(
+            camera.position,
+            Vec3::new(9.0, 8.0, 7.0),
+            "camera must not silently follow a different pawn"
+        );
+        assert_eq!(
+            post.aim_origin, camera.position,
+            "aim resolves from the unchanged camera when selected pawn lacks transform"
+        );
+    }
+
+    #[test]
+    fn camera_follow_no_marker_fallback_does_not_skip_transformless_first_pawn() {
+        use crate::scripting::components::player_movement::PlayerMovementComponent;
+        use crate::scripting::registry::{EntityRegistry, Transform};
+
+        let mut registry = EntityRegistry::new();
+        let descriptor = minimal_player_descriptor();
+        let first = registry.spawn(Transform {
+            position: Vec3::new(1.0, 2.0, 3.0),
+            ..Transform::default()
+        });
+        registry
+            .set_component(first, PlayerMovementComponent::from_descriptor(&descriptor))
+            .expect("first pawn receives movement");
+        registry
+            .remove_component::<Transform>(first)
+            .expect("test strips transform from first pawn");
+
+        let fallback = registry.spawn(Transform {
+            position: Vec3::new(50.0, 0.0, 0.0),
+            ..Transform::default()
+        });
+        registry
+            .set_component(
+                fallback,
+                PlayerMovementComponent::from_descriptor(&descriptor),
+            )
+            .expect("fallback pawn receives movement");
+
+        let mut camera = Camera::new(Vec3::new(9.0, 8.0, 7.0), 0.0, 0.0);
+
+        assert_eq!(
+            followed_player_pawn(&registry),
+            Some(first),
+            "legacy no-marker fallback must pick the same first movement pawn as sim systems"
+        );
+        follow_camera_to_local_pawn(&mut camera, &registry);
+
+        assert_eq!(
+            camera.position,
+            Vec3::new(9.0, 8.0, 7.0),
+            "camera must not silently follow a later pawn"
+        );
+    }
+
+    #[test]
+    fn sim_command_reuses_frame_resolved_crouch_toggle_across_catchup_ticks() {
+        let mut input_system = InputSystem::new(default_bindings());
+        input_system.set_physical_input(
+            input::PhysicalInput::Key(winit::keyboard::KeyCode::KeyC),
+            true,
+        );
+        let snapshot = input_system.snapshot();
+        assert_eq!(snapshot.button(Action::Crouch), ButtonState::Pressed);
+
+        let mut crouch_toggle_active = false;
+        let crouch_intent = resolve_crouch_intent(
+            CrouchMode::Toggle,
+            snapshot.button(Action::Crouch),
+            &mut crouch_toggle_active,
+        );
+        assert!(crouch_intent);
+        assert!(crouch_toggle_active);
+
+        let camera = Camera::new(Vec3::ZERO, 0.0, 0.0);
+        let commands: Vec<sim::SimCommand> = (0..2)
+            .map(|_| build_sim_command(&snapshot, &camera, crouch_intent, false, false))
+            .collect();
+
+        assert_eq!(commands.len(), 2);
+        assert!(
+            commands
+                .iter()
+                .all(|command| command.movement.crouch_intent)
+        );
+        assert!(
+            crouch_toggle_active,
+            "a catch-up frame must not re-resolve the same Pressed snapshot and flip the toggle off",
+        );
+    }
+
+    #[test]
+    fn sim_command_strips_dash_edge_after_first_catchup_tick() {
+        let mut input_system = InputSystem::new(default_bindings());
+        input_system.set_physical_input(
+            input::PhysicalInput::Key(winit::keyboard::KeyCode::KeyF),
+            true,
+        );
+        let snapshot = input_system.snapshot();
+        assert_eq!(snapshot.button(Action::Dash), ButtonState::Pressed);
+
+        let camera = Camera::new(Vec3::ZERO, 0.0, 0.0);
+        let commands: Vec<sim::SimCommand> = (0..2)
+            .map(|tick_index| {
+                let dash_pressed = tick_index == 0
+                    && matches!(snapshot.button(Action::Dash), ButtonState::Pressed);
+                build_sim_command(&snapshot, &camera, false, dash_pressed, false)
+            })
+            .collect();
+
+        assert!(commands[0].movement.dash_pressed);
+        assert!(
+            !commands[1].movement.dash_pressed,
+            "one physical dash press must not replay as a new dash edge on every catch-up tick",
+        );
+    }
+
+    #[test]
+    fn sim_command_strips_shoot_pressed_edge_after_first_catchup_tick() {
+        let mut input_system = InputSystem::new(default_bindings());
+        input_system.set_physical_input(
+            input::PhysicalInput::MouseButton(winit::event::MouseButton::Left),
+            true,
+        );
+        let snapshot = input_system.snapshot();
+        assert_eq!(snapshot.button(Action::Shoot), ButtonState::Pressed);
+
+        let camera = Camera::new(Vec3::ZERO, 0.0, 0.0);
+        let commands: Vec<sim::SimCommand> = (0..2)
+            .map(|tick_index| {
+                let shoot_pressed = tick_index == 0
+                    && matches!(snapshot.button(Action::Shoot), ButtonState::Pressed);
+                build_sim_command(&snapshot, &camera, false, false, shoot_pressed)
+            })
+            .collect();
+
+        assert!(commands[0].fire_button.pressed);
+        assert!(commands[0].fire_button.active);
+        assert!(
+            !commands[1].fire_button.pressed,
+            "one physical shoot press must not replay as a new pressed edge on every catch-up tick",
+        );
+        assert!(
+            commands[1].fire_button.active,
+            "held shoot state must remain active across later catch-up ticks",
+        );
+    }
+
+    #[test]
+    fn simulate_tick_resolves_weapon_aim_after_movement_camera_follow() {
+        use std::cell::RefCell;
+        use std::collections::HashSet;
+        use std::rc::Rc;
+
+        use crate::collision::CollisionWorld;
+        use crate::scripting::components::player_movement::PlayerMovementComponent;
+        use crate::scripting::registry::{EntityRegistry, Transform};
+
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let descriptor = minimal_player_descriptor();
+        let start_position = Vec3::new(
+            0.0,
+            descriptor.capsule.half_height + descriptor.capsule.radius + 0.5,
+            0.0,
+        );
+        {
+            let mut registry = registry.borrow_mut();
+            let player = registry.spawn(Transform {
+                position: start_position,
+                ..Transform::default()
+            });
+            registry
+                .set_component(
+                    player,
+                    PlayerMovementComponent::from_descriptor(&descriptor),
+                )
+                .expect("player movement component attaches to spawned entity");
+        }
+
+        let mut camera = Camera::new(Vec3::new(99.0, 99.0, 99.0), 0.0, 0.0);
+        let world = CollisionWorld::new();
+        let hit_zones = scripting_systems::hit_zones::HitZoneStore::new();
+        let mut progress = ProgressTracker::new();
+        let mut ai_warned = HashSet::new();
+        let command = sim::SimCommand {
+            movement: movement::MovementInput {
+                wish_dir: glam::Vec2::ZERO,
+                jump_pressed: false,
+                dash_pressed: false,
+                running: false,
+                crouch_intent: false,
+                facing_yaw: 0.0,
+            },
+            fire_button: weapon::FireButtonState {
+                pressed: true,
+                active: true,
+            },
+        };
+        let mut resolved_aim_origin = None;
+
+        let _events = sim::simulate_tick(
+            registry.clone(),
+            &world,
+            &hit_zones,
+            None,
+            -9.81,
+            None,
+            0.0,
+            &mut progress,
+            &mut ai_warned,
+            &command,
+            |registry| {
+                follow_camera_to_local_pawn(&mut camera, &registry.borrow());
+                let post = build_post_movement_command(&camera);
+                resolved_aim_origin = Some(post.aim_origin);
+                post
+            },
+            TICK_DURATION.as_secs_f32(),
+        );
+
+        assert_eq!(resolved_aim_origin, Some(camera.position));
+        assert_ne!(
+            camera.position,
+            Vec3::new(99.0, 99.0, 99.0),
+            "weapon aim must be resolved from the post-movement followed camera, not the stale frame-start camera",
         );
     }
 

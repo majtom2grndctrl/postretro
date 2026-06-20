@@ -31,7 +31,7 @@ use crate::scripting::provenance::{
     DescriptorComponentKind, DescriptorMapOverride, DescriptorProvenance, DescriptorSpawnPath,
     parse_bool,
 };
-use crate::scripting::registry::{EntityId, EntityRegistry, Transform};
+use crate::scripting::registry::{ComponentKind, EntityId, EntityRegistry, Transform};
 
 /// Capsule fallback for a descriptor-spawned agent when the map has no navmesh
 /// (`agent_params == None`). The agent still materializes — it simply cannot
@@ -581,6 +581,15 @@ pub(crate) fn spawn_from_player_starts(
             continue;
         };
 
+        if registry.local_player_pawn().is_none()
+            && matches!(
+                registry.has_component_kind(id, ComponentKind::PlayerMovement),
+                Ok(true)
+            )
+        {
+            let _ = registry.mark_local_player_pawn(id);
+        }
+
         // Forward the per-placement KVP bag (sans `entity_class`, which is a
         // routing hint, not a runtime property) so `getEntityProperty` works
         // uniformly for player-start-spawned entities.
@@ -658,7 +667,10 @@ pub(crate) fn spawn_from_player_starts(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scripting::data_descriptors::{FireMode, ResolutionMode, WeaponDescriptor};
+    use crate::scripting::data_descriptors::{
+        AirParams, CapsuleParams, FallParams, FireMode, GroundParams, PlayerMovementDescriptor,
+        ResolutionMode, SpeedParams, WeaponDescriptor,
+    };
     use std::collections::HashMap;
 
     fn placement(classname: &str, kvps: &[(&str, &str)]) -> MapEntity {
@@ -1663,6 +1675,58 @@ mod tests {
         }
     }
 
+    fn movement_descriptor() -> PlayerMovementDescriptor {
+        PlayerMovementDescriptor {
+            capsule: CapsuleParams {
+                radius: 0.35,
+                half_height: 0.9,
+                eye_height: 1.1,
+            },
+            ground: GroundParams {
+                speed: SpeedParams {
+                    walk: 7.0,
+                    run: 11.0,
+                    crouch: 3.0,
+                },
+                accel: 12.0,
+                step_height: 0.35,
+                max_slope: 45.0,
+            },
+            air: AirParams {
+                forward_steer: 0.3,
+                accel: 2.0,
+                max_control_speed: 4.0,
+                bunny_hop: true,
+                jumps: 1,
+                jump_velocity: 5.0,
+                jump_ceiling: 2.0,
+            },
+            fall: FallParams {
+                terminal_velocity: 50.0,
+            },
+            stuck_stop_enabled: true,
+            stuck_stop_threshold: 0.001,
+            dash: None,
+            forgiveness: None,
+            crouch: None,
+            view_feel: None,
+        }
+    }
+
+    fn player_with_movement(classname: &str) -> EntityTypeDescriptor {
+        EntityTypeDescriptor {
+            canonical_name: Some(classname.to_string()),
+            default_weapon: None,
+            light: None,
+            emitter: None,
+            movement: Some(movement_descriptor()),
+            weapon: None,
+            mesh: None,
+            health: None,
+            ai: None,
+        }
+    }
+
     fn spawn_point(kvps: &[(&str, &str)]) -> MapEntity {
         placement(PLAYER_START_CLASSNAME, kvps)
     }
@@ -1728,6 +1792,28 @@ mod tests {
     }
 
     #[test]
+    fn single_spawn_point_marks_spawned_movement_pawn_as_local() {
+        let mut reg = EntityRegistry::new();
+        let descriptors = vec![player_with_movement("player")];
+        let origin = Vec3::new(4.0, 5.0, 6.0);
+        let points = vec![spawn_point_at(origin, Vec3::ZERO, &[])];
+
+        spawn_from_player_starts(&points, &descriptors, &mut reg, None);
+
+        let local = reg
+            .local_player_pawn()
+            .expect("player_spawn should mark the selected local pawn");
+        assert!(
+            reg.get_component::<PlayerMovementComponent>(local).is_ok(),
+            "marked local pawn should carry PlayerMovement"
+        );
+        assert_eq!(
+            reg.get_component::<Transform>(local).unwrap().position,
+            origin
+        );
+    }
+
+    #[test]
     fn multiple_spawn_points_spawn_one_entity_each() {
         let mut reg = EntityRegistry::new();
         let descriptors = vec![stub_descriptor("player")];
@@ -1736,6 +1822,59 @@ mod tests {
         spawn_from_player_starts(&points, &descriptors, &mut reg, None);
 
         assert_eq!(live_count(&reg), 3);
+    }
+
+    #[test]
+    fn multiple_spawn_points_mark_first_loaded_movement_pawn_in_placement_order() {
+        fn marked_position(points: Vec<MapEntity>) -> Vec3 {
+            let mut reg = EntityRegistry::new();
+            let descriptors = vec![player_with_movement("player")];
+            spawn_from_player_starts(&points, &descriptors, &mut reg, None);
+            let local = reg
+                .local_player_pawn()
+                .expect("one spawned pawn should be marked local");
+            reg.get_component::<Transform>(local).unwrap().position
+        }
+
+        let alpha = spawn_point_at(Vec3::new(-3.0, 0.0, 0.0), Vec3::ZERO, &[]);
+        let beta = spawn_point_at(Vec3::new(3.0, 0.0, 0.0), Vec3::ZERO, &[]);
+
+        assert_eq!(
+            marked_position(vec![alpha.clone(), beta.clone()]),
+            Vec3::new(-3.0, 0.0, 0.0)
+        );
+        assert_eq!(
+            marked_position(vec![beta, alpha]),
+            Vec3::new(3.0, 0.0, 0.0),
+            "the selected local pawn follows spawn-point placement order"
+        );
+    }
+
+    #[test]
+    fn player_spawn_marks_first_successful_movement_pawn_when_earlier_spawn_has_no_movement() {
+        let mut reg = EntityRegistry::new();
+        let descriptors = vec![stub_descriptor("prop"), player_with_movement("player")];
+        let prop_origin = Vec3::new(-3.0, 0.0, 0.0);
+        let player_origin = Vec3::new(3.0, 0.0, 0.0);
+        let points = vec![
+            spawn_point_at(prop_origin, Vec3::ZERO, &[("entity_class", "prop")]),
+            spawn_point_at(player_origin, Vec3::ZERO, &[("entity_class", "player")]),
+        ];
+
+        spawn_from_player_starts(&points, &descriptors, &mut reg, None);
+
+        assert_eq!(live_count(&reg), 2);
+        let local = reg
+            .local_player_pawn()
+            .expect("later movement pawn should be marked local");
+        assert!(
+            reg.get_component::<PlayerMovementComponent>(local).is_ok(),
+            "marked local pawn should carry PlayerMovement"
+        );
+        assert_eq!(
+            reg.get_component::<Transform>(local).unwrap().position,
+            player_origin
+        );
     }
 
     #[test]

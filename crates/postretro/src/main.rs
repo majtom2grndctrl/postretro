@@ -2742,6 +2742,22 @@ impl ApplicationHandler for App {
                                     );
                                 }
                             }
+                            // Remote-entity wireframe (M15 Phase 1): on the client
+                            // path only, draw a capsule at each replicated remote
+                            // entity so the host's moving pawn is visible rather
+                            // than an invisible bare-Transform ghost. Thin
+                            // delegation — `netcode` collects the centers
+                            // (registry read, no wgpu), the renderer owns the draw.
+                            // No-op for single-player and the host.
+                            if let Some(endpoint) = self.net_endpoint.as_ref() {
+                                let registry = self.script_ctx.registry.borrow();
+                                let centers = netcode::remote_entity_positions(endpoint, &registry);
+                                renderer.emit_remote_entity_markers(
+                                    &centers,
+                                    netcode::REMOTE_CAPSULE_RADIUS,
+                                    netcode::REMOTE_CAPSULE_HALF_HEIGHT,
+                                );
+                            }
                             out
                         };
 

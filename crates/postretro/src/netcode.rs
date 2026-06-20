@@ -396,6 +396,59 @@ pub(crate) fn apply(
     }
 }
 
+/// Standing-player collision-capsule dimensions, used to size the debug
+/// wireframe drawn over each replicated remote entity so it matches the real
+/// player volume. Sourced from the canonical standing descriptor
+/// (`scripting/components/player_movement.rs` and `main.rs`'s built-in pawn:
+/// `CapsuleParams { radius: 0.4, half_height: 0.8, .. }`). Duplicated here as
+/// named consts rather than threading a deep movement-descriptor dependency
+/// into the client render path; if the canonical standing capsule changes,
+/// update these to match.
+///
+/// `dev-tools`-gated: the only consumer is the client debug-capsule draw, which
+/// lives behind the same feature (the debug-line renderer is `dev-tools` only).
+#[cfg(feature = "dev-tools")]
+pub(crate) const REMOTE_CAPSULE_RADIUS: f32 = 0.4;
+#[cfg(feature = "dev-tools")]
+pub(crate) const REMOTE_CAPSULE_HALF_HEIGHT: f32 = 0.8;
+
+/// Collect the world-space positions of every replicated remote entity for the
+/// client-side debug wireframe (M15 Phase 1 visibility aid). Returns the
+/// `Transform.position` of each `EntityId` in the client's `NetworkId ->
+/// EntityId` map; empty for single-player and the host (no client map).
+///
+/// Read-only: borrows the registry immutably and never touches wgpu — the
+/// caller hands these positions to the renderer, which owns the capsule draw
+/// (Renderer-owns-GPU). The returned position is the capsule center, matching
+/// the pawn `Transform.position` convention (the collision capsule is symmetric
+/// about it; see `movement/substrate.rs`).
+///
+/// Phase 1 wire-binds only `Transform`, so the client cannot distinguish a
+/// player pawn from an inert prop — every remote entity gets a capsule. On the
+/// sparse dev map this is effectively just the host pawn. Phase 2's
+/// replicable-set policy (with the full component set and interest management)
+/// will scope this to actual players; see `context/lib/networking.md`.
+///
+/// `dev-tools`-gated: the sole consumer is the client debug-capsule draw behind
+/// that feature (the debug-line renderer is `dev-tools` only).
+#[cfg(feature = "dev-tools")]
+pub(crate) fn remote_entity_positions(
+    endpoint: &NetEndpoint,
+    registry: &EntityRegistry,
+) -> Vec<Vec3> {
+    let NetEndpoint::Client { map, .. } = endpoint else {
+        return Vec::new();
+    };
+    map.values()
+        .filter_map(|&id| {
+            registry
+                .get_component::<Transform>(id)
+                .ok()
+                .map(|t| t.position)
+        })
+        .collect()
+}
+
 /// Spawn a fresh entity seeded from a replicated `ComponentValue`. A spawn always
 /// installs a `Transform`; if the payload is a `Transform`, spawn directly from
 /// it, otherwise spawn at the default pose and set the component.

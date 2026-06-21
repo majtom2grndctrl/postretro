@@ -156,12 +156,21 @@ impl ServerReplication {
     /// recycled, so a despawned id never reappears, and a client that joins after the
     /// prune gets a fresh full baseline of only the *live* entities — it never knew
     /// the despawned entity and so never needs its tombstone. With no clients
-    /// registered there is no one left to inform, so all tombstones are pruned.
+    /// registered, `all()` over the empty client set is vacuously true, so any
+    /// tombstone this runs against is dropped — harmless, since a later joiner gets
+    /// a live-only baseline. Note this runs only from `apply_ack`/`remove_client`,
+    /// never `ingest_tick`: a despawn recorded while zero clients are connected
+    /// lingers until the first client connects, receives the stale despawn, and
+    /// acks it (the apply is an idempotent no-op on the client).
     ///
     /// This is the bound on cumulative-despawn state: without it `self.tombstones`
     /// (and the per-snapshot encode loop over it) grows forever across a session's
     /// join/leave/despawn churn, since ids never recycle to trigger the
     /// reappearance-based removal in `ingest_tick`.
+    ///
+    /// Cost is O(tombstones × clients) per call; both stay small in practice —
+    /// tombstones drain as soon as all clients ack them, and acks arrive frequently
+    /// on the reliable-ordered `Channel::Input`.
     fn prune_acked_tombstones(&mut self) {
         let clients = &self.clients;
         self.tombstones.retain(|network_id, tombstone| {

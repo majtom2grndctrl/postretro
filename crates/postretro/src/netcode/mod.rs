@@ -21,7 +21,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use glam::{Quat, Vec3};
 
 use postretro_net::replication::ServerReplication;
-use postretro_net::timesync::{self, ClockEstimator, MonotonicClock, TimeSyncSender};
+use postretro_net::timesync::{
+    self, ClockEstimator, MonotonicClock, TimeSyncRequest, TimeSyncSender,
+};
 use postretro_net::transport::{NetClient, NetServer};
 use postretro_net::wire::{
     self, ComponentPayload, NetworkId, RawSnapshotMessage, SnapshotMessage, ValidationError,
@@ -229,6 +231,17 @@ impl ClientTimeSync {
         }
     }
 
+    /// Emit a 5 Hz probe if the cadence is due, recording the issued `sample_id`
+    /// with the estimator in the same step. Sending and recording are fused here so
+    /// a caller cannot queue a probe whose echo the estimator's provenance guard
+    /// would then reject as never-issued — which would silently freeze the clock
+    /// estimate. Returns the request to encode and send, or `None` when not due.
+    fn maybe_send_probe(&mut self, client_tick: u32) -> Option<TimeSyncRequest> {
+        let req = self.sender.maybe_send(&self.clock, client_tick)?;
+        self.estimator.record_sent(req.sample_id);
+        Some(req)
+    }
+
     /// The smoothed server-tick estimate for the current local time, for the
     /// interpolation sampling path. `None` until the first echo has been folded in.
     pub(crate) fn estimated_server_tick(&self) -> Option<f64> {
@@ -398,9 +411,10 @@ fn wire_transform_is_finite(t: &WireTransform) -> bool {
 fn payload_is_finite(payload: &ComponentPayload) -> bool {
     match payload {
         ComponentPayload::Transform(wire) => wire_transform_is_finite(wire),
-        // The movement wire subset is not applied by Phase 1 glue (Task 3 merges
-        // it into a local `PlayerMovementComponent`); still validate its floats so
-        // a non-finite payload is dropped at the boundary rather than carried.
+        // The movement payload is received and validated here but not yet applied
+        // to any local `PlayerMovementComponent` — the authoritative mover is
+        // Transform-only. Validate its floats now so a non-finite payload is
+        // dropped at the ingest boundary rather than propagated.
         ComponentPayload::PlayerMovementState(m) => player_movement_is_finite(m),
     }
 }
@@ -749,8 +763,10 @@ pub(crate) fn client_drive_time_sync(
     time_sync: &mut ClientTimeSync,
     client_tick: u32,
 ) {
-    // 1. Emit a probe if the 5 Hz cadence is due.
-    if let Some(req) = time_sync.sender.maybe_send(&time_sync.clock, client_tick) {
+    // 1. Emit a probe if the 5 Hz cadence is due. `maybe_send_probe` records the
+    //    issued sample id with the estimator so the matching echo passes the
+    //    provenance guard (forgetting that would freeze the clock estimate).
+    if let Some(req) = time_sync.maybe_send_probe(client_tick) {
         let msg = wire::ClientMessage::TimeSync(req);
         client.send_input(wire::encode(&msg));
     }
@@ -1001,6 +1017,34 @@ mod tests {
         assert_eq!(
             owned[0].network_id, expected_net_id.0,
             "the replicated pawn carries its allocated NetworkId"
+        );
+    }
+
+    // Regression: `client_drive_time_sync` once emitted a probe without recording
+    // its sample id, so the estimator's provenance guard rejected every echo and
+    // the clock never initialized (a silent client-side freeze). `maybe_send_probe`
+    // fuses send+record; this drives that production helper and proves the matching
+    // echo initializes the estimator.
+    #[test]
+    fn time_sync_probe_records_issued_id_so_echo_initializes_estimator() {
+        let mut time_sync = ClientTimeSync::new();
+
+        // Emit a probe through the production path (the 5 Hz cadence fires on the
+        // first call). This must record the issued sample id with the estimator.
+        let req = time_sync
+            .maybe_send_probe(0)
+            .expect("the first probe fires immediately");
+
+        // The server's echo for that exact sample id must pass the provenance guard
+        // and fold in, leaving the estimator initialized.
+        let echo = req.echo(600, 0);
+        assert!(
+            time_sync.estimator.ingest_echo(&echo, 0),
+            "an echo for an issued sample id must be accepted"
+        );
+        assert!(
+            time_sync.estimated_server_tick().is_some(),
+            "the estimator initializes after a recorded probe's echo is folded in"
         );
     }
 

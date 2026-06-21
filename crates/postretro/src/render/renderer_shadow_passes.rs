@@ -1,0 +1,454 @@
+// Per-frame skinned shadow-depth passes (spot pool + cube point-light pool),
+// factored out of `render_frame_indirect` to keep that file within the budget.
+// See: context/lib/rendering_pipeline.md §4
+
+use super::*;
+
+impl Renderer {
+    /// Spot-shadow depth loop: per occupied slot, render world geometry (indirect,
+    /// cone-culled) then skinned-entity occluders into that slot's depth map.
+    /// Caller gates on `render_world && self.has_geometry && self.index_count > 0`.
+    pub(super) fn record_spot_shadow_depth(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        mesh_frame_plan: Option<&mesh_instances::MeshFramePlan>,
+    ) {
+        let stride = self.shadow_vs_stride;
+        let slot_assignment = self.spot_shadow_pool.slot_assignment.clone();
+        let mut used_slots: Vec<u32> = slot_assignment
+            .iter()
+            .copied()
+            .filter(|&s| s != crate::lighting::spot_shadow::NO_SHADOW_SLOT)
+            .collect();
+        used_slots.sort_unstable();
+        used_slots.dedup();
+
+        // Reset the per-frame entity-occluder counter; the per-slot cull
+        // tallies into it below. Mirrors `shadow-cone-cull`'s submitted
+        // counter — pure CPU, no GPU readback.
+        self.spot_entity_occluders_submitted = 0;
+
+        // Per-slot GPU cone cull: one compute pass loops the occupied slots,
+        // dispatching BVH traversal into each slot's indirect sub-region
+        // gated by that slot's cone frustum planes. Runs after the camera
+        // BVH cull and before the per-slot depth render passes below, so the
+        // sub-regions are populated when each slot draws indirect.
+        if let Some(shadow_cull) = &self.shadow_cull {
+            shadow_cull.dispatch_occupied_slots(
+                &self.queue,
+                encoder,
+                &self.spot_shadow_pool.slot_cone_matrices,
+            );
+        }
+
+        for slot in used_slots {
+            let view = &self.spot_shadow_pool.views[slot as usize];
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Spot Shadow Depth Pass"),
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                ..Default::default()
+            });
+            pass.set_pipeline(&self.shadow_depth_pipeline);
+            pass.set_bind_group(0, &self.shadow_vs_bind_group, &[slot * stride]);
+            pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+            pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            // Indirect cone-culled draw from this slot's sub-region. The
+            // depth-only shadow pipeline has no group-1 material slot, so
+            // `None` skips the texture bind (matching the depth pre-pass).
+            // Fall back to the full unconditional draw if the shadow cull
+            // owner is absent (no BVH).
+            if let Some(shadow_cull) = &self.shadow_cull {
+                shadow_cull.draw_slot_indirect(&mut pass, slot, None);
+            } else {
+                pass.draw_indexed(0..self.index_count, 0, 0..1);
+            }
+
+            // Skinned ENTITY occluders into the SAME slot, through the
+            // parameterized depth-only path: target view = this slot's depth
+            // attachment (the `pass` above), light-space matrix = the
+            // per-slot `shadow_vs_bind_group` + dynamic offset. This proves
+            // the cube-ready contract — the pipeline takes the view + matrix
+            // as per-render parameters, with no slot-count or 2D-target
+            // assumption baked in. Reads the already-posed buffers from the
+            // hoist (no rewrite since), so the occluder pose matches the
+            // forward draw with no one-frame lag.
+            //
+            // TWO gates (kept separate from pool-slot eligibility):
+            //   1. `slot_entity_eligible[slot]` — the slot's light passes
+            //      `entity_occluder_eligible` (dynamic + toggle on). An
+            //      ineligible slot keeps its world shadow (already drawn
+            //      above) but draws ZERO entity occluders.
+            //   2. per-instance cone cull inside `record_skinned_depth` —
+            //      only instances whose transformed bound intersects this
+            //      slot's cone are submitted.
+            if let Some(plan) = &mesh_frame_plan {
+                if self.spot_shadow_pool.slot_entity_eligible[slot as usize] {
+                    if let Some(cone_matrix) =
+                        self.spot_shadow_pool.slot_cone_matrices[slot as usize]
+                    {
+                        let cone_planes =
+                            crate::lighting::cone_frustum::cone_frustum_planes(&cone_matrix);
+                        self.spot_entity_occluders_submitted +=
+                            self.mesh_pass.record_skinned_depth(
+                                &mut pass,
+                                plan,
+                                &self.shadow_vs_bind_group,
+                                slot * stride,
+                                &cone_planes,
+                            );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Cube point-light shadow depth loop: clear every occupied eligible face to
+    /// the far plane and render skinned-entity occluders into it. Caller gates on
+    /// `render_world`.
+    pub(super) fn record_cube_shadow_depth(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        mesh_frame_plan: Option<&mesh_instances::MeshFramePlan>,
+    ) {
+        if let Some(pool) = &self.cube_shadow_pool {
+            let stride = self.shadow_vs_stride;
+            for layer in 0..pool.face_matrices.len() {
+                let face_matrix_opt = pool.face_matrices[layer];
+                // Only occupied faces are touched; an occupied face ALWAYS gets
+                // its Clear(1.0) far-plane baseline this frame, mesh plan or not
+                // (the occluder draw below is the only mesh-plan-gated step). See
+                // `cube_shadow::cube_face_needs_clear` for why the clear must not
+                // be gated on the plan.
+                if !crate::lighting::cube_shadow::cube_face_needs_clear(face_matrix_opt.is_some()) {
+                    continue;
+                }
+                let face_matrix = face_matrix_opt.expect("face_needs_clear implies occupied");
+                let view = &pool.face_views[layer];
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Cube Shadow Depth Pass"),
+                    color_attachments: &[],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(1.0),
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: None,
+                    }),
+                    timestamp_writes: None,
+                    ..Default::default()
+                });
+                // Occluders are entity-only: submit skinned meshes ONLY when a
+                // mesh frame plan exists. With no plan the face still receives its
+                // Clear(1.0) far-plane baseline above, so an occluder-free eligible
+                // cube reads as fully lit (shadow factor 1.0) — matching the spot
+                // path and the off-camera (no-slot) path.
+                if let Some(plan) = &mesh_frame_plan {
+                    // Face frustum planes from the same matrix uploaded to the cube
+                    // VS uniform buffer — one source of truth for cull + projection.
+                    let face_planes =
+                        crate::lighting::cone_frustum::cone_frustum_planes(&face_matrix);
+                    self.cube_entity_occluders_submitted += self.mesh_pass.record_skinned_depth(
+                        &mut pass,
+                        plan,
+                        &self.cube_shadow_vs_bind_group,
+                        layer as u32 * stride,
+                        &face_planes,
+                    );
+                }
+            }
+        }
+    }
+}
+
+impl Renderer {
+    /// Depth pre-pass (writes the scene depth buffer for the forward Equal test)
+    /// followed by the half-res SDF shadow dispatch. Both run before `scene_color`
+    /// is bound and before the forward pass that consumes them.
+    pub(super) fn record_depth_and_sdf_passes(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        view_proj: Mat4,
+        render_world: bool,
+    ) {
+        if render_world {
+            let depth_ts = self
+                .frame_timing
+                .as_ref()
+                .map(|t| t.render_pass_writes(TIMING_PAIR_DEPTH_PREPASS));
+            let mut depth_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Depth Pre-Pass"),
+                // Vertex-only: depth attachment only. The lightmap-UV gbuffer
+                // MRT was removed with the animated dominant-direction trace.
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: depth_ts,
+                ..Default::default()
+            });
+
+            if self.has_geometry && self.index_count > 0 {
+                depth_pass.set_pipeline(&self.depth_prepass_pipeline);
+                depth_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+                depth_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+                depth_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+
+                if let Some(cull) = &self.compute_cull {
+                    cull.draw_indirect(&mut depth_pass, None); // None = no texture bind (group 0 only)
+                }
+            }
+        }
+
+        // SDF half-res shadow pass — Task 4. Runs after the depth pre-pass
+        // (consumes its texture) and before the forward pass (which will
+        // bilateral-upsample the factor in Task 5). Skipped when no SDF
+        // atlas is loaded; Task 6 will also gate on the mode selector. When
+        // skipped, the half-res target retains its prior contents — Task 5's
+        // forward multiply is responsible for gating on the same mode.
+        if render_world && self.sdf_atlas_resources.present {
+            let sdf_ts = self
+                .frame_timing
+                .as_ref()
+                .map(|t| t.compute_pass_writes(TIMING_PAIR_SDF_SHADOW));
+            let inv_view_proj = view_proj.inverse();
+            // TEMP DEBUG: SDF shadow path visualization. When a debug-viz mode is
+            // selected, the pass writes a debug RGB code into slot 0 instead of
+            // per-light visibility floats. The mode value (3 = debug paths,
+            // 4 = normals) is threaded so the shader picks the right encoding;
+            // 0 means "not a debug mode" (production path).
+            let sdf_debug_mode = match self.sdf_shadow_mode {
+                SdfShadowMode::VisualizeDebugPaths => SdfShadowMode::VisualizeDebugPaths as u32,
+                SdfShadowMode::VisualizeNormals => SdfShadowMode::VisualizeNormals as u32,
+                _ => 0,
+            };
+            self.sdf_shadow_pass.dispatch(
+                &self.queue,
+                encoder,
+                &self.sdf_atlas_resources,
+                SdfShadowFrameInputs {
+                    inv_view_proj,
+                    camera_position: self.last_camera_position.into(),
+                },
+                sdf_ts,
+                sdf_debug_mode,
+            );
+        }
+    }
+}
+
+impl Renderer {
+    /// Pre-scene compute work encoded before any render pass: BVH/visibility cull,
+    /// animated-lightmap compose, and SH compose. All write storage the forward
+    /// pass later samples, so they precede the depth pre-pass.
+    pub(super) fn record_pre_scene_compute(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        visible: &VisibleCells,
+        view_proj: Mat4,
+        render_world: bool,
+    ) {
+        // Same submission as render passes — no readback or GPU sync between cull and draw.
+        if render_world {
+            if let Some(cull) = &mut self.compute_cull {
+                let cull_ts = self
+                    .frame_timing
+                    .as_ref()
+                    .map(|t| t.compute_pass_writes(TIMING_PAIR_CULL));
+                cull.dispatch(
+                    &self.device,
+                    &self.queue,
+                    encoder,
+                    visible,
+                    &view_proj,
+                    cull_ts,
+                );
+
+                if log::log_enabled!(log::Level::Debug) {
+                    let f = self.debug_frame;
+
+                    let bm = cull.debug_bitmask_fingerprint();
+                    if bm != self.debug_prev_bitmask {
+                        log::debug!(
+                            "[cull f={f}] visible-cell bitmask changed: pop={} hash={:#010x} (was pop={} hash={:#010x})",
+                            bm.0,
+                            bm.1,
+                            self.debug_prev_bitmask.0,
+                            self.debug_prev_bitmask.1,
+                        );
+                        self.debug_prev_bitmask = bm;
+                    }
+
+                    let mut vp_hash = 0u32;
+                    for i in 0..4 {
+                        let col = view_proj.col(i);
+                        vp_hash ^= col.x.to_bits();
+                        vp_hash ^= col.y.to_bits().rotate_left(7);
+                        vp_hash ^= col.z.to_bits().rotate_left(13);
+                        vp_hash ^= col.w.to_bits().rotate_left(19);
+                    }
+                    if vp_hash != self.debug_prev_vp_hash {
+                        log::debug!("[cull f={f}] view_proj changed: hash={:#010x}", vp_hash);
+                        self.debug_prev_vp_hash = vp_hash;
+                    }
+
+                    let cur_vis = match visible {
+                        VisibleCells::Culled(cells) => ("Culled", cells.len()),
+                        VisibleCells::DrawAll => ("DrawAll", 0),
+                    };
+                    if cur_vis != self.debug_prev_visible {
+                        log::debug!(
+                            "[cull f={f}] VisibleCells changed: {}(n={}) (was {}(n={}))",
+                            cur_vis.0,
+                            cur_vis.1,
+                            self.debug_prev_visible.0,
+                            self.debug_prev_visible.1,
+                        );
+                        self.debug_prev_visible = cur_vis;
+                    }
+                }
+            }
+        }
+
+        // Before depth pre-pass: storage→sampled barrier must resolve before forward sampling.
+        if render_world && self.animated_lightmap.is_active() {
+            let animated_ts = self
+                .frame_timing
+                .as_ref()
+                .map(|t| t.compute_pass_writes(TIMING_PAIR_ANIMATED_LM_COMPOSE));
+            self.animated_lightmap.dispatch(
+                &self.queue,
+                encoder,
+                &self.uniform_bind_group,
+                visible,
+                animated_ts,
+            );
+        }
+
+        // Before depth pre-pass: storage-write → sampled-read barrier for SH.
+        if render_world {
+            let sh_compose_ts = self
+                .frame_timing
+                .as_ref()
+                .map(|t| t.compute_pass_writes(TIMING_PAIR_SH_COMPOSE));
+            self.sh_compose
+                .dispatch(encoder, &self.uniform_bind_group, sh_compose_ts);
+        }
+    }
+}
+
+#[cfg(feature = "dev-tools")]
+impl Renderer {
+    /// Encode + submit the SH atlas readback copy after the frame submit. A no-op
+    /// unless the diagnostics irradiance overlay requested a copy this frame.
+    pub(super) fn encode_sh_probe_readback(&mut self) {
+        // Capture the just-composed SH atlas for the live irradiance overlay.
+        // Separate submission so the boundary orders this copy after the compose
+        // storage writes (see the note at the compose dispatch above). Skipped
+        // unless the overlay is active.
+        if self.sh_probe_readback.wants_copy() {
+            // Block until the compose submit above has fully retired before the
+            // copy reads `total`. A submission boundary alone does not hard-sync
+            // the compute storage writes against the copy on the Metal backend:
+            // when the in-room compose runs longer (active delta lights), the
+            // copy catches the last-written (high-z) texels mid-flight and reads
+            // foreign/zero garbage. Only reached while the overlay is active, so
+            // the per-readback stall is confined to debug sessions.
+            let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+            let mut readback_encoder =
+                self.device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("SH Readback Encoder"),
+                    });
+            self.sh_probe_readback.encode_copy(
+                &mut readback_encoder,
+                &self.sh_volume_resources.total_atlas_texture,
+            );
+            self.queue
+                .submit(std::iter::once(readback_encoder.finish()));
+        }
+    }
+}
+
+impl Renderer {
+    /// Wireframe BVH-leaf overlay (dev toggle): draws each leaf's line-list indices
+    /// tinted by its per-frame cull status. `scene_color` is the offscreen target.
+    pub(super) fn record_wireframe_overlay(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        scene_color: &wgpu::TextureView,
+        render_world: bool,
+    ) {
+        if render_world
+            && self.wireframe_enabled
+            && self.has_geometry
+            && self.wireframe_index_count > 0
+            && !self.bvh_leaves.is_empty()
+        {
+            if let Some(cull) = &self.compute_cull {
+                let cull_status_bind_group =
+                    self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("Wireframe Cull Status BG"),
+                        layout: &self.wireframe_cull_status_bgl,
+                        entries: &[wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: cull.cull_status_buffer().as_entire_binding(),
+                        }],
+                    });
+
+                let mut overlay_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Wireframe Overlay Pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: scene_color,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &self.depth_view,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: None,
+                    }),
+                    ..Default::default()
+                });
+
+                overlay_pass.set_pipeline(&self.wireframe_pipeline);
+                overlay_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+                overlay_pass.set_bind_group(1, &cull_status_bind_group, &[]);
+                overlay_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+                overlay_pass.set_index_buffer(
+                    self.wireframe_index_buffer.slice(..),
+                    wgpu::IndexFormat::Uint32,
+                );
+
+                // instance_index = leaf index so shader looks up per-leaf cull status.
+                for (leaf_idx, leaf) in self.bvh_leaves.iter().enumerate() {
+                    let wire_offset = leaf.index_offset * 2;
+                    let wire_count = leaf.index_count * 2;
+                    let li = leaf_idx as u32;
+                    overlay_pass.draw_indexed(wire_offset..wire_offset + wire_count, 0, li..li + 1);
+                }
+            }
+        }
+    }
+}

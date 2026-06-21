@@ -14,6 +14,8 @@
 
 use std::collections::VecDeque;
 
+use glam::Vec3;
+
 use postretro_net::wire::{InputCommand, NetworkId};
 
 use crate::collision::CollisionWorld;
@@ -28,6 +30,87 @@ use crate::scripting::registry::{EntityId, Transform};
 /// snapshots) can never grow the history unbounded.
 const MAX_HISTORY: usize = 64;
 
+// --- Correction classification thresholds (M15 Phase 3 Task 5 AC) ---
+//
+// A reconcile correction is the displacement between the pre-reconcile predicted
+// pose and the post-reconcile authoritative pose. Its magnitude classifies how the
+// local first-person *presentation* absorbs it. These are the pinned starting caps;
+// the AC mandates that any change must be backed by measured harness rationale —
+// they are not free tuning knobs. Derived expectations in tests read these consts,
+// never re-typed magic numbers.
+
+/// Ordinary correction cap: an offset magnitude at or below this (in metres) is a
+/// small mispredict smoothed over a few render frames. The common case under
+/// loopback latency.
+pub(crate) const ORDINARY_CORRECTION_MAX_M: f32 = 0.5;
+
+/// Dash correction cap: a correction on a tick whose history entry crossed a dash
+/// (`included_dash`) tolerates a larger smoothed offset — a dash burst legitimately
+/// produces a bigger visible delta than ordinary locomotion. Still smoothed, not
+/// snapped, up to this magnitude.
+pub(crate) const DASH_CORRECTION_MAX_M: f32 = 2.0;
+
+/// Teleport threshold: a correction at or above this (in metres) is too large to
+/// smooth without a visible rubber-band slide. It is snapped — history and the
+/// presentation offset are cleared and the registry transform stamps prev == current
+/// — so the pawn appears at the authoritative pose immediately.
+pub(crate) const TELEPORT_CORRECTION_MIN_M: f32 = 3.0;
+
+/// Fraction of the presentation offset retained per render frame as it decays to
+/// zero. `offset *= DECAY_PER_FRAME` each frame, so a smoothed correction converges
+/// over a bounded handful of frames (≈10 frames to fall below ~3% of its initial
+/// magnitude at 0.7) — fast enough to feel responsive, slow enough to hide the
+/// snap. Render-rate, not tick-rate: smoothing is presentation, not simulation.
+const DECAY_PER_FRAME: f32 = 0.7;
+
+/// Below this magnitude (metres) the presentation offset is treated as fully
+/// converged and zeroed, so the decaying geometric tail does not leave a permanent
+/// sub-visible bias on the rendered eye.
+const OFFSET_SETTLED_EPSILON_M: f32 = 1e-4;
+
+/// How a reconcile correction was classified by displacement magnitude. The
+/// classification drives whether the registry-snapped correction is smoothed
+/// (seeded as a decaying presentation offset) or snapped hard (teleport: offset
+/// cleared, history cleared, prev == current stamped). Returned by the reconcile
+/// entry point so Task 6's harness can assert the class directly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CorrectionClass {
+    /// `<= ORDINARY_CORRECTION_MAX_M`: a small mispredict, smoothed.
+    Ordinary,
+    /// `<= DASH_CORRECTION_MAX_M` on an `included_dash` tick: a larger but expected
+    /// dash-window correction, smoothed.
+    Dash,
+    /// `>= TELEPORT_CORRECTION_MIN_M`: snapped, not smoothed.
+    Teleport,
+    /// In the gap between the smoothed caps and the teleport floor (or a dash-sized
+    /// correction on a non-dash tick): smoothed like an ordinary correction, but the
+    /// magnitude is logged as out-of-band. Kept distinct so the harness can see the
+    /// engine took the seed-and-smooth path on a correction larger than the ordinary
+    /// cap rather than silently widening `Ordinary`.
+    OversizedSmoothed,
+}
+
+/// Classify a correction by its displacement `magnitude` (metres) and whether the
+/// corrected tick crossed a dash. Pure: the single source of truth for the AC
+/// thresholds, shared by the reconcile path and its tests.
+///
+/// - `>= TELEPORT_CORRECTION_MIN_M` → [`CorrectionClass::Teleport`] (checked first:
+///   a teleport-sized delta is a teleport regardless of dash).
+/// - `<= ORDINARY_CORRECTION_MAX_M` → [`CorrectionClass::Ordinary`].
+/// - `<= DASH_CORRECTION_MAX_M` on a dash tick → [`CorrectionClass::Dash`].
+/// - otherwise → [`CorrectionClass::OversizedSmoothed`] (still smoothed).
+pub(crate) fn classify_correction(magnitude: f32, included_dash: bool) -> CorrectionClass {
+    if magnitude >= TELEPORT_CORRECTION_MIN_M {
+        CorrectionClass::Teleport
+    } else if magnitude <= ORDINARY_CORRECTION_MAX_M {
+        CorrectionClass::Ordinary
+    } else if included_dash && magnitude <= DASH_CORRECTION_MAX_M {
+        CorrectionClass::Dash
+    } else {
+        CorrectionClass::OversizedSmoothed
+    }
+}
+
 /// One predicted fixed tick: the command frame sent to the host and the local
 /// state it produced. Task 5 reconciliation reads `client_tick` to match the
 /// host's `last_processed_client_tick` ack, restores from the authoritative
@@ -35,9 +118,7 @@ const MAX_HISTORY: usize = 64;
 /// through [`replay`].
 //
 // `client_tick`/`command`/`included_dash` are read by this module's tests and the
-// Task 5 reconciliation that walks the history; staged dead-code-allowed (like the
-// Task 2 helpers) until that caller lands.
-#[allow(dead_code)]
+// Task 5 reconciliation (`reconcile.rs`) that walks the history.
 #[derive(Debug, Clone)]
 pub(crate) struct PredictedTick {
     /// The monotonic client command-frame number this tick was predicted at.
@@ -92,6 +173,14 @@ pub(crate) struct ClientPrediction {
     /// increasing `client_tick` stream. Lives here (not on `App`) so the send-stamp
     /// allocator stays with the prediction state it feeds.
     next_client_tick: u32,
+    /// Local-pawn correction smoothing (Task 5). The decaying difference between the
+    /// pre-reconcile predicted pose and the reconciled authoritative pose, in world
+    /// space. The registry transform always snaps to the authoritative result
+    /// (gameplay/collision/AI read it); only the local first-person *presentation*
+    /// adds this offset, decaying it to zero over a bounded number of render frames
+    /// so the correction is continuous on screen without lying to the simulation.
+    /// Owned here, never on `App`/`main.rs` — the source-layout gate.
+    presentation_offset: Vec3,
 }
 
 impl ClientPrediction {
@@ -141,9 +230,8 @@ impl ClientPrediction {
         self.armed.is_some()
     }
 
-    /// Read-only view of the predicted-tick ring (oldest-first). Task 5
-    /// reconciliation walks this to find the acked tick and replay the rest.
-    #[allow(dead_code)]
+    /// Read-only view of the predicted-tick ring (oldest-first). The reconcile path
+    /// walks this to find the acked tick and replay the rest.
     pub(crate) fn history(&self) -> &VecDeque<PredictedTick> {
         &self.history
     }
@@ -217,7 +305,6 @@ impl ClientPrediction {
     /// are settled and need not be replayed again. Entries *after* the ack remain
     /// for Task 5 to replay on top of the authoritative baseline. Mechanism only:
     /// this task builds the prune; Task 5 invokes it as part of reconciliation.
-    #[allow(dead_code)]
     pub(crate) fn prune_through_ack(&mut self, acked_tick: u32) {
         while self
             .history
@@ -225,6 +312,82 @@ impl ClientPrediction {
             .is_some_and(|entry| entry.client_tick <= acked_tick)
         {
             self.history.pop_front();
+        }
+    }
+
+    /// Clear all predicted history. Used by the reconcile path for the two cases that
+    /// invalidate every retained prediction at once: an authoritative `None`-ack
+    /// reset (the host has not resolved any of the client's commands, so the baseline
+    /// supersedes the whole ring) and a teleport-class correction (the predicted
+    /// trajectory diverged too far to replay onto).
+    pub(crate) fn clear_history(&mut self) {
+        self.history.clear();
+    }
+
+    /// Whether `included_dash` is set on any retained (unacked) history entry. The
+    /// reconcile path reads this to classify the correction: a correction landing on
+    /// a window that crossed a dash tolerates the larger [`DASH_CORRECTION_MAX_M`]
+    /// smoothed cap. Checked over the post-prune ring (the unacked tail that was
+    /// replayed onto the authoritative baseline).
+    pub(crate) fn unacked_window_included_dash(&self) -> bool {
+        self.history.iter().any(|entry| entry.included_dash)
+    }
+
+    /// Seed the local-pawn presentation offset from a fresh correction: the
+    /// `correction` vector is `predicted_pose - reconciled_pose`, so adding it back to
+    /// the (snapped) registry pose reproduces the pre-reconcile predicted pose, and
+    /// decaying it to zero glides the rendered eye from where the client *thought* it
+    /// was to where the authority says it is. Replaces any in-flight offset outright
+    /// (the newest correction is authoritative over a stale one). Smoothing only —
+    /// the caller has already snapped the registry to the reconciled result.
+    pub(crate) fn seed_presentation_offset(&mut self, correction: Vec3) {
+        self.presentation_offset = correction;
+    }
+
+    /// Clear the presentation offset immediately (no decay). Used on a teleport: the
+    /// pawn snaps to the authoritative pose with no smoothed glide, so any in-flight
+    /// offset from a prior small correction is discarded too.
+    pub(crate) fn clear_presentation_offset(&mut self) {
+        self.presentation_offset = Vec3::ZERO;
+    }
+
+    /// The current local-pawn presentation offset (decaying toward zero). The render
+    /// seam adds it to the registry transform to produce the presented first-person
+    /// pose; gameplay never reads it. `ZERO` when no correction is in flight.
+    pub(crate) fn presentation_offset(&self) -> Vec3 {
+        self.presentation_offset
+    }
+
+    /// Produce the presented local pose: the gameplay-authoritative `registry_pose`
+    /// with the decaying correction offset added to its position. The
+    /// presentation-pose accessor in `Transform` form — used wherever a full pose
+    /// (not just the offset) is convenient, including the Task 6 latency harness
+    /// asserting the presented pose lags the snapped registry pose. The `main.rs`
+    /// render seam folds the same offset onto the interpolated *camera eye* via
+    /// [`presentation_offset`](Self::presentation_offset) (it works with the
+    /// interpolated position, not a registry Transform). Rotation/scale are not
+    /// corrected (Phase 3 is movement-only; orientation comes from the live look
+    /// input, not the reconciled snapshot). Staged until the harness lands.
+    #[allow(dead_code)]
+    pub(crate) fn present_local_pose(&self, registry_pose: Transform) -> Transform {
+        Transform {
+            position: registry_pose.position + self.presentation_offset,
+            ..registry_pose
+        }
+    }
+
+    /// Decay the presentation offset one render frame toward zero. Called at render
+    /// rate (not tick rate): correction smoothing is presentation, decoupled from the
+    /// fixed sim step. Geometric decay by [`DECAY_PER_FRAME`]; snaps to exactly zero
+    /// once below [`OFFSET_SETTLED_EPSILON_M`] so the rendered eye fully converges
+    /// rather than carrying a permanent sub-visible bias. No-op when already zero.
+    pub(crate) fn decay_presentation_offset(&mut self) {
+        if self.presentation_offset == Vec3::ZERO {
+            return;
+        }
+        self.presentation_offset *= DECAY_PER_FRAME;
+        if self.presentation_offset.length() < OFFSET_SETTLED_EPSILON_M {
+            self.presentation_offset = Vec3::ZERO;
         }
     }
 }
@@ -531,6 +694,107 @@ mod tests {
             entry.included_dash,
             "a dash command predicts a Dash state through the movement-only path"
         );
+    }
+
+    // --- Correction classification reads the pinned AC thresholds (no duplicated
+    // magic numbers): the boundary cases derive their expectations from the consts. ---
+    #[test]
+    fn classify_correction_uses_pinned_thresholds() {
+        // At/below the ordinary cap → Ordinary (dash flag irrelevant).
+        assert_eq!(
+            classify_correction(ORDINARY_CORRECTION_MAX_M, false),
+            CorrectionClass::Ordinary
+        );
+        assert_eq!(
+            classify_correction(ORDINARY_CORRECTION_MAX_M, true),
+            CorrectionClass::Ordinary
+        );
+        // Above the ordinary cap, within the dash cap, on a dash tick → Dash.
+        let dash_mid = (ORDINARY_CORRECTION_MAX_M + DASH_CORRECTION_MAX_M) * 0.5;
+        assert_eq!(classify_correction(dash_mid, true), CorrectionClass::Dash);
+        // Same magnitude on a non-dash tick → OversizedSmoothed (still smoothed).
+        assert_eq!(
+            classify_correction(dash_mid, false),
+            CorrectionClass::OversizedSmoothed
+        );
+        // At/above the teleport floor → Teleport regardless of the dash flag.
+        assert_eq!(
+            classify_correction(TELEPORT_CORRECTION_MIN_M, true),
+            CorrectionClass::Teleport
+        );
+        assert_eq!(
+            classify_correction(TELEPORT_CORRECTION_MIN_M, false),
+            CorrectionClass::Teleport
+        );
+        // Between the dash cap and the teleport floor on a dash tick → OversizedSmoothed.
+        let between = (DASH_CORRECTION_MAX_M + TELEPORT_CORRECTION_MIN_M) * 0.5;
+        assert_eq!(
+            classify_correction(between, true),
+            CorrectionClass::OversizedSmoothed
+        );
+    }
+
+    // --- The presentation offset seeds, decays geometrically toward zero, and
+    // settles exactly at zero (no permanent sub-visible bias). ---
+    #[test]
+    fn presentation_offset_seeds_decays_and_settles_to_zero() {
+        let mut prediction = ClientPrediction::new();
+        assert_eq!(prediction.presentation_offset(), Vec3::ZERO);
+
+        prediction.seed_presentation_offset(Vec3::new(0.3, 0.0, -0.4));
+        let seeded = prediction.presentation_offset().length();
+        assert!(seeded > EPSILON, "a nonzero offset is seeded");
+
+        // present_local_pose adds the offset to the registry pose's position.
+        let pose = Transform {
+            position: Vec3::new(1.0, 2.0, 3.0),
+            ..Transform::default()
+        };
+        let presented = prediction.present_local_pose(pose);
+        assert!(
+            (presented.position - (pose.position + prediction.presentation_offset())).length()
+                < EPSILON
+        );
+
+        // Each decay strictly shrinks it; it converges to exactly zero.
+        let after_one = {
+            prediction.decay_presentation_offset();
+            prediction.presentation_offset().length()
+        };
+        assert!(after_one < seeded, "decay shrinks the offset");
+        for _ in 0..64 {
+            prediction.decay_presentation_offset();
+        }
+        assert_eq!(prediction.presentation_offset(), Vec3::ZERO);
+        // Decaying a zero offset is a no-op.
+        prediction.decay_presentation_offset();
+        assert_eq!(prediction.presentation_offset(), Vec3::ZERO);
+    }
+
+    // --- clear_presentation_offset / clear_history wipe state for the teleport +
+    // reset paths. ---
+    #[test]
+    fn clear_helpers_wipe_offset_and_history() {
+        let world = floor_world();
+        let mut prediction = ClientPrediction::new();
+        prediction.arm(NetworkId(1), EntityId::from_raw(0));
+        prediction.predict_tick(
+            forward_command(0, false),
+            (start_transform(), component()),
+            &world,
+            GRAVITY,
+            DT,
+        );
+        prediction.seed_presentation_offset(Vec3::new(1.0, 0.0, 0.0));
+        assert!(!prediction.history().is_empty());
+
+        prediction.clear_history();
+        assert!(
+            prediction.history().is_empty(),
+            "clear_history empties the ring"
+        );
+        prediction.clear_presentation_offset();
+        assert_eq!(prediction.presentation_offset(), Vec3::ZERO);
     }
 
     // --- Re-arming to the same pawn preserves unacked history; re-arming to a

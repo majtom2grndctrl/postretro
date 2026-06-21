@@ -32,10 +32,12 @@ use glam::Vec3;
 
 use postretro_net::wire::{
     AckMessage, BaselineRefreshRequest, COMPONENT_KIND_PLAYER_MOVEMENT_STATE, ClientMessage,
-    ComponentPayload, EntityRecord, NetworkId, SnapshotMessage,
+    ComponentPayload, EntityRecord, NetworkId, SnapshotMessage, WirePlayerMovementState,
 };
 
-use crate::scripting::registry::{ComponentKind, ComponentValue, EntityId, EntityRegistry};
+use crate::scripting::registry::{
+    ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform,
+};
 
 use super::interpolation::{PoseSource, RemoteInterpolationBuffer, TransformSample};
 use super::{payload_is_finite, wire_to_transform};
@@ -108,6 +110,44 @@ pub(crate) struct ClientReplication {
     /// entity's initial pose at spawn — the interpolation sampler drives the visible
     /// pose every frame thereafter.
     interp: RemoteInterpolationBuffer,
+    /// The local predicted pawn's `NetworkId`, once a `local_player` record has armed
+    /// it (M15 Phase 3 Task 5). The local pawn is driven by client-side prediction +
+    /// reconciliation, NOT the remote interpolation path: it is excluded from the
+    /// interp buffer (`apply_components_to` skips recording it) and from
+    /// `sample_into_registry`'s presentation writes (which would otherwise clobber the
+    /// reconciled pose with a stale interpolated remote pose). `None` until armed.
+    local_pawn: Option<NetworkId>,
+}
+
+/// The authoritative local-pawn record this snapshot delivered, captured for the
+/// caller to drive reconciliation (M15 Phase 3 Task 5). `ClientReplication` knows
+/// which record is `local_player` but does not own `ClientPrediction`; it surfaces
+/// the authoritative pose + movement subset + command ack here, and the engine glue
+/// (`client_receive_and_apply`, which owns both halves) runs the reconcile. The
+/// `Transform` is still applied to the registry in `apply_components_to` so a
+/// not-yet-armed local pawn has a pose; reconcile then merges/replays on top.
+#[derive(Debug, Clone)]
+pub(crate) struct LocalReconcileInput {
+    /// The `NetworkId` of the local pawn record. The reconcile path matches by
+    /// `entity_id` (the armed pawn's mapped id), so this is carried for diagnostics
+    /// and the Task 6 harness rather than the reconcile match; staged until then.
+    #[allow(dead_code)]
+    pub(crate) network_id: NetworkId,
+    /// The mapped `EntityId` the record applied to.
+    pub(crate) entity_id: EntityId,
+    /// The authoritative pose the host resolved for this pawn. Restored verbatim,
+    /// then the unacked commands replay on top.
+    pub(crate) transform: Transform,
+    /// The authoritative mutable movement-tick subset. Merged onto the EXISTING
+    /// descriptor-derived component via `merge_wire_into_movement_state` (never
+    /// reconstructs a component). `None` if the local record carried no movement
+    /// payload (defensive — wire validation pairs `local_player` with movement).
+    pub(crate) movement: Option<WirePlayerMovementState>,
+    /// The latest client command tick the host resolved for this pawn before
+    /// snapshotting, or `None` if it has resolved none yet. `Some` ⇒ prune history
+    /// through it and replay the rest; `None` after prediction has started ⇒
+    /// authoritative reset (clear history, apply baseline, do NOT prune by tick).
+    pub(crate) acked_tick: Option<u32>,
 }
 
 /// What an `apply_snapshot` call produced: the ack to send (if the snapshot was
@@ -133,6 +173,12 @@ pub(crate) struct ApplyOutcome {
     /// this snapshot. Task 5 extends this seam with the reconciliation ack
     /// (`last_processed_client_tick`) it consumes alongside the merge.
     pub(crate) armed_local_pawn: Option<(NetworkId, EntityId)>,
+    /// The authoritative local-pawn record this snapshot applied (M15 Phase 3
+    /// Task 5), for the caller to drive reconciliation. `None` when no local-player
+    /// record was applied this snapshot. Captured for EVERY applied local record (a
+    /// full baseline or a delta), not only the arming one — reconcile runs on every
+    /// authoritative local update; the arming case is just the first.
+    pub(crate) local_reconcile: Option<LocalReconcileInput>,
 }
 
 impl ClientReplication {
@@ -181,10 +227,7 @@ impl ClientReplication {
                     baseline_id,
                     components,
                     local_player,
-                    // Task 1 stub: `last_processed_client_tick` is decoded and
-                    // validated but not yet consumed — Task 5 reconciliation reads
-                    // it. `local_player` is consumed now to arm prediction (Task 3).
-                    ..
+                    last_processed_client_tick,
                 } => {
                     if self.apply_full_baseline(
                         registry,
@@ -202,6 +245,13 @@ impl ClientReplication {
                             *local_player,
                             &mut outcome,
                         );
+                        self.capture_local_reconcile(
+                            NetworkId(*network_id),
+                            *local_player,
+                            components,
+                            *last_processed_client_tick,
+                            &mut outcome,
+                        );
                     }
                 }
                 EntityRecord::Delta {
@@ -210,8 +260,7 @@ impl ClientReplication {
                     new_baseline_id,
                     components,
                     local_player,
-                    // Task 1 stub: see the `FullBaseline` arm above.
-                    ..
+                    last_processed_client_tick,
                 } => {
                     if self.apply_delta(
                         registry,
@@ -228,6 +277,13 @@ impl ClientReplication {
                             registry,
                             NetworkId(*network_id),
                             *local_player,
+                            &mut outcome,
+                        );
+                        self.capture_local_reconcile(
+                            NetworkId(*network_id),
+                            *local_player,
+                            components,
+                            *last_processed_client_tick,
                             &mut outcome,
                         );
                     }
@@ -409,7 +465,56 @@ impl ClientReplication {
             log::warn!("[Net] failed to mark local player pawn for {network_id:?}: {err}");
             return;
         }
+        // Record the local pawn so the interp path (record + sample) excludes it: it is
+        // prediction-driven, not remote-interpolated. Drop any interp samples already
+        // buffered for it (a record applied before the arming snapshot seeded one).
+        self.local_pawn = Some(network_id);
+        self.interp.forget(network_id);
         outcome.armed_local_pawn = Some((network_id, entity_id));
+    }
+
+    /// Capture an applied `local_player` record's authoritative state for the caller's
+    /// reconcile pass (M15 Phase 3 Task 5). A no-op for a non-local record. The
+    /// reconcile orchestration (merge / restore / prune / replay / smooth) lives in
+    /// the engine glue that owns both `ClientReplication` and `ClientPrediction`, so
+    /// this only surfaces the inputs: the authoritative `Transform`, the mutable
+    /// movement-tick subset, and the command ack. Runs AFTER `maybe_arm_local_pawn`,
+    /// so a record that armed this frame is also captured (reconcile runs on the
+    /// arming snapshot too — restoring the baseline with no unacked tail to replay).
+    fn capture_local_reconcile(
+        &mut self,
+        network_id: NetworkId,
+        local_player: bool,
+        components: &[ComponentPayload],
+        acked_tick: Option<u32>,
+        outcome: &mut ApplyOutcome,
+    ) {
+        if !local_player {
+            return;
+        }
+        let Some(&entity_id) = self.map.get(&network_id) else {
+            return;
+        };
+        // Pull the authoritative pose + movement subset out of the (finite-checked)
+        // payloads. A local record is a movement record (wire validation), so both are
+        // normally present; the Transform is required for reconcile to restore.
+        let Some(transform) = first_transform(components) else {
+            log::warn!(
+                "[Net] local_player record for {network_id:?} has no Transform; skipping reconcile"
+            );
+            return;
+        };
+        let movement = components.iter().find_map(|p| match p {
+            ComponentPayload::PlayerMovementState(m) if payload_is_finite(p) => Some(*m),
+            _ => None,
+        });
+        outcome.local_reconcile = Some(LocalReconcileInput {
+            network_id,
+            entity_id,
+            transform,
+            movement,
+            acked_tick,
+        });
     }
 
     /// Despawn a mapped entity and drop its mapping + baseline. Idempotent: an unknown
@@ -428,6 +533,11 @@ impl ClientReplication {
         // Drop the entity's interpolation buffer; a later re-spawn under a fresh
         // NetworkId starts with an empty buffer.
         self.interp.forget(network_id);
+        // If the local predicted pawn despawned, forget it: prediction re-arms off a
+        // future `local_player` baseline (a fresh NetworkId).
+        if self.local_pawn == Some(network_id) {
+            self.local_pawn = None;
+        }
     }
 
     /// Apply each component payload onto `id`. A `Transform` is written through
@@ -458,6 +568,16 @@ impl ClientReplication {
             _ => None,
         });
 
+        // The local predicted pawn is reconcile-driven: its authoritative pose +
+        // movement subset are captured by `capture_local_reconcile` and the reconcile
+        // path merges/replays them. Here we still write the Transform (so a not-yet-
+        // armed local pawn has a pose), but we do NOT feed the interp buffer (the local
+        // pawn never remote-interpolates) and we do NOT emit the movement-without-local
+        // diagnostic (reconcile handles the movement subset). `local_pawn` is set by
+        // `maybe_arm_local_pawn`, which runs AFTER this on the arming snapshot — so the
+        // arming record's interp sample is dropped by the `forget` there instead.
+        let is_local = self.local_pawn == Some(network_id);
+
         for payload in components {
             // Untrusted-wire guard: a non-finite pose/velocity is dropped before it
             // reaches the registry, where it would poison interpolation/camera math.
@@ -473,15 +593,19 @@ impl ClientReplication {
                     // is an unsupported kind, impossible for Transform. This seeds the
                     // initial visible pose; the interpolation sampler drives it after.
                     let _ = registry.set_component_value(id, value);
-                    // Record the server-tick-stamped sample for the interpolation buffer.
-                    self.interp.record(
-                        network_id,
-                        TransformSample {
-                            server_tick,
-                            transform,
-                            velocity: record_velocity,
-                        },
-                    );
+                    // Record the server-tick-stamped sample for the interpolation
+                    // buffer — skipped for the local pawn (prediction-driven, never
+                    // remote-interpolated).
+                    if !is_local {
+                        self.interp.record(
+                            network_id,
+                            TransformSample {
+                                server_tick,
+                                transform,
+                                velocity: record_velocity,
+                            },
+                        );
+                    }
                 }
                 ComponentPayload::PlayerMovementState(_) => {
                     // Apply ONLY onto an entity that already has a descriptor-derived
@@ -503,7 +627,7 @@ impl ClientReplication {
                         COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
                         "movement payload discriminant drifted"
                     );
-                    if !has_local {
+                    if !has_local && !is_local {
                         outcome
                             .ignored
                             .push(IgnoredPayload::MovementWithoutLocalComponent {
@@ -577,7 +701,7 @@ impl ClientReplication {
     /// and the render-stage `interpolated_transform` blend reproduces the pose verbatim
     /// at any frame alpha (the sim sub-tick fraction is an unrelated time base and must
     /// not re-blend an already-resolved pose — see
-    /// `EntityRegistry::set_remote_presentation_transform`). An entity with no buffered
+    /// `EntityRegistry::set_presentation_transform`). An entity with no buffered
     /// samples yet is left at its last-applied pose. Returns the number of entities
     /// presented (diagnostics).
     pub(crate) fn sample_into_registry(
@@ -593,10 +717,15 @@ impl ClientReplication {
             if !registry.exists(entity_id) {
                 continue;
             }
+            // The local predicted pawn is prediction/reconcile-driven, not remote-
+            // interpolated: skip it so its reconciled pose is not clobbered.
+            if self.local_pawn == Some(network_id) {
+                continue;
+            }
             let Some(pose) = self.interp.presented_pose(network_id, render_server_tick) else {
                 continue; // no samples buffered yet
             };
-            let _ = registry.set_remote_presentation_transform(entity_id, pose.transform);
+            let _ = registry.set_presentation_transform(entity_id, pose.transform);
             presented += 1;
             // Diagnostic: a HeldNewest after sustained starvation is the visible
             // freeze the buffer falls back to; logged sparingly at trace.

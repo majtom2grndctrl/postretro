@@ -10,6 +10,7 @@ mod interpolation;
 mod lifecycle;
 mod movement_state;
 mod prediction;
+mod reconcile;
 mod replication;
 mod wire_convert;
 
@@ -22,10 +23,21 @@ pub(crate) use interpolation::{DemoMover, interpolation_delay_ticks};
 pub(crate) use lifecycle::{SlotPawnSource, SlotPawns, on_slot_accepted, on_slot_closed};
 pub(crate) use prediction::ClientPrediction;
 // The movement-only replay helper is consumed by this module's forward prediction
-// (via the in-module path) and re-exported for Task 5 reconciliation's replay-the-
-// rest loop, which has no caller yet. Staged like the Task 2 wire/movement helpers.
+// (via the in-module path) and by Task 5 reconciliation (`reconcile.rs`, which calls
+// it through the submodule path).
 #[allow(unused_imports)]
 pub(crate) use prediction::replay;
+// Task 5 correction-classification API + thresholds and the reconcile entry point.
+// Re-exported so the Task 6 integrated latency harness can drive reconciliation
+// in-memory and assert the classification directly against the pinned AC thresholds.
+// Staged dead-code-allowed until that harness lands.
+#[allow(unused_imports)]
+pub(crate) use prediction::{
+    CorrectionClass, DASH_CORRECTION_MAX_M, ORDINARY_CORRECTION_MAX_M, TELEPORT_CORRECTION_MIN_M,
+    classify_correction,
+};
+#[allow(unused_imports)]
+pub(crate) use reconcile::reconcile_local_pawn;
 pub(crate) use replication::{ReplicableSet, produce_owned_snapshots};
 pub(crate) use wire_convert::sim_command_to_input;
 
@@ -501,11 +513,15 @@ pub(crate) fn decode_snapshot(bytes: &[u8]) -> Result<SnapshotMessage, SnapshotD
 ///
 /// The mutable registry borrow is threaded in by the caller (`main.rs`), so this
 /// module never reaches into `App`.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn client_receive_and_apply(
     registry: &mut EntityRegistry,
     client: &mut NetClient,
     replication: &mut ClientReplication,
     prediction: &mut ClientPrediction,
+    collision: &CollisionWorld,
+    gravity: f32,
+    tick_dt: f32,
     frame_dt: Duration,
 ) {
     for bytes in client.drain_snapshots() {
@@ -519,10 +535,29 @@ pub(crate) fn client_receive_and_apply(
         let outcome = replication.apply_snapshot(registry, &snapshot);
         // M15 Phase 3 Task 3: a `local_player` baseline arms client prediction with
         // the marked local pawn. Re-arming the same pawn preserves unacked history;
-        // a new pawn clears it. Task 5 reconciliation (merge/restore/prune/replay)
-        // is the next consumer of this applied-local-record point.
+        // a new pawn clears it. Arm BEFORE reconcile so the just-armed pawn reconciles
+        // on its arming snapshot too.
         if let Some((network_id, entity_id)) = outcome.armed_local_pawn {
             prediction.arm(network_id, entity_id);
+        }
+        // M15 Phase 3 Task 5: reconcile the local predicted pawn against the
+        // authoritative record this snapshot delivered — merge the movement subset,
+        // restore the transform, prune through the host ack, replay the unacked tail,
+        // snap the reconciled gameplay state, and seed the decaying presentation
+        // offset (or snap on a teleport). The registry-touching orchestration lives in
+        // `reconcile`; long-lived prediction/smoothing state lives in `prediction`.
+        if let Some(local) = &outcome.local_reconcile {
+            reconcile::reconcile_local_pawn(
+                registry,
+                prediction,
+                local.entity_id,
+                local.transform,
+                local.movement.as_ref(),
+                local.acked_tick,
+                collision,
+                gravity,
+                tick_dt,
+            );
         }
         for buffer in client::encode_client_messages(&outcome) {
             client.send_input(buffer);
@@ -602,6 +637,30 @@ pub(crate) fn client_predict_tick(
     let _ = registry.set_component(armed.entity_id, transform);
     let _ = registry.set_component(armed.entity_id, movement);
     true
+}
+
+/// The local-pawn presentation offset (M15 Phase 3 Task 5): the decaying correction
+/// added to the local pawn's gameplay-authoritative registry transform to produce the
+/// continuous first-person *presentation* pose. `Vec3::ZERO` for single-player, the
+/// host, or a client whose prediction is unarmed / fully converged. THE single accessor
+/// every local first-person render seam in `main.rs` reads (camera follow, view-feel
+/// eye, `RenderCamera`, portal visibility apex) so they all consume one continuous pose
+/// while gameplay reads the snapped registry transform.
+pub(crate) fn client_local_presentation_offset(endpoint: Option<&NetEndpoint>) -> Vec3 {
+    match endpoint {
+        Some(NetEndpoint::Client { prediction, .. }) => prediction.presentation_offset(),
+        _ => Vec3::ZERO,
+    }
+}
+
+/// Decay the local-pawn presentation offset one render frame toward zero (Task 5).
+/// Called once per render frame on the client, decoupled from the fixed sim tick:
+/// correction smoothing is presentation, not simulation. A no-op for single-player,
+/// the host, or a client with no correction in flight.
+pub(crate) fn client_decay_local_correction(endpoint: Option<&mut NetEndpoint>) {
+    if let Some(NetEndpoint::Client { prediction, .. }) = endpoint {
+        prediction.decay_presentation_offset();
+    }
 }
 
 /// Sample every remote entity's interpolation buffer and write the resulting poses

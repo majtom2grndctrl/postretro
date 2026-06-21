@@ -1343,9 +1343,16 @@ fn followed_player_pawn(
         .map(|(id, _)| id)
 }
 
+/// Follow the camera to the local pawn's eye. `presentation_offset` is the M15
+/// Phase 3 Task 5 local-pawn correction offset (the decaying difference between the
+/// predicted and reconciled pose); it is added to the gameplay-authoritative
+/// registry transform so the first-person eye glides smoothly across a reconcile
+/// correction without rubber-banding. `Vec3::ZERO` off the connected-client path
+/// (single-player / host), where the camera follows the registry pose verbatim.
 fn follow_camera_to_local_pawn(
     camera: &mut Camera,
     registry: &scripting::registry::EntityRegistry,
+    presentation_offset: Vec3,
 ) {
     use crate::scripting::registry::Transform;
 
@@ -1357,8 +1364,9 @@ fn follow_camera_to_local_pawn(
                 ),
             registry.get_component::<Transform>(id),
         ) {
-            camera.position =
-                transform.position + Vec3::new(0.0, component.capsule.eye_height, 0.0);
+            camera.position = transform.position
+                + presentation_offset
+                + Vec3::new(0.0, component.capsule.eye_height, 0.0);
         }
     }
 }
@@ -2159,7 +2167,17 @@ impl ApplicationHandler for App {
                             self.client_predict_movement_tick(&command, tick_dt);
                             if has_player_pawn {
                                 let registry_ref = self.script_ctx.registry.borrow();
-                                follow_camera_to_local_pawn(&mut self.camera, &registry_ref);
+                                // Tick-rate camera follow tracks the gameplay-
+                                // authoritative (snapped) registry pose; the Task 5
+                                // presentation offset is folded in once at the render
+                                // stage (the single presentation-pose seam) so the
+                                // frame_timing buffer carries the un-offset pose and
+                                // the offset decays at render rate, not tick rate.
+                                follow_camera_to_local_pawn(
+                                    &mut self.camera,
+                                    &registry_ref,
+                                    Vec3::ZERO,
+                                );
                             }
                             self.frame_timing
                                 .push_state(InterpolableState::new(self.camera.position));
@@ -2189,7 +2207,13 @@ impl ApplicationHandler for App {
                                 // weapon fire resolves its aim ray.
                                 if has_player_pawn {
                                     let registry_ref = registry.borrow();
-                                    follow_camera_to_local_pawn(&mut self.camera, &registry_ref);
+                                    // Host / single-player: no client-side correction
+                                    // offset (the host pawn is authoritative).
+                                    follow_camera_to_local_pawn(
+                                        &mut self.camera,
+                                        &registry_ref,
+                                        Vec3::ZERO,
+                                    );
                                 }
 
                                 #[cfg(feature = "dev-tools")]
@@ -2379,6 +2403,22 @@ impl ApplicationHandler for App {
                 // frame's look rotation.
                 let interp = self.frame_timing.interpolated_state();
 
+                // M15 Phase 3 Task 5: fold the connected client's local-pawn
+                // presentation offset into the interpolated eye position. This is the
+                // single render-stage presentation-pose seam — RenderCamera and the
+                // portal-visibility render eye both derive from `presented_eye` below,
+                // so the smoothed correction reaches the view matrix, camera uniforms,
+                // BSP camera-leaf lookup, and portal apex together. Gameplay reads the
+                // un-offset registry pose; only presentation lags and converges. ZERO
+                // off the connected-client path.
+                let local_presentation_offset =
+                    netcode::client_local_presentation_offset(self.net_endpoint.as_ref());
+                let presented_eye = interp.position + local_presentation_offset;
+                // Decay the offset one render frame toward zero now that this frame has
+                // read it (read the copy above, then advance the stored offset). Render-
+                // rate convergence: the correction glides out over a few frames.
+                netcode::client_decay_local_correction(self.net_endpoint.as_mut());
+
                 // View-feel assembly (movement.md D1/D5/D6): a render-only,
                 // pawn-driven camera effect. When the camera-driving pawn carries
                 // `view_feel`, run the render-rate evaluator and fold its output
@@ -2441,7 +2481,7 @@ impl ApplicationHandler for App {
                     };
 
                 let render_camera = camera::RenderCamera::new(
-                    interp.position,
+                    presented_eye,
                     self.camera.aspect(),
                     self.camera.yaw + vf_yaw_offset,
                     self.camera.pitch + vf_pitch_offset,
@@ -3813,6 +3853,12 @@ impl App {
             };
         let host_agent_params = self.nav_graph.as_ref().map(|g| g.agent_params());
         let host_spawn_points = std::mem::take(&mut self.host_spawn_points);
+        // M15 Phase 3 Task 5: the client reconcile replay threads collision + gravity
+        // through `client_receive_and_apply`. Capture the gravity scalar before the
+        // endpoint borrow (a `Cell` copy); the collision world is read by-reference
+        // inside the client arm (a disjoint field from `net_endpoint`).
+        let gravity = self.script_ctx.gravity.get();
+        let collision_world = &self.collision_world;
         match self.net_endpoint.as_mut() {
             None => {}
             Some(netcode::NetEndpoint::Host {
@@ -3939,6 +3985,9 @@ impl App {
                     client,
                     replication,
                     prediction,
+                    collision_world,
+                    gravity,
+                    crate::frame_timing::TICK_DURATION.as_secs_f32(),
                     dt,
                 );
                 // The interpolation-buffer sampling that writes presented remote poses
@@ -4708,7 +4757,7 @@ mod tests {
                 &mut ai_warned,
                 &command,
                 |registry| {
-                    follow_camera_to_local_pawn(&mut camera, &registry.borrow());
+                    follow_camera_to_local_pawn(&mut camera, &registry.borrow(), Vec3::ZERO);
                     build_post_movement_command(&camera)
                 },
                 TICK_DURATION.as_secs_f32(),
@@ -4769,7 +4818,7 @@ mod tests {
             Some(marked),
             "valid marked movement pawn remains selected even without transform"
         );
-        follow_camera_to_local_pawn(&mut camera, &registry);
+        follow_camera_to_local_pawn(&mut camera, &registry, Vec3::ZERO);
         let post = build_post_movement_command(&camera);
 
         assert_eq!(
@@ -4819,7 +4868,7 @@ mod tests {
             Some(first),
             "legacy no-marker fallback must pick the same first movement pawn as sim systems"
         );
-        follow_camera_to_local_pawn(&mut camera, &registry);
+        follow_camera_to_local_pawn(&mut camera, &registry, Vec3::ZERO);
 
         assert_eq!(
             camera.position,
@@ -4985,7 +5034,7 @@ mod tests {
             &mut ai_warned,
             &command,
             |registry| {
-                follow_camera_to_local_pawn(&mut camera, &registry.borrow());
+                follow_camera_to_local_pawn(&mut camera, &registry.borrow(), Vec3::ZERO);
                 let post = build_post_movement_command(&camera);
                 resolved_aim_origin = Some(post.aim_origin);
                 post

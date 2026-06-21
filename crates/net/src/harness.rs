@@ -638,6 +638,9 @@ mod tests {
             clock.now_us.set(client_now_us(virtual_ms));
             let client_tick = (virtual_ms * 60 / 1000) as u32;
             if let Some(req) = sender.maybe_send(&clock, client_tick) {
+                // Register the issued sample_id so the estimator's provenance
+                // guard accepts the eventual echo.
+                estimator.record_sent(req.sample_id);
                 // Encode as the real wire envelope so the codec is exercised.
                 let msg = wire::ClientMessage::TimeSync(req);
                 to_server.enqueue(wire::encode(&msg));

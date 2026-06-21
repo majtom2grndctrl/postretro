@@ -223,10 +223,11 @@ pub enum ValidationError {
     UnknownRecordKind(u16),
     /// `component_kind` was not one of the defined component discriminants.
     UnknownComponentKind(u16),
-    /// The payload slot required by `component_kind` was `None`.
+    /// The slot `component_kind` names was `None` (whether or not a different slot
+    /// was populated).
     MissingComponentPayload(u16),
     /// More than one payload slot was `Some` (ambiguous which one `component_kind`
-    /// names), or a slot was `Some` that does not match `component_kind`.
+    /// names).
     MismatchedComponentPayload(u16),
 }
 
@@ -349,24 +350,6 @@ impl RawSnapshotMessage {
             records,
         })
     }
-}
-
-// ---------------------------------------------------------------------------
-// Phase 1 full-state snapshot (still used by Phase 1 engine glue until Task 2/3
-// rewires serialize/apply onto the lifecycle records above).
-// ---------------------------------------------------------------------------
-
-/// Full-state snapshot envelope: a server tick stamp plus a count-prefixed list
-/// of `(NetworkId, ComponentPayload)`. bitcode length-prefixes the `Vec`, which
-/// is the "count-prefixed entries" on the wire; an empty list encodes as count 0.
-///
-/// Phase 1 carrier — the Phase 2 wire is [`RawSnapshotMessage`]. `ComponentPayload`
-/// is no longer `Encode`/`Decode` (it is the validated apply model), so this type's
-/// codec derive is gone; it is constructed in-process by the engine glue, not sent.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Snapshot {
-    pub tick: u32,
-    pub entries: Vec<(NetworkId, ComponentPayload)>,
 }
 
 /// Wire mirror of the engine `MovementInput` fields the input command carries.
@@ -941,8 +924,10 @@ mod tests {
     }
 
     #[test]
-    fn mismatched_payload_slot_rejects() {
+    fn wrong_slot_for_kind_reports_missing() {
         // Kind says PlayerMovementState, but only the Transform slot is filled.
+        // The named slot (player_movement) is None, so the error is Missing, not
+        // Mismatched — even though a different slot is populated.
         let payload = RawComponentPayload {
             component_kind: COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
             transform: Some(sample_transform()),

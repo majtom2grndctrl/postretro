@@ -125,6 +125,12 @@ struct Sample {
 /// Stale-echo policy: each accepted sample must carry a `sample_id` strictly
 /// greater than the last accepted one. A reordered or duplicated echo (older or
 /// equal id) is ignored, so only the newest in-flight probe advances state.
+///
+/// Provenance policy: an echo is also rejected if its `sample_id` exceeds the
+/// highest id actually issued by the local [`TimeSyncSender`]. Call
+/// [`ClockEstimator::record_sent`] each time a probe is emitted; `ingest_echo`
+/// rejects any echo whose id was never sent, closing the wedge-by-forged-id
+/// attack vector.
 pub struct ClockEstimator {
     micros_per_tick: f64,
     /// `false` until the first sample is folded in; the first sample seeds the
@@ -132,6 +138,9 @@ pub struct ClockEstimator {
     initialized: bool,
     /// Highest `sample_id` accepted so far. A sample id `<=` this is stale.
     last_sample_id: Option<u32>,
+    /// Highest `sample_id` issued by the local sender. An echo with a
+    /// `sample_id` greater than this was never sent and is rejected.
+    last_issued_id: Option<u32>,
     /// Smoothed server-tick offset: `estimated_server_tick(t) =
     /// client_ticks(t) + offset_ticks`, where `client_ticks(t) = t_us /
     /// micros_per_tick`.
@@ -157,6 +166,7 @@ impl ClockEstimator {
             micros_per_tick: micros_per_tick as f64,
             initialized: false,
             last_sample_id: None,
+            last_issued_id: None,
             offset_ticks: 0.0,
             rtt_us: 0.0,
             jitter_us: 0.0,
@@ -170,16 +180,39 @@ impl ClockEstimator {
         self.initialized
     }
 
+    /// Record that a probe with `sample_id` was just emitted. Must be called once
+    /// per [`TimeSyncSender::maybe_send`] result (passing the returned
+    /// `sample_id`). `ingest_echo` rejects any echo whose `sample_id` exceeds
+    /// the highest id recorded here.
+    pub fn record_sent(&mut self, sample_id: u32) {
+        self.last_issued_id = Some(match self.last_issued_id {
+            None => sample_id,
+            Some(prev) => prev.max(sample_id),
+        });
+    }
+
     /// Fold one echo into the estimate. `recv_time_us` is the client's local
     /// monotonic microseconds when the echo arrived — RTT is computed purely
     /// from it and the echoed `client_send_time_us`, never from the server's
     /// clock. Returns `true` if the sample advanced state, `false` if it was a
-    /// stale/duplicate echo dropped by `sample_id`.
+    /// stale/duplicate or unsent echo.
+    ///
+    /// Provenance check: rejects an echo whose `sample_id` was never issued by
+    /// the local sender (greater than the highest id passed to
+    /// [`ClockEstimator::record_sent`]). A forged high id cannot wedge the
+    /// estimator; a subsequent legitimate echo still advances state.
     ///
     /// A non-monotonic receive time (echo `client_send_time_us` greater than
     /// `recv_time_us`, e.g. a corrupted or replayed packet) yields a clamped
     /// zero RTT rather than an underflow — never a panic.
     pub fn ingest_echo(&mut self, echo: &TimeSyncEcho, recv_time_us: u64) -> bool {
+        // Provenance guard: reject an echo we could not have sent.
+        match self.last_issued_id {
+            None => return false, // no probe sent yet
+            Some(max_issued) if echo.sample_id > max_issued => return false,
+            _ => {}
+        }
+
         // Stale-echo guard: only a strictly-newer sample advances state. A
         // reordered or duplicated echo is dropped here.
         if let Some(last) = self.last_sample_id {
@@ -251,7 +284,7 @@ impl ClockEstimator {
     }
 
     /// Smoothed jitter estimate in microseconds — the interpolation buffer
-    /// consumer (Task 6) sizes its delay against this.
+    /// consumer sizes its delay against this.
     #[must_use]
     pub fn jitter_micros(&self) -> f64 {
         self.jitter_us
@@ -414,6 +447,7 @@ mod tests {
         let mut e = echo(0, send_us, 60);
         e.server_echo_time_us = 5; // absurd server clock, must not affect RTT
         let recv_us = send_us + 150_000; // 150 ms round trip on the client clock
+        est.record_sent(0);
         assert!(est.ingest_echo(&e, recv_us));
         assert!(
             (est.rtt_micros() - 150_000.0).abs() < EPS,
@@ -429,6 +463,7 @@ mod tests {
         let mut est = ClockEstimator::new(DEFAULT_MICROS_PER_TICK);
         let e = echo(0, 2_000_000, 60);
         let recv_us = 1_000_000; // earlier than send — impossible but must be safe
+        est.record_sent(0);
         assert!(est.ingest_echo(&e, recv_us));
         assert!((est.rtt_micros() - 0.0).abs() < EPS);
     }
@@ -438,6 +473,10 @@ mod tests {
     #[test]
     fn stale_echo_is_ignored_by_sample_id() {
         let mut est = ClockEstimator::new(DEFAULT_MICROS_PER_TICK);
+        // Record ids 0-6 as sent so the provenance check passes.
+        for id in 0..=6 {
+            est.record_sent(id);
+        }
         // Newest sample id 5 accepted first.
         assert!(est.ingest_echo(&echo(5, 1_000_000, 600), 1_100_000));
         let offset_after_5 = est.estimated_server_tick_at(0);
@@ -460,6 +499,8 @@ mod tests {
     #[test]
     fn first_sample_seeds_then_subsequent_samples_smooth_at_weight() {
         let mut est = ClockEstimator::new(DEFAULT_MICROS_PER_TICK);
+        est.record_sent(0);
+        est.record_sent(1);
 
         // First sample seeds offset directly. send=0, RTT=0 => midpoint 0 =>
         // offset = server_tick - 0 = 100.
@@ -481,6 +522,8 @@ mod tests {
     #[test]
     fn jitter_grows_with_rtt_variance_at_its_weight() {
         let mut est = ClockEstimator::new(DEFAULT_MICROS_PER_TICK);
+        est.record_sent(0);
+        est.record_sent(1);
         // Seed RTT at 100_000 us (jitter seeded to 0).
         assert!(est.ingest_echo(&echo(0, 0, 60), 100_000));
         assert!((est.jitter_micros() - 0.0).abs() < EPS);
@@ -493,6 +536,36 @@ mod tests {
             "jitter must EWMA the RTT deviation at weight 0.2, got {}",
             est.jitter_micros()
         );
+    }
+
+    // --- Provenance guard: forged sample_id cannot wedge the estimator ---
+
+    #[test]
+    fn forged_max_sample_id_is_rejected_and_does_not_freeze_estimator() {
+        // A single echo with sample_id = u32::MAX (never sent) must be rejected
+        // even when it is strictly greater than the last accepted id (None here).
+        // A subsequent legitimate echo (sample_id 0, which was sent) must still
+        // advance the estimate — the estimator is not wedged.
+        let mut est = ClockEstimator::new(DEFAULT_MICROS_PER_TICK);
+        est.record_sent(0); // only id 0 has been issued
+
+        // Forged max id — never sent, must be rejected.
+        let forged = echo(u32::MAX, 500_000, 999);
+        assert!(
+            !est.ingest_echo(&forged, 600_000),
+            "echo with sample_id u32::MAX was never sent and must be rejected"
+        );
+        assert!(
+            !est.is_initialized(),
+            "a rejected forged echo must not advance the estimate"
+        );
+
+        // A legitimate echo (id 0, which was sent) must still be accepted.
+        assert!(
+            est.ingest_echo(&echo(0, 0, 600), 100_000),
+            "a legitimate echo must advance the estimate after a forged echo was rejected"
+        );
+        assert!(est.is_initialized());
     }
 
     // --- Sender cadence (5 Hz) ---
@@ -524,6 +597,7 @@ mod tests {
     #[test]
     fn estimated_server_tick_advances_with_local_clock() {
         let mut est = ClockEstimator::new(DEFAULT_MICROS_PER_TICK);
+        est.record_sent(0);
         // Seed: at local time 0 the server is at tick 600.
         assert!(est.ingest_echo(&echo(0, 0, 600), 0));
 

@@ -3761,28 +3761,44 @@ impl App {
             None => {}
             Some(netcode::NetEndpoint::Host {
                 server,
+                allocator,
                 replication,
+                replicable,
+                slot_pawns,
                 tick,
-                ..
             }) => {
                 // Drive the listen server (accept handshakes, drain the socket).
                 // Snapshots are sent post-loop in `net_serialize_and_send`.
                 match server.update(dt) {
                     // Log this frame's handshake verdicts and register accepted
                     // clients with the replication tracker so their per-client
-                    // baseline state exists before the next snapshot batch.
-                    Ok(outcomes) => {
+                    // baseline state exists before the next snapshot batch. Then
+                    // apply the slot lifecycle transitions (accept spawns a slot-
+                    // owned inert pawn; close despawns it) through the game-logic-
+                    // owned registry borrow.
+                    Ok(poll) => {
                         use postretro_net::transport::HandshakeOutcome;
-                        for outcome in outcomes {
+                        for outcome in &poll.handshakes {
                             match outcome {
                                 HandshakeOutcome::Accepted { client_id } => {
                                     log::info!("[Net] client {client_id} accepted");
-                                    replication.register_client(client_id);
+                                    replication.register_client(*client_id);
                                 }
                                 HandshakeOutcome::Rejected { client_id, reason } => {
                                     log::warn!("[Net] client {client_id} rejected: {reason}");
                                 }
                             }
+                        }
+                        if !poll.lifecycle.is_empty() {
+                            let mut registry = self.script_ctx.registry.borrow_mut();
+                            netcode::host_handle_lifecycle(
+                                &mut registry,
+                                allocator,
+                                replication,
+                                replicable,
+                                slot_pawns,
+                                &poll.lifecycle,
+                            );
                         }
                     }
                     Err(err) => log::error!("[Net] host update failed: {err}"),
@@ -3837,6 +3853,7 @@ impl App {
             tick,
             replication,
             replicable,
+            slot_pawns: _,
         }) = self.net_endpoint.as_mut()
         else {
             return;

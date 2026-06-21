@@ -13,9 +13,11 @@
 // untouched — Phase 2 owns remove-missing).
 
 mod client;
+mod lifecycle;
 mod replication;
 
 pub(crate) use client::ClientReplication;
+pub(crate) use lifecycle::{on_slot_accepted, on_slot_closed, SlotPawnSource, SlotPawns};
 pub(crate) use replication::{produce_owned_snapshots, ReplicableSet};
 
 use std::collections::HashMap;
@@ -166,6 +168,11 @@ pub(crate) enum NetEndpoint {
         /// The Phase 2 replicable set: entities explicitly registered as
         /// authoritative networked gameplay objects (slot pawns, demo mover).
         replicable: ReplicableSet,
+        /// Task 4 connection-lifecycle state: the slot -> remote-pawn `EntityId`
+        /// map. An accepted client gets one slot-owned inert pawn here; a closed
+        /// slot despawns it. Owned alongside `allocator`/`replicable` because the
+        /// accept/close cleanup mutates all three together.
+        slot_pawns: SlotPawns,
     },
     /// Client plus the Phase 2 client replication state (the `NetworkId -> EntityId`
     /// map, per-entity baseline table, pending-repair set, sequence tracking). The
@@ -261,6 +268,7 @@ impl NetEndpoint {
                     tick: 0,
                     replication: Box::new(ServerReplication::new()),
                     replicable: ReplicableSet::new(),
+                    slot_pawns: SlotPawns::new(),
                 }))
             }
             NetRole::Connect { addr } => {
@@ -514,6 +522,55 @@ pub(crate) fn host_replicate(
         if let Some(raw) = replication.encode_in_batch(client_id, tick, sequence) {
             let bytes = wire::encode(&raw);
             let _ = server.send_snapshot(client_id, bytes);
+        }
+    }
+}
+
+/// Apply this frame's slot lifecycle transitions to the host's remote-pawn state
+/// (Task 4). Each `SlotEvent::Accepted` spawns and registers one slot-owned inert
+/// pawn; each `SlotEvent::Closed` (clean disconnect or timeout — one cleanup path)
+/// despawns it, drops it from the replicable set, and drops the slot mapping. The
+/// `HandshakeOutcome::Accepted` verdicts still drive per-client replication
+/// registration at the call site; this consumes the slot-lifecycle half of the same
+/// poll.
+///
+/// Game-logic-owned: the registry mutation flows through `EntityRegistry::spawn` /
+/// `despawn`. The mutable registry borrow is threaded in by the caller so this
+/// module never reaches into `App`.
+pub(crate) fn host_handle_lifecycle(
+    registry: &mut EntityRegistry,
+    allocator: &mut NetworkIdAllocator,
+    replication: &mut ServerReplication,
+    replicable: &mut ReplicableSet,
+    slot_pawns: &mut SlotPawns,
+    lifecycle: &[postretro_net::slots::SlotEvent],
+) {
+    use postretro_net::slots::SlotEvent;
+    for event in lifecycle {
+        match event {
+            SlotEvent::Accepted { client_id } => {
+                // Prefer the descriptor-backed materialization path when a
+                // descriptor-backed pawn is available; this glue path has no player
+                // descriptor threaded in, so use the Transform-only inert fixture
+                // (entity_model.md §7b — not a real movement pawn).
+                let _ = on_slot_accepted(
+                    registry,
+                    slot_pawns,
+                    allocator,
+                    replicable,
+                    *client_id,
+                    SlotPawnSource::TransformFixture,
+                );
+            }
+            SlotEvent::Closed { client_id, .. } => {
+                let _ = on_slot_closed(
+                    registry,
+                    slot_pawns,
+                    replicable,
+                    replication,
+                    *client_id,
+                );
+            }
         }
     }
 }

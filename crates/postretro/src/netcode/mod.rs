@@ -5,6 +5,7 @@
 // See: context/lib/networking.md
 
 mod client;
+mod command_queue;
 mod interpolation;
 mod lifecycle;
 mod movement_state;
@@ -13,6 +14,10 @@ mod replication;
 mod wire_convert;
 
 pub(crate) use client::ClientReplication;
+pub(crate) use command_queue::{HostCommandQueues, MovementOwners, host_resolve_movement_inputs};
+// `ResolvedCommand` / `ResolutionSource` are produced by the command queue and read
+// by this module's tests; Task 5/6 (reconciliation/harness) consume them through the
+// submodule path. Not re-exported here until a non-test caller lands.
 pub(crate) use interpolation::{DemoMover, interpolation_delay_ticks};
 pub(crate) use lifecycle::{SlotPawnSource, SlotPawns, on_slot_accepted, on_slot_closed};
 pub(crate) use prediction::ClientPrediction;
@@ -193,6 +198,15 @@ pub(crate) enum NetEndpoint {
         /// slot despawns it. Owned alongside `allocator`/`replicable` because the
         /// accept/close cleanup mutates all three together.
         slot_pawns: SlotPawns,
+        /// M15 Phase 3 host authoritative command queues, keyed by client id. Inbound
+        /// `ClientMessage::Input` is sanitized + queued here; the movement stage
+        /// resolves one command per pawn per fixed tick via the deterministic gap
+        /// policy.
+        command_queues: HostCommandQueues,
+        /// M15 Phase 3 movement-authority owner map: `EntityId -> owning client id`.
+        /// Stamps `owner_client_id` + the resolved cursor onto each owned pawn's
+        /// snapshot so the net crate can derive per-recipient `local_player`.
+        owners: MovementOwners,
         /// Task 6 Phase 2 net-demo fixture. When the demo path is active
         /// (`POSTRETRO_NET_DEMO_MOVER=1`), the host spawns one deterministic
         /// AI-less mover ([`DemoMover`]) and stores its `EntityId` here; each tick
@@ -311,6 +325,8 @@ impl NetEndpoint {
                     replication: Box::new(ServerReplication::new()),
                     replicable: ReplicableSet::new(),
                     slot_pawns: SlotPawns::new(),
+                    command_queues: HostCommandQueues::new(),
+                    owners: MovementOwners::new(),
                     demo_mover: DemoMoverState::from_env(),
                 }))
             }
@@ -703,17 +719,21 @@ pub(crate) fn host_drive_demo_mover(
 /// snapshot is encoded only when `tick % SNAPSHOT_TICK_INTERVAL == 0`, but the
 /// tracker ingests every tick so an entity that changes and reverts within the
 /// interval is still detected on the boundary it is sampled.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn host_replicate(
     registry: &EntityRegistry,
     server: &mut NetServer,
     allocator: &mut NetworkIdAllocator,
     replication: &mut ServerReplication,
     replicable: &ReplicableSet,
+    owners: &MovementOwners,
+    command_queues: &HostCommandQueues,
     tick: u32,
 ) {
     // Owned post-tick snapshot rule: copy replicable state into owned mirrors keyed
     // by NetworkId while borrowing the registry, then release before the net call.
-    let owned = produce_owned_snapshots(registry, replicable, allocator);
+    // Owned movement pawns also carry their owner id + resolved cursor (Phase 3).
+    let owned = produce_owned_snapshots(registry, replicable, allocator, owners, command_queues);
     replication.ingest_tick(owned);
 
     // Snapshots emit at 20 Hz (every third 60 Hz tick); ingest ran every tick above.
@@ -769,6 +789,61 @@ pub(crate) fn host_handle_accept(
     );
 }
 
+/// Production accept seam for a Phase 3 movement session: spawn the descriptor-backed
+/// remote `PlayerMovement` pawn for an accepted client. Deterministically assigns the
+/// slot a `player_spawn` placement (auditable, stable across reconnect), records the
+/// owner mapping, then materializes the pawn through [`on_slot_accepted`]'s descriptor
+/// path. Falls back to nothing (logged) if there are no spawn points or the descriptor
+/// spawn fails — the caller keeps the slot for a later retry.
+///
+/// `spawn_points` are the level's `player_spawn` placements; `descriptors` the
+/// registered entity descriptors; `agent_params` the navmesh capsule (or `None`).
+/// Game-logic-owned: the spawn flows through `EntityRegistry::spawn`; the caller
+/// threads in the mutable registry borrow.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn host_handle_accept_descriptor(
+    registry: &mut EntityRegistry,
+    allocator: &mut NetworkIdAllocator,
+    replicable: &mut ReplicableSet,
+    slot_pawns: &mut SlotPawns,
+    command_queues: &mut HostCommandQueues,
+    owners: &mut MovementOwners,
+    client_id: u64,
+    spawn_points: &[crate::scripting::map_entity::MapEntity],
+    descriptors: &[crate::scripting::data_descriptors::EntityTypeDescriptor],
+    agent_params: Option<crate::nav::NavAgentParams>,
+) {
+    // Deterministic, auditable slot -> placement assignment recorded BEFORE the spawn.
+    let Some(idx) = slot_pawns.assign_placement(client_id, spawn_points.len()) else {
+        log::warn!(
+            "[Net] slot {client_id} accepted but the map has no player_spawn placements; no pawn spawned"
+        );
+        return;
+    };
+    let placement = &spawn_points[idx];
+
+    let spawned = on_slot_accepted(
+        registry,
+        slot_pawns,
+        allocator,
+        replicable,
+        client_id,
+        SlotPawnSource::Descriptor {
+            placement,
+            descriptors,
+            agent_params,
+        },
+    );
+
+    if let Some((pawn, _net_id)) = spawned {
+        // Record the owner mapping (pawn -> client_id) so snapshot production can stamp
+        // `owner_client_id` and the resolved cursor. The client's command queue is
+        // created lazily on its first ingested command.
+        owners.set(pawn, client_id);
+        let _ = command_queues;
+    }
+}
+
 /// Apply this frame's slot lifecycle transitions to the host's remote-pawn state
 /// (Task 4). `ServerPoll.lifecycle` carries `SlotEvent::Closed` only — accepts are
 /// driven from the handshake verdict via [`host_handle_accept`], never lifecycle.
@@ -783,13 +858,24 @@ pub(crate) fn host_handle_lifecycle(
     replicable: &mut ReplicableSet,
     replication: &mut ServerReplication,
     slot_pawns: &mut SlotPawns,
+    command_queues: &mut HostCommandQueues,
+    owners: &mut MovementOwners,
     lifecycle: &[postretro_net::slots::SlotEvent],
 ) {
     use postretro_net::slots::SlotEvent;
     for event in lifecycle {
         match event {
             SlotEvent::Closed { client_id, .. } => {
-                let _ = on_slot_closed(registry, slot_pawns, replicable, replication, *client_id);
+                let despawned =
+                    on_slot_closed(registry, slot_pawns, replicable, replication, *client_id);
+                // M15 Phase 3: drop the closed client's command queue and the pawn's
+                // owner mapping so its stale authority metadata never rides a later
+                // snapshot. The slot's placement assignment is intentionally retained
+                // (a reconnecting client lands on its prior spawn — auditable source).
+                command_queues.remove_client(*client_id);
+                if let Some(pawn) = despawned {
+                    owners.remove_pawn(pawn);
+                }
             }
             // Accepts never reach lifecycle (the transport discards `SlotEvent::Accepted`
             // at `on_accept`); the spawn is driven from the handshake verdict instead, so
@@ -814,6 +900,7 @@ pub(crate) fn host_handle_lifecycle(
 pub(crate) fn host_handle_client_messages(
     server: &mut NetServer,
     replication: &mut ServerReplication,
+    command_queues: &mut HostCommandQueues,
     client_id: u64,
     server_tick: u32,
     server_now_us: u64,
@@ -826,27 +913,56 @@ pub(crate) fn host_handle_client_messages(
                 continue;
             }
         };
-        match msg {
-            wire::ClientMessage::Ack(ack) => {
-                replication.apply_ack(
-                    client_id,
-                    ack.latest_snapshot_sequence,
-                    &ack.entity_baselines,
-                    &ack.despawn_tombstones,
-                );
-            }
-            wire::ClientMessage::BaselineRefresh(req) => {
-                replication.request_refresh(client_id, req.network_id, req.missing_baseline_ref);
-            }
-            // Echo the time-sync probe with the server tick sampled now. The echo
-            // rides Channel::Input back; the client measures RTT from its own
-            // send/receive times and folds the server tick into its estimate.
-            wire::ClientMessage::TimeSync(req) => {
-                let echo = req.echo(server_tick, server_now_us);
-                server.send_input(client_id, wire::encode(&echo));
-            }
-            // Phase 1/2 round-trips input but does not yet apply it to gameplay.
-            wire::ClientMessage::Input(_) => {}
+        host_handle_client_message(
+            server,
+            replication,
+            command_queues,
+            client_id,
+            server_tick,
+            server_now_us,
+            msg,
+        );
+    }
+}
+
+/// Apply one decoded `ClientMessage` from `client_id` (M15 Phase 3). Split from the
+/// drain loop so the duplicate/old-input hardening is testable by injecting a
+/// `ClientMessage::Input` directly at this seam — without a reliable-ordered
+/// transport producing duplicates. An invalid `Input` (non-finite) is dropped at
+/// intake and mutates no queue or registry state.
+pub(crate) fn host_handle_client_message(
+    server: &mut NetServer,
+    replication: &mut ServerReplication,
+    command_queues: &mut HostCommandQueues,
+    client_id: u64,
+    server_tick: u32,
+    server_now_us: u64,
+    msg: wire::ClientMessage,
+) {
+    match msg {
+        wire::ClientMessage::Ack(ack) => {
+            replication.apply_ack(
+                client_id,
+                ack.latest_snapshot_sequence,
+                &ack.entity_baselines,
+                &ack.despawn_tombstones,
+            );
+        }
+        wire::ClientMessage::BaselineRefresh(req) => {
+            replication.request_refresh(client_id, req.network_id, req.missing_baseline_ref);
+        }
+        // Echo the time-sync probe with the server tick sampled now. The echo
+        // rides Channel::Input back; the client measures RTT from its own
+        // send/receive times and folds the server tick into its estimate.
+        wire::ClientMessage::TimeSync(req) => {
+            let echo = req.echo(server_tick, server_now_us);
+            server.send_input(client_id, wire::encode(&echo));
+        }
+        // M15 Phase 3 Task 4: sanitize + queue the input command for this client.
+        // `ingest` rejects non-finite commands, drops stale/duplicate ones, and never
+        // mutates any other client's queue. The movement stage resolves them per tick.
+        wire::ClientMessage::Input(input) => {
+            command_queues.ingest(client_id, &input);
         }
     }
 }
@@ -1113,7 +1229,13 @@ mod tests {
         // It has an allocated NetworkId and replicates: produce_owned_snapshots emits
         // exactly the one pawn, keyed by its allocated NetworkId.
         let expected_net_id = allocator.stamp(pawn);
-        let owned = produce_owned_snapshots(&registry, &replicable, &mut allocator);
+        let owned = produce_owned_snapshots(
+            &registry,
+            &replicable,
+            &mut allocator,
+            &MovementOwners::new(),
+            &HostCommandQueues::new(),
+        );
         assert_eq!(owned.len(), 1, "exactly the accepted pawn replicates");
         assert_eq!(
             owned[0].network_id, expected_net_id.0,

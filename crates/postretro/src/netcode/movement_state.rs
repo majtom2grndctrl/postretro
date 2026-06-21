@@ -15,8 +15,8 @@ use crate::scripting::components::player_movement::{MovementState, PlayerMovemen
 /// mirror. Only the fields that change tick-to-tick cross the wire; descriptor
 /// tuning, `view_feel`, standing dimensions, stuck-stop config, and
 /// `dash_programs` stay local on both peers and are never read here.
-// Caller lands in Task 4 (host snapshot production) / Task 5 (reconciliation).
-#[allow(dead_code)]
+// Called by Task 4's host snapshot production (`replication::collect_payloads`); also
+// consumed by Task 5 reconciliation.
 pub(crate) fn movement_state_to_wire(
     component: &PlayerMovementComponent,
 ) -> WirePlayerMovementState {

@@ -31,6 +31,7 @@ use crate::movement::substrate::{
 /// checks (`.length_squared() < 0.001`, `.y.abs() > 1e-3`) that are
 /// sensitive to diagonal magnitudes. The 3D world-space direction derived from
 /// `wish_dir` is normalized internally before being applied to locomotion.
+#[derive(Debug, Clone)]
 pub(crate) struct MovementInput {
     pub(crate) wish_dir: Vec2, // x = right, y = forward
     pub(crate) jump_pressed: bool,

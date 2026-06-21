@@ -34,10 +34,47 @@ use crate::wire::{
 /// (`WireTransform`, `WirePlayerMovementState`) by value, never by serializing and
 /// diffing bytes. The order is significant for equality: the producer must emit a
 /// stable component order per entity.
+///
+/// `owner_client_id` and `last_processed_client_tick` are movement-authority
+/// metadata the engine glue stamps for a networked movement pawn (M15 Phase 3). The
+/// tracker stays registry-blind: it keeps them keyed by `NetworkId`, compares
+/// `owner_client_id` against the recipient client id at encode time to derive the
+/// per-recipient `local_player` flag, and echoes `last_processed_client_tick` into
+/// the record. Both are `None` for the Transform-only fixtures and the demo mover —
+/// a pawn with no movement authority. They are **excluded from dirty detection**:
+/// the resolved cursor advances every tick a command resolves, but the wire
+/// payload only changes when the pose/movement mirrors do, so folding the cursor
+/// into equality would defeat the omit-unchanged optimization.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EntitySnapshot {
     pub network_id: u32,
     pub components: Vec<ComponentPayload>,
+    /// The client that owns this pawn (movement authority), or `None` for an
+    /// unowned entity (fixture / demo mover / static). Compared against the
+    /// recipient client id at encode time to set `local_player`. Never exposes an
+    /// `EntityId` — it is an opaque `u64` client id, the same id the transport keys
+    /// clients by.
+    pub owner_client_id: Option<u64>,
+    /// The latest client command tick the host resolved for this pawn before
+    /// snapshotting, or `None` if no command has resolved yet (or the pawn carries
+    /// no movement authority). Echoed into the per-recipient record's
+    /// `last_processed_client_tick`.
+    pub last_processed_client_tick: Option<u32>,
+}
+
+impl EntitySnapshot {
+    /// Construct a metadata-free snapshot (no movement authority). The Transform-only
+    /// slot fixtures and the demo mover use this; it keeps their call sites terse and
+    /// documents that an unowned entity never carries authority metadata.
+    #[must_use]
+    pub fn unowned(network_id: u32, components: Vec<ComponentPayload>) -> Self {
+        Self {
+            network_id,
+            components,
+            owner_client_id: None,
+            last_processed_client_tick: None,
+        }
+    }
 }
 
 /// Despawn reason carried in a tombstone record. A `u8` on the wire; the tracker
@@ -64,13 +101,22 @@ struct ClientReplicationState {
     pending_refreshes: HashSet<(u32, u32)>,
 }
 
-/// Current server-tracked state for one entity: its latest owned components and the
-/// `baseline_id` that names them. The baseline id advances only when the wire
-/// mirrors change, so a client holding that id needs no update.
+/// Current server-tracked state for one entity: its latest owned components, the
+/// `baseline_id` that names them, and the movement-authority metadata. The baseline
+/// id advances only when the wire mirrors change, so a client holding that id needs
+/// no update — but the authority metadata (`owner_client_id`,
+/// `last_processed_client_tick`) is refreshed on **every** ingest without bumping
+/// the baseline, since the resolved cursor advances each tick a command resolves
+/// while the pose may not have moved. Folding the cursor into the baseline would
+/// resend an otherwise-unchanged pawn every tick.
 #[derive(Debug, Clone)]
 struct EntityState {
     baseline_id: u32,
     components: Vec<ComponentPayload>,
+    /// Owning client (movement authority), or `None` for an unowned entity.
+    owner_client_id: Option<u64>,
+    /// Latest resolved client command tick, or `None` until one resolves.
+    last_processed_client_tick: Option<u32>,
 }
 
 /// A despawned entity awaiting per-client tombstone acks. Held until every client
@@ -202,11 +248,19 @@ impl ServerReplication {
             self.tombstones.remove(&snap.network_id);
             match self.entities.get_mut(&snap.network_id) {
                 Some(existing) if existing.components == snap.components => {
-                    // Unchanged: keep the baseline id so acked clients are omitted.
+                    // Unchanged pose/movement mirrors: keep the baseline id so acked
+                    // clients are omitted. The authority metadata still refreshes —
+                    // the resolved cursor advances every tick a command resolves even
+                    // when the pawn did not visibly move, and the metadata rides the
+                    // record without bumping the baseline.
+                    existing.owner_client_id = snap.owner_client_id;
+                    existing.last_processed_client_tick = snap.last_processed_client_tick;
                 }
                 Some(existing) => {
                     existing.baseline_id = self.next_baseline_id;
                     existing.components = snap.components;
+                    existing.owner_client_id = snap.owner_client_id;
+                    existing.last_processed_client_tick = snap.last_processed_client_tick;
                     self.next_baseline_id = self.next_baseline_id.wrapping_add(1);
                 }
                 None => {
@@ -217,6 +271,8 @@ impl ServerReplication {
                         EntityState {
                             baseline_id,
                             components: snap.components,
+                            owner_client_id: snap.owner_client_id,
+                            last_processed_client_tick: snap.last_processed_client_tick,
                         },
                     );
                 }
@@ -410,6 +466,14 @@ impl ServerReplication {
                 .and_then(|c| c.acked_baselines.get(&network_id).copied());
             let force_full = refreshes.contains(&network_id);
 
+            // Per-recipient movement-authority metadata (M15 Phase 3). Derived here
+            // from id comparison only — the tracker never sees an `EntityId`, registry,
+            // or descriptor. The metadata is meaningful only on a movement record
+            // (`validate` rejects it elsewhere), so `movement_metadata` gates it on the
+            // entity actually carrying a `PlayerMovementState` payload, and
+            // `local_player` is `true` only in the snapshot sent to the owning client.
+            let authority = MovementAuthority::for_recipient(entity, client_id);
+
             match acked {
                 // Already holds the current baseline and no refresh forced: omit.
                 Some(acked_id) if acked_id == entity.baseline_id && !force_full => continue,
@@ -421,11 +485,9 @@ impl ServerReplication {
                         baseline_id_or_ref: acked_id,
                         new_baseline_id_or_tombstone_id: entity.baseline_id,
                         reason: 0,
-                        // Movement-authority metadata is populated by the engine host
-                        // glue (Task 4); the registry-blind tracker emits it absent.
-                        has_last_processed_client_tick: false,
-                        last_processed_client_tick: 0,
-                        local_player: false,
+                        has_last_processed_client_tick: authority.has_tick,
+                        last_processed_client_tick: authority.tick,
+                        local_player: authority.local_player,
                         components: entity.components.iter().map(raw_from_payload).collect(),
                     });
                 }
@@ -437,11 +499,9 @@ impl ServerReplication {
                         baseline_id_or_ref: entity.baseline_id,
                         new_baseline_id_or_tombstone_id: 0,
                         reason: 0,
-                        // Movement-authority metadata is populated by the engine host
-                        // glue (Task 4); the registry-blind tracker emits it absent.
-                        has_last_processed_client_tick: false,
-                        last_processed_client_tick: 0,
-                        local_player: false,
+                        has_last_processed_client_tick: authority.has_tick,
+                        last_processed_client_tick: authority.tick,
+                        local_player: authority.local_player,
                         components: entity.components.iter().map(raw_from_payload).collect(),
                     });
                 }
@@ -479,6 +539,45 @@ impl ServerReplication {
             server_tick,
             records,
         })
+    }
+}
+
+/// The per-recipient movement-authority metadata for one entity record, resolved
+/// from id comparison only. Registry-blind: it compares the entity's tracked
+/// `owner_client_id` against the recipient client id and never sees an `EntityId`,
+/// the registry, or a movement descriptor.
+struct MovementAuthority {
+    /// Whether `tick` carries a real resolved cursor (mirrors the typed `Option`).
+    has_tick: bool,
+    /// The resolved cursor value; meaningful only when `has_tick` is `true`.
+    tick: u32,
+    /// `true` only in the snapshot sent to this pawn's owning client.
+    local_player: bool,
+}
+
+impl MovementAuthority {
+    /// Resolve the authority metadata for `recipient`. Authority rides ONLY a
+    /// movement record: a pawn that carries no `PlayerMovementState` payload emits
+    /// all-absent metadata regardless of its `owner_client_id`, because `validate`
+    /// rejects ack/local-player metadata on a non-movement record. `local_player` is
+    /// `true` only when the recipient is the tracked owner.
+    fn for_recipient(entity: &EntityState, recipient: u64) -> Self {
+        let carries_movement = entity
+            .components
+            .iter()
+            .any(|c| matches!(c, ComponentPayload::PlayerMovementState(_)));
+        if !carries_movement {
+            return Self {
+                has_tick: false,
+                tick: 0,
+                local_player: false,
+            };
+        }
+        Self {
+            has_tick: entity.last_processed_client_tick.is_some(),
+            tick: entity.last_processed_client_tick.unwrap_or(0),
+            local_player: entity.owner_client_id == Some(recipient),
+        }
     }
 }
 
@@ -545,9 +644,23 @@ mod tests {
     }
 
     fn entity(network_id: u32, components: Vec<ComponentPayload>) -> EntitySnapshot {
+        EntitySnapshot::unowned(network_id, components)
+    }
+
+    /// An owned movement pawn snapshot: a `PlayerMovementState`-carrying entity with
+    /// an `owner_client_id` and resolved cursor, the shape the engine host glue
+    /// produces for a networked movement pawn.
+    fn owned_movement(
+        network_id: u32,
+        owner: u64,
+        last_tick: Option<u32>,
+        velocity_x: f32,
+    ) -> EntitySnapshot {
         EntitySnapshot {
             network_id,
-            components,
+            components: vec![transform(0.0), movement(velocity_x)],
+            owner_client_id: Some(owner),
+            last_processed_client_tick: last_tick,
         }
     }
 
@@ -1111,5 +1224,127 @@ mod tests {
         // not. The acked maps are swept wholesale when the client disconnects.
         server.remove_client(CLIENT_A);
         assert!(server.clients.is_empty(), "client maps swept on disconnect");
+    }
+
+    // Per-recipient `local_player` (M15 Phase 3 Task 4): a movement pawn owned by
+    // CLIENT_A is encoded `local_player = true` only in CLIENT_A's snapshot and
+    // `false` in CLIENT_B's. Derived from id comparison alone — the tracker never
+    // sees an EntityId/registry. The owned record also carries the movement payload
+    // and the resolved `last_processed_client_tick`.
+    #[test]
+    fn local_player_true_only_for_owning_recipient() {
+        let mut server = ServerReplication::new();
+        server.register_client(CLIENT_A);
+        server.register_client(CLIENT_B);
+        // CLIENT_A owns network id 1; its resolved cursor is at tick 12.
+        server.ingest_tick(vec![owned_movement(1, CLIENT_A, Some(12), 3.0)]);
+
+        let seq = server.begin_batch();
+        let snap_a = server.encode_in_batch(CLIENT_A, 60, seq).unwrap();
+        let snap_b = server.encode_in_batch(CLIENT_B, 60, seq).unwrap();
+
+        let rec_a = record_for(&snap_a, 1).expect("owner sees its pawn");
+        let rec_b = record_for(&snap_b, 1).expect("non-owner sees the pawn too");
+
+        match rec_a {
+            EntityRecord::FullBaseline {
+                local_player,
+                last_processed_client_tick,
+                components,
+                ..
+            } => {
+                assert!(local_player, "owner's snapshot marks the pawn local_player");
+                assert_eq!(
+                    last_processed_client_tick,
+                    Some(12),
+                    "owner record carries the resolved cursor"
+                );
+                assert!(
+                    components
+                        .iter()
+                        .any(|c| matches!(c, ComponentPayload::PlayerMovementState(_))),
+                    "owner record carries the movement payload"
+                );
+            }
+            other => panic!("expected FullBaseline, got {other:?}"),
+        }
+
+        match rec_b {
+            EntityRecord::FullBaseline {
+                local_player,
+                last_processed_client_tick,
+                ..
+            } => {
+                assert!(
+                    !local_player,
+                    "a non-owning recipient never sees local_player=true"
+                );
+                // The resolved cursor is still echoed to every recipient (it is pawn
+                // state, not owner-private); only `local_player` is recipient-specific.
+                assert_eq!(last_processed_client_tick, Some(12));
+            }
+            other => panic!("expected FullBaseline, got {other:?}"),
+        }
+    }
+
+    // A movement pawn with no resolved command yet (cursor `None`) encodes
+    // `last_processed_client_tick = None` but still derives `local_player` for its
+    // owner — the first baseline before any tick resolves.
+    #[test]
+    fn owned_movement_pawn_with_no_resolved_tick_encodes_none_cursor() {
+        let mut server = ServerReplication::new();
+        server.register_client(CLIENT_A);
+        server.ingest_tick(vec![owned_movement(1, CLIENT_A, None, 0.0)]);
+
+        let snap = server.encode_for_client(CLIENT_A, 60).unwrap();
+        match record_for(&snap, 1).expect("pawn present") {
+            EntityRecord::FullBaseline {
+                local_player,
+                last_processed_client_tick,
+                ..
+            } => {
+                assert!(local_player, "owner still marked local before any tick");
+                assert_eq!(last_processed_client_tick, None);
+            }
+            other => panic!("expected FullBaseline, got {other:?}"),
+        }
+    }
+
+    // The authority metadata is excluded from dirty detection: a tick that only
+    // advances the resolved cursor (pose/movement mirrors unchanged) does NOT bump
+    // the baseline, so an acked recipient stays omitted — but the refreshed cursor is
+    // still echoed when the pawn IS re-sent (here forced via a refresh request).
+    #[test]
+    fn resolved_cursor_advance_does_not_bump_baseline() {
+        let mut server = ServerReplication::new();
+        server.register_client(CLIENT_A);
+        server.ingest_tick(vec![owned_movement(1, CLIENT_A, Some(5), 1.0)]);
+        let snap1 = server.encode_for_client(CLIENT_A, 60).unwrap();
+        let EntityRecord::FullBaseline { baseline_id, .. } = record_for(&snap1, 1).unwrap() else {
+            panic!("fb");
+        };
+        server.apply_ack(CLIENT_A, snap1.sequence, &[(1, baseline_id)], &[]);
+
+        // Cursor advances 5 -> 6 but the movement mirror is identical: the pawn is
+        // omitted next tick (no baseline bump).
+        server.ingest_tick(vec![owned_movement(1, CLIENT_A, Some(6), 1.0)]);
+        let snap2 = server.encode_for_client(CLIENT_A, 61).unwrap();
+        assert!(
+            record_for(&snap2, 1).is_none(),
+            "cursor-only advance must not resend the pawn"
+        );
+
+        // Force a refresh: the re-sent FullBaseline carries the *latest* cursor (6),
+        // proving the cursor was tracked even while the baseline held.
+        server.request_refresh(CLIENT_A, 1, baseline_id);
+        server.ingest_tick(vec![owned_movement(1, CLIENT_A, Some(6), 1.0)]);
+        let snap3 = server.encode_for_client(CLIENT_A, 62).unwrap();
+        match record_for(&snap3, 1).expect("refresh forces a baseline") {
+            EntityRecord::FullBaseline {
+                last_processed_client_tick,
+                ..
+            } => assert_eq!(last_processed_client_tick, Some(6)),
+            other => panic!("expected FullBaseline, got {other:?}"),
+        }
     }
 }

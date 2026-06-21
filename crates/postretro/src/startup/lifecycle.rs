@@ -790,6 +790,11 @@ impl App {
             let (spawn_points, map_entities): (Vec<_>, Vec<_>) = all_entities
                 .into_iter()
                 .partition(|e| e.classname == PLAYER_START_CLASSNAME);
+            // Retain a copy of the spawn points for the host's runtime net-slot
+            // accept path (M15 Phase 3 Task 4): `pending_spawn_points` is consumed by
+            // `spawn_from_player_starts` during this install, but the host needs the
+            // placements later to materialize each accepted client's descriptor pawn.
+            self.host_spawn_points = spawn_points.clone();
             self.pending_spawn_points = Some(spawn_points);
             let handled =
                 apply_classname_dispatch(&map_entities, &self.classname_dispatch, &mut registry);
@@ -1201,6 +1206,7 @@ mod tests {
             pending_splash_override: None,
             builtin_handled: None,
             pending_spawn_points: None,
+            host_spawn_points: Vec::new(),
             pending_map_entities: None,
             script_time: 0.0,
             anim_time: 0.0,

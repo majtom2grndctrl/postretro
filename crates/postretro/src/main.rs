@@ -651,6 +651,7 @@ fn main() -> Result<()> {
         active_wieldable_descriptor: None,
         builtin_handled: None,
         pending_spawn_points: None,
+        host_spawn_points: Vec::new(),
         pending_map_entities: None,
         script_time: 0.0,
         anim_time: 0.0,
@@ -1068,6 +1069,13 @@ struct App {
     /// separate path from `apply_data_archetype_dispatch`. `None` before level
     /// load and after consumed.
     pending_spawn_points: Option<Vec<crate::scripting::map_entity::MapEntity>>,
+
+    /// A retained copy of the level's `player_spawn` placements for the host's
+    /// runtime net-slot accept path (M15 Phase 3 Task 4). Unlike
+    /// `pending_spawn_points` (consumed at install), this survives so each accepted
+    /// client's descriptor-backed remote pawn can be spawned from its deterministically
+    /// assigned placement. Empty before level load and on maps with no player_spawn.
+    host_spawn_points: Vec<crate::scripting::map_entity::MapEntity>,
 
     /// Non-player-start map entities partitioned out of `world.map_entities`
     /// during install, awaiting the data-archetype sweep on the same frame.
@@ -2157,6 +2165,13 @@ impl ApplicationHandler for App {
                                 .push_state(InterpolableState::new(self.camera.position));
                             continue;
                         }
+
+                        // Host: advance remote (owned) pawns through the authoritative
+                        // multi-pawn movement seam first (Task 4), then the shared
+                        // `simulate_tick` runs the host's own pawn movement + AI /
+                        // weapon / death. Remote movement never uses local_movement_pawn.
+                        let remote_movement_events = self.host_drive_remote_movement(tick_dt);
+                        pending_movement_events.extend(remote_movement_events);
 
                         let tick_events = sim::simulate_tick(
                             self.script_ctx.registry.clone(),
@@ -3784,6 +3799,20 @@ impl App {
     /// serializes post-loop instead.
     fn net_poll_and_apply(&mut self, frame_dt: f32) {
         let dt = std::time::Duration::from_secs_f32(frame_dt);
+        // Capture the host's descriptor-spawn inputs before the `net_endpoint` borrow:
+        // the accept arm materializes each accepted client's descriptor-backed remote
+        // pawn (M15 Phase 3 Task 4), and these reads alias `self.script_ctx` /
+        // `self.nav_graph` / `self.host_spawn_points`, which the endpoint borrow would
+        // otherwise lock out. Cheap on the non-accept path (descriptors clone is the
+        // only cost, paid once per frame on the host).
+        let host_descriptors: Vec<crate::scripting::data_descriptors::EntityTypeDescriptor> =
+            if matches!(self.net_endpoint, Some(netcode::NetEndpoint::Host { .. })) {
+                self.script_ctx.data_registry.borrow().entities.clone()
+            } else {
+                Vec::new()
+            };
+        let host_agent_params = self.nav_graph.as_ref().map(|g| g.agent_params());
+        let host_spawn_points = std::mem::take(&mut self.host_spawn_points);
         match self.net_endpoint.as_mut() {
             None => {}
             Some(netcode::NetEndpoint::Host {
@@ -3792,6 +3821,8 @@ impl App {
                 replication,
                 replicable,
                 slot_pawns,
+                command_queues,
+                owners,
                 tick,
                 demo_mover: _,
             }) => {
@@ -3818,13 +3849,34 @@ impl App {
                                     HandshakeOutcome::Accepted { client_id } => {
                                         log::info!("[Net] client {client_id} accepted");
                                         replication.register_client(*client_id);
-                                        netcode::host_handle_accept(
-                                            &mut registry,
-                                            allocator,
-                                            replicable,
-                                            slot_pawns,
-                                            *client_id,
-                                        );
+                                        if host_spawn_points.is_empty() {
+                                            // No descriptor-backed player spawn on this
+                                            // map: fall back to the inert Transform-only
+                                            // fixture (dev/test path; never local).
+                                            netcode::host_handle_accept(
+                                                &mut registry,
+                                                allocator,
+                                                replicable,
+                                                slot_pawns,
+                                                *client_id,
+                                            );
+                                        } else {
+                                            // Phase 3 movement session: materialize the
+                                            // descriptor-backed remote PlayerMovement pawn
+                                            // from the slot's assigned placement.
+                                            netcode::host_handle_accept_descriptor(
+                                                &mut registry,
+                                                allocator,
+                                                replicable,
+                                                slot_pawns,
+                                                command_queues,
+                                                owners,
+                                                *client_id,
+                                                &host_spawn_points,
+                                                &host_descriptors,
+                                                host_agent_params,
+                                            );
+                                        }
                                     }
                                     HandshakeOutcome::Rejected { client_id, reason } => {
                                         log::warn!("[Net] client {client_id} rejected: {reason}");
@@ -3838,6 +3890,8 @@ impl App {
                                 replicable,
                                 replication,
                                 slot_pawns,
+                                command_queues,
+                                owners,
                                 &poll.lifecycle,
                             );
                         }
@@ -3854,6 +3908,7 @@ impl App {
                     netcode::host_handle_client_messages(
                         server,
                         replication,
+                        command_queues,
                         client_id,
                         server_tick,
                         server_now_us,
@@ -3893,6 +3948,9 @@ impl App {
                 // clobbered by the snapshot pass.
             }
         }
+        // Restore the spawn-point cache taken before the endpoint borrow. The host
+        // needs it on every future accept; `mem::take` only borrowed it for this call.
+        self.host_spawn_points = host_spawn_points;
     }
 
     /// Host Phase 2 replication step. Thin delegation to `crate::netcode`. Ingests
@@ -3908,6 +3966,8 @@ impl App {
             replication,
             replicable,
             slot_pawns: _,
+            command_queues,
+            owners,
             demo_mover,
         }) = self.net_endpoint.as_mut()
         else {
@@ -3925,7 +3985,16 @@ impl App {
 
         {
             let registry = self.script_ctx.registry.borrow();
-            netcode::host_replicate(&registry, server, allocator, replication, replicable, *tick);
+            netcode::host_replicate(
+                &registry,
+                server,
+                allocator,
+                replication,
+                replicable,
+                owners,
+                command_queues,
+                *tick,
+            );
         }
         // Advance the monotonic server tick after this tick's ingest+send so a
         // late-joining client never sees a stalled clock.
@@ -3963,6 +4032,42 @@ impl App {
         matches!(
             self.net_endpoint.as_ref(),
             Some(netcode::NetEndpoint::Client { .. })
+        )
+    }
+
+    /// Host authoritative movement pre-pass (M15 Phase 3 Task 4). Resolves one
+    /// command per OWNED (remote) pawn through the deterministic gap policy, routes
+    /// each through the `EntityId -> client_id` map, and advances those pawns through
+    /// the multi-pawn movement seam — BEFORE the frame's `simulate_tick` runs AI /
+    /// weapon / death. Remote authoritative movement never goes through
+    /// `local_movement_pawn`: every owned pawn is named explicitly here. The host's
+    /// OWN player pawn (if any) is still driven by `simulate_tick`'s movement stage
+    /// from locally-sampled input; folding it into this explicit list alongside the
+    /// host's sampled command is the remaining integration seam (it requires the host
+    /// to own a queue/owner entry for itself). No-op for single-player and the client.
+    ///
+    /// Returns the aggregated remote movement events for the caller to fold into the
+    /// frame's pending movement-event drain.
+    fn host_drive_remote_movement(&mut self, tick_dt: f32) -> Vec<&'static str> {
+        let Some(netcode::NetEndpoint::Host {
+            command_queues,
+            owners,
+            ..
+        }) = self.net_endpoint.as_mut()
+        else {
+            return Vec::new();
+        };
+        let pawn_inputs = netcode::host_resolve_movement_inputs(owners, command_queues);
+        if pawn_inputs.is_empty() {
+            return Vec::new();
+        }
+        let mut registry = self.script_ctx.registry.borrow_mut();
+        sim::run_host_movement_tick(
+            &mut registry,
+            &self.collision_world,
+            self.script_ctx.gravity.get(),
+            &pawn_inputs,
+            tick_dt,
         )
     }
 

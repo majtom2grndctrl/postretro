@@ -77,8 +77,7 @@ pub(crate) fn input_command_to_sim(input: &InputCommand) -> SimCommand {
 ///   unconstrained; Phase 3 introduces no wrapping policy.
 /// - Boolean button fields are already typed by bitcode, so they need no
 ///   validation and carry through unchanged.
-// Caller lands in Task 4 (`host_handle_client_messages` before queueing).
-#[allow(dead_code)]
+// Called by Task 4's host command-queue intake (`command_queue::HostCommandQueues::ingest`).
 pub(crate) fn sanitize_input_command(cmd: &InputCommand) -> Option<InputCommand> {
     let [wish_right, wish_forward] = cmd.movement.wish_dir;
     if !wish_right.is_finite() || !wish_forward.is_finite() || !cmd.movement.facing_yaw.is_finite()

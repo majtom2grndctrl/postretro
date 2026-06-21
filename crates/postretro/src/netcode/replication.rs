@@ -41,24 +41,19 @@ impl ReplicableSet {
         Self::default()
     }
 
-    // The register/unregister/contains surface is the registration mechanism this
-    // task lands ahead of its callers: Task 4 registers the slot-owned inert pawns
-    // and Task 6 the host-owned demo mover. Exercised now by this module's tests and
-    // the predicate; `allow(dead_code)` documents the not-yet-wired caller rather
-    // than deleting the required API.
+    // The register/unregister/contains surface is the registration mechanism for
+    // authoritative networked entities: the lifecycle glue registers slot-owned
+    // inert pawns and the demo path registers the host-owned mover.
     /// Register an entity as an authoritative networked gameplay object. Idempotent.
-    #[allow(dead_code)]
     pub(crate) fn register(&mut self, id: EntityId) {
         self.registered.insert(id);
     }
 
     /// Stop replicating an entity (e.g. it despawned in game logic). Idempotent.
-    #[allow(dead_code)]
     pub(crate) fn unregister(&mut self, id: EntityId) {
         self.registered.remove(&id);
     }
 
-    #[allow(dead_code)]
     pub(crate) fn contains(&self, id: EntityId) -> bool {
         self.registered.contains(&id)
     }
@@ -83,11 +78,9 @@ impl ReplicableSet {
 /// gameplay components (`Transform`; the movement subset later), never the
 /// presentation kinds, so a registered entity never leaks a baked/cosmetic payload.
 ///
-/// Landed ahead of its caller (Task 4/6 wire registration into spawn paths);
-/// exercised now by this module's tests. `produce_owned_snapshots` consults the set
-/// directly via `iter`, so this standalone predicate is the documented entry point
-/// for callers checking a single entity.
-#[allow(dead_code)]
+/// `produce_owned_snapshots` consults the set directly via `iter`; this standalone
+/// single-entity predicate is exercised only by this module's tests.
+#[cfg(test)]
 pub(crate) fn is_replicable(set: &ReplicableSet, id: EntityId) -> bool {
     set.contains(id)
 }
@@ -133,8 +126,9 @@ fn collect_payloads(registry: &EntityRegistry, id: EntityId) -> Vec<ComponentPay
     let mut payloads = Vec::new();
     if let Ok(transform) = registry.get_component::<Transform>(id) {
         // The collection deliberately skips presentation kinds entirely by only
-        // pulling the wire-bound gameplay components (Transform here; the movement
-        // subset when Task 3 lands its merge).
+        // pulling the wire-bound gameplay components (Transform today; the movement
+        // subset is added when a replicated entity carries a live
+        // PlayerMovementComponent — see below).
         let payload = ComponentPayload::Transform(transform_to_wire(transform));
         // Live cross-check of the engine->wire discriminant mapping (the drift-guard
         // tests pin it both sides; a divergence would mis-tag replication).
@@ -145,9 +139,11 @@ fn collect_payloads(registry: &EntityRegistry, id: EntityId) -> Vec<ComponentPay
         );
         payloads.push(payload);
     }
-    // PlayerMovementState's wire subset is assembled by Task 3's movement merge; the
-    // owned-snapshot producer does not yet pull it (no `ComponentValue` carries the
-    // wire subset directly). When Task 3 lands the merge, append it here in order.
+    // No PlayerMovementState payload is emitted today: the Phase 2 host-owned demo
+    // mover is Transform-only, and `WirePlayerMovementState` is only meaningfully
+    // assembled from an entity that already has a live `PlayerMovementComponent`,
+    // which the Phase 2 fixture lacks. When a host-authoritative entity carries that
+    // component, append its movement payload here in stable order (after Transform).
     payloads
 }
 

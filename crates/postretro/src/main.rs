@@ -3792,24 +3792,18 @@ impl App {
                     netcode::host_handle_client_messages(server, replication, client_id);
                 }
             }
-            Some(netcode::NetEndpoint::Client { client, map }) => {
+            Some(netcode::NetEndpoint::Client {
+                client,
+                replication,
+            }) => {
                 if let Err(err) = client.update(dt) {
                     log::error!("[Net] client update failed: {err}");
                 }
-                // Apply every snapshot received this frame, latest last, so the
-                // registry reflects the most recent host-authoritative state.
-                let snapshots = client.drain_snapshots();
-                if !snapshots.is_empty() {
-                    let mut registry = self.script_ctx.registry.borrow_mut();
-                    for bytes in snapshots {
-                        match netcode::decode_snapshot(&bytes) {
-                            Ok(snapshot) => netcode::apply(&mut registry, &snapshot, map),
-                            Err(err) => {
-                                log::warn!("[Net] dropping undecodable snapshot: {err}");
-                            }
-                        }
-                    }
-                }
+                // Decode + apply every snapshot received this frame through the
+                // Phase 2 client state machine, send the resulting acks + baseline-
+                // refresh requests, and advance the pending-repair 5 Hz cadence.
+                let mut registry = self.script_ctx.registry.borrow_mut();
+                netcode::client_receive_and_apply(&mut registry, client, replication, dt);
             }
         }
     }

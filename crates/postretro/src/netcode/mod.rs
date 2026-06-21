@@ -12,8 +12,10 @@
 // despawn reconciliation (a `NetworkId` missing from a later snapshot is left
 // untouched — Phase 2 owns remove-missing).
 
+mod client;
 mod replication;
 
+pub(crate) use client::ClientReplication;
 pub(crate) use replication::{produce_owned_snapshots, ReplicableSet};
 
 use std::collections::HashMap;
@@ -25,13 +27,11 @@ use glam::{Quat, Vec3};
 use postretro_net::replication::ServerReplication;
 use postretro_net::transport::{NetClient, NetServer};
 use postretro_net::wire::{
-    self, ComponentPayload, EntityRecord, NetworkId, RawSnapshotMessage, Snapshot, ValidationError,
+    self, ComponentPayload, NetworkId, RawSnapshotMessage, SnapshotMessage, ValidationError,
     WireError, WireMovementState, WirePlayerMovementState, WireTransform,
 };
 
-use crate::scripting::registry::{
-    ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform,
-};
+use crate::scripting::registry::{ComponentKind, EntityId, EntityRegistry, Transform};
 
 /// Default listen port for `--host` when no port is supplied.
 pub(crate) const DEFAULT_HOST_PORT: u16 = 27015;
@@ -166,11 +166,12 @@ pub(crate) enum NetEndpoint {
         /// authoritative networked gameplay objects (slot pawns, demo mover).
         replicable: ReplicableSet,
     },
-    /// Client plus the `NetworkId -> EntityId` map for applied snapshots. The
+    /// Client plus the Phase 2 client replication state (the `NetworkId -> EntityId`
+    /// map, per-entity baseline table, pending-repair set, sequence tracking). The
     /// `NetClient` is boxed for the same reason the `Host` server is.
     Client {
         client: Box<NetClient>,
-        map: HashMap<NetworkId, EntityId>,
+        replication: ClientReplication,
     },
 }
 
@@ -212,7 +213,7 @@ impl NetEndpoint {
                     .map_err(|e| format!("client transport init failed: {e}"))?;
                 Ok(Some(NetEndpoint::Client {
                     client: Box::new(client),
-                    map: HashMap::new(),
+                    replication: ClientReplication::new(),
                 }))
             }
         }
@@ -349,99 +350,53 @@ fn player_movement_is_finite(m: &WirePlayerMovementState) -> bool {
         && state_finite
 }
 
-/// Convert a wire `ComponentPayload` to the engine `ComponentValue`, or `None`
-/// when Phase 1 glue does not apply this payload. The exhaustive match (no `_`
-/// arm) means a new payload variant is a compile error here until its handling is
-/// decided.
-///
-/// `PlayerMovementState` returns `None` in Phase 1: the wire carries only the
-/// mutable tick subset, and reconstructing a full `PlayerMovementComponent` from
-/// it (merging onto a local descriptor-derived component) is Task 3's job, not a
-/// Phase 1 spawn-from-wire concern.
-fn payload_to_component_value(payload: &ComponentPayload) -> Option<ComponentValue> {
-    match payload {
-        ComponentPayload::Transform(wire) => {
-            Some(ComponentValue::Transform(wire_to_transform(wire)))
-        }
-        ComponentPayload::PlayerMovementState(_) => None,
-    }
-}
-
-
-/// Client apply step (game-logic-owned). For each `(NetworkId, ComponentPayload)`:
-/// on first sight of the `NetworkId`, `spawn` with the converted `Transform` and
-/// record the mapping; otherwise `set_component_value` on the mapped `EntityId`.
-///
-/// Phase 1 never despawns: a `NetworkId` absent from a later snapshot is left
-/// untouched (remove-missing reconciliation is Phase 2). A stale mapped
-/// `EntityId` (registry rejected the write) is re-spawned and the map updated.
-pub(crate) fn apply(
-    registry: &mut EntityRegistry,
-    snapshot: &Snapshot,
-    map: &mut HashMap<NetworkId, EntityId>,
-) {
-    for (net_id, payload) in &snapshot.entries {
-        // Untrusted-wire guard: a non-finite pose (NaN/±Inf in position or
-        // rotation) is dropped at the boundary before it can reach the registry
-        // — never spawned, never set. This covers both first-sight spawn and
-        // subsequent set paths because the skip precedes the branch below.
-        if !payload_is_finite(payload) {
-            log::warn!("[Net] dropping snapshot entry for {net_id:?}: non-finite transform");
-            continue;
-        }
-        // Phase 1 glue applies only payloads with an engine `ComponentValue`
-        // mapping; others (movement tick subset) are skipped until Task 3.
-        let Some(value) = payload_to_component_value(payload) else {
-            continue;
-        };
-        match map.get(net_id).copied() {
-            Some(existing) => {
-                if registry
-                    .set_component_value(existing, value.clone())
-                    .is_err()
-                {
-                    // The mapped entity is gone (should not happen in Phase 1,
-                    // which never despawns) — re-spawn from this payload so the
-                    // remote entity stays visible rather than silently vanishing.
-                    let id = spawn_from_value(registry, value);
-                    map.insert(*net_id, id);
-                }
-            }
-            None => {
-                let id = spawn_from_value(registry, value);
-                map.insert(*net_id, id);
-            }
-        }
-    }
-}
-
-/// Decode Phase 2 wire bytes into an in-process [`Snapshot`]. Decodes the raw
-/// envelope (corrupt bytes -> `Err`), validates it into the typed apply model
-/// (invalid kinds/version -> `Err`), then flattens the Phase 1-shaped records
-/// (`FullBaseline` only in Phase 1) back into `(NetworkId, ComponentPayload)`
-/// entries. `Delta`/`Despawn` records are ignored here — applying them is Task 3.
-pub(crate) fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot, SnapshotDecodeError> {
+/// Decode Phase 2 wire bytes into the typed [`SnapshotMessage`] apply model. Decodes
+/// the raw envelope (corrupt bytes -> `Err`), then validates it into the typed model
+/// (invalid kinds/version -> `Err`). The full record set — `FullBaseline`, `Delta`,
+/// and `Despawn` — is preserved for the client apply state machine; nothing is
+/// flattened or dropped here.
+pub(crate) fn decode_snapshot(bytes: &[u8]) -> Result<SnapshotMessage, SnapshotDecodeError> {
     let raw: RawSnapshotMessage = wire::decode(bytes).map_err(SnapshotDecodeError::Decode)?;
-    let typed = raw.validate().map_err(SnapshotDecodeError::Validate)?;
-    let mut entries = Vec::new();
-    for record in typed.records {
-        // Phase 1 apply only consumes full-baseline records; lifecycle deltas and
-        // despawns are Task 3's reconciliation, not this Phase 1 bridge.
-        if let EntityRecord::FullBaseline {
-            network_id,
-            components,
-            ..
-        } = record
-        {
-            for payload in components {
-                entries.push((NetworkId(network_id), payload));
+    raw.validate().map_err(SnapshotDecodeError::Validate)
+}
+
+/// Drive the client's receive + apply + ack path for one frame (game-logic-owned).
+/// Drains every snapshot received this frame, decodes + validates each (a corrupt or
+/// invalid packet is logged and dropped, never a panic), applies it through the
+/// [`ClientReplication`] state machine, and sends the resulting ack + any
+/// baseline-refresh requests back on `Channel::Input`. Then advances the
+/// pending-repair 5 Hz cadence by `frame_dt` and sends any due resends.
+///
+/// The mutable registry borrow is threaded in by the caller (`main.rs`), so this
+/// module never reaches into `App`.
+pub(crate) fn client_receive_and_apply(
+    registry: &mut EntityRegistry,
+    client: &mut NetClient,
+    replication: &mut ClientReplication,
+    frame_dt: Duration,
+) {
+    for bytes in client.drain_snapshots() {
+        let snapshot = match decode_snapshot(&bytes) {
+            Ok(snapshot) => snapshot,
+            Err(err) => {
+                log::warn!("[Net] dropping undecodable snapshot: {err}");
+                continue;
             }
+        };
+        let outcome = replication.apply_snapshot(registry, &snapshot);
+        for buffer in client::encode_client_messages(&outcome) {
+            client.send_input(buffer);
         }
     }
-    Ok(Snapshot {
-        tick: typed.server_tick,
-        entries,
-    })
+
+    // Resend pending baseline-refresh requests on the 5 Hz cadence. A request is one
+    // BaselineRefresh ClientMessage on the reliable Input channel; the matching full
+    // baseline clears the pending entry so the resend stops.
+    let due = replication.tick_pending_repairs(frame_dt.as_secs_f32() * 1000.0);
+    for req in due {
+        let buffer = wire::encode(&wire::ClientMessage::BaselineRefresh(req));
+        client.send_input(buffer);
+    }
 }
 
 /// Snapshot send cadence: one snapshot per client every third 60 Hz sim tick
@@ -591,10 +546,12 @@ pub(crate) fn remote_entity_positions(
     endpoint: &NetEndpoint,
     registry: &EntityRegistry,
 ) -> Vec<Vec3> {
-    let NetEndpoint::Client { map, .. } = endpoint else {
+    let NetEndpoint::Client { replication, .. } = endpoint else {
         return Vec::new();
     };
-    map.values()
+    replication
+        .map()
+        .values()
         .filter_map(|&id| {
             registry
                 .get_component::<Transform>(id)
@@ -602,22 +559,6 @@ pub(crate) fn remote_entity_positions(
                 .map(|t| t.position)
         })
         .collect()
-}
-
-/// Spawn a fresh entity seeded from a replicated `ComponentValue`. A spawn always
-/// installs a `Transform`; if the payload is a `Transform`, spawn directly from
-/// it, otherwise spawn at the default pose and set the component.
-fn spawn_from_value(registry: &mut EntityRegistry, value: ComponentValue) -> EntityId {
-    match value {
-        ComponentValue::Transform(transform) => registry.spawn(transform),
-        other => {
-            let id = registry.spawn(Transform::default());
-            // The id was just returned by spawn, so the only failure mode is an
-            // unsupported component kind, which cannot occur in Phase 1.
-            let _ = registry.set_component_value(id, other);
-            id
-        }
-    }
 }
 
 #[cfg(test)]
@@ -713,12 +654,8 @@ mod tests {
         assert!((wire.rotation[2] - original.rotation.z).abs() < EPSILON);
         assert!((wire.rotation[3] - original.rotation.w).abs() < EPSILON);
 
-        let payload = ComponentPayload::Transform(wire);
-        let value =
-            payload_to_component_value(&payload).expect("Transform payload converts to a value");
-        let ComponentValue::Transform(rebuilt) = value else {
-            panic!("Transform payload must rebuild a Transform component");
-        };
+        // Inverse conversion rebuilds the engine Transform from the wire mirror.
+        let rebuilt = wire_to_transform(&wire);
 
         assert!((rebuilt.position - original.position).length() < EPSILON);
         // angle_between is 0 when rotations match.
@@ -727,173 +664,10 @@ mod tests {
         assert!((rebuilt.scale - original.scale).length() < EPSILON);
     }
 
-    // --- Apply: spawns on first sight, mutates the same EntityId on second. ---
-    #[test]
-    fn apply_spawns_on_first_sight_and_mutates_on_second() {
-        let mut registry = EntityRegistry::new();
-        let mut map: HashMap<NetworkId, EntityId> = HashMap::new();
-
-        let first_pos = Vec3::new(1.0, 2.0, 3.0);
-        let snapshot1 = Snapshot {
-            tick: 1,
-            entries: vec![(
-                NetworkId(42),
-                ComponentPayload::Transform(transform_to_wire(&Transform {
-                    position: first_pos,
-                    rotation: Quat::IDENTITY,
-                    scale: Vec3::ONE,
-                })),
-            )],
-        };
-        apply(&mut registry, &snapshot1, &mut map);
-
-        assert_eq!(map.len(), 1, "first sight records exactly one mapping");
-        let spawned = *map.get(&NetworkId(42)).expect("NetworkId(42) mapped");
-        let after_first = registry
-            .get_component::<Transform>(spawned)
-            .expect("spawned entity carries a Transform");
-        assert!((after_first.position - first_pos).length() < EPSILON);
-
-        // Second snapshot: same NetworkId, moved position. Must mutate, not respawn.
-        let moved_pos = Vec3::new(10.0, 20.0, 30.0);
-        let snapshot2 = Snapshot {
-            tick: 2,
-            entries: vec![(
-                NetworkId(42),
-                ComponentPayload::Transform(transform_to_wire(&Transform {
-                    position: moved_pos,
-                    rotation: Quat::IDENTITY,
-                    scale: Vec3::ONE,
-                })),
-            )],
-        };
-        apply(&mut registry, &snapshot2, &mut map);
-
-        assert_eq!(map.len(), 1, "second snapshot does not add a new mapping");
-        let same = *map.get(&NetworkId(42)).expect("mapping unchanged");
-        assert_eq!(
-            same, spawned,
-            "same NetworkId must map to the same EntityId"
-        );
-        let after_second = registry
-            .get_component::<Transform>(same)
-            .expect("entity still live");
-        assert!(
-            (after_second.position - moved_pos).length() < EPSILON,
-            "second snapshot moves the existing entity"
-        );
-    }
-
-    #[test]
-    fn apply_phase1_never_despawns_missing_network_ids() {
-        let mut registry = EntityRegistry::new();
-        let mut map: HashMap<NetworkId, EntityId> = HashMap::new();
-
-        let snapshot1 = Snapshot {
-            tick: 1,
-            entries: vec![
-                (
-                    NetworkId(1),
-                    ComponentPayload::Transform(transform_to_wire(&Transform::default())),
-                ),
-                (
-                    NetworkId(2),
-                    ComponentPayload::Transform(transform_to_wire(&Transform::default())),
-                ),
-            ],
-        };
-        apply(&mut registry, &snapshot1, &mut map);
-        let id1 = *map.get(&NetworkId(1)).unwrap();
-        let id2 = *map.get(&NetworkId(2)).unwrap();
-
-        // Second snapshot omits NetworkId(2). Phase 1 leaves it untouched.
-        let snapshot2 = Snapshot {
-            tick: 2,
-            entries: vec![(
-                NetworkId(1),
-                ComponentPayload::Transform(transform_to_wire(&Transform::default())),
-            )],
-        };
-        apply(&mut registry, &snapshot2, &mut map);
-
-        assert!(registry.exists(id1), "present id stays live");
-        assert!(
-            registry.exists(id2),
-            "omitted NetworkId is NOT despawned in Phase 1"
-        );
-        assert!(map.contains_key(&NetworkId(2)), "mapping is retained");
-    }
-
-    // --- Apply: a non-finite wire Transform (NaN/Inf) is dropped at the
-    // boundary — never spawned, never set — while finite entries in the same
-    // snapshot still apply. Guards downstream interpolation/camera/culling math
-    // from a hostile or buggy host. ---
-    #[test]
-    fn apply_skips_non_finite_transform_entry() {
-        let mut registry = EntityRegistry::new();
-        let mut map: HashMap<NetworkId, EntityId> = HashMap::new();
-
-        // Entry A: position carries NaN — must be skipped. Build the wire mirror
-        // directly so the non-finite value survives to the apply boundary.
-        let poisoned = WireTransform {
-            position: [f32::NAN, 0.0, 0.0],
-            rotation: [0.0, 0.0, 0.0, 1.0],
-            scale: [1.0, 1.0, 1.0],
-        };
-        // Entry B: a finite transform in the same snapshot — must still apply.
-        let finite_pos = Vec3::new(4.0, 5.0, 6.0);
-        let snapshot = Snapshot {
-            tick: 1,
-            entries: vec![
-                (NetworkId(1), ComponentPayload::Transform(poisoned)),
-                (
-                    NetworkId(2),
-                    ComponentPayload::Transform(transform_to_wire(&Transform {
-                        position: finite_pos,
-                        rotation: Quat::IDENTITY,
-                        scale: Vec3::ONE,
-                    })),
-                ),
-            ],
-        };
-        apply(&mut registry, &snapshot, &mut map);
-
-        // The poisoned entry never spawned and never recorded a mapping.
-        assert!(
-            !map.contains_key(&NetworkId(1)),
-            "non-finite entry must not spawn or map"
-        );
-        // The finite entry in the same snapshot applied normally.
-        assert_eq!(map.len(), 1, "only the finite entry maps");
-        let spawned = *map.get(&NetworkId(2)).expect("finite entry mapped");
-        let applied = registry
-            .get_component::<Transform>(spawned)
-            .expect("finite entry carries a Transform");
-        assert!((applied.position - finite_pos).length() < EPSILON);
-
-        // A second snapshot resending the poison for an already-mapped id must
-        // not overwrite the good state with a non-finite pose (skip applies on
-        // the set path too).
-        let snapshot2 = Snapshot {
-            tick: 2,
-            entries: vec![(
-                NetworkId(2),
-                ComponentPayload::Transform(WireTransform {
-                    position: [f32::INFINITY, 0.0, 0.0],
-                    rotation: [0.0, 0.0, 0.0, 1.0],
-                    scale: [1.0, 1.0, 1.0],
-                }),
-            )],
-        };
-        apply(&mut registry, &snapshot2, &mut map);
-        let unchanged = registry
-            .get_component::<Transform>(spawned)
-            .expect("entity still live");
-        assert!(
-            (unchanged.position - finite_pos).length() < EPSILON,
-            "non-finite set must not overwrite a good pose"
-        );
-    }
+    // The client apply state machine (spawn, mutate-in-place, despawn, non-finite
+    // drop, baseline repair, sequence tracking, ack production) is tested in the
+    // `client` submodule, which owns that path. This module's tests cover the wire
+    // conversions, the discriminant drift guard, and CLI parsing.
 
     // --- Argv parsing: default / --host / --connect, coexisting with the map path. ---
     fn argv(parts: &[&str]) -> Vec<String> {

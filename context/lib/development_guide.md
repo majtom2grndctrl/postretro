@@ -122,6 +122,8 @@ Inside the hot path the ordinary defaults still hold: avoid per-frame allocation
 
 **Build and load time is a budget too.** The offline bake dominates compile time — the bake is the engine's most-optimized CPU path (content-hash stage caching, rayon-parallel SH, incremental per-light bake), and near-instant boot is a product goal. The discipline is the warm/cold contract: the cold (`--no-cache`) build is the exact ship source of truth and favors correctness; the warm iteration path is cached, parallelized, and may even approximate for author speed. Coupling: "Bake over compute" moves cost *into* the bake, so weigh what a new baked input costs the build loop, not just the frame.
 
+**Concurrent agents in isolated worktrees: cap at 3.** Each worktree builds the engine from scratch, and that build is heavy — the `rquickjs-sys` QuickJS C dependency dominates. Beyond three simultaneous engine builds, concurrent compiles saturate CPU and exhaust disk; a full volume surfaces as linker "No space left on device" or bus errors that fail otherwise-correct work. Three is the safe ceiling. Need more parallelism? Batch — run the next group after the first merges, not wider.
+
 When per-pass GPU timing (`POSTRETRO_GPU_TIMING=1`) or a profile confirms a real bottleneck, optimize aggressively — but keep the result clean. An optimization that makes the code unmaintainable is not acceptable, even with measurements behind it. Fast *and* clean is the goal; brittleness moves the cost from runtime to maintenance.
 
 Never leave a bare `// TODO: fix later`. Either file a follow-up with context or fix it now.

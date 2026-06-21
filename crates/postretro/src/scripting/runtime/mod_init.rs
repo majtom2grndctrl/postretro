@@ -262,4 +262,3 @@ impl ScriptRuntime {
         dependencies.changed_paths_affect_mod_init(paths)
     }
 }
-

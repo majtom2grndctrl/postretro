@@ -7,12 +7,23 @@
 mod client;
 mod interpolation;
 mod lifecycle;
+mod movement_state;
 mod replication;
+mod wire_convert;
 
 pub(crate) use client::ClientReplication;
 pub(crate) use interpolation::{DemoMover, interpolation_delay_ticks};
 pub(crate) use lifecycle::{SlotPawnSource, SlotPawns, on_slot_accepted, on_slot_closed};
 pub(crate) use replication::{ReplicableSet, produce_owned_snapshots};
+
+// Phase 3 Task 2 seam — NOT re-exported here yet. The SimCommand<->InputCommand
+// conversions (`wire_convert`), the inbound `sanitize_input_command` guard, and
+// the movement-state extract/merge helpers (`movement_state`) are `pub(crate)` in
+// their focused submodules. Later Phase 3 tasks call them through the submodule
+// path (e.g. `crate::netcode::wire_convert::sim_command_to_input`) and add a
+// mod.rs re-export when they wire up a caller: Task 3 (client prediction/send),
+// Task 4 (host command queue), Task 5 (reconciliation). Each helper carries
+// `#[allow(dead_code)]` until its caller lands.
 
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};

@@ -74,13 +74,12 @@ pub const fn protocol_version() -> ProtocolVersion {
 /// Named renet channels. The `u8` ids are the channel identifiers shared by the
 /// server and client `ChannelConfig` lists.
 ///
-/// - `Control` — reliable-ordered: the version handshake (and, in Phase 2,
-///   spawn/despawn). Order matters and loss is unacceptable.
+/// - `Control` — reliable-ordered: the version handshake and spawn/despawn.
+///   Order matters and loss is unacceptable.
 /// - `Snapshot` — unreliable: full-state snapshots, latest-wins; a dropped
 ///   snapshot is superseded by the next one.
-/// - `Input` — reserved for the Phase 2 client input-command stream. Registered
-///   now so the channel layout (and thus `transport_protocol_id`) is stable;
-///   carries no traffic in Phase 1.
+/// - `Input` — reliable-ordered: carries client→server acks, baseline-refresh
+///   requests, and time-sync probes, plus server→client time-sync echoes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Channel {
     Control = 0,
@@ -313,8 +312,9 @@ impl NetServer {
                 continue;
             }
             while let Some(bytes) = self.server.receive_message(client_id, Channel::Control) {
-                // A client already accepted may send later control traffic
-                // (spawn/despawn, Phase 2). Phase 1 has none, so drain-and-ignore.
+                // A client already accepted may send later control traffic.
+                // No post-handshake control messages are defined today; drain
+                // and ignore so the channel buffer does not accumulate.
                 if self.slots.is_accepted(client_id) {
                     continue;
                 }
@@ -346,6 +346,9 @@ impl NetServer {
                         // `HandshakeOutcome::Accepted` below carries the same accept
                         // signal the caller already consumes). The slot table is now
                         // the source of truth for `is_accepted`/`accepted_clients`.
+                        // The caller must spawn the slot pawn from its
+                        // `HandshakeOutcome::Accepted` handling — the accept signal
+                        // rides `handshakes`, not `lifecycle`.
                         let _ = self.slots.on_accept(client_id);
                         log::info!("[Net] client {client_id} accepted (protocol {received:?})");
                         outcomes.push(HandshakeOutcome::Accepted { client_id });
@@ -590,16 +593,16 @@ impl NetClient {
         self.handshake_sent
     }
 
-    /// Send an input-command buffer over the reserved input channel (Phase 2).
-    /// Exposed now so the channel surface is complete. Also carries the Task 5
-    /// time-sync request (`ClientMessage::TimeSync`).
+    /// Send a buffer over the reliable-ordered input channel. Carries
+    /// `ClientMessage` variants: input commands, acks, baseline-refresh requests,
+    /// and time-sync probes (`ClientMessage::TimeSync`).
     pub fn send_input(&mut self, input: Vec<u8>) {
         self.client.send_message(Channel::Input, input);
     }
 
     /// Drain input-channel buffers received this frame (reliable-ordered). The
-    /// server sends the Task 5 time-sync echo here; Phase 1 had no server->client
-    /// input traffic.
+    /// server sends time-sync echoes here; decode each buffer as a
+    /// `TimeSyncEcho`.
     pub fn drain_input(&mut self) -> Vec<Vec<u8>> {
         let mut out = Vec::new();
         while let Some(bytes) = self.client.receive_message(Channel::Input) {
@@ -617,8 +620,9 @@ impl NetClient {
         out
     }
 
-    /// Drain control-channel buffers received this frame (reliable-ordered). Phase
-    /// 1 server sends no control traffic to the client; exposed for Phase 2.
+    /// Drain control-channel buffers received this frame (reliable-ordered).
+    /// No server→client control messages are defined today; exposed so callers
+    /// can drain without depending on the channel layout staying empty.
     pub fn drain_control(&mut self) -> Vec<Vec<u8>> {
         let mut out = Vec::new();
         while let Some(bytes) = self.client.receive_message(Channel::Control) {

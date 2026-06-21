@@ -240,7 +240,10 @@ impl PacketConditioner {
 mod tests {
     use super::*;
     use crate::transport::{NetClient, NetServer};
-    use crate::wire::{self, ComponentPayload, NetworkId, Snapshot, WireTransform};
+    use crate::wire::{
+        self, COMPONENT_KIND_TRANSFORM, RECORD_KIND_FULL_BASELINE, RawComponentPayload,
+        RawEntityRecord, RawSnapshotMessage, SNAPSHOT_VERSION, WireTransform,
+    };
     use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
     use std::time::Duration;
 
@@ -342,16 +345,27 @@ mod tests {
 
     // --- The acceptance test: handshake + snapshot through the conditioner. ---
 
-    fn sample_snapshot() -> Snapshot {
-        Snapshot {
-            tick: 42,
-            entries: vec![(
-                NetworkId(7),
-                ComponentPayload::Transform(WireTransform {
-                    position: [1.5, -2.0, 3.25],
-                    rotation: [0.0, 0.0, 0.0, 1.0],
-                }),
-            )],
+    fn sample_snapshot() -> RawSnapshotMessage {
+        RawSnapshotMessage {
+            version: SNAPSHOT_VERSION,
+            sequence: 1,
+            server_tick: 42,
+            records: vec![RawEntityRecord {
+                record_kind: RECORD_KIND_FULL_BASELINE,
+                network_id: 7,
+                baseline_id_or_ref: 1,
+                new_baseline_id_or_tombstone_id: 0,
+                reason: 0,
+                components: vec![RawComponentPayload {
+                    component_kind: COMPONENT_KIND_TRANSFORM,
+                    transform: Some(WireTransform {
+                        position: [1.5, -2.0, 3.25],
+                        rotation: [0.0, 0.0, 0.0, 1.0],
+                        scale: [1.0, 1.0, 1.0],
+                    }),
+                    player_movement: None,
+                }],
+            }],
         }
     }
 
@@ -441,7 +455,7 @@ mod tests {
         // 3. The client must receive the snapshot and decode it byte-faithfully.
         let received = client.drain_snapshots();
         assert_eq!(received.len(), 1, "exactly one snapshot should arrive");
-        let decoded: Snapshot =
+        let decoded: RawSnapshotMessage =
             wire::decode(&received[0]).expect("conditioned delivery must not corrupt the payload");
         assert_eq!(
             decoded, snapshot,
@@ -491,7 +505,7 @@ mod tests {
         assert_ne!(delivered[0], decoy, "the dropped decoy must not arrive");
 
         // The surviving buffer decodes to the expected snapshot.
-        let decoded: Snapshot =
+        let decoded: RawSnapshotMessage =
             wire::decode(&delivered[0]).expect("surviving buffer must be the snapshot");
         assert_eq!(decoded, snapshot);
     }
@@ -529,7 +543,173 @@ mod tests {
 
         let received = client.drain_snapshots();
         assert_eq!(received.len(), 1);
-        let decoded: Snapshot = wire::decode(&received[0]).expect("decodes");
+        let decoded: RawSnapshotMessage = wire::decode(&received[0]).expect("decodes");
         assert_eq!(decoded, snapshot);
+    }
+
+    // --- Time-sync convergence under the Phase 1 latency harness ---
+    //
+    // The headline Task 5 acceptance test. A client/server time-sync exchange is
+    // relayed through the conditioner at the mandated profile (150 ms RTT mean,
+    // 5% loss, heavy jitter) on the virtual clock. The client clock estimate must
+    // track the true server tick within 2 sim ticks once it has had enough
+    // samples and time. Fully deterministic: seeded PRNG + caller-advanced virtual
+    // clock, no wall-clock read anywhere.
+
+    use crate::timesync::{
+        ClockEstimator, DEFAULT_MICROS_PER_TICK, MonotonicClock, SAMPLE_PERIOD_US, TimeSyncSender,
+    };
+
+    /// The mandated automated harness profile, applied in BOTH directions: a
+    /// 45..105 ms one-way range (75 ms mean) under the conditioner's additive
+    /// jitter, 5% loss, fixed seed. Mean RTT ≈ 150 ms.
+    fn timesync_link() -> LinkConfig {
+        LinkConfig {
+            delay: 45,
+            jitter: 60,
+            loss_probability: 0.05,
+            seed: 0x1502,
+        }
+    }
+
+    /// One sim tick in milliseconds (60 Hz). The virtual master clock advances in
+    /// these steps so the server tick is exactly `virtual_ms * 60 / 1000` past a
+    /// base, and the client microsecond clock advances 1000× as microseconds.
+    const TICK_MS: VirtualMillis = 16; // ~16.667 ms; integer ms keeps the clock exact-ish
+
+    /// A virtual monotonic microsecond clock for the estimator. The relay loop
+    /// sets it from the master virtual-ms clock (plus a fixed client origin offset
+    /// to prove the offset math handles an unrelated client clock origin).
+    struct RelayClock {
+        now_us: std::cell::Cell<u64>,
+    }
+    impl MonotonicClock for RelayClock {
+        fn now_micros(&self) -> u64 {
+            self.now_us.get()
+        }
+    }
+
+    #[test]
+    fn time_sync_estimate_tracks_server_tick_within_two_ticks_under_harness() {
+        // Two conditioners, one per direction, both on the same mandated profile.
+        let mut to_server = PacketConditioner::new(timesync_link());
+        let mut to_client = PacketConditioner::new(timesync_link());
+
+        // Master virtual clock (ms). The server's true tick is derived from it so
+        // the estimator has a ground truth to converge to.
+        let mut virtual_ms: VirtualMillis = 0;
+
+        // The server's tick clock: an arbitrary non-zero base proves the estimator
+        // recovers the offset, not just the rate. true_tick(ms) = base + ms*60/1000.
+        const SERVER_TICK_BASE: u64 = 3_600; // 60 s worth of ticks of head-start
+        let true_server_tick = |ms: u64| -> u64 { SERVER_TICK_BASE + (ms * 60) / 1000 };
+
+        // The client monotonic microsecond clock has its own unrelated origin: a
+        // fixed offset added on top of virtual-ms-as-microseconds. The estimator
+        // must still recover the server tick from client-local times alone.
+        const CLIENT_CLOCK_ORIGIN_US: u64 = 9_000_000_000; // arbitrary, unrelated
+        let client_now_us = |ms: u64| -> u64 { CLIENT_CLOCK_ORIGIN_US + ms * 1000 };
+
+        let clock = RelayClock {
+            now_us: std::cell::Cell::new(client_now_us(0)),
+        };
+        let mut sender = TimeSyncSender::new();
+        let mut estimator = ClockEstimator::new(DEFAULT_MICROS_PER_TICK);
+
+        // In-flight echoes carry their scheduled client-arrival microsecond so the
+        // estimator records the receive time on the client's own clock. The relay
+        // delivers raw `TimeSyncEcho` bytes; we tag each with the master-ms arrival
+        // so we can compute the client receive microsecond at ingest.
+        // (The conditioner works in ms; we translate to client microseconds.)
+
+        let mut successful_samples: u32 = 0;
+        // Run until BOTH gates pass: 5 s of simulated time AND ≥20 samples (the
+        // spec's "whichever comes later"). Cap the loop so a regression cannot hang.
+        const FIVE_SECONDS_MS: VirtualMillis = 5_000;
+        const MIN_SAMPLES: u32 = 20;
+        const MAX_MS: VirtualMillis = 60_000; // generous ceiling; never reached normally
+
+        // Track the worst-case error once the gates are satisfied so the assertion
+        // reflects steady-state tracking, not the cold-start transient.
+        let mut max_error_after_gates = 0.0_f64;
+
+        while virtual_ms < MAX_MS {
+            // 1. Client: maybe emit a 5 Hz probe at the current client time.
+            clock.now_us.set(client_now_us(virtual_ms));
+            let client_tick = (virtual_ms * 60 / 1000) as u32;
+            if let Some(req) = sender.maybe_send(&clock, client_tick) {
+                // Register the issued sample_id so the estimator's provenance
+                // guard accepts the eventual echo.
+                estimator.record_sent(req.sample_id);
+                // Encode as the real wire envelope so the codec is exercised.
+                let msg = wire::ClientMessage::TimeSync(req);
+                to_server.enqueue(wire::encode(&msg));
+            }
+
+            // 2. Advance both link clocks by one tick step.
+            to_server.advance(TICK_MS);
+            to_client.advance(TICK_MS);
+
+            // 3. Server: deliver any due requests, echo each with the server tick
+            //    sampled at the master clock now, enqueue the echo back.
+            for packet in to_server.take_ready() {
+                // Decode the client envelope; a corrupt packet is ignored, never a
+                // panic (the conditioner does not corrupt, but the path is real).
+                if let Ok(wire::ClientMessage::TimeSync(req)) =
+                    wire::decode::<wire::ClientMessage>(&packet)
+                {
+                    let server_tick = true_server_tick(virtual_ms) as u32;
+                    let echo = req.echo(server_tick, virtual_ms * 1000);
+                    to_client.enqueue(wire::encode(&echo));
+                }
+            }
+
+            // 4. Client: deliver any due echoes, record the receive time on the
+            //    client's own clock, fold into the estimator.
+            for packet in to_client.take_ready() {
+                if let Ok(echo) = wire::decode::<crate::timesync::TimeSyncEcho>(&packet) {
+                    let recv_us = client_now_us(virtual_ms);
+                    if estimator.ingest_echo(&echo, recv_us) {
+                        successful_samples += 1;
+                    }
+                }
+            }
+
+            // 5. Once both gates are met, accumulate the steady-state error.
+            let gates_met = virtual_ms >= FIVE_SECONDS_MS && successful_samples >= MIN_SAMPLES;
+            if gates_met && estimator.is_initialized() {
+                let estimated = estimator.estimated_server_tick_at(client_now_us(virtual_ms));
+                let truth = true_server_tick(virtual_ms) as f64;
+                let error = (estimated - truth).abs();
+                if error > max_error_after_gates {
+                    max_error_after_gates = error;
+                }
+            }
+
+            virtual_ms += TICK_MS;
+
+            // Stop once both gates are satisfied AND we have measured a span of
+            // steady-state error (another full second past the gate) so the bound
+            // is checked on settled, not transient, state.
+            if gates_met && virtual_ms >= FIVE_SECONDS_MS + 1_000 {
+                break;
+            }
+        }
+
+        // Both gates must actually have been reached.
+        assert!(
+            successful_samples >= MIN_SAMPLES,
+            "expected at least {MIN_SAMPLES} successful samples through 5% loss, got {successful_samples}"
+        );
+        assert!(virtual_ms >= FIVE_SECONDS_MS, "must simulate at least 5 s");
+
+        // The acceptance bound: estimated server tick within 2 sim ticks of truth.
+        // Measured worst-case steady-state error is ~0.96 ticks at this seed.
+        assert!(
+            max_error_after_gates <= 2.0,
+            "estimated server tick must track truth within 2 ticks after the gates; \
+             worst-case steady-state error was {max_error_after_gates:.3} ticks \
+             ({successful_samples} samples, sample period {SAMPLE_PERIOD_US} us)"
+        );
     }
 }

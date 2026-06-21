@@ -875,6 +875,48 @@ impl EntityRegistry {
         }
     }
 
+    /// Remote-presentation write (M15 Phase 2 interpolation): set the entity's
+    /// visible transform to a network-interpolated pose and stamp its previous-tick
+    /// slot to the **same** pose, so the render-stage
+    /// [`interpolated_transform`](Self::interpolated_transform) blend is a no-op at
+    /// any alpha and the buffer's already-resolved pose is shown verbatim.
+    ///
+    /// Time-base reasoning (why previous == current / alpha-agnostic): remote
+    /// entities are not moved by a sim system. The interpolation buffer
+    /// (`RemoteInterpolationBuffer`) already resolves the final pose `P(N)` for this
+    /// render frame at the correct *server-time* target
+    /// (`estimated_server_tick - interpolation_delay`). That resolution is
+    /// independent of — and must not be re-blended by — the render accessor's
+    /// `alpha`, which is the unrelated *sim sub-tick* fraction
+    /// (`accumulator / tick_duration`, see `crate::frame_timing`). Blending `P(N)`
+    /// toward the last-presented `P(N-1)` by that sub-tick alpha would re-sample the
+    /// buffer's smooth trajectory at a frame-varying offset, injecting sub-frame
+    /// jitter. Setting `previous == current` makes
+    /// `lerp(previous, current, alpha) == current` for every alpha, so the remote
+    /// pose is *alpha-invariant*: rendered exactly as the buffer produced it.
+    ///
+    /// No pop: continuity comes from the buffer itself, which produces a smooth
+    /// trajectory across frames. Sampling it once per render frame (previous ==
+    /// current each frame) reproduces that motion faithfully; it does not rely on
+    /// the render-stage blend carrying the prior frame's pose. No other consumer
+    /// reads a remote entity's previous transform (no motion blur / trails), so
+    /// collapsing it to `current` is safe.
+    ///
+    /// See: context/lib/entity_model.md §5 · context/lib/networking.md
+    pub(crate) fn set_remote_presentation_transform(
+        &mut self,
+        id: EntityId,
+        pose: Transform,
+    ) -> Result<(), RegistryError> {
+        let index = self.validate(id)?;
+        self.components[ComponentKind::Transform as usize][index] =
+            Some(ComponentValue::Transform(pose));
+        // previous == current: the buffer already resolved the final frame pose, so
+        // the render blend must reproduce it at any alpha (see doc comment above).
+        self.previous_transforms[index] = Some(pose);
+        Ok(())
+    }
+
     /// Render-stage accessor: the entity's visual transform blended between its
     /// previous-tick and current transforms by `alpha` (0 = previous, 1 =
     /// current). Position and scale are component-lerped; rotation is

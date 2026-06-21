@@ -15,26 +15,41 @@ use std::net::{SocketAddr, UdpSocket};
 use std::time::Duration;
 
 use renet::{
-    ChannelConfig, ClientId, ConnectionConfig, RenetClient, RenetServer, SendType, ServerEvent,
+    ChannelConfig, ClientId, ConnectionConfig, DisconnectReason, RenetClient, RenetServer,
+    SendType, ServerEvent,
 };
 use renet_netcode::{
     ClientAuthentication, NetcodeClientTransport, NetcodeServerTransport, NetcodeTransportError,
     ServerAuthentication, ServerConfig,
 };
 
+use crate::slots::{CloseCause, SlotEvent, SlotState, SlotTable};
 use crate::wire::{self, ProtocolVersion, WireError};
+
+/// Classify a renet [`DisconnectReason`] into the engine-visible [`CloseCause`].
+/// A clean client-initiated disconnect is `Disconnect`; every other reason
+/// (transport timeout, channel/serialization error, server-initiated) folds into
+/// `Timeout` — from the cleanup path's view they are all "the link went away and
+/// we must reclaim the slot". `DisconnectedByServer` is the server reclaiming the
+/// slot itself (e.g. an app-handshake reject), also a non-clean close.
+fn close_cause_from(reason: DisconnectReason) -> CloseCause {
+    match reason {
+        DisconnectReason::DisconnectedByClient => CloseCause::Disconnect,
+        _ => CloseCause::Timeout,
+    }
+}
 
 /// App protocol identity. Hand-bumped on any change that breaks cross-version
 /// compatibility of the message *vocabulary* (a new control message, a changed
 /// channel layout). Carried as `ProtocolVersion::app_protocol_id` and folded into
 /// the transport-level `protocol_id`.
-pub const PROTOCOL_ID: u32 = 0x_5052_4C31; // "PRL1"
+pub const PROTOCOL_ID: u32 = 0x_5052_4C32; // "PRL2" — Phase 2 adds ack/refresh/time-sync families
 
 /// Wire-format version. Hand-bumped whenever the bitcode byte layout of any wire
 /// type changes (added field, reordered enum, bumped bitcode major). Carried as
 /// `ProtocolVersion::wire_version` and folded into the transport-level
 /// `protocol_id` so a wire-incompatible peer is refused at the netcode layer.
-pub const WIRE_VERSION: u32 = 1;
+pub const WIRE_VERSION: u32 = 2;
 
 /// Transport-level gate fed to renet_netcode as the netcode `protocol_id: u64`.
 /// Packs both hand-bumped consts so the encrypted handshake itself fails for any
@@ -59,13 +74,12 @@ pub const fn protocol_version() -> ProtocolVersion {
 /// Named renet channels. The `u8` ids are the channel identifiers shared by the
 /// server and client `ChannelConfig` lists.
 ///
-/// - `Control` — reliable-ordered: the version handshake (and, in Phase 2,
-///   spawn/despawn). Order matters and loss is unacceptable.
+/// - `Control` — reliable-ordered: the version handshake and spawn/despawn.
+///   Order matters and loss is unacceptable.
 /// - `Snapshot` — unreliable: full-state snapshots, latest-wins; a dropped
 ///   snapshot is superseded by the next one.
-/// - `Input` — reserved for the Phase 2 client input-command stream. Registered
-///   now so the channel layout (and thus `transport_protocol_id`) is stable;
-///   carries no traffic in Phase 1.
+/// - `Input` — reliable-ordered: carries client→server acks, baseline-refresh
+///   requests, and time-sync probes, plus server→client time-sync echoes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Channel {
     Control = 0,
@@ -164,16 +178,6 @@ pub fn validate_handshake(
     }
 }
 
-/// Outcome of a client's handshake, tracked per client by the server.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum HandshakeState {
-    /// Connected at the transport layer; the app-level `ProtocolVersion` control
-    /// message has not arrived yet. No entity state is sent in this state.
-    Pending,
-    /// Handshake validated — the client may receive entity state.
-    Accepted,
-}
-
 /// A handshake result surfaced to the caller after `update`. The accept path lets
 /// the caller begin replicating to that client; the reject path carries the typed
 /// reason already logged and acted on (client disconnected) by `update`.
@@ -196,9 +200,25 @@ pub enum HandshakeOutcome {
 pub struct NetServer {
     server: RenetServer,
     transport: NetcodeServerTransport,
-    /// Per-client handshake state. A client absent from this map is unknown; a
-    /// `Pending` entry has connected but not yet been validated.
-    handshakes: std::collections::HashMap<ClientId, HandshakeState>,
+    /// Per-client connection slot state and accepted->closed lifecycle transitions
+    /// (`slots.rs`). Replaces the Phase 1 pending/accepted-only handshake map: it
+    /// also models the terminal `Closed` state so post-close traffic is refused and
+    /// the engine glue can run its remote-pawn cleanup on the close transition.
+    slots: SlotTable,
+}
+
+/// What one `update`/`poll_handshakes` poll produced this frame: the app-handshake
+/// verdicts (accept/reject, for logging and per-client replication registration) and
+/// the slot lifecycle close events (clean disconnect or timeout) the engine glue
+/// turns into remote-pawn cleanup. Accept transitions ride `handshakes` as
+/// `HandshakeOutcome::Accepted`; close transitions ride `lifecycle`.
+#[derive(Debug, Default)]
+#[must_use = "a poll reports client accept/reject and slot close transitions; handle or explicitly ignore"]
+pub struct ServerPoll {
+    /// App-handshake verdicts produced this poll.
+    pub handshakes: Vec<HandshakeOutcome>,
+    /// Slot close transitions produced this poll (accepted slots that went closed).
+    pub lifecycle: Vec<SlotEvent>,
 }
 
 impl NetServer {
@@ -226,7 +246,7 @@ impl NetServer {
         Ok(Self {
             server,
             transport,
-            handshakes: std::collections::HashMap::new(),
+            slots: SlotTable::new(),
         })
     }
 
@@ -243,27 +263,36 @@ impl NetServer {
     ///
     /// Non-blocking: the netcode transport drains the socket to `WouldBlock` and
     /// returns. Never blocks the caller.
-    #[must_use = "handshake outcomes report client accept/reject; handle or explicitly ignore"]
-    pub fn update(&mut self, dt: Duration) -> Result<Vec<HandshakeOutcome>, NetcodeTransportError> {
+    pub fn update(&mut self, dt: Duration) -> Result<ServerPoll, NetcodeTransportError> {
         self.server.update(dt);
         self.transport.update(dt, &mut self.server)?;
 
-        // Reap connection lifecycle events so handshake state tracks live clients.
+        // Reap connection lifecycle events: a connect opens a Pending slot; a
+        // disconnect closes the slot, classifying clean-disconnect vs timeout, and
+        // surfaces a close event when an *accepted* slot closes (so the glue cleans
+        // up its slot-owned pawn). A closed slot is terminal — post-close traffic is
+        // refused below.
+        let mut lifecycle = Vec::new();
         while let Some(event) = self.server.get_event() {
             match event {
                 ServerEvent::ClientConnected { client_id } => {
-                    self.handshakes.insert(client_id, HandshakeState::Pending);
+                    self.slots.on_connect(client_id);
                 }
-                ServerEvent::ClientDisconnected { client_id, .. } => {
-                    self.handshakes.remove(&client_id);
+                ServerEvent::ClientDisconnected { client_id, reason } => {
+                    if let Some(close) = self.slots.on_close(client_id, close_cause_from(reason)) {
+                        lifecycle.push(close);
+                    }
                 }
             }
         }
 
-        let outcomes = self.process_control_messages();
+        let handshakes = self.process_control_messages();
 
         self.transport.send_packets(&mut self.server);
-        Ok(outcomes)
+        Ok(ServerPoll {
+            handshakes,
+            lifecycle,
+        })
     }
 
     /// Drain the control channel for every client and, for those still `Pending`,
@@ -276,10 +305,17 @@ impl NetServer {
         let expected = protocol_version();
 
         for client_id in self.server.clients_id() {
+            // A closed slot is terminal: refuse its control traffic. renet may still
+            // surface a buffered message from a peer mid-disconnect; the slot model
+            // says that peer is gone, so drop it without a handshake decision.
+            if self.slots.is_closed(client_id) {
+                continue;
+            }
             while let Some(bytes) = self.server.receive_message(client_id, Channel::Control) {
-                // A client already accepted may send later control traffic
-                // (spawn/despawn, Phase 2). Phase 1 has none, so drain-and-ignore.
-                if self.handshakes.get(&client_id) == Some(&HandshakeState::Accepted) {
+                // A client already accepted may send later control traffic.
+                // No post-handshake control messages are defined today; drain
+                // and ignore so the channel buffer does not accumulate.
+                if self.slots.is_accepted(client_id) {
                     continue;
                 }
 
@@ -305,7 +341,15 @@ impl NetServer {
 
                 match validate_handshake(expected, received) {
                     Ok(()) => {
-                        self.handshakes.insert(client_id, HandshakeState::Accepted);
+                        // The slot transitions Pending->Accepted exactly once; the
+                        // emitted `SlotEvent::Accepted` is not surfaced here (the
+                        // `HandshakeOutcome::Accepted` below carries the same accept
+                        // signal the caller already consumes). The slot table is now
+                        // the source of truth for `is_accepted`/`accepted_clients`.
+                        // The caller must spawn the slot pawn from its
+                        // `HandshakeOutcome::Accepted` handling — the accept signal
+                        // rides `handshakes`, not `lifecycle`.
+                        let _ = self.slots.on_accept(client_id);
                         log::info!("[Net] client {client_id} accepted (protocol {received:?})");
                         outcomes.push(HandshakeOutcome::Accepted { client_id });
                     }
@@ -322,27 +366,39 @@ impl NetServer {
         outcomes
     }
 
-    /// Disconnect a client and forget its handshake state. renet flushes the
-    /// disconnect over the transport on the next `send_packets`.
+    /// Disconnect a client at the app-handshake reject and close its slot. The
+    /// slot moves to `Closed { Timeout }` (a server-initiated reject is a non-clean
+    /// close from the slot model's view); renet flushes the disconnect over the
+    /// transport on the next `send_packets`. A pending (never-accepted) reject emits
+    /// no lifecycle event — there was no slot-owned pawn to clean up.
     fn reject(&mut self, client_id: ClientId, _reason: RejectReason) {
-        self.handshakes.remove(&client_id);
+        let _ = self.slots.on_close(client_id, CloseCause::Timeout);
         self.server.disconnect(client_id);
     }
 
-    /// Has the given client passed the app-level handshake?
+    /// Has the given client passed the app-level handshake and not since closed?
     #[must_use]
     pub fn is_accepted(&self, client_id: ClientId) -> bool {
-        self.handshakes.get(&client_id) == Some(&HandshakeState::Accepted)
+        self.slots.is_accepted(client_id)
+    }
+
+    /// Has the given client's slot closed (clean disconnect or timeout)?
+    #[must_use]
+    pub fn is_closed(&self, client_id: ClientId) -> bool {
+        self.slots.is_closed(client_id)
+    }
+
+    /// The current lifecycle state of a slot, or `None` if the client is unknown.
+    #[must_use]
+    pub fn slot_state(&self, client_id: ClientId) -> Option<SlotState> {
+        self.slots.state(client_id)
     }
 
     /// Client ids that have passed the handshake and may receive entity state.
+    /// Closed slots are excluded.
     #[must_use]
     pub fn accepted_clients(&self) -> Vec<ClientId> {
-        self.handshakes
-            .iter()
-            .filter(|(_, state)| **state == HandshakeState::Accepted)
-            .map(|(id, _)| *id)
-            .collect()
+        self.slots.accepted_clients()
     }
 
     /// All transport-connected client ids (regardless of handshake state).
@@ -363,14 +419,34 @@ impl NetServer {
         true
     }
 
-    /// Drain any input-channel messages from a client (Phase 2 traffic; empty in
-    /// Phase 1). Exposed now so the channel surface is complete.
+    /// Drain any input-channel messages from a client (Phase 2 acks, refresh
+    /// requests, time-sync probes). A **closed** slot's input is refused: once the
+    /// slot is gone its peer must not influence replication state, so any buffered
+    /// message renet still surfaces is dropped (the stale-packets-after-close gate).
     pub fn drain_input(&mut self, client_id: ClientId) -> Vec<Vec<u8>> {
+        if self.slots.is_closed(client_id) {
+            // Drain-and-drop so renet's buffer does not grow, but return nothing.
+            while self
+                .server
+                .receive_message(client_id, Channel::Input)
+                .is_some()
+            {}
+            return Vec::new();
+        }
         let mut out = Vec::new();
         while let Some(bytes) = self.server.receive_message(client_id, Channel::Input) {
             out.push(bytes.to_vec());
         }
         out
+    }
+
+    /// Send a buffer to a client on the reliable-ordered `Channel::Input`. Used
+    /// for the Task 5 time-sync echo, which rides the input channel back to the
+    /// client independently of snapshots. Unlike `send_snapshot`, this is not
+    /// gated on acceptance: time-sync may flow to a connected client before it has
+    /// passed the app handshake (the echo carries no entity state).
+    pub fn send_input(&mut self, client_id: ClientId, payload: Vec<u8>) {
+        self.server.send_message(client_id, Channel::Input, payload);
     }
 
     /// Connection-level packets renet wants delivered to `client_id`, *bypassing*
@@ -392,11 +468,29 @@ impl NetServer {
 
     /// Register a client with the renet connection layer without going through the
     /// netcode transport — required by the in-memory relay, which establishes the
-    /// connection itself. Mirrors `RenetServer::add_connection` and seeds the
-    /// handshake state as `Pending`.
+    /// connection itself. Mirrors `RenetServer::add_connection` and seeds the slot
+    /// as `Pending`.
     pub fn add_relay_connection(&mut self, client_id: ClientId) {
         self.server.add_connection(client_id);
-        self.handshakes.insert(client_id, HandshakeState::Pending);
+        self.slots.on_connect(client_id);
+    }
+
+    /// Force-close a relay slot with `cause`, mirroring a transport disconnect for
+    /// the in-memory harness (which moves packets itself and so never sees a renet
+    /// disconnect event). Returns the `SlotEvent::Closed` when an accepted slot
+    /// closes — the same lifecycle signal `update` surfaces over a real socket — so
+    /// harness-driven tests exercise the identical cleanup path. A clean disconnect
+    /// passes `CloseCause::Disconnect`; a timeout passes `CloseCause::Timeout`.
+    #[must_use]
+    pub fn close_relay_connection(
+        &mut self,
+        client_id: ClientId,
+        cause: CloseCause,
+    ) -> Option<SlotEvent> {
+        // Tell renet to drop the connection too so subsequent relay packets for this
+        // client are ignored by the connection layer.
+        self.server.remove_connection(client_id);
+        self.slots.on_close(client_id, cause)
     }
 
     /// Drive only the renet connection layer (no socket). The in-memory relay calls
@@ -407,21 +501,29 @@ impl NetServer {
 
     /// Run the app-level handshake gate over already-delivered control messages.
     /// Used by the in-memory relay, which moves packets itself and so cannot use
-    /// `update`'s socket path. Returns this poll's handshake outcomes.
-    pub fn poll_handshakes(&mut self) -> Vec<HandshakeOutcome> {
+    /// `update`'s socket path. Returns this poll's `ServerPoll` (handshake verdicts +
+    /// any slot close transitions). The relay drives close transitions explicitly
+    /// via [`NetServer::close_relay_connection`]; close events surfaced here come
+    /// from a renet-initiated disconnect (e.g. a handshake reject's `disconnect`).
+    pub fn poll_handshakes(&mut self) -> ServerPoll {
+        let mut lifecycle = Vec::new();
         while let Some(event) = self.server.get_event() {
             match event {
                 ServerEvent::ClientConnected { client_id } => {
-                    self.handshakes
-                        .entry(client_id)
-                        .or_insert(HandshakeState::Pending);
+                    self.slots.on_connect(client_id);
                 }
-                ServerEvent::ClientDisconnected { client_id, .. } => {
-                    self.handshakes.remove(&client_id);
+                ServerEvent::ClientDisconnected { client_id, reason } => {
+                    if let Some(close) = self.slots.on_close(client_id, close_cause_from(reason)) {
+                        lifecycle.push(close);
+                    }
                 }
             }
         }
-        self.process_control_messages()
+        let handshakes = self.process_control_messages();
+        ServerPoll {
+            handshakes,
+            lifecycle,
+        }
     }
 }
 
@@ -491,10 +593,22 @@ impl NetClient {
         self.handshake_sent
     }
 
-    /// Send an input-command buffer over the reserved input channel (Phase 2).
-    /// Exposed now so the channel surface is complete.
+    /// Send a buffer over the reliable-ordered input channel. Carries
+    /// `ClientMessage` variants: input commands, acks, baseline-refresh requests,
+    /// and time-sync probes (`ClientMessage::TimeSync`).
     pub fn send_input(&mut self, input: Vec<u8>) {
         self.client.send_message(Channel::Input, input);
+    }
+
+    /// Drain input-channel buffers received this frame (reliable-ordered). The
+    /// server sends time-sync echoes here; decode each buffer as a
+    /// `TimeSyncEcho`.
+    pub fn drain_input(&mut self) -> Vec<Vec<u8>> {
+        let mut out = Vec::new();
+        while let Some(bytes) = self.client.receive_message(Channel::Input) {
+            out.push(bytes.to_vec());
+        }
+        out
     }
 
     /// Drain snapshot buffers received this frame (unreliable channel).
@@ -506,8 +620,9 @@ impl NetClient {
         out
     }
 
-    /// Drain control-channel buffers received this frame (reliable-ordered). Phase
-    /// 1 server sends no control traffic to the client; exposed for Phase 2.
+    /// Drain control-channel buffers received this frame (reliable-ordered).
+    /// No server→client control messages are defined today; exposed so callers
+    /// can drain without depending on the channel layout staying empty.
     pub fn drain_control(&mut self) -> Vec<Vec<u8>> {
         let mut out = Vec::new();
         while let Some(bytes) = self.client.receive_message(Channel::Control) {
@@ -622,6 +737,120 @@ mod tests {
         assert_eq!(config.client_channels_config.len(), 3);
     }
 
+    // --- Slot lifecycle over the in-memory relay (no UDP). ---
+    //
+    // These prove the transport-level close gate: once a slot closes, the server
+    // surfaces the close transition and refuses that peer's input/snapshot traffic.
+    // The relay moves connection-layer packets directly; the netcode handshake never
+    // runs, so the app handshake is driven by relaying the client's control message.
+
+    use crate::slots::{CloseCause, SlotEvent, SlotState};
+
+    const RELAY_CLIENT: ClientId = 7;
+    const RELAY_DT: Duration = Duration::from_millis(16);
+
+    /// Stand up a relay-connected server/client pair and drive the app handshake to
+    /// acceptance by relaying the client's first control message.
+    fn relay_accepted_pair() -> (NetServer, NetClient) {
+        let origin = Duration::from_secs(1);
+        let (server_sock, server_addr) = bound_socket();
+        let (client_sock, _client_addr) = bound_socket();
+        let mut server =
+            NetServer::new(server_sock, server_addr, 8, origin).expect("server transport");
+        let mut client = NetClient::new(client_sock, server_addr, RELAY_CLIENT, origin)
+            .expect("client transport");
+
+        server.add_relay_connection(RELAY_CLIENT);
+        client.set_connected();
+
+        // Pump client->server until the handshake control message is delivered and the
+        // app gate accepts. Direct passthrough (no conditioner) so it settles fast.
+        for _ in 0..16 {
+            client.update_connections(RELAY_DT);
+            for packet in client.packets_to_send() {
+                server.process_packet_from(&packet, RELAY_CLIENT);
+            }
+            server.update_connections(RELAY_DT);
+            let poll = server.poll_handshakes();
+            if poll
+                .handshakes
+                .iter()
+                .any(|o| matches!(o, HandshakeOutcome::Accepted { .. }))
+            {
+                break;
+            }
+        }
+        assert!(
+            server.is_accepted(RELAY_CLIENT),
+            "relay client should accept"
+        );
+        (server, client)
+    }
+
+    /// Relay one round of client->server packets so a just-sent input message lands
+    /// in the server's connection-layer receive buffer.
+    fn relay_client_to_server(server: &mut NetServer, client: &mut NetClient) {
+        client.update_connections(RELAY_DT);
+        for packet in client.packets_to_send() {
+            server.process_packet_from(&packet, RELAY_CLIENT);
+        }
+        server.update_connections(RELAY_DT);
+    }
+
+    #[test]
+    fn close_relay_connection_surfaces_close_event_and_refuses_traffic() {
+        let (mut server, _client) = relay_accepted_pair();
+
+        // A clean disconnect surfaces the close transition with the Disconnect cause.
+        let event = server.close_relay_connection(RELAY_CLIENT, CloseCause::Disconnect);
+        assert_eq!(
+            event,
+            Some(SlotEvent::Closed {
+                client_id: RELAY_CLIENT,
+                cause: CloseCause::Disconnect,
+            })
+        );
+        assert!(server.is_closed(RELAY_CLIENT));
+        assert!(!server.is_accepted(RELAY_CLIENT));
+        assert_eq!(
+            server.slot_state(RELAY_CLIENT),
+            Some(SlotState::Closed {
+                cause: CloseCause::Disconnect
+            })
+        );
+
+        // Post-close: a snapshot send is refused and accepted_clients excludes it.
+        assert!(
+            !server.send_snapshot(RELAY_CLIENT, vec![1, 2, 3]),
+            "a closed slot receives no entity state"
+        );
+        assert!(server.accepted_clients().is_empty());
+    }
+
+    #[test]
+    fn input_from_a_closed_slot_is_ignored() {
+        let (mut server, mut client) = relay_accepted_pair();
+
+        // Client sends an input message; relay it so it lands in the server's buffer.
+        client.send_input(vec![9, 9, 9]);
+        relay_client_to_server(&mut server, &mut client);
+
+        // Close the slot BEFORE the server drains. The buffered (now stale) input must
+        // be dropped, not returned.
+        let _ = server.close_relay_connection(RELAY_CLIENT, CloseCause::Timeout);
+        assert!(
+            server.drain_input(RELAY_CLIENT).is_empty(),
+            "stale input from a closed slot is ignored"
+        );
+
+        // A second close (e.g. a redundant disconnect event) is a no-op transition.
+        assert_eq!(
+            server.close_relay_connection(RELAY_CLIENT, CloseCause::Disconnect),
+            None,
+            "close is terminal and idempotent"
+        );
+    }
+
     // --- Loopback integration: accept and reject over real UDP sockets. ---
     //
     // Bounded poll loop (never an unbounded/blocking wait). The netcode transport
@@ -689,8 +918,8 @@ mod tests {
                 .expect("client send packets");
 
             // Server side: full update (drains socket, validates handshakes).
-            let outcomes = server.update(POLL_DT).expect("server update");
-            all_outcomes.extend(outcomes);
+            let poll = server.update(POLL_DT).expect("server update");
+            all_outcomes.extend(poll.handshakes);
 
             // Stop once we have a verdict (accept or reject seen).
             if !all_outcomes.is_empty() {
@@ -701,7 +930,7 @@ mod tests {
                     let _ = client.transport.update(POLL_DT, &mut client.client);
                     let _ = client.transport.send_packets(&mut client.client);
                     let extra = server.update(POLL_DT).expect("server update");
-                    all_outcomes.extend(extra);
+                    all_outcomes.extend(extra.handshakes);
                 }
                 break;
             }

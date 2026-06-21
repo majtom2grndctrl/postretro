@@ -67,7 +67,6 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use glam::Vec3;
-use postretro_net::wire;
 use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, DeviceId, KeyEvent, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
@@ -2190,6 +2189,15 @@ impl ApplicationHandler for App {
                 // client and single-player. See `context/lib/entity_model.md` §6.
                 self.net_serialize_and_send();
 
+                // Task 6 client remote interpolation: sample each remote entity's
+                // buffer at `estimated_server_tick - interpolation_delay` and write the
+                // interpolated pose through the registry's remote-presentation helper.
+                // Runs AFTER the tick loop (so the stage-0 `snapshot_transforms` does
+                // not clobber the previous/current pair this writes) and BEFORE the
+                // render stage reads entities, so the renderer stays read-only.
+                // No-op for single-player and the host.
+                self.net_sample_remote_interpolation();
+
                 // Drain collected post-tick events after all ticks complete so
                 // reactions observe the final state of every entity.
                 for event_name in &pending_movement_events {
@@ -3760,85 +3768,166 @@ impl App {
         let dt = std::time::Duration::from_secs_f32(frame_dt);
         match self.net_endpoint.as_mut() {
             None => {}
-            Some(netcode::NetEndpoint::Host { server, .. }) => {
+            Some(netcode::NetEndpoint::Host {
+                server,
+                allocator,
+                replication,
+                replicable,
+                slot_pawns,
+                tick,
+                demo_mover: _,
+            }) => {
                 // Drive the listen server (accept handshakes, drain the socket).
                 // Snapshots are sent post-loop in `net_serialize_and_send`.
                 match server.update(dt) {
-                    // Log this frame's handshake verdicts. The per-frame snapshot
-                    // send re-queries `accepted_clients()`, so this logging is
-                    // purely observational; Phase 2's spawn/slot logic will be the
-                    // consumer that acts on these outcomes.
-                    Ok(outcomes) => {
+                    // Drive this frame's connection transitions through the game-logic-
+                    // owned registry borrow: an accept verdict registers the client and
+                    // spawns its slot-owned inert pawn; a lifecycle close despawns it.
+                    Ok(poll) => {
                         use postretro_net::transport::HandshakeOutcome;
-                        for outcome in outcomes {
-                            match outcome {
-                                HandshakeOutcome::Accepted { client_id } => {
-                                    log::info!("[Net] client {client_id} accepted");
-                                }
-                                HandshakeOutcome::Rejected { client_id, reason } => {
-                                    log::warn!("[Net] client {client_id} rejected: {reason}");
+                        // The accept verdict is the production spawn seam. An accepted
+                        // client must get its slot-owned pawn spawned + registered HERE,
+                        // so it is in the replicable set before `net_serialize_and_send`
+                        // runs `host_replicate` post-loop and the pawn lands in the first
+                        // snapshot. `SlotEvent::Accepted` never reaches `poll.lifecycle`
+                        // (the transport discards it at `on_accept`); lifecycle carries
+                        // `Closed` only. Both paths mutate the registry, so take one
+                        // game-logic-owned borrow when either has work.
+                        if !poll.handshakes.is_empty() || !poll.lifecycle.is_empty() {
+                            let mut registry = self.script_ctx.registry.borrow_mut();
+                            for outcome in &poll.handshakes {
+                                match outcome {
+                                    HandshakeOutcome::Accepted { client_id } => {
+                                        log::info!("[Net] client {client_id} accepted");
+                                        replication.register_client(*client_id);
+                                        netcode::host_handle_accept(
+                                            &mut registry,
+                                            allocator,
+                                            replicable,
+                                            slot_pawns,
+                                            *client_id,
+                                        );
+                                    }
+                                    HandshakeOutcome::Rejected { client_id, reason } => {
+                                        log::warn!("[Net] client {client_id} rejected: {reason}");
+                                    }
                                 }
                             }
+                            // Lifecycle carries only `Closed` events; the accept-spawn
+                            // above is the sole accept seam.
+                            netcode::host_handle_lifecycle(
+                                &mut registry,
+                                replicable,
+                                replication,
+                                slot_pawns,
+                                &poll.lifecycle,
+                            );
                         }
                     }
                     Err(err) => log::error!("[Net] host update failed: {err}"),
                 }
+                // Drain each accepted client's reliable Channel::Input: apply
+                // replication acks and baseline-refresh requests into the tracker,
+                // and echo time-sync probes with the current server tick. The echo
+                // microseconds are telemetry only, derived from the monotonic tick.
+                let server_tick = *tick;
+                let server_now_us = u64::from(server_tick) * netcode::SERVER_TICK_MICROS;
+                for client_id in server.accepted_clients() {
+                    netcode::host_handle_client_messages(
+                        server,
+                        replication,
+                        client_id,
+                        server_tick,
+                        server_now_us,
+                    );
+                }
             }
-            Some(netcode::NetEndpoint::Client { client, map }) => {
+            Some(netcode::NetEndpoint::Client {
+                client,
+                replication,
+                time_sync,
+            }) => {
                 if let Err(err) = client.update(dt) {
                     log::error!("[Net] client update failed: {err}");
                 }
-                // Apply every snapshot received this frame, latest last, so the
-                // registry reflects the most recent host-authoritative state.
-                let snapshots = client.drain_snapshots();
-                if !snapshots.is_empty() {
-                    let mut registry = self.script_ctx.registry.borrow_mut();
-                    for bytes in snapshots {
-                        match wire::decode::<wire::Snapshot>(&bytes) {
-                            Ok(snapshot) => netcode::apply(&mut registry, &snapshot, map),
-                            Err(err) => {
-                                log::warn!("[Net] dropping undecodable snapshot: {err}");
-                            }
-                        }
-                    }
-                }
+                // Drive the 5 Hz time-sync send loop + echo ingest. The client's
+                // local sim tick is the engine frame counter; the estimator reads
+                // its own monotonic clock for send/receive microseconds.
+                let client_tick = self.script_ctx.frame.get() as u32;
+                netcode::client_drive_time_sync(client, time_sync, client_tick);
+                // Decode + apply every snapshot received this frame through the
+                // Phase 2 client state machine, send the resulting acks + baseline-
+                // refresh requests, and advance the pending-repair 5 Hz cadence.
+                let mut registry = self.script_ctx.registry.borrow_mut();
+                netcode::client_receive_and_apply(&mut registry, client, replication, dt);
+                // The interpolation-buffer sampling that writes presented remote poses
+                // runs in `net_sample_remote_interpolation`, AFTER the catch-up tick
+                // loop's stage-0 `snapshot_transforms` — so its previous/current
+                // remote-presentation write is the final word before render and is not
+                // clobbered by the snapshot pass.
             }
         }
     }
 
-    /// Host serialize plus send (M15 Phase 1). Thin delegation to
-    /// `crate::netcode`. Serializes the replicable set from the registry
-    /// (immutable borrow) into a tick-stamped `Snapshot`, then sends it to every
-    /// accepted client over the snapshot channel. No-op for single-player and the
-    /// client.
+    /// Host Phase 2 replication step. Thin delegation to `crate::netcode`. Ingests
+    /// the replicable set from the registry (immutable borrow) into the per-client
+    /// replication tracker every sim tick and, on the 20 Hz cadence, encodes and
+    /// sends each accepted client a per-client delta snapshot over the snapshot
+    /// channel. No-op for single-player and the client.
     fn net_serialize_and_send(&mut self) {
         let Some(netcode::NetEndpoint::Host {
             server,
             allocator,
             tick,
+            replication,
+            replicable,
+            slot_pawns: _,
+            demo_mover,
         }) = self.net_endpoint.as_mut()
         else {
             return;
         };
 
-        let accepted = server.accepted_clients();
-        if accepted.is_empty() {
-            // Still advance the tick stamp so a late-joining client never sees a
-            // stalled monotonic clock once it is accepted.
-            *tick = tick.wrapping_add(1);
-            return;
+        // Demo path only (POSTRETRO_NET_DEMO_MOVER=1): spawn-and-drive the
+        // deterministic Phase 2 net-demo mover for this tick before snapshotting, so
+        // its pose is in the replicable set when `host_replicate` ingests below. A
+        // no-op on an ordinary host.
+        {
+            let mut registry = self.script_ctx.registry.borrow_mut();
+            netcode::host_drive_demo_mover(&mut registry, demo_mover, allocator, replicable, *tick);
         }
 
-        let snapshot = {
+        {
             let registry = self.script_ctx.registry.borrow();
-            netcode::serialize(&registry, allocator, *tick)
-        };
-        *tick = tick.wrapping_add(1);
-
-        let bytes = wire::encode(&snapshot);
-        for client_id in accepted {
-            let _ = server.send_snapshot(client_id, bytes.clone());
+            netcode::host_replicate(&registry, server, allocator, replication, replicable, *tick);
         }
+        // Advance the monotonic server tick after this tick's ingest+send so a
+        // late-joining client never sees a stalled clock.
+        *tick = tick.wrapping_add(1);
+    }
+
+    /// Client remote-interpolation sampling step (M15 Phase 2 Task 6). Thin delegation
+    /// to `crate::netcode`. Samples each remote entity's interpolation buffer at the
+    /// jitter-sized render target tick and writes the presented pose through the
+    /// registry's remote-presentation helper. That pose is already resolved at the
+    /// correct server-time target, so the write is alpha-agnostic (previous ==
+    /// current); the render-stage `interpolated_transform` blend reproduces it
+    /// verbatim rather than re-blending it by the unrelated sim sub-tick alpha.
+    ///
+    /// Runs after the catch-up tick loop so the stage-0 `snapshot_transforms` cannot
+    /// clobber the presented pose, and before the render stage reads entities.
+    /// No-op for single-player and the host (no client interpolation buffers).
+    fn net_sample_remote_interpolation(&mut self) {
+        let Some(netcode::NetEndpoint::Client {
+            replication,
+            time_sync,
+            ..
+        }) = self.net_endpoint.as_mut()
+        else {
+            return;
+        };
+        let mut registry = self.script_ctx.registry.borrow_mut();
+        netcode::client_sample_interpolation(&mut registry, replication, time_sync);
     }
 
     /// Accumulate one frame onto the animation clock: `prev + dt × scale`.

@@ -982,7 +982,10 @@ mod tests {
         let pawn = slot_pawns
             .pawn_for(CLIENT_ID)
             .expect("accept spawned a slot-owned pawn for the client");
-        assert!(registry.exists(pawn), "the slot pawn is live in the registry");
+        assert!(
+            registry.exists(pawn),
+            "the slot pawn is live in the registry"
+        );
 
         // It is registered for replication.
         assert!(

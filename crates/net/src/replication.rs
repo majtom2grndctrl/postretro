@@ -136,10 +136,46 @@ impl ServerReplication {
         self.clients.entry(client_id).or_default();
     }
 
-    /// Drop a client (disconnect). Its ack state is discarded; remaining clients
-    /// are unaffected.
+    /// Drop a client (disconnect). Removing its [`ClientReplicationState`] discards
+    /// *all* of that client's per-client maps (`acked_baselines`, `acked_tombstones`,
+    /// `pending_refreshes`) in one move, so none of them leak. Remaining clients are
+    /// unaffected — except that dropping a never-acking client may have been the last
+    /// holdout keeping a tombstone alive, so re-evaluate the global tombstone map for
+    /// anything now acked-by-all-remaining.
     pub fn remove_client(&mut self, client_id: u64) {
         self.clients.remove(&client_id);
+        self.prune_acked_tombstones();
+    }
+
+    /// Drop every global tombstone that all currently-registered clients have acked.
+    ///
+    /// A tombstone must keep resending to clients that have not yet acked it, so it is
+    /// pruned only when *every* registered client's `acked_tombstones` covers it
+    /// (`acked >= tombstone_id`, matching the encode gate). Pruning-after-all-acked is
+    /// safe against future joins: a `NetworkId` is session-monotonic and never
+    /// recycled, so a despawned id never reappears, and a client that joins after the
+    /// prune gets a fresh full baseline of only the *live* entities — it never knew
+    /// the despawned entity and so never needs its tombstone. With no clients
+    /// registered there is no one left to inform, so all tombstones are pruned.
+    ///
+    /// This is the bound on cumulative-despawn state: without it `self.tombstones`
+    /// (and the per-snapshot encode loop over it) grows forever across a session's
+    /// join/leave/despawn churn, since ids never recycle to trigger the
+    /// reappearance-based removal in `ingest_tick`.
+    fn prune_acked_tombstones(&mut self) {
+        let clients = &self.clients;
+        self.tombstones.retain(|network_id, tombstone| {
+            let acked_by_all = clients.values().all(|client| {
+                client
+                    .acked_tombstones
+                    .get(network_id)
+                    .copied()
+                    .unwrap_or(0)
+                    >= tombstone.tombstone_id
+            });
+            // Retain (keep) while NOT yet acked by all registered clients.
+            !acked_by_all
+        });
     }
 
     /// Ingest the engine-produced owned snapshots for this server tick. Compares
@@ -223,7 +259,23 @@ impl ServerReplication {
         if latest_snapshot_sequence > state.last_acked_sequence {
             state.last_acked_sequence = latest_snapshot_sequence;
         }
+        // A client cannot legitimately ack an id the server never issued. The
+        // allocators name the *next* id to hand out, so the highest issued id is
+        // `next_* - 1`; anything strictly above that is a forged or buggy ack.
+        // Accepting it would poison this client's per-entity gate permanently: a
+        // `tombstone_id = u32::MAX` ack makes the encode gate
+        // `acked >= tombstone.tombstone_id` skip every later real despawn, and an
+        // out-of-range `baseline_id` ack forces a refresh round-trip on every change
+        // until the real counter climbs past it. Clamp by ignoring out-of-range ids
+        // while keeping monotonic-advance-only for in-range ones.
+        let highest_baseline = self.next_baseline_id.wrapping_sub(1);
+        let highest_tombstone = self.next_tombstone_id.wrapping_sub(1);
         for &(network_id, baseline_id) in entity_baselines {
+            if baseline_id > highest_baseline {
+                // Forged/buggy: server never issued this baseline id. Ignore it
+                // entirely — no state advance, no refresh satisfaction.
+                continue;
+            }
             let entry = state.acked_baselines.entry(network_id).or_insert(0);
             // Monotonic: only a newer baseline advances. An older/equal ack is a
             // stale or duplicate packet and is ignored.
@@ -237,11 +289,20 @@ impl ServerReplication {
                 .retain(|&(nid, missing_ref)| !(nid == network_id && missing_ref <= baseline_id));
         }
         for &(network_id, tombstone_id) in despawn_tombstones {
+            if tombstone_id > highest_tombstone {
+                // Forged/buggy: server never issued this tombstone id. Ignore it so a
+                // later real despawn still reaches this client.
+                continue;
+            }
             let entry = state.acked_tombstones.entry(network_id).or_insert(0);
             if tombstone_id > *entry {
                 *entry = tombstone_id;
             }
         }
+
+        // This client may have just acked the last outstanding tombstone; once every
+        // registered client has acked a tombstone it can leave the global map.
+        self.prune_acked_tombstones();
     }
 
     /// Queue a baseline-refresh request from a client. Additive and idempotent —
@@ -817,5 +878,214 @@ mod tests {
 
         // Encoding an unregistered client returns None, not a panic.
         assert!(server.encode_for_client(12345, 60).is_none());
+    }
+
+    // Drive an entity to a despawn tombstone for the given network id, returning the
+    // allocated tombstone id. Both clients must already be registered and have acked
+    // the entity's baseline so the despawn is the only outstanding work.
+    fn spawn_then_despawn(server: &mut ServerReplication, network_id: u32) -> u32 {
+        server.ingest_tick(vec![entity(network_id, vec![transform(0.0)])]);
+        let snap = server.encode_for_client(CLIENT_A, 60).unwrap();
+        let EntityRecord::FullBaseline { baseline_id, .. } = record_for(&snap, network_id).unwrap()
+        else {
+            panic!("fb");
+        };
+        // Ack the baseline for every registered client so only the despawn remains.
+        let client_ids: Vec<u64> = server.clients.keys().copied().collect();
+        for cid in client_ids {
+            server.apply_ack(cid, snap.sequence, &[(network_id, baseline_id)], &[]);
+        }
+        // Entity vanishes -> despawn tombstone.
+        server.ingest_tick(vec![]);
+        let snap = server.encode_for_client(CLIENT_A, 61).unwrap();
+        match record_for(&snap, network_id).expect("despawn present") {
+            EntityRecord::Despawn { tombstone_id, .. } => tombstone_id,
+            other => panic!("expected Despawn, got {other:?}"),
+        }
+    }
+
+    // #3: a tombstone leaves the global map only once *every* registered client has
+    // acked it. A client that never acks keeps the tombstone alive (and resending).
+    #[test]
+    fn tombstone_pruned_only_after_all_clients_ack() {
+        let mut server = ServerReplication::new();
+        server.register_client(CLIENT_A);
+        server.register_client(CLIENT_B);
+        let tombstone_id = spawn_then_despawn(&mut server, 1);
+
+        // Two clients, neither acked the tombstone yet: it must stay in the global map
+        // and keep resending to both.
+        assert_eq!(server.tombstones.len(), 1, "tombstone retained pre-ack");
+        assert!(matches!(
+            record_for(&server.encode_for_client(CLIENT_A, 62).unwrap(), 1),
+            Some(EntityRecord::Despawn { .. })
+        ));
+        assert!(matches!(
+            record_for(&server.encode_for_client(CLIENT_B, 62).unwrap(), 1),
+            Some(EntityRecord::Despawn { .. })
+        ));
+
+        // Only A acks: B still needs it, so it is NOT pruned and still resends to B.
+        server.apply_ack(CLIENT_A, 62, &[], &[(1, tombstone_id)]);
+        assert_eq!(
+            server.tombstones.len(),
+            1,
+            "one un-acking client keeps the tombstone alive"
+        );
+        assert!(
+            record_for(&server.encode_for_client(CLIENT_A, 63).unwrap(), 1).is_none(),
+            "acked client no longer receives the despawn"
+        );
+        assert!(
+            matches!(
+                record_for(&server.encode_for_client(CLIENT_B, 63).unwrap(), 1),
+                Some(EntityRecord::Despawn { .. })
+            ),
+            "un-acked client still receives the despawn"
+        );
+
+        // Now B acks too: every registered client has acked -> pruned from the global
+        // map. No future client could need it (a join gets a fresh live-only baseline).
+        server.apply_ack(CLIENT_B, 63, &[], &[(1, tombstone_id)]);
+        assert!(
+            server.tombstones.is_empty(),
+            "tombstone pruned once all registered clients acked"
+        );
+    }
+
+    // #3: removing the last un-acking client re-evaluates the global map — a tombstone
+    // every *remaining* client has acked is pruned even though the departed client
+    // never acked it.
+    #[test]
+    fn removing_holdout_client_prunes_acked_by_remaining() {
+        let mut server = ServerReplication::new();
+        server.register_client(CLIENT_A);
+        server.register_client(CLIENT_B);
+        let tombstone_id = spawn_then_despawn(&mut server, 1);
+
+        // A acks; B never will. Tombstone stays alive for B.
+        server.apply_ack(CLIENT_A, 62, &[], &[(1, tombstone_id)]);
+        assert_eq!(server.tombstones.len(), 1, "B still holds it open");
+
+        // B disconnects. Its per-client maps go with its ClientReplicationState, and
+        // the global map is re-evaluated: A (the only remaining client) acked it.
+        server.remove_client(CLIENT_B);
+        assert!(
+            !server.clients.contains_key(&CLIENT_B),
+            "removed client entry fully dropped"
+        );
+        assert!(
+            server.tombstones.is_empty(),
+            "tombstone pruned once acked by all *remaining* clients"
+        );
+    }
+
+    // #4: a forged ack naming a tombstone id above the server's issued range is
+    // ignored — it does not advance per-client state, so a later real despawn still
+    // reaches that client.
+    #[test]
+    fn forged_future_tombstone_ack_is_ignored() {
+        let mut server = ServerReplication::new();
+        server.register_client(CLIENT_A);
+        server.ingest_tick(vec![entity(1, vec![transform(0.0)])]);
+        let snap1 = server.encode_for_client(CLIENT_A, 60).unwrap();
+        let EntityRecord::FullBaseline { baseline_id, .. } = record_for(&snap1, 1).unwrap() else {
+            panic!("fb");
+        };
+        server.apply_ack(CLIENT_A, snap1.sequence, &[(1, baseline_id)], &[]);
+
+        // Forged ack: a tombstone id for entity 1 far above anything issued. If this
+        // advanced acked_tombstones[1], the encode gate would permanently suppress the
+        // real despawn below.
+        server.apply_ack(CLIENT_A, snap1.sequence, &[], &[(1, u32::MAX)]);
+
+        // Real despawn now happens. It must still reach the client.
+        server.ingest_tick(vec![]);
+        let snap2 = server.encode_for_client(CLIENT_A, 61).unwrap();
+        assert!(
+            matches!(record_for(&snap2, 1), Some(EntityRecord::Despawn { .. })),
+            "forged future-id tombstone ack did not suppress the real despawn"
+        );
+    }
+
+    // #4: a forged ack naming a baseline id above the issued range is ignored — it
+    // does not advance per-client baseline state, so a later real delta still reaches
+    // that client (it is not stuck refreshing).
+    #[test]
+    fn forged_future_baseline_ack_is_ignored() {
+        let mut server = ServerReplication::new();
+        server.register_client(CLIENT_A);
+        server.ingest_tick(vec![entity(1, vec![transform(0.0)])]);
+        let snap1 = server.encode_for_client(CLIENT_A, 60).unwrap();
+        let EntityRecord::FullBaseline { baseline_id, .. } = record_for(&snap1, 1).unwrap() else {
+            panic!("fb");
+        };
+        server.apply_ack(CLIENT_A, snap1.sequence, &[(1, baseline_id)], &[]);
+
+        // Forged ack: a baseline id for entity 1 far above anything issued. It must be
+        // ignored so the client is still recorded as holding the real `baseline_id`.
+        server.apply_ack(CLIENT_A, snap1.sequence, &[(1, u32::MAX)], &[]);
+
+        // Entity moves: the client must receive a Delta *from the real acked
+        // baseline*, not be wedged or forced into a refresh by the bogus future id.
+        server.ingest_tick(vec![entity(1, vec![transform(9.0)])]);
+        let snap2 = server.encode_for_client(CLIENT_A, 61).unwrap();
+        match record_for(&snap2, 1).expect("entity present") {
+            EntityRecord::Delta { baseline_ref, .. } => {
+                assert_eq!(
+                    baseline_ref, baseline_id,
+                    "delta refs the real acked baseline, not the forged id"
+                );
+            }
+            other => panic!("expected Delta, got {other:?}"),
+        }
+    }
+
+    // #3 soak: after N spawn/despawn cycles where the single client acks every
+    // tombstone, the global tombstone map and the per-client maps stay bounded
+    // (empty) rather than growing with cumulative despawns.
+    #[test]
+    fn steady_state_tombstone_map_does_not_grow_unbounded() {
+        let mut server = ServerReplication::new();
+        server.register_client(CLIENT_A);
+
+        // Each cycle uses a fresh, never-recycled network id (session-monotonic, as on
+        // the real host), spawns it, despawns it, then acks the despawn.
+        for nid in 1..=64u32 {
+            server.ingest_tick(vec![entity(nid, vec![transform(0.0)])]);
+            let snap = server.encode_for_client(CLIENT_A, 60).unwrap();
+            let EntityRecord::FullBaseline { baseline_id, .. } = record_for(&snap, nid).unwrap()
+            else {
+                panic!("fb");
+            };
+            server.apply_ack(CLIENT_A, snap.sequence, &[(nid, baseline_id)], &[]);
+
+            // Despawn it.
+            server.ingest_tick(vec![]);
+            let snap = server.encode_for_client(CLIENT_A, 61).unwrap();
+            let EntityRecord::Despawn { tombstone_id, .. } =
+                record_for(&snap, nid).expect("despawn")
+            else {
+                panic!("despawn");
+            };
+            // Ack the despawn: the sole client now covers this tombstone.
+            server.apply_ack(CLIENT_A, snap.sequence, &[], &[(nid, tombstone_id)]);
+        }
+
+        // The global tombstone map is empty: every despawn was acked-by-all and
+        // pruned. Without the fix it would hold all 64 entries forever.
+        assert!(
+            server.tombstones.is_empty(),
+            "tombstone map bounded once all acked, got {}",
+            server.tombstones.len()
+        );
+        // The entity set is empty too (all despawned).
+        assert!(server.entities.is_empty(), "no live entities remain");
+        // The per-client acked maps are bounded by the number of distinct ids the
+        // client ever acked; they do not grow without bound relative to live state,
+        // and crucially the global tombstone map (the per-snapshot encode cost) does
+        // not. The acked maps are swept wholesale when the client disconnects.
+        server.remove_client(CLIENT_A);
+        assert!(server.clients.is_empty(), "client maps swept on disconnect");
     }
 }

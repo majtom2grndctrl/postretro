@@ -8,13 +8,21 @@ mod client;
 mod interpolation;
 mod lifecycle;
 mod movement_state;
+mod prediction;
 mod replication;
 mod wire_convert;
 
 pub(crate) use client::ClientReplication;
 pub(crate) use interpolation::{DemoMover, interpolation_delay_ticks};
 pub(crate) use lifecycle::{SlotPawnSource, SlotPawns, on_slot_accepted, on_slot_closed};
+pub(crate) use prediction::ClientPrediction;
+// The movement-only replay helper is consumed by this module's forward prediction
+// (via the in-module path) and re-exported for Task 5 reconciliation's replay-the-
+// rest loop, which has no caller yet. Staged like the Task 2 wire/movement helpers.
+#[allow(unused_imports)]
+pub(crate) use prediction::replay;
 pub(crate) use replication::{ReplicableSet, produce_owned_snapshots};
+pub(crate) use wire_convert::sim_command_to_input;
 
 // Phase 3 Task 2 seam — NOT re-exported here yet. The SimCommand<->InputCommand
 // conversions (`wire_convert`), the inbound `sanitize_input_command` guard, and
@@ -41,9 +49,12 @@ use postretro_net::wire::{
     WireError, WireMovementState, WirePlayerMovementState, WireTransform,
 };
 
+use crate::collision::CollisionWorld;
+use crate::scripting::components::player_movement::PlayerMovementComponent;
 use crate::scripting::registry::{
     ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform,
 };
+use crate::sim::SimCommand;
 
 /// Default listen port for `--host` when no port is supplied.
 pub(crate) const DEFAULT_HOST_PORT: u16 = 27015;
@@ -201,6 +212,11 @@ pub(crate) enum NetEndpoint {
         /// estimator (consumed by Task 6 interpolation), and the production
         /// monotonic clock the estimator reads through.
         time_sync: Box<ClientTimeSync>,
+        /// M15 Phase 3 client-side movement prediction for the local pawn: the
+        /// command + predicted-state ring, the armed `NetworkId -> EntityId`
+        /// baseline, and the forward-prediction tick. Long-lived prediction state
+        /// lives here (and in `prediction.rs`), never on `App` (source-layout gate).
+        prediction: ClientPrediction,
     },
 }
 
@@ -312,6 +328,7 @@ impl NetEndpoint {
                     client: Box::new(client),
                     replication: ClientReplication::new(),
                     time_sync: Box::new(ClientTimeSync::new()),
+                    prediction: ClientPrediction::new(),
                 }))
             }
         }
@@ -472,6 +489,7 @@ pub(crate) fn client_receive_and_apply(
     registry: &mut EntityRegistry,
     client: &mut NetClient,
     replication: &mut ClientReplication,
+    prediction: &mut ClientPrediction,
     frame_dt: Duration,
 ) {
     for bytes in client.drain_snapshots() {
@@ -483,6 +501,13 @@ pub(crate) fn client_receive_and_apply(
             }
         };
         let outcome = replication.apply_snapshot(registry, &snapshot);
+        // M15 Phase 3 Task 3: a `local_player` baseline arms client prediction with
+        // the marked local pawn. Re-arming the same pawn preserves unacked history;
+        // a new pawn clears it. Task 5 reconciliation (merge/restore/prune/replay)
+        // is the next consumer of this applied-local-record point.
+        if let Some((network_id, entity_id)) = outcome.armed_local_pawn {
+            prediction.arm(network_id, entity_id);
+        }
         for buffer in client::encode_client_messages(&outcome) {
             client.send_input(buffer);
         }
@@ -496,6 +521,71 @@ pub(crate) fn client_receive_and_apply(
         let buffer = wire::encode(&wire::ClientMessage::BaselineRefresh(req));
         client.send_input(buffer);
     }
+}
+
+/// Drive one connected-client predicted fixed tick (M15 Phase 3 Task 3). Sends
+/// exactly one `ClientMessage::Input` for `command` (stamped with the next
+/// monotonic `client_tick`) on the reliable `Channel::Input`, then — once
+/// prediction is armed — advances the local pawn through the movement-only replay
+/// helper and writes the predicted `Transform` + `PlayerMovementComponent` back to
+/// the registry. Returns `true` if it drove the local pawn this tick, `false` if it
+/// only sent input (prediction not yet armed, or the armed pawn is missing).
+///
+/// This is the connected-client substitute for the local movement stage of
+/// `sim::simulate_tick`: it advances ONLY the local pawn's movement (no AI, weapons,
+/// death sweep, or reactions — those stay host-authoritative and arrive via
+/// snapshots). The caller skips `simulate_tick` for local gameplay movement when
+/// this returns. Before the `local_player` baseline arms prediction, the client
+/// still sends input but drives no provisional pawn (`false`).
+///
+/// Game-logic-owned: the mutable registry borrow is threaded in by the caller so
+/// this module never reaches into `App`.
+pub(crate) fn client_predict_tick(
+    registry: &mut EntityRegistry,
+    client: &mut NetClient,
+    prediction: &mut ClientPrediction,
+    command: &SimCommand,
+    collision: &CollisionWorld,
+    gravity: f32,
+    tick_dt: f32,
+) -> bool {
+    // 1. Send exactly one Input command for this predicted tick, stamped with the
+    //    next monotonic client_tick. Sent even before the baseline arms prediction
+    //    so the host's command stream starts immediately on connect.
+    let client_tick = prediction.next_client_tick();
+    let input = sim_command_to_input(command, client_tick);
+    client.send_input(wire::encode(&wire::ClientMessage::Input(input)));
+
+    // 2. Before the local baseline arms prediction, drive no provisional pawn.
+    let Some(armed) = prediction.armed() else {
+        return false;
+    };
+
+    // 3. Read the armed pawn's current applied state (seeded from the authoritative
+    //    baseline / last reconcile). A missing pawn means the mapping went stale
+    //    between arming and now; skip this tick rather than predict from nothing.
+    let prev = match (
+        registry.get_component::<Transform>(armed.entity_id),
+        registry.get_component::<PlayerMovementComponent>(armed.entity_id),
+    ) {
+        (Ok(transform), Ok(movement)) => (*transform, movement.clone()),
+        _ => return false,
+    };
+
+    // 4. Advance the local pawn one predicted tick through the movement-only helper
+    //    and record it in the history ring.
+    let Some((transform, movement)) =
+        prediction.predict_tick(input, prev, collision, gravity, tick_dt)
+    else {
+        return false;
+    };
+
+    // 5. Write the predicted state back to the registry so camera follow, collision,
+    //    and the next predicted tick read it. Task 5 reconciles this against the
+    //    authoritative snapshot.
+    let _ = registry.set_component(armed.entity_id, transform);
+    let _ = registry.set_component(armed.entity_id, movement);
+    true
 }
 
 /// Sample every remote entity's interpolation buffer and write the resulting poses

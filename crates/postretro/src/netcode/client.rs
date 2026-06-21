@@ -125,6 +125,14 @@ pub(crate) struct ApplyOutcome {
     pub(crate) refresh_requests: Vec<BaselineRefreshRequest>,
     /// Typed diagnostics for payloads received but deliberately not applied.
     pub(crate) ignored: Vec<IgnoredPayload>,
+    /// The local-pawn baseline this snapshot applied (M15 Phase 3 Task 3): the
+    /// `NetworkId` the host flagged `local_player: true` and the `EntityId` it
+    /// mapped to, set once `apply_snapshot` has applied the baseline AND marked the
+    /// pawn via `EntityRegistry::mark_local_player_pawn`. The caller hands this to
+    /// `ClientPrediction::arm`. `None` when no local-player baseline was applied
+    /// this snapshot. Task 5 extends this seam with the reconciliation ack
+    /// (`last_processed_client_tick`) it consumes alongside the merge.
+    pub(crate) armed_local_pawn: Option<(NetworkId, EntityId)>,
 }
 
 impl ClientReplication {
@@ -172,8 +180,10 @@ impl ClientReplication {
                     network_id,
                     baseline_id,
                     components,
-                    // Task 1 stub: movement-authority metadata is decoded and
-                    // validated but not yet consumed by client apply (Task 2/4).
+                    local_player,
+                    // Task 1 stub: `last_processed_client_tick` is decoded and
+                    // validated but not yet consumed — Task 5 reconciliation reads
+                    // it. `local_player` is consumed now to arm prediction (Task 3).
                     ..
                 } => {
                     if self.apply_full_baseline(
@@ -186,6 +196,12 @@ impl ClientReplication {
                         &mut outcome,
                     ) {
                         acked_baselines.push((*network_id, *baseline_id));
+                        self.maybe_arm_local_pawn(
+                            registry,
+                            NetworkId(*network_id),
+                            *local_player,
+                            &mut outcome,
+                        );
                     }
                 }
                 EntityRecord::Delta {
@@ -193,6 +209,7 @@ impl ClientReplication {
                     baseline_ref,
                     new_baseline_id,
                     components,
+                    local_player,
                     // Task 1 stub: see the `FullBaseline` arm above.
                     ..
                 } => {
@@ -207,6 +224,12 @@ impl ClientReplication {
                         &mut outcome,
                     ) {
                         acked_baselines.push((*network_id, *new_baseline_id));
+                        self.maybe_arm_local_pawn(
+                            registry,
+                            NetworkId(*network_id),
+                            *local_player,
+                            &mut outcome,
+                        );
                     }
                 }
                 EntityRecord::Despawn {
@@ -351,6 +374,42 @@ impl ClientReplication {
         // applied set), so the client stays in step.
         self.baselines.insert(network_id, new_baseline_id);
         true
+    }
+
+    /// Arm client prediction for the recipient-local movement pawn (M15 Phase 3
+    /// Task 3). Called only after a record APPLIED (so the `NetworkId` is mapped and
+    /// live). When the host flagged the record `local_player: true`, this marks the
+    /// mapped entity as the local player pawn (`mark_local_player_pawn`) and records
+    /// the armed `(NetworkId, EntityId)` baseline in the outcome for the caller to
+    /// hand to `ClientPrediction::arm`. A no-op for non-local records.
+    ///
+    /// The client does not drive a provisional local pawn before this fires: arming
+    /// requires a stable `NetworkId -> EntityId` mapping (proven by the prior apply)
+    /// AND a `local_player` baseline. Task 5 seam: the per-snapshot reconciliation
+    /// (merge `PlayerMovementState`, restore Transform, prune-through-ack, replay)
+    /// hangs off this same applied-local-record point — this task only marks + arms.
+    fn maybe_arm_local_pawn(
+        &mut self,
+        registry: &mut EntityRegistry,
+        network_id: NetworkId,
+        local_player: bool,
+        outcome: &mut ApplyOutcome,
+    ) {
+        if !local_player {
+            return;
+        }
+        let Some(&entity_id) = self.map.get(&network_id) else {
+            // Defensive: an applied record is always mapped. Wire validation already
+            // guarantees `local_player: true` only rides a movement record.
+            return;
+        };
+        // Mark the mapped entity as the local player pawn so camera follow, the
+        // movement-pawn lookup, and prediction all converge on the same EntityId.
+        if let Err(err) = registry.mark_local_player_pawn(entity_id) {
+            log::warn!("[Net] failed to mark local player pawn for {network_id:?}: {err}");
+            return;
+        }
+        outcome.armed_local_pawn = Some((network_id, entity_id));
     }
 
     /// Despawn a mapped entity and drop its mapping + baseline. Idempotent: an unknown
@@ -1430,6 +1489,88 @@ mod tests {
         assert!(
             client.presented_source(NetworkId(7), 100.0).is_none(),
             "despawn drops the buffer"
+        );
+    }
+
+    // A local-player full baseline carries a movement payload (wire validation
+    // requires `local_player: true` only on movement records).
+    fn local_player_baseline(
+        network_id: u32,
+        baseline_id: u32,
+        components: Vec<ComponentPayload>,
+    ) -> EntityRecord {
+        EntityRecord::FullBaseline {
+            network_id,
+            baseline_id,
+            last_processed_client_tick: None,
+            local_player: true,
+            components,
+        }
+    }
+
+    // --- M15 Phase 3 Task 3: a `local_player` baseline marks the mapped pawn and
+    // reports the armed (NetworkId, EntityId) for the caller to arm prediction. ---
+    #[test]
+    fn local_player_baseline_marks_pawn_and_reports_armed_pair() {
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+
+        let out = client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                0,
+                10,
+                vec![local_player_baseline(
+                    7,
+                    1,
+                    vec![transform_payload(3.0), movement_payload()],
+                )],
+            ),
+        );
+
+        let id = *client.map().get(&NetworkId(7)).expect("local pawn mapped");
+        // The mapped entity is marked as the local player pawn.
+        assert_eq!(
+            registry.local_player_pawn(),
+            Some(id),
+            "the local_player baseline marks the mapped pawn"
+        );
+        // The armed pair is reported for the caller to hand to ClientPrediction::arm.
+        assert_eq!(
+            out.armed_local_pawn,
+            Some((NetworkId(7), id)),
+            "apply reports the armed (NetworkId, EntityId)"
+        );
+    }
+
+    // --- A non-local baseline never marks a pawn or reports an armed pair: before
+    // the local_player baseline, prediction stays inert. ---
+    #[test]
+    fn non_local_baseline_does_not_mark_or_arm() {
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+
+        let out = client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                0,
+                10,
+                vec![full_baseline(
+                    7,
+                    1,
+                    vec![transform_payload(3.0), movement_payload()],
+                )],
+            ),
+        );
+
+        assert_eq!(
+            registry.local_player_pawn(),
+            None,
+            "a non-local baseline does not mark a local pawn"
+        );
+        assert!(
+            out.armed_local_pawn.is_none(),
+            "a non-local baseline reports no armed pair (prediction stays inert)"
         );
     }
 }

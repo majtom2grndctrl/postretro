@@ -41,8 +41,10 @@ pub(crate) fn sim_command_to_input(cmd: &SimCommand, client_tick: u32) -> InputC
 /// engine `Vec2` (`x = right, y = forward`); the `client_tick` is wire-only
 /// command-history bookkeeping and is not part of the `SimCommand`, so the caller
 /// reads it off the `InputCommand` separately.
-// Caller lands in Task 4 (host applies queued client commands to its sim).
-#[allow(dead_code)]
+//
+// Callers: Task 3 client prediction (`netcode::prediction` rebuilds the
+// `MovementInput` for the movement-only replay) and Task 4 (host applies queued
+// client commands to its sim).
 pub(crate) fn input_command_to_sim(input: &InputCommand) -> SimCommand {
     SimCommand {
         movement: MovementInput {

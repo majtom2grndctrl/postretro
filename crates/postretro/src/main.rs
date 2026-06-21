@@ -2140,6 +2140,24 @@ impl ApplicationHandler for App {
                             shoot_pressed,
                         );
 
+                        // Connected-client prediction (M15 Phase 3 Task 3): send one
+                        // Input command and advance ONLY the local pawn's movement
+                        // through the movement-only replay helper — never the full
+                        // `simulate_tick` (AI / weapons / death stay host-authoritative
+                        // and arrive via snapshots). The camera follows the predicted
+                        // pawn; frame timing pushes the predicted camera pose. Task 5
+                        // adds reconciliation/smoothing on top of this seam.
+                        if self.is_connected_client() {
+                            self.client_predict_movement_tick(&command, tick_dt);
+                            if has_player_pawn {
+                                let registry_ref = self.script_ctx.registry.borrow();
+                                follow_camera_to_local_pawn(&mut self.camera, &registry_ref);
+                            }
+                            self.frame_timing
+                                .push_state(InterpolableState::new(self.camera.position));
+                            continue;
+                        }
+
                         let tick_events = sim::simulate_tick(
                             self.script_ctx.registry.clone(),
                             &self.collision_world,
@@ -3846,6 +3864,7 @@ impl App {
                 client,
                 replication,
                 time_sync,
+                prediction,
             }) => {
                 if let Err(err) = client.update(dt) {
                     log::error!("[Net] client update failed: {err}");
@@ -3856,10 +3875,17 @@ impl App {
                 let client_tick = self.script_ctx.frame.get() as u32;
                 netcode::client_drive_time_sync(client, time_sync, client_tick);
                 // Decode + apply every snapshot received this frame through the
-                // Phase 2 client state machine, send the resulting acks + baseline-
-                // refresh requests, and advance the pending-repair 5 Hz cadence.
+                // Phase 2 client state machine, arm prediction off any `local_player`
+                // baseline, send the resulting acks + baseline-refresh requests, and
+                // advance the pending-repair 5 Hz cadence.
                 let mut registry = self.script_ctx.registry.borrow_mut();
-                netcode::client_receive_and_apply(&mut registry, client, replication, dt);
+                netcode::client_receive_and_apply(
+                    &mut registry,
+                    client,
+                    replication,
+                    prediction,
+                    dt,
+                );
                 // The interpolation-buffer sampling that writes presented remote poses
                 // runs in `net_sample_remote_interpolation`, AFTER the catch-up tick
                 // loop's stage-0 `snapshot_transforms` — so its previous/current
@@ -3928,6 +3954,43 @@ impl App {
         };
         let mut registry = self.script_ctx.registry.borrow_mut();
         netcode::client_sample_interpolation(&mut registry, replication, time_sync);
+    }
+
+    /// Whether this process is a connected client (M15 Phase 3). The connected
+    /// client predicts its own movement pawn instead of running the full local
+    /// `sim::simulate_tick`; the host and single-player keep the full sim path.
+    fn is_connected_client(&self) -> bool {
+        matches!(
+            self.net_endpoint.as_ref(),
+            Some(netcode::NetEndpoint::Client { .. })
+        )
+    }
+
+    /// Connected-client predicted fixed tick (M15 Phase 3 Task 3). Thin delegation
+    /// to `crate::netcode`: sends one `ClientMessage::Input` for `command`, then
+    /// advances the local pawn through the movement-only replay helper and writes the
+    /// predicted state back to the registry. Returns `true` if it drove the local
+    /// pawn (prediction armed), `false` if it only sent input (pre-baseline). The
+    /// caller skips `simulate_tick`'s local gameplay movement when this path runs —
+    /// AI / weapons / death stay host-authoritative and arrive via snapshots.
+    fn client_predict_movement_tick(&mut self, command: &sim::SimCommand, tick_dt: f32) -> bool {
+        let Some(netcode::NetEndpoint::Client {
+            client, prediction, ..
+        }) = self.net_endpoint.as_mut()
+        else {
+            return false;
+        };
+        let gravity = self.script_ctx.gravity.get();
+        let mut registry = self.script_ctx.registry.borrow_mut();
+        netcode::client_predict_tick(
+            &mut registry,
+            client,
+            prediction,
+            command,
+            &self.collision_world,
+            gravity,
+            tick_dt,
+        )
     }
 
     /// Accumulate one frame onto the animation clock: `prev + dt × scale`.

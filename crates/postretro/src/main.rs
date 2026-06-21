@@ -3896,11 +3896,13 @@ impl App {
     /// Client remote-interpolation sampling step (M15 Phase 2 Task 6). Thin delegation
     /// to `crate::netcode`. Samples each remote entity's interpolation buffer at the
     /// jitter-sized render target tick and writes the presented pose through the
-    /// registry's remote-presentation helper (previous = last presented, current =
-    /// newly interpolated), feeding the render-stage `interpolated_transform` path.
+    /// registry's remote-presentation helper. That pose is already resolved at the
+    /// correct server-time target, so the write is alpha-agnostic (previous ==
+    /// current); the render-stage `interpolated_transform` blend reproduces it
+    /// verbatim rather than re-blending it by the unrelated sim sub-tick alpha.
     ///
     /// Runs after the catch-up tick loop so the stage-0 `snapshot_transforms` cannot
-    /// clobber the previous/current pair, and before the render stage reads entities.
+    /// clobber the presented pose, and before the render stage reads entities.
     /// No-op for single-player and the host (no client interpolation buffers).
     fn net_sample_remote_interpolation(&mut self) {
         let Some(netcode::NetEndpoint::Client {

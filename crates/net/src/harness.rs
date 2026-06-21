@@ -240,7 +240,10 @@ impl PacketConditioner {
 mod tests {
     use super::*;
     use crate::transport::{NetClient, NetServer};
-    use crate::wire::{self, ComponentPayload, NetworkId, Snapshot, WireTransform};
+    use crate::wire::{
+        self, RawComponentPayload, RawEntityRecord, RawSnapshotMessage, WireTransform,
+        COMPONENT_KIND_TRANSFORM, RECORD_KIND_FULL_BASELINE, SNAPSHOT_VERSION,
+    };
     use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
     use std::time::Duration;
 
@@ -342,16 +345,27 @@ mod tests {
 
     // --- The acceptance test: handshake + snapshot through the conditioner. ---
 
-    fn sample_snapshot() -> Snapshot {
-        Snapshot {
-            tick: 42,
-            entries: vec![(
-                NetworkId(7),
-                ComponentPayload::Transform(WireTransform {
-                    position: [1.5, -2.0, 3.25],
-                    rotation: [0.0, 0.0, 0.0, 1.0],
-                }),
-            )],
+    fn sample_snapshot() -> RawSnapshotMessage {
+        RawSnapshotMessage {
+            version: SNAPSHOT_VERSION,
+            sequence: 1,
+            server_tick: 42,
+            records: vec![RawEntityRecord {
+                record_kind: RECORD_KIND_FULL_BASELINE,
+                network_id: 7,
+                baseline_id_or_ref: 1,
+                new_baseline_id_or_tombstone_id: 0,
+                reason: 0,
+                components: vec![RawComponentPayload {
+                    component_kind: COMPONENT_KIND_TRANSFORM,
+                    transform: Some(WireTransform {
+                        position: [1.5, -2.0, 3.25],
+                        rotation: [0.0, 0.0, 0.0, 1.0],
+                        scale: [1.0, 1.0, 1.0],
+                    }),
+                    player_movement: None,
+                }],
+            }],
         }
     }
 
@@ -441,7 +455,7 @@ mod tests {
         // 3. The client must receive the snapshot and decode it byte-faithfully.
         let received = client.drain_snapshots();
         assert_eq!(received.len(), 1, "exactly one snapshot should arrive");
-        let decoded: Snapshot =
+        let decoded: RawSnapshotMessage =
             wire::decode(&received[0]).expect("conditioned delivery must not corrupt the payload");
         assert_eq!(
             decoded, snapshot,
@@ -491,7 +505,7 @@ mod tests {
         assert_ne!(delivered[0], decoy, "the dropped decoy must not arrive");
 
         // The surviving buffer decodes to the expected snapshot.
-        let decoded: Snapshot =
+        let decoded: RawSnapshotMessage =
             wire::decode(&delivered[0]).expect("surviving buffer must be the snapshot");
         assert_eq!(decoded, snapshot);
     }
@@ -529,7 +543,7 @@ mod tests {
 
         let received = client.drain_snapshots();
         assert_eq!(received.len(), 1);
-        let decoded: Snapshot = wire::decode(&received[0]).expect("decodes");
+        let decoded: RawSnapshotMessage = wire::decode(&received[0]).expect("decodes");
         assert_eq!(decoded, snapshot);
     }
 }

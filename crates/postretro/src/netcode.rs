@@ -19,7 +19,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use glam::{Quat, Vec3};
 
 use postretro_net::transport::{NetClient, NetServer};
-use postretro_net::wire::{ComponentPayload, NetworkId, Snapshot, WireTransform};
+use postretro_net::wire::{
+    self, ComponentPayload, EntityRecord, NetworkId, RawComponentPayload, RawEntityRecord,
+    RawSnapshotMessage, Snapshot, ValidationError, WireError, WireMovementState,
+    WirePlayerMovementState, WireTransform, COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
+    COMPONENT_KIND_TRANSFORM, RECORD_KIND_FULL_BASELINE, SNAPSHOT_VERSION,
+};
 
 use crate::scripting::registry::{
     ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform,
@@ -260,21 +265,22 @@ pub(crate) fn component_kind_discriminant(kind: ComponentKind) -> u16 {
     }
 }
 
-/// Convert an engine `Transform` to its wire mirror. Scale is not replicated
-/// (Phase 1 sends only position + rotation). glam `Quat` is `xyzw`, mirrored to
-/// the wire's fixed `[x, y, z, w]` order.
+/// Convert an engine `Transform` to its wire mirror. Phase 2 replicates scale
+/// alongside position + rotation. glam `Quat` is `xyzw`, mirrored to the wire's
+/// fixed `[x, y, z, w]` order.
 pub(crate) fn transform_to_wire(transform: &Transform) -> WireTransform {
     let p = transform.position;
     let q = transform.rotation;
+    let s = transform.scale;
     WireTransform {
         position: [p.x, p.y, p.z],
         rotation: [q.x, q.y, q.z, q.w],
+        scale: [s.x, s.y, s.z],
     }
 }
 
-/// Inverse of [`transform_to_wire`]. Scale was not sent, so it defaults to ONE
-/// (a replicated remote entity has no authored scale on the client). Rotation is
-/// rebuilt from the `[x, y, z, w]` wire order via `Quat::from_xyzw`.
+/// Inverse of [`transform_to_wire`]. Rotation is rebuilt from the `[x, y, z, w]`
+/// wire order via `Quat::from_xyzw`; scale is now carried on the wire.
 pub(crate) fn wire_to_transform(wire: &WireTransform) -> Transform {
     Transform {
         position: Vec3::new(wire.position[0], wire.position[1], wire.position[2]),
@@ -284,34 +290,68 @@ pub(crate) fn wire_to_transform(wire: &WireTransform) -> Transform {
             wire.rotation[2],
             wire.rotation[3],
         ),
-        scale: Vec3::ONE,
+        scale: Vec3::new(wire.scale[0], wire.scale[1], wire.scale[2]),
     }
 }
 
-/// Every position/rotation component of a wire `Transform` is finite (no NaN, no
-/// ±Inf). A snapshot arrives from an untrusted peer; a non-finite pose
+/// Every position/rotation/scale component of a wire `Transform` is finite (no
+/// NaN, no ±Inf). A snapshot arrives from an untrusted peer; a non-finite pose
 /// round-trips byte-faithfully through the codec and would poison downstream
 /// interpolation and camera/culling math if stored. The apply path drops any
 /// entry that fails this check.
 fn wire_transform_is_finite(t: &WireTransform) -> bool {
-    t.position.iter().all(|c| c.is_finite()) && t.rotation.iter().all(|c| c.is_finite())
+    t.position.iter().all(|c| c.is_finite())
+        && t.rotation.iter().all(|c| c.is_finite())
+        && t.scale.iter().all(|c| c.is_finite())
 }
 
-/// A wire `ComponentPayload` is safe to apply: all f32 fields are finite. Phase 1
-/// binds only `Transform`; adding a payload variant (Phase 2) is a compile error
-/// here until the arm is added.
+/// A wire `ComponentPayload` is safe to apply: all f32 fields are finite. The
+/// exhaustive match (no `_` arm) means a new payload variant is a compile error
+/// here until its finite-check is written.
 fn payload_is_finite(payload: &ComponentPayload) -> bool {
     match payload {
         ComponentPayload::Transform(wire) => wire_transform_is_finite(wire),
+        // The movement wire subset is not applied by Phase 1 glue (Task 3 merges
+        // it into a local `PlayerMovementComponent`); still validate its floats so
+        // a non-finite payload is dropped at the boundary rather than carried.
+        ComponentPayload::PlayerMovementState(m) => player_movement_is_finite(m),
     }
 }
 
-/// Convert a wire `ComponentPayload` to the engine `ComponentValue` via an
-/// exhaustive match over the payload — Phase 1 binds only `Transform`; adding a
-/// payload variant (Phase 2) is a compile error here until the arm is added.
-fn payload_to_component_value(payload: &ComponentPayload) -> ComponentValue {
+/// Every f32 field of a wire movement payload is finite. Mirrors the untrusted-
+/// wire guard `wire_transform_is_finite` applies to poses.
+fn player_movement_is_finite(m: &WirePlayerMovementState) -> bool {
+    let state_finite = match m.movement_state {
+        WireMovementState::Normal => true,
+        WireMovementState::Dash { elapsed_ms, boost } => {
+            elapsed_ms.is_finite() && boost.iter().all(|c| c.is_finite())
+        }
+        WireMovementState::Crouching { eye_current } => eye_current.is_finite(),
+    };
+    m.velocity.iter().all(|c| c.is_finite())
+        && m.dash_cooldown_ms.is_finite()
+        && m.coyote_timer_ms.is_finite()
+        && m.jump_buffer_timer_ms.is_finite()
+        && m.capsule_half_height.is_finite()
+        && m.capsule_eye_height.is_finite()
+        && state_finite
+}
+
+/// Convert a wire `ComponentPayload` to the engine `ComponentValue`, or `None`
+/// when Phase 1 glue does not apply this payload. The exhaustive match (no `_`
+/// arm) means a new payload variant is a compile error here until its handling is
+/// decided.
+///
+/// `PlayerMovementState` returns `None` in Phase 1: the wire carries only the
+/// mutable tick subset, and reconstructing a full `PlayerMovementComponent` from
+/// it (merging onto a local descriptor-derived component) is Task 3's job, not a
+/// Phase 1 spawn-from-wire concern.
+fn payload_to_component_value(payload: &ComponentPayload) -> Option<ComponentValue> {
     match payload {
-        ComponentPayload::Transform(wire) => ComponentValue::Transform(wire_to_transform(wire)),
+        ComponentPayload::Transform(wire) => {
+            Some(ComponentValue::Transform(wire_to_transform(wire)))
+        }
+        ComponentPayload::PlayerMovementState(_) => None,
     }
 }
 
@@ -374,7 +414,11 @@ pub(crate) fn apply(
             log::warn!("[Net] dropping snapshot entry for {net_id:?}: non-finite transform");
             continue;
         }
-        let value = payload_to_component_value(payload);
+        // Phase 1 glue applies only payloads with an engine `ComponentValue`
+        // mapping; others (movement tick subset) are skipped until Task 3.
+        let Some(value) = payload_to_component_value(payload) else {
+            continue;
+        };
         match map.get(net_id).copied() {
             Some(existing) => {
                 if registry
@@ -395,6 +439,100 @@ pub(crate) fn apply(
         }
     }
 }
+
+/// Encode an in-process [`Snapshot`] into the Phase 2 wire envelope
+/// ([`RawSnapshotMessage`]) bytes. The Phase 1 demo still sends full state every
+/// snapshot, so each entry is a `FullBaseline` record with `baseline_id = 0`;
+/// Task 2 replaces this with per-client delta/baseline tracking. This bridge keeps
+/// the host send path on the Phase 2 wire shape without yet owning replication
+/// state.
+pub(crate) fn encode_snapshot(snapshot: &Snapshot) -> Vec<u8> {
+    let records = snapshot
+        .entries
+        .iter()
+        .map(|(net_id, payload)| RawEntityRecord {
+            record_kind: RECORD_KIND_FULL_BASELINE,
+            network_id: net_id.0,
+            baseline_id_or_ref: 0,
+            new_baseline_id_or_tombstone_id: 0,
+            reason: 0,
+            components: vec![payload_to_raw(payload)],
+        })
+        .collect();
+    let raw = RawSnapshotMessage {
+        version: SNAPSHOT_VERSION,
+        sequence: snapshot.tick,
+        server_tick: snapshot.tick,
+        records,
+    };
+    wire::encode(&raw)
+}
+
+/// Decode Phase 2 wire bytes into an in-process [`Snapshot`]. Decodes the raw
+/// envelope (corrupt bytes -> `Err`), validates it into the typed apply model
+/// (invalid kinds/version -> `Err`), then flattens the Phase 1-shaped records
+/// (`FullBaseline` only in Phase 1) back into `(NetworkId, ComponentPayload)`
+/// entries. `Delta`/`Despawn` records are ignored here — applying them is Task 3.
+pub(crate) fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot, SnapshotDecodeError> {
+    let raw: RawSnapshotMessage = wire::decode(bytes).map_err(SnapshotDecodeError::Decode)?;
+    let typed = raw.validate().map_err(SnapshotDecodeError::Validate)?;
+    let mut entries = Vec::new();
+    for record in typed.records {
+        // Phase 1 apply only consumes full-baseline records; lifecycle deltas and
+        // despawns are Task 3's reconciliation, not this Phase 1 bridge.
+        if let EntityRecord::FullBaseline {
+            network_id,
+            components,
+            ..
+        } = record
+        {
+            for payload in components {
+                entries.push((NetworkId(network_id), payload));
+            }
+        }
+    }
+    Ok(Snapshot {
+        tick: typed.server_tick,
+        entries,
+    })
+}
+
+/// Convert a typed [`ComponentPayload`] back into its raw wire envelope form for
+/// encoding. The inverse of [`RawComponentPayload::validate`] for the payloads the
+/// host serializes.
+fn payload_to_raw(payload: &ComponentPayload) -> RawComponentPayload {
+    match payload {
+        ComponentPayload::Transform(t) => RawComponentPayload {
+            component_kind: COMPONENT_KIND_TRANSFORM,
+            transform: Some(*t),
+            player_movement: None,
+        },
+        ComponentPayload::PlayerMovementState(m) => RawComponentPayload {
+            component_kind: COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
+            transform: None,
+            player_movement: Some(*m),
+        },
+    }
+}
+
+/// Failure decoding a wire snapshot into a [`Snapshot`]: a corrupt buffer (bitcode
+/// decode) or a structurally-decodable but invalid envelope (bad version/kind).
+#[derive(Debug)]
+pub(crate) enum SnapshotDecodeError {
+    Decode(WireError),
+    Validate(ValidationError),
+}
+
+impl std::fmt::Display for SnapshotDecodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SnapshotDecodeError::Decode(e) => write!(f, "{e}"),
+            SnapshotDecodeError::Validate(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for SnapshotDecodeError {}
 
 /// Standing-player collision-capsule dimensions, used to size the debug
 /// wireframe drawn over each replicated remote entity so it matches the real
@@ -559,7 +697,8 @@ mod tests {
         assert!((wire.rotation[3] - original.rotation.w).abs() < EPSILON);
 
         let payload = ComponentPayload::Transform(wire);
-        let value = payload_to_component_value(&payload);
+        let value =
+            payload_to_component_value(&payload).expect("Transform payload converts to a value");
         let ComponentValue::Transform(rebuilt) = value else {
             panic!("Transform payload must rebuild a Transform component");
         };
@@ -567,8 +706,8 @@ mod tests {
         assert!((rebuilt.position - original.position).length() < EPSILON);
         // angle_between is 0 when rotations match.
         assert!(rebuilt.rotation.angle_between(original.rotation) < 1e-4);
-        // Scale is not replicated; the rebuilt transform defaults to ONE.
-        assert_eq!(rebuilt.scale, Vec3::ONE);
+        // Phase 2 replicates scale; it must round-trip through the wire mirror.
+        assert!((rebuilt.scale - original.scale).length() < EPSILON);
     }
 
     // --- Apply: spawns on first sight, mutates the same EntityId on second. ---
@@ -682,6 +821,7 @@ mod tests {
         let poisoned = WireTransform {
             position: [f32::NAN, 0.0, 0.0],
             rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: [1.0, 1.0, 1.0],
         };
         // Entry B: a finite transform in the same snapshot — must still apply.
         let finite_pos = Vec3::new(4.0, 5.0, 6.0);
@@ -724,6 +864,7 @@ mod tests {
                 ComponentPayload::Transform(WireTransform {
                     position: [f32::INFINITY, 0.0, 0.0],
                     rotation: [0.0, 0.0, 0.0, 1.0],
+                    scale: [1.0, 1.0, 1.0],
                 }),
             )],
         };

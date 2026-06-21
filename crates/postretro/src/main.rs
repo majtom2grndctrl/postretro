@@ -67,7 +67,6 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use glam::Vec3;
-use postretro_net::wire;
 use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, DeviceId, KeyEvent, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
@@ -3794,7 +3793,7 @@ impl App {
                 if !snapshots.is_empty() {
                     let mut registry = self.script_ctx.registry.borrow_mut();
                     for bytes in snapshots {
-                        match wire::decode::<wire::Snapshot>(&bytes) {
+                        match netcode::decode_snapshot(&bytes) {
                             Ok(snapshot) => netcode::apply(&mut registry, &snapshot, map),
                             Err(err) => {
                                 log::warn!("[Net] dropping undecodable snapshot: {err}");
@@ -3835,7 +3834,7 @@ impl App {
         };
         *tick = tick.wrapping_add(1);
 
-        let bytes = wire::encode(&snapshot);
+        let bytes = netcode::encode_snapshot(&snapshot);
         for client_id in accepted {
             let _ = server.send_snapshot(client_id, bytes.clone());
         }

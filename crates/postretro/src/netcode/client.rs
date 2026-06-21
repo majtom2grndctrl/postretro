@@ -172,6 +172,9 @@ impl ClientReplication {
                     network_id,
                     baseline_id,
                     components,
+                    // Task 1 stub: movement-authority metadata is decoded and
+                    // validated but not yet consumed by client apply (Task 2/4).
+                    ..
                 } => {
                     if self.apply_full_baseline(
                         registry,
@@ -190,6 +193,8 @@ impl ClientReplication {
                     baseline_ref,
                     new_baseline_id,
                     components,
+                    // Task 1 stub: see the `FullBaseline` arm above.
+                    ..
                 } => {
                     if self.apply_delta(
                         registry,
@@ -652,6 +657,10 @@ mod tests {
         EntityRecord::FullBaseline {
             network_id,
             baseline_id,
+            // Task 1 stub: client apply does not yet consume movement-authority
+            // metadata. Task 2/4 thread real values through these helpers.
+            last_processed_client_tick: None,
+            local_player: false,
             components,
         }
     }
@@ -666,6 +675,9 @@ mod tests {
             network_id,
             baseline_ref,
             new_baseline_id,
+            // Task 1 stub: see `full_baseline`.
+            last_processed_client_tick: None,
+            local_player: false,
             components,
         }
     }

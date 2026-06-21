@@ -421,6 +421,11 @@ impl ServerReplication {
                         baseline_id_or_ref: acked_id,
                         new_baseline_id_or_tombstone_id: entity.baseline_id,
                         reason: 0,
+                        // Movement-authority metadata is populated by the engine host
+                        // glue (Task 4); the registry-blind tracker emits it absent.
+                        has_last_processed_client_tick: false,
+                        last_processed_client_tick: 0,
+                        local_player: false,
                         components: entity.components.iter().map(raw_from_payload).collect(),
                     });
                 }
@@ -432,6 +437,11 @@ impl ServerReplication {
                         baseline_id_or_ref: entity.baseline_id,
                         new_baseline_id_or_tombstone_id: 0,
                         reason: 0,
+                        // Movement-authority metadata is populated by the engine host
+                        // glue (Task 4); the registry-blind tracker emits it absent.
+                        has_last_processed_client_tick: false,
+                        last_processed_client_tick: 0,
+                        local_player: false,
                         components: entity.components.iter().map(raw_from_payload).collect(),
                     });
                 }
@@ -454,6 +464,11 @@ impl ServerReplication {
                 baseline_id_or_ref: 0,
                 new_baseline_id_or_tombstone_id: tombstone.tombstone_id,
                 reason: tombstone.reason,
+                // A despawn never carries movement-authority metadata (rejected at
+                // validate); the tracker leaves all three absent.
+                has_last_processed_client_tick: false,
+                last_processed_client_tick: 0,
+                local_player: false,
                 components: Vec::new(),
             });
         }

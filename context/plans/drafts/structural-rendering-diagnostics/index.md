@@ -44,8 +44,9 @@ portal visibility, and BVH culling shape rendered geometry.
 - [ ] Wireframe modes define which triangles are drawn, whether cull status is
       shown, and which depth behavior is used.
 - [ ] Spatial tab can show compiled BVH leaf AABBs for the loaded level.
-- [ ] BVH AABB overlay has at least one useful color mode: cull status,
-      material bucket, or cell id.
+- [ ] BVH AABB overlay defaults to stable cell-id coloring.
+- [ ] BVH AABB overlay can also show cull-status coloring if that status is
+      CPU-readable without GPU readback.
 - [ ] BVH AABB overlay exposes depth-tested and explicit x-ray depth behavior,
       with depth-tested as the default.
 - [ ] BVH AABB overlay has a budget guard or sampling control so dense maps do
@@ -131,10 +132,12 @@ pushes AABB wires into `DebugLineRenderer`. Use `push_aabb` for depth-tested
 inspection and `push_aabb_overlay` only for an explicit x-ray mode. Convert
 `BvhLeaf.aabb_min` / `aabb_max` into `Vec3` in renderer code.
 
-The overlay should support a first color mode. Prefer cull status if the
-renderer has a CPU-readable status already available for the frame; otherwise
-use stable material-bucket or cell-id hashing. Do not add GPU readback just to
-color boxes in the first pass.
+The overlay should default to stable cell-id coloring, because this diagnostic
+is meant to explain structural partitioning and visibility. If the renderer has
+CPU-readable cull status already available for the frame, add cull-status
+coloring as an additional mode. Do not add GPU readback just to color boxes in
+the first pass. Defer material-bucket coloring unless a later batching/material
+diagnostic needs it.
 
 Add a budget guard. Acceptable approaches include max boxes per frame, stride
 sampling, or visible-cell-only filtering. Do not rely solely on the shared
@@ -210,8 +213,8 @@ debug lines and emits SH/nav overlays in `main.rs`.
 
 The first implementation should avoid GPU readback. Culling status is already
 written on GPU by compute cull, but if there is no CPU copy at the time of the
-overlay, choose a CPU-local color mode first and leave exact cull-status box
-color as a follow-up.
+overlay, keep cell-id coloring as the first-pass mode and leave exact
+cull-status box color as a follow-up.
 
 For Spatial visible-cell coloring, prefer the drawable `VisibleCells` value
 that already feeds the indirect render path. Do not substitute
@@ -220,5 +223,4 @@ reachability set and includes empty leaves that do not draw world geometry.
 
 ## Open questions
 
-- Which BVH color mode should be first if cull status is not CPU-readable
-  without readback: material bucket or cell id?
+None.

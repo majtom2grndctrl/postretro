@@ -243,7 +243,10 @@ impl std::fmt::Display for ValidationError {
                 write!(f, "missing payload slot for component_kind {k}")
             }
             ValidationError::MismatchedComponentPayload(k) => {
-                write!(f, "mismatched/duplicate payload slot for component_kind {k}")
+                write!(
+                    f,
+                    "mismatched/duplicate payload slot for component_kind {k}"
+                )
             }
         }
     }
@@ -260,19 +263,27 @@ impl RawComponentPayload {
         // Count populated slots once: a well-formed payload has exactly one, the
         // one its `component_kind` names. Any other slot being `Some` is a
         // mismatch regardless of the named kind (it makes the envelope ambiguous).
-        let populated = usize::from(self.transform.is_some())
-            + usize::from(self.player_movement.is_some());
+        let populated =
+            usize::from(self.transform.is_some()) + usize::from(self.player_movement.is_some());
 
         match self.component_kind {
             COMPONENT_KIND_TRANSFORM => match self.transform {
                 Some(t) if populated == 1 => Ok(ComponentPayload::Transform(t)),
-                Some(_) => Err(ValidationError::MismatchedComponentPayload(self.component_kind)),
-                None => Err(ValidationError::MissingComponentPayload(self.component_kind)),
+                Some(_) => Err(ValidationError::MismatchedComponentPayload(
+                    self.component_kind,
+                )),
+                None => Err(ValidationError::MissingComponentPayload(
+                    self.component_kind,
+                )),
             },
             COMPONENT_KIND_PLAYER_MOVEMENT_STATE => match self.player_movement {
                 Some(m) if populated == 1 => Ok(ComponentPayload::PlayerMovementState(m)),
-                Some(_) => Err(ValidationError::MismatchedComponentPayload(self.component_kind)),
-                None => Err(ValidationError::MissingComponentPayload(self.component_kind)),
+                Some(_) => Err(ValidationError::MismatchedComponentPayload(
+                    self.component_kind,
+                )),
+                None => Err(ValidationError::MissingComponentPayload(
+                    self.component_kind,
+                )),
             },
             other => Err(ValidationError::UnknownComponentKind(other)),
         }
@@ -308,7 +319,10 @@ impl RawEntityRecord {
     }
 
     fn validate_components(&self) -> Result<Vec<ComponentPayload>, ValidationError> {
-        self.components.iter().map(RawComponentPayload::validate).collect()
+        self.components
+            .iter()
+            .map(RawComponentPayload::validate)
+            .collect()
     }
 }
 
@@ -789,7 +803,9 @@ mod tests {
                 components: vec![raw_transform_payload()],
             }],
         };
-        let typed = raw.validate().expect("despawn validates, ignoring components");
+        let typed = raw
+            .validate()
+            .expect("despawn validates, ignoring components");
         assert_eq!(
             typed.records,
             vec![EntityRecord::Despawn {

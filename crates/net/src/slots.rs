@@ -118,15 +118,13 @@ impl SlotTable {
         match self.slots.get(&client_id) {
             Some(SlotState::Closed { .. }) => None,
             Some(SlotState::Accepted) => {
-                self.slots
-                    .insert(client_id, SlotState::Closed { cause });
+                self.slots.insert(client_id, SlotState::Closed { cause });
                 Some(SlotEvent::Closed { client_id, cause })
             }
             // Pending (never accepted) or unknown: record Closed so stale traffic is
             // refused, but emit nothing — no slot-owned pawn was ever created.
             _ => {
-                self.slots
-                    .insert(client_id, SlotState::Closed { cause });
+                self.slots.insert(client_id, SlotState::Closed { cause });
                 None
             }
         }

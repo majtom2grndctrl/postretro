@@ -28,13 +28,18 @@
 
 use std::collections::HashMap;
 
+use glam::Vec3;
+
 use postretro_net::wire::{
-    AckMessage, BaselineRefreshRequest, ClientMessage, ComponentPayload, EntityRecord, NetworkId,
-    SnapshotMessage, COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
+    AckMessage, BaselineRefreshRequest, COMPONENT_KIND_PLAYER_MOVEMENT_STATE, ClientMessage,
+    ComponentPayload, EntityRecord, NetworkId, SnapshotMessage,
 };
 
-use crate::scripting::registry::{ComponentKind, ComponentValue, EntityId, EntityRegistry};
+use crate::scripting::registry::{
+    ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform,
+};
 
+use super::interpolation::{PoseSource, RemoteInterpolationBuffer, TransformSample};
 use super::{payload_is_finite, wire_to_transform};
 
 /// Reason code carried in a `BaselineRefreshRequest`. Diagnostic only — the server
@@ -97,6 +102,20 @@ pub(crate) struct ClientReplication {
     latest_sequence: Option<u32>,
     /// The `server_tick` of the latest accepted snapshot — echoed back in the ack.
     acked_server_tick: u32,
+    /// Per-remote-entity interpolation buffers keyed by `NetworkId` (Task 6). Each
+    /// applied `Transform` payload is recorded here stamped by the snapshot's
+    /// `server_tick`; `sample_into_registry` later resolves a presented pose for the
+    /// render target tick and writes it through the registry's remote-presentation
+    /// helper. The raw `set_component_value` in `apply_components_to` only seeds the
+    /// entity's initial pose at spawn — the interpolation sampler drives the visible
+    /// pose every frame thereafter.
+    interp: RemoteInterpolationBuffer,
+    /// The last pose this client *presented* for each remote entity (the previous
+    /// frame's interpolated `current`). Fed as the `previous` transform on the next
+    /// remote-presentation write so the render-stage `interpolated_transform` blend
+    /// continues the buffer's motion rather than re-smoothing it. Seeded equal to the
+    /// first presented pose so a freshly-mapped entity never pops.
+    last_presented: HashMap<NetworkId, Transform>,
 }
 
 /// What an `apply_snapshot` call produced: the ack to send (if the snapshot was
@@ -165,6 +184,7 @@ impl ClientReplication {
                     if self.apply_full_baseline(
                         registry,
                         snapshot.sequence,
+                        snapshot.server_tick,
                         NetworkId(*network_id),
                         *baseline_id,
                         components,
@@ -182,6 +202,7 @@ impl ClientReplication {
                     if self.apply_delta(
                         registry,
                         snapshot.sequence,
+                        snapshot.server_tick,
                         NetworkId(*network_id),
                         *baseline_ref,
                         *new_baseline_id,
@@ -223,10 +244,12 @@ impl ClientReplication {
     /// Apply a `FullBaseline`. Returns `true` if it applied (and should be acked),
     /// `false` if it requested a refresh instead (stale mapping) or was invalid (no
     /// Transform). See the module state machine.
+    #[allow(clippy::too_many_arguments)]
     fn apply_full_baseline(
         &mut self,
         registry: &mut EntityRegistry,
         sequence: u32,
+        server_tick: u32,
         network_id: NetworkId,
         baseline_id: u32,
         components: &[ComponentPayload],
@@ -237,7 +260,14 @@ impl ClientReplication {
             // no respawn. This is the steady-state full-baseline (a refresh response,
             // or a periodic re-baseline).
             Some(existing) if registry.exists(existing) => {
-                self.apply_components_to(registry, network_id, existing, components, outcome);
+                self.apply_components_to(
+                    registry,
+                    network_id,
+                    server_tick,
+                    existing,
+                    components,
+                    outcome,
+                );
                 self.baselines.insert(network_id, baseline_id);
                 self.pending_repairs.remove(&network_id);
                 true
@@ -270,8 +300,18 @@ impl ClientReplication {
                 self.map.insert(network_id, id);
                 self.baselines.insert(network_id, baseline_id);
                 self.pending_repairs.remove(&network_id);
+                // Seed the last-presented pose to the spawn pose so the entity's first
+                // remote-presentation write has a continuous `previous` (no pop).
+                self.last_presented.insert(network_id, spawn_transform);
                 // Apply the remaining (non-Transform) payloads onto the fresh entity.
-                self.apply_components_to(registry, network_id, id, components, outcome);
+                self.apply_components_to(
+                    registry,
+                    network_id,
+                    server_tick,
+                    id,
+                    components,
+                    outcome,
+                );
                 true
             }
         }
@@ -284,6 +324,7 @@ impl ClientReplication {
         &mut self,
         registry: &mut EntityRegistry,
         sequence: u32,
+        server_tick: u32,
         network_id: NetworkId,
         baseline_ref: u32,
         new_baseline_id: u32,
@@ -309,7 +350,7 @@ impl ClientReplication {
         }
         // Safe: `appliable` proved both are Some and the entity is live.
         let id = mapped.expect("appliable delta has a mapped entity");
-        self.apply_components_to(registry, network_id, id, components, outcome);
+        self.apply_components_to(registry, network_id, server_tick, id, components, outcome);
         // Advance the stored baseline so the next delta chains from this one. An
         // empty-component delta is a valid no-op apply: it still advances the baseline
         // (the server bumped the baseline id even if the mirrors did not change the
@@ -331,22 +372,40 @@ impl ClientReplication {
         // A despawn also clears any pending repair for the entity: there is nothing
         // to repair once it is gone.
         self.pending_repairs.remove(&network_id);
+        // Drop the entity's interpolation buffer and last-presented pose; a later
+        // re-spawn under a fresh NetworkId starts with an empty buffer.
+        self.interp.forget(network_id);
+        self.last_presented.remove(&network_id);
     }
 
     /// Apply each component payload onto `id`. A `Transform` is written through
     /// `set_component_value` (idempotent — re-applying the spawn Transform is
-    /// harmless and keeps this path uniform between spawn and update). A
+    /// harmless and keeps this path uniform between spawn and update) and recorded
+    /// into the per-entity interpolation buffer stamped by `server_tick`. A
     /// `PlayerMovementState` payload applies only to an entity that already carries a
     /// local `PlayerMovementComponent`; otherwise it is ignored with a typed
-    /// diagnostic (Phase 2's dumb mover is Transform-only).
+    /// diagnostic (Phase 2's dumb mover is Transform-only). Its `velocity` is still
+    /// captured for the interpolation buffer's bounded extrapolation on starvation.
     fn apply_components_to(
-        &self,
+        &mut self,
         registry: &mut EntityRegistry,
         network_id: NetworkId,
+        server_tick: u32,
         id: EntityId,
         components: &[ComponentPayload],
         outcome: &mut ApplyOutcome,
     ) {
+        // Capture the record's movement velocity (if any) up front: it stamps the
+        // interpolation sample so a Transform-bearing record can extrapolate on
+        // starvation. The Phase 2 dumb mover carries no movement payload, so this stays
+        // None and its starvation path holds the last pose.
+        let record_velocity = components.iter().find_map(|p| match p {
+            ComponentPayload::PlayerMovementState(m) if payload_is_finite(p) => {
+                Some(Vec3::from_array(m.velocity))
+            }
+            _ => None,
+        });
+
         for payload in components {
             // Untrusted-wire guard: a non-finite pose/velocity is dropped before it
             // reaches the registry, where it would poison interpolation/camera math.
@@ -356,10 +415,21 @@ impl ClientReplication {
             }
             match payload {
                 ComponentPayload::Transform(wire) => {
-                    let value = ComponentValue::Transform(wire_to_transform(wire));
+                    let transform = wire_to_transform(wire);
+                    let value = ComponentValue::Transform(transform);
                     // The entity is live here (caller checked); the only failure mode
-                    // is an unsupported kind, impossible for Transform.
+                    // is an unsupported kind, impossible for Transform. This seeds the
+                    // initial visible pose; the interpolation sampler drives it after.
                     let _ = registry.set_component_value(id, value);
+                    // Record the server-tick-stamped sample for the interpolation buffer.
+                    self.interp.record(
+                        network_id,
+                        TransformSample {
+                            server_tick,
+                            transform,
+                            velocity: record_velocity,
+                        },
+                    );
                 }
                 ComponentPayload::PlayerMovementState(_) => {
                     // Apply ONLY onto an entity that already has a descriptor-derived
@@ -443,10 +513,70 @@ impl ClientReplication {
         due
     }
 
+    /// Sample every mapped remote entity's interpolation buffer at the render server
+    /// tick `render_server_tick` (already `estimated_server_tick - interpolation_delay`)
+    /// and write the resolved pose through the registry's remote-presentation helper.
+    ///
+    /// Game-logic-owned: runs after this frame's network receive/apply and before the
+    /// render collectors read entities (the renderer stays read-only). Each write sets
+    /// the entity's visible `Transform` to the freshly-interpolated pose and its
+    /// *previous* transform to the last-presented pose, so the render-stage
+    /// `interpolated_transform` blend is fed continuously (not bypassed, not
+    /// double-smoothed). An entity with no buffered samples yet is left at its
+    /// last-applied pose. Returns the number of entities presented (diagnostics).
+    pub(crate) fn sample_into_registry(
+        &mut self,
+        registry: &mut EntityRegistry,
+        render_server_tick: f64,
+    ) -> usize {
+        let mut presented = 0;
+        // Collect (network_id, entity_id) first to avoid borrowing `self.map` while
+        // mutating `self.last_presented`.
+        let mapped: Vec<(NetworkId, EntityId)> = self.map.iter().map(|(&n, &e)| (n, e)).collect();
+        for (network_id, entity_id) in mapped {
+            if !registry.exists(entity_id) {
+                continue;
+            }
+            let Some(pose) = self.interp.presented_pose(network_id, render_server_tick) else {
+                continue; // no samples buffered yet
+            };
+            // The previous transform fed to the render blend is the pose presented last
+            // frame; seed it to this pose on first sight so a new entity does not pop.
+            let last = self
+                .last_presented
+                .get(&network_id)
+                .copied()
+                .unwrap_or(pose.transform);
+            let _ = registry.set_remote_presentation_transform(entity_id, pose.transform, last);
+            self.last_presented.insert(network_id, pose.transform);
+            presented += 1;
+            // Diagnostic: a HeldNewest after sustained starvation is the visible
+            // freeze the buffer falls back to; logged sparingly at trace.
+            if matches!(pose.source, PoseSource::HeldNewest) {
+                log::trace!(
+                    "[Net] remote {network_id:?} holding last pose (interp buffer starved)"
+                );
+            }
+        }
+        presented
+    }
+
     /// Whether `network_id` is awaiting a baseline refresh (tests / diagnostics).
     #[cfg(test)]
     pub(crate) fn is_pending_repair(&self, network_id: NetworkId) -> bool {
         self.pending_repairs.contains_key(&network_id)
+    }
+
+    /// The presented pose source for a mapped entity at a render tick (tests).
+    #[cfg(test)]
+    pub(crate) fn presented_source(
+        &self,
+        network_id: NetworkId,
+        render_server_tick: f64,
+    ) -> Option<PoseSource> {
+        self.interp
+            .presented_pose(network_id, render_server_tick)
+            .map(|p| p.source)
     }
 
     /// The stored baseline id for a mapped entity, if any (tests / diagnostics).
@@ -483,12 +613,14 @@ fn first_transform(
 pub(crate) fn encode_client_messages(outcome: &ApplyOutcome) -> Vec<Vec<u8>> {
     let mut buffers = Vec::new();
     if let Some(ack) = &outcome.ack {
-        buffers.push(postretro_net::wire::encode(&ClientMessage::Ack(ack.clone())));
+        buffers.push(postretro_net::wire::encode(&ClientMessage::Ack(
+            ack.clone(),
+        )));
     }
     for req in &outcome.refresh_requests {
-        buffers.push(postretro_net::wire::encode(&ClientMessage::BaselineRefresh(
-            *req,
-        )));
+        buffers.push(postretro_net::wire::encode(
+            &ClientMessage::BaselineRefresh(*req),
+        ));
     }
     buffers
 }
@@ -577,7 +709,11 @@ mod tests {
 
         let out = client.apply_snapshot(
             &mut registry,
-            &snapshot(0, 100, vec![full_baseline(7, 1, vec![transform_payload(2.0)])]),
+            &snapshot(
+                0,
+                100,
+                vec![full_baseline(7, 1, vec![transform_payload(2.0)])],
+            ),
         );
         // Spawned, mapped, baseline stored, acked, sequence advanced.
         let id = *client.map().get(&NetworkId(7)).expect("mapped");
@@ -616,7 +752,11 @@ mod tests {
         // Spawn entity 7 at baseline 1.
         client.apply_snapshot(
             &mut registry,
-            &snapshot(0, 1, vec![full_baseline(7, 1, vec![transform_payload(0.0)])]),
+            &snapshot(
+                0,
+                1,
+                vec![full_baseline(7, 1, vec![transform_payload(0.0)])],
+            ),
         );
         let id = *client.map().get(&NetworkId(7)).unwrap();
 
@@ -651,7 +791,11 @@ mod tests {
         let mut client = ClientReplication::new();
         client.apply_snapshot(
             &mut registry,
-            &snapshot(0, 1, vec![full_baseline(7, 1, vec![transform_payload(3.0)])]),
+            &snapshot(
+                0,
+                1,
+                vec![full_baseline(7, 1, vec![transform_payload(3.0)])],
+            ),
         );
         let id = *client.map().get(&NetworkId(7)).unwrap();
 
@@ -672,8 +816,10 @@ mod tests {
         assert_eq!(out.ack.unwrap().entity_baselines, vec![(7, 2)]);
 
         // An empty delta whose ref is NOT held requests a refresh instead.
-        let out2 =
-            client.apply_snapshot(&mut registry, &snapshot(2, 3, vec![delta(7, 99, 100, vec![])]));
+        let out2 = client.apply_snapshot(
+            &mut registry,
+            &snapshot(2, 3, vec![delta(7, 99, 100, vec![])]),
+        );
         assert!(client.is_pending_repair(NetworkId(7)));
         assert_eq!(out2.refresh_requests.len(), 1);
         assert!(out2.ack.unwrap().entity_baselines.is_empty());
@@ -686,7 +832,11 @@ mod tests {
         let mut client = ClientReplication::new();
         client.apply_snapshot(
             &mut registry,
-            &snapshot(5, 50, vec![full_baseline(7, 1, vec![transform_payload(1.0)])]),
+            &snapshot(
+                5,
+                50,
+                vec![full_baseline(7, 1, vec![transform_payload(1.0)])],
+            ),
         );
         let id = *client.map().get(&NetworkId(7)).unwrap();
 
@@ -695,7 +845,11 @@ mod tests {
         let mut count_before = client.map().len();
         let out_old = client.apply_snapshot(
             &mut registry,
-            &snapshot(3, 30, vec![full_baseline(8, 2, vec![transform_payload(7.0)])]),
+            &snapshot(
+                3,
+                30,
+                vec![full_baseline(8, 2, vec![transform_payload(7.0)])],
+            ),
         );
         assert!(out_old.ack.is_none(), "ignored snapshot produces no ack");
         assert!(
@@ -714,7 +868,11 @@ mod tests {
         count_before = client.map().len();
         let out_dup = client.apply_snapshot(
             &mut registry,
-            &snapshot(5, 50, vec![full_baseline(9, 3, vec![transform_payload(8.0)])]),
+            &snapshot(
+                5,
+                50,
+                vec![full_baseline(9, 3, vec![transform_payload(8.0)])],
+            ),
         );
         assert!(out_dup.ack.is_none());
         assert!(!client.map().contains_key(&NetworkId(9)));
@@ -748,7 +906,11 @@ mod tests {
         // refresh, while entity 8 is untouched.
         let out = client.apply_snapshot(
             &mut registry,
-            &snapshot(1, 2, vec![full_baseline(7, 5, vec![transform_payload(3.0)])]),
+            &snapshot(
+                1,
+                2,
+                vec![full_baseline(7, 5, vec![transform_payload(3.0)])],
+            ),
         );
         assert!(
             !client.map().contains_key(&NetworkId(7)),
@@ -779,7 +941,11 @@ mod tests {
         // Spawn, then receive an unknown-baseline delta to enter the pending set.
         client.apply_snapshot(
             &mut registry,
-            &snapshot(0, 1, vec![full_baseline(7, 1, vec![transform_payload(0.0)])]),
+            &snapshot(
+                0,
+                1,
+                vec![full_baseline(7, 1, vec![transform_payload(0.0)])],
+            ),
         );
         client.apply_snapshot(
             &mut registry,
@@ -791,7 +957,11 @@ mod tests {
         // pending, acks.
         let out = client.apply_snapshot(
             &mut registry,
-            &snapshot(2, 3, vec![full_baseline(7, 100, vec![transform_payload(5.0)])]),
+            &snapshot(
+                2,
+                3,
+                vec![full_baseline(7, 100, vec![transform_payload(5.0)])],
+            ),
         );
         assert!(
             !client.is_pending_repair(NetworkId(7)),
@@ -808,7 +978,11 @@ mod tests {
         let mut client = ClientReplication::new();
         client.apply_snapshot(
             &mut registry,
-            &snapshot(0, 1, vec![full_baseline(7, 1, vec![transform_payload(0.0)])]),
+            &snapshot(
+                0,
+                1,
+                vec![full_baseline(7, 1, vec![transform_payload(0.0)])],
+            ),
         );
         let id = *client.map().get(&NetworkId(7)).unwrap();
 
@@ -825,10 +999,7 @@ mod tests {
             ),
         );
         assert!(!registry.exists(id), "entity despawned");
-        assert!(
-            !client.map().contains_key(&NetworkId(7)),
-            "mapping dropped"
-        );
+        assert!(!client.map().contains_key(&NetworkId(7)), "mapping dropped");
         assert!(client.stored_baseline(NetworkId(7)).is_none());
         assert_eq!(out.ack.unwrap().despawn_tombstones, vec![(7, 4)]);
 
@@ -890,7 +1061,10 @@ mod tests {
         );
         // Spawned from the Transform; the movement payload did NOT create a movement
         // component (the dumb mover is Transform-only).
-        let id = *client.map().get(&NetworkId(7)).expect("spawned from Transform");
+        let id = *client
+            .map()
+            .get(&NetworkId(7))
+            .expect("spawned from Transform");
         assert!((entity_pos(&registry, id).x - 4.0).abs() < EPSILON);
         assert!(
             !registry
@@ -932,7 +1106,11 @@ mod tests {
         let mut client = ClientReplication::new();
         client.apply_snapshot(
             &mut registry,
-            &snapshot(0, 1, vec![full_baseline(7, 1, vec![transform_payload(0.0)])]),
+            &snapshot(
+                0,
+                1,
+                vec![full_baseline(7, 1, vec![transform_payload(0.0)])],
+            ),
         );
         // Enter pending via an unknown-baseline delta.
         client.apply_snapshot(
@@ -957,7 +1135,11 @@ mod tests {
         // The refresh response clears pending -> no further resends.
         client.apply_snapshot(
             &mut registry,
-            &snapshot(2, 3, vec![full_baseline(7, 100, vec![transform_payload(1.0)])]),
+            &snapshot(
+                2,
+                3,
+                vec![full_baseline(7, 100, vec![transform_payload(1.0)])],
+            ),
         );
         assert!(!client.is_pending_repair(NetworkId(7)));
         assert!(
@@ -1085,7 +1267,11 @@ mod tests {
         let mut client = ClientReplication::new();
         client.apply_snapshot(
             &mut registry,
-            &snapshot(0, 1, vec![full_baseline(7, 1, vec![transform_payload(0.0)])]),
+            &snapshot(
+                0,
+                1,
+                vec![full_baseline(7, 1, vec![transform_payload(0.0)])],
+            ),
         );
         let out = client.apply_snapshot(
             &mut registry,
@@ -1094,11 +1280,148 @@ mod tests {
         let buffers = encode_client_messages(&out);
         assert_eq!(buffers.len(), 2, "ack + one refresh");
         // First is the ack, second is the refresh, both decode as ClientMessage.
-        let first: ClientMessage =
-            postretro_net::wire::decode(&buffers[0]).expect("ack decodes");
+        let first: ClientMessage = postretro_net::wire::decode(&buffers[0]).expect("ack decodes");
         assert!(matches!(first, ClientMessage::Ack(_)));
         let second: ClientMessage =
             postretro_net::wire::decode(&buffers[1]).expect("refresh decodes");
         assert!(matches!(second, ClientMessage::BaselineRefresh(_)));
+    }
+
+    // --- Interpolation buffer is fed by apply, keyed by server tick, and isolated
+    // per NetworkId across two distinct entities. ---
+    #[test]
+    fn apply_feeds_interpolation_buffer_keyed_by_server_tick() {
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+        // Two snapshots for entity 7 at server ticks 100 and 110, x = 0 then 10.
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                0,
+                100,
+                vec![full_baseline(7, 1, vec![transform_payload(0.0)])],
+            ),
+        );
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(1, 110, vec![delta(7, 1, 2, vec![transform_payload(10.0)])]),
+        );
+
+        // The buffer brackets render tick 105 -> interpolated midpoint x = 5.0.
+        assert_eq!(
+            client.presented_source(NetworkId(7), 105.0),
+            Some(PoseSource::Interpolated)
+        );
+    }
+
+    // --- sample_into_registry writes BOTH current (new pose) and previous
+    // (last-presented) so the render-stage interpolated_transform path is fed, not
+    // bypassed. Continuity: stepping the render tick forward advances the presented
+    // pose monotonically. ---
+    #[test]
+    fn sample_into_registry_feeds_previous_and_current_transform() {
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                0,
+                100,
+                vec![full_baseline(7, 1, vec![transform_payload(0.0)])],
+            ),
+        );
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(1, 110, vec![delta(7, 1, 2, vec![transform_payload(10.0)])]),
+        );
+        let id = *client.map().get(&NetworkId(7)).unwrap();
+
+        // First present at render tick 102 -> interpolated x = 2.0. last_presented was
+        // seeded to the spawn pose (x = 0.0) so previous = 0.0, current = 2.0.
+        let n = client.sample_into_registry(&mut registry, 102.0);
+        assert_eq!(n, 1, "one remote entity presented");
+        // interpolated_transform(alpha=1) == current, (alpha=0) == previous.
+        let current = registry.interpolated_transform(id, 1.0).unwrap();
+        let previous = registry.interpolated_transform(id, 0.0).unwrap();
+        assert!(
+            (current.position.x - 2.0).abs() < EPSILON,
+            "current is the new pose"
+        );
+        assert!(
+            (previous.position.x - 0.0).abs() < EPSILON,
+            "previous is the last-presented (seeded spawn) pose, not bypassed"
+        );
+
+        // Second present at render tick 106 -> x = 6.0. Now previous becomes the prior
+        // present (x = 2.0), proving continuity is carried through the helper.
+        client.sample_into_registry(&mut registry, 106.0);
+        let current2 = registry.interpolated_transform(id, 1.0).unwrap();
+        let previous2 = registry.interpolated_transform(id, 0.0).unwrap();
+        assert!((current2.position.x - 6.0).abs() < EPSILON);
+        assert!(
+            (previous2.position.x - 2.0).abs() < EPSILON,
+            "previous carries the prior presented pose (continuity, no double-smooth)"
+        );
+    }
+
+    // --- Starvation after sampling: a Transform-only remote (no velocity) holds its
+    // last pose; the presented source flips to HeldNewest. ---
+    #[test]
+    fn transform_only_remote_holds_last_pose_after_starvation() {
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                0,
+                100,
+                vec![full_baseline(7, 1, vec![transform_payload(4.0)])],
+            ),
+        );
+        // Render tick far beyond the newest sample (110): the Transform-only mover has
+        // no velocity, so the buffer holds the last pose.
+        assert_eq!(
+            client.presented_source(NetworkId(7), 200.0),
+            Some(PoseSource::HeldNewest)
+        );
+        client.sample_into_registry(&mut registry, 200.0);
+        let id = *client.map().get(&NetworkId(7)).unwrap();
+        let held = registry.interpolated_transform(id, 1.0).unwrap();
+        assert!(
+            (held.position.x - 4.0).abs() < EPSILON,
+            "held the last pose"
+        );
+    }
+
+    // --- Despawn forgets the entity's interpolation buffer. ---
+    #[test]
+    fn despawn_forgets_interpolation_buffer() {
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                0,
+                100,
+                vec![full_baseline(7, 1, vec![transform_payload(0.0)])],
+            ),
+        );
+        assert!(client.presented_source(NetworkId(7), 100.0).is_some());
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                1,
+                110,
+                vec![EntityRecord::Despawn {
+                    network_id: 7,
+                    tombstone_id: 1,
+                    reason: 0,
+                }],
+            ),
+        );
+        assert!(
+            client.presented_source(NetworkId(7), 100.0).is_none(),
+            "despawn drops the buffer"
+        );
     }
 }

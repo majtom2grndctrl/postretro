@@ -21,9 +21,9 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::wire::{
-    ComponentPayload, EntityRecord, RawComponentPayload, RawEntityRecord, RawSnapshotMessage,
-    COMPONENT_KIND_PLAYER_MOVEMENT_STATE, COMPONENT_KIND_TRANSFORM, RECORD_KIND_DELTA,
-    RECORD_KIND_DESPAWN, RECORD_KIND_FULL_BASELINE, SNAPSHOT_VERSION,
+    COMPONENT_KIND_PLAYER_MOVEMENT_STATE, COMPONENT_KIND_TRANSFORM, ComponentPayload, EntityRecord,
+    RECORD_KIND_DELTA, RECORD_KIND_DESPAWN, RECORD_KIND_FULL_BASELINE, RawComponentPayload,
+    RawEntityRecord, RawSnapshotMessage, SNAPSHOT_VERSION,
 };
 
 /// One replicable entity's owned, post-tick component state, keyed by its stable
@@ -280,7 +280,11 @@ impl ServerReplication {
     /// batch helper [`ServerReplication::begin_batch`]; this single-client form
     /// allocates its own sequence for callers replicating one client at a time.
     #[must_use]
-    pub fn encode_for_client(&mut self, client_id: u64, server_tick: u32) -> Option<RawSnapshotMessage> {
+    pub fn encode_for_client(
+        &mut self,
+        client_id: u64,
+        server_tick: u32,
+    ) -> Option<RawSnapshotMessage> {
         let sequence = self.next_sequence();
         self.encode_for_client_with_sequence(client_id, server_tick, sequence)
     }
@@ -464,13 +468,11 @@ mod tests {
 
     // Helper: find a typed record for a network_id in an encoded snapshot.
     fn record_for(snapshot: &RawSnapshotMessage, network_id: u32) -> Option<EntityRecord> {
-        typed_records(snapshot)
-            .into_iter()
-            .find(|r| match r {
-                EntityRecord::FullBaseline { network_id: n, .. } => *n == network_id,
-                EntityRecord::Delta { network_id: n, .. } => *n == network_id,
-                EntityRecord::Despawn { network_id: n, .. } => *n == network_id,
-            })
+        typed_records(snapshot).into_iter().find(|r| match r {
+            EntityRecord::FullBaseline { network_id: n, .. } => *n == network_id,
+            EntityRecord::Delta { network_id: n, .. } => *n == network_id,
+            EntityRecord::Despawn { network_id: n, .. } => *n == network_id,
+        })
     }
 
     // First snapshot for a fresh client is a FullBaseline for every entity.
@@ -478,9 +480,14 @@ mod tests {
     fn first_snapshot_is_full_baseline_for_each_entity() {
         let mut server = ServerReplication::new();
         server.register_client(CLIENT_A);
-        server.ingest_tick(vec![entity(1, vec![transform(0.0)]), entity(2, vec![transform(5.0)])]);
+        server.ingest_tick(vec![
+            entity(1, vec![transform(0.0)]),
+            entity(2, vec![transform(5.0)]),
+        ]);
 
-        let snap = server.encode_for_client(CLIENT_A, 60).expect("registered client");
+        let snap = server
+            .encode_for_client(CLIENT_A, 60)
+            .expect("registered client");
         let records = typed_records(&snap);
         assert_eq!(records.len(), 2);
         for record in records {
@@ -507,7 +514,10 @@ mod tests {
         // Same state next tick: nothing changed, so the entity is omitted.
         server.ingest_tick(vec![entity(1, vec![transform(0.0)])]);
         let snap2 = server.encode_for_client(CLIENT_A, 61).unwrap();
-        assert!(record_for(&snap2, 1).is_none(), "acked unchanged entity omitted");
+        assert!(
+            record_for(&snap2, 1).is_none(),
+            "acked unchanged entity omitted"
+        );
     }
 
     // A dirty entity (changed wire mirror) re-sends as a Delta against the acked
@@ -533,7 +543,10 @@ mod tests {
                 ..
             } => {
                 assert_eq!(baseline_ref, baseline_id, "delta refs the acked baseline");
-                assert_ne!(new_baseline_id, baseline_id, "delta carries a fresh baseline");
+                assert_ne!(
+                    new_baseline_id, baseline_id,
+                    "delta carries a fresh baseline"
+                );
             }
             other => panic!("expected Delta, got {other:?}"),
         }
@@ -573,13 +586,20 @@ mod tests {
     fn lost_packet_only_affects_unacked_entity() {
         let mut server = ServerReplication::new();
         server.register_client(CLIENT_A);
-        server.ingest_tick(vec![entity(1, vec![transform(0.0)]), entity(2, vec![transform(0.0)])]);
+        server.ingest_tick(vec![
+            entity(1, vec![transform(0.0)]),
+            entity(2, vec![transform(0.0)]),
+        ]);
         let snap1 = server.encode_for_client(CLIENT_A, 60).unwrap();
-        let EntityRecord::FullBaseline { baseline_id: b1, .. } = record_for(&snap1, 1).unwrap()
+        let EntityRecord::FullBaseline {
+            baseline_id: b1, ..
+        } = record_for(&snap1, 1).unwrap()
         else {
             panic!("fb");
         };
-        let EntityRecord::FullBaseline { baseline_id: b2, .. } = record_for(&snap1, 2).unwrap()
+        let EntityRecord::FullBaseline {
+            baseline_id: b2, ..
+        } = record_for(&snap1, 2).unwrap()
         else {
             panic!("fb");
         };
@@ -587,22 +607,37 @@ mod tests {
         server.apply_ack(CLIENT_A, snap1.sequence, &[(1, b1), (2, b2)], &[]);
 
         // Only entity 1 moves; entity 2 unchanged.
-        server.ingest_tick(vec![entity(1, vec![transform(3.0)]), entity(2, vec![transform(0.0)])]);
+        server.ingest_tick(vec![
+            entity(1, vec![transform(3.0)]),
+            entity(2, vec![transform(0.0)]),
+        ]);
         let snap2 = server.encode_for_client(CLIENT_A, 61).unwrap();
         // Entity 1 re-sends; entity 2 (acked + unchanged) is omitted.
-        assert!(matches!(record_for(&snap2, 1), Some(EntityRecord::Delta { .. })));
-        assert!(record_for(&snap2, 2).is_none(), "unchanged acked entity stays omitted");
+        assert!(matches!(
+            record_for(&snap2, 1),
+            Some(EntityRecord::Delta { .. })
+        ));
+        assert!(
+            record_for(&snap2, 2).is_none(),
+            "unchanged acked entity stays omitted"
+        );
 
         // Simulate snap2 dropped: client A does NOT ack entity 1's new baseline.
         // Entity 1 moves again. Only entity 1 is affected; entity 2 still omitted.
-        server.ingest_tick(vec![entity(1, vec![transform(7.0)]), entity(2, vec![transform(0.0)])]);
+        server.ingest_tick(vec![
+            entity(1, vec![transform(7.0)]),
+            entity(2, vec![transform(0.0)]),
+        ]);
         let snap3 = server.encode_for_client(CLIENT_A, 62).unwrap();
         match record_for(&snap3, 1).expect("entity 1 still unacked -> re-sent") {
             // Still a Delta from the last *acked* baseline (b1), not a global resend.
             EntityRecord::Delta { baseline_ref, .. } => assert_eq!(baseline_ref, b1),
             other => panic!("expected Delta from acked baseline, got {other:?}"),
         }
-        assert!(record_for(&snap3, 2).is_none(), "lost packet did not disturb entity 2");
+        assert!(
+            record_for(&snap3, 2).is_none(),
+            "lost packet did not disturb entity 2"
+        );
     }
 
     // Two clients are independent: B acking does not omit A's records.
@@ -616,7 +651,10 @@ mod tests {
         let seq = server.begin_batch();
         let snap_a = server.encode_in_batch(CLIENT_A, 60, seq).unwrap();
         let snap_b = server.encode_in_batch(CLIENT_B, 60, seq).unwrap();
-        assert_eq!(snap_a.sequence, snap_b.sequence, "batch shares one sequence");
+        assert_eq!(
+            snap_a.sequence, snap_b.sequence,
+            "batch shares one sequence"
+        );
         let EntityRecord::FullBaseline { baseline_id, .. } = record_for(&snap_a, 1).unwrap() else {
             panic!("fb");
         };
@@ -637,7 +675,9 @@ mod tests {
         // Tick 1, baseline 0.
         server.ingest_tick(vec![entity(1, vec![transform(0.0)])]);
         let snap1 = server.encode_for_client(CLIENT_A, 60).unwrap();
-        let EntityRecord::FullBaseline { baseline_id: b0, .. } = record_for(&snap1, 1).unwrap()
+        let EntityRecord::FullBaseline {
+            baseline_id: b0, ..
+        } = record_for(&snap1, 1).unwrap()
         else {
             panic!("fb");
         };
@@ -647,7 +687,11 @@ mod tests {
         // Move -> baseline 1.
         server.ingest_tick(vec![entity(1, vec![transform(1.0)])]);
         let snap2 = server.encode_for_client(CLIENT_A, 61).unwrap();
-        let EntityRecord::Delta { new_baseline_id: b1, .. } = record_for(&snap2, 1).unwrap() else {
+        let EntityRecord::Delta {
+            new_baseline_id: b1,
+            ..
+        } = record_for(&snap2, 1).unwrap()
+        else {
             panic!("delta");
         };
         assert!(b1 > b0);
@@ -704,7 +748,10 @@ mod tests {
         server.apply_ack(CLIENT_A, snap3.sequence, &[], &[(1, tombstone_id)]);
         server.ingest_tick(vec![]);
         let snap4 = server.encode_for_client(CLIENT_A, 63).unwrap();
-        assert!(record_for(&snap4, 1).is_none(), "acked tombstone stops resending");
+        assert!(
+            record_for(&snap4, 1).is_none(),
+            "acked tombstone stops resending"
+        );
     }
 
     // A refresh request queues a FullBaseline for that entity, even when the client
@@ -727,7 +774,10 @@ mod tests {
         server.ingest_tick(vec![entity(1, vec![transform(0.0)])]);
         let snap2 = server.encode_for_client(CLIENT_A, 61).unwrap();
         assert!(
-            matches!(record_for(&snap2, 1), Some(EntityRecord::FullBaseline { .. })),
+            matches!(
+                record_for(&snap2, 1),
+                Some(EntityRecord::FullBaseline { .. })
+            ),
             "refresh request forces a FullBaseline"
         );
 
@@ -753,10 +803,15 @@ mod tests {
         // Refresh for an entity that does not exist: queued, produces nothing.
         server.request_refresh(CLIENT_A, 424242, 0);
         // Encoding still works and does not panic.
-        let snap = server.encode_for_client(CLIENT_A, 60).expect("client still encodes");
+        let snap = server
+            .encode_for_client(CLIENT_A, 60)
+            .expect("client still encodes");
         // The real entity 1 is still a FullBaseline; the bogus acks did not corrupt
         // its state.
-        assert!(matches!(record_for(&snap, 1), Some(EntityRecord::FullBaseline { .. })));
+        assert!(matches!(
+            record_for(&snap, 1),
+            Some(EntityRecord::FullBaseline { .. })
+        ));
         // The non-existent refreshed entity produces no record.
         assert!(record_for(&snap, 424242).is_none());
 

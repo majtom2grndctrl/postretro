@@ -875,6 +875,38 @@ impl EntityRegistry {
         }
     }
 
+    /// Remote-presentation write (M15 Phase 2 interpolation): set the entity's
+    /// visible transform to a network-interpolated pose **and** stamp its
+    /// previous-tick slot with the *last presented* remote pose, so the
+    /// render-stage [`interpolated_transform`](Self::interpolated_transform) path
+    /// is fed continuously instead of bypassed.
+    ///
+    /// Why both fields: remote entities are written here once per render frame
+    /// (after net apply, in the game-logic-owned netcode stage) rather than moved
+    /// by a sim system, so the order-0 `snapshot_transforms` previous/current
+    /// discipline does not apply to them. If only `current` were overwritten, the
+    /// render accessor would blend from a stale previous toward the new pose and
+    /// double-smooth (the interpolation buffer already produced a smoothed pose).
+    /// Setting `previous = last_presented` makes the render-stage blend continue
+    /// the buffer's own motion across the sub-tick alpha rather than re-smoothing
+    /// it, preserving continuity. The caller owns the last-presented pose (it is
+    /// the previous frame's `current`); the first write seeds it equal to
+    /// `current` so a freshly-mapped remote entity does not pop.
+    ///
+    /// See: context/lib/entity_model.md §5 · context/lib/networking.md
+    pub(crate) fn set_remote_presentation_transform(
+        &mut self,
+        id: EntityId,
+        current: Transform,
+        last_presented: Transform,
+    ) -> Result<(), RegistryError> {
+        let index = self.validate(id)?;
+        self.components[ComponentKind::Transform as usize][index] =
+            Some(ComponentValue::Transform(current));
+        self.previous_transforms[index] = Some(last_presented);
+        Ok(())
+    }
+
     /// Render-stage accessor: the entity's visual transform blended between its
     /// previous-tick and current transforms by `alpha` (0 = previous, 1 =
     /// current). Position and scale are component-lerped; rotation is

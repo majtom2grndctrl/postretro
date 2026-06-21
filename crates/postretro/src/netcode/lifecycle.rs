@@ -121,9 +121,7 @@ pub(crate) fn on_slot_accepted(
     let net_id = allocator.stamp(pawn);
     replicable.register(pawn);
     slot_pawns.pawns.insert(client_id, pawn);
-    log::info!(
-        "[Net] slot {client_id} accepted: spawned inert remote pawn {pawn:?} as {net_id:?}"
-    );
+    log::info!("[Net] slot {client_id} accepted: spawned inert remote pawn {pawn:?} as {net_id:?}");
     (pawn, net_id)
 }
 
@@ -164,7 +162,7 @@ pub(crate) fn on_slot_closed(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use postretro_net::replication::{typed_records, EntitySnapshot};
+    use postretro_net::replication::{EntitySnapshot, typed_records};
     use postretro_net::wire::EntityRecord;
 
     use crate::netcode::produce_owned_snapshots;
@@ -179,8 +177,7 @@ mod tests {
         client_id: u64,
         tick: u32,
     ) -> Vec<EntityRecord> {
-        let owned: Vec<EntitySnapshot> =
-            produce_owned_snapshots(registry, replicable, allocator);
+        let owned: Vec<EntitySnapshot> = produce_owned_snapshots(registry, replicable, allocator);
         replication.ingest_tick(owned);
         let snap = replication
             .encode_for_client(client_id, tick)
@@ -209,9 +206,15 @@ mod tests {
             SlotPawnSource::TransformFixture,
         );
 
-        assert!(registry.exists(pawn), "the slot pawn is live in the registry");
+        assert!(
+            registry.exists(pawn),
+            "the slot pawn is live in the registry"
+        );
         assert_eq!(slot_pawns.pawn_for(CLIENT_A), Some(pawn));
-        assert!(replicable.contains(pawn), "the pawn is registered for replication");
+        assert!(
+            replicable.contains(pawn),
+            "the pawn is registered for replication"
+        );
         // The pawn replicates: produce_owned_snapshots emits it keyed by its NetworkId.
         let owned = produce_owned_snapshots(&registry, &replicable, &mut allocator);
         assert_eq!(owned.len(), 1);
@@ -298,7 +301,10 @@ mod tests {
         );
         assert_eq!(despawned, Some(pawn_a));
         assert!(!registry.exists(pawn_a), "pawn A despawned");
-        assert!(!replicable.contains(pawn_a), "pawn A left the replicable set");
+        assert!(
+            !replicable.contains(pawn_a),
+            "pawn A left the replicable set"
+        );
         assert_eq!(slot_pawns.pawn_for(CLIENT_A), None, "slot A freed");
         assert_eq!(slot_pawns.len(), 1, "only slot B remains");
 

@@ -13,12 +13,14 @@
 // untouched — Phase 2 owns remove-missing).
 
 mod client;
+mod interpolation;
 mod lifecycle;
 mod replication;
 
 pub(crate) use client::ClientReplication;
-pub(crate) use lifecycle::{on_slot_accepted, on_slot_closed, SlotPawnSource, SlotPawns};
-pub(crate) use replication::{produce_owned_snapshots, ReplicableSet};
+pub(crate) use interpolation::{DemoMover, interpolation_delay_ticks};
+pub(crate) use lifecycle::{SlotPawnSource, SlotPawns, on_slot_accepted, on_slot_closed};
+pub(crate) use replication::{ReplicableSet, produce_owned_snapshots};
 
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
@@ -34,7 +36,9 @@ use postretro_net::wire::{
     WireError, WireMovementState, WirePlayerMovementState, WireTransform,
 };
 
-use crate::scripting::registry::{ComponentKind, EntityId, EntityRegistry, Transform};
+use crate::scripting::registry::{
+    ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform,
+};
 
 /// Default listen port for `--host` when no port is supplied.
 pub(crate) const DEFAULT_HOST_PORT: u16 = 27015;
@@ -173,6 +177,14 @@ pub(crate) enum NetEndpoint {
         /// slot despawns it. Owned alongside `allocator`/`replicable` because the
         /// accept/close cleanup mutates all three together.
         slot_pawns: SlotPawns,
+        /// Task 6 Phase 2 net-demo fixture. When the demo path is active
+        /// (`POSTRETRO_NET_DEMO_MOVER=1`), the host spawns one deterministic
+        /// AI-less mover ([`DemoMover`]) and stores its `EntityId` here; each tick
+        /// it is driven along its parametric loop and replicated like any other
+        /// authoritative object. `None` when the demo path is off (production /
+        /// ordinary host) or before the first tick spawns it. Not a gameplay
+        /// archetype — it carries no script/FGD surface.
+        demo_mover: DemoMoverState,
     },
     /// Client plus the Phase 2 client replication state (the `NetworkId -> EntityId`
     /// map, per-entity baseline table, pending-repair set, sequence tracking). The
@@ -269,6 +281,7 @@ impl NetEndpoint {
                     replication: Box::new(ServerReplication::new()),
                     replicable: ReplicableSet::new(),
                     slot_pawns: SlotPawns::new(),
+                    demo_mover: DemoMoverState::from_env(),
                 }))
             }
             NetRole::Connect { addr } => {
@@ -470,6 +483,36 @@ pub(crate) fn client_receive_and_apply(
     }
 }
 
+/// Sample every remote entity's interpolation buffer and write the resulting poses
+/// through the registry's remote-presentation helper (Task 6). Game-logic-owned:
+/// called once per frame, **after** `client_receive_and_apply` (which fills the
+/// buffers) and **before** the render collectors read entities, so the renderer stays
+/// read-only over the registry.
+///
+/// The render target is `estimated_server_tick - interpolation_delay`, where the delay
+/// is sized from the measured jitter by [`interpolation_delay_ticks`]. Before the
+/// time-sync estimator has folded its first echo (`estimated_server_tick` is `None`),
+/// there is no trustworthy clock to render against, so the buffers are left unsampled
+/// and remote entities stay at their last-applied snapshot pose.
+///
+/// The mutable registry borrow is threaded in by the caller (`main.rs`), so this
+/// module never reaches into `App`.
+pub(crate) fn client_sample_interpolation(
+    registry: &mut EntityRegistry,
+    replication: &mut ClientReplication,
+    time_sync: &ClientTimeSync,
+) {
+    // No estimate yet: render at the last-applied pose until the clock initializes.
+    let Some(estimated_tick) = time_sync.estimated_server_tick() else {
+        return;
+    };
+    // Jitter is available whenever the estimate is; default to 0 defensively.
+    let jitter = time_sync.jitter_micros().unwrap_or(0.0);
+    let delay_ticks = interpolation_delay_ticks(jitter, SERVER_TICK_MICROS);
+    let render_server_tick = estimated_tick - f64::from(delay_ticks);
+    replication.sample_into_registry(registry, render_server_tick);
+}
+
 /// Microseconds per server sim tick (60 Hz), used to derive the telemetry-only
 /// `server_echo_time_us` carried in a time-sync echo. Equal to the estimator's
 /// [`timesync::DEFAULT_MICROS_PER_TICK`]; kept here so `main.rs` builds the
@@ -480,6 +523,70 @@ pub(crate) const SERVER_TICK_MICROS: u64 = timesync::DEFAULT_MICROS_PER_TICK;
 /// (20 Hz). The host ingests the registry every sim tick (so dirty detection sees
 /// every change) but only encodes + sends on this cadence.
 pub(crate) const SNAPSHOT_TICK_INTERVAL: u32 = 3;
+
+/// Host-only Phase 2 net-demo fixture state. Activation is a startup decision read
+/// once from the environment; the spawned `EntityId` is filled in lazily on the first
+/// host tick that has a registry to spawn into.
+///
+/// Gated to the demo/harness path only — `enabled` is false on an ordinary host, so a
+/// production listen server never spawns the demo mover. This is deliberately an env
+/// gate rather than a CLI flag or FGD entity: the mover is a throwaway demo fixture,
+/// not an authored gameplay object, so it must not grow a permanent CLI/script/FGD
+/// surface (entity_model.md §4 — no authored archetype).
+pub(crate) struct DemoMoverState {
+    enabled: bool,
+    entity: Option<EntityId>,
+}
+
+impl DemoMoverState {
+    /// Read the demo-mover activation from the environment. `POSTRETRO_NET_DEMO_MOVER=1`
+    /// turns it on; anything else (unset, empty, other value) leaves it off.
+    fn from_env() -> Self {
+        let enabled = std::env::var("POSTRETRO_NET_DEMO_MOVER")
+            .map(|v| v == "1")
+            .unwrap_or(false);
+        Self {
+            enabled,
+            entity: None,
+        }
+    }
+}
+
+/// Drive the host-only demo mover (Task 6, demo path only). On the first call with the
+/// demo path active, spawns one deterministic AI-less mover, registers it in the
+/// replicable set, and stamps its `NetworkId`; every call thereafter writes its
+/// deterministic pose for `server_tick`. A no-op when the demo path is off.
+///
+/// Game-logic-owned: the spawn and the pose write flow through `EntityRegistry::spawn`
+/// / `set_component`. The mover is a `Transform`-only entity (no movement payload), so
+/// on the client it replicates as the dumb mover whose interpolation-buffer starvation
+/// path holds the last pose.
+pub(crate) fn host_drive_demo_mover(
+    registry: &mut EntityRegistry,
+    demo_mover: &mut DemoMoverState,
+    allocator: &mut NetworkIdAllocator,
+    replicable: &mut ReplicableSet,
+    server_tick: u32,
+) {
+    if !demo_mover.enabled {
+        return;
+    }
+    let pose = DemoMover::pose_at(server_tick);
+    match demo_mover.entity {
+        Some(id) if registry.exists(id) => {
+            // Steady state: write the deterministic pose for this tick.
+            let _ = registry.set_component_value(id, ComponentValue::Transform(pose));
+        }
+        _ => {
+            // First tick (or the entity vanished): spawn, register, stamp.
+            let id = registry.spawn(pose);
+            allocator.stamp(id);
+            replicable.register(id);
+            demo_mover.entity = Some(id);
+            log::info!("[Net] demo mover spawned {id:?} (Phase 2 net-demo fixture)");
+        }
+    }
+}
 
 /// Drive one host sim tick of Phase 2 per-client delta replication. Game-logic
 /// owned: borrows the registry immutably, copies the replicable set into owned
@@ -563,13 +670,7 @@ pub(crate) fn host_handle_lifecycle(
                 );
             }
             SlotEvent::Closed { client_id, .. } => {
-                let _ = on_slot_closed(
-                    registry,
-                    slot_pawns,
-                    replicable,
-                    replication,
-                    *client_id,
-                );
+                let _ = on_slot_closed(registry, slot_pawns, replicable, replication, *client_id);
             }
         }
     }

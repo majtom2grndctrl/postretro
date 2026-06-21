@@ -443,8 +443,7 @@ impl NetServer {
     /// gated on acceptance: time-sync may flow to a connected client before it has
     /// passed the app handshake (the echo carries no entity state).
     pub fn send_input(&mut self, client_id: ClientId, payload: Vec<u8>) {
-        self.server
-            .send_message(client_id, Channel::Input, payload);
+        self.server.send_message(client_id, Channel::Input, payload);
     }
 
     /// Connection-level packets renet wants delivered to `client_id`, *bypassing*
@@ -754,8 +753,8 @@ mod tests {
         let (client_sock, _client_addr) = bound_socket();
         let mut server =
             NetServer::new(server_sock, server_addr, 8, origin).expect("server transport");
-        let mut client =
-            NetClient::new(client_sock, server_addr, RELAY_CLIENT, origin).expect("client transport");
+        let mut client = NetClient::new(client_sock, server_addr, RELAY_CLIENT, origin)
+            .expect("client transport");
 
         server.add_relay_connection(RELAY_CLIENT);
         client.set_connected();
@@ -777,7 +776,10 @@ mod tests {
                 break;
             }
         }
-        assert!(server.is_accepted(RELAY_CLIENT), "relay client should accept");
+        assert!(
+            server.is_accepted(RELAY_CLIENT),
+            "relay client should accept"
+        );
         (server, client)
     }
 

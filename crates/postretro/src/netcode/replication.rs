@@ -20,7 +20,7 @@ use postretro_net::wire::ComponentPayload;
 
 use crate::scripting::registry::{ComponentKind, EntityId, EntityRegistry, Transform};
 
-use super::{component_kind_discriminant, transform_to_wire, NetworkIdAllocator};
+use super::{NetworkIdAllocator, component_kind_discriminant, transform_to_wire};
 
 /// The Phase 2 replicable set: entities `crate::netcode` has explicitly registered
 /// as authoritative networked gameplay objects. Task 4 registers the slot-owned
@@ -201,8 +201,15 @@ mod tests {
         let snaps = produce_owned_snapshots(&registry, &set, &mut allocator);
         assert_eq!(snaps.len(), 1, "only the registered entity is produced");
         let net_id = allocator.stamp(a).0;
-        assert_eq!(snaps[0].network_id, net_id, "stamped with its stable NetworkId");
-        assert_eq!(snaps[0].components.len(), 1, "carries its Transform payload");
+        assert_eq!(
+            snaps[0].network_id, net_id,
+            "stamped with its stable NetworkId"
+        );
+        assert_eq!(
+            snaps[0].components.len(),
+            1,
+            "carries its Transform payload"
+        );
         assert!(matches!(
             snaps[0].components[0],
             ComponentPayload::Transform(_)
@@ -210,7 +217,10 @@ mod tests {
 
         // A second pass yields the same NetworkId for the same EntityId.
         let snaps2 = produce_owned_snapshots(&registry, &set, &mut allocator);
-        assert_eq!(snaps2[0].network_id, net_id, "NetworkId stable across ticks");
+        assert_eq!(
+            snaps2[0].network_id, net_id,
+            "NetworkId stable across ticks"
+        );
     }
 
     // A registered entity that vanished from the registry is skipped (not produced),
@@ -227,6 +237,9 @@ mod tests {
         // tolerates the lag). `despawn` returns a Result; the id is live here.
         registry.despawn(a).expect("live entity despawns");
         let snaps = produce_owned_snapshots(&registry, &set, &mut allocator);
-        assert!(snaps.is_empty(), "a vanished registered entity is not produced");
+        assert!(
+            snaps.is_empty(),
+            "a vanished registered entity is not produced"
+        );
     }
 }

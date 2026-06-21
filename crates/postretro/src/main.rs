@@ -2189,6 +2189,15 @@ impl ApplicationHandler for App {
                 // client and single-player. See `context/lib/entity_model.md` §6.
                 self.net_serialize_and_send();
 
+                // Task 6 client remote interpolation: sample each remote entity's
+                // buffer at `estimated_server_tick - interpolation_delay` and write the
+                // interpolated pose through the registry's remote-presentation helper.
+                // Runs AFTER the tick loop (so the stage-0 `snapshot_transforms` does
+                // not clobber the previous/current pair this writes) and BEFORE the
+                // render stage reads entities, so the renderer stays read-only.
+                // No-op for single-player and the host.
+                self.net_sample_remote_interpolation();
+
                 // Drain collected post-tick events after all ticks complete so
                 // reactions observe the final state of every entity.
                 for event_name in &pending_movement_events {
@@ -3766,6 +3775,7 @@ impl App {
                 replicable,
                 slot_pawns,
                 tick,
+                demo_mover: _,
             }) => {
                 // Drive the listen server (accept handshakes, drain the socket).
                 // Snapshots are sent post-loop in `net_serialize_and_send`.
@@ -3837,6 +3847,11 @@ impl App {
                 // refresh requests, and advance the pending-repair 5 Hz cadence.
                 let mut registry = self.script_ctx.registry.borrow_mut();
                 netcode::client_receive_and_apply(&mut registry, client, replication, dt);
+                // The interpolation-buffer sampling that writes presented remote poses
+                // runs in `net_sample_remote_interpolation`, AFTER the catch-up tick
+                // loop's stage-0 `snapshot_transforms` — so its previous/current
+                // remote-presentation write is the final word before render and is not
+                // clobbered by the snapshot pass.
             }
         }
     }
@@ -3854,25 +3869,50 @@ impl App {
             replication,
             replicable,
             slot_pawns: _,
+            demo_mover,
         }) = self.net_endpoint.as_mut()
         else {
             return;
         };
 
+        // Demo path only (POSTRETRO_NET_DEMO_MOVER=1): spawn-and-drive the
+        // deterministic Phase 2 net-demo mover for this tick before snapshotting, so
+        // its pose is in the replicable set when `host_replicate` ingests below. A
+        // no-op on an ordinary host.
+        {
+            let mut registry = self.script_ctx.registry.borrow_mut();
+            netcode::host_drive_demo_mover(&mut registry, demo_mover, allocator, replicable, *tick);
+        }
+
         {
             let registry = self.script_ctx.registry.borrow();
-            netcode::host_replicate(
-                &registry,
-                server,
-                allocator,
-                replication,
-                replicable,
-                *tick,
-            );
+            netcode::host_replicate(&registry, server, allocator, replication, replicable, *tick);
         }
         // Advance the monotonic server tick after this tick's ingest+send so a
         // late-joining client never sees a stalled clock.
         *tick = tick.wrapping_add(1);
+    }
+
+    /// Client remote-interpolation sampling step (M15 Phase 2 Task 6). Thin delegation
+    /// to `crate::netcode`. Samples each remote entity's interpolation buffer at the
+    /// jitter-sized render target tick and writes the presented pose through the
+    /// registry's remote-presentation helper (previous = last presented, current =
+    /// newly interpolated), feeding the render-stage `interpolated_transform` path.
+    ///
+    /// Runs after the catch-up tick loop so the stage-0 `snapshot_transforms` cannot
+    /// clobber the previous/current pair, and before the render stage reads entities.
+    /// No-op for single-player and the host (no client interpolation buffers).
+    fn net_sample_remote_interpolation(&mut self) {
+        let Some(netcode::NetEndpoint::Client {
+            replication,
+            time_sync,
+            ..
+        }) = self.net_endpoint.as_mut()
+        else {
+            return;
+        };
+        let mut registry = self.script_ctx.registry.borrow_mut();
+        netcode::client_sample_interpolation(&mut registry, replication, time_sync);
     }
 
     /// Accumulate one frame onto the animation clock: `prev + dt × scale`.

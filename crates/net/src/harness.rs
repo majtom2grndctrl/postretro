@@ -241,8 +241,8 @@ mod tests {
     use super::*;
     use crate::transport::{NetClient, NetServer};
     use crate::wire::{
-        self, RawComponentPayload, RawEntityRecord, RawSnapshotMessage, WireTransform,
-        COMPONENT_KIND_TRANSFORM, RECORD_KIND_FULL_BASELINE, SNAPSHOT_VERSION,
+        self, COMPONENT_KIND_TRANSFORM, RECORD_KIND_FULL_BASELINE, RawComponentPayload,
+        RawEntityRecord, RawSnapshotMessage, SNAPSHOT_VERSION, WireTransform,
     };
     use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
     use std::time::Duration;
@@ -557,7 +557,7 @@ mod tests {
     // clock, no wall-clock read anywhere.
 
     use crate::timesync::{
-        ClockEstimator, MonotonicClock, TimeSyncSender, DEFAULT_MICROS_PER_TICK, SAMPLE_PERIOD_US,
+        ClockEstimator, DEFAULT_MICROS_PER_TICK, MonotonicClock, SAMPLE_PERIOD_US, TimeSyncSender,
     };
 
     /// The mandated automated harness profile, applied in BOTH directions: a

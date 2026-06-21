@@ -1,16 +1,8 @@
-// Engine-side netcode glue (M15 Phase 1). The ONLY engine code that touches the
-// `EntityRegistry` on behalf of replication: `postretro-net` emits typed
-// snapshots and never mutates the registry (entity_model.md §6; netcode
-// contracts in context/lib/networking.md). This module
-// owns role selection, the optional endpoint held by `App`, the
-// `NetworkId <-> EntityId` maps, and the two game-logic-owned steps (host
-// `serialize`, client `apply`) plus the `WireTransform <-> Transform` and
-// `ComponentKind -> u16` conversions.
-//
-// Phase 1 is "ugly-but-connected": the client is a pure viewer of
-// host-authoritative state. No prediction, no client->server gameplay input, no
-// despawn reconciliation (a `NetworkId` missing from a later snapshot is left
-// untouched — Phase 2 owns remove-missing).
+// Engine-side netcode glue for M15 Phase 2: role selection, the `NetworkId <-> EntityId`
+// maps, the connection-slot lifecycle, and the game-logic-owned host delta serialize and
+// client apply/interpolation steps (the sole engine code that mutates the registry for
+// replication).
+// See: context/lib/networking.md
 
 mod client;
 mod interpolation;
@@ -237,18 +229,16 @@ impl ClientTimeSync {
         }
     }
 
-    /// The smoothed server-tick estimate for the current local time, for Task 6
-    /// interpolation consumers. `None` until the first echo has been folded in.
-    #[allow(dead_code)] // consumed by Task 6 interpolation; surfaced now.
+    /// The smoothed server-tick estimate for the current local time, for the
+    /// interpolation sampling path. `None` until the first echo has been folded in.
     pub(crate) fn estimated_server_tick(&self) -> Option<f64> {
         self.estimator
             .is_initialized()
             .then(|| self.estimator.estimated_server_tick(&self.clock))
     }
 
-    /// The smoothed jitter estimate in microseconds, for Task 6 interpolation
-    /// delay sizing. `None` until the first echo has been folded in.
-    #[allow(dead_code)] // consumed by Task 6 interpolation; surfaced now.
+    /// The smoothed jitter estimate in microseconds, for interpolation delay
+    /// sizing. `None` until the first echo has been folded in.
     pub(crate) fn jitter_micros(&self) -> Option<f64> {
         self.estimator
             .is_initialized()
@@ -633,45 +623,64 @@ pub(crate) fn host_replicate(
     }
 }
 
-/// Apply this frame's slot lifecycle transitions to the host's remote-pawn state
-/// (Task 4). Each `SlotEvent::Accepted` spawns and registers one slot-owned inert
-/// pawn; each `SlotEvent::Closed` (clean disconnect or timeout — one cleanup path)
-/// despawns it, drops it from the replicable set, and drops the slot mapping. The
-/// `HandshakeOutcome::Accepted` verdicts still drive per-client replication
-/// registration at the call site; this consumes the slot-lifecycle half of the same
-/// poll.
+/// Spawn and register the slot-owned pawn for an accepted client (Task 4). This is
+/// the production accept seam: the `NetServer` surfaces an accept only via
+/// `ServerPoll.handshakes` (`SlotEvent::Accepted` is discarded inside the transport),
+/// so the engine drives the spawn from the `HandshakeOutcome::Accepted` verdict —
+/// `host_handle_lifecycle` never sees an accept. Threads the same allocator /
+/// replicable set / slot map the close path uses, so accept and close mutate one
+/// consistent state. Idempotent per slot (see [`on_slot_accepted`]).
 ///
-/// Game-logic-owned: the registry mutation flows through `EntityRegistry::spawn` /
-/// `despawn`. The mutable registry borrow is threaded in by the caller so this
-/// module never reaches into `App`.
-pub(crate) fn host_handle_lifecycle(
+/// This glue path has no player descriptor, so the pawn is the `Transform`-only inert
+/// fixture (entity_model.md §7b — not a real movement pawn). Called BEFORE the frame's
+/// `host_replicate` so the new pawn is in the first snapshot.
+///
+/// Game-logic-owned: the spawn flows through `EntityRegistry::spawn`; the caller
+/// threads in the mutable registry borrow so this module never reaches into `App`.
+pub(crate) fn host_handle_accept(
     registry: &mut EntityRegistry,
     allocator: &mut NetworkIdAllocator,
-    replication: &mut ServerReplication,
     replicable: &mut ReplicableSet,
+    slot_pawns: &mut SlotPawns,
+    client_id: u64,
+) {
+    let _ = on_slot_accepted(
+        registry,
+        slot_pawns,
+        allocator,
+        replicable,
+        client_id,
+        SlotPawnSource::TransformFixture,
+    );
+}
+
+/// Apply this frame's slot lifecycle transitions to the host's remote-pawn state
+/// (Task 4). `ServerPoll.lifecycle` carries `SlotEvent::Closed` only — accepts are
+/// driven from the handshake verdict via [`host_handle_accept`], never lifecycle.
+/// Each close (clean disconnect or timeout — one cleanup path) despawns the slot's
+/// pawn, drops it from the replicable set, and drops the slot mapping.
+///
+/// Game-logic-owned: the registry mutation flows through `EntityRegistry::despawn`.
+/// The mutable registry borrow is threaded in by the caller so this module never
+/// reaches into `App`.
+pub(crate) fn host_handle_lifecycle(
+    registry: &mut EntityRegistry,
+    replicable: &mut ReplicableSet,
+    replication: &mut ServerReplication,
     slot_pawns: &mut SlotPawns,
     lifecycle: &[postretro_net::slots::SlotEvent],
 ) {
     use postretro_net::slots::SlotEvent;
     for event in lifecycle {
         match event {
-            SlotEvent::Accepted { client_id } => {
-                // Prefer the descriptor-backed materialization path when a
-                // descriptor-backed pawn is available; this glue path has no player
-                // descriptor threaded in, so use the Transform-only inert fixture
-                // (entity_model.md §7b — not a real movement pawn).
-                let _ = on_slot_accepted(
-                    registry,
-                    slot_pawns,
-                    allocator,
-                    replicable,
-                    *client_id,
-                    SlotPawnSource::TransformFixture,
-                );
-            }
             SlotEvent::Closed { client_id, .. } => {
                 let _ = on_slot_closed(registry, slot_pawns, replicable, replication, *client_id);
             }
+            // Accepts never reach lifecycle (the transport discards `SlotEvent::Accepted`
+            // at `on_accept`); the spawn is driven from the handshake verdict instead, so
+            // this arm is unreachable in production. Kept exhaustive (no `_`) so a new
+            // SlotEvent variant is a compile error here.
+            SlotEvent::Accepted { .. } => {}
         }
     }
 }
@@ -940,6 +949,56 @@ mod tests {
         assert!(rebuilt.rotation.angle_between(original.rotation) < 1e-4);
         // Phase 2 replicates scale; it must round-trip through the wire mirror.
         assert!((rebuilt.scale - original.scale).length() < EPSILON);
+    }
+
+    // Regression: the production host accept seam never spawned the slot-owned pawn.
+    // `main.rs`'s `HandshakeOutcome::Accepted` arm only called `register_client`, and
+    // `host_handle_lifecycle` reads only `ServerPoll.lifecycle` (which never carries an
+    // accept) — so no remote pawn was spawned, no `NetworkId` allocated, nothing entered
+    // the replicable set, and nothing replicated in production. The unit lifecycle tests
+    // passed only by calling `on_slot_accepted` directly, bypassing this seam. This test
+    // drives the accept through `host_handle_accept` — the exact helper the production
+    // `HandshakeOutcome::Accepted` arm invokes — and asserts the pawn exists, is
+    // replicable, and carries an allocated NetworkId. A future regression that drops the
+    // accept-spawn wiring fails here.
+    #[test]
+    fn host_handle_accept_spawns_registered_replicable_pawn_with_network_id() {
+        let mut registry = EntityRegistry::new();
+        let mut allocator = NetworkIdAllocator::new();
+        let mut replicable = ReplicableSet::new();
+        let mut slot_pawns = SlotPawns::new();
+        const CLIENT_ID: u64 = 42;
+
+        // Drive the accept through the production dispatch helper (NOT on_slot_accepted).
+        host_handle_accept(
+            &mut registry,
+            &mut allocator,
+            &mut replicable,
+            &mut slot_pawns,
+            CLIENT_ID,
+        );
+
+        // A slot-owned pawn now exists for the client and is live in the registry.
+        let pawn = slot_pawns
+            .pawn_for(CLIENT_ID)
+            .expect("accept spawned a slot-owned pawn for the client");
+        assert!(registry.exists(pawn), "the slot pawn is live in the registry");
+
+        // It is registered for replication.
+        assert!(
+            replicable.contains(pawn),
+            "the accepted pawn is in the replicable set"
+        );
+
+        // It has an allocated NetworkId and replicates: produce_owned_snapshots emits
+        // exactly the one pawn, keyed by its allocated NetworkId.
+        let expected_net_id = allocator.stamp(pawn);
+        let owned = produce_owned_snapshots(&registry, &replicable, &mut allocator);
+        assert_eq!(owned.len(), 1, "exactly the accepted pawn replicates");
+        assert_eq!(
+            owned[0].network_id, expected_net_id.0,
+            "the replicated pawn carries its allocated NetworkId"
+        );
     }
 
     // The client apply state machine (spawn, mutate-in-place, despawn, non-finite

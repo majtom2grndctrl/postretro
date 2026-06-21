@@ -3780,32 +3780,45 @@ impl App {
                 // Drive the listen server (accept handshakes, drain the socket).
                 // Snapshots are sent post-loop in `net_serialize_and_send`.
                 match server.update(dt) {
-                    // Log this frame's handshake verdicts and register accepted
-                    // clients with the replication tracker so their per-client
-                    // baseline state exists before the next snapshot batch. Then
-                    // apply the slot lifecycle transitions (accept spawns a slot-
-                    // owned inert pawn; close despawns it) through the game-logic-
-                    // owned registry borrow.
+                    // Drive this frame's connection transitions through the game-logic-
+                    // owned registry borrow: an accept verdict registers the client and
+                    // spawns its slot-owned inert pawn; a lifecycle close despawns it.
                     Ok(poll) => {
                         use postretro_net::transport::HandshakeOutcome;
-                        for outcome in &poll.handshakes {
-                            match outcome {
-                                HandshakeOutcome::Accepted { client_id } => {
-                                    log::info!("[Net] client {client_id} accepted");
-                                    replication.register_client(*client_id);
-                                }
-                                HandshakeOutcome::Rejected { client_id, reason } => {
-                                    log::warn!("[Net] client {client_id} rejected: {reason}");
+                        // The accept verdict is the production spawn seam. An accepted
+                        // client must get its slot-owned pawn spawned + registered HERE,
+                        // so it is in the replicable set before `net_serialize_and_send`
+                        // runs `host_replicate` post-loop and the pawn lands in the first
+                        // snapshot. `SlotEvent::Accepted` never reaches `poll.lifecycle`
+                        // (the transport discards it at `on_accept`); lifecycle carries
+                        // `Closed` only. Both paths mutate the registry, so take one
+                        // game-logic-owned borrow when either has work.
+                        if !poll.handshakes.is_empty() || !poll.lifecycle.is_empty() {
+                            let mut registry = self.script_ctx.registry.borrow_mut();
+                            for outcome in &poll.handshakes {
+                                match outcome {
+                                    HandshakeOutcome::Accepted { client_id } => {
+                                        log::info!("[Net] client {client_id} accepted");
+                                        replication.register_client(*client_id);
+                                        netcode::host_handle_accept(
+                                            &mut registry,
+                                            allocator,
+                                            replicable,
+                                            slot_pawns,
+                                            *client_id,
+                                        );
+                                    }
+                                    HandshakeOutcome::Rejected { client_id, reason } => {
+                                        log::warn!("[Net] client {client_id} rejected: {reason}");
+                                    }
                                 }
                             }
-                        }
-                        if !poll.lifecycle.is_empty() {
-                            let mut registry = self.script_ctx.registry.borrow_mut();
+                            // Lifecycle carries only `Closed` events; the accept-spawn
+                            // above is the sole accept seam.
                             netcode::host_handle_lifecycle(
                                 &mut registry,
-                                allocator,
-                                replication,
                                 replicable,
+                                replication,
                                 slot_pawns,
                                 &poll.lifecycle,
                             );

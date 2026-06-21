@@ -14,6 +14,14 @@ mod reconcile;
 mod replication;
 mod wire_convert;
 
+// M15 Phase 3 Task 6: the integrated in-memory prediction/reconciliation harness and
+// its shared test scaffolding. Both are test-only — they drive the real Task 1-5 seams
+// end to end over the dev `PacketConditioner` but introduce no production runtime state.
+#[cfg(test)]
+mod predict_reconcile_harness;
+#[cfg(test)]
+mod predict_reconcile_harness_test_fixtures;
+
 pub(crate) use client::ClientReplication;
 pub(crate) use command_queue::{HostCommandQueues, MovementOwners, host_resolve_movement_inputs};
 // `ResolvedCommand` / `ResolutionSource` are produced by the command queue and read

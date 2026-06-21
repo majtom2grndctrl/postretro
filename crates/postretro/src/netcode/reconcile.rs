@@ -163,7 +163,7 @@ pub(crate) fn reconcile_local_pawn(
 mod tests {
     use super::*;
 
-    use glam::{Vec2, Vec3};
+    use glam::Vec3;
     use parry3d::math::{Isometry, Point};
     use parry3d::shape::TriMesh;
 

@@ -383,6 +383,73 @@ pub struct InputCommand {
     pub fire_button: WireFireButtonState,
 }
 
+/// Client -> server acknowledgement of replication progress, carried on the
+/// reliable-ordered `Channel::Input` (alongside the input stream and, later,
+/// time-sync). The server consumes it to advance each client's per-entity acked
+/// baseline and retire acked despawn tombstones.
+///
+/// Semantics are **monotonic and additive**, never replacement-by-packet:
+/// `entity_baselines` and `despawn_tombstones` list only the entries this client
+/// has newly observed — an omitted entry leaves the server's prior ack state for
+/// that entity/tombstone unchanged, and a stale (older-id) entry is ignored. The
+/// `Vec`s are bitcode length-prefixed; an empty ack (no per-entity progress) is a
+/// valid carrier for `latest_snapshot_sequence` / `acked_server_tick` alone.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct AckMessage {
+    /// The highest snapshot `sequence` this client has received and processed.
+    pub latest_snapshot_sequence: u32,
+    /// The `server_tick` of that latest processed snapshot.
+    pub acked_server_tick: u32,
+    /// `(network_id, baseline_id)` pairs the client now holds. Advances the
+    /// server's per-client baseline for that entity only if `baseline_id` is
+    /// newer than the one already recorded.
+    pub entity_baselines: Vec<(u32, u32)>,
+    /// `(network_id, tombstone_id)` pairs the client has applied. Retires that
+    /// tombstone for this client so the server stops resending the despawn.
+    pub despawn_tombstones: Vec<(u32, u32)>,
+}
+
+/// Client -> server request to re-send a full baseline for one entity, carried on
+/// the reliable-ordered `Channel::Input`. Sent when the client receives a `Delta`
+/// referencing a `baseline_ref` it does not hold (a lost/old snapshot left it
+/// without that baseline). The server responds with a `FullBaseline` record for
+/// that entity on `Channel::Snapshot`.
+///
+/// Requests are **additive** and keyed by `(client, network_id,
+/// missing_baseline_ref)` on the server, so a duplicate request (the reliable
+/// channel re-sent it, or the client asked twice) queues the same refresh once,
+/// not twice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+pub struct BaselineRefreshRequest {
+    /// The snapshot `sequence` whose delta could not be applied. Diagnostic /
+    /// dedup context; the repair is keyed by entity + missing ref, not sequence.
+    pub snapshot_sequence: u32,
+    /// The entity whose baseline the client is missing.
+    pub network_id: u32,
+    /// The `baseline_ref` the unappliable delta named but the client lacks.
+    pub missing_baseline_ref: u32,
+    /// Why the refresh is needed (e.g. unknown baseline). A `u8` reason code,
+    /// not interpreted by the repair path — logged for diagnostics.
+    pub reason: u8,
+}
+
+/// Discriminated client -> server envelope for the reliable-ordered
+/// `Channel::Input`, which multiplexes several message kinds (the input stream,
+/// replication acks, baseline-refresh requests, and — Task 5 — time-sync). bitcode
+/// tags the enum, so the server decodes one `ClientMessage` and matches on the
+/// variant rather than guessing the type of an untagged payload. A new kind (e.g.
+/// `TimeSync`) is added as a variant **appended** to preserve the discriminant
+/// order of existing variants.
+#[derive(Debug, Clone, PartialEq, Encode, Decode)]
+pub enum ClientMessage {
+    /// Per-tick input intent (round-tripped in Phase 1; applied in Phase 2/3).
+    Input(InputCommand),
+    /// Replication progress ack.
+    Ack(AckMessage),
+    /// A request to re-send one entity's full baseline.
+    BaselineRefresh(BaselineRefreshRequest),
+}
+
 /// Handshake message. Every connection is gated on a matching `ProtocolVersion`
 /// before any other bitcode payload is decoded — the bitcode byte format is
 /// unstable across crate majors, so a mismatch must be rejected up front.
@@ -572,6 +639,69 @@ mod tests {
             wire_version: 1,
         };
         assert!(round_trips(&handshake));
+    }
+
+    #[test]
+    fn ack_message_round_trips() {
+        let ack = AckMessage {
+            latest_snapshot_sequence: 17,
+            acked_server_tick: 510,
+            entity_baselines: vec![(3, 9), (7, 2), (42, 100)],
+            despawn_tombstones: vec![(11, 4)],
+        };
+        assert!(round_trips(&ack));
+        // An empty ack (no per-entity progress) is still a valid carrier.
+        let empty = AckMessage {
+            latest_snapshot_sequence: 0,
+            acked_server_tick: 0,
+            entity_baselines: Vec::new(),
+            despawn_tombstones: Vec::new(),
+        };
+        assert!(round_trips(&empty));
+    }
+
+    #[test]
+    fn baseline_refresh_request_round_trips() {
+        let req = BaselineRefreshRequest {
+            snapshot_sequence: 22,
+            network_id: 8,
+            missing_baseline_ref: 5,
+            reason: 1,
+        };
+        assert!(round_trips(&req));
+    }
+
+    #[test]
+    fn client_message_variants_round_trip() {
+        let variants = [
+            ClientMessage::Input(sample_input()),
+            ClientMessage::Ack(AckMessage {
+                latest_snapshot_sequence: 3,
+                acked_server_tick: 180,
+                entity_baselines: vec![(1, 2)],
+                despawn_tombstones: vec![(4, 5)],
+            }),
+            ClientMessage::BaselineRefresh(BaselineRefreshRequest {
+                snapshot_sequence: 9,
+                network_id: 1,
+                missing_baseline_ref: 2,
+                reason: 0,
+            }),
+        ];
+        for msg in variants {
+            assert!(round_trips(&msg));
+        }
+    }
+
+    #[test]
+    fn corrupt_ack_and_refresh_decode_to_err_not_panic() {
+        // A hostile/truncated client->server message must be a typed Err, never a
+        // panic — the server must survive a malformed ack/refresh on the wire.
+        let garbage = [0xFFu8, 0x00, 0xAB, 0x12, 0x9C, 0x7D, 0x55, 0x01];
+        assert!(decode::<AckMessage>(&garbage).is_err());
+        assert!(decode::<BaselineRefreshRequest>(&garbage).is_err());
+        assert!(decode::<AckMessage>(&[]).is_err());
+        assert!(decode::<BaselineRefreshRequest>(&[]).is_err());
     }
 
     // --- Validation: raw -> typed happy paths ---

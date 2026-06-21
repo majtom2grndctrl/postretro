@@ -12,18 +12,21 @@
 // despawn reconciliation (a `NetworkId` missing from a later snapshot is left
 // untouched — Phase 2 owns remove-missing).
 
+mod replication;
+
+pub(crate) use replication::{produce_owned_snapshots, ReplicableSet};
+
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use glam::{Quat, Vec3};
 
+use postretro_net::replication::ServerReplication;
 use postretro_net::transport::{NetClient, NetServer};
 use postretro_net::wire::{
-    self, ComponentPayload, EntityRecord, NetworkId, RawComponentPayload, RawEntityRecord,
-    RawSnapshotMessage, Snapshot, ValidationError, WireError, WireMovementState,
-    WirePlayerMovementState, WireTransform, COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
-    COMPONENT_KIND_TRANSFORM, RECORD_KIND_FULL_BASELINE, SNAPSHOT_VERSION,
+    self, ComponentPayload, EntityRecord, NetworkId, RawSnapshotMessage, Snapshot, ValidationError,
+    WireError, WireMovementState, WirePlayerMovementState, WireTransform,
 };
 
 use crate::scripting::registry::{
@@ -155,6 +158,13 @@ pub(crate) enum NetEndpoint {
         allocator: NetworkIdAllocator,
         /// Monotonic server tick stamp written into each snapshot.
         tick: u32,
+        /// Phase 2 per-client replication tracker (acked baselines, deltas,
+        /// tombstones, refresh queue), keyed by `NetworkId`. Registry-blind: fed
+        /// owned wire-mirror snapshots, never the registry.
+        replication: Box<ServerReplication>,
+        /// The Phase 2 replicable set: entities explicitly registered as
+        /// authoritative networked gameplay objects (slot pawns, demo mover).
+        replicable: ReplicableSet,
     },
     /// Client plus the `NetworkId -> EntityId` map for applied snapshots. The
     /// `NetClient` is boxed for the same reason the `Host` server is.
@@ -186,6 +196,8 @@ impl NetEndpoint {
                     server: Box::new(server),
                     allocator: NetworkIdAllocator::new(),
                     tick: 0,
+                    replication: Box::new(ServerReplication::new()),
+                    replicable: ReplicableSet::new(),
                 }))
             }
             NetRole::Connect { addr } => {
@@ -355,43 +367,6 @@ fn payload_to_component_value(payload: &ComponentPayload) -> Option<ComponentVal
     }
 }
 
-/// Host serialize step (game-logic-owned). Walk the replicable set — every live
-/// entity carrying a `Transform` — stamp each `EntityId` to its `NetworkId`,
-/// convert the `Transform` to its wire mirror, and build the `Snapshot` envelope
-/// stamped with `tick`.
-///
-/// Borrows the registry immutably; never mutates it (the apply step is the only
-/// registry-touching path, and only on the client).
-///
-/// Phase 1 boundary: every entity gets a `Transform` at spawn, so this set is
-/// effectively the whole entity table. Since only `Transform` is wire-bound and
-/// apply never despawns, non-renderable/non-pawn entities replicate as inert
-/// bare-`Transform` ghosts on the client. The authoritative-vs-cosmetic-vs-static
-/// replicable-set policy and interest management are Phase 2 (with the full
-/// component set and entity lifecycle); see `context/lib/networking.md`.
-pub(crate) fn serialize(
-    registry: &EntityRegistry,
-    allocator: &mut NetworkIdAllocator,
-    tick: u32,
-) -> Snapshot {
-    let mut entries = Vec::new();
-    for (id, value) in registry.iter_with_kind(ComponentKind::Transform) {
-        if let ComponentValue::Transform(transform) = value {
-            let net_id = allocator.stamp(id);
-            let payload = ComponentPayload::Transform(transform_to_wire(transform));
-            // Engine-aligned discriminant must equal the wire-side `kind()`. This
-            // is the live cross-check of the `ComponentKind -> u16` mapping the
-            // drift-guard test pins; a divergence here would mis-tag replication.
-            debug_assert_eq!(
-                component_kind_discriminant(value.kind()),
-                payload.kind(),
-                "engine/wire component discriminant diverged"
-            );
-            entries.push((net_id, payload));
-        }
-    }
-    Snapshot { tick, entries }
-}
 
 /// Client apply step (game-logic-owned). For each `(NetworkId, ComponentPayload)`:
 /// on first sight of the `NetworkId`, `spawn` with the converted `Transform` and
@@ -440,34 +415,6 @@ pub(crate) fn apply(
     }
 }
 
-/// Encode an in-process [`Snapshot`] into the Phase 2 wire envelope
-/// ([`RawSnapshotMessage`]) bytes. The Phase 1 demo still sends full state every
-/// snapshot, so each entry is a `FullBaseline` record with `baseline_id = 0`;
-/// Task 2 replaces this with per-client delta/baseline tracking. This bridge keeps
-/// the host send path on the Phase 2 wire shape without yet owning replication
-/// state.
-pub(crate) fn encode_snapshot(snapshot: &Snapshot) -> Vec<u8> {
-    let records = snapshot
-        .entries
-        .iter()
-        .map(|(net_id, payload)| RawEntityRecord {
-            record_kind: RECORD_KIND_FULL_BASELINE,
-            network_id: net_id.0,
-            baseline_id_or_ref: 0,
-            new_baseline_id_or_tombstone_id: 0,
-            reason: 0,
-            components: vec![payload_to_raw(payload)],
-        })
-        .collect();
-    let raw = RawSnapshotMessage {
-        version: SNAPSHOT_VERSION,
-        sequence: snapshot.tick,
-        server_tick: snapshot.tick,
-        records,
-    };
-    wire::encode(&raw)
-}
-
 /// Decode Phase 2 wire bytes into an in-process [`Snapshot`]. Decodes the raw
 /// envelope (corrupt bytes -> `Err`), validates it into the typed apply model
 /// (invalid kinds/version -> `Err`), then flattens the Phase 1-shaped records
@@ -497,21 +444,91 @@ pub(crate) fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot, SnapshotDecodeEr
     })
 }
 
-/// Convert a typed [`ComponentPayload`] back into its raw wire envelope form for
-/// encoding. The inverse of [`RawComponentPayload::validate`] for the payloads the
-/// host serializes.
-fn payload_to_raw(payload: &ComponentPayload) -> RawComponentPayload {
-    match payload {
-        ComponentPayload::Transform(t) => RawComponentPayload {
-            component_kind: COMPONENT_KIND_TRANSFORM,
-            transform: Some(*t),
-            player_movement: None,
-        },
-        ComponentPayload::PlayerMovementState(m) => RawComponentPayload {
-            component_kind: COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
-            transform: None,
-            player_movement: Some(*m),
-        },
+/// Snapshot send cadence: one snapshot per client every third 60 Hz sim tick
+/// (20 Hz). The host ingests the registry every sim tick (so dirty detection sees
+/// every change) but only encodes + sends on this cadence.
+pub(crate) const SNAPSHOT_TICK_INTERVAL: u32 = 3;
+
+/// Drive one host sim tick of Phase 2 per-client delta replication. Game-logic
+/// owned: borrows the registry immutably, copies the replicable set into owned
+/// wire-mirror snapshots, releases the borrow, then feeds the net tracker and (on
+/// the 20 Hz cadence) encodes + sends a per-client delta snapshot to every accepted
+/// client.
+///
+/// `tick` is the monotonic server tick stamp; it is advanced by the caller. A
+/// snapshot is encoded only when `tick % SNAPSHOT_TICK_INTERVAL == 0`, but the
+/// tracker ingests every tick so an entity that changes and reverts within the
+/// interval is still detected on the boundary it is sampled.
+pub(crate) fn host_replicate(
+    registry: &EntityRegistry,
+    server: &mut NetServer,
+    allocator: &mut NetworkIdAllocator,
+    replication: &mut ServerReplication,
+    replicable: &ReplicableSet,
+    tick: u32,
+) {
+    // Owned post-tick snapshot rule: copy replicable state into owned mirrors keyed
+    // by NetworkId while borrowing the registry, then release before the net call.
+    let owned = produce_owned_snapshots(registry, replicable, allocator);
+    replication.ingest_tick(owned);
+
+    // Snapshots emit at 20 Hz (every third 60 Hz tick); ingest ran every tick above.
+    if tick % SNAPSHOT_TICK_INTERVAL != 0 {
+        return;
+    }
+
+    let accepted = server.accepted_clients();
+    if accepted.is_empty() {
+        return;
+    }
+    // One sequence shared across all clients in this 20 Hz batch.
+    let sequence = replication.begin_batch();
+    for client_id in accepted {
+        // Register lazily: an accepted client gets a fresh per-client state on first
+        // sight (all-FullBaseline first snapshot). Idempotent.
+        replication.register_client(client_id);
+        if let Some(raw) = replication.encode_in_batch(client_id, tick, sequence) {
+            let bytes = wire::encode(&raw);
+            let _ = server.send_snapshot(client_id, bytes);
+        }
+    }
+}
+
+/// Drain and apply one accepted client's reliable `Channel::Input` messages on the
+/// host: replication acks advance that client's per-entity baseline / retire
+/// tombstones, baseline-refresh requests queue a `FullBaseline` for the named
+/// entity. Corrupt or unknown-variant bytes are logged and dropped — never a panic.
+///
+/// `InputCommand` messages are decoded but not yet applied (Phase 3 gameplay);
+/// time-sync (Task 5) will add a variant handled here without disturbing this path.
+pub(crate) fn host_handle_client_messages(
+    server: &mut NetServer,
+    replication: &mut ServerReplication,
+    client_id: u64,
+) {
+    for bytes in server.drain_input(client_id) {
+        let msg: wire::ClientMessage = match wire::decode(&bytes) {
+            Ok(msg) => msg,
+            Err(err) => {
+                log::warn!("[Net] dropping undecodable client message from {client_id}: {err}");
+                continue;
+            }
+        };
+        match msg {
+            wire::ClientMessage::Ack(ack) => {
+                replication.apply_ack(
+                    client_id,
+                    ack.latest_snapshot_sequence,
+                    &ack.entity_baselines,
+                    &ack.despawn_tombstones,
+                );
+            }
+            wire::ClientMessage::BaselineRefresh(req) => {
+                replication.request_refresh(client_id, req.network_id, req.missing_baseline_ref);
+            }
+            // Phase 1/2 round-trips input but does not yet apply it to gameplay.
+            wire::ClientMessage::Input(_) => {}
+        }
     }
 }
 
@@ -875,34 +892,6 @@ mod tests {
         assert!(
             (unchanged.position - finite_pos).length() < EPSILON,
             "non-finite set must not overwrite a good pose"
-        );
-    }
-
-    // --- Serialize: stamps each replicable EntityId to a stable NetworkId. ---
-    #[test]
-    fn serialize_stamps_transform_entities_with_stable_ids() {
-        let mut registry = EntityRegistry::new();
-        let a = registry.spawn(Transform {
-            position: Vec3::new(1.0, 0.0, 0.0),
-            ..Transform::default()
-        });
-        let _b = registry.spawn(Transform {
-            position: Vec3::new(2.0, 0.0, 0.0),
-            ..Transform::default()
-        });
-        let mut allocator = NetworkIdAllocator::new();
-
-        let snap1 = serialize(&registry, &mut allocator, 7);
-        assert_eq!(snap1.tick, 7);
-        assert_eq!(snap1.entries.len(), 2, "both transform entities replicate");
-
-        // The id stamped for `a` is stable across snapshots.
-        let a_net_id = allocator.stamp(a);
-        let snap2 = serialize(&registry, &mut allocator, 8);
-        let a_in_snap2 = snap2.entries.iter().find(|(net_id, _)| *net_id == a_net_id);
-        assert!(
-            a_in_snap2.is_some(),
-            "the same EntityId stamps to the same NetworkId across snapshots"
         );
     }
 

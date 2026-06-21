@@ -3759,20 +3759,24 @@ impl App {
         let dt = std::time::Duration::from_secs_f32(frame_dt);
         match self.net_endpoint.as_mut() {
             None => {}
-            Some(netcode::NetEndpoint::Host { server, .. }) => {
+            Some(netcode::NetEndpoint::Host {
+                server,
+                replication,
+                ..
+            }) => {
                 // Drive the listen server (accept handshakes, drain the socket).
                 // Snapshots are sent post-loop in `net_serialize_and_send`.
                 match server.update(dt) {
-                    // Log this frame's handshake verdicts. The per-frame snapshot
-                    // send re-queries `accepted_clients()`, so this logging is
-                    // purely observational; Phase 2's spawn/slot logic will be the
-                    // consumer that acts on these outcomes.
+                    // Log this frame's handshake verdicts and register accepted
+                    // clients with the replication tracker so their per-client
+                    // baseline state exists before the next snapshot batch.
                     Ok(outcomes) => {
                         use postretro_net::transport::HandshakeOutcome;
                         for outcome in outcomes {
                             match outcome {
                                 HandshakeOutcome::Accepted { client_id } => {
                                     log::info!("[Net] client {client_id} accepted");
+                                    replication.register_client(client_id);
                                 }
                                 HandshakeOutcome::Rejected { client_id, reason } => {
                                     log::warn!("[Net] client {client_id} rejected: {reason}");
@@ -3781,6 +3785,11 @@ impl App {
                         }
                     }
                     Err(err) => log::error!("[Net] host update failed: {err}"),
+                }
+                // Drain each accepted client's reliable Channel::Input: apply
+                // replication acks and baseline-refresh requests into the tracker.
+                for client_id in server.accepted_clients() {
+                    netcode::host_handle_client_messages(server, replication, client_id);
                 }
             }
             Some(netcode::NetEndpoint::Client { client, map }) => {
@@ -3805,39 +3814,37 @@ impl App {
         }
     }
 
-    /// Host serialize plus send (M15 Phase 1). Thin delegation to
-    /// `crate::netcode`. Serializes the replicable set from the registry
-    /// (immutable borrow) into a tick-stamped `Snapshot`, then sends it to every
-    /// accepted client over the snapshot channel. No-op for single-player and the
-    /// client.
+    /// Host Phase 2 replication step. Thin delegation to `crate::netcode`. Ingests
+    /// the replicable set from the registry (immutable borrow) into the per-client
+    /// replication tracker every sim tick and, on the 20 Hz cadence, encodes and
+    /// sends each accepted client a per-client delta snapshot over the snapshot
+    /// channel. No-op for single-player and the client.
     fn net_serialize_and_send(&mut self) {
         let Some(netcode::NetEndpoint::Host {
             server,
             allocator,
             tick,
+            replication,
+            replicable,
         }) = self.net_endpoint.as_mut()
         else {
             return;
         };
 
-        let accepted = server.accepted_clients();
-        if accepted.is_empty() {
-            // Still advance the tick stamp so a late-joining client never sees a
-            // stalled monotonic clock once it is accepted.
-            *tick = tick.wrapping_add(1);
-            return;
-        }
-
-        let snapshot = {
+        {
             let registry = self.script_ctx.registry.borrow();
-            netcode::serialize(&registry, allocator, *tick)
-        };
-        *tick = tick.wrapping_add(1);
-
-        let bytes = netcode::encode_snapshot(&snapshot);
-        for client_id in accepted {
-            let _ = server.send_snapshot(client_id, bytes.clone());
+            netcode::host_replicate(
+                &registry,
+                server,
+                allocator,
+                replication,
+                replicable,
+                *tick,
+            );
         }
+        // Advance the monotonic server tick after this tick's ingest+send so a
+        // late-joining client never sees a stalled clock.
+        *tick = tick.wrapping_add(1);
     }
 
     /// Accumulate one frame onto the animation clock: `prev + dt × scale`.

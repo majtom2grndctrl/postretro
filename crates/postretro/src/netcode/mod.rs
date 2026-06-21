@@ -25,6 +25,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use glam::{Quat, Vec3};
 
 use postretro_net::replication::ServerReplication;
+use postretro_net::timesync::{self, ClockEstimator, MonotonicClock, TimeSyncSender};
 use postretro_net::transport::{NetClient, NetServer};
 use postretro_net::wire::{
     self, ComponentPayload, NetworkId, RawSnapshotMessage, SnapshotMessage, ValidationError,
@@ -172,7 +173,68 @@ pub(crate) enum NetEndpoint {
     Client {
         client: Box<NetClient>,
         replication: ClientReplication,
+        /// Task 5 time-sync substrate: the 5 Hz probe sender, the clock/jitter
+        /// estimator (consumed by Task 6 interpolation), and the production
+        /// monotonic clock the estimator reads through.
+        time_sync: Box<ClientTimeSync>,
     },
+}
+
+/// The production monotonic clock: the engine's `Instant` frame clock exposed as
+/// a [`MonotonicClock`] so the estimator reads elapsed microseconds since this
+/// origin, never wall-clock. A standalone field on [`ClientTimeSync`] so reading
+/// it never aliases the `sender`/`estimator` borrows.
+pub(crate) struct EngineClock {
+    origin: std::time::Instant,
+}
+
+impl MonotonicClock for EngineClock {
+    fn now_micros(&self) -> u64 {
+        // Saturate at u64::MAX rather than panic on the (practically unreachable)
+        // overflow of microseconds since process start.
+        self.origin.elapsed().as_micros().min(u128::from(u64::MAX)) as u64
+    }
+}
+
+/// Client-side time-sync state: the 5 Hz probe sender, the clock/jitter
+/// estimator (consumed by Task 6 interpolation), and the production monotonic
+/// clock both read through.
+pub(crate) struct ClientTimeSync {
+    clock: EngineClock,
+    sender: TimeSyncSender,
+    estimator: ClockEstimator,
+}
+
+impl ClientTimeSync {
+    fn new() -> Self {
+        Self {
+            clock: EngineClock {
+                origin: std::time::Instant::now(),
+            },
+            sender: TimeSyncSender::new(),
+            // The engine sim runs at 60 Hz; the estimator converts microseconds to
+            // ticks at the same rate so its offset is in sim ticks.
+            estimator: ClockEstimator::new(timesync::DEFAULT_MICROS_PER_TICK),
+        }
+    }
+
+    /// The smoothed server-tick estimate for the current local time, for Task 6
+    /// interpolation consumers. `None` until the first echo has been folded in.
+    #[allow(dead_code)] // consumed by Task 6 interpolation; surfaced now.
+    pub(crate) fn estimated_server_tick(&self) -> Option<f64> {
+        self.estimator
+            .is_initialized()
+            .then(|| self.estimator.estimated_server_tick(&self.clock))
+    }
+
+    /// The smoothed jitter estimate in microseconds, for Task 6 interpolation
+    /// delay sizing. `None` until the first echo has been folded in.
+    #[allow(dead_code)] // consumed by Task 6 interpolation; surfaced now.
+    pub(crate) fn jitter_micros(&self) -> Option<f64> {
+        self.estimator
+            .is_initialized()
+            .then(|| self.estimator.jitter_micros())
+    }
 }
 
 impl NetEndpoint {
@@ -214,6 +276,7 @@ impl NetEndpoint {
                 Ok(Some(NetEndpoint::Client {
                     client: Box::new(client),
                     replication: ClientReplication::new(),
+                    time_sync: Box::new(ClientTimeSync::new()),
                 }))
             }
         }
@@ -399,6 +462,12 @@ pub(crate) fn client_receive_and_apply(
     }
 }
 
+/// Microseconds per server sim tick (60 Hz), used to derive the telemetry-only
+/// `server_echo_time_us` carried in a time-sync echo. Equal to the estimator's
+/// [`timesync::DEFAULT_MICROS_PER_TICK`]; kept here so `main.rs` builds the
+/// telemetry stamp without importing the net const directly.
+pub(crate) const SERVER_TICK_MICROS: u64 = timesync::DEFAULT_MICROS_PER_TICK;
+
 /// Snapshot send cadence: one snapshot per client every third 60 Hz sim tick
 /// (20 Hz). The host ingests the registry every sim tick (so dirty detection sees
 /// every change) but only encodes + sends on this cadence.
@@ -452,14 +521,20 @@ pub(crate) fn host_replicate(
 /// Drain and apply one accepted client's reliable `Channel::Input` messages on the
 /// host: replication acks advance that client's per-entity baseline / retire
 /// tombstones, baseline-refresh requests queue a `FullBaseline` for the named
-/// entity. Corrupt or unknown-variant bytes are logged and dropped — never a panic.
+/// entity, and a time-sync probe is echoed back on `Channel::Input` with the
+/// current `server_tick`. Corrupt or unknown-variant bytes are logged and dropped
+/// — never a panic.
 ///
-/// `InputCommand` messages are decoded but not yet applied (Phase 3 gameplay);
-/// time-sync (Task 5) will add a variant handled here without disturbing this path.
+/// `server_tick` is the host's current monotonic sim tick (sampled at echo);
+/// `server_now_us` is the host's monotonic microseconds, carried in the echo as
+/// telemetry only. `InputCommand` messages are decoded but not yet applied
+/// (Phase 3 gameplay).
 pub(crate) fn host_handle_client_messages(
     server: &mut NetServer,
     replication: &mut ServerReplication,
     client_id: u64,
+    server_tick: u32,
+    server_now_us: u64,
 ) {
     for bytes in server.drain_input(client_id) {
         let msg: wire::ClientMessage = match wire::decode(&bytes) {
@@ -481,8 +556,53 @@ pub(crate) fn host_handle_client_messages(
             wire::ClientMessage::BaselineRefresh(req) => {
                 replication.request_refresh(client_id, req.network_id, req.missing_baseline_ref);
             }
+            // Echo the time-sync probe with the server tick sampled now. The echo
+            // rides Channel::Input back; the client measures RTT from its own
+            // send/receive times and folds the server tick into its estimate.
+            wire::ClientMessage::TimeSync(req) => {
+                let echo = req.echo(server_tick, server_now_us);
+                server.send_input(client_id, wire::encode(&echo));
+            }
             // Phase 1/2 round-trips input but does not yet apply it to gameplay.
             wire::ClientMessage::Input(_) => {}
+        }
+    }
+}
+
+/// Drive one frame of the client time-sync exchange: emit a 5 Hz probe (stamped
+/// with the client's local sim tick and monotonic microseconds) over
+/// `Channel::Input`, then fold any echoes received this frame into the clock
+/// estimator. `client_tick` is the client's local monotonic sim tick. Corrupt or
+/// non-time-sync input bytes are dropped, never a panic.
+///
+/// The estimator and sender read time through the `ClientTimeSync` monotonic
+/// clock (wrapping the engine `Instant`), so this path never touches wall-clock.
+pub(crate) fn client_drive_time_sync(
+    client: &mut NetClient,
+    time_sync: &mut ClientTimeSync,
+    client_tick: u32,
+) {
+    // 1. Emit a probe if the 5 Hz cadence is due.
+    if let Some(req) = time_sync.sender.maybe_send(&time_sync.clock, client_tick) {
+        let msg = wire::ClientMessage::TimeSync(req);
+        client.send_input(wire::encode(&msg));
+    }
+
+    // 2. Fold any echoes that arrived this frame. The receive time is read from
+    //    the same monotonic clock, so RTT is purely client-local.
+    let echoes = client.drain_input();
+    if echoes.is_empty() {
+        return;
+    }
+    let recv_us = time_sync.clock.now_micros();
+    for bytes in echoes {
+        match wire::decode::<postretro_net::timesync::TimeSyncEcho>(&bytes) {
+            Ok(echo) => {
+                time_sync.estimator.ingest_echo(&echo, recv_us);
+            }
+            Err(err) => {
+                log::warn!("[Net] dropping undecodable time-sync echo: {err}");
+            }
         }
     }
 }

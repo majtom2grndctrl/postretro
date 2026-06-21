@@ -3762,6 +3762,7 @@ impl App {
             Some(netcode::NetEndpoint::Host {
                 server,
                 replication,
+                tick,
                 ..
             }) => {
                 // Drive the listen server (accept handshakes, drain the socket).
@@ -3787,18 +3788,34 @@ impl App {
                     Err(err) => log::error!("[Net] host update failed: {err}"),
                 }
                 // Drain each accepted client's reliable Channel::Input: apply
-                // replication acks and baseline-refresh requests into the tracker.
+                // replication acks and baseline-refresh requests into the tracker,
+                // and echo time-sync probes with the current server tick. The echo
+                // microseconds are telemetry only, derived from the monotonic tick.
+                let server_tick = *tick;
+                let server_now_us = u64::from(server_tick) * netcode::SERVER_TICK_MICROS;
                 for client_id in server.accepted_clients() {
-                    netcode::host_handle_client_messages(server, replication, client_id);
+                    netcode::host_handle_client_messages(
+                        server,
+                        replication,
+                        client_id,
+                        server_tick,
+                        server_now_us,
+                    );
                 }
             }
             Some(netcode::NetEndpoint::Client {
                 client,
                 replication,
+                time_sync,
             }) => {
                 if let Err(err) = client.update(dt) {
                     log::error!("[Net] client update failed: {err}");
                 }
+                // Drive the 5 Hz time-sync send loop + echo ingest. The client's
+                // local sim tick is the engine frame counter; the estimator reads
+                // its own monotonic clock for send/receive microseconds.
+                let client_tick = self.script_ctx.frame.get() as u32;
+                netcode::client_drive_time_sync(client, time_sync, client_tick);
                 // Decode + apply every snapshot received this frame through the
                 // Phase 2 client state machine, send the resulting acks + baseline-
                 // refresh requests, and advance the pending-repair 5 Hz cadence.

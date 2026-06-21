@@ -35,9 +35,7 @@ use postretro_net::wire::{
     ComponentPayload, EntityRecord, NetworkId, SnapshotMessage,
 };
 
-use crate::scripting::registry::{
-    ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform,
-};
+use crate::scripting::registry::{ComponentKind, ComponentValue, EntityId, EntityRegistry};
 
 use super::interpolation::{PoseSource, RemoteInterpolationBuffer, TransformSample};
 use super::{payload_is_finite, wire_to_transform};
@@ -110,12 +108,6 @@ pub(crate) struct ClientReplication {
     /// entity's initial pose at spawn — the interpolation sampler drives the visible
     /// pose every frame thereafter.
     interp: RemoteInterpolationBuffer,
-    /// The last pose this client *presented* for each remote entity (the previous
-    /// frame's interpolated `current`). Fed as the `previous` transform on the next
-    /// remote-presentation write so the render-stage `interpolated_transform` blend
-    /// continues the buffer's motion rather than re-smoothing it. Seeded equal to the
-    /// first presented pose so a freshly-mapped entity never pops.
-    last_presented: HashMap<NetworkId, Transform>,
 }
 
 /// What an `apply_snapshot` call produced: the ack to send (if the snapshot was
@@ -300,9 +292,6 @@ impl ClientReplication {
                 self.map.insert(network_id, id);
                 self.baselines.insert(network_id, baseline_id);
                 self.pending_repairs.remove(&network_id);
-                // Seed the last-presented pose to the spawn pose so the entity's first
-                // remote-presentation write has a continuous `previous` (no pop).
-                self.last_presented.insert(network_id, spawn_transform);
                 // Apply the remaining (non-Transform) payloads onto the fresh entity.
                 self.apply_components_to(
                     registry,
@@ -372,10 +361,9 @@ impl ClientReplication {
         // A despawn also clears any pending repair for the entity: there is nothing
         // to repair once it is gone.
         self.pending_repairs.remove(&network_id);
-        // Drop the entity's interpolation buffer and last-presented pose; a later
-        // re-spawn under a fresh NetworkId starts with an empty buffer.
+        // Drop the entity's interpolation buffer; a later re-spawn under a fresh
+        // NetworkId starts with an empty buffer.
         self.interp.forget(network_id);
-        self.last_presented.remove(&network_id);
     }
 
     /// Apply each component payload onto `id`. A `Transform` is written through
@@ -519,11 +507,15 @@ impl ClientReplication {
     ///
     /// Game-logic-owned: runs after this frame's network receive/apply and before the
     /// render collectors read entities (the renderer stays read-only). Each write sets
-    /// the entity's visible `Transform` to the freshly-interpolated pose and its
-    /// *previous* transform to the last-presented pose, so the render-stage
-    /// `interpolated_transform` blend is fed continuously (not bypassed, not
-    /// double-smoothed). An entity with no buffered samples yet is left at its
-    /// last-applied pose. Returns the number of entities presented (diagnostics).
+    /// the entity's visible `Transform` to the freshly-interpolated pose. The buffer
+    /// already resolved that pose at the correct *server-time* target, so the
+    /// remote-presentation write is *alpha-agnostic*: it collapses previous == current
+    /// and the render-stage `interpolated_transform` blend reproduces the pose verbatim
+    /// at any frame alpha (the sim sub-tick fraction is an unrelated time base and must
+    /// not re-blend an already-resolved pose — see
+    /// `EntityRegistry::set_remote_presentation_transform`). An entity with no buffered
+    /// samples yet is left at its last-applied pose. Returns the number of entities
+    /// presented (diagnostics).
     pub(crate) fn sample_into_registry(
         &mut self,
         registry: &mut EntityRegistry,
@@ -531,7 +523,7 @@ impl ClientReplication {
     ) -> usize {
         let mut presented = 0;
         // Collect (network_id, entity_id) first to avoid borrowing `self.map` while
-        // mutating `self.last_presented`.
+        // writing back through the registry.
         let mapped: Vec<(NetworkId, EntityId)> = self.map.iter().map(|(&n, &e)| (n, e)).collect();
         for (network_id, entity_id) in mapped {
             if !registry.exists(entity_id) {
@@ -540,15 +532,7 @@ impl ClientReplication {
             let Some(pose) = self.interp.presented_pose(network_id, render_server_tick) else {
                 continue; // no samples buffered yet
             };
-            // The previous transform fed to the render blend is the pose presented last
-            // frame; seed it to this pose on first sight so a new entity does not pop.
-            let last = self
-                .last_presented
-                .get(&network_id)
-                .copied()
-                .unwrap_or(pose.transform);
-            let _ = registry.set_remote_presentation_transform(entity_id, pose.transform, last);
-            self.last_presented.insert(network_id, pose.transform);
+            let _ = registry.set_remote_presentation_transform(entity_id, pose.transform);
             presented += 1;
             // Diagnostic: a HeldNewest after sustained starvation is the visible
             // freeze the buffer falls back to; logged sparingly at trace.
@@ -1314,12 +1298,15 @@ mod tests {
         );
     }
 
-    // --- sample_into_registry writes BOTH current (new pose) and previous
-    // (last-presented) so the render-stage interpolated_transform path is fed, not
-    // bypassed. Continuity: stepping the render tick forward advances the presented
-    // pose monotonically. ---
+    // --- sample_into_registry writes an *alpha-invariant* presented pose: the buffer
+    // already resolved the final frame pose at the correct server-time target, so the
+    // remote-presentation write collapses previous == current and the render-stage
+    // interpolated_transform blend reproduces it verbatim at any alpha (the sim
+    // sub-tick alpha is an unrelated time base and must not re-blend it). Continuity:
+    // stepping the render tick forward advances the presented pose along the buffer's
+    // own smooth trajectory (not via the render blend). ---
     #[test]
-    fn sample_into_registry_feeds_previous_and_current_transform() {
+    fn sample_into_registry_presents_alpha_invariant_pose() {
         let mut registry = EntityRegistry::new();
         let mut client = ClientReplication::new();
         client.apply_snapshot(
@@ -1336,31 +1323,40 @@ mod tests {
         );
         let id = *client.map().get(&NetworkId(7)).unwrap();
 
-        // First present at render tick 102 -> interpolated x = 2.0. last_presented was
-        // seeded to the spawn pose (x = 0.0) so previous = 0.0, current = 2.0.
+        // First present at render tick 102 -> interpolated x = 2.0. The pose must be
+        // identical at alpha = 0.0, 0.5, and 1.0: the buffer's resolved pose is shown
+        // verbatim, never re-blended by the render alpha.
         let n = client.sample_into_registry(&mut registry, 102.0);
         assert_eq!(n, 1, "one remote entity presented");
-        // interpolated_transform(alpha=1) == current, (alpha=0) == previous.
-        let current = registry.interpolated_transform(id, 1.0).unwrap();
-        let previous = registry.interpolated_transform(id, 0.0).unwrap();
+        let at_zero = registry.interpolated_transform(id, 0.0).unwrap();
+        let at_half = registry.interpolated_transform(id, 0.5).unwrap();
+        let at_one = registry.interpolated_transform(id, 1.0).unwrap();
         assert!(
-            (current.position.x - 2.0).abs() < EPSILON,
-            "current is the new pose"
+            (at_one.position.x - 2.0).abs() < EPSILON,
+            "presented pose is the buffer's resolved x = 2.0"
         );
         assert!(
-            (previous.position.x - 0.0).abs() < EPSILON,
-            "previous is the last-presented (seeded spawn) pose, not bypassed"
+            (at_zero.position.x - at_one.position.x).abs() < EPSILON,
+            "alpha=0.0 pose equals alpha=1.0 pose (alpha-invariant)"
         );
+        assert!(
+            (at_half.position.x - at_one.position.x).abs() < EPSILON,
+            "alpha=0.5 pose equals alpha=1.0 pose (alpha-invariant)"
+        );
+        // Rotation and scale are likewise alpha-invariant (previous == current).
+        assert!(at_zero.rotation.abs_diff_eq(at_one.rotation, EPSILON));
+        assert!((at_zero.scale - at_one.scale).length() < EPSILON);
 
-        // Second present at render tick 106 -> x = 6.0. Now previous becomes the prior
-        // present (x = 2.0), proving continuity is carried through the helper.
+        // Second present at render tick 106 -> the buffer's own trajectory advances the
+        // presented pose to x = 6.0, still alpha-invariant. Continuity comes from the
+        // buffer, not from the render blend carrying a prior pose.
         client.sample_into_registry(&mut registry, 106.0);
-        let current2 = registry.interpolated_transform(id, 1.0).unwrap();
-        let previous2 = registry.interpolated_transform(id, 0.0).unwrap();
-        assert!((current2.position.x - 6.0).abs() < EPSILON);
+        let next_zero = registry.interpolated_transform(id, 0.0).unwrap();
+        let next_one = registry.interpolated_transform(id, 1.0).unwrap();
+        assert!((next_one.position.x - 6.0).abs() < EPSILON);
         assert!(
-            (previous2.position.x - 2.0).abs() < EPSILON,
-            "previous carries the prior presented pose (continuity, no double-smooth)"
+            (next_zero.position.x - next_one.position.x).abs() < EPSILON,
+            "still alpha-invariant after a second present"
         );
     }
 

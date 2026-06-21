@@ -5,6 +5,7 @@
 // `[f32; N]`, and the dependency arrow only ever points postretro -> postretro-net.
 
 pub mod replication;
+pub mod timesync;
 pub mod transport;
 pub mod wire;
 

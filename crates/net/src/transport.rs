@@ -373,6 +373,16 @@ impl NetServer {
         out
     }
 
+    /// Send a buffer to a client on the reliable-ordered `Channel::Input`. Used
+    /// for the Task 5 time-sync echo, which rides the input channel back to the
+    /// client independently of snapshots. Unlike `send_snapshot`, this is not
+    /// gated on acceptance: time-sync may flow to a connected client before it has
+    /// passed the app handshake (the echo carries no entity state).
+    pub fn send_input(&mut self, client_id: ClientId, payload: Vec<u8>) {
+        self.server
+            .send_message(client_id, Channel::Input, payload);
+    }
+
     /// Connection-level packets renet wants delivered to `client_id`, *bypassing*
     /// the netcode UDP transport. The in-memory harness (`harness.rs`) hands these
     /// straight to the peer's `process_packet`. Returns `Vec<Vec<u8>>` (renet's
@@ -492,9 +502,21 @@ impl NetClient {
     }
 
     /// Send an input-command buffer over the reserved input channel (Phase 2).
-    /// Exposed now so the channel surface is complete.
+    /// Exposed now so the channel surface is complete. Also carries the Task 5
+    /// time-sync request (`ClientMessage::TimeSync`).
     pub fn send_input(&mut self, input: Vec<u8>) {
         self.client.send_message(Channel::Input, input);
+    }
+
+    /// Drain input-channel buffers received this frame (reliable-ordered). The
+    /// server sends the Task 5 time-sync echo here; Phase 1 had no server->client
+    /// input traffic.
+    pub fn drain_input(&mut self) -> Vec<Vec<u8>> {
+        let mut out = Vec::new();
+        while let Some(bytes) = self.client.receive_message(Channel::Input) {
+            out.push(bytes.to_vec());
+        }
+        out
     }
 
     /// Drain snapshot buffers received this frame (unreliable channel).

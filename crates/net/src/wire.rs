@@ -448,6 +448,10 @@ pub enum ClientMessage {
     Ack(AckMessage),
     /// A request to re-send one entity's full baseline.
     BaselineRefresh(BaselineRefreshRequest),
+    /// A time-sync probe (Task 5): the server echoes it on `Channel::Input` with
+    /// its current tick so the client estimates the server clock. Appended last to
+    /// preserve the discriminant order of the variants above.
+    TimeSync(crate::timesync::TimeSyncRequest),
 }
 
 /// Handshake message. Every connection is gated on a matching `ProtocolVersion`
@@ -686,6 +690,11 @@ mod tests {
                 network_id: 1,
                 missing_baseline_ref: 2,
                 reason: 0,
+            }),
+            ClientMessage::TimeSync(crate::timesync::TimeSyncRequest {
+                sample_id: 4,
+                client_send_tick: 88,
+                client_send_time_us: 12_345_678,
             }),
         ];
         for msg in variants {

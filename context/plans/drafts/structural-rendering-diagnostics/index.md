@@ -45,8 +45,9 @@ portal visibility, and BVH culling shape rendered geometry.
       shown, and which depth behavior is used.
 - [ ] Spatial tab can show compiled BVH leaf AABBs for the loaded level.
 - [ ] BVH AABB overlay defaults to stable cell-id coloring.
-- [ ] BVH AABB overlay can also show cull-status coloring if that status is
-      CPU-readable without GPU readback.
+- [ ] BVH AABB overlay does not add GPU readback; cull-status coloring is
+      exposed only if an existing CPU-readable status source is present,
+      otherwise it is omitted or disabled.
 - [ ] BVH AABB overlay exposes depth-tested and explicit x-ray depth behavior,
       with depth-tested as the default.
 - [ ] BVH AABB overlay has a budget guard or sampling control so dense maps do
@@ -62,8 +63,9 @@ portal visibility, and BVH culling shape rendered geometry.
 - [ ] Spatial overlays no-op cleanly when no level or no BVH is loaded.
 - [ ] No wgpu types or GPU calls leave renderer modules.
 - [ ] Existing diagnostic input tests still pass.
-- [ ] Renderer/debug-line tests cover any new overlay primitive, cap, or mode
-      behavior that can be tested without a GPU.
+- [ ] Renderer/debug-line tests cover pure helpers introduced for color
+      selection, budget selection, tab defaults, and enum/mode mapping where
+      those helpers exist.
 
 ## Tasks
 
@@ -91,9 +93,14 @@ No new `DiagnosticAction` is needed for opening Spatial. The existing
 
 Add spatial diagnostics state for the new tab. It should hold selected
 wireframe mode, BVH overlay visibility, BVH color mode, BVH depth mode, and
-any budget/filter controls. Add renderer setters/getters where needed,
-following the current panel-to-renderer pattern used by lighting and SDF
-controls.
+BVH budget/filter controls. Add this state in `debug_ui/mod.rs` and renderer
+state/accessors in `renderer_types.rs` and `renderer_diagnostics.rs`, following
+the current panel-to-renderer pattern used by lighting and SDF controls.
+
+The BVH budget/filter state should include a deterministic local guard before
+any AABB lines are appended to `DebugLineRenderer`, such as `max_boxes` plus
+stride sampling and/or visible-cells-only filtering. Do not model this as only
+a shared debug-line cap.
 
 Keep wireframe naming clear. The current overlay is a culling-status triangle
 wireframe. The user-facing label should not imply it is an authoring brush
@@ -115,29 +122,35 @@ Minimum useful modes:
   BVH leaf, keeps cull-status tinting, and renders always-on-top. This is the
   current diagnostic behavior and should be labeled as a culling diagnostic.
 - Visible triangle wireframe: draws only triangles submitted as visible by the
-  current frame's drawable visibility path, suppresses cull-status tinting, and
-  renders depth-tested so hidden/cut-off surfaces do not read as visible
-  structure.
+  current frame's CPU drawable `VisibleCells` path, suppresses cull-status
+  tinting, and renders depth-tested so hidden/cut-off surfaces do not read as
+  visible structure. It does not mean final GPU BVH/frustum survivors; current
+  cull status is GPU-resident, and this plan should not add GPU readback for
+  wireframe filtering.
 
 Implementation may use separate pipelines or a compact pipeline selector.
 `record_wireframe_overlay` should select behavior from renderer state instead
 of a single boolean. Keep the existing `Alt+Shift+Backslash` behavior as a
-fast toggle for the current cull-status overlay unless implementation finds a
-compatibility issue. The Spatial tab exposes the full selector.
+fast toggle from Off to `CullStatusAlwaysOnTop`, and back to Off when that mode
+is active. The Spatial tab exposes the full selector.
 
 ### Task 4: BVH Leaf AABB Overlay
 
-Add a renderer diagnostic emitter that walks the loaded `BvhLeaf` list and
-pushes AABB wires into `DebugLineRenderer`. Use `push_aabb` for depth-tested
-inspection and `push_aabb_overlay` only for an explicit x-ray mode. Convert
-`BvhLeaf.aabb_min` / `aabb_max` into `Vec3` in renderer code.
+Add a renderer diagnostic emitter in `renderer_diagnostics.rs` that walks the
+loaded `BvhLeaf` list and pushes AABB wires into `DebugLineRenderer`. Use
+`push_aabb` for depth-tested inspection and `push_aabb_overlay` only for an
+explicit x-ray mode. Convert `BvhLeaf.aabb_min` / `aabb_max` into `Vec3` in
+renderer code. This task should create the emitter and state plumbing; final
+frame call-site wiring can happen in Task 6.
 
 The overlay should default to stable cell-id coloring, because this diagnostic
 is meant to explain structural partitioning and visibility. If the renderer has
 CPU-readable cull status already available for the frame, add cull-status
 coloring as an additional mode. Do not add GPU readback just to color boxes in
-the first pass. Defer material-bucket coloring unless a later batching/material
-diagnostic needs it.
+the first pass. Current cull status is GPU-resident, so the first implementation
+should not expose a cull-status AABB mode unless a CPU mirror already exists.
+Defer material-bucket coloring unless a later batching/material diagnostic
+needs it.
 
 Add a budget guard. Acceptable approaches include max boxes per frame, stride
 sampling, or visible-cell-only filtering. Do not rely solely on the shared
@@ -170,17 +183,29 @@ runtime data only. Do not add PRL sections, compiler output, GPU readback, or
 wgpu-facing APIs for these overlays. Renderer-facing API additions should pass
 plain CPU data or renderer-owned state across the existing renderer boundary.
 
-They should use the same per-frame debug-line lifecycle as SH and nav overlays:
-clear once, then append all selected diagnostics before `render_frame_indirect`.
+Implement the public overlay emitters in `renderer_diagnostics.rs`. They should
+use the same per-frame debug-line lifecycle as SH and nav overlays: in
+`main.rs`, near `clear_debug_lines` and `emit_sh_diagnostics`, clear once, then
+append all selected diagnostics before `render_frame_indirect`. Do not reuse
+`light_reachable_leaf_mask` for Spatial visible-cell coloring; pass or derive
+the visible coloring directly from `visible_cells`.
 
 ### Task 6: Integration and Tests
 
 Wire Spatial diagnostics into the current frame path beside
 `emit_sh_diagnostics`, `emit_nav_diagnostics`, and agent path overlays. Add
 unit tests for tab defaults, diagnostic chord stability, wireframe mode state,
-and any non-GPU color/budget helper. Update `context/lib/rendering_pipeline.md`
-as part of implementation so it documents the final wireframe modes, cull-status
-semantics, depth behavior, and Spatial overlay data sources.
+and non-GPU color/budget helpers. Discover the final Spatial state and renderer
+API names created by earlier tasks in `debug_ui/mod.rs` and
+`renderer_diagnostics.rs`, then wire them beside `emit_sh_diagnostics` in
+`main.rs`.
+
+Diagnostic chord tests should assert that `ToggleDebugPanel` remains
+`Alt+Shift+Backquote`, no Spatial-specific chord is added, and the egui
+consumed-event gate still lets only `ToggleDebugPanel` pass while the panel has
+focus. Update `context/lib/rendering_pipeline.md` as part of implementation so
+it documents the final wireframe modes, cull-status semantics, depth behavior,
+and Spatial overlay data sources.
 
 ## Sequencing
 

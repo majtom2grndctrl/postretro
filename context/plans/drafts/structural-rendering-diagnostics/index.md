@@ -41,15 +41,23 @@ portal visibility, and BVH culling shape rendered geometry.
 - [ ] Spatial tab can toggle the existing world triangle wireframe overlay.
 - [ ] Spatial tab distinguishes at least depth-tested and always-on-top
       triangle wireframe semantics in labels or controls.
+- [ ] Wireframe modes define which triangles are drawn, whether cull status is
+      shown, and which depth behavior is used.
 - [ ] Spatial tab can show compiled BVH leaf AABBs for the loaded level.
 - [ ] BVH AABB overlay has at least one useful color mode: cull status,
       material bucket, or cell id.
+- [ ] BVH AABB overlay exposes depth-tested and explicit x-ray depth behavior,
+      with depth-tested as the default.
 - [ ] BVH AABB overlay has a budget guard or sampling control so dense maps do
-      not flood the debug-line buffer silently.
+      not flood the debug-line buffer silently. The guard is local to the BVH
+      overlay and deterministic before lines are appended to the shared debug
+      line buffer.
 - [ ] Spatial tab can show BSP/cell bounds for the loaded level.
 - [ ] Spatial tab can show portal edges or polygons for the loaded level.
 - [ ] Spatial context overlays can distinguish currently visible cells from
       non-visible cells.
+- [ ] Spatial visible-cell coloring uses the drawable `VisibleCells` result,
+      not the wider fog/light reachability mask.
 - [ ] Spatial overlays no-op cleanly when no level or no BVH is loaded.
 - [ ] No wgpu types or GPU calls leave renderer modules.
 - [ ] Existing diagnostic input tests still pass.
@@ -81,9 +89,10 @@ No new `DiagnosticAction` is needed for opening Spatial. The existing
 ### Task 2: Spatial Diagnostics State and Renderer API
 
 Add spatial diagnostics state for the new tab. It should hold selected
-wireframe mode, BVH overlay visibility, BVH color mode, and any budget/filter
-controls. Add renderer setters/getters where needed, following the current
-panel-to-renderer pattern used by lighting and SDF controls.
+wireframe mode, BVH overlay visibility, BVH color mode, BVH depth mode, and
+any budget/filter controls. Add renderer setters/getters where needed,
+following the current panel-to-renderer pattern used by lighting and SDF
+controls.
 
 Keep wireframe naming clear. The current overlay is a culling-status triangle
 wireframe. The user-facing label should not imply it is an authoring brush
@@ -94,14 +103,20 @@ outline or a purely visible-surface mesh.
 Make world triangle wireframe behavior explicit in renderer code and docs.
 Current source has a mismatch: `rendering_pipeline.md` describes a depth-tested
 wireframe overlay, while `crates/postretro/src/render/renderer_init_pipelines.rs`
-creates the wireframe pipeline with `CompareFunction::Always`. Decide and
-implement distinct modes instead of a hidden behavior.
+creates the wireframe pipeline with `CompareFunction::Always`, disables depth
+writes, and `record_wireframe_overlay` draws every BVH leaf while tinting by
+cull status. Decide and implement distinct modes instead of a hidden behavior.
 
 Minimum useful modes:
 
 - Off.
-- Cull-status triangle wireframe, always-on-top.
-- Visible triangle wireframe, depth-tested.
+- Cull-status triangle wireframe: draws all loaded world triangles from every
+  BVH leaf, keeps cull-status tinting, and renders always-on-top. This is the
+  current diagnostic behavior and should be labeled as a culling diagnostic.
+- Visible triangle wireframe: draws only triangles submitted as visible by the
+  current frame's drawable visibility path, suppresses cull-status tinting, and
+  renders depth-tested so hidden/cut-off surfaces do not read as visible
+  structure.
 
 Implementation may use separate pipelines or a compact pipeline selector.
 `record_wireframe_overlay` should select behavior from renderer state instead
@@ -122,24 +137,38 @@ use stable material-bucket or cell-id hashing. Do not add GPU readback just to
 color boxes in the first pass.
 
 Add a budget guard. Acceptable approaches include max boxes per frame, stride
-sampling, visible-cell-only filtering, or using the debug-line renderer cap with
-a clear UI label. The behavior must be deterministic enough for visual
-comparison.
+sampling, or visible-cell-only filtering. Do not rely solely on the shared
+debug-line renderer cap for BVH budgeting, because that would make BVH output
+depend on other overlays and append order. The behavior must be deterministic
+enough for visual comparison.
 
 ### Task 5: Cell and Portal Context
 
 Add context overlays for cells and portals. Reuse existing level runtime data
 where possible:
 
-- BSP leaf/cell bounds from the loaded level.
-- Portal polygons or edges from loaded portal data.
-- The current visible-cell mask from portal traversal.
+- BSP leaf/cell bounds from the decoded `LevelWorld` leaf data.
+- Portal polygons or edges from decoded `LevelWorld` portal data.
+- The current drawable visible-cell result from per-frame visibility
+  determination.
 
 These overlays should be separate toggles in Spatial. Cell overlays should make
-the current visible set readable, using the visible-cell mask already available
-in the frame loop. They should use the same per-frame debug-line lifecycle as
-SH and nav overlays: clear once, then append all selected diagnostics before
-`render_frame_indirect`.
+the current visible set readable, using `VisibleCells` from the frame loop or
+renderer frame input. Use `VisibleCells::Culled` as the exact visible set for
+drawable BSP cells. Treat `VisibleCells::DrawAll` as all non-solid drawable
+cells visible, and label or color that fallback distinctly enough that it does
+not look like a successful portal walk. The wider `fog_reachable` /
+`light_reachable_leaf_mask` data remains reserved for fog and dynamic-light
+isolation and should not drive Spatial visible-cell coloring unless a future
+mode explicitly names that behavior.
+
+All first-pass cell and portal overlays should consume existing decoded PRL
+runtime data only. Do not add PRL sections, compiler output, GPU readback, or
+wgpu-facing APIs for these overlays. Renderer-facing API additions should pass
+plain CPU data or renderer-owned state across the existing renderer boundary.
+
+They should use the same per-frame debug-line lifecycle as SH and nav overlays:
+clear once, then append all selected diagnostics before `render_frame_indirect`.
 
 ### Task 6: Integration and Tests
 
@@ -147,8 +176,8 @@ Wire Spatial diagnostics into the current frame path beside
 `emit_sh_diagnostics`, `emit_nav_diagnostics`, and agent path overlays. Add
 unit tests for tab defaults, diagnostic chord stability, wireframe mode state,
 and any non-GPU color/budget helper. Update `context/lib/rendering_pipeline.md`
-only if the implementation changes durable renderer behavior; otherwise leave
-library updates for promotion.
+as part of implementation so it documents the final wireframe modes, cull-status
+semantics, depth behavior, and Spatial overlay data sources.
 
 ## Sequencing
 
@@ -184,8 +213,12 @@ written on GPU by compute cull, but if there is no CPU copy at the time of the
 overlay, choose a CPU-local color mode first and leave exact cull-status box
 color as a follow-up.
 
+For Spatial visible-cell coloring, prefer the drawable `VisibleCells` value
+that already feeds the indirect render path. Do not substitute
+`light_reachable_leaf_mask`: it intentionally represents the wider fog/light
+reachability set and includes empty leaves that do not draw world geometry.
+
 ## Open questions
 
-- Should BVH boxes default to depth-tested or x-ray? Depth-tested is less
-  misleading; x-ray is better for whole-map structure. Default to depth-tested
-  unless early implementation screenshots show it hides too much structure.
+- Which BVH color mode should be first if cull status is not CPU-readable
+  without readback: material bucket or cell id?

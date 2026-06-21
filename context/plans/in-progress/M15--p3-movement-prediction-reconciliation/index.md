@@ -201,10 +201,21 @@ fixed tick, runs `movement::tick` for those explicit pawns only, writes each res
 `Transform` and `PlayerMovementComponent`, and aggregates per-pawn movement events into
 `TickEvents::movement`. It must not use `local_movement_pawn()` or the single local-player
 marker. In single-player, the existing `simulate_tick` path can call the helper with the
-current local pawn. In host mode, every authoritative movement pawn, including the listen
-host's own player pawn if present, is included in the explicit `(EntityId, MovementInput)`
-list; host mode must not use `local_movement_pawn()` for any authoritative movement pawn.
-The fixed-tick order is host movement commands first, then AI/agent/weapon/death as today.
+current local pawn. In host mode, every **remote client** movement pawn is included in the
+explicit `(EntityId, MovementInput)` list and is driven by this seam, never by
+`local_movement_pawn()`. The fixed-tick order is host movement commands first, then
+AI/agent/weapon/death as today.
+
+> **Phase 3 decision (2026-06-21):** The original AC also folded the *listen host's own
+> player pawn* into the explicit seam so that host mode never touched `local_movement_pawn()`
+> at all. As implemented, remote client pawns go through the seam (the Phase 3 deliverable),
+> but the listen host's own pawn stays on `simulate_tick`'s local movement stage. Phase 3 is
+> validated entirely through a **connected client** (Task 6 harness/loopback), so the host's
+> own pawn is off the critical path and the gap has no observable Phase 3 cost. Retiring
+> `local_movement_pawn()` from host mode is **deferred to a future host-as-loopback-client
+> model** (host-player becomes a client to a same-process server via an in-memory transport),
+> which dissolves the special case rather than patching it with a host self-queue. That work
+> is its own small spec, tracked separately — not an amendment to this plan.
 
 On accept, the host materializes one descriptor-backed `PlayerMovement` pawn through a new
 net-slot spawn helper adjacent to `scripting::builtins::data_archetype`. Extend

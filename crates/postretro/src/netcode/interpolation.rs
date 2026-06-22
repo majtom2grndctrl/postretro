@@ -65,6 +65,9 @@ const MAX_STARVATION_MARGIN_MICROS: f64 = 100_000.0;
 const STARVATION_MARGIN_DECAY: f64 = 0.85;
 /// Below this, the starvation margin is treated as settled and snapped to zero.
 const STARVATION_MARGIN_EPSILON_MICROS: f64 = 500.0;
+/// Velocity below this squared magnitude is treated as stationary for starvation
+/// feedback. The pose still holds; it just does not raise global delay.
+const STARVATION_VELOCITY_EPSILON_SQ: f32 = 1e-8;
 
 /// Maximum forward extrapolation past the newest sample, in microseconds (100 ms).
 /// Beyond this the predicted pose has drifted too far from any real sample to trust,
@@ -105,6 +108,7 @@ pub(crate) fn interpolation_delay_ticks(jitter_micros: f64, micros_per_tick: u64
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct InterpolationDelayState {
     starvation_margin_micros: f64,
+    last_render_server_tick: Option<f64>,
 }
 
 impl InterpolationDelayState {
@@ -119,6 +123,24 @@ impl InterpolationDelayState {
             self.starvation_margin_micros,
             micros_per_tick,
         )
+    }
+
+    /// Render target tick for the remote interpolation buffers. Delay changes may
+    /// pause remote presentation while the server estimate catches up, but never
+    /// move the sampled server time backward.
+    pub(crate) fn render_server_tick(
+        &mut self,
+        estimated_tick: f64,
+        jitter_micros: f64,
+        micros_per_tick: u64,
+    ) -> f64 {
+        let delay_ticks = self.delay_ticks(jitter_micros, micros_per_tick);
+        let candidate = estimated_tick - f64::from(delay_ticks);
+        let render_tick = self
+            .last_render_server_tick
+            .map_or(candidate, |last| candidate.max(last));
+        self.last_render_server_tick = Some(render_tick);
+        render_tick
     }
 
     /// Fold one sampled frame into the starvation feedback. Call only when at least
@@ -338,6 +360,25 @@ impl EntityBuffer {
             },
         }
     }
+
+    /// Whether a held-newest pose means the buffer likely missed fresher samples.
+    /// Stationary omitted-by-delta entities are expected to hold their last pose and
+    /// must not raise the shared delay for every remote.
+    fn held_newest_needs_feedback(&self, latest_accepted_server_tick: u32) -> bool {
+        let Some(newest) = self.samples.back() else {
+            return false;
+        };
+        if newest.server_tick < latest_accepted_server_tick {
+            return false;
+        }
+        if let Some(velocity) = newest.velocity {
+            return velocity.length_squared() > STARVATION_VELOCITY_EPSILON_SQ;
+        }
+        let Some(previous) = self.samples.iter().rev().nth(1) else {
+            return false;
+        };
+        transform_changed(&previous.transform, &newest.transform)
+    }
 }
 
 /// Per-remote-entity interpolation buffers, keyed by `NetworkId`. Receives
@@ -379,6 +420,17 @@ impl RemoteInterpolationBuffer {
         self.buffers.get(&network_id)?.sample_at(target_tick)
     }
 
+    /// True when this entity's held-newest pose should feed adaptive delay.
+    pub(crate) fn held_newest_needs_feedback(
+        &self,
+        network_id: NetworkId,
+        latest_accepted_server_tick: u32,
+    ) -> bool {
+        self.buffers
+            .get(&network_id)
+            .is_some_and(|buffer| buffer.held_newest_needs_feedback(latest_accepted_server_tick))
+    }
+
     /// Number of buffered entities (tests / diagnostics).
     #[cfg(test)]
     pub(crate) fn entity_count(&self) -> usize {
@@ -400,6 +452,10 @@ fn lerp_transform(a: &Transform, b: &Transform, alpha: f32) -> Transform {
         rotation: a.rotation.slerp(b.rotation, alpha),
         scale: a.scale.lerp(b.scale, alpha),
     }
+}
+
+fn transform_changed(a: &Transform, b: &Transform) -> bool {
+    a.position != b.position || a.rotation != b.rotation || a.scale != b.scale
 }
 
 /// Host-only Phase 2 net-demo fixture: a deterministic, AI-less mover that follows a
@@ -572,6 +628,36 @@ mod tests {
         assert_eq!(
             ticks, expected,
             "jitter plus starvation feedback cannot exceed the global ceiling"
+        );
+    }
+
+    // Regression: raising adaptive delay after held-newest starvation used to move the
+    // remote render target backward when the server estimate advanced by fewer ticks
+    // than the delay increase.
+    #[test]
+    fn adaptive_delay_increase_never_rewinds_render_target() {
+        let mut state = InterpolationDelayState::new();
+
+        let first = state.render_server_tick(100.0, 0.0, DEFAULT_MICROS_PER_TICK);
+        assert_eq!(first, 97.0, "50 ms floor is 3 ticks");
+
+        state.observe_sampled_frame(true);
+        state.observe_sampled_frame(true);
+
+        let next = state.render_server_tick(101.0, 0.0, DEFAULT_MICROS_PER_TICK);
+        assert!(
+            next >= first,
+            "render target must not regress after a delay increase: {next} < {first}"
+        );
+        assert_eq!(
+            next, first,
+            "presentation may pause while the server estimate catches up"
+        );
+
+        let caught_up = state.render_server_tick(104.0, 0.0, DEFAULT_MICROS_PER_TICK);
+        assert!(
+            caught_up > next,
+            "render target resumes advancing once the estimate catches up"
         );
     }
 

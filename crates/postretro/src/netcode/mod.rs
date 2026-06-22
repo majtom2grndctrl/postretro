@@ -104,6 +104,7 @@ pub(crate) enum NetRole {
 /// authoritative pawns). The install path keys this off the live endpoint
 /// (`App::is_connected_client`); this is the equivalent role-level statement used
 /// where only the parsed role is in hand (and by the regression test).
+#[cfg(test)]
 pub(crate) fn role_suppresses_boot_player_spawn(role: &NetRole) -> bool {
     matches!(role, NetRole::Connect { .. })
 }
@@ -750,11 +751,11 @@ pub(crate) fn client_sample_interpolation(
     };
     // Jitter is available whenever the estimate is; default to 0 defensively.
     let jitter = time_sync.jitter_micros().unwrap_or(0.0);
-    let delay_ticks = interpolation_delay.delay_ticks(jitter, SERVER_TICK_MICROS);
-    let render_server_tick = estimated_tick - f64::from(delay_ticks);
+    let render_server_tick =
+        interpolation_delay.render_server_tick(estimated_tick, jitter, SERVER_TICK_MICROS);
     let stats = replication.sample_into_registry(registry, render_server_tick);
     if stats.presented > 0 {
-        interpolation_delay.observe_sampled_frame(stats.held_newest > 0);
+        interpolation_delay.observe_sampled_frame(stats.starvation_feedback > 0);
     }
 }
 

@@ -47,6 +47,7 @@ use super::{payload_is_finite, wire_to_transform};
 pub(crate) struct InterpolationSampleStats {
     pub(crate) presented: usize,
     pub(crate) held_newest: usize,
+    pub(crate) starvation_feedback: usize,
 }
 
 /// Reason code carried in a `BaselineRefreshRequest`. Diagnostic only — the server
@@ -779,6 +780,12 @@ impl ClientReplication {
             // freeze the buffer falls back to; logged sparingly at trace.
             if matches!(pose.source, PoseSource::HeldNewest) {
                 stats.held_newest += 1;
+                if self
+                    .interp
+                    .held_newest_needs_feedback(network_id, self.acked_server_tick)
+                {
+                    stats.starvation_feedback += 1;
+                }
                 log::trace!(
                     "[Net] remote {network_id:?} holding last pose (interp buffer starved)"
                 );
@@ -870,8 +877,12 @@ mod tests {
     }
 
     fn movement_payload() -> ComponentPayload {
+        movement_payload_with_velocity([1.0, 0.0, 0.0])
+    }
+
+    fn movement_payload_with_velocity(velocity: [f32; 3]) -> ComponentPayload {
         ComponentPayload::PlayerMovementState(WirePlayerMovementState {
-            velocity: [1.0, 0.0, 0.0],
+            velocity,
             is_grounded: true,
             air_jumps_remaining: 1,
             air_dashes_remaining: 1,
@@ -1639,11 +1650,73 @@ mod tests {
         let stats = client.sample_into_registry(&mut registry, 200.0);
         assert_eq!(stats.presented, 1, "one remote entity presented");
         assert_eq!(stats.held_newest, 1, "held-newest starvation is reported");
+        assert_eq!(
+            stats.starvation_feedback, 0,
+            "one Transform-only sample is not enough evidence to raise global delay"
+        );
         let id = *client.map().get(&NetworkId(7)).unwrap();
         let held = registry.interpolated_transform(id, 1.0).unwrap();
         assert!(
             (held.position.x - 4.0).abs() < EPSILON,
             "held the last pose"
+        );
+    }
+
+    // Regression: acked unchanged stationary remotes are intentionally omitted by the
+    // server, so their buffers can hold newest forever without indicating packet loss.
+    #[test]
+    fn stationary_remote_holding_newest_does_not_feed_starvation_delay() {
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                0,
+                100,
+                vec![full_baseline(
+                    7,
+                    1,
+                    vec![
+                        transform_payload(4.0),
+                        movement_payload_with_velocity([0.0, 0.0, 0.0]),
+                    ],
+                )],
+            ),
+        );
+        client.apply_snapshot(&mut registry, &snapshot(1, 110, vec![]));
+
+        let stats = client.sample_into_registry(&mut registry, 200.0);
+        assert_eq!(stats.presented, 1, "stationary remote still presents");
+        assert_eq!(stats.held_newest, 1, "pose holds newest as expected");
+        assert_eq!(
+            stats.starvation_feedback, 0,
+            "expected no-change hold must not raise the global delay"
+        );
+    }
+
+    #[test]
+    fn moving_remote_holding_newest_feeds_starvation_delay() {
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                0,
+                100,
+                vec![full_baseline(
+                    7,
+                    1,
+                    vec![transform_payload(4.0), movement_payload()],
+                )],
+            ),
+        );
+
+        let stats = client.sample_into_registry(&mut registry, 200.0);
+        assert_eq!(stats.presented, 1, "moving remote still presents");
+        assert_eq!(stats.held_newest, 1, "pose holds newest after starvation");
+        assert_eq!(
+            stats.starvation_feedback, 1,
+            "active remotes still raise delay when the buffer starves"
         );
     }
 

@@ -710,10 +710,10 @@ pub(crate) fn client_local_presentation_offset(endpoint: Option<&NetEndpoint>) -
     }
 }
 
-/// Decay the local-pawn presentation offset one render frame toward zero (Task 5).
-/// Called once per render frame on the client, decoupled from the fixed sim tick:
-/// correction smoothing is presentation, not simulation. A no-op for single-player,
-/// the host, or a client with no correction in flight.
+/// Decay the local-pawn presentation offset after the current presented fixed-tick
+/// camera pose has been pushed. The render stage interpolates those presented poses
+/// directly, so the offset is baked into the frame-timing endpoints exactly once. A
+/// no-op for single-player, the host, or a client with no correction in flight.
 pub(crate) fn client_decay_local_correction(endpoint: Option<&mut NetEndpoint>) {
     if let Some(NetEndpoint::Client { prediction, .. }) = endpoint {
         prediction.decay_presentation_offset();
@@ -1233,12 +1233,12 @@ pub(crate) fn remote_entity_positions(
     registry: &EntityRegistry,
 ) -> Vec<Vec3> {
     match endpoint {
-        // Client: the replicated remote entities live in the `NetworkId -> EntityId`
-        // map. Draw a capsule at each one (the host pawn, slot pawns, demo mover).
+        // Client: draw only non-local mapped entities. The local predicted pawn is
+        // also in the map, but it is camera/prediction driven and must not get a
+        // duplicate "remote" capsule marker.
         NetEndpoint::Client { replication, .. } => replication
-            .map()
-            .values()
-            .filter_map(|&id| {
+            .remote_debug_entity_ids()
+            .filter_map(|id| {
                 registry
                     .get_component::<Transform>(id)
                     .ok()
@@ -1728,6 +1728,79 @@ mod tests {
         assert!(
             netcode_remote_positions(&client, &registry).is_empty(),
             "a client with no mapped entities draws nothing (client-map path, not host)"
+        );
+    }
+
+    // Regression: the client dev-tools overlay used to draw every mapped entity,
+    // including the local predicted pawn. That duplicated the player capsule at the
+    // prediction/reconcile seam and made the overlay look like a production jitter.
+    #[cfg(feature = "dev-tools")]
+    #[test]
+    fn remote_entity_positions_client_excludes_local_predicted_pawn() {
+        let mut registry = EntityRegistry::new();
+        let mut client = NetEndpoint::from_role(&NetRole::Connect {
+            addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
+        })
+        .expect("client endpoint constructs")
+        .expect("connect role yields an endpoint");
+
+        let NetEndpoint::Client { replication, .. } = &mut client else {
+            panic!("from_role(Connect) must yield a Client endpoint");
+        };
+        replication.apply_snapshot(
+            &mut registry,
+            &SnapshotMessage {
+                sequence: 0,
+                server_tick: 10,
+                records: vec![
+                    postretro_net::wire::EntityRecord::FullBaseline {
+                        network_id: 7,
+                        baseline_id: 1,
+                        last_processed_client_tick: None,
+                        local_player: true,
+                        entity_class: Some("player".to_string()),
+                        components: vec![
+                            ComponentPayload::Transform(WireTransform {
+                                position: [3.0, 0.0, 0.0],
+                                rotation: [0.0, 0.0, 0.0, 1.0],
+                                scale: [1.0, 1.0, 1.0],
+                            }),
+                            ComponentPayload::PlayerMovementState(WirePlayerMovementState {
+                                velocity: [0.0, 0.0, 0.0],
+                                is_grounded: true,
+                                air_jumps_remaining: 1,
+                                air_dashes_remaining: 1,
+                                dash_cooldown_ms: 0.0,
+                                air_ticks: 0,
+                                movement_state: WireMovementState::Normal,
+                                coyote_timer_ms: 0.0,
+                                jump_buffer_timer_ms: 0.0,
+                                jump_spent: false,
+                                capsule_half_height: 0.8,
+                                capsule_eye_height: 1.5,
+                            }),
+                        ],
+                    },
+                    postretro_net::wire::EntityRecord::FullBaseline {
+                        network_id: 8,
+                        baseline_id: 1,
+                        last_processed_client_tick: None,
+                        local_player: false,
+                        entity_class: None,
+                        components: vec![ComponentPayload::Transform(WireTransform {
+                            position: [9.0, 0.0, 0.0],
+                            rotation: [0.0, 0.0, 0.0, 1.0],
+                            scale: [1.0, 1.0, 1.0],
+                        })],
+                    },
+                ],
+            },
+        );
+
+        assert_eq!(
+            netcode_remote_positions(&client, &registry),
+            vec![Vec3::new(9.0, 0.0, 0.0)],
+            "client remote overlay excludes the local predicted pawn"
         );
     }
 

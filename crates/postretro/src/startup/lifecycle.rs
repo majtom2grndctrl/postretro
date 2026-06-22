@@ -911,8 +911,27 @@ impl App {
 
             // Spawn one entity per `player_spawn` placement, routing each through
             // its `entity_class` (default `"player"`).
+            //
+            // A CONNECTED CLIENT must NOT spawn a boot pawn here (M15 Phase 3,
+            // Task 3/6 contract): its authoritative local pawn arrives later as a
+            // host-replicated `local_player` baseline (a different `EntityId`), which
+            // arms exactly one `PlayerMovement` pawn. A boot pawn would be a second,
+            // never-replicated, never-despawned pawn — the camera would follow the
+            // frozen boot pawn pre-arm and then jump entity (and take a spurious
+            // boot-pos → host-pos reconcile correction) at arm. Single-player and the
+            // listen host KEEP spawning their boot pawn (the host needs its own /
+            // authoritative pawns). The camera pose below is still seeded from the
+            // map's first spawn regardless, so a connected client holds that pose
+            // until the net baseline arms its pawn.
+            let suppress_boot_pawn = self.is_connected_client();
             let (active_wieldable, active_wieldable_descriptor) =
                 match self.pending_spawn_points.take() {
+                    Some(_) if suppress_boot_pawn => {
+                        log::info!(
+                            "[Loader] connected client: deferring player spawn to host baseline"
+                        );
+                        (None, None)
+                    }
                     Some(spawn_points) if !spawn_points.is_empty() => {
                         let result = spawn_from_player_starts(
                             &spawn_points,

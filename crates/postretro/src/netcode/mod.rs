@@ -21,6 +21,11 @@ mod wire_convert;
 mod predict_reconcile_harness;
 #[cfg(test)]
 mod predict_reconcile_harness_test_fixtures;
+// M15 Phase 3 regression: the connected-client boot-spawn gate (the boot → baseline
+// arm sequence the harness above otherwise skips). Pins "client owns no local pawn
+// until baseline".
+#[cfg(test)]
+mod boot_spawn_gate_test;
 
 pub(crate) use client::ClientReplication;
 pub(crate) use command_queue::{HostCommandQueues, MovementOwners, host_resolve_movement_inputs};
@@ -87,6 +92,20 @@ pub(crate) enum NetRole {
     Host { port: u16 },
     /// Client connecting to `addr`.
     Connect { addr: SocketAddr },
+}
+
+/// Whether `role` must suppress the level-install boot player spawn
+/// (`spawn_from_player_starts`) — M15 Phase 3, Task 3/6 contract. A CONNECTED
+/// CLIENT owns ZERO `PlayerMovement` pawns until the host's `local_player`
+/// baseline arms exactly one; spawning a boot pawn would create a second,
+/// never-replicated, never-despawned pawn (camera glued to a frozen pawn pre-arm,
+/// then an entity jump + spurious boot-pos → host-pos reconcile teleport at arm).
+/// Single-player and the listen host KEEP their boot spawn (they need their own /
+/// authoritative pawns). The install path keys this off the live endpoint
+/// (`App::is_connected_client`); this is the equivalent role-level statement used
+/// where only the parsed role is in hand (and by the regression test).
+pub(crate) fn role_suppresses_boot_player_spawn(role: &NetRole) -> bool {
+    matches!(role, NetRole::Connect { .. })
 }
 
 /// Parsed net configuration. Today this is just the role; kept as a struct so

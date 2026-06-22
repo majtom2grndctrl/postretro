@@ -2130,7 +2130,15 @@ impl ApplicationHandler for App {
                             has_player_pawn(&registry)
                         };
 
-                        if !has_player_pawn {
+                        // A connected client owns ZERO PlayerMovement pawns until the
+                        // host's `local_player` baseline arms one (M15 Phase 3). During
+                        // that pre-arm window it must NOT fly-cam: it holds the map's
+                        // first-spawn pose (seeded at install) so the view is steady
+                        // until its net pawn arrives. Without this guard the pawnless
+                        // branch below would drift the camera with movement input.
+                        let pre_arm_client = self.is_connected_client();
+
+                        if !has_player_pawn && !pre_arm_client {
                             let forward = self.camera.forward();
                             let right = self.camera.right();
                             let mut move_dir =

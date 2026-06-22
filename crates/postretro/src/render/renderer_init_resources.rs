@@ -162,7 +162,7 @@ pub(crate) fn request_renderer_device(
     // on every targeted backend (Vulkan/Metal/DX12), but check anyway so a
     // non-filterable adapter fails here with a named message rather than an
     // opaque `create_bind_group` crash later. See context/lib/rendering_pipeline.md §4.
-    if !crate::lighting::lightmap::atlas_format_filterable(&adapter) {
+    if !crate::lighting::lightmap::atlas_format_filterable(adapter) {
         anyhow::bail!(
             "[Renderer] GPU adapter does not support linear filtering of \
                  Rgba16Float; PostRetro requires it for lightmap irradiance \
@@ -179,7 +179,7 @@ pub(crate) fn request_renderer_device(
     // misconfigured adapter fails here with a named message instead of an
     // opaque `create_bind_group` crash later. Matches the
     // `atlas_format_filterable` (`Rgba16Float`) check above.
-    if !crate::lighting::lightmap::bc6h_irradiance_filterable(&adapter) {
+    if !crate::lighting::lightmap::bc6h_irradiance_filterable(adapter) {
         anyhow::bail!(
             "[Renderer] GPU adapter does not support linear filtering of \
                  Bc6hRgbUfloat; PostRetro requires it for the compressed \
@@ -304,7 +304,7 @@ pub(crate) fn build_lighting_bind_group(
 
     let lighting_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Lighting Bind Group"),
-        layout: &lighting_bind_group_layout,
+        layout: lighting_bind_group_layout,
         entries: &[
             wgpu::BindGroupEntry {
                 binding: 0,

@@ -32,9 +32,11 @@ impl Modifiers {
 /// itself (renderer, visibility stats), never by game logic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DiagnosticAction {
-    /// Toggle the culling-delta wireframe overlay on/off. Shows all chunks
-    /// color-coded by cull status: green = rendered, red = frustum-culled,
-    /// cyan = portal-culled.
+    /// Toggle the cull-status all-leaves x-ray wireframe overlay on/off. Shows
+    /// all loaded world triangles color-coded by GPU cull status: green =
+    /// rendered, red = explicitly frustum-culled, cyan = not submitted by the
+    /// GPU cull pass, including skipped subtree descendants and leaves outside
+    /// CPU-visible cells.
     ToggleWireframe,
     /// Dump the next frame's portal walk (visited leaves, rejected portals,
     /// reject reasons) to the log. One-shot per press.
@@ -428,6 +430,42 @@ mod tests {
         assert!(
             has_toggle,
             "ToggleDebugPanel must be present in default chord table when dev-tools is enabled"
+        );
+    }
+
+    #[cfg(feature = "dev-tools")]
+    #[test]
+    fn toggle_debug_panel_chord_stays_alt_shift_backquote() {
+        let chord = default_diagnostic_chords()
+            .into_iter()
+            .find(|c| c.action == DiagnosticAction::ToggleDebugPanel)
+            .expect("ToggleDebugPanel chord must be registered");
+
+        assert_eq!(chord.modifiers, Modifiers::ALT_SHIFT);
+        assert_eq!(chord.key, KeyCode::Backquote);
+    }
+
+    #[cfg(feature = "dev-tools")]
+    #[test]
+    fn default_dev_tool_chord_table_has_no_spatial_entry_point() {
+        let mut count = 0;
+        for chord in default_diagnostic_chords() {
+            match chord.action {
+                DiagnosticAction::ToggleWireframe => assert_eq!(chord.key, KeyCode::Backslash),
+                DiagnosticAction::DumpPortalWalk => assert_eq!(chord.key, KeyCode::Digit1),
+                DiagnosticAction::ToggleVsync => assert_eq!(chord.key, KeyCode::KeyV),
+                DiagnosticAction::PlayTestSfx => assert_eq!(chord.key, KeyCode::KeyP),
+                DiagnosticAction::ToggleDebugPanel => assert_eq!(chord.key, KeyCode::Backquote),
+                DiagnosticAction::ToggleNavOverlay => assert_eq!(chord.key, KeyCode::KeyN),
+                DiagnosticAction::CycleDevLevel => assert_eq!(chord.key, KeyCode::KeyL),
+                DiagnosticAction::SpawnChaseAgent => assert_eq!(chord.key, KeyCode::KeyG),
+            }
+            count += 1;
+        }
+
+        assert_eq!(
+            count, 8,
+            "Spatial diagnostics must stay inside the existing diagnostics panel entry point",
         );
     }
 

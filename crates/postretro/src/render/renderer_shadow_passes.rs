@@ -1,8 +1,22 @@
-// Per-frame skinned shadow-depth passes (spot pool + cube point-light pool),
-// factored out of `render_frame_indirect` to keep that file within the budget.
-// See: context/lib/rendering_pipeline.md §4
+// Per-frame renderer pass recording factored out of frame orchestration.
+// See: context/lib/rendering_pipeline.md §7.1, §7.6
 
 use super::*;
+
+fn wireframe_draws_leaf(
+    mode: WorldWireframeMode,
+    visible: &VisibleCells,
+    leaf: &crate::geometry::BvhLeaf,
+) -> bool {
+    match mode {
+        WorldWireframeMode::Off => false,
+        WorldWireframeMode::CullStatusTrianglesAlwaysOnTop => true,
+        WorldWireframeMode::VisibleTrianglesDepthTested => match visible {
+            VisibleCells::DrawAll => true,
+            VisibleCells::Culled(cells) => cells.contains(&leaf.cell_id),
+        },
+    }
+}
 
 impl Renderer {
     /// Spot-shadow depth loop: per occupied slot, render world geometry (indirect,
@@ -170,6 +184,60 @@ impl Renderer {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn leaf(cell_id: u32) -> crate::geometry::BvhLeaf {
+        crate::geometry::BvhLeaf {
+            aabb_min: [0.0; 3],
+            material_bucket_id: 0,
+            aabb_max: [1.0; 3],
+            index_offset: 0,
+            index_count: 3,
+            cell_id,
+            chunk_range_start: 0,
+            chunk_range_count: 0,
+        }
+    }
+
+    #[test]
+    fn cull_status_wireframe_draws_every_leaf() {
+        let visible = VisibleCells::Culled(vec![2]);
+
+        assert!(wireframe_draws_leaf(
+            WorldWireframeMode::CullStatusTrianglesAlwaysOnTop,
+            &visible,
+            &leaf(1),
+        ));
+    }
+
+    #[test]
+    fn visible_wireframe_draws_only_cpu_visible_cells() {
+        let visible = VisibleCells::Culled(vec![2, 4]);
+
+        assert!(wireframe_draws_leaf(
+            WorldWireframeMode::VisibleTrianglesDepthTested,
+            &visible,
+            &leaf(2),
+        ));
+        assert!(!wireframe_draws_leaf(
+            WorldWireframeMode::VisibleTrianglesDepthTested,
+            &visible,
+            &leaf(3),
+        ));
+    }
+
+    #[test]
+    fn visible_wireframe_draws_all_for_draw_all_visibility() {
+        assert!(wireframe_draws_leaf(
+            WorldWireframeMode::VisibleTrianglesDepthTested,
+            &VisibleCells::DrawAll,
+            &leaf(999),
+        ));
+    }
+}
+
 impl Renderer {
     /// Depth pre-pass (writes the scene depth buffer for the forward Equal test)
     /// followed by the half-res SDF shadow dispatch. Both run before `scene_color`
@@ -214,12 +282,10 @@ impl Renderer {
             }
         }
 
-        // SDF half-res shadow pass — Task 4. Runs after the depth pre-pass
-        // (consumes its texture) and before the forward pass (which will
-        // bilateral-upsample the factor in Task 5). Skipped when no SDF
-        // atlas is loaded; Task 6 will also gate on the mode selector. When
-        // skipped, the half-res target retains its prior contents — Task 5's
-        // forward multiply is responsible for gating on the same mode.
+        // SDF half-res shadow pass. Runs after the depth pre-pass because it
+        // consumes scene depth, and before the forward pass that samples the
+        // shadow factor. Skipped when no SDF atlas is loaded; forward-side
+        // atlas/mode flags gate consumption so stale target contents are ignored.
         if render_world && self.sdf_atlas_resources.present {
             let sdf_ts = self
                 .frame_timing
@@ -385,13 +451,16 @@ impl Renderer {
 }
 
 impl Renderer {
-    /// Wireframe BVH-leaf overlay (dev toggle): draws each leaf's line-list indices
-    /// tinted by its per-frame cull status. `scene_color` is the offscreen target.
+    /// Wireframe BVH-leaf overlay. The cull-status mode draws every loaded leaf
+    /// always-on-top with GPU cull-status tinting. The visible mode draws only
+    /// leaves from the frame's CPU `VisibleCells` set, depth-tested, with a flat
+    /// color so it does not imply final GPU BVH/frustum survivors.
     pub(super) fn record_wireframe_overlay(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         scene_color: &wgpu::TextureView,
         render_world: bool,
+        visible: &VisibleCells,
     ) {
         if render_world
             && self.wireframe_enabled
@@ -432,7 +501,17 @@ impl Renderer {
                     ..Default::default()
                 });
 
-                overlay_pass.set_pipeline(&self.wireframe_pipeline);
+                let pipeline = match self.world_wireframe_mode {
+                    WorldWireframeMode::Off => return,
+                    WorldWireframeMode::CullStatusTrianglesAlwaysOnTop => {
+                        &self.wireframe_cull_status_pipeline
+                    }
+                    WorldWireframeMode::VisibleTrianglesDepthTested => {
+                        &self.wireframe_visible_pipeline
+                    }
+                };
+
+                overlay_pass.set_pipeline(pipeline);
                 overlay_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
                 overlay_pass.set_bind_group(1, &cull_status_bind_group, &[]);
                 overlay_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
@@ -443,6 +522,9 @@ impl Renderer {
 
                 // instance_index = leaf index so shader looks up per-leaf cull status.
                 for (leaf_idx, leaf) in self.bvh_leaves.iter().enumerate() {
+                    if !wireframe_draws_leaf(self.world_wireframe_mode, visible, leaf) {
+                        continue;
+                    }
                     let wire_offset = leaf.index_offset * 2;
                     let wire_count = leaf.index_count * 2;
                     let li = leaf_idx as u32;

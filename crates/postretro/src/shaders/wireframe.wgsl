@@ -1,9 +1,11 @@
-// Wireframe overlay — BVH-leaf cull-status debug visualization.
-// Draws each leaf's geometry color-coded by the value the compute-cull
-// shader wrote into `cull_status`:
-//   0 → cyan  (portal-culled: cell not in visible set)
-//   1 → red   (frustum-culled: leaf AABB outside frustum)
+// Wireframe overlay — world-triangle diagnostics.
+// The cull-status mode draws each BVH leaf's geometry color-coded by the value
+// the compute-cull shader wrote into `cull_status`:
+//   0 → cyan  (not submitted by the GPU cull pass; may include skipped subtree descendants)
+//   1 → red   (leaf explicitly marked frustum-culled)
 //   2 → green (rendered: survived both tests)
+// The CPU-visible mode uses the same vertex path, but a flat fragment color so
+// it cannot be mistaken for final GPU BVH/frustum survivors.
 //
 // The leaf index is passed via `instance_index` (first_instance in the
 // draw call). See: context/lib/rendering_pipeline.md §7.1
@@ -22,10 +24,8 @@ struct Uniforms {
     // wireframe pass shares the same uniform buffer so the struct strides
     // must match. The wireframe pipeline never references this field.
     sdf_shadow_flags: u32,
-    // Task 6 of sdf-static-occluder-shadows — `SdfShadowMode` selector.
-    // The wireframe pipeline never references this field; it exists here
-    // only to keep the shared uniform struct stride in lockstep with
-    // forward.wgsl. See `SdfShadowMode` in render/mod.rs.
+    // Same slot as `sdf_shadow_mode` in forward.wgsl. The wireframe pass
+    // never reads it; the field preserves the shared uniform layout/stride.
     sdf_shadow_mode: u32,
     // `sdf_force_visibility_one` in forward.wgsl (offset 104..108) — never read
     // by the wireframe pipeline, present only to keep the shared group-0
@@ -67,12 +67,17 @@ fn vs_main(in: VertexInput, @builtin(instance_index) instance_idx: u32) -> Verte
 }
 
 @fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+fn fs_cull_status(in: VertexOutput) -> @location(0) vec4<f32> {
     let status = cull_status[in.chunk_idx];
-    // 0 = portal-culled, 1 = frustum-culled, 2 = visible
+    // 0 = not submitted, 1 = explicitly frustum-culled, 2 = visible
     switch status {
         case 2u: { return vec4<f32>(0.0, 1.0, 0.2, 1.0); }  // green: rendered
-        case 1u: { return vec4<f32>(1.0, 0.2, 0.15, 1.0); } // red: frustum-culled
-        default: { return vec4<f32>(0.0, 0.9, 0.9, 1.0); }  // cyan: portal-culled
+        case 1u: { return vec4<f32>(1.0, 0.2, 0.15, 1.0); } // red: explicitly frustum-culled
+        default: { return vec4<f32>(0.0, 0.9, 0.9, 1.0); }  // cyan: not submitted
     }
+}
+
+@fragment
+fn fs_visible(_in: VertexOutput) -> @location(0) vec4<f32> {
+    return vec4<f32>(1.0, 0.92, 0.18, 1.0);
 }

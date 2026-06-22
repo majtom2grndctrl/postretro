@@ -5,6 +5,7 @@
 use super::*;
 
 impl Renderer {
+    #[allow(clippy::too_many_arguments)]
     pub fn render_frame_indirect(
         &mut self,
         visible: &VisibleCells,
@@ -395,7 +396,7 @@ impl Renderer {
             composite.draw(0..3, 0..1); // fullscreen triangle from vertex_index — no vertex buffer
         }
 
-        self.record_wireframe_overlay(&mut encoder, scene_color, render_world);
+        self.record_wireframe_overlay(&mut encoder, scene_color, render_world, visible);
 
         #[cfg(feature = "dev-tools")]
         if render_world {

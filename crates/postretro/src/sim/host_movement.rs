@@ -22,11 +22,18 @@ use crate::scripting::components::player_movement::PlayerMovementComponent;
 use crate::scripting::registry::{EntityId, EntityRegistry, Transform};
 
 /// Advance the named movement pawns one fixed tick. Snapshots each pawn's component
-/// and position ONCE at the start (so an input list that names the same pawn twice,
-/// or reads racing a write, cannot happen — every pawn is read before any write),
-/// runs `movement::tick` for each, writes the resulting `Transform` plus movement
-/// component back, and returns the aggregated movement events (`"landed"` /
-/// `"jumped"`) across all pawns in input order.
+/// and position ONCE at the start of the tick, runs `movement::tick` for each, writes
+/// the resulting `Transform` plus movement component back, and returns the aggregated
+/// movement events (`"landed"` / `"jumped"`) across all pawns in input order. Reading
+/// all pawns before writing any keeps each pawn's input applied to its start-of-tick
+/// state, never to another pawn's mid-tick write.
+///
+/// Precondition: `pawn_inputs` must name each `EntityId` at most once. The seam pushes
+/// one snapshot per occurrence, so a duplicated id would double-apply its input and
+/// double-count its events — the snapshot discipline orders reads-before-writes but
+/// does NOT dedup. Today's sole caller resolves inputs from a per-pawn `HashMap`, so
+/// uniqueness holds by construction; this is a documented caller contract, not a guard
+/// enforced here.
 ///
 /// Pawns whose `EntityId` lacks a live `PlayerMovementComponent` or `Transform` are
 /// skipped (a stale id from a despawn racing the command queue); they contribute no

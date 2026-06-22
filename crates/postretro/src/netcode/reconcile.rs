@@ -118,7 +118,11 @@ pub(crate) fn reconcile_local_pawn(
     }
 
     // 5. Snap the gameplay-authoritative state into the registry: transform + movement
-    //    component. Collision, AI, and future prediction read this immediately.
+    //    component. Collision, AI, and future prediction read this immediately — and
+    //    "registry is truth, history is a command log" means the NEXT predict_tick
+    //    chains from THIS reconciled pose (it reads `prev` from the registry, never a
+    //    stored history pose), so the correction is not silently overwritten by a
+    //    prediction chained off the stale pre-reconcile pose.
     let _ = registry.set_component(entity_id, reconciled_transform);
     let _ = registry.set_component(entity_id, component.clone());
 
@@ -686,6 +690,111 @@ mod tests {
         assert!(
             (predicted_position(&registry, id) - baseline.position).length() < EPSILON,
             "baseline applied"
+        );
+    }
+
+    // Regression: a reconcile that landed while the command tail was still unacked
+    // was silently overwritten by the NEXT predicted tick, because predict_tick
+    // chained from the stored pre-reconcile history pose instead of the reconciled
+    // registry state. Gameplay/collision/future-prediction diverged from authority
+    // while only the presentation offset reflected the correction. With "registry is
+    // truth, history is a command log", the next predict_tick chains from the
+    // reconciled registry pose. This FAILS against the old chain-from-history.rs.
+    #[test]
+    fn next_predict_chains_from_reconciled_pose_with_unacked_tail() {
+        let world = floor_world();
+        let mut registry = EntityRegistry::new();
+        let mut prediction = ClientPrediction::new();
+        let id = spawn_armed_pawn(&mut registry, &mut prediction, NetworkId(8));
+
+        // Predict 4 ticks (client_tick 0..=3), chaining through the registry exactly
+        // as client_predict_tick does.
+        let mut prev = (
+            *registry.get_component::<Transform>(id).unwrap(),
+            registry
+                .get_component::<PlayerMovementComponent>(id)
+                .unwrap()
+                .clone(),
+        );
+        for tick in 0..4u32 {
+            let (t, m) = prediction
+                .predict_tick(
+                    forward_command(tick, false),
+                    prev.clone(),
+                    &world,
+                    GRAVITY,
+                    DT,
+                )
+                .unwrap();
+            registry.set_component(id, t).unwrap();
+            registry.set_component(id, m.clone()).unwrap();
+            prev = (t, m);
+        }
+        let pre_reconcile_pose = predicted_position(&registry, id);
+
+        // Reconcile mid-stream: ack ONLY through tick 1, so ticks 2 and 3 stay UNACKED
+        // (the realistic in-flight case). Apply a non-trivial baseline shift (+1.0 m
+        // along +X) at the acked baseline so the reconciled pose is clearly distinct
+        // from the pre-reconcile prediction.
+        let auth_transform = Transform {
+            position: Vec3::new(1.0, 1.21, pre_reconcile_pose.z),
+            ..Transform::default()
+        };
+        reconcile_local_pawn(
+            &mut registry,
+            &mut prediction,
+            id,
+            auth_transform,
+            Some(&authoritative_movement()),
+            Some(1),
+            &world,
+            GRAVITY,
+            DT,
+        )
+        .expect("armed pawn reconciles");
+
+        // The registry now holds the reconciled pose (baseline + the 2 replayed unacked
+        // forward commands): clearly shifted +X from the pre-reconcile prediction.
+        let reconciled_pose = predicted_position(&registry, id);
+        assert!(
+            (reconciled_pose.x - pre_reconcile_pose.x) > 0.5,
+            "the reconciled pose carries the +1.0 m baseline shift (x={})",
+            reconciled_pose.x
+        );
+
+        // Predict the NEXT tick (client_tick 4) the way the real caller does: read
+        // `prev` FRESH from the reconciled registry, predict, write back.
+        let prev_next = (
+            *registry.get_component::<Transform>(id).unwrap(),
+            registry
+                .get_component::<PlayerMovementComponent>(id)
+                .unwrap()
+                .clone(),
+        );
+        let (t, m) = prediction
+            .predict_tick(forward_command(4, false), prev_next, &world, GRAVITY, DT)
+            .unwrap();
+        registry.set_component(id, t).unwrap();
+        registry.set_component(id, m).unwrap();
+        let next_pose = predicted_position(&registry, id);
+
+        // The next predicted pose must be chained from the RECONCILED pose: it keeps
+        // the +X baseline shift and advances forward (-Z) one more tick from there.
+        // The old chain-from-history would discard the shift, landing back near the
+        // pre-reconcile trajectory (x ~ 0).
+        assert!(
+            (next_pose.x - reconciled_pose.x).abs() < EPSILON,
+            "the next prediction keeps the reconciled +X shift (next.x={}, reconciled.x={})",
+            next_pose.x,
+            reconciled_pose.x
+        );
+        assert!(
+            next_pose.z < reconciled_pose.z - EPSILON,
+            "the next prediction advances forward from the reconciled pose, not the stale one"
+        );
+        assert!(
+            (next_pose.x - pre_reconcile_pose.x) > 0.5,
+            "the correction was NOT overwritten by chaining off the pre-reconcile pose"
         );
     }
 

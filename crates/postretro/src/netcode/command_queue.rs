@@ -15,6 +15,7 @@ use std::collections::HashMap;
 
 use postretro_net::wire::InputCommand;
 
+use crate::netcode::prediction::client_tick_le;
 use crate::netcode::wire_convert::{input_command_to_sim, sanitize_input_command};
 use crate::scripting::registry::EntityId;
 use crate::sim::SimCommand;
@@ -93,9 +94,12 @@ impl ClientCommandState {
     /// sanitization happens at the [`HostCommandQueues::ingest`] boundary.
     fn enqueue(&mut self, cmd: InputCommand) -> bool {
         // Stale: a command at or below the resolved cursor describes a tick the host
-        // already settled authoritatively. Drop it.
+        // already settled authoritatively. Drop it. Wrap-aware `<=` (serial-number
+        // arithmetic) so the comparison stays correct across the u32 client_tick wrap
+        // — the allocator advances with `wrapping_add`, so a plain `<=` would freeze
+        // the pawn to neutral for the half-range straddling u32::MAX.
         if let Some(cursor) = self.resolved_cursor
-            && cmd.client_tick <= cursor
+            && client_tick_le(cmd.client_tick, cursor)
         {
             return false;
         }
@@ -127,9 +131,11 @@ impl ClientCommandState {
 
     /// Drop every queued command at or below `cursor` — they are stale once the
     /// cursor advances past them (e.g. after a hold/neutral resolves a tick that a
-    /// late real command targeted).
+    /// late real command targeted). Wrap-aware (serial-number arithmetic), matching
+    /// the [`enqueue`](Self::enqueue) stale-check so both agree across the u32 wrap.
     fn drop_stale(&mut self, cursor: u32) {
-        self.pending.retain(|c| c.client_tick > cursor);
+        self.pending
+            .retain(|c| !client_tick_le(c.client_tick, cursor));
     }
 }
 
@@ -399,6 +405,34 @@ mod tests {
         // A late command at the resolved cursor (0) is stale -> dropped.
         assert!(!queues.ingest(CLIENT, &command(0, 0.0)));
         assert_eq!(queues.resolved_cursor(CLIENT), Some(0));
+    }
+
+    // Regression: the enqueue stale-check used a plain `<=`, which mis-ordered the
+    // comparison straddling the u32 client_tick wrap (the allocator wraps with
+    // wrapping_add) — freezing the pawn to neutral for the half-range past u32::MAX.
+    // The wrap-aware predicate keeps a post-wrap command live against a pre-wrap cursor.
+    #[test]
+    fn enqueue_stale_check_is_wrap_aware_at_the_u32_boundary() {
+        let mut queues = HostCommandQueues::new();
+
+        // Resolve a command just before the wrap so the cursor sits at u32::MAX - 1.
+        assert!(queues.ingest(CLIENT, &command(u32::MAX - 1, 1.0)));
+        let r = queues.resolve_tick(CLIENT).unwrap();
+        assert_eq!(r.client_tick, u32::MAX - 1);
+        assert_eq!(queues.resolved_cursor(CLIENT), Some(u32::MAX - 1));
+
+        // A post-wrap command (tick 1) is AHEAD of the cursor in serial-number order,
+        // so it must queue — a plain `1 <= u32::MAX-1` would wrongly drop it as stale.
+        assert!(
+            queues.ingest(CLIENT, &command(1, -1.0)),
+            "a post-wrap command is not stale against a pre-wrap cursor"
+        );
+
+        // And a genuinely stale pre-wrap command (== cursor) is still dropped.
+        assert!(
+            !queues.ingest(CLIENT, &command(u32::MAX - 1, 0.0)),
+            "a command at the cursor is stale across the wrap too"
+        );
     }
 
     // Ordered input: consecutive ticks resolve as Real and advance the cursor by one

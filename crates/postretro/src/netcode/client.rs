@@ -520,9 +520,13 @@ impl ClientReplication {
         let Some(&entity_id) = self.map.get(&network_id) else {
             return;
         };
-        // Pull the authoritative pose + movement subset out of the (finite-checked)
-        // payloads. A local record is a movement record (wire validation), so both are
-        // normally present; the Transform is required for reconcile to restore.
+        // Pull the authoritative pose + movement subset out of the payloads. A local
+        // record is a movement record (wire validation), so both are normally present;
+        // the Transform is required for reconcile to restore. No finiteness re-check
+        // here: `RawSnapshotMessage::validate` (postretro-net `wire.rs`) already rejects
+        // any non-finite `PlayerMovementState` before this typed apply path runs, so a
+        // payload that reaches here is finite by construction. Re-checking would only
+        // risk a silent partial apply (the Transform merged, the movement dropped).
         let Some(transform) = first_transform(components) else {
             log::warn!(
                 "[Net] local_player record for {network_id:?} has no Transform; skipping reconcile"
@@ -530,7 +534,7 @@ impl ClientReplication {
             return;
         };
         let movement = components.iter().find_map(|p| match p {
-            ComponentPayload::PlayerMovementState(m) if payload_is_finite(p) => Some(*m),
+            ComponentPayload::PlayerMovementState(m) => Some(*m),
             _ => None,
         });
         outcome.local_reconcile = Some(LocalReconcileInput {

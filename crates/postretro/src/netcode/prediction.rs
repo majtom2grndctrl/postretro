@@ -1,7 +1,8 @@
-// Client-side movement prediction state for M15 Phase 3: the command/predicted-
-// state ring for the local pawn, the armed `NetworkId -> EntityId` baseline, the
-// forward-prediction tick, prune-through-ack, and the side-effect-free
-// movement-only replay helper shared with Task 5's reconciliation.
+// Client-side movement prediction state for M15 Phase 3: the command-log ring for
+// the local pawn (commands only — the registry is the pose chain), the armed
+// `NetworkId -> EntityId` baseline, the forward-prediction tick, prune-through-ack,
+// and the side-effect-free movement-only replay helper shared with Task 5's
+// reconciliation.
 // See: context/lib/networking.md · context/lib/movement.md
 //
 // Boundary: the replay helper lives HERE (not in `sim/`) because production
@@ -29,6 +30,18 @@ use crate::scripting::registry::{EntityId, Transform};
 /// target. The ring drops its oldest entry when full so a stalled ack (lost
 /// snapshots) can never grow the history unbounded.
 const MAX_HISTORY: usize = 64;
+
+/// Wrap-aware "is `a` at or before `b`" for the monotonic `client_tick` serial
+/// number (`next_client_tick` allocates with `wrapping_add`, so the stream wraps at
+/// `u32::MAX` ≈ 828 days at 60 Hz). Serial-number arithmetic (RFC 1982): the signed
+/// `wrapping_sub` is negative-or-zero when `a` precedes-or-equals `b` within the
+/// half-range window any plausible unacked tail occupies. A plain `a <= b` would
+/// mis-order the one comparison that straddles the wrap; this is the single ordering
+/// predicate the host stale-drop ([`crate::netcode::command_queue`]) and the client
+/// [`ClientPrediction::prune_through_ack`] both route through so they agree across it.
+pub(crate) fn client_tick_le(a: u32, b: u32) -> bool {
+    (a.wrapping_sub(b) as i32) <= 0
+}
 
 // --- Correction classification thresholds (M15 Phase 3 Task 5 AC) ---
 //
@@ -111,11 +124,16 @@ pub(crate) fn classify_correction(magnitude: f32, included_dash: bool) -> Correc
     }
 }
 
-/// One predicted fixed tick: the command frame sent to the host and the local
-/// state it produced. Task 5 reconciliation reads `client_tick` to match the
-/// host's `last_processed_client_tick` ack, restores from the authoritative
-/// baseline, then replays the commands of every entry *after* the acked tick
-/// through [`replay`].
+/// One logged command frame: the input sent to the host for a single predicted
+/// fixed tick. The ring is a pure command log, NOT a state log — it stores no
+/// predicted pose. Reconciliation matches `client_tick` against the host's
+/// `last_processed_client_tick` ack, prunes the acked prefix, then replays the
+/// remaining entries' commands forward from the authoritative pose through
+/// [`replay`]. Forward prediction likewise chains from the registry's current pose
+/// (the caller-supplied `prev`), never from a stored entry — so the reconciled
+/// registry state is what the next predicted tick builds on (the invariant the
+/// stored-pose log silently violated: a reconcile correction was overwritten by the
+/// next prediction chained off the stale pre-reconcile pose).
 //
 // `client_tick`/`command`/`included_dash` are read by this module's tests and the
 // Task 5 reconciliation (`reconcile.rs`) that walks the history.
@@ -128,11 +146,6 @@ pub(crate) struct PredictedTick {
     /// The exact command frame sent to the host for this tick. Retained so
     /// reconciliation can re-feed it to [`replay`] verbatim.
     pub(crate) command: InputCommand,
-    /// The predicted `Transform` after advancing this tick's movement.
-    pub(crate) transform: Transform,
-    /// The predicted `PlayerMovementComponent` after advancing this tick's
-    /// movement.
-    pub(crate) movement: PlayerMovementComponent,
     /// Whether the movement state entered or stayed in `Dash` while predicting
     /// this tick. Phase 3 instrumentation: reconciliation surfaces whether a
     /// rewound window crossed a dash so smoothing (Task 5) can special-case the
@@ -149,23 +162,26 @@ pub(crate) struct ArmedPawn {
     pub(crate) entity_id: EntityId,
 }
 
-/// Client-side movement prediction state for the local pawn. Owns the command +
-/// predicted-state ring and the armed baseline identity. Long-lived prediction
-/// state lives here, not on `App` — the source-layout gate keeps it out of the
-/// 6k-line `main.rs` and the 1.4k-line `client.rs`.
+/// Client-side movement prediction state for the local pawn. Owns the outbound
+/// command-log ring and the armed baseline identity. Long-lived prediction state
+/// lives here, not on `App` — the source-layout gate keeps it out of the 6k-line
+/// `main.rs` and the 1.4k-line `client.rs`.
 ///
-/// Phase 3 scope (this task): storage, pruning, arming, and the forward-prediction
-/// tick. Snapshot reconciliation (restore-from-authority, prune-through-ack,
-/// replay-the-rest, presentation-offset smoothing) is Task 5 — it consumes the
+/// Invariant — **registry is truth, history is a command log**: the ring stores only
+/// the commands (no predicted pose). Both forward prediction and reconcile chain from
+/// the registry's current pose, so a reconcile that snaps the registry to authority is
+/// the pose the next prediction builds on. Reconciliation (restore-from-authority,
+/// prune-through-ack, replay-the-rest, presentation-offset smoothing) consumes the
 /// `history` and `replay` seams this module exposes.
 #[derive(Debug, Default)]
 pub(crate) struct ClientPrediction {
     /// The armed local-pawn identity, or `None` until a `local_player` baseline
     /// has been applied AND mapped. Prediction does nothing while this is `None`.
     armed: Option<ArmedPawn>,
-    /// Predicted-tick ring, oldest-first. One entry per predicted fixed tick;
-    /// `client_tick` is monotonic non-decreasing across the deque. Pruned through
-    /// the host ack and bounded to [`MAX_HISTORY`].
+    /// Command-log ring, oldest-first. One entry per predicted fixed tick recording
+    /// the outbound command (no pose — the registry holds the chained state);
+    /// `client_tick` is monotonic non-decreasing across the deque (modulo the u32
+    /// wrap). Pruned through the host ack and bounded to [`MAX_HISTORY`].
     history: VecDeque<PredictedTick>,
     /// The next monotonic command-frame number to stamp on an outbound
     /// `InputCommand`. Advances once per sent command — including the pre-baseline
@@ -230,24 +246,27 @@ impl ClientPrediction {
         self.armed.is_some()
     }
 
-    /// Read-only view of the predicted-tick ring (oldest-first). The reconcile path
-    /// walks this to find the acked tick and replay the rest.
+    /// Read-only view of the command-log ring (oldest-first). The reconcile path
+    /// walks this to prune the acked prefix and replay the remaining commands.
     pub(crate) fn history(&self) -> &VecDeque<PredictedTick> {
         &self.history
     }
 
     /// Advance the local pawn one predicted fixed tick: run the movement-only
-    /// [`replay`] from the prior predicted state through `command`, record the
-    /// result in the history ring, and return the resulting `(Transform,
-    /// PlayerMovementComponent)` for the caller to write back into the registry.
-    /// Returns `None` (and records nothing) when prediction is not armed — the
-    /// before-baseline inert contract.
+    /// [`replay`] from `prev` through `command`, log the command in the history
+    /// ring, and return the resulting `(Transform, PlayerMovementComponent)` for the
+    /// caller to write back into the registry. Returns `None` (and records nothing)
+    /// when prediction is not armed — the before-baseline inert contract.
     ///
-    /// The starting state is the most-recent history entry's predicted state, or
-    /// `prev` (the registry's current applied state, seeded from the authoritative
-    /// baseline) when the ring is empty. Pure with respect to the registry: the
-    /// caller owns reading `prev` and writing the result back; this never touches
-    /// the registry, AI, weapons, death, or reactions.
+    /// The starting state is ALWAYS `prev` — the registry's current applied state,
+    /// which `client_predict_tick` reads fresh each tick. Because the caller writes
+    /// the result straight back, the registry is the chain: tick N+1 reads what tick
+    /// N wrote, and a reconcile that snapped the registry to the authoritative pose
+    /// is the pose the very next prediction builds on (the history ring stores no
+    /// pose to chain off, so a correction can no longer be silently overwritten).
+    /// Pure with respect to the registry: the caller owns reading `prev` and writing
+    /// the result back; this never touches the registry, AI, weapons, death, or
+    /// reactions.
     pub(crate) fn predict_tick(
         &mut self,
         command: InputCommand,
@@ -259,10 +278,7 @@ impl ClientPrediction {
         // Inert until armed: before the local_player baseline, drive no pawn.
         self.armed?;
 
-        let (start_transform, start_movement) = match self.history.back() {
-            Some(last) => (last.transform, last.movement.clone()),
-            None => prev,
-        };
+        let (start_transform, start_movement) = prev;
 
         let sim = input_command_to_sim(&command);
         // The command's dash request and the resulting movement state together cover
@@ -292,8 +308,6 @@ impl ClientPrediction {
         self.history.push_back(PredictedTick {
             client_tick: command.client_tick,
             command,
-            transform,
-            movement: movement.clone(),
             included_dash,
         });
 
@@ -309,7 +323,7 @@ impl ClientPrediction {
         while self
             .history
             .front()
-            .is_some_and(|entry| entry.client_tick <= acked_tick)
+            .is_some_and(|entry| client_tick_le(entry.client_tick, acked_tick))
         {
             self.history.pop_front();
         }
@@ -579,7 +593,10 @@ mod tests {
         let mut prediction = ClientPrediction::new();
         prediction.arm(NetworkId(7), EntityId::from_raw(3));
 
-        let prev = (start_transform(), component());
+        // Chain `prev` forward each tick exactly as `client_predict_tick` does
+        // (read current state, predict, write back). The registry — here the local
+        // `prev` — is the chain; the history ring is now just a command log.
+        let mut prev = (start_transform(), component());
         for tick in 0..5u32 {
             let out = prediction.predict_tick(
                 forward_command(tick, false),
@@ -588,7 +605,8 @@ mod tests {
                 GRAVITY,
                 DT,
             );
-            assert!(out.is_some(), "armed prediction advances the pawn");
+            let (t, m) = out.expect("armed prediction advances the pawn");
+            prev = (t, m);
         }
 
         assert_eq!(
@@ -600,11 +618,10 @@ mod tests {
         let ticks: Vec<u32> = prediction.history().iter().map(|e| e.client_tick).collect();
         assert_eq!(ticks, vec![0, 1, 2, 3, 4]);
 
-        // The pawn actually advanced across the window (state is chained tick-to-tick,
-        // not recomputed from prev each time).
-        let last = prediction.history().back().unwrap();
+        // The pawn actually advanced across the window (the chained pose moved
+        // forward, not the per-tick recompute-from-START a stale chain would give).
         assert!(
-            last.transform.position.z < START.z - EPSILON,
+            prev.0.position.z < START.z - EPSILON,
             "chained prediction moves the pawn forward across ticks"
         );
     }
@@ -823,6 +840,68 @@ mod tests {
         assert!(
             prediction.history().is_empty(),
             "arming a new pawn clears the old pawn's history"
+        );
+    }
+
+    // --- The client_tick ordering predicate is wrap-aware: it agrees with plain
+    // `<=` away from the wrap and orders the comparison that straddles u32::MAX
+    // correctly (serial-number arithmetic), which a plain `<=` gets wrong. ---
+    #[test]
+    fn client_tick_le_orders_correctly_across_the_u32_wrap() {
+        // Ordinary range: matches plain `<=`.
+        assert!(client_tick_le(3, 5));
+        assert!(client_tick_le(5, 5));
+        assert!(!client_tick_le(6, 5));
+
+        // Across the wrap: tick u32::MAX-1 precedes tick 2 (the stream wrapped). A
+        // plain `(u32::MAX - 1) <= 2` is false; the wrap-aware predicate is true.
+        let before = u32::MAX - 1;
+        let after = 2u32; // a few ticks later, after the wrap
+        assert!(
+            client_tick_le(before, after),
+            "a tick just before the wrap precedes one just after it"
+        );
+        assert!(
+            !client_tick_le(after, before),
+            "the post-wrap tick does not precede the pre-wrap one"
+        );
+    }
+
+    // Regression: across the u32 client_tick wrap the prune used a plain `<=`, which
+    // mis-ordered the straddling comparison — the unacked tail was mis-pruned (either
+    // wiped or never dropped). prune_through_ack now routes through client_tick_le.
+    #[test]
+    fn prune_through_ack_is_wrap_aware_at_the_u32_boundary() {
+        let world = floor_world();
+        let mut prediction = ClientPrediction::new();
+        prediction.arm(NetworkId(11), EntityId::from_raw(5));
+
+        // Log commands straddling the wrap: u32::MAX-1, u32::MAX, 0, 1.
+        let ticks = [u32::MAX - 1, u32::MAX, 0, 1];
+        let mut prev = (start_transform(), component());
+        for &tick in &ticks {
+            let (t, m) = prediction
+                .predict_tick(
+                    forward_command(tick, false),
+                    prev.clone(),
+                    &world,
+                    GRAVITY,
+                    DT,
+                )
+                .unwrap();
+            prev = (t, m);
+        }
+        assert_eq!(prediction.history().len(), 4);
+
+        // Ack through u32::MAX: the two pre-wrap entries drop, the post-wrap 0 and 1
+        // remain. A plain `<=` would have kept 0 and 1 ahead of u32::MAX incorrectly
+        // pruned (0 <= u32::MAX is true), wiping the live tail.
+        prediction.prune_through_ack(u32::MAX);
+        let remaining: Vec<u32> = prediction.history().iter().map(|e| e.client_tick).collect();
+        assert_eq!(
+            remaining,
+            vec![0, 1],
+            "only the pre-wrap prefix is pruned; the post-wrap tail survives"
         );
     }
 }

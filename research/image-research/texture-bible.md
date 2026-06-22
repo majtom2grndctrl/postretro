@@ -47,6 +47,103 @@ All textures should be usable as **diffuse/albedo-first game textures**. They sh
 
 Use `skymall-reference-image.png` for palette, subject matter, material vocabulary, and scene mood only. Do not copy its lighting, shadows, camera perspective, or composed scene into texture bitmaps.
 
+## Tiling modes
+
+Every texture prompt should declare a tiling mode. Do not rely on `tileable: true`
+alone. State which axes repeat and which edges must match.
+
+Use these terms:
+
+| Mode | Meaning | Prompt language | Common uses |
+|------|---------|-----------------|-------------|
+| `repeat_2d` | Repeats on both U and V axes. Left edge matches right edge. Top edge matches bottom edge. Corners wrap cleanly. | "2D seamless," "edge-matched on all four sides," "periodic texture," "toroidal wraparound canvas." | Floors, walls, concrete, broad glass, generic metal panels, plaza tile. |
+| `repeat_u` | Repeats horizontally only. Left and right edges match. Top and bottom are intentional bounded material edges. | "horizontal trim repeat," "one-axis seamless in U," "left/right edge-matched only." | Cap trims, rails, light strips, sign borders, stair lips, beam skins. |
+| `repeat_v` | Repeats vertically only. Top and bottom edges match. Left and right are intentional bounded material edges. | "vertical strip repeat," "one-axis seamless in V," "top/bottom edge-matched only." | Hanging vines, waterfall strips, column strips, vertical sign borders. |
+| `non_repeating` | Unique panel/decal. No edge matching required. Composition should fit one brush face. | "non-repeating unique panel," "decal texture," "single-use framed panel." | Posters, signs, storefront panels, directory screens, ceiling lights, medallions. |
+
+For `repeat_2d`, prompt against centered framed motifs unless they are truly
+periodic. Any seam, beam, bolt row, grout line, cloud band, diagonal, or motif
+that touches one edge must continue at the matching position on the opposite
+edge. A complete centered X-brace, medallion, sign, or fixture is usually
+`non_repeating`, not `repeat_2d`.
+
+For `repeat_u` and `repeat_v`, only the repeating axis needs edge continuity.
+The other axis is the trim cross-section. It may have top/bottom or left/right
+material bands, caps, rims, frames, lens borders, or casing edges that should
+not wrap.
+
+### Pattern topology
+
+For patterned repeats, treat the canvas as a unit cell cut from an infinite
+surface. The boundary is not a frame.
+
+For grid, ashlar, brick, panel, cross-junction, and T-junction patterns,
+declare the edge phase:
+
+| Edge phase | Meaning |
+|------------|---------|
+| `shared_seam` | Matching edges each carry half of the same seam. Tiled copies form one normal seam. |
+| `continuation` | Motifs cross the boundary and continue from the opposite edge. |
+| `interior_only` | Major seams stay inside the canvas and do not touch repeat edges. |
+
+Use `shared_seam` or `continuation` for grout and panel networks that touch the
+boundary. Do not paint complete matching seams on both opposite edges unless
+the doubled seam is intentional.
+
+Rows and columns may be split by the boundary. The top and bottom pieces should
+recombine into one normal row in a 2×2 repeat. Mirrored top/bottom rows often
+create doubled rows; avoid them for irregular ashlar, brick, panel, and
+rectangular tile patterns.
+
+For cross- and T-junction patterns, any junction touching an edge must continue
+at the matching coordinate on the opposite edge. A junction may be split across
+the boundary. It should not become two adjacent junctions after tiling.
+
+### Repeat rhythm
+
+Edge matching is not enough. Repeats also need rhythm continuity.
+
+Use these checks:
+
+| Term | Meaning |
+|------|---------|
+| Seam continuity | Pixels match across repeat edges. |
+| Rhythm continuity | Rows, columns, panels, bolts, chips, scuffs, and motifs keep a natural cadence across the wrap. |
+| Seam weight | Boundary seams match the thickness and contrast of interior seams. |
+| Motif cadence | Repeated details keep even spacing and do not reset visibly at the edge. |
+| Boundary salience | Repeat edges do not read as special stripes, frames, or splices. |
+| Macro-repeat | Large repeated shapes expose the tile period. |
+| Edge framing | Strong borders make each repeat read as a framed square. |
+
+Boundary seams should have the same visual weight as interior seams. In a repeat
+preview, no boundary should read as a center stripe, outer frame, splice, or
+heavier row unless the texture is intentionally a panel grid.
+
+Texture QA should preview repeats before accepting a generation:
+
+- `repeat_2d`: inspect a 2×2 repeat. Check edge continuity, corner continuity, boundary row/column weight, and rhythm continuity.
+- `repeat_u`: inspect a 3×1 horizontal repeat. Check left/right continuity and motif cadence.
+- `repeat_v`: inspect a 1×3 vertical repeat. Check top/bottom continuity and motif cadence.
+- `non_repeating`: inspect at native size on a single flat face. Check border, readability, and composition.
+
+Preferred prompt metadata:
+
+```yaml
+tiling:
+  mode: repeat_2d # repeat_2d | repeat_u | repeat_v | non_repeating
+  edge_contract: left/right and top/bottom edges must match; corners wrap cleanly
+  edge_phase: shared_seam # shared_seam | continuation | interior_only | none
+  rhythm_contract: boundary seams match interior seam weight; motif cadence does not reset at edges
+  qa_preview: inspect as a 2x2 repeat before accepting
+```
+
+For `repeat_u`, set `edge_contract` to "left/right edges must match; top/bottom
+are bounded material edges" and `qa_preview` to "inspect as a 3x1 horizontal
+repeat." For `repeat_v`, use the vertical equivalent. Use `edge_phase: none`
+when the texture has no seam network. For `non_repeating`, set `edge_contract`
+to "no edge matching required", `edge_phase` to "none", and preview as a single
+panel.
+
 ## Texture tool pass
 
 Use `tools/texture-tool` after image generation produces source art. Treat it as a finishing and normalization step for PostRetro / TrenchBroom texture bundles, not as a replacement for art-direction prompts or acceptance review.
@@ -249,13 +346,15 @@ Textures should be brush-friendly.
 
 Each texture should stand alone as a file that TrenchBroom can browse and assign directly. Do not depend on sheet coordinates, atlas packing, or sub-rect selection.
 
-They should tile cleanly on square surfaces and tolerate being stretched or rotated. Important seams should align to the pixel grid. Avoid perspective baked into tiling textures unless the texture is intended as a poster, sign, or fake interior panel.
+Repeating textures should satisfy their declared tiling mode and tolerate brush stretching or rotation. Important seams should align to the pixel grid. Avoid perspective baked into repeating textures unless the texture is intended as a poster, sign, or fake interior panel.
 
 For floors and walls, strong edge seams and grout lines are useful because they give simple brush geometry scale.
 
-For trims, use narrow textures such as **64×16**, **64×32**, or **128×16**. These can define edges, caps, borders, ledges, stair lips, sign frames, and light strips.
+For trims, use narrow `repeat_u` textures such as **64×16**, **64×32**, or **128×16**. These can define edges, caps, borders, ledges, stair lips, sign frames, and light strips. Left and right edges must match. Top and bottom usually should not match; they describe the trim's cross-section.
 
-For signage and storefronts, use non-tiling textures with clear borders so they can be placed on flat brush faces like decals or panels.
+Use `repeat_v` for vertical strips such as waterfall sheets, hanging vines, column wraps, and vertical sign borders. Top and bottom edges must match. Left and right usually describe the strip width.
+
+For signage and storefronts, use `non_repeating` textures with clear borders so they can be placed on flat brush faces like decals or panels.
 
 Use texture categories like these:
 
@@ -285,7 +384,7 @@ It uses **post-pandemic comfort cues**: daylight, plants, water, lounges, open c
 
 It uses **retro-futurist wayfinding**: cyan screens, black signboards, blocky LED text, mall directories, hanging banners, shop signs, and optimistic lifestyle slogans.
 
-It uses **low-resolution hand-painted material economy**: every texture must be readable, chunky, tileable, and useful on simple brush geometry.
+It uses **low-resolution hand-painted material economy**: every texture must be readable, chunky, and useful on simple brush geometry. Repeating materials must declare and satisfy their tiling mode; patterned repeats must also satisfy their edge phase.
 
 The core phrase is:
 
@@ -312,14 +411,26 @@ The environment should be clean, public, bright, and optimistic, but still visib
 
 Use this at the top of texture-generation prompts:
 
-“Create a low-resolution hand-painted pixel-art texture for a late-1990s low-poly 3D game environment, intended for brush-based level design in TrenchBroom. The setting is a futuristic ‘skymall’: a bright elevated public mall and transit atrium with post-pandemic civic design cues, biophilic architecture, clean-air wellness branding, modular public seating, glass railings, warm stone floors, pale concrete, cyan wayfinding screens, and optimistic retro-futurist signage. The texture should be chunky, readable, tile-friendly, and diffuse/albedo-first, with broad pixel clusters, flat lighting, simple material color ramps, clear seams, and no photorealistic detail. Do not paint directional lighting, shadows, ambient-occlusion corners, contact shadows, or highlights into the bitmap; leave lighting depth to lightmaps, normal maps, specular maps, and environment lighting. It should look like a texture made for a 1998 PC game, but depicting a clean, humane, sunlit futuristic public space.”
+“Create a low-resolution hand-painted pixel-art texture for a late-1990s low-poly 3D game environment, intended for brush-based level design in TrenchBroom. The setting is a futuristic ‘skymall’: a bright elevated public mall and transit atrium with post-pandemic civic design cues, biophilic architecture, clean-air wellness branding, modular public seating, glass railings, warm stone floors, pale concrete, cyan wayfinding screens, and optimistic retro-futurist signage. The texture should be chunky, readable, brush-friendly, and diffuse/albedo-first, with broad pixel clusters, flat lighting, simple material color ramps, clear seams, and no photorealistic detail. Declare a tiling mode: `repeat_2d`, `repeat_u`, `repeat_v`, or `non_repeating`. For repeating seam or pattern networks, declare an edge phase: `shared_seam`, `continuation`, or `interior_only`. Do not paint directional lighting, shadows, ambient-occlusion corners, contact shadows, or highlights into the bitmap; leave lighting depth to lightmaps, normal maps, specular maps, and environment lighting. It should look like a texture made for a 1998 PC game, but depicting a clean, humane, sunlit futuristic public space.”
 
 ## Example material prompt pattern
 
 For any specific texture, use this structure:
 
-“Create a [SIZE] pixel texture of [MATERIAL], for a late-1990s low-poly 3D game skymall environment. It should show [KEY FEATURES]. Style: chunky hand-painted pixel art, diffuse/albedo-first, flat lighting, tile-friendly, readable at low resolution, broad color blocks, simple material color ramps, no painted highlights or shadows, no photorealism, no modern PBR material complexity. Palette: [PALETTE]. Intended use in TrenchBroom: [SURFACE / BRUSH USE].”
+“Create a [SIZE] pixel texture of [MATERIAL], for a late-1990s low-poly 3D game skymall environment. Tiling mode: [repeat_2d / repeat_u / repeat_v / non_repeating]. Edge contract: [which edges must match, or no edge matching]. Edge phase: [shared_seam / continuation / interior_only / none]. Rhythm contract: boundary seams match interior seam weight; rows, columns, bolts, chips, scuffs, and motifs keep natural cadence across the wrap; no edge reads as a special stripe, frame, splice, or heavier row unless intentional. It should show [KEY FEATURES]. Style: chunky hand-painted pixel art, diffuse/albedo-first, flat lighting, brush-friendly, readable at low resolution, broad color blocks, simple material color ramps, no painted highlights or shadows, no photorealism, no modern PBR material complexity. Palette: [PALETTE]. Intended use in TrenchBroom: [SURFACE / BRUSH USE].”
 
 Example:
 
-“Create a 128×128 pixel seamless texture of warm beige stone mall flooring for a late-1990s low-poly 3D game skymall environment. It should show square public-atrium floor tiles with chunky dark grout, subtle tan and cream variation, small hand-painted chips, and clean civic polish. Style: chunky hand-painted pixel art, diffuse/albedo-first, flat lighting, tile-friendly, readable at low resolution, broad color blocks, simple material color ramps, no painted highlights or shadows, no photorealism, no modern PBR material complexity. Palette: cream, beige, tan, warm gray, muted ochre. Intended use in TrenchBroom: large atrium floors, upper walkways, shop thresholds.”
+“Create a 128×128 pixel texture of warm beige stone mall flooring for a late-1990s low-poly 3D game skymall environment. Tiling mode: `repeat_2d`. Edge contract: 2D seamless; left/right and top/bottom edges must match, and all four corners must wrap cleanly. Edge phase: `shared_seam`; boundary grout is half thickness on matching edges, so tiled copies form one normal seam. It should show square public-atrium floor tiles with chunky dark grout, subtle tan and cream variation, small hand-painted chips, and clean civic polish. Style: chunky hand-painted pixel art, diffuse/albedo-first, flat lighting, brush-friendly, readable at low resolution, broad color blocks, simple material color ramps, no painted highlights or shadows, no photorealism, no modern PBR material complexity. Palette: cream, beige, tan, warm gray, muted ochre. Intended use in TrenchBroom: large atrium floors, upper walkways, shop thresholds.”
+
+Ashlar example:
+
+“Create a 128×128 pixel texture of mixed rectangular ashlar floor tile for a late-1990s low-poly 3D game skymall environment. Tiling mode: `repeat_2d`. Edge contract: left/right and top/bottom edges must match; corners wrap cleanly. Edge phase: `shared_seam`; the canvas is a unit cell cut from an infinite grout network, not a framed tile image. Rhythm contract: boundary seams match interior seam weight; row heights and vertical joint spacing keep natural cadence across the wrap. Rows may be split by the boundary, but top and bottom pieces must recombine into one normal row. Avoid mirrored top/bottom rows, doubled horizontal seams, edge framing, and visible macro-repeat. Style: chunky hand-painted pixel art, diffuse/albedo-first, flat lighting, brush-friendly, readable at low resolution, no photorealism. Intended use in TrenchBroom: large floor fields that need irregular rectangular tile rhythm.”
+
+Trim example:
+
+“Create a 64×16 pixel texture of pale concrete cap trim for a late-1990s low-poly 3D game skymall environment. Tiling mode: `repeat_u`. Edge contract: left/right edges must match seamlessly; top and bottom are bounded material bands and should not match each other. Edge phase: `continuation`; horizontal bands and chips continue through the left/right wrap. It should show a horizontal civic concrete cap with chunky chips, a distinct upper band, a lower band, and flat albedo color variation. Style: chunky hand-painted pixel art, diffuse/albedo-first, flat lighting, brush-friendly, readable at low resolution, broad color blocks, no painted highlights or shadows, no photorealism. Intended use in TrenchBroom: planter lips, balcony edges, stair caps, wall caps.”
+
+Unique-panel example:
+
+“Create a 64×128 pixel vertical wayfinding sign texture for a late-1990s low-poly 3D game skymall environment. Tiling mode: `non_repeating`. Edge contract: no edge matching required; compose as a single framed panel. Edge phase: `none`. It should show a dark blue-black signboard with cyan blocky directory text, simple icon rows, and a clear border. Style: chunky hand-painted pixel art, diffuse/albedo-first, flat lighting, brush-friendly, readable at low resolution, no painted glow spill, no photorealism. Intended use in TrenchBroom: one flat sign face.”

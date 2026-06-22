@@ -9,7 +9,7 @@
 ## Goal
 
 Add **co-op multiplayer** to PostRetro: an authoritative client-server engine where
-a host runs the world and up to 16 players share a campaign level. The model is
+a game server owns the world and up to 16 players share a campaign level. The model is
 **authoritative server + snapshot replication** (the model CS2 / Valorant / Overwatch 2
 ship today, not deterministic lockstep) — sidestepping the cross-architecture `f32`
 determinism trap (`research.md` §1–2). This reverses the standing "Multiplayer /
@@ -30,8 +30,11 @@ code, so enemy-replication detail is grounded, not assumed.
 ### In scope
 - **Authoritative client-server** model: server (the host) owns world state; clients
   predict locally and reconcile toward server snapshots.
-- **Listen-server architecture**, built to a seam that lets a headless **dedicated
-  server** be split out later without re-architecting authority.
+- **Host-as-client architecture:** a hosted session runs a local headless server process
+  and a normal client connected over loopback. The host player uses the same input,
+  prediction, snapshot-apply, and render path as remote clients. In-process `--host`
+  remains an intermediate/dev test shape only; the shipping host path is local server +
+  local client.
 - **Up to 16 players**, co-op campaign first.
 - **Transport + replication stack**: `renet` 2.0 + `renet_netcode` transport, hand-rolled
   replication (`lightyear` as design blueprint), `bitcode` serialization, custom
@@ -116,8 +119,9 @@ correctly) and **measured findings** (recorded numbers, not thresholds).
 - [ ] A client-fired **projectile appears instantly** and its predicted entity **hands off
   to the server-confirmed entity** with no visible duplicate or pop under normal latency.
   (Phase 6)
-- [ ] **16 players** on one listen-server host stay within a stated host-upstream
-  **bandwidth budget**; the sim/host boundary exposes a **headless server entry point**
+- [ ] **16 players** on one host-owned server stay within a stated host-upstream
+  **bandwidth budget**; the hosted-session flow launches/owns a local headless server and
+  connects the host client over loopback; the same server entry point runs standalone
   (dedicated-server readiness). (Phase 7)
 
 ## Tasks
@@ -215,13 +219,14 @@ predicted/confirmed/interpolated classification) with no visible duplicate or po
 bug-prone reconciliation/de-dup machinery, accepted deliberately for the weapon feel.
 Playtest bar: "do projectiles feel crisp." Server stays authoritative on outcomes.
 
-### Phase 7: Scale + dedicated-server readiness
-Validate **16 players** on one listen-server host within a stated **host-upstream
+### Phase 7: Scale + local-server host flow + dedicated-server readiness
+Validate **16 players** on one host-owned server within a stated **host-upstream
 bandwidth budget** (state-sync + priority-accumulator budgeting); add interest management
-(reuse the portal/PVS visibility) only if the budget demands it. Prove the
-**dedicated-server seam**: the host/sim boundary compiles and runs as a **headless server
-entry point** (no client half), confirming the Phase 0 extraction delivered the
-split-later promise.
+(reuse the portal/PVS visibility) only if the budget demands it. Prove the packaged hosted
+session starts or owns a local headless server process and connects the host's game client
+over loopback, so the host player runs the same client path as remote players. Prove the
+same server entry point can run standalone with no client half, confirming the Phase 0
+extraction delivered the dedicated-server promise.
 
 ## Sequencing
 
@@ -305,10 +310,11 @@ game-logic-owned snapshot apply — lives in `postretro`.
 
 **Frame-loop integration.** Client per frame: send buffered input command(s) → apply
 received snapshots to the registry (reconcile predicted pawn) → run the headless tick for
-predicted entities → render. Server (host) per tick: drain client input commands → run
-the headless tick → serialize per-entity delta snapshots per client → send. The headless
-`simulate` seam from Phase 0 is the shared core; the listen-server host runs both halves,
-a dedicated server runs only the server half. Four invariants:
+predicted entities → render. Server per tick: drain client input commands → run the
+headless tick → serialize per-entity delta snapshots per client → send. The headless
+`simulate` seam from Phase 0 is the shared core. Target host play runs a local server
+process plus a local client over loopback; a standalone dedicated server runs only the
+server half. Four invariants:
 
 - **Entity-ownership stays exclusive.** Snapshot application and predicted-entity
   spawn/despawn run through a **game-logic-owned apply step** — the net crate emits typed

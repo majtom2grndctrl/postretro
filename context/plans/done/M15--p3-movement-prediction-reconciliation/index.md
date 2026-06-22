@@ -122,9 +122,11 @@ Playtest follow-ups found and fixed before landing:
   feed-forward + held-newest feedback), made **framerate-independent** (rise/decay driven
   by wall-clock `dt`, 60 fps behavior preserved).
 
-**Deferred netcode-interpolation refinements** (recorded on the M15 roadmap as Phase 3
-follow-up drafts — not yet specced; trigger is a degraded-link playtest showing the
-symptom, since both are invisible on clean LAN co-op):
+**Deferred netcode-interpolation refinements** (folded into M15 **Phase 7** on the roadmap
+as one tightly-scoped follow-up spec — Phase 7's loaded/many-remote conditions are their
+natural home, and the first below scales with player count; pull forward only if a
+Phase 5/6 combat-under-latency playtest surfaces either sooner. Both are invisible on clean
+LAN co-op):
 - **Per-entity interpolation delay** — the starvation-driven delay is currently *global*,
   so one genuinely-starved moving remote adds latency to all remotes. Per-entity delay
   removes that coupling but introduces per-entity time offsets (remotes can desync in time

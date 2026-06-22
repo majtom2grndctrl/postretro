@@ -3904,6 +3904,7 @@ impl App {
                 command_queues,
                 owners,
                 tick,
+                host_pawn: _,
                 demo_mover: _,
             }) => {
                 // Drive the listen server (accept handshakes, drain the socket).
@@ -4052,6 +4053,7 @@ impl App {
             slot_pawns: _,
             command_queues,
             owners,
+            host_pawn: _,
             demo_mover,
         }) = self.net_endpoint.as_mut()
         else {
@@ -4153,6 +4155,40 @@ impl App {
             &pawn_inputs,
             tick_dt,
         )
+    }
+
+    /// Register the listen host's OWN player pawn for outbound replication after a
+    /// level install (M15 Phase 3, issue 3b). The host's boot pawn is spawned by
+    /// `install_level_payload` via `spawn_from_player_starts` and marked the
+    /// `local_player_pawn`; without registering it in the `ReplicableSet` it never
+    /// reaches `produce_owned_snapshots`, so clients draw no host capsule.
+    ///
+    /// Thin delegation: reads `local_player_pawn` from the registry and hands it to
+    /// `netcode::host_register_own_pawn`, which stamps a `NetworkId`, registers it for
+    /// replication with NO owner mapping (never `local_player` on any recipient), and
+    /// tracks it so a level reload unregisters the stale pawn. No-op for single-player,
+    /// the client, and a host whose map has no `player_spawn` (no local pawn to
+    /// replicate). The host pawn stays driven locally by `simulate_tick` — this only
+    /// replicates its Transform + PlayerMovementState outbound.
+    fn host_register_own_pawn_after_install(&mut self) {
+        let Some(netcode::NetEndpoint::Host {
+            allocator,
+            replicable,
+            host_pawn,
+            ..
+        }) = self.net_endpoint.as_mut()
+        else {
+            return;
+        };
+        let pawn = {
+            let registry = self.script_ctx.registry.borrow();
+            registry.local_player_pawn()
+        };
+        let Some(pawn) = pawn else {
+            // A host on a map with no player_spawn has no own pawn to replicate.
+            return;
+        };
+        netcode::host_register_own_pawn(allocator, replicable, host_pawn, pawn);
     }
 
     /// Connected-client predicted fixed tick (M15 Phase 3 Task 3). Thin delegation

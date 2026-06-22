@@ -602,6 +602,11 @@ impl App {
         match payload.level {
             Some(world) => {
                 self.install_level_payload(world, payload.prm_cache_root);
+                // M15 Phase 3 (issue 3b): register the listen host's own boot pawn for
+                // outbound replication now that the install has spawned + marked it the
+                // local player. Reload-safe and a no-op off the host / on a map without a
+                // player_spawn. The host pawn stays driven locally by `simulate_tick`.
+                self.host_register_own_pawn_after_install();
                 self.level_load = None;
                 if let Some(renderer) = self.renderer.as_mut() {
                     renderer.clear_splash();

@@ -233,6 +233,22 @@ pub(crate) enum NetEndpoint {
         /// Stamps `owner_client_id` + the resolved cursor onto each owned pawn's
         /// snapshot so the net crate can derive per-recipient `local_player`.
         owners: MovementOwners,
+        /// The listen host's OWN player pawn, registered for OUTBOUND replication
+        /// only (M15 Phase 3, issue 3b). The host pawn is driven LOCALLY by
+        /// `simulate_tick`/`local_movement_pawn` exactly as in single-player — it is
+        /// never command-queued, predicted, or reconciled. This field only tracks
+        /// the registered pawn `EntityId` so a level reload can unregister the stale
+        /// pawn before registering the freshly-spawned one (the registry bumps the
+        /// generation on despawn, so the reloaded pawn is a distinct entity). `None`
+        /// until the first level install registers the host pawn, and on maps with no
+        /// player_spawn (a headless/observer host).
+        ///
+        /// Its snapshot carries `owner_client_id = None` (no remote owner), so the
+        /// per-recipient `local_player` flag is false for EVERY client — clients treat
+        /// it as a normal remote pawn (interpolated, drawn as a capsule). No second
+        /// local-player marker exists; the host pawn stays the host's own
+        /// `local_player_pawn` registry-side and is replicated outbound, that is all.
+        host_pawn: Option<EntityId>,
         /// Task 6 Phase 2 net-demo fixture. When the demo path is active
         /// (`POSTRETRO_NET_DEMO_MOVER=1`), the host spawns one deterministic
         /// AI-less mover ([`DemoMover`]) and stores its `EntityId` here; each tick
@@ -353,6 +369,7 @@ impl NetEndpoint {
                     slot_pawns: SlotPawns::new(),
                     command_queues: HostCommandQueues::new(),
                     owners: MovementOwners::new(),
+                    host_pawn: None,
                     demo_mover: DemoMoverState::from_env(),
                 }))
             }
@@ -950,6 +967,47 @@ pub(crate) fn host_handle_accept_descriptor(
     }
 }
 
+/// Register the listen host's OWN player pawn for OUTBOUND replication (M15 Phase 3,
+/// issue 3b): without this, the host pawn never enters the `ReplicableSet`, so
+/// `produce_owned_snapshots` never emits it and clients see no host capsule.
+///
+/// This is replication-only. The host pawn keeps being driven LOCALLY by
+/// `simulate_tick`/`local_movement_pawn` — it is deliberately NOT recorded in
+/// `MovementOwners`, NOT command-queued, and NOT predicted/reconciled. Because it has
+/// no `owner_client_id`, its per-recipient `local_player` flag is false for every
+/// client (clients interpolate it as a normal remote pawn).
+///
+/// Idempotent and reload-safe: registering the same pawn twice is a no-op (the set and
+/// the allocator are both stable per `EntityId`). On a level reload the freshly-spawned
+/// pawn is a distinct `EntityId`, so the previously-tracked host pawn (if any) is
+/// unregistered first — never leaving a stale id in the replicable set. Pass the
+/// `Host` variant's `host_pawn` tracking slot; the helper updates it.
+///
+/// Game-logic-owned: it reads the registry through the borrow the caller threads in and
+/// only touches the replication bookkeeping; it never reaches into `App`.
+pub(crate) fn host_register_own_pawn(
+    allocator: &mut NetworkIdAllocator,
+    replicable: &mut ReplicableSet,
+    host_pawn: &mut Option<EntityId>,
+    pawn: EntityId,
+) {
+    // A level reload spawns a fresh host pawn (distinct EntityId). Drop the stale
+    // registration before registering the new one so the replicable set never names a
+    // despawned id. Re-registering the SAME pawn skips the churn (idempotent install).
+    if let Some(previous) = *host_pawn {
+        if previous != pawn {
+            replicable.unregister(previous);
+        }
+    }
+    // Stamp the stable session-monotonic NetworkId and register for replication,
+    // mirroring `on_slot_accepted` — but with NO owner mapping, so the host pawn is
+    // replicated as an unowned (never-local) remote pawn to every client.
+    let net_id = allocator.stamp(pawn);
+    replicable.register(pawn);
+    *host_pawn = Some(pawn);
+    log::info!("[Net] host registered own pawn {pawn:?} as {net_id:?} (outbound replication only)");
+}
+
 /// Apply this frame's slot lifecycle transitions to the host's remote-pawn state
 /// (Task 4). `ServerPoll.lifecycle` carries `SlotEvent::Closed` only — accepts are
 /// driven from the handshake verdict via [`host_handle_accept`], never lifecycle.
@@ -1148,10 +1206,12 @@ pub(crate) const REMOTE_CAPSULE_RADIUS: f32 = 0.4;
 #[cfg(feature = "dev-tools")]
 pub(crate) const REMOTE_CAPSULE_HALF_HEIGHT: f32 = 0.8;
 
-/// Collect the world-space positions of every replicated remote entity for the
-/// client-side debug wireframe (M15 Phase 1 visibility aid). Returns the
-/// `Transform.position` of each `EntityId` in the client's `NetworkId ->
-/// EntityId` map; empty for single-player and the host (no client map).
+/// Collect the world-space positions of every replicated entity for the
+/// debug wireframe (M15 Phase 1 visibility aid). On the CLIENT, returns the
+/// `Transform.position` of each `EntityId` in its `NetworkId -> EntityId` map. On
+/// the HOST (issue 3a), returns the position of each `EntityId` in the authoritative
+/// `ReplicableSet` — the host has no client map, so it draws its own replicated
+/// entities (slot/client pawns plus its own pawn). Empty for single-player.
 ///
 /// Read-only: borrows the registry immutably and never touches wgpu — the
 /// caller hands these positions to the renderer, which owns the capsule draw
@@ -1172,19 +1232,34 @@ pub(crate) fn remote_entity_positions(
     endpoint: &NetEndpoint,
     registry: &EntityRegistry,
 ) -> Vec<Vec3> {
-    let NetEndpoint::Client { replication, .. } = endpoint else {
-        return Vec::new();
-    };
-    replication
-        .map()
-        .values()
-        .filter_map(|&id| {
-            registry
-                .get_component::<Transform>(id)
-                .ok()
-                .map(|t| t.position)
-        })
-        .collect()
+    match endpoint {
+        // Client: the replicated remote entities live in the `NetworkId -> EntityId`
+        // map. Draw a capsule at each one (the host pawn, slot pawns, demo mover).
+        NetEndpoint::Client { replication, .. } => replication
+            .map()
+            .values()
+            .filter_map(|&id| {
+                registry
+                    .get_component::<Transform>(id)
+                    .ok()
+                    .map(|t| t.position)
+            })
+            .collect(),
+        // Host: there is no client `NetworkId -> EntityId` map, so source the overlay
+        // from the host's OWN authoritative replicated entities — the `ReplicableSet`
+        // (the registered slot/client pawns, and the host's own pawn after issue 3b).
+        // Read-only and dev-tools-only; no wire change. The set is keyed by `EntityId`,
+        // which the registry resolves to a `Transform` directly.
+        NetEndpoint::Host { replicable, .. } => replicable
+            .iter()
+            .filter_map(|id| {
+                registry
+                    .get_component::<Transform>(id)
+                    .ok()
+                    .map(|t| t.position)
+            })
+            .collect(),
+    }
 }
 
 #[cfg(test)]
@@ -1375,6 +1450,291 @@ mod tests {
             time_sync.estimated_server_tick().is_some(),
             "the estimator initializes after a recorded probe's echo is folded in"
         );
+    }
+
+    // --- Issue 3b: the listen host's OWN pawn replicates outbound ---------------
+
+    use crate::scripting::builtins::spawn_from_player_starts;
+    use crate::scripting::data_descriptors::{
+        AirParams, CapsuleParams, EntityTypeDescriptor, FallParams, GroundParams,
+        PlayerMovementDescriptor, SpeedParams,
+    };
+    use crate::scripting::map_entity::MapEntity;
+    use postretro_net::replication::{ServerReplication, typed_records};
+    use postretro_net::wire::EntityRecord;
+
+    /// A minimal `"player"` descriptor carrying a movement component, mirroring the
+    /// lifecycle-test fixture so `spawn_from_player_starts` materializes a real
+    /// `PlayerMovement` pawn and marks it the local player (the host's own pawn).
+    fn host_player_descriptor() -> EntityTypeDescriptor {
+        EntityTypeDescriptor {
+            canonical_name: Some("player".to_string()),
+            default_weapon: None,
+            light: None,
+            emitter: None,
+            movement: Some(PlayerMovementDescriptor {
+                capsule: CapsuleParams {
+                    radius: 0.4,
+                    half_height: 0.8,
+                    eye_height: 0.5,
+                },
+                ground: GroundParams {
+                    speed: SpeedParams {
+                        walk: 7.0,
+                        run: 11.0,
+                        crouch: 3.0,
+                    },
+                    accel: 10.0,
+                    step_height: 0.3,
+                    max_slope: 45.0,
+                },
+                air: AirParams {
+                    forward_steer: 0.0,
+                    accel: 0.7,
+                    max_control_speed: 0.5,
+                    bunny_hop: false,
+                    jumps: 0,
+                    jump_velocity: 5.5,
+                    jump_ceiling: 0.0,
+                },
+                fall: FallParams {
+                    terminal_velocity: 40.0,
+                },
+                stuck_stop_enabled: PlayerMovementDescriptor::DEFAULT_STUCK_STOP_ENABLED,
+                stuck_stop_threshold: PlayerMovementDescriptor::DEFAULT_STUCK_STOP_THRESHOLD,
+                dash: None,
+                forgiveness: None,
+                crouch: None,
+                view_feel: None,
+            }),
+            weapon: None,
+            mesh: None,
+            health: None,
+            ai: None,
+        }
+    }
+
+    fn host_player_spawn_placement() -> MapEntity {
+        MapEntity {
+            classname: "player_spawn".to_string(),
+            origin: glam::Vec3::new(5.0, 1.0, -2.0),
+            angles: glam::Vec3::ZERO,
+            key_values: std::collections::HashMap::new(),
+            tags: vec![],
+        }
+    }
+
+    /// Spawn the host's own boot pawn exactly as `install_level_payload` does, returning
+    /// the marked `local_player_pawn` `EntityId`.
+    fn spawn_host_boot_pawn(registry: &mut EntityRegistry) -> EntityId {
+        let descriptors = [host_player_descriptor()];
+        let placement = [host_player_spawn_placement()];
+        spawn_from_player_starts(&placement, &descriptors, registry, None);
+        registry
+            .local_player_pawn()
+            .expect("the host boot pawn is marked the local player")
+    }
+
+    // Issue 3b: after host setup the host's own pawn is registered in the ReplicableSet
+    // with a NetworkId, and `produce_owned_snapshots` emits a VALID NON-local movement
+    // record for it — owner None (so `local_player` false for any recipient), no ack
+    // (`last_processed_client_tick` None), carrying Transform + PlayerMovementState +
+    // entity_class. It is NEVER local for any recipient and is NOT double-registered on
+    // a second install.
+    #[test]
+    fn host_own_pawn_replicates_as_non_local_movement_record() {
+        let mut registry = EntityRegistry::new();
+        let pawn = spawn_host_boot_pawn(&mut registry);
+
+        let mut allocator = NetworkIdAllocator::new();
+        let mut replicable = ReplicableSet::new();
+        let mut host_pawn: Option<EntityId> = None;
+
+        // Register the host's own pawn for outbound replication (the production seam:
+        // `App::host_register_own_pawn_after_install`).
+        host_register_own_pawn(&mut allocator, &mut replicable, &mut host_pawn, pawn);
+
+        // It is in the replicable set, tracked, and carries an allocated NetworkId.
+        assert!(
+            replicable.contains(pawn),
+            "the host's own pawn is registered for replication"
+        );
+        assert_eq!(host_pawn, Some(pawn), "the host pawn is tracked for reload");
+        let net_id = allocator.stamp(pawn);
+
+        // The host pawn has NO owner mapping (it is driven locally, never command-queued)
+        // and NO resolved cursor — produce it with empty owners / queues.
+        let owners = MovementOwners::new();
+        let queues = HostCommandQueues::new();
+        let owned =
+            produce_owned_snapshots(&registry, &replicable, &mut allocator, &owners, &queues);
+        assert_eq!(owned.len(), 1, "exactly the host's own pawn replicates");
+        let snap = &owned[0];
+        assert_eq!(snap.network_id, net_id.0, "stamped with its NetworkId");
+
+        // Owner None -> local_player false for EVERY recipient; no ack cursor.
+        assert_eq!(
+            snap.owner_client_id, None,
+            "the host pawn has no remote owner (never local_player on any recipient)"
+        );
+        assert_eq!(
+            snap.last_processed_client_tick, None,
+            "the host pawn is not command-driven, so it carries no ack cursor"
+        );
+
+        // Carries Transform + PlayerMovementState (the movement subset the producer
+        // attaches for a live PlayerMovementComponent).
+        assert_eq!(
+            snap.components.len(),
+            2,
+            "host pawn replicates Transform + PlayerMovementState"
+        );
+        assert!(
+            snap.components
+                .iter()
+                .any(|c| matches!(c, ComponentPayload::Transform(_))),
+            "carries a Transform payload"
+        );
+        assert!(
+            snap.components
+                .iter()
+                .any(|c| matches!(c, ComponentPayload::PlayerMovementState(_))),
+            "carries a PlayerMovementState payload"
+        );
+
+        // The record is a VALID non-local movement record on the wire: ingest into the
+        // tracker and encode for a sample recipient. `local_player` must be false (the
+        // recipient is not the owner — there is no owner). Validation accepts a movement
+        // record with None ack + local_player false + entity_class present-or-absent.
+        const RECIPIENT: u64 = 7;
+        let mut replication = ServerReplication::new();
+        replication.register_client(RECIPIENT);
+        let owned2 =
+            produce_owned_snapshots(&registry, &replicable, &mut allocator, &owners, &queues);
+        replication.ingest_tick(owned2);
+        let encoded = replication
+            .encode_for_client(RECIPIENT, 1)
+            .expect("registered recipient encodes");
+        // `typed_records` runs the wire validation; a malformed record would error here.
+        let records = typed_records(&encoded);
+        let host_record = records
+            .iter()
+            .find(|r| match r {
+                EntityRecord::FullBaseline { network_id, .. }
+                | EntityRecord::Delta { network_id, .. } => *network_id == net_id.0,
+                _ => false,
+            })
+            .expect("the host pawn reaches the recipient as a valid record");
+        let local_player = match host_record {
+            EntityRecord::FullBaseline { local_player, .. }
+            | EntityRecord::Delta { local_player, .. } => *local_player,
+            _ => panic!("host pawn record is a movement baseline/delta"),
+        };
+        assert!(
+            !local_player,
+            "the host pawn is NEVER marked local_player for any recipient"
+        );
+    }
+
+    // Issue 3b: a second install (level reload) re-registers the freshly-spawned host
+    // pawn and unregisters the stale one — it never double-registers, and the replicable
+    // set never names a despawned id.
+    #[test]
+    fn host_own_pawn_not_double_registered_on_reload() {
+        let mut registry = EntityRegistry::new();
+        let mut allocator = NetworkIdAllocator::new();
+        let mut replicable = ReplicableSet::new();
+        let mut host_pawn: Option<EntityId> = None;
+
+        // First install.
+        let first = spawn_host_boot_pawn(&mut registry);
+        host_register_own_pawn(&mut allocator, &mut replicable, &mut host_pawn, first);
+        assert!(replicable.contains(first));
+
+        // Re-registering the SAME pawn (idempotent install) keeps exactly one entry.
+        host_register_own_pawn(&mut allocator, &mut replicable, &mut host_pawn, first);
+        let count_after_idempotent = replicable.iter().count();
+        assert_eq!(
+            count_after_idempotent, 1,
+            "re-registering the same host pawn does not double-register"
+        );
+
+        // A level reload: despawn the old pawn and spawn a fresh one (distinct EntityId).
+        registry.despawn(first).expect("old host pawn despawns");
+        registry.clear_for_level_unload();
+        let second = spawn_host_boot_pawn(&mut registry);
+        assert_ne!(first, second, "the reloaded host pawn is a distinct entity");
+
+        host_register_own_pawn(&mut allocator, &mut replicable, &mut host_pawn, second);
+        assert_eq!(host_pawn, Some(second), "tracks the fresh host pawn");
+        assert!(
+            !replicable.contains(first),
+            "the stale host pawn is unregistered on reload"
+        );
+        assert!(
+            replicable.contains(second),
+            "the fresh host pawn is registered"
+        );
+        assert_eq!(
+            replicable.iter().count(),
+            1,
+            "exactly one host pawn is registered after reload"
+        );
+    }
+
+    // Issue 3a: `remote_entity_positions` for a Host endpoint sources the overlay from
+    // the host's authoritative ReplicableSet (non-empty when pawns are registered);
+    // the Client endpoint still sources its own NetworkId -> EntityId map.
+    #[cfg(feature = "dev-tools")]
+    #[test]
+    fn remote_entity_positions_host_sources_replicable_set() {
+        // Build a real Host endpoint (binds an ephemeral UDP socket), then move its
+        // replicable set out, populate it, and move it back — registering two
+        // authoritative pawns at known positions.
+        let mut registry = EntityRegistry::new();
+        let a = registry.spawn(Transform {
+            position: Vec3::new(1.0, 2.0, 3.0),
+            ..Transform::default()
+        });
+        let b = registry.spawn(Transform {
+            position: Vec3::new(-4.0, 0.0, 5.0),
+            ..Transform::default()
+        });
+
+        let mut host = NetEndpoint::from_role(&NetRole::Host { port: 0 })
+            .expect("host endpoint constructs")
+            .expect("host role yields an endpoint");
+        let NetEndpoint::Host { replicable, .. } = &mut host else {
+            panic!("from_role(Host) must yield a Host endpoint");
+        };
+        replicable.register(a);
+        replicable.register(b);
+
+        let mut positions = netcode_remote_positions(&host, &registry);
+        positions.sort_by(|p, q| p.x.partial_cmp(&q.x).unwrap());
+        assert_eq!(
+            positions,
+            vec![Vec3::new(-4.0, 0.0, 5.0), Vec3::new(1.0, 2.0, 3.0)],
+            "the host overlay sources the registered authoritative pawns' positions"
+        );
+
+        // A Client endpoint with an empty NetworkId -> EntityId map sources its own
+        // (empty) map, NOT the host set — confirming the per-endpoint branch.
+        let client = NetEndpoint::from_role(&NetRole::Connect {
+            addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
+        })
+        .expect("client endpoint constructs")
+        .expect("connect role yields an endpoint");
+        assert!(
+            netcode_remote_positions(&client, &registry).is_empty(),
+            "a client with no mapped entities draws nothing (client-map path, not host)"
+        );
+    }
+
+    /// Local alias so the dev-tools-gated test reads the same symbol the caller uses.
+    #[cfg(feature = "dev-tools")]
+    fn netcode_remote_positions(endpoint: &NetEndpoint, registry: &EntityRegistry) -> Vec<Vec3> {
+        remote_entity_positions(endpoint, registry)
     }
 
     // The client apply state machine (spawn, mutate-in-place, despawn, non-finite

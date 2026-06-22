@@ -23,10 +23,10 @@ mod movement;
 // The runtime nav graph is built in every build whenever a level carries a
 // baked navmesh; pathfinding consumes its query surface.
 mod nav;
-// Engine-side netcode glue (M15 Phase 1): role selection, the optional endpoint
-// held by `App`, and the game-logic-owned serialize/apply steps. The ONLY engine
-// code that touches the registry on behalf of replication. See
-// `context/lib/entity_model.md` §6.
+// Engine-side netcode glue (M15 Phase 3): role selection, the optional endpoint
+// held by `App`, the game-logic-owned serialize/apply steps, and client-side
+// prediction and reconciliation. The ONLY engine code that touches the registry
+// on behalf of replication. See `context/lib/entity_model.md` §6.
 mod netcode;
 mod options;
 mod weapon;
@@ -1347,8 +1347,9 @@ fn followed_player_pawn(
 /// Phase 3 Task 5 local-pawn correction offset (the decaying difference between the
 /// predicted and reconciled pose); it is added to the gameplay-authoritative
 /// registry transform so the first-person eye glides smoothly across a reconcile
-/// correction without rubber-banding. `Vec3::ZERO` off the connected-client path
-/// (single-player / host), where the camera follows the registry pose verbatim.
+/// correction without rubber-banding. The offset is always `Vec3::ZERO` at tick rate
+/// (both the single-player/host path and the connected-client tick path pass zero);
+/// the real offset is read from `ClientPrediction` at render rate by the render seam.
 fn follow_camera_to_local_pawn(
     camera: &mut Camera,
     registry: &scripting::registry::EntityRegistry,

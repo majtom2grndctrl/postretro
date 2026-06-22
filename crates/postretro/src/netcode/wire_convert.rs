@@ -16,8 +16,6 @@ use crate::weapon::FireButtonState;
 /// y = forward`) into the wire's `[right, forward]` array; the buttons and
 /// `facing_yaw` carry through verbatim, and `FireButtonState` rides along
 /// faithfully (Phase 5 consumes it — Phase 3 only round-trips it).
-// Caller lands in Task 3 (client send) / Task 5 (reconciliation replay).
-#[allow(dead_code)]
 pub(crate) fn sim_command_to_input(cmd: &SimCommand, client_tick: u32) -> InputCommand {
     InputCommand {
         client_tick,

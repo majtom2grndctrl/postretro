@@ -239,8 +239,8 @@ impl ClientPrediction {
 
     /// Whether prediction is armed and may drive the local pawn this frame. Before
     /// arming the client may still SEND input commands to the host, but it must not
-    /// spawn or advance a provisional local pawn. Used by this module's tests and the
-    /// Task 5 reconciliation gate; staged until that caller lands.
+    /// spawn or advance a provisional local pawn. Test-only; no production caller
+    /// (the reconcile path calls `armed()` directly).
     #[allow(dead_code)]
     pub(crate) fn is_armed(&self) -> bool {
         self.armed.is_some()
@@ -375,13 +375,13 @@ impl ClientPrediction {
     /// Produce the presented local pose: the gameplay-authoritative `registry_pose`
     /// with the decaying correction offset added to its position. The
     /// presentation-pose accessor in `Transform` form — used wherever a full pose
-    /// (not just the offset) is convenient, including the Task 6 latency harness
-    /// asserting the presented pose lags the snapped registry pose. The `main.rs`
-    /// render seam folds the same offset onto the interpolated *camera eye* via
+    /// (not just the offset) is convenient. The `main.rs` render seam folds the same
+    /// offset onto the interpolated *camera eye* via
     /// [`presentation_offset`](Self::presentation_offset) (it works with the
     /// interpolated position, not a registry Transform). Rotation/scale are not
     /// corrected (Phase 3 is movement-only; orientation comes from the live look
-    /// input, not the reconciled snapshot). Staged until the harness lands.
+    /// input, not the reconciled snapshot). Test-only presentation-pose accessor;
+    /// no production caller.
     #[allow(dead_code)]
     pub(crate) fn present_local_pose(&self, registry_pose: Transform) -> Transform {
         Transform {

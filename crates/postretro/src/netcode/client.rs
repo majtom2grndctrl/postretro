@@ -129,8 +129,8 @@ pub(crate) struct ClientReplication {
 #[derive(Debug, Clone)]
 pub(crate) struct LocalReconcileInput {
     /// The `NetworkId` of the local pawn record. The reconcile path matches by
-    /// `entity_id` (the armed pawn's mapped id), so this is carried for diagnostics
-    /// and the Task 6 harness rather than the reconcile match; staged until then.
+    /// `entity_id` (the armed pawn's mapped id). Diagnostic/future-use field;
+    /// not currently consumed.
     #[allow(dead_code)]
     pub(crate) network_id: NetworkId,
     /// The mapped `EntityId` the record applied to.
@@ -874,8 +874,8 @@ mod tests {
         EntityRecord::FullBaseline {
             network_id,
             baseline_id,
-            // Task 1 stub: client apply does not yet consume movement-authority
-            // metadata. Task 2/4 thread real values through these helpers.
+            // Generic non-local fixture: intentionally omits `local_player`/
+            // `last_processed_client_tick` to exercise the non-local replication path.
             last_processed_client_tick: None,
             local_player: false,
             // Generic (non-local) baseline fixture: no descriptor class.
@@ -894,7 +894,7 @@ mod tests {
             network_id,
             baseline_ref,
             new_baseline_id,
-            // Task 1 stub: see `full_baseline`.
+            // Generic non-local fixture: see `full_baseline`.
             last_processed_client_tick: None,
             local_player: false,
             // Generic (non-local) delta fixture: no descriptor class.

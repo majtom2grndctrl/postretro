@@ -102,7 +102,7 @@ pub(crate) fn reconcile_local_pawn(
     //    Skipped on a reset (history was cleared). Threads collision/gravity/dt through
     //    the movement-only replay so the reconciled tail matches the forward prediction.
     if !is_reset {
-        for entry in prediction.history().clone() {
+        for entry in prediction.history().iter() {
             let sim = crate::netcode::wire_convert::input_command_to_sim(&entry.command);
             let (next_transform, next_movement, _events) = replay(
                 reconciled_transform,

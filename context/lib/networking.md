@@ -6,7 +6,7 @@
 
 ---
 
-This is **Milestone 15 Phase 1**: authoritative client-server co-op, "ugly-but-connected". General-purpose multiplayer is a non-goal (see `index.md` §4). The Phase 1 client is a pure viewer of host-authoritative full-state — no prediction, no client→server gameplay, no lifecycle reconciliation. See *Phase boundaries* below.
+This is **Milestone 15 Phase 3**: authoritative client-server co-op with client-side prediction and reconciliation. General-purpose multiplayer is a non-goal (see `index.md` §4). See *Phase boundaries* below.
 
 ## Crate boundary and ownership
 
@@ -32,7 +32,7 @@ Three channels, fixed layout, agreed by both peers (the layout is folded into th
 |---------|----------|---------|
 | Control | reliable-ordered | version handshake; later, spawn/despawn |
 | Snapshot | unreliable | full-state snapshots, latest-wins (a dropped snapshot is superseded by the next) |
-| Input | reliable-ordered (reserved) | client input-command stream — registered now, no traffic in Phase 1 |
+| Input | reliable-ordered | client input-command stream — carries `ClientMessage::Input` (Phase 3) |
 
 The Input channel is registered in Phase 1 only so the channel layout — and thus the transport protocol gate — is stable before it carries traffic. Reliability is matched to the data: control state must arrive and stay ordered; snapshots are disposable because the next one obsoletes the last.
 
@@ -143,7 +143,7 @@ Phase 1 ships the durable shape above. The following are **deferred** and must n
 
 - **Phase 2:** delta encoding, snapshot interpolation, time-sync, entity lifecycle (spawn/despawn over the control channel, remove-missing reconciliation), and the client→server input stream over the reserved Input channel.
   - **Replicable-set policy and interest management** are deferred here: which entities are authoritative networked objects vs. client-cosmetic (particles/sprites) vs. static (baked lights/fog). Phase 1 replicates the full `Transform`-bearing set, which floods snapshots on FX-heavy maps — the campaign-test smoke emitters (each a `BillboardEmitter`/`ParticleState` entity) drowned the moving pawn in the two-process demo. The Phase 2 predicate scopes the wire to entities carrying an authoritative gameplay component (`PlayerMovement`/`Agent`/`Brain`/`Health`/movers); `BillboardEmitter`/`ParticleState`/`SpriteVisual`/`Light`/`FogVolume` are deterministic client-local or baked, identical on both ends from the shared `.prl`, and must stay off the wire.
-- **Phase 3:** client-side prediction and reconciliation.
+- **Phase 3:** client-side prediction and reconciliation. **Shipped.**
 
 Phase 1 explicitly **never despawns:** a `NetworkId` absent from a later snapshot is left untouched; remove-missing is Phase 2's job. The component payload binds **only `Transform`** in Phase 1; other components join in the same `ComponentKind` numeric order without changing the envelope shape.
 

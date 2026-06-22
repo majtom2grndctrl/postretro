@@ -1,7 +1,7 @@
-// Engine-side netcode glue for M15 Phase 2: role selection, the `NetworkId <-> EntityId`
-// maps, the connection-slot lifecycle, and the game-logic-owned host delta serialize and
-// client apply/interpolation steps (the sole engine code that mutates the registry for
-// replication).
+// Engine-side netcode glue for M15 Phase 3: role selection, the `NetworkId <-> EntityId`
+// maps, the connection-slot lifecycle, the game-logic-owned host delta serialize and
+// client apply/interpolation steps, and client-side prediction and reconciliation
+// (the sole engine code that mutates the registry for replication).
 // See: context/lib/networking.md
 
 mod client;
@@ -24,21 +24,14 @@ mod predict_reconcile_harness_test_fixtures;
 
 pub(crate) use client::ClientReplication;
 pub(crate) use command_queue::{HostCommandQueues, MovementOwners, host_resolve_movement_inputs};
-// `ResolvedCommand` / `ResolutionSource` are produced by the command queue and read
-// by this module's tests; Task 5/6 (reconciliation/harness) consume them through the
-// submodule path. Not re-exported here until a non-test caller lands.
+// `ResolvedCommand` / `ResolutionSource` are produced by the command queue and consumed
+// via the submodule path only; not re-exported here.
 pub(crate) use interpolation::{DemoMover, interpolation_delay_ticks};
 pub(crate) use lifecycle::{SlotPawnSource, SlotPawns, on_slot_accepted, on_slot_closed};
 pub(crate) use prediction::ClientPrediction;
-// The movement-only replay helper is consumed by this module's forward prediction
-// (via the in-module path) and by Task 5 reconciliation (`reconcile.rs`, which calls
-// it through the submodule path).
-#[allow(unused_imports)]
-pub(crate) use prediction::replay;
-// Task 5 correction-classification API + thresholds and the reconcile entry point.
-// Re-exported so the Task 6 integrated latency harness can drive reconciliation
-// in-memory and assert the classification directly against the pinned AC thresholds.
-// Staged dead-code-allowed until that harness lands.
+// Correction-classification API + thresholds and the reconcile entry point.
+// Re-exported for test consumers (the integrated latency harness asserts classification
+// directly against the pinned AC thresholds); production code uses the direct submodule path.
 #[allow(unused_imports)]
 pub(crate) use prediction::{
     CorrectionClass, DASH_CORRECTION_MAX_M, ORDINARY_CORRECTION_MAX_M, TELEPORT_CORRECTION_MIN_M,
@@ -49,14 +42,8 @@ pub(crate) use reconcile::reconcile_local_pawn;
 pub(crate) use replication::{ReplicableSet, produce_owned_snapshots};
 pub(crate) use wire_convert::sim_command_to_input;
 
-// Phase 3 Task 2 seam — NOT re-exported here yet. The SimCommand<->InputCommand
-// conversions (`wire_convert`), the inbound `sanitize_input_command` guard, and
-// the movement-state extract/merge helpers (`movement_state`) are `pub(crate)` in
-// their focused submodules. Later Phase 3 tasks call them through the submodule
-// path (e.g. `crate::netcode::wire_convert::sim_command_to_input`) and add a
-// mod.rs re-export when they wire up a caller: Task 3 (client prediction/send),
-// Task 4 (host command queue), Task 5 (reconciliation). Each helper carries
-// `#[allow(dead_code)]` until its caller lands.
+// The conversion/merge helpers (`wire_convert`, `movement_state`) live in their focused
+// submodules and are imported by callers via the direct submodule path.
 
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};

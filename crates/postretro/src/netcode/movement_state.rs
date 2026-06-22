@@ -49,8 +49,6 @@ pub(crate) fn movement_state_to_wire(
 /// `cos_walkable`, the forgiveness *windows* (`coyote_ms`/`jump_buffer_ms`), and
 /// the derived `dash_programs`. A reconcile/apply path materializes the component
 /// from the local descriptor first, then merges authoritative tick state in here.
-// Caller lands in Task 4 (host snapshot production) / Task 5 (reconciliation).
-#[allow(dead_code)]
 pub(crate) fn merge_wire_into_movement_state(
     component: &mut PlayerMovementComponent,
     wire: &WirePlayerMovementState,

@@ -42,6 +42,13 @@ use crate::scripting::registry::{
 use super::interpolation::{PoseSource, RemoteInterpolationBuffer, TransformSample};
 use super::{payload_is_finite, wire_to_transform};
 
+/// Result of one remote interpolation sampling pass.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct InterpolationSampleStats {
+    pub(crate) presented: usize,
+    pub(crate) held_newest: usize,
+}
+
 /// Reason code carried in a `BaselineRefreshRequest`. Diagnostic only — the server
 /// repair path keys on entity + missing ref, not the reason (net wire contract).
 const REFRESH_REASON_UNKNOWN_BASELINE: u8 = 0;
@@ -743,14 +750,14 @@ impl ClientReplication {
     /// at any frame alpha (the sim sub-tick fraction is an unrelated time base and must
     /// not re-blend an already-resolved pose — see
     /// `EntityRegistry::set_presentation_transform`). An entity with no buffered
-    /// samples yet is left at its last-applied pose. Returns the number of entities
-    /// presented (diagnostics).
+    /// samples yet is left at its last-applied pose. Returns presentation stats for
+    /// diagnostics and adaptive delay feedback.
     pub(crate) fn sample_into_registry(
         &mut self,
         registry: &mut EntityRegistry,
         render_server_tick: f64,
-    ) -> usize {
-        let mut presented = 0;
+    ) -> InterpolationSampleStats {
+        let mut stats = InterpolationSampleStats::default();
         // Collect (network_id, entity_id) first to avoid borrowing `self.map` while
         // writing back through the registry.
         let mapped: Vec<(NetworkId, EntityId)> = self.map.iter().map(|(&n, &e)| (n, e)).collect();
@@ -767,16 +774,17 @@ impl ClientReplication {
                 continue; // no samples buffered yet
             };
             let _ = registry.set_presentation_transform(entity_id, pose.transform);
-            presented += 1;
+            stats.presented += 1;
             // Diagnostic: a HeldNewest after sustained starvation is the visible
             // freeze the buffer falls back to; logged sparingly at trace.
             if matches!(pose.source, PoseSource::HeldNewest) {
+                stats.held_newest += 1;
                 log::trace!(
                     "[Net] remote {network_id:?} holding last pose (interp buffer starved)"
                 );
             }
         }
-        presented
+        stats
     }
 
     /// Whether `network_id` is awaiting a baseline refresh (tests / diagnostics).
@@ -1571,8 +1579,9 @@ mod tests {
         // First present at render tick 102 -> interpolated x = 2.0. The pose must be
         // identical at alpha = 0.0, 0.5, and 1.0: the buffer's resolved pose is shown
         // verbatim, never re-blended by the render alpha.
-        let n = client.sample_into_registry(&mut registry, 102.0);
-        assert_eq!(n, 1, "one remote entity presented");
+        let stats = client.sample_into_registry(&mut registry, 102.0);
+        assert_eq!(stats.presented, 1, "one remote entity presented");
+        assert_eq!(stats.held_newest, 0, "bracketed pose did not starve");
         let at_zero = registry.interpolated_transform(id, 0.0).unwrap();
         let at_half = registry.interpolated_transform(id, 0.5).unwrap();
         let at_one = registry.interpolated_transform(id, 1.0).unwrap();
@@ -1595,7 +1604,9 @@ mod tests {
         // Second present at render tick 106 -> the buffer's own trajectory advances the
         // presented pose to x = 6.0, still alpha-invariant. Continuity comes from the
         // buffer, not from the render blend carrying a prior pose.
-        client.sample_into_registry(&mut registry, 106.0);
+        let stats = client.sample_into_registry(&mut registry, 106.0);
+        assert_eq!(stats.presented, 1, "one remote entity presented");
+        assert_eq!(stats.held_newest, 0, "bracketed pose did not starve");
         let next_zero = registry.interpolated_transform(id, 0.0).unwrap();
         let next_one = registry.interpolated_transform(id, 1.0).unwrap();
         assert!((next_one.position.x - 6.0).abs() < EPSILON);
@@ -1625,7 +1636,9 @@ mod tests {
             client.presented_source(NetworkId(7), 200.0),
             Some(PoseSource::HeldNewest)
         );
-        client.sample_into_registry(&mut registry, 200.0);
+        let stats = client.sample_into_registry(&mut registry, 200.0);
+        assert_eq!(stats.presented, 1, "one remote entity presented");
+        assert_eq!(stats.held_newest, 1, "held-newest starvation is reported");
         let id = *client.map().get(&NetworkId(7)).unwrap();
         let held = registry.interpolated_transform(id, 1.0).unwrap();
         assert!(

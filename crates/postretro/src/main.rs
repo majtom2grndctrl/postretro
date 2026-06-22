@@ -4001,6 +4001,7 @@ impl App {
                 replication,
                 time_sync,
                 prediction,
+                ..
             }) => {
                 if let Err(err) = client.update(dt) {
                     log::error!("[Net] client update failed: {err}");
@@ -4102,13 +4103,19 @@ impl App {
         let Some(netcode::NetEndpoint::Client {
             replication,
             time_sync,
+            interpolation_delay,
             ..
         }) = self.net_endpoint.as_mut()
         else {
             return;
         };
         let mut registry = self.script_ctx.registry.borrow_mut();
-        netcode::client_sample_interpolation(&mut registry, replication, time_sync);
+        netcode::client_sample_interpolation(
+            &mut registry,
+            replication,
+            time_sync,
+            interpolation_delay,
+        );
     }
 
     /// Whether this process is a connected client (M15 Phase 3). The connected

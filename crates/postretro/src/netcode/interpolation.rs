@@ -54,6 +54,17 @@ const MAX_DELAY_MICROS: u64 = 250_000;
 /// top of the 50 ms floor before clamping (a 2σ-style margin against the smoothed
 /// mean-absolute deviation `ClientTimeSync::jitter_micros` reports).
 const JITTER_MULTIPLIER: f64 = 2.0;
+/// Extra delay added per frame where a remote buffer had to hold its newest pose.
+/// This feedback moves a too-aggressive clean-link delay toward the 100-150 ms band
+/// only after real starvation is observed, instead of charging every client that cost.
+const STARVATION_MARGIN_STEP_MICROS: f64 = 25_000.0;
+/// The starvation feedback may add at most 100 ms before the normal max-delay clamp.
+/// Jitter can still raise the final delay to `MAX_DELAY_MICROS`.
+const MAX_STARVATION_MARGIN_MICROS: f64 = 100_000.0;
+/// Fraction of the starvation margin retained after a clean sampled frame.
+const STARVATION_MARGIN_DECAY: f64 = 0.85;
+/// Below this, the starvation margin is treated as settled and snapped to zero.
+const STARVATION_MARGIN_EPSILON_MICROS: f64 = 500.0;
 
 /// Maximum forward extrapolation past the newest sample, in microseconds (100 ms).
 /// Beyond this the predicted pose has drifted too far from any real sample to trust,
@@ -65,7 +76,7 @@ const MAX_EXTRAPOLATION_MICROS: f64 = 100_000.0;
 /// headroom for reordered/duplicated arrivals without unbounded growth.
 const MAX_SAMPLES_PER_ENTITY: usize = 16;
 
-/// Interpolation delay in **whole sim ticks**, sized from the measured link jitter.
+/// Base interpolation delay in **whole sim ticks**, sized from measured link jitter.
 ///
 /// The continuous law is `clamp(50 ms + 2 × jitter, 50 ms, 250 ms)`; the result is
 /// then **rounded up** to a whole number of sim ticks, because the render target is a
@@ -76,16 +87,80 @@ const MAX_SAMPLES_PER_ENTITY: usize = 16;
 /// `jitter_micros` is the smoothed jitter from `ClientTimeSync::jitter_micros`;
 /// `micros_per_tick` is the engine's `DEFAULT_MICROS_PER_TICK`. A negative or
 /// non-finite jitter (impossible from the estimator, but defended) is treated as zero.
+#[cfg(test)]
 #[must_use]
 pub(crate) fn interpolation_delay_ticks(jitter_micros: f64, micros_per_tick: u64) -> u32 {
+    adaptive_interpolation_delay_ticks(jitter_micros, 0.0, micros_per_tick)
+}
+
+/// Client-side feedback state for the remote interpolation delay.
+///
+/// Time-sync jitter is the feed-forward signal. Buffer starvation is the feedback
+/// signal: if remotes had to hold their newest pose, the current delay was too tight
+/// for recent traffic, so subsequent frames temporarily add headroom.
+///
+/// Production delay is:
+/// `clamp(50 ms + 2 × jitter + starvation_margin, 50 ms, 250 ms)`,
+/// rounded up to whole sim ticks.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct InterpolationDelayState {
+    starvation_margin_micros: f64,
+}
+
+impl InterpolationDelayState {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// Delay in whole sim ticks using both measured jitter and recent starvation.
+    pub(crate) fn delay_ticks(&self, jitter_micros: f64, micros_per_tick: u64) -> u32 {
+        adaptive_interpolation_delay_ticks(
+            jitter_micros,
+            self.starvation_margin_micros,
+            micros_per_tick,
+        )
+    }
+
+    /// Fold one sampled frame into the starvation feedback. Call only when at least
+    /// one remote entity was actually sampled; empty frames carry no link signal.
+    pub(crate) fn observe_sampled_frame(&mut self, had_starvation: bool) {
+        if had_starvation {
+            self.starvation_margin_micros = (self.starvation_margin_micros
+                + STARVATION_MARGIN_STEP_MICROS)
+                .min(MAX_STARVATION_MARGIN_MICROS);
+        } else {
+            self.starvation_margin_micros *= STARVATION_MARGIN_DECAY;
+            if self.starvation_margin_micros < STARVATION_MARGIN_EPSILON_MICROS {
+                self.starvation_margin_micros = 0.0;
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn starvation_margin_micros(&self) -> f64 {
+        self.starvation_margin_micros
+    }
+}
+
+fn adaptive_interpolation_delay_ticks(
+    jitter_micros: f64,
+    starvation_margin_micros: f64,
+    micros_per_tick: u64,
+) -> u32 {
     debug_assert!(micros_per_tick > 0, "micros_per_tick must be positive");
     let jitter = if jitter_micros.is_finite() && jitter_micros > 0.0 {
         jitter_micros
     } else {
         0.0
     };
+    let starvation_margin =
+        if starvation_margin_micros.is_finite() && starvation_margin_micros > 0.0 {
+            starvation_margin_micros.min(MAX_STARVATION_MARGIN_MICROS)
+        } else {
+            0.0
+        };
     // Compute the clamped delay in microseconds, then round UP to whole ticks.
-    let raw_micros = MIN_DELAY_MICROS as f64 + JITTER_MULTIPLIER * jitter;
+    let raw_micros = MIN_DELAY_MICROS as f64 + JITTER_MULTIPLIER * jitter + starvation_margin;
     let clamped = raw_micros.clamp(MIN_DELAY_MICROS as f64, MAX_DELAY_MICROS as f64);
     let ticks = (clamped / micros_per_tick as f64).ceil();
     // `clamped` is bounded by MAX_DELAY_MICROS, so this cast never saturates u32.
@@ -428,6 +503,76 @@ mod tests {
         let neg = interpolation_delay_ticks(-50_000.0, DEFAULT_MICROS_PER_TICK);
         assert_eq!(nan, 3);
         assert_eq!(neg, 3);
+    }
+
+    #[test]
+    fn adaptive_delay_rises_after_observed_starvation() {
+        let mut state = InterpolationDelayState::new();
+        assert_eq!(
+            state.delay_ticks(0.0, DEFAULT_MICROS_PER_TICK),
+            3,
+            "clean link starts at the 50 ms floor"
+        );
+
+        state.observe_sampled_frame(true);
+        assert_eq!(
+            state.delay_ticks(0.0, DEFAULT_MICROS_PER_TICK),
+            5,
+            "one starved frame adds 25 ms of temporary headroom"
+        );
+
+        for _ in 0..8 {
+            state.observe_sampled_frame(true);
+        }
+        assert!(
+            state.starvation_margin_micros() <= MAX_STARVATION_MARGIN_MICROS,
+            "starvation feedback stays capped"
+        );
+        assert_eq!(
+            state.delay_ticks(0.0, DEFAULT_MICROS_PER_TICK),
+            9,
+            "capped starvation feedback raises the clean-link delay to 150 ms"
+        );
+    }
+
+    #[test]
+    fn adaptive_delay_decays_after_clean_sampled_frames() {
+        let mut state = InterpolationDelayState::new();
+        for _ in 0..4 {
+            state.observe_sampled_frame(true);
+        }
+        let raised = state.delay_ticks(0.0, DEFAULT_MICROS_PER_TICK);
+        assert!(raised > 3, "starvation feedback raised delay");
+
+        for _ in 0..64 {
+            state.observe_sampled_frame(false);
+        }
+
+        assert_eq!(
+            state.starvation_margin_micros(),
+            0.0,
+            "clean frames settle the starvation margin exactly to zero"
+        );
+        assert_eq!(
+            state.delay_ticks(0.0, DEFAULT_MICROS_PER_TICK),
+            3,
+            "settled state returns to the clean-link 50 ms floor"
+        );
+    }
+
+    #[test]
+    fn adaptive_delay_still_clamps_to_global_max() {
+        let mut state = InterpolationDelayState::new();
+        for _ in 0..8 {
+            state.observe_sampled_frame(true);
+        }
+
+        let ticks = state.delay_ticks(1_000_000.0, DEFAULT_MICROS_PER_TICK);
+        let expected = (MAX_DELAY_MICROS as f64 / DEFAULT_MICROS_PER_TICK as f64).ceil() as u32;
+        assert_eq!(
+            ticks, expected,
+            "jitter plus starvation feedback cannot exceed the global ceiling"
+        );
     }
 
     // --- Sample lookup by server tick: midpoint lands halfway. ---

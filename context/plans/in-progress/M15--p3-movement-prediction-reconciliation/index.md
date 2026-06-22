@@ -317,6 +317,26 @@ processed a snapshot acking that cursor.
 >   `materialize_local_pawn_movement` stub was removed); the headline latency gate still
 >   passes deterministically under seed `0x1502` (measured post-drain error `0.00000 m`).
 
+### Task 8: Adaptive remote interpolation delay clamp
+
+> **Phase 3 amendment (2026-06-22):** The 30 Hz snapshot cadence is a good co-op
+> default only if clean links keep low latency and bad links get enough buffer. The
+> remote interpolation delay is now adaptive. Time-sync jitter remains the feed-forward
+> input. Held-newest interpolation starvation is the feedback input.
+>
+> Production law:
+> `clamp(50 ms + 2 * jitter + starvation_margin, 50 ms, 250 ms)`, rounded up to whole
+> 60 Hz sim ticks. `starvation_margin` rises when a sampled remote has to hold its
+> newest pose, and decays back to zero after clean sampled frames. The margin caps at
+> 100 ms, so a clean link still presents near the 50 ms floor, while repeated starvation
+> can move the effective floor toward 150 ms before jitter applies. The global 250 ms
+> ceiling still wins.
+>
+> This changes only remote presentation. The local pawn remains prediction/reconcile
+> driven. Do not add network interpolation delay to the local player. Review should
+> verify tests for: unchanged clean-link floor, delay rise after starvation, decay after
+> clean sampled frames, and the unchanged global ceiling.
+
 ## Sequencing
 
 **Phase 1 (sequential):** Task 1 — wire identity and authority metadata block all replay.
@@ -330,6 +350,9 @@ land in parallel once the wire shape is pinned.
 and movement-state merge helpers.
 
 **Phase 5 (sequential):** Task 6 — validates the integrated prediction path.
+
+**Phase 6 (calibration):** Task 8 — adaptive remote interpolation delay clamp. It depends
+on the Task 6 starvation signal and does not change wire format or local prediction.
 
 ## Rough sketch
 

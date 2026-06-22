@@ -31,7 +31,7 @@ pub(crate) use client::ClientReplication;
 pub(crate) use command_queue::{HostCommandQueues, MovementOwners, host_resolve_movement_inputs};
 // `ResolvedCommand` / `ResolutionSource` are produced by the command queue and consumed
 // via the submodule path only; not re-exported here.
-pub(crate) use interpolation::{DemoMover, interpolation_delay_ticks};
+pub(crate) use interpolation::{DemoMover, InterpolationDelayState};
 pub(crate) use lifecycle::{SlotPawnSource, SlotPawns, on_slot_accepted, on_slot_closed};
 pub(crate) use prediction::ClientPrediction;
 // Correction-classification API + thresholds and the reconcile entry point.
@@ -268,6 +268,9 @@ pub(crate) enum NetEndpoint {
         /// estimator (consumed by Task 6 interpolation), and the production
         /// monotonic clock the estimator reads through.
         time_sync: Box<ClientTimeSync>,
+        /// Remote-entity interpolation delay feedback. Time-sync jitter sets the
+        /// baseline delay; recent buffer starvation temporarily raises it.
+        interpolation_delay: InterpolationDelayState,
         /// M15 Phase 3 client-side movement prediction for the local pawn: the
         /// command + predicted-state ring, the armed `NetworkId -> EntityId`
         /// baseline, and the forward-prediction tick. Long-lived prediction state
@@ -387,6 +390,7 @@ impl NetEndpoint {
                     client: Box::new(client),
                     replication: ClientReplication::new(),
                     time_sync: Box::new(ClientTimeSync::new()),
+                    interpolation_delay: InterpolationDelayState::new(),
                     prediction: ClientPrediction::new(),
                 }))
             }
@@ -726,11 +730,11 @@ pub(crate) fn client_decay_local_correction(endpoint: Option<&mut NetEndpoint>) 
 /// buffers) and **before** the render collectors read entities, so the renderer stays
 /// read-only over the registry.
 ///
-/// The render target is `estimated_server_tick - interpolation_delay`, where the delay
-/// is sized from the measured jitter by [`interpolation_delay_ticks`]. Before the
-/// time-sync estimator has folded its first echo (`estimated_server_tick` is `None`),
-/// there is no trustworthy clock to render against, so the buffers are left unsampled
-/// and remote entities stay at their last-applied snapshot pose.
+/// The render target is `estimated_server_tick - interpolation_delay`. Jitter sets
+/// the baseline delay; recent held-newest starvation temporarily adds headroom.
+/// Before the time-sync estimator has folded its first echo (`estimated_server_tick`
+/// is `None`), there is no trustworthy clock to render against, so the buffers are
+/// left unsampled and remote entities stay at their last-applied snapshot pose.
 ///
 /// The mutable registry borrow is threaded in by the caller (`main.rs`), so this
 /// module never reaches into `App`.
@@ -738,6 +742,7 @@ pub(crate) fn client_sample_interpolation(
     registry: &mut EntityRegistry,
     replication: &mut ClientReplication,
     time_sync: &ClientTimeSync,
+    interpolation_delay: &mut InterpolationDelayState,
 ) {
     // No estimate yet: render at the last-applied pose until the clock initializes.
     let Some(estimated_tick) = time_sync.estimated_server_tick() else {
@@ -745,9 +750,12 @@ pub(crate) fn client_sample_interpolation(
     };
     // Jitter is available whenever the estimate is; default to 0 defensively.
     let jitter = time_sync.jitter_micros().unwrap_or(0.0);
-    let delay_ticks = interpolation_delay_ticks(jitter, SERVER_TICK_MICROS);
+    let delay_ticks = interpolation_delay.delay_ticks(jitter, SERVER_TICK_MICROS);
     let render_server_tick = estimated_tick - f64::from(delay_ticks);
-    replication.sample_into_registry(registry, render_server_tick);
+    let stats = replication.sample_into_registry(registry, render_server_tick);
+    if stats.presented > 0 {
+        interpolation_delay.observe_sampled_frame(stats.held_newest > 0);
+    }
 }
 
 /// Microseconds per server sim tick (60 Hz), used to derive the telemetry-only

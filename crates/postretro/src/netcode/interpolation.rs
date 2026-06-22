@@ -32,15 +32,26 @@ use postretro_net::wire::NetworkId;
 
 use crate::scripting::registry::Transform;
 
-/// Lower bound of the interpolation delay: 100 ms expressed in microseconds. The
-/// delay never drops below this even on a jitter-free link, so a single late packet
-/// does not starve the buffer.
-const MIN_DELAY_MICROS: u64 = 100_000;
+/// Lower bound of the interpolation delay: 50 ms expressed in microseconds.
+///
+/// M15 Phase 3 calibration (playtest bug "Symptom 2", 2026-06-22): the remote view
+/// lagged ~0.5 s — the sum of this floor (was 100 ms, up to 250 ms under jitter), the
+/// 20 Hz snapshot cadence, and time-sync smoothing. Co-op runs on LAN / low-latency
+/// links with a small player count, so the conservative 100 ms floor (sized for an
+/// open-internet competitive link) was overkill. Halving it to 50 ms ≈ 3 ticks at
+/// 60 Hz keeps two snapshots bracketing the render target on a clean link at the
+/// raised 30 Hz cadence (`SNAPSHOT_TICK_INTERVAL = 2`, ~33 ms apart), so motion stays
+/// smooth without starving the buffer; the jitter term below still raises the delay
+/// automatically (toward `MAX_DELAY_MICROS`) on a genuinely jittery link. Combined
+/// with the faster cadence this targets ~80-120 ms steady-state remote-view latency.
+const MIN_DELAY_MICROS: u64 = 50_000;
 /// Upper bound of the interpolation delay: 250 ms. Past this the added input-to-photon
 /// latency is worse than the occasional extrapolation a tighter delay would cause.
+/// Unchanged by the Symptom 2 calibration: it is the safety ceiling for a bad link,
+/// reached only when measured jitter is high, not the steady-state co-op latency.
 const MAX_DELAY_MICROS: u64 = 250_000;
 /// Jitter multiplier in the delay law: the delay absorbs twice the measured jitter on
-/// top of the 100 ms floor before clamping (a 2σ-style margin against the smoothed
+/// top of the 50 ms floor before clamping (a 2σ-style margin against the smoothed
 /// mean-absolute deviation `ClientTimeSync::jitter_micros` reports).
 const JITTER_MULTIPLIER: f64 = 2.0;
 
@@ -49,14 +60,14 @@ const JITTER_MULTIPLIER: f64 = 2.0;
 /// so the state machine holds the last pose instead of extrapolating further.
 const MAX_EXTRAPOLATION_MICROS: f64 = 100_000.0;
 
-/// How many samples to retain per entity. At the 20 Hz snapshot cadence (~3 sim ticks
-/// apart) and a 250 ms max delay, ~5 samples span the delay window; 16 leaves ample
+/// How many samples to retain per entity. At the 30 Hz snapshot cadence (~2 sim ticks
+/// apart) and a 250 ms max delay, ~8 samples span the delay window; 16 leaves ample
 /// headroom for reordered/duplicated arrivals without unbounded growth.
 const MAX_SAMPLES_PER_ENTITY: usize = 16;
 
 /// Interpolation delay in **whole sim ticks**, sized from the measured link jitter.
 ///
-/// The continuous law is `clamp(100 ms + 2 × jitter, 100 ms, 250 ms)`; the result is
+/// The continuous law is `clamp(50 ms + 2 × jitter, 50 ms, 250 ms)`; the result is
 /// then **rounded up** to a whole number of sim ticks, because the render target is a
 /// server tick and a fractional-tick delay would bias the bracketing search. Rounding
 /// *up* keeps the delay at least the requested duration (never less buffered headroom
@@ -376,16 +387,16 @@ mod tests {
 
     #[test]
     fn delay_clamps_to_min_at_zero_jitter() {
-        // Zero jitter -> 100 ms floor -> ceil(100_000 / 16_667) = 6 ticks.
+        // Zero jitter -> 50 ms floor -> ceil(50_000 / 16_667) = 3 ticks.
         let ticks = interpolation_delay_ticks(0.0, DEFAULT_MICROS_PER_TICK);
         let expected = (MIN_DELAY_MICROS as f64 / DEFAULT_MICROS_PER_TICK as f64).ceil() as u32;
         assert_eq!(ticks, expected);
-        assert_eq!(ticks, 6, "100 ms floor is 6 whole ticks at 60 Hz");
+        assert_eq!(ticks, 3, "50 ms floor is 3 whole ticks at 60 Hz");
     }
 
     #[test]
     fn delay_clamps_to_max_at_high_jitter() {
-        // Jitter large enough that 100 ms + 2×jitter exceeds the 250 ms ceiling:
+        // Jitter large enough that 50 ms + 2×jitter exceeds the 250 ms ceiling:
         // the result clamps to 250 ms -> ceil(250_000 / 16_667) = 15 ticks.
         let huge_jitter = 1_000_000.0; // 1 s of jitter
         let ticks = interpolation_delay_ticks(huge_jitter, DEFAULT_MICROS_PER_TICK);
@@ -398,25 +409,25 @@ mod tests {
     fn delay_rounds_up_to_whole_ticks() {
         // Pick a jitter that lands the raw delay strictly between two tick
         // boundaries, then assert the result is the CEIL, not the floor/round.
-        // 100 ms + 2×jitter; choose jitter = 5_000 us -> raw = 110_000 us.
-        // 110_000 / 16_667 = 6.6 -> ceil = 7.
+        // 50 ms + 2×jitter; choose jitter = 5_000 us -> raw = 60_000 us.
+        // 60_000 / 16_667 = 3.6 -> ceil = 4.
         let ticks = interpolation_delay_ticks(5_000.0, DEFAULT_MICROS_PER_TICK);
-        assert_eq!(ticks, 7, "fractional tick delay rounds up");
+        assert_eq!(ticks, 4, "fractional tick delay rounds up");
 
         // A raw delay just past a tick boundary rounds up to the next whole tick.
-        // jitter = 25_000 -> raw = 150_000 us; 150_000 / 16_667 = 8.99... -> 9.
-        let ticks2 = interpolation_delay_ticks(25_000.0, DEFAULT_MICROS_PER_TICK);
-        assert_eq!(ticks2, 9, "just-under-9-ticks rounds up to 9");
+        // jitter = 20_000 -> raw = 90_000 us; 90_000 / 16_667 = 5.4 -> 6.
+        let ticks2 = interpolation_delay_ticks(20_000.0, DEFAULT_MICROS_PER_TICK);
+        assert_eq!(ticks2, 6, "fractional tick delay rounds up to 6");
     }
 
     #[test]
     fn delay_treats_non_finite_jitter_as_zero() {
         // A NaN/negative jitter (impossible from the estimator, but defended) maps
-        // to the 100 ms floor, never a garbage or panicking delay.
+        // to the 50 ms floor, never a garbage or panicking delay.
         let nan = interpolation_delay_ticks(f64::NAN, DEFAULT_MICROS_PER_TICK);
         let neg = interpolation_delay_ticks(-50_000.0, DEFAULT_MICROS_PER_TICK);
-        assert_eq!(nan, 6);
-        assert_eq!(neg, 6);
+        assert_eq!(nan, 3);
+        assert_eq!(neg, 3);
     }
 
     // --- Sample lookup by server tick: midpoint lands halfway. ---

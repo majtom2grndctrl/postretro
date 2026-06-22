@@ -414,6 +414,12 @@ impl LoopbackHarness {
                 self.prediction
                     .predict_tick(input, prev, &self.world, GRAVITY, DT)
             {
+                // Mirror production `client_predict_tick`: stamp previous = current for
+                // the local pawn BEFORE writing the new predicted pose, so its
+                // transform-history stays coherent each predicted tick (the connected
+                // client skips `simulate_tick`'s registry-wide stage-0 snapshot). The
+                // presented-eye smoothness test depends on this faithful mirror.
+                self.client_registry.snapshot_transform(pawn);
                 self.client_registry.set_component(pawn, t).unwrap();
                 self.client_registry.set_component(pawn, m).unwrap();
             }
@@ -761,5 +767,52 @@ impl LoopbackHarness {
     pub(crate) fn bystanders_alive(&self) -> bool {
         self.host_registry.exists(self.host_bystander)
             && self.client_registry.exists(self.client_bystander)
+    }
+
+    /// The local pawn's gameplay-authoritative (registry CURRENT) first-person eye:
+    /// the pawn's current `Transform.position` plus the constant capsule eye height —
+    /// exactly what `follow_camera_to_local_pawn` reads each fixed tick to drive
+    /// `camera.position` (which is then pushed into `frame_timing`). NO presentation
+    /// offset is folded here: the production camera-follow seam is passed `Vec3::ZERO`
+    /// and the offset is added once at the render stage. `None` until the local pawn is
+    /// armed and carries both components. The presented-eye smoothness test feeds this
+    /// stream into a `frame_timing`-equivalent interpolator + the offset to reconstruct
+    /// the exact first-person eye the player sees.
+    pub(crate) fn local_pawn_eye(&self) -> Option<Vec3> {
+        let pawn = self.client_pawn?;
+        let position = self
+            .client_registry
+            .get_component::<Transform>(pawn)
+            .ok()?
+            .position;
+        let eye_height = self
+            .client_registry
+            .get_component::<PlayerMovementComponent>(pawn)
+            .ok()?
+            .capsule
+            .eye_height;
+        Some(position + Vec3::new(0.0, eye_height, 0.0))
+    }
+
+    /// The local pawn's render-eye via the registry's *interpolated* transform at
+    /// sub-tick `alpha` (the surface the pawn MESH and portal-visibility apex read in
+    /// `main.rs`), plus the constant capsule eye height. This is the surface the
+    /// structural fix repairs: `interpolated_transform` lerps `previous_transforms`
+    /// against current, and a stale local previous (the bug) makes it lerp against an
+    /// ever-staler frozen pose → velocity-proportional jitter. The existing harness
+    /// never samples it (`position_error` reads only the CURRENT transform).
+    pub(crate) fn local_pawn_interpolated_eye(&self, alpha: f32) -> Option<Vec3> {
+        let pawn = self.client_pawn?;
+        let interpolated = self
+            .client_registry
+            .interpolated_transform(pawn, alpha)
+            .ok()?;
+        let eye_height = self
+            .client_registry
+            .get_component::<PlayerMovementComponent>(pawn)
+            .ok()?
+            .capsule
+            .eye_height;
+        Some(interpolated.position + Vec3::new(0.0, eye_height, 0.0))
     }
 }

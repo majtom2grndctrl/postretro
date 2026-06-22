@@ -2174,20 +2174,40 @@ impl ApplicationHandler for App {
                         // adds reconciliation/smoothing on top of this seam.
                         if self.is_connected_client() {
                             self.client_predict_movement_tick(&command, tick_dt);
+                            // Tick-rate camera follow tracks the PRESENTED local pose:
+                            // the gameplay-authoritative (snapped) registry pose plus the
+                            // decaying presentation offset. Folding the offset in HERE —
+                            // before `frame_timing.push_state` — is the fix for the
+                            // velocity-proportional first-person shake (M15 Phase 3
+                            // playtest bug). Reconcile snaps the registry backward by the
+                            // correction each snapshot and seeds the offset forward by the
+                            // same amount, so `registry + offset` is continuous across the
+                            // snap. If `frame_timing` instead carried the bare (snapped)
+                            // registry pose and the offset were re-added only at render,
+                            // `frame_timing` would interpolate ACROSS the snap (a backward
+                            // arc) while a constant offset over-corrected at alpha 0 — the
+                            // exact ∝-velocity oscillation. With the presented pose pushed,
+                            // both `frame_timing` endpoints sit in presented space and the
+                            // render-rate interpolation between consecutive presented poses
+                            // IS the smoother; the offset decays once per tick here.
+                            let presentation_offset = netcode::client_local_presentation_offset(
+                                self.net_endpoint.as_ref(),
+                            );
                             if has_player_pawn {
                                 let registry_ref = self.script_ctx.registry.borrow();
-                                // Tick-rate camera follow tracks the gameplay-
-                                // authoritative (snapped) registry pose; the Task 5
-                                // presentation offset is folded in once at the render
-                                // stage (the single presentation-pose seam) so the
-                                // frame_timing buffer carries the un-offset pose and
-                                // the offset decays at render rate, not tick rate.
                                 follow_camera_to_local_pawn(
                                     &mut self.camera,
                                     &registry_ref,
-                                    Vec3::ZERO,
+                                    presentation_offset,
                                 );
                             }
+                            // Decay the offset one step now that this tick's camera pose
+                            // has baked in the current value. Tick-rate decay (paired with
+                            // the presented-pose push) keeps `frame_timing` continuous;
+                            // the render stage reads the interpolated presented eye
+                            // directly and must NOT re-add the offset (it is already in
+                            // the pose), so there is no double-count.
+                            netcode::client_decay_local_correction(self.net_endpoint.as_mut());
                             self.frame_timing
                                 .push_state(InterpolableState::new(self.camera.position));
                             continue;
@@ -2412,21 +2432,18 @@ impl ApplicationHandler for App {
                 // frame's look rotation.
                 let interp = self.frame_timing.interpolated_state();
 
-                // M15 Phase 3 Task 5: fold the connected client's local-pawn
-                // presentation offset into the interpolated eye position. This is the
-                // single render-stage presentation-pose seam — RenderCamera and the
-                // portal-visibility render eye both derive from `presented_eye` below,
-                // so the smoothed correction reaches the view matrix, camera uniforms,
-                // BSP camera-leaf lookup, and portal apex together. Gameplay reads the
-                // un-offset registry pose; only presentation lags and converges. ZERO
-                // off the connected-client path.
-                let local_presentation_offset =
-                    netcode::client_local_presentation_offset(self.net_endpoint.as_ref());
-                let presented_eye = interp.position + local_presentation_offset;
-                // Decay the offset one render frame toward zero now that this frame has
-                // read it (read the copy above, then advance the stored offset). Render-
-                // rate convergence: the correction glides out over a few frames.
-                netcode::client_decay_local_correction(self.net_endpoint.as_mut());
+                // M15 Phase 3 Task 5: the connected client's local-pawn presentation
+                // offset is already baked into the camera pose `frame_timing` carries
+                // (folded in at the tick-rate camera-follow seam above, where the offset
+                // also decays once per tick). So the interpolated eye IS the presented
+                // eye — re-adding the offset here would double-count it and re-introduce
+                // the ∝-velocity oscillation it was moved to fix. `frame_timing`
+                // interpolates between consecutive PRESENTED poses, so the smoothed
+                // correction reaches the view matrix, camera uniforms, BSP camera-leaf
+                // lookup, and portal apex continuously across each reconcile snap.
+                // Single-player and the host carry a ZERO offset, so this is the bare
+                // interpolated eye for them, unchanged.
+                let presented_eye = interp.position;
 
                 // View-feel assembly (movement.md D1/D5/D6): a render-only,
                 // pawn-driven camera effect. When the camera-driving pawn carries
@@ -4022,7 +4039,7 @@ impl App {
 
     /// Host Phase 2 replication step. Thin delegation to `crate::netcode`. Ingests
     /// the replicable set from the registry (immutable borrow) into the per-client
-    /// replication tracker every sim tick and, on the 20 Hz cadence, encodes and
+    /// replication tracker every sim tick and, on the 30 Hz cadence, encodes and
     /// sends each accepted client a per-client delta snapshot over the snapshot
     /// channel. No-op for single-player and the client.
     fn net_serialize_and_send(&mut self) {

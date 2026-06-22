@@ -123,7 +123,18 @@ pub(crate) fn reconcile_local_pawn(
     //    chains from THIS reconciled pose (it reads `prev` from the registry, never a
     //    stored history pose), so the correction is not silently overwritten by a
     //    prediction chained off the stale pre-reconcile pose.
-    let _ = registry.set_component(entity_id, reconciled_transform);
+    //
+    //    Stamp previous == current for the local pawn (`set_presentation_transform`) so
+    //    its transform-history is coherent the instant the snap lands, NOT only after the
+    //    next predicted tick re-stamps it. Reconcile runs once per frame BEFORE the tick
+    //    loop; on a zero-tick frame no `client_predict_tick` follows to fix the history,
+    //    and the render-stage `interpolated_transform` for the pawn mesh would otherwise
+    //    lerp the stale pre-reconcile previous against the snapped current — a one-frame
+    //    velocity-proportional smear. Smoothing of the FIRST-PERSON eye is carried
+    //    separately by the decaying presentation offset (step 6); the gameplay pose +
+    //    mesh snap cleanly. The teleport branch below re-stamps the same way (its
+    //    `set_presentation_transform` call) after clearing history.
+    let _ = registry.set_presentation_transform(entity_id, reconciled_transform);
     let _ = registry.set_component(entity_id, component.clone());
 
     // 6. Classify the correction (predicted - reconciled) and smooth or snap. With no
@@ -139,13 +150,13 @@ pub(crate) fn reconcile_local_pawn(
     match class {
         CorrectionClass::Teleport => {
             // Snap hard: no smoothed glide. Clear the predicted ring (the trajectory
-            // diverged too far to replay onto) and the presentation offset, and stamp
-            // the registry transform prev == current so the render blend leaves no
-            // visible slide across the teleport. Generalizes the remote-presentation
-            // transform-history reset for the local pawn.
+            // diverged too far to replay onto) and the presentation offset. The
+            // prev == current stamp that leaves no render-blend slide across the
+            // teleport already happened in step 5 (`set_presentation_transform`); a
+            // teleport differs from a smoothed correction only in clearing history +
+            // the offset, not in how the transform is stamped.
             prediction.clear_history();
             prediction.clear_presentation_offset();
-            let _ = registry.set_presentation_transform(entity_id, reconciled_transform);
         }
         CorrectionClass::Ordinary | CorrectionClass::Dash | CorrectionClass::OversizedSmoothed => {
             // Smooth: the registry snapped to the reconciled pose; seed the decaying

@@ -56,6 +56,19 @@ fn light_link() -> LinkConfig {
     }
 }
 
+/// Plain loopback at ~zero latency: no delay, jitter, or loss. The host playout
+/// buffer still warms up (a few ticks), but once armed the host resolves the
+/// client's commands the same tick they arrive, so reconcile corrections are ~0 and
+/// the presented-eye smoothness test sees only the structural jitter it targets.
+fn loopback_link() -> LinkConfig {
+    LinkConfig {
+        delay: 0,
+        jitter: 0,
+        loss_probability: 0.0,
+        seed: 0x100b,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Section A — Integrated scenario tests (drive the real seams end to end)
 // ---------------------------------------------------------------------------
@@ -429,6 +442,202 @@ fn malformed_input_at_drain_seam_is_rejected() {
     assert!(
         run_resolve(&mut h, CLIENT_ID).is_none(),
         "a rejected malformed command never resolves a tick"
+    );
+    assert!(h.bystanders_alive());
+}
+
+// --- Presented first-person eye smoothness (M15 Phase 3 playtest bug "Symptom 1").
+//
+// Bug: on a CONNECTED CLIENT the first-person camera vibrated with amplitude ∝ speed
+// (zero at standstill). Root cause: the client `continue`s past `simulate_tick`, so
+// the registry-wide stage-0 `snapshot_transforms` (the per-tick `previous = current`
+// copy render interpolation relies on) never ran for the local pawn. The render-stage
+// `interpolated_transform(localpawn, alpha)` then lerped the live-current pose against
+// an ever-staler frozen-previous, and the per-snapshot reconcile snap perturbed the
+// registry — together a velocity-proportional per-frame oscillation of the PRESENTED
+// eye, even on plain loopback at ~zero latency.
+//
+// Why the existing harness misses it: every other test asserts on `position_error()` /
+// `client_position()`, which read the registry's *current* Transform after the drain
+// settles. They never sample the render-rate PRESENTED eye — the interpolated transform
+// blended at a sub-tick alpha plus the decaying presentation offset — so the jitter is
+// invisible to them (the pre-fix headline gate still reports 0.00000 m). This test
+// samples that eye across render sub-steps under the real predict + reconcile cadence.
+//
+// Fix: `client_predict_tick` (mirrored in the harness `client_predict_and_send`) now
+// stamps `previous = current` for the local pawn each predicted tick via
+// `EntityRegistry::snapshot_transform`, and `reconcile_local_pawn` snaps the local
+// pawn with `set_presentation_transform` (prev == current) so the transform-history is
+// coherent the instant a reconcile lands — without rerunning `simulate_tick`.
+#[test]
+fn presented_first_person_eye_is_smooth_under_reconcile_cadence() {
+    use crate::frame_timing::{FrameTiming, InterpolableState};
+
+    // Plain loopback (the reported repro is plain loopback at ~zero latency). The host
+    // tracks the client closely, so reconcile corrections stay small and the PRESENTED
+    // first-person eye should advance smoothly. The pre-fix eye oscillated ∝ speed here.
+    let mut h = LoopbackHarness::new(loopback_link());
+    h.step_until_armed(&forward_command(false));
+    assert!(h.prediction.is_armed(), "prediction armed before sampling");
+
+    // Reconstruct the EXACT production first-person eye assembly (main.rs ~2175-2445):
+    //   - each fixed tick, `follow_camera_to_local_pawn` reads the registry CURRENT eye
+    //     PLUS the presentation offset (the PRESENTED pose) into `camera.position`, the
+    //     offset decays once per tick, and `frame_timing.push_state(camera.pos)` pushes
+    //     the presented pose;
+    //   - each render frame, `presented_eye = frame_timing.interpolated_state()` directly
+    //     (the offset is already baked into the pose — NOT re-added at render).
+    // We drive a real `FrameTiming` with that PRESENTED eye stream. The offset is folded
+    // via `present_local_pose` (the pure presentation accessor) using the same value
+    // `client_local_presentation_offset` feeds the render seam. Several render frames per
+    // tick at a ladder of alphas reconstruct the continuous eye a variable-rate renderer
+    // draws. The reconcile cadence (inside `h.step`) perturbs the registry across the run;
+    // a correct presented-pose assembly stays continuous across each snap.
+    let seed_eye = h.local_pawn_eye().expect("armed pawn has an eye");
+    let mut frame_timing = FrameTiming::new(InterpolableState::new(seed_eye));
+    const ALPHAS: [f32; 4] = [0.0, 0.25, 0.5, 0.75];
+
+    // The presented eye Z over the whole render timeline. Constant forward walk → the
+    // eye must advance smoothly along -Z. The velocity-proportional bug shows up as
+    // alternating forward/back substeps (high jerk) and a backward arc each reconcile
+    // (the offset double-counting at alpha 0 / `frame_timing` interpolating the snap).
+    let mut eye_z: Vec<f32> = Vec::new();
+
+    for _ in 0..200 {
+        // One fixed tick: predict + reconcile (inside step). Then camera-follow the
+        // PRESENTED eye (registry CURRENT + offset) and push it into frame_timing, and
+        // decay the offset once per tick — exactly the production tick-rate seam.
+        h.step(&forward_command(false));
+        let registry_eye = h.local_pawn_eye().expect("armed pawn has an eye");
+        let camera_eye = h
+            .prediction
+            .present_local_pose(Transform {
+                position: registry_eye,
+                ..Transform::default()
+            })
+            .position;
+        frame_timing.push_state(InterpolableState::new(camera_eye));
+        h.prediction.decay_presentation_offset();
+
+        // Several render frames this tick: presented eye = interpolated PRESENTED pose
+        // read directly (offset already baked in — no re-add). `frame_timing`
+        // interpolates between the last two pushed presented eyes at the render alpha
+        // (the same `InterpolableState::lerp` the render seam reads).
+        for &alpha in &ALPHAS {
+            let presented = frame_timing
+                .previous_state
+                .lerp(&frame_timing.current_state, alpha)
+                .position;
+            assert!(presented.is_finite(), "presented eye is finite");
+            eye_z.push(presented.z);
+        }
+    }
+
+    assert!(eye_z.len() > 8, "sampled a meaningful timeline");
+
+    // The pawn genuinely moved (not a degenerate at-rest run): real -Z travel.
+    let total_travel = eye_z.first().unwrap() - eye_z.last().unwrap();
+    assert!(
+        total_travel > 5.0,
+        "the forward-walk scenario advanced the presented eye along -Z (travel {total_travel:.3} m)"
+    );
+
+    let steps: Vec<f32> = eye_z.windows(2).map(|w| w[1] - w[0]).collect();
+    // Expected smooth per-render-frame forward step: forward run speed (≈11 m/s) over
+    // one tick (1/60 s) split across the per-tick render frames ≈ 0.046 m. Derive the
+    // smooth scale from the observed mean so the gate is not a magic number.
+    let mean_step = steps.iter().sum::<f32>() / steps.len() as f32; // negative (forward)
+    let smooth_scale = mean_step.abs();
+
+    // GATE 1: no large backward vibration. A small backward glide is legitimate while a
+    // correction offset decays toward the (slightly-behind) authority; the BUG instead
+    // snapped the eye backward by ~a full tick of locomotion every tick boundary. Bound
+    // any backward substep to a fraction of the smooth forward step — an amplitude-∝-
+    // speed shake blows straight past this; a decay glide stays well under it.
+    let max_backward_step = steps.iter().copied().fold(f32::MIN, f32::max);
+    assert!(
+        max_backward_step <= smooth_scale * 0.5,
+        "the presented eye must not jump backward ∝ speed (velocity-proportional shake); \
+         worst backward substep {max_backward_step:.5} m exceeds 0.5x the smooth forward \
+         step {smooth_scale:.5} m"
+    );
+
+    // GATE 2: bounded jerk. Under constant velocity the per-frame step barely varies;
+    // the pre-fix oscillation produced huge swings (near-full-tick backward snap then an
+    // over-long forward catch-up). Bound the worst per-frame step *change* to a small
+    // multiple of the smooth step.
+    let max_jerk = steps
+        .windows(2)
+        .map(|w| (w[1] - w[0]).abs())
+        .fold(0.0_f32, f32::max);
+    assert!(
+        max_jerk <= smooth_scale * 1.5,
+        "presented-eye motion must be smooth (bounded jerk); worst per-frame step change \
+         {max_jerk:.5} m exceeds 1.5x the smooth forward step {smooth_scale:.5} m"
+    );
+
+    assert!(
+        h.bystanders_alive(),
+        "movement-only path: the death sweep never ran"
+    );
+}
+
+// --- Local-pawn render interpolation coherence (the structural Rank-3 term of the
+// same playtest bug). The pawn MESH and the portal-visibility render eye read the
+// registry's `interpolated_transform(localpawn, alpha)` (main.rs / mesh_render.rs), NOT
+// the camera `frame_timing` path. The bug: the connected client skips `simulate_tick`,
+// so the per-tick `previous = current` stamp never ran for the local pawn and
+// `interpolated_transform` lerped live-current against an ever-staler frozen-previous —
+// at alpha 0 it snapped back ~the whole accumulated distance every frame.
+//
+// Fix: `client_predict_tick` stamps `snapshot_transform` each predicted tick and
+// `reconcile_local_pawn` snaps the pawn with `set_presentation_transform` (prev ==
+// current), so previous is always exactly one tick (or the reconciled pose) behind
+// current. The existing harness never read this surface (`position_error` reads only
+// the CURRENT transform); this asserts the interpolated render pose advances smoothly.
+#[test]
+fn local_pawn_interpolated_render_eye_is_coherent_each_tick() {
+    let mut h = LoopbackHarness::new(loopback_link());
+    h.step_until_armed(&forward_command(false));
+    assert!(h.prediction.is_armed(), "prediction armed before sampling");
+
+    // For each tick, sweep the render alpha across the registry's interpolated local
+    // pawn pose. With coherent transform-history the per-tick span (alpha 0 → 1) is one
+    // tick of locomotion; the bug inflated it to the whole distance-since-spawn and made
+    // alpha 0 snap backward. We assert the intra-tick span stays near one tick of walk.
+    let mut max_intratick_span = 0.0_f32;
+    let mut moved = false;
+    for _ in 0..120 {
+        h.step(&forward_command(false));
+        let at0 = h
+            .local_pawn_interpolated_eye(0.0)
+            .expect("armed pawn interpolated eye");
+        let at1 = h
+            .local_pawn_interpolated_eye(1.0)
+            .expect("armed pawn interpolated eye");
+        // alpha 1 is the current pose, alpha 0 is the previous-tick pose. The forward
+        // span (current ahead of previous along -Z) is one tick of locomotion when the
+        // history is coherent; the bug made alpha 0 reach back to a frozen-stale pose.
+        let span = (at1 - at0).length();
+        max_intratick_span = max_intratick_span.max(span);
+        if at1.z < -1.0 {
+            moved = true;
+        }
+    }
+
+    assert!(
+        moved,
+        "the forward-walk scenario advanced the interpolated eye"
+    );
+    // One tick of run locomotion is ≈ run_speed (11 m/s) / 60 Hz ≈ 0.18 m. A coherent
+    // previous→current span is at most a few ticks (a reconcile that replays the unacked
+    // tail snaps prev == current, so even then the span is bounded). The bug produced a
+    // span of the WHOLE distance-since-spawn (many metres), growing without bound. Bound
+    // the span well below that runaway while leaving headroom for the reconcile replay.
+    assert!(
+        max_intratick_span < 1.0,
+        "the interpolated render eye's previous→current span must stay near one tick of \
+         locomotion (coherent transform-history); worst span was {max_intratick_span:.3} m"
     );
     assert!(h.bystanders_alive());
 }

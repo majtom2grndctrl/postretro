@@ -875,6 +875,30 @@ impl EntityRegistry {
         }
     }
 
+    /// Single-entity counterpart of [`snapshot_transforms`](Self::snapshot_transforms):
+    /// copy one entity's current `Transform` into its previous-tick slot. Used by the
+    /// connected-client prediction path (M15 Phase 3), which advances ONLY the local
+    /// pawn each fixed tick and so cannot afford the registry-wide snapshot
+    /// `simulate_tick` runs at stage 0 (that path also reruns AI/weapons/death — the
+    /// connected client skips it entirely). Calling this per predicted tick, before
+    /// writing the new predicted pose, keeps the local pawn's previous→current pair
+    /// coherent so the render-stage [`interpolated_transform`](Self::interpolated_transform)
+    /// blend (and any prev/current-derived velocity) advances smoothly rather than
+    /// lerping live-current against an ever-staler frozen-previous. A no-op for a stale
+    /// id or an entity without a `Transform`.
+    pub(crate) fn snapshot_transform(&mut self, id: EntityId) {
+        let Ok(index) = self.validate(id) else {
+            return;
+        };
+        if let Some(ComponentValue::Transform(current)) = self.components
+            [ComponentKind::Transform as usize]
+            .get(index)
+            .and_then(|c| c.as_ref())
+        {
+            self.previous_transforms[index] = Some(*current);
+        }
+    }
+
     /// Presentation-pose write: set the entity's visible transform to `pose` and
     /// stamp its previous-tick slot to the **same** pose, so the render-stage
     /// [`interpolated_transform`](Self::interpolated_transform) blend is a no-op at

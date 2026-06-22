@@ -661,7 +661,17 @@ pub(crate) fn client_predict_tick(
         return false;
     };
 
-    // 5. Write the predicted state back to the registry so camera follow, collision,
+    // 5. Stamp previous = current for the local pawn BEFORE writing the new predicted
+    //    pose — the per-tick transform-history bookkeeping the render path needs. The
+    //    connected client skips `simulate_tick` (it would rerun AI/weapons/death), so
+    //    the registry-wide stage-0 `snapshot_transforms` never runs here; this is its
+    //    single-pawn equivalent. Without it `previous_transforms[localpawn]` freezes at
+    //    the last reconcile/spawn and the render-stage `interpolated_transform` (local
+    //    pawn mesh + any prev/current-derived velocity) lerps live-current against an
+    //    ever-staler previous, producing the velocity-proportional first-person jitter.
+    registry.snapshot_transform(armed.entity_id);
+
+    // 6. Write the predicted state back to the registry so camera follow, collision,
     //    and the next predicted tick read it. Task 5 reconciles this against the
     //    authoritative snapshot.
     let _ = registry.set_component(armed.entity_id, transform);
@@ -729,10 +739,17 @@ pub(crate) fn client_sample_interpolation(
 /// telemetry stamp without importing the net const directly.
 pub(crate) const SERVER_TICK_MICROS: u64 = timesync::DEFAULT_MICROS_PER_TICK;
 
-/// Snapshot send cadence: one snapshot per client every third 60 Hz sim tick
-/// (20 Hz). The host ingests the registry every sim tick (so dirty detection sees
+/// Snapshot send cadence: one snapshot per client every second 60 Hz sim tick
+/// (30 Hz). The host ingests the registry every sim tick (so dirty detection sees
 /// every change) but only encodes + sends on this cadence.
-pub(crate) const SNAPSHOT_TICK_INTERVAL: u32 = 3;
+///
+/// M15 Phase 3 calibration (playtest bug "Symptom 2", 2026-06-22): raised from every
+/// third tick (20 Hz) to every second tick (30 Hz). The faster cadence shrinks the
+/// snapshot-spacing contribution to remote-view latency (~50 ms half-period → ~33 ms,
+/// so ~16 ms mean) and keeps two snapshots bracketing the now-tighter 50 ms
+/// interpolation floor (`MIN_DELAY_MICROS`) so remote motion stays smooth. The +50%
+/// snapshot bandwidth is acceptable for co-op's small player count.
+pub(crate) const SNAPSHOT_TICK_INTERVAL: u32 = 2;
 
 /// Host-only Phase 2 net-demo fixture state. Activation is a startup decision read
 /// once from the environment; the spawned `EntityId` is filled in lazily on the first
@@ -801,7 +818,7 @@ pub(crate) fn host_drive_demo_mover(
 /// Drive one host sim tick of Phase 2 per-client delta replication. Game-logic
 /// owned: borrows the registry immutably, copies the replicable set into owned
 /// wire-mirror snapshots, releases the borrow, then feeds the net tracker and (on
-/// the 20 Hz cadence) encodes + sends a per-client delta snapshot to every accepted
+/// the 30 Hz cadence) encodes + sends a per-client delta snapshot to every accepted
 /// client.
 ///
 /// `tick` is the monotonic server tick stamp; it is advanced by the caller. A
@@ -825,7 +842,7 @@ pub(crate) fn host_replicate(
     let owned = produce_owned_snapshots(registry, replicable, allocator, owners, command_queues);
     replication.ingest_tick(owned);
 
-    // Snapshots emit at 20 Hz (every third 60 Hz tick); ingest ran every tick above.
+    // Snapshots emit at 30 Hz (every second 60 Hz tick); ingest ran every tick above.
     if tick % SNAPSHOT_TICK_INTERVAL != 0 {
         return;
     }
@@ -834,7 +851,7 @@ pub(crate) fn host_replicate(
     if accepted.is_empty() {
         return;
     }
-    // One sequence shared across all clients in this 20 Hz batch.
+    // One sequence shared across all clients in this 30 Hz batch.
     let sequence = replication.begin_batch();
     for client_id in accepted {
         // Register lazily: an accepted client gets a fresh per-client state on first

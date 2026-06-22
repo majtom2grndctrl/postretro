@@ -2282,7 +2282,7 @@ impl ApplicationHandler for App {
                 // not clobber the previous/current pair this writes) and BEFORE the
                 // render stage reads entities, so the renderer stays read-only.
                 // No-op for single-player and the host.
-                self.net_sample_remote_interpolation();
+                self.net_sample_remote_interpolation(frame_dt);
 
                 // Drain collected post-tick events after all ticks complete so
                 // reactions observe the final state of every entity.
@@ -4100,7 +4100,7 @@ impl App {
     /// Runs after the catch-up tick loop so the stage-0 `snapshot_transforms` cannot
     /// clobber the presented pose, and before the render stage reads entities.
     /// No-op for single-player and the host (no client interpolation buffers).
-    fn net_sample_remote_interpolation(&mut self) {
+    fn net_sample_remote_interpolation(&mut self, frame_dt: f32) {
         let Some(netcode::NetEndpoint::Client {
             replication,
             time_sync,
@@ -4116,6 +4116,7 @@ impl App {
             replication,
             time_sync,
             interpolation_delay,
+            f64::from(frame_dt),
         );
     }
 

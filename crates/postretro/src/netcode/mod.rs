@@ -739,11 +739,16 @@ pub(crate) fn client_decay_local_correction(endpoint: Option<&mut NetEndpoint>) 
 ///
 /// The mutable registry borrow is threaded in by the caller (`main.rs`), so this
 /// module never reaches into `App`.
+///
+/// `frame_dt_secs` is the frame's wall-clock delta (the same per-frame delta the frame
+/// loop computes); it drives the framerate-independent starvation feedback so the
+/// adaptive delay's time-constant does not scale with frame rate.
 pub(crate) fn client_sample_interpolation(
     registry: &mut EntityRegistry,
     replication: &mut ClientReplication,
     time_sync: &ClientTimeSync,
     interpolation_delay: &mut InterpolationDelayState,
+    frame_dt_secs: f64,
 ) {
     // No estimate yet: render at the last-applied pose until the clock initializes.
     let Some(estimated_tick) = time_sync.estimated_server_tick() else {
@@ -755,7 +760,7 @@ pub(crate) fn client_sample_interpolation(
         interpolation_delay.render_server_tick(estimated_tick, jitter, SERVER_TICK_MICROS);
     let stats = replication.sample_into_registry(registry, render_server_tick);
     if stats.presented > 0 {
-        interpolation_delay.observe_sampled_frame(stats.starvation_feedback > 0);
+        interpolation_delay.observe_sampled_frame(stats.starvation_feedback > 0, frame_dt_secs);
     }
 }
 

@@ -10,16 +10,16 @@ use glam::Vec3;
 
 use crate::agent_steering;
 use crate::collision::CollisionWorld;
-use crate::movement::{MovementInput, tick as movement_tick};
+use crate::movement::MovementInput;
 use crate::nav::NavGraph;
 use crate::scripting::components::health::apply_damage;
-use crate::scripting::components::player_movement::PlayerMovementComponent;
 use crate::scripting::reaction_dispatch::ProgressTracker;
-use crate::scripting::registry::{ComponentKind, EntityId, EntityRegistry, Transform};
+use crate::scripting::registry::{ComponentKind, EntityId, EntityRegistry};
 use crate::scripting_systems;
 use crate::scripting_systems::hit_zones::HitZoneStore;
 use crate::weapon::{self, FireButtonState, WeaponFireCommand};
 
+#[derive(Debug, Clone)]
 pub(crate) struct SimCommand {
     pub(crate) movement: MovementInput,
     pub(crate) fire_button: FireButtonState,
@@ -95,6 +95,10 @@ pub(crate) fn simulate_tick(
     }
 }
 
+mod host_movement;
+
+pub(crate) use host_movement::run_host_movement_tick;
+
 #[cfg(test)]
 mod determinism_tests;
 #[cfg(test)]
@@ -102,6 +106,12 @@ mod divergence_spike_tests;
 #[cfg(any(test, feature = "dev-tools"))]
 pub(crate) mod predict_reconcile;
 
+/// Single-player / single-pawn movement stage. Resolves the local movement pawn via
+/// the registry marker, then drives it through the shared host multi-pawn seam
+/// (`host_movement::run_host_movement_tick`) with a one-element input list. The host
+/// netcode path bypasses this entirely and calls the seam directly with EVERY
+/// authoritative pawn (Task 4) — `local_movement_pawn` is the single-player resolver
+/// only, never the authoritative-host resolver.
 fn run_movement_tick(
     registry: &Rc<RefCell<EntityRegistry>>,
     collision_world: &CollisionWorld,
@@ -109,45 +119,23 @@ fn run_movement_tick(
     input: &MovementInput,
     tick_dt: f32,
 ) -> Vec<&'static str> {
-    let mut events_out: Vec<&'static str> = Vec::new();
-    let mut snapshots: Vec<(EntityId, PlayerMovementComponent, Vec3)> = Vec::new();
-    {
+    let local = {
         let registry = registry.borrow();
-        if let Some(id) = local_movement_pawn(&registry) {
-            if let (Ok(component), Ok(transform)) = (
-                registry.get_component::<PlayerMovementComponent>(id),
-                registry.get_component::<Transform>(id),
-            ) {
-                snapshots.push((id, component.clone(), transform.position));
-            }
-        }
-    }
+        local_movement_pawn(&registry)
+    };
+    let Some(id) = local else {
+        return Vec::new();
+    };
 
+    let pawn_inputs = [(id, input.clone())];
     let mut registry = registry.borrow_mut();
-    for (id, mut component, position) in snapshots {
-        let (new_pos, events) = movement_tick(
-            &mut component,
-            input,
-            collision_world,
-            gravity,
-            tick_dt,
-            position,
-        );
-        if let Ok(transform) = registry.get_component::<Transform>(id) {
-            let mut t = *transform;
-            t.position = new_pos;
-            let _ = registry.set_component(id, t);
-        }
-        let _ = registry.set_component(id, component);
-        if events.landed {
-            events_out.push("landed");
-        }
-        if events.jumped {
-            events_out.push("jumped");
-        }
-    }
-
-    events_out
+    host_movement::run_host_movement_tick(
+        &mut registry,
+        collision_world,
+        gravity,
+        &pawn_inputs,
+        tick_dt,
+    )
 }
 
 /// Resolve the local movement pawn: registry marker first, then first

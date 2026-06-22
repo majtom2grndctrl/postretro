@@ -23,10 +23,10 @@ mod movement;
 // The runtime nav graph is built in every build whenever a level carries a
 // baked navmesh; pathfinding consumes its query surface.
 mod nav;
-// Engine-side netcode glue (M15 Phase 1): role selection, the optional endpoint
-// held by `App`, and the game-logic-owned serialize/apply steps. The ONLY engine
-// code that touches the registry on behalf of replication. See
-// `context/lib/entity_model.md` §6.
+// Engine-side netcode glue (M15 Phase 3): role selection, the optional endpoint
+// held by `App`, the game-logic-owned serialize/apply steps, and client-side
+// prediction and reconciliation. The ONLY engine code that touches the registry
+// on behalf of replication. See `context/lib/entity_model.md` §6.
 mod netcode;
 mod options;
 mod weapon;
@@ -651,6 +651,7 @@ fn main() -> Result<()> {
         active_wieldable_descriptor: None,
         builtin_handled: None,
         pending_spawn_points: None,
+        host_spawn_points: Vec::new(),
         pending_map_entities: None,
         script_time: 0.0,
         anim_time: 0.0,
@@ -1069,6 +1070,13 @@ struct App {
     /// load and after consumed.
     pending_spawn_points: Option<Vec<crate::scripting::map_entity::MapEntity>>,
 
+    /// A retained copy of the level's `player_spawn` placements for the host's
+    /// runtime net-slot accept path (M15 Phase 3 Task 4). Unlike
+    /// `pending_spawn_points` (consumed at install), this survives so each accepted
+    /// client's descriptor-backed remote pawn can be spawned from its deterministically
+    /// assigned placement. Empty before level load and on maps with no player_spawn.
+    host_spawn_points: Vec<crate::scripting::map_entity::MapEntity>,
+
     /// Non-player-start map entities partitioned out of `world.map_entities`
     /// during install, awaiting the data-archetype sweep on the same frame.
     /// `None` before level load and after the sweep consumes them.
@@ -1335,9 +1343,17 @@ fn followed_player_pawn(
         .map(|(id, _)| id)
 }
 
+/// Follow the camera to the local pawn's eye. `presentation_offset` is the M15
+/// Phase 3 Task 5 local-pawn correction offset (the decaying difference between the
+/// predicted and reconciled pose); it is added to the gameplay-authoritative
+/// registry transform so the first-person eye glides smoothly across a reconcile
+/// correction without rubber-banding. The offset is always `Vec3::ZERO` at tick rate
+/// (both the single-player/host path and the connected-client tick path pass zero);
+/// the real offset is read from `ClientPrediction` at render rate by the render seam.
 fn follow_camera_to_local_pawn(
     camera: &mut Camera,
     registry: &scripting::registry::EntityRegistry,
+    presentation_offset: Vec3,
 ) {
     use crate::scripting::registry::Transform;
 
@@ -1349,8 +1365,9 @@ fn follow_camera_to_local_pawn(
                 ),
             registry.get_component::<Transform>(id),
         ) {
-            camera.position =
-                transform.position + Vec3::new(0.0, component.capsule.eye_height, 0.0);
+            camera.position = transform.position
+                + presentation_offset
+                + Vec3::new(0.0, component.capsule.eye_height, 0.0);
         }
     }
 }
@@ -2113,7 +2130,15 @@ impl ApplicationHandler for App {
                             has_player_pawn(&registry)
                         };
 
-                        if !has_player_pawn {
+                        // A connected client owns ZERO PlayerMovement pawns until the
+                        // host's `local_player` baseline arms one (M15 Phase 3). During
+                        // that pre-arm window it must NOT fly-cam: it holds the map's
+                        // first-spawn pose (seeded at install) so the view is steady
+                        // until its net pawn arrives. Without this guard the pawnless
+                        // branch below would drift the camera with movement input.
+                        let pre_arm_client = self.is_connected_client();
+
+                        if !has_player_pawn && !pre_arm_client {
                             let forward = self.camera.forward();
                             let right = self.camera.right();
                             let mut move_dir =
@@ -2140,6 +2165,61 @@ impl ApplicationHandler for App {
                             shoot_pressed,
                         );
 
+                        // Connected-client prediction (M15 Phase 3 Task 3): send one
+                        // Input command and advance ONLY the local pawn's movement
+                        // through the movement-only replay helper — never the full
+                        // `simulate_tick` (AI / weapons / death stay host-authoritative
+                        // and arrive via snapshots). The camera follows the predicted
+                        // pawn; frame timing pushes the predicted camera pose. Task 5
+                        // adds reconciliation/smoothing on top of this seam.
+                        if self.is_connected_client() {
+                            self.client_predict_movement_tick(&command, tick_dt);
+                            // Tick-rate camera follow tracks the PRESENTED local pose:
+                            // the gameplay-authoritative (snapped) registry pose plus the
+                            // decaying presentation offset. Folding the offset in HERE —
+                            // before `frame_timing.push_state` — is the fix for the
+                            // velocity-proportional first-person shake (M15 Phase 3
+                            // playtest bug). Reconcile snaps the registry backward by the
+                            // correction each snapshot and seeds the offset forward by the
+                            // same amount, so `registry + offset` is continuous across the
+                            // snap. If `frame_timing` instead carried the bare (snapped)
+                            // registry pose and the offset were re-added only at render,
+                            // `frame_timing` would interpolate ACROSS the snap (a backward
+                            // arc) while a constant offset over-corrected at alpha 0 — the
+                            // exact ∝-velocity oscillation. With the presented pose pushed,
+                            // both `frame_timing` endpoints sit in presented space and the
+                            // render-rate interpolation between consecutive presented poses
+                            // IS the smoother; the offset decays once per tick here.
+                            let presentation_offset = netcode::client_local_presentation_offset(
+                                self.net_endpoint.as_ref(),
+                            );
+                            if has_player_pawn {
+                                let registry_ref = self.script_ctx.registry.borrow();
+                                follow_camera_to_local_pawn(
+                                    &mut self.camera,
+                                    &registry_ref,
+                                    presentation_offset,
+                                );
+                            }
+                            // Decay the offset one step now that this tick's camera pose
+                            // has baked in the current value. Tick-rate decay (paired with
+                            // the presented-pose push) keeps `frame_timing` continuous;
+                            // the render stage reads the interpolated presented eye
+                            // directly and must NOT re-add the offset (it is already in
+                            // the pose), so there is no double-count.
+                            netcode::client_decay_local_correction(self.net_endpoint.as_mut());
+                            self.frame_timing
+                                .push_state(InterpolableState::new(self.camera.position));
+                            continue;
+                        }
+
+                        // Host: advance remote (owned) pawns through the authoritative
+                        // multi-pawn movement seam first (Task 4), then the shared
+                        // `simulate_tick` runs the host's own pawn movement + AI /
+                        // weapon / death. Remote movement never uses local_movement_pawn.
+                        let remote_movement_events = self.host_drive_remote_movement(tick_dt);
+                        pending_movement_events.extend(remote_movement_events);
+
                         let tick_events = sim::simulate_tick(
                             self.script_ctx.registry.clone(),
                             &self.collision_world,
@@ -2156,7 +2236,13 @@ impl ApplicationHandler for App {
                                 // weapon fire resolves its aim ray.
                                 if has_player_pawn {
                                     let registry_ref = registry.borrow();
-                                    follow_camera_to_local_pawn(&mut self.camera, &registry_ref);
+                                    // Host / single-player: no client-side correction
+                                    // offset (the host pawn is authoritative).
+                                    follow_camera_to_local_pawn(
+                                        &mut self.camera,
+                                        &registry_ref,
+                                        Vec3::ZERO,
+                                    );
                                 }
 
                                 #[cfg(feature = "dev-tools")]
@@ -2196,7 +2282,7 @@ impl ApplicationHandler for App {
                 // not clobber the previous/current pair this writes) and BEFORE the
                 // render stage reads entities, so the renderer stays read-only.
                 // No-op for single-player and the host.
-                self.net_sample_remote_interpolation();
+                self.net_sample_remote_interpolation(frame_dt);
 
                 // Drain collected post-tick events after all ticks complete so
                 // reactions observe the final state of every entity.
@@ -2346,6 +2432,19 @@ impl ApplicationHandler for App {
                 // frame's look rotation.
                 let interp = self.frame_timing.interpolated_state();
 
+                // M15 Phase 3 Task 5: the connected client's local-pawn presentation
+                // offset is already baked into the camera pose `frame_timing` carries
+                // (folded in at the tick-rate camera-follow seam above, where the offset
+                // also decays once per tick). So the interpolated eye IS the presented
+                // eye — re-adding the offset here would double-count it and re-introduce
+                // the ∝-velocity oscillation it was moved to fix. `frame_timing`
+                // interpolates between consecutive PRESENTED poses, so the smoothed
+                // correction reaches the view matrix, camera uniforms, BSP camera-leaf
+                // lookup, and portal apex continuously across each reconcile snap.
+                // Single-player and the host carry a ZERO offset, so this is the bare
+                // interpolated eye for them, unchanged.
+                let presented_eye = interp.position;
+
                 // View-feel assembly (movement.md D1/D5/D6): a render-only,
                 // pawn-driven camera effect. When the camera-driving pawn carries
                 // `view_feel`, run the render-rate evaluator and fold its output
@@ -2408,7 +2507,7 @@ impl ApplicationHandler for App {
                     };
 
                 let render_camera = camera::RenderCamera::new(
-                    interp.position,
+                    presented_eye,
                     self.camera.aspect(),
                     self.camera.yaw + vf_yaw_offset,
                     self.camera.pitch + vf_pitch_offset,
@@ -3772,6 +3871,34 @@ impl App {
     /// serializes post-loop instead.
     fn net_poll_and_apply(&mut self, frame_dt: f32) {
         let dt = std::time::Duration::from_secs_f32(frame_dt);
+        // Capture the host's descriptor-spawn inputs before the `net_endpoint` borrow:
+        // the accept arm materializes each accepted client's descriptor-backed remote
+        // pawn (M15 Phase 3 Task 4), and these reads alias `self.script_ctx` /
+        // `self.nav_graph` / `self.host_spawn_points`, which the endpoint borrow would
+        // otherwise lock out. Cheap on the non-accept path (descriptors clone is the
+        // only cost, paid once per frame on the host).
+        // Both the host accept arm and the client apply arm need the shared descriptor
+        // table: the host materializes each accepted client's descriptor-backed pawn
+        // (Task 4), and the client materializes its LOCAL pawn's descriptor-backed
+        // `PlayerMovementComponent` from the wire `entity_class` (Task 7). Both peers
+        // load the same content, so the same descriptor table serves both roles — clone
+        // it for either networked role before the `net_endpoint` borrow.
+        let net_descriptors: Vec<crate::scripting::data_descriptors::EntityTypeDescriptor> = if matches!(
+            self.net_endpoint,
+            Some(netcode::NetEndpoint::Host { .. } | netcode::NetEndpoint::Client { .. })
+        ) {
+            self.script_ctx.data_registry.borrow().entities.clone()
+        } else {
+            Vec::new()
+        };
+        let host_agent_params = self.nav_graph.as_ref().map(|g| g.agent_params());
+        let host_spawn_points = std::mem::take(&mut self.host_spawn_points);
+        // M15 Phase 3 Task 5: the client reconcile replay threads collision + gravity
+        // through `client_receive_and_apply`. Capture the gravity scalar before the
+        // endpoint borrow (a `Cell` copy); the collision world is read by-reference
+        // inside the client arm (a disjoint field from `net_endpoint`).
+        let gravity = self.script_ctx.gravity.get();
+        let collision_world = &self.collision_world;
         match self.net_endpoint.as_mut() {
             None => {}
             Some(netcode::NetEndpoint::Host {
@@ -3780,7 +3907,10 @@ impl App {
                 replication,
                 replicable,
                 slot_pawns,
+                command_queues,
+                owners,
                 tick,
+                host_pawn: _,
                 demo_mover: _,
             }) => {
                 // Drive the listen server (accept handshakes, drain the socket).
@@ -3806,13 +3936,34 @@ impl App {
                                     HandshakeOutcome::Accepted { client_id } => {
                                         log::info!("[Net] client {client_id} accepted");
                                         replication.register_client(*client_id);
-                                        netcode::host_handle_accept(
-                                            &mut registry,
-                                            allocator,
-                                            replicable,
-                                            slot_pawns,
-                                            *client_id,
-                                        );
+                                        if host_spawn_points.is_empty() {
+                                            // No descriptor-backed player spawn on this
+                                            // map: fall back to the inert Transform-only
+                                            // fixture (dev/test path; never local).
+                                            netcode::host_handle_accept(
+                                                &mut registry,
+                                                allocator,
+                                                replicable,
+                                                slot_pawns,
+                                                *client_id,
+                                            );
+                                        } else {
+                                            // Phase 3 movement session: materialize the
+                                            // descriptor-backed remote PlayerMovement pawn
+                                            // from the slot's assigned placement.
+                                            netcode::host_handle_accept_descriptor(
+                                                &mut registry,
+                                                allocator,
+                                                replicable,
+                                                slot_pawns,
+                                                command_queues,
+                                                owners,
+                                                *client_id,
+                                                &host_spawn_points,
+                                                &net_descriptors,
+                                                host_agent_params,
+                                            );
+                                        }
                                     }
                                     HandshakeOutcome::Rejected { client_id, reason } => {
                                         log::warn!("[Net] client {client_id} rejected: {reason}");
@@ -3826,6 +3977,8 @@ impl App {
                                 replicable,
                                 replication,
                                 slot_pawns,
+                                command_queues,
+                                owners,
                                 &poll.lifecycle,
                             );
                         }
@@ -3842,6 +3995,7 @@ impl App {
                     netcode::host_handle_client_messages(
                         server,
                         replication,
+                        command_queues,
                         client_id,
                         server_tick,
                         server_now_us,
@@ -3852,6 +4006,8 @@ impl App {
                 client,
                 replication,
                 time_sync,
+                prediction,
+                ..
             }) => {
                 if let Err(err) = client.update(dt) {
                     log::error!("[Net] client update failed: {err}");
@@ -3862,10 +4018,21 @@ impl App {
                 let client_tick = self.script_ctx.frame.get() as u32;
                 netcode::client_drive_time_sync(client, time_sync, client_tick);
                 // Decode + apply every snapshot received this frame through the
-                // Phase 2 client state machine, send the resulting acks + baseline-
-                // refresh requests, and advance the pending-repair 5 Hz cadence.
+                // Phase 2 client state machine, arm prediction off any `local_player`
+                // baseline, send the resulting acks + baseline-refresh requests, and
+                // advance the pending-repair 5 Hz cadence.
                 let mut registry = self.script_ctx.registry.borrow_mut();
-                netcode::client_receive_and_apply(&mut registry, client, replication, dt);
+                netcode::client_receive_and_apply(
+                    &mut registry,
+                    client,
+                    replication,
+                    prediction,
+                    &net_descriptors,
+                    collision_world,
+                    gravity,
+                    crate::frame_timing::TICK_DURATION.as_secs_f32(),
+                    dt,
+                );
                 // The interpolation-buffer sampling that writes presented remote poses
                 // runs in `net_sample_remote_interpolation`, AFTER the catch-up tick
                 // loop's stage-0 `snapshot_transforms` — so its previous/current
@@ -3873,11 +4040,14 @@ impl App {
                 // clobbered by the snapshot pass.
             }
         }
+        // Restore the spawn-point cache taken before the endpoint borrow. The host
+        // needs it on every future accept; `mem::take` only borrowed it for this call.
+        self.host_spawn_points = host_spawn_points;
     }
 
     /// Host Phase 2 replication step. Thin delegation to `crate::netcode`. Ingests
     /// the replicable set from the registry (immutable borrow) into the per-client
-    /// replication tracker every sim tick and, on the 20 Hz cadence, encodes and
+    /// replication tracker every sim tick and, on the 30 Hz cadence, encodes and
     /// sends each accepted client a per-client delta snapshot over the snapshot
     /// channel. No-op for single-player and the client.
     fn net_serialize_and_send(&mut self) {
@@ -3888,6 +4058,9 @@ impl App {
             replication,
             replicable,
             slot_pawns: _,
+            command_queues,
+            owners,
+            host_pawn: _,
             demo_mover,
         }) = self.net_endpoint.as_mut()
         else {
@@ -3905,7 +4078,16 @@ impl App {
 
         {
             let registry = self.script_ctx.registry.borrow();
-            netcode::host_replicate(&registry, server, allocator, replication, replicable, *tick);
+            netcode::host_replicate(
+                &registry,
+                server,
+                allocator,
+                replication,
+                replicable,
+                owners,
+                command_queues,
+                *tick,
+            );
         }
         // Advance the monotonic server tick after this tick's ingest+send so a
         // late-joining client never sees a stalled clock.
@@ -3914,7 +4096,8 @@ impl App {
 
     /// Client remote-interpolation sampling step (M15 Phase 2 Task 6). Thin delegation
     /// to `crate::netcode`. Samples each remote entity's interpolation buffer at the
-    /// jitter-sized render target tick and writes the presented pose through the
+    /// adaptive render target tick (jitter delay plus held-newest starvation
+    /// feedback) and writes the presented pose through the
     /// registry's remote-presentation helper. That pose is already resolved at the
     /// correct server-time target, so the write is alpha-agnostic (previous ==
     /// current); the render-stage `interpolated_transform` blend reproduces it
@@ -3923,17 +4106,131 @@ impl App {
     /// Runs after the catch-up tick loop so the stage-0 `snapshot_transforms` cannot
     /// clobber the presented pose, and before the render stage reads entities.
     /// No-op for single-player and the host (no client interpolation buffers).
-    fn net_sample_remote_interpolation(&mut self) {
+    fn net_sample_remote_interpolation(&mut self, frame_dt: f32) {
         let Some(netcode::NetEndpoint::Client {
             replication,
             time_sync,
+            interpolation_delay,
             ..
         }) = self.net_endpoint.as_mut()
         else {
             return;
         };
         let mut registry = self.script_ctx.registry.borrow_mut();
-        netcode::client_sample_interpolation(&mut registry, replication, time_sync);
+        netcode::client_sample_interpolation(
+            &mut registry,
+            replication,
+            time_sync,
+            interpolation_delay,
+            f64::from(frame_dt),
+        );
+    }
+
+    /// Whether this process is a connected client (M15 Phase 3). The connected
+    /// client predicts its own movement pawn instead of running the full local
+    /// `sim::simulate_tick`; the host and single-player keep the full sim path.
+    fn is_connected_client(&self) -> bool {
+        matches!(
+            self.net_endpoint.as_ref(),
+            Some(netcode::NetEndpoint::Client { .. })
+        )
+    }
+
+    /// Host authoritative movement pre-pass (M15 Phase 3 Task 4). Resolves one
+    /// command per OWNED (remote) pawn through the deterministic gap policy, routes
+    /// each through the `EntityId -> client_id` map, and advances those pawns through
+    /// the multi-pawn movement seam — BEFORE the frame's `simulate_tick` runs AI /
+    /// weapon / death. Remote authoritative movement never goes through
+    /// `local_movement_pawn`: every owned pawn is named explicitly here. The host's
+    /// OWN player pawn (if any) is still driven by `simulate_tick`'s movement stage
+    /// from locally-sampled input; folding it into this explicit list alongside the
+    /// host's sampled command is the remaining integration seam (it requires the host
+    /// to own a queue/owner entry for itself). No-op for single-player and the client.
+    ///
+    /// Returns the aggregated remote movement events for the caller to fold into the
+    /// frame's pending movement-event drain.
+    fn host_drive_remote_movement(&mut self, tick_dt: f32) -> Vec<&'static str> {
+        let Some(netcode::NetEndpoint::Host {
+            command_queues,
+            owners,
+            ..
+        }) = self.net_endpoint.as_mut()
+        else {
+            return Vec::new();
+        };
+        let pawn_inputs = netcode::host_resolve_movement_inputs(owners, command_queues);
+        if pawn_inputs.is_empty() {
+            return Vec::new();
+        }
+        let mut registry = self.script_ctx.registry.borrow_mut();
+        sim::run_host_movement_tick(
+            &mut registry,
+            &self.collision_world,
+            self.script_ctx.gravity.get(),
+            &pawn_inputs,
+            tick_dt,
+        )
+    }
+
+    /// Register the listen host's OWN player pawn for outbound replication after a
+    /// level install (M15 Phase 3, issue 3b). The host's boot pawn is spawned by
+    /// `install_level_payload` via `spawn_from_player_starts` and marked the
+    /// `local_player_pawn`; without registering it in the `ReplicableSet` it never
+    /// reaches `produce_owned_snapshots`, so clients draw no host capsule.
+    ///
+    /// Thin delegation: reads `local_player_pawn` from the registry and hands it to
+    /// `netcode::host_register_own_pawn`, which stamps a `NetworkId`, registers it for
+    /// replication with NO owner mapping (never `local_player` on any recipient), and
+    /// tracks it so a level reload unregisters the stale pawn. No-op for single-player,
+    /// the client, and a host whose map has no `player_spawn` (no local pawn to
+    /// replicate). The host pawn stays driven locally by `simulate_tick` — this only
+    /// replicates its Transform + PlayerMovementState outbound.
+    fn host_register_own_pawn_after_install(&mut self) {
+        let Some(netcode::NetEndpoint::Host {
+            allocator,
+            replicable,
+            host_pawn,
+            ..
+        }) = self.net_endpoint.as_mut()
+        else {
+            return;
+        };
+        let pawn = {
+            let registry = self.script_ctx.registry.borrow();
+            registry.local_player_pawn()
+        };
+        let Some(pawn) = pawn else {
+            // A host on a map with no player_spawn has no own pawn to replicate.
+            return;
+        };
+        netcode::host_register_own_pawn(allocator, replicable, host_pawn, pawn);
+    }
+
+    /// Connected-client predicted fixed tick (M15 Phase 3 Task 3). Thin delegation
+    /// to `crate::netcode`: sends one `ClientMessage::Input` for `command`, then
+    /// advances the local pawn through the movement-only replay helper and writes the
+    /// predicted state back to the registry. Returns `true` if it drove the local
+    /// pawn (prediction armed), `false` if it only sent input (pre-baseline). The
+    /// caller skips `simulate_tick`'s local gameplay movement when this path runs —
+    /// AI / weapons / death stay host-authoritative and arrive via snapshots.
+    fn client_predict_movement_tick(&mut self, command: &sim::SimCommand, tick_dt: f32) -> bool {
+        let Some(netcode::NetEndpoint::Client {
+            client, prediction, ..
+        }) = self.net_endpoint.as_mut()
+        else {
+            return false;
+        };
+        let gravity = self.script_ctx.gravity.get();
+        let mut registry = self.script_ctx.registry.borrow_mut();
+        netcode::client_predict_tick(
+            &mut registry,
+            client,
+            prediction,
+            command,
+            &self.collision_world,
+            gravity,
+            tick_dt,
+        )
     }
 
     /// Accumulate one frame onto the animation clock: `prev + dt × scale`.
@@ -4565,7 +4862,7 @@ mod tests {
                 &mut ai_warned,
                 &command,
                 |registry| {
-                    follow_camera_to_local_pawn(&mut camera, &registry.borrow());
+                    follow_camera_to_local_pawn(&mut camera, &registry.borrow(), Vec3::ZERO);
                     build_post_movement_command(&camera)
                 },
                 TICK_DURATION.as_secs_f32(),
@@ -4626,7 +4923,7 @@ mod tests {
             Some(marked),
             "valid marked movement pawn remains selected even without transform"
         );
-        follow_camera_to_local_pawn(&mut camera, &registry);
+        follow_camera_to_local_pawn(&mut camera, &registry, Vec3::ZERO);
         let post = build_post_movement_command(&camera);
 
         assert_eq!(
@@ -4676,7 +4973,7 @@ mod tests {
             Some(first),
             "legacy no-marker fallback must pick the same first movement pawn as sim systems"
         );
-        follow_camera_to_local_pawn(&mut camera, &registry);
+        follow_camera_to_local_pawn(&mut camera, &registry, Vec3::ZERO);
 
         assert_eq!(
             camera.position,
@@ -4842,7 +5139,7 @@ mod tests {
             &mut ai_warned,
             &command,
             |registry| {
-                follow_camera_to_local_pawn(&mut camera, &registry.borrow());
+                follow_camera_to_local_pawn(&mut camera, &registry.borrow(), Vec3::ZERO);
                 let post = build_post_movement_command(&camera);
                 resolved_aim_origin = Some(post.aim_origin);
                 post

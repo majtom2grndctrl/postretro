@@ -32,13 +32,23 @@ use glam::Vec3;
 
 use postretro_net::wire::{
     AckMessage, BaselineRefreshRequest, COMPONENT_KIND_PLAYER_MOVEMENT_STATE, ClientMessage,
-    ComponentPayload, EntityRecord, NetworkId, SnapshotMessage,
+    ComponentPayload, EntityRecord, NetworkId, SnapshotMessage, WirePlayerMovementState,
 };
 
-use crate::scripting::registry::{ComponentKind, ComponentValue, EntityId, EntityRegistry};
+use crate::scripting::registry::{
+    ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform,
+};
 
 use super::interpolation::{PoseSource, RemoteInterpolationBuffer, TransformSample};
 use super::{payload_is_finite, wire_to_transform};
+
+/// Result of one remote interpolation sampling pass.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct InterpolationSampleStats {
+    pub(crate) presented: usize,
+    pub(crate) held_newest: usize,
+    pub(crate) starvation_feedback: usize,
+}
 
 /// Reason code carried in a `BaselineRefreshRequest`. Diagnostic only — the server
 /// repair path keys on entity + missing ref, not the reason (net wire contract).
@@ -108,6 +118,60 @@ pub(crate) struct ClientReplication {
     /// entity's initial pose at spawn — the interpolation sampler drives the visible
     /// pose every frame thereafter.
     interp: RemoteInterpolationBuffer,
+    /// The local predicted pawn's `NetworkId`, once a `local_player` record has armed
+    /// it (M15 Phase 3 Task 5). The local pawn is driven by client-side prediction +
+    /// reconciliation, NOT the remote interpolation path: it is excluded from the
+    /// interp buffer (`apply_components_to` skips recording it) and from
+    /// `sample_into_registry`'s presentation writes (which would otherwise clobber the
+    /// reconciled pose with a stale interpolated remote pose). `None` until armed.
+    local_pawn: Option<NetworkId>,
+}
+
+/// The authoritative local-pawn record this snapshot delivered, captured for the
+/// caller to drive reconciliation (M15 Phase 3 Task 5). `ClientReplication` knows
+/// which record is `local_player` but does not own `ClientPrediction`; it surfaces
+/// the authoritative pose + movement subset + command ack here, and the engine glue
+/// (`client_receive_and_apply`, which owns both halves) runs the reconcile. The
+/// `Transform` is still applied to the registry in `apply_components_to` so a
+/// not-yet-armed local pawn has a pose; reconcile then merges/replays on top.
+#[derive(Debug, Clone)]
+pub(crate) struct LocalReconcileInput {
+    /// The `NetworkId` of the local pawn record. The reconcile path matches by
+    /// `entity_id` (the armed pawn's mapped id). Diagnostic/future-use field;
+    /// not currently consumed.
+    #[allow(dead_code)]
+    pub(crate) network_id: NetworkId,
+    /// The mapped `EntityId` the record applied to.
+    pub(crate) entity_id: EntityId,
+    /// The authoritative pose the host resolved for this pawn. Restored verbatim,
+    /// then the unacked commands replay on top.
+    pub(crate) transform: Transform,
+    /// The authoritative mutable movement-tick subset. Merged onto the EXISTING
+    /// descriptor-derived component via `merge_wire_into_movement_state` (never
+    /// reconstructs a component). `None` if the local record carried no movement
+    /// payload (defensive — wire validation pairs `local_player` with movement).
+    pub(crate) movement: Option<WirePlayerMovementState>,
+    /// The latest client command tick the host resolved for this pawn before
+    /// snapshotting, or `None` if it has resolved none yet. `Some` ⇒ prune history
+    /// through it and replay the rest; `None` after prediction has started ⇒
+    /// authoritative reset (clear history, apply baseline, do NOT prune by tick).
+    pub(crate) acked_tick: Option<u32>,
+}
+
+/// The local-pawn baseline an `apply_snapshot` armed this snapshot (M15 Phase 3): the
+/// recipient-local `NetworkId` the host flagged `local_player: true`, the `EntityId` it
+/// mapped to, and the descriptor `entity_class` the host materialized the pawn from
+/// (Task 7). The engine glue (`client_receive_and_apply`) hands `(network_id,
+/// entity_id)` to `ClientPrediction::arm` and uses `entity_class` to materialize the
+/// matching descriptor-backed `PlayerMovementComponent` on the freshly-spawned (or
+/// re-armed) local pawn — so the wire movement subset has something to merge onto and
+/// prediction/reconciliation become live. `entity_class` is `None` when the host
+/// stamped no class (defensive — the glue then defaults to `"player"`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ArmedLocalPawn {
+    pub(crate) network_id: NetworkId,
+    pub(crate) entity_id: EntityId,
+    pub(crate) entity_class: Option<String>,
 }
 
 /// What an `apply_snapshot` call produced: the ack to send (if the snapshot was
@@ -125,6 +189,20 @@ pub(crate) struct ApplyOutcome {
     pub(crate) refresh_requests: Vec<BaselineRefreshRequest>,
     /// Typed diagnostics for payloads received but deliberately not applied.
     pub(crate) ignored: Vec<IgnoredPayload>,
+    /// The local-pawn baseline this snapshot applied (M15 Phase 3 Task 3): the
+    /// `NetworkId` the host flagged `local_player: true`, the `EntityId` it mapped to,
+    /// and the descriptor `entity_class` to materialize (Task 7), set once
+    /// `apply_snapshot` has applied the baseline AND marked the pawn via
+    /// `EntityRegistry::mark_local_player_pawn`. The caller hands `(network_id,
+    /// entity_id)` to `ClientPrediction::arm` and materializes the component from
+    /// `entity_class`. `None` when no local-player baseline was applied this snapshot.
+    pub(crate) armed_local_pawn: Option<ArmedLocalPawn>,
+    /// The authoritative local-pawn record this snapshot applied (M15 Phase 3
+    /// Task 5), for the caller to drive reconciliation. `None` when no local-player
+    /// record was applied this snapshot. Captured for EVERY applied local record (a
+    /// full baseline or a delta), not only the arming one — reconcile runs on every
+    /// authoritative local update; the arming case is just the first.
+    pub(crate) local_reconcile: Option<LocalReconcileInput>,
 }
 
 impl ClientReplication {
@@ -132,13 +210,23 @@ impl ClientReplication {
         Self::default()
     }
 
-    /// Read-only view of the current `NetworkId -> EntityId` map. The sole non-test
-    /// consumer is the `dev-tools` debug-capsule draw (`remote_entity_positions`), so
-    /// gate it to that feature (and tests) to avoid a dead-code warning in the default
-    /// build.
-    #[cfg(any(test, feature = "dev-tools"))]
+    /// Read-only view of the current `NetworkId -> EntityId` map. Test-only; the
+    /// dev-tools overlay uses `remote_debug_entity_ids` so it can exclude the local
+    /// predicted pawn.
+    #[cfg(test)]
     pub(crate) fn map(&self) -> &HashMap<NetworkId, EntityId> {
         &self.map
+    }
+
+    /// Entity ids that should be drawn as remote debug markers. The local predicted
+    /// pawn is mapped, but it is not remote: drawing it here duplicates the player's
+    /// own capsule at the reconciled/predicted seam and makes the dev-tools overlay
+    /// look like it is vibrating ahead of the camera.
+    #[cfg(any(test, feature = "dev-tools"))]
+    pub(crate) fn remote_debug_entity_ids(&self) -> impl Iterator<Item = EntityId> + '_ {
+        self.map.iter().filter_map(|(&network_id, &entity_id)| {
+            (self.local_pawn != Some(network_id)).then_some(entity_id)
+        })
     }
 
     /// Apply one validated snapshot. Rejects an old/duplicate sequence wholesale;
@@ -172,6 +260,9 @@ impl ClientReplication {
                     network_id,
                     baseline_id,
                     components,
+                    local_player,
+                    last_processed_client_tick,
+                    entity_class,
                 } => {
                     if self.apply_full_baseline(
                         registry,
@@ -183,6 +274,20 @@ impl ClientReplication {
                         &mut outcome,
                     ) {
                         acked_baselines.push((*network_id, *baseline_id));
+                        self.maybe_arm_local_pawn(
+                            registry,
+                            NetworkId(*network_id),
+                            *local_player,
+                            entity_class.clone(),
+                            &mut outcome,
+                        );
+                        self.capture_local_reconcile(
+                            NetworkId(*network_id),
+                            *local_player,
+                            components,
+                            *last_processed_client_tick,
+                            &mut outcome,
+                        );
                     }
                 }
                 EntityRecord::Delta {
@@ -190,6 +295,9 @@ impl ClientReplication {
                     baseline_ref,
                     new_baseline_id,
                     components,
+                    local_player,
+                    last_processed_client_tick,
+                    entity_class,
                 } => {
                     if self.apply_delta(
                         registry,
@@ -202,6 +310,20 @@ impl ClientReplication {
                         &mut outcome,
                     ) {
                         acked_baselines.push((*network_id, *new_baseline_id));
+                        self.maybe_arm_local_pawn(
+                            registry,
+                            NetworkId(*network_id),
+                            *local_player,
+                            entity_class.clone(),
+                            &mut outcome,
+                        );
+                        self.capture_local_reconcile(
+                            NetworkId(*network_id),
+                            *local_player,
+                            components,
+                            *last_processed_client_tick,
+                            &mut outcome,
+                        );
                     }
                 }
                 EntityRecord::Despawn {
@@ -348,6 +470,100 @@ impl ClientReplication {
         true
     }
 
+    /// Arm client prediction for the recipient-local movement pawn (M15 Phase 3
+    /// Task 3). Called only after a record APPLIED (so the `NetworkId` is mapped and
+    /// live). When the host flagged the record `local_player: true`, this marks the
+    /// mapped entity as the local player pawn (`mark_local_player_pawn`) and records
+    /// the armed `(NetworkId, EntityId)` baseline in the outcome for the caller to
+    /// hand to `ClientPrediction::arm`. A no-op for non-local records.
+    ///
+    /// The client does not drive a provisional local pawn before this fires: arming
+    /// requires a stable `NetworkId -> EntityId` mapping (proven by the prior apply)
+    /// AND a `local_player` baseline. Task 5 seam: the per-snapshot reconciliation
+    /// (merge `PlayerMovementState`, restore Transform, prune-through-ack, replay)
+    /// hangs off this same applied-local-record point — this task only marks + arms.
+    fn maybe_arm_local_pawn(
+        &mut self,
+        registry: &mut EntityRegistry,
+        network_id: NetworkId,
+        local_player: bool,
+        entity_class: Option<String>,
+        outcome: &mut ApplyOutcome,
+    ) {
+        if !local_player {
+            return;
+        }
+        let Some(&entity_id) = self.map.get(&network_id) else {
+            // Defensive: an applied record is always mapped. Wire validation already
+            // guarantees `local_player: true` only rides a movement record.
+            return;
+        };
+        // Mark the mapped entity as the local player pawn so camera follow, the
+        // movement-pawn lookup, and prediction all converge on the same EntityId.
+        if let Err(err) = registry.mark_local_player_pawn(entity_id) {
+            log::warn!("[Net] failed to mark local player pawn for {network_id:?}: {err}");
+            return;
+        }
+        // Record the local pawn so the interp path (record + sample) excludes it: it is
+        // prediction-driven, not remote-interpolated. Drop any interp samples already
+        // buffered for it (a record applied before the arming snapshot seeded one).
+        self.local_pawn = Some(network_id);
+        self.interp.forget(network_id);
+        outcome.armed_local_pawn = Some(ArmedLocalPawn {
+            network_id,
+            entity_id,
+            entity_class,
+        });
+    }
+
+    /// Capture an applied `local_player` record's authoritative state for the caller's
+    /// reconcile pass (M15 Phase 3 Task 5). A no-op for a non-local record. The
+    /// reconcile orchestration (merge / restore / prune / replay / smooth) lives in
+    /// the engine glue that owns both `ClientReplication` and `ClientPrediction`, so
+    /// this only surfaces the inputs: the authoritative `Transform`, the mutable
+    /// movement-tick subset, and the command ack. Runs AFTER `maybe_arm_local_pawn`,
+    /// so a record that armed this frame is also captured (reconcile runs on the
+    /// arming snapshot too — restoring the baseline with no unacked tail to replay).
+    fn capture_local_reconcile(
+        &mut self,
+        network_id: NetworkId,
+        local_player: bool,
+        components: &[ComponentPayload],
+        acked_tick: Option<u32>,
+        outcome: &mut ApplyOutcome,
+    ) {
+        if !local_player {
+            return;
+        }
+        let Some(&entity_id) = self.map.get(&network_id) else {
+            return;
+        };
+        // Pull the authoritative pose + movement subset out of the payloads. A local
+        // record is a movement record (wire validation), so both are normally present;
+        // the Transform is required for reconcile to restore. No finiteness re-check
+        // here: `RawSnapshotMessage::validate` (postretro-net `wire.rs`) already rejects
+        // any non-finite `PlayerMovementState` before this typed apply path runs, so a
+        // payload that reaches here is finite by construction. Re-checking would only
+        // risk a silent partial apply (the Transform merged, the movement dropped).
+        let Some(transform) = first_transform(components) else {
+            log::warn!(
+                "[Net] local_player record for {network_id:?} has no Transform; skipping reconcile"
+            );
+            return;
+        };
+        let movement = components.iter().find_map(|p| match p {
+            ComponentPayload::PlayerMovementState(m) => Some(*m),
+            _ => None,
+        });
+        outcome.local_reconcile = Some(LocalReconcileInput {
+            network_id,
+            entity_id,
+            transform,
+            movement,
+            acked_tick,
+        });
+    }
+
     /// Despawn a mapped entity and drop its mapping + baseline. Idempotent: an unknown
     /// or already-despawned `NetworkId` is a no-op (the registry `despawn` of a stale
     /// id errors, which we swallow).
@@ -364,6 +580,11 @@ impl ClientReplication {
         // Drop the entity's interpolation buffer; a later re-spawn under a fresh
         // NetworkId starts with an empty buffer.
         self.interp.forget(network_id);
+        // If the local predicted pawn despawned, forget it: prediction re-arms off a
+        // future `local_player` baseline (a fresh NetworkId).
+        if self.local_pawn == Some(network_id) {
+            self.local_pawn = None;
+        }
     }
 
     /// Apply each component payload onto `id`. A `Transform` is written through
@@ -394,6 +615,16 @@ impl ClientReplication {
             _ => None,
         });
 
+        // The local predicted pawn is reconcile-driven: its authoritative pose +
+        // movement subset are captured by `capture_local_reconcile` and the reconcile
+        // path merges/replays them. Once armed, do NOT write its authoritative
+        // Transform here: reconcile must still be able to read the pre-apply predicted
+        // registry pose to seed the presentation offset. The arming snapshot is the
+        // one exception (`local_pawn` is not set until `maybe_arm_local_pawn` runs
+        // after this): it may seed the spawn/baseline pose here, and then `forget`
+        // drops the one interpolation sample.
+        let is_local = self.local_pawn == Some(network_id);
+
         for payload in components {
             // Untrusted-wire guard: a non-finite pose/velocity is dropped before it
             // reaches the registry, where it would poison interpolation/camera math.
@@ -404,20 +635,26 @@ impl ClientReplication {
             match payload {
                 ComponentPayload::Transform(wire) => {
                     let transform = wire_to_transform(wire);
-                    let value = ComponentValue::Transform(transform);
-                    // The entity is live here (caller checked); the only failure mode
-                    // is an unsupported kind, impossible for Transform. This seeds the
-                    // initial visible pose; the interpolation sampler drives it after.
-                    let _ = registry.set_component_value(id, value);
-                    // Record the server-tick-stamped sample for the interpolation buffer.
-                    self.interp.record(
-                        network_id,
-                        TransformSample {
-                            server_tick,
-                            transform,
-                            velocity: record_velocity,
-                        },
-                    );
+                    if !is_local {
+                        let value = ComponentValue::Transform(transform);
+                        // The entity is live here (caller checked); the only failure mode
+                        // is an unsupported kind, impossible for Transform. This seeds the
+                        // initial visible pose; the interpolation sampler drives it after.
+                        let _ = registry.set_component_value(id, value);
+                    }
+                    // Record the server-tick-stamped sample for the interpolation
+                    // buffer — skipped for the local pawn (prediction-driven, never
+                    // remote-interpolated).
+                    if !is_local {
+                        self.interp.record(
+                            network_id,
+                            TransformSample {
+                                server_tick,
+                                transform,
+                                velocity: record_velocity,
+                            },
+                        );
+                    }
                 }
                 ComponentPayload::PlayerMovementState(_) => {
                     // Apply ONLY onto an entity that already has a descriptor-derived
@@ -439,7 +676,7 @@ impl ClientReplication {
                         COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
                         "movement payload discriminant drifted"
                     );
-                    if !has_local {
+                    if !has_local && !is_local {
                         outcome
                             .ignored
                             .push(IgnoredPayload::MovementWithoutLocalComponent {
@@ -513,15 +750,15 @@ impl ClientReplication {
     /// and the render-stage `interpolated_transform` blend reproduces the pose verbatim
     /// at any frame alpha (the sim sub-tick fraction is an unrelated time base and must
     /// not re-blend an already-resolved pose — see
-    /// `EntityRegistry::set_remote_presentation_transform`). An entity with no buffered
-    /// samples yet is left at its last-applied pose. Returns the number of entities
-    /// presented (diagnostics).
+    /// `EntityRegistry::set_presentation_transform`). An entity with no buffered
+    /// samples yet is left at its last-applied pose. Returns presentation stats for
+    /// diagnostics and adaptive delay feedback.
     pub(crate) fn sample_into_registry(
         &mut self,
         registry: &mut EntityRegistry,
         render_server_tick: f64,
-    ) -> usize {
-        let mut presented = 0;
+    ) -> InterpolationSampleStats {
+        let mut stats = InterpolationSampleStats::default();
         // Collect (network_id, entity_id) first to avoid borrowing `self.map` while
         // writing back through the registry.
         let mapped: Vec<(NetworkId, EntityId)> = self.map.iter().map(|(&n, &e)| (n, e)).collect();
@@ -529,20 +766,32 @@ impl ClientReplication {
             if !registry.exists(entity_id) {
                 continue;
             }
+            // The local predicted pawn is prediction/reconcile-driven, not remote-
+            // interpolated: skip it so its reconciled pose is not clobbered.
+            if self.local_pawn == Some(network_id) {
+                continue;
+            }
             let Some(pose) = self.interp.presented_pose(network_id, render_server_tick) else {
                 continue; // no samples buffered yet
             };
-            let _ = registry.set_remote_presentation_transform(entity_id, pose.transform);
-            presented += 1;
+            let _ = registry.set_presentation_transform(entity_id, pose.transform);
+            stats.presented += 1;
             // Diagnostic: a HeldNewest after sustained starvation is the visible
             // freeze the buffer falls back to; logged sparingly at trace.
             if matches!(pose.source, PoseSource::HeldNewest) {
+                stats.held_newest += 1;
+                if self
+                    .interp
+                    .held_newest_needs_feedback(network_id, self.acked_server_tick)
+                {
+                    stats.starvation_feedback += 1;
+                }
                 log::trace!(
                     "[Net] remote {network_id:?} holding last pose (interp buffer starved)"
                 );
             }
         }
-        presented
+        stats
     }
 
     /// Whether `network_id` is awaiting a baseline refresh (tests / diagnostics).
@@ -628,8 +877,12 @@ mod tests {
     }
 
     fn movement_payload() -> ComponentPayload {
+        movement_payload_with_velocity([1.0, 0.0, 0.0])
+    }
+
+    fn movement_payload_with_velocity(velocity: [f32; 3]) -> ComponentPayload {
         ComponentPayload::PlayerMovementState(WirePlayerMovementState {
-            velocity: [1.0, 0.0, 0.0],
+            velocity,
             is_grounded: true,
             air_jumps_remaining: 1,
             air_dashes_remaining: 1,
@@ -652,6 +905,12 @@ mod tests {
         EntityRecord::FullBaseline {
             network_id,
             baseline_id,
+            // Generic non-local fixture: intentionally omits `local_player`/
+            // `last_processed_client_tick` to exercise the non-local replication path.
+            last_processed_client_tick: None,
+            local_player: false,
+            // Generic (non-local) baseline fixture: no descriptor class.
+            entity_class: None,
             components,
         }
     }
@@ -666,6 +925,11 @@ mod tests {
             network_id,
             baseline_ref,
             new_baseline_id,
+            // Generic non-local fixture: see `full_baseline`.
+            last_processed_client_tick: None,
+            local_player: false,
+            // Generic (non-local) delta fixture: no descriptor class.
+            entity_class: None,
             components,
         }
     }
@@ -1326,8 +1590,9 @@ mod tests {
         // First present at render tick 102 -> interpolated x = 2.0. The pose must be
         // identical at alpha = 0.0, 0.5, and 1.0: the buffer's resolved pose is shown
         // verbatim, never re-blended by the render alpha.
-        let n = client.sample_into_registry(&mut registry, 102.0);
-        assert_eq!(n, 1, "one remote entity presented");
+        let stats = client.sample_into_registry(&mut registry, 102.0);
+        assert_eq!(stats.presented, 1, "one remote entity presented");
+        assert_eq!(stats.held_newest, 0, "bracketed pose did not starve");
         let at_zero = registry.interpolated_transform(id, 0.0).unwrap();
         let at_half = registry.interpolated_transform(id, 0.5).unwrap();
         let at_one = registry.interpolated_transform(id, 1.0).unwrap();
@@ -1350,7 +1615,9 @@ mod tests {
         // Second present at render tick 106 -> the buffer's own trajectory advances the
         // presented pose to x = 6.0, still alpha-invariant. Continuity comes from the
         // buffer, not from the render blend carrying a prior pose.
-        client.sample_into_registry(&mut registry, 106.0);
+        let stats = client.sample_into_registry(&mut registry, 106.0);
+        assert_eq!(stats.presented, 1, "one remote entity presented");
+        assert_eq!(stats.held_newest, 0, "bracketed pose did not starve");
         let next_zero = registry.interpolated_transform(id, 0.0).unwrap();
         let next_one = registry.interpolated_transform(id, 1.0).unwrap();
         assert!((next_one.position.x - 6.0).abs() < EPSILON);
@@ -1380,12 +1647,76 @@ mod tests {
             client.presented_source(NetworkId(7), 200.0),
             Some(PoseSource::HeldNewest)
         );
-        client.sample_into_registry(&mut registry, 200.0);
+        let stats = client.sample_into_registry(&mut registry, 200.0);
+        assert_eq!(stats.presented, 1, "one remote entity presented");
+        assert_eq!(stats.held_newest, 1, "held-newest starvation is reported");
+        assert_eq!(
+            stats.starvation_feedback, 0,
+            "one Transform-only sample is not enough evidence to raise global delay"
+        );
         let id = *client.map().get(&NetworkId(7)).unwrap();
         let held = registry.interpolated_transform(id, 1.0).unwrap();
         assert!(
             (held.position.x - 4.0).abs() < EPSILON,
             "held the last pose"
+        );
+    }
+
+    // Regression: acked unchanged stationary remotes are intentionally omitted by the
+    // server, so their buffers can hold newest forever without indicating packet loss.
+    #[test]
+    fn stationary_remote_holding_newest_does_not_feed_starvation_delay() {
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                0,
+                100,
+                vec![full_baseline(
+                    7,
+                    1,
+                    vec![
+                        transform_payload(4.0),
+                        movement_payload_with_velocity([0.0, 0.0, 0.0]),
+                    ],
+                )],
+            ),
+        );
+        client.apply_snapshot(&mut registry, &snapshot(1, 110, vec![]));
+
+        let stats = client.sample_into_registry(&mut registry, 200.0);
+        assert_eq!(stats.presented, 1, "stationary remote still presents");
+        assert_eq!(stats.held_newest, 1, "pose holds newest as expected");
+        assert_eq!(
+            stats.starvation_feedback, 0,
+            "expected no-change hold must not raise the global delay"
+        );
+    }
+
+    #[test]
+    fn moving_remote_holding_newest_feeds_starvation_delay() {
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                0,
+                100,
+                vec![full_baseline(
+                    7,
+                    1,
+                    vec![transform_payload(4.0), movement_payload()],
+                )],
+            ),
+        );
+
+        let stats = client.sample_into_registry(&mut registry, 200.0);
+        assert_eq!(stats.presented, 1, "moving remote still presents");
+        assert_eq!(stats.held_newest, 1, "pose holds newest after starvation");
+        assert_eq!(
+            stats.starvation_feedback, 1,
+            "active remotes still raise delay when the buffer starves"
         );
     }
 
@@ -1418,6 +1749,214 @@ mod tests {
         assert!(
             client.presented_source(NetworkId(7), 100.0).is_none(),
             "despawn drops the buffer"
+        );
+    }
+
+    // A local-player full baseline carries a movement payload (wire validation
+    // requires `local_player: true` only on movement records).
+    fn local_player_baseline(
+        network_id: u32,
+        baseline_id: u32,
+        components: Vec<ComponentPayload>,
+    ) -> EntityRecord {
+        EntityRecord::FullBaseline {
+            network_id,
+            baseline_id,
+            last_processed_client_tick: None,
+            local_player: true,
+            // A local movement pawn baseline names the descriptor class the host
+            // materialized it from; the client materializes the matching component.
+            entity_class: Some("player".to_string()),
+            components,
+        }
+    }
+
+    fn local_player_delta(
+        network_id: u32,
+        baseline_ref: u32,
+        new_baseline_id: u32,
+        acked_tick: Option<u32>,
+        components: Vec<ComponentPayload>,
+    ) -> EntityRecord {
+        EntityRecord::Delta {
+            network_id,
+            baseline_ref,
+            new_baseline_id,
+            last_processed_client_tick: acked_tick,
+            local_player: true,
+            entity_class: Some("player".to_string()),
+            components,
+        }
+    }
+
+    // --- M15 Phase 3 Task 3: a `local_player` baseline marks the mapped pawn and
+    // reports the armed (NetworkId, EntityId) for the caller to arm prediction. ---
+    #[test]
+    fn local_player_baseline_marks_pawn_and_reports_armed_pair() {
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+
+        let out = client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                0,
+                10,
+                vec![local_player_baseline(
+                    7,
+                    1,
+                    vec![transform_payload(3.0), movement_payload()],
+                )],
+            ),
+        );
+
+        let id = *client.map().get(&NetworkId(7)).expect("local pawn mapped");
+        // The mapped entity is marked as the local player pawn.
+        assert_eq!(
+            registry.local_player_pawn(),
+            Some(id),
+            "the local_player baseline marks the mapped pawn"
+        );
+        // The armed pair is reported for the caller to hand to ClientPrediction::arm,
+        // carrying the descriptor class (Task 7) for client-side materialization.
+        assert_eq!(
+            out.armed_local_pawn,
+            Some(ArmedLocalPawn {
+                network_id: NetworkId(7),
+                entity_id: id,
+                entity_class: Some("player".to_string()),
+            }),
+            "apply reports the armed (NetworkId, EntityId, entity_class)"
+        );
+    }
+
+    // Regression: once the local pawn is armed, apply_snapshot used to write the
+    // authoritative Transform into the registry before reconcile ran. That erased the
+    // pre-reconcile predicted pose, so smoothing measured the wrong correction and the
+    // first-person camera snapped/rubber-banded instead of gliding.
+    #[test]
+    fn local_player_delta_preserves_predicted_registry_pose_for_reconcile() {
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                0,
+                10,
+                vec![local_player_baseline(
+                    7,
+                    1,
+                    vec![transform_payload(0.0), movement_payload()],
+                )],
+            ),
+        );
+        let id = *client.map().get(&NetworkId(7)).expect("local pawn mapped");
+        let predicted = Transform {
+            position: Vec3::new(5.0, 0.0, 0.0),
+            ..Transform::default()
+        };
+        registry
+            .set_component(id, predicted)
+            .expect("test seeds predicted pose");
+
+        let out = client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                1,
+                12,
+                vec![local_player_delta(
+                    7,
+                    1,
+                    2,
+                    Some(4),
+                    vec![transform_payload(2.0), movement_payload()],
+                )],
+            ),
+        );
+
+        assert!(
+            (entity_pos(&registry, id) - predicted.position).length() < EPSILON,
+            "apply_snapshot must leave the armed local pawn's predicted pose for reconcile"
+        );
+        let reconcile = out
+            .local_reconcile
+            .expect("local authoritative record captured");
+        assert!(
+            (reconcile.transform.position - Vec3::new(2.0, 0.0, 0.0)).length() < EPSILON,
+            "the authoritative pose is still surfaced to reconcile"
+        );
+        assert_eq!(
+            reconcile.acked_tick,
+            Some(4),
+            "the host command ack is preserved for prune/replay"
+        );
+    }
+
+    // Regression: the dev-tools "remote" capsule overlay used the raw client
+    // NetworkId->EntityId map, which includes the local predicted pawn after a
+    // local_player baseline. That drew a duplicate local capsule at the
+    // prediction/reconcile seam and made it appear to vibrate slightly ahead of the
+    // player. Remote markers must exclude the local pawn.
+    #[test]
+    fn remote_debug_entity_ids_excludes_local_predicted_pawn() {
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                0,
+                10,
+                vec![
+                    local_player_baseline(7, 1, vec![transform_payload(3.0), movement_payload()]),
+                    full_baseline(8, 1, vec![transform_payload(9.0), movement_payload()]),
+                ],
+            ),
+        );
+
+        let local = *client.map().get(&NetworkId(7)).expect("local pawn mapped");
+        let remote = *client.map().get(&NetworkId(8)).expect("remote pawn mapped");
+        let ids: Vec<EntityId> = client.remote_debug_entity_ids().collect();
+
+        assert_eq!(
+            ids,
+            vec![remote],
+            "only non-local mapped entities are remote"
+        );
+        assert!(
+            !ids.contains(&local),
+            "the local predicted pawn must not be drawn as a remote debug capsule"
+        );
+    }
+
+    // --- A non-local baseline never marks a pawn or reports an armed pair: before
+    // the local_player baseline, prediction stays inert. ---
+    #[test]
+    fn non_local_baseline_does_not_mark_or_arm() {
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+
+        let out = client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                0,
+                10,
+                vec![full_baseline(
+                    7,
+                    1,
+                    vec![transform_payload(3.0), movement_payload()],
+                )],
+            ),
+        );
+
+        assert_eq!(
+            registry.local_player_pawn(),
+            None,
+            "a non-local baseline does not mark a local pawn"
+        );
+        assert!(
+            out.armed_local_pawn.is_none(),
+            "a non-local baseline reports no armed pair (prediction stays inert)"
         );
     }
 }

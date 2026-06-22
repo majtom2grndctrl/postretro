@@ -6,7 +6,7 @@
 
 ---
 
-This is **Milestone 15 Phase 1**: authoritative client-server co-op, "ugly-but-connected". General-purpose multiplayer is a non-goal (see `index.md` §4). The Phase 1 client is a pure viewer of host-authoritative full-state — no prediction, no client→server gameplay, no lifecycle reconciliation. See *Phase boundaries* below.
+This is **Milestone 15 Phase 3**: authoritative client-server co-op with client-side prediction and reconciliation. General-purpose multiplayer is a non-goal (see `index.md` §4). See *Phase boundaries* below.
 
 ## Crate boundary and ownership
 
@@ -32,7 +32,7 @@ Three channels, fixed layout, agreed by both peers (the layout is folded into th
 |---------|----------|---------|
 | Control | reliable-ordered | version handshake; later, spawn/despawn |
 | Snapshot | unreliable | full-state snapshots, latest-wins (a dropped snapshot is superseded by the next) |
-| Input | reliable-ordered (reserved) | client input-command stream — registered now, no traffic in Phase 1 |
+| Input | reliable-ordered | client input-command stream — carries `ClientMessage::Input` (Phase 3) |
 
 The Input channel is registered in Phase 1 only so the channel layout — and thus the transport protocol gate — is stable before it carries traffic. Reliability is matched to the data: control state must arrive and stay ordered; snapshots are disposable because the next one obsoletes the last.
 
@@ -103,13 +103,47 @@ sudo tc qdisc del dev lo root netem
 
 `tc netem` shapes every packet over `lo`, so it affects all local loopback traffic for the duration — apply it only for a soak session and always tear it down afterward. The in-memory harness is the deterministic automated gate; `tc netem` is the manual end-to-end soak over the real encrypted UDP path.
 
+### Manual loopback recipe — Phase 3 movement prediction (host + client over `lo`)
+
+The deterministic in-memory harness (`netcode::predict_reconcile_harness`) is the automated Phase 3 gate; this is its manual real-socket complement, for eyeballing the *feel* of prediction/reconciliation that automated tests cannot judge. Use a map with a descriptor-backed player pawn — `content/dev/maps/campaign-test.prl` (a `player_spawn` placement resolves to the `"player"` descriptor) — so the host materializes a real movement pawn on accept.
+
+Run two processes locally over `lo`:
+
+```sh
+# Terminal 1 — listen host on the campaign-test map.
+RUST_LOG=info cargo run -p postretro -- --host content/dev/maps/campaign-test.prl
+
+# Terminal 2 — client connecting back to the host's default port over loopback.
+RUST_LOG=info cargo run -p postretro -- --connect 127.0.0.1:<port> content/dev/maps/campaign-test.prl
+```
+
+Then shape the loopback link to the Phase 2/3 profile (45..105 ms one-way, ~5% loss) before driving the client, so the manual session matches the automated harness's `LinkConfig { delay: 45, jitter: 60, loss_probability: 0.05, .. }`:
+
+```sh
+# ~75ms mean one-way delay, ±30ms jitter, 5% loss on loopback (both directions).
+sudo tc qdisc add dev lo root netem delay 75ms 30ms loss 5%
+# ... drive the client, observe, then ALWAYS tear down:
+sudo tc qdisc del dev lo root netem
+```
+
+Verify, on the **client**:
+
+1. **One `local_player` baseline.** The log shows the client arming prediction exactly once for its own pawn (`[Net] client <id> accepted` on the host; the client marks one pawn local). No record for any other pawn carries `local_player`.
+2. **One camera-followed pawn.** The camera follows a single pawn — the marked local pawn — and never a remote one.
+3. **No second local-player marker after join/disconnect.** Disconnect and rejoin the client; the host issues a fresh `NetworkId` and the client arms exactly one local pawn again. There is never a moment with two `local_player`-marked pawns.
+4. **Immediate local input.** Under the shaped link, the camera-followed pawn responds to WASD/dash on the *same* fixed tick the input is sampled — it does not wait a full RTT. This is prediction working: the local pawn moves locally before the host's authoritative snapshot returns.
+5. **Remote interpolation still active.** A *second* client (or the host's own pawn, viewed from the first client) moves smoothly via the Phase 2 interpolation buffer, NOT prediction — a remote pawn lags behind by the interpolation delay and is never predicted.
+6. **No duplicate local pawn.** Exactly one descriptor-backed pawn exists per client. There is no provisional client-spawned pawn alongside the host-authoritative one; the local pawn is the host's pawn, mapped by `NetworkId` and reconciled in place.
+
+Tear down the `tc netem` qdisc when finished. As with the Phase 1/2 soak, the shaped link affects all loopback traffic for its duration.
+
 ## Phase boundaries
 
 Phase 1 ships the durable shape above. The following are **deferred** and must not be read into the Phase 1 contracts:
 
 - **Phase 2:** delta encoding, snapshot interpolation, time-sync, entity lifecycle (spawn/despawn over the control channel, remove-missing reconciliation), and the client→server input stream over the reserved Input channel.
   - **Replicable-set policy and interest management** are deferred here: which entities are authoritative networked objects vs. client-cosmetic (particles/sprites) vs. static (baked lights/fog). Phase 1 replicates the full `Transform`-bearing set, which floods snapshots on FX-heavy maps — the campaign-test smoke emitters (each a `BillboardEmitter`/`ParticleState` entity) drowned the moving pawn in the two-process demo. The Phase 2 predicate scopes the wire to entities carrying an authoritative gameplay component (`PlayerMovement`/`Agent`/`Brain`/`Health`/movers); `BillboardEmitter`/`ParticleState`/`SpriteVisual`/`Light`/`FogVolume` are deterministic client-local or baked, identical on both ends from the shared `.prl`, and must stay off the wire.
-- **Phase 3:** client-side prediction and reconciliation.
+- **Phase 3:** client-side prediction and reconciliation. **Shipped.**
 
 Phase 1 explicitly **never despawns:** a `NetworkId` absent from a later snapshot is left untouched; remove-missing is Phase 2's job. The component payload binds **only `Transform`** in Phase 1; other components join in the same `ComponentKind` numeric order without changing the envelope shape.
 

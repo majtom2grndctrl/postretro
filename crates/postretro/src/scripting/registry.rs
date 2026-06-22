@@ -875,35 +875,59 @@ impl EntityRegistry {
         }
     }
 
-    /// Remote-presentation write (M15 Phase 2 interpolation): set the entity's
-    /// visible transform to a network-interpolated pose and stamp its previous-tick
-    /// slot to the **same** pose, so the render-stage
+    /// Single-entity counterpart of [`snapshot_transforms`](Self::snapshot_transforms):
+    /// copy one entity's current `Transform` into its previous-tick slot. Used by the
+    /// connected-client prediction path (M15 Phase 3), which advances ONLY the local
+    /// pawn each fixed tick and so cannot afford the registry-wide snapshot
+    /// `simulate_tick` runs at stage 0 (that path also reruns AI/weapons/death — the
+    /// connected client skips it entirely). Calling this per predicted tick, before
+    /// writing the new predicted pose, keeps the local pawn's previous→current pair
+    /// coherent so the render-stage [`interpolated_transform`](Self::interpolated_transform)
+    /// blend (and any prev/current-derived velocity) advances smoothly rather than
+    /// lerping live-current against an ever-staler frozen-previous. A no-op for a stale
+    /// id or an entity without a `Transform`.
+    pub(crate) fn snapshot_transform(&mut self, id: EntityId) {
+        let Ok(index) = self.validate(id) else {
+            return;
+        };
+        if let Some(ComponentValue::Transform(current)) = self.components
+            [ComponentKind::Transform as usize]
+            .get(index)
+            .and_then(|c| c.as_ref())
+        {
+            self.previous_transforms[index] = Some(*current);
+        }
+    }
+
+    /// Presentation-pose write: set the entity's visible transform to `pose` and
+    /// stamp its previous-tick slot to the **same** pose, so the render-stage
     /// [`interpolated_transform`](Self::interpolated_transform) blend is a no-op at
-    /// any alpha and the buffer's already-resolved pose is shown verbatim.
+    /// any alpha and `pose` is shown verbatim. Two callers, one shape:
     ///
-    /// Time-base reasoning (why previous == current / alpha-agnostic): remote
-    /// entities are not moved by a sim system. The interpolation buffer
-    /// (`RemoteInterpolationBuffer`) already resolves the final pose `P(N)` for this
-    /// render frame at the correct *server-time* target
-    /// (`estimated_server_tick - interpolation_delay`). That resolution is
-    /// independent of — and must not be re-blended by — the render accessor's
-    /// `alpha`, which is the unrelated *sim sub-tick* fraction
-    /// (`accumulator / tick_duration`, see `crate::frame_timing`). Blending `P(N)`
-    /// toward the last-presented `P(N-1)` by that sub-tick alpha would re-sample the
-    /// buffer's smooth trajectory at a frame-varying offset, injecting sub-frame
-    /// jitter. Setting `previous == current` makes
-    /// `lerp(previous, current, alpha) == current` for every alpha, so the remote
-    /// pose is *alpha-invariant*: rendered exactly as the buffer produced it.
+    /// - **Remote interpolation (M15 Phase 2):** the interpolation buffer already
+    ///   resolved the final pose for this render frame at the correct server-time
+    ///   target, so the render `alpha` (an unrelated sim sub-tick fraction) must not
+    ///   re-blend it. Setting `previous == current` makes
+    ///   `lerp(previous, current, alpha) == current` for every alpha — the remote
+    ///   pose is alpha-invariant, rendered exactly as the buffer produced it.
+    /// - **Local-pawn reconcile teleport (M15 Phase 3 Task 5):** a teleport-class
+    ///   correction snaps the predicted pawn to the authoritative pose and must
+    ///   leave no prev→current arc for the render blend to interpolate across — that
+    ///   arc would smear the teleport into a visible slide. Stamping
+    ///   `previous == current` collapses it, so the snapped pose renders cleanly the
+    ///   frame the teleport lands.
     ///
-    /// No pop: continuity comes from the buffer itself, which produces a smooth
-    /// trajectory across frames. Sampling it once per render frame (previous ==
-    /// current each frame) reproduces that motion faithfully; it does not rely on
-    /// the render-stage blend carrying the prior frame's pose. No other consumer
-    /// reads a remote entity's previous transform (no motion blur / trails), so
-    /// collapsing it to `current` is safe.
+    /// Time-base reasoning (why previous == current / alpha-agnostic): the render
+    /// accessor's `alpha` is the *sim sub-tick* fraction (`accumulator /
+    /// tick_duration`, see `crate::frame_timing`), unrelated to either the remote
+    /// buffer's server-time target or a one-shot local teleport. Blending toward the
+    /// prior frame's pose by that sub-tick alpha would re-sample at a frame-varying
+    /// offset (injecting jitter) or smear a teleport. No pop: no consumer reads
+    /// these entities' previous transform for motion blur / trails, so collapsing it
+    /// to `current` is safe.
     ///
     /// See: context/lib/entity_model.md §5 · context/lib/networking.md
-    pub(crate) fn set_remote_presentation_transform(
+    pub(crate) fn set_presentation_transform(
         &mut self,
         id: EntityId,
         pose: Transform,

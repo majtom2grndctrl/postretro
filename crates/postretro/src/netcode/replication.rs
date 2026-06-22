@@ -18,9 +18,15 @@ use std::collections::HashSet;
 use postretro_net::replication::EntitySnapshot;
 use postretro_net::wire::ComponentPayload;
 
+use crate::scripting::components::player_movement::PlayerMovementComponent;
+use crate::scripting::provenance::{DescriptorProvenance, DescriptorSpawnPath};
 use crate::scripting::registry::{ComponentKind, EntityId, EntityRegistry, Transform};
 
-use super::{NetworkIdAllocator, component_kind_discriminant, transform_to_wire};
+use super::movement_state::movement_state_to_wire;
+use super::{
+    HostCommandQueues, MovementOwners, NetworkIdAllocator, component_kind_discriminant,
+    transform_to_wire,
+};
 
 /// The Phase 2 replicable set: entities `crate::netcode` has explicitly registered
 /// as authoritative networked gameplay objects. Task 4 registers the slot-owned
@@ -101,6 +107,8 @@ pub(crate) fn produce_owned_snapshots(
     registry: &EntityRegistry,
     set: &ReplicableSet,
     allocator: &mut NetworkIdAllocator,
+    owners: &MovementOwners,
+    command_queues: &HostCommandQueues,
 ) -> Vec<EntitySnapshot> {
     let mut snapshots = Vec::new();
     for id in set.iter() {
@@ -112,12 +120,54 @@ pub(crate) fn produce_owned_snapshots(
         }
         let components = collect_payloads(registry, id);
         let network_id = allocator.stamp(id).0;
+        // Movement-authority metadata (M15 Phase 3): a pawn owned by a client carries
+        // its owner id + resolved command cursor. Unowned entities (the Transform-only
+        // fixtures, the demo mover) carry neither — produced as an `unowned` snapshot.
+        let owner_client_id = owners.owner_of(id);
+        let last_processed_client_tick =
+            owner_client_id.and_then(|cid| command_queues.resolved_cursor(cid));
+        // Descriptor class the pawn was materialized from (M15 Phase 3 Task 7), so the
+        // recipient can materialize the matching descriptor-backed component locally.
+        // Read from the pawn's own `DescriptorProvenance` — the cleanest existing
+        // source: `spawn_net_slot_pawn` stamps `canonical_name` (the resolved
+        // `entity_class`, default `"player"`) and `DescriptorSpawnPath::NetworkSlot`.
+        // Gated to a movement pawn (the wire rejects `entity_class` on a non-movement
+        // record); a non-movement / non-net-slot entity stays `None`.
+        let entity_class = movement_entity_class(registry, id, &components);
         snapshots.push(EntitySnapshot {
             network_id,
             components,
+            owner_client_id,
+            last_processed_client_tick,
+            entity_class,
         });
     }
     snapshots
+}
+
+/// The descriptor class a replicable movement pawn was materialized from, for the
+/// snapshot's `entity_class` (M15 Phase 3 Task 7). `None` unless the entity both
+/// carries a `PlayerMovementState` payload (the wire only allows `entity_class` on a
+/// movement record) AND was spawned through the net-slot descriptor path
+/// (`DescriptorSpawnPath::NetworkSlot`), in which case its `DescriptorProvenance`
+/// `canonical_name` is exactly the resolved `entity_class` (default `"player"`). A
+/// Transform-only fixture / demo mover / map-start pawn returns `None`.
+fn movement_entity_class(
+    registry: &EntityRegistry,
+    id: EntityId,
+    components: &[ComponentPayload],
+) -> Option<String> {
+    let carries_movement = components
+        .iter()
+        .any(|c| matches!(c, ComponentPayload::PlayerMovementState(_)));
+    if !carries_movement {
+        return None;
+    }
+    let provenance = registry.get_component::<DescriptorProvenance>(id).ok()?;
+    if provenance.spawn_path != DescriptorSpawnPath::NetworkSlot {
+        return None;
+    }
+    Some(provenance.canonical_name.clone())
 }
 
 /// Collect the wire-mirror payloads for one replicable entity, in a stable order:
@@ -142,11 +192,20 @@ fn collect_payloads(registry: &EntityRegistry, id: EntityId) -> Vec<ComponentPay
         );
         payloads.push(payload);
     }
-    // No PlayerMovementState payload is emitted today: the Phase 2 host-owned demo
-    // mover is Transform-only, and `WirePlayerMovementState` is only meaningfully
-    // assembled from an entity that already has a live `PlayerMovementComponent`,
-    // which the Phase 2 fixture lacks. When a host-authoritative entity carries that
-    // component, append its movement payload here in stable order (after Transform).
+    // Append the movement payload (M15 Phase 3) in stable order after Transform, when
+    // the entity carries a live `PlayerMovementComponent` (a descriptor-backed net-slot
+    // pawn). The Transform-only fixtures and the demo mover lack the component, so they
+    // still emit Transform alone. `movement_state_to_wire` extracts only the mutable
+    // tick subset; descriptor tuning stays local on both peers.
+    if let Ok(movement) = registry.get_component::<PlayerMovementComponent>(id) {
+        let payload = ComponentPayload::PlayerMovementState(movement_state_to_wire(movement));
+        debug_assert_eq!(
+            component_kind_discriminant(ComponentKind::PlayerMovement),
+            payload.kind(),
+            "engine/wire movement discriminant diverged"
+        );
+        payloads.push(payload);
+    }
     payloads
 }
 
@@ -197,7 +256,13 @@ mod tests {
         set.register(a);
         let mut allocator = NetworkIdAllocator::new();
 
-        let snaps = produce_owned_snapshots(&registry, &set, &mut allocator);
+        let snaps = produce_owned_snapshots(
+            &registry,
+            &set,
+            &mut allocator,
+            &MovementOwners::new(),
+            &HostCommandQueues::new(),
+        );
         assert_eq!(snaps.len(), 1, "only the registered entity is produced");
         let net_id = allocator.stamp(a).0;
         assert_eq!(
@@ -215,7 +280,13 @@ mod tests {
         ));
 
         // A second pass yields the same NetworkId for the same EntityId.
-        let snaps2 = produce_owned_snapshots(&registry, &set, &mut allocator);
+        let snaps2 = produce_owned_snapshots(
+            &registry,
+            &set,
+            &mut allocator,
+            &MovementOwners::new(),
+            &HostCommandQueues::new(),
+        );
         assert_eq!(
             snaps2[0].network_id, net_id,
             "NetworkId stable across ticks"
@@ -235,7 +306,13 @@ mod tests {
         // Despawn the entity in game logic but leave it registered (the producer
         // tolerates the lag). `despawn` returns a Result; the id is live here.
         registry.despawn(a).expect("live entity despawns");
-        let snaps = produce_owned_snapshots(&registry, &set, &mut allocator);
+        let snaps = produce_owned_snapshots(
+            &registry,
+            &set,
+            &mut allocator,
+            &MovementOwners::new(),
+            &HostCommandQueues::new(),
+        );
         assert!(
             snaps.is_empty(),
             "a vanished registered entity is not produced"

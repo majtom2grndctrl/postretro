@@ -56,6 +56,11 @@ pub(crate) enum DescriptorSpawnPath {
     MapPlacement,
     PlayerSpawn,
     DefaultWeapon,
+    /// A networked co-op slot pawn materialized on client accept (M15 Phase 3).
+    /// Distinguishes a host-authoritative remote player pawn from a map-start
+    /// single-player spawn: it is descriptor-backed like `PlayerSpawn` but is NOT
+    /// marked the local player and carries no global `active_wieldable`.
+    NetworkSlot,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

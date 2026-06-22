@@ -356,6 +356,11 @@ mod tests {
                 baseline_id_or_ref: 1,
                 new_baseline_id_or_tombstone_id: 0,
                 reason: 0,
+                has_last_processed_client_tick: false,
+                last_processed_client_tick: 0,
+                local_player: false,
+                has_entity_class: false,
+                entity_class: String::new(),
                 components: vec![RawComponentPayload {
                     component_kind: COMPONENT_KIND_TRANSFORM,
                     transform: Some(WireTransform {

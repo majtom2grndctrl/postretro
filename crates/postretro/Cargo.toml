@@ -96,6 +96,13 @@ dev-tools = ["dep:egui", "dep:egui-winit", "dep:egui-wgpu", "postretro-net/dev-t
 postretro-script-compiler = { path = "../script-compiler" }
 
 [dev-dependencies]
+# Enable the net crate's dev-only in-memory packet conditioner (`postretro_net::harness`:
+# `PacketConditioner`/`LinkConfig`) for the Phase 3 prediction/reconciliation latency
+# harness (M15 Phase 3 Task 6). The harness module is gated `#[cfg(any(test, feature =
+# "dev-tools"))]`; the default runtime build of `postretro` does NOT pull it in, since
+# this only activates under test/example/bench builds.
+postretro-net = { workspace = true, features = ["dev-tools"] }
+
 # No kira dev-dependency is needed to reach its mock backend: kira 0.12 compiles
 # `kira::backend::mock` unconditionally (it is NOT behind a feature flag), so
 # `MockBackend` is always available to tests regardless of the trimmed feature

@@ -602,6 +602,11 @@ impl App {
         match payload.level {
             Some(world) => {
                 self.install_level_payload(world, payload.prm_cache_root);
+                // M15 Phase 3 (issue 3b): register the listen host's own boot pawn for
+                // outbound replication now that the install has spawned + marked it the
+                // local player. Reload-safe and a no-op off the host / on a map without a
+                // player_spawn. The host pawn stays driven locally by `simulate_tick`.
+                self.host_register_own_pawn_after_install();
                 self.level_load = None;
                 if let Some(renderer) = self.renderer.as_mut() {
                     renderer.clear_splash();
@@ -790,6 +795,11 @@ impl App {
             let (spawn_points, map_entities): (Vec<_>, Vec<_>) = all_entities
                 .into_iter()
                 .partition(|e| e.classname == PLAYER_START_CLASSNAME);
+            // Retain a copy of the spawn points for the host's runtime net-slot
+            // accept path (M15 Phase 3 Task 4): `pending_spawn_points` is consumed by
+            // `spawn_from_player_starts` during this install, but the host needs the
+            // placements later to materialize each accepted client's descriptor pawn.
+            self.host_spawn_points = spawn_points.clone();
             self.pending_spawn_points = Some(spawn_points);
             let handled =
                 apply_classname_dispatch(&map_entities, &self.classname_dispatch, &mut registry);
@@ -906,8 +916,27 @@ impl App {
 
             // Spawn one entity per `player_spawn` placement, routing each through
             // its `entity_class` (default `"player"`).
+            //
+            // A CONNECTED CLIENT must NOT spawn a boot pawn here (M15 Phase 3,
+            // Task 3/6 contract): its authoritative local pawn arrives later as a
+            // host-replicated `local_player` baseline (a different `EntityId`), which
+            // arms exactly one `PlayerMovement` pawn. A boot pawn would be a second,
+            // never-replicated, never-despawned pawn — the camera would follow the
+            // frozen boot pawn pre-arm and then jump entity (and take a spurious
+            // boot-pos → host-pos reconcile correction) at arm. Single-player and the
+            // listen host KEEP spawning their boot pawn (the host needs its own /
+            // authoritative pawns). The camera pose below is still seeded from the
+            // map's first spawn regardless, so a connected client holds that pose
+            // until the net baseline arms its pawn.
+            let suppress_boot_pawn = self.is_connected_client();
             let (active_wieldable, active_wieldable_descriptor) =
                 match self.pending_spawn_points.take() {
+                    Some(_) if suppress_boot_pawn => {
+                        log::info!(
+                            "[Loader] connected client: deferring player spawn to host baseline"
+                        );
+                        (None, None)
+                    }
                     Some(spawn_points) if !spawn_points.is_empty() => {
                         let result = spawn_from_player_starts(
                             &spawn_points,
@@ -1201,6 +1230,7 @@ mod tests {
             pending_splash_override: None,
             builtin_handled: None,
             pending_spawn_points: None,
+            host_spawn_points: Vec::new(),
             pending_map_entities: None,
             script_time: 0.0,
             anim_time: 0.0,

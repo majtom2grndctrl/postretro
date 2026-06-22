@@ -34,7 +34,10 @@ pub struct NetworkId(pub u32);
 /// Pinned snapshot wire-format version. Carried in `RawSnapshotMessage.version`
 /// and asserted *after* the two handshake gates, so a Phase 1 peer is already
 /// refused by the gates before any Phase 2 snapshot reaches this check.
-pub const SNAPSHOT_VERSION: u16 = 2;
+///
+/// Bumped to 4 in M15 Phase 3 Task 7: the entity record gained
+/// `has_entity_class`/`entity_class`, so a record's bitcode layout changed.
+pub const SNAPSHOT_VERSION: u16 = 4;
 
 /// `record_kind` discriminant for a full-baseline (spawn / join / refresh) record.
 pub const RECORD_KIND_FULL_BASELINE: u16 = 0;
@@ -97,6 +100,41 @@ pub struct WirePlayerMovementState {
     pub capsule_eye_height: f32,
 }
 
+impl WireMovementState {
+    /// Whether every float this variant carries is finite (no NaN/inf). `Normal`
+    /// carries nothing, so it is vacuously finite. The exhaustive `match` (no `_`
+    /// arm) means a new variant with float payload is a compile error here until its
+    /// finiteness is accounted for — the same drift discipline as the variant guards.
+    #[must_use]
+    fn all_finite(&self) -> bool {
+        match self {
+            WireMovementState::Normal => true,
+            WireMovementState::Dash { elapsed_ms, boost } => {
+                elapsed_ms.is_finite() && boost.iter().all(|c| c.is_finite())
+            }
+            WireMovementState::Crouching { eye_current } => eye_current.is_finite(),
+        }
+    }
+}
+
+impl WirePlayerMovementState {
+    /// Whether every replicated float is finite (no NaN/inf): velocity, all live
+    /// timers, capsule dimensions, and the active state's payload. Checked at
+    /// `validate` so a non-finite movement state is rejected before typed apply and
+    /// never reaches the registry. Integer counters and bools cannot be non-finite,
+    /// so they are not checked.
+    #[must_use]
+    fn all_finite(&self) -> bool {
+        self.velocity.iter().all(|c| c.is_finite())
+            && self.dash_cooldown_ms.is_finite()
+            && self.coyote_timer_ms.is_finite()
+            && self.jump_buffer_timer_ms.is_finite()
+            && self.capsule_half_height.is_finite()
+            && self.capsule_eye_height.is_finite()
+            && self.movement_state.all_finite()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Raw encoded boundary
 // ---------------------------------------------------------------------------
@@ -134,6 +172,40 @@ pub struct RawEntityRecord {
     pub new_baseline_id_or_tombstone_id: u32,
     /// `Despawn`: the despawn reason code. Unused for `FullBaseline`/`Delta`.
     pub reason: u8,
+    /// Movement-authority ack flag: whether `last_processed_client_tick` carries a
+    /// real value. Mirrors the `Option`-ness of the typed
+    /// `EntityRecord::last_processed_client_tick`: `false` ⇒ no tick resolved yet
+    /// (the typed value is `None`); `true` ⇒ the host has resolved ≥1 command tick
+    /// for this pawn (the typed value is `Some(last_processed_client_tick)`). The
+    /// flag is required because the wire integer cannot itself encode "absent" — a
+    /// `false` flag combined with a nonzero tick is a malformed envelope rejected at
+    /// `validate`.
+    pub has_last_processed_client_tick: bool,
+    /// The latest client command tick the host resolved for this pawn before
+    /// snapshotting. Meaningful only when `has_last_processed_client_tick` is `true`
+    /// (and only on movement records — a non-movement or despawn record carrying
+    /// either ack field is rejected at `validate`).
+    pub last_processed_client_tick: u32,
+    /// True only in the per-recipient snapshot sent to this pawn's owning client, so
+    /// that client predicts/reconciles it locally. Always `false` for non-local
+    /// pawns and for non-movement / despawn records (a `true` flag on either is
+    /// rejected at `validate`).
+    pub local_player: bool,
+    /// Whether `entity_class` carries a real value (mirrors the `Option`-ness of the
+    /// typed `EntityRecord::entity_class`). `false` ⇒ no class stamped (the typed
+    /// value is `None`); `true` ⇒ the host stamped the descriptor class the pawn was
+    /// materialized from (the typed value is `Some(entity_class)`). The flag is
+    /// required because an empty `String` is a legal-but-meaningless class; a `false`
+    /// flag paired with a non-empty class is a malformed envelope rejected at
+    /// `validate`.
+    pub has_entity_class: bool,
+    /// The opaque descriptor-class identifier the host materialized this movement
+    /// pawn from (e.g. `"player"`), so the client can materialize the matching
+    /// descriptor-backed component locally. Meaningful only when `has_entity_class`
+    /// is `true` and only on a movement record — a non-movement or despawn record
+    /// carrying it is rejected at `validate`. This is a plain string identifier, NOT
+    /// a descriptor type: the crate stays registry-blind and never resolves it.
+    pub entity_class: String,
     pub components: Vec<RawComponentPayload>,
 }
 
@@ -182,12 +254,33 @@ pub enum EntityRecord {
     FullBaseline {
         network_id: u32,
         baseline_id: u32,
+        /// Latest client command tick the host resolved for this pawn before
+        /// snapshotting. `Some` on the recipient-local movement pawn once ≥1 real or
+        /// synthetic command tick is resolved; `None` for non-local movement pawns and
+        /// for the first baseline before any tick is resolved. Always `None` on a
+        /// record that does not carry a `PlayerMovementState` (enforced at `validate`).
+        last_processed_client_tick: Option<u32>,
+        /// True only in the snapshot sent to this pawn's owning client. Always `false`
+        /// for non-local pawns and for non-movement records (enforced at `validate`).
+        local_player: bool,
+        /// The opaque descriptor-class identifier the host materialized this movement
+        /// pawn from (e.g. `"player"`), or `None` for a non-movement record / a pawn
+        /// the host stamped no class for. `Some` only on a record carrying a
+        /// `PlayerMovementState` (enforced at `validate`). A plain string identifier,
+        /// never resolved by this registry-blind crate.
+        entity_class: Option<String>,
         components: Vec<ComponentPayload>,
     },
     Delta {
         network_id: u32,
         baseline_ref: u32,
         new_baseline_id: u32,
+        /// See `FullBaseline::last_processed_client_tick`.
+        last_processed_client_tick: Option<u32>,
+        /// See `FullBaseline::local_player`.
+        local_player: bool,
+        /// See `FullBaseline::entity_class`.
+        entity_class: Option<String>,
         components: Vec<ComponentPayload>,
     },
     Despawn {
@@ -229,6 +322,30 @@ pub enum ValidationError {
     /// More than one payload slot was `Some` (ambiguous which one `component_kind`
     /// names).
     MismatchedComponentPayload(u16),
+    /// A record carried movement-authority metadata
+    /// (`has_last_processed_client_tick` / `local_player`) but does not carry a
+    /// `PlayerMovementState` component. Ack/local-player metadata is only meaningful
+    /// on a movement pawn record.
+    MovementMetadataWithoutMovement,
+    /// `has_last_processed_client_tick` was `false` but `last_processed_client_tick`
+    /// was nonzero — the "absent" flag cannot ride a real tick value.
+    MalformedTickMetadata { last_processed_client_tick: u32 },
+    /// A despawn record carried any movement-authority metadata
+    /// (`has_last_processed_client_tick` / `local_player`) or an `entity_class`. A
+    /// tombstone has no pawn state to ack and no descriptor class to materialize.
+    MetadataOnDespawn,
+    /// A record carried an `entity_class` (`has_entity_class = true`) but does not
+    /// carry a `PlayerMovementState` component. The class is only meaningful on a
+    /// movement pawn record (it names the descriptor the client materializes).
+    EntityClassWithoutMovement,
+    /// `has_entity_class` was `false` but `entity_class` was non-empty — the "absent"
+    /// flag cannot ride a real class value.
+    MalformedEntityClassMetadata,
+    /// A `PlayerMovementState` payload carried a non-finite float (NaN/inf) in one
+    /// of its replicated fields (velocity, timers, dash boost, crouch eye value, or
+    /// capsule dimensions). Rejected before typed apply so no non-finite movement
+    /// state reaches the registry.
+    NonFiniteMovementState,
 }
 
 impl std::fmt::Display for ValidationError {
@@ -248,6 +365,29 @@ impl std::fmt::Display for ValidationError {
                     f,
                     "mismatched/duplicate payload slot for component_kind {k}"
                 )
+            }
+            ValidationError::MovementMetadataWithoutMovement => write!(
+                f,
+                "movement-authority metadata on a record without a PlayerMovementState component"
+            ),
+            ValidationError::MalformedTickMetadata {
+                last_processed_client_tick,
+            } => write!(
+                f,
+                "has_last_processed_client_tick=false but last_processed_client_tick={last_processed_client_tick} is nonzero"
+            ),
+            ValidationError::MetadataOnDespawn => {
+                write!(f, "movement-authority metadata on a despawn record")
+            }
+            ValidationError::EntityClassWithoutMovement => write!(
+                f,
+                "entity_class on a record without a PlayerMovementState component"
+            ),
+            ValidationError::MalformedEntityClassMetadata => {
+                write!(f, "has_entity_class=false but entity_class is non-empty")
+            }
+            ValidationError::NonFiniteMovementState => {
+                write!(f, "non-finite float in a PlayerMovementState payload")
             }
         }
     }
@@ -278,7 +418,13 @@ impl RawComponentPayload {
                 )),
             },
             COMPONENT_KIND_PLAYER_MOVEMENT_STATE => match self.player_movement {
-                Some(m) if populated == 1 => Ok(ComponentPayload::PlayerMovementState(m)),
+                Some(m) if populated == 1 => {
+                    if m.all_finite() {
+                        Ok(ComponentPayload::PlayerMovementState(m))
+                    } else {
+                        Err(ValidationError::NonFiniteMovementState)
+                    }
+                }
                 Some(_) => Err(ValidationError::MismatchedComponentPayload(
                     self.component_kind,
                 )),
@@ -297,24 +443,52 @@ impl RawEntityRecord {
     /// the overloaded id/reason fields are interpreted per the record's kind.
     pub fn validate(&self) -> Result<EntityRecord, ValidationError> {
         match self.record_kind {
-            RECORD_KIND_FULL_BASELINE => Ok(EntityRecord::FullBaseline {
-                network_id: self.network_id,
-                baseline_id: self.baseline_id_or_ref,
-                components: self.validate_components()?,
-            }),
-            RECORD_KIND_DELTA => Ok(EntityRecord::Delta {
-                network_id: self.network_id,
-                baseline_ref: self.baseline_id_or_ref,
-                new_baseline_id: self.new_baseline_id_or_tombstone_id,
-                components: self.validate_components()?,
-            }),
+            RECORD_KIND_FULL_BASELINE => {
+                let components = self.validate_components()?;
+                let last_processed_client_tick = self.validate_movement_metadata(&components)?;
+                let entity_class = self.validate_entity_class(&components)?;
+                Ok(EntityRecord::FullBaseline {
+                    network_id: self.network_id,
+                    baseline_id: self.baseline_id_or_ref,
+                    last_processed_client_tick,
+                    local_player: self.local_player,
+                    entity_class,
+                    components,
+                })
+            }
+            RECORD_KIND_DELTA => {
+                let components = self.validate_components()?;
+                let last_processed_client_tick = self.validate_movement_metadata(&components)?;
+                let entity_class = self.validate_entity_class(&components)?;
+                Ok(EntityRecord::Delta {
+                    network_id: self.network_id,
+                    baseline_ref: self.baseline_id_or_ref,
+                    new_baseline_id: self.new_baseline_id_or_tombstone_id,
+                    last_processed_client_tick,
+                    local_player: self.local_player,
+                    entity_class,
+                    components,
+                })
+            }
             // Despawn carries no components; any present are ignored, matching the
-            // overloaded-field rule (only the fields a kind names are read).
-            RECORD_KIND_DESPAWN => Ok(EntityRecord::Despawn {
-                network_id: self.network_id,
-                tombstone_id: self.new_baseline_id_or_tombstone_id,
-                reason: self.reason,
-            }),
+            // overloaded-field rule (only the fields a kind names are read). It must
+            // not carry movement-authority metadata or an entity_class, though — a
+            // tombstone has no pawn state to ack and no descriptor class to materialize.
+            RECORD_KIND_DESPAWN => {
+                if self.has_last_processed_client_tick
+                    || self.last_processed_client_tick != 0
+                    || self.local_player
+                    || self.has_entity_class
+                    || !self.entity_class.is_empty()
+                {
+                    return Err(ValidationError::MetadataOnDespawn);
+                }
+                Ok(EntityRecord::Despawn {
+                    network_id: self.network_id,
+                    tombstone_id: self.new_baseline_id_or_tombstone_id,
+                    reason: self.reason,
+                })
+            }
             other => Err(ValidationError::UnknownRecordKind(other)),
         }
     }
@@ -324,6 +498,69 @@ impl RawEntityRecord {
             .iter()
             .map(RawComponentPayload::validate)
             .collect()
+    }
+
+    /// Validate this record's movement-authority metadata against its (already
+    /// validated) components, returning the typed `last_processed_client_tick`.
+    ///
+    /// Rules:
+    /// - `has_last_processed_client_tick = false` with a nonzero tick is malformed.
+    /// - ack/local-player metadata is only valid on a record carrying a
+    ///   `PlayerMovementState`; on any other record it is rejected.
+    fn validate_movement_metadata(
+        &self,
+        components: &[ComponentPayload],
+    ) -> Result<Option<u32>, ValidationError> {
+        // The raw flag must be internally consistent before anything else: a "tick
+        // absent" flag cannot ride a real tick value.
+        if !self.has_last_processed_client_tick && self.last_processed_client_tick != 0 {
+            return Err(ValidationError::MalformedTickMetadata {
+                last_processed_client_tick: self.last_processed_client_tick,
+            });
+        }
+
+        let carries_movement = components
+            .iter()
+            .any(|c| matches!(c, ComponentPayload::PlayerMovementState(_)));
+        let carries_metadata = self.has_last_processed_client_tick || self.local_player;
+
+        if carries_metadata && !carries_movement {
+            return Err(ValidationError::MovementMetadataWithoutMovement);
+        }
+
+        Ok(self
+            .has_last_processed_client_tick
+            .then_some(self.last_processed_client_tick))
+    }
+
+    /// Validate this record's `entity_class` metadata against its (already validated)
+    /// components, returning the typed `Option<String>`.
+    ///
+    /// Rules (mirroring the movement-authority metadata rules):
+    /// - `has_entity_class = false` with a non-empty class is malformed.
+    /// - an `entity_class` is only valid on a record carrying a `PlayerMovementState`;
+    ///   on any other record it is rejected.
+    fn validate_entity_class(
+        &self,
+        components: &[ComponentPayload],
+    ) -> Result<Option<String>, ValidationError> {
+        // The flag must be internally consistent first: an "absent" flag cannot ride a
+        // real (non-empty) class value.
+        if !self.has_entity_class && !self.entity_class.is_empty() {
+            return Err(ValidationError::MalformedEntityClassMetadata);
+        }
+
+        if self.has_entity_class {
+            let carries_movement = components
+                .iter()
+                .any(|c| matches!(c, ComponentPayload::PlayerMovementState(_)));
+            if !carries_movement {
+                return Err(ValidationError::EntityClassWithoutMovement);
+            }
+            Ok(Some(self.entity_class.clone()))
+        } else {
+            Ok(None)
+        }
     }
 }
 
@@ -373,9 +610,17 @@ pub struct WireFireButtonState {
 
 /// Input-command envelope: the client's per-tick intent, mirroring the engine
 /// `SimCommand` (movement + fire button). Round-tripped in Phase 1; applied to
-/// gameplay in Phase 2.
+/// gameplay in Phase 2; reconciled against in Phase 3.
+///
+/// `client_tick` is the client's monotonic command-frame number, stamped first so
+/// the host can record which command tick it last resolved for that pawn (echoed
+/// back in the snapshot's `last_processed_client_tick`). The client matches that
+/// ack against its own command history to know how far to replay during
+/// reconciliation. It is the first field by design — the field order is part of the
+/// wire layout (`WIRE_VERSION`).
 #[derive(Debug, Clone, Copy, PartialEq, Encode, Decode)]
 pub struct InputCommand {
+    pub client_tick: u32,
     pub movement: WireMovementInput,
     pub fire_button: WireFireButtonState,
 }
@@ -548,8 +793,35 @@ mod tests {
         }
     }
 
+    /// A raw record with no movement-authority metadata set (the common case for
+    /// the round-trip/validation fixtures). Tests that exercise the metadata set the
+    /// three fields explicitly rather than through this helper.
+    fn raw_record(
+        record_kind: u16,
+        network_id: u32,
+        baseline_id_or_ref: u32,
+        new_baseline_id_or_tombstone_id: u32,
+        reason: u8,
+        components: Vec<RawComponentPayload>,
+    ) -> RawEntityRecord {
+        RawEntityRecord {
+            record_kind,
+            network_id,
+            baseline_id_or_ref,
+            new_baseline_id_or_tombstone_id,
+            reason,
+            has_last_processed_client_tick: false,
+            last_processed_client_tick: 0,
+            local_player: false,
+            has_entity_class: false,
+            entity_class: String::new(),
+            components,
+        }
+    }
+
     fn sample_input() -> InputCommand {
         InputCommand {
+            client_tick: 4_242,
             movement: WireMovementInput {
                 wish_dir: [0.5, -0.75],
                 jump_pressed: true,
@@ -587,14 +859,14 @@ mod tests {
             version: SNAPSHOT_VERSION,
             sequence: 11,
             server_tick: 900,
-            records: vec![RawEntityRecord {
-                record_kind: RECORD_KIND_FULL_BASELINE,
-                network_id: 5,
-                baseline_id_or_ref: 3,
-                new_baseline_id_or_tombstone_id: 0,
-                reason: 0,
-                components: vec![raw_transform_payload(), raw_movement_payload()],
-            }],
+            records: vec![raw_record(
+                RECORD_KIND_FULL_BASELINE,
+                5,
+                3,
+                0,
+                0,
+                vec![raw_transform_payload(), raw_movement_payload()],
+            )],
         };
         assert!(round_trips(&raw));
     }
@@ -718,14 +990,14 @@ mod tests {
             version: SNAPSHOT_VERSION,
             sequence: 4,
             server_tick: 60,
-            records: vec![RawEntityRecord {
-                record_kind: RECORD_KIND_FULL_BASELINE,
-                network_id: 9,
-                baseline_id_or_ref: 2,
-                new_baseline_id_or_tombstone_id: 0,
-                reason: 0,
-                components: vec![raw_transform_payload(), raw_movement_payload()],
-            }],
+            records: vec![raw_record(
+                RECORD_KIND_FULL_BASELINE,
+                9,
+                2,
+                0,
+                0,
+                vec![raw_transform_payload(), raw_movement_payload()],
+            )],
         };
         let typed = raw.validate().expect("well-formed snapshot validates");
         assert_eq!(typed.sequence, 4);
@@ -735,6 +1007,9 @@ mod tests {
             vec![EntityRecord::FullBaseline {
                 network_id: 9,
                 baseline_id: 2,
+                last_processed_client_tick: None,
+                local_player: false,
+                entity_class: None,
                 components: vec![
                     ComponentPayload::Transform(sample_transform()),
                     ComponentPayload::PlayerMovementState(sample_movement()),
@@ -749,14 +1024,14 @@ mod tests {
             version: SNAPSHOT_VERSION,
             sequence: 5,
             server_tick: 61,
-            records: vec![RawEntityRecord {
-                record_kind: RECORD_KIND_DELTA,
-                network_id: 9,
-                baseline_id_or_ref: 2,
-                new_baseline_id_or_tombstone_id: 3,
-                reason: 0,
-                components: vec![raw_transform_payload()],
-            }],
+            records: vec![raw_record(
+                RECORD_KIND_DELTA,
+                9,
+                2,
+                3,
+                0,
+                vec![raw_transform_payload()],
+            )],
         };
         let typed = raw.validate().expect("well-formed delta validates");
         assert_eq!(
@@ -765,6 +1040,9 @@ mod tests {
                 network_id: 9,
                 baseline_ref: 2,
                 new_baseline_id: 3,
+                last_processed_client_tick: None,
+                local_player: false,
+                entity_class: None,
                 components: vec![ComponentPayload::Transform(sample_transform())],
             }]
         );
@@ -776,15 +1054,15 @@ mod tests {
             version: SNAPSHOT_VERSION,
             sequence: 6,
             server_tick: 62,
-            records: vec![RawEntityRecord {
-                record_kind: RECORD_KIND_DESPAWN,
-                network_id: 9,
-                baseline_id_or_ref: 0,
-                new_baseline_id_or_tombstone_id: 42,
-                reason: 7,
-                // Components on a despawn are ignored, not rejected.
-                components: vec![raw_transform_payload()],
-            }],
+            // Components on a despawn are ignored, not rejected.
+            records: vec![raw_record(
+                RECORD_KIND_DESPAWN,
+                9,
+                0,
+                42,
+                7,
+                vec![raw_transform_payload()],
+            )],
         };
         let typed = raw
             .validate()
@@ -817,14 +1095,14 @@ mod tests {
             version: SNAPSHOT_VERSION,
             sequence: 9,
             server_tick: 1,
-            records: vec![RawEntityRecord {
-                record_kind: RECORD_KIND_FULL_BASELINE,
-                network_id: 3,
-                baseline_id_or_ref: 1,
-                new_baseline_id_or_tombstone_id: 0,
-                reason: 0,
-                components: vec![raw_transform_payload()],
-            }],
+            records: vec![raw_record(
+                RECORD_KIND_FULL_BASELINE,
+                3,
+                1,
+                0,
+                0,
+                vec![raw_transform_payload()],
+            )],
         };
         let bytes = encode(&raw);
         let truncated = &bytes[..bytes.len() - 1];
@@ -846,14 +1124,14 @@ mod tests {
             version: SNAPSHOT_VERSION,
             sequence: 1,
             server_tick: 1,
-            records: vec![RawEntityRecord {
-                record_kind: 99, // not FullBaseline/Delta/Despawn
-                network_id: 1,
-                baseline_id_or_ref: 0,
-                new_baseline_id_or_tombstone_id: 0,
-                reason: 0,
-                components: Vec::new(),
-            }],
+            records: vec![raw_record(
+                99, // not FullBaseline/Delta/Despawn
+                1,
+                0,
+                0,
+                0,
+                Vec::new(),
+            )],
         };
         // Decodes cleanly into the raw envelope...
         let bytes = encode(&raw);
@@ -871,18 +1149,18 @@ mod tests {
             version: SNAPSHOT_VERSION,
             sequence: 1,
             server_tick: 1,
-            records: vec![RawEntityRecord {
-                record_kind: RECORD_KIND_FULL_BASELINE,
-                network_id: 1,
-                baseline_id_or_ref: 0,
-                new_baseline_id_or_tombstone_id: 0,
-                reason: 0,
-                components: vec![RawComponentPayload {
+            records: vec![raw_record(
+                RECORD_KIND_FULL_BASELINE,
+                1,
+                0,
+                0,
+                0,
+                vec![RawComponentPayload {
                     component_kind: 1234, // not Transform/PlayerMovementState
                     transform: Some(sample_transform()),
                     player_movement: None,
                 }],
-            }],
+            )],
         };
         let bytes = encode(&raw);
         let decoded: RawSnapshotMessage = decode(&bytes).expect("invalid kind still decodes");
@@ -967,22 +1245,15 @@ mod tests {
             sequence: 1,
             server_tick: 1,
             records: vec![
-                RawEntityRecord {
-                    record_kind: RECORD_KIND_FULL_BASELINE,
-                    network_id: 1,
-                    baseline_id_or_ref: 0,
-                    new_baseline_id_or_tombstone_id: 0,
-                    reason: 0,
-                    components: vec![raw_transform_payload()],
-                },
-                RawEntityRecord {
-                    record_kind: 77,
-                    network_id: 2,
-                    baseline_id_or_ref: 0,
-                    new_baseline_id_or_tombstone_id: 0,
-                    reason: 0,
-                    components: Vec::new(),
-                },
+                raw_record(
+                    RECORD_KIND_FULL_BASELINE,
+                    1,
+                    0,
+                    0,
+                    0,
+                    vec![raw_transform_payload()],
+                ),
+                raw_record(77, 2, 0, 0, 0, Vec::new()),
             ],
         };
         assert_eq!(raw.validate(), Err(ValidationError::UnknownRecordKind(77)));
@@ -1020,12 +1291,18 @@ mod tests {
             EntityRecord::FullBaseline {
                 network_id: 1,
                 baseline_id: 2,
+                last_processed_client_tick: None,
+                local_player: false,
+                entity_class: None,
                 components: vec![ComponentPayload::Transform(sample_transform())],
             },
             EntityRecord::Delta {
                 network_id: 1,
                 baseline_ref: 2,
                 new_baseline_id: 3,
+                last_processed_client_tick: None,
+                local_player: false,
+                entity_class: None,
                 components: vec![ComponentPayload::Transform(sample_transform())],
             },
             EntityRecord::Despawn {
@@ -1036,51 +1313,431 @@ mod tests {
         ];
         for typed in variants {
             // Each typed variant maps to exactly one raw record_kind; validating
-            // that raw record must reproduce the typed variant unchanged.
+            // that raw record must reproduce the typed variant unchanged. These
+            // variants carry no movement component, so the metadata stays absent
+            // (`None`/`false`) — exercised separately in the metadata tests.
             let raw = match &typed {
                 EntityRecord::FullBaseline {
                     network_id,
                     baseline_id,
                     components,
-                } => RawEntityRecord {
-                    record_kind: RECORD_KIND_FULL_BASELINE,
-                    network_id: *network_id,
-                    baseline_id_or_ref: *baseline_id,
-                    new_baseline_id_or_tombstone_id: 0,
-                    reason: 0,
-                    components: components.iter().map(raw_from_typed).collect(),
-                },
+                    ..
+                } => raw_record(
+                    RECORD_KIND_FULL_BASELINE,
+                    *network_id,
+                    *baseline_id,
+                    0,
+                    0,
+                    components.iter().map(raw_from_typed).collect(),
+                ),
                 EntityRecord::Delta {
                     network_id,
                     baseline_ref,
                     new_baseline_id,
                     components,
-                } => RawEntityRecord {
-                    record_kind: RECORD_KIND_DELTA,
-                    network_id: *network_id,
-                    baseline_id_or_ref: *baseline_ref,
-                    new_baseline_id_or_tombstone_id: *new_baseline_id,
-                    reason: 0,
-                    components: components.iter().map(raw_from_typed).collect(),
-                },
+                    ..
+                } => raw_record(
+                    RECORD_KIND_DELTA,
+                    *network_id,
+                    *baseline_ref,
+                    *new_baseline_id,
+                    0,
+                    components.iter().map(raw_from_typed).collect(),
+                ),
                 EntityRecord::Despawn {
                     network_id,
                     tombstone_id,
                     reason,
-                } => RawEntityRecord {
-                    record_kind: RECORD_KIND_DESPAWN,
-                    network_id: *network_id,
-                    baseline_id_or_ref: 0,
-                    new_baseline_id_or_tombstone_id: *tombstone_id,
-                    reason: *reason,
-                    components: Vec::new(),
-                },
+                } => raw_record(
+                    RECORD_KIND_DESPAWN,
+                    *network_id,
+                    0,
+                    *tombstone_id,
+                    *reason,
+                    Vec::new(),
+                ),
             };
             // Round-trip the raw record through bitcode before validating, so the
             // pinned `record_kind` survives the wire too.
             let bytes = encode(&raw);
             let decoded: RawEntityRecord = decode(&bytes).expect("raw record decodes");
             assert_eq!(decoded.validate(), Ok(typed));
+        }
+    }
+
+    // --- Command-frame tick ---
+
+    #[test]
+    fn input_command_carries_client_tick_through_round_trip() {
+        // The client_tick is the first field and must survive the wire so the host
+        // can echo it back as the movement-authority ack.
+        let cmd = InputCommand {
+            client_tick: 9_001,
+            ..sample_input()
+        };
+        let bytes = encode(&cmd);
+        let decoded: InputCommand = decode(&bytes).expect("input command decodes");
+        assert_eq!(decoded.client_tick, 9_001);
+        assert_eq!(decoded, cmd);
+    }
+
+    // --- Snapshot movement-authority metadata ---
+
+    /// A full-baseline movement record carrying a resolved tick and the local-player
+    /// flag round-trips through raw -> wire -> typed with both surfaced.
+    #[test]
+    fn movement_metadata_round_trips_to_typed_record() {
+        let mut record = raw_record(
+            RECORD_KIND_FULL_BASELINE,
+            9,
+            2,
+            0,
+            0,
+            vec![raw_transform_payload(), raw_movement_payload()],
+        );
+        record.has_last_processed_client_tick = true;
+        record.last_processed_client_tick = 777;
+        record.local_player = true;
+
+        let raw = RawSnapshotMessage {
+            version: SNAPSHOT_VERSION,
+            sequence: 1,
+            server_tick: 1,
+            records: vec![record],
+        };
+        let bytes = encode(&raw);
+        let decoded: RawSnapshotMessage = decode(&bytes).expect("snapshot decodes");
+        let typed = decoded.validate().expect("metadata is well-formed");
+        assert_eq!(
+            typed.records,
+            vec![EntityRecord::FullBaseline {
+                network_id: 9,
+                baseline_id: 2,
+                last_processed_client_tick: Some(777),
+                local_player: true,
+                entity_class: None,
+                components: vec![
+                    ComponentPayload::Transform(sample_transform()),
+                    ComponentPayload::PlayerMovementState(sample_movement()),
+                ],
+            }]
+        );
+    }
+
+    /// A movement record may legitimately have no resolved tick yet (`None`) and not
+    /// be the local player — the non-local / pre-first-command case.
+    #[test]
+    fn movement_record_without_metadata_validates_to_none() {
+        let raw = raw_record(
+            RECORD_KIND_FULL_BASELINE,
+            9,
+            2,
+            0,
+            0,
+            vec![raw_movement_payload()],
+        );
+        let typed = raw.validate().expect("absent metadata is valid");
+        assert_eq!(
+            typed,
+            EntityRecord::FullBaseline {
+                network_id: 9,
+                baseline_id: 2,
+                last_processed_client_tick: None,
+                local_player: false,
+                entity_class: None,
+                components: vec![ComponentPayload::PlayerMovementState(sample_movement())],
+            }
+        );
+    }
+
+    /// Either ack flag on a record with no `PlayerMovementState` is rejected: the
+    /// metadata is meaningless without a movement pawn to attribute it to.
+    #[test]
+    fn metadata_on_non_movement_record_rejects() {
+        // local_player set on a Transform-only record.
+        let mut local = raw_record(
+            RECORD_KIND_FULL_BASELINE,
+            1,
+            1,
+            0,
+            0,
+            vec![raw_transform_payload()],
+        );
+        local.local_player = true;
+        assert_eq!(
+            local.validate(),
+            Err(ValidationError::MovementMetadataWithoutMovement)
+        );
+
+        // last_processed_client_tick set on a Transform-only record.
+        let mut tick = raw_record(
+            RECORD_KIND_FULL_BASELINE,
+            1,
+            1,
+            0,
+            0,
+            vec![raw_transform_payload()],
+        );
+        tick.has_last_processed_client_tick = true;
+        tick.last_processed_client_tick = 5;
+        assert_eq!(
+            tick.validate(),
+            Err(ValidationError::MovementMetadataWithoutMovement)
+        );
+    }
+
+    /// `has_last_processed_client_tick = false` paired with a nonzero tick is a
+    /// malformed envelope — the "absent" flag cannot ride a real value.
+    #[test]
+    fn malformed_tick_metadata_rejects() {
+        let mut record = raw_record(
+            RECORD_KIND_FULL_BASELINE,
+            1,
+            1,
+            0,
+            0,
+            vec![raw_movement_payload()],
+        );
+        record.has_last_processed_client_tick = false;
+        record.last_processed_client_tick = 42; // nonzero with the flag clear
+        assert_eq!(
+            record.validate(),
+            Err(ValidationError::MalformedTickMetadata {
+                last_processed_client_tick: 42
+            })
+        );
+    }
+
+    /// Any movement-authority metadata on a despawn record is rejected: a tombstone
+    /// has no pawn state to ack.
+    #[test]
+    fn metadata_on_despawn_rejects() {
+        for mutate in [
+            |r: &mut RawEntityRecord| r.has_last_processed_client_tick = true,
+            |r: &mut RawEntityRecord| r.last_processed_client_tick = 3,
+            |r: &mut RawEntityRecord| r.local_player = true,
+        ] {
+            let mut record = raw_record(RECORD_KIND_DESPAWN, 1, 0, 9, 0, Vec::new());
+            mutate(&mut record);
+            assert_eq!(record.validate(), Err(ValidationError::MetadataOnDespawn));
+        }
+    }
+
+    // --- entity_class metadata (M15 Phase 3 Task 7) ---
+
+    /// A movement record carrying `entity_class` round-trips raw -> wire -> typed with
+    /// the class surfaced as `Some(_)`.
+    #[test]
+    fn entity_class_round_trips_to_typed_record() {
+        let mut record = raw_record(
+            RECORD_KIND_FULL_BASELINE,
+            9,
+            2,
+            0,
+            0,
+            vec![raw_transform_payload(), raw_movement_payload()],
+        );
+        record.has_entity_class = true;
+        record.entity_class = "player".to_string();
+        record.has_last_processed_client_tick = true;
+        record.last_processed_client_tick = 5;
+        record.local_player = true;
+
+        let raw = RawSnapshotMessage {
+            version: SNAPSHOT_VERSION,
+            sequence: 1,
+            server_tick: 1,
+            records: vec![record],
+        };
+        let bytes = encode(&raw);
+        let decoded: RawSnapshotMessage = decode(&bytes).expect("snapshot decodes");
+        let typed = decoded.validate().expect("entity_class is well-formed");
+        assert_eq!(
+            typed.records,
+            vec![EntityRecord::FullBaseline {
+                network_id: 9,
+                baseline_id: 2,
+                last_processed_client_tick: Some(5),
+                local_player: true,
+                entity_class: Some("player".to_string()),
+                components: vec![
+                    ComponentPayload::Transform(sample_transform()),
+                    ComponentPayload::PlayerMovementState(sample_movement()),
+                ],
+            }]
+        );
+    }
+
+    /// A delta movement record also carries `entity_class` through validation.
+    #[test]
+    fn entity_class_round_trips_on_delta() {
+        let mut record = raw_record(RECORD_KIND_DELTA, 9, 2, 3, 0, vec![raw_movement_payload()]);
+        record.has_entity_class = true;
+        record.entity_class = "boomer".to_string();
+        let typed = record.validate().expect("delta entity_class validates");
+        assert_eq!(
+            typed,
+            EntityRecord::Delta {
+                network_id: 9,
+                baseline_ref: 2,
+                new_baseline_id: 3,
+                last_processed_client_tick: None,
+                local_player: false,
+                entity_class: Some("boomer".to_string()),
+                components: vec![ComponentPayload::PlayerMovementState(sample_movement())],
+            }
+        );
+    }
+
+    /// `entity_class` on a record with no `PlayerMovementState` is rejected: the class
+    /// is only meaningful on a movement pawn (it names a descriptor to materialize).
+    #[test]
+    fn entity_class_on_non_movement_record_rejects() {
+        let mut record = raw_record(
+            RECORD_KIND_FULL_BASELINE,
+            1,
+            1,
+            0,
+            0,
+            vec![raw_transform_payload()],
+        );
+        record.has_entity_class = true;
+        record.entity_class = "player".to_string();
+        assert_eq!(
+            record.validate(),
+            Err(ValidationError::EntityClassWithoutMovement)
+        );
+    }
+
+    /// Any `entity_class` on a despawn record is rejected: a tombstone has no pawn to
+    /// materialize.
+    #[test]
+    fn entity_class_on_despawn_rejects() {
+        for mutate in [
+            |r: &mut RawEntityRecord| r.has_entity_class = true,
+            |r: &mut RawEntityRecord| r.entity_class = "player".to_string(),
+        ] {
+            let mut record = raw_record(RECORD_KIND_DESPAWN, 1, 0, 9, 0, Vec::new());
+            mutate(&mut record);
+            assert_eq!(record.validate(), Err(ValidationError::MetadataOnDespawn));
+        }
+    }
+
+    /// `has_entity_class = false` paired with a non-empty class is malformed — the
+    /// "absent" flag cannot ride a real class value.
+    #[test]
+    fn malformed_entity_class_metadata_rejects() {
+        let mut record = raw_record(
+            RECORD_KIND_FULL_BASELINE,
+            1,
+            1,
+            0,
+            0,
+            vec![raw_movement_payload()],
+        );
+        record.has_entity_class = false;
+        record.entity_class = "player".to_string(); // non-empty with the flag clear
+        assert_eq!(
+            record.validate(),
+            Err(ValidationError::MalformedEntityClassMetadata)
+        );
+    }
+
+    // --- Non-finite PlayerMovementState rejection ---
+
+    /// Every replicated float field of a `PlayerMovementState` must be finite; a
+    /// NaN/inf in any of them is rejected before typed apply, so no non-finite
+    /// movement state reaches the registry. Each case mutates exactly one field.
+    #[test]
+    fn non_finite_movement_state_rejects_each_field() {
+        let mutators: [fn(&mut WirePlayerMovementState); 9] = [
+            |m| m.velocity[0] = f32::NAN,
+            |m| m.velocity[2] = f32::INFINITY,
+            |m| m.dash_cooldown_ms = f32::NAN,
+            |m| m.coyote_timer_ms = f32::INFINITY,
+            |m| m.jump_buffer_timer_ms = f32::NEG_INFINITY,
+            |m| m.capsule_half_height = f32::NAN,
+            |m| m.capsule_eye_height = f32::INFINITY,
+            |m| {
+                m.movement_state = WireMovementState::Dash {
+                    elapsed_ms: f32::NAN,
+                    boost: [0.0, 0.0, 0.0],
+                }
+            },
+            |m| {
+                m.movement_state = WireMovementState::Crouching {
+                    eye_current: f32::INFINITY,
+                }
+            },
+        ];
+        for mutate in mutators {
+            let mut movement = sample_movement();
+            // sample_movement defaults to a finite Dash; reset to a finite Normal so
+            // the dash/crouch mutators are the only non-finite source in their case.
+            movement.movement_state = WireMovementState::Normal;
+            mutate(&mut movement);
+            let payload = RawComponentPayload {
+                component_kind: COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
+                transform: None,
+                player_movement: Some(movement),
+            };
+            assert_eq!(
+                payload.validate(),
+                Err(ValidationError::NonFiniteMovementState)
+            );
+        }
+    }
+
+    /// The dash-boost vector is also checked component-wise.
+    #[test]
+    fn non_finite_dash_boost_rejects() {
+        let movement = WirePlayerMovementState {
+            movement_state: WireMovementState::Dash {
+                elapsed_ms: 10.0,
+                boost: [1.0, f32::NAN, 3.0],
+            },
+            ..sample_movement()
+        };
+        let payload = RawComponentPayload {
+            component_kind: COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
+            transform: None,
+            player_movement: Some(movement),
+        };
+        assert_eq!(
+            payload.validate(),
+            Err(ValidationError::NonFiniteMovementState)
+        );
+    }
+
+    // Drift guard: every `WireMovementState` variant's float payload is covered by
+    // the finiteness check. The expectation is derived from the source enum via an
+    // exhaustive `match` (no `_` arm), so a new variant is a compile error here until
+    // its finiteness contribution is declared — never a silently-passing guard.
+    #[test]
+    fn movement_state_finiteness_covers_every_variant() {
+        let variants = [
+            WireMovementState::Normal,
+            WireMovementState::Dash {
+                elapsed_ms: 1.0,
+                boost: [0.0, 0.0, 0.0],
+            },
+            WireMovementState::Crouching { eye_current: 0.5 },
+        ];
+        for state in variants {
+            // A finite instance of every variant must pass the finiteness gate.
+            assert!(state.all_finite(), "finite variant must be all_finite");
+            // The number of float fields each variant carries — derived from the
+            // source enum so adding a variant (or a float field) forces an update.
+            let float_field_count = match state {
+                WireMovementState::Normal => 0,
+                WireMovementState::Dash { .. } => 4, // elapsed_ms + 3 boost components
+                WireMovementState::Crouching { .. } => 1,
+            };
+            // Non-`Normal` variants carry floats and so are non-finite-detectable.
+            assert_eq!(
+                float_field_count > 0,
+                !matches!(state, WireMovementState::Normal)
+            );
         }
     }
 

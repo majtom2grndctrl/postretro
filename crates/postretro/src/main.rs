@@ -2719,6 +2719,12 @@ impl ApplicationHandler for App {
                                         &light_reachable_leaf_mask,
                                     );
                                 }
+                                let bvh_visible_cell_mask =
+                                    drawable_visible_cell_mask(world.leaves.len(), &visible_cells);
+                                renderer
+                                    .emit_bvh_overlay_diagnostics(bvh_visible_cell_mask.as_deref());
+                                renderer.emit_cell_overlay_diagnostics(world, &visible_cells);
+                                renderer.emit_portal_overlay_diagnostics(world);
                             }
                             // Navmesh overlay: append region rectangles + portal
                             // edges. No-op unless the `Alt+Shift+N` toggle is on
@@ -4189,6 +4195,25 @@ impl App {
             Err(err) => {
                 log::warn!("[dev-tools] chase agent attach failed: {err:?}");
             }
+        }
+    }
+}
+
+#[cfg(feature = "dev-tools")]
+fn drawable_visible_cell_mask(
+    leaf_count: usize,
+    visible_cells: &VisibleCells,
+) -> Option<Vec<bool>> {
+    match visible_cells {
+        VisibleCells::DrawAll => None,
+        VisibleCells::Culled(cells) => {
+            let mut mask = vec![false; leaf_count];
+            for &cell in cells {
+                if let Some(slot) = mask.get_mut(cell as usize) {
+                    *slot = true;
+                }
+            }
+            Some(mask)
         }
     }
 }
@@ -5901,20 +5926,39 @@ mod tests {
         diagnostics.handle_key(KeyCode::ShiftLeft, true, false);
         diagnostics.handle_key(KeyCode::AltLeft, true, false);
 
-        // Alt+Shift+Backslash (ToggleWireframe) — dropped by the gate.
-        let blocked = consumed_gate(&mut diagnostics, KeyCode::Backslash, true, false);
-        assert_eq!(
-            blocked, None,
-            "consumed-event gate must suppress non-toggle diagnostic chords",
-        );
+        for code in [
+            KeyCode::Backslash,
+            KeyCode::Digit1,
+            KeyCode::KeyV,
+            KeyCode::KeyP,
+            KeyCode::KeyN,
+            KeyCode::KeyL,
+            KeyCode::KeyG,
+        ] {
+            let blocked = consumed_gate(&mut diagnostics, code, true, false);
+            assert_eq!(
+                blocked, None,
+                "consumed-event gate must suppress non-toggle diagnostic chord {code:?}",
+            );
+        }
 
-        // Alt+Shift+Backquote (ToggleDebugPanel) — passes the gate.
-        let allowed = consumed_gate(&mut diagnostics, KeyCode::Backquote, true, false);
         assert_eq!(
-            allowed,
+            consumed_gate(&mut diagnostics, KeyCode::Backquote, true, false),
             Some(DiagnosticAction::ToggleDebugPanel),
             "consumed-event gate must allow ToggleDebugPanel through",
         );
+    }
+
+    #[cfg(feature = "dev-tools")]
+    #[test]
+    fn drawable_visible_cell_mask_derives_only_from_drawable_visible_cells() {
+        assert_eq!(
+            drawable_visible_cell_mask(4, &VisibleCells::Culled(vec![1, 3, 99])),
+            Some(vec![false, true, false, true]),
+        );
+        // DrawAll is an all-visible sentinel. The BVH overlay interprets the
+        // absent mask as unfiltered/all-visible when visible-cells-only is on.
+        assert_eq!(drawable_visible_cell_mask(4, &VisibleCells::DrawAll), None);
     }
 
     /// Regression: on a multi-tick frame, look rotation must be applied

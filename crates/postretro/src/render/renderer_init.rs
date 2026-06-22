@@ -353,7 +353,8 @@ impl Renderer {
         let RendererPipelines {
             pipeline,
             wireframe_cull_status_layout,
-            wireframe_pipeline,
+            wireframe_cull_status_pipeline,
+            wireframe_visible_pipeline,
             depth_prepass_pipeline,
             shadow_vs_bgl,
             shadow_depth_pipeline,
@@ -540,13 +541,21 @@ impl Renderer {
             bvh_leaves,
             compute_cull,
             shadow_cull,
-            wireframe_pipeline,
+            wireframe_cull_status_pipeline,
+            wireframe_visible_pipeline,
             wireframe_index_buffer,
             wireframe_index_count,
             wireframe_cull_status_bgl: wireframe_cull_status_layout,
+            world_wireframe_mode: WorldWireframeMode::Off,
             wireframe_enabled: false,
             #[cfg(feature = "dev-tools")]
             debug_lines,
+            #[cfg(feature = "dev-tools")]
+            bvh_overlay: BvhOverlayState::default(),
+            #[cfg(feature = "dev-tools")]
+            cell_overlay: CellOverlayState::default(),
+            #[cfg(feature = "dev-tools")]
+            portal_overlay: PortalOverlayState::default(),
             #[cfg(feature = "dev-tools")]
             show_navmesh: false,
             lighting_isolation: LightingIsolation::Normal,

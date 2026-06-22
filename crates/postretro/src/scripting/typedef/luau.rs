@@ -193,11 +193,11 @@ pub(super) fn emit_luau_game_state_refs(out: &mut String) {
     out.push_str("declare function getGameState(): GameStateRefs\n\n");
 }
 
-/// Static type declarations for the Luau SDK library globals installed by
-/// the embedded `world.luau`, `entities/lights.luau`, `entities/emitters.luau`,
-/// `entities/fog_volumes.luau`, and `util/keyframes.luau` preludes. Appended to the generated
-/// `postretro.d.luau` so `luau-lsp` resolves the symbols without an explicit
-/// `require`. See: context/lib/scripting.md §7.
+// Static type declarations for the Luau SDK library globals installed by
+// the embedded `world.luau`, `entities/lights.luau`, `entities/emitters.luau`,
+// `entities/fog_volumes.luau`, and `util/keyframes.luau` preludes. Appended to the generated
+// `postretro.d.luau` so `luau-lsp` resolves the symbols without an explicit
+// `require`. See: context/lib/scripting.md §7.
 // Source of truth for this static block:
 //   sdk/lib/world.luau
 //   sdk/lib/entities/lights.luau

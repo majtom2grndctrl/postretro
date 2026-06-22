@@ -204,11 +204,25 @@ The active set is repacked densely into the GPU fog buffer in ascending source-i
 
 ### 7.6 Wireframe Overlay (`dev-tools` only)
 
-Renders world geometry as a line-list overlay using depth from the shared depth buffer (depth test on, depth write on). Runs after the fog composite and before debug lines. Active only when the wireframe toggle is enabled and geometry is loaded. Per-leaf cull status from the BVH traversal pass gates which leaves are drawn, so culled geometry stays invisible in wireframe mode.
+Renders world geometry as a line-list overlay after the fog composite and before debug lines. The Diagnostics Spatial tab owns the full selector; `Alt+Shift+Backslash` remains a fast toggle between Off and the cull-status mode.
+
+Modes:
+
+- **Off** — no triangle wireframe pass.
+- **Cull-status triangles (all leaves, x-ray)** — draws all loaded world triangles from every BVH leaf, renders always-on-top (`depth_compare = Always`, depth writes off), and tints by the GPU BVH traversal pass's per-leaf cull status: cyan = not submitted by the GPU cull pass (including leaves outside the CPU-visible set and descendants of skipped subtrees), red = leaf explicitly marked frustum-culled, green = rendered by the GPU indirect path. This is a culling diagnostic, not a visible-surface mesh view.
+- **CPU-visible triangles (depth-tested)** — draws only BVH leaves whose `cell_id` is in the current frame's drawable `VisibleCells` set (`DrawAll` draws every leaf), uses a flat color with no cull-status tinting, and depth-tests against the shared scene depth (`LessEqual`, depth writes off). This shows geometry submitted by the CPU visibility path; it does not mean final GPU BVH/frustum survivors. Current cull status is GPU-resident, and this mode does not add GPU readback.
 
 ### 7.7 Debug Lines (`dev-tools` only)
 
-Immediate-mode line segments uploaded from a CPU buffer each frame. Depth test on, depth write off — lines occlude against opaque geometry but do not occlude each other. Runs after the wireframe overlay. See §12 for the full debug-line renderer contract.
+Immediate-mode line segments uploaded from a CPU buffer each frame. Depth-tested lines test against opaque scene depth with depth writes off, so they occlude against world geometry but do not occlude each other. Explicit overlay/x-ray lines use the always-on-top debug-line path. Runs after the wireframe overlay. See §12 for the full debug-line renderer contract.
+
+Spatial diagnostics use this pass for CPU-authored structural overlays:
+
+- **BVH leaf AABBs** come from the renderer-owned CPU copy of compiled `BvhLeaf` records loaded from the PRL BVH section. They default to stable cell-id coloring, have a local deterministic budget (`max_boxes`, `stride`, optional visible-cells-only filter), and do not read back GPU cull status. Depth-tested is the default; x-ray is an explicit mode.
+- **BSP cell bounds** come from decoded `LevelWorld.leaves`. Solid cells are skipped. Drawable visible cells are colored from the current frame's drawable `VisibleCells::Culled` set; `VisibleCells::DrawAll` uses a distinct fallback color so it does not look like a successful portal walk.
+- **Portal edges** come from decoded `LevelWorld.portals` polygon edges. They use the same depth-tested/x-ray selector as the other Spatial context overlays.
+
+Spatial visible-cell coloring is derived from the drawable `VisibleCells` result that feeds world rendering, not from fog/light reachability masks. The wider `fog_reachable` / light-reachable sets include empty leaves for volume and dynamic-light isolation and must not drive first-pass Spatial visibility colors.
 
 ### 7.8 Screen-space effects resolve pass
 
@@ -332,7 +346,7 @@ Set `POSTRETRO_GPU_TIMING=1` to enable per-pass GPU timing. Requires adapter sup
 
 ### Debug-Line Renderer
 
-`dev-tools` only. Immediate-mode API: per-frame CPU buffer of `(start, end, color_rgba)` line segments uploaded to a `LineList` vertex buffer and drawn after the fog composite pass and before egui. Depth test on (matching world render target sample count), depth write off — lines occlude against opaque geometry only. Buffer cleared at the top of the diagnostic emit call each frame, before new segments are pushed — not inside the render path — so it stays bounded even when `render_frame_indirect` early-returns (surface Timeout/Occluded/Outdated). Capped at a fixed segment limit (overflow: log + truncate). First consumer: SH volume diagnostic overlay.
+`dev-tools` only. Immediate-mode API: per-frame CPU buffer of `(start, end, color_rgba)` line segments uploaded to a `LineList` vertex buffer and drawn after the fog composite pass and before egui. Depth-tested lines match the world render target sample count, test against opaque scene depth, and keep depth writes off. Overlay/x-ray lines are a separate always-on-top stream. Buffer cleared at the top of the diagnostic emit call each frame, before new segments are pushed — not inside the render path — so it stays bounded even when `render_frame_indirect` early-returns (surface Timeout/Occluded/Outdated). Capped at a fixed segment limit (overflow: log + truncate). Consumers include SH volume diagnostics, nav/path overlays, remote-entity markers, and Spatial BVH/cell/portal overlays.
 
 ---
 

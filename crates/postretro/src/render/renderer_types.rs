@@ -37,6 +37,205 @@ pub(crate) struct GpuTexture {
     pub(super) bind_group: wgpu::BindGroup,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+pub enum WorldWireframeMode {
+    Off,
+    CullStatusTrianglesAlwaysOnTop,
+    VisibleTrianglesDepthTested,
+}
+
+#[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+impl WorldWireframeMode {
+    pub const ALL_VARIANTS: [Self; 3] = [
+        Self::Off,
+        Self::CullStatusTrianglesAlwaysOnTop,
+        Self::VisibleTrianglesDepthTested,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::CullStatusTrianglesAlwaysOnTop => "Cull-status triangles (all leaves, x-ray)",
+            Self::VisibleTrianglesDepthTested => "CPU-visible triangles (depth-tested)",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+pub enum BvhOverlayColorMode {
+    CellId,
+}
+
+#[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+impl BvhOverlayColorMode {
+    pub const ALL_VARIANTS: [Self; 1] = [Self::CellId];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::CellId => "Stable cell ID",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+pub enum BvhOverlayDepthMode {
+    DepthTested,
+    XRayAlwaysOnTop,
+}
+
+#[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+impl BvhOverlayDepthMode {
+    pub const ALL_VARIANTS: [Self; 2] = [Self::DepthTested, Self::XRayAlwaysOnTop];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::DepthTested => "Depth-tested",
+            Self::XRayAlwaysOnTop => "X-ray / always on top",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+pub struct BvhOverlayBudget {
+    pub max_boxes: usize,
+    pub stride: usize,
+    pub visible_cells_only: bool,
+}
+
+impl Default for BvhOverlayBudget {
+    fn default() -> Self {
+        Self {
+            max_boxes: 512,
+            stride: 1,
+            visible_cells_only: false,
+        }
+    }
+}
+
+#[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+impl BvhOverlayBudget {
+    pub fn sanitized(self) -> Self {
+        Self {
+            max_boxes: self.max_boxes,
+            stride: self.stride.max(1),
+            visible_cells_only: self.visible_cells_only,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+pub struct BvhOverlayState {
+    pub visible: bool,
+    pub color_mode: BvhOverlayColorMode,
+    pub depth_mode: BvhOverlayDepthMode,
+    pub budget: BvhOverlayBudget,
+}
+
+impl Default for BvhOverlayState {
+    fn default() -> Self {
+        Self {
+            visible: false,
+            color_mode: BvhOverlayColorMode::CellId,
+            depth_mode: BvhOverlayDepthMode::DepthTested,
+            budget: BvhOverlayBudget::default(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+pub struct CellOverlayState {
+    pub visible: bool,
+    pub depth_mode: BvhOverlayDepthMode,
+}
+
+impl Default for CellOverlayState {
+    fn default() -> Self {
+        Self {
+            visible: false,
+            depth_mode: BvhOverlayDepthMode::DepthTested,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+pub struct PortalOverlayState {
+    pub visible: bool,
+    pub depth_mode: BvhOverlayDepthMode,
+}
+
+impl Default for PortalOverlayState {
+    fn default() -> Self {
+        Self {
+            visible: false,
+            depth_mode: BvhOverlayDepthMode::DepthTested,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn world_wireframe_modes_define_final_spatial_contract() {
+        assert_eq!(
+            WorldWireframeMode::ALL_VARIANTS,
+            [
+                WorldWireframeMode::Off,
+                WorldWireframeMode::CullStatusTrianglesAlwaysOnTop,
+                WorldWireframeMode::VisibleTrianglesDepthTested,
+            ],
+        );
+        assert_eq!(WorldWireframeMode::Off.label(), "Off");
+        assert_eq!(
+            WorldWireframeMode::CullStatusTrianglesAlwaysOnTop.label(),
+            "Cull-status triangles (all leaves, x-ray)",
+        );
+        assert_eq!(
+            WorldWireframeMode::VisibleTrianglesDepthTested.label(),
+            "CPU-visible triangles (depth-tested)",
+        );
+    }
+
+    #[test]
+    fn spatial_overlay_defaults_are_off_depth_tested_and_cell_colored() {
+        assert_eq!(
+            BvhOverlayState::default(),
+            BvhOverlayState {
+                visible: false,
+                color_mode: BvhOverlayColorMode::CellId,
+                depth_mode: BvhOverlayDepthMode::DepthTested,
+                budget: BvhOverlayBudget {
+                    max_boxes: 512,
+                    stride: 1,
+                    visible_cells_only: false,
+                },
+            },
+        );
+        assert_eq!(
+            CellOverlayState::default(),
+            CellOverlayState {
+                visible: false,
+                depth_mode: BvhOverlayDepthMode::DepthTested,
+            },
+        );
+        assert_eq!(
+            PortalOverlayState::default(),
+            PortalOverlayState {
+                visible: false,
+                depth_mode: BvhOverlayDepthMode::DepthTested,
+            },
+        );
+    }
+}
+
 /// Hardware anisotropy cap for the Post Retro filtering pool. wgpu 29 requires
 /// `anisotropy_clamp >= 1`; 16 is the common ceiling exposed by desktop adapters
 /// and the visual point of diminishing returns for grazing-angle sharpness.
@@ -74,11 +273,10 @@ pub struct LevelGeometry<'a> {
     /// `None` → no SDF static-occluder atlas; runtime SDF shadow pass disabled.
     /// An empty-geometry section (zero grid dims) is treated the same way.
     pub sdf_atlas: Option<&'a postretro_level_format::sdf_atlas::SdfAtlasSection>,
-    /// Whether the lightmap atlas was baked with the static-light visibility
-    /// term included (Shadowed — `main`-equivalent) or removed (Unshadowed,
-    /// Task 2a). The renderer surfaces this so the forward pass (Task 5)
-    /// knows whether to multiply the SDF visibility factor into the static
-    /// term. Defaults to `Shadowed` for legacy PRLs.
+    /// Whether baked static-direct lightmap samples already include static-light
+    /// visibility. `Shadowed` atlases contain the visibility term; `Unshadowed`
+    /// atlases leave it for runtime SDF shadowing so the forward pass does not
+    /// double-count static-light occlusion. Legacy PRLs default to `Shadowed`.
     pub lightmap_mode: crate::prl::LightmapMode,
     pub texture_materials: &'a [crate::material::Material],
 }
@@ -274,14 +472,22 @@ pub struct Renderer {
     /// maps with no BVH (kept in lockstep with `compute_cull`).
     pub(super) shadow_cull: Option<crate::shadow_cull::ShadowCullPipeline>,
 
-    pub(super) wireframe_pipeline: wgpu::RenderPipeline,
+    pub(super) wireframe_cull_status_pipeline: wgpu::RenderPipeline,
+    pub(super) wireframe_visible_pipeline: wgpu::RenderPipeline,
     pub(super) wireframe_index_buffer: wgpu::Buffer,
     pub(super) wireframe_index_count: u32,
     pub(super) wireframe_cull_status_bgl: wgpu::BindGroupLayout,
+    pub(super) world_wireframe_mode: WorldWireframeMode,
     pub(super) wireframe_enabled: bool,
 
     #[cfg(feature = "dev-tools")]
     pub(super) debug_lines: debug_lines::DebugLineRenderer,
+    #[cfg(feature = "dev-tools")]
+    pub(super) bvh_overlay: BvhOverlayState,
+    #[cfg(feature = "dev-tools")]
+    pub(super) cell_overlay: CellOverlayState,
+    #[cfg(feature = "dev-tools")]
+    pub(super) portal_overlay: PortalOverlayState,
     /// Navmesh overlay toggle, flipped by `Alt+Shift+N`. Read at the emit call
     /// site to decide whether to push region/portal debug lines this frame.
     #[cfg(feature = "dev-tools")]

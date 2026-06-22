@@ -54,51 +54,85 @@ latency. Phase 3 is movement-only: walk, jump, crouch, and dash.
 
 ## Acceptance criteria
 
-- [ ] A connected client sends one command frame per predicted fixed tick. Each command has
+- [x] A connected client sends one command frame per predicted fixed tick. Each command has
   a monotonic `client_tick`, round-trips through `ClientMessage::Input`, and survives
   duplicate / old / malformed input packets without host panic or unrelated entity mutation.
   Duplicate/old hardening is tested by injecting `ClientMessage::Input` directly into the
   host drain/queue seam, not by requiring reliable-ordered transport to produce duplicates.
-- [ ] The host applies accepted client commands to that client's authoritative
+- [x] The host applies accepted client commands to that client's authoritative
   descriptor-backed `PlayerMovement` pawn in command-tick order. Missing command ticks hold
   the last known intent for `INPUT_HOLD_TICKS = 3`, then fall back to neutral input.
   Synthetic hold/neutral ticks advance the authoritative input cursor; later real commands
   at or below that cursor are dropped.
-- [ ] Host snapshots for movement pawns include `Transform`, `PlayerMovementState`, the
+- [x] Host snapshots for movement pawns include `Transform`, `PlayerMovementState`, the
   latest resolved `client_tick` for that pawn, and a recipient-local pawn marker. The
   payload stays registry-blind inside `postretro-net`; engine glue owns all registry reads
   and writes. Registry-blindness is a wire-test plus review/grep gate: `crates/net` must
   not reference `EntityRegistry`, `EntityId`, or movement descriptors.
-- [ ] After the local movement baseline is established, the client predicts its local pawn
+- [x] After the local movement baseline is established, the client predicts its local pawn
   immediately from the same `SimCommand` it sends to the host. Under the deterministic
   Phase 2 latency profile, local walk, jump, crouch, and dash input have no added network
   wait before affecting the camera-followed pawn. The observable assertion is that the
   mapped local pawn / camera-follow pose changes on the same predicted fixed tick that
   emits `ClientMessage::Input`, before receiving an authoritative snapshot for that tick.
-- [ ] On an authoritative movement snapshot, the client restores the acked
+- [x] On an authoritative movement snapshot, the client restores the acked
   `Transform` + mutable `PlayerMovementComponent` state, prunes commands through the echoed
   `client_tick`, replays remaining commands through the movement-only replay helper, and
   leaves unrelated replicated entities on the existing remote interpolation path. A
   `local_player` record with `None` ack after prediction has started resets prediction
   history, applies the baseline, and does not prune by command tick.
-- [ ] Normal corrections are smoothed rather than snap-teleported. Automated tests assert
+- [x] Normal corrections are smoothed rather than snap-teleported. Automated tests assert
   correction classification and initial presentation-offset magnitude: ordinary corrections
   are `<= 0.5 m`, dash corrections are `<= 2.0 m`, and displacements `>= 3.0 m` classify
   as teleports. Teleports clear prediction history and presentation offset. Gameplay state
   always uses the reconciled registry transform; only local first-person presentation
   consumes a decaying correction offset. Visual smoothness is a manual QA gate, and any
   threshold change must update this AC with measured harness rationale.
-- [ ] `crates/postretro/src/main.rs`, `crates/postretro/src/movement/mod.rs`, and
+- [x] `crates/postretro/src/main.rs`, `crates/postretro/src/movement/mod.rs`, and
   `crates/postretro/src/netcode/client.rs` do not own core prediction state. Thin call-site
   edits are allowed, but long-lived prediction state, command history, smoothing state, and
   replay logic live in new focused netcode/sim modules or are split before extension. This
   is a source-layout review gate.
-- [ ] `cargo test -p postretro-net` and focused `postretro` sim/netcode tests pass.
+- [x] `cargo test -p postretro-net` and focused `postretro` sim/netcode tests pass.
   Focused tests include the `postretro_net` wire/replication suite plus `postretro`
   `netcode`/`sim` prediction and reconciliation tests. Manual loopback with host/client
   verifies one `local_player` baseline, one camera-followed pawn, no second local-player
   marker after join/disconnect, immediate local input, remote interpolation still active,
   and no duplicate local pawn.
+
+## Shipped (2026-06-22)
+
+All acceptance criteria met; automated suites green (`postretro-net` wire/replication,
+`postretro` `netcode`/`sim` prediction + reconciliation, seed `0x1502` reconciliation
+harness at `0.00000 m`). The manual QA gates (visual smoothness + loopback host/client)
+were validated in a **local-only playtest with 3 clients on one Windows machine**.
+
+Playtest follow-ups found and fixed before landing:
+- Connected-client first-person **camera shake** ∝ speed — the client skipped
+  `simulate_tick` so the per-tick transform-history stamp render interpolation needs never
+  ran, and the camera pushed the bare reconcile-snapped pose into `frame_timing` while a
+  constant presentation offset was re-added at render rate. Fixed; guarded by two new
+  headless **presented-eye** regression tests (the registry-only harness was blind to it).
+- **Remote-view latency** calibration (~0.5 s → ~100 ms): interp-delay floor 100→50 ms,
+  snapshot cadence 20→30 Hz.
+- **Mutual capsule invisibility**: host dev overlay now sources the `ReplicableSet` (3a);
+  the listen host's own pawn is replicated outbound (owner `None`, never local, no
+  command-queue/prediction routing — minimal host-visible step, 3b).
+- The remote interpolation delay gained a **starvation feedback** controller (jitter
+  feed-forward + held-newest feedback), made **framerate-independent** (rise/decay driven
+  by wall-clock `dt`, 60 fps behavior preserved).
+
+**Deferred netcode-interpolation refinements** (recorded on the M15 roadmap as Phase 3
+follow-up drafts — not yet specced; trigger is a degraded-link playtest showing the
+symptom, since both are invisible on clean LAN co-op):
+- **Per-entity interpolation delay** — the starvation-driven delay is currently *global*,
+  so one genuinely-starved moving remote adds latency to all remotes. Per-entity delay
+  removes that coupling but introduces per-entity time offsets (remotes can desync in time
+  relative to each other) — a design tradeoff to weigh, not a pure win.
+- **Smoothed delay transitions** — a delay *increase* currently pauses the remote render
+  target (monotonic no-rewind clamp) until the server estimate catches up, which can read
+  as a brief freeze on a sustained-jitter link. Rate-limiting the transition trades
+  directly against the no-rewind guarantee, so it needs care.
 
 ## Tasks
 

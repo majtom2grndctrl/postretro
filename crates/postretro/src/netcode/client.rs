@@ -150,6 +150,22 @@ pub(crate) struct LocalReconcileInput {
     pub(crate) acked_tick: Option<u32>,
 }
 
+/// The local-pawn baseline an `apply_snapshot` armed this snapshot (M15 Phase 3): the
+/// recipient-local `NetworkId` the host flagged `local_player: true`, the `EntityId` it
+/// mapped to, and the descriptor `entity_class` the host materialized the pawn from
+/// (Task 7). The engine glue (`client_receive_and_apply`) hands `(network_id,
+/// entity_id)` to `ClientPrediction::arm` and uses `entity_class` to materialize the
+/// matching descriptor-backed `PlayerMovementComponent` on the freshly-spawned (or
+/// re-armed) local pawn — so the wire movement subset has something to merge onto and
+/// prediction/reconciliation become live. `entity_class` is `None` when the host
+/// stamped no class (defensive — the glue then defaults to `"player"`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ArmedLocalPawn {
+    pub(crate) network_id: NetworkId,
+    pub(crate) entity_id: EntityId,
+    pub(crate) entity_class: Option<String>,
+}
+
 /// What an `apply_snapshot` call produced: the ack to send (if the snapshot was
 /// accepted), the refresh requests triggered this snapshot, and any typed
 /// ignored-payload diagnostics. The caller (engine glue) converts these into
@@ -166,13 +182,13 @@ pub(crate) struct ApplyOutcome {
     /// Typed diagnostics for payloads received but deliberately not applied.
     pub(crate) ignored: Vec<IgnoredPayload>,
     /// The local-pawn baseline this snapshot applied (M15 Phase 3 Task 3): the
-    /// `NetworkId` the host flagged `local_player: true` and the `EntityId` it
-    /// mapped to, set once `apply_snapshot` has applied the baseline AND marked the
-    /// pawn via `EntityRegistry::mark_local_player_pawn`. The caller hands this to
-    /// `ClientPrediction::arm`. `None` when no local-player baseline was applied
-    /// this snapshot. Task 5 extends this seam with the reconciliation ack
-    /// (`last_processed_client_tick`) it consumes alongside the merge.
-    pub(crate) armed_local_pawn: Option<(NetworkId, EntityId)>,
+    /// `NetworkId` the host flagged `local_player: true`, the `EntityId` it mapped to,
+    /// and the descriptor `entity_class` to materialize (Task 7), set once
+    /// `apply_snapshot` has applied the baseline AND marked the pawn via
+    /// `EntityRegistry::mark_local_player_pawn`. The caller hands `(network_id,
+    /// entity_id)` to `ClientPrediction::arm` and materializes the component from
+    /// `entity_class`. `None` when no local-player baseline was applied this snapshot.
+    pub(crate) armed_local_pawn: Option<ArmedLocalPawn>,
     /// The authoritative local-pawn record this snapshot applied (M15 Phase 3
     /// Task 5), for the caller to drive reconciliation. `None` when no local-player
     /// record was applied this snapshot. Captured for EVERY applied local record (a
@@ -228,6 +244,7 @@ impl ClientReplication {
                     components,
                     local_player,
                     last_processed_client_tick,
+                    entity_class,
                 } => {
                     if self.apply_full_baseline(
                         registry,
@@ -243,6 +260,7 @@ impl ClientReplication {
                             registry,
                             NetworkId(*network_id),
                             *local_player,
+                            entity_class.clone(),
                             &mut outcome,
                         );
                         self.capture_local_reconcile(
@@ -261,6 +279,7 @@ impl ClientReplication {
                     components,
                     local_player,
                     last_processed_client_tick,
+                    entity_class,
                 } => {
                     if self.apply_delta(
                         registry,
@@ -277,6 +296,7 @@ impl ClientReplication {
                             registry,
                             NetworkId(*network_id),
                             *local_player,
+                            entity_class.clone(),
                             &mut outcome,
                         );
                         self.capture_local_reconcile(
@@ -449,6 +469,7 @@ impl ClientReplication {
         registry: &mut EntityRegistry,
         network_id: NetworkId,
         local_player: bool,
+        entity_class: Option<String>,
         outcome: &mut ApplyOutcome,
     ) {
         if !local_player {
@@ -470,7 +491,11 @@ impl ClientReplication {
         // buffered for it (a record applied before the arming snapshot seeded one).
         self.local_pawn = Some(network_id);
         self.interp.forget(network_id);
-        outcome.armed_local_pawn = Some((network_id, entity_id));
+        outcome.armed_local_pawn = Some(ArmedLocalPawn {
+            network_id,
+            entity_id,
+            entity_class,
+        });
     }
 
     /// Capture an applied `local_player` record's authoritative state for the caller's
@@ -849,6 +874,8 @@ mod tests {
             // metadata. Task 2/4 thread real values through these helpers.
             last_processed_client_tick: None,
             local_player: false,
+            // Generic (non-local) baseline fixture: no descriptor class.
+            entity_class: None,
             components,
         }
     }
@@ -866,6 +893,8 @@ mod tests {
             // Task 1 stub: see `full_baseline`.
             last_processed_client_tick: None,
             local_player: false,
+            // Generic (non-local) delta fixture: no descriptor class.
+            entity_class: None,
             components,
         }
     }
@@ -1633,6 +1662,9 @@ mod tests {
             baseline_id,
             last_processed_client_tick: None,
             local_player: true,
+            // A local movement pawn baseline names the descriptor class the host
+            // materialized it from; the client materializes the matching component.
+            entity_class: Some("player".to_string()),
             components,
         }
     }
@@ -1664,11 +1696,16 @@ mod tests {
             Some(id),
             "the local_player baseline marks the mapped pawn"
         );
-        // The armed pair is reported for the caller to hand to ClientPrediction::arm.
+        // The armed pair is reported for the caller to hand to ClientPrediction::arm,
+        // carrying the descriptor class (Task 7) for client-side materialization.
         assert_eq!(
             out.armed_local_pawn,
-            Some((NetworkId(7), id)),
-            "apply reports the armed (NetworkId, EntityId)"
+            Some(ArmedLocalPawn {
+                network_id: NetworkId(7),
+                entity_id: id,
+                entity_class: Some("player".to_string()),
+            }),
+            "apply reports the armed (NetworkId, EntityId, entity_class)"
         );
     }
 

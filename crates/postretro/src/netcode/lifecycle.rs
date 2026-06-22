@@ -665,6 +665,13 @@ mod tests {
             2,
             "descriptor pawn replicates Transform + PlayerMovementState"
         );
+        // M15 Phase 3 Task 7: the owned snapshot carries the resolved descriptor class
+        // (default `"player"`) so the client materializes the matching component.
+        assert_eq!(
+            owned[0].entity_class,
+            Some("player".to_string()),
+            "descriptor net-slot pawn stamps its entity_class for the wire"
+        );
     }
 
     // The deterministic slot->placement assignment is stable across reconnect: the

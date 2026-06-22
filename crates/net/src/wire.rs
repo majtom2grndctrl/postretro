@@ -34,7 +34,10 @@ pub struct NetworkId(pub u32);
 /// Pinned snapshot wire-format version. Carried in `RawSnapshotMessage.version`
 /// and asserted *after* the two handshake gates, so a Phase 1 peer is already
 /// refused by the gates before any Phase 2 snapshot reaches this check.
-pub const SNAPSHOT_VERSION: u16 = 3;
+///
+/// Bumped to 4 in M15 Phase 3 Task 7: the entity record gained
+/// `has_entity_class`/`entity_class`, so a record's bitcode layout changed.
+pub const SNAPSHOT_VERSION: u16 = 4;
 
 /// `record_kind` discriminant for a full-baseline (spawn / join / refresh) record.
 pub const RECORD_KIND_FULL_BASELINE: u16 = 0;
@@ -188,6 +191,21 @@ pub struct RawEntityRecord {
     /// pawns and for non-movement / despawn records (a `true` flag on either is
     /// rejected at `validate`).
     pub local_player: bool,
+    /// Whether `entity_class` carries a real value (mirrors the `Option`-ness of the
+    /// typed `EntityRecord::entity_class`). `false` ⇒ no class stamped (the typed
+    /// value is `None`); `true` ⇒ the host stamped the descriptor class the pawn was
+    /// materialized from (the typed value is `Some(entity_class)`). The flag is
+    /// required because an empty `String` is a legal-but-meaningless class; a `false`
+    /// flag paired with a non-empty class is a malformed envelope rejected at
+    /// `validate`.
+    pub has_entity_class: bool,
+    /// The opaque descriptor-class identifier the host materialized this movement
+    /// pawn from (e.g. `"player"`), so the client can materialize the matching
+    /// descriptor-backed component locally. Meaningful only when `has_entity_class`
+    /// is `true` and only on a movement record — a non-movement or despawn record
+    /// carrying it is rejected at `validate`. This is a plain string identifier, NOT
+    /// a descriptor type: the crate stays registry-blind and never resolves it.
+    pub entity_class: String,
     pub components: Vec<RawComponentPayload>,
 }
 
@@ -245,6 +263,12 @@ pub enum EntityRecord {
         /// True only in the snapshot sent to this pawn's owning client. Always `false`
         /// for non-local pawns and for non-movement records (enforced at `validate`).
         local_player: bool,
+        /// The opaque descriptor-class identifier the host materialized this movement
+        /// pawn from (e.g. `"player"`), or `None` for a non-movement record / a pawn
+        /// the host stamped no class for. `Some` only on a record carrying a
+        /// `PlayerMovementState` (enforced at `validate`). A plain string identifier,
+        /// never resolved by this registry-blind crate.
+        entity_class: Option<String>,
         components: Vec<ComponentPayload>,
     },
     Delta {
@@ -255,6 +279,8 @@ pub enum EntityRecord {
         last_processed_client_tick: Option<u32>,
         /// See `FullBaseline::local_player`.
         local_player: bool,
+        /// See `FullBaseline::entity_class`.
+        entity_class: Option<String>,
         components: Vec<ComponentPayload>,
     },
     Despawn {
@@ -305,9 +331,16 @@ pub enum ValidationError {
     /// was nonzero — the "absent" flag cannot ride a real tick value.
     MalformedTickMetadata { last_processed_client_tick: u32 },
     /// A despawn record carried any movement-authority metadata
-    /// (`has_last_processed_client_tick` / `local_player`). A tombstone has no pawn
-    /// state to ack.
+    /// (`has_last_processed_client_tick` / `local_player`) or an `entity_class`. A
+    /// tombstone has no pawn state to ack and no descriptor class to materialize.
     MetadataOnDespawn,
+    /// A record carried an `entity_class` (`has_entity_class = true`) but does not
+    /// carry a `PlayerMovementState` component. The class is only meaningful on a
+    /// movement pawn record (it names the descriptor the client materializes).
+    EntityClassWithoutMovement,
+    /// `has_entity_class` was `false` but `entity_class` was non-empty — the "absent"
+    /// flag cannot ride a real class value.
+    MalformedEntityClassMetadata,
     /// A `PlayerMovementState` payload carried a non-finite float (NaN/inf) in one
     /// of its replicated fields (velocity, timers, dash boost, crouch eye value, or
     /// capsule dimensions). Rejected before typed apply so no non-finite movement
@@ -345,6 +378,13 @@ impl std::fmt::Display for ValidationError {
             ),
             ValidationError::MetadataOnDespawn => {
                 write!(f, "movement-authority metadata on a despawn record")
+            }
+            ValidationError::EntityClassWithoutMovement => write!(
+                f,
+                "entity_class on a record without a PlayerMovementState component"
+            ),
+            ValidationError::MalformedEntityClassMetadata => {
+                write!(f, "has_entity_class=false but entity_class is non-empty")
             }
             ValidationError::NonFiniteMovementState => {
                 write!(f, "non-finite float in a PlayerMovementState payload")
@@ -406,34 +446,40 @@ impl RawEntityRecord {
             RECORD_KIND_FULL_BASELINE => {
                 let components = self.validate_components()?;
                 let last_processed_client_tick = self.validate_movement_metadata(&components)?;
+                let entity_class = self.validate_entity_class(&components)?;
                 Ok(EntityRecord::FullBaseline {
                     network_id: self.network_id,
                     baseline_id: self.baseline_id_or_ref,
                     last_processed_client_tick,
                     local_player: self.local_player,
+                    entity_class,
                     components,
                 })
             }
             RECORD_KIND_DELTA => {
                 let components = self.validate_components()?;
                 let last_processed_client_tick = self.validate_movement_metadata(&components)?;
+                let entity_class = self.validate_entity_class(&components)?;
                 Ok(EntityRecord::Delta {
                     network_id: self.network_id,
                     baseline_ref: self.baseline_id_or_ref,
                     new_baseline_id: self.new_baseline_id_or_tombstone_id,
                     last_processed_client_tick,
                     local_player: self.local_player,
+                    entity_class,
                     components,
                 })
             }
             // Despawn carries no components; any present are ignored, matching the
             // overloaded-field rule (only the fields a kind names are read). It must
-            // not carry movement-authority metadata, though — a tombstone has no pawn
-            // state to ack.
+            // not carry movement-authority metadata or an entity_class, though — a
+            // tombstone has no pawn state to ack and no descriptor class to materialize.
             RECORD_KIND_DESPAWN => {
                 if self.has_last_processed_client_tick
                     || self.last_processed_client_tick != 0
                     || self.local_player
+                    || self.has_entity_class
+                    || !self.entity_class.is_empty()
                 {
                     return Err(ValidationError::MetadataOnDespawn);
                 }
@@ -485,6 +531,36 @@ impl RawEntityRecord {
         Ok(self
             .has_last_processed_client_tick
             .then_some(self.last_processed_client_tick))
+    }
+
+    /// Validate this record's `entity_class` metadata against its (already validated)
+    /// components, returning the typed `Option<String>`.
+    ///
+    /// Rules (mirroring the movement-authority metadata rules):
+    /// - `has_entity_class = false` with a non-empty class is malformed.
+    /// - an `entity_class` is only valid on a record carrying a `PlayerMovementState`;
+    ///   on any other record it is rejected.
+    fn validate_entity_class(
+        &self,
+        components: &[ComponentPayload],
+    ) -> Result<Option<String>, ValidationError> {
+        // The flag must be internally consistent first: an "absent" flag cannot ride a
+        // real (non-empty) class value.
+        if !self.has_entity_class && !self.entity_class.is_empty() {
+            return Err(ValidationError::MalformedEntityClassMetadata);
+        }
+
+        if self.has_entity_class {
+            let carries_movement = components
+                .iter()
+                .any(|c| matches!(c, ComponentPayload::PlayerMovementState(_)));
+            if !carries_movement {
+                return Err(ValidationError::EntityClassWithoutMovement);
+            }
+            Ok(Some(self.entity_class.clone()))
+        } else {
+            Ok(None)
+        }
     }
 }
 
@@ -737,6 +813,8 @@ mod tests {
             has_last_processed_client_tick: false,
             last_processed_client_tick: 0,
             local_player: false,
+            has_entity_class: false,
+            entity_class: String::new(),
             components,
         }
     }
@@ -931,6 +1009,7 @@ mod tests {
                 baseline_id: 2,
                 last_processed_client_tick: None,
                 local_player: false,
+                entity_class: None,
                 components: vec![
                     ComponentPayload::Transform(sample_transform()),
                     ComponentPayload::PlayerMovementState(sample_movement()),
@@ -963,6 +1042,7 @@ mod tests {
                 new_baseline_id: 3,
                 last_processed_client_tick: None,
                 local_player: false,
+                entity_class: None,
                 components: vec![ComponentPayload::Transform(sample_transform())],
             }]
         );
@@ -1213,6 +1293,7 @@ mod tests {
                 baseline_id: 2,
                 last_processed_client_tick: None,
                 local_player: false,
+                entity_class: None,
                 components: vec![ComponentPayload::Transform(sample_transform())],
             },
             EntityRecord::Delta {
@@ -1221,6 +1302,7 @@ mod tests {
                 new_baseline_id: 3,
                 last_processed_client_tick: None,
                 local_player: false,
+                entity_class: None,
                 components: vec![ComponentPayload::Transform(sample_transform())],
             },
             EntityRecord::Despawn {
@@ -1333,6 +1415,7 @@ mod tests {
                 baseline_id: 2,
                 last_processed_client_tick: Some(777),
                 local_player: true,
+                entity_class: None,
                 components: vec![
                     ComponentPayload::Transform(sample_transform()),
                     ComponentPayload::PlayerMovementState(sample_movement()),
@@ -1361,6 +1444,7 @@ mod tests {
                 baseline_id: 2,
                 last_processed_client_tick: None,
                 local_player: false,
+                entity_class: None,
                 components: vec![ComponentPayload::PlayerMovementState(sample_movement())],
             }
         );
@@ -1437,6 +1521,126 @@ mod tests {
             mutate(&mut record);
             assert_eq!(record.validate(), Err(ValidationError::MetadataOnDespawn));
         }
+    }
+
+    // --- entity_class metadata (M15 Phase 3 Task 7) ---
+
+    /// A movement record carrying `entity_class` round-trips raw -> wire -> typed with
+    /// the class surfaced as `Some(_)`.
+    #[test]
+    fn entity_class_round_trips_to_typed_record() {
+        let mut record = raw_record(
+            RECORD_KIND_FULL_BASELINE,
+            9,
+            2,
+            0,
+            0,
+            vec![raw_transform_payload(), raw_movement_payload()],
+        );
+        record.has_entity_class = true;
+        record.entity_class = "player".to_string();
+        record.has_last_processed_client_tick = true;
+        record.last_processed_client_tick = 5;
+        record.local_player = true;
+
+        let raw = RawSnapshotMessage {
+            version: SNAPSHOT_VERSION,
+            sequence: 1,
+            server_tick: 1,
+            records: vec![record],
+        };
+        let bytes = encode(&raw);
+        let decoded: RawSnapshotMessage = decode(&bytes).expect("snapshot decodes");
+        let typed = decoded.validate().expect("entity_class is well-formed");
+        assert_eq!(
+            typed.records,
+            vec![EntityRecord::FullBaseline {
+                network_id: 9,
+                baseline_id: 2,
+                last_processed_client_tick: Some(5),
+                local_player: true,
+                entity_class: Some("player".to_string()),
+                components: vec![
+                    ComponentPayload::Transform(sample_transform()),
+                    ComponentPayload::PlayerMovementState(sample_movement()),
+                ],
+            }]
+        );
+    }
+
+    /// A delta movement record also carries `entity_class` through validation.
+    #[test]
+    fn entity_class_round_trips_on_delta() {
+        let mut record = raw_record(RECORD_KIND_DELTA, 9, 2, 3, 0, vec![raw_movement_payload()]);
+        record.has_entity_class = true;
+        record.entity_class = "boomer".to_string();
+        let typed = record.validate().expect("delta entity_class validates");
+        assert_eq!(
+            typed,
+            EntityRecord::Delta {
+                network_id: 9,
+                baseline_ref: 2,
+                new_baseline_id: 3,
+                last_processed_client_tick: None,
+                local_player: false,
+                entity_class: Some("boomer".to_string()),
+                components: vec![ComponentPayload::PlayerMovementState(sample_movement())],
+            }
+        );
+    }
+
+    /// `entity_class` on a record with no `PlayerMovementState` is rejected: the class
+    /// is only meaningful on a movement pawn (it names a descriptor to materialize).
+    #[test]
+    fn entity_class_on_non_movement_record_rejects() {
+        let mut record = raw_record(
+            RECORD_KIND_FULL_BASELINE,
+            1,
+            1,
+            0,
+            0,
+            vec![raw_transform_payload()],
+        );
+        record.has_entity_class = true;
+        record.entity_class = "player".to_string();
+        assert_eq!(
+            record.validate(),
+            Err(ValidationError::EntityClassWithoutMovement)
+        );
+    }
+
+    /// Any `entity_class` on a despawn record is rejected: a tombstone has no pawn to
+    /// materialize.
+    #[test]
+    fn entity_class_on_despawn_rejects() {
+        for mutate in [
+            |r: &mut RawEntityRecord| r.has_entity_class = true,
+            |r: &mut RawEntityRecord| r.entity_class = "player".to_string(),
+        ] {
+            let mut record = raw_record(RECORD_KIND_DESPAWN, 1, 0, 9, 0, Vec::new());
+            mutate(&mut record);
+            assert_eq!(record.validate(), Err(ValidationError::MetadataOnDespawn));
+        }
+    }
+
+    /// `has_entity_class = false` paired with a non-empty class is malformed — the
+    /// "absent" flag cannot ride a real class value.
+    #[test]
+    fn malformed_entity_class_metadata_rejects() {
+        let mut record = raw_record(
+            RECORD_KIND_FULL_BASELINE,
+            1,
+            1,
+            0,
+            0,
+            vec![raw_movement_payload()],
+        );
+        record.has_entity_class = false;
+        record.entity_class = "player".to_string(); // non-empty with the flag clear
+        assert_eq!(
+            record.validate(),
+            Err(ValidationError::MalformedEntityClassMetadata)
+        );
     }
 
     // --- Non-finite PlayerMovementState rejection ---

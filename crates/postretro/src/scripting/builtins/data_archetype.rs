@@ -772,6 +772,64 @@ pub(crate) fn spawn_net_slot_pawn(
     Some(id)
 }
 
+/// Materialize the descriptor-derived `PlayerMovementComponent` for a client's LOCAL
+/// network pawn (M15 Phase 3 Task 7), reusing the same descriptor → component
+/// internals as the host's net-slot spawn (`PlayerMovementComponent::from_descriptor`,
+/// the body of [`attach_descriptor_components`]). This is the client counterpart to
+/// the host's [`spawn_net_slot_pawn`]: the host spawns the authoritative pawn from a
+/// descriptor and replicates only the mutable movement subset; the client receives a
+/// Transform-only baseline (the wire never carries descriptor-immutable tuning) and
+/// must materialize the matching component locally so the wire subset has something to
+/// merge onto and prediction/reconciliation can run.
+///
+/// `entity_class` is the descriptor class the host stamped on the wire (default
+/// `"player"` if the record carried none). The component is built from that class's
+/// `movement` block. Idempotent: a re-baseline / re-arm must not reset the live tick
+/// state, so an entity already carrying a `PlayerMovementComponent` is left untouched.
+///
+/// Returns `true` if a component is now present (materialized this call or already
+/// there), `false` if the descriptor is unregistered or has no movement block (logged)
+/// — in which case prediction stays inert for that pawn, exactly as before this path.
+///
+/// Deliberately does NOT call `mark_local_player_pawn` (the client's apply path owns
+/// that marker, set in `maybe_arm_local_pawn`) and attaches nothing but the movement
+/// component — no weapon, no provenance, no KVPs. It is a narrow local-state seam, not
+/// a full descriptor spawn.
+pub(crate) fn materialize_net_local_movement_component(
+    entity_class: &str,
+    descriptors: &[EntityTypeDescriptor],
+    registry: &mut EntityRegistry,
+    id: EntityId,
+) -> bool {
+    // Idempotent: never clobber a live component on a re-arm.
+    if matches!(
+        registry.has_component_kind(id, ComponentKind::PlayerMovement),
+        Ok(true)
+    ) {
+        return true;
+    }
+
+    let Some(descriptor) = find_descriptor(descriptors, entity_class) else {
+        log::warn!(
+            "[Net] local pawn entity_class `{entity_class}` not registered; movement \
+             prediction stays inert for this pawn"
+        );
+        return false;
+    };
+    let Some(movement_desc) = descriptor.movement.as_ref() else {
+        log::warn!(
+            "[Net] local pawn entity_class `{entity_class}` has no movement block; movement \
+             prediction stays inert for this pawn"
+        );
+        return false;
+    };
+
+    let component = PlayerMovementComponent::from_descriptor(movement_desc);
+    // `set_component` only fails on a stale id; the caller proved the pawn live.
+    let _ = registry.set_component(id, component);
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

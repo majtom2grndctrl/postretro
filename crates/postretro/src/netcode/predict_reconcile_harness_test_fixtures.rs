@@ -37,11 +37,16 @@ use super::wire_convert::sim_command_to_input;
 use crate::collision::CollisionWorld;
 use crate::movement::MovementInput;
 use crate::netcode::{NetworkIdAllocator, host_handle_client_message};
+use crate::scripting::builtins::data_archetype::materialize_net_local_movement_component;
 use crate::scripting::components::health::HealthComponent;
 use crate::scripting::components::player_movement::PlayerMovementComponent;
 use crate::scripting::data_descriptors::{
-    AirParams, BoolOrIr, CapsuleParams, DashParams, FallParams, ForgivenessParams, GroundParams,
-    HealthDescriptor, NumberOrIr, PlayerMovementDescriptor, SpeedParams,
+    AirParams, BoolOrIr, CapsuleParams, DashParams, EntityTypeDescriptor, FallParams,
+    ForgivenessParams, GroundParams, HealthDescriptor, NumberOrIr, PlayerMovementDescriptor,
+    SpeedParams,
+};
+use crate::scripting::provenance::{
+    DescriptorComponentKind, DescriptorProvenance, DescriptorSpawnPath,
 };
 use crate::scripting::registry::{EntityId, EntityRegistry, Transform};
 use crate::sim::SimCommand;
@@ -142,6 +147,43 @@ pub(crate) fn component() -> PlayerMovementComponent {
     PlayerMovementComponent::from_descriptor(&player_descriptor())
 }
 
+/// The descriptor class both peers share for the local pawn (mirrors the production
+/// default the host stamps and the client falls back to).
+pub(crate) const ENTITY_CLASS: &str = "player";
+
+/// The shared descriptor table both peers load (same content on both ends). The host
+/// materializes its authoritative pawn from this table's `movement` block; the client
+/// materializes its LOCAL pawn's component from the SAME table via the real
+/// `materialize_net_local_movement_component` path — so the two components are
+/// bit-identical and the wire mutable subset merges onto a matching base. The single
+/// `"player"` descriptor wraps the harness `player_descriptor()` movement block.
+pub(crate) fn entity_descriptors() -> Vec<EntityTypeDescriptor> {
+    vec![EntityTypeDescriptor {
+        canonical_name: Some(ENTITY_CLASS.to_string()),
+        default_weapon: None,
+        light: None,
+        emitter: None,
+        movement: Some(player_descriptor()),
+        weapon: None,
+        mesh: None,
+        health: None,
+        ai: None,
+    }]
+}
+
+/// The `DescriptorProvenance` a real net-slot pawn carries, so the host snapshot
+/// production (`produce_owned_snapshots` -> `movement_entity_class`) stamps
+/// `entity_class = Some("player")` on the owned snapshot — exactly as
+/// `spawn_net_slot_pawn` does in production.
+fn net_slot_provenance() -> DescriptorProvenance {
+    DescriptorProvenance {
+        canonical_name: ENTITY_CLASS.to_string(),
+        owned_components: [DescriptorComponentKind::Movement].into_iter().collect(),
+        map_overrides: Default::default(),
+        spawn_path: DescriptorSpawnPath::NetworkSlot,
+    }
+}
+
 /// A forward-walking sim command at the given facing, dash optional. The harness
 /// stamps the wire `client_tick` from `ClientPrediction::next_client_tick`.
 pub(crate) fn forward_command(dash_pressed: bool) -> SimCommand {
@@ -232,6 +274,10 @@ pub(crate) struct LoopbackHarness {
     pub(crate) client_registry: EntityRegistry,
     pub(crate) client_replication: ClientReplication,
     pub(crate) prediction: ClientPrediction,
+    /// The shared descriptor table the client materializes its LOCAL pawn from on
+    /// arming — the SAME table both peers load in production. Drives the real
+    /// `materialize_net_local_movement_component` path (no harness stub).
+    pub(crate) descriptors: Vec<EntityTypeDescriptor>,
     /// The client pawn's mapped `EntityId`, set once the first baseline arms it.
     pub(crate) client_pawn: Option<EntityId>,
     pub(crate) host_pawn_network_id: NetworkId,
@@ -279,6 +325,12 @@ impl LoopbackHarness {
             ..Transform::default()
         });
         host_registry.set_component(host_pawn, component()).unwrap();
+        // Stamp net-slot provenance so the REAL host snapshot production stamps
+        // `entity_class = Some("player")` on the owned snapshot (the production path
+        // reads `DescriptorProvenance` with `spawn_path == NetworkSlot`).
+        host_registry
+            .set_component(host_pawn, net_slot_provenance())
+            .unwrap();
         let host_bystander = spawn_dead_bystander(&mut host_registry);
 
         // A `NetServer` bound to an ephemeral socket. No packets ever flow over it;
@@ -321,6 +373,7 @@ impl LoopbackHarness {
             client_registry,
             client_replication: ClientReplication::new(),
             prediction: ClientPrediction::new(),
+            descriptors: entity_descriptors(),
             client_pawn: None,
             host_pawn_network_id,
             host_bystander,
@@ -483,18 +536,23 @@ impl LoopbackHarness {
                 .client_replication
                 .apply_snapshot(&mut self.client_registry, &snapshot);
 
-            // Arm BEFORE reconcile (load-bearing ordering).
-            if let Some((network_id, entity_id)) = outcome.armed_local_pawn {
-                self.prediction.arm(network_id, entity_id);
-                self.client_pawn = Some(entity_id);
-                // Materialize the local pawn's movement component from the SHARED
-                // local descriptor. `apply_snapshot` spawns the pawn Transform-only;
-                // the descriptor-derived `PlayerMovementComponent` is content shared by
-                // both peers (it never crosses the wire — that is why
-                // `merge_wire_into_movement_state` merges onto an existing component),
-                // so the client materializes it from its own descriptor on arming. This
-                // mirrors the host's descriptor-backed slot-pawn spawn (lifecycle).
-                Self::materialize_local_pawn_movement(&mut self.client_registry, entity_id);
+            // Arm BEFORE reconcile (load-bearing ordering). This is the REAL production
+            // client path (`client_receive_and_apply`): arm prediction, then materialize
+            // the local pawn's descriptor-backed `PlayerMovementComponent` from the wire
+            // `entity_class` (default `"player"`) via the production helper. The wire
+            // never carries descriptor-immutable tuning, so the client builds the
+            // component from the SAME shared descriptor table the host spawned its pawn
+            // from — then the wire mutable subset has a matching base to merge onto.
+            if let Some(armed) = &outcome.armed_local_pawn {
+                self.prediction.arm(armed.network_id, armed.entity_id);
+                self.client_pawn = Some(armed.entity_id);
+                let entity_class = armed.entity_class.as_deref().unwrap_or("player");
+                materialize_net_local_movement_component(
+                    entity_class,
+                    &self.descriptors,
+                    &mut self.client_registry,
+                    armed.entity_id,
+                );
             }
             if let Some(reconcile) = outcome.local_reconcile {
                 reconcile_local_pawn(
@@ -516,21 +574,6 @@ impl LoopbackHarness {
             }
         }
         acks
-    }
-
-    /// Materialize a descriptor-derived `PlayerMovementComponent` on the local pawn
-    /// if it does not already carry one. Idempotent: a re-baseline re-arm must not
-    /// reset the live tick state, so an existing component is left untouched.
-    pub(crate) fn materialize_local_pawn_movement(
-        registry: &mut EntityRegistry,
-        entity_id: EntityId,
-    ) {
-        if registry
-            .get_component::<PlayerMovementComponent>(entity_id)
-            .is_err()
-        {
-            let _ = registry.set_component(entity_id, component());
-        }
     }
 
     /// Feed client acks back to the server replication tracker (the reverse control

@@ -60,6 +60,14 @@ pub struct EntitySnapshot {
     /// no movement authority). Echoed into the per-recipient record's
     /// `last_processed_client_tick`.
     pub last_processed_client_tick: Option<u32>,
+    /// The opaque descriptor-class identifier the engine glue materialized this
+    /// movement pawn from (e.g. `"player"`), or `None` for an unowned / non-movement
+    /// entity. Echoed verbatim into the record's `entity_class` so the recipient can
+    /// materialize the matching descriptor-backed component. A plain string id — the
+    /// tracker stays registry-blind and never resolves it. Like the other authority
+    /// metadata it is excluded from dirty detection (a class never changes for a live
+    /// pawn, but folding it into equality is unnecessary).
+    pub entity_class: Option<String>,
 }
 
 impl EntitySnapshot {
@@ -73,6 +81,7 @@ impl EntitySnapshot {
             components,
             owner_client_id: None,
             last_processed_client_tick: None,
+            entity_class: None,
         }
     }
 }
@@ -117,6 +126,10 @@ struct EntityState {
     owner_client_id: Option<u64>,
     /// Latest resolved client command tick, or `None` until one resolves.
     last_processed_client_tick: Option<u32>,
+    /// Descriptor-class identifier the pawn was materialized from, or `None`. Echoed
+    /// into the per-recipient record's `entity_class`; refreshed every ingest like the
+    /// rest of the authority metadata.
+    entity_class: Option<String>,
 }
 
 /// A despawned entity awaiting per-client tombstone acks. Held until every client
@@ -255,12 +268,14 @@ impl ServerReplication {
                     // record without bumping the baseline.
                     existing.owner_client_id = snap.owner_client_id;
                     existing.last_processed_client_tick = snap.last_processed_client_tick;
+                    existing.entity_class = snap.entity_class;
                 }
                 Some(existing) => {
                     existing.baseline_id = self.next_baseline_id;
                     existing.components = snap.components;
                     existing.owner_client_id = snap.owner_client_id;
                     existing.last_processed_client_tick = snap.last_processed_client_tick;
+                    existing.entity_class = snap.entity_class;
                     self.next_baseline_id = self.next_baseline_id.wrapping_add(1);
                 }
                 None => {
@@ -273,6 +288,7 @@ impl ServerReplication {
                             components: snap.components,
                             owner_client_id: snap.owner_client_id,
                             last_processed_client_tick: snap.last_processed_client_tick,
+                            entity_class: snap.entity_class,
                         },
                     );
                 }
@@ -488,6 +504,8 @@ impl ServerReplication {
                         has_last_processed_client_tick: authority.has_tick,
                         last_processed_client_tick: authority.tick,
                         local_player: authority.local_player,
+                        has_entity_class: authority.has_entity_class,
+                        entity_class: authority.entity_class.clone(),
                         components: entity.components.iter().map(raw_from_payload).collect(),
                     });
                 }
@@ -502,6 +520,8 @@ impl ServerReplication {
                         has_last_processed_client_tick: authority.has_tick,
                         last_processed_client_tick: authority.tick,
                         local_player: authority.local_player,
+                        has_entity_class: authority.has_entity_class,
+                        entity_class: authority.entity_class.clone(),
                         components: entity.components.iter().map(raw_from_payload).collect(),
                     });
                 }
@@ -524,11 +544,13 @@ impl ServerReplication {
                 baseline_id_or_ref: 0,
                 new_baseline_id_or_tombstone_id: tombstone.tombstone_id,
                 reason: tombstone.reason,
-                // A despawn never carries movement-authority metadata (rejected at
-                // validate); the tracker leaves all three absent.
+                // A despawn never carries movement-authority metadata or an
+                // entity_class (rejected at validate); the tracker leaves all absent.
                 has_last_processed_client_tick: false,
                 last_processed_client_tick: 0,
                 local_player: false,
+                has_entity_class: false,
+                entity_class: String::new(),
                 components: Vec::new(),
             });
         }
@@ -553,14 +575,22 @@ struct MovementAuthority {
     tick: u32,
     /// `true` only in the snapshot sent to this pawn's owning client.
     local_player: bool,
+    /// Whether `entity_class` carries a real value (mirrors the typed `Option`).
+    has_entity_class: bool,
+    /// The descriptor-class identifier; meaningful only when `has_entity_class` is
+    /// `true`. Cloned into the record (the only allocation on the encode path here).
+    entity_class: String,
 }
 
 impl MovementAuthority {
-    /// Resolve the authority metadata for `recipient`. Authority rides ONLY a
-    /// movement record: a pawn that carries no `PlayerMovementState` payload emits
-    /// all-absent metadata regardless of its `owner_client_id`, because `validate`
-    /// rejects ack/local-player metadata on a non-movement record. `local_player` is
-    /// `true` only when the recipient is the tracked owner.
+    /// Resolve the authority metadata for `recipient`. Authority — including the
+    /// `entity_class` — rides ONLY a movement record: a pawn that carries no
+    /// `PlayerMovementState` payload emits all-absent metadata regardless of its
+    /// `owner_client_id`/`entity_class`, because `validate` rejects ack/local-player
+    /// metadata and `entity_class` on a non-movement record. `local_player` is `true`
+    /// only when the recipient is the tracked owner; `entity_class` is echoed to every
+    /// recipient (it is pawn state, not owner-private — a remote viewer materializes
+    /// the same descriptor for interpolation if it ever needs to).
     fn for_recipient(entity: &EntityState, recipient: u64) -> Self {
         let carries_movement = entity
             .components
@@ -571,12 +601,16 @@ impl MovementAuthority {
                 has_tick: false,
                 tick: 0,
                 local_player: false,
+                has_entity_class: false,
+                entity_class: String::new(),
             };
         }
         Self {
             has_tick: entity.last_processed_client_tick.is_some(),
             tick: entity.last_processed_client_tick.unwrap_or(0),
             local_player: entity.owner_client_id == Some(recipient),
+            has_entity_class: entity.entity_class.is_some(),
+            entity_class: entity.entity_class.clone().unwrap_or_default(),
         }
     }
 }
@@ -661,6 +695,7 @@ mod tests {
             components: vec![transform(0.0), movement(velocity_x)],
             owner_client_id: Some(owner),
             last_processed_client_tick: last_tick,
+            entity_class: Some("player".to_string()),
         }
     }
 
@@ -1250,6 +1285,7 @@ mod tests {
             EntityRecord::FullBaseline {
                 local_player,
                 last_processed_client_tick,
+                entity_class,
                 components,
                 ..
             } => {
@@ -1258,6 +1294,11 @@ mod tests {
                     last_processed_client_tick,
                     Some(12),
                     "owner record carries the resolved cursor"
+                );
+                assert_eq!(
+                    entity_class,
+                    Some("player".to_string()),
+                    "owner record carries the descriptor class to materialize"
                 );
                 assert!(
                     components
@@ -1273,15 +1314,18 @@ mod tests {
             EntityRecord::FullBaseline {
                 local_player,
                 last_processed_client_tick,
+                entity_class,
                 ..
             } => {
                 assert!(
                     !local_player,
                     "a non-owning recipient never sees local_player=true"
                 );
-                // The resolved cursor is still echoed to every recipient (it is pawn
-                // state, not owner-private); only `local_player` is recipient-specific.
+                // The resolved cursor and entity_class are echoed to every recipient
+                // (pawn state, not owner-private); only `local_player` is
+                // recipient-specific.
                 assert_eq!(last_processed_client_tick, Some(12));
+                assert_eq!(entity_class, Some("player".to_string()));
             }
             other => panic!("expected FullBaseline, got {other:?}"),
         }

@@ -3845,12 +3845,20 @@ impl App {
         // `self.nav_graph` / `self.host_spawn_points`, which the endpoint borrow would
         // otherwise lock out. Cheap on the non-accept path (descriptors clone is the
         // only cost, paid once per frame on the host).
-        let host_descriptors: Vec<crate::scripting::data_descriptors::EntityTypeDescriptor> =
-            if matches!(self.net_endpoint, Some(netcode::NetEndpoint::Host { .. })) {
-                self.script_ctx.data_registry.borrow().entities.clone()
-            } else {
-                Vec::new()
-            };
+        // Both the host accept arm and the client apply arm need the shared descriptor
+        // table: the host materializes each accepted client's descriptor-backed pawn
+        // (Task 4), and the client materializes its LOCAL pawn's descriptor-backed
+        // `PlayerMovementComponent` from the wire `entity_class` (Task 7). Both peers
+        // load the same content, so the same descriptor table serves both roles — clone
+        // it for either networked role before the `net_endpoint` borrow.
+        let net_descriptors: Vec<crate::scripting::data_descriptors::EntityTypeDescriptor> = if matches!(
+            self.net_endpoint,
+            Some(netcode::NetEndpoint::Host { .. } | netcode::NetEndpoint::Client { .. })
+        ) {
+            self.script_ctx.data_registry.borrow().entities.clone()
+        } else {
+            Vec::new()
+        };
         let host_agent_params = self.nav_graph.as_ref().map(|g| g.agent_params());
         let host_spawn_points = std::mem::take(&mut self.host_spawn_points);
         // M15 Phase 3 Task 5: the client reconcile replay threads collision + gravity
@@ -3919,7 +3927,7 @@ impl App {
                                                 owners,
                                                 *client_id,
                                                 &host_spawn_points,
-                                                &host_descriptors,
+                                                &net_descriptors,
                                                 host_agent_params,
                                             );
                                         }
@@ -3985,6 +3993,7 @@ impl App {
                     client,
                     replication,
                     prediction,
+                    &net_descriptors,
                     collision_world,
                     gravity,
                     crate::frame_timing::TICK_DURATION.as_secs_f32(),

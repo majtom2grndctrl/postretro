@@ -292,6 +292,31 @@ Drain is complete when the conditioner has no packets in flight, the host input 
 empty or its resolved cursor is at least the final sent command tick, and the client has
 processed a snapshot acking that cursor.
 
+### Task 7: Client-side descriptor materialization of the local pawn
+
+> **Phase 3 note (2026-06-21):** The local predicted pawn needs a real
+> `PlayerMovementComponent` for the wire mutable subset to merge onto and for replay to run,
+> but `apply_snapshot` spawns the local baseline Transform-only (descriptor-immutable tuning
+> never crosses the wire). Task 7 carries the descriptor class on the wire so the client can
+> materialize the matching component from its own (shared) content:
+>
+> - The snapshot entity record gains `entity_class`: `RawEntityRecord` stores
+>   `has_entity_class: bool` + `entity_class: String`; the typed `EntityRecord::{FullBaseline,
+>   Delta}` expose `entity_class: Option<String>`. `validate` rejects an `entity_class` on a
+>   non-movement / despawn record and a `has_entity_class=false` paired with a non-empty
+>   string. `SNAPSHOT_VERSION` is bumped to **4** (record bitcode layout changed).
+> - The host stamps the class from the pawn's `DescriptorProvenance` (`canonical_name`, gated
+>   to `DescriptorSpawnPath::NetworkSlot` movement pawns; default `"player"`) in
+>   `produce_owned_snapshots`. `postretro-net` stays registry-blind — `entity_class` is a
+>   plain `String` it never resolves.
+> - On the `local_player` baseline the client materializes the descriptor-backed
+>   `PlayerMovementComponent` via a focused helper next to the host net-slot spawn internals
+>   (`scripting::builtins::data_archetype::materialize_net_local_movement_component`), keeping
+>   `client.rs` thin; the glue then arms prediction and reconciles.
+> - The Task 6 harness now exercises this **real** client materialization path (its prior
+>   `materialize_local_pawn_movement` stub was removed); the headline latency gate still
+>   passes deterministically under seed `0x1502` (measured post-drain error `0.00000 m`).
+
 ## Sequencing
 
 **Phase 1 (sequential):** Task 1 — wire identity and authority metadata block all replay.

@@ -19,6 +19,7 @@ use postretro_net::replication::EntitySnapshot;
 use postretro_net::wire::ComponentPayload;
 
 use crate::scripting::components::player_movement::PlayerMovementComponent;
+use crate::scripting::provenance::{DescriptorProvenance, DescriptorSpawnPath};
 use crate::scripting::registry::{ComponentKind, EntityId, EntityRegistry, Transform};
 
 use super::movement_state::movement_state_to_wire;
@@ -125,14 +126,48 @@ pub(crate) fn produce_owned_snapshots(
         let owner_client_id = owners.owner_of(id);
         let last_processed_client_tick =
             owner_client_id.and_then(|cid| command_queues.resolved_cursor(cid));
+        // Descriptor class the pawn was materialized from (M15 Phase 3 Task 7), so the
+        // recipient can materialize the matching descriptor-backed component locally.
+        // Read from the pawn's own `DescriptorProvenance` — the cleanest existing
+        // source: `spawn_net_slot_pawn` stamps `canonical_name` (the resolved
+        // `entity_class`, default `"player"`) and `DescriptorSpawnPath::NetworkSlot`.
+        // Gated to a movement pawn (the wire rejects `entity_class` on a non-movement
+        // record); a non-movement / non-net-slot entity stays `None`.
+        let entity_class = movement_entity_class(registry, id, &components);
         snapshots.push(EntitySnapshot {
             network_id,
             components,
             owner_client_id,
             last_processed_client_tick,
+            entity_class,
         });
     }
     snapshots
+}
+
+/// The descriptor class a replicable movement pawn was materialized from, for the
+/// snapshot's `entity_class` (M15 Phase 3 Task 7). `None` unless the entity both
+/// carries a `PlayerMovementState` payload (the wire only allows `entity_class` on a
+/// movement record) AND was spawned through the net-slot descriptor path
+/// (`DescriptorSpawnPath::NetworkSlot`), in which case its `DescriptorProvenance`
+/// `canonical_name` is exactly the resolved `entity_class` (default `"player"`). A
+/// Transform-only fixture / demo mover / map-start pawn returns `None`.
+fn movement_entity_class(
+    registry: &EntityRegistry,
+    id: EntityId,
+    components: &[ComponentPayload],
+) -> Option<String> {
+    let carries_movement = components
+        .iter()
+        .any(|c| matches!(c, ComponentPayload::PlayerMovementState(_)));
+    if !carries_movement {
+        return None;
+    }
+    let provenance = registry.get_component::<DescriptorProvenance>(id).ok()?;
+    if provenance.spawn_path != DescriptorSpawnPath::NetworkSlot {
+        return None;
+    }
+    Some(provenance.canonical_name.clone())
 }
 
 /// Collect the wire-mirror payloads for one replicable entity, in a stable order:

@@ -715,6 +715,9 @@ fn stale_snapshot_for(h: &LoopbackHarness) -> postretro_net::wire::SnapshotMessa
             )],
             local_player: true,
             last_processed_client_tick: Some(0),
+            // A synthetic STALE fixture rejected by the sequence guard before apply;
+            // it never exercises client materialization, so no class is stamped.
+            entity_class: None,
         }],
     }
 }
@@ -748,12 +751,15 @@ impl LoopbackHarness {
             let outcome = self
                 .client_replication
                 .apply_snapshot(&mut self.client_registry, &snapshot);
-            if let Some((network_id, entity_id)) = outcome.armed_local_pawn {
-                self.prediction.arm(network_id, entity_id);
-                self.client_pawn = Some(entity_id);
-                LoopbackHarness::materialize_local_pawn_movement(
+            if let Some(armed) = &outcome.armed_local_pawn {
+                self.prediction.arm(armed.network_id, armed.entity_id);
+                self.client_pawn = Some(armed.entity_id);
+                let entity_class = armed.entity_class.as_deref().unwrap_or("player");
+                crate::scripting::builtins::data_archetype::materialize_net_local_movement_component(
+                    entity_class,
+                    &self.descriptors,
                     &mut self.client_registry,
-                    entity_id,
+                    armed.entity_id,
                 );
             }
             if let Some(reconcile) = outcome.local_reconcile {

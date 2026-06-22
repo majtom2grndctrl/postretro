@@ -1,0 +1,10 @@
+[package]
+name = "imgproc"
+version = "0.1.0"
+edition = "2021"
+default-run = "imgproc"
+
+[workspace]
+
+[dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }

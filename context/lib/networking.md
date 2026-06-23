@@ -137,6 +137,43 @@ Verify, on the **client**:
 
 Tear down the `tc netem` qdisc when finished. As with the Phase 1/2 soak, the shaped link affects all loopback traffic for its duration.
 
+## Host input command queue — gap policy and bounded playout
+
+The host holds a per-client queue of sanitized inbound `InputCommand`s and resolves
+exactly one command per owned pawn per 60 Hz fixed tick, advancing a per-pawn resolved
+cursor (`last_processed_client_tick`, stamped into snapshot authority metadata). Two
+policies govern resolution:
+
+- **Hold-then-neutral gap policy.** When the exact next tick is missing, the host holds
+  the last resolved command for up to `INPUT_HOLD_TICKS` (rides out one dropped/late
+  packet), then synthesizes neutral input (a disconnected-but-not-yet-closed client
+  cannot coast on stale intent). A client that has never sent a command resolves to
+  nothing — its pawn holds its authoritative pose.
+
+- **Bounded playout buffer with depth-keyed catch-up.** Drain-rate equals produce-rate
+  (both 60 Hz) and the cursor advances +1 per tick, so any backlog in the pending queue
+  would become *permanent* latency. Two backlogs arise: a client streams input on
+  connect before the host can drain its pawn (the accept/spawn handshake window), and a
+  mid-session host frame hitch stalls the drain while commands keep arriving. To
+  self-correct, when the pending queue's depth exceeds `INPUT_BUFFER_MAX` (~8 ticks ≈
+  133 ms), the host fast-forwards: it keeps only the newest `INPUT_BUFFER_TARGET`
+  (~2 ticks ≈ 33 ms) commands and reseats the cursor on the new oldest, so the resolved
+  cursor never sits more than a small bounded buffer behind the newest received command.
+  The trigger is **pending-queue depth (count of buffered commands), not tick-distance
+  to the newest command** — a client that went silent then resumed at a far-future tick
+  holds a single command far ahead (depth 1), which must NOT catch up; the
+  hold→neutral→real resume path stays intact. `INPUT_BUFFER_MAX > INPUT_BUFFER_TARGET`
+  gives hysteresis so catch-up does not thrash.
+
+A catch-up jump advances `last_processed_client_tick` by more than one tick. This is
+safe for client reconciliation: the client prunes predicted history monotonically up to
+the acked tick, so a forward jump simply discards a larger span of settled predictions
+at once.
+
+All tick comparisons (stale-drop, duplicate-collapse, fast-forward cursor reseat) use
+the wrap-aware serial-number predicate (`client_tick_le`), correct across the u32
+`client_tick` wrap.
+
 ## Phase boundaries
 
 Phase 1 ships the durable shape above. The following are **deferred** and must not be read into the Phase 1 contracts:

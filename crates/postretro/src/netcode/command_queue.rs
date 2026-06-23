@@ -3,6 +3,26 @@
 // keyed by client id; the per-pawn resolved cursor (`last_processed_client_tick`)
 // drives a hold-then-neutral gap policy so a missing command tick never stalls the
 // authoritative movement seam.
+//
+// Bounded playout buffer + depth-keyed catch-up: the resolved cursor consumes one
+// command per 60 Hz tick, the same rate the client produces them. Without catch-up,
+// any backlog that builds up in `pending` becomes PERMANENT latency, because
+// drain-rate == produce-rate and the cursor only advances +1 per tick. Two backlogs
+// matter: (1) the client streams input at 60 Hz immediately on connect, but the host
+// can't drain a pawn until `owners.set()` runs at the end of accept+spawn — so a
+// handshake/spawn-window backlog (tens of ticks ≈ hundreds of ms) accumulates; (2) a
+// mid-session host frame hitch stalls the drain while commands keep arriving. Either
+// way, a seed at the oldest queued command with +1-only advance locks that backlog in
+// forever (a 48-command startup backlog → a rock-steady ~800 ms lag that never
+// shrinks). The fix: when `pending` depth exceeds INPUT_BUFFER_MAX, fast-forward —
+// drop all but the newest INPUT_BUFFER_TARGET commands and reseat the cursor on the
+// new oldest, so playout converges to a small bounded buffer and stays there.
+//
+// Why depth-keyed (number of buffered commands), NOT tick-distance to the newest:
+// a continuous-stream backlog holds MANY commands queued ahead (catch up), but a
+// client that went silent then RESUMED at a far-future tick holds exactly ONE command
+// far ahead (must NOT catch up — the hold→neutral→real resume path must stay intact).
+// Tick-distance can't tell those apart; pending depth can.
 // See: context/lib/networking.md
 //
 // Boundary: this is engine-side game logic, not the net crate. The net crate is
@@ -63,14 +83,35 @@ impl MovementOwners {
 /// intent.
 pub(crate) const INPUT_HOLD_TICKS: u32 = 3;
 
+/// Steady-state playout floor: the pending depth a catch-up fast-forward trims back
+/// to. ~2 ticks ≈ 33 ms at 60 Hz — a small buffer that absorbs one late/dropped
+/// packet (it complements [`INPUT_HOLD_TICKS`]: the buffer rides out jitter on the
+/// way in, the hold rides it out on the way out) without re-introducing perceptible
+/// latency. Kept well below [`INPUT_BUFFER_MAX`] so catch-up restores real headroom.
+pub(crate) const INPUT_BUFFER_TARGET: usize = 2;
+
+/// Catch-up trigger: the pending depth above which `resolve_tick` fast-forwards,
+/// trimming the buffer back to [`INPUT_BUFFER_TARGET`]. ~8 ticks ≈ 133 ms at 60 Hz.
+/// Two constraints pin it:
+/// - It MUST exceed the largest in-order burst legitimate usage/tests reach, so a
+///   normal small-gap regime never trips catch-up. The hottest existing tests ingest
+///   4 (`ordered_input_resolves_each_tick_real`) and 3
+///   (`stale_command_at_or_below_cursor_is_dropped`) commands before resolving; 8 is
+///   strictly greater, so they resolve exactly as before.
+/// - It MUST exceed [`INPUT_BUFFER_TARGET`] (hysteresis) so a fast-forward leaves the
+///   buffer comfortably below the trigger and catch-up does not thrash tick-to-tick.
+pub(crate) const INPUT_BUFFER_MAX: usize = 8;
+
 /// One client's resolved-command state on the host: its pending inbound queue and
 /// the gap-policy cursor. Keyed in [`HostCommandQueues`] by client id.
 #[derive(Debug, Default)]
 struct ClientCommandState {
     /// Pending sanitized commands, kept sorted-ascending and deduplicated by
-    /// `client_tick`. Small (one resolved per tick at 60 Hz; loopback co-op RTT is
-    /// tiny), so a `Vec` with binary-search insert beats a heap's overhead and keeps
-    /// stale-drop / duplicate-collapse trivial to reason about.
+    /// `client_tick`. Normally small (steady state holds ~[`INPUT_BUFFER_TARGET`]
+    /// commands; `resolve_tick`'s catch-up bounds it back down whenever a handshake or
+    /// hitch backlog pushes it past [`INPUT_BUFFER_MAX`]), so a `Vec` with binary-search
+    /// insert beats a heap's overhead and keeps stale-drop / duplicate-collapse trivial
+    /// to reason about. The fast-forward drains the stale prefix in one `drain` call.
     pending: Vec<InputCommand>,
     /// The latest client command tick this pawn has *resolved* (consumed a real
     /// command for, held the previous through, or synthesized neutral for). `None`
@@ -210,8 +251,36 @@ impl HostCommandQueues {
     /// If that exact tick is queued, consume it (`Real`). Otherwise hold the previous
     /// command for up to [`INPUT_HOLD_TICKS`] ticks (`Held`), then synthesize neutral
     /// (`Neutral`). Real and synthetic resolutions both advance the cursor.
+    ///
+    /// Bounded playout + catch-up: BEFORE picking the expected tick, if the pending
+    /// queue has grown past [`INPUT_BUFFER_MAX`] real buffered commands, fast-forward —
+    /// keep only the newest [`INPUT_BUFFER_TARGET`] and reseat the cursor on the new
+    /// oldest. Because drain-rate == produce-rate (both 60 Hz), a backlog that builds
+    /// during the accept/spawn handshake window (the client streams on connect before
+    /// the host can drain) or a mid-session host hitch would otherwise become permanent
+    /// latency under +1-only advance; this single path drains it back to a small buffer
+    /// and keeps it there. It is depth-keyed (count of buffered commands), NOT
+    /// tick-distance to the newest, so a single far-future command after a silence does
+    /// NOT trip it — the hold→neutral→real resume path stays intact.
     pub(crate) fn resolve_tick(&mut self, client_id: u64) -> Option<ResolvedCommand> {
         let state = self.clients.get_mut(&client_id)?;
+
+        // Catch-up fast-forward: a deep pending queue means real commands are stacking
+        // up faster than the +1-per-tick cursor consumes them — a startup-handshake or
+        // hitch backlog. Drop all but the newest INPUT_BUFFER_TARGET so the resolved
+        // cursor never sits more than a small bounded buffer behind the newest received
+        // command. Wrap-aware throughout: the new oldest's `client_tick - 1` (serial
+        // arithmetic) is the cursor the normal exact-tick path then consumes as `Real`.
+        if state.pending.len() > INPUT_BUFFER_MAX {
+            let drop_count = state.pending.len() - INPUT_BUFFER_TARGET;
+            state.pending.drain(0..drop_count);
+            // `pending` is non-empty here (INPUT_BUFFER_TARGET >= 1), so `first()` holds.
+            let new_first = state.pending[0].client_tick;
+            state.resolved_cursor = Some(new_first.wrapping_sub(1));
+            // The trajectory jumped; any held intent is stale. Reset the hold so the
+            // upcoming exact-tick hit resolves cleanly as the new `Real` baseline.
+            state.held_ticks = 0;
+        }
 
         let expected = match state.resolved_cursor {
             // First resolution: the next tick we want is the oldest queued command's
@@ -594,5 +663,158 @@ mod tests {
         // A still resolves its first-arrival command, not a duplicate's 0.0 intent.
         let ra = queues.resolve_tick(A).unwrap();
         assert!((ra.command.movement.wish_dir.y - 1.0).abs() < EPSILON);
+    }
+
+    /// Lag (in ticks) between the newest received command and the resolved cursor.
+    /// `None` cursor (never resolved) reports the full depth from tick 0. Wrap-safe via
+    /// the same serial-number subtraction the queue uses.
+    fn lag(queues: &HostCommandQueues, client: u64, newest_received: u32) -> u32 {
+        let cursor = queues.resolved_cursor(client).unwrap_or(0);
+        newest_received.wrapping_sub(cursor)
+    }
+
+    // Regression: a backlog accumulated during the accept/spawn handshake window (the
+    // client streams at 60 Hz on connect before the host can drain) became PERMANENT
+    // ~800 ms latency, because the cursor seeded at the oldest queued command and only
+    // advanced +1 per tick — drain-rate == produce-rate, so the backlog never shrank.
+    // The depth-keyed catch-up must converge the lag to a small bounded buffer within a
+    // tick or two and keep it there under steady 1-in/1-out streaming.
+    #[test]
+    fn startup_backlog_converges_and_stays_bounded() {
+        let mut queues = HostCommandQueues::new();
+
+        // The host couldn't drain this pawn until ownership was set: a 48-command
+        // backlog (≈ 800 ms at 60 Hz) piled up in `pending`. Nothing resolved yet.
+        const BACKLOG: u32 = 48;
+        for t in 0..BACKLOG {
+            assert!(queues.ingest(CLIENT, &command(t, 1.0)));
+        }
+
+        // First resolve fast-forwards: depth 48 > INPUT_BUFFER_MAX. The lag must
+        // immediately drop into the bounded range (≤ INPUT_BUFFER_MAX), NOT stay at 47.
+        let newest = BACKLOG - 1;
+        let r = queues.resolve_tick(CLIENT).expect("a command resolves");
+        assert_eq!(
+            r.source,
+            ResolutionSource::Real,
+            "the fast-forward consumes a recent real command, not a held/neutral"
+        );
+        assert!(
+            lag(&queues, CLIENT, newest) <= INPUT_BUFFER_MAX as u32,
+            "lag collapses to the bounded buffer on the first catch-up (lag={})",
+            lag(&queues, CLIENT, newest)
+        );
+
+        // Now run steady state: one fresh command ingested per simulated tick, one
+        // resolved. The lag must stay bounded forever — never creep back toward 48.
+        for next_tick in BACKLOG..(BACKLOG + 200) {
+            assert!(queues.ingest(CLIENT, &command(next_tick, 1.0)));
+            let r = queues.resolve_tick(CLIENT).expect("steady-state resolve");
+            assert_eq!(
+                r.source,
+                ResolutionSource::Real,
+                "steady 1-in/1-out resolves the expected real command"
+            );
+            assert!(
+                lag(&queues, CLIENT, next_tick) <= INPUT_BUFFER_MAX as u32,
+                "lag stays bounded under steady streaming (lag={})",
+                lag(&queues, CLIENT, next_tick)
+            );
+        }
+    }
+
+    // Regression: a mid-session host frame hitch stalls the drain while the client
+    // keeps streaming, deepening `pending` the same way the startup backlog did. The
+    // same catch-up path must re-converge the lag after the burst lands in one go.
+    #[test]
+    fn mid_session_hitch_catches_up() {
+        let mut queues = HostCommandQueues::new();
+
+        // Reach steady state cleanly: a few ordered ticks, one resolved each.
+        let mut next_tick = 0u32;
+        for _ in 0..5 {
+            assert!(queues.ingest(CLIENT, &command(next_tick, 1.0)));
+            queues.resolve_tick(CLIENT).expect("steady resolve");
+            next_tick += 1;
+        }
+        let steady_newest = next_tick - 1;
+        assert!(lag(&queues, CLIENT, steady_newest) <= INPUT_BUFFER_MAX as u32);
+
+        // The host stalls for a long frame: BURST commands arrive before the next
+        // resolve (depth jumps well past INPUT_BUFFER_MAX).
+        const BURST: u32 = 30;
+        for _ in 0..BURST {
+            assert!(queues.ingest(CLIENT, &command(next_tick, -1.0)));
+            next_tick += 1;
+        }
+        let newest_after_burst = next_tick - 1;
+
+        // The very next resolve fast-forwards back into the bounded range.
+        let r = queues.resolve_tick(CLIENT).expect("post-hitch resolve");
+        assert_eq!(r.source, ResolutionSource::Real);
+        assert!(
+            lag(&queues, CLIENT, newest_after_burst) <= INPUT_BUFFER_MAX as u32,
+            "the hitch backlog re-converges to the bounded buffer (lag={})",
+            lag(&queues, CLIENT, newest_after_burst)
+        );
+
+        // And it stays bounded under resumed steady streaming.
+        for _ in 0..100 {
+            let newest_received = next_tick;
+            assert!(queues.ingest(CLIENT, &command(newest_received, -1.0)));
+            next_tick += 1;
+            queues.resolve_tick(CLIENT).expect("resumed steady resolve");
+            assert!(
+                lag(&queues, CLIENT, newest_received) <= INPUT_BUFFER_MAX as u32,
+                "lag stays bounded after the hitch (lag={})",
+                lag(&queues, CLIENT, newest_received)
+            );
+        }
+    }
+
+    // Resume-after-silence must NOT trip catch-up: a single far-future command after a
+    // long gap holds exactly ONE entry in `pending`, so depth never exceeds
+    // INPUT_BUFFER_MAX. This guards that the depth-keyed (not tick-distance) trigger
+    // preserves the hold→neutral→real resume semantics — the inverse failure mode the
+    // catch-up must avoid. Mirrors `resumed_input_after_gap_resolves_cleanly`.
+    #[test]
+    fn resume_after_silence_does_not_trigger_catchup() {
+        let mut queues = HostCommandQueues::new();
+        queues.ingest(CLIENT, &command(0, 1.0));
+        let _ = queues.resolve_tick(CLIENT); // tick 0 Real, cursor 0
+
+        // Long silence: exhaust the hold and go neutral (ticks 1..=3 held, tick 4
+        // neutral).
+        for _ in 0..(INPUT_HOLD_TICKS + 1) {
+            let _ = queues.resolve_tick(CLIENT);
+        }
+        assert_eq!(queues.resolved_cursor(CLIENT), Some(INPUT_HOLD_TICKS + 1));
+
+        // Client resumes at a far-future tick. Pending depth is exactly 1 — far below
+        // INPUT_BUFFER_MAX — so catch-up must NOT fire and discard it.
+        let resume_tick = 200u32;
+        assert!(queues.ingest(CLIENT, &command(resume_tick, -1.0)));
+
+        // Walk the neutral fill up to the resume tick, then resolve it Real. If catch-up
+        // had wrongly fired, the single far-future command would have been kept (depth 1
+        // is already <= INPUT_BUFFER_TARGET) but the cursor would have JUMPED forward to
+        // resume_tick-1, skipping the deterministic neutral fill — so the first resolve
+        // would already be Real. Assert the gap is filled with neutral first.
+        let first = queues.resolve_tick(CLIENT).unwrap();
+        assert_eq!(
+            first.source,
+            ResolutionSource::Neutral,
+            "a far-future single command does NOT fast-forward the cursor; the gap fills neutral"
+        );
+        assert_eq!(first.client_tick, INPUT_HOLD_TICKS + 2);
+
+        let mut last = Some(first);
+        for _ in 0..(resume_tick - (INPUT_HOLD_TICKS + 2)) {
+            last = queues.resolve_tick(CLIENT);
+        }
+        let resolved = last.expect("resumed command resolves");
+        assert_eq!(resolved.client_tick, resume_tick);
+        assert_eq!(resolved.source, ResolutionSource::Real);
+        assert!((resolved.command.movement.wish_dir.y - (-1.0)).abs() < EPSILON);
     }
 }

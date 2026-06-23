@@ -257,7 +257,12 @@ def light_entity(mode, origin, color, falloff, intensity, spot, rng):
     cr, cg, cb = color
     if mode == "static":
         cls = "light"
-        extra = ['"_bake_only" "0"', '"_shadow_type" "static_light_map"']
+        # `_light_size` is the bake-only emitter radius (metres) that drives the
+        # soft-shadow penumbra. The default 0.25 m is sub-texel at our coarse
+        # lightmap density, so shadows bake hard; 0.75 m gives a visibly soft
+        # penumbra and exercises the (expensive) soft-shadow bake path.
+        extra = ['"_bake_only" "0"', '"_shadow_type" "static_light_map"',
+                 '"_light_size" "0.75"']
     else:
         cls = "light_dynamic_spot" if spot else "light_dynamic"
         extra = []
@@ -274,7 +279,7 @@ def light_entity(mode, origin, color, falloff, intensity, spot, rng):
 
 
 def generate(nx, ny, nz, seed, door_prob, shaft_prob, lights_mode, light_every,
-             crates_per_room, spot_frac):
+             crates_per_room, spot_frac, static_frac):
     rng = random.Random(seed)
     spot_stride = max(1, round(1.0 / spot_frac)) if spot_frac > 0 else 0
     # center the grid near origin
@@ -370,7 +375,7 @@ def generate(nx, ny, nz, seed, door_prob, shaft_prob, lights_mode, light_every,
                 emit_crate_stack(brushes, x0i, y0i, x1i, y1i, zf, zc, crate_tex, rng)
                 ncrates += (len(brushes) > before)
 
-            # light near the ceiling. Every 5th light is a spotlight aimed down --
+            # light near the ceiling. Every Nth light is a spotlight aimed down --
             # spots are what cast crate shadows (world geo into the spot depth pass).
             if lights_mode != "none" and r % max(1, light_every) == 0:
                 # hug the ceiling, above the tallest crate stack (which is capped
@@ -380,7 +385,16 @@ def generate(nx, ny, nz, seed, door_prob, shaft_prob, lights_mode, light_every,
                 spot = (spot_stride > 0 and nlit % spot_stride == 0)
                 falloff = 1600 if spot else 1400
                 intensity = 220 if spot else 150
-                lights.append(light_entity(lights_mode, (cx, cy, cz), color,
+                # In 'mixed' mode each light is independently baked (static) or
+                # runtime (dynamic); the four combos (static/dynamic x spot/point)
+                # exercise the lightmap+SH bake AND the per-frame forward/shadow
+                # path in one scene. Static spots/points bake crate shadows into
+                # the lightmap; dynamic spots cast them at runtime.
+                if lights_mode == "mixed":
+                    this_mode = "static" if rng.random() < static_frac else "dynamic"
+                else:
+                    this_mode = lights_mode
+                lights.append(light_entity(this_mode, (cx, cy, cz), color,
                                            falloff, intensity, spot, rng))
                 nlit += 1
 
@@ -439,13 +453,18 @@ def main(argv):
     ap.add_argument("--shaft-prob", type=float, default=0.5,
                     help="fraction of candidate interior slabs that get a "
                          "vertical shaft connecting layers (default 1.0)")
-    ap.add_argument("--lights", choices=["none", "dynamic", "static"],
+    ap.add_argument("--lights", choices=["none", "dynamic", "static", "mixed"],
                     default="none",
                     help="add one light per room. 'dynamic' = light_dynamic "
                          "(runtime, no bake; stresses the per-frame forward "
                          "light loop + the 96-slot spot / 6-slot cube shadow "
                          "pools). 'static' = light (baked; stresses the lightmap "
-                         "+ SH bake -- much slower compile). (default none)")
+                         "+ SH bake -- much slower compile). 'mixed' = a per-room "
+                         "blend of both (see --static-frac), stressing the bake "
+                         "AND the runtime path in one scene. (default none)")
+    ap.add_argument("--static-frac", type=float, default=0.5,
+                    help="in --lights mixed, fraction of lights that are baked "
+                         "(static); the rest are dynamic. (default 0.5)")
     ap.add_argument("--light-every", type=int, default=1, metavar="N",
                     help="place a light in every Nth room (default 1 = all)")
     ap.add_argument("--crates", type=int, default=0, metavar="N",
@@ -473,13 +492,16 @@ def main(argv):
 
     brushes, spawn, rooms, lights, ncrates = generate(
         nx, ny, nz, args.seed, args.door_prob, args.shaft_prob,
-        args.lights, args.light_every, args.crates, args.spot_frac)
+        args.lights, args.light_every, args.crates, args.spot_frac,
+        args.static_frac)
     write_map(args.out, brushes, spawn, nx, ny, nz, lights)
     nspot = sum(1 for L in lights if "spot" in L[1])
+    ndyn = sum(1 for L in lights if "dynamic" in L[1])
+    nstat = len(lights) - ndyn
     print(f"grid {nx}x{ny}x{nz} = {nx*ny*nz} cells -> {rooms} rooms, "
           f"{len(brushes)} brushes ({ncrates} crates)")
-    print(f"lights: {len(lights)} {args.lights} ({nspot} spot, "
-          f"{len(lights)-nspot} point)")
+    print(f"lights: {len(lights)} {args.lights} "
+          f"({nstat} static, {ndyn} dynamic; {nspot} spot, {len(lights)-nspot} point)")
     print(f"extent: X/Y +/-{max(half_x, half_y)} u, Z {nz*PITCH_Z} u tall")
     print(f"wrote {args.out}")
 

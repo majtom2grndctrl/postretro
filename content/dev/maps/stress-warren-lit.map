@@ -10224,46 +10224,58 @@
 }
 // entity 2
 {
-"classname" "light_dynamic_spot"
+"classname" "light_spot"
 "origin" "-4480 -4480 296"
 "light" "220"
 "_color" "0 255 200"
 "_falloff_range" "1600"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 "_cone" "30"
 "_cone2" "48"
 "angles" "-90 0 0"
 }
 // entity 3
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-2560 -3840 296"
 "light" "150"
 "_color" "255 0 200"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 4
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-1280 -3840 296"
 "light" "150"
 "_color" "255 160 40"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 5
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "0 -4480 296"
 "light" "150"
 "_color" "40 160 255"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 6
 {
@@ -10290,23 +10302,29 @@
 }
 // entity 8
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "5120 -4480 296"
 "light" "150"
 "_color" "255 60 60"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 9
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-4480 -2560 296"
 "light" "150"
 "_color" "120 220 255"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 10
 {
@@ -10353,13 +10371,16 @@
 }
 // entity 14
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "1280 -1920 296"
 "light" "150"
 "_color" "180 0 255"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 15
 {
@@ -10373,13 +10394,16 @@
 }
 // entity 16
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-4480 0 296"
 "light" "150"
 "_color" "255 60 60"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 17
 {
@@ -10396,66 +10420,84 @@
 }
 // entity 18
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "1280 0 296"
 "light" "150"
 "_color" "0 255 200"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 19
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "5120 -640 296"
 "light" "150"
 "_color" "255 0 200"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 20
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-640 1280 296"
 "light" "150"
 "_color" "255 160 40"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 21
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "3200 640 296"
 "light" "150"
 "_color" "40 160 255"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 22
 {
-"classname" "light_dynamic_spot"
+"classname" "light_spot"
 "origin" "5120 1280 296"
 "light" "220"
 "_color" "180 0 255"
 "_falloff_range" "1600"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 "_cone" "30"
 "_cone2" "48"
 "angles" "-90 0 0"
 }
 // entity 23
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-4480 1920 296"
 "light" "150"
 "_color" "0 255 120"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 24
 {
@@ -10469,13 +10511,16 @@
 }
 // entity 25
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "1280 2560 296"
 "light" "150"
 "_color" "120 220 255"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 26
 {
@@ -10489,13 +10534,16 @@
 }
 // entity 27
 {
-"classname" "light_dynamic_spot"
+"classname" "light_spot"
 "origin" "3840 2560 296"
 "light" "220"
 "_color" "255 0 200"
 "_falloff_range" "1600"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 "_cone" "30"
 "_cone2" "48"
 "angles" "-90 0 0"
@@ -10512,13 +10560,16 @@
 }
 // entity 29
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-2560 3200 296"
 "light" "150"
 "_color" "40 160 255"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 30
 {
@@ -10555,13 +10606,16 @@
 }
 // entity 33
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-5120 4480 296"
 "light" "150"
 "_color" "120 220 255"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 34
 {
@@ -10585,23 +10639,29 @@
 }
 // entity 36
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-1280 4480 296"
 "light" "150"
 "_color" "255 160 40"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 37
 {
-"classname" "light_dynamic_spot"
+"classname" "light_spot"
 "origin" "0 4480 296"
 "light" "220"
 "_color" "40 160 255"
 "_falloff_range" "1600"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 "_cone" "30"
 "_cone2" "48"
 "angles" "-90 0 0"
@@ -10628,13 +10688,16 @@
 }
 // entity 40
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-4480 -4480 680"
 "light" "150"
 "_color" "255 60 60"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 41
 {
@@ -10661,13 +10724,16 @@
 }
 // entity 43
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "1280 -3840 680"
 "light" "150"
 "_color" "255 0 200"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 44
 {
@@ -10681,23 +10747,29 @@
 }
 // entity 45
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "5120 -4480 680"
 "light" "150"
 "_color" "40 160 255"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 46
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-5120 -2560 680"
 "light" "150"
 "_color" "180 0 255"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 47
 {
@@ -10714,43 +10786,55 @@
 }
 // entity 48
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "0 -2560 680"
 "light" "150"
 "_color" "255 60 60"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 49
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "3200 -3200 680"
 "light" "150"
 "_color" "120 220 255"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 50
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "5120 -3200 680"
 "light" "150"
 "_color" "0 255 200"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 51
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-3840 -1280 680"
 "light" "150"
 "_color" "255 0 200"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 52
 {
@@ -10777,23 +10861,29 @@
 }
 // entity 54
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "2560 -1920 680"
 "light" "150"
 "_color" "180 0 255"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 55
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "4480 -1920 680"
 "light" "150"
 "_color" "0 255 120"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 56
 {
@@ -10807,56 +10897,71 @@
 }
 // entity 57
 {
-"classname" "light_dynamic_spot"
+"classname" "light_spot"
 "origin" "-2560 -640 680"
 "light" "220"
 "_color" "120 220 255"
 "_falloff_range" "1600"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 "_cone" "30"
 "_cone2" "48"
 "angles" "-90 0 0"
 }
 // entity 58
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-640 -640 680"
 "light" "150"
 "_color" "0 255 200"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 59
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "1280 0 680"
 "light" "150"
 "_color" "255 0 200"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 60
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "2560 -640 680"
 "light" "150"
 "_color" "255 160 40"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 61
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "3840 -640 680"
 "light" "150"
 "_color" "40 160 255"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 62
 {
@@ -10913,13 +11018,16 @@
 }
 // entity 67
 {
-"classname" "light_dynamic_spot"
+"classname" "light_spot"
 "origin" "2560 640 680"
 "light" "220"
 "_color" "255 0 200"
 "_falloff_range" "1600"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 "_cone" "30"
 "_cone2" "48"
 "angles" "-90 0 0"
@@ -10956,23 +11064,29 @@
 }
 // entity 71
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "1280 1920 680"
 "light" "150"
 "_color" "0 255 120"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 72
 {
-"classname" "light_dynamic_spot"
+"classname" "light_spot"
 "origin" "2560 2560 680"
 "light" "220"
 "_color" "255 60 60"
 "_falloff_range" "1600"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 "_cone" "30"
 "_cone2" "48"
 "angles" "-90 0 0"
@@ -10999,13 +11113,16 @@
 }
 // entity 75
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-1280 3200 680"
 "light" "150"
 "_color" "255 0 200"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 76
 {
@@ -11042,43 +11159,55 @@
 }
 // entity 79
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "5120 3840 680"
 "light" "150"
 "_color" "0 255 120"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 80
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-1920 4480 680"
 "light" "150"
 "_color" "255 60 60"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 81
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "1280 4480 680"
 "light" "150"
 "_color" "120 220 255"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 82
 {
-"classname" "light_dynamic_spot"
+"classname" "light_spot"
 "origin" "2560 4480 680"
 "light" "220"
 "_color" "0 255 200"
 "_falloff_range" "1600"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 "_cone" "30"
 "_cone2" "48"
 "angles" "-90 0 0"
@@ -11095,13 +11224,16 @@
 }
 // entity 84
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-2560 -3840 1064"
 "light" "150"
 "_color" "255 160 40"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 85
 {
@@ -11158,13 +11290,16 @@
 }
 // entity 90
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "5120 -2560 1064"
 "light" "150"
 "_color" "0 255 200"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 91
 {
@@ -11178,13 +11313,16 @@
 }
 // entity 92
 {
-"classname" "light_dynamic_spot"
+"classname" "light_spot"
 "origin" "-1920 -1280 1064"
 "light" "220"
 "_color" "255 160 40"
 "_falloff_range" "1600"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 "_cone" "30"
 "_cone2" "48"
 "angles" "-90 0 0"
@@ -11221,23 +11359,29 @@
 }
 // entity 96
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "640 0 1064"
 "light" "150"
 "_color" "255 60 60"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 97
 {
-"classname" "light_dynamic_spot"
+"classname" "light_spot"
 "origin" "3200 -640 1064"
 "light" "220"
 "_color" "120 220 255"
 "_falloff_range" "1600"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 "_cone" "30"
 "_cone2" "48"
 "angles" "-90 0 0"
@@ -11254,23 +11398,29 @@
 }
 // entity 99
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-5120 640 1064"
 "light" "150"
 "_color" "255 0 200"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 100
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-3840 1280 1064"
 "light" "150"
 "_color" "255 160 40"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 101
 {
@@ -11284,13 +11434,16 @@
 }
 // entity 102
 {
-"classname" "light_dynamic_spot"
+"classname" "light_spot"
 "origin" "-1280 640 1064"
 "light" "220"
 "_color" "180 0 255"
 "_falloff_range" "1600"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 "_cone" "30"
 "_cone2" "48"
 "angles" "-90 0 0"
@@ -11307,33 +11460,42 @@
 }
 // entity 104
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-5120 2560 1064"
 "light" "150"
 "_color" "255 60 60"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 105
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-2560 2560 1064"
 "light" "150"
 "_color" "120 220 255"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 106
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-1280 2560 1064"
 "light" "150"
 "_color" "0 255 200"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 107
 {
@@ -11360,13 +11522,16 @@
 }
 // entity 109
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "3840 2560 1064"
 "light" "150"
 "_color" "40 160 255"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 110
 {
@@ -11380,13 +11545,16 @@
 }
 // entity 111
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-3840 3200 1064"
 "light" "150"
 "_color" "0 255 120"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 112
 {
@@ -11403,33 +11571,42 @@
 }
 // entity 113
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "5120 3840 1064"
 "light" "150"
 "_color" "120 220 255"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 114
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-5120 4480 1064"
 "light" "150"
 "_color" "0 255 200"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 115
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-3200 4480 1064"
 "light" "150"
 "_color" "255 0 200"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 116
 {
@@ -11443,26 +11620,32 @@
 }
 // entity 117
 {
-"classname" "light_dynamic_spot"
+"classname" "light_spot"
 "origin" "2560 4480 1064"
 "light" "220"
 "_color" "40 160 255"
 "_falloff_range" "1600"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 "_cone" "30"
 "_cone2" "48"
 "angles" "-90 0 0"
 }
 // entity 118
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "3840 4480 1064"
 "light" "150"
 "_color" "180 0 255"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 119
 {
@@ -11496,36 +11679,45 @@
 }
 // entity 122
 {
-"classname" "light_dynamic_spot"
+"classname" "light_spot"
 "origin" "0 -3840 1448"
 "light" "220"
 "_color" "0 255 200"
 "_falloff_range" "1600"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 "_cone" "30"
 "_cone2" "48"
 "angles" "-90 0 0"
 }
 // entity 123
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "1920 -3840 1448"
 "light" "150"
 "_color" "255 0 200"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 124
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "3840 -3840 1448"
 "light" "150"
 "_color" "255 160 40"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 125
 {
@@ -11539,23 +11731,29 @@
 }
 // entity 126
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-4480 -3200 1448"
 "light" "150"
 "_color" "180 0 255"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 127
 {
-"classname" "light_dynamic_spot"
+"classname" "light_spot"
 "origin" "-1920 -3200 1448"
 "light" "220"
 "_color" "0 255 120"
 "_falloff_range" "1600"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 "_cone" "30"
 "_cone2" "48"
 "angles" "-90 0 0"
@@ -11592,13 +11790,16 @@
 }
 // entity 131
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "1280 -1920 1448"
 "light" "150"
 "_color" "255 0 200"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 132
 {
@@ -11615,13 +11816,16 @@
 }
 // entity 133
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "5120 -1920 1448"
 "light" "150"
 "_color" "40 160 255"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 134
 {
@@ -11698,36 +11902,45 @@
 }
 // entity 141
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "640 640 1448"
 "light" "150"
 "_color" "40 160 255"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 142
 {
-"classname" "light_dynamic_spot"
+"classname" "light_spot"
 "origin" "3200 640 1448"
 "light" "220"
 "_color" "180 0 255"
 "_falloff_range" "1600"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 "_cone" "30"
 "_cone2" "48"
 "angles" "-90 0 0"
 }
 // entity 143
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "5120 640 1448"
 "light" "150"
 "_color" "0 255 120"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 144
 {
@@ -11741,23 +11954,29 @@
 }
 // entity 145
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-3840 2560 1448"
 "light" "150"
 "_color" "120 220 255"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 146
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "640 1920 1448"
 "light" "150"
 "_color" "0 255 200"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 147
 {
@@ -11774,13 +11993,16 @@
 }
 // entity 148
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "3840 2560 1448"
 "light" "150"
 "_color" "255 160 40"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 149
 {
@@ -11804,46 +12026,58 @@
 }
 // entity 151
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "640 3200 1448"
 "light" "150"
 "_color" "0 255 120"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 152
 {
-"classname" "light_dynamic_spot"
+"classname" "light_spot"
 "origin" "2560 3200 1448"
 "light" "220"
 "_color" "255 60 60"
 "_falloff_range" "1600"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 "_cone" "30"
 "_cone2" "48"
 "angles" "-90 0 0"
 }
 // entity 153
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "5120 3200 1448"
 "light" "150"
 "_color" "120 220 255"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 154
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-4480 4480 1448"
 "light" "150"
 "_color" "0 255 200"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }
 // entity 155
 {
@@ -11880,11 +12114,14 @@
 }
 // entity 158
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "5120 4480 1448"
 "light" "150"
 "_color" "180 0 255"
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_light_size" "0.75"
 }

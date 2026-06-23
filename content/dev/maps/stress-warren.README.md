@@ -7,9 +7,9 @@ committed variants:
 
 | Map | Contents | Stresses |
 |-----|----------|----------|
-| `stress-warren.map`        | 157 rooms, no lights        | geometry/BVH walk + portal traversal only |
-| `stress-warren-lit.map`    | 157 rooms, 157 dynamic lights | + per-frame forward light loop, light culling, and shadow pools |
-| `stress-warren-crates.map` | 71 rooms, 142 crate stacks, 71 lights (36 spot) | + **shadow casting** (spots rasterize the crate-filled world into shadow maps) and a denser geometry/material load |
+| `stress-warren.map`        | 157 rooms, no lights | geometry/BVH walk + portal traversal only |
+| `stress-warren-lit.map`    | 157 rooms, 157 **mixed** lights (≈half baked / half runtime) | + the lightmap/SH **bake** AND the per-frame forward light loop, light culling, and shadow pools |
+| `stress-warren-crates.map` | 71 rooms, 142 crate stacks, 71 **mixed** lights (36 spot) | + **shadow casting** from both paths: static spots bake crate shadows into the lightmap, dynamic spots rasterize the crate-filled world into runtime shadow maps |
 
 All surfaces use the bundled `50-free-textures` collection, whose diffuses carry
 `_n`/`_s` normal+specular siblings — prl-build auto-bundles them into the `.prm`
@@ -21,9 +21,9 @@ buckets (= more indirect draw calls per frame).
 
 ```bash
 python3 tools/gen_stress_map.py                       # default: 9 8 4, ~150 rooms, no lights
-python3 tools/gen_stress_map.py --lights dynamic \
+python3 tools/gen_stress_map.py --lights mixed \
     -o content/dev/maps/stress-warren-lit.map         # the lit variant
-python3 tools/gen_stress_map.py --grid 7 6 3 --lights dynamic --crates 2 \
+python3 tools/gen_stress_map.py --grid 7 6 3 --lights mixed --crates 2 \
     --spot-frac 0.5 -o content/dev/maps/stress-warren-crates.map   # crates + shadows
 # push harder / change connectivity:
 python3 tools/gen_stress_map.py --grid 8 8 5 --door-prob 0.2
@@ -50,48 +50,63 @@ geometry, which has three consequences:
 
 ## Compile
 
-The map ships no static lights on purpose (the per-frame geometry walk stays the
-dominant cost, and there is no multi-hour lightmap/SH bake). You **must** pass a
-coarse SH probe spacing — the SH irradiance volume bakes a probe grid over the
-whole world AABB regardless of lights, so the 1.0 m default would bake millions
-of probes for a map this large:
+Always pass a coarse SH probe spacing — the SH irradiance volume bakes a probe
+grid over the whole world AABB regardless of lights, so the 1.0 m default would
+bake millions of probes for a map this large. The lightless map has nothing else
+to bake and compiles in seconds:
 
 ```bash
 prl-build content/dev/maps/stress-warren.map \
     -o content/dev/maps/stress-warren.prl --sh-probe-spacing 10.0 --no-cache
-# the lit variant compiles the same way (~17 s; dynamic lights don't bake):
-prl-build content/dev/maps/stress-warren-lit.map \
-    -o content/dev/maps/stress-warren-lit.prl --sh-probe-spacing 10.0 --no-cache
 ```
 
-## Lighting (`--lights`)
+The **mixed** maps carry static (baked) lights, so they also run the lightmap +
+SH bake. These rooms have large (~26 m) surfaces, so you **must** pass a coarse
+`--lightmap-density` or the atlas explodes (the 0.04 m default bakes for many
+minutes / overflows). At 0.5 m the cold bakes take a few minutes:
+
+```bash
+prl-build content/dev/maps/stress-warren-lit.map \
+    -o content/dev/maps/stress-warren-lit.prl \
+    --sh-probe-spacing 10.0 --lightmap-density 0.5 --no-cache
+prl-build content/dev/maps/stress-warren-crates.map \
+    -o content/dev/maps/stress-warren-crates.prl \
+    --sh-probe-spacing 10.0 --lightmap-density 0.5 --no-cache
+```
+
+Drop `--no-cache` while iterating — the per-light lightmap layers are cached, so
+only edited lights re-bake. Ship final bakes with `--release`.
+
+## Lighting (`--lights`, `--spot-frac`, `--static-frac`)
 
 `--lights` places one light per room (`--light-every N` thins that to every Nth
-room). Every 5th light is a spotlight, so both shadow pools are pushed past
-capacity. Two modes target different cost paths:
+room); `--spot-frac` sets the share that are spotlights. The modes target
+different cost paths:
 
 - **`dynamic`** — `light_dynamic` / `light_dynamic_spot`. Unbaked: stresses the
   **runtime** per-frame forward light loop, per-leaf light culling, and the
-  shadow pools. The committed `stress-warren-lit.map` uses this. Runtime caps
-  (all graceful — extras render unshadowed, nothing is dropped from direct
-  lighting): spot pool `SHADOW_POOL_SIZE = 96` (`spot_shadow.rs`), point/cube
-  pool `CUBE_COUNT = 6` (`cube_shadow.rs`). 157 lights deliberately overflows
-  both so the ranking/overflow path is exercised. Compile ≈ 17 s.
+  shadow pools. Runtime caps (all graceful — extras render unshadowed, nothing
+  is dropped from direct lighting): spot pool `SHADOW_POOL_SIZE = 96`
+  (`spot_shadow.rs`), point/cube pool `CUBE_COUNT = 6` (`cube_shadow.rs`). A
+  full per-room set overflows both, exercising the ranking/overflow path.
+  Dynamic lights don't bake, so compile is seconds.
 - **`static`** — `light` / `light_spot`. Baked: stresses the **compiler**
-  (lightmap + SH bake), not the per-frame path. Beware: these rooms have large
-  (~26 m) surfaces, so at the default 0.04 m/texel the lightmap atlas is huge
-  and the cold soft-shadow bake runs for many minutes (157 lights ≈ 6 min even
-  at `--lightmap-density 0.5`). Use it with mitigations:
+  (lightmap + SH bake). These rooms have large (~26 m) surfaces, so the default
+  0.04 m/texel atlas is huge — always pass a coarse `--lightmap-density`.
+- **`mixed`** — a per-room blend (`--static-frac`, default 0.5 each way), so a
+  single scene stresses the bake **and** the runtime path at once. The two
+  committed lit maps use this. Static lights get `_light_size 0.75` for a soft
+  (rather than 1-texel-hard) penumbra; static spots/points bake crate shadows
+  into the lightmap while dynamic spots cast them at runtime.
 
-  ```bash
-  python3 tools/gen_stress_map.py --lights static --light-every 4 \
-      -o content/dev/maps/stress-warren-static.map
-  prl-build content/dev/maps/stress-warren-static.map \
-      -o out.prl --sh-probe-spacing 10.0 --lightmap-density 0.5
-  ```
+**Expected static-light warning.** At `--lightmap-density 0.5` each static light
+logs a one-line `sub-texel penumbra (~1.00 texel)` warning — its softened
+penumbra (~0.5 m) is right at the texel floor, so corner/contact shadows read
+hard. This is informational, not an error; a finer `--lightmap-density 0.25`
+clears most of them at ~4× the bake time and atlas size (risking the 8192² cap).
 
-  Drop `--no-cache` while iterating — the per-light lightmap layers are cached,
-  so only edited lights re-bake. Ship final bakes with `--release`.
+Drop `--no-cache` while iterating — the per-light lightmap layers are cached, so
+only edited lights re-bake. Ship final bakes with `--release`.
 
 ## The binding engine constraint: 4096 BSP leaves
 

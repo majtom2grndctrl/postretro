@@ -120,10 +120,8 @@ impl ReplicatedSlotSchema {
     }
 
     /// The wire id for a dotted slot name, or `None` if the slot is not replicated.
-    /// The name→id inverse of [`name_for`](Self::name_for).
-    // Reserved extension point; production bypasses via descriptor_health_for_pawn /
-    // entries(). Exercised by tests today.
-    #[allow(dead_code)]
+    /// Test-only inverse of [`name_for`](Self::name_for).
+    #[cfg(test)]
     pub(crate) fn id_for(&self, name: &str) -> Option<StateSlotId> {
         self.entries
             .iter()
@@ -284,6 +282,10 @@ pub(crate) struct HostStateReplication {
     /// then reused for the session. `None` until built.
     schema: Option<ReplicatedSlotSchema>,
     tracker: ServerStateReplication,
+    /// Set to `true` the first time `ingest_frame` runs. Used only in debug builds
+    /// to assert the ingest-before-produce ordering contract.
+    #[cfg(debug_assertions)]
+    ingested: bool,
 }
 
 impl HostStateReplication {
@@ -291,6 +293,8 @@ impl HostStateReplication {
         Self {
             schema: None,
             tracker: ServerStateReplication::new(),
+            #[cfg(debug_assertions)]
+            ingested: false,
         }
     }
 
@@ -356,6 +360,11 @@ impl HostStateReplication {
         client_id: u64,
         sequence: u32,
     ) -> Option<Vec<RawStateSlotRecord>> {
+        #[cfg(debug_assertions)]
+        debug_assert!(
+            self.ingested,
+            "produce_for_client called before ingest_frame; ingest must run once per frame before the per-client produce loop"
+        );
         self.tracker.produce_in_batch(client_id, sequence)
     }
 
@@ -382,6 +391,11 @@ impl HostStateReplication {
             .iter()
             .map(|e| (e.slot_id, e.name.clone(), e.scope))
             .collect();
+
+        #[cfg(debug_assertions)]
+        {
+            self.ingested = true;
+        }
 
         for (slot_id, name, scope) in entries {
             match scope {

@@ -77,6 +77,27 @@ prl-build content/dev/maps/stress-warren-crates.map \
 Drop `--no-cache` while iterating — the per-light lightmap layers are cached, so
 only edited lights re-bake. Ship final bakes with `--release`.
 
+`--lightmap-density` is the resolution knob: 0.5 m is a few-minute bake; **0.25 m**
+gives ~2× sharper baked lightmaps (and ~4× the atlas — lit `.prl` grows 23 MB →
+83 MB, ~4 min) without overflowing the 8192² cap here. Finer still risks the cap
+and an automatic density-halving fallback.
+
+## Textures and the missing-texture checkerboard
+
+All world materials resolve from `content/dev/textures/50-free-textures` at
+**compile** time and are baked into per-texture `.prm` mip sidecars under
+`.build-caches/prm-cache/` (content-addressed by PNG hash). The `.prl` stores
+only the blake3 *keys*, **not** the pixels. So a `.prl` run on a machine whose
+`.build-caches/prm-cache/` lacks those sidecars shows the missing-texture
+checkerboard — and shows it *partially* if some sidecars happen to be cached from
+other maps (e.g. `concrete_pavement_036` is shared with `campaign-test`). This is
+not a misspelled-name problem; every name above is verified to resolve.
+
+To see real materials, **compile the map locally** (the `TextureMips` stage
+regenerates every `.prm`) — a clean bake of these 15 textures takes ~5 s. (The
+temporary download branch additionally commits the `.prm` so its `.prl` render
+without a local compile.)
+
 ## Lighting (`--lights`, `--spot-frac`, `--static-frac`)
 
 `--lights` places one light per room (`--light-every N` thins that to every Nth

@@ -80,6 +80,12 @@ TEX_WALL = "debug_wall_grey"
 TEX_FLOOR = "debug_floor_grey"
 TEX_CEIL = "debug_ceiling_grey"
 
+# Cyberpunk-ish palette (0-255 RGB) so lights vary in color.
+LIGHT_COLORS = [
+    (0, 255, 200), (255, 0, 200), (255, 160, 40), (40, 160, 255),
+    (180, 0, 255), (0, 255, 120), (255, 60, 60), (120, 220, 255),
+]
+
 
 def box_brush(x0, y0, z0, x1, y1, z1, tex_side, tex_top, tex_bottom):
     """An axis-aligned solid box as a 6-plane Standard-format brush.
@@ -181,7 +187,33 @@ def tile_layer(nx, ny, rng):
     return room
 
 
-def generate(nx, ny, nz, seed, door_prob, shaft_prob):
+def light_entity(mode, origin, color, falloff, intensity, spot, rng):
+    """Return a light entity block (list of "key value" lines + classname).
+
+    mode: 'dynamic' -> light_dynamic / light_dynamic_spot (runtime, unbaked:
+          stresses the per-frame forward light loop + shadow pools, no bake).
+    mode: 'static'  -> light (baked: stresses the lightmap + SH bake).
+    """
+    cr, cg, cb = color
+    if mode == "static":
+        cls = "light"
+        extra = ['"_bake_only" "0"', '"_shadow_type" "static_light_map"']
+    else:
+        cls = "light_dynamic_spot" if spot else "light_dynamic"
+        extra = []
+    if spot:
+        cls = "light_spot" if mode == "static" else "light_dynamic_spot"
+        extra += ['"_cone" "30"', '"_cone2" "48"', '"angles" "-90 0 0"']
+    out = ["{", f'"classname" "{cls}"',
+           f'"origin" "{origin[0]} {origin[1]} {origin[2]}"',
+           f'"light" "{intensity}"', f'"_color" "{cr} {cg} {cb}"',
+           f'"_falloff_range" "{falloff}"', '"delay" "0"', '"style" "0"']
+    out += extra
+    out.append("}")
+    return out
+
+
+def generate(nx, ny, nz, seed, door_prob, shaft_prob, lights_mode, light_every):
     rng = random.Random(seed)
     # center the grid near origin
     ox = -(nx * PITCH_XY) // 2
@@ -246,10 +278,38 @@ def generate(nx, ny, nz, seed, door_prob, shaft_prob):
     spy = (Y[sj] + Y[sj + 1]) // 2
     spz = Z[0] + SLAB_T // 2 + 32
 
-    return brushes, (spx, spy, spz), total_rooms
+    # Lights: one per room (sampled every `light_every`th room), placed near the
+    # ceiling at the room centroid. Every 5th light is a spotlight so both the
+    # 96-slot spot pool and the 6-slot cube pool get exercised.
+    lights = []
+    if lights_mode != "none":
+        # invert cell -> room into room -> cells (rooms are single-layer)
+        room_cells = {}
+        for k in range(nz):
+            for (i, j), r in layers[k].items():
+                room_cells.setdefault(r, (k, []))[1].append((i, j))
+        nlit = 0
+        for r in sorted(room_cells):
+            if r % max(1, light_every) != 0:
+                continue
+            k, cells = room_cells[r]
+            i0 = min(c[0] for c in cells); i1 = max(c[0] for c in cells)
+            j0 = min(c[1] for c in cells); j1 = max(c[1] for c in cells)
+            cx = (X[i0] + X[i1 + 1]) // 2
+            cy = (Y[j0] + Y[j1 + 1]) // 2
+            cz = Z[k + 1] - SLAB_T // 2 - 48        # just under the ceiling
+            color = LIGHT_COLORS[r % len(LIGHT_COLORS)]
+            spot = (nlit % 5 == 0)
+            falloff = 1600 if spot else 1400
+            intensity = 220 if spot else 150
+            lights.append(light_entity(lights_mode, (cx, cy, cz), color,
+                                       falloff, intensity, spot, rng))
+            nlit += 1
+
+    return brushes, (spx, spy, spz), total_rooms, lights
 
 
-def write_map(path, brushes, spawn, nx, ny, nz):
+def write_map(path, brushes, spawn, nx, ny, nz, lights):
     lines = []
     lines.append("// Game: Postretro")
     lines.append("// Format: Standard")
@@ -270,12 +330,17 @@ def write_map(path, brushes, spawn, nx, ny, nz):
         lines.append(f"// brush {n}")
         lines.append(b.rstrip("\n"))
     lines.append("}")
-    lines.append("// entity 1")
+    n = 1
+    lines.append(f"// entity {n}")
     lines.append("{")
     lines.append('"classname" "player_spawn"')
     lines.append(f'"origin" "{spawn[0]} {spawn[1]} {spawn[2]}"')
     lines.append('"angle" "0"')
     lines.append("}")
+    for light in lights:
+        n += 1
+        lines.append(f"// entity {n}")
+        lines.extend(light)
     with open(path, "w") as f:
         f.write("\n".join(lines) + "\n")
 
@@ -296,6 +361,15 @@ def main(argv):
     ap.add_argument("--shaft-prob", type=float, default=0.5,
                     help="fraction of candidate interior slabs that get a "
                          "vertical shaft connecting layers (default 1.0)")
+    ap.add_argument("--lights", choices=["none", "dynamic", "static"],
+                    default="none",
+                    help="add one light per room. 'dynamic' = light_dynamic "
+                         "(runtime, no bake; stresses the per-frame forward "
+                         "light loop + the 96-slot spot / 6-slot cube shadow "
+                         "pools). 'static' = light (baked; stresses the lightmap "
+                         "+ SH bake -- much slower compile). (default none)")
+    ap.add_argument("--light-every", type=int, default=1, metavar="N",
+                    help="place a light in every Nth room (default 1 = all)")
     args = ap.parse_args(argv)
 
     nx, ny, nz = args.grid
@@ -310,11 +384,15 @@ def main(argv):
               f"classic +/-16384 envelope (still f32-exact, but unusually large)",
               file=sys.stderr)
 
-    brushes, spawn, rooms = generate(nx, ny, nz, args.seed,
-                                     args.door_prob, args.shaft_prob)
-    write_map(args.out, brushes, spawn, nx, ny, nz)
+    brushes, spawn, rooms, lights = generate(nx, ny, nz, args.seed,
+                                             args.door_prob, args.shaft_prob,
+                                             args.lights, args.light_every)
+    write_map(args.out, brushes, spawn, nx, ny, nz, lights)
+    nspot = sum(1 for L in lights if "spot" in L[1])
     print(f"grid {nx}x{ny}x{nz} = {nx*ny*nz} cells -> {rooms} rooms, "
           f"{len(brushes)} brushes")
+    print(f"lights: {len(lights)} {args.lights} ({nspot} spot, "
+          f"{len(lights)-nspot} point)")
     print(f"extent: X/Y +/-{max(half_x, half_y)} u, Z {nz*PITCH_Z} u tall")
     print(f"wrote {args.out}")
 

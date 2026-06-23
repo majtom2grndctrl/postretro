@@ -34,13 +34,13 @@ Options persist as `settings.toml` in the platform config directory (e.g. `~/.co
 
 Player options load at engine init (Phase 0), before `InputSystem` is constructed. The loaded options seed input preferences (sensitivity, invert-Y) at startup. On first boot (no file present), the engine writes defaults atomically before continuing — the boot defaults-write is the primary exercise of the atomic-write path.
 
-No save-on-change occurs at runtime until the M13 settings menu is wired. The boot defaults-write is the only save call before that.
+No save-on-change occurs at runtime until the E13 settings menu is wired. The boot defaults-write is the only save call before that.
 
 ---
 
-## 4. M13 Settings Menu Seam
+## 4. E13 Settings Menu Seam
 
-`PlayerOptions` is the store the M13 settings menu reads and writes. The options module ships the store and its boot wiring; the menu ships the UI, controls, and save-on-change triggers. These are distinct deliverables.
+`PlayerOptions` is the store the E13 settings menu reads and writes. The options module ships the store and its boot wiring; the menu ships the UI, controls, and save-on-change triggers. These are distinct deliverables.
 
 ---
 
@@ -52,7 +52,7 @@ No save-on-change occurs at runtime until the M13 settings menu is wired. The bo
 
 ## 6. Non-Goals
 
-- **UI.** The M13 settings menu is a separate deliverable.
+- **UI.** The E13 settings menu is a separate deliverable.
 - **Keybind remapping.** Same conceptual home, separate spec (conflict detection, gamepad maps).
 - **Scripting surface.** `PlayerOptions` is engine-internal config — no SDK types, no `.d.ts`/`.d.luau`, no drift test.
 - **Game-save store.** Separate spec.

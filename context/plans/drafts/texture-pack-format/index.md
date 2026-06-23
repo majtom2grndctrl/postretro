@@ -1,6 +1,6 @@
 # Texture Pack Format (.prpak)
 
-**Status:** Optional, lower priority. Part of Milestone 8 (Material Optimization). Earns its place only if a shipping scenario surfaces filesystem-traversal cost from loose `.prm` files. Drop from the milestone if shipping pressure doesn't materialise.
+**Status:** Optional, lower priority. Part of Epic 8 (Material Optimization). Earns its place only if a shipping scenario surfaces filesystem-traversal cost from loose `.prm` files. Drop from the epic if shipping pressure doesn't materialise.
 
 ## Goal
 

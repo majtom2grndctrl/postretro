@@ -2,7 +2,7 @@
 
 ## Goal
 
-`docs/scripting-reference.md` is the modder-facing API reference (M6: "covers all bound APIs"), but it has zero weapon coverage — the M10 weapon-primitives plan shipped the `components.weapon` block, `defaultWeapon` equip, and the `activate` / `impact` events without documenting them. Close the gap. Docs only; no engine change.
+`docs/scripting-reference.md` is the modder-facing API reference (E6: "covers all bound APIs"), but it has zero weapon coverage — the E10 weapon-primitives plan shipped the `components.weapon` block, `defaultWeapon` equip, and the `activate` / `impact` events without documenting them. Close the gap. Docs only; no engine change.
 
 Discovered during the M10--entity-health-damage implementability review (2026-06). That plan documents its own surface (health block, `applyDamage`, `playerDied`, `player.health`); this one back-fills the weapon surface it builds on.
 

@@ -1,8 +1,8 @@
-# M10 — Enemy Steering Feel (acceleration, turn-rate, arrival easing)
+# E10 — Enemy Steering Feel (acceleration, turn-rate, arrival easing)
 
-> **Wave:** M10 enemy-AI follow-up (refinement of the shipped `M10--enemy-ai-behavior` / `M10--pathfinding-path-following` foundation). **Deferred / larger** — the meatiest of the manual-test refinements. Surfaced in play-testing as "movement reads like a chess piece moving onto squares, not an immersive FPS chase."
+> **Wave:** E10 enemy-AI follow-up (refinement of the shipped `M10--enemy-ai-behavior` / `M10--pathfinding-path-following` foundation). **Deferred / larger** — the meatiest of the manual-test refinements. Surfaced in play-testing as "movement reads like a chess piece moving onto squares, not an immersive FPS chase."
 >
-> **Composes with:** enemy facing/orientation, the velocity-driven locomotion-animation spec (`M10--enemy-locomotion-animation`), and the existing separation pass. Steering-feel is independent at the code seam — consumers read `velocity` through the unchanged `path_state` surface; no API change is required when smoothing lands. Landing after facing/locomotion only improves visual polish. Note: the one-tick lag (`run_ai_tick` precedes `run_agent_tick`) already applies to facing, so the smoothed velocity reaches facing/animation one tick later — acknowledged, not a same-tick guarantee.
+> **Composes with:** enemy facing/orientation, the velocity-driven locomotion-animation spec (`E10--enemy-locomotion-animation`), and the existing separation pass. Steering-feel is independent at the code seam — consumers read `velocity` through the unchanged `path_state` surface; no API change is required when smoothing lands. Landing after facing/locomotion only improves visual polish. Note: the one-tick lag (`run_ai_tick` precedes `run_agent_tick`) already applies to facing, so the smoothed velocity reaches facing/animation one tick later — acknowledged, not a same-tick guarantee.
 
 ## Goal
 

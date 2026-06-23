@@ -1,8 +1,8 @@
-# M10 — Enemy Stuck Recovery (unwedge from concave geometry)
+# E10 — Enemy Stuck Recovery (unwedge from concave geometry)
 
-> **Wave:** M10 enemy-AI follow-up (refinement of the shipped `M10--enemy-ai-behavior` / `M10--pathfinding-path-following` foundation). Surfaced in manual play-testing: the enemy jams against a pillar when the player rounds it and stays immobile.
+> **Wave:** E10 enemy-AI follow-up (refinement of the shipped `M10--enemy-ai-behavior` / `M10--pathfinding-path-following` foundation). Surfaced in manual play-testing: the enemy jams against a pillar when the player rounds it and stays immobile.
 >
-> **Adjacent specs:** `M10--enemy-steering-feel` (accel/turn-rate/arrival — different concern, same `agent_steering::tick` file) and `M10--enemy-locomotion-animation`. This spec is the **collision-recovery** gap; those are feel/animation.
+> **Adjacent specs:** `E10--enemy-steering-feel` (accel/turn-rate/arrival — different concern, same `agent_steering::tick` file) and `E10--enemy-locomotion-animation`. This spec is the **collision-recovery** gap; those are feel/animation.
 
 ## Goal
 
@@ -32,7 +32,7 @@ The wedge is a **collision-recovery gap**, not a routing failure:
 - **Capsule-exact navmesh** (Option B): Euclidean radius erosion + funnel corner-offset so no waypoint sits within a radius of geometry. This touches the bake algorithm (bumps `NAVMESH_STAGE_VERSION`), region decomposition, and the funnel, and forces a re-bake of all maps. Deferred to a separate draft only if the post-implementation escalation gate fires.
 - **Unstick inside `collide_and_slide`** (Option C, rejected): the sweep harness is intentionally intent-agnostic and cannot know which direction is "out," so recovery there would jitter. Recovery belongs in the steering tick, which owns intent.
 - Player movement; inter-agent deadlock resolution beyond what the tangent slide + replan already give; flocking.
-- Steering *feel* (accel/turn-rate/arrival) — `M10--enemy-steering-feel`.
+- Steering *feel* (accel/turn-rate/arrival) — `E10--enemy-steering-feel`.
 
 ## Acceptance criteria
 

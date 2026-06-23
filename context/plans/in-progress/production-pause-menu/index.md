@@ -176,7 +176,7 @@ remains usable when no mod or level reaction manifest exists.
 
 ## Demo Cleanup
 
-Remove pause-menu-only M13 demo plumbing:
+Remove pause-menu-only E13 demo plumbing:
 
 - `content/dev/scripts/pause-menu-store.ts`;
 - the `registerPauseMenuStore()` call;

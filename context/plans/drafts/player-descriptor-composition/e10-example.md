@@ -1,6 +1,6 @@
-# M10 Scripting Surface — Speculative End-State Example
+# E10 Scripting Surface — Speculative End-State Example
 
-One annotated mod start-script showing the full Milestone 10 (Animated Enemies) scripting vocabulary in the composed descriptor style this plan sets. Three provenance tags mark each block:
+One annotated mod start-script showing the full Epic 10 (Animated Enemies) scripting vocabulary in the composed descriptor style this plan sets. Three provenance tags mark each block:
 
 - **SHIPPED** — today's surface, unchanged.
 - **THIS PLAN** — the reshape `index.md` specifies.
@@ -18,7 +18,7 @@ const player = defineEntity({
   canonicalName: "player",                         // SHIPPED
   defaultWeapon: "reference_pistol",               // SHIPPED — equip-at-spawn
   components: {
-    health: { max: 100 },                          // SHIPPED — feeds player.health slot (M13 contract)
+    health: { max: 100 },                          // SHIPPED — feeds player.health slot (E13 contract)
 
     movement: {                                    // THIS PLAN — composed shape
       capsule: { radius: 0.2, halfHeight: 0.8, eyeHeight: 0.5 },
@@ -94,7 +94,7 @@ const player = defineEntity({
 // ───────────────────────────── Weapons ─────────────────────────────
 
 const referencePistol = defineEntity({
-  canonicalName: "reference_pistol",               // SHIPPED — M10 weapon primitives
+  canonicalName: "reference_pistol",               // SHIPPED — E10 weapon primitives
   components: {
     weapon: {
       damage: 12,
@@ -145,12 +145,12 @@ const grunt = defineEntity({
       defaultState: "idle",
     },
 
-    health: {                                      // SHIPPED — M10 health/damage
+    health: {                                      // SHIPPED — E10 health/damage
       max: 60,
       hitbox: { halfExtents: [0.4, 0.9, 0.4], offset: [0, 0.9, 0] },
     },
 
-    // SPECULATIVE — skeletal hit zones (M10 plan, not yet built). The model
+    // SPECULATIVE — skeletal hit zones (E10 plan, not yet built). The model
     // ships spatial tags via glTF extras; the script ships the balance.
     // Multipliers scale the incoming DamagePayload per tagged bone capsule.
     hitZones: {
@@ -159,7 +159,7 @@ const grunt = defineEntity({
       default: 1.0,
     },
 
-    // SPECULATIVE — enemy AI behavior (M10 plan, not yet built). Deliberately
+    // SPECULATIVE — enemy AI behavior (E10 plan, not yet built). Deliberately
     // the SAME {from, to, when} transition-row grammar movement pinned
     // (movement.md §2): closed states, closed predicate vocabulary, data-only.
     // One grammar across subsystems is the composition story.
@@ -184,15 +184,15 @@ const grunt = defineEntity({
 
 export function setupMod() {
   return {
-    name: "m10-reference",
+    name: "e10-reference",
     entities: [player, referencePistol, heavyCannon, grunt],
   };
 }
 ```
 
-## What this demonstrates, milestone item by item
+## What this demonstrates, epic item by item
 
-| M10 item | Where it appears |
+| E10 item | Where it appears |
 |---|---|
 | Mesh render path + `MeshComponent` | `grunt.components.mesh.model` |
 | Skinned animation runtime (state map) | `mesh.animations` + `defaultState`; behavior states select animation by name |

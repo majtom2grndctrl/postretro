@@ -6,7 +6,7 @@
 
 ---
 
-This is **Milestone 15 Phase 3**: authoritative client-server co-op with client-side prediction and reconciliation. General-purpose multiplayer is a non-goal (see `index.md` §4). See *Phase boundaries* below.
+This is **Epic 15 Phase 3**: authoritative client-server co-op with client-side prediction and reconciliation. General-purpose multiplayer is a non-goal (see `index.md` §4). See *Phase boundaries* below.
 
 ## Crate boundary and ownership
 

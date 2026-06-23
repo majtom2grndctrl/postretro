@@ -2,7 +2,7 @@
 
 > **Status:** bug note, not a spec. A small, self-contained type-generation gap to fix.
 >
-> **Origin:** surfaced while scaffolding the M10 skinned-animation demo content (`content/dev/maps/anim-demo.*`). Running `tsc --noEmit` against `content/dev/scripts/tsconfig.json` fails — independent of the demo content, which references none of these types.
+> **Origin:** surfaced while scaffolding the E10 skinned-animation demo content (`content/dev/maps/anim-demo.*`). Running `tsc --noEmit` against `content/dev/scripts/tsconfig.json` fails — independent of the demo content, which references none of these types.
 
 ## The gap
 
@@ -25,7 +25,7 @@ export type ComponentValue =
 
 ## Impact
 
-- **Not blocking, not from the mesh work.** The engine's authoritative bundler (`scripts-build` / `postretro-script-compiler`) compiles content fine, and the committed SDK drift test (`committed_sdk_types_match_current_registry`) passes — the committed `.d.ts` *is* what the generator produces, so the gap is in the generator, and it predates the M10 animation work (which added `MeshDescriptor`, not these particle/sprite types).
+- **Not blocking, not from the mesh work.** The engine's authoritative bundler (`scripts-build` / `postretro-script-compiler`) compiles content fine, and the committed SDK drift test (`committed_sdk_types_match_current_registry`) passes — the committed `.d.ts` *is* what the generator produces, so the gap is in the generator, and it predates the E10 animation work (which added `MeshDescriptor`, not these particle/sprite types).
 - **But** it breaks editor/`tsc` type-checking of mod scripts — any author who type-checks `content/dev/scripts` hits these two errors with no offending code of their own.
 
 ## Fix direction (pick one)

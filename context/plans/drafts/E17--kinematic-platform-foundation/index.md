@@ -1,10 +1,10 @@
-# M17 - Kinematic Platform Foundation
+# E17 - Kinematic Platform Foundation
 
 > **Status:** draft.
 >
-> **Milestone:** 17 - Kinematic Geometry and Moving Platforms.
+> **Epic:** 17 - Kinematic Geometry and Moving Platforms.
 >
-> **Fits after:** M15 Phase 3/3.5 networking and movement prediction/reconciliation.
+> **Fits after:** E15 Phase 3/3.5 networking and movement prediction/reconciliation.
 
 ## Goal
 
@@ -15,7 +15,7 @@ and replicates enough server-authored state for remote interpolation and local
 replay.
 
 This is the substrate plan. It proves one moving brush payload end-to-end before
-the milestone adds triggers, rotating carry, doors, dynamic portals, kinematic
+the epic adds triggers, rotating carry, doors, dynamic portals, kinematic
 clusters, or destruction.
 
 ## Scope
@@ -82,7 +82,7 @@ First-slice FGD keys:
 - `kinematic_waypoint.next`: optional next waypoint targetname.
 
 No trigger key ships in this plan. That keeps the first platform independent of
-M18 trigger ownership and lets the platform substrate land before level-event
+E18 trigger ownership and lets the platform substrate land before level-event
 semantics.
 
 ### Runtime Model
@@ -228,7 +228,7 @@ not a client-authored divergent path.
   side contact slides or blocks according to the existing movement substrate.
 - [ ] Leaving a moving platform applies the plan's release-velocity policy
   consistently in single-player and connected-client replay.
-- [ ] In the deterministic net harness at the M15 profile (150 ms RTT, jitter,
+- [ ] In the deterministic net harness at the E15 profile (150 ms RTT, jitter,
   5% loss), a remote client sees the mover smoothly interpolated and a local
   player riding it reconciles without persistent correction drift.
 - [ ] No new `unsafe` is introduced.
@@ -360,7 +360,7 @@ authoritative mover samples for the replay ticks so corrections do not compound
 from a mismatched platform pose.
 
 Extend the in-memory prediction/reconciliation harness with a moving-platform
-scenario at the M15 latency/loss profile.
+scenario at the E15 latency/loss profile.
 
 ### Task 6: Demo map, diagnostics, and documentation
 
@@ -445,7 +445,7 @@ there; new logic belongs in focused modules.
 
 ## Open Questions
 
-None block this draft. Later M17 specs must resolve:
+None block this draft. Later E17 specs must resolve:
 
 - trigger ownership and late-join semantics for co-op set pieces;
 - angular carry/orientation policy for rotating platforms;

@@ -1390,6 +1390,18 @@ fn update_debug_chase_agent_destination(
     agent_steering::set_destination(registry, agent, target);
 }
 
+/// Whether the clean-exit handler should write persistent slots to `state.json`
+/// (M15 Phase 3.5 Task 5). The save runs only when the state-store lifecycle has
+/// committed declarations and restore (`can_save`) AND this process is not a
+/// connected client. A connected client's replicated slots (`player.health`,
+/// `player.maxHealth`, shared mod slots) are server-authoritative values applied
+/// through the replicated-state path, not local edits — persisting them would write
+/// another peer's authoritative state into this client's save file. Single-player
+/// (`is_connected_client == false`) and the host both save unchanged.
+fn should_save_persisted_state(can_save: bool, is_connected_client: bool) -> bool {
+    can_save && !is_connected_client
+}
+
 // --- ApplicationHandler ---
 
 impl ApplicationHandler for App {
@@ -3078,7 +3090,18 @@ impl ApplicationHandler for App {
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         // Saving before declarations commit and restore completes could replace
         // a valid state file with an empty or default-only snapshot.
-        if self.state_store_lifecycle.can_save() {
+        //
+        // A connected client must NOT persist replicated slot writes to `state.json`
+        // (M15 Phase 3.5 Task 5): its `player.health` / `player.maxHealth` and any
+        // shared mod slots are server-authoritative values applied through the
+        // replicated-state path, not local edits to save. Bitcode stays live-wire only,
+        // and save-game sync for net sessions is a non-goal. Single-player (`None`) and
+        // the host (`NetEndpoint::Host`) save unchanged — only `NetEndpoint::Client`
+        // skips the clean-exit save.
+        if should_save_persisted_state(
+            self.state_store_lifecycle.can_save(),
+            self.is_connected_client(),
+        ) {
             let state_path = Path::new(STATE_FILE_PATH);
             let collected = collect_persisted_state(&self.script_ctx.slot_table.borrow());
             for warning in collected.warnings {
@@ -4568,6 +4591,26 @@ mod tests {
         AirParams, CapsuleParams, FallParams, ForgivenessParams, GroundParams,
         PlayerMovementDescriptor, SpeedParams,
     };
+
+    // M15 Phase 3.5 Task 5: a connected client skips the clean-exit `state.json` save;
+    // single-player and the host still save. `is_connected_client` is `true` only for
+    // `NetEndpoint::Client`, so this gate is the role-aware switch at the save call site.
+    #[test]
+    fn connected_client_skips_state_save_while_single_player_and_host_save() {
+        // Single-player (no endpoint) and host (not a connected client) save.
+        assert!(
+            should_save_persisted_state(true, false),
+            "single-player / host saves when the lifecycle permits"
+        );
+        // A connected client never saves, even when the lifecycle would otherwise allow.
+        assert!(
+            !should_save_persisted_state(true, true),
+            "a connected client skips the clean-exit save"
+        );
+        // The lifecycle gate still suppresses the save before commit/restore.
+        assert!(!should_save_persisted_state(false, false));
+        assert!(!should_save_persisted_state(false, true));
+    }
 
     fn minimal_player_descriptor() -> PlayerMovementDescriptor {
         PlayerMovementDescriptor {

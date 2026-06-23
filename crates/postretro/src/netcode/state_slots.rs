@@ -1227,4 +1227,190 @@ mod tests {
             "client B sees its own (different) health"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // Task 5: shared/global mod-slot proof + descriptor parse/materialize fixture
+    // -----------------------------------------------------------------------
+
+    use crate::scripting::primitives::store::store_declaration;
+
+    /// The Task 5 integration fixture store: a mod-authored `defineStore` slot opted
+    /// into `network: "shared"` through the real `store_declaration` parse path. This
+    /// proves the replication path is general, not health-hardcoded — the shared slot
+    /// is declared exactly as a mod author would write it, then committed into the slot
+    /// table. The engine player health slots are cleared back to `None` so this fixture
+    /// table carries exactly the one shared mod slot.
+    fn net_fixture_table() -> SlotTable {
+        let mut table = SlotTable::new();
+        table.get_mut("player.health").unwrap().schema.network = ReplicationScope::None;
+        table.get_mut("player.maxHealth").unwrap().schema.network = ReplicationScope::None;
+
+        // Authored through the same parse path as a real `defineStore("netFixture", ...)`
+        // call, so the SharedGlobal scope comes from the mod-facing `network: "shared"`
+        // opt-in, not a hand-set field.
+        let declaration = store_declaration(
+            "netFixture",
+            serde_json::json!({
+                "objectiveProgress": { "type": "number", "default": 0, "network": "shared" },
+            }),
+        )
+        .expect("netFixture schema parses");
+        assert_eq!(
+            declaration.records[0].1.schema.network,
+            ReplicationScope::SharedGlobal,
+            "network: \"shared\" lowered to SharedGlobal through the parse path"
+        );
+        table
+            .insert_namespace(&declaration.namespace, declaration.records)
+            .expect("netFixture commits");
+        table
+    }
+
+    // A `sharedGlobal` fixture slot (`netFixture.objectiveProgress`, authored via
+    // `network: "shared"`) replicates to EVERY accepted client and to a LATE JOINER
+    // through a full baseline — proving the shared path through the Task 3 shared-ingest
+    // glue, not just the entity HUD slots.
+    #[test]
+    fn shared_fixture_objective_progress_reaches_every_client_and_late_joiner() {
+        let mut host_table = net_fixture_table();
+        // The host advances the shared objective. One value per StateSlotId regardless
+        // of owner — every accepted client sees the same number.
+        host_table
+            .get_mut("netFixture.objectiveProgress")
+            .unwrap()
+            .value = Some(SlotValue::Number(7.0));
+
+        // No owned pawns are needed: the shared slot's source is the table value.
+        let registry = EntityRegistry::new();
+        let owners = MovementOwners::new();
+
+        let mut host = HostStateReplication::new();
+        host.register_client(CLIENT_A);
+        host.register_client(CLIENT_B);
+        let fingerprint = host.fingerprint(&host_table);
+
+        // Both originally-accepted clients receive the shared value on the first frame.
+        for client in [CLIENT_A, CLIENT_B] {
+            let records = host
+                .produce_for_client(&host_table, &registry, &owners, client, 0)
+                .expect("accepted client produces records");
+            assert_eq!(records.len(), 1, "the one shared fixture slot is produced");
+
+            let mut client_table = net_fixture_table();
+            let mut apply = ClientStateApply::new();
+            let outcome = apply.apply_snapshot_state(&mut client_table, 0, &fingerprint, &records);
+            assert_eq!(
+                outcome.slot_baselines.len(),
+                1,
+                "the shared record is acked"
+            );
+            assert!(outcome.refresh_requests.is_empty());
+            assert_eq!(
+                client_table
+                    .get("netFixture.objectiveProgress")
+                    .unwrap()
+                    .value,
+                Some(SlotValue::Number(7.0)),
+                "client {client} sees the shared objective progress"
+            );
+        }
+
+        // A LATE JOINER (client C) accepts after the value was set and without any
+        // further value change, then must still receive the full baseline.
+        const CLIENT_C: u64 = 3;
+        host.register_client(CLIENT_C);
+        let late_records = host
+            .produce_for_client(&host_table, &registry, &owners, CLIENT_C, 1)
+            .expect("late joiner produces records");
+        assert_eq!(
+            late_records.len(),
+            1,
+            "late joiner gets a full baseline for the shared slot without a value change"
+        );
+
+        let mut late_table = net_fixture_table();
+        let mut late_apply = ClientStateApply::new();
+        let outcome =
+            late_apply.apply_snapshot_state(&mut late_table, 1, &fingerprint, &late_records);
+        assert_eq!(outcome.slot_baselines.len(), 1);
+        assert_eq!(
+            late_table
+                .get("netFixture.objectiveProgress")
+                .unwrap()
+                .value,
+            Some(SlotValue::Number(7.0)),
+            "the late joiner converges to the shared objective progress"
+        );
+    }
+
+    /// Spawn an owned pawn whose `HealthComponent` is materialized through the SAME
+    /// descriptor parse → materialize path the engine uses: a `HealthDescriptor` parsed
+    /// from descriptor JSON (`serde_json::from_value`, exactly the engine's parse step),
+    /// validated, then materialized via `HealthComponent::from_descriptor` (the engine's
+    /// materialize step). This proves the descriptor-fed projection flows through the
+    /// real descriptor path, not a hand-built component.
+    fn registry_with_descriptor_health(
+        client_id: u64,
+        max: f32,
+    ) -> (EntityRegistry, MovementOwners) {
+        // Parse step: descriptor JSON → HealthDescriptor (the engine's `serde_json`
+        // parse path for `components.health`).
+        let descriptor: HealthDescriptor =
+            serde_json::from_value(serde_json::json!({ "max": max }))
+                .expect("health descriptor parses");
+        let descriptor = descriptor.validate().expect("health descriptor validates");
+
+        // Materialize step: HealthComponent::from_descriptor (current initializes to max).
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        registry
+            .set_component(pawn, HealthComponent::from_descriptor(&descriptor))
+            .unwrap();
+
+        let mut owners = MovementOwners::new();
+        owners.set(pawn, client_id);
+        (registry, owners)
+    }
+
+    // A descriptor-defined source value (health), materialized through the descriptor
+    // PARSE/MATERIALIZE path, projects into the named `player.health` / `player.maxHealth`
+    // slots and replicates through the SAME wire schema/apply path as store slots — using
+    // a `StateSlotId` from the same deterministic schema.
+    #[test]
+    fn descriptor_parsed_health_projects_through_named_slots() {
+        let host_table = player_health_replicated_table();
+        let (registry, owners) = registry_with_descriptor_health(CLIENT_A, 120.0);
+
+        let mut host = HostStateReplication::new();
+        host.register_client(CLIENT_A);
+        let fingerprint = host.fingerprint(&host_table);
+        let records = host
+            .produce_for_client(&host_table, &registry, &owners, CLIENT_A, 0)
+            .expect("registered client produces records");
+        assert_eq!(records.len(), 2, "health + maxHealth projected");
+
+        // The slot ids come from the same deterministic schema as store slots.
+        let schema = ReplicatedSlotSchema::build(&host_table);
+        let health_id = schema.id_for("player.health").expect("health id");
+        let max_id = schema.id_for("player.maxHealth").expect("maxHealth id");
+        let record_ids: std::collections::BTreeSet<u16> =
+            records.iter().map(|r| r.slot_id).collect();
+        assert!(record_ids.contains(&health_id.0));
+        assert!(record_ids.contains(&max_id.0));
+
+        let mut client_table = player_health_replicated_table();
+        let mut client = ClientStateApply::new();
+        let outcome = client.apply_snapshot_state(&mut client_table, 0, &fingerprint, &records);
+        assert_eq!(outcome.slot_baselines.len(), 2);
+        assert_eq!(
+            client_table.get("player.health").unwrap().value,
+            Some(SlotValue::Number(120.0)),
+            "descriptor-parsed current HP (== max at spawn) reached the named slot"
+        );
+        assert_eq!(
+            client_table.get("player.maxHealth").unwrap().value,
+            Some(SlotValue::Number(120.0)),
+            "descriptor-parsed max HP reached the named slot"
+        );
+    }
 }

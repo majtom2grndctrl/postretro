@@ -92,6 +92,7 @@ mod tests {
             persist: false,
             readonly: true,
             ownership: SlotOwnership::Engine,
+            network: crate::scripting::slot_table::ReplicationScope::None,
         })
     }
 

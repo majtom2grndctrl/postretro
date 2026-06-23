@@ -39,6 +39,25 @@ pub(crate) enum SlotOwnership {
     Mod,
 }
 
+/// How (and to whom) a slot's authoritative value replicates from server to
+/// accepted clients (M15 Phase 3.5). `None` is the default: the slot is local-only
+/// and receives no `StateSlotId` — it never affects the replicated-slot schema or
+/// its fingerprint. The two replicated scopes feed the schema builder.
+///
+/// The internal enum names are pinned (`SharedGlobal` / `OwnerPrivatePlayer`) — the
+/// schema fingerprint and the net descriptor lowering depend on them, and the
+/// mod-facing `network: "shared"` authoring surface (Task 5) maps onto them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ReplicationScope {
+    /// Local-only. Not replicated; no `StateSlotId`; excluded from the fingerprint.
+    #[default]
+    None,
+    /// Server sends this slot to every accepted client.
+    SharedGlobal,
+    /// Server sends this slot only to the owning accepted client.
+    OwnerPrivatePlayer,
+}
+
 /// Immutable declaration metadata for a state slot.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct SlotSchema {
@@ -48,6 +67,9 @@ pub(crate) struct SlotSchema {
     pub(crate) persist: bool,
     pub(crate) readonly: bool,
     pub(crate) ownership: SlotOwnership,
+    /// Replication scope (M15 Phase 3.5). Defaults to `None` (local-only). Only
+    /// `SharedGlobal`/`OwnerPrivatePlayer` slots enter the replicated-slot schema.
+    pub(crate) network: ReplicationScope,
 }
 
 /// A declared slot and its current runtime value.
@@ -423,6 +445,7 @@ mod tests {
             persist: false,
             readonly: false,
             ownership: SlotOwnership::Mod,
+            network: ReplicationScope::None,
         })
     }
 
@@ -677,6 +700,7 @@ mod tests {
                     persist: false,
                     readonly: true,
                     ownership: SlotOwnership::Engine,
+                    network: ReplicationScope::None,
                 }),
             )
             .unwrap();

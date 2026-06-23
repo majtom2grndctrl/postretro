@@ -1338,6 +1338,7 @@ mod tests {
             persist: false,
             readonly: false,
             ownership: SlotOwnership::Mod,
+            network: crate::scripting::slot_table::ReplicationScope::None,
         });
         record.value = Some(SlotValue::Number(value));
         record
@@ -1537,6 +1538,7 @@ mod tests {
                         persist: true,
                         readonly: false,
                         ownership: SlotOwnership::Mod,
+                        network: crate::scripting::slot_table::ReplicationScope::None,
                     }),
                 )],
             )

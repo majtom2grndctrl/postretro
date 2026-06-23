@@ -204,6 +204,7 @@ mod tests {
     use crate::scripting::engine_state_catalog::{
         EngineStateCapability, EngineStateDefault, EngineStateValueType,
     };
+    use crate::scripting::slot_table::ReplicationScope;
     use std::collections::BTreeMap;
 
     const BASE: EngineStateCatalogEntry<'static> = EngineStateCatalogEntry {
@@ -214,6 +215,7 @@ mod tests {
         range: None,
         persist: false,
         capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::None,
     };
 
     fn expected_catalog_path_slots() -> BTreeMap<String, String> {

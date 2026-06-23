@@ -12,6 +12,13 @@ mod movement_state;
 mod prediction;
 mod reconcile;
 mod replication;
+// M15 Phase 3.5 Task 1: the replicated-slot schema/fingerprint/lowering and the
+// projection-adapter shape. Its public items are consumed by the Task 2 server
+// tracker and the Task 3 production/apply loop, which land next; until then they
+// have no in-crate caller, so the module carries a dead-code allow rather than
+// premature wiring. Remove the allow when Task 3 wires production/apply.
+#[allow(dead_code)]
+mod state_slots;
 mod wire_convert;
 
 // M15 Phase 3 Task 6: the integrated in-memory prediction/reconciliation harness and
@@ -1142,6 +1149,17 @@ pub(crate) fn host_handle_client_message(
         wire::ClientMessage::Input(input) => {
             command_queues.ingest(client_id, &input);
         }
+        // M15 Phase 3.5: a client missing a replicated state-slot baseline. The
+        // server state tracker (Task 2) consumes this to schedule a full baseline for
+        // that slot. Task 1 establishes the wire variant; the tracker that handles it
+        // lands next, so for now the request is logged and dropped.
+        wire::ClientMessage::StateBaselineRefresh(req) => {
+            log::debug!(
+                "[Net] client {client_id} requested state baseline refresh for slot {} (missing ref {}); tracker handling lands in Phase 3.5 Task 2",
+                req.slot_id,
+                req.missing_baseline_ref
+            );
+        }
     }
 }
 
@@ -1808,6 +1826,8 @@ mod tests {
                         })],
                     },
                 ],
+                state_schema_fingerprint: [0u8; 32],
+                state_records: Vec::new(),
             },
         );
 

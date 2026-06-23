@@ -928,6 +928,8 @@ fn stale_snapshot_for(h: &LoopbackHarness) -> postretro_net::wire::SnapshotMessa
             // it never exercises client materialization, so no class is stamped.
             entity_class: None,
         }],
+        state_schema_fingerprint: [0u8; 32],
+        state_records: Vec::new(),
     }
 }
 

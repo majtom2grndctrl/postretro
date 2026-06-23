@@ -13,8 +13,8 @@ use crate::scripting::ctx::ScriptCtx;
 use crate::scripting::error::ScriptError;
 use crate::scripting::primitives_registry::{ContextScope, PrimitiveRegistry};
 use crate::scripting::slot_table::{
-    NumericRange, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue, StoreDeclaration,
-    StoreDeclarationSet,
+    NumericRange, ReplicationScope, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue,
+    StoreDeclaration, StoreDeclarationSet,
 };
 
 struct StoreSchemaJson(Value);
@@ -929,6 +929,10 @@ fn validate_slot_schema(
         persist,
         readonly,
         ownership: SlotOwnership::Mod,
+        // Mod slots are local-only in Phase 3.5. The `network: "shared"` authoring
+        // surface (mapping to `SharedGlobal`) lands in Task 5; until then every
+        // mod-declared slot defaults to `None`.
+        network: ReplicationScope::None,
     }))
 }
 

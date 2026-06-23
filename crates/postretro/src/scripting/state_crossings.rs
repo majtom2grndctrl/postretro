@@ -168,6 +168,7 @@ mod tests {
             persist: false,
             readonly: false,
             ownership: SlotOwnership::Mod,
+            network: crate::scripting::slot_table::ReplicationScope::None,
         });
         record.value = value.map(SlotValue::Number);
         record
@@ -370,6 +371,7 @@ mod tests {
                     persist: false,
                     readonly: false,
                     ownership: SlotOwnership::Mod,
+                    network: crate::scripting::slot_table::ReplicationScope::None,
                 }),
             )
             .unwrap();

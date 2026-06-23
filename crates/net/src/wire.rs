@@ -37,7 +37,12 @@ pub struct NetworkId(pub u32);
 ///
 /// Bumped to 4 in M15 Phase 3 Task 7: the entity record gained
 /// `has_entity_class`/`entity_class`, so a record's bitcode layout changed.
-pub const SNAPSHOT_VERSION: u16 = 4;
+///
+/// Bumped to 5 in M15 Phase 3.5: `RawSnapshotMessage` gained
+/// `state_schema_fingerprint`/`state_records`, `AckMessage` gained
+/// `slot_baselines`, and `ClientMessage` gained `StateBaselineRefresh` — the
+/// snapshot, ack, and client-message bitcode layouts all changed.
+pub const SNAPSHOT_VERSION: u16 = 5;
 
 /// `record_kind` discriminant for a full-baseline (spawn / join / refresh) record.
 pub const RECORD_KIND_FULL_BASELINE: u16 = 0;
@@ -219,6 +224,17 @@ pub struct RawSnapshotMessage {
     pub sequence: u32,
     pub server_tick: u32,
     pub records: Vec<RawEntityRecord>,
+    /// Opaque 32-byte fingerprint of the server's replicated-slot schema (M15
+    /// Phase 3.5). The client matches it against its own local fingerprint before
+    /// applying any state record. This crate never computes it — the engine
+    /// (`postretro`) computes it with `blake3` and hands it across as bytes.
+    pub state_schema_fingerprint: [u8; 32],
+    /// Replicated state-slot records riding this snapshot. Empty is valid (the
+    /// snapshot carries no slot changes this frame). Validated against the local
+    /// schema by [`crate::state_slots::validate_state_records`], not here — schema
+    /// validation needs the engine-owned `StateSchema`, which this registry-blind
+    /// crate is never handed at decode time.
+    pub state_records: Vec<crate::state_slots::RawStateSlotRecord>,
 }
 
 // ---------------------------------------------------------------------------
@@ -297,6 +313,14 @@ pub struct SnapshotMessage {
     pub sequence: u32,
     pub server_tick: u32,
     pub records: Vec<EntityRecord>,
+    /// Carried through unchanged from the raw snapshot. The entity-record half is
+    /// validated by [`RawSnapshotMessage::validate`]; the state-record half is
+    /// schema-validated separately by the engine via
+    /// [`crate::state_slots::validate_state_records`], which needs the engine-owned
+    /// local schema. The fingerprint and raw records ride here so the engine glue
+    /// gets both halves of one server frame from a single typed message.
+    pub state_schema_fingerprint: [u8; 32],
+    pub state_records: Vec<crate::state_slots::RawStateSlotRecord>,
 }
 
 // ---------------------------------------------------------------------------
@@ -585,6 +609,8 @@ impl RawSnapshotMessage {
             sequence: self.sequence,
             server_tick: self.server_tick,
             records,
+            state_schema_fingerprint: self.state_schema_fingerprint,
+            state_records: self.state_records.clone(),
         })
     }
 }
@@ -649,6 +675,13 @@ pub struct AckMessage {
     /// `(network_id, tombstone_id)` pairs the client has applied. Retires that
     /// tombstone for this client so the server stops resending the despawn.
     pub despawn_tombstones: Vec<(u32, u32)>,
+    /// `(state_slot_id, baseline_id)` pairs the client now holds for replicated
+    /// state slots (M15 Phase 3.5). Same monotonic-additive semantics as
+    /// `entity_baselines`, but keyed by `StateSlotId` instead of `NetworkId`:
+    /// advances the server's per-client state baseline for that slot only if
+    /// `baseline_id` is newer. An empty list leaves prior state-ack progress
+    /// unchanged. The `u16` is the `StateSlotId` inner value.
+    pub slot_baselines: Vec<(u16, u32)>,
 }
 
 /// Client -> server request to re-send a full baseline for one entity, carried on
@@ -675,6 +708,30 @@ pub struct BaselineRefreshRequest {
     pub reason: u8,
 }
 
+/// Client -> server request to re-send a full baseline for one replicated *state
+/// slot*, carried on the reliable-ordered `Channel::Input` (M15 Phase 3.5).
+///
+/// Distinct from [`BaselineRefreshRequest`] by design: entity baselines are keyed
+/// by `NetworkId`, while state baselines are keyed by `StateSlotId`. Sent when the
+/// client receives a state `Delta` referencing a `baseline_ref` it does not hold;
+/// the server schedules a `FullBaseline` for that slot on `Channel::Snapshot`.
+/// Requests are additive and deduped server-side by `(client, slot_id,
+/// missing_baseline_ref)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+pub struct StateBaselineRefreshRequest {
+    /// The snapshot `sequence` whose state delta could not be applied. Diagnostic /
+    /// dedup context; the repair is keyed by slot + missing ref, not sequence.
+    pub snapshot_sequence: u32,
+    /// The replicated state slot whose baseline the client is missing (`StateSlotId`
+    /// inner value).
+    pub slot_id: u16,
+    /// The `baseline_ref` the unappliable state delta named but the client lacks.
+    pub missing_baseline_ref: u32,
+    /// Why the refresh is needed. A `u8` reason code, not interpreted by the repair
+    /// path — logged for diagnostics.
+    pub reason: u8,
+}
+
 /// Discriminated client -> server envelope for the reliable-ordered
 /// `Channel::Input`, which multiplexes several message kinds (the input stream,
 /// replication acks, baseline-refresh requests, and — Task 5 — time-sync). bitcode
@@ -694,6 +751,10 @@ pub enum ClientMessage {
     /// its current tick so the client estimates the server clock. Appended last to
     /// preserve the discriminant order of the variants above.
     TimeSync(crate::timesync::TimeSyncRequest),
+    /// A request to re-send one replicated state slot's full baseline (M15 Phase
+    /// 3.5). Appended last to preserve the discriminant order of the variants
+    /// above. Keyed by `StateSlotId`, distinct from `BaselineRefresh`'s `NetworkId`.
+    StateBaselineRefresh(StateBaselineRefreshRequest),
 }
 
 /// Handshake message. Every connection is gated on a matching `ProtocolVersion`
@@ -819,6 +880,25 @@ mod tests {
         }
     }
 
+    /// A raw snapshot carrying no replicated state records (the common case for the
+    /// entity-record fixtures). The Phase 3.5 state fields default to an all-zero
+    /// fingerprint and an empty record list; the state_slots module tests exercise
+    /// those fields directly.
+    fn raw_snapshot(
+        sequence: u32,
+        server_tick: u32,
+        records: Vec<RawEntityRecord>,
+    ) -> RawSnapshotMessage {
+        RawSnapshotMessage {
+            version: SNAPSHOT_VERSION,
+            sequence,
+            server_tick,
+            records,
+            state_schema_fingerprint: [0u8; 32],
+            state_records: Vec::new(),
+        }
+    }
+
     fn sample_input() -> InputCommand {
         InputCommand {
             client_tick: 4_242,
@@ -855,11 +935,10 @@ mod tests {
 
     #[test]
     fn raw_snapshot_full_baseline_round_trips() {
-        let raw = RawSnapshotMessage {
-            version: SNAPSHOT_VERSION,
-            sequence: 11,
-            server_tick: 900,
-            records: vec![raw_record(
+        let raw = raw_snapshot(
+            11,
+            900,
+            vec![raw_record(
                 RECORD_KIND_FULL_BASELINE,
                 5,
                 3,
@@ -867,19 +946,45 @@ mod tests {
                 0,
                 vec![raw_transform_payload(), raw_movement_payload()],
             )],
-        };
+        );
         assert!(round_trips(&raw));
     }
 
     #[test]
     fn raw_snapshot_empty_records_round_trips() {
+        let raw = raw_snapshot(0, 0, Vec::new());
+        assert!(round_trips(&raw));
+    }
+
+    /// A snapshot carrying a non-empty state-record list and a real fingerprint
+    /// round-trips through the wire — the Phase 3.5 fields are part of the envelope.
+    #[test]
+    fn raw_snapshot_with_state_records_round_trips() {
+        use crate::state_slots::{
+            RawStateSlotRecord, STATE_RECORD_KIND_FULL_BASELINE, WireSlotValue,
+        };
         let raw = RawSnapshotMessage {
             version: SNAPSHOT_VERSION,
-            sequence: 0,
-            server_tick: 0,
+            sequence: 3,
+            server_tick: 42,
             records: Vec::new(),
+            state_schema_fingerprint: [9u8; 32],
+            state_records: vec![RawStateSlotRecord {
+                slot_id: 1,
+                kind: STATE_RECORD_KIND_FULL_BASELINE,
+                has_baseline_ref: false,
+                baseline_ref: 0,
+                baseline_id: 7,
+                value: WireSlotValue::Number(50.0),
+            }],
         };
         assert!(round_trips(&raw));
+        // The state fields survive a decode and reach the typed apply model.
+        let bytes = encode(&raw);
+        let decoded: RawSnapshotMessage = decode(&bytes).expect("snapshot decodes");
+        let typed = decoded.validate().expect("entity half validates");
+        assert_eq!(typed.state_schema_fingerprint, [9u8; 32]);
+        assert_eq!(typed.state_records.len(), 1);
     }
 
     #[test]
@@ -921,6 +1026,7 @@ mod tests {
             acked_server_tick: 510,
             entity_baselines: vec![(3, 9), (7, 2), (42, 100)],
             despawn_tombstones: vec![(11, 4)],
+            slot_baselines: vec![(1, 7), (2, 3)],
         };
         assert!(round_trips(&ack));
         // An empty ack (no per-entity progress) is still a valid carrier.
@@ -929,8 +1035,20 @@ mod tests {
             acked_server_tick: 0,
             entity_baselines: Vec::new(),
             despawn_tombstones: Vec::new(),
+            slot_baselines: Vec::new(),
         };
         assert!(round_trips(&empty));
+    }
+
+    #[test]
+    fn state_baseline_refresh_request_round_trips() {
+        let req = StateBaselineRefreshRequest {
+            snapshot_sequence: 22,
+            slot_id: 4,
+            missing_baseline_ref: 5,
+            reason: 1,
+        };
+        assert!(round_trips(&req));
     }
 
     #[test]
@@ -953,6 +1071,7 @@ mod tests {
                 acked_server_tick: 180,
                 entity_baselines: vec![(1, 2)],
                 despawn_tombstones: vec![(4, 5)],
+                slot_baselines: vec![(6, 7)],
             }),
             ClientMessage::BaselineRefresh(BaselineRefreshRequest {
                 snapshot_sequence: 9,
@@ -964,6 +1083,12 @@ mod tests {
                 sample_id: 4,
                 client_send_tick: 88,
                 client_send_time_us: 12_345_678,
+            }),
+            ClientMessage::StateBaselineRefresh(StateBaselineRefreshRequest {
+                snapshot_sequence: 9,
+                slot_id: 1,
+                missing_baseline_ref: 2,
+                reason: 0,
             }),
         ];
         for msg in variants {
@@ -998,6 +1123,8 @@ mod tests {
                 0,
                 vec![raw_transform_payload(), raw_movement_payload()],
             )],
+            state_schema_fingerprint: [0u8; 32],
+            state_records: Vec::new(),
         };
         let typed = raw.validate().expect("well-formed snapshot validates");
         assert_eq!(typed.sequence, 4);
@@ -1032,6 +1159,8 @@ mod tests {
                 0,
                 vec![raw_transform_payload()],
             )],
+            state_schema_fingerprint: [0u8; 32],
+            state_records: Vec::new(),
         };
         let typed = raw.validate().expect("well-formed delta validates");
         assert_eq!(
@@ -1063,6 +1192,8 @@ mod tests {
                 7,
                 vec![raw_transform_payload()],
             )],
+            state_schema_fingerprint: [0u8; 32],
+            state_records: Vec::new(),
         };
         let typed = raw
             .validate()
@@ -1103,6 +1234,8 @@ mod tests {
                 0,
                 vec![raw_transform_payload()],
             )],
+            state_schema_fingerprint: [0u8; 32],
+            state_records: Vec::new(),
         };
         let bytes = encode(&raw);
         let truncated = &bytes[..bytes.len() - 1];
@@ -1132,6 +1265,8 @@ mod tests {
                 0,
                 Vec::new(),
             )],
+            state_schema_fingerprint: [0u8; 32],
+            state_records: Vec::new(),
         };
         // Decodes cleanly into the raw envelope...
         let bytes = encode(&raw);
@@ -1161,6 +1296,8 @@ mod tests {
                     player_movement: None,
                 }],
             )],
+            state_schema_fingerprint: [0u8; 32],
+            state_records: Vec::new(),
         };
         let bytes = encode(&raw);
         let decoded: RawSnapshotMessage = decode(&bytes).expect("invalid kind still decodes");
@@ -1226,6 +1363,8 @@ mod tests {
             sequence: 1,
             server_tick: 1,
             records: Vec::new(),
+            state_schema_fingerprint: [0u8; 32],
+            state_records: Vec::new(),
         };
         assert_eq!(
             raw.validate(),
@@ -1255,6 +1394,8 @@ mod tests {
                 ),
                 raw_record(77, 2, 0, 0, 0, Vec::new()),
             ],
+            state_schema_fingerprint: [0u8; 32],
+            state_records: Vec::new(),
         };
         assert_eq!(raw.validate(), Err(ValidationError::UnknownRecordKind(77)));
     }
@@ -1404,6 +1545,8 @@ mod tests {
             sequence: 1,
             server_tick: 1,
             records: vec![record],
+            state_schema_fingerprint: [0u8; 32],
+            state_records: Vec::new(),
         };
         let bytes = encode(&raw);
         let decoded: RawSnapshotMessage = decode(&bytes).expect("snapshot decodes");
@@ -1548,6 +1691,8 @@ mod tests {
             sequence: 1,
             server_tick: 1,
             records: vec![record],
+            state_schema_fingerprint: [0u8; 32],
+            state_records: Vec::new(),
         };
         let bytes = encode(&raw);
         let decoded: RawSnapshotMessage = decode(&bytes).expect("snapshot decodes");

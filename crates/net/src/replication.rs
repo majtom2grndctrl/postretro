@@ -560,6 +560,13 @@ impl ServerReplication {
             sequence,
             server_tick,
             records,
+            // Entity replication owns the entity-record half of the snapshot only.
+            // The replicated state-slot half (fingerprint + records, M15 Phase 3.5)
+            // is produced by the sibling state tracker and merged into this envelope
+            // by the engine send path; the entity producer leaves it empty so a
+            // state-less snapshot is still a valid carrier.
+            state_schema_fingerprint: [0u8; 32],
+            state_records: Vec::new(),
         })
     }
 }

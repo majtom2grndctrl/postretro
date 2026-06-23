@@ -3,7 +3,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::slot_table::{NumericRange, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue};
+use super::slot_table::{
+    NumericRange, ReplicationScope, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue,
+};
 
 /// Script-side write capability for a built-in engine-owned state slot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,6 +54,10 @@ pub(crate) struct EngineStateCatalogEntry<'a> {
     pub(crate) range: Option<NumericRange>,
     pub(crate) persist: bool,
     pub(crate) capability: EngineStateCapability,
+    /// Replication scope for this engine slot (M15 Phase 3.5). Defaults to `None`
+    /// for every existing slot in this phase; Task 4 flips `player.health` /
+    /// `player.maxHealth` to `OwnerPrivatePlayer`.
+    pub(crate) network: ReplicationScope,
 }
 
 impl EngineStateCatalogEntry<'_> {
@@ -63,6 +69,7 @@ impl EngineStateCatalogEntry<'_> {
             persist: self.persist,
             readonly: !self.capability.is_writable(),
             ownership: SlotOwnership::Engine,
+            network: self.network,
         })
     }
 }
@@ -347,6 +354,7 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         range: None,
         persist: false,
         capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::None,
     },
     EngineStateCatalogEntry {
         wire_name: "player.maxHealth",
@@ -359,6 +367,7 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         }),
         persist: false,
         capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::None,
     },
     EngineStateCatalogEntry {
         wire_name: "screen.flash",
@@ -368,6 +377,7 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         range: None,
         persist: false,
         capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::None,
     },
     EngineStateCatalogEntry {
         wire_name: "screen.vignette",
@@ -377,6 +387,7 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         range: None,
         persist: false,
         capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::None,
     },
     EngineStateCatalogEntry {
         wire_name: "screen.shake",
@@ -386,6 +397,7 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         range: None,
         persist: false,
         capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::None,
     },
     EngineStateCatalogEntry {
         wire_name: "input.mode",
@@ -397,6 +409,7 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         range: None,
         persist: false,
         capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::None,
     },
     EngineStateCatalogEntry {
         wire_name: "ui.textEntry",
@@ -406,6 +419,7 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         range: None,
         persist: false,
         capability: EngineStateCapability::Writable,
+        network: ReplicationScope::None,
     },
 ];
 
@@ -421,6 +435,7 @@ mod tests {
         range: None,
         persist: false,
         capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::None,
     };
 
     fn entry(

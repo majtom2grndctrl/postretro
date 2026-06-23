@@ -63,24 +63,26 @@ prl-build content/dev/maps/stress-warren.map \
 The **mixed** maps carry static (baked) lights, so they also run the lightmap +
 SH bake. These rooms have large (~26 m) surfaces, so you **must** pass a coarse
 `--lightmap-density` or the atlas explodes (the 0.04 m default bakes for many
-minutes / overflows). At 0.5 m the cold bakes take a few minutes:
+minutes / overflows). The default below is **0.25 m** — sharp baked lightmaps
+that stay under the 8192² atlas cap (lit bake ~4 min / 83 MB `.prl`, crates
+~1 min / 43 MB):
 
 ```bash
 prl-build content/dev/maps/stress-warren-lit.map \
     -o content/dev/maps/stress-warren-lit.prl \
-    --sh-probe-spacing 10.0 --lightmap-density 0.5 --no-cache
+    --sh-probe-spacing 10.0 --lightmap-density 0.25 --no-cache
 prl-build content/dev/maps/stress-warren-crates.map \
     -o content/dev/maps/stress-warren-crates.prl \
-    --sh-probe-spacing 10.0 --lightmap-density 0.5 --no-cache
+    --sh-probe-spacing 10.0 --lightmap-density 0.25 --no-cache
 ```
 
 Drop `--no-cache` while iterating — the per-light lightmap layers are cached, so
 only edited lights re-bake. Ship final bakes with `--release`.
 
-`--lightmap-density` is the resolution knob: 0.5 m is a few-minute bake; **0.25 m**
-gives ~2× sharper baked lightmaps (and ~4× the atlas — lit `.prl` grows 23 MB →
-83 MB, ~4 min) without overflowing the 8192² cap here. Finer still risks the cap
-and an automatic density-halving fallback.
+`--lightmap-density` is the resolution knob. **0.25 m** is the default here;
+**0.5 m** is ~4× faster and ~4× smaller (lit `.prl` 23 MB, ~2 min) if you want
+a quicker bake and don't need the sharper lightmaps. Going finer than 0.25 m
+risks the 8192² cap and an automatic density-halving fallback.
 
 ## Textures and the missing-texture checkerboard
 

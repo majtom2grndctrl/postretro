@@ -49,7 +49,7 @@ Plans ship in this sequence. The render foundation and combat tracks converge tw
 
 **Follow-up drafts** (playtest refinements; not promoted):
 
-- [ ] **Networked enemy authority baseline** — align shipped enemies with Epic 15 before steering adds more agent state: host owns AI/steering/death, connected clients skip local enemy sim, and remote enemies materialize from replicated descriptor-backed transforms. `context/plans/drafts/E10--networked-enemy-authority-baseline/`
+- [ ] **Networked enemy authority baseline** — align shipped enemies with Epic 15 before steering adds more agent state: host owns AI/steering/death, connected clients skip local enemy sim, and remote enemies materialize from replicated descriptor-backed transforms. `context/plans/ready/E10--networked-enemy-authority-baseline/`
 - [ ] **Enemy steering feel** — acceleration, deceleration, bounded turn rate, and arrival easing so agents read as moving bodies, not waypoint snaps. `context/plans/drafts/E10--enemy-steering-feel/`
 - [ ] **Enemy stuck recovery** — detect route-valid physical wedges and apply deterministic tangent recovery plus budgeted replans. `context/plans/drafts/E10--enemy-stuck-recovery/`
 - [ ] **Enemy locomotion animation** — choose idle vs. walk from actual agent ground speed while preserving attack/death state selection. `context/plans/drafts/E10--enemy-locomotion-animation/`

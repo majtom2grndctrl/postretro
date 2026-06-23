@@ -32,7 +32,7 @@ Scripting is **strictly single-threaded**. Both rquickjs contexts and mlua state
 
 Both are the authoring path: scripts run once at load time and register intent. The shared Definition context accumulates definitions across calls; cross-script globals are intentional. All persistent state flows through Rust primitives, not script globals.
 
-**Data context lifecycle.** At level load, after geometry and entities are ready, the engine creates a short-lived VM context and runs the data script. The script must export a `setupLevel(ctx)` function. Its return bundle carries behavior only: `{reactions, crossings}` (crossings: state-crossing watchers, M13 HUD dynamics). Those are level-local definitions. Per-map classification metadata does not belong here; catalog `tags`, when authored, are the authoritative classification source. Per-level entity-type registration is not supported — entity types are engine-global and arrive through the mod manifest, not `setupLevel`.
+**Data context lifecycle.** At level load, after geometry and entities are ready, the engine creates a short-lived VM context and runs the data script. The script must export a `setupLevel(ctx)` function. Its return bundle carries behavior only: `{reactions, crossings}` (crossings: state-crossing watchers, E13 HUD dynamics). Those are level-local definitions. Per-map classification metadata does not belong here; catalog `tags`, when authored, are the authoritative classification source. Per-level entity-type registration is not supported — entity types are engine-global and arrive through the mod manifest, not `setupLevel`.
 
 The context is dropped after the data script completes. No live reference to the data VM remains. Active reactions and crossings are per-level and clear on unload. Entity types, the map catalog, and mod-global reaction/crossing definitions are engine-global. Level-scope and engine-global registries can be cleared and repopulated independently.
 
@@ -297,7 +297,7 @@ Six tag-targeted reaction primitives operate on `FogVolumeComponent`: `setFogDen
 
 ### 10.4 System Reactions (no entity targets)
 
-One event namespace, two execution arms (M13 HUD dynamics): entity-targeted
+One event namespace, two execution arms (E13 HUD dynamics): entity-targeted
 primitives resolve tags and mutate the `EntityRegistry`; **system reactions**
 (`playSound`, `rumble`, `flashScreen`, `showDialog` / `openMenu` /
 `closeDialog`, `setState`, the text-edit reactions, `vignette`,
@@ -368,7 +368,7 @@ Start the node set minimal: named-input leaves, arithmetic, `clamp`, `lerp`, `se
 
 **Author-facing naming.** Scripts see the vocabulary as the `runtime` namespace — one builder per opcode, `read(name)` for the named-input leaf — and the emitted union type `RuntimeValue`. Builder arguments accept bare number/boolean literals, auto-wrapped into constant nodes. SDK naming rule: `State` in a name means stored (slots, `StateValue`); `Runtime` means computed by the engine, never stored. Rust internals keep the IR names (`IrNode`, `BakedIr`); the adopting plan's boundary inventory records the mapping.
 
-**Scope.** This is a cross-cutting engine pattern. Movement is the first adopter (M14 plan 3). Plans are sequential: substrate → movement adopter → consolidation (demand-driven). Each plan consumes the prior plan's settled output.
+**Scope.** This is a cross-cutting engine pattern. Movement is the first adopter (E14 plan 3). Plans are sequential: substrate → movement adopter → consolidation (demand-driven). Each plan consumes the prior plan's settled output.
 
 ---
 

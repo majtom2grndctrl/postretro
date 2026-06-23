@@ -2,7 +2,7 @@
 
 ## Goal
 
-Reorganize the player movement descriptor from bolted-on flat siblings into a composed surface with three load-bearing ideas: **states are the primary axis**, **modifiers compose under states**, and **viewFeel is a layered override stack**. This is the direction document for the descriptor API — new specs (slide, wall-run, weapons, AI) extend this shape instead of adding more top-level keys. A companion file (`m10-example.md`) demonstrates the target surface across the full M10 scripting vocabulary.
+Reorganize the player movement descriptor from bolted-on flat siblings into a composed surface with three load-bearing ideas: **states are the primary axis**, **modifiers compose under states**, and **viewFeel is a layered override stack**. This is the direction document for the descriptor API — new specs (slide, wall-run, weapons, AI) extend this shape instead of adding more top-level keys. A companion file (`e10-example.md`) demonstrates the target surface across the full E10 scripting vocabulary.
 
 ## Background — what's wrong today
 
@@ -106,7 +106,7 @@ movement: {
 
 - Wieldable viewFeel overlay (precedence slot reserved here; lands with wieldable-instance work — `research/weapon-model.md`).
 - Slide / wall-run / vault states and their layers (each lands with its movement spec, extending this shape).
-- AI behavior graph and hit zones (M10 plans; the example file shows the direction only).
+- AI behavior graph and hit zones (E10 plans; the example file shows the direction only).
 - Expression-field expansion beyond dash's current fields.
 - Dual-shape support or deprecation path — old shape rejects with a clear validation error (pre-stable).
 

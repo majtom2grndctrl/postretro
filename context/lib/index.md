@@ -90,4 +90,4 @@ Full detail (section inventory, SectionId registry): `build_pipeline.md`.
 - General-purpose / extensible ECS framework — archetype storage, query planner, system scheduler, modder-defined component types. Internal storage *is* data-oriented (dense per-kind component columns); the component *vocabulary* is engine-closed. See `entity_model.md` §1.
 - Deferred rendering
 - Runtime level compilation
-- General-purpose multiplayer — deterministic lockstep / rollback, competitive PvP, matchmaking, anti-cheat, peer-to-peer topologies, full server-rewind lag compensation. Authoritative client-server **co-op** is in scope: see Milestone 15 (`plans/roadmap.md`); design in `context/research/netcode/`.
+- General-purpose multiplayer — deterministic lockstep / rollback, competitive PvP, matchmaking, anti-cheat, peer-to-peer topologies, full server-rewind lag compensation. Authoritative client-server **co-op** is in scope: see Epic 15 (`plans/roadmap.md`); design in `context/research/netcode/`.

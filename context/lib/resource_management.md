@@ -80,7 +80,7 @@ The material enum and prefix derivation are implemented. Behavior hooks are plan
 | Behavior | Status |
 |----------|--------|
 | **Emissive surfaces** | Not implemented. No material bypasses or adds to scene lighting. A correct emissive feature (additive HDR contribution + bloom) is deferred — see §4.5. |
-| **Shininess** | Implemented (Milestone 5) — specular exponent on enum variant. |
+| **Shininess** | Implemented (Epic 5) — specular exponent on enum variant. |
 | **Footstep sounds** | Planned. |
 | **Bullet impact particles** | Planned. |
 | **Ricochet behavior** | Planned. |
@@ -99,7 +99,7 @@ Unknown prefix maps to a default material. Engine logs a warning at load time id
 
 Optional sibling textures provide per-texel surface properties. Suffixes are appended to the diffuse texture name (e.g., `wall.png` → `wall_s.png`). Siblings are discovered by `prl-build` at compile time, not by the runtime.
 
-### 4.1 Specular Maps (Milestone 5)
+### 4.1 Specular Maps (Epic 5)
 
 Per-texel specular intensity modulates the direct lighting highlight.
 

@@ -1,6 +1,6 @@
-# M10 — Enemy Locomotion Animation (velocity-driven idle/walk)
+# E10 — Enemy Locomotion Animation (velocity-driven idle/walk)
 
-> **Wave:** M10 enemy-AI follow-up (refinement of the shipped `M10--enemy-ai-behavior` foundation — "a foundation to refine, not a stub"). Surfaced in manual play-testing.
+> **Wave:** E10 enemy-AI follow-up (refinement of the shipped `M10--enemy-ai-behavior` foundation — "a foundation to refine, not a stub"). Surfaced in manual play-testing.
 >
 > **Builds on:** the enemy-facing + attack-animation-replay blocks that have landed in `run_ai_tick` (ai.rs ~519-592); this spec layers locomotion selection over the same animation region.
 
@@ -35,13 +35,13 @@ Clip names are **not** the cause: the KayKit glTF clips (`Idle`, `Walking_A`, `1
 - Full locomotion animation blending: walk↔run blend trees, directional blends, multi-clip locomotion graphs.
 - Implementing speed-scaled walk playback. This draft keeps the ground-speed data shape ready for it but ships a single idle/walk switch.
 - Auto-returning to a neutral pose when a one-shot clip (attack/death) completes via `state_elapsed` — noted as a future hook (see Open questions), not built here.
-- Steering-dynamics smoothing / movement feel — separate spec (`M10--enemy-steering-feel`).
+- Steering-dynamics smoothing / movement feel — separate spec (`E10--enemy-steering-feel`).
 - Any change to the FSM transition set or to damage/attack timing.
 
 ## Acceptance criteria
 
 - [ ] An enemy in the `Alert` state whose agent horizontal speed is above the locomotion epsilon requests the walk (alert-mapped) animation; the same enemy with horizontal speed below the epsilon requests the idle-mapped animation — asserted on the FSM's selected animation-state name given a stubbed agent velocity, with no real multi-clip model required (runnable unit test).
-- [ ] The animation apply path computes horizontal speed once, derives `moving` from that value, and leaves the speed available beside the selection helper. During a gradual acceleration ramp from `M10--enemy-steering-feel`, frames below the epsilon select idle and frames above it select walk from the same measured ground speed; no separate logical-state estimate can drift from actual movement (runnable helper test with below/near/above-epsilon speeds).
+- [ ] The animation apply path computes horizontal speed once, derives `moving` from that value, and leaves the speed available beside the selection helper. During a gradual acceleration ramp from `E10--enemy-steering-feel`, frames below the epsilon select idle and frames above it select walk from the same measured ground speed; no separate logical-state estimate can drift from actual movement (runnable helper test with below/near/above-epsilon speeds).
 - [ ] A stop while remaining in `Alert` triggers exactly one walk→idle animation switch, and a resume triggers exactly one idle→walk switch; while locomotion intent is unchanged no further switch is requested (latch asserted over several ticks — the switch is not re-issued every tick).
 - [ ] `Attack` and `Death` select their mapped animation (`attack`, `death`) regardless of agent speed; an `Idle` enemy keeps the idle animation — selection for the non-`Alert` states is unchanged (runnable unit test).
 - [ ] A player that walks out to the resolved de-aggro distance returns the enemy to `Idle` (steering cleared), and a stationary in-range-but-not-chasing enemy shows the idle animation rather than the walk clip (transition + selection asserted via the steering read surface, not an internal call count). The existing FSM already performs the Alert→Idle de-aggro on `leash_range` at ai.rs:208 (`if evaluate_acquisition && distance > tuning.leash_range`), clearing steering; AC4 is therefore achieved by the `leashRange` descriptor literal change alone with no FSM edit (consistent with "no change to the FSM transition set" in Out of scope).

@@ -1,4 +1,4 @@
-# M10 — Enemy Combat Positioning Research
+# E10 — Enemy Combat Positioning Research
 
 Research anchors used to shape the draft. These are not implementation requirements by themselves.
 
@@ -14,7 +14,7 @@ Research anchors used to shape the draft. These are not implementation requireme
   https://github.com/recastnavigation/recastnavigation
 - DetourCrowd docs: anticipates turns, obstacle avoidance, separation, and path visibility/topology optimization. Useful as a named reference for local movement layers, not a dependency.
   https://recastnav.com/group__crowd.html
-- RVO2 / ORCA: reciprocal preferred-velocity local collision avoidance. Future reference only; too large for this M10 positioning pass.
+- RVO2 / ORCA: reciprocal preferred-velocity local collision avoidance. Future reference only; too large for this E10 positioning pass.
   https://gamma.cs.unc.edu/RVO2/
   https://gamma.cs.unc.edu/ORCA/publications/ORCA.pdf
 - van Toll et al., *The Medial Axis of a Multi-Layered Environment and its Application as a Navigation Mesh*: clearance-aware navmesh / Explicit Corridor Map reference for future capsule-clearance work.

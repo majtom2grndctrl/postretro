@@ -1,7 +1,7 @@
 # Per-Region BVH (Partitioned by PVS Leaf)
 
 > **Status:** draft
-> **Depends on:** Milestone 4 BVH (`context/plans/done/bvh-foundation/`) — specifically the flat DFS + skip-index layout (`2-runtime-bvh.md`), `BvhNode` (`postretro/src/geometry.rs:28-40`) / `BvhLeaf` (`postretro/src/geometry.rs:46-56`) / `BvhTree` (`postretro/src/geometry.rs:61-66`), the `Bvh` PRL section (`postretro-level-format/src/bvh.rs:70-239` `BvhSection`, loaded via `postretro-level-format/src/lib.rs:89`), `ComputeCullPipeline` in `postretro/src/compute_cull.rs`, and the compiler-side BVH build in `postretro-level-compiler/src/bvh_build.rs`. Cross-consumer: SH baker (`postretro-level-compiler/src/sh_bake.rs:12`, `bvh::bvh::Bvh`) and SDF baker (`postretro-level-compiler/src/sdf_bake.rs:8–9`).
+> **Depends on:** Epic 4 BVH (`context/plans/done/bvh-foundation/`) — specifically the flat DFS + skip-index layout (`2-runtime-bvh.md`), `BvhNode` (`postretro/src/geometry.rs:28-40`) / `BvhLeaf` (`postretro/src/geometry.rs:46-56`) / `BvhTree` (`postretro/src/geometry.rs:61-66`), the `Bvh` PRL section (`postretro-level-format/src/bvh.rs:70-239` `BvhSection`, loaded via `postretro-level-format/src/lib.rs:89`), `ComputeCullPipeline` in `postretro/src/compute_cull.rs`, and the compiler-side BVH build in `postretro-level-compiler/src/bvh_build.rs`. Cross-consumer: SH baker (`postretro-level-compiler/src/sh_bake.rs:12`, `bvh::bvh::Bvh`) and SDF baker (`postretro-level-compiler/src/sdf_bake.rs:8–9`).
 > **Related:** `postretro/src/shaders/bvh_cull.wgsl` · `postretro/src/visibility.rs` (portal DFS / `VisibleCells`) · `postretro-level-format/src/bvh.rs:70-239` (`BvhSection`) · `context/lib/build_pipeline.md` §Pipeline
 
 ---
@@ -30,7 +30,7 @@ Record the measurements (numbers + adapter + build) in this file before moving o
 
 ### Current state — single global BVH
 
-Milestone 4 commits to a global BVH (`context/plans/done/bvh-foundation/index.md:39`):
+Epic 4 commits to a global BVH (`context/plans/done/bvh-foundation/index.md:39`):
 
 > "Global BVH, not per-region. Single flat hierarchy over all static geometry. Per-region is the pivot path if the check-in (sub-plan 3) shows global doesn't hit frame-time parity on cell-heavy maps — designed for as a fallback, not as day-one scope."
 
@@ -184,7 +184,7 @@ Loader splits the flat node/leaf buffers into region-indexed slices. Storage buf
 - Changing PVS format or portal traversal — `visibility.rs` changes only the cell→region aggregation, not the underlying algorithm.
 - Runtime BVH refit for dynamic geometry — static world only, baked partition.
 - Parallelism within a region's traversal — workgroup stays `@workgroup_size(1)`; one-invocation-per-region is the parallelism unit.
-- Chunk-based region assignment (Milestone 8's chunk primitive). If chunks become the region unit later, this plan's scheme is additive: region ID becomes chunk ID.
+- Chunk-based region assignment (Epic 8's chunk primitive). If chunks become the region unit later, this plan's scheme is additive: region ID becomes chunk ID.
 - Changing `BvhLeaf.cell_id` semantics or the 128-word visible-cell bitmask.
 
 ---

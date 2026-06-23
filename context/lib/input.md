@@ -101,7 +101,7 @@ Raw mouse motion is essential for consistent aiming. OS pointer acceleration var
 |---------|--------|-------|
 | `Gameplay` | Locked and hidden | Player input / action system |
 | `DevTools` | Released | Debug overlay (egui) |
-| `Menu` | Released | Modal UI stack (consumer lands with M13 input breadth — a capturing UI tree on the stack) |
+| `Menu` | Released | Modal UI stack (consumer lands with E13 input breadth — a capturing UI tree on the stack) |
 
 Only `Gameplay` captures the cursor (`captures_cursor()` returns true for `Gameplay` only).
 

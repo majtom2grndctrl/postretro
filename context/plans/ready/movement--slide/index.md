@@ -6,7 +6,7 @@ Add a speed-preserving `Sliding` movement state (Titanfall/Apex model) on the sh
 
 This spec ships slide **complete**, not as a flat-ground thin slice: it pulls the cross-cutting-policies D8 substrate contact-forwarding forward (slide is its first consumer, ahead of wall-run) and prefaces the feature with a behavior-preserving split of the per-state intents into a submodule, before wall-run + vault pile onto `movement/mod.rs`.
 
-Fifth in the `movement--*` series under Milestone 11 (Advanced Movement). See `movement.md` §2/§4/§5/§6.
+Fifth in the `movement--*` series under Epic 11 (Advanced Movement). See `movement.md` §2/§4/§5/§6.
 
 ## Scope
 
@@ -24,7 +24,7 @@ Fifth in the `movement--*` series under Milestone 11 (Advanced Movement). See `m
 - Correcting the `carry.rs` doc-comment that earmarks slide as the first `Zero`/`Scale` consumer (Decision D4).
 
 ### Out of scope (non-goals)
-- **IR/expression-form slide fields.** `SlideParams` values are plain literals. Expression adoption (the `Dash`/`MovementScope` path) is M14's concern — only *computed/conditional/derived* behavior consolidates onto the command buffer (`scripting.md` §11); slide's six knobs are static tuning. Dash got IR as a dedicated adopter spec; slide does not pull it in.
+- **IR/expression-form slide fields.** `SlideParams` values are plain literals. Expression adoption (the `Dash`/`MovementScope` path) is E14's concern — only *computed/conditional/derived* behavior consolidates onto the command buffer (`scripting.md` §11); slide's six knobs are static tuning. Dash got IR as a dedicated adopter spec; slide does not pull it in.
 - **Wall-relative carry rules + wall-normal forwarding.** `projectOntoWallPlane`/`reflect` and the forwarded *wall* normal belong to `movement--wall-run` — slide does not consume them. Building them now is speculation. (Slide forwards only the *floor* normal it actually uses.)
 - **New input action.** Slide reuses the resolved `crouch_intent` bit and the derived jump edges — no `Action::Slide`, no `MovementInput` field, no input-layer changes.
 - Map-overridable slide tuning (movement physics is descriptor-owned, never FGD KVPs — `movement.md` §7).

@@ -2,7 +2,7 @@
 
 > **Read this when:** working on the UI layer (`render/ui/`) — widgets, theming, HUD state binding, UI animation.
 > **Key invariant:** scripts declare widget trees and state values; Rust owns the live UI. Authoritative values live in the state store; anything the UI animates or displays is renderer-local presentation state that never writes back.
-> **Related:** `context/research/ui-layer.md` (design exploration) · `scripting.md` (state store) · `rendering_pipeline.md` (frame structure) · plans under `context/plans/` `done/M13--*` and `ready/M13--*`.
+> **Related:** `context/research/ui-layer.md` (design exploration) · `scripting.md` (state store) · `rendering_pipeline.md` (frame structure) · plans under `context/plans/` `done/M13--*` and `ready/E13--*`.
 
 ---
 

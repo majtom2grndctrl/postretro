@@ -35,6 +35,23 @@ impl PlayerHudStatePublisher {
         }
     }
 
+    /// Republish the player HUD store slots for this frame unless this endpoint is
+    /// a connected client.
+    ///
+    /// M15 Phase 3.5 Task 4: `player.health` / `player.maxHealth` are owner-private
+    /// replicated slots. On a connected client the server writes them through the
+    /// state-slot apply path, so the local (non-authoritative) publisher must not
+    /// overwrite them. The host and single-player keep publishing as before. The
+    /// `is_connected_client` decision is owned by the `main.rs` call site (the
+    /// `NetEndpoint` role lives there); this method keeps the gate testable without
+    /// an `App`.
+    pub(crate) fn tick_for_role(&mut self, is_connected_client: bool) {
+        if is_connected_client {
+            return;
+        }
+        self.tick();
+    }
+
     /// Republish the player HUD store slots for this frame.
     ///
     /// Publishes the live pawn HP into `player.health` and max HP into
@@ -167,6 +184,34 @@ mod tests {
         assert_eq!(
             read_store_slot(&ctx, "player.maxHealth").unwrap(),
             SlotValue::Number(100.0)
+        );
+    }
+
+    #[test]
+    fn tick_for_role_skips_player_slots_on_connected_client() {
+        use crate::scripting::primitives::store::read_store_slot;
+
+        // M15 Phase 3.5 Task 4: a connected client must NOT publish the player
+        // slots — the server replicates them through the state-slot apply path.
+        // With a live pawn present, the gated tick still writes nothing, so the
+        // engine-owned slots keep their (unset) value.
+        let ctx = ScriptCtx::new();
+        spawn_pawn_with_health(&ctx, 73.0);
+        let mut publisher = PlayerHudStatePublisher::new(ctx.clone());
+
+        publisher.tick_for_role(true);
+        assert_eq!(
+            read_store_slot(&ctx, "player.health").ok(),
+            None,
+            "connected client does not publish player.health",
+        );
+
+        // Host / single-player (is_connected_client == false) still publishes.
+        publisher.tick_for_role(false);
+        assert_eq!(
+            read_store_slot(&ctx, "player.health").unwrap(),
+            SlotValue::Number(73.0),
+            "host / single-player still publishes player.health",
         );
     }
 

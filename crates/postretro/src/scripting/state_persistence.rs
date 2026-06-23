@@ -303,6 +303,7 @@ mod tests {
             persist,
             readonly: false,
             ownership: SlotOwnership::Mod,
+            network: crate::scripting::slot_table::ReplicationScope::None,
         })
     }
 
@@ -539,6 +540,7 @@ mod tests {
                     persist: true,
                     readonly: true,
                     ownership: SlotOwnership::Mod,
+                    network: crate::scripting::slot_table::ReplicationScope::None,
                 }),
             )
             .unwrap();

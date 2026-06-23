@@ -930,8 +930,9 @@ export type WritableStateRef<T> = ReadonlyStateRef<T> & { __writableStateRefBran
 --- `range = {min, max}`; `"boolean"` and `"string"` require matching defaults;
 --- `"enum"` requires non-empty `values` and a default in that list; `"array"` is
 --- a finite-number array. `persist` saves on clean exit; `readonly` blocks
---- script writes.
-export type StoreSlotSchema = { type: string, readonly: boolean?, [string]: any }
+--- script writes. `network = "shared"` replicates the slot to every connected
+--- client (server-authoritative); omitted means local-only.
+export type StoreSlotSchema = { type: string, readonly: boolean?, network: "shared"?, [string]: any }
 
 --- Plain declaration data returned through `ModManifest.stores`.
 export type StoreDeclaration = { namespace: string, schema: { [string]: StoreSlotSchema } }

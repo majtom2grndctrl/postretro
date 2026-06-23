@@ -264,6 +264,10 @@ pub(crate) struct LoopbackHarness {
     pub(crate) replicable: ReplicableSet,
     pub(crate) allocator: NetworkIdAllocator,
     pub(crate) server_replication: ServerReplication,
+    /// M15 Phase 3.5 host state tracker — required by `host_handle_client_message`'s
+    /// signature. The movement harness drives no replicated state slots, so it stays
+    /// empty; it exists so the genuine per-message dispatcher seam compiles and runs.
+    pub(crate) server_state: super::state_slots::HostStateReplication,
     pub(crate) server_tick: u32,
     pub(crate) snapshot_sequence: u32,
     /// Host ticks elapsed since start, gating the playout warmup (the host begins
@@ -352,6 +356,9 @@ impl LoopbackHarness {
         let mut server_replication = ServerReplication::new();
         server_replication.register_client(CLIENT_ID);
 
+        let mut server_state = super::state_slots::HostStateReplication::new();
+        server_state.register_client(CLIENT_ID);
+
         // Client side: starts empty — the first applied baseline spawns + arms the
         // local pawn through the real apply path. The client bystander is local.
         let mut client_registry = EntityRegistry::new();
@@ -367,6 +374,7 @@ impl LoopbackHarness {
             replicable,
             allocator,
             server_replication,
+            server_state,
             server_tick: 0,
             snapshot_sequence: 0,
             host_ticks_elapsed: 0,
@@ -453,6 +461,7 @@ impl LoopbackHarness {
                 host_handle_client_message(
                     &mut self.server,
                     &mut self.server_replication,
+                    &mut self.server_state,
                     &mut self.command_queues,
                     CLIENT_ID,
                     self.server_tick,
@@ -691,6 +700,7 @@ impl LoopbackHarness {
                     host_handle_client_message(
                         &mut self.server,
                         &mut self.server_replication,
+                        &mut self.server_state,
                         &mut self.command_queues,
                         CLIENT_ID,
                         self.server_tick,

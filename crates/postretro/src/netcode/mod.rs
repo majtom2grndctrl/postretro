@@ -12,6 +12,11 @@ mod movement_state;
 mod prediction;
 mod reconcile;
 mod replication;
+// M15 Phase 3.5: the replicated-slot schema/fingerprint/lowering, the engine
+// production (`HostStateReplication`) and client apply (`ClientStateApply`) glue. The
+// schema is the only place the engine maps `StateSlotId <-> dotted name`; the net
+// trackers stay registry-blind.
+mod state_slots;
 mod wire_convert;
 
 // M15 Phase 3 Task 6: the integrated in-memory prediction/reconciliation harness and
@@ -26,6 +31,12 @@ mod predict_reconcile_harness_test_fixtures;
 // until baseline".
 #[cfg(test)]
 mod boot_spawn_gate_test;
+// M15 Phase 3.5 Task 6: the conditioned-loss state-slot harness. Drives the real
+// host production / client apply glue through the dev `PacketConditioner` under loss,
+// proving shared + owner-private slots converge and a dropped baseline repairs via
+// `StateBaselineRefresh` without reconnect.
+#[cfg(test)]
+mod state_slot_loss_harness_test;
 
 pub(crate) use client::ClientReplication;
 pub(crate) use command_queue::{HostCommandQueues, MovementOwners, host_resolve_movement_inputs};
@@ -258,6 +269,12 @@ pub(crate) enum NetEndpoint {
         /// ordinary host) or before the first tick spawns it. Not a gameplay
         /// archetype — it carries no script/FGD surface.
         demo_mover: DemoMoverState,
+        /// M15 Phase 3.5 replicated-state production: the deterministic replicated-slot
+        /// schema (built once from the live `SlotTable`) and the registry-blind
+        /// `ServerStateReplication` tracker. The frame send path ingests this frame's
+        /// projected values and produces per-client state records spliced into the
+        /// entity snapshot envelope. Boxed to keep the variant compact.
+        state_slots: Box<state_slots::HostStateReplication>,
     },
     /// Client plus the Phase 2 client replication state (the `NetworkId -> EntityId`
     /// map, per-entity baseline table, pending-repair set, sequence tracking). The
@@ -277,6 +294,12 @@ pub(crate) enum NetEndpoint {
         /// baseline, and the forward-prediction tick. Long-lived prediction state
         /// lives here (and in `prediction.rs`), never on `App` (source-layout gate).
         prediction: ClientPrediction,
+        /// M15 Phase 3.5 replicated-state apply: the deterministic schema (identical to
+        /// the server's, built once from the live `SlotTable`) and the per-slot held
+        /// baseline. The snapshot receive path validates the whole state batch against
+        /// the schema and applies it all-or-nothing through the store-write path before
+        /// the UI read snapshot is built.
+        state_slots: Box<state_slots::ClientStateApply>,
     },
 }
 
@@ -375,6 +398,7 @@ impl NetEndpoint {
                     owners: MovementOwners::new(),
                     host_pawn: None,
                     demo_mover: DemoMoverState::from_env(),
+                    state_slots: Box::new(state_slots::HostStateReplication::new()),
                 }))
             }
             NetRole::Connect { addr } => {
@@ -393,6 +417,7 @@ impl NetEndpoint {
                     time_sync: Box::new(ClientTimeSync::new()),
                     interpolation_delay: InterpolationDelayState::new(),
                     prediction: ClientPrediction::new(),
+                    state_slots: Box::new(state_slots::ClientStateApply::new()),
                 }))
             }
         }
@@ -552,8 +577,10 @@ pub(crate) fn decode_snapshot(bytes: &[u8]) -> Result<SnapshotMessage, SnapshotD
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn client_receive_and_apply(
     registry: &mut EntityRegistry,
+    slot_table: &mut crate::scripting::slot_table::SlotTable,
     client: &mut NetClient,
     replication: &mut ClientReplication,
+    state_slots: &mut state_slots::ClientStateApply,
     prediction: &mut ClientPrediction,
     descriptors: &[crate::scripting::data_descriptors::EntityTypeDescriptor],
     collision: &CollisionWorld,
@@ -569,7 +596,34 @@ pub(crate) fn client_receive_and_apply(
                 continue;
             }
         };
-        let outcome = replication.apply_snapshot(registry, &snapshot);
+        let mut outcome = replication.apply_snapshot(registry, &snapshot);
+
+        // M15 Phase 3.5: apply this snapshot's replicated-state records. Validated as a
+        // whole batch against the local schema, then committed all-or-nothing through
+        // the engine store-write path (type/range/enum/finite checks run). Runs only on
+        // a snapshot the entity apply accepted (a stale/duplicate sequence yields no
+        // `ack`, so the state batch is skipped too — it carries the same superseded
+        // frame). Applied BEFORE the UI read snapshot is built (the receive path runs in
+        // the Game-logic stage, well before render), so the UI sees the authoritative
+        // value next frame. The state acks ride back in the SAME `AckMessage` as the
+        // entity acks (one ack per snapshot); refresh requests go out as their own
+        // `ClientMessage::StateBaselineRefresh`.
+        if outcome.ack.is_some() {
+            let state_outcome = state_slots.apply_snapshot_state(
+                slot_table,
+                snapshot.sequence,
+                &snapshot.state_schema_fingerprint,
+                &snapshot.state_records,
+            );
+            if let Some(ack) = outcome.ack.as_mut() {
+                ack.slot_baselines = state_outcome.slot_baselines;
+            }
+            for req in state_outcome.refresh_requests {
+                client.send_input(wire::encode(&wire::ClientMessage::StateBaselineRefresh(
+                    req,
+                )));
+            }
+        }
         // M15 Phase 3 Task 3 + Task 7: a `local_player` baseline arms client prediction
         // with the marked local pawn AND materializes its descriptor-backed
         // `PlayerMovementComponent` from the wire `entity_class` (default `"player"`).
@@ -859,9 +913,11 @@ pub(crate) fn host_drive_demo_mover(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn host_replicate(
     registry: &EntityRegistry,
+    slot_table: &crate::scripting::slot_table::SlotTable,
     server: &mut NetServer,
     allocator: &mut NetworkIdAllocator,
     replication: &mut ServerReplication,
+    state_slots: &mut state_slots::HostStateReplication,
     replicable: &ReplicableSet,
     owners: &MovementOwners,
     command_queues: &HostCommandQueues,
@@ -882,13 +938,31 @@ pub(crate) fn host_replicate(
     if accepted.is_empty() {
         return;
     }
-    // One sequence shared across all clients in this 30 Hz batch.
+    // The replicated-state schema fingerprint is stamped into every snapshot carrying
+    // state records so the client gates on a match. Built once from the live slot table.
+    let state_fingerprint = state_slots.fingerprint(slot_table);
+    // Ingest this frame's authoritative source values ONCE before the per-client loop:
+    // the scan is frame-wide (every replicated slot, every owned pawn), so running it
+    // per client would repeat it O(clients) times. Each client's `produce_for_client`
+    // below only reads the now-ingested per-client view.
+    state_slots.ingest_frame(slot_table, registry, owners);
+    // One sequence shared across all clients in this 30 Hz batch — and shared with the
+    // state tracker's `produce_for_client` so one ack describes one server frame.
     let sequence = replication.begin_batch();
     for client_id in accepted {
         // Register lazily: an accepted client gets a fresh per-client state on first
-        // sight (all-FullBaseline first snapshot). Idempotent.
+        // sight (all-FullBaseline first snapshot). Idempotent for both trackers.
         replication.register_client(client_id);
-        if let Some(raw) = replication.encode_in_batch(client_id, tick, sequence) {
+        state_slots.register_client(client_id);
+        if let Some(mut raw) = replication.encode_in_batch(client_id, tick, sequence) {
+            // Splice this client's replicated-state records into the SAME snapshot
+            // envelope the entity tracker produced (no new channel, no sibling message).
+            // The entity tracker leaves `state_records` empty + an all-zero fingerprint;
+            // overwrite both with the real fingerprint and the per-client records.
+            raw.state_schema_fingerprint = state_fingerprint;
+            if let Some(records) = state_slots.produce_for_client(client_id, sequence) {
+                raw.state_records = records;
+            }
             let bytes = wire::encode(&raw);
             let _ = server.send_snapshot(client_id, bytes);
         }
@@ -1031,10 +1105,12 @@ pub(crate) fn host_register_own_pawn(
 /// Game-logic-owned: the registry mutation flows through `EntityRegistry::despawn`.
 /// The mutable registry borrow is threaded in by the caller so this module never
 /// reaches into `App`.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn host_handle_lifecycle(
     registry: &mut EntityRegistry,
     replicable: &mut ReplicableSet,
     replication: &mut ServerReplication,
+    state_slots: &mut state_slots::HostStateReplication,
     slot_pawns: &mut SlotPawns,
     command_queues: &mut HostCommandQueues,
     owners: &mut MovementOwners,
@@ -1051,6 +1127,9 @@ pub(crate) fn host_handle_lifecycle(
                 // snapshot. The slot's placement assignment is intentionally retained
                 // (a reconnecting client lands on its prior spawn — auditable source).
                 command_queues.remove_client(*client_id);
+                // M15 Phase 3.5: drop the closed client's replicated-state baselines and
+                // its owner-private slot values so none leak past the connection.
+                state_slots.remove_client(*client_id);
                 if let Some(pawn) = despawned {
                     owners.remove_pawn(pawn);
                 }
@@ -1075,9 +1154,11 @@ pub(crate) fn host_handle_lifecycle(
 /// `server_now_us` is the host's monotonic microseconds, carried in the echo as
 /// telemetry only. `InputCommand` messages are decoded but not yet applied
 /// (Phase 3 gameplay).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn host_handle_client_messages(
     server: &mut NetServer,
     replication: &mut ServerReplication,
+    state_slots: &mut state_slots::HostStateReplication,
     command_queues: &mut HostCommandQueues,
     client_id: u64,
     server_tick: u32,
@@ -1094,6 +1175,7 @@ pub(crate) fn host_handle_client_messages(
         host_handle_client_message(
             server,
             replication,
+            state_slots,
             command_queues,
             client_id,
             server_tick,
@@ -1108,9 +1190,11 @@ pub(crate) fn host_handle_client_messages(
 /// `ClientMessage::Input` directly at this seam — without a reliable-ordered
 /// transport producing duplicates. An invalid `Input` (non-finite) is dropped at
 /// intake and mutates no queue or registry state.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn host_handle_client_message(
     server: &mut NetServer,
     replication: &mut ServerReplication,
+    state_slots: &mut state_slots::HostStateReplication,
     command_queues: &mut HostCommandQueues,
     client_id: u64,
     server_tick: u32,
@@ -1125,6 +1209,9 @@ pub(crate) fn host_handle_client_message(
                 &ack.entity_baselines,
                 &ack.despawn_tombstones,
             );
+            // The same ack advances replicated-state baselines (M15 Phase 3.5), keyed
+            // by `StateSlotId` rather than `NetworkId`. One ack, one server frame.
+            state_slots.apply_ack(client_id, ack.latest_snapshot_sequence, &ack.slot_baselines);
         }
         wire::ClientMessage::BaselineRefresh(req) => {
             replication.request_refresh(client_id, req.network_id, req.missing_baseline_ref);
@@ -1141,6 +1228,12 @@ pub(crate) fn host_handle_client_message(
         // mutates any other client's queue. The movement stage resolves them per tick.
         wire::ClientMessage::Input(input) => {
             command_queues.ingest(client_id, &input);
+        }
+        // M15 Phase 3.5: a client missing a replicated state-slot baseline. The state
+        // tracker schedules a full baseline for that slot in the client's next snapshot.
+        // Keyed by `StateSlotId` (distinct from the entity `BaselineRefresh`).
+        wire::ClientMessage::StateBaselineRefresh(req) => {
+            state_slots.request_refresh(client_id, req.slot_id, req.missing_baseline_ref);
         }
     }
 }
@@ -1808,6 +1901,8 @@ mod tests {
                         })],
                     },
                 ],
+                state_schema_fingerprint: [0u8; 32],
+                state_records: Vec::new(),
             },
         );
 

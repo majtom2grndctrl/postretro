@@ -351,6 +351,9 @@ impl ClientReplication {
             acked_server_tick: snapshot.server_tick,
             entity_baselines: acked_baselines,
             despawn_tombstones: acked_tombstones,
+            // State-slot baselines are acked by the Task 3 client apply path; this
+            // entity-apply ack carries none.
+            slot_baselines: Vec::new(),
         });
         outcome
     }
@@ -939,6 +942,8 @@ mod tests {
             sequence,
             server_tick,
             records,
+            state_schema_fingerprint: [0u8; 32],
+            state_records: Vec::new(),
         }
     }
 

@@ -463,6 +463,7 @@ mod tests {
                         persist: false,
                         readonly: false,
                         ownership: SlotOwnership::Mod,
+                        network: crate::scripting::slot_table::ReplicationScope::None,
                     },
                     value: Some(SlotValue::Number(100.0)),
                 },

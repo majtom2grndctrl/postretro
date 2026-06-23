@@ -371,6 +371,8 @@ mod tests {
                     player_movement: None,
                 }],
             }],
+            state_schema_fingerprint: [0u8; 32],
+            state_records: Vec::new(),
         }
     }
 

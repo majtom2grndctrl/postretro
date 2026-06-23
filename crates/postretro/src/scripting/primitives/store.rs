@@ -13,8 +13,8 @@ use crate::scripting::ctx::ScriptCtx;
 use crate::scripting::error::ScriptError;
 use crate::scripting::primitives_registry::{ContextScope, PrimitiveRegistry};
 use crate::scripting::slot_table::{
-    NumericRange, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue, StoreDeclaration,
-    StoreDeclarationSet,
+    NumericRange, ReplicationScope, SlotOwnership, SlotRecord, SlotSchema, SlotTable, SlotType,
+    SlotValue, StoreDeclaration, StoreDeclarationSet,
 };
 
 struct StoreSchemaJson(Value);
@@ -234,6 +234,12 @@ struct SlotSchemaInput {
     readonly: bool,
     #[serde(default)]
     values: Option<Value>,
+    /// Mod-facing replication opt-in (M15 Phase 3.5 Task 5). `"shared"` maps to
+    /// `ReplicationScope::SharedGlobal`; `"ownerPrivate"` is rejected (the per-player
+    /// authoring namespace does not exist yet); absent / `null` means local-only
+    /// (`ReplicationScope::None`).
+    #[serde(default)]
+    network: Option<String>,
 }
 
 const DEFINE_STORE_DOC: &str = "Build a typed state-store declaration for ModManifest.stores. \
@@ -313,6 +319,48 @@ pub(crate) fn write_store_slot(
         .get_mut(name)
         .ok_or_else(|| unknown_slot("storeWrite", name))?;
     slot.value = Some(validate_slot_value(name, &slot.schema, value)?);
+    Ok(())
+}
+
+/// Atomically apply a batch of `(dotted slot name, value)` writes to the slot
+/// table through the engine bypass (M15 Phase 3.5 Task 3 — the replicated-state
+/// client apply path). Every write is **prevalidated** against its slot's declared
+/// type/range/enum/finite rules first; only if ALL prevalidate does the batch
+/// commit. A single failure leaves every slot in the batch unchanged — there is no
+/// partial apply.
+///
+/// This is the engine bypass (like [`write_store_slot`]): replicated player slots
+/// are readonly-to-scripts, so the readonly gate must not block the authoritative
+/// server value. Type/range/enum/finite validation still runs, so a hostile or
+/// type-mismatched replicated value is rejected (the whole batch) rather than
+/// poisoning a slot — the net crate already validated the wire value against the
+/// shared schema, and this is the engine-side defence in depth that keeps the slot
+/// table's own invariants.
+///
+/// Takes the `SlotTable` directly rather than a `ScriptCtx` so the netcode client
+/// apply path can call it under the registry/endpoint borrow without aliasing the
+/// scripting context. The error names the first slot that failed prevalidation.
+pub(crate) fn apply_store_slot_batch(
+    table: &mut SlotTable,
+    writes: &[(String, SlotValue)],
+) -> Result<(), ScriptError> {
+    // Prevalidate every write against its slot's declared schema. An unknown slot or
+    // a type/range/enum/finite failure aborts BEFORE any mutation.
+    let mut validated = Vec::with_capacity(writes.len());
+    for (name, value) in writes {
+        let slot = table
+            .get(name)
+            .ok_or_else(|| unknown_slot("stateApply", name))?;
+        let checked = validate_slot_value(name, &slot.schema, value.clone())?;
+        validated.push((name, checked));
+    }
+    // All prevalidated: commit. `get_mut` cannot miss (we just read each above) and
+    // the value is already validated, so this loop never fails.
+    for (name, value) in validated {
+        if let Some(slot) = table.get_mut(name) {
+            slot.value = Some(value);
+        }
+    }
     Ok(())
 }
 
@@ -802,7 +850,10 @@ fn validate_dense_lua_array(table: &LuaTable, field_name: &str) -> Result<usize,
     Ok(max_index as usize)
 }
 
-fn store_declaration(namespace: &str, schema: Value) -> Result<StoreDeclaration, ScriptError> {
+pub(crate) fn store_declaration(
+    namespace: &str,
+    schema: Value,
+) -> Result<StoreDeclaration, ScriptError> {
     let inputs: BTreeMap<String, SlotSchemaInput> =
         serde_json::from_value(schema).map_err(|error| invalid_schema(None, error))?;
 
@@ -844,7 +895,10 @@ fn validate_slot_schema(
         persist,
         readonly,
         values,
+        network,
     } = input;
+
+    let network = replication_scope_for(slot_name, network.as_deref())?;
 
     let default = default.ok_or_else(|| ScriptError::InvalidArgument {
         reason: format!("defineStore: slot `{slot_name}` requires `default`"),
@@ -929,7 +983,50 @@ fn validate_slot_schema(
         persist,
         readonly,
         ownership: SlotOwnership::Mod,
+        // Mod-facing replication opt-in (M15 Phase 3.5 Task 5): `network: "shared"`
+        // maps to `SharedGlobal`, absent means local-only `None`, and `"ownerPrivate"`
+        // was already rejected above.
+        network,
     }))
+}
+
+/// Map a mod-facing `defineStore` slot `network` field to an internal
+/// [`ReplicationScope`] (M15 Phase 3.5 Task 5). The mod-facing vocabulary is
+/// deliberately narrower than the internal enum:
+///
+/// - absent / `null` → `ReplicationScope::None` (local-only; the default).
+/// - `"shared"` → `ReplicationScope::SharedGlobal` (replicated to every accepted
+///   client; server-authoritative).
+/// - `"ownerPrivate"` → REJECTED. Mod-declared owner-private per-player slots are out
+///   of scope until a per-player authoring namespace exists (see the plan's Design and
+///   Non-goals). Engine player slots (`player.health` / `player.maxHealth`) are
+///   owner-private through the engine catalog, not through `defineStore`.
+/// - any other value → rejected with an author-facing error listing the accepted form.
+///
+/// The internal enum names stay `SharedGlobal`/`OwnerPrivatePlayer`; only the
+/// author-facing surface is constrained here.
+fn replication_scope_for(
+    slot_name: &str,
+    network: Option<&str>,
+) -> Result<ReplicationScope, ScriptError> {
+    match network {
+        None => Ok(ReplicationScope::None),
+        Some("shared") => Ok(ReplicationScope::SharedGlobal),
+        Some("ownerPrivate") => Err(ScriptError::InvalidArgument {
+            reason: format!(
+                "defineStore: slot `{slot_name}` `network: \"ownerPrivate\"` is not supported for \
+                 mod stores yet (no per-player authoring namespace exists); use `network: \"shared\"` \
+                 for a server-replicated global slot, or omit `network` for a local-only slot"
+            ),
+        }),
+        Some(other) => Err(ScriptError::InvalidArgument {
+            reason: format!(
+                "defineStore: slot `{slot_name}` has unknown `network` value `{other}`; the only \
+                 accepted value is `\"shared\"` (replicate to every connected client), or omit \
+                 `network` for a local-only slot"
+            ),
+        }),
+    }
 }
 
 fn json_number(value: &Value, slot_name: &str, field: &str) -> Result<f32, ScriptError> {
@@ -1778,6 +1875,127 @@ mod tests {
         assert_eq!(
             read_store_slot(&ctx, "test.number").unwrap(),
             SlotValue::Number(0.5)
+        );
+    }
+
+    // --- M15 Phase 3.5 Task 5: `defineStore` `network` opt-in -------------------
+
+    #[test]
+    fn define_store_network_shared_maps_to_shared_global_scope() {
+        // `network: "shared"` opts a mod slot into `SharedGlobal` replication; an
+        // omitted `network` field stays local-only `None`.
+        let declaration = store_declaration(
+            "netFixture",
+            serde_json::json!({
+                "objectiveProgress": { "type": "number", "default": 0, "network": "shared" },
+                "localOnly": { "type": "number", "default": 0 },
+            }),
+        )
+        .expect("shared + local-only schema is valid");
+
+        let scopes: BTreeMap<&str, ReplicationScope> = declaration
+            .records
+            .iter()
+            .map(|(name, record)| (name.as_str(), record.schema.network))
+            .collect();
+        assert_eq!(
+            scopes.get("objectiveProgress"),
+            Some(&ReplicationScope::SharedGlobal),
+            "network: \"shared\" maps to SharedGlobal"
+        );
+        assert_eq!(
+            scopes.get("localOnly"),
+            Some(&ReplicationScope::None),
+            "an omitted network field is local-only None"
+        );
+    }
+
+    #[test]
+    fn define_store_rejects_owner_private_network_for_mod_stores() {
+        // Mod-declared owner-private per-player slots are out of scope: `"ownerPrivate"`
+        // must be rejected with a clear, author-facing error.
+        let err = store_declaration(
+            "netFixture",
+            serde_json::json!({
+                "secret": { "type": "number", "default": 0, "network": "ownerPrivate" },
+            }),
+        )
+        .expect_err("ownerPrivate is rejected for mod stores");
+        let message = err.to_string();
+        assert!(
+            message.contains("ownerPrivate") && message.contains("not supported"),
+            "error names the rejected value and that it is unsupported: {message}"
+        );
+    }
+
+    #[test]
+    fn define_store_rejects_unknown_network_value() {
+        let err = store_declaration(
+            "netFixture",
+            serde_json::json!({
+                "weird": { "type": "number", "default": 0, "network": "everyone" },
+            }),
+        )
+        .expect_err("an unknown network value is rejected");
+        assert!(
+            err.to_string().contains("unknown `network` value"),
+            "error names the unknown network value: {err}"
+        );
+    }
+
+    #[test]
+    fn define_store_network_shared_round_trips_in_both_runtimes() {
+        // The same `network: "shared"` opt-in works through the real QuickJS and Luau
+        // `defineStore` paths and commits a `SharedGlobal` slot in each.
+        let js_ctx = ScriptCtx::new();
+        commit_store_for_test(
+            &js_ctx,
+            "netFixture",
+            serde_json::json!({
+                "objectiveProgress": { "type": "number", "default": 0, "network": "shared" },
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            js_ctx
+                .slot_table
+                .borrow()
+                .get("netFixture.objectiveProgress")
+                .unwrap()
+                .schema
+                .network,
+            ReplicationScope::SharedGlobal,
+        );
+
+        let luau_registry = registry_for(ScriptCtx::new());
+        let luau = LuauSubsystem::new(&luau_registry, &LuauConfig::default()).unwrap();
+        let manifest: LuaTable = luau
+            .run_source::<LuaTable>(
+                Which::Definition,
+                r#"
+                local store = defineStore("netFixture", {
+                    objectiveProgress = { type = "number", default = 0, network = "shared" },
+                })
+                return { stores = { store.declaration } }
+                "#,
+                "net-fixture.luau",
+            )
+            .unwrap();
+        let declarations = drain_store_declarations_lua(&manifest).unwrap();
+        // The drained declaration carries the SharedGlobal scope.
+        let mut table = SlotTable::new();
+        for declaration in declarations.iter() {
+            table
+                .insert_namespace(&declaration.namespace, declaration.records.clone())
+                .unwrap();
+        }
+        assert_eq!(
+            table
+                .get("netFixture.objectiveProgress")
+                .unwrap()
+                .schema
+                .network,
+            ReplicationScope::SharedGlobal,
         );
     }
 }

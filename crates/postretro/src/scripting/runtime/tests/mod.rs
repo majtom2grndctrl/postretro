@@ -154,6 +154,7 @@ fn number_store_declarations(namespace: &str, default: f32) -> StoreDeclarationS
                     persist: false,
                     readonly: false,
                     ownership: SlotOwnership::Mod,
+                    network: crate::scripting::slot_table::ReplicationScope::None,
                 }),
             )],
         })

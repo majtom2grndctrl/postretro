@@ -156,6 +156,7 @@ fn duplicate_input_at_drain_seam_is_inert() {
         host_handle_client_message(
             &mut h.server,
             &mut h.server_replication,
+            &mut h.server_state,
             &mut h.command_queues,
             CLIENT_ID,
             0,
@@ -169,6 +170,7 @@ fn duplicate_input_at_drain_seam_is_inert() {
     host_handle_client_message(
         &mut h.server,
         &mut h.server_replication,
+        &mut h.server_state,
         &mut h.command_queues,
         OTHER,
         0,
@@ -428,6 +430,7 @@ fn malformed_input_at_drain_seam_is_rejected() {
     host_handle_client_message(
         &mut h.server,
         &mut h.server_replication,
+        &mut h.server_state,
         &mut h.command_queues,
         CLIENT_ID,
         0,
@@ -928,6 +931,8 @@ fn stale_snapshot_for(h: &LoopbackHarness) -> postretro_net::wire::SnapshotMessa
             // it never exercises client materialization, so no class is stamped.
             entity_class: None,
         }],
+        state_schema_fingerprint: [0u8; 32],
+        state_records: Vec::new(),
     }
 }
 

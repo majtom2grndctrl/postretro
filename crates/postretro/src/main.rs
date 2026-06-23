@@ -717,7 +717,7 @@ fn resolve_crouch_intent(mode: options::CrouchMode, button: ButtonState, latch: 
 
 // --- Application state ---
 
-struct App {
+pub(crate) struct App {
     renderer: Option<Renderer>,
 
     /// Audio subsystem. `None` until `resumed()` builds it after the renderer,
@@ -1388,6 +1388,18 @@ fn update_debug_chase_agent_destination(
         .map(|t| t.position)
         .unwrap_or(fallback_target);
     agent_steering::set_destination(registry, agent, target);
+}
+
+/// Whether the clean-exit handler should write persistent slots to `state.json`
+/// (M15 Phase 3.5 Task 5). The save runs only when the state-store lifecycle has
+/// committed declarations and restore (`can_save`) AND this process is not a
+/// connected client. A connected client's replicated slots (`player.health`,
+/// `player.maxHealth`, shared mod slots) are server-authoritative values applied
+/// through the replicated-state path, not local edits — persisting them would write
+/// another peer's authoritative state into this client's save file. Single-player
+/// (`is_connected_client == false`) and the host both save unchanged.
+fn should_save_persisted_state(can_save: bool, is_connected_client: bool) -> bool {
+    can_save && !is_connected_client
 }
 
 // --- ApplicationHandler ---
@@ -2327,7 +2339,14 @@ impl ApplicationHandler for App {
                 // after game logic settles and before crossing detection / UI
                 // snapshot construction, so same-frame consumers see the
                 // settled pawn HP. See: context/lib/scripting.md §5.
-                self.player_hud_state.tick();
+                //
+                // M15 Phase 3.5 Task 4: skip on a connected client. `player.health`
+                // / `player.maxHealth` are now owner-private replicated slots; the
+                // server writes them through the state-slot apply path, so a client
+                // must not overwrite the replicated values from its own (non-
+                // authoritative) pawn. Host and single-player keep publishing.
+                self.player_hud_state
+                    .tick_for_role(self.is_connected_client());
                 // Flash-decay state writes the engine-owned `screen.flash`
                 // surface at the same game-logic stage as the HUD publisher, so
                 // the UI snapshot below freezes this frame's flash color. Runs
@@ -3071,7 +3090,18 @@ impl ApplicationHandler for App {
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         // Saving before declarations commit and restore completes could replace
         // a valid state file with an empty or default-only snapshot.
-        if self.state_store_lifecycle.can_save() {
+        //
+        // A connected client must NOT persist replicated slot writes to `state.json`
+        // (M15 Phase 3.5 Task 5): its `player.health` / `player.maxHealth` and any
+        // shared mod slots are server-authoritative values applied through the
+        // replicated-state path, not local edits to save. Bitcode stays live-wire only,
+        // and save-game sync for net sessions is a non-goal. Single-player (`None`) and
+        // the host (`NetEndpoint::Host`) save unchanged — only `NetEndpoint::Client`
+        // skips the clean-exit save.
+        if should_save_persisted_state(
+            self.state_store_lifecycle.can_save(),
+            self.is_connected_client(),
+        ) {
             let state_path = Path::new(STATE_FILE_PATH);
             let collected = collect_persisted_state(&self.script_ctx.slot_table.borrow());
             for warning in collected.warnings {
@@ -3497,7 +3527,10 @@ impl App {
     /// borrow of `self.renderer`, and a `&self` receiver here would conflict with
     /// it. Borrowing only `self.script_ctx.slot_table` keeps the two field borrows
     /// disjoint.
-    fn build_ui_slot_snapshot(
+    ///
+    /// `pub(crate)` so the netcode state-slot apply tests can drive the REAL UI read
+    /// path (the replicated value must surface here), not a hand-mirrored copy.
+    pub(crate) fn build_ui_slot_snapshot(
         slot_table: &scripting::slot_table::SlotTable,
     ) -> std::collections::HashMap<String, scripting::slot_table::SlotValue> {
         slot_table
@@ -3912,6 +3945,7 @@ impl App {
                 tick,
                 host_pawn: _,
                 demo_mover: _,
+                state_slots,
             }) => {
                 // Drive the listen server (accept handshakes, drain the socket).
                 // Snapshots are sent post-loop in `net_serialize_and_send`.
@@ -3936,6 +3970,11 @@ impl App {
                                     HandshakeOutcome::Accepted { client_id } => {
                                         log::info!("[Net] client {client_id} accepted");
                                         replication.register_client(*client_id);
+                                        // M15 Phase 3.5: register the accepted client with
+                                        // the state tracker too, so its first snapshot
+                                        // carries a full state baseline (a late joiner gets
+                                        // one without waiting for a value change).
+                                        state_slots.register_client(*client_id);
                                         if host_spawn_points.is_empty() {
                                             // No descriptor-backed player spawn on this
                                             // map: fall back to the inert Transform-only
@@ -3976,6 +4015,7 @@ impl App {
                                 &mut registry,
                                 replicable,
                                 replication,
+                                state_slots,
                                 slot_pawns,
                                 command_queues,
                                 owners,
@@ -3995,6 +4035,7 @@ impl App {
                     netcode::host_handle_client_messages(
                         server,
                         replication,
+                        state_slots,
                         command_queues,
                         client_id,
                         server_tick,
@@ -4007,6 +4048,7 @@ impl App {
                 replication,
                 time_sync,
                 prediction,
+                state_slots,
                 ..
             }) => {
                 if let Err(err) = client.update(dt) {
@@ -4019,13 +4061,18 @@ impl App {
                 netcode::client_drive_time_sync(client, time_sync, client_tick);
                 // Decode + apply every snapshot received this frame through the
                 // Phase 2 client state machine, arm prediction off any `local_player`
-                // baseline, send the resulting acks + baseline-refresh requests, and
-                // advance the pending-repair 5 Hz cadence.
+                // baseline, apply replicated state-slot records through the store-write
+                // path, send the resulting acks + baseline-refresh requests, and advance
+                // the pending-repair 5 Hz cadence. The registry and slot table are
+                // disjoint RefCells; both borrows coexist for the duration of the apply.
                 let mut registry = self.script_ctx.registry.borrow_mut();
+                let mut slot_table = self.script_ctx.slot_table.borrow_mut();
                 netcode::client_receive_and_apply(
                     &mut registry,
+                    &mut slot_table,
                     client,
                     replication,
+                    state_slots,
                     prediction,
                     &net_descriptors,
                     collision_world,
@@ -4062,6 +4109,7 @@ impl App {
             owners,
             host_pawn: _,
             demo_mover,
+            state_slots,
         }) = self.net_endpoint.as_mut()
         else {
             return;
@@ -4077,12 +4125,22 @@ impl App {
         }
 
         {
+            // M15 Phase 3.5: borrow the slot table (immutable) alongside the registry so
+            // `host_replicate` can collect this frame's replicated-state source values
+            // and splice the per-client state records into the snapshot envelope. The
+            // two RefCells are disjoint, so both borrows coexist. Game logic and the HUD
+            // publisher have already settled the slot table by this post-tick point; the
+            // descriptor-fed health projection reads live `HealthComponent`s, so it sees
+            // this frame's settled HP regardless of the host HUD publisher's later tick.
             let registry = self.script_ctx.registry.borrow();
+            let slot_table = self.script_ctx.slot_table.borrow();
             netcode::host_replicate(
                 &registry,
+                &slot_table,
                 server,
                 allocator,
                 replication,
+                state_slots,
                 replicable,
                 owners,
                 command_queues,
@@ -4536,6 +4594,26 @@ mod tests {
         AirParams, CapsuleParams, FallParams, ForgivenessParams, GroundParams,
         PlayerMovementDescriptor, SpeedParams,
     };
+
+    // M15 Phase 3.5 Task 5: a connected client skips the clean-exit `state.json` save;
+    // single-player and the host still save. `is_connected_client` is `true` only for
+    // `NetEndpoint::Client`, so this gate is the role-aware switch at the save call site.
+    #[test]
+    fn connected_client_skips_state_save_while_single_player_and_host_save() {
+        // Single-player (no endpoint) and host (not a connected client) save.
+        assert!(
+            should_save_persisted_state(true, false),
+            "single-player / host saves when the lifecycle permits"
+        );
+        // A connected client never saves, even when the lifecycle would otherwise allow.
+        assert!(
+            !should_save_persisted_state(true, true),
+            "a connected client skips the clean-exit save"
+        );
+        // The lifecycle gate still suppresses the save before commit/restore.
+        assert!(!should_save_persisted_state(false, false));
+        assert!(!should_save_persisted_state(false, true));
+    }
 
     fn minimal_player_descriptor() -> PlayerMovementDescriptor {
         PlayerMovementDescriptor {

@@ -3,7 +3,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::slot_table::{NumericRange, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue};
+use super::slot_table::{
+    NumericRange, ReplicationScope, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue,
+};
 
 /// Script-side write capability for a built-in engine-owned state slot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,6 +54,10 @@ pub(crate) struct EngineStateCatalogEntry<'a> {
     pub(crate) range: Option<NumericRange>,
     pub(crate) persist: bool,
     pub(crate) capability: EngineStateCapability,
+    /// Replication scope for this engine slot (M15 Phase 3.5). Defaults to `None`
+    /// for every existing slot in this phase; Task 4 flips `player.health` /
+    /// `player.maxHealth` to `OwnerPrivatePlayer`.
+    pub(crate) network: ReplicationScope,
 }
 
 impl EngineStateCatalogEntry<'_> {
@@ -63,6 +69,7 @@ impl EngineStateCatalogEntry<'_> {
             persist: self.persist,
             readonly: !self.capability.is_writable(),
             ownership: SlotOwnership::Engine,
+            network: self.network,
         })
     }
 }
@@ -347,6 +354,11 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         range: None,
         persist: false,
         capability: EngineStateCapability::Readonly,
+        // M15 Phase 3.5 Task 4: server-authoritative, sent only to the owning
+        // accepted client. The Task 3 production path already projects each owned
+        // pawn's `HealthComponent` per `(StateSlotId, owner_client_id)`; this flip
+        // makes the slot replicate.
+        network: ReplicationScope::OwnerPrivatePlayer,
     },
     EngineStateCatalogEntry {
         wire_name: "player.maxHealth",
@@ -359,6 +371,8 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         }),
         persist: false,
         capability: EngineStateCapability::Readonly,
+        // M15 Phase 3.5 Task 4: owner-private, paired with `player.health`.
+        network: ReplicationScope::OwnerPrivatePlayer,
     },
     EngineStateCatalogEntry {
         wire_name: "screen.flash",
@@ -368,6 +382,7 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         range: None,
         persist: false,
         capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::None,
     },
     EngineStateCatalogEntry {
         wire_name: "screen.vignette",
@@ -377,6 +392,7 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         range: None,
         persist: false,
         capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::None,
     },
     EngineStateCatalogEntry {
         wire_name: "screen.shake",
@@ -386,6 +402,7 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         range: None,
         persist: false,
         capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::None,
     },
     EngineStateCatalogEntry {
         wire_name: "input.mode",
@@ -397,6 +414,7 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         range: None,
         persist: false,
         capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::None,
     },
     EngineStateCatalogEntry {
         wire_name: "ui.textEntry",
@@ -406,6 +424,7 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         range: None,
         persist: false,
         capability: EngineStateCapability::Writable,
+        network: ReplicationScope::None,
     },
 ];
 
@@ -421,6 +440,7 @@ mod tests {
         range: None,
         persist: false,
         capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::None,
     };
 
     fn entry(
@@ -608,5 +628,37 @@ mod tests {
             player_max_health.capability,
             EngineStateCapability::Readonly
         );
+    }
+
+    #[test]
+    fn player_health_slots_are_owner_private_replicated() {
+        // M15 Phase 3.5 Task 4: the two engine player slots replicate owner-private
+        // (server sends each only to the owning client); every other built-in slot
+        // stays local-only (`None`).
+        let catalog = engine_state_catalog().unwrap();
+        let entries = catalog.entries();
+
+        for wire_name in ["player.health", "player.maxHealth"] {
+            let entry = entries
+                .iter()
+                .find(|entry| entry.wire_name == wire_name)
+                .unwrap();
+            assert_eq!(
+                entry.network,
+                ReplicationScope::OwnerPrivatePlayer,
+                "{wire_name} must be owner-private replicated"
+            );
+        }
+
+        for entry in entries {
+            if entry.wire_name != "player.health" && entry.wire_name != "player.maxHealth" {
+                assert_eq!(
+                    entry.network,
+                    ReplicationScope::None,
+                    "{} must stay local-only in Phase 3.5",
+                    entry.wire_name
+                );
+            }
+        }
     }
 }

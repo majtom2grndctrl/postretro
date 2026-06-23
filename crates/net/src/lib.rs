@@ -6,6 +6,7 @@
 
 pub mod replication;
 pub mod slots;
+pub mod state_replication;
 pub mod state_slots;
 pub mod timesync;
 pub mod transport;

@@ -304,6 +304,467 @@ impl DescriptorSlotProjection for HealthSlotProjection {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Server-side production glue
+// ---------------------------------------------------------------------------
+
+use postretro_net::state_replication::ServerStateReplication;
+use postretro_net::state_slots::{RawStateSlotRecord, WireSlotValue};
+
+use crate::netcode::command_queue::MovementOwners;
+use crate::scripting::components::health::HealthComponent;
+use crate::scripting::registry::EntityId;
+
+/// Host-side replicated-state production: owns the deterministic replicated-slot
+/// schema (built once, lazily, from the live `SlotTable` after mod stores commit)
+/// and the registry-blind [`ServerStateReplication`] tracker. Lives on the
+/// `NetEndpoint::Host` variant; the frame send path (`net_serialize_and_send` →
+/// `host_replicate`) ingests this frame's projected values, then produces per-client
+/// state records to splice into the entity snapshot envelope.
+///
+/// The schema is the only place the engine maps `StateSlotId <-> dotted name`; the
+/// net tracker never sees a name. Both peers build the schema identically from the
+/// same content, so a fingerprint match is the cross-peer agreement gate.
+pub(crate) struct HostStateReplication {
+    /// Built lazily on the first frame (mod init has committed the stores by then),
+    /// then reused for the session. `None` until built.
+    schema: Option<ReplicatedSlotSchema>,
+    tracker: ServerStateReplication,
+}
+
+impl HostStateReplication {
+    pub(crate) fn new() -> Self {
+        Self {
+            schema: None,
+            tracker: ServerStateReplication::new(),
+        }
+    }
+
+    /// Build the schema from the live slot table on first use, returning a reference.
+    /// Idempotent — built once and cached. Called inside the frame send path, by which
+    /// point mod stores have committed, so the schema reflects the final slot set.
+    fn schema(&mut self, slot_table: &SlotTable) -> &ReplicatedSlotSchema {
+        self.schema
+            .get_or_insert_with(|| ReplicatedSlotSchema::build(slot_table))
+    }
+
+    /// The local schema fingerprint, building the schema if needed. Stamped into every
+    /// snapshot carrying state records so the client gates on a match.
+    pub(crate) fn fingerprint(&mut self, slot_table: &SlotTable) -> [u8; 32] {
+        *self.schema(slot_table).fingerprint()
+    }
+
+    /// Register an accepted client so it is replicated to (accept lifecycle).
+    pub(crate) fn register_client(&mut self, client_id: u64) {
+        self.tracker.register_client(client_id);
+    }
+
+    /// Drop a closed client's per-client state and its owner-private values (close
+    /// lifecycle).
+    pub(crate) fn remove_client(&mut self, client_id: u64) {
+        self.tracker.remove_client(client_id);
+    }
+
+    /// Apply a client's `AckMessage.slot_baselines` (inbound reliable path).
+    pub(crate) fn apply_ack(
+        &mut self,
+        client_id: u64,
+        latest_snapshot_sequence: u32,
+        slot_baselines: &[(u16, u32)],
+    ) {
+        self.tracker
+            .apply_ack(client_id, latest_snapshot_sequence, slot_baselines);
+    }
+
+    /// Apply a client's `StateBaselineRefresh` request keyed by `StateSlotId` (inbound
+    /// reliable path). An unknown slot id is queued and simply produces nothing.
+    pub(crate) fn request_refresh(
+        &mut self,
+        client_id: u64,
+        slot_id: u16,
+        missing_baseline_ref: u32,
+    ) {
+        self.tracker
+            .request_refresh(client_id, StateSlotId(slot_id), missing_baseline_ref);
+    }
+
+    /// Ingest this server frame's authoritative values into the tracker, then produce
+    /// the per-client state records to splice into `client_id`'s snapshot. Returns
+    /// `None` for an unregistered (pending/rejected/closed) client, so such a client
+    /// receives no state records.
+    ///
+    /// The collect+ingest step is intrinsically per-frame, but the tracker dedups by
+    /// value (an unchanged value keeps its baseline id), so calling it once per client
+    /// in a batch only re-ingests already-tracked values cheaply. To keep one ack per
+    /// frame, the caller passes the shared `sequence` from the entity tracker's batch.
+    pub(crate) fn produce_for_client(
+        &mut self,
+        slot_table: &SlotTable,
+        registry: &EntityRegistry,
+        owners: &MovementOwners,
+        client_id: u64,
+        sequence: u32,
+    ) -> Option<Vec<RawStateSlotRecord>> {
+        // Build the schema once, then ingest this frame's projected values. The schema
+        // borrow is dropped before the tracker call (it borrows `self.schema`; the
+        // tracker borrows `self.tracker`), so clone the small per-entry projection list
+        // out first.
+        self.ingest_frame(slot_table, registry, owners);
+        self.tracker.produce_in_batch(client_id, sequence)
+    }
+
+    /// Collect and ingest this frame's authoritative source values. Shared slots take
+    /// the slot table's current value; owner-private slots take a per-owner value
+    /// (descriptor-fed health from each owned pawn's `HealthComponent`, else the slot's
+    /// table value keyed to each owner). A slot with no source value this frame is
+    /// simply not ingested (it keeps its prior tracked value, or stays absent).
+    fn ingest_frame(
+        &mut self,
+        slot_table: &SlotTable,
+        registry: &EntityRegistry,
+        owners: &MovementOwners,
+    ) {
+        // Snapshot the schema entries we need (id, name, scope) so the schema borrow is
+        // released before the `&mut self.tracker` calls below.
+        let entries: Vec<(StateSlotId, String, ReplicationScope)> = self
+            .schema(slot_table)
+            .entries()
+            .iter()
+            .map(|e| (e.slot_id, e.name.clone(), e.scope))
+            .collect();
+
+        for (slot_id, name, scope) in entries {
+            match scope {
+                ReplicationScope::None => {}
+                ReplicationScope::SharedGlobal => {
+                    if let Some(value) = shared_source_value(slot_table, &name) {
+                        self.tracker.ingest_shared(slot_id, value);
+                    }
+                }
+                ReplicationScope::OwnerPrivatePlayer => {
+                    for (pawn, client_id) in owners.iter() {
+                        if let Some(value) =
+                            owner_private_source_value(slot_table, registry, &name, pawn)
+                        {
+                            self.tracker.ingest_owner_private(slot_id, client_id, value);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl Default for HostStateReplication {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// The current shared-slot source value: the slot table's current value, lowered to
+/// the wire mirror. `None` when the slot has no value yet or a non-finite value (kept
+/// off the wire). Shared slots are global — they have one value regardless of owner.
+fn shared_source_value(slot_table: &SlotTable, name: &str) -> Option<WireSlotValue> {
+    let record = slot_table.get(name)?;
+    let value = record.value.as_ref()?;
+    slot_value_to_wire(value)
+}
+
+/// The per-owner source value for an owner-private slot. Descriptor-fed health slots
+/// (`player.health` / `player.maxHealth`) read the owning pawn's live
+/// `HealthComponent` directly — the descriptor projection path, per-owner. Any other
+/// owner-private slot falls back to the slot table's current value keyed to this owner
+/// (a single global value replicated privately). `None` when no source value exists.
+fn owner_private_source_value(
+    slot_table: &SlotTable,
+    registry: &EntityRegistry,
+    name: &str,
+    pawn: EntityId,
+) -> Option<WireSlotValue> {
+    if let Some(value) = descriptor_health_for_pawn(registry, name, pawn) {
+        return slot_value_to_wire(&value);
+    }
+    let record = slot_table.get(name)?;
+    let value = record.value.as_ref()?;
+    slot_value_to_wire(value)
+}
+
+/// Read the descriptor-fed health value for `name` from `pawn`'s live
+/// `HealthComponent`, the first descriptor-defined replicated source (M15 Phase 3.5).
+/// `player.health` → current HP, `player.maxHealth` → max HP. `None` for any other
+/// name or a pawn carrying no `HealthComponent`. This is the per-owner generalization
+/// of [`HealthSlotProjection`]: the production path reads each owned pawn's component
+/// rather than a single context, so each client's snapshot carries its own health.
+fn descriptor_health_for_pawn(
+    registry: &EntityRegistry,
+    name: &str,
+    pawn: EntityId,
+) -> Option<SlotValue> {
+    let field = match name {
+        "player.health" => HealthField::Current,
+        "player.maxHealth" => HealthField::Max,
+        _ => return None,
+    };
+    let health = registry.get_component::<HealthComponent>(pawn).ok()?;
+    let value = match field {
+        HealthField::Current => health.current,
+        HealthField::Max => health.max,
+    };
+    Some(SlotValue::Number(value))
+}
+
+#[derive(Clone, Copy)]
+enum HealthField {
+    Current,
+    Max,
+}
+
+// ---------------------------------------------------------------------------
+// Client-side apply glue
+// ---------------------------------------------------------------------------
+
+use std::collections::HashMap;
+
+use postretro_net::state_slots::{StateSlotRecord, StateValidationError, validate_state_records};
+use postretro_net::wire::StateBaselineRefreshRequest;
+
+use crate::scripting::primitives::store::apply_store_slot_batch;
+
+/// Reason code carried in a `StateBaselineRefresh` request. Diagnostic only — the
+/// server repair path keys on slot + missing ref, not the reason.
+const STATE_REFRESH_REASON_UNKNOWN_BASELINE: u8 = 0;
+
+/// What a client state-apply pass produced for the caller to send back on the reliable
+/// input channel: the `(slot_id, baseline_id)` acks for applied records, and the
+/// baseline-refresh requests for deltas referencing a baseline the client does not
+/// hold. Both empty when the snapshot carried no state records or was rejected whole.
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct StateApplyOutcome {
+    pub(crate) slot_baselines: Vec<(u16, u32)>,
+    pub(crate) refresh_requests: Vec<StateBaselineRefreshRequest>,
+}
+
+/// Client-side replicated-state apply: owns the deterministic schema (built lazily
+/// from the live `SlotTable`, identical to the server's) and the per-slot held
+/// baseline. Lives on the `NetEndpoint::Client` variant; the snapshot receive path
+/// validates the whole state batch against the schema, applies all-or-nothing through
+/// the engine store-write path, and returns the acks + refresh requests to send back.
+pub(crate) struct ClientStateApply {
+    schema: Option<ReplicatedSlotSchema>,
+    /// The lowered net schema (fingerprint + per-slot descriptors), built once
+    /// alongside `schema` and reused so per-snapshot validation does not re-lower it.
+    net_schema: Option<StateSchema>,
+    /// `StateSlotId -> held baseline_id`. A delta's `baseline_ref` must match this to
+    /// apply; a successful apply advances it. `FullBaseline` sets it outright.
+    held_baselines: HashMap<StateSlotId, u32>,
+}
+
+impl ClientStateApply {
+    pub(crate) fn new() -> Self {
+        Self {
+            schema: None,
+            net_schema: None,
+            held_baselines: HashMap::new(),
+        }
+    }
+
+    /// Build the schema (and its lowered net form) once from the live slot table,
+    /// returning a reference to the replicated-slot schema for name lookups.
+    fn schema(&mut self, slot_table: &SlotTable) -> &ReplicatedSlotSchema {
+        self.ensure_built(slot_table);
+        self.schema.as_ref().expect("schema built above")
+    }
+
+    /// The lowered net schema, building both forms once if needed.
+    fn net_schema(&mut self, slot_table: &SlotTable) -> &StateSchema {
+        self.ensure_built(slot_table);
+        self.net_schema.as_ref().expect("net schema built above")
+    }
+
+    fn ensure_built(&mut self, slot_table: &SlotTable) {
+        if self.schema.is_none() {
+            let schema = ReplicatedSlotSchema::build(slot_table);
+            self.net_schema = Some(schema.to_net_schema());
+            self.schema = Some(schema);
+        }
+    }
+
+    /// Validate and apply one snapshot's replicated-state records. The whole batch is
+    /// validated against the local schema FIRST (fingerprint, then every record); any
+    /// invalid record rejects the WHOLE batch and leaves every slot unchanged — no
+    /// partial apply. On a fingerprint mismatch a stable diagnostic is logged and the
+    /// batch is dropped.
+    ///
+    /// On success, every applicable record's value is written through the atomic
+    /// store-batch helper (which prevalidates all mapped values, then commits all or
+    /// none), so the slot table's own type/range/enum/finite checks run too. A delta
+    /// referencing a baseline the client does not hold yields a refresh request and is
+    /// excluded from the applied set (the rest of the batch still applies). Returns the
+    /// acks for applied records and any refresh requests to send.
+    pub(crate) fn apply_snapshot_state(
+        &mut self,
+        slot_table: &mut SlotTable,
+        snapshot_sequence: u32,
+        snapshot_fingerprint: &[u8; 32],
+        records: &[RawStateSlotRecord],
+    ) -> StateApplyOutcome {
+        if records.is_empty() {
+            return StateApplyOutcome::default();
+        }
+
+        // Validate the whole batch against the local schema. The schema borrow is
+        // released before the slot-table mutation below.
+        let typed = {
+            let net_schema = self.net_schema(slot_table);
+            match validate_state_records(net_schema, snapshot_fingerprint, records) {
+                Ok(typed) => typed,
+                Err(err) => {
+                    log_state_validation_rejection(&err);
+                    return StateApplyOutcome::default();
+                }
+            }
+        };
+
+        // Partition the validated records: applicable (full baseline, or a delta whose
+        // ref the client holds) vs refresh-needed (delta against a missing baseline).
+        let mut writes: Vec<(String, SlotValue)> = Vec::new();
+        let mut pending_baselines: Vec<(StateSlotId, u32)> = Vec::new();
+        let mut outcome = StateApplyOutcome::default();
+
+        for record in &typed {
+            match record {
+                StateSlotRecord::FullBaseline {
+                    slot_id,
+                    baseline_id,
+                    value,
+                } => {
+                    if let Some(write) = self.write_for(slot_table, *slot_id, value) {
+                        writes.push(write);
+                    }
+                    pending_baselines.push((*slot_id, *baseline_id));
+                }
+                StateSlotRecord::Delta {
+                    slot_id,
+                    baseline_ref,
+                    new_baseline_id,
+                    value,
+                } => {
+                    if self.held_baselines.get(slot_id).copied() == Some(*baseline_ref) {
+                        if let Some(write) = self.write_for(slot_table, *slot_id, value) {
+                            writes.push(write);
+                        }
+                        pending_baselines.push((*slot_id, *new_baseline_id));
+                    } else {
+                        // Missing baseline: request a full refresh keyed by StateSlotId.
+                        // Leave the slot untouched; the rest of the batch still applies.
+                        outcome.refresh_requests.push(StateBaselineRefreshRequest {
+                            snapshot_sequence,
+                            slot_id: slot_id.0,
+                            missing_baseline_ref: *baseline_ref,
+                            reason: STATE_REFRESH_REASON_UNKNOWN_BASELINE,
+                        });
+                    }
+                }
+            }
+        }
+
+        // Atomic commit: prevalidate ALL mapped values, then write all or none. A store
+        // rejection (type/range/enum/finite) leaves every slot unchanged AND advances
+        // no baseline — the batch is rejected whole.
+        if !writes.is_empty() {
+            if let Err(err) = apply_store_slot_batch(slot_table, &writes) {
+                log::warn!(
+                    "[Net] replicated state batch rejected by store validation; slots unchanged: {err}"
+                );
+                return StateApplyOutcome::default();
+            }
+        }
+
+        // Applied: advance held baselines and ack them.
+        for (slot_id, baseline_id) in pending_baselines {
+            self.held_baselines.insert(slot_id, baseline_id);
+            outcome.slot_baselines.push((slot_id.0, baseline_id));
+        }
+        outcome
+    }
+
+    /// Map a validated record's `StateSlotId` to its dotted slot name and engine value,
+    /// or `None` to skip the slot write (an `Unset` clears no Phase 3.5 player slot, and
+    /// an unmapped id never reaches here — the batch was schema-validated). The schema
+    /// borrow is taken read-only.
+    fn write_for(
+        &mut self,
+        slot_table: &SlotTable,
+        slot_id: StateSlotId,
+        value: &WireSlotValue,
+    ) -> Option<(String, SlotValue)> {
+        let name = self.schema(slot_table).name_for(slot_id)?.to_string();
+        let value = wire_value_to_slot(value)?;
+        Some((name, value))
+    }
+}
+
+impl Default for ClientStateApply {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Log a stable, greppable diagnostic for a rejected replicated-state batch. The
+/// fingerprint-mismatch line is the one the AC names ("the client logs a stable
+/// mismatch diagnostic"); the others share the `[Net]` tag and a stable prefix.
+fn log_state_validation_rejection(err: &StateValidationError) {
+    match err {
+        StateValidationError::SchemaFingerprintMismatch => {
+            log::warn!(
+                "[Net] replicated state schema fingerprint mismatch; dropping state records and keeping existing slot values"
+            );
+        }
+        other => {
+            log::warn!("[Net] replicated state batch rejected before apply: {other}");
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Engine <-> wire value conversion
+// ---------------------------------------------------------------------------
+
+/// Lower an engine [`SlotValue`] to its wire mirror. A non-finite number or array
+/// element yields `None`: the source value came from the validated slot table (so it
+/// is finite by construction), but a defensive `None` keeps a poisoned value off the
+/// wire rather than letting the client reject the whole batch. Enum/string/boolean
+/// always convert.
+fn slot_value_to_wire(value: &SlotValue) -> Option<WireSlotValue> {
+    match value {
+        SlotValue::Number(n) if n.is_finite() => Some(WireSlotValue::Number(*n)),
+        SlotValue::Number(_) => None,
+        SlotValue::Boolean(b) => Some(WireSlotValue::Boolean(*b)),
+        SlotValue::String(s) => Some(WireSlotValue::String(s.clone())),
+        SlotValue::Enum(s) => Some(WireSlotValue::Enum(s.clone())),
+        SlotValue::Array(values) if values.iter().all(|v| v.is_finite()) => {
+            Some(WireSlotValue::Array(values.clone()))
+        }
+        SlotValue::Array(_) => None,
+    }
+}
+
+/// Lift a wire [`WireSlotValue`] back to an engine [`SlotValue`] for the client apply
+/// path. `Unset` has no engine value (the slot is cleared, which Phase 3.5 never does
+/// for the player slots) so it yields `None`; the apply path skips an `Unset` record's
+/// slot write. All other variants convert directly; type/range/enum/finite validation
+/// runs again at the store-write boundary.
+fn wire_value_to_slot(value: &WireSlotValue) -> Option<SlotValue> {
+    match value {
+        WireSlotValue::Unset => None,
+        WireSlotValue::Number(n) => Some(SlotValue::Number(*n)),
+        WireSlotValue::Boolean(b) => Some(SlotValue::Boolean(*b)),
+        WireSlotValue::String(s) => Some(SlotValue::String(s.clone())),
+        WireSlotValue::Enum(s) => Some(SlotValue::Enum(s.clone())),
+        WireSlotValue::Array(values) => Some(SlotValue::Array(values.clone())),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -464,5 +925,287 @@ mod tests {
             .expect("range lowered");
         assert!(range.min_finite);
         assert!(!range.max_finite, "inf max lowers as non-finite");
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 3: engine production + client apply glue
+    // -----------------------------------------------------------------------
+
+    use crate::scripting::data_descriptors::HealthDescriptor;
+    use crate::scripting::registry::Transform;
+
+    const CLIENT_A: u64 = 1;
+    const CLIENT_B: u64 = 2;
+
+    /// A host slot table with one `SharedGlobal` (`net.objective`) and one
+    /// `OwnerPrivatePlayer` (`net.private`) mod number slot. Both peers build this
+    /// identically, so their schema fingerprints match.
+    fn shared_and_private_table() -> SlotTable {
+        let mut table = SlotTable::new();
+        table
+            .insert_namespace(
+                "net",
+                vec![
+                    replicated_number("net.objective", ReplicationScope::SharedGlobal),
+                    replicated_number("net.private", ReplicationScope::OwnerPrivatePlayer),
+                ],
+            )
+            .unwrap();
+        table
+    }
+
+    /// A slot table whose `player.health` / `player.maxHealth` slots are owner-private
+    /// replicated (the Task 4 catalog flip, set directly here so Task 3 can prove the
+    /// descriptor path). Both peers build this identically.
+    fn player_health_replicated_table() -> SlotTable {
+        let mut table = SlotTable::new();
+        table.get_mut("player.health").unwrap().schema.network =
+            ReplicationScope::OwnerPrivatePlayer;
+        table.get_mut("player.maxHealth").unwrap().schema.network =
+            ReplicationScope::OwnerPrivatePlayer;
+        table
+    }
+
+    /// Spawn one owned pawn for `client_id` carrying a `HealthComponent`, returning the
+    /// registry, the owner map, and the pawn id.
+    fn registry_with_owned_health(
+        client_id: u64,
+        current: f32,
+        max: f32,
+    ) -> (EntityRegistry, MovementOwners, EntityId) {
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        let mut health = HealthComponent::from_descriptor(&HealthDescriptor {
+            max,
+            hitbox: None,
+            zone_multipliers: std::collections::HashMap::new(),
+        });
+        health.current = current;
+        registry.set_component(pawn, health).unwrap();
+        let mut owners = MovementOwners::new();
+        owners.set(pawn, client_id);
+        (registry, owners, pawn)
+    }
+
+    // A shared slot and an owner-private slot round-trip from host production into the
+    // client slot table through the real produce/apply glue, sharing one wire schema.
+    #[test]
+    fn shared_and_owner_private_round_trip_through_glue() {
+        let mut host_table = shared_and_private_table();
+        // The host sets the shared objective value and an owner-private value (via the
+        // table fallback path keyed per owner).
+        host_table.get_mut("net.objective").unwrap().value = Some(SlotValue::Number(3.0));
+        host_table.get_mut("net.private").unwrap().value = Some(SlotValue::Number(42.0));
+
+        let (registry, owners, _pawn) = registry_with_owned_health(CLIENT_A, 0.0, 0.0);
+
+        let mut host = HostStateReplication::new();
+        host.register_client(CLIENT_A);
+        let fingerprint = host.fingerprint(&host_table);
+        let records = host
+            .produce_for_client(&host_table, &registry, &owners, CLIENT_A, 0)
+            .expect("registered client produces records");
+        assert_eq!(records.len(), 2, "shared + owner-private both produced");
+
+        // Client side: a fresh table (no values) and the apply glue.
+        let mut client_table = shared_and_private_table();
+        let mut client = ClientStateApply::new();
+        let outcome = client.apply_snapshot_state(&mut client_table, 0, &fingerprint, &records);
+        assert_eq!(
+            outcome.slot_baselines.len(),
+            2,
+            "both records acked after apply"
+        );
+        assert!(outcome.refresh_requests.is_empty());
+        assert_eq!(
+            client_table.get("net.objective").unwrap().value,
+            Some(SlotValue::Number(3.0)),
+            "shared slot applied through the store-write path"
+        );
+        assert_eq!(
+            client_table.get("net.private").unwrap().value,
+            Some(SlotValue::Number(42.0)),
+            "owner-private slot applied through the store-write path"
+        );
+    }
+
+    // A descriptor-defined source value (health) projects into a named owner-private
+    // slot and replicates through the SAME wire schema/apply path as store slots.
+    #[test]
+    fn descriptor_health_projects_and_replicates_like_a_store_slot() {
+        // A table whose player health slots are owner-private replicated (the Task 4
+        // catalog flip, set directly here so Task 3 can prove the descriptor path).
+        let host_table = player_health_replicated_table();
+
+        // The descriptor-fed source: an owned pawn with a live HealthComponent. No slot
+        // value is ever written on the host — the value comes straight from the
+        // component through the projection.
+        let (registry, owners, _pawn) = registry_with_owned_health(CLIENT_A, 75.0, 100.0);
+
+        let mut host = HostStateReplication::new();
+        host.register_client(CLIENT_A);
+        let fingerprint = host.fingerprint(&host_table);
+        let records = host
+            .produce_for_client(&host_table, &registry, &owners, CLIENT_A, 0)
+            .expect("registered client produces records");
+        assert_eq!(records.len(), 2, "health + maxHealth projected");
+
+        // Client applies through the store path; the engine-owned readonly player slots
+        // receive the replicated values (engine bypass honors readonly).
+        let mut client_table = player_health_replicated_table();
+        let mut client = ClientStateApply::new();
+        let outcome = client.apply_snapshot_state(&mut client_table, 0, &fingerprint, &records);
+        assert_eq!(outcome.slot_baselines.len(), 2);
+        assert_eq!(
+            client_table.get("player.health").unwrap().value,
+            Some(SlotValue::Number(75.0)),
+            "descriptor-fed current HP reached the named slot"
+        );
+        assert_eq!(
+            client_table.get("player.maxHealth").unwrap().value,
+            Some(SlotValue::Number(100.0)),
+            "descriptor-fed max HP reached the named slot"
+        );
+    }
+
+    // Client apply validates ALL records before mutating any slot: a fingerprint
+    // mismatch rejects the whole batch and leaves every slot unchanged.
+    #[test]
+    fn fingerprint_mismatch_rejects_whole_batch_and_keeps_values() {
+        let mut host_table = shared_and_private_table();
+        host_table.get_mut("net.objective").unwrap().value = Some(SlotValue::Number(9.0));
+        let (registry, owners, _pawn) = registry_with_owned_health(CLIENT_A, 0.0, 0.0);
+
+        let mut host = HostStateReplication::new();
+        host.register_client(CLIENT_A);
+        let _real_fingerprint = host.fingerprint(&host_table);
+        let records = host
+            .produce_for_client(&host_table, &registry, &owners, CLIENT_A, 0)
+            .expect("records");
+
+        // The client holds a prior value the apply must NOT overwrite.
+        let mut client_table = shared_and_private_table();
+        client_table.get_mut("net.objective").unwrap().value = Some(SlotValue::Number(1.0));
+        let mut client = ClientStateApply::new();
+
+        // A WRONG fingerprint must reject the whole batch before any mutation.
+        let outcome = client.apply_snapshot_state(&mut client_table, 0, &[0xAB; 32], &records);
+        assert!(
+            outcome.slot_baselines.is_empty(),
+            "rejected batch acks nothing"
+        );
+        assert!(outcome.refresh_requests.is_empty());
+        assert_eq!(
+            client_table.get("net.objective").unwrap().value,
+            Some(SlotValue::Number(1.0)),
+            "fingerprint mismatch left the prior value unchanged"
+        );
+    }
+
+    // Any single invalid record rejects the WHOLE batch: a type-mismatched record in a
+    // batch leaves EVERY slot (including the otherwise-valid ones) unchanged.
+    #[test]
+    fn one_invalid_record_rejects_whole_batch_no_partial_apply() {
+        let host_table = shared_and_private_table();
+        let mut host = HostStateReplication::new();
+        host.register_client(CLIENT_A);
+        let fingerprint = host.fingerprint(&host_table);
+
+        // Hand-build a batch: a valid number record for net.objective (slot 0, sorted by
+        // name: net.objective < net.private) and a TYPE-MISMATCHED boolean for the
+        // number slot net.private (slot 1). The whole batch must reject.
+        let schema = ReplicatedSlotSchema::build(&host_table);
+        let objective_id = schema.id_for("net.objective").unwrap().0;
+        let private_id = schema.id_for("net.private").unwrap().0;
+        let records = vec![
+            RawStateSlotRecord {
+                slot_id: objective_id,
+                kind: postretro_net::state_slots::STATE_RECORD_KIND_FULL_BASELINE,
+                has_baseline_ref: false,
+                baseline_ref: 0,
+                baseline_id: 1,
+                value: WireSlotValue::Number(5.0),
+            },
+            RawStateSlotRecord {
+                slot_id: private_id,
+                kind: postretro_net::state_slots::STATE_RECORD_KIND_FULL_BASELINE,
+                has_baseline_ref: false,
+                baseline_ref: 0,
+                baseline_id: 1,
+                value: WireSlotValue::Boolean(true), // type mismatch: net.private is a number
+            },
+        ];
+
+        let mut client_table = shared_and_private_table();
+        // Both slots default to 0.0; assert they stay at the default after rejection.
+        let mut client = ClientStateApply::new();
+        let outcome = client.apply_snapshot_state(&mut client_table, 0, &fingerprint, &records);
+        assert!(
+            outcome.slot_baselines.is_empty(),
+            "a type mismatch rejects the whole batch (no partial apply)"
+        );
+        assert_eq!(
+            client_table.get("net.objective").unwrap().value,
+            Some(SlotValue::Number(0.0)),
+            "the valid record's slot is unchanged because the batch rejected whole"
+        );
+        assert_eq!(
+            client_table.get("net.private").unwrap().value,
+            Some(SlotValue::Number(0.0)),
+            "the invalid record's slot is unchanged"
+        );
+    }
+
+    // Owner-private filtering through the glue: client B never receives client A's
+    // private slot, and each sees its own descriptor-fed health.
+    #[test]
+    fn owner_private_health_is_per_client_through_glue() {
+        let host_table = player_health_replicated_table();
+
+        // Two owned pawns with distinct health, owned by A and B.
+        let mut registry = EntityRegistry::new();
+        let mut owners = MovementOwners::new();
+        for (client, current, max) in [(CLIENT_A, 80.0_f32, 100.0_f32), (CLIENT_B, 40.0, 50.0)] {
+            let pawn = registry.spawn(Transform::default());
+            let mut health = HealthComponent::from_descriptor(&HealthDescriptor {
+                max,
+                hitbox: None,
+                zone_multipliers: std::collections::HashMap::new(),
+            });
+            health.current = current;
+            registry.set_component(pawn, health).unwrap();
+            owners.set(pawn, client);
+        }
+
+        let mut host = HostStateReplication::new();
+        host.register_client(CLIENT_A);
+        host.register_client(CLIENT_B);
+        let fingerprint = host.fingerprint(&host_table);
+
+        let records_a = host
+            .produce_for_client(&host_table, &registry, &owners, CLIENT_A, 0)
+            .unwrap();
+        let records_b = host
+            .produce_for_client(&host_table, &registry, &owners, CLIENT_B, 0)
+            .unwrap();
+
+        // Each client's batch carries only ITS pawn's health.
+        let mut table_a = player_health_replicated_table();
+        let mut table_b = player_health_replicated_table();
+        let mut client_a = ClientStateApply::new();
+        let mut client_b = ClientStateApply::new();
+        client_a.apply_snapshot_state(&mut table_a, 0, &fingerprint, &records_a);
+        client_b.apply_snapshot_state(&mut table_b, 0, &fingerprint, &records_b);
+
+        assert_eq!(
+            table_a.get("player.health").unwrap().value,
+            Some(SlotValue::Number(80.0)),
+            "client A sees its own health"
+        );
+        assert_eq!(
+            table_b.get("player.health").unwrap().value,
+            Some(SlotValue::Number(40.0)),
+            "client B sees its own (different) health"
+        );
     }
 }

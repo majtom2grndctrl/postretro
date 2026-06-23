@@ -156,6 +156,7 @@ fn duplicate_input_at_drain_seam_is_inert() {
         host_handle_client_message(
             &mut h.server,
             &mut h.server_replication,
+            &mut h.server_state,
             &mut h.command_queues,
             CLIENT_ID,
             0,
@@ -169,6 +170,7 @@ fn duplicate_input_at_drain_seam_is_inert() {
     host_handle_client_message(
         &mut h.server,
         &mut h.server_replication,
+        &mut h.server_state,
         &mut h.command_queues,
         OTHER,
         0,
@@ -428,6 +430,7 @@ fn malformed_input_at_drain_seam_is_rejected() {
     host_handle_client_message(
         &mut h.server,
         &mut h.server_replication,
+        &mut h.server_state,
         &mut h.command_queues,
         CLIENT_ID,
         0,

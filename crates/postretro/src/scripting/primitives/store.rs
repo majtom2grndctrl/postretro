@@ -13,8 +13,8 @@ use crate::scripting::ctx::ScriptCtx;
 use crate::scripting::error::ScriptError;
 use crate::scripting::primitives_registry::{ContextScope, PrimitiveRegistry};
 use crate::scripting::slot_table::{
-    NumericRange, ReplicationScope, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue,
-    StoreDeclaration, StoreDeclarationSet,
+    NumericRange, ReplicationScope, SlotOwnership, SlotRecord, SlotSchema, SlotTable, SlotType,
+    SlotValue, StoreDeclaration, StoreDeclarationSet,
 };
 
 struct StoreSchemaJson(Value);
@@ -313,6 +313,48 @@ pub(crate) fn write_store_slot(
         .get_mut(name)
         .ok_or_else(|| unknown_slot("storeWrite", name))?;
     slot.value = Some(validate_slot_value(name, &slot.schema, value)?);
+    Ok(())
+}
+
+/// Atomically apply a batch of `(dotted slot name, value)` writes to the slot
+/// table through the engine bypass (M15 Phase 3.5 Task 3 — the replicated-state
+/// client apply path). Every write is **prevalidated** against its slot's declared
+/// type/range/enum/finite rules first; only if ALL prevalidate does the batch
+/// commit. A single failure leaves every slot in the batch unchanged — there is no
+/// partial apply.
+///
+/// This is the engine bypass (like [`write_store_slot`]): replicated player slots
+/// are readonly-to-scripts, so the readonly gate must not block the authoritative
+/// server value. Type/range/enum/finite validation still runs, so a hostile or
+/// type-mismatched replicated value is rejected (the whole batch) rather than
+/// poisoning a slot — the net crate already validated the wire value against the
+/// shared schema, and this is the engine-side defence in depth that keeps the slot
+/// table's own invariants.
+///
+/// Takes the `SlotTable` directly rather than a `ScriptCtx` so the netcode client
+/// apply path can call it under the registry/endpoint borrow without aliasing the
+/// scripting context. The error names the first slot that failed prevalidation.
+pub(crate) fn apply_store_slot_batch(
+    table: &mut SlotTable,
+    writes: &[(String, SlotValue)],
+) -> Result<(), ScriptError> {
+    // Prevalidate every write against its slot's declared schema. An unknown slot or
+    // a type/range/enum/finite failure aborts BEFORE any mutation.
+    let mut validated = Vec::with_capacity(writes.len());
+    for (name, value) in writes {
+        let slot = table
+            .get(name)
+            .ok_or_else(|| unknown_slot("stateApply", name))?;
+        let checked = validate_slot_value(name, &slot.schema, value.clone())?;
+        validated.push((name, checked));
+    }
+    // All prevalidated: commit. `get_mut` cannot miss (we just read each above) and
+    // the value is already validated, so this loop never fails.
+    for (name, value) in validated {
+        if let Some(slot) = table.get_mut(name) {
+            slot.value = Some(value);
+        }
+    }
     Ok(())
 }
 

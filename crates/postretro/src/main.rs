@@ -3912,6 +3912,7 @@ impl App {
                 tick,
                 host_pawn: _,
                 demo_mover: _,
+                state_slots,
             }) => {
                 // Drive the listen server (accept handshakes, drain the socket).
                 // Snapshots are sent post-loop in `net_serialize_and_send`.
@@ -3936,6 +3937,11 @@ impl App {
                                     HandshakeOutcome::Accepted { client_id } => {
                                         log::info!("[Net] client {client_id} accepted");
                                         replication.register_client(*client_id);
+                                        // M15 Phase 3.5: register the accepted client with
+                                        // the state tracker too, so its first snapshot
+                                        // carries a full state baseline (a late joiner gets
+                                        // one without waiting for a value change).
+                                        state_slots.register_client(*client_id);
                                         if host_spawn_points.is_empty() {
                                             // No descriptor-backed player spawn on this
                                             // map: fall back to the inert Transform-only
@@ -3976,6 +3982,7 @@ impl App {
                                 &mut registry,
                                 replicable,
                                 replication,
+                                state_slots,
                                 slot_pawns,
                                 command_queues,
                                 owners,
@@ -3995,6 +4002,7 @@ impl App {
                     netcode::host_handle_client_messages(
                         server,
                         replication,
+                        state_slots,
                         command_queues,
                         client_id,
                         server_tick,
@@ -4007,6 +4015,7 @@ impl App {
                 replication,
                 time_sync,
                 prediction,
+                state_slots,
                 ..
             }) => {
                 if let Err(err) = client.update(dt) {
@@ -4019,13 +4028,18 @@ impl App {
                 netcode::client_drive_time_sync(client, time_sync, client_tick);
                 // Decode + apply every snapshot received this frame through the
                 // Phase 2 client state machine, arm prediction off any `local_player`
-                // baseline, send the resulting acks + baseline-refresh requests, and
-                // advance the pending-repair 5 Hz cadence.
+                // baseline, apply replicated state-slot records through the store-write
+                // path, send the resulting acks + baseline-refresh requests, and advance
+                // the pending-repair 5 Hz cadence. The registry and slot table are
+                // disjoint RefCells; both borrows coexist for the duration of the apply.
                 let mut registry = self.script_ctx.registry.borrow_mut();
+                let mut slot_table = self.script_ctx.slot_table.borrow_mut();
                 netcode::client_receive_and_apply(
                     &mut registry,
+                    &mut slot_table,
                     client,
                     replication,
+                    state_slots,
                     prediction,
                     &net_descriptors,
                     collision_world,
@@ -4062,6 +4076,7 @@ impl App {
             owners,
             host_pawn: _,
             demo_mover,
+            state_slots,
         }) = self.net_endpoint.as_mut()
         else {
             return;
@@ -4077,12 +4092,22 @@ impl App {
         }
 
         {
+            // M15 Phase 3.5: borrow the slot table (immutable) alongside the registry so
+            // `host_replicate` can collect this frame's replicated-state source values
+            // and splice the per-client state records into the snapshot envelope. The
+            // two RefCells are disjoint, so both borrows coexist. Game logic and the HUD
+            // publisher have already settled the slot table by this post-tick point; the
+            // descriptor-fed health projection reads live `HealthComponent`s, so it sees
+            // this frame's settled HP regardless of the host HUD publisher's later tick.
             let registry = self.script_ctx.registry.borrow();
+            let slot_table = self.script_ctx.slot_table.borrow();
             netcode::host_replicate(
                 &registry,
+                &slot_table,
                 server,
                 allocator,
                 replication,
+                state_slots,
                 replicable,
                 owners,
                 command_queues,

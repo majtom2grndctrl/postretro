@@ -50,6 +50,9 @@ Usage
 -----
     python3 tools/gen_stress_map.py            # committed default, fits the cap
     python3 tools/gen_stress_map.py --grid 8 8 4 --door-prob 0.2
+    # crate stacks (shadow-casting occluders) + spot-heavy dynamic lights:
+    python3 tools/gen_stress_map.py --grid 7 6 3 --lights dynamic \
+        --crates 2 --spot-frac 0.5
 
 Then compile with a COARSE SH probe spacing (the SH irradiance volume bakes a
 probe grid over the whole world AABB regardless of lights; at the default 1.0 m
@@ -76,9 +79,36 @@ DOOR_W = 256      # doorway opening width
 DOOR_H = 192      # doorway opening height (leaves a solid lintel under the ceiling)
 SHAFT = 384       # vertical shaft opening (square hole in interior slabs)
 
-TEX_WALL = "debug_wall_grey"
-TEX_FLOOR = "debug_floor_grey"
-TEX_CEIL = "debug_ceiling_grey"
+# Textures from the bundled "50-free-textures" collection. Each diffuse has a
+# `_n` (normal) and `_s` (specular) sibling, which prl-build auto-resolves into
+# the per-texture .prm bundle (build_pipeline.md §Texture name resolution), so
+# these maps also stress the normal-map + specular material pipeline. Using
+# several per surface class spreads geometry across more material buckets => more
+# indirect draw calls per frame, another axis of realistic stress.
+_C = "50-free-textures/"
+WALL_TEX = [_C + n for n in (
+    "concrete_stone_021", "concrete_stone_023", "concrete_stone_025",
+    "concrete_stone_027", "concrete_stone_029")]
+FLOOR_TEX = [_C + n for n in (
+    "concrete_pavement_036", "concrete_pavement_038", "concrete_pavement_040",
+    "concrete_pavement_042")]
+CEIL_TEX = [_C + n for n in (
+    "concrete_stone_031", "concrete_stone_033", "concrete_stone_035")]
+CRATE_TEX = [_C + n for n in ("wood_bark_046", "wood_bark_047", "wood_bark_048")]
+
+
+def pick(pool, key):
+    """Deterministically pick a texture from a pool by an integer key."""
+    return pool[key % len(pool)]
+
+# Crate stacks: small solid box-brushes piled on the room floor. They are world
+# geometry, so they (a) add to the per-frame geometry/BVH walk, (b) cast real
+# dynamic shadows under SPOT lights (the spot-shadow depth pass rasterizes world
+# geometry; point/cube shadows render entity occluders only -- see
+# rendering_pipeline.md §4, §7.1), and (c) carve the room's empty leaf into
+# several BSP leaves, so they spend the 4096-leaf budget and lower room count.
+CRATE_EDGE = 112      # crate cube edge (Quake units, ~2.8 m)
+CRATE_MARGIN = 192    # keep stacks this far from interior walls (clear of doors)
 
 # Cyberpunk-ish palette (0-255 RGB) so lights vary in color.
 LIGHT_COLORS = [
@@ -106,14 +136,14 @@ def box_brush(x0, y0, z0, x1, y1, z1, tex_side, tex_top, tex_bottom):
     )
 
 
-def wall_box(brushes, x0, y0, x1, y1, zf, zc):
+def wall_box(brushes, x0, y0, x1, y1, zf, zc, tex):
     """Solid wall slab spanning [x0,x1]x[y0,y1] over interior height [zf,zc]."""
     if x1 - x0 < 1 or y1 - y0 < 1:
         return
-    brushes.append(box_brush(x0, y0, zf, x1, y1, zc, TEX_WALL, TEX_WALL, TEX_WALL))
+    brushes.append(box_brush(x0, y0, zf, x1, y1, zc, tex, tex, tex))
 
 
-def emit_wall(brushes, axis, line, lo, hi, zf, zc, doored):
+def emit_wall(brushes, axis, line, lo, hi, zf, zc, doored, tex):
     """Emit a wall on an interior/edge boundary, optionally with a centered door.
 
     axis 'x': wall lies on plane X=line, spanning Y in [lo,hi].
@@ -123,9 +153,9 @@ def emit_wall(brushes, axis, line, lo, hi, zf, zc, doored):
     h = WALL_T // 2
     if not doored:
         if axis == "x":
-            wall_box(brushes, line - h, lo, line + h, hi, zf, zc)
+            wall_box(brushes, line - h, lo, line + h, hi, zf, zc, tex)
         else:
-            wall_box(brushes, lo, line - h, hi, line + h, zf, zc)
+            wall_box(brushes, lo, line - h, hi, line + h, zf, zc, tex)
         return
 
     # Centered full-thickness doorway: split into two jambs + a lintel.
@@ -133,16 +163,16 @@ def emit_wall(brushes, axis, line, lo, hi, zf, zc, doored):
     d0, d1 = mid - DOOR_W // 2, mid + DOOR_W // 2
     ztop = zf + DOOR_H
     if axis == "x":
-        wall_box(brushes, line - h, lo, line + h, d0, zf, zc)       # jamb low
-        wall_box(brushes, line - h, d1, line + h, hi, zf, zc)       # jamb high
-        wall_box(brushes, line - h, d0, line + h, d1, ztop, zc)     # lintel
+        wall_box(brushes, line - h, lo, line + h, d0, zf, zc, tex)       # jamb low
+        wall_box(brushes, line - h, d1, line + h, hi, zf, zc, tex)       # jamb high
+        wall_box(brushes, line - h, d0, line + h, d1, ztop, zc, tex)     # lintel
     else:
-        wall_box(brushes, lo, line - h, d0, line + h, zf, zc)
-        wall_box(brushes, d1, line - h, hi, line + h, zf, zc)
-        wall_box(brushes, d0, line - h, d1, line + h, ztop, zc)
+        wall_box(brushes, lo, line - h, d0, line + h, zf, zc, tex)
+        wall_box(brushes, d1, line - h, hi, line + h, zf, zc, tex)
+        wall_box(brushes, d0, line - h, d1, line + h, ztop, zc, tex)
 
 
-def emit_slab(brushes, x0, y0, x1, y1, zc, holed):
+def emit_slab(brushes, x0, y0, x1, y1, zc, holed, ftex, ctex):
     """Horizontal slab centered on Z=zc over footprint [x0,x1]x[y0,y1].
 
     When `holed`, a centered square shaft is carved (slab split into 4 rims)
@@ -151,16 +181,16 @@ def emit_slab(brushes, x0, y0, x1, y1, zc, holed):
     h = SLAB_T // 2
     z0, z1 = zc - h, zc + h
     if not holed:
-        brushes.append(box_brush(x0, y0, z0, x1, y1, z1, TEX_FLOOR, TEX_FLOOR, TEX_CEIL))
+        brushes.append(box_brush(x0, y0, z0, x1, y1, z1, ftex, ftex, ctex))
         return
     cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
     a0, a1 = cx - SHAFT // 2, cx + SHAFT // 2
     b0, b1 = cy - SHAFT // 2, cy + SHAFT // 2
     # four rims around the hole
-    brushes.append(box_brush(x0, y0, z0, x1, b0, z1, TEX_FLOOR, TEX_FLOOR, TEX_CEIL))
-    brushes.append(box_brush(x0, b1, z0, x1, y1, z1, TEX_FLOOR, TEX_FLOOR, TEX_CEIL))
-    brushes.append(box_brush(x0, b0, z0, a0, b1, z1, TEX_FLOOR, TEX_FLOOR, TEX_CEIL))
-    brushes.append(box_brush(a1, b0, z0, x1, b1, z1, TEX_FLOOR, TEX_FLOOR, TEX_CEIL))
+    brushes.append(box_brush(x0, y0, z0, x1, b0, z1, ftex, ftex, ctex))
+    brushes.append(box_brush(x0, b1, z0, x1, y1, z1, ftex, ftex, ctex))
+    brushes.append(box_brush(x0, b0, z0, a0, b1, z1, ftex, ftex, ctex))
+    brushes.append(box_brush(a1, b0, z0, x1, b1, z1, ftex, ftex, ctex))
 
 
 def tile_layer(nx, ny, rng):
@@ -185,6 +215,36 @@ def tile_layer(nx, ny, rng):
                     room[(i + di, j + dj)] = rid
             rid += 1
     return room
+
+
+def emit_crate_stack(brushes, x0i, y0i, x1i, y1i, zf, zc, tex, rng):
+    """Pile crate cubes on the floor inside the room interior rect.
+
+    The base is placed clear of the walls by CRATE_MARGIN; upper crates jitter
+    slightly for a messy-pile silhouette (better shadow shapes). Stack height is
+    capped so the top crate stays under the ceiling `zc` -- otherwise a tall
+    stack pokes through the ceiling slab and can engulf the ceiling light (which
+    then bakes "inside a solid leaf"). Boxes are solid world brushes; minor
+    overlaps between stacked crates are harmless (the BSP unions solids).
+    """
+    e = CRATE_EDGE
+    # interior rect the base may occupy (so the whole crate stays off the walls)
+    bx0, bx1 = x0i + CRATE_MARGIN, x1i - CRATE_MARGIN - e
+    by0, by1 = y0i + CRATE_MARGIN, y1i - CRATE_MARGIN - e
+    if bx1 <= bx0 or by1 <= by0:
+        return
+    px = rng.randint(bx0, bx1)
+    py = rng.randint(by0, by1)
+    max_h = max(1, (zc - zf - 32) // e)             # fit under the ceiling
+    height = rng.randint(1, min(3, max_h))
+    for n in range(height):
+        jx = rng.randint(-e // 4, e // 4) if n else 0
+        jy = rng.randint(-e // 4, e // 4) if n else 0
+        cx0 = max(x0i + 8, min(px + jx, x1i - e - 8))
+        cy0 = max(y0i + 8, min(py + jy, y1i - e - 8))
+        cz0 = zf + n * e
+        brushes.append(box_brush(cx0, cy0, cz0, cx0 + e, cy0 + e, cz0 + e,
+                                 tex, tex, tex))
 
 
 def light_entity(mode, origin, color, falloff, intensity, spot, rng):
@@ -213,8 +273,10 @@ def light_entity(mode, origin, color, falloff, intensity, spot, rng):
     return out
 
 
-def generate(nx, ny, nz, seed, door_prob, shaft_prob, lights_mode, light_every):
+def generate(nx, ny, nz, seed, door_prob, shaft_prob, lights_mode, light_every,
+             crates_per_room, spot_frac):
     rng = random.Random(seed)
+    spot_stride = max(1, round(1.0 / spot_frac)) if spot_frac > 0 else 0
     # center the grid near origin
     ox = -(nx * PITCH_XY) // 2
     oy = -(ny * PITCH_XY) // 2
@@ -244,22 +306,23 @@ def generate(nx, ny, nz, seed, door_prob, shaft_prob, lights_mode, light_every):
         for j in range(ny):
             for i in range(nx):
                 r = room_of(i, j, k)
+                wt = pick(WALL_TEX, r)               # wall texture varies by room
                 # X-boundary at X[i] (between cell i-1 and i)
                 if i == 0:
-                    emit_wall(brushes, "x", X[0], Y[j], Y[j + 1], zf, zc, False)
+                    emit_wall(brushes, "x", X[0], Y[j], Y[j + 1], zf, zc, False, wt)
                 elif room_of(i - 1, j, k) != r:
                     emit_wall(brushes, "x", X[i], Y[j], Y[j + 1], zf, zc,
-                              rng.random() < door_prob)
+                              rng.random() < door_prob, wt)
                 if i == nx - 1:
-                    emit_wall(brushes, "x", X[nx], Y[j], Y[j + 1], zf, zc, False)
+                    emit_wall(brushes, "x", X[nx], Y[j], Y[j + 1], zf, zc, False, wt)
                 # Y-boundary at Y[j]
                 if j == 0:
-                    emit_wall(brushes, "y", Y[0], X[i], X[i + 1], zf, zc, False)
+                    emit_wall(brushes, "y", Y[0], X[i], X[i + 1], zf, zc, False, wt)
                 elif room_of(i, j - 1, k) != r:
                     emit_wall(brushes, "y", Y[j], X[i], X[i + 1], zf, zc,
-                              rng.random() < door_prob)
+                              rng.random() < door_prob, wt)
                 if j == ny - 1:
-                    emit_wall(brushes, "y", Y[ny], X[i], X[i + 1], zf, zc, False)
+                    emit_wall(brushes, "y", Y[ny], X[i], X[i + 1], zf, zc, False, wt)
 
     # Horizontal slabs at every Z-boundary, full cell footprint. Top and bottom
     # boundaries (k==0, k==nz) are always solid (seal). Interior boundaries get a
@@ -270,7 +333,8 @@ def generate(nx, ny, nz, seed, door_prob, shaft_prob, lights_mode, light_every):
                 interior = 0 < k < nz
                 holed = (interior and (i % 3 == 1) and (j % 3 == 1)
                          and rng.random() < shaft_prob)
-                emit_slab(brushes, X[i], Y[j], X[i + 1], Y[j + 1], Z[k], holed)
+                emit_slab(brushes, X[i], Y[j], X[i + 1], Y[j + 1], Z[k], holed,
+                          pick(FLOOR_TEX, i + j), pick(CEIL_TEX, i + j + k))
 
     # Player spawn: interior of cell (min(1,nx-1), min(1,ny-1), 0).
     si, sj = min(1, nx - 1), min(1, ny - 1)
@@ -278,35 +342,49 @@ def generate(nx, ny, nz, seed, door_prob, shaft_prob, lights_mode, light_every):
     spy = (Y[sj] + Y[sj + 1]) // 2
     spz = Z[0] + SLAB_T // 2 + 32
 
-    # Lights: one per room (sampled every `light_every`th room), placed near the
-    # ceiling at the room centroid. Every 5th light is a spotlight so both the
-    # 96-slot spot pool and the 6-slot cube pool get exercised.
+    # Per-room props: crate stacks on the floor and one ceiling light. Both need
+    # the room's interior rect, so invert cell -> room once (rooms are single-layer).
     lights = []
-    if lights_mode != "none":
-        # invert cell -> room into room -> cells (rooms are single-layer)
+    ncrates = 0
+    if lights_mode != "none" or crates_per_room > 0:
         room_cells = {}
         for k in range(nz):
             for (i, j), r in layers[k].items():
                 room_cells.setdefault(r, (k, []))[1].append((i, j))
         nlit = 0
         for r in sorted(room_cells):
-            if r % max(1, light_every) != 0:
-                continue
             k, cells = room_cells[r]
             i0 = min(c[0] for c in cells); i1 = max(c[0] for c in cells)
             j0 = min(c[1] for c in cells); j1 = max(c[1] for c in cells)
+            x0i, x1i = X[i0] + WALL_T // 2, X[i1 + 1] - WALL_T // 2
+            y0i, y1i = Y[j0] + WALL_T // 2, Y[j1 + 1] - WALL_T // 2
+            zf = Z[k] + SLAB_T // 2                  # interior floor
+            zc = Z[k + 1] - SLAB_T // 2              # interior ceiling
             cx = (X[i0] + X[i1 + 1]) // 2
             cy = (Y[j0] + Y[j1 + 1]) // 2
-            cz = Z[k + 1] - SLAB_T // 2 - 48        # just under the ceiling
-            color = LIGHT_COLORS[r % len(LIGHT_COLORS)]
-            spot = (nlit % 5 == 0)
-            falloff = 1600 if spot else 1400
-            intensity = 220 if spot else 150
-            lights.append(light_entity(lights_mode, (cx, cy, cz), color,
-                                       falloff, intensity, spot, rng))
-            nlit += 1
 
-    return brushes, (spx, spy, spz), total_rooms, lights
+            # crate stacks (one wood texture per room so abutting stacks match)
+            crate_tex = pick(CRATE_TEX, r)
+            for _ in range(crates_per_room):
+                before = len(brushes)
+                emit_crate_stack(brushes, x0i, y0i, x1i, y1i, zf, zc, crate_tex, rng)
+                ncrates += (len(brushes) > before)
+
+            # light near the ceiling. Every 5th light is a spotlight aimed down --
+            # spots are what cast crate shadows (world geo into the spot depth pass).
+            if lights_mode != "none" and r % max(1, light_every) == 0:
+                # hug the ceiling, above the tallest crate stack (which is capped
+                # in emit_crate_stack at zc-32) so a centroid crate never engulfs it
+                cz = zc - 24
+                color = LIGHT_COLORS[r % len(LIGHT_COLORS)]
+                spot = (spot_stride > 0 and nlit % spot_stride == 0)
+                falloff = 1600 if spot else 1400
+                intensity = 220 if spot else 150
+                lights.append(light_entity(lights_mode, (cx, cy, cz), color,
+                                           falloff, intensity, spot, rng))
+                nlit += 1
+
+    return brushes, (spx, spy, spz), total_rooms, lights, ncrates
 
 
 def write_map(path, brushes, spawn, nx, ny, nz, lights):
@@ -370,6 +448,15 @@ def main(argv):
                          "+ SH bake -- much slower compile). (default none)")
     ap.add_argument("--light-every", type=int, default=1, metavar="N",
                     help="place a light in every Nth room (default 1 = all)")
+    ap.add_argument("--crates", type=int, default=0, metavar="N",
+                    help="crate stacks per room (solid box-brushes on the floor; "
+                         "cast spot-light shadows and add to the geometry walk, "
+                         "but each spends BSP leaves so room count must drop). "
+                         "(default 0)")
+    ap.add_argument("--spot-frac", type=float, default=0.2,
+                    help="fraction of lights that are spotlights. Only spots "
+                         "cast shadows from world geometry (crates), so raise "
+                         "this to stress shadow-map rendering. (default 0.2)")
     args = ap.parse_args(argv)
 
     nx, ny, nz = args.grid
@@ -384,13 +471,13 @@ def main(argv):
               f"classic +/-16384 envelope (still f32-exact, but unusually large)",
               file=sys.stderr)
 
-    brushes, spawn, rooms, lights = generate(nx, ny, nz, args.seed,
-                                             args.door_prob, args.shaft_prob,
-                                             args.lights, args.light_every)
+    brushes, spawn, rooms, lights, ncrates = generate(
+        nx, ny, nz, args.seed, args.door_prob, args.shaft_prob,
+        args.lights, args.light_every, args.crates, args.spot_frac)
     write_map(args.out, brushes, spawn, nx, ny, nz, lights)
     nspot = sum(1 for L in lights if "spot" in L[1])
     print(f"grid {nx}x{ny}x{nz} = {nx*ny*nz} cells -> {rooms} rooms, "
-          f"{len(brushes)} brushes")
+          f"{len(brushes)} brushes ({ncrates} crates)")
     print(f"lights: {len(lights)} {args.lights} ({nspot} spot, "
           f"{len(lights)-nspot} point)")
     print(f"extent: X/Y +/-{max(half_x, half_y)} u, Z {nz*PITCH_Z} u tall")

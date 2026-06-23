@@ -717,7 +717,7 @@ fn resolve_crouch_intent(mode: options::CrouchMode, button: ButtonState, latch: 
 
 // --- Application state ---
 
-struct App {
+pub(crate) struct App {
     renderer: Option<Renderer>,
 
     /// Audio subsystem. `None` until `resumed()` builds it after the renderer,
@@ -3527,7 +3527,10 @@ impl App {
     /// borrow of `self.renderer`, and a `&self` receiver here would conflict with
     /// it. Borrowing only `self.script_ctx.slot_table` keeps the two field borrows
     /// disjoint.
-    fn build_ui_slot_snapshot(
+    ///
+    /// `pub(crate)` so the netcode state-slot apply tests can drive the REAL UI read
+    /// path (the replicated value must surface here), not a hand-mirrored copy.
+    pub(crate) fn build_ui_slot_snapshot(
         slot_table: &scripting::slot_table::SlotTable,
     ) -> std::collections::HashMap<String, scripting::slot_table::SlotValue> {
         slot_table

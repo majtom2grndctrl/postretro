@@ -1,29 +1,6 @@
 // Server-side state-slot replication tracker: per-client acked-baseline state and
 // per-client state-record encoding, keyed only by `StateSlotId`.
 // See: context/lib/networking.md
-//
-// This module is the net-crate half of M15 Phase 3.5 server state replication, a
-// SIBLING to the entity tracker in `replication.rs` (kept separate per the
-// split-before-extend decision — slots are not folded into `ServerReplication`).
-// It is `postretro`-free, registry-blind, and script-blind by construction: it
-// never sees a `SlotTable`, `SlotValue`, `EntityRegistry`, descriptor types, or
-// glam. A slot is identified only by its deterministic `StateSlotId`; the engine
-// glue (`crate::netcode`, Task 3) owns the `StateSlotId -> dotted name` map and
-// hands this tracker owned `WireSlotValue`s keyed by slot id.
-//
-// Value cardinality follows scope (the engine chooses which ingest method to call):
-//   * `SharedGlobal`         -> one value per `StateSlotId`, sent to every client.
-//   * `OwnerPrivatePlayer`   -> one value per `(StateSlotId, owner_client_id)`, sent
-//                               only to the owning client.
-//
-// A state "delta" is NOT a numeric/semantic diff: it carries the new COMPLETE
-// `WireSlotValue` plus the referenced (acked) baseline id and the new baseline id.
-// The split from a full baseline is only about whether the client already holds a
-// prior baseline to reference. Baseline ids advance on value change so a stale
-// client is detectable; an unchanged value keeps its id and an acked client is
-// omitted. Acks advance per-client state monotonically; a refresh forces a full
-// baseline. None of this path panics on a stale/forged ack or refresh — an unknown
-// client or out-of-range id is simply ignored.
 
 use std::collections::{HashMap, HashSet};
 
@@ -578,7 +555,7 @@ mod tests {
 
     // Fallback to full when the referenced baseline is missing: a refresh naming a
     // baseline the client never acked still yields a FullBaseline (the client holds
-    // no acked baseline, so encode falls back to full rather than a danging delta).
+    // no acked baseline, so encode falls back to full rather than a dangling delta).
     #[test]
     fn fallback_to_full_when_referenced_baseline_missing() {
         let mut server = ServerStateReplication::new();

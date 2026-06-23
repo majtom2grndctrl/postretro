@@ -12,14 +12,10 @@ mod movement_state;
 mod prediction;
 mod reconcile;
 mod replication;
-// M15 Phase 3.5: the replicated-slot schema/fingerprint/lowering, the descriptor
-// projection adapter (Task 1), and the engine production (`HostStateReplication`) /
-// client apply (`ClientStateApply`) glue (Task 3). The schema is the only place the
-// engine maps `StateSlotId <-> dotted name`; the net trackers stay registry-blind.
-// Some Task 1 items (e.g. `HealthSlotProjection`, the `DescriptorSlotProjection`
-// trait) are exercised by tests and Task 4/5 but not yet by the production hook, so
-// the module carries a scoped dead-code allow until those tasks wire them.
-#[allow(dead_code)]
+// M15 Phase 3.5: the replicated-slot schema/fingerprint/lowering, the engine
+// production (`HostStateReplication`) and client apply (`ClientStateApply`) glue. The
+// schema is the only place the engine maps `StateSlotId <-> dotted name`; the net
+// trackers stay registry-blind.
 mod state_slots;
 mod wire_convert;
 
@@ -945,6 +941,11 @@ pub(crate) fn host_replicate(
     // The replicated-state schema fingerprint is stamped into every snapshot carrying
     // state records so the client gates on a match. Built once from the live slot table.
     let state_fingerprint = state_slots.fingerprint(slot_table);
+    // Ingest this frame's authoritative source values ONCE before the per-client loop:
+    // the scan is frame-wide (every replicated slot, every owned pawn), so running it
+    // per client would repeat it O(clients) times. Each client's `produce_for_client`
+    // below only reads the now-ingested per-client view.
+    state_slots.ingest_frame(slot_table, registry, owners);
     // One sequence shared across all clients in this 30 Hz batch — and shared with the
     // state tracker's `produce_for_client` so one ack describes one server frame.
     let sequence = replication.begin_batch();
@@ -959,9 +960,7 @@ pub(crate) fn host_replicate(
             // The entity tracker leaves `state_records` empty + an all-zero fingerprint;
             // overwrite both with the real fingerprint and the per-client records.
             raw.state_schema_fingerprint = state_fingerprint;
-            if let Some(records) =
-                state_slots.produce_for_client(slot_table, registry, owners, client_id, sequence)
-            {
+            if let Some(records) = state_slots.produce_for_client(client_id, sequence) {
                 raw.state_records = records;
             }
             let bytes = wire::encode(&raw);

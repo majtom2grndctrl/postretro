@@ -456,7 +456,7 @@ export type WritableStateRef<T> = ReadonlyStateRef<T> & { __writableStateRefBran
 --- a finite-number array. `persist` saves on clean exit; `readonly` blocks
 --- script writes. `network = "shared"` replicates the slot to every connected
 --- client (server-authoritative); omitted means local-only.
-export type StoreSlotSchema = { type: string, readonly: boolean?, network: string?, [string]: any }
+export type StoreSlotSchema = { type: string, readonly: boolean?, network: "shared"?, [string]: any }
 
 --- Plain declaration data returned through `ModManifest.stores`.
 export type StoreDeclaration = { namespace: string, schema: { [string]: StoreSlotSchema } }

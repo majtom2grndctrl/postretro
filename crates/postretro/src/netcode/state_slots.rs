@@ -2,20 +2,17 @@
 // `StateSlotId` map and 32-byte fingerprint from the slot table's replicated
 // slots, lowers them to `postretro-net` wire descriptors, and projects
 // descriptor-defined gameplay values (HealthComponent) into named replicated
-// slots. The net crate is registry-blind and script-blind; this module owns the
-// only mapping between `SlotTable` dotted names and wire `StateSlotId`s.
+// slots. Owns the host production loop (`HostStateReplication`) and the client
+// apply path (`ClientStateApply`). The net crate is registry-blind and
+// script-blind; this module owns the only mapping between `SlotTable` dotted
+// names and wire `StateSlotId`s.
 // See: context/lib/networking.md · context/lib/scripting.md §5
-//
-// Phase 3.5 Task 1 scope: the schema/fingerprint/lowering and the projection
-// adapter *shape*. Task 2 builds the server tracker against the descriptors, and
-// Task 3 wires production/apply into the frame loop. No production loop here yet.
 
 use postretro_net::state_slots::{
     NumericRange as WireNumericRange, ReplicationScope as WireReplicationScope, SlotValueType,
     StateSchema, StateSlotDescriptor, StateSlotId,
 };
 
-use crate::scripting::components::health::pawn_with_health;
 use crate::scripting::registry::EntityRegistry;
 use crate::scripting::slot_table::{
     NumericRange, ReplicationScope, SlotTable, SlotType, SlotValue,
@@ -123,7 +120,10 @@ impl ReplicatedSlotSchema {
     }
 
     /// The wire id for a dotted slot name, or `None` if the slot is not replicated.
-    /// The production path uses this to stamp a projected value with its id.
+    /// The name→id inverse of [`name_for`](Self::name_for).
+    // Reserved extension point; production bypasses via descriptor_health_for_pawn /
+    // entries(). Exercised by tests today.
+    #[allow(dead_code)]
     pub(crate) fn id_for(&self, name: &str) -> Option<StateSlotId> {
         self.entries
             .iter()
@@ -183,9 +183,11 @@ fn scope_to_wire(scope: ReplicationScope) -> WireReplicationScope {
     match scope {
         ReplicationScope::SharedGlobal => WireReplicationScope::SharedGlobal,
         ReplicationScope::OwnerPrivatePlayer => WireReplicationScope::OwnerPrivatePlayer,
-        // `None` slots are filtered out before lowering, so this is unreachable in
-        // practice; map defensively to shared rather than panic.
-        ReplicationScope::None => WireReplicationScope::SharedGlobal,
+        ReplicationScope::None => {
+            unreachable!(
+                "None-scoped slots are filtered out by ReplicatedSlotSchema::build before lowering"
+            )
+        }
     }
 }
 
@@ -238,8 +240,11 @@ fn compute_fingerprint(entries: &[ReplicatedSlotSchemaEntry]) -> [u8; 32] {
         let scope_tag = match entry.scope {
             ReplicationScope::SharedGlobal => SCOPE_TAG_SHARED_GLOBAL,
             ReplicationScope::OwnerPrivatePlayer => SCOPE_TAG_OWNER_PRIVATE,
-            // Filtered out before this point; map deterministically rather than panic.
-            ReplicationScope::None => 0,
+            ReplicationScope::None => {
+                unreachable!(
+                    "None-scoped slots are filtered out by ReplicatedSlotSchema::build before lowering"
+                )
+            }
         };
         hasher.update(&[scope_tag]);
     }
@@ -251,57 +256,6 @@ fn write_len_prefixed_str(hasher: &mut blake3::Hasher, value: &str) {
     let bytes = value.as_bytes();
     hasher.update(&(bytes.len() as u32).to_le_bytes());
     hasher.update(bytes);
-}
-
-// ---------------------------------------------------------------------------
-// Descriptor-defined value projection
-// ---------------------------------------------------------------------------
-
-/// One projected `(dotted slot name, value)` pair, produced by a projection adapter
-/// from descriptor-defined gameplay state. The production loop (Task 3) maps the
-/// name to a `StateSlotId` via [`ReplicatedSlotSchema::id_for`] and the server
-/// tracker (Task 2) tracks the wire value.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct ProjectedSlotValue {
-    pub(crate) name: String,
-    pub(crate) value: SlotValue,
-}
-
-/// A source of descriptor-defined gameplay values that feed named replicated slots.
-/// Phase 3.5 adds no descriptor authoring syntax: an adapter reads engine component
-/// state and emits named-slot projections. The schema (type/scope/validation) lives
-/// in the slot table; an adapter only supplies values for already-declared slots.
-pub(crate) trait DescriptorSlotProjection {
-    /// Project the current descriptor-defined values into named slots for one
-    /// player pawn context. Returns the pairs to replicate; an empty vec means the
-    /// source has no value this frame (e.g. no pawn materialized yet).
-    fn project(&self, registry: &EntityRegistry) -> Vec<ProjectedSlotValue>;
-}
-
-/// The first projection adapter: reads `HealthComponent` current/max from the
-/// descriptor-spawned player pawn and projects them to `player.health` /
-/// `player.maxHealth`. No general descriptor-struct replication — only these two
-/// named numeric slots. Task 4 extends this to per-owner extraction on the server;
-/// Task 1 establishes the adapter shape and the single-pawn read.
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct HealthSlotProjection;
-
-impl DescriptorSlotProjection for HealthSlotProjection {
-    fn project(&self, registry: &EntityRegistry) -> Vec<ProjectedSlotValue> {
-        let Some((_pawn, health)) = pawn_with_health(registry) else {
-            return Vec::new();
-        };
-        vec![
-            ProjectedSlotValue {
-                name: "player.health".to_string(),
-                value: SlotValue::Number(health.current),
-            },
-            ProjectedSlotValue {
-                name: "player.maxHealth".to_string(),
-                value: SlotValue::Number(health.max),
-            },
-        ]
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -388,37 +342,33 @@ impl HostStateReplication {
             .request_refresh(client_id, StateSlotId(slot_id), missing_baseline_ref);
     }
 
-    /// Ingest this server frame's authoritative values into the tracker, then produce
-    /// the per-client state records to splice into `client_id`'s snapshot. Returns
-    /// `None` for an unregistered (pending/rejected/closed) client, so such a client
-    /// receives no state records.
+    /// Produce the per-client state records to splice into `client_id`'s snapshot.
+    /// Returns `None` for an unregistered (pending/rejected/closed) client, so such a
+    /// client receives no state records.
     ///
-    /// The collect+ingest step is intrinsically per-frame, but the tracker dedups by
-    /// value (an unchanged value keeps its baseline id), so calling it once per client
-    /// in a batch only re-ingests already-tracked values cheaply. To keep one ack per
-    /// frame, the caller passes the shared `sequence` from the entity tracker's batch.
+    /// PRODUCE ONLY — the caller must run [`ingest_frame`](Self::ingest_frame) ONCE per
+    /// frame BEFORE the per-client produce loop. Ingest is a frame-wide registry/table
+    /// scan; running it once per client would repeat it O(clients) times. To keep one
+    /// ack per frame, the caller passes the shared `sequence` from the entity tracker's
+    /// batch.
     pub(crate) fn produce_for_client(
         &mut self,
-        slot_table: &SlotTable,
-        registry: &EntityRegistry,
-        owners: &MovementOwners,
         client_id: u64,
         sequence: u32,
     ) -> Option<Vec<RawStateSlotRecord>> {
-        // Build the schema once, then ingest this frame's projected values. The schema
-        // borrow is dropped before the tracker call (it borrows `self.schema`; the
-        // tracker borrows `self.tracker`), so clone the small per-entry projection list
-        // out first.
-        self.ingest_frame(slot_table, registry, owners);
         self.tracker.produce_in_batch(client_id, sequence)
     }
 
-    /// Collect and ingest this frame's authoritative source values. Shared slots take
-    /// the slot table's current value; owner-private slots take a per-owner value
-    /// (descriptor-fed health from each owned pawn's `HealthComponent`, else the slot's
-    /// table value keyed to each owner). A slot with no source value this frame is
-    /// simply not ingested (it keeps its prior tracked value, or stays absent).
-    fn ingest_frame(
+    /// Collect and ingest this frame's authoritative source values into the tracker.
+    /// Shared slots take the slot table's current value; owner-private slots take a
+    /// per-owner value (descriptor-fed health from each owned pawn's `HealthComponent`,
+    /// else the slot's table value keyed to each owner). A slot with no source value
+    /// this frame is simply not ingested (it keeps its prior tracked value, or stays
+    /// absent).
+    ///
+    /// Run ONCE per frame before the per-client produce loop: the scan is frame-wide,
+    /// not per-client.
+    pub(crate) fn ingest_frame(
         &mut self,
         slot_table: &SlotTable,
         registry: &EntityRegistry,
@@ -492,9 +442,8 @@ fn owner_private_source_value(
 /// Read the descriptor-fed health value for `name` from `pawn`'s live
 /// `HealthComponent`, the first descriptor-defined replicated source (M15 Phase 3.5).
 /// `player.health` → current HP, `player.maxHealth` → max HP. `None` for any other
-/// name or a pawn carrying no `HealthComponent`. This is the per-owner generalization
-/// of [`HealthSlotProjection`]: the production path reads each owned pawn's component
-/// rather than a single context, so each client's snapshot carries its own health.
+/// name or a pawn carrying no `HealthComponent`. The production path reads each owned
+/// pawn's component per-owner, so each client's snapshot carries its own health.
 fn descriptor_health_for_pawn(
     registry: &EntityRegistry,
     name: &str,
@@ -589,18 +538,23 @@ impl ClientStateApply {
         }
     }
 
-    /// Validate and apply one snapshot's replicated-state records. The whole batch is
-    /// validated against the local schema FIRST (fingerprint, then every record); any
-    /// invalid record rejects the WHOLE batch and leaves every slot unchanged — no
-    /// partial apply. On a fingerprint mismatch a stable diagnostic is logged and the
-    /// batch is dropped.
+    /// Validate and apply one snapshot's replicated-state records. Two rejection
+    /// classes behave differently:
+    ///
+    /// - **Structural / schema rejection** — a fingerprint mismatch, or any record that
+    ///   fails schema validation (unknown slot id, type mismatch, non-finite, over-cap)
+    ///   or the store's own type/range/enum/finite check — rejects the WHOLE batch and
+    ///   leaves every slot unchanged (no partial apply, no baseline advance). A
+    ///   fingerprint mismatch logs a stable diagnostic; the batch is dropped.
+    /// - **Delta against a missing baseline** — a single delta referencing a baseline
+    ///   the client does not hold is EXCLUDED from this batch and triggers a refresh
+    ///   request, while the rest of the batch still applies normally. It does not reject
+    ///   the batch.
     ///
     /// On success, every applicable record's value is written through the atomic
     /// store-batch helper (which prevalidates all mapped values, then commits all or
-    /// none), so the slot table's own type/range/enum/finite checks run too. A delta
-    /// referencing a baseline the client does not hold yields a refresh request and is
-    /// excluded from the applied set (the rest of the batch still applies). Returns the
-    /// acks for applied records and any refresh requests to send.
+    /// none), so the slot table's own validation runs too. Returns the acks for applied
+    /// records and any refresh requests to send.
     pub(crate) fn apply_snapshot_state(
         &mut self,
         slot_table: &mut SlotTable,
@@ -1021,8 +975,9 @@ mod tests {
         let mut host = HostStateReplication::new();
         host.register_client(CLIENT_A);
         let fingerprint = host.fingerprint(&host_table);
+        host.ingest_frame(&host_table, &registry, &owners);
         let records = host
-            .produce_for_client(&host_table, &registry, &owners, CLIENT_A, 0)
+            .produce_for_client(CLIENT_A, 0)
             .expect("registered client produces records");
         assert_eq!(records.len(), 2, "shared + owner-private both produced");
 
@@ -1064,8 +1019,9 @@ mod tests {
         let mut host = HostStateReplication::new();
         host.register_client(CLIENT_A);
         let fingerprint = host.fingerprint(&host_table);
+        host.ingest_frame(&host_table, &registry, &owners);
         let records = host
-            .produce_for_client(&host_table, &registry, &owners, CLIENT_A, 0)
+            .produce_for_client(CLIENT_A, 0)
             .expect("registered client produces records");
         assert_eq!(records.len(), 2, "health + maxHealth projected");
 
@@ -1098,9 +1054,8 @@ mod tests {
         let mut host = HostStateReplication::new();
         host.register_client(CLIENT_A);
         let _real_fingerprint = host.fingerprint(&host_table);
-        let records = host
-            .produce_for_client(&host_table, &registry, &owners, CLIENT_A, 0)
-            .expect("records");
+        host.ingest_frame(&host_table, &registry, &owners);
+        let records = host.produce_for_client(CLIENT_A, 0).expect("records");
 
         // The client holds a prior value the apply must NOT overwrite.
         let mut client_table = shared_and_private_table();
@@ -1201,12 +1156,9 @@ mod tests {
         host.register_client(CLIENT_B);
         let fingerprint = host.fingerprint(&host_table);
 
-        let records_a = host
-            .produce_for_client(&host_table, &registry, &owners, CLIENT_A, 0)
-            .unwrap();
-        let records_b = host
-            .produce_for_client(&host_table, &registry, &owners, CLIENT_B, 0)
-            .unwrap();
+        host.ingest_frame(&host_table, &registry, &owners);
+        let records_a = host.produce_for_client(CLIENT_A, 0).unwrap();
+        let records_b = host.produce_for_client(CLIENT_B, 0).unwrap();
 
         // Each client's batch carries only ITS pawn's health.
         let mut table_a = player_health_replicated_table();
@@ -1289,10 +1241,14 @@ mod tests {
         host.register_client(CLIENT_B);
         let fingerprint = host.fingerprint(&host_table);
 
+        // Ingest the frame's shared value once; both clients (and the late joiner) read
+        // the same ingested view.
+        host.ingest_frame(&host_table, &registry, &owners);
+
         // Both originally-accepted clients receive the shared value on the first frame.
         for client in [CLIENT_A, CLIENT_B] {
             let records = host
-                .produce_for_client(&host_table, &registry, &owners, client, 0)
+                .produce_for_client(client, 0)
                 .expect("accepted client produces records");
             assert_eq!(records.len(), 1, "the one shared fixture slot is produced");
 
@@ -1320,7 +1276,7 @@ mod tests {
         const CLIENT_C: u64 = 3;
         host.register_client(CLIENT_C);
         let late_records = host
-            .produce_for_client(&host_table, &registry, &owners, CLIENT_C, 1)
+            .produce_for_client(CLIENT_C, 1)
             .expect("late joiner produces records");
         assert_eq!(
             late_records.len(),
@@ -1384,8 +1340,9 @@ mod tests {
         let mut host = HostStateReplication::new();
         host.register_client(CLIENT_A);
         let fingerprint = host.fingerprint(&host_table);
+        host.ingest_frame(&host_table, &registry, &owners);
         let records = host
-            .produce_for_client(&host_table, &registry, &owners, CLIENT_A, 0)
+            .produce_for_client(CLIENT_A, 0)
             .expect("registered client produces records");
         assert_eq!(records.len(), 2, "health + maxHealth projected");
 
@@ -1434,9 +1391,8 @@ mod tests {
         let mut host = HostStateReplication::new();
         host.register_client(CLIENT_A);
         let _real_fingerprint = host.fingerprint(&host_table);
-        let records = host
-            .produce_for_client(&host_table, &registry, &owners, CLIENT_A, 0)
-            .expect("records");
+        host.ingest_frame(&host_table, &registry, &owners);
+        let records = host.produce_for_client(CLIENT_A, 0).expect("records");
 
         let mut client_table = shared_and_private_table();
         let mut client = ClientStateApply::new();
@@ -1463,24 +1419,25 @@ mod tests {
         );
     }
 
-    /// Mirror the UI read-snapshot slot projection contract documented on
-    /// `App::build_ui_slot_snapshot`: the snapshot carries every slot whose `value`
-    /// is `Some`. Deriving the assertion from that destination contract (not from the
-    /// netcode apply path) is the seam this AC test guards — the value the apply path
-    /// writes must surface as a present key in the UI read snapshot.
-    fn ui_slot_snapshot(slot_table: &SlotTable) -> HashMap<String, SlotValue> {
-        slot_table
-            .iter()
-            .filter_map(|(name, record)| {
-                record.value.clone().map(|value| (name.to_string(), value))
+    /// Read a numeric UI slot value from the REAL UI read-snapshot projection, or
+    /// `None` if absent. Pins the exact production destination contract by routing
+    /// through `crate::App::build_ui_slot_snapshot` — the slot-table → `slot_values`
+    /// projection that feeds `UiReadSnapshot` — rather than a hand-mirrored copy.
+    fn ui_snapshot_number(slot_table: &SlotTable, name: &str) -> Option<f32> {
+        crate::App::build_ui_slot_snapshot(slot_table)
+            .get(name)
+            .and_then(|value| match value {
+                SlotValue::Number(n) => Some(*n),
+                _ => None,
             })
-            .collect()
     }
 
-    // Acceptance metric: after applying the first full state baseline, the UI read
-    // snapshot contains both `player.health` and `player.maxHealth` (the connected
-    // client no longer renders them as missing). Drives the real host production →
-    // client apply glue, then projects the slot table exactly as the UI read path does.
+    // Acceptance metric (AC-1): after applying the first full state baseline through the
+    // REAL host production → client apply glue, the REAL UI read snapshot
+    // (`App::build_ui_slot_snapshot` → `slot_values`) carries both `player.health` and
+    // `player.maxHealth` — the connected client no longer renders them as missing. This
+    // is a true seam-crossing test: the apply path writes the slot table, the UI path
+    // reads it, and the value must survive the crossing.
     #[test]
     fn first_baseline_populates_ui_read_snapshot_player_health_slots() {
         let host_table = player_health_replicated_table();
@@ -1489,8 +1446,9 @@ mod tests {
         let mut host = HostStateReplication::new();
         host.register_client(CLIENT_A);
         let fingerprint = host.fingerprint(&host_table);
+        host.ingest_frame(&host_table, &registry, &owners);
         let records = host
-            .produce_for_client(&host_table, &registry, &owners, CLIENT_A, 0)
+            .produce_for_client(CLIENT_A, 0)
             .expect("registered client produces records");
 
         // A fresh client table whose player slots have NO value yet: the UI read
@@ -1498,25 +1456,26 @@ mod tests {
         let mut client_table = player_health_replicated_table();
         client_table.get_mut("player.health").unwrap().value = None;
         client_table.get_mut("player.maxHealth").unwrap().value = None;
-        let before = ui_slot_snapshot(&client_table);
         assert!(
-            !before.contains_key("player.health") && !before.contains_key("player.maxHealth"),
+            ui_snapshot_number(&client_table, "player.health").is_none()
+                && ui_snapshot_number(&client_table, "player.maxHealth").is_none(),
             "before the baseline the player health slots are missing from the UI snapshot"
         );
 
         let mut client = ClientStateApply::new();
         client.apply_snapshot_state(&mut client_table, 0, &fingerprint, &records);
 
-        let after = ui_slot_snapshot(&client_table);
-        assert_eq!(
-            after.get("player.health"),
-            Some(&SlotValue::Number(75.0)),
-            "player.health is present in the UI read snapshot after the first baseline"
+        let health = ui_snapshot_number(&client_table, "player.health")
+            .expect("player.health present in the UI read snapshot after the first baseline");
+        let max_health = ui_snapshot_number(&client_table, "player.maxHealth")
+            .expect("player.maxHealth present in the UI read snapshot after the first baseline");
+        assert!(
+            (health - 75.0).abs() < 1e-4,
+            "player.health reached the UI snapshot with the replicated value, got {health}"
         );
-        assert_eq!(
-            after.get("player.maxHealth"),
-            Some(&SlotValue::Number(100.0)),
-            "player.maxHealth is present in the UI read snapshot after the first baseline"
+        assert!(
+            (max_health - 100.0).abs() < 1e-4,
+            "player.maxHealth reached the UI snapshot with the replicated value, got {max_health}"
         );
     }
 
@@ -1539,8 +1498,9 @@ mod tests {
 
         // Frame 1: the host produces the first FullBaseline — but it is LOST (the
         // client never applies it, so it holds no baseline for net.objective).
+        host.ingest_frame(&host_table, &registry, &owners);
         let _lost = host
-            .produce_for_client(&host_table, &registry, &owners, CLIENT_A, 0)
+            .produce_for_client(CLIENT_A, 0)
             .expect("first frame records");
 
         // Frame 2: the value changes. With an acked baseline (from the host's view the
@@ -1550,8 +1510,9 @@ mod tests {
         let baseline_one = {
             // Re-produce frame 1 to learn its baseline id, ack it on the server so the
             // server will send a delta next, but the CLIENT never saw it.
+            host.ingest_frame(&host_table, &registry, &owners);
             let records = host
-                .produce_for_client(&host_table, &registry, &owners, CLIENT_A, 1)
+                .produce_for_client(CLIENT_A, 1)
                 .expect("frame 1 reproduced");
             let objective = records
                 .iter()
@@ -1563,9 +1524,8 @@ mod tests {
 
         // Now the value changes: the server emits a DELTA referencing baseline_one.
         host_table.get_mut("net.objective").unwrap().value = Some(SlotValue::Number(4.0));
-        let delta_records = host
-            .produce_for_client(&host_table, &registry, &owners, CLIENT_A, 2)
-            .expect("delta frame");
+        host.ingest_frame(&host_table, &registry, &owners);
+        let delta_records = host.produce_for_client(CLIENT_A, 2).expect("delta frame");
         assert!(
             delta_records
                 .iter()
@@ -1598,9 +1558,8 @@ mod tests {
         // Server handles the refresh and schedules a FullBaseline for that slot.
         let req = &outcome.refresh_requests[0];
         host.request_refresh(CLIENT_A, req.slot_id, req.missing_baseline_ref);
-        let repair_records = host
-            .produce_for_client(&host_table, &registry, &owners, CLIENT_A, 3)
-            .expect("repair frame");
+        host.ingest_frame(&host_table, &registry, &owners);
+        let repair_records = host.produce_for_client(CLIENT_A, 3).expect("repair frame");
         assert!(
             repair_records
                 .iter()

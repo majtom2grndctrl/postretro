@@ -1,5 +1,5 @@
 ---
-name: fix-findings
+name: fix-review-findings
 description: >
   Acts on review panel findings by dispatching concurrent GPT 5.5 workers with
   medium reasoning effort for small-blast-radius items (one per file), then a

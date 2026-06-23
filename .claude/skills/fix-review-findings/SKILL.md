@@ -1,5 +1,5 @@
 ---
-name: fix-findings
+name: fix-review-findings
 description: >
   Acts on review panel findings by dispatching concurrent Sonnet agents for
   small-blast-radius items (one per file), then an Opus agent for remaining

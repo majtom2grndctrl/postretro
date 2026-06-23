@@ -1,184 +1,10 @@
 # Implementation Roadmap
 
 > **Lifecycle:** reviewed and updated at the start of each milestone. Deleted when all milestones are complete.
-> **Purpose:** milestone-by-milestone plan from "wgpu window exists" through a moddable, playable game. Each milestone produces something visible and testable.
-> **Sequencing:** Milestones 1–9 built in order, each on the last. Milestones 10+ are parallel tracks in unrelated domains — animated enemies, advanced movement, sound, UI, the behavior-IR foundation. They share the Milestone 6/7 entity-and-collision foundation but none is a prerequisite to another. Build in any order. A milestone is a *grouping of specs*, not a single linear unit: specs within a milestone ship in sequence, but the milestones themselves are not a strict prerequisite chain.
+> **Purpose:** active quarterly roadmap from Milestone 10 onward. Milestones 1-9 are archived in `context/plans/roadmap-q1-archive.md`. Each milestone produces something visible and testable.
+> **Sequencing:** Milestone 10 starts the active planning horizon. Milestones 10+ are parallel tracks in related domains: animated enemies, advanced movement, sound, UI, behavior IR, multiplayer foundations, weapons/combat, kinematics, and co-op set-pieces. A milestone is a *grouping of specs*, not a single linear unit: specs within a milestone ship in sequence, but the milestones themselves are not a strict prerequisite chain.
 > **Related:** `context/lib/index.md`, `context/lib/rendering_pipeline.md`
 > **Status markers:** `[x]` shipped and in the tree · `[ ]` not yet built · cut-after-build items keep `[x]`, strike the description, and append **✂ Cut (YYYY-MM):** with the reason — so a "done" item that no longer exists in the tree reads as such · a later-revived cut item appends **↩ Revived (YYYY-MM):** pointing to the active work.
-
----
-
-## Milestone 1: BSP Loading and Wireframe ✓
-
-- [x] Integrate qbsp crate; load a compiled BSP2 file at startup
-- [x] Parse BSP geometry: vertices, edges, faces, models
-- [x] Upload vertex data to wgpu buffers
-- [x] Render BSP faces as wireframe (no textures, no lighting)
-- [x] Minimal free-fly camera (raw winit keyboard/mouse, enough to navigate — replaced by action-mapped input in Milestone 2)
-- [x] Basic PVS culling: determine camera leaf, decompress PVS, skip non-visible leaves
-
-**Testable outcome:** fly through a BSP level in wireframe, PVS culling visibly reduces draw count. ✓
-
----
-
-## Milestone 1.5: PRL Compiler and Voxel-Based Visibility ✓
-
-- [x] PRL binary format (postretro-level-format crate): header, section table, typed sections
-- [x] Level compiler (postretro-level-compiler crate): .map parsing via shambler, spatial partitioning, geometry extraction, PVS, binary output
-- [x] Voxel grid: rasterize brush volumes into 3D solid/empty bitmap for spatial queries
-- [x] Exterior void sealing: flood-fill from player spawn, mark unreachable empty space as solid
-- [x] Spatial grid with voxel-aware cell classification: solid cells skipped, boundary cells subdivided, air cells merged into face-containing clusters
-- [x] Ray-cast PVS via 3D-DDA through voxel grid (replaces BSP portal flood-fill)
-- [x] Engine PRL loader: file extension dispatch, cluster-based wireframe rendering with per-cluster coloring
-- [x] Visibility confidence diagnostics: --diagnostics flag, PRL confidence section, engine gradient rendering
-- [x] Test maps: varied-scale rooms (gen_test_map_4.py), contract test suite (107 tests, all passing)
-
-**Testable outcome:** compile .map → .prl, fly through in wireframe with voxel-based PVS culling. Visibility matches expectations across varied room sizes. ✓
-
-**Status note:** superseded by the BVH + portal pipeline in Milestone 4. Voxel code remains in repo as reference.
-
----
-
-## Milestone 2: Input and Frame Timing ✓
-
-- [x] Fixed-timestep frame loop: accumulator, interpolation factor, delta-time clamping
-- [x] Input subsystem: action mapping (keyboard/mouse via winit, gamepad via gilrs)
-- [x] Mouse capture, sensitivity, invert-Y
-- [x] Replace raw free-fly camera with action-driven camera (still no collision)
-- [x] Gamepad support: analog sticks, dead zones, trigger axes
-
-**Testable outcome:** action-driven camera navigating wireframe levels with stable frame timing. Keyboard, mouse, and gamepad all work. ✓
-
----
-
-## Milestone 3: Textured World ✓
-
-- [x] Load PNG textures at runtime, matched by texture name strings
-- [x] Depth buffer and back-face culling for solid rendering
-- [x] Create render pipeline: base texture with flat uniform lighting (no lightmaps yet)
-- [x] Material derivation from texture name prefixes (table lookup, logged warnings for unknown prefixes)
-- [x] CSG face clipping to eliminate z-fighting from overlapping brushes (PRL path).
-
-**Testable outcome:** textured level with uniform lighting. Navigate with action-mapped input. No z-fighting. ✓
-
----
-
-## Milestone 3.5: Rendering Foundation Extension ✓
-
-- [x] **Vertex format upgrade** — packed normals and tangents per vertex (octahedral `u16 × 2` each, plus bitangent sign).
-- [x] **Per-cell draw chunks** — world geometry grouped into per-portal-cell chunks with explicit AABB and index range.
-- [x] **GPU-driven indirect draw path** — compute cull → `multi_draw_indexed_indirect`.
-
-**Testable outcome:** textured level with flat ambient, navigable, rendering via GPU-driven indirect draws with portal + frustum culling. ✓
-
----
-
-## Milestone 4: BVH Foundation ✓
-
-- [x] **Compile-time BVH** — global SAH BVH over all static triangles, flattened to dense node/leaf arrays in DFS order, new `Bvh` PRL section.
-- [x] **Runtime BVH traversal** — WGSL skip-index DFS traversal with visible-cell bitmask fed by portal DFS.
-- [x] **Check-in gate** — visual parity with Milestone 3.5 confirmed.
-
-**Testable outcome:** ✓ identical visual output to Milestone 3.5, rendered through a global BVH. Milestone 5 unblocked.
-
-**Durable decisions migrated to `context/lib/`:**
-- Global vs. per-region rationale → `rendering_pipeline.md` §5
-- `Bvh` PRL section layout → `rendering_pipeline.md` §5 + `build_pipeline.md`
-- WGSL skip-index traversal pattern → `rendering_pipeline.md` §7.1
-
----
-
-## Milestone 5: Lighting Foundation ✓
-
-- [x] **FGD light entities** — `light`, `light_spot`, `light_sun` in `assets/postretro.fgd`; canonical light format; `_bake_only` property distinguishes runtime-dynamic lights from probe-grid-only contributors.
-- [x] **SH irradiance volume baker** — prl-build stage; ray-casts through the Milestone 4 BVH; SH L2 projection; validity mask.
-- [x] **Direct lighting loop** — flat per-fragment light loop over runtime lights; per-type evaluation; Lambert diffuse.
-- [x] **Light influence volumes** — per-light sphere bounds in PRL; runtime spatial culling; gates CSM slot assignment and SDF sphere-trace per-light activation.
-- [x] ~~**CSM sun shadows** — 3 cascades, 1024², bounding-sphere fit with rotation-invariant texel snapping. Hard edges match aesthetic.~~ **✂ Cut (2026-04):** retired with the old lighting stack (alongside the SDF sphere-trace) ahead of the lighting rework; no runtime cascade pass remains in the tree.
-- [x] **Runtime probe sampling** — parse SH section as 3D texture; trilinear sample in world shader for both static surfaces and dynamic entities.
-- [x] **Animated SH layers** — per-light monochrome SH layers, animation descriptor + sample buffers, per-frame brightness/color curve evaluation in the fragment shader.
-- [x] **Lightmaps** — per-face baked direct lighting; static surfaces sample lightmap atlas; dynamic entities fall back to probe grid.
-
-**Testable outcome:** textured level with probe-sampled indirect, lightmapped static surfaces, CSM-driven sun shadows, and animated light layers. ✓
-
-**Scope note:** SDF sphere-traced soft shadows and specular maps were descoped here. Specular maps later shipped; SDF was cut (2026-04) then revived (2026-05) as the static-lighting rewrite, and shipped. See `plans/done/sdf-filterable-atlas/`, `plans/done/sdf-per-light-shadows/`, `plans/done/sdf-shadow-lightmap-uv-prepass/`, `plans/done/sdf-static-occluder-shadows/`.
-
----
-
-## Milestone 6: Scripting + Entity Foundation ✓
-
-Establish the entity model and scripting layer together. Scripting and entities are co-designed from the start: the entity API is the scripting API, and most entity behaviors are written as scripts rather than Rust. This avoids the two-pass "Rust-only stabilization then bind" approach — the scripting surface constraint shapes the entity model from day one.
-
-- [x] **Language selection** — dual-runtime approach: QuickJS (rquickjs) for TypeScript/JavaScript, Luau (mlua) for Luau. Both runtimes run side by side; scripts dispatched by extension.
-- [x] **Entity model** — typed collections (spawn / query / destroy, stable numeric ID); classname registry for FGD-defined types; lifecycle (spawn, tick, destroy); parent/child relationships with transform inheritance; world-space transforms with interpolation state for the render stage.
-- [x] **Event system** — typed owned events; classname- or ID-scoped subscriptions. Event types are scripting-bindable by construction (no Rust-specific types in the surface).
-- [x] **Scripting runtime** — both VMs embedded; shared definition + behavior contexts; pre-warmed context pool; primitive registry (one registration installs in both runtimes and all future contexts); pooled-context isolation (QuickJS: `Object.freeze(globalThis)`; Luau: sandbox flag). See `context/lib/scripting.md`.
-- [x] **Entity API bindings** — spawn / query / move / destroy; event subscribe/emit. All bindings use IDs/handles rather than Rust references; no lifetimes in the surface.
-- [x] **Map entity parsing** — `.map` entity lump → typed entities at compile time, classname-keyed. Entities spawn from map data at level load.
-- [x] **Hot reload** — file watcher monitors script directory; changed scripts reload on next frame drain. Debug builds only.
-- [x] **Reference behaviors (script)** — ~~`RotatorDriver` and `DamageSource` written as scripts~~. **✂ Cut (2026-06):** the per-tick behavior scripts went with the live-VM removal (`plans/done/remove-live-vm/`); only their data-archetype descriptors survive (`sdk/behaviors/reference/entities.{ts,luau}`). The damage-source role is superseded by the `applyDamage` reaction primitive (M10 entity health + damage surface).
-- [x] **Modder-facing API reference** — covers all bound APIs. See `docs/scripting-reference.md`.
-
-**Testable outcome:** spawn a scripted entity from a `.map` file; confirm it ticks and emits events at the fixed tick rate. Hot-reload the script during gameplay. ~~The `DamageSource` debug entity is available for future destruction testing.~~ ✓
-
----
-
-## Milestone 7: Grounded Movement ✓
-
-Player controller with world collision, gravity, and jumping. The player is an entity. Movement behavior is scripts (TypeScript and Luau) with enforced parity; the engine exposes collision and gravity primitives. Quake-inspired grounded movement with air control as modder-configurable data parameters.
-
-**Prerequisite:** Milestone 6 (entity model + scripting) ✓
-
-Plans ship in this sequence:
-
-- [x] **Scripting primitives folder** — refactor flat `primitives.rs` / `primitives_light.rs` into a `scripting/primitives/` domain folder. Prerequisite for collision and gravity plans. `context/plans/done/scripting-primitives-folder/`
-- [x] **Mod script layer** — mod-level script execution layer that runs before any level loads. Player entity types declared here; prerequisite for player spawn. `context/plans/done/M7--mod-script-layer/`
-- [x] **Collision foundation** — parry3d dependency; `CollisionWorld` backed by PRL static geometry trimesh; Rust-owned, not script-visible. `context/plans/done/M7--collision-foundation/`
-- [x] **Gravity primitives** — `initialGravity` worldspawn KVP; `world.getGravity()` / `world.setGravity()` behavior-scope primitives; SDK and docs updated. Depends on scripting primitives folder. `context/plans/done/M7--gravity-primitives/`
-- [x] **Player spawn** — `player_spawn` FGD entry with `entity_class` KVP; level load spawns player entities from it. Depends on mod script layer.
-- [x] **Movement scripts** — TypeScript and Luau reference movement scripts with full feature parity (gravity, wall slide, step-up, jump, strafe, air control); contract test asserts matching output. Depends on collision foundation, gravity primitives, player spawn. `context/plans/done/M7--movement-scripts/`
-
-**Testable outcome:** player walks through a PRL level with full collision response — no clipping, wall slide, step-up, jump. Modder can edit and hot-reload the movement script in either TypeScript or Luau. ✓
-
----
-
-## Milestone 8: Material Optimization ✓
-
-Texture and material pipeline polish. Move mip generation offline, establish Post Retro (hardware aniso + in-shader texel-grid reconstruction) as the foundational default look, and shrink normals on disk and in VRAM. Post Retro is now the sole texture-filtering path. Independent of Milestone 7 — ships in either order.
-
-Plans ship in this sequence:
-
-- [x] **Baked texture mips** — move mip generation from runtime renderer into prl-build. Gamma-correct linear-space Mitchell-Netravali filtering. Output as `.prm` sidecar files in per-mod `.prl-cache/tex/<blake3>.prm`, not embedded in PRL. `.prm` is a material bundle: per-slot (diffuse / specular / normal) with format tag, mip chain, payload bytes. Source PNGs remain the authoring source of truth; conversion is implicit during prl-build. `context/plans/done/baked-texture-mips/`
-- [x] ~~**Shader anisotropic filtering** — per-pixel manual aniso in `forward.wgsl`, derivative-gated, N taps of `textureSampleGrad` along the major axis. Preserves nearest-filter chunky look in-plane while killing grazing-angle shimmer. Depends on baked texture mips. `context/plans/done/shader-anisotropic-filtering/`~~ **✂ Cut (2026-05):** retired with True Retro mode; hardware aniso is the sole path.
-- [x] ~~**Graphics mode toggle** — introduced Post Retro and True Retro runtime filtering modes; `GraphicsMode` enum, `defaultGraphicsMode` mod-manifest key, egui combo.~~ **✂ Cut (2026-05):** True Retro mode + the `GraphicsMode` toggle scaffolding removed by *Retire True Retro mode*; Post Retro survives as the sole filtering path. `context/plans/done/graphics-mode-toggle/`
-- [x] **BC5 normal compression** — BC5 encoder in prl-build, BC5 `format_tag` value in `.prm`, GPU upload path. Normals only — BC1/BC7 fight the pixel-art aesthetic on diffuse. Additive: `format_tag` is extensible from day one, no version bump. Also retires the Post Retro normal-averaging bias under hardware aniso. `context/plans/done/prm-bc5-normals/`
-- [x] **Retire True Retro mode** — deleted manual-aniso shader code and True Retro branches in `forward.wgsl`; unwound `GraphicsMode` enum, `defaultGraphicsMode` mod-manifest key, nearest sampler pool, and egui mode combo. Post Retro normal path retains existing `(rgb*2-1)->normalize` decode unchanged. `context/plans/done/retire-true-retro/`
-- [ ] **Texture pack format (optional)** — shipping consolidation of `.prl-cache/tex/` into a single pack file. **Deferred** until there are more real textures and the iteration-vs-ship tension actually appears. `context/plans/drafts/texture-pack-format/`
-
-**Testable outcome:** Post Retro mode renders with no grazing-angle shimmer and crisp hardware-aniso filtering; True Retro opt-in is removed; normals are ~50% smaller on disk and in VRAM; level load does zero CPU mip work. ✓
-
-**Status note:** all tasks shipped except the optional Texture pack format, deferred until there are more real textures.
-
----
-
-## Milestone 9: Diffuse GI Upgrade (depth-aware probes + fog) ✓
-
-Kill light-leak-through-walls by adding per-probe visibility data to the Milestone 5 SH irradiance volume, then extend the fog system. The depth-aware interpolant replaces the plain trilinear SH sample entirely — one runtime path. Probe streaming is deferred: this milestone keeps probes resident and produces the VRAM-fit measurement that decides whether streaming ever becomes its own milestone.
-
-**Assumes the shipped Milestone 5 lighting foundation** — SH irradiance volume + baker, runtime probe sampling (SH as a 3D texture), lightmaps, and CSM sun shadows are all in place. Milestone 9 is a pure upgrade layer on top; it builds nothing M5 already delivers. Independent of Milestones 7–8.
-
-**Pre-milestone fix — already satisfied:** the fog pass (`src/render/fog_pass.rs`) is imported, owned by `Renderer`, and runs in every frame's render stage. It was wired as part of the portal-fog-culling work, not as a standalone M9 prerequisite. See `rendering_pipeline.md` §7.5 and `plans/done/perf-portal-fog-culling/`. Directional fog (below) builds directly on the live pass.
-
-Plans ship in this sequence:
-
-- [x] **Probe weight correctness (no new data)** — in the world shader: reject trilinear corners facing away from the surface normal, exclude invalid (zero-packed) probes from the blend, renormalize remaining weights. Pure ALU. Fixes a latent bug where invalid probes drag near-wall surfaces toward black — independent of DDGI, and a prerequisite the depth-aware interpolant needs anyway. **Measurement gate:** record residual smear/leak here to quantify what the depth atlas buys before paying for it.
-- [x] **Probe depth/visibility atlas (bake)** — prl-build stage baking per-probe depth moments alongside the existing SH bands, ray-cast through the Milestone 4 BVH. Format kept chunk-friendly so a later brick split needs no interpolant rewrite (deferred-streaming insurance). New/extended PRL section.
-- [x] **Depth-aware runtime interpolant** — replace the trilinear SH sample with a visibility-weighted (Chebyshev) interpolant in the world shader, for both static surfaces and dynamic entities. Removes the plain-trilinear path. Depends on the depth atlas.
-- [x] **Directional fog** — extend the live fog pass with the directional term, on top of the existing volumetric fog scope.
-  - [ ] *(Optional)* **Back-scatter** — expose the signed `scatter_bias` range (negative `g`). Needs a third cached directional SH read. Wire format already stores signed `g`; no PRL format break when this lands. Deferred to future.
-- [x] **Memory-budget checkpoint + coarse open-area spacing** — VRAM budget readout plus coarser probe spacing in open volumes; produces the empirical resident-fit number that gates any future streaming milestone.
-
-**Testable outcome:** near-wall surfaces no longer darken from invalid-probe averaging; indirect light no longer bleeds through walls (visibility-weighted probe sampling); a single resident probe representation drives both static and dynamic surfaces; the fog pass runs with a working directional term; residual-smear and VRAM budget for a representative large map are both recorded. ✓
 
 ---
 
@@ -328,9 +154,9 @@ Plans ship in this sequence:
 
 ---
 
-## Milestone 15: Multiplayer (Co-op Netcode)
+## Milestone 15: Multiplayer Foundations and Host Flow
 
-Authoritative client-server multiplayer: a game server owns the world and up to 16 players share a campaign level, co-op campaign first. **North star:** two-plus players join a host's level (one mid-game), move and fight together against shared server-authoritative enemies and set-pieces, with local-player movement and projectiles client-predicted so the game stays responsive under latency. The model is **authoritative server + snapshot replication** (Quake/Source/Overwatch lineage), deliberately **not** deterministic lockstep — the engine simulates in f32 (glam, parry3d) and cross-architecture f32 is not bit-identical, so lockstep would desync; snapshots tolerate that drift by construction. This reverses the standing "Multiplayer / networking" non-goal (`index.md` §4, `entity_model.md` §9, reconciled).
+Authoritative client-server multiplayer foundation: a game server owns the world, clients receive snapshots, local movement predicts and reconciles, and server-owned state slots replicate to the right clients. **North star:** multiplayer sessions start and survive cleanly, the host player uses the same loopback-client path as remote clients, and the same headless server entry point can run standalone. Gameplay-specific networking for combat, projectiles, movers, and co-op set-pieces lives with those feature milestones below.
 
 **Stack.** `renet` 2.0 + `renet_netcode` transport (Bevy-free since 2.0, synchronously frame-polled, no tokio), hand-rolled replication (`lightyear` as design blueprint, not a dependency — it is Bevy-coupled; the registry is bespoke), `bitcode` serialization, custom per-entity snapshot delta. A new `crates/net/` sibling crate owns transport + replication; the headless simulation seam (Phase 0) is what lets the server half run without a renderer.
 
@@ -340,23 +166,47 @@ Authoritative client-server multiplayer: a game server owns the world and up to 
 
 **Epic milestone**, realized as detail-on-open phases — each its own `/draft-spec` → `/orchestrate` cycle (the M10/M13/M14 pattern). The full design — model, stack, crate decisions, named-pattern references, architectural-invariant reconciliations, risk ledger, seam map — lives in `context/research/netcode/`. Per-phase specs are drafted against it as each phase opens.
 
-**Prerequisite:** Milestone 6 (entity model + scripting) ✓, Milestone 7 (grounded movement + collision world) ✓, and **Milestone 10 (animated enemies)** — co-op combat needs server-authoritative enemies; M10's `Agent` + AI-brain components replicate as ordinary entities. Phases 0–3.5 are enemy-free and need only M6/M7 (Phase 2's on-the-wire test entity is a dumb AI-less mover); the combat-bearing phases (4–7) build on M10.
+**Prerequisite:** Milestone 6 (entity model + scripting) ✓ and Milestone 7 (grounded movement + collision world) ✓. Feature milestones consume this foundation when they need server-authoritative combat, movers, or co-op progress.
 
-Phases ship in this sequence (detail-on-open; critical path `0 → 1 → 2 → 3 → 3.5 → 4 → 5 → 6 → 7`):
+Phases ship in this sequence (detail-on-open; critical path `0 → 1 → 2 → 3 → 3.5 → 4`):
 
 - [x] **Phase 0 — Headless seam + determinism harness + spike.** Extract the fixed-tick game logic out of the render-interleaved frame loop into a headless `simulate` seam (no wgpu/winit) — the shared server+client tick path; write the determinism test first (green-and-stays-green gate). Spike: measure cross-arch f32 divergence (sets the reconciliation tolerance) + a throwaway predict/reconcile feel-prototype. Split-before-extend `main.rs` (5,792 lines) and `movement/mod.rs` (6,055 lines) first; budget 2–3×. Shipped (seam + green determinism harness + recorded divergence/feel findings): `context/plans/done/M15--p0-headless-sim-seam/`.
 - [x] **Phase 1 — Transport + wire + handshake.** renet 2.0 + renet_netcode in a new `crates/net/` (polled non-blocking, no tokio) + protocol/version handshake (mismatch rejected, no state) + bitcode wire (native `Encode/Decode` on wire-mirror types — serde-tagged enums can't round-trip on a binary format). A snapshot struct round-trips; a remote pawn appears and moves — verified two-process loopback on the combat-test map (pawn move/jump/crouch replicate; an always-on-top dev-tools overlay capsule locates remote entities). Latency-sim harness shipped (in-process conditioner + `tc netem`, not turmoil); `networking.md` context doc promoted. Known Phase-1 limit carried to Phase 2: full-`Transform`-set replication floods FX-heavy maps (campaign-test smoke emitters). Shipped: `context/plans/done/M15--p1-transport-wire-handshake/`.
 - [x] **Phase 2 — Replication: delta/baseline/ack + time-sync + interpolation + lifecycle + replicable-set scoping.** Per-entity delta vs. per-entity acked baseline (eventual consistency, lightyear-style); time-sync; join-in-progress AND player-leave/disconnect; remote interpolation with jitter-sized delay. **Replicable-set policy** (carried from Phase 1): scope the wire to authoritative dynamic entities — those carrying a gameplay component (`PlayerMovement`/`Agent`/`Brain`/`Health`/movers) — not the full `Transform`-bearing set. `BillboardEmitter`/`ParticleState`/`SpriteVisual`/`Light`/`FogVolume` are deterministic client-local or baked (identical on both ends from the shared `.prl`) and must stay off the wire; Phase 1 replicated all of them, flooding snapshots on FX-heavy maps (the campaign-test smoke emitters drowned the pawn). Proven on a dumb AI-less server-authoritative mover (no M10). Exit gate: smooth at 150 ms RTT + 5% loss + jitter. Shipped: `context/plans/done/M15--p2-replication-timesync-lifecycle/`.
-- [x] **Phase 3 — Movement prediction + reconciliation.** Client predicts its own pawn from buffered input (command frames); reconciles against snapshots; respawn reconciles as a teleport (snap). Reconciliation *smoothing* (esp. dash corrections) is the hard part. May run in parallel with Phase 4. Shipped: command-frame wire + host authority, immediate local prediction, snapshot reconciliation with correction-class smoothing (ordinary/dash/teleport), and jitter+starvation adaptive remote interpolation. Validated by a local-only 3-client playtest; playtest follow-ups (camera-shake fix, remote-latency calibration, mutual capsule visibility, framerate-independent adaptive delay) folded in. `context/plans/done/M15--p3-movement-prediction-reconciliation/`
-- [x] **Phase 3.5 — State replication (server-authoritative state-store slots → clients).** Schema-driven replication for state-store slot values. Server authority feeds each client's engine-owned slot table; UI keeps subscribing by slot name. Closes the current gap where connected clients show `player.health` as `--`: Phase 3 replicates movement, not stats, and the slot feeder is host/single-player-only. Wire keys values by the scripting schema (`defineStore`), never bespoke per-stat fields, so HP, ammo, shields, and modder-defined stats need no netcode change per stat. Reuses Mod State Store `persist` serialization, branded `StateValue<T>`, clamp/validate rules, server-authoritative slot filtering, and Phase 2 delta/baseline/ack + join-in-progress baselines. Scopes: **owner-private** slots (HP/ammo/shields → owning client) and **shared/global** slots (objective/set-piece progress → all clients, including late joiners). Sequences before Phase 4 and Phase 5; Phase 4 may overlap only until it needs progress replication, and Phase 5 consumes confirmed HP. Also carries server-owned recharge results from future shields/damage-type work and the M14 behavior-IR recharge policy. Detail-on-open; spec drafted against `context/research/netcode/` plus the mod-state-store / persist docs.
-- [ ] **Phase 4 — Co-op set-piece design (gating).** Trigger ownership, reveal/spawn fan-out, progress, co-op respawn + player-leave policy, set-piece-progress replication for joiners (the **shared/global**-slot case of Phase 3.5's state replication) — proven by one playable co-op set-piece with real M10 enemies. Gates the combat phases ("is co-op fun").
-- [ ] **Phase 5 — Server-authoritative hitscan combat.** Fire server-authoritative with immediate cosmetic feedback; favor-the-shooter against a short single-entity history — not full server-rewind. HP changes only on confirmation (the confirmed value reaches the client's HUD over Phase 3.5's **owner-private** state replication).
-- [ ] **Phase 6 — Predicted projectiles.** Client-predicted projectiles with predicted-entity → server-confirmed handoff, for rocket/grenade feel.
-- [ ] **Phase 7 — Scale + local-server host flow + dedicated-server readiness.** Validate 16 players within a host-upstream bandwidth budget (priority-accumulator; interest management via portal/PVS if needed); prove the packaged hosted-session flow can launch or own a local headless server and connect the host's client over loopback; prove the same server entry point can run standalone. This phase's loaded/jittery, many-remote conditions are also the home for the two deferred Phase 3 remote-interpolation refinements below — per-entity delay in particular scales in severity with player count, and both are invisible on clean LAN co-op. Fold them in here as one tightly-scoped follow-up spec, **unless** a Phase 5/6 combat-under-latency playtest surfaces either sooner (a stuttering/briefly-frozen remote *enemy* reads worse than a teammate) and justifies pulling it forward:
+- [x] **Phase 3 — Movement prediction + reconciliation.** Client predicts its own pawn from buffered input (command frames); reconciles against snapshots; respawn reconciles as a teleport (snap). Reconciliation *smoothing* (esp. dash corrections) is the hard part. Shipped: command-frame wire + host authority, immediate local prediction, snapshot reconciliation with correction-class smoothing (ordinary/dash/teleport), and jitter+starvation adaptive remote interpolation. Validated by a local-only 3-client playtest; playtest follow-ups (camera-shake fix, remote-latency calibration, mutual capsule visibility, framerate-independent adaptive delay) folded in. `context/plans/done/M15--p3-movement-prediction-reconciliation/`
+- [x] **Phase 3.5 — State replication (server-authoritative state-store slots → clients).** Schema-driven replication for state-store slot values. Server authority feeds each client's engine-owned slot table; UI keeps subscribing by slot name. Closes the current gap where connected clients show `player.health` as `--`: Phase 3 replicates movement, not stats, and the slot feeder is host/single-player-only. Wire keys values by the scripting schema (`defineStore`), never bespoke per-stat fields, so HP, ammo, shields, and modder-defined stats need no netcode change per stat. Reuses Mod State Store `persist` serialization, branded `StateValue<T>`, clamp/validate rules, server-authoritative slot filtering, and Phase 2 delta/baseline/ack + join-in-progress baselines. Scopes: **owner-private** slots (HP/ammo/shields → owning client) and **shared/global** slots (objective/set-piece progress → all clients, including late joiners). Feeds later combat, shields, and co-op set-piece milestones. Detail-on-open; spec drafted against `context/research/netcode/` plus the mod-state-store / persist docs.
+- [ ] **Phase 4 — Scale + local-server host flow + dedicated-server readiness.** Validate 16 players within a host-upstream bandwidth budget (priority-accumulator; interest management via portal/PVS if needed); prove the packaged hosted-session flow can launch or own a local headless server and connect the host's client over loopback; prove the same server entry point can run standalone. This phase's loaded/jittery, many-remote conditions are also the home for the two deferred Phase 3 remote-interpolation refinements below — per-entity delay in particular scales in severity with player count, and both are invisible on clean LAN co-op. Fold them in here as one tightly-scoped follow-up spec, unless a feature milestone's latency playtest surfaces either sooner and justifies pulling it forward:
   - [ ] **Per-entity interpolation delay** — the starvation-driven delay is global today (one starved moving remote adds latency to every remote); make it per-entity. Tradeoff, not a pure win: per-entity delay introduces per-entity time offsets (remotes can desync in time relative to each other).
   - [ ] **Smoothed interpolation-delay transitions** — a delay *increase* currently pauses the remote render target (the monotonic no-rewind clamp) until the server estimate catches up, which can read as a brief freeze on a sustained-jitter link. Rate-limit the transition instead. Delicate: trades directly against the no-rewind guarantee.
 
-**Testable outcome:** two-plus players connect to a host-owned server (one joining mid-level, another dropping with the session surviving), move together with predicted local movement that stays responsive at 150 ms + loss + jitter, fight shared server-authoritative enemies through a co-op set-piece, and fire predicted projectiles — all reconciling to server authority with no full server-rewind. The host player uses the same loopback client path as remote clients. A headless server entry point runs standalone, confirming dedicated-server readiness.
+**Testable outcome:** two-plus players connect to a host-owned server (one joining mid-level, another dropping with the session surviving), move together with predicted local movement that stays responsive at 150 ms + loss + jitter, and receive server-owned state-slot updates. The host player uses the same loopback client path as remote clients. A headless server entry point runs standalone, confirming dedicated-server readiness.
+
+---
+
+## Milestone 16: Weapons, Wieldables, and Combat Networking
+
+Grow the thin weapon primitive into the durable combat model: instance-owned wieldable state, active equip/switch, resource state, viewmodel hooks, server-authoritative hitscan, confirmed damage, short favor-the-shooter history, and predicted projectile handoff. This milestone groups combat networking with the weapon systems that consume it, so ammo, fire intent, projectile ownership, HP confirmation, shields, and ability-like resources can be planned against one dependency graph instead of split across abstract netcode phases.
+
+## Milestone 17: Kinematic Geometry and Moving Platforms
+
+Build the moving-world substrate as deterministic kinematic geometry, not rigid-body simulation: moving brush payloads compile as runtime-transformable render and collider data, waypoint or script-declared drivers move them, players ride them through the existing custom-kinematic movement substrate, and server snapshots provide the state needed for remote interpolation and local replay. The first plan should prove one platform or elevator before rotating carry, doors-as-occluders, dynamic portals, kinematic clusters, or destruction.
+
+This milestone owns the engine substrate for moving world geometry. It deliberately does **not** start with a general physics engine, dynamic BSP, or author-scripted per-tick motion. The first path is a server-authoritative kinematic mover: compile a brush entity into local-space render/collider payloads, drive it along a linear waypoint path, render and collide it at runtime, and make a player ride it through the existing custom-kinematic movement substrate. Later specs can add author-facing triggers, script commands, rotation, doors, and visibility-bearing moving geometry only after the basic moving payload is proven.
+
+Plans ship in this sequence:
+
+- [ ] **A - Kinematic platform foundation.** One `func_mover` brush entity plus waypoint point entities; compile local-space render/collider payloads outside static BSP/BVH/lightmaps; spawn runtime mover entities; drive a linear or ping-pong platform/elevator deterministically; render it through renderer-owned WGPU resources; collide the player against it and carry the player with linear platform velocity; replicate mover state for remote interpolation and local replay. No triggers beyond `start_on_spawn`, no rotation, no visibility blocking. Draft: `context/plans/drafts/M17--kinematic-platform-foundation/`.
+- [ ] **B - Trigger/event and script command surface.** Add touch/use trigger volumes and closed-vocabulary mover commands (`start`, `stop`, `reverse`, `goToPathNode`) as data interpreted by Rust. This is where author scripts tie mover state to level events without gaining per-tick control. Depends on A so trigger ownership can target real runtime movers. Coordinate with M18 before adding co-op trigger semantics.
+- [ ] **C - Rotation and orientation carry.** Add rotating and angled movers after linear carry is stable: angular velocity on contacts, standing-player orientation policy, leave/detach velocity policy, and reconciliation behavior for rotating bases. Depends on A and should not ship in the first foundation.
+- [ ] **D - Doors and blocking movers.** Sliding/elevator/door behavior with blocking, crush/damage policy, interruption, and audio hooks. Doors still do **not** affect portal visibility in this step; they are moving collision/render objects only. Depends on B for trigger/script control and A for mover payloads.
+- [ ] **E - Visibility-bearing moving world.** Doors-as-occluders, dynamic portals, sector-graph updates, kinematic clusters/sub-worlds, and any chunk-primitive consolidation. This is a later infrastructure step, not a platform prerequisite. Start only when a concrete set-piece or performance need justifies it.
+- [ ] **F - Destruction bridge.** Pre-fracture, promotion to dynamic debris, and rigid-body debris stay outside the deterministic kinematic substrate. Revisit only after M17's mover payloads and the speculative destruction work both have real consumers.
+
+**Wave guidance:** do not run a two-spec wave for A. It cuts across PRL format, FGD authoring, renderer upload/draw, collision queries, movement carry, and network payloads, so the first orchestration should land alone and become the integration surface for B/C. A later B + D wave may be reasonable if A is stable and the trigger/door work can share one demo map and one net QA pass; C should stay separate because rotating carry changes movement and reconciliation semantics.
+
+## Milestone 18: Co-op Set-Pieces
+
+Turn multiplayer foundations, enemies, combat, and optional movers into authored co-op play: trigger ownership, reveal/spawn fan-out, shared progress, late-join restoration, respawn and player-leave policy, and one playable encounter that proves the loop is fun. This milestone owns co-op semantics rather than generic networking plumbing; it consumes M15 state replication, M10 enemies, M16 combat, and M17 kinematic machinery only where the set-piece needs them.
 
 ---
 
@@ -366,8 +216,6 @@ Features below are intended but not yet sequenced. Rough priority ordering withi
 
 ### Gameplay systems
 
-- **Weapons and Wieldables (future milestone candidate)** — one future `/orchestrate` spec for the next weapon-system foundation, not a grab bag. Milestone 10 shipped the thin weapon primitive. This milestone should grow the durable wieldable model: instance-owned weapon state, active-wieldable reference, equip/switch, one resource model slice, viewmodel hooks, and one richer first-person weapon that still uses the existing damage payload seam. The resource model should settle the tagged-union shape while implementing only the proving variant needed for the slice: pooled ammo reserves live on inventory, loaded magazine / heat / charge live on the wieldable instance, and resources update per tick. Keep projectile variety, augments, loot rolls, and chunk-destruction weapons as follow-on specs unless one is needed to prove the foundation.
-  - **Networking placement:** put this on the roadmap now, but do not build the networked or input-driven version before M15 Phase 2 settles lifecycle / input-stream boundaries and Phase 3 settles command frames, prediction, and reconciliation. Best window: after Phase 3 and before Phase 5 if scoped to replicable `Weapon` state plus local fire intent that server-authoritative hitscan will consume. Phase 5 still owns authoritative hit resolution, damage confirmation, and any favor-the-shooter history. Phase 6 still owns predicted projectile entity handoff.
 - **Shields + damage-type system** — an engine shield/stat component with authored *policy* via typed command buffers (behavior-IR milestone): elemental / resistance damage-type interactions and recharge models (fast like Halo, slow-and-delayed like Borderlands). The engine owns the component and its per-tick recharge system; the modder owns the policy IR. Health (Milestone 10) is the minimal scalar precedent; shields generalize it. Promote to an active milestone once the behavior-IR foundation ships.
 - **NPC Entities** — first enemy plus the nav/AI foundation lands in Milestone 10. Remaining/speculative refinements: richer scripted AI state machines (patrol / chase / attack), line-of-sight and navigation queries, and multiple enemy archetypes.
 - **Baked spatial-AI data** — the Milestone 10 navmesh bake is the first layer of a broader compile-time hint set for intelligent enemies. Speculative extensions reuse the same additive PRL section: cover points, jump/drop links, hint nodes (sniper perches, ambush spots), and precomputed influence/flow data. Authored in TrenchBroom where useful, derived in prl-build where it follows from geometry.
@@ -375,8 +223,6 @@ Features below are intended but not yet sequenced. Rough priority ordering withi
 
 ### Moving and destructible geometry
 
-- **Kinematic Geometry and Moving Platforms (future milestone candidate)** — one future `/orchestrate` spec for the first moving-world slice, not the whole dynamic-geometry vision. First spec should settle the authoring / PRL contract: moving brush entities emit runtime-transformable render and collider payloads, not static BSP / portal / collision ownership, except for an explicitly chosen rest-state lighting or occlusion policy. First acceptance should be one server-authoritative kinematic platform or elevator, driven by an engine-owned kinematic driver, that renders, collides, interpolates remotely, and carries the player. No rigid-body solver for player/platform riding: movers are deterministic kinematic transforms, and player riding extends the existing sweep/slide substrate with kinematic collider queries plus contact velocity and orientation injection.
-  - **Networking placement:** a transform-only visible mover can be drafted after M15 Phase 2 because Phase 2 proves lifecycle, interpolation, and the dumb replicated mover. Collision-bearing player-carry behavior should wait for M15 Phase 3, because riding/orientation corrections need the same prediction and reconciliation path as local movement. Defer kinematic clusters/sub-worlds, doors as a family, dynamic portals, sector-local visibility, and Chunk Primitive unification unless required to prove the first platform/elevator slice. If opened early, keep it to replicated movers with no player-carry/orientation semantics.
 - **Destruction (Pre-Fracture + Promotion)** — brushes pre-fractured into pieces with dependency edges at compile time. Runtime promotes pieces from static to dynamic on damage; reveals pre-authored interior break-faces. Requires a full rigidbody solver (Rapier) for debris physics. Latent portals activated on fracture to open hidden areas.
 
 ### Rendering and visual polish

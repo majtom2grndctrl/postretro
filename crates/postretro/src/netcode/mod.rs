@@ -35,6 +35,12 @@ mod predict_reconcile_harness_test_fixtures;
 // until baseline".
 #[cfg(test)]
 mod boot_spawn_gate_test;
+// M15 Phase 3.5 Task 6: the conditioned-loss state-slot harness. Drives the real
+// host production / client apply glue through the dev `PacketConditioner` under loss,
+// proving shared + owner-private slots converge and a dropped baseline repairs via
+// `StateBaselineRefresh` without reconnect.
+#[cfg(test)]
+mod state_slot_loss_harness_test;
 
 pub(crate) use client::ClientReplication;
 pub(crate) use command_queue::{HostCommandQueues, MovementOwners, host_resolve_movement_inputs};

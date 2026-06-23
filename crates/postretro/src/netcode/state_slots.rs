@@ -1413,4 +1413,209 @@ mod tests {
             "descriptor-parsed max HP reached the named slot"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // Task 6: schema-mismatch logging, UI read-snapshot AC, and the
+    // refresh/repair-through-the-glue seam (the conditioned-loss harness lives
+    // in `state_slot_loss_harness_test`).
+    // -----------------------------------------------------------------------
+
+    use crate::scripting::reactions::log_capture::capture;
+
+    // A schema fingerprint mismatch logs a STABLE, greppable diagnostic before any
+    // mutation. The AC names "the client logs a stable mismatch diagnostic"; this
+    // captures it with the existing log-capture helper and asserts stable substrings
+    // (not the full line), so the message can be reworded without breaking the gate
+    // as long as the load-bearing tokens stay.
+    #[test]
+    fn fingerprint_mismatch_logs_stable_diagnostic() {
+        let host_table = shared_and_private_table();
+        let (registry, owners, _pawn) = registry_with_owned_health(CLIENT_A, 0.0, 0.0);
+        let mut host = HostStateReplication::new();
+        host.register_client(CLIENT_A);
+        let _real_fingerprint = host.fingerprint(&host_table);
+        let records = host
+            .produce_for_client(&host_table, &registry, &owners, CLIENT_A, 0)
+            .expect("records");
+
+        let mut client_table = shared_and_private_table();
+        let mut client = ClientStateApply::new();
+
+        // Run the apply under a captured-log scope so the warn! is recorded.
+        let logs = capture(|| {
+            let outcome = client.apply_snapshot_state(&mut client_table, 0, &[0xAB; 32], &records);
+            assert!(
+                outcome.slot_baselines.is_empty(),
+                "the mismatched batch acks nothing"
+            );
+        });
+
+        // Stable substrings: the `[Net]` subsystem tag and the load-bearing tokens of
+        // the mismatch diagnostic. Asserted as `contains`, never a full-line match.
+        let matched = logs.iter().any(|(level, message)| {
+            *level == log::Level::Warn
+                && message.contains("[Net]")
+                && message.contains("fingerprint mismatch")
+        });
+        assert!(
+            matched,
+            "expected a [Net] warn naming the fingerprint mismatch; captured: {logs:?}"
+        );
+    }
+
+    /// Mirror the UI read-snapshot slot projection contract documented on
+    /// `App::build_ui_slot_snapshot`: the snapshot carries every slot whose `value`
+    /// is `Some`. Deriving the assertion from that destination contract (not from the
+    /// netcode apply path) is the seam this AC test guards — the value the apply path
+    /// writes must surface as a present key in the UI read snapshot.
+    fn ui_slot_snapshot(slot_table: &SlotTable) -> HashMap<String, SlotValue> {
+        slot_table
+            .iter()
+            .filter_map(|(name, record)| {
+                record.value.clone().map(|value| (name.to_string(), value))
+            })
+            .collect()
+    }
+
+    // Acceptance metric: after applying the first full state baseline, the UI read
+    // snapshot contains both `player.health` and `player.maxHealth` (the connected
+    // client no longer renders them as missing). Drives the real host production →
+    // client apply glue, then projects the slot table exactly as the UI read path does.
+    #[test]
+    fn first_baseline_populates_ui_read_snapshot_player_health_slots() {
+        let host_table = player_health_replicated_table();
+        let (registry, owners, _pawn) = registry_with_owned_health(CLIENT_A, 75.0, 100.0);
+
+        let mut host = HostStateReplication::new();
+        host.register_client(CLIENT_A);
+        let fingerprint = host.fingerprint(&host_table);
+        let records = host
+            .produce_for_client(&host_table, &registry, &owners, CLIENT_A, 0)
+            .expect("registered client produces records");
+
+        // A fresh client table whose player slots have NO value yet: the UI read
+        // snapshot must not carry them before the baseline lands.
+        let mut client_table = player_health_replicated_table();
+        client_table.get_mut("player.health").unwrap().value = None;
+        client_table.get_mut("player.maxHealth").unwrap().value = None;
+        let before = ui_slot_snapshot(&client_table);
+        assert!(
+            !before.contains_key("player.health") && !before.contains_key("player.maxHealth"),
+            "before the baseline the player health slots are missing from the UI snapshot"
+        );
+
+        let mut client = ClientStateApply::new();
+        client.apply_snapshot_state(&mut client_table, 0, &fingerprint, &records);
+
+        let after = ui_slot_snapshot(&client_table);
+        assert_eq!(
+            after.get("player.health"),
+            Some(&SlotValue::Number(75.0)),
+            "player.health is present in the UI read snapshot after the first baseline"
+        );
+        assert_eq!(
+            after.get("player.maxHealth"),
+            Some(&SlotValue::Number(100.0)),
+            "player.maxHealth is present in the UI read snapshot after the first baseline"
+        );
+    }
+
+    // Missing-baseline repair through the glue: when the client receives a DELTA that
+    // references a baseline it never held (the FullBaseline carrying it was lost), the
+    // apply path emits a `StateBaselineRefresh` keyed by `StateSlotId` and leaves the
+    // slot untouched; the server then schedules a FullBaseline that converges the slot
+    // — all without reconnect. This is the refresh/repair seam the conditioned-loss
+    // harness exercises end to end; here it is pinned deterministically at the glue.
+    #[test]
+    fn missing_baseline_delta_requests_refresh_then_repairs() {
+        let mut host_table = shared_and_private_table();
+        host_table.get_mut("net.objective").unwrap().value = Some(SlotValue::Number(3.0));
+        let registry = EntityRegistry::new();
+        let owners = MovementOwners::new();
+
+        let mut host = HostStateReplication::new();
+        host.register_client(CLIENT_A);
+        let fingerprint = host.fingerprint(&host_table);
+
+        // Frame 1: the host produces the first FullBaseline — but it is LOST (the
+        // client never applies it, so it holds no baseline for net.objective).
+        let _lost = host
+            .produce_for_client(&host_table, &registry, &owners, CLIENT_A, 0)
+            .expect("first frame records");
+
+        // Frame 2: the value changes. With an acked baseline (from the host's view the
+        // client never acked, so this is actually a FullBaseline fallback). To force a
+        // genuine DELTA-against-missing on the client we have the host believe the
+        // client acked frame 1, then drop frame 1 on the client.
+        let baseline_one = {
+            // Re-produce frame 1 to learn its baseline id, ack it on the server so the
+            // server will send a delta next, but the CLIENT never saw it.
+            let records = host
+                .produce_for_client(&host_table, &registry, &owners, CLIENT_A, 1)
+                .expect("frame 1 reproduced");
+            let objective = records
+                .iter()
+                .find(|r| r.kind == postretro_net::state_slots::STATE_RECORD_KIND_FULL_BASELINE)
+                .expect("a full baseline for the unacked objective");
+            objective.baseline_id
+        };
+        host.apply_ack(CLIENT_A, 1, &[(0, baseline_one)]);
+
+        // Now the value changes: the server emits a DELTA referencing baseline_one.
+        host_table.get_mut("net.objective").unwrap().value = Some(SlotValue::Number(4.0));
+        let delta_records = host
+            .produce_for_client(&host_table, &registry, &owners, CLIENT_A, 2)
+            .expect("delta frame");
+        assert!(
+            delta_records
+                .iter()
+                .any(|r| r.kind == postretro_net::state_slots::STATE_RECORD_KIND_DELTA),
+            "the server sends a delta against the (client-missing) baseline"
+        );
+
+        // The client never applied frame 1, so it holds no baseline: applying the delta
+        // must request a refresh and leave the slot untouched.
+        let mut client_table = shared_and_private_table();
+        client_table.get_mut("net.objective").unwrap().value = None;
+        let mut client = ClientStateApply::new();
+        let outcome =
+            client.apply_snapshot_state(&mut client_table, 2, &fingerprint, &delta_records);
+        assert_eq!(
+            outcome.refresh_requests.len(),
+            1,
+            "a delta against a missing baseline requests exactly one refresh"
+        );
+        assert_eq!(
+            outcome.refresh_requests[0].slot_id, 0,
+            "the refresh is keyed by the StateSlotId of net.objective"
+        );
+        assert_eq!(
+            client_table.get("net.objective").unwrap().value,
+            None,
+            "the slot is left untouched until the refresh repairs it"
+        );
+
+        // Server handles the refresh and schedules a FullBaseline for that slot.
+        let req = &outcome.refresh_requests[0];
+        host.request_refresh(CLIENT_A, req.slot_id, req.missing_baseline_ref);
+        let repair_records = host
+            .produce_for_client(&host_table, &registry, &owners, CLIENT_A, 3)
+            .expect("repair frame");
+        assert!(
+            repair_records
+                .iter()
+                .any(|r| r.kind == postretro_net::state_slots::STATE_RECORD_KIND_FULL_BASELINE),
+            "the refresh forces a full baseline"
+        );
+
+        // The client applies the repair and converges — no reconnect needed.
+        let repair_outcome =
+            client.apply_snapshot_state(&mut client_table, 3, &fingerprint, &repair_records);
+        assert!(repair_outcome.refresh_requests.is_empty(), "repaired");
+        assert_eq!(
+            client_table.get("net.objective").unwrap().value,
+            Some(SlotValue::Number(4.0)),
+            "the slot converges to the authoritative value after refresh repair"
+        );
+    }
 }

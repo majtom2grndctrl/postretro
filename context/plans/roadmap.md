@@ -3,6 +3,7 @@
 > **Lifecycle:** reviewed and updated at the start of each milestone. Deleted when all milestones are complete.
 > **Purpose:** active quarterly roadmap from Milestone 10 onward. Milestones 1-9 are archived in `context/plans/roadmap-q1-archive.md`. Each milestone produces something visible and testable.
 > **Sequencing:** Milestone 10 starts the active planning horizon. Milestones 10+ are parallel tracks in related domains: animated enemies, advanced movement, sound, UI, behavior IR, multiplayer foundations, weapons/combat, kinematics, and co-op set-pieces. A milestone is a *grouping of specs*, not a single linear unit: specs within a milestone ship in sequence, but the milestones themselves are not a strict prerequisite chain.
+> **Nomenclature (Epic › Milestone › Spec):** a *spec* (a.k.a. plan) is the unit drafted with `/draft-plan` and run through `/orchestrate` — one testable feature, a handful of tasks. A *milestone* groups ~6–14 specs into a visible, testable outcome. An *epic* groups several milestones when one body of work is too large for a single milestone; most milestones stand alone and need no epic. Combat is the first epic.
 > **Related:** `context/lib/index.md`, `context/lib/rendering_pipeline.md`
 > **Status markers:** `[x]` shipped and in the tree · `[ ]` not yet built · cut-after-build items keep `[x]`, strike the description, and append **✂ Cut (YYYY-MM):** with the reason — so a "done" item that no longer exists in the tree reads as such · a later-revived cut item appends **↩ Revived (YYYY-MM):** pointing to the active work.
 
@@ -183,9 +184,79 @@ Phases ship in this sequence (detail-on-open; critical path `0 → 1 → 2 → 3
 
 ---
 
-## Milestone 16: Weapons, Wieldables, and Combat Networking
+## Epic: Combat
 
-Grow the thin weapon primitive into the durable combat model: instance-owned wieldable state, active equip/switch, resource state, viewmodel hooks, server-authoritative hitscan, confirmed damage, short favor-the-shooter history, and predicted projectile handoff. This milestone groups combat networking with the weapon systems that consume it, so ammo, fire intent, projectile ownership, HP confirmation, shields, and ability-like resources can be planned against one dependency graph instead of split across abstract netcode phases.
+Grow the shipped weapon/health foundation (Milestone 10 — a hitscan weapon **instance**, `DamagePayload`, the `applyDamage` chokepoint, the death sweep, skeletal hit zones) into the full combat surface, from Doom-simple to Borderlands-systems-heavy. Too large for one milestone, so it is organized as five milestones along dependency seams. **This epic supersedes the former Milestone 16 (Weapons, Wieldables, and Combat Networking) and the Future/Gameplay "Shields + damage-type system" entry.** Combat networking folds into the specs that introduce each authoritative interaction rather than batching it: Milestone 15 (through Phase 3.5) already replicates state slots schema-driven, so stat replication is free; only interaction *authority* — hit confirmation, projectile ownership, DoT ticks — is per-spec work.
+
+Design intent lives in `context/research/weapon-model.md` (wieldables/weapons) and `context/research/combat-events.md` (on-hit/on-kill substrate). Every spec extends a named seam Milestone 10 left open — the `effective()` stats accessor, `ActivationOutcome::{Effect, Spawned}`, the `active_wieldable` chokepoint, the resource tagged-union noted on the weapon descriptor.
+
+**Prerequisites:** Milestone 10 (weapon + health/damage foundation) ✓ · Milestone 14 (behavior-IR substrate — combat policy and shield recharge) ✓ · Milestone 15 through Phase 3.5 (transport + state replication — combat networking) ✓.
+
+**Milestone sequencing — seam-first, not strictly chained.** Bank the combat-events source-id seam (`creditSource` on the weapon descriptor) in the first Weapon Systems spec, then lead with Weapon Systems for a visible outcome. Combat Feedback & Economy comes online once weapon variety and the Milestone 13 HUD make rewards and damage numbers visible; Resolution Modes and Damage & Defenses follow and feed their gated facts back into Feedback. The five are not a strict chain — Damage & Defenses depends only on the shipped `DamagePayload`, so it can run parallel to Resolution Modes.
+
+### Combat Feedback & Economy
+
+The on-hit / on-kill substrate (`combat-events.md`): the engine emits structured combat **facts** on every damage application and death; mods own the **policy** (XP, score, kill credit, resource economy, damage numbers). Builds on the shipped `applyDamage` chokepoint, the death sweep, and the Milestone 14 IR evaluator. Damage-type facts (`element`, `brokeShield`) and the projectile aggregation window are gated on later milestones and land as follow-on specs.
+
+- [ ] **source-id ledger** — a modder-controlled source id stamped at `applyDamage`, plus a bounded per-target contributor ledger. The hard-to-reverse data shape — front-loaded.
+- [ ] **`onKill` moment** — fires once per confirmed death from the death sweep (covering DoT, environmental, and deferred-despawn deaths); `playerDied` is the degenerate player-target case.
+- [ ] **`onImpact` + `onDamage` moments** — per-impact singular facts plus the per-attack aggregate reduction (sums, counts, per-bucket).
+- [ ] **`CombatScope` IR adopter** — a behavior-IR binding scope over the event's facts and the mod store; reuses the Milestone 14 evaluator (a new scope, not a new evaluator).
+- [ ] **resource-grant chokepoint + dev-mod reference** — a blessed engine path that *adds* to health/ammo/armor (the inverse of `applyDamage`), plus a reference XP/score/damage-number policy a mod replaces wholesale.
+
+**Testable outcome:** kills and hits emit typed facts; a reference mod awards XP, grants ammo on a kill, and drives damage numbers — all as authored policy, with no engine concept of reward.
+
+### Weapon Systems
+
+Grow the single shipped hitscan weapon into the durable wieldable model (`weapon-model.md`): per-instance state, resources, loadout, augments, and richer activations. The first spec banks the combat-events source-id seam.
+
+- [ ] **ammo resource** — the resource tagged-union's ammo variant: a pooled-by-type reserve on the inventory, a per-instance magazine, atomic reload.
+- [ ] **heat + cell resources** — the other two union variants plus the per-tick resource update (heat dissipates, cells regen — independent of fire).
+- [ ] **per-shell reload** — the cancellable, interruptible reload state machine (the shotgun case), versus atomic magazine reload.
+- [ ] **switching + inventory** — the inventory of owned wieldables; the active reference repoints, preserving per-instance state. Replaces the `active_wieldable` chokepoint.
+- [ ] **pickup** — the same instance placed in the world with a trigger; on pickup it joins the inventory. One spawn-and-activate path for equip and pickup.
+- [ ] **dual-wield** — generalize the single active reference to a primary/off-hand pair; resolves the activation-trigger fork (`weapon-model.md` §9). Depends on switching.
+- [ ] **augments / attachments** — the unified slotted-modifier system (internal augments and visible attachments are one mechanism); composes stat deltas + behavior hooks through the `effective()` seam.
+- [ ] **charge-on-activation** — charge level (0..1) scales listed stats at release; orthogonal to the resource, so it composes with any resource kind.
+- [ ] **secondary activation** — alt-fire, filling the `secondary` block seam; includes a primary-use that spawns a persistent tracked entity for a secondary to resolve (the detonator pattern).
+- [ ] **viewmodel** — first-person weapon model + animation hooks, reusing the rigid-mesh degenerate of the Milestone 10 mesh pass.
+
+**Testable outcome:** carry several weapons drawing from shared ammo pools (plus heat/cell weapons), switch between them preserving each one's state, reload (atomic and per-shell), pick weapons off the floor, slot augments that change effective stats, and fire an alt-fire — all instance-owned.
+
+### Resolution Modes
+
+New ways an activation resolves — each a sibling under `ActivationOutcome` — and the milestone that owns combat interaction **authority**. The first spec establishes server-authoritative fire; each later mode carries its own authority.
+
+- [ ] **server-authoritative fire + hit confirmation** — the favor-the-shooter history window and hit confirmation the later modes inherit (the authority seam; depends on Milestone 15).
+- [ ] **projectile** — a new engine-owned travel/collision sim plus ownership/prediction networking; fills `ActivationOutcome::Spawned`. Reopens the combat-events projectile aggregation window (a follow-on Feedback spec).
+- [ ] **melee** — a short-range shape-sweep query (a non-ray query family shared with AoE), exposed both as a resolution mode and as a universal quick-melee activation, with a lunge (a combat↔movement impulse).
+- [ ] **AoE / splash** — a radial volume query emitting a damage payload per target with distance falloff (the rocket-launcher case).
+- [ ] **executions / glory kills** — an animation-locked finisher; reuses the death-sweep deferred-despawn seam.
+
+**Testable outcome:** fire traveling projectiles that predict and reconcile in co-op, melee and quick-melee with a lunge, splash damage from explosives, and a remote-detonated charge (primary launches, secondary detonates) — all server-authoritative.
+
+### Damage & Defenses
+
+Grow `DamagePayload` from amount-only into the full taxonomy, and add layered and temporal defenses. Depends only on the shipped payload and Milestone 14 IR, so it can run parallel to Resolution Modes.
+
+- [ ] **damage types / elemental** — a damage type grows inside the payload; unlocks the combat-events `element` / `damageOf(element)` facts.
+- [ ] **crit math** — a crit multiplier and flag, applied per hit zone (skeletal hit zones shipped in Milestone 10).
+- [ ] **knockback** — an on-hit impulse payload field feeding the movement substrate (the rocket-jump seam).
+- [ ] **status effects / DoT** — a new engine-owned per-tick component (burn / shock / corrode) with duration and stacking; DoT ticks are server-authoritative and emit through the combat-events chokepoint.
+- [ ] **shields + shield types** — an engine shield component with authored recharge *policy* via behavior-IR (fast like Halo, slow-and-delayed like Borderlands), layered over health, with elemental shield types and resistance interactions; unlocks the combat-events `brokeShield` fact. Supersedes the former Future/Gameplay "Shields + damage-type system."
+
+**Testable outcome:** weapons deal typed/elemental damage, headshots crit, hits knock targets back, status effects tick damage over time, and shields absorb-then-recharge with elemental resistances — recharge curves authored as IR policy.
+
+### Weapon Feel
+
+The feel layer on top of working combat — tuning axes the SDK exposes, not new systems.
+
+- [ ] **spread / recoil / accuracy** — per-weapon accuracy stats and recoil patterns (a Borderlands stat axis; new fields behind the `effective()` seam).
+- [ ] **ADS** — an aim-down-sights view/FOV transition plus an accuracy modifier (the `adsSpeed` stat already exists).
+- [ ] **scope rendering** — zoom / picture-in-picture optic rendering (renderer work).
+- [ ] **aim assist** — autoaim / aim-assist on the input/aim layer (controller support; ties to the Milestone 13 gamepad surface).
+
+**Testable outcome:** weapons have distinct spread/recoil signatures, ADS smoothly transitions and tightens accuracy, scoped weapons zoom, and gamepad aiming feels assisted.
 
 ## Milestone 17: Kinematic Geometry and Moving Platforms
 
@@ -206,7 +277,7 @@ Plans ship in this sequence:
 
 ## Milestone 18: Co-op Set-Pieces
 
-Turn multiplayer foundations, enemies, combat, and optional movers into authored co-op play: trigger ownership, reveal/spawn fan-out, shared progress, late-join restoration, respawn and player-leave policy, and one playable encounter that proves the loop is fun. This milestone owns co-op semantics rather than generic networking plumbing; it consumes M15 state replication, M10 enemies, M16 combat, and M17 kinematic machinery only where the set-piece needs them.
+Turn multiplayer foundations, enemies, combat, and optional movers into authored co-op play: trigger ownership, reveal/spawn fan-out, shared progress, late-join restoration, respawn and player-leave policy, and one playable encounter that proves the loop is fun. This milestone owns co-op semantics rather than generic networking plumbing; it consumes M15 state replication, M10 enemies, the Combat epic, and M17 kinematic machinery only where the set-piece needs them.
 
 ---
 
@@ -216,7 +287,7 @@ Features below are intended but not yet sequenced. Rough priority ordering withi
 
 ### Gameplay systems
 
-- **Shields + damage-type system** — an engine shield/stat component with authored *policy* via typed command buffers (behavior-IR milestone): elemental / resistance damage-type interactions and recharge models (fast like Halo, slow-and-delayed like Borderlands). The engine owns the component and its per-tick recharge system; the modder owns the policy IR. Health (Milestone 10) is the minimal scalar precedent; shields generalize it. Promote to an active milestone once the behavior-IR foundation ships.
+- **Shields + damage-type system** — **→ promoted into the Combat epic (Damage & Defenses milestone).** It grows `DamagePayload` into a full damage taxonomy and adds an engine shield component with authored recharge *policy* via behavior-IR (elemental / resistance interactions; recharge models fast like Halo or slow-and-delayed like Borderlands). The engine owns the component and its per-tick recharge system; the modder owns the policy IR. Health (Milestone 10) is the minimal scalar precedent; shields generalize it. The behavior-IR foundation (Milestone 14) has shipped, so it is no longer speculative. Design intent: `context/research/combat-events.md`, `context/research/weapon-model.md`.
 - **NPC Entities** — first enemy plus the nav/AI foundation lands in Milestone 10. Remaining/speculative refinements: richer scripted AI state machines (patrol / chase / attack), line-of-sight and navigation queries, and multiple enemy archetypes.
 - **Baked spatial-AI data** — the Milestone 10 navmesh bake is the first layer of a broader compile-time hint set for intelligent enemies. Speculative extensions reuse the same additive PRL section: cover points, jump/drop links, hint nodes (sniper perches, ambush spots), and precomputed influence/flow data. Authored in TrenchBroom where useful, derived in prl-build where it follows from geometry.
 - **World Entities** — common base scripts for doors, pickups, trigger volumes, timeline/sequence helpers; a scripted ambush set piece with destruction choreography.

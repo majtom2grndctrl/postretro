@@ -49,12 +49,13 @@ Plans ship in this sequence. The render foundation and combat tracks converge tw
 
 **Follow-up drafts** (playtest refinements; not promoted):
 
+- [ ] **Networked enemy authority baseline** — align shipped enemies with Epic 15 before steering adds more agent state: host owns AI/steering/death, connected clients skip local enemy sim, and remote enemies materialize from replicated descriptor-backed transforms. `context/plans/drafts/E10--networked-enemy-authority-baseline/`
 - [ ] **Enemy steering feel** — acceleration, deceleration, bounded turn rate, and arrival easing so agents read as moving bodies, not waypoint snaps. `context/plans/drafts/E10--enemy-steering-feel/`
 - [ ] **Enemy stuck recovery** — detect route-valid physical wedges and apply deterministic tangent recovery plus budgeted replans. `context/plans/drafts/E10--enemy-stuck-recovery/`
 - [ ] **Enemy locomotion animation** — choose idle vs. walk from actual agent ground speed while preserving attack/death state selection. `context/plans/drafts/E10--enemy-locomotion-animation/`
 - [ ] **Enemy combat positioning** — select stable reachable combat destinations around the player instead of chasing the player's center point. `context/plans/drafts/E10--enemy-combat-positioning/`
 
-**Follow-up sequencing:** steering feel and locomotion animation may run in parallel. Stuck recovery follows steering feel because both share `agent_steering` and recovery should evaluate the final smoothed steering intent. Combat positioning follows steering/stuck recovery, or at minimum its AI integration waits for them, because it changes the destination the settled steering system follows.
+**Follow-up sequencing:** networked enemy authority baseline runs first, before any steering or animation refinement, so enemies are server-authoritative under Epic 15 and clients observe the same remote entity path. After that, steering feel and locomotion animation may run in parallel. Stuck recovery follows steering feel because both share `agent_steering` and recovery should evaluate the final smoothed steering intent. Combat positioning follows steering/stuck recovery, or at minimum its AI integration waits for them, because it changes the destination the settled steering system follows.
 
 **Testable outcome:** a skinned-model enemy spawns from a map, walks toward the player without clipping playing its locomotion clip, switches to an attack clip and damages the player in range, takes hitscan weapon damage, and plays a death clip then despawns at zero HP — lit by baked SH (optionally casting a real-time shadow via the dynamic shadow pool and receiving dynamic direct light). Weapons and enemies emit typed sound events throughout; audible playback lands with the Sound Foundation epic.
 

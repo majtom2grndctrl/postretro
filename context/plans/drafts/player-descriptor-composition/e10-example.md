@@ -184,7 +184,7 @@ const grunt = defineEntity({
 
 export function setupMod() {
   return {
-    name: "m10-reference",
+    name: "e10-reference",
     entities: [player, referencePistol, heavyCannon, grunt],
   };
 }

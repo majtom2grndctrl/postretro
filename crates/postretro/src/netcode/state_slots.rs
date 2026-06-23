@@ -787,8 +787,9 @@ mod tests {
     }
 
     /// A table with two replicated mod slots under one namespace plus the default
-    /// (all-`None`) engine slots. Only the two replicated slots should enter the
-    /// schema.
+    /// engine slots. After the Task 4 flip the engine `player.health` /
+    /// `player.maxHealth` slots are also replicated (owner-private), so the schema
+    /// carries those two engine slots alongside the two mod slots.
     fn table_with_replicated() -> SlotTable {
         let mut table = SlotTable::new();
         table
@@ -808,9 +809,18 @@ mod tests {
         let table = table_with_replicated();
         let schema = ReplicatedSlotSchema::build(&table);
         let names: Vec<&str> = schema.entries().iter().map(|e| e.name.as_str()).collect();
-        // Default engine slots are all `None` scope, so only the two mod slots
-        // appear, sorted by dotted name.
-        assert_eq!(names, vec!["net.alpha", "net.bravo"]);
+        // After the Task 4 catalog flip the two engine player slots are also
+        // replicated (owner-private), so they join the two mod slots, all sorted
+        // by dotted name.
+        assert_eq!(
+            names,
+            vec![
+                "net.alpha",
+                "net.bravo",
+                "player.health",
+                "player.maxHealth"
+            ]
+        );
         assert_eq!(schema.entries()[0].slot_id, StateSlotId(0));
         assert_eq!(schema.entries()[1].slot_id, StateSlotId(1));
     }
@@ -821,22 +831,24 @@ mod tests {
         let schema = ReplicatedSlotSchema::build(&table);
         let id = schema.id_for("net.alpha").expect("alpha is replicated");
         assert_eq!(schema.name_for(id), Some("net.alpha"));
-        assert_eq!(
-            schema.id_for("player.health"),
-            None,
-            "None-scope slot has no id"
-        );
+        // After the Task 4 flip `player.health` is owner-private replicated, so it
+        // now carries a `StateSlotId`.
+        let health_id = schema
+            .id_for("player.health")
+            .expect("player.health is replicated after the Task 4 flip");
+        assert_eq!(schema.name_for(health_id), Some("player.health"));
     }
 
     #[test]
-    fn default_table_has_empty_schema() {
-        // Every built-in engine slot defaults to `None` scope in Phase 3.5 Task 1
-        // (Task 4 flips player.health/maxHealth), so the default schema is empty and
-        // its fingerprint is the empty-stream digest.
+    fn default_table_has_only_player_health_slots() {
+        // The Task 4 catalog flip makes `player.health` / `player.maxHealth`
+        // owner-private; every other built-in slot stays `None`. So the default
+        // table's schema is exactly these two engine player slots.
         let table = SlotTable::new();
         let schema = ReplicatedSlotSchema::build(&table);
-        assert!(schema.entries().is_empty());
-        assert!(schema.to_net_schema().is_empty());
+        let names: Vec<&str> = schema.entries().iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["player.health", "player.maxHealth"]);
+        assert!(!schema.to_net_schema().is_empty());
     }
 
     #[test]
@@ -886,7 +898,8 @@ mod tests {
         let schema = ReplicatedSlotSchema::build(&table);
         let net = schema.to_net_schema();
         assert_eq!(net.fingerprint(), schema.fingerprint());
-        assert_eq!(net.len(), 2);
+        // Two mod slots plus the two owner-private engine player slots (Task 4 flip).
+        assert_eq!(net.len(), 4);
         let alpha = net
             .descriptor(StateSlotId(0))
             .expect("alpha descriptor exists");
@@ -939,9 +952,14 @@ mod tests {
 
     /// A host slot table with one `SharedGlobal` (`net.objective`) and one
     /// `OwnerPrivatePlayer` (`net.private`) mod number slot. Both peers build this
-    /// identically, so their schema fingerprints match.
+    /// identically, so their schema fingerprints match. The engine player slots are
+    /// cleared back to `None` so these mod-slot round-trip tests stay focused on
+    /// exactly the two declared mod slots (the Task 4 catalog flip is exercised by
+    /// the dedicated player-health tests below).
     fn shared_and_private_table() -> SlotTable {
         let mut table = SlotTable::new();
+        table.get_mut("player.health").unwrap().schema.network = ReplicationScope::None;
+        table.get_mut("player.maxHealth").unwrap().schema.network = ReplicationScope::None;
         table
             .insert_namespace(
                 "net",
@@ -955,14 +973,15 @@ mod tests {
     }
 
     /// A slot table whose `player.health` / `player.maxHealth` slots are owner-private
-    /// replicated (the Task 4 catalog flip, set directly here so Task 3 can prove the
-    /// descriptor path). Both peers build this identically.
+    /// replicated. The Task 4 catalog flip already sets this scope, so a plain
+    /// `SlotTable::new()` carries it; both peers build this identically.
     fn player_health_replicated_table() -> SlotTable {
-        let mut table = SlotTable::new();
-        table.get_mut("player.health").unwrap().schema.network =
-            ReplicationScope::OwnerPrivatePlayer;
-        table.get_mut("player.maxHealth").unwrap().schema.network =
-            ReplicationScope::OwnerPrivatePlayer;
+        let table = SlotTable::new();
+        debug_assert_eq!(
+            table.get("player.health").unwrap().schema.network,
+            ReplicationScope::OwnerPrivatePlayer,
+            "Task 4 catalog flip makes player.health owner-private"
+        );
         table
     }
 

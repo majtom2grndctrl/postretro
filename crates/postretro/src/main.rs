@@ -2327,7 +2327,14 @@ impl ApplicationHandler for App {
                 // after game logic settles and before crossing detection / UI
                 // snapshot construction, so same-frame consumers see the
                 // settled pawn HP. See: context/lib/scripting.md §5.
-                self.player_hud_state.tick();
+                //
+                // M15 Phase 3.5 Task 4: skip on a connected client. `player.health`
+                // / `player.maxHealth` are now owner-private replicated slots; the
+                // server writes them through the state-slot apply path, so a client
+                // must not overwrite the replicated values from its own (non-
+                // authoritative) pawn. Host and single-player keep publishing.
+                self.player_hud_state
+                    .tick_for_role(self.is_connected_client());
                 // Flash-decay state writes the engine-owned `screen.flash`
                 // surface at the same game-logic stage as the HUD publisher, so
                 // the UI snapshot below freezes this frame's flash color. Runs

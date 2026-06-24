@@ -86,8 +86,12 @@ impl WireTransform {
     /// the `Transform` component payload (a non-finite pose is rejected before
     /// typed apply, so none reaches the registry) and it backs the `entity_class`
     /// rule (a class may only ride a record carrying a finite `Transform`).
+    ///
+    /// `pub(crate)` so the production side (`MovementAuthority::for_recipient`) gates
+    /// `entity_class` on the SAME finite-`Transform` rule `validate` enforces on receipt,
+    /// keeping production and validation in lockstep.
     #[must_use]
-    fn all_finite(&self) -> bool {
+    pub(crate) fn all_finite(&self) -> bool {
         self.position.iter().all(|c| c.is_finite())
             && self.rotation.iter().all(|c| c.is_finite())
             && self.scale.iter().all(|c| c.is_finite())

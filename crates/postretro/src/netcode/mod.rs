@@ -42,6 +42,11 @@ mod state_slot_loss_harness_test;
 
 pub(crate) use client::ClientReplication;
 pub(crate) use command_queue::{HostCommandQueues, MovementOwners, host_resolve_movement_inputs};
+// The shared map-enemy predicate (E10 Task 4): host enemy registration consumes it via
+// the direct submodule path; connected-client spawn suppression (Task 5) imports it from
+// this re-export. `allow(unused_imports)` until that importer lands.
+#[allow(unused_imports)]
+pub(crate) use descriptor_class::is_networked_ai_map_enemy;
 // `ResolvedCommand` / `ResolutionSource` are produced by the command queue and consumed
 // via the submodule path only; not re-exported here.
 pub(crate) use interpolation::{DemoMover, InterpolationDelayState};
@@ -57,7 +62,7 @@ pub(crate) use prediction::{
 };
 #[allow(unused_imports)]
 pub(crate) use reconcile::reconcile_local_pawn;
-pub(crate) use replication::{ReplicableSet, produce_owned_snapshots};
+pub(crate) use replication::{ReplicableSet, host_register_map_enemies, produce_owned_snapshots};
 pub(crate) use wire_convert::sim_command_to_input;
 
 // The conversion/merge helpers (`wire_convert`, `movement_state`) live in their focused
@@ -263,6 +268,14 @@ pub(crate) enum NetEndpoint {
         /// local-player marker exists; the host pawn stays the host's own
         /// `local_player_pawn` registry-side and is replicated outbound, that is all.
         host_pawn: Option<EntityId>,
+        /// E10 Task 4: the set of map-placed AI enemy `EntityId`s the host has registered
+        /// for outbound replication this level. The single owner of that id set so a level
+        /// reload has one place to clean up: `host_register_map_enemies` unregisters every
+        /// stale id here before registering the freshly-spawned level's enemies (the
+        /// registry bumps generations on despawn, so a reloaded enemy is a distinct
+        /// entity). Empty until the first level install registers enemies, and on a map
+        /// with no AI enemies.
+        map_enemies: std::collections::HashSet<EntityId>,
         /// Task 6 Phase 2 net-demo fixture. When the demo path is active
         /// (`POSTRETRO_NET_DEMO_MOVER=1`), the host spawns one deterministic
         /// AI-less mover ([`DemoMover`]) and stores its `EntityId` here; each tick
@@ -399,6 +412,7 @@ impl NetEndpoint {
                     command_queues: HostCommandQueues::new(),
                     owners: MovementOwners::new(),
                     host_pawn: None,
+                    map_enemies: std::collections::HashSet::new(),
                     demo_mover: DemoMoverState::from_env(),
                     state_slots: Box::new(state_slots::HostStateReplication::new()),
                 }))

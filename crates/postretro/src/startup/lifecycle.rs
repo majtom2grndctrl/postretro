@@ -978,6 +978,14 @@ impl App {
             // Drop the registry borrow before touching `self.level` /
             // `self.camera`.
             drop(registry);
+
+            // E10 Task 4: register this level's map-placed AI enemies (the
+            // `apply_data_archetype_dispatch` sweep above spawned them) for outbound
+            // replication. Reload-safe and host-gated (a no-op off a listen host). Runs at
+            // the first borrow-free point after the dispatch — it takes its own registry
+            // borrow internally.
+            self.host_register_map_enemies_after_install();
+
             self.active_wieldable = active_wieldable;
             self.active_wieldable_descriptor = active_wieldable_descriptor;
 

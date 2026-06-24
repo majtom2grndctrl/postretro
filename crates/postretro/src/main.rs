@@ -3944,6 +3944,7 @@ impl App {
                 owners,
                 tick,
                 host_pawn: _,
+                map_enemies: _,
                 demo_mover: _,
                 state_slots,
             }) => {
@@ -4108,6 +4109,7 @@ impl App {
             command_queues,
             owners,
             host_pawn: _,
+            map_enemies: _,
             demo_mover,
             state_slots,
         }) = self.net_endpoint.as_mut()
@@ -4262,6 +4264,32 @@ impl App {
             return;
         };
         netcode::host_register_own_pawn(allocator, replicable, host_pawn, pawn);
+    }
+
+    /// Register the listen host's map-placed AI enemies for outbound replication after a
+    /// level install (E10 Task 4). Map-placed descriptor enemies carrying `Brain` + `Agent`
+    /// are spawned by `apply_data_archetype_dispatch`; without registering them in the
+    /// `ReplicableSet` they never reach `produce_owned_snapshots`, so clients see no enemy.
+    ///
+    /// Host-gated: a no-op for single-player and the connected client (the endpoint is not
+    /// the `Host` variant). Thin delegation to `netcode::host_register_map_enemies`, which
+    /// sweeps the registry for AI map enemies, stamps each a `NetworkId`, registers it with
+    /// NO owner mapping (host-authoritative, never `local_player`), and tracks the ids in
+    /// the `Host` endpoint's `map_enemies` set so a level reload unregisters the stale ones
+    /// first. The enemies stay driven by the host's AI/steering systems — this only
+    /// replicates their `Transform` (and descriptor class) outbound.
+    fn host_register_map_enemies_after_install(&mut self) {
+        let Some(netcode::NetEndpoint::Host {
+            allocator,
+            replicable,
+            map_enemies,
+            ..
+        }) = self.net_endpoint.as_mut()
+        else {
+            return;
+        };
+        let registry = self.script_ctx.registry.borrow();
+        netcode::host_register_map_enemies(&registry, allocator, replicable, map_enemies);
     }
 
     /// Connected-client predicted fixed tick (M15 Phase 3 Task 3). Thin delegation

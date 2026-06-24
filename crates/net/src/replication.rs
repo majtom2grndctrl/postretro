@@ -590,34 +590,50 @@ struct MovementAuthority {
 }
 
 impl MovementAuthority {
-    /// Resolve the authority metadata for `recipient`. Authority — including the
-    /// `entity_class` — rides ONLY a movement record: a pawn that carries no
-    /// `PlayerMovementState` payload emits all-absent metadata regardless of its
-    /// `owner_client_id`/`entity_class`, because `validate` rejects ack/local-player
-    /// metadata and `entity_class` on a non-movement record. `local_player` is `true`
-    /// only when the recipient is the tracked owner; `entity_class` is echoed to every
-    /// recipient (it is pawn state, not owner-private — a remote viewer materializes
-    /// the same descriptor for interpolation if it ever needs to).
+    /// Resolve the authority metadata for `recipient`. Two metadata classes ride a
+    /// record under DIFFERENT rules, mirroring the two `validate` gates (E10 Task 3/4):
+    ///
+    /// - **Movement authority** (`has_tick`/`last_processed_client_tick`, `local_player`)
+    ///   rides ONLY a movement record: an entity with no `PlayerMovementState` payload
+    ///   emits all-absent movement metadata regardless of its `owner_client_id`, because
+    ///   `validate` rejects ack/local-player metadata on a non-movement record.
+    ///   `local_player` is `true` only when the recipient is the tracked owner.
+    /// - **`entity_class`** rides any NON-DESPAWN record carrying a finite `Transform`
+    ///   (it no longer needs a `PlayerMovementState`): a host-authoritative map enemy
+    ///   replicates Transform-only, so its descriptor class must travel on that record.
+    ///   It is echoed to EVERY recipient (it is entity state, not owner-private — a
+    ///   remote viewer materializes the same descriptor for its presentation). Gated on
+    ///   the finite-`Transform` check `validate` enforces on receipt so production never
+    ///   stamps a class the validator would reject. (A despawn record never reaches
+    ///   here — this resolves only entity records the encode loop emits as
+    ///   baseline/delta.)
     fn for_recipient(entity: &EntityState, recipient: u64) -> Self {
         let carries_movement = entity
             .components
             .iter()
             .any(|c| matches!(c, ComponentPayload::PlayerMovementState(_)));
-        if !carries_movement {
-            return Self {
-                has_tick: false,
-                tick: 0,
-                local_player: false,
-                has_entity_class: false,
-                entity_class: String::new(),
-            };
-        }
+        let carries_finite_transform = entity.components.iter().any(|c| match c {
+            ComponentPayload::Transform(t) => t.all_finite(),
+            ComponentPayload::PlayerMovementState(_) => false,
+        });
+
+        // `entity_class` is valid on any finite-Transform record; movement metadata is
+        // movement-only.
+        let attach_class = carries_finite_transform && entity.entity_class.is_some();
         Self {
-            has_tick: entity.last_processed_client_tick.is_some(),
-            tick: entity.last_processed_client_tick.unwrap_or(0),
-            local_player: entity.owner_client_id == Some(recipient),
-            has_entity_class: entity.entity_class.is_some(),
-            entity_class: entity.entity_class.clone().unwrap_or_default(),
+            has_tick: carries_movement && entity.last_processed_client_tick.is_some(),
+            tick: if carries_movement {
+                entity.last_processed_client_tick.unwrap_or(0)
+            } else {
+                0
+            },
+            local_player: carries_movement && entity.owner_client_id == Some(recipient),
+            has_entity_class: attach_class,
+            entity_class: if attach_class {
+                entity.entity_class.clone().unwrap_or_default()
+            } else {
+                String::new()
+            },
         }
     }
 }
@@ -1395,6 +1411,104 @@ mod tests {
                 last_processed_client_tick,
                 ..
             } => assert_eq!(last_processed_client_tick, Some(6)),
+            other => panic!("expected FullBaseline, got {other:?}"),
+        }
+    }
+
+    /// A host-authoritative map enemy snapshot: a Transform-only entity carrying an
+    /// `entity_class` but NO `PlayerMovementState`, unowned by any client — the shape the
+    /// E10 host enemy-registration glue produces.
+    fn enemy(network_id: u32, class: &str) -> EntitySnapshot {
+        EntitySnapshot {
+            network_id,
+            components: vec![transform(0.0)],
+            owner_client_id: None,
+            last_processed_client_tick: None,
+            entity_class: Some(class.to_string()),
+        }
+    }
+
+    // E10 Task 4: `entity_class` rides a non-movement finite-`Transform` record (a host
+    // enemy), while `local_player`/resolved-tick stay movement-only — they are withheld on
+    // a record without a `PlayerMovementState`. The encoded record validates (the wire
+    // accepts `entity_class` on a finite-Transform record since Task 3).
+    #[test]
+    fn entity_class_rides_transform_record_but_movement_metadata_withheld() {
+        let mut server = ServerReplication::new();
+        server.register_client(CLIENT_A);
+        server.ingest_tick(vec![enemy(1, "grunt")]);
+
+        let snap = server.encode_for_client(CLIENT_A, 60).unwrap();
+        // The whole snapshot validates: an entity_class on a finite-Transform record is
+        // accepted, so `typed_records` is non-empty.
+        match record_for(&snap, 1).expect("the enemy record is present and valid") {
+            EntityRecord::FullBaseline {
+                entity_class,
+                local_player,
+                last_processed_client_tick,
+                components,
+                ..
+            } => {
+                assert_eq!(
+                    entity_class,
+                    Some("grunt".to_string()),
+                    "the class rides the Transform-only enemy record"
+                );
+                assert!(
+                    !local_player,
+                    "a non-movement record never carries local_player"
+                );
+                assert_eq!(
+                    last_processed_client_tick, None,
+                    "a non-movement record carries no resolved-tick metadata"
+                );
+                assert!(
+                    components
+                        .iter()
+                        .all(|c| matches!(c, ComponentPayload::Transform(_))),
+                    "the enemy record is Transform-only"
+                );
+            }
+            other => panic!("expected FullBaseline, got {other:?}"),
+        }
+    }
+
+    // E10 Task 4: an entity_class is withheld at production on a record that carries NO
+    // finite `Transform` — here a movement-only record (`PlayerMovementState` alone, no
+    // Transform). This mirrors the validate gate (`EntityClassWithoutTransform`) on the
+    // production side: the host never stamps a class the validator would reject. The
+    // record still encodes and validates because no class rides it.
+    #[test]
+    fn entity_class_withheld_when_no_finite_transform() {
+        let mut server = ServerReplication::new();
+        server.register_client(CLIENT_A);
+        // A movement-only record (no Transform component) that nonetheless carries an
+        // entity_class in its tracked state: production must drop the class.
+        server.ingest_tick(vec![EntitySnapshot {
+            network_id: 1,
+            components: vec![movement(1.0)],
+            owner_client_id: Some(CLIENT_A),
+            last_processed_client_tick: Some(3),
+            entity_class: Some("grunt".to_string()),
+        }]);
+
+        let snap = server.encode_for_client(CLIENT_A, 60).unwrap();
+        match record_for(&snap, 1).expect("record present and valid") {
+            EntityRecord::FullBaseline {
+                entity_class,
+                local_player,
+                ..
+            } => {
+                assert_eq!(
+                    entity_class, None,
+                    "no class is stamped without a finite Transform to back it"
+                );
+                // Movement metadata still rides this movement record for its owner.
+                assert!(
+                    local_player,
+                    "the owner still sees local_player on a movement record"
+                );
+            }
             other => panic!("expected FullBaseline, got {other:?}"),
         }
     }

@@ -238,7 +238,7 @@ fn warn_parse(entity: &MapEntity, key: &str, raw: &str) {
 /// Roadmap: composable archetypes, FGD generated from the registry, and a
 /// `mob_spawn` marker (mirroring `player_spawn`) will sit on this lookup.
 /// The abstraction grows from this single match site.
-pub(super) fn find_descriptor<'a>(
+pub(crate) fn find_descriptor<'a>(
     descriptors: &'a [EntityTypeDescriptor],
     classname: &str,
 ) -> Option<&'a EntityTypeDescriptor> {
@@ -722,21 +722,13 @@ mod tests {
         AirParams, CapsuleParams, FallParams, FireMode, GroundParams, PlayerMovementDescriptor,
         ResolutionMode, SpeedParams, WeaponDescriptor,
     };
-    use std::collections::HashMap;
 
-    fn placement(classname: &str, kvps: &[(&str, &str)]) -> MapEntity {
-        let mut kv = HashMap::new();
-        for (k, v) in kvps {
-            kv.insert((*k).to_string(), (*v).to_string());
-        }
-        MapEntity {
-            classname: classname.to_string(),
-            origin: Vec3::new(1.0, 2.0, 3.0),
-            angles: Vec3::ZERO,
-            key_values: kv,
-            tags: vec![],
-        }
-    }
+    // Shared descriptor/placement builders live in the sibling fixture module so
+    // the netcode agreement test can reuse them without a private-helper reach
+    // or a duplicate copy. See testing_guide.md §4.
+    use super::super::data_archetype_test_fixtures::{
+        ai_enemy_descriptor, mesh_descriptor, placement,
+    };
 
     fn light_descriptor(classname: &str, is_dynamic: bool) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
@@ -752,57 +744,6 @@ mod tests {
             movement: None,
             weapon: None,
             mesh: None,
-            health: None,
-            ai: None,
-        }
-    }
-
-    /// Build an `EntityTypeDescriptor` carrying only a mesh component. `animated`
-    /// selects between a stateless mesh (model only) and a two-state animated
-    /// mesh (`idle` default + `attack`), mirroring the validated descriptor shape
-    /// the mesh parser produces.
-    fn mesh_descriptor(classname: &str, animated: bool) -> EntityTypeDescriptor {
-        use crate::scripting::components::mesh::{AnimationState, InterruptPolicy};
-
-        let (animations, default_state) = if animated {
-            let mut states = HashMap::new();
-            states.insert(
-                "idle".to_string(),
-                AnimationState {
-                    clip: "idle_clip".to_string(),
-                    looping: true,
-                    crossfade_ms: 150.0,
-                    interrupt: InterruptPolicy::Smooth,
-                    clip_index: None,
-                },
-            );
-            states.insert(
-                "attack".to_string(),
-                AnimationState {
-                    clip: "attack_clip".to_string(),
-                    looping: false,
-                    crossfade_ms: 0.0,
-                    interrupt: InterruptPolicy::Snap,
-                    clip_index: None,
-                },
-            );
-            (states, Some("idle".to_string()))
-        } else {
-            (HashMap::new(), None)
-        };
-
-        EntityTypeDescriptor {
-            canonical_name: Some(classname.to_string()),
-            default_weapon: None,
-            light: None,
-            emitter: None,
-            movement: None,
-            weapon: None,
-            mesh: Some(crate::scripting::data_descriptors::MeshDescriptor {
-                model: "decraniated".to_string(),
-                animations,
-                default_state,
-            }),
             health: None,
             ai: None,
         }
@@ -2092,37 +2033,6 @@ mod tests {
 
     // ---- E10 Task 5: connected-client AI-enemy spawn suppression ----
 
-    /// Minimal valid `ai` block: its mere presence is what attaches `Brain` +
-    /// `Agent`, which is the single thing the pre-materialization classifier and
-    /// the live predicate both key on. Tuning values are not exercised here.
-    fn sample_ai_descriptor() -> crate::scripting::data_descriptors::AiDescriptor {
-        use crate::scripting::data_descriptors::{AiDescriptor, AiStateNames};
-        AiDescriptor {
-            detection_range: 18.0,
-            attack_range: 2.0,
-            leash_range: 26.0,
-            attack_damage: 8.0,
-            attack_cooldown_ms: 1200.0,
-            move_speed: 3.5,
-            death_despawn_ms: 1500.0,
-            states: AiStateNames {
-                idle: "idle".into(),
-                alert: "walk".into(),
-                attack: "attack".into(),
-                death: "die".into(),
-            },
-        }
-    }
-
-    /// An AI-enemy descriptor: a mesh placement (so it is directly map-placeable)
-    /// plus an `ai` block (so materialization attaches `Brain` + `Agent`). This
-    /// is the shape a real map-placed enemy descriptor has.
-    fn ai_enemy_descriptor(classname: &str) -> EntityTypeDescriptor {
-        let mut descriptor = mesh_descriptor(classname, true);
-        descriptor.ai = Some(sample_ai_descriptor());
-        descriptor
-    }
-
     #[test]
     fn descriptor_materializes_ai_enemy_keys_on_ai_block() {
         // An `ai` block is the sole AI classifier; light/mesh/health-only
@@ -2269,38 +2179,5 @@ mod tests {
             matches!(reg.has_component_kind(id, ComponentKind::Agent), Ok(true)),
             "ai descriptor materializes an Agent alongside the Brain"
         );
-    }
-
-    #[test]
-    fn classifier_agrees_with_live_predicate_one_source_of_truth() {
-        // One source of truth: the pre-materialization descriptor classifier
-        // (`descriptor_materializes_ai_enemy`, used to FILTER on the client) must
-        // agree with the live-component predicate (`is_networked_ai_map_enemy`,
-        // used to REGISTER on the host) for a `MapPlacement` spawn. Materialize
-        // an AI enemy and a non-AI prop and assert each side agrees per entity.
-        use crate::netcode::is_networked_ai_map_enemy;
-
-        let descriptors = vec![
-            ai_enemy_descriptor("grunt"),
-            mesh_descriptor("crate", false),
-        ];
-        let placements = vec![placement("grunt", &[]), placement("crate", &[])];
-        let mut reg = EntityRegistry::new();
-        apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg, None);
-
-        for (id, _) in reg
-            .iter_with_kind(ComponentKind::DescriptorProvenance)
-            .collect::<Vec<_>>()
-        {
-            let provenance = reg.get_component::<DescriptorProvenance>(id).unwrap();
-            let descriptor = find_descriptor(&descriptors, &provenance.canonical_name)
-                .expect("descriptor for materialized entity");
-            assert_eq!(
-                descriptor_materializes_ai_enemy(descriptor),
-                is_networked_ai_map_enemy(&reg, id),
-                "pre-materialization classifier and live predicate must agree for `{}`",
-                provenance.canonical_name,
-            );
-        }
     }
 }

@@ -85,3 +85,51 @@ pub(super) fn descriptor_entity_class(
 
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    use crate::scripting::builtins::data_archetype::{
+        apply_data_archetype_dispatch, descriptor_materializes_ai_enemy, find_descriptor,
+    };
+    use crate::scripting::builtins::data_archetype_test_fixtures::{
+        ai_enemy_descriptor, mesh_descriptor, placement,
+    };
+
+    #[test]
+    fn classifier_agrees_with_live_predicate_one_source_of_truth() {
+        // One source of truth: the pre-materialization descriptor classifier
+        // (`descriptor_materializes_ai_enemy`, used to FILTER on the client) must
+        // agree with the live-component predicate (`is_networked_ai_map_enemy`,
+        // used to REGISTER on the host) for a `MapPlacement` spawn. Materialize
+        // an AI enemy and a non-AI prop and assert each side agrees per entity.
+        //
+        // Lives on the netcode side because only it can see BOTH the scripting
+        // classifier and the netcode live predicate — the scripting tree must not
+        // reach up into `crate::netcode` (dependency arrow is netcode → scripting).
+        let descriptors = vec![
+            ai_enemy_descriptor("grunt"),
+            mesh_descriptor("crate", false),
+        ];
+        let placements = vec![placement("grunt", &[]), placement("crate", &[])];
+        let mut reg = EntityRegistry::new();
+        apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg, None);
+
+        for (id, _) in reg
+            .iter_with_kind(ComponentKind::DescriptorProvenance)
+            .collect::<Vec<_>>()
+        {
+            let provenance = reg.get_component::<DescriptorProvenance>(id).unwrap();
+            let descriptor = find_descriptor(&descriptors, &provenance.canonical_name)
+                .expect("descriptor for materialized entity");
+            assert_eq!(
+                descriptor_materializes_ai_enemy(descriptor),
+                is_networked_ai_map_enemy(&reg, id),
+                "pre-materialization classifier and live predicate must agree for `{}`",
+                provenance.canonical_name,
+            );
+        }
+    }
+}

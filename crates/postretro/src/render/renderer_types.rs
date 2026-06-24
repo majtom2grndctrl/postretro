@@ -618,6 +618,15 @@ pub struct Renderer {
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
     pub(super) camera_cull_diagnostics: CameraCullDiagnostics,
 
+    /// Full tree-walk cull-cost estimate, recomputed every frame in
+    /// `record_pre_scene_compute` independent of which GPU cull strategy ran.
+    /// This is the baseline the candidate path beats — it must not be a side
+    /// effect of the tree-walk dispatch, or candidate-eligible frames starve it
+    /// to zero. `None` when no cull pipeline is loaded (no level / no BVH). Read
+    /// by the baseline diagnostics panel (dev-tools).
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub(super) bvh_cull_diagnostics: Option<crate::compute_cull::BvhCullDiagnostics>,
+
     /// `POSTRETRO_SHADOW_DEBUG=1`: env-gated shadow-pipeline diagnostics. Cached
     /// at construction so the hot path pays one bool test, not a `getenv`, per
     /// frame. When set, `emit_shadow_debug` logs (via `log::info!`) a compact

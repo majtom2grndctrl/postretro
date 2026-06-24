@@ -220,11 +220,12 @@ pub(super) fn emit_portal_overlay(
 }
 
 impl Renderer {
+    /// The full tree-walk cull-cost baseline computed this frame by
+    /// `record_pre_scene_compute`, independent of the active GPU cull path.
+    /// `None` when no cull pipeline is loaded.
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
     pub fn visibility_diagnostics(&self) -> Option<crate::compute_cull::BvhCullDiagnostics> {
-        self.compute_cull
-            .as_ref()
-            .map(ComputeCullPipeline::latest_diagnostics)
+        self.bvh_cull_diagnostics
     }
 
     /// `true` when the loaded map carries a baked SH volume. The diagnostic

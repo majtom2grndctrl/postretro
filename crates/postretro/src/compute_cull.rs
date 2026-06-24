@@ -39,7 +39,7 @@ pub(crate) struct CullUniforms {
     pub(crate) planes: [[f32; 4]; 6],
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
 pub struct BvhFrontierDiagnostics {
     pub frontier_subtrees: u32,
@@ -48,7 +48,7 @@ pub struct BvhFrontierDiagnostics {
     pub imbalance_ratio: f32,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
 pub struct BvhCullDiagnostics {
     pub estimated_node_visits: u32,
@@ -82,17 +82,18 @@ pub struct ComputeCullPipeline {
     cull_status_buffer: wgpu::Buffer,
 
     visible_bitmask_scratch: Vec<u32>,
+    // CPU mirrors of the read-only BVH, kept for the dev-tools-only cull-cost
+    // estimate (`estimate_diagnostics`). Dead in shipping builds.
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
     bvh_nodes: Vec<BvhNode>,
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
     bvh_leaves: Vec<BvhLeaf>,
-    submitted_bucket_scratch: Vec<bool>,
-    latest_diagnostics: BvhCullDiagnostics,
 }
 
 impl ComputeCullPipeline {
     pub fn new(device: &wgpu::Device, bvh: &BvhTree, has_multi_draw_indirect: bool) -> Self {
         let total_leaves = bvh.leaves.len() as u32;
         let bucket_ranges = bvh.derive_bucket_ranges();
-        let bucket_count = bucket_ranges.len();
 
         let node_bytes = serialize_bvh_nodes(&bvh.nodes);
         let node_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -256,8 +257,6 @@ impl ComputeCullPipeline {
             visible_bitmask_scratch: vec![0u32; VISIBLE_CELLS_WORDS],
             bvh_nodes: bvh.nodes.clone(),
             bvh_leaves: bvh.leaves.clone(),
-            submitted_bucket_scratch: vec![false; bucket_count],
-            latest_diagnostics: BvhCullDiagnostics::default(),
         }
     }
 
@@ -307,14 +306,6 @@ impl ComputeCullPipeline {
         queue.write_buffer(&self.visible_cells_buffer, 0, &bitmask_bytes);
 
         let planes = extract_frustum_planes_for_gpu(view_proj);
-        self.latest_diagnostics = estimate_bvh_cull_with_planes(
-            &self.bvh_nodes,
-            &self.bvh_leaves,
-            &self.bucket_ranges,
-            visible,
-            &planes,
-            &mut self.submitted_bucket_scratch,
-        );
         let uniforms = CullUniforms { planes };
         let uniforms_bytes = serialize_cull_uniforms(&uniforms);
         queue.write_buffer(&self.uniform_buffer, 0, &uniforms_bytes);
@@ -432,9 +423,27 @@ impl ComputeCullPipeline {
         (pop, hash)
     }
 
+    /// Estimate the would-be tree-walk cull cost for this frame's frustum and
+    /// visible set. Pure read-only analysis over the CPU BVH mirrors — runs
+    /// regardless of which GPU cull strategy actually dispatched, so the
+    /// baseline panel is never starved when the candidate path takes over. The
+    /// bucket scratch is a one-per-frame local alloc; this is dev-tools-only.
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
-    pub fn latest_diagnostics(&self) -> BvhCullDiagnostics {
-        self.latest_diagnostics
+    pub fn estimate_diagnostics(
+        &self,
+        visible: &crate::visibility::VisibleCells,
+        view_proj: &Mat4,
+    ) -> BvhCullDiagnostics {
+        let planes = extract_frustum_planes_for_gpu(view_proj);
+        let mut bucket_scratch = vec![false; self.bucket_ranges.len()];
+        estimate_bvh_cull_with_planes(
+            &self.bvh_nodes,
+            &self.bvh_leaves,
+            &self.bucket_ranges,
+            visible,
+            &planes,
+            &mut bucket_scratch,
+        )
     }
 }
 
@@ -1183,6 +1192,52 @@ mod tests {
             "candidate_count must occupy the first little-endian word"
         );
         assert_eq!(&bytes[4..], &[0u8; 12], "pad words must be zero");
+    }
+
+    /// The baseline estimate is path-independent: it measures the full tree
+    /// walk over a `Culled` visible set — exactly the set a candidate-eligible
+    /// frame carries — and returns non-default counts. This is the contract the
+    /// renderer-driven analysis pass relies on: the baseline panel populates on
+    /// candidate frames (where the tree-walk dispatch never runs), not just on
+    /// tree-walk frames.
+    ///
+    /// Regression: baseline showed all zeros on candidate-eligible frames
+    /// because the estimate was a side effect of the tree-walk dispatch.
+    #[test]
+    fn cpu_bvh_estimate_populates_for_candidate_style_visible_set() {
+        let tree = BvhTree {
+            nodes: vec![
+                internal_node(3, [-0.5, -0.5, -0.5], [3.0, 0.5, 0.5]),
+                leaf_node_aabb(0, 2, [-0.5, -0.5, -0.5], [0.5, 0.5, 0.5]),
+                leaf_node_aabb(1, 3, [2.0, -0.5, -0.5], [3.0, 0.5, 0.5]),
+            ],
+            leaves: vec![
+                leaf_aabb(0, 7, [-0.5, -0.5, -0.5], [0.5, 0.5, 0.5]),
+                leaf_aabb(1, 8, [2.0, -0.5, -0.5], [3.0, 0.5, 0.5]),
+            ],
+            root_node_index: 0,
+        };
+        let planes = extract_frustum_planes_for_gpu(&Mat4::IDENTITY);
+        let mut bucket_scratch = Vec::new();
+        // `Culled` with a concrete visible-cell set — the shape a candidate
+        // frame carries. The full tree walk still runs in the estimate.
+        let diagnostics = estimate_bvh_cull_with_planes(
+            &tree.nodes,
+            &tree.leaves,
+            &tree.derive_bucket_ranges(),
+            &crate::visibility::VisibleCells::Culled(vec![7]),
+            &planes,
+            &mut bucket_scratch,
+        );
+
+        assert_ne!(
+            diagnostics,
+            BvhCullDiagnostics::default(),
+            "baseline estimate must be non-default for a candidate-style visible set"
+        );
+        // Whole tree visited; only the frustum-passing visible leaf submits.
+        assert_eq!(diagnostics.estimated_node_visits, 3);
+        assert_eq!(diagnostics.submitted_leaves, 1);
     }
 
     #[test]

@@ -518,13 +518,15 @@ fn draw_performance_tab(ui: &mut egui::Ui, frame_timing: Option<&FrameTimingSnap
 }
 
 fn draw_spatial_tab(ui: &mut egui::Ui, state: &mut DiagnosticsState, renderer: &mut Renderer) {
-    egui::CollapsingHeader::new("Visibility Diagnostics")
+    egui::CollapsingHeader::new("BVH cull baseline (full tree walk)")
         .default_open(true)
         .show(ui, |ui| {
             let Some(diagnostics) = renderer.visibility_diagnostics() else {
                 ui.label("No BVH cull data loaded");
                 return;
             };
+
+            ui.label("Would-be tree-walk cost, regardless of the active cull path.");
 
             egui::Grid::new("visibility_diagnostics_grid")
                 .num_columns(2)

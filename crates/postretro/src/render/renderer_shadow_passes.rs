@@ -411,6 +411,20 @@ impl Renderer {
 
         // Same submission as render passes — no readback or GPU sync between cull and draw.
         if render_world {
+            // Baseline cull-cost estimate, recomputed every frame independent of
+            // which GPU cull strategy dispatches below. It must live HERE, not as
+            // a side effect of the tree-walk dispatch, or candidate-eligible
+            // frames (which skip that dispatch) starve the baseline panel to zero.
+            // Read `compute_cull` immutably to an owned value, then assign the
+            // disjoint diagnostics field.
+            #[cfg(feature = "dev-tools")]
+            {
+                self.bvh_cull_diagnostics = self
+                    .compute_cull
+                    .as_ref()
+                    .map(|cull| cull.estimate_diagnostics(visible, &view_proj));
+            }
+
             // Candidate-cull routing. Eligible iff ALL hold:
             //   * a valid loaded `CellDrawIndex`,
             //   * `VisibleCells::Culled` (a concrete visible-cell set), AND

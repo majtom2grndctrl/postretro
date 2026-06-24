@@ -17,6 +17,20 @@ pub enum VisibleCells {
     DrawAll,
 }
 
+/// Borrowed renderer input describing this frame's camera visibility, threaded
+/// into `render_frame_indirect`/`record_pre_scene_compute` so the renderer can
+/// choose its camera-cull strategy without reaching into game state. Carries
+/// only the camera visible-cell set and the path provenance that produced it;
+/// candidate-cull eligibility is derived solely from this struct plus the
+/// loaded `CellDrawIndex`.
+///
+/// `path` is `Copy`; `cells` is borrowed for the duration of the render call.
+#[derive(Debug, Clone, Copy)]
+pub struct CameraCullVisibility<'a> {
+    pub cells: &'a VisibleCells,
+    pub path: VisibilityPath,
+}
+
 /// Per-frame visibility pipeline statistics for diagnostics.
 #[derive(Debug, Clone)]
 pub struct VisibilityStats {

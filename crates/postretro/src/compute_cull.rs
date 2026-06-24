@@ -350,6 +350,14 @@ impl ComputeCullPipeline {
         &self.cull_status_buffer
     }
 
+    /// The global per-leaf indirect draw buffer. The candidate-cull path
+    /// (`CandidateCullPipeline`) writes the SAME slots in this buffer that the
+    /// tree walk does, so the draw path (`bucket_ranges` / `draw_indirect_buckets`)
+    /// is byte-for-byte identical regardless of which cull ran.
+    pub(crate) fn indirect_buffer(&self) -> &wgpu::Buffer {
+        &self.indirect_buffer
+    }
+
     /// Read-only BVH node storage buffer, uploaded once at level load. The
     /// shadow cull owner (`ShadowCullPipeline`) binds the SAME buffer rather
     /// than re-serializing the BVH per slot.

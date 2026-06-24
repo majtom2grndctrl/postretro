@@ -476,6 +476,13 @@ pub struct Renderer {
     pub(super) cell_draw_index: Option<crate::prl::CellDrawIndex>,
     /// `None` for maps with no BVH.
     pub(super) compute_cull: Option<ComputeCullPipeline>,
+    /// Candidate-cull GPU path (Task 5): gathers only visible cells' BVH
+    /// leaves (via the baked `cell_draw_index` CSR) and dispatches one
+    /// invocation per candidate leaf, writing the SAME global indirect/status
+    /// slots as `compute_cull`. Built in lockstep with `compute_cull`; used only
+    /// on candidate-eligible frames (valid index + `Culled` + `PrlPortal`),
+    /// otherwise the legacy tree walk runs. `None` for maps with no BVH.
+    pub(super) candidate_cull: Option<crate::candidate_cull::CandidateCullPipeline>,
     /// Per-slot cone cull for the spot-shadow depth passes. Sibling to
     /// `compute_cull`, sharing its read-only BVH node/leaf buffers. `None` for
     /// maps with no BVH (kept in lockstep with `compute_cull`).
@@ -530,6 +537,10 @@ pub struct Renderer {
     pub(super) debug_prev_bitmask: (u32, u32),
     pub(super) debug_prev_vp_hash: u32,
     pub(super) debug_prev_visible: (&'static str, usize),
+    /// One-shot guard so the candidate-cull out-of-range-cell warning logs once,
+    /// not every frame (Task 5). Never reset — a single notice per process is
+    /// enough to flag a corrupt/stale `CellDrawIndex`.
+    pub(super) candidate_cull_oor_logged: bool,
 
     /// `POSTRETRO_SHADOW_DEBUG=1`: env-gated shadow-pipeline diagnostics. Cached
     /// at construction so the hot path pays one bool test, not a `getenv`, per

@@ -8,7 +8,7 @@ impl Renderer {
     #[allow(clippy::too_many_arguments)]
     pub fn render_frame_indirect(
         &mut self,
-        visible: &VisibleCells,
+        cam_vis: CameraCullVisibility<'_>,
         light_reachable_leaf_mask: &[bool],
         reachable_leaf_aabbs: &[(Vec3, Vec3)],
         fog_reachable: &[u32],
@@ -19,6 +19,10 @@ impl Renderer {
         clear_color: ClearColor,
         render_world: bool,
     ) -> Result<Option<wgpu::SurfaceTexture>> {
+        // The drawable visible-cell set; candidate-cull eligibility derives
+        // from `cam_vis` (set + path provenance) inside `record_pre_scene_compute`.
+        let visible: &VisibleCells = cam_vis.cells;
+
         self.debug_frame = self.debug_frame.wrapping_add(1);
         let output = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(tex) => tex,
@@ -51,7 +55,7 @@ impl Renderer {
                 label: Some("Frame Encoder"),
             });
 
-        self.record_pre_scene_compute(&mut encoder, visible, view_proj, render_world);
+        self.record_pre_scene_compute(&mut encoder, cam_vis, view_proj, render_world);
 
         // The readback copy is deliberately not encoded here. A
         // `copy_texture_to_buffer` in the same command buffer as the compose

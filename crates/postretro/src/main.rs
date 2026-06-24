@@ -10,6 +10,7 @@ mod agent;
 mod agent_steering;
 mod audio;
 mod camera;
+mod candidate_cull;
 mod collision;
 mod compute_cull;
 mod frame_timing;
@@ -109,7 +110,9 @@ use crate::startup::{
     BootState, FRONTEND_CLEAR_COLOR, InFlightLevelLoad, LevelRequest, LevelSource, LoadOutcome,
     SplashSource, StartupTimings,
 };
-use crate::visibility::{VisibilityPath, VisibilityResult, VisibilityStats, VisibleCells};
+use crate::visibility::{
+    CameraCullVisibility, VisibilityPath, VisibilityResult, VisibilityStats, VisibleCells,
+};
 
 const DEFAULT_MAP_PATH: &str = "content/dev/maps/campaign-test.prl";
 
@@ -2924,7 +2927,10 @@ impl ApplicationHandler for App {
                         renderer.set_ui_snapshot(ui_snapshot);
 
                         let surface_texture = match renderer.render_frame_indirect(
-                            &visible_cells,
+                            CameraCullVisibility {
+                                cells: &visible_cells,
+                                path: stats.path,
+                            },
                             &light_reachable_leaf_mask,
                             &reachable_leaf_aabbs,
                             &fog_reachable,
@@ -3483,7 +3489,12 @@ impl App {
 
         renderer.set_ui_snapshot(ui_snapshot);
         let surface_texture = match renderer.render_frame_indirect(
-            &VisibleCells::DrawAll,
+            CameraCullVisibility {
+                cells: &VisibleCells::DrawAll,
+                // Frontend/splash path: no world cull. DrawAll + non-portal
+                // provenance keeps the candidate path inert regardless.
+                path: VisibilityPath::EmptyWorldFallback,
+            },
             &[],
             &[],
             &[],

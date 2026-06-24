@@ -324,26 +324,99 @@ impl Renderer {
     pub(super) fn record_pre_scene_compute(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
-        visible: &VisibleCells,
+        cam_vis: CameraCullVisibility<'_>,
         view_proj: Mat4,
         render_world: bool,
     ) {
+        let visible: &VisibleCells = cam_vis.cells;
+
         // Same submission as render passes — no readback or GPU sync between cull and draw.
         if render_world {
-            if let Some(cull) = &mut self.compute_cull {
-                let cull_ts = self
-                    .frame_timing
-                    .as_ref()
-                    .map(|t| t.compute_pass_writes(TIMING_PAIR_CULL));
-                cull.dispatch(
-                    &self.device,
-                    &self.queue,
-                    encoder,
-                    visible,
-                    &view_proj,
-                    cull_ts,
-                );
+            // Candidate-cull routing (Task 5). Eligible iff ALL hold:
+            //   * a valid loaded `CellDrawIndex`,
+            //   * `VisibleCells::Culled` (a concrete visible-cell set), AND
+            //   * portal-traversal provenance (`VisibilityPath::PrlPortal`).
+            // The gather may still bail to the tree walk for THIS frame if a
+            // visible cell id is out of the index's range. Everything else
+            // (DrawAll, non-portal Culled fallbacks, missing index) routes to
+            // the unchanged tree walk. Gathered here with immutable borrows,
+            // before the disjoint-field dispatch borrows below.
+            let candidate_leaves: Option<Vec<u32>> = match (
+                self.cell_draw_index.as_ref(),
+                self.candidate_cull.as_ref(),
+                visible,
+                cam_vis.path,
+            ) {
+                (
+                    Some(index),
+                    Some(_),
+                    VisibleCells::Culled(cells),
+                    VisibilityPath::PrlPortal { .. },
+                ) => match crate::candidate_cull::gather_candidate_leaves(index, cells) {
+                    crate::candidate_cull::CandidateGather::Candidates(leaves) => Some(leaves),
+                    crate::candidate_cull::CandidateGather::OutOfRange { cell_id } => {
+                        if !self.candidate_cull_oor_logged {
+                            log::warn!(
+                                "[Renderer] candidate cull: visible cell id {} out of \
+                                 CellDrawIndex range ({} cells); using legacy tree walk \
+                                 for this frame",
+                                cell_id,
+                                index.cell_count,
+                            );
+                            self.candidate_cull_oor_logged = true;
+                        }
+                        None
+                    }
+                },
+                _ => None,
+            };
 
+            let cull_ts = self
+                .frame_timing
+                .as_ref()
+                .map(|t| t.compute_pass_writes(TIMING_PAIR_CULL));
+
+            // Single dispatch selection, consuming `cull_ts` (not `Copy`) in
+            // exactly one arm. The candidate arm uses disjoint-field borrows:
+            // `compute_cull` immutably (for its shared camera leaf/indirect/status
+            // buffer accessors) and `candidate_cull` mutably — distinct struct
+            // fields, so both are live at once. The candidate path writes the
+            // SAME global indirect/status slots as the tree-walk fallback arm.
+            match (
+                candidate_leaves,
+                self.compute_cull.as_ref(),
+                self.candidate_cull.as_mut(),
+            ) {
+                (Some(candidates), Some(cull), Some(candidate)) => {
+                    candidate.dispatch(
+                        &self.device,
+                        &self.queue,
+                        encoder,
+                        cull.leaf_buffer(),
+                        cull.indirect_buffer(),
+                        cull.cull_status_buffer(),
+                        &candidates,
+                        &view_proj,
+                        cull_ts,
+                    );
+                }
+                // Tree-walk fallback (DrawAll, non-portal Culled, missing index,
+                // out-of-range cell id, or no candidate pipeline).
+                _ => {
+                    if let Some(cull) = &mut self.compute_cull {
+                        cull.dispatch(
+                            &self.device,
+                            &self.queue,
+                            encoder,
+                            visible,
+                            &view_proj,
+                            cull_ts,
+                        );
+                    }
+                }
+            }
+
+            if let Some(cull) = &self.compute_cull {
                 if log::log_enabled!(log::Level::Debug) {
                     let f = self.debug_frame;
 

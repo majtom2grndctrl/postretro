@@ -649,6 +649,16 @@ pub(crate) fn client_receive_and_apply(
             prediction.arm(armed.network_id, armed.entity_id);
             remote_materialize::materialize_armed_local_pawn(armed, descriptors, registry);
         }
+        // E10 Task 6: each non-local baseline that just spawned a descriptor-class-bearing
+        // entity gets its remote-enemy presentation materialized here, where the descriptor
+        // table is in scope (the net-facing apply is descriptor-blind). The helper attaches
+        // ONLY the descriptor's mesh — no Brain/Agent/Health/Weapon/PlayerMovement — and is
+        // idempotent + unknown-class-tolerant (leaves the entity transform-only, never
+        // rejects the snapshot). The entity is already mapped, so it interpolates regardless
+        // of whether a mesh attached. Runs before the frame renders (Game-logic stage).
+        for remote in &outcome.remote_enemies {
+            remote_materialize::materialize_armed_remote_enemy(remote, descriptors, registry);
+        }
         // M15 Phase 3 Task 5: reconcile the local predicted pawn against the
         // authoritative record this snapshot delivered — merge the movement subset,
         // restore the transform, prune through the host ack, replay the unacked tail,

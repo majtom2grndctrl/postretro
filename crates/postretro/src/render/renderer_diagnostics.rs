@@ -220,6 +220,13 @@ pub(super) fn emit_portal_overlay(
 }
 
 impl Renderer {
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub fn visibility_diagnostics(&self) -> Option<crate::compute_cull::BvhCullDiagnostics> {
+        self.compute_cull
+            .as_ref()
+            .map(ComputeCullPipeline::latest_diagnostics)
+    }
+
     /// `true` when the loaded map carries a baked SH volume. The diagnostic
     /// panel queries this to render either live controls or a disabled-state label.
     #[cfg(feature = "dev-tools")]

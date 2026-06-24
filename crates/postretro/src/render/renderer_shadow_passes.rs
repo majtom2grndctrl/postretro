@@ -18,6 +18,70 @@ fn wireframe_draws_leaf(
     }
 }
 
+/// Whether a leaf AABB survives the frustum, mirroring `is_aabb_outside_frustum`
+/// in both cull shaders (p-vertex test, inside-sign `dot(n, p) + d >= 0`).
+/// `planes` come from `extract_frustum_planes_for_gpu` — the exact CPU source
+/// the GPU uniform is serialized from — so the CPU diagnostics submitted count
+/// matches what the GPU writes.
+fn leaf_passes_frustum(leaf: &crate::geometry::BvhLeaf, planes: &[[f32; 4]; 6]) -> bool {
+    for plane in planes {
+        let n = Vec3::new(plane[0], plane[1], plane[2]);
+        let d = plane[3];
+        let p = Vec3::new(
+            if n.x >= 0.0 { leaf.aabb_max[0] } else { leaf.aabb_min[0] },
+            if n.y >= 0.0 { leaf.aabb_max[1] } else { leaf.aabb_min[1] },
+            if n.z >= 0.0 { leaf.aabb_max[2] } else { leaf.aabb_min[2] },
+        );
+        if n.dot(p) + d < 0.0 {
+            return false;
+        }
+    }
+    true
+}
+
+/// CPU-derived submitted-leaf count for the candidate path: candidates that
+/// pass the frustum predicate (visible-cell membership is already implied by
+/// the gather). Diagnostic only; not a perf gate.
+fn count_submitted_candidates(
+    leaves: &[crate::geometry::BvhLeaf],
+    candidates: &[u32],
+    view_proj: &Mat4,
+) -> u32 {
+    let planes = crate::compute_cull::extract_frustum_planes_for_gpu(view_proj);
+    candidates
+        .iter()
+        .filter(|&&i| {
+            leaves
+                .get(i as usize)
+                .is_some_and(|leaf| leaf_passes_frustum(leaf, &planes))
+        })
+        .count() as u32
+}
+
+/// CPU-derived submitted-leaf count for the tree walk: drawable leaves whose
+/// cell is visible and whose AABB passes the frustum, over the whole leaf
+/// array. Mirrors `bvh_cull.wgsl::cull_main`'s submit branch. Diagnostic only.
+fn count_submitted_tree_walk(
+    leaves: &[crate::geometry::BvhLeaf],
+    visible: &VisibleCells,
+    view_proj: &Mat4,
+) -> u32 {
+    let planes = crate::compute_cull::extract_frustum_planes_for_gpu(view_proj);
+    leaves
+        .iter()
+        .filter(|leaf| {
+            if leaf.index_count == 0 {
+                return false;
+            }
+            let cell_visible = match visible {
+                VisibleCells::DrawAll => true,
+                VisibleCells::Culled(cells) => cells.contains(&leaf.cell_id),
+            };
+            cell_visible && leaf_passes_frustum(leaf, &planes)
+        })
+        .count() as u32
+}
+
 impl Renderer {
     /// Spot-shadow depth loop: per occupied slot, render world geometry (indirect,
     /// cone-culled) then skinned-entity occluders into that slot's depth map.
@@ -388,6 +452,20 @@ impl Renderer {
                 self.candidate_cull.as_mut(),
             ) {
                 (Some(candidates), Some(cull), Some(candidate)) => {
+                    // CPU-derived Spatial diagnostics: candidate count vs total
+                    // leaves, and submitted = candidates passing the frustum
+                    // predicate. Computed before the dispatch moves `candidates`.
+                    self.camera_cull_diagnostics = CameraCullDiagnostics {
+                        path: CameraCullPath::Candidate {
+                            candidate_leaves: candidates.len() as u32,
+                        },
+                        total_leaves: cull.total_leaves(),
+                        submitted_leaves: count_submitted_candidates(
+                            &self.bvh_leaves,
+                            &candidates,
+                            &view_proj,
+                        ),
+                    };
                     candidate.dispatch(
                         &self.device,
                         &self.queue,
@@ -412,6 +490,19 @@ impl Renderer {
                             &view_proj,
                             cull_ts,
                         );
+                    }
+                    // Tree-walk diagnostics: submitted = drawable, visible-cell,
+                    // frustum-passing leaves over the WHOLE leaf array.
+                    if let Some(cull) = self.compute_cull.as_ref() {
+                        self.camera_cull_diagnostics = CameraCullDiagnostics {
+                            path: CameraCullPath::TreeWalk,
+                            total_leaves: cull.total_leaves(),
+                            submitted_leaves: count_submitted_tree_walk(
+                                &self.bvh_leaves,
+                                visible,
+                                &view_proj,
+                            ),
+                        };
                     }
                 }
             }

@@ -26,6 +26,20 @@ pub(crate) const CANDIDATE_CULL_WORKGROUP_SIZE: u32 = 64;
 /// `candidate_count` plus three pad words to a vec4-aligned uniform.
 pub(crate) const CANDIDATE_PARAMS_SIZE: u64 = 16;
 
+/// Serialize the 16-byte `CandidateCullParams` uniform: `candidate_count`
+/// little-endian followed by three zero pad words, matching the WGSL struct
+/// `{ candidate_count: u32, _pad0: u32, _pad1: u32, _pad2: u32 }`. Extracted
+/// from `dispatch` so the CPU/WGSL ABI is covered by a unit test rather than
+/// only exercised on a GPU frame.
+pub(crate) fn serialize_candidate_params(candidate_count: u32) -> Vec<u8> {
+    let mut params = Vec::with_capacity(CANDIDATE_PARAMS_SIZE as usize);
+    params.extend_from_slice(&candidate_count.to_le_bytes());
+    params.extend_from_slice(&0u32.to_le_bytes());
+    params.extend_from_slice(&0u32.to_le_bytes());
+    params.extend_from_slice(&0u32.to_le_bytes());
+    params
+}
+
 /// Outcome of the pure candidate gather.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CandidateGather {
@@ -231,11 +245,7 @@ impl CandidateCullPipeline {
         queue.write_buffer(&self.uniform_buffer, 0, &serialize_cull_uniforms(&uniforms));
 
         let candidate_count = candidate_leaves.len() as u32;
-        let mut params = Vec::with_capacity(CANDIDATE_PARAMS_SIZE as usize);
-        params.extend_from_slice(&candidate_count.to_le_bytes());
-        params.extend_from_slice(&0u32.to_le_bytes());
-        params.extend_from_slice(&0u32.to_le_bytes());
-        params.extend_from_slice(&0u32.to_le_bytes());
+        let params = serialize_candidate_params(candidate_count);
         queue.write_buffer(&self.params_buffer, 0, &params);
 
         // candidate_count == 0: buffers are already cleared; skip the dispatch.
@@ -363,5 +373,44 @@ mod tests {
         // cell_count == 1, so id 1 is out of range.
         let gather = gather_candidate_leaves(&index, &[0, 1]);
         assert_eq!(gather, CandidateGather::OutOfRange { cell_id: 1 });
+    }
+
+    /// The gather visits ONLY the visible cells' spans: its output equals the
+    /// union of those cells' CSR spans and nothing else (work ∝ candidate
+    /// count, not total leaves/nodes). Cell 1's leaves and the non-visible
+    /// cell 3's leaves must never appear when only cells 0 and 2 are visible.
+    #[test]
+    fn gather_visits_only_visible_cells_spans() {
+        // 4 cells. cell 0 -> [span0], cell 1 -> [span1], cell 2 -> [span2],
+        // cell 3 -> [span3]. Each span owns a disjoint global-leaf range.
+        let index = index_from(
+            vec![0, 1, 2, 3, 4],
+            vec![
+                Span { leaf_start: 0, leaf_count: 2 },  // cell 0: leaves 0,1
+                Span { leaf_start: 2, leaf_count: 3 },  // cell 1: leaves 2,3,4
+                Span { leaf_start: 5, leaf_count: 1 },  // cell 2: leaf 5
+                Span { leaf_start: 6, leaf_count: 2 },  // cell 3: leaves 6,7
+            ],
+        );
+
+        let gather = gather_candidate_leaves(&index, &[2, 0]);
+        let leaves = match gather {
+            CandidateGather::Candidates(leaves) => leaves,
+            other => panic!("expected Candidates, got {other:?}"),
+        };
+
+        // Exactly the union of cells 2 and 0 spans (first-seen order: 2 then 0).
+        assert_eq!(leaves, vec![5, 0, 1]);
+
+        // Nothing from the non-visible cells leaked in.
+        for hidden in [2u32, 3, 4, 6, 7] {
+            assert!(
+                !leaves.contains(&hidden),
+                "leaf {hidden} from a non-visible cell must not be gathered"
+            );
+        }
+        // Candidate count equals the visible cells' leaf total, not the global
+        // leaf count (8): the gather did no work proportional to total leaves.
+        assert_eq!(leaves.len(), 3);
     }
 }

@@ -11,6 +11,10 @@ mod agent_steering;
 mod audio;
 mod camera;
 mod candidate_cull;
+#[cfg(test)]
+mod candidate_cull_mirror;
+#[cfg(test)]
+mod candidate_cull_probes;
 mod collision;
 mod compute_cull;
 mod frame_timing;

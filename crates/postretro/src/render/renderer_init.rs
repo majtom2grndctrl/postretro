@@ -581,6 +581,7 @@ impl Renderer {
             debug_prev_vp_hash: u32::MAX,
             debug_prev_visible: ("init", usize::MAX),
             candidate_cull_oor_logged: false,
+            camera_cull_diagnostics: crate::render::CameraCullDiagnostics::default(),
             shadow_debug_enabled: std::env::var("POSTRETRO_SHADOW_DEBUG").ok().as_deref()
                 == Some("1"),
             shadow_debug_prev: (u128::MAX, u128::MAX, u32::MAX, u32::MAX),

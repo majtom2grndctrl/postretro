@@ -441,6 +441,14 @@ impl Renderer {
         self.cell_overlay.depth_mode = mode;
     }
 
+    /// Last frame's CPU-derived camera-cull diagnostics: which path ran
+    /// (candidate vs tree walk), candidate/total/submitted leaf counts.
+    /// Surfaced in the Spatial diagnostics tab. Diagnostic only.
+    #[cfg(feature = "dev-tools")]
+    pub fn camera_cull_diagnostics(&self) -> CameraCullDiagnostics {
+        self.camera_cull_diagnostics
+    }
+
     #[cfg(feature = "dev-tools")]
     pub fn portal_overlay_state(&self) -> PortalOverlayState {
         self.portal_overlay

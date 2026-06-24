@@ -7,6 +7,7 @@ use winit::window::Window;
 use super::BvhOverlayBudget;
 use super::BvhOverlayColorMode;
 use super::BvhOverlayDepthMode;
+use super::CameraCullPath;
 use super::CellOverlayState;
 use super::DynamicDirectIsolation;
 use super::LightingIsolation;
@@ -648,6 +649,29 @@ fn draw_spatial_tab(ui: &mut egui::Ui, state: &mut DiagnosticsState, renderer: &
                 .changed()
             {
                 renderer.set_bvh_overlay_budget(state.bvh_budget);
+            }
+        });
+
+    egui::CollapsingHeader::new("Camera cull")
+        .default_open(true)
+        .show(ui, |ui| {
+            let diag = renderer.camera_cull_diagnostics();
+            let (path_label, candidate_label) = match diag.path {
+                CameraCullPath::Candidate { candidate_leaves } => {
+                    ("Candidate (visible-cell)", candidate_leaves.to_string())
+                }
+                CameraCullPath::TreeWalk => ("Tree walk (legacy)", "—".to_string()),
+            };
+            ui.label(format!("Path: {path_label}"));
+            ui.label(format!("Candidate leaves: {candidate_label}"));
+            ui.label(format!("Total leaves: {}", diag.total_leaves));
+            ui.label(format!("Submitted leaves: {}", diag.submitted_leaves));
+            // Candidate vs total exposes future indirect-compaction headroom.
+            if let Some(candidates) = diag.candidate_leaves() {
+                if diag.total_leaves > 0 {
+                    let pct = 100.0 * candidates as f32 / diag.total_leaves as f32;
+                    ui.label(format!("Candidate / total: {pct:.1}%"));
+                }
             }
         });
 }

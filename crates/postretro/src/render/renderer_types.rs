@@ -179,9 +179,77 @@ impl Default for PortalOverlayState {
     }
 }
 
+/// Which camera-cull path ran for a frame, surfaced to the Spatial diagnostics
+/// tab. Diagnostic only — never gates behavior.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CameraCullPath {
+    /// Visible-cell candidate cull (valid `CellDrawIndex` + `Culled` + portal
+    /// provenance). `candidate_leaves` is the gathered candidate count.
+    Candidate { candidate_leaves: u32 },
+    /// Legacy whole-BVH tree walk (`DrawAll`, non-portal fallback, missing /
+    /// invalid index, or an out-of-range visible cell id).
+    TreeWalk,
+}
+
+/// CPU-derived camera-cull diagnostics for the Spatial tab. Captured each frame
+/// in `record_pre_scene_compute`. Exposes candidate-vs-total leaves so a future
+/// optional indirect-compaction pass is a measured decision, not a guess. Not a
+/// perf gate; reads no GPU buffers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CameraCullDiagnostics {
+    /// Which path the frame used.
+    pub path: CameraCullPath,
+    /// Total BVH leaves in the level (the tree walk's working set).
+    pub total_leaves: u32,
+    /// Leaves submitted this frame (passed the frustum predicate and, on the
+    /// candidate path, were gathered from visible cells). CPU-derived.
+    pub submitted_leaves: u32,
+}
+
+impl Default for CameraCullDiagnostics {
+    fn default() -> Self {
+        Self {
+            path: CameraCullPath::TreeWalk,
+            total_leaves: 0,
+            submitted_leaves: 0,
+        }
+    }
+}
+
+impl CameraCullDiagnostics {
+    /// Candidate leaf count for the frame, or `None` on the tree-walk path
+    /// (where there is no candidate gather).
+    #[cfg(any(feature = "dev-tools", test))]
+    pub fn candidate_leaves(&self) -> Option<u32> {
+        match self.path {
+            CameraCullPath::Candidate { candidate_leaves } => Some(candidate_leaves),
+            CameraCullPath::TreeWalk => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn camera_cull_diagnostics_reports_candidate_leaves_per_path() {
+        let candidate = CameraCullDiagnostics {
+            path: CameraCullPath::Candidate { candidate_leaves: 7 },
+            total_leaves: 100,
+            submitted_leaves: 3,
+        };
+        assert_eq!(candidate.candidate_leaves(), Some(7));
+
+        let tree_walk = CameraCullDiagnostics {
+            path: CameraCullPath::TreeWalk,
+            total_leaves: 100,
+            submitted_leaves: 42,
+        };
+        assert_eq!(tree_walk.candidate_leaves(), None);
+        // Default is the tree-walk path with zeroed counts.
+        assert_eq!(CameraCullDiagnostics::default().candidate_leaves(), None);
+    }
 
     #[test]
     fn world_wireframe_modes_define_final_spatial_contract() {
@@ -541,6 +609,12 @@ pub struct Renderer {
     /// not every frame (Task 5). Never reset — a single notice per process is
     /// enough to flag a corrupt/stale `CellDrawIndex`.
     pub(super) candidate_cull_oor_logged: bool,
+    /// CPU-derived camera-cull diagnostics from the last `record_pre_scene_compute`
+    /// (candidate vs tree-walk path, candidate/total/submitted leaves). Read by
+    /// the Spatial diagnostics tab (dev-tools). Diagnostic only — never gates
+    /// behavior.
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub(super) camera_cull_diagnostics: CameraCullDiagnostics,
 
     /// `POSTRETRO_SHADOW_DEBUG=1`: env-gated shadow-pipeline diagnostics. Cached
     /// at construction so the hot path pays one bool test, not a `getenv`, per

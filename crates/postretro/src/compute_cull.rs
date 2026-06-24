@@ -636,11 +636,12 @@ mod tests {
 
     /// Guards against `vec3<f32>` creeping back into the WGSL structs: alignment 16
     /// would silently shift every node/leaf after index 0 in the GPU storage buffers.
-    #[test]
-    fn wgsl_bvh_struct_strides_match_spec() {
-        let module = naga::front::wgsl::parse_str(CULL_SHADER_SOURCE)
-            .expect("cull shader should parse as WGSL");
-
+    /// Parse a WGSL source and map every declared struct name to its naga
+    /// `span` (the byte stride). Drift guard input is the actual shader text,
+    /// never a hand-copied field list.
+    fn struct_strides(source: &str) -> std::collections::HashMap<String, u32> {
+        let module =
+            naga::front::wgsl::parse_str(source).expect("shader should parse as WGSL");
         let mut seen = std::collections::HashMap::new();
         for (_handle, ty) in module.types.iter() {
             if let naga::TypeInner::Struct { span, .. } = &ty.inner {
@@ -649,12 +650,50 @@ mod tests {
                 }
             }
         }
+        seen
+    }
 
-        let node_span = seen
+    /// Extract the full text of a top-level `fn <name>(...) { ... }` from WGSL
+    /// source, signature through the matching closing brace. Used to compare a
+    /// helper byte-for-byte between two shaders that copy it (WGSL has no
+    /// include). Returns the exact source slice including the braces.
+    fn extract_wgsl_fn<'a>(source: &'a str, name: &str) -> &'a str {
+        let needle = format!("fn {name}");
+        let start = source
+            .find(&needle)
+            .unwrap_or_else(|| panic!("shader should declare fn {name}"));
+        let brace_start = source[start..]
+            .find('{')
+            .map(|o| start + o)
+            .expect("function should have a body");
+        let mut depth = 0usize;
+        for (i, c) in source[brace_start..].char_indices() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return &source[start..brace_start + i + 1];
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("unbalanced braces extracting fn {name}");
+    }
+
+    /// `BvhNode`/`BvhLeaf` strides in `bvh_cull.wgsl` must match the on-disk
+    /// layout. Guards against `vec3<f32>` creeping back in (align 16 would
+    /// silently shift every node/leaf after index 0 in the GPU storage buffers).
+    #[test]
+    fn wgsl_bvh_struct_strides_match_spec() {
+        let strides = struct_strides(CULL_SHADER_SOURCE);
+
+        let node_span = strides
             .get("BvhNode")
             .copied()
             .expect("shader should declare struct BvhNode");
-        let leaf_span = seen
+        let leaf_span = strides
             .get("BvhLeaf")
             .copied()
             .expect("shader should declare struct BvhLeaf");
@@ -670,6 +709,83 @@ mod tests {
              a vec3<f32> field likely crept back in (align 16 → stride 64), \
              or the chunk_range_* fields were dropped"
         );
+    }
+
+    /// The candidate cull shader reuses `BvhLeaf`, `DrawIndexedIndirect`,
+    /// `FrustumPlane`, and `CullUniforms` from `bvh_cull.wgsl`. Their naga
+    /// strides must match between the two shaders, so the candidate path binds
+    /// the SAME leaf/indirect storage buffers without a layout mismatch. Strides
+    /// are derived from each shader's actual text, not a hand-copied list.
+    #[test]
+    fn candidate_shader_reuses_bvh_cull_struct_layouts() {
+        let bvh = struct_strides(CULL_SHADER_SOURCE);
+        let candidate = struct_strides(crate::candidate_cull::CANDIDATE_CULL_SHADER_SOURCE);
+
+        for name in ["BvhLeaf", "DrawIndexedIndirect", "FrustumPlane", "CullUniforms"] {
+            let a = bvh
+                .get(name)
+                .unwrap_or_else(|| panic!("bvh_cull.wgsl should declare struct {name}"));
+            let b = candidate
+                .get(name)
+                .unwrap_or_else(|| panic!("candidate_cull.wgsl should declare struct {name}"));
+            assert_eq!(
+                a, b,
+                "struct {name} stride differs between bvh_cull.wgsl ({a}) and \
+                 candidate_cull.wgsl ({b}); the candidate path must reuse the \
+                 byte-for-byte layout to share storage buffers"
+            );
+        }
+
+        // The shared BvhLeaf must still be 48 bytes in the candidate shader.
+        assert_eq!(candidate.get("BvhLeaf").copied(), Some(48));
+    }
+
+    /// `is_aabb_outside_frustum` is copied byte-for-byte between the two shaders
+    /// (no WGSL include). A diverging copy would frustum-test candidates with
+    /// different math than the tree walk, breaking the equivalence proof.
+    #[test]
+    fn is_aabb_outside_frustum_is_identical_across_shaders() {
+        let bvh_fn = extract_wgsl_fn(CULL_SHADER_SOURCE, "is_aabb_outside_frustum");
+        let candidate_fn = extract_wgsl_fn(
+            crate::candidate_cull::CANDIDATE_CULL_SHADER_SOURCE,
+            "is_aabb_outside_frustum",
+        );
+        assert_eq!(
+            bvh_fn, candidate_fn,
+            "is_aabb_outside_frustum must be byte-for-byte identical between \
+             bvh_cull.wgsl and candidate_cull.wgsl"
+        );
+    }
+
+    /// The 16-byte `CandidateCullParams` ABI: the WGSL struct is exactly 16
+    /// bytes (`candidate_count` + three pad words), the Rust constant agrees,
+    /// and the CPU serializer writes 16 bytes with `candidate_count` in the
+    /// first little-endian word.
+    #[test]
+    fn candidate_params_abi_is_sixteen_bytes() {
+        let strides = struct_strides(crate::candidate_cull::CANDIDATE_CULL_SHADER_SOURCE);
+        let params_span = strides
+            .get("CandidateCullParams")
+            .copied()
+            .expect("candidate_cull.wgsl should declare struct CandidateCullParams");
+        assert_eq!(
+            params_span as u64,
+            crate::candidate_cull::CANDIDATE_PARAMS_SIZE,
+            "CandidateCullParams WGSL stride must equal CANDIDATE_PARAMS_SIZE"
+        );
+
+        let bytes = crate::candidate_cull::serialize_candidate_params(0x1234_5678);
+        assert_eq!(
+            bytes.len() as u64,
+            crate::candidate_cull::CANDIDATE_PARAMS_SIZE,
+            "serialized params must be exactly CANDIDATE_PARAMS_SIZE bytes"
+        );
+        assert_eq!(
+            &bytes[0..4],
+            &0x1234_5678u32.to_le_bytes(),
+            "candidate_count must occupy the first little-endian word"
+        );
+        assert_eq!(&bytes[4..], &[0u8; 12], "pad words must be zero");
     }
 
     #[test]

@@ -112,11 +112,12 @@ pub(crate) fn request_renderer_device(
     const REQUIRED_MAX_TEXTURE_DIMENSION_2D: u32 = 8192;
     // Single-buffer ceiling. wgpu defaults to 256 MiB; the dev-tools SH
     // irradiance readback (full-atlas Rgba16Float copy) overruns it on large
-    // maps. 4 GiB is a deliberate dev-stage limit — clears current maps, still
-    // low enough to flag a runaway allocation here rather than balloon silently.
-    // Modern FPS demand more; revisit against a real hardware floor once shipping
-    // maps exist. Desktop and Apple-Silicon adapters report GiBs here.
-    const REQUIRED_MAX_BUFFER_SIZE: u64 = 4 * 1024 * 1024 * 1024;
+    // maps (~327 MiB on stress-warren-crates). 2 GiB clears that with headroom
+    // yet stays low enough to flag a runaway allocation here rather than balloon
+    // silently. It also sits within reach of real adapters: the dev Apple-Silicon
+    // device caps below 3 GiB, so a higher floor (e.g. 4 GiB) rejects it.
+    // Revisit against a known target-hardware floor once shipping maps exist.
+    const REQUIRED_MAX_BUFFER_SIZE: u64 = 2 * 1024 * 1024 * 1024;
     let adapter_limits = adapter.limits();
     let required_limits = wgpu::Limits {
         max_bind_groups: 8,
@@ -167,7 +168,7 @@ pub(crate) fn request_renderer_device(
     if adapter_limits.max_buffer_size < REQUIRED_MAX_BUFFER_SIZE {
         anyhow::bail!(
             "GPU adapter allows a maximum single buffer of {} bytes; this engine \
-                 requires {} (4 GiB) for large scene and diagnostic buffers",
+                 requires {} (2 GiB) for large scene and diagnostic buffers",
             adapter_limits.max_buffer_size,
             REQUIRED_MAX_BUFFER_SIZE
         );

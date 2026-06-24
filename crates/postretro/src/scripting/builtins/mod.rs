@@ -8,6 +8,7 @@ use crate::scripting::registry::EntityRegistry;
 
 pub(crate) mod billboard_emitter;
 pub(crate) mod data_archetype;
+pub(crate) mod net_descriptor;
 pub(crate) mod prop_mesh;
 
 // Used by `main.rs` for the level-load sweep. The `gen-script-types` bin

@@ -37,7 +37,7 @@ use super::wire_convert::sim_command_to_input;
 use crate::collision::CollisionWorld;
 use crate::movement::MovementInput;
 use crate::netcode::{NetworkIdAllocator, host_handle_client_message};
-use crate::scripting::builtins::data_archetype::materialize_net_local_movement_component;
+use crate::scripting::builtins::net_descriptor::materialize_net_local_movement_component;
 use crate::scripting::components::health::HealthComponent;
 use crate::scripting::components::player_movement::PlayerMovementComponent;
 use crate::scripting::data_descriptors::{

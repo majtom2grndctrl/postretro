@@ -21,7 +21,9 @@
 
 use glam::Mat4;
 
-use crate::candidate_cull::{CandidateGather, gather_candidate_leaves};
+use std::collections::HashSet;
+
+use crate::candidate_cull::{GatherStatus, gather_candidate_leaves};
 use crate::compute_cull::extract_frustum_planes_for_gpu;
 use crate::geometry::{BucketRange, BvhLeaf, BvhTree};
 use crate::prl::CellDrawIndex;
@@ -238,6 +240,12 @@ fn passes_frustum(leaf: &BvhLeaf, planes: &[[f32; 4]; 6]) -> bool {
 /// Non-drawable leaves are never enumerated into the candidate CSR, so to keep
 /// the two paths comparable the tree-walk oracle leaves their slots cleared too
 /// (a non-drawable leaf has `index_count == 0`, so it can never submit).
+/// The oracle intentionally deviates from the real GPU shader for non-drawable
+/// leaves: it leaves those slots cleared (status 0) rather than possibly writing
+/// status 1 as the GPU might for non-drawable BVH nodes it visits. This is safe
+/// because both paths agree `index_count == 0` for those slots, and
+/// `assert_matches` cross-compares only `index_count` — not the 0-vs-1 status —
+/// for non-submitted slots.
 pub(crate) fn tree_walk_mirror(
     world: &SyntheticWorld,
     visible: &VisibleCells,
@@ -302,9 +310,11 @@ pub(crate) fn candidate_mirror(
         // DrawAll routes to the tree walk; the candidate path never runs.
         VisibleCells::DrawAll => return None,
     };
-    let candidates = match gather_candidate_leaves(&world.index, cells) {
-        CandidateGather::Candidates(leaves) => leaves,
-        CandidateGather::OutOfRange { .. } => return None,
+    let mut candidates = Vec::new();
+    let mut seen = HashSet::new();
+    match gather_candidate_leaves(&world.index, cells, &mut candidates, &mut seen) {
+        GatherStatus::Ok => {}
+        GatherStatus::OutOfRange { .. } => return None,
     };
 
     let planes = extract_frustum_planes_for_gpu(view_proj);
@@ -369,6 +379,11 @@ pub(crate) fn leaf(
 /// drawable leaves' contiguous per-bucket spans in ascending `leaf_start`. This
 /// is the bake the runtime validates, so deriving it here keeps the oracle's
 /// CSR honest rather than hand-listing spans.
+///
+/// Precondition: `leaves` must be sorted by `(material_bucket_id, cell_id,
+/// index_offset)` — matching BVH flatten output — because the bucket-boundary
+/// span-splitting depends on that order; unsorted input produces valid-looking
+/// but wrong CSR.
 pub(crate) fn build_index(
     leaves: &[BvhLeaf],
     cell_count: u32,
@@ -612,13 +627,11 @@ mod tests {
         let visible = VisibleCells::Culled(vec![0, 0, 0]);
 
         // The gather output has no duplicate leaf indices.
-        let gather = gather_candidate_leaves(&world.index, &[0, 0, 0]);
-        match gather {
-            CandidateGather::Candidates(leaves) => {
-                assert_eq!(leaves, vec![0], "cell 0 owns exactly leaf 0, written once");
-            }
-            other => panic!("expected Candidates, got {other:?}"),
-        }
+        let mut leaves = Vec::new();
+        let mut seen = HashSet::new();
+        let status = gather_candidate_leaves(&world.index, &[0, 0, 0], &mut leaves, &mut seen);
+        assert_eq!(status, GatherStatus::Ok);
+        assert_eq!(leaves, vec![0], "cell 0 owns exactly leaf 0, written once");
 
         let tree = tree_walk_mirror(&world, &visible, &vp);
         let cand = candidate_mirror(&world, &visible, &vp).expect("candidate path runs");

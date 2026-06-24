@@ -239,7 +239,7 @@ pub enum LightmapMode {
 /// Runtime view of the `CellDrawIndex` PRL section (id 37): each cell's owned
 /// BVH-leaf spans in CSR layout. Held as the format type after the loader has
 /// cross-validated it against the BVH leaf array and BSP leaf count. A stable
-/// runtime name so the candidate-cull GPU path (Task 5) consumes one type.
+/// runtime name so the candidate-cull GPU path consumes one type.
 pub type CellDrawIndex = CellDrawIndexSection;
 
 #[derive(Debug)]
@@ -323,7 +323,7 @@ pub struct LevelWorld {
     /// Per-cell BVH-leaf draw index (PRL section 37), cross-validated against
     /// the BVH leaf array and BSP leaf count. `None` when the section is absent
     /// or any cross-section invariant fails — the camera cull then falls back to
-    /// the legacy tree-walk (Task 5). A malformed index degrades the load (logs
+    /// the legacy tree-walk. A malformed index degrades the load (logs
     /// once, continues) rather than failing it.
     pub cell_draw_index: Option<CellDrawIndex>,
 }
@@ -1289,7 +1289,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
             }
         };
 
-    // Optional — absent → legacy tree-walk camera cull (Task 5). Decoded here
+    // Optional — absent → legacy tree-walk camera cull. Decoded here
     // via the generic read seam; cross-validated against the BVH leaf array and
     // BSP leaves only *after* `leaves` is built below. A malformed or
     // cross-inconsistent index degrades to `None` (logged once under [Loader]),
@@ -1362,7 +1362,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
     // Decode + cross-validate the CellDrawIndex (id 37) now that `leaves` (BSP
     // leaf flags) and `bvh` are both available. Any failure — malformed body,
     // unsupported version, or a cross-section invariant — degrades to `None`
-    // (legacy tree-walk camera cull, Task 5), logging once under [Loader]. The
+    // (legacy tree-walk camera cull), logging once under [Loader]. The
     // header version is read straight from the raw bytes so the explicit
     // version guard is exercised even though `from_bytes` parses only v1.
     let cell_draw_index: Option<CellDrawIndex> = match cell_draw_index_data {
@@ -3060,6 +3060,25 @@ mod tests {
         // cell 1 is solid (non-drawable) but the index gives it a span.
         let bvh_leaves = vec![rt_bvh_leaf(0, 3, 0), rt_bvh_leaf(0, 3, 1)];
         let leaves = vec![bsp_leaf(false, 1), bsp_leaf(true, 0)];
+        let section = valid_two_cell_section();
+        let err = validate_cell_draw_index(&section, &bvh_leaves, &leaves, CELL_DRAW_INDEX_VERSION)
+            .unwrap_err();
+        assert!(err.contains("non-drawable BVH leaf"), "got: {err}");
+    }
+
+    // Regression guard for the review question: a span covering a leaf with
+    // `index_count > 0` whose cell is non-drawable BECAUSE it is zero-face (but
+    // NOT solid). `rejects_span_on_non_drawable_cell` covers the solid+zero-face
+    // case; this isolates the other non-drawable sub-case so both halves of
+    // `cell_is_drawable = !is_solid && face_count > 0` are pinned. The validator
+    // already enforces this via the in-span `!leaf_is_drawable` check (a leaf is
+    // drawable only if its cell is), so it must return Err and degrade-to-legacy.
+    #[test]
+    fn validate_cell_draw_index_rejects_index_count_leaf_on_zero_face_cell() {
+        // cell 1: non-solid but zero faces → non-drawable. Its BVH leaf has
+        // index_count == 3 (> 0), yet the index tries to cover it.
+        let bvh_leaves = vec![rt_bvh_leaf(0, 3, 0), rt_bvh_leaf(0, 3, 1)];
+        let leaves = vec![bsp_leaf(false, 1), bsp_leaf(false, 0)];
         let section = valid_two_cell_section();
         let err = validate_cell_draw_index(&section, &bvh_leaves, &leaves, CELL_DRAW_INDEX_VERSION)
             .unwrap_err();

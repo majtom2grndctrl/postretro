@@ -3,6 +3,11 @@
 // the compute-cull shader wrote into `cull_status`:
 //   0 → cyan  (not submitted by the GPU cull pass; may include skipped subtree descendants)
 //   1 → red   (leaf explicitly marked frustum-culled)
+//             Path note: on the candidate cull path, a leaf that is both
+//             in a hidden cell AND frustum-rejected is never submitted, so
+//             its slot reads 0 (cyan), not 1. The legacy tree walk always
+//             writes 1 for a frustum reject. Overlay-only cosmetic difference
+//             — the drawn output is identical on both paths.
 //   2 → green (rendered: survived both tests)
 // The CPU-visible mode uses the same vertex path, but a flat fragment color so
 // it cannot be mistaken for final GPU BVH/frustum survivors.

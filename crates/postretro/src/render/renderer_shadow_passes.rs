@@ -82,6 +82,9 @@ fn count_submitted_tree_walk(
     leaves
         .iter()
         .filter(|leaf| {
+            // `!is_solid && face_count > 0` drawability is not checked here: non-drawable
+            // cells' BVH leaves always have `index_count == 0`, so the early return above
+            // already excludes them.
             if leaf.index_count == 0 {
                 return false;
             }
@@ -408,29 +411,33 @@ impl Renderer {
 
         // Same submission as render passes — no readback or GPU sync between cull and draw.
         if render_world {
-            // Candidate-cull routing (Task 5). Eligible iff ALL hold:
+            // Candidate-cull routing. Eligible iff ALL hold:
             //   * a valid loaded `CellDrawIndex`,
             //   * `VisibleCells::Culled` (a concrete visible-cell set), AND
             //   * portal-traversal provenance (`VisibilityPath::PrlPortal`).
             // The gather may still bail to the tree walk for THIS frame if a
             // visible cell id is out of the index's range. Everything else
             // (DrawAll, non-portal Culled fallbacks, missing index) routes to
-            // the unchanged tree walk. Gathered here with immutable borrows,
-            // before the disjoint-field dispatch borrows below.
-            let candidate_leaves: Option<Vec<u32>> = match (
+            // the unchanged tree walk. Gathered into the pipeline's reused
+            // scratch (no per-frame allocation): `cell_draw_index` borrowed
+            // immutably and `candidate_cull` mutably — disjoint fields. The
+            // returned flag only signals readiness; the gathered leaves live in
+            // the pipeline (`candidate.candidates()`), read after this borrow
+            // ends in the dispatch match below.
+            let candidates_ready: Option<()> = match (
                 self.cell_draw_index.as_ref(),
-                self.candidate_cull.as_ref(),
+                self.candidate_cull.as_mut(),
                 visible,
                 cam_vis.path,
             ) {
                 (
                     Some(index),
-                    Some(_),
+                    Some(candidate),
                     VisibleCells::Culled(cells),
                     VisibilityPath::PrlPortal { .. },
-                ) => match crate::candidate_cull::gather_candidate_leaves(index, cells) {
-                    crate::candidate_cull::CandidateGather::Candidates(leaves) => Some(leaves),
-                    crate::candidate_cull::CandidateGather::OutOfRange { cell_id } => {
+                ) => match candidate.gather(index, cells) {
+                    crate::candidate_cull::GatherStatus::Ok => Some(()),
+                    crate::candidate_cull::GatherStatus::OutOfRange { cell_id } => {
                         if !self.candidate_cull_oor_logged {
                             log::warn!(
                                 "[Renderer] candidate cull: visible cell id {} out of \
@@ -459,14 +466,17 @@ impl Renderer {
             // fields, so both are live at once. The candidate path writes the
             // SAME global indirect/status slots as the tree-walk fallback arm.
             match (
-                candidate_leaves,
+                candidates_ready,
                 self.compute_cull.as_ref(),
                 self.candidate_cull.as_mut(),
             ) {
-                (Some(candidates), Some(cull), Some(candidate)) => {
+                (Some(()), Some(cull), Some(candidate)) => {
                     // CPU-derived Spatial diagnostics: candidate count vs total
                     // leaves, and submitted = candidates passing the frustum
-                    // predicate. Computed before the dispatch moves `candidates`.
+                    // predicate. The gathered leaves live in the pipeline scratch
+                    // (`candidate.candidates()`); read immutably here before the
+                    // mutable `dispatch` borrow below.
+                    let candidates = candidate.candidates();
                     self.camera_cull_diagnostics = CameraCullDiagnostics {
                         path: CameraCullPath::Candidate {
                             candidate_leaves: candidates.len() as u32,
@@ -474,7 +484,7 @@ impl Renderer {
                         total_leaves: cull.total_leaves(),
                         submitted_leaves: count_submitted_candidates(
                             &self.bvh_leaves,
-                            &candidates,
+                            candidates,
                             &view_proj,
                         ),
                     };
@@ -485,7 +495,6 @@ impl Renderer {
                         cull.leaf_buffer(),
                         cull.indirect_buffer(),
                         cull.cull_status_buffer(),
-                        &candidates,
                         &view_proj,
                         cull_ts,
                     );

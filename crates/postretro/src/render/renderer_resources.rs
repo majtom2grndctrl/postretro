@@ -359,10 +359,12 @@ impl Renderer {
 
         // --- BVH + compute cull ---
         self.bvh_leaves = bvh_leaves;
-        // Per-cell draw index for the candidate-cull path (Task 5). Cloned
-        // alongside the BVH leaves; the empty-geometry install path clears it
-        // to `None`, so `release_level_resources` drops it for free.
+        // Per-cell draw index for the candidate-cull path. Cloned alongside the
+        // BVH leaves; the empty-geometry install path clears it to `None`, so
+        // `release_level_resources` drops it for free.
         self.cell_draw_index = geometry.cell_draw_index.cloned();
+        // Reset per-level so a corrupt index on a later level still warns once.
+        self.candidate_cull_oor_logged = false;
         self.compute_cull = if !self.bvh_leaves.is_empty() {
             Some(ComputeCullPipeline::new(
                 &self.device,

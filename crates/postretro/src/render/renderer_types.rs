@@ -349,8 +349,8 @@ pub struct LevelGeometry<'a> {
     /// double-count static-light occlusion. Legacy PRLs default to `Shadowed`.
     pub lightmap_mode: crate::prl::LightmapMode,
     /// Per-cell BVH-leaf draw index (PRL section 37), cross-validated at load.
-    /// `None` → the candidate-cull GPU path (Task 5) is unavailable and the
-    /// camera cull falls back to the legacy tree-walk.
+    /// `None` → the candidate-cull GPU path is unavailable and the camera cull
+    /// falls back to the legacy tree-walk.
     pub cell_draw_index: Option<&'a crate::prl::CellDrawIndex>,
     pub texture_materials: &'a [crate::material::Material],
 }
@@ -541,12 +541,12 @@ pub struct Renderer {
     pub(super) bvh_leaves: Vec<crate::geometry::BvhLeaf>,
     /// Per-cell BVH-leaf draw index (PRL section 37), cloned from the installed
     /// `LevelGeometry`. `None` when the map has no valid index — the
-    /// candidate-cull GPU path (Task 5) consumes this; absent → legacy
-    /// tree-walk camera cull. Cleared by `release_level_resources`.
+    /// candidate-cull GPU path consumes this; absent → legacy tree-walk camera
+    /// cull. Cleared by `release_level_resources`.
     pub(super) cell_draw_index: Option<crate::prl::CellDrawIndex>,
     /// `None` for maps with no BVH.
     pub(super) compute_cull: Option<ComputeCullPipeline>,
-    /// Candidate-cull GPU path (Task 5): gathers only visible cells' BVH
+    /// Candidate-cull GPU path: gathers only visible cells' BVH
     /// leaves (via the baked `cell_draw_index` CSR) and dispatches one
     /// invocation per candidate leaf, writing the SAME global indirect/status
     /// slots as `compute_cull`. Built in lockstep with `compute_cull`; used only
@@ -608,8 +608,8 @@ pub struct Renderer {
     pub(super) debug_prev_vp_hash: u32,
     pub(super) debug_prev_visible: (&'static str, usize),
     /// One-shot guard so the candidate-cull out-of-range-cell warning logs once,
-    /// not every frame (Task 5). Never reset — a single notice per process is
-    /// enough to flag a corrupt/stale `CellDrawIndex`.
+    /// not every frame. Reset on each level install so a later level's corrupt
+    /// index still warns once.
     pub(super) candidate_cull_oor_logged: bool,
     /// CPU-derived camera-cull diagnostics from the last `record_pre_scene_compute`
     /// (candidate vs tree-walk path, candidate/total/submitted leaves). Read by

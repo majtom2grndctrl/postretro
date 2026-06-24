@@ -10,6 +10,8 @@
 //     cell ids, CSR expansion). Unit-tested without a GPU.
 //   * `CandidateCullPipeline` — the wgpu dispatch layer.
 
+use std::collections::HashSet;
+
 use glam::Mat4;
 
 use crate::compute_cull::{CullUniforms, extract_frustum_planes_for_gpu, serialize_cull_uniforms};
@@ -39,46 +41,59 @@ pub(crate) fn serialize_candidate_params(candidate_count: u32) -> Vec<u8> {
     params
 }
 
-/// Outcome of the pure candidate gather.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum CandidateGather {
-    /// Flat list of global BVH-leaf indices to test this frame. May be empty
-    /// (every visible cell owns no drawable leaves) — the caller still clears
-    /// the camera buffers, then skips the dispatch.
-    Candidates(Vec<u32>),
+/// Outcome of the pure candidate gather. On [`GatherStatus::Ok`] the expanded
+/// candidate leaves live in the caller-provided `out` scratch; on
+/// [`GatherStatus::OutOfRange`] `out` holds only the partial gather up to the
+/// bad id and the caller must discard it (route to the tree walk).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GatherStatus {
+    /// The flat list of global BVH-leaf indices to test this frame is now in
+    /// the caller's `out` scratch. May be empty (every visible cell owns no
+    /// drawable leaves) — the caller still clears the camera buffers, then
+    /// skips the dispatch.
+    Ok,
     /// At least one visible cell id was outside the loaded index
     /// (`>= cell_count`). The caller logs once and falls back to the legacy
-    /// tree walk for this frame rather than gathering a partial/corrupt set.
+    /// tree walk for this frame rather than using the partial set in `out`.
     OutOfRange { cell_id: u32 },
 }
 
 /// Pure, GPU-free candidate gather. Expands the visible cells' owned BVH-leaf
-/// spans into a flat list of global leaf indices by indexing the `CellDrawIndex`
-/// CSR with each id in the visible-cell set.
+/// spans into `out` (a flat list of global leaf indices) by indexing the
+/// `CellDrawIndex` CSR with each id in the visible-cell set.
+///
+/// `out` and `seen` are caller-owned scratch, cleared on entry and reused
+/// across frames so the per-frame candidate path allocates nothing
+/// (development_guide.md §1.4). The pipeline owns them as fields; tests pass
+/// local buffers. Keeping them as parameters preserves the pure, GPU-free,
+/// unit-testable boundary (development_guide.md §4.1).
 ///
 /// Steps:
-///   1. Dedupe `visible_cells` preserving first-seen order, so a duplicate cell
-///      id cannot produce duplicate writes to the same indirect/status slot.
+///   1. Dedupe `visible_cells` preserving first-seen order (a `Vec` push guarded
+///      by `seen.insert`), so a duplicate cell id cannot produce duplicate
+///      writes to the same indirect/status slot.
 ///   2. For each unique cell `c`, append the leaves of every span in
 ///      `spans[offset[c]..offset[c+1]]`, expanded to individual leaf indices.
 ///
-/// A visible cell id `>= cell_count` returns [`CandidateGather::OutOfRange`]
-/// immediately — the caller must not gather a partial set from a corrupt id.
+/// A visible cell id `>= cell_count` returns [`GatherStatus::OutOfRange`]
+/// immediately — the caller must not use the partial set from a corrupt id.
 /// The CSR was cross-validated at load (spans in-bounds, drawable-only,
 /// exact-once coverage), so no per-span re-checking happens here.
 pub(crate) fn gather_candidate_leaves(
     index: &CellDrawIndex,
     visible_cells: &[u32],
-) -> CandidateGather {
-    let mut seen = std::collections::HashSet::with_capacity(visible_cells.len());
-    let mut out: Vec<u32> = Vec::new();
+    out: &mut Vec<u32>,
+    seen: &mut HashSet<u32>,
+) -> GatherStatus {
+    out.clear();
+    seen.clear();
 
     for &cell in visible_cells {
         if !seen.insert(cell) {
             continue; // duplicate cell id — first-seen order already handled it.
         }
         if cell >= index.cell_count {
-            return CandidateGather::OutOfRange { cell_id: cell };
+            return GatherStatus::OutOfRange { cell_id: cell };
         }
         let c = cell as usize;
         let start = index.cell_span_offset[c] as usize;
@@ -91,7 +106,7 @@ pub(crate) fn gather_candidate_leaves(
         }
     }
 
-    CandidateGather::Candidates(out)
+    GatherStatus::Ok
 }
 
 /// GPU-side candidate cull dispatch layer. Owns the candidate buffer, the
@@ -109,6 +124,13 @@ pub struct CandidateCullPipeline {
     total_leaves: u32,
     /// Reused per frame to avoid reallocating the upload staging vector.
     candidate_scratch: Vec<u8>,
+    /// Reused per frame by [`Self::gather`]: the deduped, CSR-expanded candidate
+    /// leaf list. Cleared (not reallocated) each frame so the candidate path
+    /// allocates nothing on the hot path (development_guide.md §1.4).
+    gather_out: Vec<u32>,
+    /// Reused per frame by [`Self::gather`]: the first-seen dedupe set for
+    /// visible cell ids. Cleared each frame alongside `gather_out`.
+    gather_seen: HashSet<u32>,
 }
 
 impl CandidateCullPipeline {
@@ -202,7 +224,31 @@ impl CandidateCullPipeline {
             params_buffer,
             total_leaves,
             candidate_scratch: Vec::new(),
+            gather_out: Vec::new(),
+            gather_seen: HashSet::new(),
         }
+    }
+
+    /// Run the pure candidate gather into this pipeline's reused scratch,
+    /// returning the status. On [`GatherStatus::Ok`] the expanded candidate
+    /// leaves are available via [`Self::candidates`]; on
+    /// [`GatherStatus::OutOfRange`] the caller routes the frame to the tree
+    /// walk and ignores `candidates`. Owning the scratch here keeps the
+    /// per-frame path allocation-free while [`gather_candidate_leaves`] stays a
+    /// pure, GPU-free, unit-testable function.
+    pub fn gather(&mut self, index: &CellDrawIndex, visible_cells: &[u32]) -> GatherStatus {
+        gather_candidate_leaves(
+            index,
+            visible_cells,
+            &mut self.gather_out,
+            &mut self.gather_seen,
+        )
+    }
+
+    /// The candidate leaves from the most recent [`Self::gather`] that returned
+    /// [`GatherStatus::Ok`]. Only meaningful in that case.
+    pub fn candidates(&self) -> &[u32] {
+        &self.gather_out
     }
 
     /// Clear the camera `indirect_draws` and `cull_status` buffers over ONLY
@@ -215,6 +261,10 @@ impl CandidateCullPipeline {
     /// writes the same per-leaf slots. Clearing only `total_leaves * stride`
     /// bytes leaves any future shadow/entity/packed non-camera regions of a
     /// shared buffer untouched.
+    ///
+    /// The candidate leaves come from this pipeline's own [`Self::gather`]
+    /// scratch (`self.candidates()`), not a parameter — so the caller never
+    /// holds a borrow that conflicts with `&mut self` here.
     #[allow(clippy::too_many_arguments)]
     pub fn dispatch(
         &mut self,
@@ -224,7 +274,6 @@ impl CandidateCullPipeline {
         leaf_buffer: &wgpu::Buffer,
         indirect_buffer: &wgpu::Buffer,
         cull_status_buffer: &wgpu::Buffer,
-        candidate_leaves: &[u32],
         view_proj: &Mat4,
         timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'_>>,
     ) {
@@ -243,7 +292,7 @@ impl CandidateCullPipeline {
         let uniforms = CullUniforms { planes };
         queue.write_buffer(&self.uniform_buffer, 0, &serialize_cull_uniforms(&uniforms));
 
-        let candidate_count = candidate_leaves.len() as u32;
+        let candidate_count = self.gather_out.len() as u32;
         let params = serialize_candidate_params(candidate_count);
         queue.write_buffer(&self.params_buffer, 0, &params);
 
@@ -252,6 +301,9 @@ impl CandidateCullPipeline {
             return;
         }
 
+        // Disjoint-field borrows: read the gathered leaves (`gather_out`) while
+        // filling the upload staging buffer (`candidate_scratch`).
+        let candidate_leaves = &self.gather_out;
         self.candidate_scratch.clear();
         self.candidate_scratch.reserve(candidate_leaves.len() * 4);
         for &leaf in candidate_leaves {
@@ -317,6 +369,16 @@ mod tests {
         }
     }
 
+    /// Gather into fresh local scratch (the pipeline owns reused scratch in the
+    /// hot path; tests pass their own). Returns the status plus the gathered
+    /// leaves so the assertions stay terse.
+    fn gather(index: &CellDrawIndex, visible_cells: &[u32]) -> (GatherStatus, Vec<u32>) {
+        let mut out = Vec::new();
+        let mut seen = HashSet::new();
+        let status = gather_candidate_leaves(index, visible_cells, &mut out, &mut seen);
+        (status, out)
+    }
+
     /// Smoke test: dedupe of visible cell ids (first-seen order) plus CSR span
     /// expansion to a flat global-leaf list. Task 6 extends equivalence and
     /// diagnostics coverage.
@@ -344,14 +406,10 @@ mod tests {
         );
 
         // Visible cells with a duplicate (2 appears twice) — must not double-write.
-        let gather = gather_candidate_leaves(&index, &[2, 0, 2]);
-        match gather {
-            CandidateGather::Candidates(leaves) => {
-                // First-seen order: cell 2 first (20,21), then cell 0 (0,1,2,10).
-                assert_eq!(leaves, vec![20, 21, 0, 1, 2, 10]);
-            }
-            other => panic!("expected Candidates, got {other:?}"),
-        }
+        let (status, leaves) = gather(&index, &[2, 0, 2]);
+        assert_eq!(status, GatherStatus::Ok);
+        // First-seen order: cell 2 first (20,21), then cell 0 (0,1,2,10).
+        assert_eq!(leaves, vec![20, 21, 0, 1, 2, 10]);
     }
 
     #[test]
@@ -364,8 +422,9 @@ mod tests {
             }],
         );
         // Cell 1 owns no leaves.
-        let gather = gather_candidate_leaves(&index, &[1]);
-        assert_eq!(gather, CandidateGather::Candidates(vec![]));
+        let (status, leaves) = gather(&index, &[1]);
+        assert_eq!(status, GatherStatus::Ok);
+        assert_eq!(leaves, Vec::<u32>::new());
     }
 
     /// The candidate shader must be valid WGSL (a malformed copy would fail
@@ -386,8 +445,42 @@ mod tests {
             }],
         );
         // cell_count == 1, so id 1 is out of range.
-        let gather = gather_candidate_leaves(&index, &[0, 1]);
-        assert_eq!(gather, CandidateGather::OutOfRange { cell_id: 1 });
+        let (status, _leaves) = gather(&index, &[0, 1]);
+        assert_eq!(status, GatherStatus::OutOfRange { cell_id: 1 });
+    }
+
+    /// Reused scratch is cleared (not appended) on each gather: a second call
+    /// with different visible cells must not leak the first call's leaves. This
+    /// proves the per-frame allocation removal (caller-owned scratch) preserves
+    /// the gather contract across frames.
+    #[test]
+    fn gather_clears_reused_scratch_between_calls() {
+        let index = index_from(
+            vec![0, 1, 2],
+            vec![
+                Span {
+                    leaf_start: 0,
+                    leaf_count: 2,
+                }, // cell 0: leaves 0,1
+                Span {
+                    leaf_start: 5,
+                    leaf_count: 1,
+                }, // cell 1: leaf 5
+            ],
+        );
+
+        let mut out = Vec::new();
+        let mut seen = HashSet::new();
+
+        let status = gather_candidate_leaves(&index, &[0], &mut out, &mut seen);
+        assert_eq!(status, GatherStatus::Ok);
+        assert_eq!(out, vec![0, 1]);
+
+        // Second frame, different visible set: must reflect ONLY cell 1, with no
+        // residue from the previous gather.
+        let status = gather_candidate_leaves(&index, &[1], &mut out, &mut seen);
+        assert_eq!(status, GatherStatus::Ok);
+        assert_eq!(out, vec![5]);
     }
 
     /// The gather visits ONLY the visible cells' spans: its output equals the
@@ -420,11 +513,8 @@ mod tests {
             ],
         );
 
-        let gather = gather_candidate_leaves(&index, &[2, 0]);
-        let leaves = match gather {
-            CandidateGather::Candidates(leaves) => leaves,
-            other => panic!("expected Candidates, got {other:?}"),
-        };
+        let (status, leaves) = gather(&index, &[2, 0]);
+        assert_eq!(status, GatherStatus::Ok);
 
         // Exactly the union of cells 2 and 0 spans (first-seen order: 2 then 0).
         assert_eq!(leaves, vec![5, 0, 1]);

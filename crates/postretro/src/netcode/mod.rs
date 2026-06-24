@@ -6,11 +6,13 @@
 
 mod client;
 mod command_queue;
+mod descriptor_class;
 mod interpolation;
 mod lifecycle;
 mod movement_state;
 mod prediction;
 mod reconcile;
+mod remote_materialize;
 mod replication;
 // M15 Phase 3.5: the replicated-slot schema/fingerprint/lowering, the engine
 // production (`HostStateReplication`) and client apply (`ClientStateApply`) glue. The
@@ -625,26 +627,13 @@ pub(crate) fn client_receive_and_apply(
             }
         }
         // M15 Phase 3 Task 3 + Task 7: a `local_player` baseline arms client prediction
-        // with the marked local pawn AND materializes its descriptor-backed
-        // `PlayerMovementComponent` from the wire `entity_class` (default `"player"`).
-        // `apply_snapshot` spawned the pawn Transform-only; the descriptor-immutable
-        // movement tuning never crosses the wire, so the client materializes it locally
-        // from the same descriptor table both peers share — then the wire mutable subset
-        // has a component to merge onto and prediction/reconciliation light up. Materialize
-        // BEFORE reconcile (which merges onto the existing component) and arm BEFORE
-        // reconcile so the just-armed pawn reconciles on its arming snapshot too. The
-        // materialization itself lives behind a focused helper next to the host's
-        // net-slot spawn internals; this is the thin call. Re-arming the same pawn
-        // preserves unacked history; the helper is idempotent (a re-arm keeps live state).
+        // with the marked local pawn AND materializes its descriptor-backed presentation.
+        // Arm and materialize BEFORE reconcile so the just-armed pawn reconciles on its
+        // arming snapshot too; the materialization call-site glue lives in
+        // `remote_materialize` (the focused seam Task 6 extends to remote enemies).
         if let Some(armed) = &outcome.armed_local_pawn {
             prediction.arm(armed.network_id, armed.entity_id);
-            let entity_class = armed.entity_class.as_deref().unwrap_or("player");
-            crate::scripting::builtins::net_descriptor::materialize_net_local_movement_component(
-                entity_class,
-                descriptors,
-                registry,
-                armed.entity_id,
-            );
+            remote_materialize::materialize_armed_local_pawn(armed, descriptors, registry);
         }
         // M15 Phase 3 Task 5: reconcile the local predicted pawn against the
         // authoritative record this snapshot delivered — merge the movement subset,

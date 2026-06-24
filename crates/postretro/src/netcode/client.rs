@@ -872,6 +872,15 @@ impl ClientReplication {
         self.baselines.get(&network_id).copied()
     }
 
+    /// Number of interpolation samples buffered for a mapped remote entity (tests).
+    /// Zero once the entity's buffer has been forgotten (despawn) or before any
+    /// Transform sample has been recorded. Used by the E10 enemy-replication harness
+    /// to prove the despawn apply forgets the `RemoteInterpolationBuffer` state.
+    #[cfg(test)]
+    pub(crate) fn sample_count(&self, network_id: NetworkId) -> usize {
+        self.interp.sample_count(network_id)
+    }
+
     /// The latest accepted snapshot sequence (tests / diagnostics).
     #[cfg(test)]
     pub(crate) fn latest_sequence(&self) -> Option<u32> {

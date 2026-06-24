@@ -39,6 +39,12 @@ mod boot_spawn_gate_test;
 // `StateBaselineRefresh` without reconnect.
 #[cfg(test)]
 mod state_slot_loss_harness_test;
+// E10 (Networked Enemy Authority Baseline) Task 7: the integration harness proving the
+// whole host→client enemy path end to end (host registration → wire → conditioned link
+// → client remote-presentation materialization → interpolation → despawn cleanup →
+// late join). Drives the genuine Task 1-6 seams; carries the manual loopback recipe.
+#[cfg(test)]
+mod enemy_replication_harness_test;
 
 pub(crate) use client::ClientReplication;
 pub(crate) use command_queue::{HostCommandQueues, MovementOwners, host_resolve_movement_inputs};

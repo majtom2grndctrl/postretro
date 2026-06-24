@@ -18,6 +18,11 @@ pub(crate) mod prop_mesh;
 pub(crate) use data_archetype::apply_data_archetype_dispatch;
 #[allow(unused_imports)]
 pub(crate) use data_archetype::{PLAYER_START_CLASSNAME, spawn_from_player_starts};
+// Connected-client AI-enemy spawn suppression (E10 Task 5). `gen-script-types`
+// pulls in the scripting tree but never installs a level, so the import is
+// unused there.
+#[allow(unused_imports)]
+pub(crate) use data_archetype::{descriptor_materializes_ai_enemy, filter_out_client_ai_enemies};
 
 // Re-export so call sites that say `super::MapEntity` (handlers, tests) keep
 // working unchanged. The struct itself lives in `scripting::map_entity`.

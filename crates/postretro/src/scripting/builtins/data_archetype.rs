@@ -255,6 +255,57 @@ fn is_directly_map_placeable(descriptor: &EntityTypeDescriptor) -> bool {
         || descriptor.health.is_some()
 }
 
+/// Whether materializing this descriptor would attach the engine-owned AI pair
+/// (`ComponentKind::Brain` + `ComponentKind::Agent`) — i.e. whether the
+/// descriptor carries an `ai` block. This is the *pre-materialization* mirror of
+/// the live-component predicate `crate::netcode::is_networked_ai_map_enemy`,
+/// which can only inspect those components AFTER an entity exists: the `ai`
+/// block is the sole thing `attach_descriptor_components` keys the `Brain` +
+/// `Agent` attachment on, so `descriptor.ai.is_some()` holds exactly when that
+/// predicate would later return `true` for a `MapPlacement` spawn of this
+/// descriptor.
+///
+/// Used by the connected-client install path (E10 Task 5) to drop AI-enemy map
+/// placements *before* dispatch, since those enemies must arrive only as
+/// host-authoritative snapshots — never as locally-spawned authoritative copies.
+/// Keying on `ai.is_some()` (not classname strings, not
+/// `DescriptorProvenance.owned_components`, which never tracks AI) keeps the same
+/// single definition of "AI map enemy" the live predicate enforces.
+pub(crate) fn descriptor_materializes_ai_enemy(descriptor: &EntityTypeDescriptor) -> bool {
+    descriptor.ai.is_some()
+}
+
+/// Partition map placements for a **connected client** install (E10 Task 5):
+/// returns only the placements that should still materialize locally, dropping
+/// any whose matched descriptor would materialize an authoritative AI enemy
+/// ([`descriptor_materializes_ai_enemy`]). Those enemies are host-authoritative
+/// and reach the client solely via host snapshots (a later task materializes the
+/// remote presentation); spawning a local authoritative copy here would be a
+/// second, never-replicated brain.
+///
+/// Placements whose classname has no descriptor match are retained untouched —
+/// they are not AI enemies and the downstream dispatch handles their
+/// unknown-classname / built-in-collision diagnostics exactly as it would on a
+/// host. Single-player and listen-host installs never call this (they keep every
+/// placement); only the connected-client lifecycle path filters.
+pub(crate) fn filter_out_client_ai_enemies(
+    entities: &[MapEntity],
+    descriptors: &[EntityTypeDescriptor],
+) -> Vec<MapEntity> {
+    entities
+        .iter()
+        .filter(
+            |entity| match find_descriptor(descriptors, &entity.classname) {
+                Some(descriptor) => !descriptor_materializes_ai_enemy(descriptor),
+                // No descriptor match: not an AI enemy — retain for the normal
+                // unknown-classname diagnostics in dispatch.
+                None => true,
+            },
+        )
+        .cloned()
+        .collect()
+}
+
 /// Attach descriptor components to an already-spawned entity. `initial_*` KVP
 /// overrides are applied to `emitter` and `light` before attachment;
 /// `movement` receives descriptor values verbatim. Weapon attachment is opt-in
@@ -2037,5 +2088,219 @@ mod tests {
         let light = reg.get_component::<LightComponent>(id).unwrap();
         assert!(light.is_dynamic);
         assert_eq!(light.origin, [7.0, 0.0, 0.0]);
+    }
+
+    // ---- E10 Task 5: connected-client AI-enemy spawn suppression ----
+
+    /// Minimal valid `ai` block: its mere presence is what attaches `Brain` +
+    /// `Agent`, which is the single thing the pre-materialization classifier and
+    /// the live predicate both key on. Tuning values are not exercised here.
+    fn sample_ai_descriptor() -> crate::scripting::data_descriptors::AiDescriptor {
+        use crate::scripting::data_descriptors::{AiDescriptor, AiStateNames};
+        AiDescriptor {
+            detection_range: 18.0,
+            attack_range: 2.0,
+            leash_range: 26.0,
+            attack_damage: 8.0,
+            attack_cooldown_ms: 1200.0,
+            move_speed: 3.5,
+            death_despawn_ms: 1500.0,
+            states: AiStateNames {
+                idle: "idle".into(),
+                alert: "walk".into(),
+                attack: "attack".into(),
+                death: "die".into(),
+            },
+        }
+    }
+
+    /// An AI-enemy descriptor: a mesh placement (so it is directly map-placeable)
+    /// plus an `ai` block (so materialization attaches `Brain` + `Agent`). This
+    /// is the shape a real map-placed enemy descriptor has.
+    fn ai_enemy_descriptor(classname: &str) -> EntityTypeDescriptor {
+        let mut descriptor = mesh_descriptor(classname, true);
+        descriptor.ai = Some(sample_ai_descriptor());
+        descriptor
+    }
+
+    #[test]
+    fn descriptor_materializes_ai_enemy_keys_on_ai_block() {
+        // An `ai` block is the sole AI classifier; light/mesh/health-only
+        // descriptors are non-AI props.
+        assert!(descriptor_materializes_ai_enemy(&ai_enemy_descriptor(
+            "grunt"
+        )));
+        assert!(!descriptor_materializes_ai_enemy(&mesh_descriptor(
+            "prop", false
+        )));
+        assert!(!descriptor_materializes_ai_enemy(&light_descriptor(
+            "torch", true
+        )));
+    }
+
+    #[test]
+    fn client_filter_drops_ai_enemy_placements_keeps_props() {
+        // The connected-client pre-dispatch filter drops AI-enemy placements and
+        // keeps non-AI props in the same map.
+        let descriptors = vec![
+            ai_enemy_descriptor("grunt"),
+            mesh_descriptor("crate", false),
+        ];
+        let placements = vec![
+            placement("grunt", &[]),
+            placement("crate", &[]),
+            placement("grunt", &[]),
+        ];
+
+        let kept = filter_out_client_ai_enemies(&placements, &descriptors);
+
+        assert_eq!(kept.len(), 1, "both grunt placements dropped, crate kept");
+        assert_eq!(kept[0].classname, "crate");
+    }
+
+    #[test]
+    fn client_filter_retains_unknown_classname_placements() {
+        // A placement with no descriptor match is not an AI enemy; the filter
+        // retains it so the dispatch's own unknown-classname diagnostics fire.
+        let descriptors = vec![ai_enemy_descriptor("grunt")];
+        let placements = vec![placement("mystery", &[]), placement("grunt", &[])];
+
+        let kept = filter_out_client_ai_enemies(&placements, &descriptors);
+
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].classname, "mystery");
+    }
+
+    #[test]
+    fn client_filtered_dispatch_spawns_no_brain_but_host_dispatch_does() {
+        // End-to-end on the dispatch seam: the SAME placements + descriptors
+        // produce a Brain-bearing entity through the unfiltered (host /
+        // single-player) path but NONE through the connected-client filtered
+        // path. The non-AI prop materializes in BOTH.
+        let descriptors = vec![
+            ai_enemy_descriptor("grunt"),
+            mesh_descriptor("crate", false),
+        ];
+        let placements = vec![placement("grunt", &[]), placement("crate", &[])];
+
+        // Host / single-player: every placement dispatched unfiltered.
+        let mut host_reg = EntityRegistry::new();
+        apply_data_archetype_dispatch(
+            &placements,
+            &descriptors,
+            &HashSet::new(),
+            &mut host_reg,
+            None,
+        );
+        assert!(
+            host_reg
+                .iter_with_kind(ComponentKind::Brain)
+                .next()
+                .is_some(),
+            "host/single-player materializes the AI enemy locally"
+        );
+        let host_crates = host_reg
+            .iter_with_kind(ComponentKind::Mesh)
+            .filter(|(id, _)| {
+                host_reg
+                    .get_component::<DescriptorProvenance>(*id)
+                    .map(|p| p.canonical_name == "crate")
+                    .unwrap_or(false)
+            })
+            .count();
+        assert_eq!(host_crates, 1, "host materializes the non-AI prop");
+
+        // Connected client: filter AI enemies before dispatch.
+        let mut client_reg = EntityRegistry::new();
+        let client_placements = filter_out_client_ai_enemies(&placements, &descriptors);
+        apply_data_archetype_dispatch(
+            &client_placements,
+            &descriptors,
+            &HashSet::new(),
+            &mut client_reg,
+            None,
+        );
+        assert!(
+            client_reg
+                .iter_with_kind(ComponentKind::Brain)
+                .next()
+                .is_none(),
+            "connected client must NOT spawn a local authoritative AI enemy"
+        );
+        assert!(
+            client_reg
+                .iter_with_kind(ComponentKind::Agent)
+                .next()
+                .is_none(),
+            "no Agent either — the AI pair is suppressed together"
+        );
+        let client_crates = client_reg
+            .iter_with_kind(ComponentKind::Mesh)
+            .filter(|(id, _)| {
+                client_reg
+                    .get_component::<DescriptorProvenance>(*id)
+                    .map(|p| p.canonical_name == "crate")
+                    .unwrap_or(false)
+            })
+            .count();
+        assert_eq!(
+            client_crates, 1,
+            "connected client still materializes the non-AI prop"
+        );
+    }
+
+    #[test]
+    fn ai_descriptor_materialization_yields_live_brain_and_agent() {
+        // Invariant the suppression mechanism rests on: an `ai` descriptor
+        // materialization attaches BOTH live `Brain` and `Agent` columns. Without
+        // this, `is_networked_ai_map_enemy` (which reads those live columns) and
+        // the pre-materialization `descriptor_materializes_ai_enemy` could
+        // disagree.
+        let descriptors = vec![ai_enemy_descriptor("grunt")];
+        let placements = vec![placement("grunt", &[])];
+        let mut reg = EntityRegistry::new();
+        apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg, None);
+
+        let (id, _) = reg
+            .iter_with_kind(ComponentKind::Brain)
+            .next()
+            .expect("ai descriptor materializes a Brain");
+        assert!(
+            matches!(reg.has_component_kind(id, ComponentKind::Agent), Ok(true)),
+            "ai descriptor materializes an Agent alongside the Brain"
+        );
+    }
+
+    #[test]
+    fn classifier_agrees_with_live_predicate_one_source_of_truth() {
+        // One source of truth: the pre-materialization descriptor classifier
+        // (`descriptor_materializes_ai_enemy`, used to FILTER on the client) must
+        // agree with the live-component predicate (`is_networked_ai_map_enemy`,
+        // used to REGISTER on the host) for a `MapPlacement` spawn. Materialize
+        // an AI enemy and a non-AI prop and assert each side agrees per entity.
+        use crate::netcode::is_networked_ai_map_enemy;
+
+        let descriptors = vec![
+            ai_enemy_descriptor("grunt"),
+            mesh_descriptor("crate", false),
+        ];
+        let placements = vec![placement("grunt", &[]), placement("crate", &[])];
+        let mut reg = EntityRegistry::new();
+        apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg, None);
+
+        for (id, _) in reg
+            .iter_with_kind(ComponentKind::DescriptorProvenance)
+            .collect::<Vec<_>>()
+        {
+            let provenance = reg.get_component::<DescriptorProvenance>(id).unwrap();
+            let descriptor = find_descriptor(&descriptors, &provenance.canonical_name)
+                .expect("descriptor for materialized entity");
+            assert_eq!(
+                descriptor_materializes_ai_enemy(descriptor),
+                is_networked_ai_map_enemy(&reg, id),
+                "pre-materialization classifier and live predicate must agree for `{}`",
+                provenance.canonical_name,
+            );
+        }
     }
 }

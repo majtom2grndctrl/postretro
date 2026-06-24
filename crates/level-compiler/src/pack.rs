@@ -495,13 +495,11 @@ pub fn pack_and_write_portals(
             data: bytes.clone(),
         });
     }
-    if let Some(ref bytes) = map_entities_bytes {
-        sections.push(SectionBlob {
-            section_id: SectionId::MapEntity as u32,
-            version: 1,
-            data: bytes.clone(),
-        });
-    }
+    append_optional_section(
+        &mut sections,
+        SectionId::MapEntity as u32,
+        map_entities_bytes,
+    );
     sections.push(SectionBlob {
         section_id: SectionId::FogVolumes as u32,
         version: 1,
@@ -641,6 +639,26 @@ pub fn pack_and_write_portals(
     }
 
     Ok(())
+}
+
+/// Append an optional section blob when its data is present.
+///
+/// Generic over `section_id` so any optional PRL section can route through the
+/// same append point. Absent data (`None`) is a no-op — the section is simply
+/// omitted from the container, which is how the runtime distinguishes optional
+/// sections.
+fn append_optional_section(
+    sections: &mut Vec<SectionBlob>,
+    section_id: u32,
+    data: Option<Vec<u8>>,
+) {
+    if let Some(bytes) = data {
+        sections.push(SectionBlob {
+            section_id,
+            version: 1,
+            data: bytes,
+        });
+    }
 }
 
 /// Write sections to disk and validate via read-back.

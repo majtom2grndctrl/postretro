@@ -512,6 +512,20 @@ pub(crate) fn validate_delta_sh(
     Ok(())
 }
 
+/// Read an optional section's raw bytes by id, or `None` if the section is
+/// absent from the container.
+///
+/// Generic over `section_id` so any optional PRL section routes through the
+/// same read point. Wraps `prl_format::read_section_data`; the `FormatError`
+/// converts into `PrlLoadError` via the `#[from]` impl on the error enum.
+fn read_optional_section_data<R: std::io::Read + std::io::Seek>(
+    cursor: &mut R,
+    meta: &prl_format::ContainerMeta,
+    section_id: u32,
+) -> Result<Option<Vec<u8>>, PrlLoadError> {
+    Ok(prl_format::read_section_data(cursor, meta, section_id)?)
+}
+
 pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
     let path_ref = Path::new(path);
     if !path_ref.exists() {
@@ -528,7 +542,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
     let geom = GeometrySection::from_bytes(&geom_data)?;
 
     let texture_names_data =
-        prl_format::read_section_data(&mut cursor, &meta, SectionId::TextureNames as u32)?;
+        read_optional_section_data(&mut cursor, &meta, SectionId::TextureNames as u32)?;
     let texture_names_section = match texture_names_data {
         Some(data) => Some(TextureNamesSection::from_bytes(&data)?),
         None => None,

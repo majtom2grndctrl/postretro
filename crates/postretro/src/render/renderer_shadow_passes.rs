@@ -424,7 +424,7 @@ impl Renderer {
             // returned flag only signals readiness; the gathered leaves live in
             // the pipeline (`candidate.candidates()`), read after this borrow
             // ends in the dispatch match below.
-            let candidates_ready: Option<()> = match (
+            let candidates_ready: bool = match (
                 self.cell_draw_index.as_ref(),
                 self.candidate_cull.as_mut(),
                 visible,
@@ -436,7 +436,7 @@ impl Renderer {
                     VisibleCells::Culled(cells),
                     VisibilityPath::PrlPortal { .. },
                 ) => match candidate.gather(index, cells) {
-                    crate::candidate_cull::GatherStatus::Ok => Some(()),
+                    crate::candidate_cull::GatherStatus::Ok => true,
                     crate::candidate_cull::GatherStatus::OutOfRange { cell_id } => {
                         if !self.candidate_cull_oor_logged {
                             log::warn!(
@@ -448,10 +448,10 @@ impl Renderer {
                             );
                             self.candidate_cull_oor_logged = true;
                         }
-                        None
+                        false
                     }
                 },
-                _ => None,
+                _ => false,
             };
 
             let cull_ts = self
@@ -470,7 +470,7 @@ impl Renderer {
                 self.compute_cull.as_ref(),
                 self.candidate_cull.as_mut(),
             ) {
-                (Some(()), Some(cull), Some(candidate)) => {
+                (true, Some(cull), Some(candidate)) => {
                     // CPU-derived Spatial diagnostics: candidate count vs total
                     // leaves, and submitted = candidates passing the frustum
                     // predicate. The gathered leaves live in the pipeline scratch

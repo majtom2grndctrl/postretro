@@ -477,10 +477,22 @@ mod tests {
         assert_eq!(out, vec![0, 1]);
 
         // Second frame, different visible set: must reflect ONLY cell 1, with no
-        // residue from the previous gather.
+        // residue from the previous gather. Guards `out.clear()`.
         let status = gather_candidate_leaves(&index, &[1], &mut out, &mut seen);
         assert_eq!(status, GatherStatus::Ok);
         assert_eq!(out, vec![5]);
+
+        // Third frame re-visits a cell id (0) already inserted in `seen` by an
+        // earlier frame. This specifically guards `seen.clear()`: a stale `seen`
+        // would make `insert(0)` fail, skip the cell, and yield an empty `out`.
+        // Correct behavior re-expands cell 0's span.
+        let status = gather_candidate_leaves(&index, &[0], &mut out, &mut seen);
+        assert_eq!(status, GatherStatus::Ok);
+        assert_eq!(
+            out,
+            vec![0, 1],
+            "stale `seen` must not skip a re-visited cell"
+        );
     }
 
     /// The gather visits ONLY the visible cells' spans: its output equals the

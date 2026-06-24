@@ -13,9 +13,7 @@ use postretro_level_format::animated_light_chunks::AnimatedLightChunksSection;
 use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection;
 use postretro_level_format::bsp::{BspLeavesSection, BspNodesSection};
 use postretro_level_format::bvh::{BVH_NODE_FLAG_LEAF, BvhSection};
-use postretro_level_format::cell_draw_index::{
-    CELL_DRAW_INDEX_VERSION, CellDrawIndexSection,
-};
+use postretro_level_format::cell_draw_index::{CELL_DRAW_INDEX_VERSION, CellDrawIndexSection};
 use postretro_level_format::chunk_light_list::ChunkLightListSection;
 use postretro_level_format::data_script::DataScriptSection;
 use postretro_level_format::delta_sh_volumes::{AFFINITY_FACTOR, DeltaShVolumesSection};
@@ -2986,13 +2984,8 @@ mod tests {
         let (bvh_leaves, leaves) = two_cell_setup();
         let section = valid_two_cell_section();
         assert!(
-            validate_cell_draw_index(
-                &section,
-                &bvh_leaves,
-                &leaves,
-                CELL_DRAW_INDEX_VERSION
-            )
-            .is_ok()
+            validate_cell_draw_index(&section, &bvh_leaves, &leaves, CELL_DRAW_INDEX_VERSION)
+                .is_ok()
         );
     }
 
@@ -3012,13 +3005,8 @@ mod tests {
         // Only one BSP leaf but the section declares two cells.
         let leaves = vec![bsp_leaf(false, 1)];
         let section = valid_two_cell_section();
-        let err = validate_cell_draw_index(
-            &section,
-            &bvh_leaves,
-            &leaves,
-            CELL_DRAW_INDEX_VERSION,
-        )
-        .unwrap_err();
+        let err = validate_cell_draw_index(&section, &bvh_leaves, &leaves, CELL_DRAW_INDEX_VERSION)
+            .unwrap_err();
         assert!(err.contains("cell_count"), "got: {err}");
     }
 
@@ -3031,13 +3019,8 @@ mod tests {
             leaf_start: 1,
             leaf_count: 5,
         };
-        let err = validate_cell_draw_index(
-            &section,
-            &bvh_leaves,
-            &leaves,
-            CELL_DRAW_INDEX_VERSION,
-        )
-        .unwrap_err();
+        let err = validate_cell_draw_index(&section, &bvh_leaves, &leaves, CELL_DRAW_INDEX_VERSION)
+            .unwrap_err();
         assert!(err.contains("exceeds total BVH leaves"), "got: {err}");
     }
 
@@ -3055,13 +3038,8 @@ mod tests {
                 leaf_count: 2,
             }],
         };
-        let err = validate_cell_draw_index(
-            &section,
-            &bvh_leaves,
-            &leaves,
-            CELL_DRAW_INDEX_VERSION,
-        )
-        .unwrap_err();
+        let err = validate_cell_draw_index(&section, &bvh_leaves, &leaves, CELL_DRAW_INDEX_VERSION)
+            .unwrap_err();
         assert!(err.contains("wrong cell"), "got: {err}");
     }
 
@@ -3072,13 +3050,8 @@ mod tests {
         let bvh_leaves = vec![rt_bvh_leaf(0, 3, 0), rt_bvh_leaf(0, 0, 1)];
         let leaves = vec![bsp_leaf(false, 1), bsp_leaf(false, 1)];
         let section = valid_two_cell_section();
-        let err = validate_cell_draw_index(
-            &section,
-            &bvh_leaves,
-            &leaves,
-            CELL_DRAW_INDEX_VERSION,
-        )
-        .unwrap_err();
+        let err = validate_cell_draw_index(&section, &bvh_leaves, &leaves, CELL_DRAW_INDEX_VERSION)
+            .unwrap_err();
         assert!(err.contains("non-drawable BVH leaf"), "got: {err}");
     }
 
@@ -3088,13 +3061,8 @@ mod tests {
         let bvh_leaves = vec![rt_bvh_leaf(0, 3, 0), rt_bvh_leaf(0, 3, 1)];
         let leaves = vec![bsp_leaf(false, 1), bsp_leaf(true, 0)];
         let section = valid_two_cell_section();
-        let err = validate_cell_draw_index(
-            &section,
-            &bvh_leaves,
-            &leaves,
-            CELL_DRAW_INDEX_VERSION,
-        )
-        .unwrap_err();
+        let err = validate_cell_draw_index(&section, &bvh_leaves, &leaves, CELL_DRAW_INDEX_VERSION)
+            .unwrap_err();
         assert!(err.contains("non-drawable BVH leaf"), "got: {err}");
     }
 
@@ -3113,13 +3081,8 @@ mod tests {
                 leaf_count: 2,
             }],
         };
-        let err = validate_cell_draw_index(
-            &section,
-            &bvh_leaves,
-            &leaves,
-            CELL_DRAW_INDEX_VERSION,
-        )
-        .unwrap_err();
+        let err = validate_cell_draw_index(&section, &bvh_leaves, &leaves, CELL_DRAW_INDEX_VERSION)
+            .unwrap_err();
         assert!(err.contains("material bucket"), "got: {err}");
     }
 
@@ -3144,13 +3107,8 @@ mod tests {
                 },
             ],
         };
-        let err = validate_cell_draw_index(
-            &section,
-            &bvh_leaves,
-            &leaves,
-            CELL_DRAW_INDEX_VERSION,
-        )
-        .unwrap_err();
+        let err = validate_cell_draw_index(&section, &bvh_leaves, &leaves, CELL_DRAW_INDEX_VERSION)
+            .unwrap_err();
         assert!(err.contains("non-maximal"), "got: {err}");
     }
 
@@ -3167,13 +3125,8 @@ mod tests {
                 leaf_count: 1,
             }],
         };
-        let err = validate_cell_draw_index(
-            &section,
-            &bvh_leaves,
-            &leaves,
-            CELL_DRAW_INDEX_VERSION,
-        )
-        .unwrap_err();
+        let err = validate_cell_draw_index(&section, &bvh_leaves, &leaves, CELL_DRAW_INDEX_VERSION)
+            .unwrap_err();
         assert!(err.contains("missing from the draw index"), "got: {err}");
     }
 
@@ -3186,13 +3139,8 @@ mod tests {
         let bvh_leaves = vec![rt_bvh_leaf(0, 3, 0), rt_bvh_leaf(0, 0, 1)];
         let leaves = vec![bsp_leaf(false, 1), bsp_leaf(true, 0)];
         let section = valid_two_cell_section();
-        let err = validate_cell_draw_index(
-            &section,
-            &bvh_leaves,
-            &leaves,
-            CELL_DRAW_INDEX_VERSION,
-        )
-        .unwrap_err();
+        let err = validate_cell_draw_index(&section, &bvh_leaves, &leaves, CELL_DRAW_INDEX_VERSION)
+            .unwrap_err();
         assert!(
             err.contains("non-drawable") || err.contains("non-empty CSR row"),
             "got: {err}"
@@ -3223,13 +3171,8 @@ mod tests {
             ],
         };
         assert!(
-            validate_cell_draw_index(
-                &section,
-                &bvh_leaves,
-                &leaves,
-                CELL_DRAW_INDEX_VERSION
-            )
-            .is_err()
+            validate_cell_draw_index(&section, &bvh_leaves, &leaves, CELL_DRAW_INDEX_VERSION)
+                .is_err()
         );
     }
 
@@ -3475,7 +3418,10 @@ mod tests {
             default_fog_volumes_blob(),
             cell_draw_index_blob(&section),
         ];
-        let tmp = write_prl_fixture(sections, "postretro_test_bucket_crossing_cell_draw_index.prl");
+        let tmp = write_prl_fixture(
+            sections,
+            "postretro_test_bucket_crossing_cell_draw_index.prl",
+        );
         let world = load_prl(tmp.to_str().unwrap()).expect("load must continue (degrade)");
         assert!(
             world.cell_draw_index.is_none(),

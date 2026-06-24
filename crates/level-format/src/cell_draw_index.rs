@@ -91,9 +91,7 @@ impl CellDrawIndexSection {
 
     pub fn from_bytes(data: &[u8]) -> crate::Result<Self> {
         if data.len() < HEADER_SIZE {
-            return Err(invalid_data(
-                "cell draw index section too short for header",
-            ));
+            return Err(invalid_data("cell draw index section too short for header"));
         }
 
         let version = read_u32(data, 0);

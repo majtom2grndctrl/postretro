@@ -15,8 +15,7 @@ use glam::Mat4;
 use crate::compute_cull::{CullUniforms, extract_frustum_planes_for_gpu, serialize_cull_uniforms};
 use crate::prl::CellDrawIndex;
 
-pub(crate) const CANDIDATE_CULL_SHADER_SOURCE: &str =
-    include_str!("shaders/candidate_cull.wgsl");
+pub(crate) const CANDIDATE_CULL_SHADER_SOURCE: &str = include_str!("shaders/candidate_cull.wgsl");
 
 /// Workgroup size of `candidate_cull.wgsl::candidate_cull_main`. The dispatch
 /// rounds the candidate count up to this.
@@ -166,12 +165,12 @@ impl CandidateCullPipeline {
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Candidate Cull Bind Group Layout"),
             entries: &[
-                uniform_entry(0),         // CullUniforms
-                storage_entry(1, true),   // leaves (read)
-                storage_entry(2, false),  // indirect_draws (read_write)
-                storage_entry(3, false),  // cull_status (read_write)
-                storage_entry(4, true),   // candidate_leaves (read)
-                uniform_entry(5),         // CandidateCullParams
+                uniform_entry(0),        // CullUniforms
+                storage_entry(1, true),  // leaves (read)
+                storage_entry(2, false), // indirect_draws (read_write)
+                storage_entry(3, false), // cull_status (read_write)
+                storage_entry(4, true),  // candidate_leaves (read)
+                uniform_entry(5),        // CandidateCullParams
             ],
         });
 
@@ -256,7 +255,8 @@ impl CandidateCullPipeline {
         self.candidate_scratch.clear();
         self.candidate_scratch.reserve(candidate_leaves.len() * 4);
         for &leaf in candidate_leaves {
-            self.candidate_scratch.extend_from_slice(&leaf.to_le_bytes());
+            self.candidate_scratch
+                .extend_from_slice(&leaf.to_le_bytes());
         }
         queue.write_buffer(&self.candidate_buffer, 0, &self.candidate_scratch);
 
@@ -328,9 +328,18 @@ mod tests {
         let index = index_from(
             vec![0, 2, 2, 3],
             vec![
-                Span { leaf_start: 0, leaf_count: 3 },
-                Span { leaf_start: 10, leaf_count: 1 },
-                Span { leaf_start: 20, leaf_count: 2 },
+                Span {
+                    leaf_start: 0,
+                    leaf_count: 3,
+                },
+                Span {
+                    leaf_start: 10,
+                    leaf_count: 1,
+                },
+                Span {
+                    leaf_start: 20,
+                    leaf_count: 2,
+                },
             ],
         );
 
@@ -349,7 +358,10 @@ mod tests {
     fn gather_empty_cell_yields_no_leaves() {
         let index = index_from(
             vec![0, 1, 1],
-            vec![Span { leaf_start: 5, leaf_count: 2 }],
+            vec![Span {
+                leaf_start: 5,
+                leaf_count: 2,
+            }],
         );
         // Cell 1 owns no leaves.
         let gather = gather_candidate_leaves(&index, &[1]);
@@ -368,7 +380,10 @@ mod tests {
     fn gather_out_of_range_cell_signals_fallback() {
         let index = index_from(
             vec![0, 1],
-            vec![Span { leaf_start: 0, leaf_count: 1 }],
+            vec![Span {
+                leaf_start: 0,
+                leaf_count: 1,
+            }],
         );
         // cell_count == 1, so id 1 is out of range.
         let gather = gather_candidate_leaves(&index, &[0, 1]);
@@ -386,10 +401,22 @@ mod tests {
         let index = index_from(
             vec![0, 1, 2, 3, 4],
             vec![
-                Span { leaf_start: 0, leaf_count: 2 },  // cell 0: leaves 0,1
-                Span { leaf_start: 2, leaf_count: 3 },  // cell 1: leaves 2,3,4
-                Span { leaf_start: 5, leaf_count: 1 },  // cell 2: leaf 5
-                Span { leaf_start: 6, leaf_count: 2 },  // cell 3: leaves 6,7
+                Span {
+                    leaf_start: 0,
+                    leaf_count: 2,
+                }, // cell 0: leaves 0,1
+                Span {
+                    leaf_start: 2,
+                    leaf_count: 3,
+                }, // cell 1: leaves 2,3,4
+                Span {
+                    leaf_start: 5,
+                    leaf_count: 1,
+                }, // cell 2: leaf 5
+                Span {
+                    leaf_start: 6,
+                    leaf_count: 2,
+                }, // cell 3: leaves 6,7
             ],
         );
 

@@ -375,10 +375,9 @@ impl Renderer {
         // Rebuild the candidate-cull path in lockstep with `compute_cull`, sized
         // to the freshly-installed leaf count. Empty-geometry install → `None`,
         // so `release_level_resources` drops it for free.
-        self.candidate_cull = self
-            .compute_cull
-            .as_ref()
-            .map(|c| crate::candidate_cull::CandidateCullPipeline::new(&self.device, c.total_leaves()));
+        self.candidate_cull = self.compute_cull.as_ref().map(|c| {
+            crate::candidate_cull::CandidateCullPipeline::new(&self.device, c.total_leaves())
+        });
 
         // Rebuild the shadow cull owner against the freshly-uploaded BVH
         // buffers — its per-slot bind groups reference the camera cull's

@@ -75,7 +75,9 @@ pub fn bake_cell_draw_index(
             _ => false,
         };
         if extend {
-            runs.last_mut().expect("extend implies a last run").leaf_count += 1;
+            runs.last_mut()
+                .expect("extend implies a last run")
+                .leaf_count += 1;
         } else {
             runs.push(Span {
                 leaf_start: slot,
@@ -179,7 +181,8 @@ fn debug_assert_invariants(
                 );
                 if span.leaf_start == prev {
                     debug_assert_ne!(
-                        prev_bucket, Some(span_bucket),
+                        prev_bucket,
+                        Some(span_bucket),
                         "abutting same-bucket spans in cell {cell} must be one maximal span",
                     );
                 }
@@ -277,7 +280,7 @@ mod tests {
     }
 
     /// Spans owned by a cell, read back out of the CSR.
-    fn cell_spans<'a>(section: &'a CellDrawIndexSection, cell: usize) -> &'a [Span] {
+    fn cell_spans(section: &CellDrawIndexSection, cell: usize) -> &[Span] {
         let start = section.cell_span_offset[cell] as usize;
         let end = section.cell_span_offset[cell + 1] as usize;
         &section.spans[start..end]
@@ -292,17 +295,19 @@ mod tests {
     #[test]
     fn single_cell_single_bucket_is_one_span() {
         // Cell 0, one bucket, three contiguous leaves -> a single span [0,3).
-        let leaves = sort_like_bvh(vec![
-            leaf(0, 0, 0, 3),
-            leaf(0, 0, 3, 3),
-            leaf(0, 0, 6, 3),
-        ]);
+        let leaves = sort_like_bvh(vec![leaf(0, 0, 0, 3), leaf(0, 0, 3, 3), leaf(0, 0, 6, 3)]);
         let bsp = vec![empty_leaf(3)];
         let section = bake_cell_draw_index(&leaves, &bsp).unwrap();
 
         assert_eq!(section.cell_count, 1);
         assert_eq!(section.cell_span_offset, vec![0, 1]);
-        assert_eq!(cell_spans(&section, 0), &[Span { leaf_start: 0, leaf_count: 3 }]);
+        assert_eq!(
+            cell_spans(&section, 0),
+            &[Span {
+                leaf_start: 0,
+                leaf_count: 3
+            }]
+        );
     }
 
     #[test]
@@ -317,11 +322,7 @@ mod tests {
         //   bucket 0: (cell 0, off 0), (cell 1, off 10)
         //   bucket 1: (cell 0, off 20)
         // => slots: 0=cell0, 1=cell1, 2=cell0. Cell 0 owns slots {0, 2} as two runs.
-        let leaves = sort_like_bvh(vec![
-            leaf(0, 0, 0, 3),
-            leaf(0, 1, 10, 3),
-            leaf(1, 0, 20, 3),
-        ]);
+        let leaves = sort_like_bvh(vec![leaf(0, 0, 0, 3), leaf(0, 1, 10, 3), leaf(1, 0, 20, 3)]);
         let bsp = vec![empty_leaf(2), empty_leaf(1)];
         let section = bake_cell_draw_index(&leaves, &bsp).unwrap();
 
@@ -329,13 +330,25 @@ mod tests {
         assert_eq!(
             cell_spans(&section, 0),
             &[
-                Span { leaf_start: 0, leaf_count: 1 },
-                Span { leaf_start: 2, leaf_count: 1 },
+                Span {
+                    leaf_start: 0,
+                    leaf_count: 1
+                },
+                Span {
+                    leaf_start: 2,
+                    leaf_count: 1
+                },
             ],
             "per-bucket split must produce two spans for the interleaved cell",
         );
         // Cell 1 owns the single middle slot.
-        assert_eq!(cell_spans(&section, 1), &[Span { leaf_start: 1, leaf_count: 1 }]);
+        assert_eq!(
+            cell_spans(&section, 1),
+            &[Span {
+                leaf_start: 1,
+                leaf_count: 1
+            }]
+        );
     }
 
     #[test]
@@ -357,8 +370,14 @@ mod tests {
         assert_eq!(
             cell_spans(&section, 0),
             &[
-                Span { leaf_start: 0, leaf_count: 2 },
-                Span { leaf_start: 2, leaf_count: 2 },
+                Span {
+                    leaf_start: 0,
+                    leaf_count: 2
+                },
+                Span {
+                    leaf_start: 2,
+                    leaf_count: 2
+                },
             ],
             "spans must break at the material bucket boundary even when slots abut",
         );
@@ -372,8 +391,17 @@ mod tests {
         let bsp = vec![empty_leaf(1), solid_leaf()];
         let section = bake_cell_draw_index(&leaves, &bsp).unwrap();
 
-        assert_eq!(cell_spans(&section, 0), &[Span { leaf_start: 0, leaf_count: 1 }]);
-        assert!(cell_spans(&section, 1).is_empty(), "solid cell must be an empty row");
+        assert_eq!(
+            cell_spans(&section, 0),
+            &[Span {
+                leaf_start: 0,
+                leaf_count: 1
+            }]
+        );
+        assert!(
+            cell_spans(&section, 1).is_empty(),
+            "solid cell must be an empty row"
+        );
         assert_eq!(section.cell_span_offset[1], section.cell_span_offset[2]);
     }
 
@@ -385,8 +413,17 @@ mod tests {
         let bsp = vec![empty_leaf(1), empty_leaf(0)];
         let section = bake_cell_draw_index(&leaves, &bsp).unwrap();
 
-        assert_eq!(cell_spans(&section, 0), &[Span { leaf_start: 0, leaf_count: 1 }]);
-        assert!(cell_spans(&section, 1).is_empty(), "zero-face cell must be an empty row");
+        assert_eq!(
+            cell_spans(&section, 0),
+            &[Span {
+                leaf_start: 0,
+                leaf_count: 1
+            }]
+        );
+        assert!(
+            cell_spans(&section, 1).is_empty(),
+            "zero-face cell must be an empty row"
+        );
     }
 
     #[test]
@@ -421,13 +458,25 @@ mod tests {
 
         // cell 0: [0,1) span; cell 1: empty; cell 2: [1,3) two spans.
         assert_eq!(section.cell_span_offset, vec![0, 1, 1, 3]);
-        assert_eq!(cell_spans(&section, 0), &[Span { leaf_start: 0, leaf_count: 1 }]);
+        assert_eq!(
+            cell_spans(&section, 0),
+            &[Span {
+                leaf_start: 0,
+                leaf_count: 1
+            }]
+        );
         assert!(cell_spans(&section, 1).is_empty());
         assert_eq!(
             cell_spans(&section, 2),
             &[
-                Span { leaf_start: 1, leaf_count: 1 },
-                Span { leaf_start: 3, leaf_count: 1 },
+                Span {
+                    leaf_start: 1,
+                    leaf_count: 1
+                },
+                Span {
+                    leaf_start: 3,
+                    leaf_count: 1
+                },
             ],
         );
         // Final offset equals span_count.
@@ -471,11 +520,7 @@ mod tests {
     #[test]
     fn round_trips_through_format_crate() {
         // The baked section must satisfy the format crate's structural validation.
-        let leaves = sort_like_bvh(vec![
-            leaf(0, 0, 0, 3),
-            leaf(0, 2, 6, 3),
-            leaf(1, 2, 12, 3),
-        ]);
+        let leaves = sort_like_bvh(vec![leaf(0, 0, 0, 3), leaf(0, 2, 6, 3), leaf(1, 2, 12, 3)]);
         let bsp = vec![empty_leaf(1), solid_leaf(), empty_leaf(2)];
         let section = bake_cell_draw_index(&leaves, &bsp).unwrap();
 

@@ -235,7 +235,9 @@ mod tests {
     #[test]
     fn camera_cull_diagnostics_reports_candidate_leaves_per_path() {
         let candidate = CameraCullDiagnostics {
-            path: CameraCullPath::Candidate { candidate_leaves: 7 },
+            path: CameraCullPath::Candidate {
+                candidate_leaves: 7,
+            },
             total_leaves: 100,
             submitted_leaves: 3,
         };

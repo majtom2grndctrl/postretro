@@ -127,13 +127,20 @@ mod tests {
 
             let mut scratch = Vec::new();
             let (vis, _frustum) = crate::visibility::determine_visible_cells(
-                position, view_proj, &world, false, &mut scratch,
+                position,
+                view_proj,
+                &world,
+                false,
+                &mut scratch,
             );
 
             // The probe asserts the portal path is exercised; non-portal
             // provenance would route to the tree walk in the renderer.
             assert!(
-                matches!(vis.stats.path, crate::visibility::VisibilityPath::PrlPortal { .. }),
+                matches!(
+                    vis.stats.path,
+                    crate::visibility::VisibilityPath::PrlPortal { .. }
+                ),
                 "{}: expected portal path, got {:?}",
                 probe.map,
                 vis.stats.path,

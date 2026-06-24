@@ -640,8 +640,7 @@ mod tests {
     /// `span` (the byte stride). Drift guard input is the actual shader text,
     /// never a hand-copied field list.
     fn struct_strides(source: &str) -> std::collections::HashMap<String, u32> {
-        let module =
-            naga::front::wgsl::parse_str(source).expect("shader should parse as WGSL");
+        let module = naga::front::wgsl::parse_str(source).expect("shader should parse as WGSL");
         let mut seen = std::collections::HashMap::new();
         for (_handle, ty) in module.types.iter() {
             if let naga::TypeInner::Struct { span, .. } = &ty.inner {
@@ -721,7 +720,12 @@ mod tests {
         let bvh = struct_strides(CULL_SHADER_SOURCE);
         let candidate = struct_strides(crate::candidate_cull::CANDIDATE_CULL_SHADER_SOURCE);
 
-        for name in ["BvhLeaf", "DrawIndexedIndirect", "FrustumPlane", "CullUniforms"] {
+        for name in [
+            "BvhLeaf",
+            "DrawIndexedIndirect",
+            "FrustumPlane",
+            "CullUniforms",
+        ] {
             let a = bvh
                 .get(name)
                 .unwrap_or_else(|| panic!("bvh_cull.wgsl should declare struct {name}"));

@@ -208,9 +208,21 @@ fn passes_frustum(leaf: &BvhLeaf, planes: &[[f32; 4]; 6]) -> bool {
         let n = glam::Vec3::new(plane[0], plane[1], plane[2]);
         let d = plane[3];
         let p = glam::Vec3::new(
-            if n.x >= 0.0 { leaf.aabb_max[0] } else { leaf.aabb_min[0] },
-            if n.y >= 0.0 { leaf.aabb_max[1] } else { leaf.aabb_min[1] },
-            if n.z >= 0.0 { leaf.aabb_max[2] } else { leaf.aabb_min[2] },
+            if n.x >= 0.0 {
+                leaf.aabb_max[0]
+            } else {
+                leaf.aabb_min[0]
+            },
+            if n.y >= 0.0 {
+                leaf.aabb_max[1]
+            } else {
+                leaf.aabb_min[1]
+            },
+            if n.z >= 0.0 {
+                leaf.aabb_max[2]
+            } else {
+                leaf.aabb_min[2]
+            },
         );
         if n.dot(p) + d < 0.0 {
             return false;
@@ -226,7 +238,11 @@ fn passes_frustum(leaf: &BvhLeaf, planes: &[[f32; 4]; 6]) -> bool {
 /// Non-drawable leaves are never enumerated into the candidate CSR, so to keep
 /// the two paths comparable the tree-walk oracle leaves their slots cleared too
 /// (a non-drawable leaf has `index_count == 0`, so it can never submit).
-pub(crate) fn tree_walk_mirror(world: &SyntheticWorld, visible: &VisibleCells, view_proj: &Mat4) -> CullMirror {
+pub(crate) fn tree_walk_mirror(
+    world: &SyntheticWorld,
+    visible: &VisibleCells,
+    view_proj: &Mat4,
+) -> CullMirror {
     let planes = extract_frustum_planes_for_gpu(view_proj);
     let mut slots = vec![
         LeafSlot {
@@ -353,7 +369,11 @@ pub(crate) fn leaf(
 /// drawable leaves' contiguous per-bucket spans in ascending `leaf_start`. This
 /// is the bake the runtime validates, so deriving it here keeps the oracle's
 /// CSR honest rather than hand-listing spans.
-pub(crate) fn build_index(leaves: &[BvhLeaf], cell_count: u32, cell_drawable: &[bool]) -> CellDrawIndex {
+pub(crate) fn build_index(
+    leaves: &[BvhLeaf],
+    cell_count: u32,
+    cell_drawable: &[bool],
+) -> CellDrawIndex {
     let mut cell_span_offset = Vec::with_capacity(cell_count as usize + 1);
     let mut spans: Vec<Span> = Vec::new();
     cell_span_offset.push(0u32);
@@ -404,7 +424,11 @@ pub(crate) fn build_index(leaves: &[BvhLeaf], cell_count: u32, cell_drawable: &[
 }
 
 /// Assemble a synthetic world: build the CSR from the leaves and drawability.
-pub(crate) fn synthetic_world(leaves: Vec<BvhLeaf>, cell_count: u32, cell_drawable: Vec<bool>) -> SyntheticWorld {
+pub(crate) fn synthetic_world(
+    leaves: Vec<BvhLeaf>,
+    cell_count: u32,
+    cell_drawable: Vec<bool>,
+) -> SyntheticWorld {
     let index = build_index(&leaves, cell_count, &cell_drawable);
     SyntheticWorld {
         leaves,
@@ -464,7 +488,11 @@ mod tests {
         let tree = tree_walk_mirror(&world, &visible, &vp);
         let cand = candidate_mirror(&world, &visible, &vp).expect("candidate path runs");
 
-        assert_eq!(tree.submitted, vec![0], "leaf 0 should submit on the tree walk");
+        assert_eq!(
+            tree.submitted,
+            vec![0],
+            "leaf 0 should submit on the tree walk"
+        );
         cand.assert_matches(&tree);
 
         // The submitted slot carries the full command.
@@ -493,7 +521,10 @@ mod tests {
         let tree = tree_walk_mirror(&world, &visible, &vp);
         let cand = candidate_mirror(&world, &visible, &vp).expect("candidate path runs");
 
-        assert!(tree.submitted.is_empty(), "frustum-rejected leaf must not submit");
+        assert!(
+            tree.submitted.is_empty(),
+            "frustum-rejected leaf must not submit"
+        );
         cand.assert_matches(&tree);
 
         assert_eq!(cand.slots[1].cull_status, STATUS_FRUSTUM_REJECT);

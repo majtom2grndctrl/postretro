@@ -28,9 +28,21 @@ fn leaf_passes_frustum(leaf: &crate::geometry::BvhLeaf, planes: &[[f32; 4]; 6]) 
         let n = Vec3::new(plane[0], plane[1], plane[2]);
         let d = plane[3];
         let p = Vec3::new(
-            if n.x >= 0.0 { leaf.aabb_max[0] } else { leaf.aabb_min[0] },
-            if n.y >= 0.0 { leaf.aabb_max[1] } else { leaf.aabb_min[1] },
-            if n.z >= 0.0 { leaf.aabb_max[2] } else { leaf.aabb_min[2] },
+            if n.x >= 0.0 {
+                leaf.aabb_max[0]
+            } else {
+                leaf.aabb_min[0]
+            },
+            if n.y >= 0.0 {
+                leaf.aabb_max[1]
+            } else {
+                leaf.aabb_min[1]
+            },
+            if n.z >= 0.0 {
+                leaf.aabb_max[2]
+            } else {
+                leaf.aabb_min[2]
+            },
         );
         if n.dot(p) + d < 0.0 {
             return false;

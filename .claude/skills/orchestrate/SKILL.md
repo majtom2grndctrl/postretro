@@ -53,7 +53,8 @@ For each phase in the sequencing section:
 2. The agent's **specific task** — description, acceptance criteria
 3. Instruction to read relevant `context/lib/` files for architectural guidance
 4. Instruction to follow `context/lib/development_guide.md` conventions
-5. Instruction to run `cargo check` and `cargo test` before considering the task complete
+5. Instruction to run `cargo check` before considering the task complete
+6. Instruction to run **focused** tests for the touched crate/module/behavior — not a full workspace or full-crate `cargo test` by default. Full-suite runs are the coordinator's final gate, not a per-task step. Prefer `cargo test -p <crate> <name_filter>` (and `--lib` to skip integration tests). WARN agents: the `postretro-level-compiler` `tests/` integration suite shells out to `prl-build` and triggers cold SH/lightmap bakes (~1h) — never run a bare `cargo test -p postretro-level-compiler`, and never compile `stress-warren*`/`campaign-test` in a routine test.
 
 **Do NOT provide:**
 - Other tasks' details (the agent doesn't need them)
@@ -73,7 +74,7 @@ Between phases, check that prerequisites for the next phase are satisfied.
 ### 5. Complete
 
 When all phases are done:
-- Run preflight checks: `cargo fmt --check && cargo clippy -- -D warnings && cargo test`
+- Run the full preflight **once after integration** (this is the coordinator's single full-suite gate): `cargo fmt --check && cargo clippy -- -D warnings && cargo test`. If the session touched the bake/compile pipeline or its fixtures, ALSO run the on-demand cold-bake coverage as part of this one-time gate: `CARGO_PROFILE_TEST_SPLIT_DEBUGINFO=off cargo test -p postretro-level-compiler -- --ignored` (these are `#[ignore]`-gated because they cost ~1h; the gate is where that cost belongs, not per-task).
 - Run a `/review-panel` on code edited in this session
 - Report review panel findings to user to discuss which feedback to act on
 

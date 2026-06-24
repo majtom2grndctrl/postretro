@@ -108,6 +108,15 @@ Tests run via `cargo test` with no window and no GPU context. The renderer's dat
 
 In the web/sandbox environment, run tests with `CARGO_PROFILE_TEST_SPLIT_DEBUGINFO=off cargo test` — split debuginfo fails to link there. Local runs need no flag.
 
+### Slow / cold-bake suites — verify focused, not broad
+
+Some suites are expensive and must not be run reflexively:
+
+- The `postretro-level-compiler` `tests/` integration tests (e.g. `animated_weight_maps_fixtures.rs`) shell out to `prl-build`, doing **cold SH/lightmap bakes** (`--no-cache`). A bare `cargo test -p postretro-level-compiler` can take **~1 hour**. The expensive cold-bake tests are `#[ignore]`-gated — run them on demand with `cargo test -p postretro-level-compiler -- --ignored`, or as part of the one-time integration preflight gate.
+- Compiling the large maps (`stress-warren*`, `campaign-test`) is slow. Routine, non-`#[ignore]` tests use only small, focused fixtures — synthetic in-memory structures or tiny purpose-built fixture maps. Heavy-map harnesses are `#[ignore]`-gated, on-demand only.
+
+**Default verification while iterating:** `cargo check` plus *targeted* tests for the touched crate/module — `cargo test -p <crate> <name_filter>`, with `--lib` to skip the integration tests. Reserve a full `cargo test` for a single coordinator-level gate after integration, not per change.
+
 ---
 
 ## 4. Test Organization

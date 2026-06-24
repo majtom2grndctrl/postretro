@@ -34,6 +34,7 @@ fn workspace_root() -> PathBuf {
 }
 
 #[test]
+#[ignore = "cold prl-build bake; run on demand with -- --ignored"]
 fn single_fixture_compiles_and_carries_weight_map_section() {
     let ws = workspace_root();
     let input = ws.join("content/dev/maps/test_animated_weight_maps_single.map");
@@ -124,6 +125,7 @@ fn single_fixture_compiles_and_carries_weight_map_section() {
 /// "every test map compiles" coverage for the new map; the soft-shadow *values*
 /// are covered by unit tests in `lightmap_bake.rs`.
 #[test]
+#[ignore = "cold prl-build bake (--no-cache lightmap); run on demand with -- --ignored"]
 fn soft_shadow_test_map_compiles_to_a_baked_lightmap() {
     let ws = workspace_root();
     let input = ws.join("content/dev/maps/soft_shadow_test.map");
@@ -191,6 +193,7 @@ fn soft_shadow_test_map_compiles_to_a_baked_lightmap() {
 /// contained one entry (slot 0), so `light_index = 1` overflowed. This test
 /// asserts `light_index < animation_descriptors.len()` for every entry.
 #[test]
+#[ignore = "cold prl-build bake; run on demand with -- --ignored"]
 fn mixed_fixture_light_indices_are_in_descriptor_buffer_bounds() {
     let ws = workspace_root();
     let input = ws.join("content/dev/maps/test_animated_weight_maps_mixed.map");

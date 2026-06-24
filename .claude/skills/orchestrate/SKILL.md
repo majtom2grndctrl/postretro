@@ -74,7 +74,7 @@ Between phases, check that prerequisites for the next phase are satisfied.
 ### 5. Complete
 
 When all phases are done:
-- Run the full preflight **once after integration** (this is the coordinator's single full-suite gate): `cargo fmt --check && cargo clippy -- -D warnings && cargo test`. Note this gate pays the cold-bake cost; that is acceptable as a one-time integration check, not as a per-task step.
+- Run the full preflight **once after integration** (this is the coordinator's single full-suite gate): `cargo fmt --check && cargo clippy -- -D warnings && cargo test`. If the session touched the bake/compile pipeline or its fixtures, ALSO run the on-demand cold-bake coverage as part of this one-time gate: `CARGO_PROFILE_TEST_SPLIT_DEBUGINFO=off cargo test -p postretro-level-compiler -- --ignored` (these are `#[ignore]`-gated because they cost ~1h; the gate is where that cost belongs, not per-task).
 - Run a `/review-panel` on code edited in this session
 - Report review panel findings to user to discuss which feedback to act on
 

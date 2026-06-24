@@ -56,6 +56,7 @@ impl Renderer {
             direct_sh_volume: None,
             sdf_atlas: None,
             lightmap_mode: crate::prl::LightmapMode::default(),
+            cell_draw_index: None,
             texture_materials: &empty_materials,
         };
         self.install_level_geometry(&empty_geometry);
@@ -358,6 +359,10 @@ impl Renderer {
 
         // --- BVH + compute cull ---
         self.bvh_leaves = bvh_leaves;
+        // Per-cell draw index for the candidate-cull path (Task 5). Cloned
+        // alongside the BVH leaves; the empty-geometry install path clears it
+        // to `None`, so `release_level_resources` drops it for free.
+        self.cell_draw_index = geometry.cell_draw_index.cloned();
         self.compute_cull = if !self.bvh_leaves.is_empty() {
             Some(ComputeCullPipeline::new(
                 &self.device,

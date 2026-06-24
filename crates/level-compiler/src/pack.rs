@@ -358,6 +358,10 @@ pub fn pack_and_write_portals(
     fog_cell_masks: Option<&FogCellMasksSection>,
     sdf_atlas: Option<&SdfAtlasSection>,
     navmesh: Option<&NavMeshSection>,
+    // Pre-serialized CellDrawIndex (id 37) bytes, or `None` for zero-leaf maps.
+    // Already-encoded because the bake is gated on non-empty BVH leaves upstream;
+    // emission is independent of portal presence.
+    cell_draw_index_bytes: Option<Vec<u8>>,
 ) -> anyhow::Result<()> {
     let geometry_bytes = geo_result.geometry.to_bytes();
     let texture_names_bytes = geo_result.texture_names.to_bytes();
@@ -529,6 +533,11 @@ pub fn pack_and_write_portals(
             data: bytes.clone(),
         });
     }
+    append_optional_section(
+        &mut sections,
+        SectionId::CellDrawIndex as u32,
+        cell_draw_index_bytes,
+    );
 
     write_and_validate_sections(output, &sections)?;
 
@@ -912,6 +921,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .expect("pack_and_write_portals should succeed");
 
@@ -983,6 +993,7 @@ mod tests {
             None,
             None,
             &FogVolumesSection::default(),
+            None,
             None,
             None,
             None,
@@ -1068,6 +1079,7 @@ mod tests {
             None,
             None,
             &FogVolumesSection::default(),
+            None,
             None,
             None,
             None,

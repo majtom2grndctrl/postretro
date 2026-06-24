@@ -13,6 +13,9 @@ use postretro_level_format::animated_light_chunks::AnimatedLightChunksSection;
 use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection;
 use postretro_level_format::bsp::{BspLeavesSection, BspNodesSection};
 use postretro_level_format::bvh::{BVH_NODE_FLAG_LEAF, BvhSection};
+use postretro_level_format::cell_draw_index::{
+    CELL_DRAW_INDEX_VERSION, CellDrawIndexSection,
+};
 use postretro_level_format::chunk_light_list::ChunkLightListSection;
 use postretro_level_format::data_script::DataScriptSection;
 use postretro_level_format::delta_sh_volumes::{AFFINITY_FACTOR, DeltaShVolumesSection};
@@ -235,6 +238,12 @@ pub enum LightmapMode {
     Unshadowed,
 }
 
+/// Runtime view of the `CellDrawIndex` PRL section (id 37): each cell's owned
+/// BVH-leaf spans in CSR layout. Held as the format type after the loader has
+/// cross-validated it against the BVH leaf array and BSP leaf count. A stable
+/// runtime name so the candidate-cull GPU path (Task 5) consumes one type.
+pub type CellDrawIndex = CellDrawIndexSection;
+
 #[derive(Debug)]
 pub struct LevelWorld {
     pub vertices: Vec<WorldVertex>,
@@ -313,6 +322,12 @@ pub struct LevelWorld {
     /// build today, so allowed dead in shipping builds until pathfinding lands.
     #[allow(dead_code)]
     pub navmesh: Option<NavMeshSection>,
+    /// Per-cell BVH-leaf draw index (PRL section 37), cross-validated against
+    /// the BVH leaf array and BSP leaf count. `None` when the section is absent
+    /// or any cross-section invariant fails — the camera cull then falls back to
+    /// the legacy tree-walk (Task 5). A malformed index degrades the load (logs
+    /// once, continues) rather than failing it.
+    pub cell_draw_index: Option<CellDrawIndex>,
 }
 
 impl LevelWorld {
@@ -507,6 +522,232 @@ pub(crate) fn validate_delta_sh(
             base_dimension: base.tile_dimension,
             base_border: base.tile_border,
         });
+    }
+
+    Ok(())
+}
+
+/// Cross-validate a decoded `CellDrawIndex` section against the runtime BVH
+/// leaf array and the BSP leaf count. `from_bytes` already enforced structural
+/// CSR invariants (version, length, monotonic offsets, non-empty spans, no
+/// `leaf_start + leaf_count` overflow); this layer enforces every invariant that
+/// requires the *other* sections to be present.
+///
+/// Pure (no I/O, no logging) so each reject path is unit-testable without a
+/// `.prl`. Returns `Err(reason)` describing the first failing invariant; the
+/// loader logs the reason once under `[Loader]` and degrades the index to
+/// `None` (legacy tree-walk camera cull), never failing the whole load.
+///
+/// Rejected cases (cell id == BSP leaf index == BVH `cell_id`):
+/// - unsupported `version`,
+/// - `cell_count != leaves.len()` (BSP leaf count),
+/// - `cell_span_offset[0] != 0`, non-monotonic offsets, or
+///   `cell_span_offset[cell_count] != span_count`,
+/// - any span outside `[0, total_leaves)` (checked-add),
+/// - any span whose leaves don't all carry `BvhLeaf.cell_id == cell`,
+/// - any span covering a non-drawable leaf, or any span on a non-drawable cell,
+/// - any span crossing a material-bucket boundary,
+/// - spans out of ascending `leaf_start` order within a cell,
+/// - adjacent same-cell/same-bucket spans that form a non-maximal run,
+/// - overlapping / duplicate leaf coverage,
+/// - any drawable leaf missing from the index,
+/// - any non-drawable cell with a non-empty CSR row.
+///
+/// `version` is taken from the section header; `from_bytes` already rejects a
+/// non-matching version, but the explicit guard keeps the rule local and lets a
+/// future structurally-valid version bump be rejected here too.
+pub(crate) fn validate_cell_draw_index(
+    section: &CellDrawIndexSection,
+    bvh_leaves: &[BvhLeaf],
+    leaves: &[LeafData],
+    version: u32,
+) -> Result<(), String> {
+    if version != CELL_DRAW_INDEX_VERSION {
+        return Err(format!(
+            "unsupported version {version}, expected {CELL_DRAW_INDEX_VERSION}"
+        ));
+    }
+
+    let bsp_leaf_count = leaves.len();
+    let cell_count = section.cell_count as usize;
+    if cell_count != bsp_leaf_count {
+        return Err(format!(
+            "cell_count {cell_count} != BSP leaf count {bsp_leaf_count}"
+        ));
+    }
+
+    // Re-check the CSR offset invariants here too: a structurally-valid section
+    // for a *future* version could reach this layer, and the validity of every
+    // span lookup below depends on these. (from_bytes guards the current shape.)
+    let offsets = &section.cell_span_offset;
+    if offsets.len() != cell_count + 1 {
+        return Err(format!(
+            "offset table length {} != cell_count + 1 ({})",
+            offsets.len(),
+            cell_count + 1
+        ));
+    }
+    if offsets[0] != 0 {
+        return Err(format!("offset[0] {} != 0", offsets[0]));
+    }
+    for w in offsets.windows(2) {
+        if w[1] < w[0] {
+            return Err(format!("non-monotonic offsets: {} after {}", w[1], w[0]));
+        }
+    }
+    if offsets[cell_count] != section.span_count {
+        return Err(format!(
+            "offset[cell_count] {} != span_count {}",
+            offsets[cell_count], section.span_count
+        ));
+    }
+    if section.spans.len() != section.span_count as usize {
+        return Err(format!(
+            "span array length {} != span_count {}",
+            section.spans.len(),
+            section.span_count
+        ));
+    }
+
+    let total_leaves = bvh_leaves.len();
+
+    // A cell (BSP leaf) is drawable iff it is non-solid and carries faces. A BVH
+    // leaf is drawable iff it has indices AND its cell is drawable. Both halves
+    // join through `cell_id == BSP leaf index`.
+    let cell_is_drawable = |cell: usize| -> bool {
+        match leaves.get(cell) {
+            Some(l) => !l.is_solid && l.face_count > 0,
+            None => false,
+        }
+    };
+    let leaf_is_drawable = |leaf: &BvhLeaf| -> bool {
+        leaf.index_count > 0 && cell_is_drawable(leaf.cell_id as usize)
+    };
+
+    // Coverage map over every BVH leaf: which leaves a cell row claims.
+    let mut covered = vec![false; total_leaves];
+
+    for cell in 0..cell_count {
+        let start = offsets[cell] as usize;
+        let end = offsets[cell + 1] as usize;
+        let cell_spans = &section.spans[start..end];
+
+        let mut prev_end: Option<u32> = None; // exclusive end of previous span
+        let mut prev_bucket: Option<u32> = None;
+
+        for span in cell_spans {
+            let leaf_start = span.leaf_start;
+            let leaf_count = span.leaf_count;
+            // Structural guard re-asserted for non-current versions.
+            if leaf_count == 0 {
+                return Err(format!("cell {cell} has an empty span"));
+            }
+            let span_end = match leaf_start.checked_add(leaf_count) {
+                Some(e) => e,
+                None => {
+                    return Err(format!(
+                        "cell {cell} span leaf_start {leaf_start} + leaf_count {leaf_count} \
+                         overflows u32"
+                    ));
+                }
+            };
+            if span_end as usize > total_leaves {
+                return Err(format!(
+                    "cell {cell} span [{leaf_start}, {span_end}) exceeds total BVH leaves \
+                     {total_leaves}"
+                ));
+            }
+
+            // Ascending, non-overlapping `leaf_start` within the cell.
+            if let Some(pe) = prev_end {
+                if leaf_start < pe {
+                    return Err(format!(
+                        "cell {cell} spans out of order / overlapping: span starting \
+                         {leaf_start} follows a span ending {pe}"
+                    ));
+                }
+            }
+
+            let span_bucket = bvh_leaves[leaf_start as usize].material_bucket_id;
+
+            // Every leaf in the span: belongs to this cell, is drawable, shares
+            // one material bucket, and is not already covered.
+            for idx in leaf_start..span_end {
+                let leaf = &bvh_leaves[idx as usize];
+                if leaf.cell_id as usize != cell {
+                    return Err(format!(
+                        "cell {cell} span covers BVH leaf {idx} whose cell_id is {} \
+                         (wrong cell)",
+                        leaf.cell_id
+                    ));
+                }
+                if leaf.material_bucket_id != span_bucket {
+                    return Err(format!(
+                        "cell {cell} span [{leaf_start}, {span_end}) crosses material bucket \
+                         boundary at leaf {idx} (bucket {} != {span_bucket})",
+                        leaf.material_bucket_id
+                    ));
+                }
+                if !leaf_is_drawable(leaf) {
+                    return Err(format!(
+                        "cell {cell} span covers non-drawable BVH leaf {idx} \
+                         (index_count {} on a {} cell)",
+                        leaf.index_count,
+                        if cell_is_drawable(cell) {
+                            "drawable"
+                        } else {
+                            "non-drawable"
+                        }
+                    ));
+                }
+                if covered[idx as usize] {
+                    return Err(format!(
+                        "cell {cell} span re-covers already-claimed BVH leaf {idx} \
+                         (overlap / duplicate)"
+                    ));
+                }
+                covered[idx as usize] = true;
+            }
+
+            // Non-maximal run: an adjacent same-bucket span that abuts the
+            // previous one (prev_end == leaf_start) could have been one span.
+            if let (Some(pe), Some(pb)) = (prev_end, prev_bucket) {
+                if pe == leaf_start && pb == span_bucket {
+                    return Err(format!(
+                        "cell {cell} has a non-maximal run: spans abutting at leaf \
+                         {leaf_start} in bucket {span_bucket} should be one span"
+                    ));
+                }
+            }
+
+            prev_end = Some(span_end);
+            prev_bucket = Some(span_bucket);
+        }
+    }
+
+    // Cross-check both directions:
+    //   - every drawable BVH leaf must be covered by exactly one span,
+    //   - non-drawable cells must have an empty CSR row.
+    let mut cell_has_drawable_leaf = vec![false; cell_count];
+    for (idx, leaf) in bvh_leaves.iter().enumerate() {
+        if leaf_is_drawable(leaf) {
+            // `leaf_is_drawable` already required `cell_id` to name a drawable
+            // BSP leaf, so the cast is in range here.
+            cell_has_drawable_leaf[leaf.cell_id as usize] = true;
+            if !covered[idx] {
+                return Err(format!(
+                    "drawable BVH leaf {idx} (cell {}) is missing from the draw index",
+                    leaf.cell_id
+                ));
+            }
+        }
+    }
+
+    for cell in 0..cell_count {
+        let row_empty = offsets[cell] == offsets[cell + 1];
+        if !cell_has_drawable_leaf[cell] && !row_empty {
+            return Err(format!("non-drawable cell {cell} has a non-empty CSR row"));
+        }
     }
 
     Ok(())
@@ -1050,6 +1291,14 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
             }
         };
 
+    // Optional — absent → legacy tree-walk camera cull (Task 5). Decoded here
+    // via the generic read seam; cross-validated against the BVH leaf array and
+    // BSP leaves only *after* `leaves` is built below. A malformed or
+    // cross-inconsistent index degrades to `None` (logged once under [Loader]),
+    // never failing the load. Hold the raw bytes for now.
+    let cell_draw_index_data =
+        read_optional_section_data(&mut cursor, &meta, SectionId::CellDrawIndex as u32)?;
+
     let has_portals = portals_section.is_some();
 
     let nodes: Vec<NodeData> = match &nodes_section {
@@ -1110,6 +1359,48 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
             None
         }
         other => other,
+    };
+
+    // Decode + cross-validate the CellDrawIndex (id 37) now that `leaves` (BSP
+    // leaf flags) and `bvh` are both available. Any failure — malformed body,
+    // unsupported version, or a cross-section invariant — degrades to `None`
+    // (legacy tree-walk camera cull, Task 5), logging once under [Loader]. The
+    // header version is read straight from the raw bytes so the explicit
+    // version guard is exercised even though `from_bytes` parses only v1.
+    let cell_draw_index: Option<CellDrawIndex> = match cell_draw_index_data {
+        Some(data) => {
+            let header_version = data
+                .get(0..4)
+                .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+            match CellDrawIndexSection::from_bytes(&data) {
+                Ok(section) => {
+                    let version = header_version.unwrap_or(CELL_DRAW_INDEX_VERSION);
+                    match validate_cell_draw_index(&section, &bvh.leaves, &leaves, version) {
+                        Ok(()) => {
+                            log::info!(
+                                "[PRL] CellDrawIndex: {} cells, {} spans (candidate-cull index loaded)",
+                                section.cell_count,
+                                section.span_count,
+                            );
+                            Some(section)
+                        }
+                        Err(reason) => {
+                            log::warn!(
+                                "[Loader] CellDrawIndex section invalid ({reason}); ignoring index, camera cull falls back to legacy tree-walk"
+                            );
+                            None
+                        }
+                    }
+                }
+                Err(err) => {
+                    log::warn!(
+                        "[Loader] CellDrawIndex section malformed ({err}); ignoring index, camera cull falls back to legacy tree-walk"
+                    );
+                    None
+                }
+            }
+        }
+        None => None,
     };
 
     let root = if nodes.is_empty() {
@@ -1214,6 +1505,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         initial_gravity,
         fog_cell_masks,
         navmesh,
+        cell_draw_index,
     })
 }
 
@@ -1438,6 +1730,7 @@ mod tests {
             initial_gravity: -9.81,
             fog_cell_masks: None,
             navmesh: None,
+            cell_draw_index: None,
         }
     }
 
@@ -1498,6 +1791,7 @@ mod tests {
             initial_gravity: -9.81,
             fog_cell_masks: None,
             navmesh: None,
+            cell_draw_index: None,
         };
         assert_eq!(world.find_leaf(Vec3::new(50.0, 50.0, 50.0)), 0);
     }
@@ -1551,6 +1845,7 @@ mod tests {
             initial_gravity: -9.81,
             fog_cell_masks: None,
             navmesh: None,
+            cell_draw_index: None,
         };
 
         let spawn = world.spawn_position();
@@ -1593,6 +1888,7 @@ mod tests {
             initial_gravity: -9.81,
             fog_cell_masks: None,
             navmesh: None,
+            cell_draw_index: None,
         };
 
         let indices = face_leaf_indices(&world);
@@ -2629,6 +2925,562 @@ mod tests {
             "absent FogCellMasks section should yield None"
         );
 
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    // --- CellDrawIndex (section 37) cross-validation + load ---
+
+    use postretro_level_format::cell_draw_index::{
+        CELL_DRAW_INDEX_VERSION, CellDrawIndexSection, Span,
+    };
+
+    /// A runtime BVH leaf with the fields the cross-validation reads. Other
+    /// fields are filler; the validator only inspects `material_bucket_id`,
+    /// `index_count`, and `cell_id`.
+    fn rt_bvh_leaf(material_bucket_id: u32, index_count: u32, cell_id: u32) -> BvhLeaf {
+        BvhLeaf {
+            aabb_min: [0.0; 3],
+            material_bucket_id,
+            aabb_max: [1.0; 3],
+            index_offset: 0,
+            index_count,
+            cell_id,
+            chunk_range_start: 0,
+            chunk_range_count: 0,
+        }
+    }
+
+    /// BSP leaf with only the drawability-relevant flags set.
+    fn bsp_leaf(is_solid: bool, face_count: u32) -> LeafData {
+        simple_leaf(Vec3::ZERO, Vec3::splat(1.0), 0, face_count, is_solid)
+    }
+
+    /// Two drawable cells, one drawable BVH leaf each, all in bucket 0.
+    /// cell 0 → bvh leaf 0, cell 1 → bvh leaf 1.
+    fn two_cell_setup() -> (Vec<BvhLeaf>, Vec<LeafData>) {
+        let bvh_leaves = vec![rt_bvh_leaf(0, 3, 0), rt_bvh_leaf(0, 3, 1)];
+        let leaves = vec![bsp_leaf(false, 1), bsp_leaf(false, 1)];
+        (bvh_leaves, leaves)
+    }
+
+    fn valid_two_cell_section() -> CellDrawIndexSection {
+        CellDrawIndexSection {
+            cell_count: 2,
+            span_count: 2,
+            cell_span_offset: vec![0, 1, 2],
+            spans: vec![
+                Span {
+                    leaf_start: 0,
+                    leaf_count: 1,
+                },
+                Span {
+                    leaf_start: 1,
+                    leaf_count: 1,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn validate_cell_draw_index_accepts_valid_section() {
+        let (bvh_leaves, leaves) = two_cell_setup();
+        let section = valid_two_cell_section();
+        assert!(
+            validate_cell_draw_index(
+                &section,
+                &bvh_leaves,
+                &leaves,
+                CELL_DRAW_INDEX_VERSION
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn validate_cell_draw_index_rejects_unsupported_version() {
+        let (bvh_leaves, leaves) = two_cell_setup();
+        let section = valid_two_cell_section();
+        let err =
+            validate_cell_draw_index(&section, &bvh_leaves, &leaves, CELL_DRAW_INDEX_VERSION + 1)
+                .unwrap_err();
+        assert!(err.contains("version"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_cell_draw_index_rejects_wrong_cell_count() {
+        let (bvh_leaves, _) = two_cell_setup();
+        // Only one BSP leaf but the section declares two cells.
+        let leaves = vec![bsp_leaf(false, 1)];
+        let section = valid_two_cell_section();
+        let err = validate_cell_draw_index(
+            &section,
+            &bvh_leaves,
+            &leaves,
+            CELL_DRAW_INDEX_VERSION,
+        )
+        .unwrap_err();
+        assert!(err.contains("cell_count"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_cell_draw_index_rejects_span_out_of_bounds() {
+        let (bvh_leaves, leaves) = two_cell_setup();
+        let mut section = valid_two_cell_section();
+        // cell 1's span runs past the 2-leaf BVH array.
+        section.spans[1] = Span {
+            leaf_start: 1,
+            leaf_count: 5,
+        };
+        let err = validate_cell_draw_index(
+            &section,
+            &bvh_leaves,
+            &leaves,
+            CELL_DRAW_INDEX_VERSION,
+        )
+        .unwrap_err();
+        assert!(err.contains("exceeds total BVH leaves"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_cell_draw_index_rejects_wrong_cell_span() {
+        // bvh leaf 1 belongs to cell 1, but here cell 0 claims [0,2).
+        let bvh_leaves = vec![rt_bvh_leaf(0, 3, 0), rt_bvh_leaf(0, 3, 1)];
+        let leaves = vec![bsp_leaf(false, 1), bsp_leaf(false, 1)];
+        let section = CellDrawIndexSection {
+            cell_count: 2,
+            span_count: 1,
+            cell_span_offset: vec![0, 1, 1],
+            spans: vec![Span {
+                leaf_start: 0,
+                leaf_count: 2,
+            }],
+        };
+        let err = validate_cell_draw_index(
+            &section,
+            &bvh_leaves,
+            &leaves,
+            CELL_DRAW_INDEX_VERSION,
+        )
+        .unwrap_err();
+        assert!(err.contains("wrong cell"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_cell_draw_index_rejects_non_drawable_leaf_coverage() {
+        // cell 1's BVH leaf has zero indices — not drawable, but the index
+        // tries to cover it.
+        let bvh_leaves = vec![rt_bvh_leaf(0, 3, 0), rt_bvh_leaf(0, 0, 1)];
+        let leaves = vec![bsp_leaf(false, 1), bsp_leaf(false, 1)];
+        let section = valid_two_cell_section();
+        let err = validate_cell_draw_index(
+            &section,
+            &bvh_leaves,
+            &leaves,
+            CELL_DRAW_INDEX_VERSION,
+        )
+        .unwrap_err();
+        assert!(err.contains("non-drawable BVH leaf"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_cell_draw_index_rejects_span_on_non_drawable_cell() {
+        // cell 1 is solid (non-drawable) but the index gives it a span.
+        let bvh_leaves = vec![rt_bvh_leaf(0, 3, 0), rt_bvh_leaf(0, 3, 1)];
+        let leaves = vec![bsp_leaf(false, 1), bsp_leaf(true, 0)];
+        let section = valid_two_cell_section();
+        let err = validate_cell_draw_index(
+            &section,
+            &bvh_leaves,
+            &leaves,
+            CELL_DRAW_INDEX_VERSION,
+        )
+        .unwrap_err();
+        assert!(err.contains("non-drawable BVH leaf"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_cell_draw_index_rejects_bucket_crossing_span() {
+        // cell 0 owns two BVH leaves in different buckets; one span can't cover
+        // both.
+        let bvh_leaves = vec![rt_bvh_leaf(0, 3, 0), rt_bvh_leaf(1, 3, 0)];
+        let leaves = vec![bsp_leaf(false, 1)];
+        let section = CellDrawIndexSection {
+            cell_count: 1,
+            span_count: 1,
+            cell_span_offset: vec![0, 1],
+            spans: vec![Span {
+                leaf_start: 0,
+                leaf_count: 2,
+            }],
+        };
+        let err = validate_cell_draw_index(
+            &section,
+            &bvh_leaves,
+            &leaves,
+            CELL_DRAW_INDEX_VERSION,
+        )
+        .unwrap_err();
+        assert!(err.contains("material bucket"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_cell_draw_index_rejects_non_maximal_run() {
+        // cell 0 owns leaves 0,1 in the same bucket but splits them into two
+        // abutting spans that should have been one.
+        let bvh_leaves = vec![rt_bvh_leaf(0, 3, 0), rt_bvh_leaf(0, 3, 0)];
+        let leaves = vec![bsp_leaf(false, 1)];
+        let section = CellDrawIndexSection {
+            cell_count: 1,
+            span_count: 2,
+            cell_span_offset: vec![0, 2],
+            spans: vec![
+                Span {
+                    leaf_start: 0,
+                    leaf_count: 1,
+                },
+                Span {
+                    leaf_start: 1,
+                    leaf_count: 1,
+                },
+            ],
+        };
+        let err = validate_cell_draw_index(
+            &section,
+            &bvh_leaves,
+            &leaves,
+            CELL_DRAW_INDEX_VERSION,
+        )
+        .unwrap_err();
+        assert!(err.contains("non-maximal"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_cell_draw_index_rejects_missing_drawable_leaf() {
+        // cell 1's drawable leaf is never covered (cell 1 row is empty).
+        let (bvh_leaves, leaves) = two_cell_setup();
+        let section = CellDrawIndexSection {
+            cell_count: 2,
+            span_count: 1,
+            cell_span_offset: vec![0, 1, 1],
+            spans: vec![Span {
+                leaf_start: 0,
+                leaf_count: 1,
+            }],
+        };
+        let err = validate_cell_draw_index(
+            &section,
+            &bvh_leaves,
+            &leaves,
+            CELL_DRAW_INDEX_VERSION,
+        )
+        .unwrap_err();
+        assert!(err.contains("missing from the draw index"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_cell_draw_index_rejects_non_drawable_cell_with_nonempty_row() {
+        // cell 0 drawable; cell 1 solid (non-drawable) yet carries a span over a
+        // bvh leaf that names cell 1. The leaf is non-drawable (solid cell), so
+        // the in-span drawability check fires first — both surface the
+        // "non-drawable cell shouldn't have a row" intent.
+        let bvh_leaves = vec![rt_bvh_leaf(0, 3, 0), rt_bvh_leaf(0, 0, 1)];
+        let leaves = vec![bsp_leaf(false, 1), bsp_leaf(true, 0)];
+        let section = valid_two_cell_section();
+        let err = validate_cell_draw_index(
+            &section,
+            &bvh_leaves,
+            &leaves,
+            CELL_DRAW_INDEX_VERSION,
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("non-drawable") || err.contains("non-empty CSR row"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_cell_draw_index_rejects_overlapping_coverage() {
+        // Two cells, but both spans cover bvh leaf 0 (cell 1's span re-covers).
+        // Construct directly to bypass structural CSR checks at this layer.
+        let bvh_leaves = vec![rt_bvh_leaf(0, 3, 0), rt_bvh_leaf(0, 3, 1)];
+        let leaves = vec![bsp_leaf(false, 1), bsp_leaf(false, 1)];
+        // cell 0 → [0,1); cell 1 → also [0,1) (wrong + overlap). The wrong-cell
+        // check trips first, which is itself a rejection — assert it fails.
+        let section = CellDrawIndexSection {
+            cell_count: 2,
+            span_count: 2,
+            cell_span_offset: vec![0, 1, 2],
+            spans: vec![
+                Span {
+                    leaf_start: 0,
+                    leaf_count: 1,
+                },
+                Span {
+                    leaf_start: 0,
+                    leaf_count: 1,
+                },
+            ],
+        };
+        assert!(
+            validate_cell_draw_index(
+                &section,
+                &bvh_leaves,
+                &leaves,
+                CELL_DRAW_INDEX_VERSION
+            )
+            .is_err()
+        );
+    }
+
+    fn cell_draw_index_blob(section: &CellDrawIndexSection) -> prl_format::SectionBlob {
+        prl_format::SectionBlob {
+            section_id: SectionId::CellDrawIndex as u32,
+            version: CELL_DRAW_INDEX_VERSION as u16,
+            data: section.to_bytes(),
+        }
+    }
+
+    /// BspLeaves matching `sample_bvh_section` (two non-solid leaves with faces),
+    /// so the loaded `LevelWorld.leaves` join makes both cells drawable.
+    fn two_drawable_bsp_leaves_blob() -> prl_format::SectionBlob {
+        let leaves = BspLeavesSection {
+            leaves: vec![
+                BspLeafRecord {
+                    face_start: 0,
+                    face_count: 1,
+                    bounds_min: [0.0, 0.0, 0.0],
+                    bounds_max: [2.0, 2.0, 2.0],
+                    is_solid: 0,
+                },
+                BspLeafRecord {
+                    face_start: 1,
+                    face_count: 1,
+                    bounds_min: [9.0, 0.0, 0.0],
+                    bounds_max: [12.0, 2.0, 2.0],
+                    is_solid: 0,
+                },
+            ],
+        };
+        prl_format::SectionBlob {
+            section_id: SectionId::BspLeaves as u32,
+            version: 1,
+            data: leaves.to_bytes(),
+        }
+    }
+
+    fn base_cell_draw_index_sections() -> Vec<prl_format::SectionBlob> {
+        vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: sample_geometry().to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: sample_bvh_section().to_bytes(),
+            },
+            two_drawable_bsp_leaves_blob(),
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ]
+    }
+
+    #[test]
+    fn load_prl_absent_cell_draw_index_yields_none() {
+        let tmp = write_prl_fixture(
+            base_cell_draw_index_sections(),
+            "postretro_test_no_cell_draw_index.prl",
+        );
+        let world = load_prl(tmp.to_str().unwrap()).expect("legacy PRL without index must load");
+        assert!(
+            world.cell_draw_index.is_none(),
+            "absent CellDrawIndex section should yield None (legacy tree-walk selection)"
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_parses_valid_cell_draw_index() {
+        let mut sections = base_cell_draw_index_sections();
+        sections.push(cell_draw_index_blob(&valid_two_cell_section()));
+        let tmp = write_prl_fixture(sections, "postretro_test_valid_cell_draw_index.prl");
+        let world = load_prl(tmp.to_str().unwrap()).expect("PRL with valid index must load");
+        let index = world
+            .cell_draw_index
+            .as_ref()
+            .expect("valid CellDrawIndex must round-trip into LevelWorld");
+        assert_eq!(index.cell_count, 2);
+        assert_eq!(index.span_count, 2);
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    /// Every representative invalid section must degrade to `None` while the
+    /// rest of the load continues (the geometry/leaves still parse).
+    #[test]
+    fn load_prl_invalid_cell_draw_index_degrades_to_none() {
+        // (label, section) pairs covering the representative reject cases.
+        let cases: Vec<(&str, CellDrawIndexSection)> = vec![
+            (
+                "wrong cell_count",
+                CellDrawIndexSection {
+                    cell_count: 3, // BVH/BSP topology has 2 cells
+                    span_count: 2,
+                    cell_span_offset: vec![0, 1, 2, 2],
+                    spans: vec![
+                        Span {
+                            leaf_start: 0,
+                            leaf_count: 1,
+                        },
+                        Span {
+                            leaf_start: 1,
+                            leaf_count: 1,
+                        },
+                    ],
+                },
+            ),
+            (
+                "span out of bounds",
+                CellDrawIndexSection {
+                    cell_count: 2,
+                    span_count: 2,
+                    cell_span_offset: vec![0, 1, 2],
+                    spans: vec![
+                        Span {
+                            leaf_start: 0,
+                            leaf_count: 1,
+                        },
+                        Span {
+                            leaf_start: 1,
+                            leaf_count: 9, // runs past the 2-leaf array
+                        },
+                    ],
+                },
+            ),
+            (
+                "wrong-cell span",
+                CellDrawIndexSection {
+                    cell_count: 2,
+                    span_count: 1,
+                    cell_span_offset: vec![0, 1, 1],
+                    spans: vec![Span {
+                        leaf_start: 0,
+                        leaf_count: 2, // cell 0 claiming leaf 1 (cell 1's)
+                    }],
+                },
+            ),
+            (
+                "missing drawable leaf",
+                CellDrawIndexSection {
+                    cell_count: 2,
+                    span_count: 1,
+                    cell_span_offset: vec![0, 1, 1],
+                    spans: vec![Span {
+                        leaf_start: 0,
+                        leaf_count: 1, // cell 1's leaf never covered
+                    }],
+                },
+            ),
+        ];
+
+        for (i, (label, section)) in cases.into_iter().enumerate() {
+            let mut sections = base_cell_draw_index_sections();
+            sections.push(cell_draw_index_blob(&section));
+            let tmp = write_prl_fixture(
+                sections,
+                &format!("postretro_test_invalid_cell_draw_index_{i}.prl"),
+            );
+            let world = load_prl(tmp.to_str().unwrap())
+                .unwrap_or_else(|e| panic!("[{label}] load must continue, got error: {e:?}"));
+            assert!(
+                world.cell_draw_index.is_none(),
+                "[{label}] invalid index must degrade to None"
+            );
+            // Load did not fail: the rest of the world still parsed.
+            assert_eq!(world.leaves.len(), 2, "[{label}] leaves must still load");
+            assert_eq!(world.bvh.leaves.len(), 2, "[{label}] bvh must still load");
+            std::fs::remove_file(&tmp).ok();
+        }
+    }
+
+    /// A bucket-crossing span is a degradation case at the load layer too.
+    #[test]
+    fn load_prl_bucket_crossing_cell_draw_index_degrades_to_none() {
+        // Build a BVH whose two leaves for cell 0 sit in different buckets, then
+        // hand the index a single span covering both.
+        let bvh = BvhSection {
+            nodes: sample_bvh_section().nodes,
+            leaves: vec![
+                FormatBvhLeaf {
+                    aabb_min: [0.0, 0.0, 0.0],
+                    material_bucket_id: 0,
+                    aabb_max: [2.0, 2.0, 2.0],
+                    index_offset: 0,
+                    index_count: 3,
+                    cell_id: 0,
+                    chunk_range_start: 0,
+                    chunk_range_count: 0,
+                },
+                FormatBvhLeaf {
+                    aabb_min: [9.0, 0.0, 0.0],
+                    material_bucket_id: 1,
+                    aabb_max: [12.0, 2.0, 2.0],
+                    index_offset: 3,
+                    index_count: 3,
+                    cell_id: 0,
+                    chunk_range_start: 0,
+                    chunk_range_count: 0,
+                },
+            ],
+            root_node_index: 0,
+        };
+        // One drawable BSP leaf (cell 0).
+        let bsp_leaves = BspLeavesSection {
+            leaves: vec![BspLeafRecord {
+                face_start: 0,
+                face_count: 1,
+                bounds_min: [0.0, 0.0, 0.0],
+                bounds_max: [12.0, 2.0, 2.0],
+                is_solid: 0,
+            }],
+        };
+        let section = CellDrawIndexSection {
+            cell_count: 1,
+            span_count: 1,
+            cell_span_offset: vec![0, 1],
+            spans: vec![Span {
+                leaf_start: 0,
+                leaf_count: 2, // crosses bucket 0 → 1
+            }],
+        };
+
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: sample_geometry().to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: bvh.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::BspLeaves as u32,
+                version: 1,
+                data: bsp_leaves.to_bytes(),
+            },
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+            cell_draw_index_blob(&section),
+        ];
+        let tmp = write_prl_fixture(sections, "postretro_test_bucket_crossing_cell_draw_index.prl");
+        let world = load_prl(tmp.to_str().unwrap()).expect("load must continue (degrade)");
+        assert!(
+            world.cell_draw_index.is_none(),
+            "bucket-crossing index must degrade to None"
+        );
         std::fs::remove_file(&tmp).ok();
     }
 }

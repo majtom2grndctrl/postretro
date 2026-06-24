@@ -278,6 +278,10 @@ pub struct LevelGeometry<'a> {
     /// atlases leave it for runtime SDF shadowing so the forward pass does not
     /// double-count static-light occlusion. Legacy PRLs default to `Shadowed`.
     pub lightmap_mode: crate::prl::LightmapMode,
+    /// Per-cell BVH-leaf draw index (PRL section 37), cross-validated at load.
+    /// `None` → the candidate-cull GPU path (Task 5) is unavailable and the
+    /// camera cull falls back to the legacy tree-walk.
+    pub cell_draw_index: Option<&'a crate::prl::CellDrawIndex>,
     pub texture_materials: &'a [crate::material::Material],
 }
 
@@ -465,6 +469,11 @@ pub struct Renderer {
     /// GPU textures indexed by texture index.
     pub(super) gpu_textures: Vec<GpuTexture>,
     pub(super) bvh_leaves: Vec<crate::geometry::BvhLeaf>,
+    /// Per-cell BVH-leaf draw index (PRL section 37), cloned from the installed
+    /// `LevelGeometry`. `None` when the map has no valid index — the
+    /// candidate-cull GPU path (Task 5) consumes this; absent → legacy
+    /// tree-walk camera cull. Cleared by `release_level_resources`.
+    pub(super) cell_draw_index: Option<crate::prl::CellDrawIndex>,
     /// `None` for maps with no BVH.
     pub(super) compute_cull: Option<ComputeCullPipeline>,
     /// Per-slot cone cull for the spot-shadow depth passes. Sibling to

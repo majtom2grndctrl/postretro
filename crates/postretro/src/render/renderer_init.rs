@@ -180,6 +180,8 @@ impl Renderer {
 
         let bvh_leaves: Vec<crate::geometry::BvhLeaf> =
             geometry.map(|g| g.bvh.leaves.clone()).unwrap_or_default();
+        let cell_draw_index: Option<crate::prl::CellDrawIndex> =
+            geometry.and_then(|g| g.cell_draw_index.cloned());
         let compute_cull = geometry
             .filter(|g| !g.bvh.leaves.is_empty())
             .map(|g| ComputeCullPipeline::new(&device, g.bvh, has_multi_draw_indirect));
@@ -539,6 +541,7 @@ impl Renderer {
             screen_effects,
             gpu_textures,
             bvh_leaves,
+            cell_draw_index,
             compute_cull,
             shadow_cull,
             wireframe_cull_status_pipeline,

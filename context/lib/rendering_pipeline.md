@@ -112,7 +112,7 @@ The seams that keep direct and indirect disjoint — tier routing, the position-
 
 World geometry is organized into a global BVH at compile time. Each BVH leaf covers one `(face, material_bucket)` pair. Leaves are sorted by material bucket so each bucket owns a contiguous slot range in the indirect buffer.
 
-**Draw flow.** Portal traversal (§2) produces a visible-cell bitmask → BVH traversal compute walks the tree, tests each leaf AABB and its cell bit, writes or zeros the leaf's indirect buffer slot → opaque pass issues one `multi_draw_indexed_indirect` call per material bucket against its contiguous slot range.
+**Draw flow.** Portal traversal (§2) produces a visible-cell bitmask → the camera cull (§7.1) writes or zeros each leaf's indirect buffer slot, via either the candidate path (gathers only the visible cells' leaves from the baked `CellDrawIndex` CSR) or the tree-walk fallback (walks the whole BVH, testing each leaf's AABB and cell bit) → opaque pass issues one `multi_draw_indexed_indirect` call per material bucket against its contiguous slot range.
 
 **Global vs. per-region.** One BVH over all static geometry. Global wins on shader simplicity and tree quality. Per-region is the pivot path if a cell-heavy map regresses on frame time — tighter cache behavior at the cost of more bookkeeping and storage buffers. Pivot only when global is measured to fall short. No hardware ray tracing — not in baseline wgpu.
 

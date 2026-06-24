@@ -1,5 +1,7 @@
 # Flat Leaf Camera Cull
 
+> **Status:** not implemented; archived in favor of Visible-Cell Candidate Cull.
+
 ## Goal
 
 Replace the camera path's serial BVH tree walk with a flat, parallel leaf
@@ -38,6 +40,8 @@ to late leaf rejection, not submitted geometry.
 - Visibility regions, baked PVS, per-region BVHs, or BVH layout changes.
 - Replacing runtime portal traversal.
 - Shadow cone cull migration. Shadows keep the current BVH walk in this plan.
+  Only camera tree-walk strategy selection is dev-tools-only. Shared BVH
+  traversal shader/resources needed by shadow cull remain production resources.
 - Hardware occlusion queries, Hi-Z, software occlusion raster, or depth readback.
 - GPU timing as an acceptance gate. GPU timing may be collected manually.
 
@@ -66,12 +70,11 @@ to late leaf rejection, not submitted geometry.
       Flat diagnostics report `flat_work = total_leaves` while
       preserving the same 3 final submissions. No checked-in `stress-warren`
       fixture is required.
-- [ ] Cull-status wireframe remains meaningful: visible-cell rejects reuse the
-      existing status 0 = not submitted / cell not visible (cyan), frustum
-      rejects use frustum status, and submitted leaves use rendered status.
-      Frustum test runs first; a leaf that fails both gates is frustum/red
-      because the shader exits at the first failed gate. Do not add a status
-      code.
+- [ ] Cull-status wireframe remains meaningful. Use existing status values only:
+      `0 = not submitted / cell not visible (cyan)`, `1 = frustum rejected
+      (red)`, `2 = rendered/submitted (green)`. Frustum test runs first; a leaf
+      that fails both gates is frustum/red because the shader exits at the first
+      failed gate. Do not add a status code.
 - [ ] PRLs with missing BVH data continue to fail load if they fail load today.
       PRLs with zero BVH leaves keep the existing zero-leaf behavior.
 - [ ] Shadow cull output and dynamic spot shadow behavior are unchanged.
@@ -81,6 +84,9 @@ to late leaf rejection, not submitted geometry.
       equally focused CPU-only cull-equivalence test name.
 - [ ] New WGSL shader has CPU-only parse/validation coverage with
       `naga::front::wgsl::parse_str` plus `naga::valid::Validator`.
+      CPU-only tests also validate the flat camera cull bind-group layout
+      entries against the shader interface and validate Rust/WGSL
+      `FlatCullParams` serialization.
       Renderer/GPU runs may provide manual evidence, but are not an acceptance
       gate.
 - [ ] `cargo check -p postretro --features dev-tools` passes.
@@ -102,28 +108,30 @@ Add a WGSL shader for camera culling that dispatches one invocation per BVH
 leaf. It reads the existing leaf storage buffer, visible-cell bitmask, frustum
 planes, and `FlatCullParams`. `FlatCullParams` is a separate 16-byte uniform
 buffer serialized by Rust and WGSL together: `leaf_count: u32`, `draw_all: u32`,
-then 8 bytes padding for WGSL uniform alignment. Add a new flat shader params
-binding after existing camera cull bindings where possible; if exact binding
-index is risky, tests must cover Rust/WGSL layout and serialization. Do not
-change shadow/tree-walk shared `CullUniforms`. `VisibleCells::Culled` uploads
-the sparse visible-cell bitmask and sets `draw_all = 0`. `VisibleCells::DrawAll`
-sets `draw_all = 1` and bypasses the bitmask. For each leaf, it tests leaf AABB
-against the camera frustum first, then tests `cell_id` against the visible-cell
-contract unless `draw_all != 0`, writes that leaf's existing indirect slot in
-the current material-bucket order, and writes the existing cull-status code. It
-does not read BVH nodes or `skip_index`.
+then 8 bytes padding for WGSL uniform alignment. The flat shader owns a
+flat-specific camera cull bind-group layout. It includes the existing camera
+cull resources plus `FlatCullParams`. CPU-only tests validate bind-group layout
+entries against the shader interface and validate Rust/WGSL struct
+serialization. Do not change shadow/tree-walk shared `CullUniforms`.
+`VisibleCells::Culled` uploads the sparse visible-cell bitmask and sets
+`draw_all = 0`. `VisibleCells::DrawAll` sets `draw_all = 1` and bypasses the
+bitmask. For each leaf, it tests leaf AABB against the camera frustum first,
+then tests `cell_id` against the visible-cell contract unless `draw_all != 0`,
+writes that leaf's existing indirect slot in the current material-bucket order,
+and writes the existing cull-status code. It does not read BVH nodes or
+`skip_index`.
 
 ### Task 3: Wire Camera Cull Strategy
 
 Add the renderer-side pipeline and bind group plumbing for the flat shader.
 Reuse the existing leaf buffer, visible-cell buffer, camera frustum data,
-indirect buffer, and cull-status buffer. Add cull-strategy state and plumbing;
-current code has one camera cull dispatch path. Keep the existing tree-walk
-shader available only behind the dev-tools manual/debug strategy switch for
-comparison. Production/default path is flat leaf. Dispatch enough workgroups to
-cover all leaves, with an in-shader `leaf_index >= leaf_count` guard for the
-final partial group. `arrayLength` may be an extra safety check only if
-available.
+indirect buffer, and cull-status buffer. Create cull-strategy state/control from
+scratch; current code has one unconditional camera cull dispatch path. Keep the
+existing tree-walk shader available only behind the dev-tools manual/debug
+strategy switch for comparison. Production/default path is flat leaf. Dispatch
+enough workgroups to cover all leaves, with an in-shader
+`leaf_index >= leaf_count` guard for the final partial group. `arrayLength` may
+be an extra safety check only if available.
 
 ### Task 4: Preserve Draw And Debug Contracts
 
@@ -133,6 +141,9 @@ indirect and cull-status buffers as before. Confirm no caller needs to know
 whether camera cull used tree-walk or flat leaf mode. The flat shader writes the
 same per-leaf command slot and order used by the current material-bucket
 indirect layout. It must not rebuild bucket ranges or remap leaves.
+Flat mode intentionally changes per-leaf cull-status attribution versus
+tree-walk skipped-subtree descendants. Flat mode tests every leaf and marks each
+leaf individually. Tree fallback keeps old skipped-subtree cyan behavior.
 
 ### Task 5: Add CPU Equivalence Coverage
 
@@ -149,7 +160,9 @@ sets. Current `BvhCullDiagnostics` exposes counts only. Add or refactor a CPU
 helper that returns submitted leaf indices, bucket span identities, and per-leaf
 indirect commands. Compared bucket span identity is `(material_bucket_id,
 first_leaf, leaf_count)` or the local equivalent in stable bucket order, for
-buckets with submitted leaves.
+buckets with submitted leaves. CPU mirror coverage must include cull status and
+test order for frustum-only, visible-cell-only, submitted, and fails-both
+leaves. The fails-both leaf must be frustum/red because frustum is tested first.
 
 ### Task 6: Update Diagnostics And Context
 
@@ -157,9 +170,10 @@ Update the Spatial diagnostics readout so it reports tree-walk estimates and
 flat leaf work side by side. The data source is CPU-only estimator data:
 `tree_*` estimate fields plus flat fields. Flat fields include
 `flat_work = total_leaves`, `flat_frustum_rejects`,
-`flat_visible_cell_rejects`, and submitted leaves/indices/bucket spans if the
-flat CPU helper computes them. Update `render/debug_ui/mod.rs` only for Spatial
-tab text changes.
+`flat_visible_cell_rejects`, submitted leaf indices, bucket span identities, and
+per-leaf indirect commands. The helper/tests must compute all flat fields.
+Diagnostics may display a subset. Update `render/debug_ui/mod.rs` only for
+Spatial tab text changes.
 After implementation, update `context/lib/rendering_pipeline.md` to describe
 camera cull as default flat per-leaf compute.
 

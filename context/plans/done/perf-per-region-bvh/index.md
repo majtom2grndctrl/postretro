@@ -1,6 +1,6 @@
 # Per-Region BVH (Partitioned by PVS Leaf)
 
-> **Status:** draft
+> **Status:** not implemented; archived in favor of Visible-Cell Candidate Cull.
 > **Depends on:** Epic 4 BVH (`context/plans/done/bvh-foundation/`) — specifically the flat DFS + skip-index layout (`2-runtime-bvh.md`), `BvhNode` (`postretro/src/geometry.rs:28-40`) / `BvhLeaf` (`postretro/src/geometry.rs:46-56`) / `BvhTree` (`postretro/src/geometry.rs:61-66`), the `Bvh` PRL section (`postretro-level-format/src/bvh.rs:70-239` `BvhSection`, loaded via `postretro-level-format/src/lib.rs:89`), `ComputeCullPipeline` in `postretro/src/compute_cull.rs`, and the compiler-side BVH build in `postretro-level-compiler/src/bvh_build.rs`. Cross-consumer: SH baker (`postretro-level-compiler/src/sh_bake.rs:12`, `bvh::bvh::Bvh`) and SDF baker (`postretro-level-compiler/src/sdf_bake.rs:8–9`).
 > **Related:** `postretro/src/shaders/bvh_cull.wgsl` · `postretro/src/visibility.rs` (portal DFS / `VisibleCells`) · `postretro-level-format/src/bvh.rs:70-239` (`BvhSection`) · `context/lib/build_pipeline.md` §Pipeline
 

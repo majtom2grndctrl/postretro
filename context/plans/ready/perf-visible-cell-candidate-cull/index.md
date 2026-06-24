@@ -34,17 +34,12 @@ Three source facts make a narrower path cheap and correct:
   it produces `Culled`, so no baked visibility is needed; only a baked
   *draw-location* index.
 
-**Why this design over its siblings, on principle.** `index.md` §2 holds that
-"portal traversal is the sole visibility path." This plan honors that: it bakes
-only where each cell's geometry lives, never a second visibility source.
-`perf-cluster-pvs-static-candidates` and `perf-baked-visibility-region-masks`
-both bake PVS *reachability* — a competing, conservative visibility path — and
-the cluster plan's compact CPU draw plan fragments the material-bucket ranges
-into per-`(cluster, bucket)` slices (its named failure mode). This plan keeps
-the global per-leaf indirect slots, so the material-bucket draw path is
-unchanged and never fragments. It is also not `perf-flat-leaf-cull`, which tests
-every leaf each frame ("plow faster"); this tests only visible cells' leaves
-("plow less"), matching the lean-pipeline northstar.
+**Design principle.** `index.md` §2 holds that "portal traversal is the sole
+visibility path." This plan honors that: it bakes only where each cell's
+geometry lives, never a second visibility source. Runtime portal traversal stays
+authoritative. The renderer keeps global per-leaf indirect slots, so the
+material-bucket draw path is unchanged and never fragments. Cull work scales
+with visible cells' leaves instead of total leaves or tree depth.
 
 ## Scope
 
@@ -369,11 +364,8 @@ Likely touch points: `crates/level-format/src/{lib.rs,cell_draw_index.rs}`,
 | Cell id | `u32` | little-endian `u32`, runtime BSP leaf index | n/a | n/a | n/a |
 | Leaf span | `(leaf_start, leaf_count)` | two little-endian `u32` | n/a | n/a | n/a |
 
-> Section id `37` is also claimed by the alternative drafts
-> `perf-cluster-pvs-static-candidates`, `perf-baked-visibility-region-masks`,
-> and `E17--kinematic-platform-foundation`. This draft is the active candidate
-> and owns `37` if promoted first; if an alternative promotes instead, reconcile
-> the losing drafts before implementation.
+> Section id `37` is reserved by this plan once promoted. Reconcile any unrelated
+> future section-id claim before implementation.
 
 ## Wire format
 

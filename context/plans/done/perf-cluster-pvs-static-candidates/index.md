@@ -1,5 +1,7 @@
 # Cluster PVS Static Candidates
 
+> **Status:** not implemented; archived in favor of Visible-Cell Candidate Cull.
+
 ## Goal
 
 Reduce large-map static-world visibility cost by adding baked visibility clusters and compact static draw candidates. The renderer should stop treating the whole global BVH and all material bucket ranges as the camera path's default candidate set on maps such as `stress-warren-crates`.

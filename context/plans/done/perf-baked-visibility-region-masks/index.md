@@ -1,5 +1,7 @@
 # Baked Visibility Regions BVH Masks
 
+> **Status:** not implemented; archived in favor of Visible-Cell Candidate Cull.
+
 ## Goal
 
 Move static-world visibility rejection earlier in GPU BVH traversal without

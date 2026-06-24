@@ -517,6 +517,64 @@ fn draw_performance_tab(ui: &mut egui::Ui, frame_timing: Option<&FrameTimingSnap
 }
 
 fn draw_spatial_tab(ui: &mut egui::Ui, state: &mut DiagnosticsState, renderer: &mut Renderer) {
+    egui::CollapsingHeader::new("Visibility Diagnostics")
+        .default_open(true)
+        .show(ui, |ui| {
+            let Some(diagnostics) = renderer.visibility_diagnostics() else {
+                ui.label("No BVH cull data loaded");
+                return;
+            };
+
+            egui::Grid::new("visibility_diagnostics_grid")
+                .num_columns(2)
+                .striped(true)
+                .show(ui, |ui| {
+                    ui.label("BVH node visits");
+                    ui.label(diagnostics.estimated_node_visits.to_string());
+                    ui.end_row();
+
+                    ui.label("Leaf tests");
+                    ui.label(diagnostics.leaf_tests.to_string());
+                    ui.end_row();
+
+                    ui.label("Frustum rejects");
+                    ui.label(diagnostics.frustum_rejects.to_string());
+                    ui.end_row();
+
+                    ui.label("Visible-cell rejects");
+                    ui.label(diagnostics.visible_cell_rejects.to_string());
+                    ui.end_row();
+
+                    ui.label("Submitted leaves");
+                    ui.label(diagnostics.submitted_leaves.to_string());
+                    ui.end_row();
+
+                    ui.label("Submitted indices");
+                    ui.label(diagnostics.submitted_index_count.to_string());
+                    ui.end_row();
+
+                    ui.label("Submitted bucket spans");
+                    ui.label(diagnostics.submitted_bucket_spans.to_string());
+                    ui.end_row();
+
+                    ui.label("Frontier subtrees");
+                    ui.label(diagnostics.frontier.frontier_subtrees.to_string());
+                    ui.end_row();
+
+                    ui.label("Frontier work");
+                    ui.label(diagnostics.frontier.total_estimated_work.to_string());
+                    ui.end_row();
+
+                    ui.label("Max subtree work");
+                    ui.label(diagnostics.frontier.max_subtree_work.to_string());
+                    ui.end_row();
+
+                    ui.label("Imbalance");
+                    ui.label(format!("{:.2}x", diagnostics.frontier.imbalance_ratio));
+                    ui.end_row();
+                });
+        });
+
     egui::CollapsingHeader::new("World triangle wireframe")
         .default_open(true)
         .show(ui, |ui| {

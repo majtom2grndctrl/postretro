@@ -12,10 +12,10 @@ use postretro_level_format::geometry::GeometrySection;
 
 use crate::geometry::GeometryResult;
 
-/// Runtime visible-cell bitmask capacity. The bitmask is a fixed 4096-bit
-/// structure; any leaf with a higher cell id would be silently dropped by the
-/// traversal shader, so BVH construction rejects it at compile time.
-const MAX_CELL_ID_EXCLUSIVE: u32 = 4096;
+/// Runtime visible-cell bitmask capacity. The bitmask is a fixed 131072-bit
+/// (16 KiB) structure; any leaf with a higher cell id would be silently dropped
+/// by the traversal shader, so BVH construction rejects it at compile time.
+const MAX_CELL_ID_EXCLUSIVE: u32 = 131072;
 
 #[derive(Debug, thiserror::Error)]
 pub enum BvhBuildError {

@@ -23,9 +23,9 @@ const _: () = assert!(
 
 pub(crate) const DRAW_INDIRECT_SIZE: u64 = 20;
 
-/// Fixed 128-word (512-byte) bitmask covering up to 4096 cell IDs. Fixed
+/// Fixed 4096-word (16 KiB) bitmask covering up to 131072 cell IDs. Fixed
 /// size removes any resize path from the hot frame loop.
-pub(crate) const VISIBLE_CELLS_WORDS: usize = 128;
+pub(crate) const VISIBLE_CELLS_WORDS: usize = 4096;
 const VISIBLE_CELLS_BYTES: u64 = (VISIBLE_CELLS_WORDS * 4) as u64;
 pub(crate) const MAX_VISIBLE_CELLS: u32 = (VISIBLE_CELLS_WORDS as u32) * 32;
 const FRONTIER_TARGET_SUBTREES: usize = 64;
@@ -957,8 +957,8 @@ mod tests {
 
     #[test]
     fn visible_cells_bitmask_buffer_size() {
-        assert_eq!(VISIBLE_CELLS_BYTES, 512);
-        assert_eq!(MAX_VISIBLE_CELLS, 4096);
+        assert_eq!(VISIBLE_CELLS_BYTES, 16384);
+        assert_eq!(MAX_VISIBLE_CELLS, 131072);
     }
 
     #[test]

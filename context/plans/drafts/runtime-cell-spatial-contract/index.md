@@ -7,7 +7,7 @@ cell locator. Keep BSP in the compiler pipeline where it discovers solid and
 empty space. Runtime systems consume cells, portals, cell draw data, BVH draw
 accelerators, and the existing collision trimesh.
 
-This is a follow-on to `context/plans/ready/perf-visible-cell-candidate-cull/`.
+This is a follow-on to `context/plans/done/perf-visible-cell-candidate-cull/`.
 It depends on that plan landing first. This checkout already has
 `CellDrawIndex = 37`.
 
@@ -21,9 +21,9 @@ It depends on that plan landing first. This checkout already has
 - Rename runtime APIs and data flow around cells: `find_leaf` becomes
   `locate_cell`, `VisibleCells` becomes cell-semantic, and callers stop
   treating BSP leaf records as the durable runtime type.
-- Treat all runtime leaf-index payloads as cell-index payloads. Rename where
-  practical. Preserve legacy names only when churn is not worth the risk, and
-  document them as cell ids.
+- Treat runtime leaf-index payloads as cell-index payloads according to the
+  Boundary Inventory rename table. Preserved legacy names must be documented as
+  cell ids.
 - Keep portal traversal as the normal room-visibility path. Named fallbacks
   handle solid-camera, exterior-camera, and no usable portals.
 - Keep runtime BVH as a draw, shadow cone cull, and diagnostics accelerator.
@@ -38,8 +38,8 @@ It depends on that plan landing first. This checkout already has
 ### Out of scope
 
 - Removing compiler BSP construction.
-- Replacing `CollisionWorld`, `parry3d::TriMesh`, capsule sweeps, or hitscan
-  world rays.
+- Replacing `CollisionWorld`, `parry3d::shape::TriMesh`, capsule sweeps, or
+  hitscan world rays.
 - Dynamic moving occluder geometry or per-frame BVH rebuilds.
 - Baked PVS.
 - Changing `CellDrawIndex` layout from the candidate-cull plan, except where
@@ -58,6 +58,8 @@ It depends on that plan landing first. This checkout already has
       synthesizes a fallback leaf for missing BSP data.
 - [ ] Modern PRLs with valid `Cells` / `CellLocator` plus legacy runtime
       `BspNodes` or `BspLeaves` fail with a named ambiguous/stale-format error.
+      Dual-section fixture PRLs are allowed only through Task 5 migration
+      tests; rejection starts in Task 6.
 - [ ] Runtime camera visibility no longer calls `find_leaf`. It calls
       `locate_cell`, then portal traversal starts from that cell id.
 - [ ] Runtime mesh and particle visibility call the same point-to-cell locator
@@ -80,6 +82,11 @@ It depends on that plan landing first. This checkout already has
 - [ ] `CollisionWorld::populate_from_level`, `cast_capsule`, and `cast_ray`
       keep using PRL static geometry through `parry3d` queries. No collision AC
       depends on BSP or the new cell locator.
+- [ ] After behavior lands, `context/lib/build_pipeline.md`,
+      `context/lib/rendering_pipeline.md`, and `context/lib/entity_model.md`
+      are updated with the new contracts: BSP is compile-only scaffolding,
+      runtime visibility uses cells and portals, and collision uses
+      `CollisionWorld`.
 - [ ] Cell diagnostics show current cell, portal-reachable drawable cells,
       fog-reachable cells, locator path, and candidate BVH leaf counts.
 - [ ] Fog/light reachability keeps the wider portal-reachable cell set:
@@ -165,15 +172,19 @@ Add fixture probes here while both implementations exist. Probe positions must
 produce the same cell ids as the old BSP leaf path. This protects Task 4, which
 removes `find_leaf`.
 
+Dual-section fixture PRLs are allowed only while `find_leaf` and legacy BSP
+sections still exist for comparison, through Task 5. They become invalid in
+Task 6, when ambiguous legacy-section rejection starts.
+
 ### Task 4: Migrate Runtime Visibility Callers
 
 Change `determine_visible_cells` to seed visibility from `locate_cell`. Change
 portal traversal inputs and diagnostics to use cell terminology. Migrate mesh
 and particle culling call sites that currently descend BSP for object positions.
-Keep `VisibleCells` behavior stable for the renderer and scripts: it carries
-drawable cell ids or `DrawAll`. Preserve the wider fog/light reachability set
-as cell ids. It includes empty non-solid cells for volume and dynamic-light
-gating. An empty wider set remains the DrawAll/fallback sentinel.
+Keep `VisibleCells` behavior stable for the renderer: it carries drawable cell
+ids or `DrawAll`. Preserve the wider fog/light reachability set as cell ids. It
+includes empty non-solid cells for volume and dynamic-light gating. An empty
+wider set remains the DrawAll/fallback sentinel.
 
 This task owns callers in visibility, portal traversal, mesh render collection,
 particle render collection, dynamic light reachability, SH diagnostics, fog
@@ -191,10 +202,10 @@ fog-reachable cell, then ORs the current camera cell mask. This prevents
 single-frame flicker when portal traversal briefly omits the camera cell.
 
 Map lights and runtime light bridge records become cell-semantic. Rename
-`leaf_index` to `cell_index` where practical. If a legacy field name remains,
-document it as a cell id. Preserve `u32::MAX` as the unassigned sentinel.
-Script-spawned dynamic lights keep that sentinel until runtime cell assignment
-exists for them.
+`leaf_index` to `cell_index` as listed in the Boundary Inventory. If a legacy
+field name remains, document it as a cell id. Preserve `u32::MAX` as the
+unassigned sentinel. Script-spawned dynamic lights keep that sentinel until
+runtime cell assignment exists for them.
 
 ### Task 5: Cross-Section Validation
 
@@ -217,7 +228,7 @@ and fog masks together. Requirements:
 - empty interior cells are non-solid, non-exterior, have no faces, and are not
   drawable;
 - `face_start + face_count` is checked for overflow and stays within
-  `Geometry.face_meta`;
+  `GeometrySection::faces` / `GeometrySection.faces.len()`;
 - every BVH leaf `cell_id` references a valid drawable cell;
 - `CellDrawIndex` uses CSR layout: `cell_span_offset[cell_count + 1]` plus
   spans `{ leaf_start, leaf_count }`;
@@ -234,12 +245,14 @@ and fog masks together. Requirements:
   `fog_volume`, `fog_lamp`, and `fog_tube`;
 - locator planes are finite and have nonzero normals;
 - locator roots and children use valid kind values, node indices are in range,
-  cell indices are in range, child ranges are checked, traversal cannot cycle,
-  and unused or unreachable nodes are rejected.
+  cell indices are in range, traversal cannot cycle, and unused or unreachable
+  nodes are rejected.
 
 Missing `Cells` / `CellLocator` sections are stale-format. Present but malformed
-or invalid `Cells` / `CellLocator` sections are named validation errors. Both
-are fatal and name the section or sections.
+or invalid `Cells` / `CellLocator` sections are named validation errors.
+Present `Cells` or `CellLocator` sections with unsupported `version` values are
+named unsupported-version validation errors for that section. Both are fatal
+and name the section or sections.
 
 Portal usability is an explicit behavior change. Current code treats any
 present `Portals` section as `has_portals`. Target behavior treats missing,
@@ -247,6 +260,13 @@ empty, decode-failed, or validation-rejected `Portals` as no usable portal
 graph and takes the no-portals fallback. `Cells` and `CellLocator` remain
 fatal. `Cells.portal_refs` range and overflow validation is fatal, but portal
 endpoint and adjacency resolution is skipped when `Portals` is unusable.
+
+Portal validation matrix:
+
+| `Portals` state | `Cells.portal_refs` validation | Endpoint/adjacency validation | Runtime state |
+|---|---|---|---|
+| usable | `portal_ref_start + portal_ref_count` overflow/bounds; each ref < `Portals.len()`; sorted, duplicate-free | required and fatal on mismatch | usable portal graph |
+| missing, empty, decode-failed, or validation-rejected | `portal_ref_start + portal_ref_count` overflow/bounds; sorted, duplicate-free; ref values accepted but unresolved | skipped | no usable portal graph fallback |
 
 The minimum modern load contract is: `Cells`, `CellLocator`, `Geometry`, and
 `Bvh` must be valid; `CellDrawIndex` must be valid when the BVH has leaves;
@@ -325,7 +345,7 @@ Collision remains separate:
 ```text
 PRL vertices + indices
   -> CollisionWorld::populate_from_level
-  -> parry3d TriMesh
+  -> parry3d::shape::TriMesh
   -> cast_capsule / cast_ray
 ```
 
@@ -348,8 +368,8 @@ shape for this engine. Prefer dynamic portal state over mutable occluder BVHs.
 | `CellLocator` section | `SectionId::CellLocator` | PRL section id 39 | n/a | n/a | n/a |
 | Visible cells | `VisibleCells` | n/a | n/a | n/a | n/a |
 | Runtime locator | `LevelWorld::locate_cell` | n/a | n/a | n/a | n/a |
-| Portal endpoints | cell ids; rename `front_leaf` / `back_leaf` where practical | `PortalRecord` endpoints are cell ids | n/a | n/a | n/a |
-| Light spatial id | `cell_index`; legacy `leaf_index` names must be cell-semantic | light cell id or `u32::MAX` sentinel | n/a | n/a | n/a |
+| Portal endpoints | rename runtime locals and helpers to `front_cell` / `back_cell`; keep compiler `Portal.front_leaf` / `back_leaf` while BSP owns portal generation, with comments that emitted runtime records carry cell ids | `PortalRecord` endpoint fields remain legacy-named only if already present; docs must say they are cell ids | n/a | n/a | n/a |
+| Light spatial id | rename runtime bridge/storage fields from `leaf_index` to `cell_index`; keep generated or catalog-facing legacy names only when type churn crosses the scripting typedef boundary, with comments that values are cell ids or `u32::MAX` | light cell id or `u32::MAX` sentinel | n/a | n/a | n/a |
 
 ## Wire Format
 
@@ -386,23 +406,28 @@ Flags:
 - bit 1: exterior;
 - bit 2: drawable.
 
-`face_start` and `face_count` reference the `Geometry` section's `face_meta`
-index space, matching the legacy leaf face range. They are diagnostic and
-visibility-fallback metadata; draw submission uses `CellDrawIndex`. `drawable`
-must equal `!solid && !exterior && face_count > 0` for v1. Store the bit anyway
-so future non-face drawable cell classes can be additive. Solid and exterior
-cells are never drawable. The exterior bit comes from explicit exterior
-classification data, not from zero `face_count`.
+`face_start` and `face_count` reference the `GeometrySection::faces` index
+space, checked against `GeometrySection.faces.len()`, matching the legacy leaf
+face range. They are diagnostic and visibility-fallback metadata; draw
+submission uses `CellDrawIndex`. `drawable` must equal
+`!solid && !exterior && face_count > 0` for v1. Store the bit anyway so future
+non-face drawable cell classes can be additive. Solid and exterior cells are
+never drawable. The exterior bit comes from explicit exterior classification
+data, not from zero `face_count`.
 
 Empty lists use zero counts and no sentinel. `portal_ref_start +
-portal_ref_count` must be checked for overflow and bounds. `portal_refs` are
-portal indices into the `Portals` section. They are sorted ascending and
-duplicate-free for each cell. Each portal index appears exactly once in each of
-its two endpoint cells and in no other cell.
+portal_ref_count` must be checked for overflow and bounds. When `face_count` is
+zero, `face_start` must be `0`. When `portal_ref_count` is zero,
+`portal_ref_start` must be `0`. `portal_refs` are portal indices into the
+`Portals` section. They are sorted ascending and duplicate-free for each cell.
+Each portal index appears exactly once in each of its two endpoint cells and in
+no other cell when `Portals` is usable. If `Portals` is unusable, endpoint and
+adjacency resolution is skipped and the loader records no usable portal graph.
 
 Validation rejects nonzero `reserved`, unknown flag bits, non-finite bounds,
 `bounds_min > bounds_max`, invalid flag combinations, and overflowing or
-out-of-range `face_start + face_count`.
+out-of-range `face_start + face_count`. Missing section is stale-format.
+Present section with unsupported `version` is a named `Cells` validation error.
 
 ### `CellLocator`
 
@@ -429,7 +454,8 @@ Node traversal uses the existing rule: `dot(position, normal) - distance >= 0`
 selects front. Locator planes must be finite and have nonzero normals.
 `root_kind`, `front_kind`, and `back_kind` accept only `0` or `1`. Node
 references must be in range. Cell references must be in range. The loader
-rejects cycles and unreachable nodes.
+rejects cycles and unreachable nodes. Missing section is stale-format. Present
+section with unsupported `version` is a named `CellLocator` validation error.
 
 ## Open Questions
 

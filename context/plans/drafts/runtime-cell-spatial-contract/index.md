@@ -16,10 +16,11 @@ source on this checkout.
 ### In scope
 
 - Add runtime `Cells` and `CellLocator` PRL sections.
-- Keep existing `BspNodes` / `BspLeaves` load fallback for legacy PRLs.
+- Stop emitting runtime `BspNodes` / `BspLeaves` sections. BSP remains a
+  compiler intermediate only.
 - Rename runtime APIs and data flow around cells: `find_leaf` becomes
-  `locate_cell`, `VisibleCells` becomes cell-semantic, and callers stop treating
-  BSP leaf records as the durable runtime type.
+  `locate_cell`, `VisibleCells` becomes cell-semantic, and callers stop
+  treating BSP leaf records as the durable runtime type.
 - Keep portal traversal as the sole visibility path.
 - Keep BVH as a draw, light, shadow, and bake accelerator. Do not make it the
   room-visibility or occlusion-authority model.
@@ -40,25 +41,25 @@ source on this checkout.
   this plan validates it against `Cells`.
 - Runtime level compilation.
 - General-purpose Godot-style scene-node visibility.
+- Legacy PRL compatibility. Maps are rebuilt often during development.
 
 ## Acceptance criteria
 
-- [ ] New PRLs contain `Cells` and `CellLocator` sections. `BspNodes` and
-      `BspLeaves` may still be emitted for transition builds, but runtime does
-      not require them when `Cells + CellLocator` are valid.
-- [ ] Legacy PRLs without the new sections still load through the existing
-      `BspNodes` / `BspLeaves` path and preserve current visibility, mesh, and
-      particle culling behavior.
-- [ ] Runtime camera visibility no longer calls `find_leaf` on the preferred
-      path. It calls a cell locator, then portal traversal starts from that
-      cell id.
+- [ ] New PRLs contain `Cells` and `CellLocator` sections and do not contain
+      runtime `BspNodes` or `BspLeaves` sections.
+- [ ] PRLs without valid `Cells` and `CellLocator` fail to load with a named
+      stale-format error. The runtime no longer synthesizes a fallback leaf for
+      missing BSP data.
+- [ ] Runtime camera visibility no longer calls `find_leaf`. It calls
+      `locate_cell`, then portal traversal starts from that cell id.
 - [ ] Runtime mesh and particle visibility call the same point-to-cell locator
       used by camera visibility. Particles remain culled by each particle's own
       position, not by their emitter's cell.
 - [ ] `VisibleCells::Culled` continues to carry cell ids. `DrawAll` fallback
       behavior remains unchanged.
-- [ ] Portal traversal output for current fixture maps matches the old BSP-leaf
-      path when cell ids equal legacy leaf ids.
+- [ ] Cell ids preserve legacy BSP leaf ids. Solid, exterior, empty, and
+      drawable leaves all have cell records. Portal traversal output for current
+      fixture maps matches the old BSP-leaf path because ids are unchanged.
 - [ ] Candidate cull consumes cell ids from portal traversal and
       `CellDrawIndex`; it does not walk runtime BSP nodes.
 - [ ] Runtime BVH data remains loaded and uploaded for world draw, shadow cone
@@ -69,10 +70,15 @@ source on this checkout.
       depends on BSP or the new cell locator.
 - [ ] Cell diagnostics show current cell, portal-reachable drawable cells,
       fog-reachable cells, locator path, and candidate leaf counts.
-- [ ] Loader validation rejects malformed new sections with a warning and falls
-      back to legacy BSP sections when present.
-- [ ] Loader validation fails the PRL load only when neither the new cell path
-      nor the legacy BSP path can provide a point-to-cell locator.
+- [ ] Loader validation rejects malformed cell-path sections as load errors.
+      There is no legacy BSP fallback.
+- [ ] Preferred-path validation covers `Cells`, `CellLocator`, `Portals`, BVH
+      leaf cell ids, `CellDrawIndex` for non-empty BVH maps, and `FogCellMasks`
+      when fog volumes exist.
+- [ ] Solid-cell camera positions use the existing solid-camera fallback:
+      frustum-cull all drawable cells by bounds and skip portal traversal.
+      Exterior-cell camera positions use the existing exterior-camera fallback.
+      Maps with no usable portals use the existing no-portals fallback.
 - [ ] `cargo test -p postretro-level-format`, `-p postretro-level-compiler`,
       `-p postretro`, and `cargo check -p postretro --features dev-tools` pass.
 - [ ] No new `unsafe`.
@@ -83,20 +89,21 @@ source on this checkout.
 
 `crates/postretro/src/prl.rs` and `crates/level-compiler/src/pack.rs` are both
 past the split-before-extend threshold. Split before adding behavior. Extract
-PRL runtime BSP/cell decoding helpers from `prl.rs` into a focused loader
-module. Extract optional-section packing helpers from `pack.rs` into a focused
-packing module. Keep public behavior unchanged. Existing tests for
+PRL cell decoding helpers from `prl.rs` into a focused loader module. Extract
+optional-section packing helpers from `pack.rs` into a focused packing module.
+Keep public behavior unchanged. Existing tests for
 `LevelWorld`, `load_prl`, and `pack_and_write_portals` must pass unchanged
 before later tasks extend these seams.
 
 ### Task 2: Add the `Cells` Section
 
 Add a `Cells` PRL section in `postretro-level-format`. A cell is the runtime
-visibility unit that currently corresponds one-to-one with an empty or solid
-BSP leaf. The section stores enough runtime information to replace
-`BspLeavesSection` for visibility and diagnostics: bounds, solidity, exterior
-status, drawable face count, and portal adjacency range. It does not store BSP
-split planes.
+visibility unit and preserves the compiler BSP leaf id space one-to-one:
+solid, exterior, empty, and drawable leaves all become cells. This avoids a
+remap for portals, BVH leaf `cell_id`, fog masks, diagnostics, and tests. The
+section stores enough runtime information to replace `BspLeavesSection` for
+visibility and diagnostics: bounds, solidity, exterior status, geometry face
+range summary, and portal adjacency range. It does not store BSP split planes.
 
 Compiler writes `Cells` from BSP leaf records plus the compiler's exterior-leaf
 classification data after portal generation. `BspLeafRecord` does not carry
@@ -113,10 +120,10 @@ plane decision tree as `BspNodesSection`, but it is a locator, not the runtime
 BSP contract. Its children point to cell ids, not BSP leaf records.
 
 Compiler writes the locator from the final BSP tree. Runtime loads it as the
-preferred point-to-cell query source. Implement `LevelWorld::locate_cell` and
-make `find_leaf` a legacy wrapper or remove it once call sites are migrated.
-The implementation must preserve current on-plane behavior: points on a split
-plane choose the front child.
+only point-to-cell query source. Implement `LevelWorld::locate_cell` and remove
+`LevelWorld::find_leaf` after call sites migrate. The implementation must
+preserve current on-plane behavior: points on a split plane choose the front
+child.
 
 ### Task 4: Migrate Runtime Visibility Callers
 
@@ -127,8 +134,8 @@ Keep `VisibleCells` behavior stable for the renderer and scripts: it carries
 drawable cell ids or `DrawAll`.
 
 This task owns callers in visibility, portal traversal, mesh render collection,
-particle render collection, and diagnostics. It does not change portal clipping
-or frustum math.
+particle render collection, SH diagnostics, fog masking, and spatial
+diagnostics. It does not change portal clipping or frustum math.
 
 ### Task 5: Cross-Section Validation
 
@@ -136,36 +143,40 @@ Validate loaded `Cells`, `CellLocator`, `Portals`, `CellDrawIndex`, BVH leaves,
 and fog masks together. Requirements:
 
 - portal endpoints reference valid non-solid cell ids;
-- portal adjacency ranges match the portal list;
+- portal adjacency ranges match the portal list: `portal_refs` are portal
+  indices into `Portals`, sorted ascending, duplicate-free per cell; each
+  portal appears exactly once in each endpoint cell's adjacency list and never
+  in unrelated cells;
 - every BVH leaf `cell_id` references a valid drawable cell;
 - `CellDrawIndex` spans cover exactly drawable BVH leaves, as defined by cell
   metadata;
 - fog cell masks, when present, have one entry per cell;
-- locator leaves reference valid cells;
-- legacy BSP fallback produces the same cell ids on fixture probes while both
-  paths are present.
+- locator roots and children use valid kind values, node indices are in range,
+  cell indices are in range, traversal cannot cycle, and unused nodes are
+  rejected;
+- fixture probes produce the same cell ids as the old BSP leaf path while both
+  implementations exist in tests.
 
-Invalid new cell sections warn and fall back to legacy BSP sections if those
-sections exist. Missing or invalid locator data is fatal only when no legacy
-fallback exists.
+Invalid cell-path sections are fatal. The minimum modern load contract is:
+`Cells`, `CellLocator`, `Portals`, `Geometry`, and `Bvh` must be valid;
+`CellDrawIndex` must be valid when the BVH has leaves; `FogCellMasks` must be
+valid when fog volumes exist.
 
-### Task 6: Remove Runtime BSP Requirement
+### Task 6: Stop Emitting Runtime BSP Sections
 
-Once preferred-path tests pass, make `BspNodes` and `BspLeaves` optional for
-runtime load. Keep compiler emission during the transition unless a separate
-format-cleanup plan removes it. Update tests so modern PRLs load with
-`Cells + CellLocator` and no BSP sections.
+Once preferred-path tests pass, stop packing `BspNodes` and `BspLeaves` into
+PRL output. Remove runtime tests that expect modern PRLs to decode those
+sections, and add stale-format tests for PRLs missing `Cells` or `CellLocator`.
+Modern PRLs load with `Cells + CellLocator` and no runtime BSP sections.
 
 This task must not change compiler BSP construction. It only changes what the
-runtime requires from the PRL.
+compiler writes into PRL and what the runtime accepts from PRL.
 
 ### Task 7: Diagnostics and Documentation
 
 Update dev-tool overlays to label cells, portals, and BVH leaves without BSP
-terminology on the preferred path. Keep legacy labels only where the fallback is
-actually active. Add diagnostics that show whether the current frame used
-`CellLocator` or legacy BSP lookup, plus fog-reachable and portal-reachable
-cells.
+terminology. Add diagnostics that show current locator status, plus
+fog-reachable and portal-reachable cells.
 
 Update `context/lib/build_pipeline.md`, `context/lib/rendering_pipeline.md`,
 and `context/lib/entity_model.md` at promotion time, not during the draft. The
@@ -186,14 +197,15 @@ locator and terminology.
 **Phase 4 (sequential):** Task 5 — validates all loaded spatial sections after
 the preferred runtime path exists.
 
-**Phase 5 (sequential):** Task 6 — removes runtime dependence on BSP sections.
+**Phase 5 (sequential):** Task 6 — stops emitting runtime BSP sections and
+rejects stale PRLs.
 
 **Phase 6 (sequential):** Task 7 — updates diagnostics and durable docs after
 behavior is stable.
 
 ## Rough Sketch
 
-Current runtime shape:
+Old runtime shape:
 
 ```text
 LevelWorld::find_leaf(position)
@@ -222,7 +234,7 @@ PRL vertices + indices
   -> cast_capsule / cast_ray
 ```
 
-The first `CellLocator` can be structurally identical to the current BSP node
+The first `CellLocator` can be structurally identical to the compiler BSP node
 descent. That makes the migration low risk. The important change is ownership:
 runtime systems ask for a cell id. They do not depend on BSP as the semantic
 world model. Later plans can replace the locator with a grid, cached-neighbor
@@ -241,7 +253,6 @@ shape for this engine. Prefer dynamic portal state over mutable occluder BVHs.
 | `CellLocator` section | `SectionId::CellLocator` | PRL section id 39 | n/a | n/a | n/a |
 | Visible cells | `VisibleCells` | n/a | n/a | n/a | n/a |
 | Runtime locator | `LevelWorld::locate_cell` | n/a | n/a | n/a | n/a |
-| Legacy locator | `LevelWorld::find_leaf` | `BspNodes` / `BspLeaves` | n/a | n/a | n/a |
 
 ## Wire Format
 
@@ -279,11 +290,17 @@ Flags:
 - bit 1: exterior;
 - bit 2: drawable.
 
-`drawable` must equal `!solid && face_count > 0` for v1. Store the bit anyway
-so future non-face drawable cell classes can be additive.
+`face_start` and `face_count` reference the `Geometry` section's `face_meta`
+index space, matching the legacy leaf face range. They are diagnostic and
+visibility-fallback metadata; draw submission uses `CellDrawIndex`. `drawable`
+must equal `!solid && face_count > 0` for v1. Store the bit anyway so future
+non-face drawable cell classes can be additive.
 
 Empty lists use zero counts and no sentinel. `portal_ref_start +
-portal_ref_count` must be checked for overflow and bounds.
+portal_ref_count` must be checked for overflow and bounds. `portal_refs` are
+portal indices into the `Portals` section. They are sorted ascending and
+duplicate-free for each cell. Each portal index appears exactly once in each of
+its two endpoint cells and in no other cell.
 
 ### `CellLocator`
 
@@ -307,15 +324,11 @@ u32 back_index
 ```
 
 Node traversal uses the existing rule: `dot(position, normal) - distance >= 0`
-selects front.
+selects front. `root_kind`, `front_kind`, and `back_kind` accept only `0` or
+`1`. Node references must be in range. Cell references must be in range. The
+loader rejects cycles and unreachable nodes.
 
 ## Open Questions
 
-- Should `BspNodes` / `BspLeaves` stop being emitted in the same implementation,
-  or should this plan only make runtime no longer require them? The draft
-  chooses runtime independence first.
-- Should `find_leaf` remain as a deprecated compatibility wrapper for one
-  release, or should the migration remove it outright after all call sites move?
-- Should dynamic portal policy bits live in this plan or a follow-up? This
-  draft leaves policy state for a later feature; it only makes cells the runtime
-  contract.
+None. Dynamic portal policy bits are a follow-up feature; this plan only makes
+cells the runtime contract.

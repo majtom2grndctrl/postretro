@@ -8,8 +8,8 @@ empty space. Runtime systems consume cells, portals, cell draw data, BVH draw
 accelerators, and the existing collision trimesh.
 
 This is a follow-on to `context/plans/ready/perf-visible-cell-candidate-cull/`.
-It depends on that plan landing first. `CellDrawIndex = 37` is not in current
-source on this checkout.
+It depends on that plan landing first. This checkout already has
+`CellDrawIndex = 37`.
 
 ## Scope
 
@@ -21,6 +21,9 @@ source on this checkout.
 - Rename runtime APIs and data flow around cells: `find_leaf` becomes
   `locate_cell`, `VisibleCells` becomes cell-semantic, and callers stop
   treating BSP leaf records as the durable runtime type.
+- Treat all runtime leaf-index payloads as cell-index payloads. Rename where
+  practical. Preserve legacy names only when churn is not worth the risk, and
+  document them as cell ids.
 - Keep portal traversal as the normal room-visibility path. Named fallbacks
   handle solid-camera, exterior-camera, and no usable portals.
 - Keep runtime BVH as a draw, shadow cone cull, and diagnostics accelerator.
@@ -60,6 +63,10 @@ source on this checkout.
 - [ ] Runtime mesh and particle visibility call the same point-to-cell locator
       used by camera visibility. Particles remain culled by each particle's own
       position, not by their emitter's cell.
+- [ ] Runtime light records that currently carry `leaf_index` become
+      cell-semantic. `u32::MAX` remains the unassigned sentinel for lights that
+      cannot be placed in a non-solid cell or are spawned without cell
+      assignment.
 - [ ] `VisibleCells::Culled` continues to carry cell ids. `DrawAll` fallback
       behavior remains unchanged.
 - [ ] Cell ids preserve legacy BSP leaf ids. Solid, exterior, empty, and
@@ -75,6 +82,11 @@ source on this checkout.
       depends on BSP or the new cell locator.
 - [ ] Cell diagnostics show current cell, portal-reachable drawable cells,
       fog-reachable cells, locator path, and candidate BVH leaf counts.
+- [ ] Fog/light reachability keeps the wider portal-reachable cell set:
+      non-solid empty cells are included, and an empty set remains the
+      DrawAll/fallback sentinel.
+- [ ] Fog active-mask selection ORs the current camera cell mask in addition to
+      fog-reachable cells.
 - [ ] Loader validation rejects malformed `Cells` / `CellLocator` sections as
       named load errors. Missing `Cells` / `CellLocator` is stale-format.
       There is no legacy BSP fallback.
@@ -159,18 +171,30 @@ Change `determine_visible_cells` to seed visibility from `locate_cell`. Change
 portal traversal inputs and diagnostics to use cell terminology. Migrate mesh
 and particle culling call sites that currently descend BSP for object positions.
 Keep `VisibleCells` behavior stable for the renderer and scripts: it carries
-drawable cell ids or `DrawAll`.
+drawable cell ids or `DrawAll`. Preserve the wider fog/light reachability set
+as cell ids. It includes empty non-solid cells for volume and dynamic-light
+gating. An empty wider set remains the DrawAll/fallback sentinel.
 
 This task owns callers in visibility, portal traversal, mesh render collection,
-particle render collection, SH diagnostics, fog masking, and spatial
-diagnostics. Remove `LevelWorld::find_leaf` after those callers migrate. It
-does not change portal clipping or frustum math.
+particle render collection, dynamic light reachability, SH diagnostics, fog
+masking, and spatial diagnostics. Remove `LevelWorld::find_leaf` after those
+callers migrate. It does not change portal clipping or frustum math.
 
 Mesh and particle object visibility remains membership-based against
 `VisibleCells`. If `locate_cell(pos)` returns a cell id not in
 `VisibleCells::Culled`, the object is culled. `DrawAll` remains visible. Do not
 add object-specific frustum-only or fallback behavior for objects in solid,
 exterior, or empty cells.
+
+Fog masking keeps the current camera-cell union. Runtime ORs the mask for every
+fog-reachable cell, then ORs the current camera cell mask. This prevents
+single-frame flicker when portal traversal briefly omits the camera cell.
+
+Map lights and runtime light bridge records become cell-semantic. Rename
+`leaf_index` to `cell_index` where practical. If a legacy field name remains,
+document it as a cell id. Preserve `u32::MAX` as the unassigned sentinel.
+Script-spawned dynamic lights keep that sentinel until runtime cell assignment
+exists for them.
 
 ### Task 5: Cross-Section Validation
 
@@ -203,6 +227,8 @@ and fog masks together. Requirements:
 - span leaves for each cell exactly cover drawable BVH leaves whose
   `BvhLeaf.cell_id == cell_id`;
 - cells with no drawable leaves have empty `CellDrawIndex` ranges;
+- light spatial ids either reference valid non-solid cells or use the
+  unassigned sentinel;
 - fog cell masks, when present, have one entry per cell; `FogCellMasks` is
   required when canonical fog volume count is greater than zero, including
   `fog_volume`, `fog_lamp`, and `fog_tube`;
@@ -322,13 +348,14 @@ shape for this engine. Prefer dynamic portal state over mutable occluder BVHs.
 | `CellLocator` section | `SectionId::CellLocator` | PRL section id 39 | n/a | n/a | n/a |
 | Visible cells | `VisibleCells` | n/a | n/a | n/a | n/a |
 | Runtime locator | `LevelWorld::locate_cell` | n/a | n/a | n/a | n/a |
+| Portal endpoints | cell ids; rename `front_leaf` / `back_leaf` where practical | `PortalRecord` endpoints are cell ids | n/a | n/a | n/a |
+| Light spatial id | `cell_index`; legacy `leaf_index` names must be cell-semantic | light cell id or `u32::MAX` sentinel | n/a | n/a | n/a |
 
 ## Wire Format
 
 All new PRL section fields are little-endian. `Cells` uses section id 38.
 `CellLocator` uses section id 39. These are follow-on ids after
-`CellDrawIndex = 37` from `perf-visible-cell-candidate-cull`, which must land
-first.
+`CellDrawIndex = 37` from `perf-visible-cell-candidate-cull`.
 
 ### `Cells`
 

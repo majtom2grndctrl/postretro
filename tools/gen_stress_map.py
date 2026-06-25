@@ -39,9 +39,14 @@ Varying room sizes
 Each layer is tiled greedily with random rectangular blocks (1x1..2x2 cells),
 so rooms come in several footprints while every room stays a clean rectangular
 box that never overlaps a neighbour. Interior shared walls inside one room are
-omitted (the cells fuse into one air volume); walls between different rooms get
-a centered doorway, producing real portals. Sparse vertical shafts punch holes
-through interior slabs so the stacked layers are portal-connected.
+omitted (the cells fuse into one air volume). Rooms are connected as a maze:
+per layer a randomized spanning tree (plus a few `--door-prob` braid doors)
+decides which shared walls get a doorway, and adjacent doorways alternate
+between two disjoint end-slots of their walls so a room's entry and exit doors
+never line up -- no straight line of sight ever crosses a third room (you can
+still see through one doorway into the adjacent room). Vertical shafts punch holes
+through interior slabs to portal-connect the stacked layers; the shaft pattern
+shifts every layer so shafts never stack into a vertical sightline.
 
 All coordinates are emitted in Quake units (Z-up); prl-build applies the
 1 unit = 0.0254 m scale and the Z-up -> Y-up swizzle.
@@ -143,24 +148,51 @@ def wall_box(brushes, x0, y0, x1, y1, zf, zc, tex):
     brushes.append(box_brush(x0, y0, zf, x1, y1, zc, tex, tex, tex))
 
 
-def emit_wall(brushes, axis, line, lo, hi, zf, zc, doored, tex):
-    """Emit a wall on an interior/edge boundary, optionally with a centered door.
+DOOR_SLOT_MARGIN = 96   # solid jamb kept at the wall ends when a door hugs a slot
 
-    axis 'x': wall lies on plane X=line, spanning Y in [lo,hi].
-    axis 'y': wall lies on plane Y=line, spanning X in [lo,hi].
-    The wall is WALL_T thick, centered on `line`. Interior height [zf,zc].
+
+def slot_center(lo, hi, slot):
+    """Doorway center for one of two disjoint end-slots of a wall segment.
+
+    slot 0 hugs the `lo` end, slot 1 hugs the `hi` end. The two slots never
+    overlap (for our 1280-unit walls the openings are ~580 units apart), so if
+    a room's two opposite-wall doorways use different slots there is no straight
+    line of sight through that room. Maze edges alternate slots (see generate),
+    which keeps any straight sightline to at most the two rooms a single doorway
+    joins -- never a third.
+    """
+    off = DOOR_W // 2 + DOOR_SLOT_MARGIN
+    if hi - lo <= 2 * off:                 # too short to offset: fall back to center
+        return (lo + hi) // 2
+    return lo + off if slot == 0 else hi - off
+
+
+def uf_find(parent, a):
+    """Union-find root with path compression (used to build the per-layer maze)."""
+    while parent[a] != a:
+        parent[a] = parent[parent[a]]
+        a = parent[a]
+    return a
+
+
+def emit_wall(brushes, axis, line, lo, hi, zf, zc, dcenter, tex):
+    """Emit a wall on an interior/edge boundary.
+
+    `dcenter` is None for a solid wall, or the coordinate along [lo,hi] where a
+    doorway opening is cut. axis 'x': wall on plane X=line, spanning Y in
+    [lo,hi]. axis 'y': wall on plane Y=line, spanning X in [lo,hi]. The wall is
+    WALL_T thick, centered on `line`. Interior height [zf,zc].
     """
     h = WALL_T // 2
-    if not doored:
+    if dcenter is None:
         if axis == "x":
             wall_box(brushes, line - h, lo, line + h, hi, zf, zc, tex)
         else:
             wall_box(brushes, lo, line - h, hi, line + h, zf, zc, tex)
         return
 
-    # Centered full-thickness doorway: split into two jambs + a lintel.
-    mid = (lo + hi) // 2
-    d0, d1 = mid - DOOR_W // 2, mid + DOOR_W // 2
+    # Full-thickness doorway at `dcenter`: split into two jambs + a lintel.
+    d0, d1 = dcenter - DOOR_W // 2, dcenter + DOOR_W // 2
     ztop = zf + DOOR_H
     if axis == "x":
         wall_box(brushes, line - h, lo, line + h, d0, zf, zc, tex)       # jamb low
@@ -278,7 +310,7 @@ def light_entity(mode, origin, color, falloff, intensity, spot, rng):
     return out
 
 
-def generate(nx, ny, nz, seed, door_prob, shaft_prob, lights_mode, light_every,
+def generate(nx, ny, nz, seed, braid_prob, shaft_prob, lights_mode, light_every,
              crates_per_room, spot_frac, static_frac):
     rng = random.Random(seed)
     spot_stride = max(1, round(1.0 / spot_frac)) if spot_frac > 0 else 0
@@ -301,6 +333,84 @@ def generate(nx, ny, nz, seed, door_prob, shaft_prob, lights_mode, light_every,
     room_of = lambda i, j, k: layers[k][(i, j)]
     total_rooms = next_base
 
+    # --- Connectivity planning: maze doors + staggered shafts --------------
+    # Per layer, connect rooms with a randomized spanning tree (a "perfect"
+    # maze) plus a few extra `braid_prob` loop doors, instead of dooring every
+    # shared wall at random. This removes the long straight corridors the old
+    # per-wall coin flip produced.
+    #
+    # Every doorway hugs one of two disjoint end-slots of its wall (slot_center).
+    # To kill straight sightlines we alternate slots PER GRID LINE: the x-doors
+    # sharing a grid row are walked left-to-right and assigned 0,1,0,1...; the
+    # y-doors sharing a grid column likewise. Because rooms are at most two cells
+    # wide, two consecutive doors in a row always flank a single shared room, so
+    # that room's entry and exit doors land in disjoint slots -- a straight line
+    # of sight can never cross a third room (you can still see through one
+    # doorway into the single adjacent room). The two axes are independent
+    # (x-doors slot along Y, y-doors along X), so no constraint couples them.
+    # doors[(k, axis, i, j)] -> doorway center along the wall (absent => solid).
+    doors = {}
+    for k in range(nz):
+        rooms_k = set(layers[k].values())
+        pair_bounds = {}   # (loRoom, hiRoom) -> [(boundary_key, lo, hi), ...]
+        for j in range(ny):
+            for i in range(nx):
+                r = layers[k][(i, j)]
+                if i > 0 and layers[k][(i - 1, j)] != r:
+                    p = tuple(sorted((r, layers[k][(i - 1, j)])))
+                    pair_bounds.setdefault(p, []).append(
+                        ((k, "x", i, j), Y[j], Y[j + 1]))
+                if j > 0 and layers[k][(i, j - 1)] != r:
+                    p = tuple(sorted((r, layers[k][(i, j - 1)])))
+                    pair_bounds.setdefault(p, []).append(
+                        ((k, "y", i, j), X[i], X[i + 1]))
+        # Randomized Kruskal: shuffle adjacencies; keep an edge if it joins two
+        # components (a tree edge), else keep it only with braid_prob (a loop).
+        parent = {r: r for r in rooms_k}
+        chosen = []        # (key, lo, hi) for every door this layer (tree + braid)
+        adj = list(pair_bounds.keys())
+        rng.shuffle(adj)
+        for a, b in adj:
+            ra, rb = uf_find(parent, a), uf_find(parent, b)
+            if ra != rb:
+                parent[ra] = rb
+            elif rng.random() >= braid_prob:
+                continue
+            chosen.append(rng.choice(pair_bounds[(a, b)]))
+
+        # Slot every door by alternating along its grid line: x-doors (key axis
+        # 'x') alternate down their row j by ascending i; y-doors alternate along
+        # their column i by ascending j. Consecutive doors on a line flank one
+        # shared room, so its two doors get opposite slots and never see through.
+        x_by_row = {}
+        y_by_col = {}
+        for key, lo, hi in chosen:
+            _, axis, i, j = key
+            if axis == "x":
+                x_by_row.setdefault(j, []).append((i, key, lo, hi))
+            else:
+                y_by_col.setdefault(i, []).append((j, key, lo, hi))
+        for j, row in x_by_row.items():
+            for n, (i, key, lo, hi) in enumerate(sorted(row)):
+                doors[key] = slot_center(lo, hi, n & 1)
+        for i, col in y_by_col.items():
+            for n, (j, key, lo, hi) in enumerate(sorted(col)):
+                doors[key] = slot_center(lo, hi, n & 1)
+
+    # Vertical shafts: holes through interior slabs that portal-connect stacked
+    # layers. The candidate cell pattern is shifted every layer (i+k, j+2k) so
+    # holes never stack vertically -- no straight shaft-of-sight through a room
+    # -- and at least one shaft per interior slab keeps the complex traversable.
+    shafts = set()
+    for k in range(1, nz):
+        cands = [(i, j) for j in range(ny) for i in range(nx)
+                 if (i + k) % 3 == 1 and (j + 2 * k) % 3 == 1]
+        chosen = [c for c in cands if rng.random() < shaft_prob]
+        if cands and not chosen:
+            chosen = [rng.choice(cands)]
+        for (i, j) in chosen:
+            shafts.add((k, i, j))
+
     brushes = []
 
     # Vertical walls. For each cell, emit its low-X and low-Y boundary, plus the
@@ -314,20 +424,20 @@ def generate(nx, ny, nz, seed, door_prob, shaft_prob, lights_mode, light_every,
                 wt = pick(WALL_TEX, r)               # wall texture varies by room
                 # X-boundary at X[i] (between cell i-1 and i)
                 if i == 0:
-                    emit_wall(brushes, "x", X[0], Y[j], Y[j + 1], zf, zc, False, wt)
+                    emit_wall(brushes, "x", X[0], Y[j], Y[j + 1], zf, zc, None, wt)
                 elif room_of(i - 1, j, k) != r:
                     emit_wall(brushes, "x", X[i], Y[j], Y[j + 1], zf, zc,
-                              rng.random() < door_prob, wt)
+                              doors.get((k, "x", i, j)), wt)
                 if i == nx - 1:
-                    emit_wall(brushes, "x", X[nx], Y[j], Y[j + 1], zf, zc, False, wt)
+                    emit_wall(brushes, "x", X[nx], Y[j], Y[j + 1], zf, zc, None, wt)
                 # Y-boundary at Y[j]
                 if j == 0:
-                    emit_wall(brushes, "y", Y[0], X[i], X[i + 1], zf, zc, False, wt)
+                    emit_wall(brushes, "y", Y[0], X[i], X[i + 1], zf, zc, None, wt)
                 elif room_of(i, j - 1, k) != r:
                     emit_wall(brushes, "y", Y[j], X[i], X[i + 1], zf, zc,
-                              rng.random() < door_prob, wt)
+                              doors.get((k, "y", i, j)), wt)
                 if j == ny - 1:
-                    emit_wall(brushes, "y", Y[ny], X[i], X[i + 1], zf, zc, False, wt)
+                    emit_wall(brushes, "y", Y[ny], X[i], X[i + 1], zf, zc, None, wt)
 
     # Horizontal slabs at every Z-boundary, full cell footprint. Top and bottom
     # boundaries (k==0, k==nz) are always solid (seal). Interior boundaries get a
@@ -335,9 +445,7 @@ def generate(nx, ny, nz, seed, door_prob, shaft_prob, lights_mode, light_every,
     for k in range(nz + 1):
         for j in range(ny):
             for i in range(nx):
-                interior = 0 < k < nz
-                holed = (interior and (i % 3 == 1) and (j % 3 == 1)
-                         and rng.random() < shaft_prob)
+                holed = (k, i, j) in shafts
                 emit_slab(brushes, X[i], Y[j], X[i + 1], Y[j + 1], Z[k], holed,
                           pick(FLOOR_TEX, i + j), pick(CEIL_TEX, i + j + k))
 
@@ -446,13 +554,21 @@ def main(argv):
                          "which lands just under the 4096 BSP-leaf cap)")
     ap.add_argument("-o", "--out", default="content/dev/maps/stress-warren.map")
     ap.add_argument("--seed", type=int, default=1)
-    ap.add_argument("--door-prob", type=float, default=0.35,
-                    help="fraction of inter-room walls that get a doorway "
-                         "(more doors = more portals but more BSP leaves; "
-                         "default 0.5)")
+    ap.add_argument("--door-prob", type=float, default=0.15,
+                    help="maze braid factor: rooms are first connected by a "
+                         "spanning-tree maze (one door per tree edge), then each "
+                         "*extra* adjacency gets a loop door with this "
+                         "probability. 0 = a perfect maze (one path between any "
+                         "two rooms); higher = more loops and shortcuts. Tree "
+                         "doors alternate wall slots so they never open a "
+                         "straight sightline through a third room; braid doors "
+                         "may occasionally, so keep this low. (default 0.15)")
     ap.add_argument("--shaft-prob", type=float, default=0.5,
-                    help="fraction of candidate interior slabs that get a "
-                         "vertical shaft connecting layers (default 1.0)")
+                    help="fraction of candidate cells that get a vertical shaft "
+                         "connecting layers (at least one is forced per interior "
+                         "slab so the complex stays traversable; the candidate "
+                         "pattern shifts each layer so shafts never stack into a "
+                         "vertical sightline). (default 0.5)")
     ap.add_argument("--lights", choices=["none", "dynamic", "static", "mixed"],
                     default="none",
                     help="add one light per room. 'dynamic' = light_dynamic "

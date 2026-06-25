@@ -110,6 +110,14 @@ pub(crate) fn request_renderer_device(
     // default for this field is already 8192; setting it explicitly
     // formalizes the dependency.
     const REQUIRED_MAX_TEXTURE_DIMENSION_2D: u32 = 8192;
+    // Single-buffer ceiling. wgpu defaults to 256 MiB; the dev-tools SH
+    // irradiance readback (full-atlas Rgba16Float copy) overruns it on large
+    // maps (~327 MiB on stress-warren-crates). 2 GiB clears that with headroom
+    // yet stays low enough to flag a runaway allocation here rather than balloon
+    // silently. It also sits within reach of real adapters: the dev Apple-Silicon
+    // device caps below 3 GiB, so a higher floor (e.g. 4 GiB) rejects it.
+    // Revisit against a known target-hardware floor once shipping maps exist.
+    const REQUIRED_MAX_BUFFER_SIZE: u64 = 2 * 1024 * 1024 * 1024;
     let adapter_limits = adapter.limits();
     let required_limits = wgpu::Limits {
         max_bind_groups: 8,
@@ -117,6 +125,7 @@ pub(crate) fn request_renderer_device(
         max_storage_textures_per_shader_stage: REQUIRED_STORAGE_TEXTURES,
         max_storage_buffer_binding_size: REQUIRED_STORAGE_BUFFER_BINDING_SIZE,
         max_texture_dimension_2d: REQUIRED_MAX_TEXTURE_DIMENSION_2D,
+        max_buffer_size: REQUIRED_MAX_BUFFER_SIZE,
         ..wgpu::Limits::default()
     };
 
@@ -154,6 +163,14 @@ pub(crate) fn request_renderer_device(
                  for the sparse-storage fix that removes this requirement)",
             adapter_limits.max_storage_buffer_binding_size,
             REQUIRED_STORAGE_BUFFER_BINDING_SIZE
+        );
+    }
+    if adapter_limits.max_buffer_size < REQUIRED_MAX_BUFFER_SIZE {
+        anyhow::bail!(
+            "GPU adapter allows a maximum single buffer of {} bytes; this engine \
+                 requires {} (2 GiB) for large scene and diagnostic buffers",
+            adapter_limits.max_buffer_size,
+            REQUIRED_MAX_BUFFER_SIZE
         );
     }
     // The lightmap irradiance + animated atlases (`Rgba16Float`) are sampled

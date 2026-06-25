@@ -6,6 +6,7 @@ pub mod animated_light_chunks;
 pub mod animated_light_weight_maps;
 pub mod bsp;
 pub mod bvh;
+pub mod cell_draw_index;
 pub mod chunk_light_list;
 pub mod data_script;
 pub mod delta_sh_volumes;
@@ -209,6 +210,12 @@ pub enum SectionId {
     /// `portal_count == 0` is valid (a single isolated region); a present
     /// section always carries `region_count >= 1`. See `navmesh::NavMeshSection`.
     NavMesh = 36,
+
+    /// Per-cell draw index: each cell's owned BVH-leaf spans, baked as a CSR
+    /// (offset table + flat span payload) so the runtime camera cull gathers
+    /// only visible cells' leaves as candidates. Optional — absence is a valid
+    /// "no draw index" load. See `cell_draw_index::CellDrawIndexSection`.
+    CellDrawIndex = 37,
 }
 
 impl SectionId {
@@ -238,6 +245,7 @@ impl SectionId {
             34 => Some(Self::OctahedralShVolume),
             35 => Some(Self::DirectShVolume),
             36 => Some(Self::NavMesh),
+            37 => Some(Self::CellDrawIndex),
             _ => None,
         }
     }

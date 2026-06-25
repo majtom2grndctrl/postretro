@@ -358,6 +358,10 @@ pub fn pack_and_write_portals(
     fog_cell_masks: Option<&FogCellMasksSection>,
     sdf_atlas: Option<&SdfAtlasSection>,
     navmesh: Option<&NavMeshSection>,
+    // Pre-serialized CellDrawIndex (id 37) bytes, or `None` for zero-leaf maps.
+    // Already-encoded because the bake is gated on non-empty BVH leaves upstream;
+    // emission is independent of portal presence.
+    cell_draw_index_bytes: Option<Vec<u8>>,
 ) -> anyhow::Result<()> {
     let geometry_bytes = geo_result.geometry.to_bytes();
     let texture_names_bytes = geo_result.texture_names.to_bytes();
@@ -495,13 +499,11 @@ pub fn pack_and_write_portals(
             data: bytes.clone(),
         });
     }
-    if let Some(ref bytes) = map_entities_bytes {
-        sections.push(SectionBlob {
-            section_id: SectionId::MapEntity as u32,
-            version: 1,
-            data: bytes.clone(),
-        });
-    }
+    append_optional_section(
+        &mut sections,
+        SectionId::MapEntity as u32,
+        map_entities_bytes,
+    );
     sections.push(SectionBlob {
         section_id: SectionId::FogVolumes as u32,
         version: 1,
@@ -531,6 +533,11 @@ pub fn pack_and_write_portals(
             data: bytes.clone(),
         });
     }
+    append_optional_section(
+        &mut sections,
+        SectionId::CellDrawIndex as u32,
+        cell_draw_index_bytes,
+    );
 
     write_and_validate_sections(output, &sections)?;
 
@@ -641,6 +648,26 @@ pub fn pack_and_write_portals(
     }
 
     Ok(())
+}
+
+/// Append an optional section blob when its data is present.
+///
+/// Generic over `section_id` so any optional PRL section can route through the
+/// same append point. Absent data (`None`) is a no-op — the section is simply
+/// omitted from the container, which is how the runtime distinguishes optional
+/// sections.
+fn append_optional_section(
+    sections: &mut Vec<SectionBlob>,
+    section_id: u32,
+    data: Option<Vec<u8>>,
+) {
+    if let Some(bytes) = data {
+        sections.push(SectionBlob {
+            section_id,
+            version: 1,
+            data: bytes,
+        });
+    }
 }
 
 /// Write sections to disk and validate via read-back.
@@ -894,6 +921,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .expect("pack_and_write_portals should succeed");
 
@@ -965,6 +993,7 @@ mod tests {
             None,
             None,
             &FogVolumesSection::default(),
+            None,
             None,
             None,
             None,
@@ -1050,6 +1079,7 @@ mod tests {
             None,
             None,
             &FogVolumesSection::default(),
+            None,
             None,
             None,
             None,

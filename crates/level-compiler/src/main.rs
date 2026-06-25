@@ -8,6 +8,7 @@ pub mod bc5;
 pub mod bc6h;
 pub mod bvh_build;
 pub mod cache;
+pub mod cell_draw_index_bake;
 pub mod chart_raster;
 pub mod chunk_light_list_bake;
 pub mod delta_sh_bake;
@@ -422,6 +423,17 @@ fn main() -> anyhow::Result<()> {
     if args.verbose {
         bvh_build::log_stats(&bvh_section);
     }
+
+    // Cell draw index (id 37): per-cell BVH-leaf spans for the runtime visible-cell
+    // candidate cull. Derived from the already-sorted flat BVH leaves joined into
+    // the encoded BSP leaf records (cell_id == BSP leaf index). Uncached — it is a
+    // cheap CSR pass over data the (uncached) BVH stage just produced. Omitted for
+    // zero-leaf maps; emission is independent of portal presence.
+    let cell_draw_index_bytes = cell_draw_index_bake::bake_cell_draw_index(
+        &bvh_section.leaves,
+        &vis_result.leaves_section.leaves,
+    )
+    .map(|section| section.to_bytes());
 
     progress.start_stage("NavMesh bake...");
     let stage_start = Instant::now();
@@ -1047,6 +1059,7 @@ fn main() -> anyhow::Result<()> {
         fog_cell_masks_section.as_ref(),
         sdf_atlas_section.as_ref(),
         navmesh_section.as_ref(),
+        cell_draw_index_bytes,
     )?;
     timings.push(("Packing", stage_start.elapsed()));
 

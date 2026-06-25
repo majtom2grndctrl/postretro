@@ -7,6 +7,7 @@ use winit::window::Window;
 use super::BvhOverlayBudget;
 use super::BvhOverlayColorMode;
 use super::BvhOverlayDepthMode;
+use super::CameraCullPath;
 use super::CellOverlayState;
 use super::DynamicDirectIsolation;
 use super::LightingIsolation;
@@ -517,13 +518,15 @@ fn draw_performance_tab(ui: &mut egui::Ui, frame_timing: Option<&FrameTimingSnap
 }
 
 fn draw_spatial_tab(ui: &mut egui::Ui, state: &mut DiagnosticsState, renderer: &mut Renderer) {
-    egui::CollapsingHeader::new("Visibility Diagnostics")
+    egui::CollapsingHeader::new("BVH cull baseline (full tree walk)")
         .default_open(true)
         .show(ui, |ui| {
             let Some(diagnostics) = renderer.visibility_diagnostics() else {
                 ui.label("No BVH cull data loaded");
                 return;
             };
+
+            ui.label("Would-be tree-walk cost, regardless of the active cull path.");
 
             egui::Grid::new("visibility_diagnostics_grid")
                 .num_columns(2)
@@ -706,6 +709,29 @@ fn draw_spatial_tab(ui: &mut egui::Ui, state: &mut DiagnosticsState, renderer: &
                 .changed()
             {
                 renderer.set_bvh_overlay_budget(state.bvh_budget);
+            }
+        });
+
+    egui::CollapsingHeader::new("Camera cull")
+        .default_open(true)
+        .show(ui, |ui| {
+            let diag = renderer.camera_cull_diagnostics();
+            let (path_label, candidate_label) = match diag.path {
+                CameraCullPath::Candidate { candidate_leaves } => {
+                    ("Candidate (visible-cell)", candidate_leaves.to_string())
+                }
+                CameraCullPath::TreeWalk => ("Tree walk (legacy)", "—".to_string()),
+            };
+            ui.label(format!("Path: {path_label}"));
+            ui.label(format!("Candidate leaves: {candidate_label}"));
+            ui.label(format!("Total leaves: {}", diag.total_leaves));
+            ui.label(format!("Submitted leaves: {}", diag.submitted_leaves));
+            // Candidate vs total exposes future indirect-compaction headroom.
+            if let Some(candidates) = diag.candidate_leaves() {
+                if diag.total_leaves > 0 {
+                    let pct = 100.0 * candidates as f32 / diag.total_leaves as f32;
+                    ui.label(format!("Candidate / total: {pct:.1}%"));
+                }
             }
         });
 }

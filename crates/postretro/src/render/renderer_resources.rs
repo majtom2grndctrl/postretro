@@ -56,6 +56,7 @@ impl Renderer {
             direct_sh_volume: None,
             sdf_atlas: None,
             lightmap_mode: crate::prl::LightmapMode::default(),
+            cell_draw_index: None,
             texture_materials: &empty_materials,
         };
         self.install_level_geometry(&empty_geometry);
@@ -358,6 +359,12 @@ impl Renderer {
 
         // --- BVH + compute cull ---
         self.bvh_leaves = bvh_leaves;
+        // Per-cell draw index for the candidate-cull path. Cloned alongside the
+        // BVH leaves; the empty-geometry install path clears it to `None`, so
+        // `release_level_resources` drops it for free.
+        self.cell_draw_index = geometry.cell_draw_index.cloned();
+        // Reset per-level so a corrupt index on a later level still warns once.
+        self.candidate_cull_oor_logged = false;
         self.compute_cull = if !self.bvh_leaves.is_empty() {
             Some(ComputeCullPipeline::new(
                 &self.device,
@@ -367,6 +374,13 @@ impl Renderer {
         } else {
             None
         };
+        // Rebuild the candidate-cull path in lockstep with `compute_cull`, sized
+        // to the freshly-installed leaf count. Empty-geometry install → `None`,
+        // so `release_level_resources` drops it for free.
+        self.candidate_cull = self.compute_cull.as_ref().map(|c| {
+            crate::candidate_cull::CandidateCullPipeline::new(&self.device, c.total_leaves())
+        });
+
         // Rebuild the shadow cull owner against the freshly-uploaded BVH
         // buffers — its per-slot bind groups reference the camera cull's
         // node/leaf storage, so a stale reference would point at the old BVH.

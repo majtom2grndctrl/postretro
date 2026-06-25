@@ -86,9 +86,9 @@ fn is_aabb_outside_frustum(aabb_min: vec3<f32>, aabb_max: vec3<f32>) -> bool {
 }
 
 fn cell_is_visible(cell_id: u32) -> bool {
-    // Fixed 128-word / 4096-cell bitmask; sub-plan 1 enforces cell_id < 4096.
+    // Fixed 4096-word / 131072-cell bitmask; sub-plan 1 enforces cell_id < 131072.
     let word_idx = cell_id >> 5u;
-    if word_idx >= 128u {
+    if word_idx >= 4096u {
         return false;
     }
     let bit = 1u << (cell_id & 31u);

@@ -497,6 +497,7 @@ mod tests {
             initial_gravity: -9.81,
             fog_cell_masks: None,
             navmesh: None,
+            cell_draw_index: None,
         }
     }
 

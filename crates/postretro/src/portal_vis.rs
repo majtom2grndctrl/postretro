@@ -810,6 +810,7 @@ mod tests {
             initial_gravity: -9.81,
             fog_cell_masks: None,
             navmesh: None,
+            cell_draw_index: None,
         }
     }
 
@@ -905,6 +906,7 @@ mod tests {
             initial_gravity: -9.81,
             fog_cell_masks: None,
             navmesh: None,
+            cell_draw_index: None,
         };
 
         let frustum = make_camera_frustum(Vec3::ZERO, Vec3::NEG_Z);
@@ -999,6 +1001,7 @@ mod tests {
             initial_gravity: -9.81,
             fog_cell_masks: None,
             navmesh: None,
+            cell_draw_index: None,
         };
 
         // Camera in leaf A, looking straight along +X toward portal 0.
@@ -1334,6 +1337,7 @@ mod tests {
             initial_gravity: -9.81,
             fog_cell_masks: None,
             navmesh: None,
+            cell_draw_index: None,
         };
 
         // Camera looking through the LEFT passage (Z=63, center of Z=62..64 gap).
@@ -1753,6 +1757,7 @@ mod tests {
             initial_gravity: -9.81,
             fog_cell_masks: None,
             navmesh: None,
+            cell_draw_index: None,
         };
 
         let camera_pos = Vec3::new(1.0, 0.0, 0.0);
@@ -1936,6 +1941,7 @@ mod tests {
             initial_gravity: -9.81,
             fog_cell_masks: None,
             navmesh: None,
+            cell_draw_index: None,
         };
 
         // Camera at origin looking +X. The camera frustum is wide enough that
@@ -2050,6 +2056,7 @@ mod tests {
             initial_gravity: -9.81,
             fog_cell_masks: None,
             navmesh: None,
+            cell_draw_index: None,
         };
 
         // Camera pose from the captured blank-frame trace. The live trace
@@ -2195,6 +2202,7 @@ mod tests {
             initial_gravity: -9.81,
             fog_cell_masks: None,
             navmesh: None,
+            cell_draw_index: None,
         };
 
         // Camera pose from the captured blank-frame trace. z = -13.00

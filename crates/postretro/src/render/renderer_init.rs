@@ -180,9 +180,16 @@ impl Renderer {
 
         let bvh_leaves: Vec<crate::geometry::BvhLeaf> =
             geometry.map(|g| g.bvh.leaves.clone()).unwrap_or_default();
+        let cell_draw_index: Option<crate::prl::CellDrawIndex> =
+            geometry.and_then(|g| g.cell_draw_index.cloned());
         let compute_cull = geometry
             .filter(|g| !g.bvh.leaves.is_empty())
             .map(|g| ComputeCullPipeline::new(&device, g.bvh, has_multi_draw_indirect));
+        // Candidate-cull path — built in lockstep with `compute_cull`, sized to
+        // the same leaf count so it writes the same global slots.
+        let candidate_cull = compute_cull
+            .as_ref()
+            .map(|c| crate::candidate_cull::CandidateCullPipeline::new(&device, c.total_leaves()));
         // Sibling shadow cull owner shares the camera cull's read-only BVH
         // node/leaf buffers (uploaded once). Built/rebuilt in lockstep with it.
         let shadow_cull = compute_cull.as_ref().map(|c| {
@@ -539,7 +546,9 @@ impl Renderer {
             screen_effects,
             gpu_textures,
             bvh_leaves,
+            cell_draw_index,
             compute_cull,
+            candidate_cull,
             shadow_cull,
             wireframe_cull_status_pipeline,
             wireframe_visible_pipeline,
@@ -571,6 +580,9 @@ impl Renderer {
             debug_prev_bitmask: (u32::MAX, u32::MAX),
             debug_prev_vp_hash: u32::MAX,
             debug_prev_visible: ("init", usize::MAX),
+            candidate_cull_oor_logged: false,
+            camera_cull_diagnostics: crate::render::CameraCullDiagnostics::default(),
+            bvh_cull_diagnostics: None,
             shadow_debug_enabled: std::env::var("POSTRETRO_SHADOW_DEBUG").ok().as_deref()
                 == Some("1"),
             shadow_debug_prev: (u128::MAX, u128::MAX, u32::MAX, u32::MAX),

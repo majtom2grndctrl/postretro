@@ -179,9 +179,83 @@ impl Default for PortalOverlayState {
     }
 }
 
+/// Which camera-cull path ran for a frame, surfaced to the Spatial diagnostics
+/// tab. Diagnostic only — never gates behavior.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CameraCullPath {
+    /// Visible-cell candidate cull (valid `CellDrawIndex` + `Culled` + portal
+    /// provenance). `candidate_leaves` is the gathered candidate count.
+    Candidate { candidate_leaves: u32 },
+    /// Legacy whole-BVH tree walk (`DrawAll`, non-portal fallback, missing /
+    /// invalid index, or an out-of-range visible cell id).
+    TreeWalk,
+}
+
+/// CPU-derived camera-cull diagnostics for the Spatial tab. Captured each frame
+/// in `record_pre_scene_compute`. Exposes candidate-vs-total leaves so a future
+/// optional indirect-compaction pass is a measured decision, not a guess. Not a
+/// perf gate; reads no GPU buffers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CameraCullDiagnostics {
+    /// Which path the frame used.
+    pub path: CameraCullPath,
+    /// Total BVH leaves in the level (the tree walk's working set).
+    pub total_leaves: u32,
+    /// Leaves submitted this frame (passed the frustum predicate and, on the
+    /// candidate path, were gathered from visible cells). On the candidate path
+    /// this is a GPU-readback value: the candidate kernel's own atomic tally,
+    /// deferred-mapped over a small ring, so it lags the current frame by a few
+    /// frames and may not exactly match the live candidate count. On the tree
+    /// walk it remains CPU-derived. Diagnostic only; never gates behavior.
+    pub submitted_leaves: u32,
+}
+
+impl Default for CameraCullDiagnostics {
+    fn default() -> Self {
+        Self {
+            path: CameraCullPath::TreeWalk,
+            total_leaves: 0,
+            submitted_leaves: 0,
+        }
+    }
+}
+
+impl CameraCullDiagnostics {
+    /// Candidate leaf count for the frame, or `None` on the tree-walk path
+    /// (where there is no candidate gather).
+    #[cfg(any(feature = "dev-tools", test))]
+    pub fn candidate_leaves(&self) -> Option<u32> {
+        match self.path {
+            CameraCullPath::Candidate { candidate_leaves } => Some(candidate_leaves),
+            CameraCullPath::TreeWalk => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn camera_cull_diagnostics_reports_candidate_leaves_per_path() {
+        let candidate = CameraCullDiagnostics {
+            path: CameraCullPath::Candidate {
+                candidate_leaves: 7,
+            },
+            total_leaves: 100,
+            submitted_leaves: 3,
+        };
+        assert_eq!(candidate.candidate_leaves(), Some(7));
+
+        let tree_walk = CameraCullDiagnostics {
+            path: CameraCullPath::TreeWalk,
+            total_leaves: 100,
+            submitted_leaves: 42,
+        };
+        assert_eq!(tree_walk.candidate_leaves(), None);
+        // Default is the tree-walk path with zeroed counts.
+        assert_eq!(CameraCullDiagnostics::default().candidate_leaves(), None);
+    }
 
     #[test]
     fn world_wireframe_modes_define_final_spatial_contract() {
@@ -278,6 +352,10 @@ pub struct LevelGeometry<'a> {
     /// atlases leave it for runtime SDF shadowing so the forward pass does not
     /// double-count static-light occlusion. Legacy PRLs default to `Shadowed`.
     pub lightmap_mode: crate::prl::LightmapMode,
+    /// Per-cell BVH-leaf draw index (PRL section 37), cross-validated at load.
+    /// `None` → the candidate-cull GPU path is unavailable and the camera cull
+    /// falls back to the legacy tree-walk.
+    pub cell_draw_index: Option<&'a crate::prl::CellDrawIndex>,
     pub texture_materials: &'a [crate::material::Material],
 }
 
@@ -465,8 +543,20 @@ pub struct Renderer {
     /// GPU textures indexed by texture index.
     pub(super) gpu_textures: Vec<GpuTexture>,
     pub(super) bvh_leaves: Vec<crate::geometry::BvhLeaf>,
+    /// Per-cell BVH-leaf draw index (PRL section 37), cloned from the installed
+    /// `LevelGeometry`. `None` when the map has no valid index — the
+    /// candidate-cull GPU path consumes this; absent → legacy tree-walk camera
+    /// cull. Cleared by `release_level_resources`.
+    pub(super) cell_draw_index: Option<crate::prl::CellDrawIndex>,
     /// `None` for maps with no BVH.
     pub(super) compute_cull: Option<ComputeCullPipeline>,
+    /// Candidate-cull GPU path: gathers only visible cells' BVH
+    /// leaves (via the baked `cell_draw_index` CSR) and dispatches one
+    /// invocation per candidate leaf, writing the SAME global indirect/status
+    /// slots as `compute_cull`. Built in lockstep with `compute_cull`; used only
+    /// on candidate-eligible frames (valid index + `Culled` + `PrlPortal`),
+    /// otherwise the legacy tree walk runs. `None` for maps with no BVH.
+    pub(super) candidate_cull: Option<crate::candidate_cull::CandidateCullPipeline>,
     /// Per-slot cone cull for the spot-shadow depth passes. Sibling to
     /// `compute_cull`, sharing its read-only BVH node/leaf buffers. `None` for
     /// maps with no BVH (kept in lockstep with `compute_cull`).
@@ -521,6 +611,25 @@ pub struct Renderer {
     pub(super) debug_prev_bitmask: (u32, u32),
     pub(super) debug_prev_vp_hash: u32,
     pub(super) debug_prev_visible: (&'static str, usize),
+    /// One-shot guard so the candidate-cull out-of-range-cell warning logs once,
+    /// not every frame. Reset on each level install so a later level's corrupt
+    /// index still warns once.
+    pub(super) candidate_cull_oor_logged: bool,
+    /// CPU-derived camera-cull diagnostics from the last `record_pre_scene_compute`
+    /// (candidate vs tree-walk path, candidate/total/submitted leaves). Read by
+    /// the Spatial diagnostics tab (dev-tools). Diagnostic only — never gates
+    /// behavior.
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub(super) camera_cull_diagnostics: CameraCullDiagnostics,
+
+    /// Full tree-walk cull-cost estimate, recomputed every frame in
+    /// `record_pre_scene_compute` independent of which GPU cull strategy ran.
+    /// This is the baseline the candidate path beats — it must not be a side
+    /// effect of the tree-walk dispatch, or candidate-eligible frames starve it
+    /// to zero. `None` when no cull pipeline is loaded (no level / no BVH). Read
+    /// by the baseline diagnostics panel (dev-tools).
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub(super) bvh_cull_diagnostics: Option<crate::compute_cull::BvhCullDiagnostics>,
 
     /// `POSTRETRO_SHADOW_DEBUG=1`: env-gated shadow-pipeline diagnostics. Cached
     /// at construction so the hot path pays one bool test, not a `getenv`, per

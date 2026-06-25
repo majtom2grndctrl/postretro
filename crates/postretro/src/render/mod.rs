@@ -75,7 +75,7 @@ use crate::prl::MapLight;
 use crate::render::loaded_texture::{
     LoadedTexture, load_model_diffuse_texture, load_textures, placeholder_loaded_texture,
 };
-use crate::visibility::VisibleCells;
+use crate::visibility::{CameraCullVisibility, VisibilityPath, VisibleCells};
 use postretro_level_format::alpha_lights::ALPHA_LIGHT_LEAF_UNASSIGNED;
 use postretro_level_format::fog_cell_masks::union_active_mask;
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;

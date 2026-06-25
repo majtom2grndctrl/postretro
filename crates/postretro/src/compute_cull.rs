@@ -39,7 +39,7 @@ pub(crate) struct CullUniforms {
     pub(crate) planes: [[f32; 4]; 6],
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
 pub struct BvhFrontierDiagnostics {
     pub frontier_subtrees: u32,
@@ -48,7 +48,7 @@ pub struct BvhFrontierDiagnostics {
     pub imbalance_ratio: f32,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
 pub struct BvhCullDiagnostics {
     pub estimated_node_visits: u32,
@@ -82,17 +82,18 @@ pub struct ComputeCullPipeline {
     cull_status_buffer: wgpu::Buffer,
 
     visible_bitmask_scratch: Vec<u32>,
+    // CPU mirrors of the read-only BVH, kept for the dev-tools-only cull-cost
+    // estimate (`estimate_diagnostics`). Dead in shipping builds.
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
     bvh_nodes: Vec<BvhNode>,
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
     bvh_leaves: Vec<BvhLeaf>,
-    submitted_bucket_scratch: Vec<bool>,
-    latest_diagnostics: BvhCullDiagnostics,
 }
 
 impl ComputeCullPipeline {
     pub fn new(device: &wgpu::Device, bvh: &BvhTree, has_multi_draw_indirect: bool) -> Self {
         let total_leaves = bvh.leaves.len() as u32;
         let bucket_ranges = bvh.derive_bucket_ranges();
-        let bucket_count = bucket_ranges.len();
 
         let node_bytes = serialize_bvh_nodes(&bvh.nodes);
         let node_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -256,8 +257,6 @@ impl ComputeCullPipeline {
             visible_bitmask_scratch: vec![0u32; VISIBLE_CELLS_WORDS],
             bvh_nodes: bvh.nodes.clone(),
             bvh_leaves: bvh.leaves.clone(),
-            submitted_bucket_scratch: vec![false; bucket_count],
-            latest_diagnostics: BvhCullDiagnostics::default(),
         }
     }
 
@@ -307,14 +306,6 @@ impl ComputeCullPipeline {
         queue.write_buffer(&self.visible_cells_buffer, 0, &bitmask_bytes);
 
         let planes = extract_frustum_planes_for_gpu(view_proj);
-        self.latest_diagnostics = estimate_bvh_cull_with_planes(
-            &self.bvh_nodes,
-            &self.bvh_leaves,
-            &self.bucket_ranges,
-            visible,
-            &planes,
-            &mut self.submitted_bucket_scratch,
-        );
         let uniforms = CullUniforms { planes };
         let uniforms_bytes = serialize_cull_uniforms(&uniforms);
         queue.write_buffer(&self.uniform_buffer, 0, &uniforms_bytes);
@@ -390,6 +381,14 @@ impl ComputeCullPipeline {
         &self.cull_status_buffer
     }
 
+    /// The global per-leaf indirect draw buffer. The candidate-cull path
+    /// (`CandidateCullPipeline`) writes the SAME slots in this buffer that the
+    /// tree walk does, so the draw path (`bucket_ranges` / `draw_indirect_buckets`)
+    /// is byte-for-byte identical regardless of which cull ran.
+    pub(crate) fn indirect_buffer(&self) -> &wgpu::Buffer {
+        &self.indirect_buffer
+    }
+
     /// Read-only BVH node storage buffer, uploaded once at level load. The
     /// shadow cull owner (`ShadowCullPipeline`) binds the SAME buffer rather
     /// than re-serializing the BVH per slot.
@@ -424,9 +423,27 @@ impl ComputeCullPipeline {
         (pop, hash)
     }
 
+    /// Estimate the would-be tree-walk cull cost for this frame's frustum and
+    /// visible set. Pure read-only analysis over the CPU BVH mirrors — runs
+    /// regardless of which GPU cull strategy actually dispatched, so the
+    /// baseline panel is never starved when the candidate path takes over. The
+    /// bucket scratch is a one-per-frame local alloc; this is dev-tools-only.
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
-    pub fn latest_diagnostics(&self) -> BvhCullDiagnostics {
-        self.latest_diagnostics
+    pub fn estimate_diagnostics(
+        &self,
+        visible: &crate::visibility::VisibleCells,
+        view_proj: &Mat4,
+    ) -> BvhCullDiagnostics {
+        let planes = extract_frustum_planes_for_gpu(view_proj);
+        let mut bucket_scratch = vec![false; self.bucket_ranges.len()];
+        estimate_bvh_cull_with_planes(
+            &self.bvh_nodes,
+            &self.bvh_leaves,
+            &self.bucket_ranges,
+            visible,
+            &planes,
+            &mut bucket_scratch,
+        )
     }
 }
 
@@ -1021,11 +1038,11 @@ mod tests {
 
     /// Guards against `vec3<f32>` creeping back into the WGSL structs: alignment 16
     /// would silently shift every node/leaf after index 0 in the GPU storage buffers.
-    #[test]
-    fn wgsl_bvh_struct_strides_match_spec() {
-        let module = naga::front::wgsl::parse_str(CULL_SHADER_SOURCE)
-            .expect("cull shader should parse as WGSL");
-
+    /// Parse a WGSL source and map every declared struct name to its naga
+    /// `span` (the byte stride). Drift guard input is the actual shader text,
+    /// never a hand-copied field list.
+    fn struct_strides(source: &str) -> std::collections::HashMap<String, u32> {
+        let module = naga::front::wgsl::parse_str(source).expect("shader should parse as WGSL");
         let mut seen = std::collections::HashMap::new();
         for (_handle, ty) in module.types.iter() {
             if let naga::TypeInner::Struct { span, .. } = &ty.inner {
@@ -1034,12 +1051,50 @@ mod tests {
                 }
             }
         }
+        seen
+    }
 
-        let node_span = seen
+    /// Extract the full text of a top-level `fn <name>(...) { ... }` from WGSL
+    /// source, signature through the matching closing brace. Used to compare a
+    /// helper byte-for-byte between two shaders that copy it (WGSL has no
+    /// include). Returns the exact source slice including the braces.
+    fn extract_wgsl_fn<'a>(source: &'a str, name: &str) -> &'a str {
+        let needle = format!("fn {name}");
+        let start = source
+            .find(&needle)
+            .unwrap_or_else(|| panic!("shader should declare fn {name}"));
+        let brace_start = source[start..]
+            .find('{')
+            .map(|o| start + o)
+            .expect("function should have a body");
+        let mut depth = 0usize;
+        for (i, c) in source[brace_start..].char_indices() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return &source[start..brace_start + i + 1];
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("unbalanced braces extracting fn {name}");
+    }
+
+    /// `BvhNode`/`BvhLeaf` strides in `bvh_cull.wgsl` must match the on-disk
+    /// layout. Guards against `vec3<f32>` creeping back in (align 16 would
+    /// silently shift every node/leaf after index 0 in the GPU storage buffers).
+    #[test]
+    fn wgsl_bvh_struct_strides_match_spec() {
+        let strides = struct_strides(CULL_SHADER_SOURCE);
+
+        let node_span = strides
             .get("BvhNode")
             .copied()
             .expect("shader should declare struct BvhNode");
-        let leaf_span = seen
+        let leaf_span = strides
             .get("BvhLeaf")
             .copied()
             .expect("shader should declare struct BvhLeaf");
@@ -1055,6 +1110,134 @@ mod tests {
              a vec3<f32> field likely crept back in (align 16 → stride 64), \
              or the chunk_range_* fields were dropped"
         );
+    }
+
+    /// The candidate cull shader reuses `BvhLeaf`, `DrawIndexedIndirect`,
+    /// `FrustumPlane`, and `CullUniforms` from `bvh_cull.wgsl`. Their naga
+    /// strides must match between the two shaders, so the candidate path binds
+    /// the SAME leaf/indirect storage buffers without a layout mismatch. Strides
+    /// are derived from each shader's actual text, not a hand-copied list.
+    #[test]
+    fn candidate_shader_reuses_bvh_cull_struct_layouts() {
+        let bvh = struct_strides(CULL_SHADER_SOURCE);
+        let candidate = struct_strides(crate::candidate_cull::CANDIDATE_CULL_SHADER_SOURCE);
+
+        for name in [
+            "BvhLeaf",
+            "DrawIndexedIndirect",
+            "FrustumPlane",
+            "CullUniforms",
+        ] {
+            let a = bvh
+                .get(name)
+                .unwrap_or_else(|| panic!("bvh_cull.wgsl should declare struct {name}"));
+            let b = candidate
+                .get(name)
+                .unwrap_or_else(|| panic!("candidate_cull.wgsl should declare struct {name}"));
+            assert_eq!(
+                a, b,
+                "struct {name} stride differs between bvh_cull.wgsl ({a}) and \
+                 candidate_cull.wgsl ({b}); the candidate path must reuse the \
+                 byte-for-byte layout to share storage buffers"
+            );
+        }
+
+        // The shared BvhLeaf must still be 48 bytes in the candidate shader.
+        assert_eq!(candidate.get("BvhLeaf").copied(), Some(48));
+    }
+
+    /// `is_aabb_outside_frustum` is copied byte-for-byte between the two shaders
+    /// (no WGSL include). A diverging copy would frustum-test candidates with
+    /// different math than the tree walk, breaking the equivalence proof.
+    #[test]
+    fn is_aabb_outside_frustum_is_identical_across_shaders() {
+        let bvh_fn = extract_wgsl_fn(CULL_SHADER_SOURCE, "is_aabb_outside_frustum");
+        let candidate_fn = extract_wgsl_fn(
+            crate::candidate_cull::CANDIDATE_CULL_SHADER_SOURCE,
+            "is_aabb_outside_frustum",
+        );
+        assert_eq!(
+            bvh_fn, candidate_fn,
+            "is_aabb_outside_frustum must be byte-for-byte identical between \
+             bvh_cull.wgsl and candidate_cull.wgsl"
+        );
+    }
+
+    /// The 16-byte `CandidateCullParams` ABI: the WGSL struct is exactly 16
+    /// bytes (`candidate_count` + three pad words), the Rust constant agrees,
+    /// and the CPU serializer writes 16 bytes with `candidate_count` in the
+    /// first little-endian word.
+    #[test]
+    fn candidate_params_abi_is_sixteen_bytes() {
+        let strides = struct_strides(crate::candidate_cull::CANDIDATE_CULL_SHADER_SOURCE);
+        let params_span = strides
+            .get("CandidateCullParams")
+            .copied()
+            .expect("candidate_cull.wgsl should declare struct CandidateCullParams");
+        assert_eq!(
+            params_span as u64,
+            crate::candidate_cull::CANDIDATE_PARAMS_SIZE,
+            "CandidateCullParams WGSL stride must equal CANDIDATE_PARAMS_SIZE"
+        );
+
+        let bytes = crate::candidate_cull::serialize_candidate_params(0x1234_5678);
+        assert_eq!(
+            bytes.len() as u64,
+            crate::candidate_cull::CANDIDATE_PARAMS_SIZE,
+            "serialized params must be exactly CANDIDATE_PARAMS_SIZE bytes"
+        );
+        assert_eq!(
+            &bytes[0..4],
+            &0x1234_5678u32.to_le_bytes(),
+            "candidate_count must occupy the first little-endian word"
+        );
+        assert_eq!(&bytes[4..], &[0u8; 12], "pad words must be zero");
+    }
+
+    /// The baseline estimate is path-independent: it measures the full tree
+    /// walk over a `Culled` visible set — exactly the set a candidate-eligible
+    /// frame carries — and returns non-default counts. This is the contract the
+    /// renderer-driven analysis pass relies on: the baseline panel populates on
+    /// candidate frames (where the tree-walk dispatch never runs), not just on
+    /// tree-walk frames.
+    ///
+    /// Regression: baseline showed all zeros on candidate-eligible frames
+    /// because the estimate was a side effect of the tree-walk dispatch.
+    #[test]
+    fn cpu_bvh_estimate_populates_for_candidate_style_visible_set() {
+        let tree = BvhTree {
+            nodes: vec![
+                internal_node(3, [-0.5, -0.5, -0.5], [3.0, 0.5, 0.5]),
+                leaf_node_aabb(0, 2, [-0.5, -0.5, -0.5], [0.5, 0.5, 0.5]),
+                leaf_node_aabb(1, 3, [2.0, -0.5, -0.5], [3.0, 0.5, 0.5]),
+            ],
+            leaves: vec![
+                leaf_aabb(0, 7, [-0.5, -0.5, -0.5], [0.5, 0.5, 0.5]),
+                leaf_aabb(1, 8, [2.0, -0.5, -0.5], [3.0, 0.5, 0.5]),
+            ],
+            root_node_index: 0,
+        };
+        let planes = extract_frustum_planes_for_gpu(&Mat4::IDENTITY);
+        let mut bucket_scratch = Vec::new();
+        // `Culled` with a concrete visible-cell set — the shape a candidate
+        // frame carries. The full tree walk still runs in the estimate.
+        let diagnostics = estimate_bvh_cull_with_planes(
+            &tree.nodes,
+            &tree.leaves,
+            &tree.derive_bucket_ranges(),
+            &crate::visibility::VisibleCells::Culled(vec![7]),
+            &planes,
+            &mut bucket_scratch,
+        );
+
+        assert_ne!(
+            diagnostics,
+            BvhCullDiagnostics::default(),
+            "baseline estimate must be non-default for a candidate-style visible set"
+        );
+        // Whole tree visited; only the frustum-passing visible leaf submits.
+        assert_eq!(diagnostics.estimated_node_visits, 3);
+        assert_eq!(diagnostics.submitted_leaves, 1);
     }
 
     #[test]

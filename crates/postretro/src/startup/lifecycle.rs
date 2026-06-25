@@ -11,7 +11,7 @@ use crate::frame_timing::InterpolableState;
 use crate::render;
 use crate::scripting::builtins::{
     PLAYER_START_CLASSNAME, apply_classname_dispatch, apply_data_archetype_dispatch,
-    filter_out_client_ai_enemies, spawn_from_player_starts,
+    filter_out_client_ai_enemies, spawn_from_player_starts, suppressed_ai_enemy_mesh_models,
 };
 use crate::scripting::reaction_dispatch::{
     fire_named_event_with_sequences, validate_scoped_sequence_primitives,
@@ -875,6 +875,14 @@ impl App {
         }
         self.level_timings.record("data_script");
 
+        // E10 AC #3: mesh model handles of the AI-enemy placements a connected
+        // client suppresses below. They never spawn a local `MeshComponent`, so
+        // the registry-driven model sweep cannot see them — but the host will
+        // materialize the remote enemy from a snapshot, and the draw planner
+        // needs the model already uploaded. Captured at the filter site and
+        // unioned into the level-load model sweep. Empty off a connected client.
+        let mut suppressed_enemy_models: Vec<String> = Vec::new();
+
         // Data-archetype sweep: `data_registry.entities` was populated from
         // `ModManifest.entities` at mod-init. Materialize every matching map
         // placement that the built-in dispatch did not already handle.
@@ -907,6 +915,13 @@ impl App {
             let mut registry = self.script_ctx.registry.borrow_mut();
             let mut map_entities = self.pending_map_entities.take().unwrap_or_default();
             if suppress_ai_enemies {
+                // Capture the suppressed enemies' mesh models BEFORE dropping
+                // the placements (E10 AC #3): the client never spawns these
+                // locally, so the registry sweep cannot find their models, yet
+                // the host-replicated remote enemy must be drawable. The
+                // level-load sweep unions these into its upload set.
+                suppressed_enemy_models =
+                    suppressed_ai_enemy_mesh_models(&map_entities, &descriptors);
                 let kept = filter_out_client_ai_enemies(&map_entities, &descriptors);
                 let dropped = map_entities.len() - kept.len();
                 if dropped > 0 {
@@ -1096,7 +1111,22 @@ impl App {
 
             let models = {
                 let registry = self.script_ctx.registry.borrow();
-                crate::distinct_mesh_models(&registry)
+                let mut models = crate::distinct_mesh_models(&registry);
+                // E10 AC #3: union the suppressed remote-enemy models. A
+                // connected client filtered these placements out before
+                // dispatch, so they have no live `MeshComponent` for
+                // `distinct_mesh_models` to find — but the host will replicate
+                // the enemy and the draw planner needs the model uploaded now.
+                // Dedup against the registry-driven set (a model also used by a
+                // locally-spawned mesh is already present). Empty on
+                // single-player / listen host, so those paths are unchanged.
+                let mut seen: std::collections::HashSet<String> = models.iter().cloned().collect();
+                for model in &suppressed_enemy_models {
+                    if seen.insert(model.clone()) {
+                        models.push(model.clone());
+                    }
+                }
+                models
             };
             for model in &models {
                 renderer.load_skinned_model(model, &self.content_root, &prm_cache_root);

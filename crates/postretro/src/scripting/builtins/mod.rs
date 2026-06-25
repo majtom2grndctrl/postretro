@@ -27,7 +27,9 @@ pub(crate) use data_archetype::{PLAYER_START_CLASSNAME, spawn_from_player_starts
 // pulls in the scripting tree but never installs a level, so the import is
 // unused there.
 #[allow(unused_imports)]
-pub(crate) use data_archetype::{descriptor_materializes_ai_enemy, filter_out_client_ai_enemies};
+pub(crate) use data_archetype::{
+    descriptor_materializes_ai_enemy, filter_out_client_ai_enemies, suppressed_ai_enemy_mesh_models,
+};
 
 // Re-export so call sites that say `super::MapEntity` (handlers, tests) keep
 // working unchanged. The struct itself lives in `scripting::map_entity`.

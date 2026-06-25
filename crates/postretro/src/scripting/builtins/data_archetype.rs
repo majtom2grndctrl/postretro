@@ -306,6 +306,58 @@ pub(crate) fn filter_out_client_ai_enemies(
         .collect()
 }
 
+/// Collect the distinct, non-empty mesh model handles referenced by the
+/// AI-enemy map placements a connected client suppresses
+/// ([`filter_out_client_ai_enemies`]), preserving first-seen order. GPU-free:
+/// this is the pure analogue of [`crate::distinct_mesh_models`] for placements
+/// that never spawn a local `MeshComponent` on a connected client, so the
+/// registry-driven sweep cannot see them.
+///
+/// Scoped to the classes the **map actually references** (the placements passed
+/// in), not every AI descriptor in the data registry — only enemies the host
+/// can replicate into this level need their model on the GPU. A placement is
+/// included only when its matched descriptor both materializes an AI enemy
+/// ([`descriptor_materializes_ai_enemy`]) AND carries a `mesh` block with a
+/// non-empty `model`; non-AI placements and AI descriptors without a renderable
+/// mesh contribute nothing.
+///
+/// Regression (E10 AC #3): a connected client filtered out the AI-enemy
+/// placement before dispatch, so its model was never in the registry-driven
+/// upload set; when the host snapshot later materialized the remote enemy the
+/// draw planner dropped it (no uploaded mesh in the model cache) and the real
+/// model never rendered — only a dev-tools debug capsule showed. The level-load
+/// sweep unions these handles with [`crate::distinct_mesh_models`] so the
+/// suppressed enemy's model is uploaded up front.
+///
+/// Each returned string is the VERBATIM renderer cache key (the descriptor's
+/// `mesh.model`), identical in shape to [`crate::distinct_mesh_models`] output,
+/// so the caller can dedup the two sets and upload each handle once.
+pub(crate) fn suppressed_ai_enemy_mesh_models(
+    entities: &[MapEntity],
+    descriptors: &[EntityTypeDescriptor],
+) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut ordered = Vec::new();
+    for entity in entities {
+        let Some(descriptor) = find_descriptor(descriptors, &entity.classname) else {
+            continue;
+        };
+        if !descriptor_materializes_ai_enemy(descriptor) {
+            continue;
+        }
+        let Some(mesh) = descriptor.mesh.as_ref() else {
+            continue;
+        };
+        if mesh.model.is_empty() {
+            continue;
+        }
+        if seen.insert(mesh.model.clone()) {
+            ordered.push(mesh.model.clone());
+        }
+    }
+    ordered
+}
+
 /// Attach descriptor components to an already-spawned entity. `initial_*` KVP
 /// overrides are applied to `emitter` and `light` before attachment;
 /// `movement` receives descriptor values verbatim. Weapon attachment is opt-in
@@ -2066,6 +2118,43 @@ mod tests {
 
         assert_eq!(kept.len(), 1, "both grunt placements dropped, crate kept");
         assert_eq!(kept[0].classname, "crate");
+    }
+
+    #[test]
+    fn suppressed_ai_enemy_mesh_models_collects_filtered_enemy_models_for_upload() {
+        // Regression (E10 AC #3): a connected client filters AI-enemy placements
+        // out before dispatch, so their model is absent from the registry-driven
+        // upload set; the host-replicated remote enemy then has no uploaded mesh
+        // and renders only a debug capsule. This pins the seam that feeds the
+        // suppressed enemies' models into the level-load upload union: the
+        // map-referenced AI enemy's model is collected; non-AI props and
+        // unknown classnames contribute nothing.
+        let descriptors = vec![
+            ai_enemy_descriptor("grunt"),
+            mesh_descriptor("crate", false),
+        ];
+        let placements = vec![
+            placement("grunt", &[]),
+            placement("crate", &[]),
+            placement("grunt", &[]),
+            placement("mystery", &[]),
+        ];
+
+        let models = suppressed_ai_enemy_mesh_models(&placements, &descriptors);
+
+        // Only the AI enemy's mesh model, deduped across both grunt placements;
+        // the non-AI crate and the unknown classname add nothing.
+        assert_eq!(models, vec!["decraniated".to_string()]);
+    }
+
+    #[test]
+    fn suppressed_ai_enemy_mesh_models_empty_without_ai_placements() {
+        // No map-referenced AI enemy ⇒ nothing to pre-upload (the single-player /
+        // listen-host case where the registry sweep already covers every mesh).
+        let descriptors = vec![mesh_descriptor("crate", false)];
+        let placements = vec![placement("crate", &[]), placement("mystery", &[])];
+
+        assert!(suppressed_ai_enemy_mesh_models(&placements, &descriptors).is_empty());
     }
 
     #[test]

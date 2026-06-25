@@ -16,7 +16,7 @@ TrenchBroom (.map) ──► prl-build (postretro-level-compiler) ──► PRL 
 Engine loads PRL + .prm sidecars at runtime (PNGs for UI only)
 ```
 
-prl-build builds a BSP tree as a compiler intermediate, generates portal geometry, builds a global BVH over all static triangles, and packs runtime data into a custom binary format. BSP drives spatial partitioning and portal generation at compile time; the runtime consumes cells, portals, and BVH arrays. Engine loads via the `postretro-level-format` crate.
+prl-build builds a BSP tree as a compiler intermediate, generates portal geometry, builds a global BVH over all static triangles, and packs runtime data into a custom binary format. BSP drives spatial partitioning and portal generation at compile time; the runtime consumes cells, portals, and BVH arrays, and still descends the BspNodes/BspLeaves tree for camera-leaf (point→cell) lookup — replacing that lookup with a dedicated cell-location section is a future step. Engine loads via the `postretro-level-format` crate.
 
 ---
 

@@ -98,6 +98,7 @@ Plans ship in this sequence:
 - [ ] **Spatial audio** — positional sources with attenuation; listener driven by the player/camera.
 - [ ] **Reverb zones** — runtime playback for `env_reverb_zone` acoustic zones (baked data already resolves them to leaves at load; see `context/lib/audio.md`).
 - [ ] **Sound-event playback** — route entity-emitted sound events through real mixed, spatialized playback; entities raise events, audio plays them.
+- [ ] **Baked BVH audio occlusion** *(later / additive)* — bake an occlusion/obstruction dataset by casting source→listener segments through the compile-time geometry BVH (the same `bvh`-crate accelerator the lighting bakers already use for shadow rays), so a sound's path through solid geometry attenuates and low-pass-filters it at runtime. Extends the baked acoustic model beyond reverb *zones* (which color a sound by the listener's region) to true *obstruction* (geometry between source and listener muffling it — a wall between you and a firefight). Pairs naturally with the runtime portal graph: portals are the open paths, baked occlusion is the cost of the blocked ones. Reuses work already paid for at bake time. Speculative; sequenced after the core foundation lands.
 
 **Testable outcome:** spatialized combat and ambient audio; reverb zones audibly change acoustics; entity-emitted sound events drive real playback with no changes to weapon or enemy code.
 

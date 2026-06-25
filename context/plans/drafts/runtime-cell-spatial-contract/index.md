@@ -8,8 +8,8 @@ empty space. Runtime systems consume cells, portals, cell draw data, BVH draw
 accelerators, and the existing collision trimesh.
 
 This is a follow-on to `context/plans/ready/perf-visible-cell-candidate-cull/`.
-It assumes the visible-cell candidate cull path and `CellDrawIndex` section
-exist.
+It depends on that plan landing first. `CellDrawIndex = 37` is not in current
+source on this checkout.
 
 ## Scope
 
@@ -61,14 +61,14 @@ exist.
       path when cell ids equal legacy leaf ids.
 - [ ] Candidate cull consumes cell ids from portal traversal and
       `CellDrawIndex`; it does not walk runtime BSP nodes.
-- [ ] BVH data remains loaded and uploaded for world draw, shadow cone cull,
-      diagnostics, and compile-time ray/bake consumers. The spec does not
-      collapse visibility into BVH traversal.
+- [ ] Runtime BVH data remains loaded and uploaded for world draw, shadow cone
+      cull, and diagnostics. The spec does not collapse visibility into BVH
+      traversal.
 - [ ] `CollisionWorld::populate_from_level`, `cast_capsule`, and `cast_ray`
       keep using PRL static geometry through `parry3d` queries. No collision AC
       depends on BSP or the new cell locator.
 - [ ] Cell diagnostics show current cell, portal-reachable drawable cells,
-      fog/light-reachable cells, locator path, and candidate leaf counts.
+      fog-reachable cells, locator path, and candidate leaf counts.
 - [ ] Loader validation rejects malformed new sections with a warning and falls
       back to legacy BSP sections when present.
 - [ ] Loader validation fails the PRL load only when neither the new cell path
@@ -98,10 +98,12 @@ BSP leaf. The section stores enough runtime information to replace
 status, drawable face count, and portal adjacency range. It does not store BSP
 split planes.
 
-Compiler writes `Cells` from the BSP leaf records after portal generation and
-exterior classification. Runtime loads `Cells` into a cell data type owned by
-`LevelWorld`. Legacy `LeafData` may remain internally during migration, but the
-preferred path must be named and treated as cells.
+Compiler writes `Cells` from BSP leaf records plus the compiler's exterior-leaf
+classification data after portal generation. `BspLeafRecord` does not carry
+exterior status; the current exterior cull zeroes face counts. Runtime loads
+`Cells` into a cell data type owned by `LevelWorld`. Legacy `LeafData` may
+remain internally during migration, but the preferred path must be named and
+treated as cells.
 
 ### Task 3: Add the `CellLocator` Section
 
@@ -162,7 +164,8 @@ runtime requires from the PRL.
 Update dev-tool overlays to label cells, portals, and BVH leaves without BSP
 terminology on the preferred path. Keep legacy labels only where the fallback is
 actually active. Add diagnostics that show whether the current frame used
-`CellLocator` or legacy BSP lookup.
+`CellLocator` or legacy BSP lookup, plus fog-reachable and portal-reachable
+cells.
 
 Update `context/lib/build_pipeline.md`, `context/lib/rendering_pipeline.md`,
 and `context/lib/entity_model.md` at promotion time, not during the draft. The
@@ -243,8 +246,9 @@ shape for this engine. Prefer dynamic portal state over mutable occluder BVHs.
 ## Wire Format
 
 All new PRL section fields are little-endian. `Cells` uses section id 38.
-`CellLocator` uses section id 39. This follows `CellDrawIndex = 37` from
-`perf-visible-cell-candidate-cull`.
+`CellLocator` uses section id 39. These are follow-on ids after
+`CellDrawIndex = 37` from `perf-visible-cell-candidate-cull`, which must land
+first.
 
 ### `Cells`
 

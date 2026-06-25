@@ -19,7 +19,7 @@ use crate::scripting::registry::{ComponentKind, EntityId, EntityRegistry};
 ///   `ComponentKind::Agent` (the engine-owned AI brain + navigation agent an `ai`
 ///   descriptor block materializes together — see `data_archetype::attach_descriptor_components`).
 ///
-/// Contract notes for importers (this is a deliverable other tasks depend on):
+/// Contract notes for importers:
 /// - It reads the **live component columns**, NOT `DescriptorProvenance.owned_components`.
 ///   `owned_components` only tracks the modder-declarable `DescriptorComponentKind` set
 ///   (weapon/movement/light/emitter/mesh/health) and never includes the AI components,

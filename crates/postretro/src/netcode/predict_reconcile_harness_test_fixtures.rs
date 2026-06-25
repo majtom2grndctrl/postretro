@@ -172,7 +172,7 @@ pub(crate) fn entity_descriptors() -> Vec<EntityTypeDescriptor> {
 }
 
 /// The `DescriptorProvenance` a real net-slot pawn carries, so the host snapshot
-/// production (`produce_owned_snapshots` -> `movement_entity_class`) stamps
+/// production (`produce_owned_snapshots` -> `descriptor_entity_class`) stamps
 /// `entity_class = Some("player")` on the owned snapshot — exactly as
 /// `spawn_net_slot_pawn` does in production.
 fn net_slot_provenance() -> DescriptorProvenance {

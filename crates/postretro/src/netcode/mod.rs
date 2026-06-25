@@ -480,6 +480,21 @@ impl NetworkIdAllocator {
         self.map.insert(id, net_id);
         net_id
     }
+
+    /// Drop the dead `EntityId -> NetworkId` mapping for an entity that no longer
+    /// replicates (e.g. unregistered on level reload), so the map does not accrue
+    /// one dead entry per ever-spawned replicable for the host's lifetime. Does
+    /// not touch `next`: NetworkIds stay monotonic and are never recycled — only
+    /// the stale mapping entry is pruned.
+    pub(crate) fn forget(&mut self, id: EntityId) {
+        self.map.remove(&id);
+    }
+
+    /// Test-only: is an `EntityId -> NetworkId` mapping currently retained?
+    #[cfg(test)]
+    pub(crate) fn maps_entity(&self, id: EntityId) -> bool {
+        self.map.contains_key(&id)
+    }
 }
 
 /// Engine-aligned `u16` wire discriminant for a `ComponentKind`, via an

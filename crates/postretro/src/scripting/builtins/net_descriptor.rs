@@ -228,7 +228,7 @@ pub(crate) fn materialize_net_remote_enemy_presentation(
         return false;
     };
     let Some(mesh_desc) = descriptor.mesh.as_ref() else {
-        log::warn!(
+        log::debug!(
             "[Net] remote enemy entity_class `{entity_class}` has no mesh block; \
              leaving remote pawn transform-only (will not render)"
         );

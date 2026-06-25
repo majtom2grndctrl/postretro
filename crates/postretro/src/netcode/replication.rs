@@ -29,9 +29,9 @@ use super::{
 };
 
 /// The Phase 2 replicable set: entities `crate::netcode` has explicitly registered
-/// as authoritative networked gameplay objects. Task 4 registers the slot-owned
-/// inert pawns and Task 6 the host-owned demo mover; this set is the registration
-/// mechanism the predicate consults.
+/// as authoritative networked gameplay objects — slot-owned movement pawns, the
+/// host's own pawn, and map-placed AI enemies (Brain + Agent from a `MapPlacement`
+/// descriptor spawn). This set is the registration mechanism the predicate consults.
 ///
 /// Membership is by `EntityId`. The predicate ([`is_replicable`]) is the authority
 /// on what crosses the wire — this set is its allow-list, layered over the
@@ -49,7 +49,8 @@ impl ReplicableSet {
 
     // The register/unregister/contains surface is the registration mechanism for
     // authoritative networked entities: the lifecycle glue registers slot-owned
-    // inert pawns and the demo path registers the host-owned mover.
+    // movement pawns and the host's own pawn, and the enemy sweep registers
+    // map-placed AI enemies.
     /// Register an entity as an authoritative networked gameplay object. Idempotent.
     pub(crate) fn register(&mut self, id: EntityId) {
         self.registered.insert(id);
@@ -75,9 +76,10 @@ impl ReplicableSet {
 }
 
 /// Phase 2 replicable-set predicate. An entity replicates iff it is explicitly
-/// registered in [`ReplicableSet`] (the host-owned demo mover, slot-owned inert
-/// pawns, and entities `crate::netcode` registered as authoritative networked
-/// gameplay objects). The Phase 1 all-`Transform` walk is deliberately *not* reused.
+/// registered in [`ReplicableSet`] (slot-owned movement pawns, the host's own pawn,
+/// and map-placed AI enemies — the authoritative networked gameplay objects
+/// `crate::netcode` registers). The Phase 1 all-`Transform` walk is deliberately
+/// *not* reused.
 ///
 /// Registration is the allow-list, so deterministic client-local / baked
 /// presentation entities (`BillboardEmitter`, `ParticleState`, `SpriteVisual`,
@@ -212,6 +214,10 @@ pub(crate) fn host_register_map_enemies(
     // or is a different entity now — never the live enemy we are about to register.
     for stale in tracked.drain() {
         replicable.unregister(stale);
+        // Prune the dead EntityId mapping so the allocator map does not accrue one
+        // entry per ever-spawned enemy. NetworkIds stay monotonic; only the stale
+        // mapping is dropped.
+        allocator.forget(stale);
     }
 
     let mut count = 0usize;
@@ -404,6 +410,44 @@ mod tests {
         );
         assert_eq!(tracked.len(), 1, "exactly one enemy tracked after reload");
         assert!(tracked.contains(&level2_enemy));
+    }
+
+    // Fix A: reload cleanup also prunes the allocator's EntityId->NetworkId map so it
+    // does not accrue a dead entry per ever-spawned enemy. NetworkIds stay monotonic —
+    // the fresh enemy gets a new, higher id, never the dropped stale one.
+    #[test]
+    fn host_reload_forgets_dead_enemy_from_allocator_map() {
+        let mut registry = EntityRegistry::new();
+        let mut allocator = NetworkIdAllocator::new();
+        let mut set = ReplicableSet::new();
+        let mut tracked: HashSet<EntityId> = HashSet::new();
+
+        // Level 1: one enemy registered, stamped, and mapped in the allocator.
+        let level1_enemy = spawn_ai_map_enemy(&mut registry, "grunt");
+        host_register_map_enemies(&registry, &mut allocator, &mut set, &mut tracked);
+        let level1_net_id = allocator.stamp(level1_enemy);
+        assert!(
+            allocator.maps_entity(level1_enemy),
+            "the level-1 enemy is mapped in the allocator after registration"
+        );
+
+        // Reload: despawn the level-1 enemy and spawn a fresh, distinct level-2 enemy.
+        registry.despawn(level1_enemy).expect("live enemy despawns");
+        let level2_enemy = spawn_ai_map_enemy(&mut registry, "grunt");
+        host_register_map_enemies(&registry, &mut allocator, &mut set, &mut tracked);
+
+        assert!(
+            !allocator.maps_entity(level1_enemy),
+            "the dead level-1 EntityId is forgotten from the allocator map on reload"
+        );
+
+        // Monotonicity intact: the fresh enemy gets a new, higher NetworkId — the dropped
+        // stale id is never recycled.
+        let level2_net_id = allocator.stamp(level2_enemy);
+        assert!(
+            level2_net_id.0 > level1_net_id.0,
+            "the reloaded enemy gets a new, higher NetworkId; ids are never recycled"
+        );
     }
 
     // E10 Task 4: snapshot production stamps `entity_class` from DescriptorProvenance for

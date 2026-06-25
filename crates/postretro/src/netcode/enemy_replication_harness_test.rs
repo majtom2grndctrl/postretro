@@ -66,7 +66,10 @@ use glam::{Quat, Vec3};
 
 use postretro_net::harness::{LinkConfig, PacketConditioner, VirtualMillis};
 use postretro_net::replication::{EntitySnapshot, ServerReplication};
-use postretro_net::wire::{self, NetworkId, RawSnapshotMessage};
+use postretro_net::wire::{
+    self, ComponentPayload, EntityRecord, NetworkId, RawSnapshotMessage, SnapshotMessage,
+    WireTransform,
+};
 
 use super::client::ClientReplication;
 use super::interpolation::PoseSource;
@@ -78,7 +81,7 @@ use crate::scripting::builtins::data_archetype::{
 };
 use crate::scripting::components::agent::AgentComponent;
 use crate::scripting::components::brain::{AiStateMap, AiTuning, BrainComponent, LogicalState};
-use crate::scripting::components::mesh::{AnimationState, InterruptPolicy};
+use crate::scripting::components::mesh::{AnimationState, InterruptPolicy, MeshComponent};
 use crate::scripting::data_descriptors::{EntityTypeDescriptor, MeshDescriptor};
 use crate::scripting::provenance::{
     DescriptorComponentKind, DescriptorProvenance, DescriptorSpawnPath,
@@ -443,6 +446,38 @@ impl EnemyReplicationHarness {
     /// exactly ONE enemy presentation exists).
     fn client_entities_with_kind(&self, kind: ComponentKind) -> usize {
         self.client_registry.iter_with_kind(kind).count()
+    }
+
+    /// TEST-ONLY helper: deliver a `SnapshotMessage` directly through the REAL
+    /// `ClientReplication::apply_snapshot` + Task 6 remote-enemy materialization seam,
+    /// bypassing the conditioner/wire layer. The sequence must be greater than any
+    /// previously applied sequence for the snapshot to be accepted. Feeds produced acks
+    /// back to the server tracker (identical to `client_receive`). Returns the
+    /// `ApplyOutcome` for the caller to inspect.
+    ///
+    /// Use this for structural edge-case tests (re-baseline, despawn of unknown id) that
+    /// need surgical control over the snapshot content — the conditioned-link path cannot
+    /// target a specific record shape deterministically.
+    #[cfg(test)]
+    fn inject_snapshot_to_client(
+        &mut self,
+        snapshot: &postretro_net::wire::SnapshotMessage,
+    ) -> super::client::ApplyOutcome {
+        let outcome = self
+            .client_replication
+            .apply_snapshot(&mut self.client_registry, snapshot);
+        for remote in &outcome.remote_enemies {
+            materialize_armed_remote_enemy(remote, &self.descriptors, &mut self.client_registry);
+        }
+        if let Some(ack) = &outcome.ack {
+            self.server_replication.apply_ack(
+                CLIENT_ID,
+                ack.latest_snapshot_sequence,
+                &ack.entity_baselines,
+                &ack.despawn_tombstones,
+            );
+        }
+        outcome
     }
 }
 
@@ -921,5 +956,266 @@ fn late_joining_client_receives_only_live_enemies() {
         client_registry.iter_with_kind(ComponentKind::Mesh).count(),
         1,
         "the late joiner renders exactly the one live enemy (no dead ghost)"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 5. Re-baseline of an already-materialized remote enemy is idempotent.
+// ---------------------------------------------------------------------------
+
+// A full-baseline re-delivery for a NetworkId the client has already mapped+materialized
+// must NOT surface a second `RemoteEnemyMaterialize` request and must NOT reset the
+// enemy's live mesh-animation state. The entity stays exactly as it was: one mesh,
+// unchanged animation current_state, no Brain/Agent. This exercises the
+// `apply_full_baseline` branch for an already-mapped, already-live entity, which applies
+// components in place (no respawn) and deliberately omits the `remote_enemies` push.
+#[test]
+fn remote_enemy_rebaseline_does_not_resurface_materialize_or_reset_animation() {
+    let mut h = EnemyReplicationHarness::new(perfect_link());
+
+    // Host: one map-placed AI enemy registered for replication.
+    let enemy = spawn_host_ai_enemy(&mut h.host_registry, ENEMY_CLASS, Vec3::new(5.0, 0.0, 0.0));
+    h.host_register_enemies();
+    let net_id = h.enemy_network_id(enemy);
+
+    // Drive the host→client path until the enemy materializes (first baseline).
+    h.step_until_client_maps(net_id, 16);
+    let remote = h
+        .client_mapped_entity(net_id)
+        .expect("client mapped the remote enemy after first baseline");
+
+    // Confirm the enemy arrived with its presentation mesh and the default animation
+    // state ("idle" from the descriptor).
+    assert_eq!(
+        h.client_entities_with_kind(ComponentKind::Mesh),
+        1,
+        "exactly one mesh after first materialization"
+    );
+    let mesh_before = h
+        .client_registry
+        .get_component::<MeshComponent>(remote)
+        .expect("remote entity carries a MeshComponent after materialization")
+        .clone();
+    assert_eq!(
+        mesh_before.animation.as_ref().unwrap().current_state,
+        "idle",
+        "animation starts in the descriptor default state"
+    );
+
+    // Advance the live animation state to something non-default so a re-reset would be
+    // observable.
+    {
+        let mut mesh = mesh_before.clone();
+        mesh.animation.as_mut().unwrap().current_state = "locomotion".to_string();
+        h.client_registry
+            .set_component(remote, mesh)
+            .expect("set animation state");
+    }
+
+    // Deliver a second FULL BASELINE for the SAME NetworkId through the real apply path.
+    // We use a sequence strictly greater than the latest accepted one, and the same
+    // NetworkId, to exercise the `FullBaseline, mapped + live` branch of apply_snapshot.
+    let latest_seq = h.client_replication.latest_sequence().unwrap_or(0);
+    let rebaseline_snapshot = SnapshotMessage {
+        sequence: latest_seq + 1,
+        server_tick: h.server_tick + 1,
+        state_schema_fingerprint: [0u8; 32],
+        state_records: Vec::new(),
+        records: vec![EntityRecord::FullBaseline {
+            network_id: net_id.0,
+            // A fresh baseline_id so the server can track the re-baseline round-trip.
+            baseline_id: 999,
+            last_processed_client_tick: None,
+            local_player: false,
+            entity_class: Some(ENEMY_CLASS.to_string()),
+            components: vec![ComponentPayload::Transform(WireTransform {
+                position: [5.0, 0.0, 0.0],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                scale: [1.0, 1.0, 1.0],
+            })],
+        }],
+    };
+    let outcome = h.inject_snapshot_to_client(&rebaseline_snapshot);
+
+    // CORE ASSERTION (a1): the apply does NOT surface a second RemoteEnemyMaterialize
+    // for this NetworkId. The `apply_full_baseline` already-mapped-and-live branch
+    // never pushes to `remote_enemies`.
+    assert!(
+        outcome.remote_enemies.iter().all(|r| r.entity_id != remote),
+        "re-baseline must not surface a second RemoteEnemyMaterialize for the already-materialized enemy"
+    );
+    assert!(
+        outcome.remote_enemies.is_empty(),
+        "the re-baseline snapshot carries only one record and it must not trigger materialization"
+    );
+
+    // CORE ASSERTION (a2): the live mesh-animation state is NOT reset. The enemy's
+    // current_state must still be "locomotion" (what we set) — materialization did not
+    // re-run / re-attach the mesh component.
+    let mesh_after = h
+        .client_registry
+        .get_component::<MeshComponent>(remote)
+        .expect("remote entity still carries a MeshComponent after re-baseline");
+    assert_eq!(
+        mesh_after.animation.as_ref().unwrap().current_state,
+        "locomotion",
+        "re-baseline must not reset live animation state (materialization did not re-run)"
+    );
+
+    // Structural sanity: still exactly one mesh, still no Brain/Agent.
+    assert_eq!(
+        h.client_entities_with_kind(ComponentKind::Mesh),
+        1,
+        "re-baseline must not spawn a second mesh entity (no duplicate)"
+    );
+    assert_eq!(
+        h.client_replication.map().len(),
+        1,
+        "re-baseline must not change the number of mapped networked entities"
+    );
+    for kind in [ComponentKind::Brain, ComponentKind::Agent] {
+        assert_eq!(
+            h.client_registry.has_component_kind(remote, kind),
+            Ok(false),
+            "re-baseline must not attach {kind:?} (host stays authoritative)"
+        );
+    }
+
+    // The ack IS produced (the re-baseline was accepted).
+    assert!(
+        outcome.ack.is_some(),
+        "a re-baseline snapshot must be acked (it was accepted)"
+    );
+    let ack = outcome.ack.unwrap();
+    assert_eq!(
+        ack.latest_snapshot_sequence,
+        latest_seq + 1,
+        "ack carries the new sequence"
+    );
+    assert_eq!(
+        ack.entity_baselines,
+        vec![(net_id.0, 999)],
+        "the re-baseline is acked with its baseline_id"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 6. Despawn for a never-mapped NetworkId is handled cleanly (no panic, clean ack).
+// ---------------------------------------------------------------------------
+
+// Without ever mapping a given NetworkId on the client, delivering a despawn record for
+// it must be a clean no-op: no panic, the snapshot is accepted and acked (the tombstone
+// is acked so the server stops resending it), no entity is removed that shouldn't be,
+// and client state (map, interp buffer) stays consistent. This exercises the
+// `apply_despawn` idempotency contract for a completely unknown NetworkId — a scenario
+// that arises when a client joins after an enemy already despawned (the late-join path
+// sends only live entities, but a duplicate or reordered despawn packet could arrive
+// for an entity the client never saw).
+#[test]
+fn despawn_for_unmapped_network_id_is_a_clean_noop() {
+    let mut h = EnemyReplicationHarness::new(perfect_link());
+
+    // Optionally establish one live enemy so we can prove the despawn leaves it intact.
+    let live_enemy =
+        spawn_host_ai_enemy(&mut h.host_registry, ENEMY_CLASS, Vec3::new(1.0, 0.0, 0.0));
+    h.host_register_enemies();
+    let live_net_id = h.enemy_network_id(live_enemy);
+    h.step_until_client_maps(live_net_id, 16);
+    assert!(
+        h.client_mapped_entity(live_net_id).is_some(),
+        "live enemy is mapped before the test"
+    );
+    let live_remote = h.client_mapped_entity(live_net_id).unwrap();
+
+    // Choose a NetworkId that was NEVER seen by this client.
+    let phantom_net_id: u32 = 9999;
+    assert!(
+        !h.client_replication
+            .map()
+            .contains_key(&NetworkId(phantom_net_id)),
+        "sanity: phantom NetworkId must not be mapped before the test"
+    );
+
+    let map_len_before = h.client_replication.map().len();
+    let registry_len_before = h
+        .client_registry
+        .iter_with_kind(ComponentKind::Mesh)
+        .count();
+
+    // Deliver a despawn for the never-mapped id through the real apply path.
+    let latest_seq = h.client_replication.latest_sequence().unwrap_or(0);
+    let despawn_snapshot = SnapshotMessage {
+        sequence: latest_seq + 1,
+        server_tick: h.server_tick + 1,
+        state_schema_fingerprint: [0u8; 32],
+        state_records: Vec::new(),
+        records: vec![EntityRecord::Despawn {
+            network_id: phantom_net_id,
+            tombstone_id: 42,
+            reason: 0,
+        }],
+    };
+    // Must not panic.
+    let outcome = h.inject_snapshot_to_client(&despawn_snapshot);
+
+    // CORE ASSERTION (b1): the snapshot is accepted — an ack is produced. The despawn
+    // apply is idempotent; unknown ids are no-ops, and the snapshot advances the
+    // sequence, so an ack is always emitted for an accepted snapshot.
+    assert!(
+        outcome.ack.is_some(),
+        "despawn for unknown NetworkId must still produce an ack (snapshot was accepted)"
+    );
+    let ack = outcome.ack.unwrap();
+    assert_eq!(
+        ack.latest_snapshot_sequence,
+        latest_seq + 1,
+        "ack carries the despawn snapshot's sequence"
+    );
+
+    // CORE ASSERTION (b2): the tombstone IS acked. The server needs this to stop
+    // resending the despawn record — the client acknowledges it has reached the
+    // despawned state for this id (trivially true since it never had it).
+    assert_eq!(
+        ack.despawn_tombstones,
+        vec![(phantom_net_id, 42)],
+        "despawn for unknown id must ack its tombstone so the server stops resending"
+    );
+
+    // CORE ASSERTION (b3): client state is consistent — the map did not grow or
+    // shrink (the phantom id was not spuriously inserted or the live enemy removed),
+    // no mesh entity was removed, and the interp buffer for the phantom id has no
+    // samples.
+    assert_eq!(
+        h.client_replication.map().len(),
+        map_len_before,
+        "map length must not change after despawn of unmapped id"
+    );
+    assert_eq!(
+        h.client_registry
+            .iter_with_kind(ComponentKind::Mesh)
+            .count(),
+        registry_len_before,
+        "no mesh entity was removed when despawning an unmapped id"
+    );
+    assert!(
+        !h.client_replication
+            .map()
+            .contains_key(&NetworkId(phantom_net_id)),
+        "phantom NetworkId must not appear in the map after its despawn"
+    );
+    assert_eq!(
+        h.client_replication.sample_count(NetworkId(phantom_net_id)),
+        0,
+        "interp buffer for the phantom id must be empty (no spurious samples)"
+    );
+
+    // The live enemy is untouched.
+    assert!(
+        h.client_registry.exists(live_remote),
+        "the live enemy entity was not removed by the phantom despawn"
+    );
+    assert!(
+        h.client_replication.map().contains_key(&live_net_id),
+        "the live enemy's mapping is intact after the phantom despawn"
     );
 }

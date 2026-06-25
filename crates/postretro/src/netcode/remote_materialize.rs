@@ -1,5 +1,5 @@
-// Client-apply call-site glue: routes an applied snapshot's `armed_local_pawn` to the
-// descriptor-presentation materialization seam (Task 6 extends it to remote enemies).
+// Client-apply call-site glue: routes applied snapshots to the descriptor-presentation
+// materialization seam for both local and remote entities.
 // See: context/lib/networking.md
 
 use crate::scripting::data_descriptors::EntityTypeDescriptor;
@@ -18,7 +18,7 @@ use super::client::{ArmedLocalPawn, RemoteEnemyMaterialize};
 /// BEFORE reconcile (which merges onto the existing component); the underlying helper is
 /// idempotent, so a re-arm of the same pawn keeps its live state.
 ///
-/// Task 6 extends this seam with the remote-enemy presentation call so descriptor
+/// This seam also carries the remote-enemy presentation call so descriptor
 /// materialization for replicated entities lives in one focused place, off the
 /// `client_receive_and_apply` hot path.
 pub(super) fn materialize_armed_local_pawn(

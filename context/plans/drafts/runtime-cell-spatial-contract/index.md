@@ -69,16 +69,18 @@ source on this checkout.
       keep using PRL static geometry through `parry3d` queries. No collision AC
       depends on BSP or the new cell locator.
 - [ ] Cell diagnostics show current cell, portal-reachable drawable cells,
-      fog-reachable cells, locator path, and candidate leaf counts.
-- [ ] Loader validation rejects malformed cell-path sections as load errors.
+      fog-reachable cells, locator path, and candidate BVH leaf counts.
+- [ ] Loader validation rejects malformed `Cells` / `CellLocator` sections as
+      load errors.
       There is no legacy BSP fallback.
 - [ ] Preferred-path validation covers `Cells`, `CellLocator`, `Portals`, BVH
       leaf cell ids, `CellDrawIndex` for non-empty BVH maps, and `FogCellMasks`
-      when fog volumes exist.
+      when canonical fog volume count is greater than zero.
 - [ ] Solid-cell camera positions use the existing solid-camera fallback:
       frustum-cull all drawable cells by bounds and skip portal traversal.
       Exterior-cell camera positions use the existing exterior-camera fallback.
-      Maps with no usable portals use the existing no-portals fallback.
+      Missing, empty, or validation-rejected `Portals` sections mean no usable
+      portals and use the existing no-portals fallback.
 - [ ] `cargo test -p postretro-level-format`, `-p postretro-level-compiler`,
       `-p postretro`, and `cargo check -p postretro --features dev-tools` pass.
 - [ ] No new `unsafe`.
@@ -89,9 +91,9 @@ source on this checkout.
 
 `crates/postretro/src/prl.rs` and `crates/level-compiler/src/pack.rs` are both
 past the split-before-extend threshold. Split before adding behavior. Extract
-PRL cell decoding helpers from `prl.rs` into a focused loader module. Extract
-optional-section packing helpers from `pack.rs` into a focused packing module.
-Keep public behavior unchanged. Existing tests for
+existing spatial/PRL decoding helpers from `prl.rs` into a focused loader
+module. Extract optional-section packing helpers from `pack.rs` into a focused
+packing module. Keep public behavior unchanged. Existing tests for
 `LevelWorld`, `load_prl`, and `pack_and_write_portals` must pass unchanged
 before later tasks extend these seams.
 
@@ -105,12 +107,13 @@ section stores enough runtime information to replace `BspLeavesSection` for
 visibility and diagnostics: bounds, solidity, exterior status, geometry face
 range summary, and portal adjacency range. It does not store BSP split planes.
 
-Compiler writes `Cells` from BSP leaf records plus the compiler's exterior-leaf
-classification data after portal generation. `BspLeafRecord` does not carry
-exterior status; the current exterior cull zeroes face counts. Runtime loads
-`Cells` into a cell data type owned by `LevelWorld`. Legacy `LeafData` may
-remain internally during migration, but the preferred path must be named and
-treated as cells.
+Compiler writes `Cells` from BSP leaf records plus an explicit per-leaf
+`is_exterior` vector or field from the compiler's exterior-leaf classification
+data after portal generation. `BspLeafRecord` does not carry exterior status;
+the current exterior cull zeroes face counts. Do not derive exterior status
+from `face_count == 0`. Runtime loads `Cells` into a cell data type owned by
+`LevelWorld`. Legacy `LeafData` may remain internally during migration, but the
+preferred path must be named and treated as cells.
 
 ### Task 3: Add the `CellLocator` Section
 
@@ -120,10 +123,10 @@ plane decision tree as `BspNodesSection`, but it is a locator, not the runtime
 BSP contract. Its children point to cell ids, not BSP leaf records.
 
 Compiler writes the locator from the final BSP tree. Runtime loads it as the
-only point-to-cell query source. Implement `LevelWorld::locate_cell` and remove
-`LevelWorld::find_leaf` after call sites migrate. The implementation must
-preserve current on-plane behavior: points on a split plane choose the front
-child.
+only point-to-cell query source. Implement `LevelWorld::locate_cell`. Keep
+`LevelWorld::find_leaf` only as a temporary comparison/test helper until
+callers migrate. The implementation must preserve current on-plane behavior:
+points on a split plane choose the front child.
 
 ### Task 4: Migrate Runtime Visibility Callers
 
@@ -135,7 +138,8 @@ drawable cell ids or `DrawAll`.
 
 This task owns callers in visibility, portal traversal, mesh render collection,
 particle render collection, SH diagnostics, fog masking, and spatial
-diagnostics. It does not change portal clipping or frustum math.
+diagnostics. Remove `LevelWorld::find_leaf` after those callers migrate. It
+does not change portal clipping or frustum math.
 
 ### Task 5: Cross-Section Validation
 
@@ -143,24 +147,36 @@ Validate loaded `Cells`, `CellLocator`, `Portals`, `CellDrawIndex`, BVH leaves,
 and fog masks together. Requirements:
 
 - portal endpoints reference valid non-solid cell ids;
+- portal endpoints are distinct;
 - portal adjacency ranges match the portal list: `portal_refs` are portal
   indices into `Portals`, sorted ascending, duplicate-free per cell; each
   portal appears exactly once in each endpoint cell's adjacency list and never
   in unrelated cells;
+- cell bounds are finite and `bounds_min <= bounds_max`;
+- `Cells.reserved == 0`;
+- cell flags contain no unknown bits;
+- `face_start + face_count` is checked for overflow and stays within
+  `Geometry.face_meta`;
 - every BVH leaf `cell_id` references a valid drawable cell;
 - `CellDrawIndex` spans cover exactly drawable BVH leaves, as defined by cell
   metadata;
-- fog cell masks, when present, have one entry per cell;
+- fog cell masks, when present, have one entry per cell; `FogCellMasks` is
+  required when canonical fog volume count is greater than zero, including
+  `fog_volume`, `fog_lamp`, and `fog_tube`;
+- locator planes are finite and have nonzero normals;
 - locator roots and children use valid kind values, node indices are in range,
-  cell indices are in range, traversal cannot cycle, and unused nodes are
-  rejected;
+  cell indices are in range, child ranges are checked, traversal cannot cycle,
+  and unused or unreachable nodes are rejected;
 - fixture probes produce the same cell ids as the old BSP leaf path while both
   implementations exist in tests.
 
-Invalid cell-path sections are fatal. The minimum modern load contract is:
-`Cells`, `CellLocator`, `Portals`, `Geometry`, and `Bvh` must be valid;
+Invalid `Cells` / `CellLocator` sections are fatal. A missing, empty, or
+validation-rejected `Portals` section is not a stale-format load error; it
+means no usable portals and takes the no-portals fallback. Do not rely on
+`has_portals = section.is_some()`. The minimum modern load contract is:
+`Cells`, `CellLocator`, `Geometry`, and `Bvh` must be valid;
 `CellDrawIndex` must be valid when the BVH has leaves; `FogCellMasks` must be
-valid when fog volumes exist.
+valid when canonical fog volume count is greater than zero.
 
 ### Task 6: Stop Emitting Runtime BSP Sections
 
@@ -178,10 +194,12 @@ Update dev-tool overlays to label cells, portals, and BVH leaves without BSP
 terminology. Add diagnostics that show current locator status, plus
 fog-reachable and portal-reachable cells.
 
-Update `context/lib/build_pipeline.md`, `context/lib/rendering_pipeline.md`,
-and `context/lib/entity_model.md` at promotion time, not during the draft. The
-durable docs should state: BSP is compile-only scaffolding; runtime visibility
-uses cells and portals; collision uses `CollisionWorld`.
+Task 7 updates `context/lib/build_pipeline.md`,
+`context/lib/rendering_pipeline.md`, and `context/lib/entity_model.md` after
+behavior lands. Do not edit durable docs while this plan is still being
+drafted/reviewed. The durable docs should state: BSP is compile-only
+scaffolding; runtime visibility uses cells and portals; collision uses
+`CollisionWorld`.
 
 ## Sequencing
 
@@ -294,13 +312,18 @@ Flags:
 index space, matching the legacy leaf face range. They are diagnostic and
 visibility-fallback metadata; draw submission uses `CellDrawIndex`. `drawable`
 must equal `!solid && face_count > 0` for v1. Store the bit anyway so future
-non-face drawable cell classes can be additive.
+non-face drawable cell classes can be additive. The exterior bit comes from
+explicit exterior classification data, not from zero `face_count`.
 
 Empty lists use zero counts and no sentinel. `portal_ref_start +
 portal_ref_count` must be checked for overflow and bounds. `portal_refs` are
 portal indices into the `Portals` section. They are sorted ascending and
 duplicate-free for each cell. Each portal index appears exactly once in each of
 its two endpoint cells and in no other cell.
+
+Validation rejects nonzero `reserved`, unknown flag bits, non-finite bounds,
+`bounds_min > bounds_max`, and overflowing or out-of-range
+`face_start + face_count`.
 
 ### `CellLocator`
 
@@ -324,9 +347,10 @@ u32 back_index
 ```
 
 Node traversal uses the existing rule: `dot(position, normal) - distance >= 0`
-selects front. `root_kind`, `front_kind`, and `back_kind` accept only `0` or
-`1`. Node references must be in range. Cell references must be in range. The
-loader rejects cycles and unreachable nodes.
+selects front. Locator planes must be finite and have nonzero normals.
+`root_kind`, `front_kind`, and `back_kind` accept only `0` or `1`. Node
+references must be in range. Cell references must be in range. The loader
+rejects cycles and unreachable nodes.
 
 ## Open Questions
 

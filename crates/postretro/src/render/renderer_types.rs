@@ -202,7 +202,11 @@ pub struct CameraCullDiagnostics {
     /// Total BVH leaves in the level (the tree walk's working set).
     pub total_leaves: u32,
     /// Leaves submitted this frame (passed the frustum predicate and, on the
-    /// candidate path, were gathered from visible cells). CPU-derived.
+    /// candidate path, were gathered from visible cells). On the candidate path
+    /// this is a GPU-readback value: the candidate kernel's own atomic tally,
+    /// deferred-mapped over a small ring, so it lags the current frame by a few
+    /// frames and may not exactly match the live candidate count. On the tree
+    /// walk it remains CPU-derived. Diagnostic only; never gates behavior.
     pub submitted_leaves: u32,
 }
 

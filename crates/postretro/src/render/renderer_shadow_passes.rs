@@ -51,25 +51,6 @@ fn leaf_passes_frustum(leaf: &crate::geometry::BvhLeaf, planes: &[[f32; 4]; 6]) 
     true
 }
 
-/// CPU-derived submitted-leaf count for the candidate path: candidates that
-/// pass the frustum predicate (visible-cell membership is already implied by
-/// the gather). Diagnostic only; not a perf gate.
-fn count_submitted_candidates(
-    leaves: &[crate::geometry::BvhLeaf],
-    candidates: &[u32],
-    view_proj: &Mat4,
-) -> u32 {
-    let planes = crate::compute_cull::extract_frustum_planes_for_gpu(view_proj);
-    candidates
-        .iter()
-        .filter(|&&i| {
-            leaves
-                .get(i as usize)
-                .is_some_and(|leaf| leaf_passes_frustum(leaf, &planes))
-        })
-        .count() as u32
-}
-
 /// CPU-derived submitted-leaf count for the tree walk: drawable leaves whose
 /// cell is visible and whose AABB passes the frustum, over the whole leaf
 /// array. Mirrors `bvh_cull.wgsl::cull_main`'s submit branch. Diagnostic only.
@@ -491,16 +472,22 @@ impl Renderer {
                     // (`candidate.candidates()`); read immutably here before the
                     // mutable `dispatch` borrow below.
                     let candidates = candidate.candidates();
+                    // `submitted_leaves` now comes from the GPU's own atomic
+                    // counter, read back deferred (a few frames stale by design,
+                    // see `CandidateCullPipeline::submitted_leaves`) — replacing
+                    // the per-frame CPU AABB-vs-frustum recompute. Dev-tools only,
+                    // matching the neighboring baseline diagnostic; shipping
+                    // builds don't allocate the readback ring or read it.
+                    #[cfg(feature = "dev-tools")]
+                    let submitted_leaves = candidate.submitted_leaves();
+                    #[cfg(not(feature = "dev-tools"))]
+                    let submitted_leaves = 0;
                     self.camera_cull_diagnostics = CameraCullDiagnostics {
                         path: CameraCullPath::Candidate {
                             candidate_leaves: candidates.len() as u32,
                         },
                         total_leaves: cull.total_leaves(),
-                        submitted_leaves: count_submitted_candidates(
-                            &self.bvh_leaves,
-                            candidates,
-                            &view_proj,
-                        ),
+                        submitted_leaves,
                     };
                     candidate.dispatch(
                         &self.device,

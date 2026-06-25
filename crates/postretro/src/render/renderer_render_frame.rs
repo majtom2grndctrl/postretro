@@ -558,6 +558,14 @@ impl Renderer {
             self.sh_volume_resources.probe_irradiance = live_irradiance;
         }
 
+        // Drive the candidate cull's deferred submitted-leaf counter readback so
+        // the Spatial-tab "Submitted leaves" count reflects the GPU's own tally
+        // (a few frames stale by design) instead of a per-frame CPU recompute.
+        #[cfg(feature = "dev-tools")]
+        if let Some(candidate) = self.candidate_cull.as_mut() {
+            candidate.post_submit(&self.device);
+        }
+
         // Caller (`App`) presents after optionally appending the egui overlay
         // pass via `render_debug_ui`.
         Ok(Some(output))

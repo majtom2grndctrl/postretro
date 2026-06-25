@@ -64,6 +64,11 @@ struct CandidateCullParams {
 @group(0) @binding(3) var<storage, read_write> cull_status: array<u32>;
 @group(0) @binding(4) var<storage, read> candidate_leaves: array<u32>;
 @group(0) @binding(5) var<uniform> params: CandidateCullParams;
+// Candidate-only diagnostic (NOT mirrored from bvh_cull.wgsl): a GPU-side
+// tally of submitted leaves, deferred-read by the renderer to drive the
+// Spatial-tab "Submitted leaves" count without a per-frame CPU recompute.
+// Cleared to 0 by the CPU before each dispatch.
+@group(0) @binding(6) var<storage, read_write> submitted_counter: atomic<u32>;
 
 fn is_aabb_outside_frustum(aabb_min: vec3<f32>, aabb_max: vec3<f32>) -> bool {
     for (var i = 0u; i < 6u; i = i + 1u) {
@@ -103,5 +108,6 @@ fn candidate_cull_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         indirect_draws[leaf_idx].base_vertex = 0;
         indirect_draws[leaf_idx].first_instance = 0u;
         cull_status[leaf_idx] = 2u;
+        atomicAdd(&submitted_counter, 1u);
     }
 }

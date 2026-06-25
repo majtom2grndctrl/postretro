@@ -11,6 +11,12 @@
 //   * `CandidateCullPipeline` — the wgpu dispatch layer.
 
 use std::collections::HashSet;
+#[cfg(feature = "dev-tools")]
+use std::sync::Arc;
+#[cfg(feature = "dev-tools")]
+use std::sync::Mutex;
+#[cfg(feature = "dev-tools")]
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use glam::Mat4;
 
@@ -109,6 +115,127 @@ pub(crate) fn gather_candidate_leaves(
     GatherStatus::Ok
 }
 
+/// Deferred (N-frame) GPU→CPU readback of the candidate kernel's submitted-leaf
+/// atomic counter. Follows the SH irradiance readback precedent
+/// (`render/sh_diagnostics.rs`): a ring of `MAP_READ` buffers, one targeted per
+/// frame, mapped a few frames later so the map never stalls the frame. The most
+/// recent successfully-mapped value is the diagnostic the panel reads; it lags
+/// the current frame's true count by the ring depth (a few frames), which is
+/// acceptable for a measurement-oriented Spatial-tab readout.
+///
+/// Dev-tools-only: shipping builds neither allocate the ring nor poll/map, since
+/// the `submitted_leaves` panel that consumes it is itself dev-tools-gated.
+#[cfg(feature = "dev-tools")]
+struct SubmittedCounterReadback {
+    /// Ring of 4-byte `MAP_READ | COPY_DST` buffers. The dispatch copies the
+    /// counter into `slots[write_index]` each candidate frame.
+    slots: Vec<wgpu::Buffer>,
+    /// Per-slot "a `map_async` is in flight" flag — the buffer is busy, so no
+    /// copy may target it until its map resolves and the main thread unmaps it.
+    map_pending: Vec<Arc<AtomicBool>>,
+    /// Per-slot landing zone for the mapped value, written by the map callback
+    /// and drained on the main thread in `post_submit`.
+    map_result: Vec<Arc<Mutex<Option<u32>>>>,
+    /// Per-slot flag: a copy was encoded+submitted into this slot and awaits its
+    /// map kickoff in `post_submit`.
+    copied_pending: Vec<bool>,
+    /// Next ring slot a dispatch copies into.
+    write_index: usize,
+    /// Most-recent successfully-mapped count (the deferred result the panel reads).
+    latest: u32,
+}
+
+#[cfg(feature = "dev-tools")]
+impl SubmittedCounterReadback {
+    /// Ring depth. Matches the SH readback's ~2-3 frame deferral: deep enough
+    /// that a slot's map has resolved by the time the ring wraps back to it, so
+    /// `encode_copy` never has to skip a frame waiting on an in-flight map.
+    const RING_DEPTH: usize = 3;
+
+    fn new(device: &wgpu::Device) -> Self {
+        let slots = (0..Self::RING_DEPTH)
+            .map(|i| {
+                device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some(&format!("Candidate Submitted Counter Readback {i}")),
+                    size: 4,
+                    usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                })
+            })
+            .collect();
+        Self {
+            slots,
+            map_pending: (0..Self::RING_DEPTH)
+                .map(|_| Arc::new(AtomicBool::new(false)))
+                .collect(),
+            map_result: (0..Self::RING_DEPTH)
+                .map(|_| Arc::new(Mutex::new(None)))
+                .collect(),
+            copied_pending: vec![false; Self::RING_DEPTH],
+            write_index: 0,
+            latest: 0,
+        }
+    }
+
+    /// Copy `counter` into the current ring slot (same encoder as the compute
+    /// pass, so the copy observes this frame's atomic result), then advance the
+    /// ring. If the target slot still has a map in flight, skip the copy for this
+    /// frame rather than racing it — the deferred count simply holds its prior
+    /// value. With `RING_DEPTH` slots this skip is essentially never hit.
+    fn encode_copy(&mut self, encoder: &mut wgpu::CommandEncoder, counter: &wgpu::Buffer) {
+        let slot = self.write_index;
+        if self.map_pending[slot].load(Ordering::Acquire) || self.copied_pending[slot] {
+            // Slot busy; leave it and try the next slot next frame.
+            self.write_index = (self.write_index + 1) % Self::RING_DEPTH;
+            return;
+        }
+        encoder.copy_buffer_to_buffer(counter, 0, &self.slots[slot], 0, 4);
+        self.copied_pending[slot] = true;
+        self.write_index = (self.write_index + 1) % Self::RING_DEPTH;
+    }
+
+    /// Drive the async map state machine once per frame after `queue.submit`.
+    /// Drains any landed value into `latest`, then kicks off maps for slots that
+    /// were copied into but not yet mapped.
+    fn post_submit(&mut self, device: &wgpu::Device) {
+        let _ = device.poll(wgpu::PollType::Poll);
+
+        for slot in 0..Self::RING_DEPTH {
+            if let Some(value) = self.map_result[slot].lock().unwrap().take() {
+                self.slots[slot].unmap();
+                self.map_pending[slot].store(false, Ordering::Release);
+                self.latest = value;
+            }
+        }
+
+        for slot in 0..Self::RING_DEPTH {
+            if self.copied_pending[slot] && !self.map_pending[slot].load(Ordering::Acquire) {
+                self.copied_pending[slot] = false;
+                self.map_pending[slot].store(true, Ordering::Release);
+                let result_slot = Arc::clone(&self.map_result[slot]);
+                let pending = Arc::clone(&self.map_pending[slot]);
+                let buf = self.slots[slot].clone();
+                self.slots[slot]
+                    .slice(0..4)
+                    .map_async(wgpu::MapMode::Read, move |res| match res {
+                        Ok(()) => {
+                            let view = buf.slice(0..4).get_mapped_range();
+                            let value = u32::from_le_bytes([view[0], view[1], view[2], view[3]]);
+                            drop(view);
+                            // Buffer stays mapped; the main thread unmaps it in
+                            // the next `post_submit` after consuming the result.
+                            *result_slot.lock().unwrap() = Some(value);
+                        }
+                        Err(err) => {
+                            log::warn!("[candidate-cull] counter map failed: {err:?}");
+                            pending.store(false, Ordering::Release);
+                        }
+                    });
+            }
+        }
+    }
+}
+
 /// GPU-side candidate cull dispatch layer. Owns the candidate buffer, the
 /// params uniform, and the pipeline; binds the camera cull's existing leaf,
 /// indirect, and status buffers (passed per dispatch) so it writes the SAME
@@ -120,6 +247,14 @@ pub struct CandidateCullPipeline {
     uniform_buffer: wgpu::Buffer,
     candidate_buffer: wgpu::Buffer,
     params_buffer: wgpu::Buffer,
+    /// 4-byte storage counter the kernel `atomicAdd`s per submitted leaf
+    /// (binding 6). Cleared to 0 before each dispatch. Always present — the
+    /// bind group layout requires it whether or not the readback is wired up.
+    submitted_counter_buffer: wgpu::Buffer,
+    /// Deferred GPU→CPU readback ring for `submitted_counter_buffer`. Dev-tools
+    /// only; absent in shipping builds (no ring allocation, no per-frame map).
+    #[cfg(feature = "dev-tools")]
+    submitted_readback: SubmittedCounterReadback,
 
     total_leaves: u32,
     /// Reused per frame to avoid reallocating the upload staging vector.
@@ -158,6 +293,18 @@ impl CandidateCullPipeline {
             mapped_at_creation: false,
         });
 
+        // GPU submitted-leaf counter (binding 6). STORAGE for the kernel's
+        // atomicAdd, COPY_DST so the CPU can clear it to 0 each frame, COPY_SRC
+        // so the dev-tools readback can copy it into the MAP_READ ring.
+        let submitted_counter_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Candidate Submitted Counter"),
+            size: 4,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Candidate Cull Compute Shader"),
             source: wgpu::ShaderSource::Wgsl(CANDIDATE_CULL_SHADER_SOURCE.into()),
@@ -193,6 +340,7 @@ impl CandidateCullPipeline {
                 storage_entry(3, false), // cull_status (read_write)
                 storage_entry(4, true),  // candidate_leaves (read)
                 uniform_entry(5),        // CandidateCullParams
+                storage_entry(6, false), // submitted_counter (read_write atomic)
             ],
         });
 
@@ -222,6 +370,9 @@ impl CandidateCullPipeline {
             uniform_buffer,
             candidate_buffer,
             params_buffer,
+            #[cfg(feature = "dev-tools")]
+            submitted_readback: SubmittedCounterReadback::new(device),
+            submitted_counter_buffer,
             total_leaves,
             candidate_scratch: Vec::new(),
             gather_out: Vec::new(),
@@ -288,6 +439,11 @@ impl CandidateCullPipeline {
             encoder.clear_buffer(cull_status_buffer, 0, Some(status_clear_bytes));
         }
 
+        // The GPU counter must start at 0 every frame: the kernel only adds.
+        // Cleared unconditionally (even on the skip path below) so a stale count
+        // never lingers into a frame that dispatches nothing.
+        encoder.clear_buffer(&self.submitted_counter_buffer, 0, Some(4));
+
         let planes = extract_frustum_planes_for_gpu(view_proj);
         let uniforms = CullUniforms { planes };
         queue.write_buffer(&self.uniform_buffer, 0, &serialize_cull_uniforms(&uniforms));
@@ -297,7 +453,12 @@ impl CandidateCullPipeline {
         queue.write_buffer(&self.params_buffer, 0, &params);
 
         // candidate_count == 0: buffers are already cleared; skip the dispatch.
+        // The counter is already zeroed, so the deferred readback should reflect
+        // 0 for this frame — encode a copy of the cleared counter before bailing.
         if candidate_count == 0 || self.total_leaves == 0 {
+            #[cfg(feature = "dev-tools")]
+            self.submitted_readback
+                .encode_copy(encoder, &self.submitted_counter_buffer);
             return;
         }
 
@@ -340,6 +501,10 @@ impl CandidateCullPipeline {
                     binding: 5,
                     resource: self.params_buffer.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: self.submitted_counter_buffer.as_entire_binding(),
+                },
             ],
         });
 
@@ -352,6 +517,28 @@ impl CandidateCullPipeline {
         compute_pass.set_pipeline(&self.pipeline);
         compute_pass.set_bind_group(0, &bind_group, &[]);
         compute_pass.dispatch_workgroups(workgroups, 1, 1);
+        drop(compute_pass);
+
+        // Capture this frame's GPU submitted-leaf tally into the readback ring,
+        // in the SAME encoder as the dispatch so the copy observes the just-
+        // written atomic. Mapped a few frames later in `post_submit`.
+        #[cfg(feature = "dev-tools")]
+        self.submitted_readback
+            .encode_copy(encoder, &self.submitted_counter_buffer);
+    }
+
+    /// Drive the deferred counter readback's map state machine. Call once per
+    /// frame after `queue.submit`. Dev-tools only.
+    #[cfg(feature = "dev-tools")]
+    pub fn post_submit(&mut self, device: &wgpu::Device) {
+        self.submitted_readback.post_submit(device);
+    }
+
+    /// Most-recent successfully-mapped GPU submitted-leaf count. Lags the current
+    /// frame by the readback ring depth (a few frames) by design. Dev-tools only.
+    #[cfg(feature = "dev-tools")]
+    pub fn submitted_leaves(&self) -> u32 {
+        self.submitted_readback.latest
     }
 }
 

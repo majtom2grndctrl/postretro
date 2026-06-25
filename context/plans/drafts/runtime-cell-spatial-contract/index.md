@@ -21,8 +21,10 @@ source on this checkout.
 - Rename runtime APIs and data flow around cells: `find_leaf` becomes
   `locate_cell`, `VisibleCells` becomes cell-semantic, and callers stop
   treating BSP leaf records as the durable runtime type.
-- Keep portal traversal as the sole visibility path.
-- Keep BVH as a draw, light, shadow, and bake accelerator. Do not make it the
+- Keep portal traversal as the normal room-visibility path. Named fallbacks
+  handle solid-camera, exterior-camera, and no usable portals.
+- Keep runtime BVH as a draw, shadow cone cull, and diagnostics accelerator.
+  Compiler BVH use for bake/light work is unchanged. Do not make BVH the
   room-visibility or occlusion-authority model.
 - Keep `CollisionWorld` as the physics source of truth. Cells may provide broad
   phase or semantics later, but collision contacts still come from geometry
@@ -47,9 +49,12 @@ source on this checkout.
 
 - [ ] New PRLs contain `Cells` and `CellLocator` sections and do not contain
       runtime `BspNodes` or `BspLeaves` sections.
-- [ ] PRLs without valid `Cells` and `CellLocator` fail to load with a named
-      stale-format error. The runtime no longer synthesizes a fallback leaf for
-      missing BSP data.
+- [ ] PRLs missing `Cells` or `CellLocator` fail to load with a named
+      stale-format error. Present but malformed `Cells` or `CellLocator`
+      sections fail with named validation errors. The runtime no longer
+      synthesizes a fallback leaf for missing BSP data.
+- [ ] Modern PRLs with valid `Cells` / `CellLocator` plus legacy runtime
+      `BspNodes` or `BspLeaves` fail with a named ambiguous/stale-format error.
 - [ ] Runtime camera visibility no longer calls `find_leaf`. It calls
       `locate_cell`, then portal traversal starts from that cell id.
 - [ ] Runtime mesh and particle visibility call the same point-to-cell locator
@@ -71,7 +76,7 @@ source on this checkout.
 - [ ] Cell diagnostics show current cell, portal-reachable drawable cells,
       fog-reachable cells, locator path, and candidate BVH leaf counts.
 - [ ] Loader validation rejects malformed `Cells` / `CellLocator` sections as
-      load errors.
+      named load errors. Missing `Cells` / `CellLocator` is stale-format.
       There is no legacy BSP fallback.
 - [ ] Preferred-path validation covers `Cells`, `CellLocator`, `Portals`, BVH
       leaf cell ids, `CellDrawIndex` for non-empty BVH maps, and `FogCellMasks`
@@ -79,8 +84,8 @@ source on this checkout.
 - [ ] Solid-cell camera positions use the existing solid-camera fallback:
       frustum-cull all drawable cells by bounds and skip portal traversal.
       Exterior-cell camera positions use the existing exterior-camera fallback.
-      Missing, empty, or validation-rejected `Portals` sections mean no usable
-      portals and use the existing no-portals fallback.
+      Missing, empty, decode-failed, or validation-rejected `Portals` sections
+      mean no usable portal graph and use the no-portals fallback.
 - [ ] `cargo test -p postretro-level-format`, `-p postretro-level-compiler`,
       `-p postretro`, and `cargo check -p postretro --features dev-tools` pass.
 - [ ] No new `unsafe`.
@@ -115,6 +120,22 @@ from `face_count == 0`. Runtime loads `Cells` into a cell data type owned by
 `LevelWorld`. Legacy `LeafData` may remain internally during migration, but the
 preferred path must be named and treated as cells.
 
+Cell bounds are copied from compiler BSP leaf bounds currently emitted as
+`BspLeafRecord.bounds_min/max`. Those bounds are already finite because BSP
+construction starts from the brush-derived world AABB with slack and tightens
+regions. Compiler validation rejects non-finite or inverted leaf bounds before
+writing `Cells`. Do not introduce unbounded runtime cells.
+
+Cell flag combinations are fixed:
+
+- `solid` and `exterior` are mutually exclusive.
+- Solid cells have `face_count == 0`, `drawable == false`, and may carry bounds.
+- Exterior cells are non-solid, have `face_count == 0`, and
+  `drawable == false`.
+- Drawable cells are non-solid, non-exterior, and have `face_count > 0`.
+- Empty interior cells are non-solid, non-exterior, have `face_count == 0`, and
+  `drawable == false`.
+
 ### Task 3: Add the `CellLocator` Section
 
 Add a `CellLocator` PRL section in `postretro-level-format`. It answers
@@ -128,6 +149,10 @@ only point-to-cell query source. Implement `LevelWorld::locate_cell`. Keep
 callers migrate. The implementation must preserve current on-plane behavior:
 points on a split plane choose the front child.
 
+Add fixture probes here while both implementations exist. Probe positions must
+produce the same cell ids as the old BSP leaf path. This protects Task 4, which
+removes `find_leaf`.
+
 ### Task 4: Migrate Runtime Visibility Callers
 
 Change `determine_visible_cells` to seed visibility from `locate_cell`. Change
@@ -140,6 +165,12 @@ This task owns callers in visibility, portal traversal, mesh render collection,
 particle render collection, SH diagnostics, fog masking, and spatial
 diagnostics. Remove `LevelWorld::find_leaf` after those callers migrate. It
 does not change portal clipping or frustum math.
+
+Mesh and particle object visibility remains membership-based against
+`VisibleCells`. If `locate_cell(pos)` returns a cell id not in
+`VisibleCells::Culled`, the object is culled. `DrawAll` remains visible. Do not
+add object-specific frustum-only or fallback behavior for objects in solid,
+exterior, or empty cells.
 
 ### Task 5: Cross-Section Validation
 
@@ -155,35 +186,55 @@ and fog masks together. Requirements:
 - cell bounds are finite and `bounds_min <= bounds_max`;
 - `Cells.reserved == 0`;
 - cell flags contain no unknown bits;
+- `solid` and `exterior` flags are mutually exclusive;
+- solid cells have no faces and are not drawable;
+- exterior cells are non-solid, have no faces, and are not drawable;
+- drawable cells are non-solid, non-exterior, and have faces;
+- empty interior cells are non-solid, non-exterior, have no faces, and are not
+  drawable;
 - `face_start + face_count` is checked for overflow and stays within
   `Geometry.face_meta`;
 - every BVH leaf `cell_id` references a valid drawable cell;
-- `CellDrawIndex` spans cover exactly drawable BVH leaves, as defined by cell
-  metadata;
+- `CellDrawIndex` uses CSR layout: `cell_span_offset[cell_count + 1]` plus
+  spans `{ leaf_start, leaf_count }`;
+- `CellDrawIndex` is emitted for non-empty BVH and omitted for empty BVH;
+- `CellDrawIndex` spans are ascending, non-overlapping, non-empty, and within
+  BVH leaf bounds;
+- span leaves for each cell exactly cover drawable BVH leaves whose
+  `BvhLeaf.cell_id == cell_id`;
+- cells with no drawable leaves have empty `CellDrawIndex` ranges;
 - fog cell masks, when present, have one entry per cell; `FogCellMasks` is
   required when canonical fog volume count is greater than zero, including
   `fog_volume`, `fog_lamp`, and `fog_tube`;
 - locator planes are finite and have nonzero normals;
 - locator roots and children use valid kind values, node indices are in range,
   cell indices are in range, child ranges are checked, traversal cannot cycle,
-  and unused or unreachable nodes are rejected;
-- fixture probes produce the same cell ids as the old BSP leaf path while both
-  implementations exist in tests.
+  and unused or unreachable nodes are rejected.
 
-Invalid `Cells` / `CellLocator` sections are fatal. A missing, empty, or
-validation-rejected `Portals` section is not a stale-format load error; it
-means no usable portals and takes the no-portals fallback. Do not rely on
-`has_portals = section.is_some()`. The minimum modern load contract is:
-`Cells`, `CellLocator`, `Geometry`, and `Bvh` must be valid;
-`CellDrawIndex` must be valid when the BVH has leaves; `FogCellMasks` must be
-valid when canonical fog volume count is greater than zero.
+Missing `Cells` / `CellLocator` sections are stale-format. Present but malformed
+or invalid `Cells` / `CellLocator` sections are named validation errors. Both
+are fatal and name the section or sections.
+
+Portal usability is an explicit behavior change. Current code treats any
+present `Portals` section as `has_portals`. Target behavior treats missing,
+empty, decode-failed, or validation-rejected `Portals` as no usable portal
+graph and takes the no-portals fallback. `Cells` and `CellLocator` remain
+fatal. `Cells.portal_refs` range and overflow validation is fatal, but portal
+endpoint and adjacency resolution is skipped when `Portals` is unusable.
+
+The minimum modern load contract is: `Cells`, `CellLocator`, `Geometry`, and
+`Bvh` must be valid; `CellDrawIndex` must be valid when the BVH has leaves;
+`FogCellMasks` must be valid when canonical fog volume count is greater than
+zero.
 
 ### Task 6: Stop Emitting Runtime BSP Sections
 
 Once preferred-path tests pass, stop packing `BspNodes` and `BspLeaves` into
 PRL output. Remove runtime tests that expect modern PRLs to decode those
 sections, and add stale-format tests for PRLs missing `Cells` or `CellLocator`.
-Modern PRLs load with `Cells + CellLocator` and no runtime BSP sections.
+Modern PRLs load with `Cells + CellLocator` and no runtime BSP sections. Modern
+PRLs that also contain `BspNodes` or `BspLeaves` are rejected with a named
+ambiguous/stale-format error.
 
 This task must not change compiler BSP construction. It only changes what the
 compiler writes into PRL and what the runtime accepts from PRL.
@@ -311,9 +362,10 @@ Flags:
 `face_start` and `face_count` reference the `Geometry` section's `face_meta`
 index space, matching the legacy leaf face range. They are diagnostic and
 visibility-fallback metadata; draw submission uses `CellDrawIndex`. `drawable`
-must equal `!solid && face_count > 0` for v1. Store the bit anyway so future
-non-face drawable cell classes can be additive. The exterior bit comes from
-explicit exterior classification data, not from zero `face_count`.
+must equal `!solid && !exterior && face_count > 0` for v1. Store the bit anyway
+so future non-face drawable cell classes can be additive. Solid and exterior
+cells are never drawable. The exterior bit comes from explicit exterior
+classification data, not from zero `face_count`.
 
 Empty lists use zero counts and no sentinel. `portal_ref_start +
 portal_ref_count` must be checked for overflow and bounds. `portal_refs` are
@@ -322,8 +374,8 @@ duplicate-free for each cell. Each portal index appears exactly once in each of
 its two endpoint cells and in no other cell.
 
 Validation rejects nonzero `reserved`, unknown flag bits, non-finite bounds,
-`bounds_min > bounds_max`, and overflowing or out-of-range
-`face_start + face_count`.
+`bounds_min > bounds_max`, invalid flag combinations, and overflowing or
+out-of-range `face_start + face_count`.
 
 ### `CellLocator`
 

@@ -380,8 +380,12 @@ pub(crate) fn is_catalog_path_relative_to_content_root(path: &str) -> bool {
     if path.is_absolute() {
         return false;
     }
-    path.components()
-        .all(|component| !matches!(component, Component::ParentDir | Component::Prefix(_)))
+    path.components().all(|component| {
+        !matches!(
+            component,
+            Component::ParentDir | Component::Prefix(_) | Component::RootDir
+        )
+    })
 }
 
 pub(crate) fn validate_finite_f32(value: f32, field: &str) -> Result<f32, DescriptorError> {

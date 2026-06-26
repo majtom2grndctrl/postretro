@@ -37,7 +37,7 @@ use super::wire_convert::sim_command_to_input;
 use crate::collision::CollisionWorld;
 use crate::movement::MovementInput;
 use crate::netcode::{NetworkIdAllocator, host_handle_client_message};
-use crate::scripting::builtins::data_archetype::materialize_net_local_movement_component;
+use crate::scripting::builtins::net_descriptor::materialize_net_local_movement_component;
 use crate::scripting::components::health::HealthComponent;
 use crate::scripting::components::player_movement::PlayerMovementComponent;
 use crate::scripting::data_descriptors::{
@@ -172,7 +172,7 @@ pub(crate) fn entity_descriptors() -> Vec<EntityTypeDescriptor> {
 }
 
 /// The `DescriptorProvenance` a real net-slot pawn carries, so the host snapshot
-/// production (`produce_owned_snapshots` -> `movement_entity_class`) stamps
+/// production (`produce_owned_snapshots` -> `descriptor_entity_class`) stamps
 /// `entity_class = Some("player")` on the owned snapshot — exactly as
 /// `spawn_net_slot_pawn` does in production.
 fn net_slot_provenance() -> DescriptorProvenance {

@@ -355,7 +355,7 @@ pub(crate) fn nearest_entity_hit(
         let zoned = zone_bearing_entry(registry, store, id);
 
         let hit = match (zoned, hitbox) {
-            (Some(zones), _) => {
+            (Some(zoned), _) => {
                 // The entity's animation, if any, drives the posed skeleton; a
                 // mesh with no animation block (stateless prop) poses to the
                 // model's first clip at the clock. The animation is cloned LAZILY
@@ -363,8 +363,9 @@ pub(crate) fn nearest_entity_hit(
                 // never deep-clones the state map. The closure keeps the registry
                 // borrow live so the reject path allocates nothing.
                 nearest_zone_hit(
-                    zones,
+                    zoned.zones,
                     transform,
+                    zoned.origin_offset,
                     || {
                         registry
                             .get_component::<MeshComponent>(id)
@@ -410,6 +411,11 @@ pub(crate) fn nearest_entity_hit(
     nearest
 }
 
+struct ZoneBearingEntry<'a> {
+    zones: &'a ModelHitZones,
+    origin_offset: Vec3,
+}
+
 /// The model hit-zone entry for an entity IF its mesh model is zone-bearing (has
 /// a derived bound, i.e. ≥1 tagged joint). `None` when the entity has no mesh,
 /// the model is unloaded, or the model carries no zone tags — in which case the
@@ -418,11 +424,14 @@ fn zone_bearing_entry<'a>(
     registry: &EntityRegistry,
     store: &'a HitZoneStore,
     id: EntityId,
-) -> Option<&'a ModelHitZones> {
+) -> Option<ZoneBearingEntry<'a>> {
     let mesh = registry.get_component::<MeshComponent>(id).ok()?;
     let entry = store.get(&ModelHandle::from(mesh.model.clone()))?;
     // Only a zone-bearing model (derived bound present) takes the capsule path.
-    entry.derived_bound.as_ref().map(|_| entry)
+    entry.derived_bound.as_ref().map(|_| ZoneBearingEntry {
+        zones: entry,
+        origin_offset: mesh.origin_offset,
+    })
 }
 
 /// Ray-test one zone-bearing entity: broad phase against the model's derived
@@ -433,6 +442,7 @@ fn zone_bearing_entry<'a>(
 fn nearest_zone_hit(
     zones: &ModelHitZones,
     transform: &Transform,
+    origin_offset: Vec3,
     resolve_animation: impl FnOnce() -> Option<MeshAnimation>,
     anim_time: f64,
     id: EntityId,
@@ -440,9 +450,10 @@ fn nearest_zone_hit(
     direction: Vec3,
     range: f32,
 ) -> Option<EntityRayHit> {
-    // Model→world by POSITION + YAW only (no pitch/roll/scale) — the game-tick
-    // placement, deliberately NOT the renderer's interpolated transform.
-    let model_to_world = position_yaw_matrix(transform);
+    // Model→world by POSITION + the same MeshComponent origin offset that render
+    // uses, plus YAW only (no pitch/roll/scale). This is the game-tick placement,
+    // deliberately NOT the renderer's interpolated transform.
+    let model_to_world = position_yaw_matrix(transform, origin_offset);
 
     // Broad phase: the derived bound is model-local; transform it to a tight
     // world-axis-aligned enclosure and ray-test that AABB. A reject here means
@@ -521,9 +532,12 @@ fn first_child_origin(
 /// and scale are deliberately dropped: hit zones use the game-tick placement, not
 /// the renderer's interpolated full transform. Yaw is extracted from the stored
 /// quaternion as rotation about world +Y.
-fn position_yaw_matrix(transform: &Transform) -> Mat4 {
+fn position_yaw_matrix(transform: &Transform, origin_offset: Vec3) -> Mat4 {
     let yaw = yaw_of(transform.rotation);
-    Mat4::from_rotation_translation(Quat::from_rotation_y(yaw), transform.position)
+    Mat4::from_rotation_translation(
+        Quat::from_rotation_y(yaw),
+        transform.position + origin_offset,
+    )
 }
 
 /// The yaw angle (rotation about world +Y) of a quaternion. Projects the
@@ -1230,6 +1244,7 @@ mod tests {
             MeshComponent {
                 model: "mob".into(),
                 animation: Some(anim),
+                origin_offset: Vec3::ZERO,
             },
         )
         .unwrap();
@@ -1303,6 +1318,7 @@ mod tests {
             MeshComponent {
                 model: "mob".into(),
                 animation: Some(anim),
+                origin_offset: Vec3::ZERO,
             },
         )
         .unwrap();
@@ -1383,6 +1399,47 @@ mod tests {
             100.0,
         )
         .expect("posed limb outside a small box is still hit");
+        assert_eq!(hit.zone.as_deref(), Some("hand"));
+    }
+
+    #[test]
+    fn zone_hit_uses_mesh_origin_offset_for_model_world_transform() {
+        let mut reg = EntityRegistry::new();
+        let store = store_with("mob", swinging_limb_model());
+        let id = reg.spawn(Transform {
+            position: Vec3::new(0.0, 0.8, 0.0),
+            ..Transform::default()
+        });
+        reg.set_component(
+            id,
+            HealthComponent {
+                max: 100.0,
+                current: 100.0,
+                hitbox: None,
+                death_handled: false,
+                zone_multipliers: std::collections::HashMap::new(),
+            },
+        )
+        .unwrap();
+        reg.set_component(
+            id,
+            MeshComponent {
+                model: "mob".into(),
+                animation: None,
+                origin_offset: Vec3::new(0.0, -0.8, 0.0),
+            },
+        )
+        .unwrap();
+
+        let hit = nearest_entity_hit(
+            &reg,
+            &store,
+            1.0,
+            Vec3::new(5.0, 0.0, 10.0),
+            Vec3::new(0.0, 0.0, -1.0),
+            100.0,
+        )
+        .expect("offset mesh hit zones should follow the rendered model origin");
         assert_eq!(hit.zone.as_deref(), Some("hand"));
     }
 

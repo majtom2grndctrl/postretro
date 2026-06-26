@@ -28,7 +28,7 @@ use postretro_net::replication::ServerReplication;
 use postretro_net::wire::NetworkId;
 
 use crate::nav::NavAgentParams;
-use crate::scripting::builtins::data_archetype::spawn_net_slot_pawn;
+use crate::scripting::builtins::net_descriptor::spawn_net_slot_pawn;
 use crate::scripting::data_descriptors::EntityTypeDescriptor;
 use crate::scripting::map_entity::MapEntity;
 use crate::scripting::registry::{EntityId, EntityRegistry, Transform};

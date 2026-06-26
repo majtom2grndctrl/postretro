@@ -1623,6 +1623,7 @@ mod tests {
         let live = MeshComponent {
             model: "decraniated".into(),
             animation: Some(live_anim),
+            origin_offset: glam::Vec3::ZERO,
         };
         registry.set_component(id, live).unwrap();
         registry

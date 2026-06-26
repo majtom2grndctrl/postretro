@@ -369,6 +369,7 @@ mod tests {
                         scale: [1.0, 1.0, 1.0],
                     }),
                     player_movement: None,
+                    mesh_animation_state: None,
                 }],
             }],
             state_schema_fingerprint: [0u8; 32],

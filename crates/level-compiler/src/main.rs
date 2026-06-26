@@ -1038,7 +1038,6 @@ fn main() -> anyhow::Result<()> {
         &args.output,
         &geo_result,
         &name_to_key,
-        &vis_result.nodes_section,
         &vis_result.leaves_section,
         &result.tree,
         &portals_section,

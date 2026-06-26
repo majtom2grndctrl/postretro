@@ -55,8 +55,8 @@ pub struct BvhLeaf {
     pub aabb_max: [f32; 3],
     pub index_offset: u32,
     pub index_count: u32,
-    /// BSP leaf id this leaf's primitives live in — the value checked against
-    /// the visible-cell bitmask in the compute shader.
+    /// Runtime cell id this leaf's primitives live in — checked against the
+    /// visible-cell bitmask in the compute shader.
     pub cell_id: u32,
     /// First chunk in the `AnimatedLightChunksSection.chunks` array owned by
     /// this leaf. `chunk_range_count == 0` on leaves with no animated-light

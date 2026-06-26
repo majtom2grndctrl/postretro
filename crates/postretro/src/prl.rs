@@ -94,6 +94,8 @@ pub enum PrlLoadError {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FaceMeta {
+    /// Runtime cell id for this face. Field name preserved from the `Geometry` wire type
+    /// (`GeometrySection` uses `leaf_index`); the value is a runtime cell id.
     pub leaf_index: u32,
     pub texture_index: Option<u32>,
     #[allow(dead_code)]
@@ -102,7 +104,6 @@ pub struct FaceMeta {
     pub material: Material,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CellData {
     pub bounds_min: Vec3,
@@ -123,7 +124,6 @@ pub enum CellLocatorChild {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct CellLocatorNodeData {
     pub plane_normal: Vec3,
     pub plane_distance: f32,
@@ -277,14 +277,10 @@ pub struct LevelWorld {
     pub indices: Vec<u32>,
     pub face_meta: Vec<FaceMeta>,
     /// Preferred spatial contract: runtime cells preserving compiler cell ids.
-    #[allow(dead_code)]
     pub cells: Vec<CellData>,
     /// Flat portal-index adjacency referenced by `cells[*].portal_ref_*`.
-    #[allow(dead_code)]
     pub cell_portal_refs: Vec<u32>,
-    #[allow(dead_code)]
     pub cell_locator_root: CellLocatorChild,
-    #[allow(dead_code)]
     pub cell_locator_nodes: Vec<CellLocatorNodeData>,
     pub portals: Vec<PortalData>,
     pub has_portals: bool,

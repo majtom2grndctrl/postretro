@@ -842,7 +842,7 @@ mod tests {
     #[test]
     fn portal_traverse_camera_cell_always_visible() {
         let world = three_cell_chain();
-        // Camera in leaf 0, looking away from all portals.
+        // Camera in cell 0, looking away from all portals.
         let frustum = make_camera_frustum(Vec3::new(16.0, 32.0, 32.0), Vec3::NEG_X);
         let visible = portal_traverse(Vec3::new(16.0, 32.0, 32.0), 0, &frustum, &world, false);
         assert!(visible[0], "camera cell should always be visible");
@@ -851,19 +851,19 @@ mod tests {
     #[test]
     fn portal_traverse_straight_corridor_sees_all_three() {
         let world = three_cell_chain();
-        // Camera in leaf 0, looking through portals toward +X.
+        // Camera in cell 0, looking through portals toward +X.
         let camera_pos = Vec3::new(16.0, 32.0, 32.0);
         let frustum = make_camera_frustum(camera_pos, Vec3::X);
         let visible = portal_traverse(camera_pos, 0, &frustum, &world, false);
         assert!(visible[0], "camera cell A should be visible");
-        assert!(visible[1], "leaf B should be visible through portal 0");
-        assert!(visible[2], "leaf C should be visible through portals 0+1");
+        assert!(visible[1], "cell B should be visible through portal 0");
+        assert!(visible[2], "cell C should be visible through portals 0+1");
     }
 
     #[test]
     fn portal_traverse_looking_away_hides_distant_leaves() {
         let world = three_cell_chain();
-        // Camera in leaf 0, looking away from the portals (toward -X).
+        // Camera in cell 0, looking away from the portals (toward -X).
         let camera_pos = Vec3::new(16.0, 32.0, 32.0);
         let frustum = make_camera_frustum(camera_pos, Vec3::NEG_X);
         let visible = portal_traverse(camera_pos, 0, &frustum, &world, false);
@@ -871,11 +871,11 @@ mod tests {
         // Portals are at X=32 and X=64, camera looks toward -X, so they're behind.
         assert!(
             !visible[1],
-            "leaf B should not be visible when looking away"
+            "cell B should not be visible when looking away"
         );
         assert!(
             !visible[2],
-            "leaf C should not be visible when looking away"
+            "cell C should not be visible when looking away"
         );
     }
 
@@ -888,9 +888,9 @@ mod tests {
         let frustum = make_camera_frustum(camera_pos, Vec3::X);
         let visible = portal_traverse(camera_pos, 0, &frustum, &world, false);
         assert!(visible[0], "camera cell should be visible");
-        assert!(!visible[1], "solid leaf should not be visible");
-        // Leaf 2 is behind solid leaf 1, so it can't be reached.
-        assert!(!visible[2], "leaf behind solid should not be visible");
+        assert!(!visible[1], "solid cell should not be visible");
+        // Cell 2 is behind solid cell 1, so it can't be reached.
+        assert!(!visible[2], "cell behind solid should not be visible");
     }
 
     #[test]
@@ -949,15 +949,15 @@ mod tests {
             vec![portal_0, portal_1],
         );
 
-        // Camera in leaf A, looking straight along +X toward portal 0.
+        // Camera in cell A, looking straight along +X toward portal 0.
         let camera_pos = Vec3::new(16.0, 32.0, 32.0);
         let frustum = make_camera_frustum(camera_pos, Vec3::X);
         let visible = portal_traverse(camera_pos, 0, &frustum, &world, false);
         assert!(visible[0], "camera cell A should be visible");
-        assert!(visible[1], "leaf B should be visible through portal 0");
+        assert!(visible[1], "cell B should be visible through portal 0");
         assert!(
             !visible[2],
-            "leaf C should not be visible — portal 1 is around the corner at Z=200"
+            "cell C should not be visible — portal 1 is around the corner at Z=200"
         );
     }
 
@@ -1022,7 +1022,7 @@ mod tests {
     ///
     /// In the broken `test-2.prl` trace, this was the failure along chain
     /// `41 → 43 → 38 → 37 → 31 → 30`: `rej 43->38 v=5/4 narrow` broke the
-    /// only chain that reached leaf 30, the leaf holding the missing wall
+    /// only chain that reached cell 30, the cell holding the missing wall
     /// and ceiling panels.
     ///
     /// The fix is the three-state `FRONT`/`BACK`/`ON` classifier from
@@ -1139,10 +1139,10 @@ mod tests {
         // Room layout with NARROW portals (2 units wide) matching the pillar
         // gap dimensions that cause issues in portal generation:
         //
-        // Leaf A (camera room, X=0..120) --[portal 0 at X=120, Z=62..64]--> Leaf B (left gap)
-        //                                --[portal 1 at X=120, Z=66..68]--> Leaf C (right gap)
-        // Leaf B --[portal 2 at X=136, Z=62..64]--> Leaf D (far room, X=136..256)
-        // Leaf C --[portal 3 at X=136, Z=66..68]--> Leaf D
+        // Cell A (camera room, X=0..120) --[portal 0 at X=120, Z=62..64]--> Cell B (left gap)
+        //                                --[portal 1 at X=120, Z=66..68]--> Cell C (right gap)
+        // Cell B --[portal 2 at X=136, Z=62..64]--> Cell D (far room, X=136..256)
+        // Cell C --[portal 3 at X=136, Z=66..68]--> Cell D
         //
         // The portals are only 2 units wide (matching a narrow doorway gap).
         let portal_a_b = PortalData {
@@ -1214,7 +1214,7 @@ mod tests {
         );
 
         // Camera looking through the LEFT passage (Z=63, center of Z=62..64 gap).
-        // Camera is in leaf A, looking toward +X.
+        // Camera is in cell A, looking toward +X.
         {
             let camera_pos = Vec3::new(16.0, 64.0, 63.0);
             let frustum = make_camera_frustum(camera_pos, Vec3::X);
@@ -1222,11 +1222,11 @@ mod tests {
             assert!(visible[0], "camera cell A should be visible");
             assert!(
                 visible[1],
-                "leaf B (left gap) should be visible when looking through left doorway"
+                "cell B (left gap) should be visible when looking through left doorway"
             );
             assert!(
                 visible[3],
-                "leaf D (far room) should be visible through left passage (A->B->D). \
+                "cell D (far room) should be visible through left passage (A->B->D). \
                  If not, the narrow frustum through the 2-unit-wide portal A-B may be \
                  rejecting the 2-unit-wide portal B-D."
             );
@@ -1240,11 +1240,11 @@ mod tests {
             assert!(visible[0], "camera cell A should be visible");
             assert!(
                 visible[2],
-                "leaf C (right gap) should be visible when looking through right doorway"
+                "cell C (right gap) should be visible when looking through right doorway"
             );
             assert!(
                 visible[3],
-                "leaf D (far room) should be visible through right passage (A->C->D). \
+                "cell D (far room) should be visible through right passage (A->C->D). \
                  If not, the narrow frustum through the 2-unit-wide portal A-C may be \
                  rejecting the 2-unit-wide portal C-D."
             );
@@ -1411,7 +1411,7 @@ mod tests {
     #[test]
     fn multi_hop_narrowed_frustums_preserve_strict_subset_invariant() {
         // Three collinear portals along +X. After clipping+narrowing at each
-        // hop, every leaf visible in the narrowed frustum must also be inside
+        // hop, every cell visible in the narrowed frustum must also be inside
         // the original camera frustum.
         let camera_pos = Vec3::new(0.0, 0.0, 0.0);
         let parent = make_camera_frustum(camera_pos, Vec3::X);
@@ -1538,16 +1538,16 @@ mod tests {
 
     #[test]
     fn portal_traverse_straddling_portal_hides_unreachable_side_branch() {
-        // Straight-through layout: camera in leaf 0 looking +X.
+        // Straight-through layout: camera in cell 0 looking +X.
         // Portal 0 (A -> B) straddles the camera's side plane — it extends
         // far beyond the frustum to the +Y direction. Without polygon
         // clipping, frustum narrowing through the un-clipped portal could
         // produce a cone that extends into -Y regions the camera cannot see
         // and incorrectly admit off-axis neighbors.
         //
-        // This test asserts that with clipping in place, leaf B is still
-        // visible (the portal is in view) and a far off-axis leaf C reached
-        // through an orthogonal portal at leaf B is correctly hidden.
+        // This test asserts that with clipping in place, cell B is still
+        // visible (the portal is in view) and a far off-axis cell C reached
+        // through an orthogonal portal at cell B is correctly hidden.
         let portal_a_b = PortalData {
             polygon: vec![
                 // 1000-unit-tall portal at X=10, centered on Z=0.
@@ -1560,7 +1560,7 @@ mod tests {
             back_cell: 1,
         };
         // Portal 1 (B -> C) is far out in +Y, well outside the camera's
-        // actual view cone even though leaf B is reachable.
+        // actual view cone even though cell B is reachable.
         let portal_b_c = PortalData {
             polygon: vec![
                 Vec3::new(15.0, 400.0, -1.0),
@@ -1601,16 +1601,16 @@ mod tests {
         assert!(visible[0], "camera cell should always be visible");
         assert!(
             visible[1],
-            "leaf B should be visible through the straddling portal"
+            "cell B should be visible through the straddling portal"
         );
         assert!(
             !visible[2],
-            "leaf C should be hidden: portal 1 is far off-axis and \
+            "cell C should be hidden: portal 1 is far off-axis and \
              unreachable through the clipped sight cone"
         );
     }
 
-    /// Regression test for the "two paths to the same leaf, narrower path
+    /// Regression test for the "two paths to the same cell, narrower path
     /// wins, downstream reach is lost" topology fixed by per-chain DFS.
     ///
     /// Topology (abstract; bounding boxes are not used by portal_traverse):
@@ -1639,7 +1639,7 @@ mod tests {
     ///   cone at X=30 (clips to empty) and **inside** the wide C-path cone
     ///   (passes through cleanly).
     ///
-    /// Under BFS-keyed-on-leaves (the former implementation):
+    /// Under BFS-keyed-on-cells (the former implementation):
     ///   A's outbound iteration order is [0, 1] → A→B runs first → X marked
     ///   visible with the narrow frustum planted by the B-path → A→C→X is
     ///   then rejected by the already-visited early-skip → X's outbound
@@ -1649,7 +1649,7 @@ mod tests {
     ///   Both A→B→X and A→C→X chains run independently. The C-path produces
     ///   a wide frustum at X that does not clip X→Y to empty → Y visible.
     ///
-    /// The test asserts visibility of all five leaves. The BFS topology fails
+    /// The test asserts visibility of all five cells. The BFS topology fails
     /// on `visible[4]` (Y) and DFS passes.
     #[test]
     fn portal_traverse_two_paths_to_same_leaf_uses_widest_frustum() {
@@ -1745,17 +1745,17 @@ mod tests {
         let frustum = make_camera_frustum(camera_pos, Vec3::X);
         let visible = portal_traverse(camera_pos, 0, &frustum, &world, false);
 
-        assert!(visible[0], "leaf A (camera) must be visible");
-        assert!(visible[1], "leaf B must be visible (A→B direct)");
-        assert!(visible[2], "leaf C must be visible (A→C direct)");
+        assert!(visible[0], "cell A (camera) must be visible");
+        assert!(visible[1], "cell B must be visible (A→B direct)");
+        assert!(visible[2], "cell C must be visible (A→C direct)");
         assert!(
             visible[3],
-            "leaf X must be visible (reachable via either path)"
+            "cell X must be visible (reachable via either path)"
         );
         assert!(
             visible[4],
-            "leaf Y must be visible via the A→C→X→Y chain. Under the \
-             previous BFS-keyed-on-leaves implementation, the A→B→X chain \
+            "cell Y must be visible via the A→C→X→Y chain. Under the \
+             previous BFS-keyed-on-cells implementation, the A→B→X chain \
              would plant a narrow frustum at X that clips X→Y to empty, \
              and the wider A→C→X chain would be dropped by the \
              visible[X] early-skip before it ever reached X→Y."
@@ -1765,7 +1765,7 @@ mod tests {
     /// Regression probe: camera sits 0.03 units from a vertical portal
     /// wall, reproducing the blank-frame scenario captured from
     /// `test-3.prl` at 2026-04-11T22:52:11Z. Camera at `(4.91, 0.92,
-    /// -14.67)` inside leaf 99 whose -X wall is on `x = 4.88`.
+    /// -14.67)` inside cell 99 whose -X wall is on `x = 4.88`.
     ///
     /// **Root cause (confirmed by diagnostic trace on 2026-04-11):** the
     /// render-pipeline near clip (`camera::NEAR = 0.1`) is baked into the
@@ -1778,7 +1778,7 @@ mod tests {
     /// ≈ 0) makes the portal reach its neighbor on this exact fixture.
     ///
     /// The test geometry is copied from the live trace verbatim — same
-    /// camera position, same leaf bounds, same 6.5×4.88 portal rectangle.
+    /// camera position, same cell bounds, same 6.5×4.88 portal rectangle.
     /// Cell A is the camera cell (+X side), cell B is the -X neighbor.
     ///
     /// Routes through `visibility::extract_frustum_planes` directly
@@ -1852,7 +1852,7 @@ mod tests {
         assert!(visible[0], "camera cell must always be visible");
         assert!(
             visible[1],
-            "leaf B must be reachable through the portal even when the \
+            "cell B must be reachable through the portal even when the \
              camera sits 0.03 units from the portal plane. Failure here \
              means the visibility frustum's near plane (inherited from \
              the render pipeline's 0.1-unit near clip) is clipping the \
@@ -1869,14 +1869,14 @@ mod tests {
     /// outbound portals rejecting `v=0/4 clip` and `reach=1` — the
     /// renderer fell back to drawing just the camera cell while the
     /// player could see into several neighbors. The camera Z matched the
-    /// leaf's max-Z face to the float, and adjacent frames oscillated
+    /// cell's max-Z face to the float, and adjacent frames oscillated
     /// between two view-proj hashes (sub-texel camera jitter), one of
     /// which clipped every portal to empty.
     ///
     /// Setup:
-    /// - Leaf A: a slab `x ∈ [−36.37, −34.34], y ∈ [0, 13], z ∈ [−13.41, −13.00]`
-    ///   matching leaf 31's bounds from the trace.
-    /// - Portal on leaf A's `+Z` face (`z = −13.00`), shared with leaf B
+    /// - Cell A: a slab `x ∈ [−36.37, −34.34], y ∈ [0, 13], z ∈ [−13.41, −13.00]`
+    ///   matching cell 31's bounds from the trace.
+    /// - Portal on cell A's `+Z` face (`z = −13.00`), shared with cell B
     ///   on the `+Z` side.
     /// - Camera at `(−34.54, 6.50, −13.00)` — the same position as the
     ///   captured trace, sitting exactly on the portal plane.
@@ -1885,7 +1885,7 @@ mod tests {
     /// If the near-plane slide leaves portal vertices sitting exactly on
     /// the slid plane and any side/near plane's `CLIP_EPSILON`
     /// classification rejects them as BACK, Sutherland-Hodgman clips the
-    /// polygon to empty and `leaf B` is unreachable — the blank-frame
+    /// polygon to empty and `cell B` is unreachable — the blank-frame
     /// bug, but for the "camera on the portal plane" case rather than
     /// "0.03 units in front of it".
     #[test]
@@ -1893,7 +1893,7 @@ mod tests {
         use crate::camera;
         use crate::visibility::extract_frustum_planes;
 
-        // Portal on the +Z face of leaf A, shared with leaf B. Vertices
+        // Portal on the +Z face of cell A, shared with cell B. Vertices
         // are all at z = -13.00 (the plane the camera will sit on).
         let portal = PortalData {
             polygon: vec![
@@ -1942,7 +1942,7 @@ mod tests {
         assert!(visible[0], "camera cell must always be visible");
         assert!(
             visible[1],
-            "leaf B must be reachable through the portal when the camera \
+            "cell B must be reachable through the portal when the camera \
              sits exactly on the portal plane and looks through it. \
              Failure here means Sutherland-Hodgman is being used even \
              though the view-frustum cross-section at apex depth is a \
@@ -1975,7 +1975,7 @@ mod tests {
         assert!(buf.contains("cells="), "header missing cells=: {buf}");
 
         // At least one accepted/rejected event line under the header. The
-        // straight corridor walks into leaf B and leaf C, so there's at
+        // straight corridor walks into cell B and cell C, so there's at
         // least one `  acc ` line.
         let has_event = buf
             .lines()

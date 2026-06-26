@@ -12,7 +12,7 @@ use postretro_level_format::alpha_lights::{
 };
 use postretro_level_format::animated_light_chunks::AnimatedLightChunksSection;
 use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection;
-use postretro_level_format::bsp::{BspLeavesSection, BspNodesSection};
+use postretro_level_format::bsp::BspLeavesSection;
 use postretro_level_format::bvh::BvhSection;
 use postretro_level_format::cell_locator::{
     CellLocatorChild, CellLocatorNodeRecord, CellLocatorSection,
@@ -296,14 +296,16 @@ pub fn encode_portals(portals: &[Portal]) -> PortalsSection {
 }
 
 /// Encode runtime cells from BSP leaf records plus explicit exterior
-/// classification. Cell ids stay one-to-one with BSP leaf ids.
+/// classification. Cell ids stay one-to-one with BSP leaf ids. The one-to-one
+/// mapping avoids remapping portal endpoints, BVH leaf `cell_id`, fog masks,
+/// and diagnostics — all downstream consumers index by leaf id directly.
 pub fn encode_cells(
     leaves: &BspLeavesSection,
     portals: &PortalsSection,
     exterior_leaves: &HashSet<usize>,
 ) -> anyhow::Result<CellsSection> {
     if leaves.leaves.is_empty() {
-        anyhow::bail!("Cells section requires at least one BSP leaf");
+        anyhow::bail!("cannot encode Cells: source BspLeavesSection is empty");
     }
 
     let mut portal_refs_by_cell: Vec<Vec<u32>> = vec![Vec::new(); leaves.leaves.len()];
@@ -405,7 +407,7 @@ fn validate_cell_bounds(
 /// using the legacy negative leaf sentinel.
 pub fn encode_cell_locator(tree: &BspTree) -> anyhow::Result<CellLocatorSection> {
     if tree.leaves.is_empty() {
-        anyhow::bail!("CellLocator section requires at least one BSP leaf");
+        anyhow::bail!("cannot encode CellLocator: source BspLeavesSection is empty");
     }
 
     let root = if tree.nodes.is_empty() {
@@ -461,7 +463,6 @@ pub fn pack_and_write_portals(
     output: &Path,
     geo_result: &GeometryResult,
     texture_cache_keys: &HashMap<String, [u8; 32]>,
-    _nodes: &BspNodesSection,
     leaves: &BspLeavesSection,
     tree: &BspTree,
     portals: &PortalsSection,
@@ -838,7 +839,7 @@ fn validate_readback(file_buf: &[u8], expected_sections: &[SectionBlob]) -> anyh
 #[cfg(test)]
 mod tests {
     use super::*;
-    use postretro_level_format::bsp::{BspLeafRecord, BspNodeRecord};
+    use postretro_level_format::bsp::BspLeafRecord;
     use postretro_level_format::bvh::{BVH_NODE_FLAG_LEAF, BvhLeaf, BvhNode as FlatBvhNode};
     use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
     use postretro_level_format::texture_names::TextureNamesSection;
@@ -884,17 +885,6 @@ mod tests {
             face_index_ranges: vec![crate::geometry::FaceIndexRange {
                 index_offset: 0,
                 index_count: 3,
-            }],
-        }
-    }
-
-    fn sample_nodes() -> BspNodesSection {
-        BspNodesSection {
-            nodes: vec![BspNodeRecord {
-                plane_normal: [1.0, 0.0, 0.0],
-                plane_distance: 32.0,
-                front: -1,    // leaf 0
-                back: -1 - 1, // leaf 1
             }],
         }
     }
@@ -1091,7 +1081,6 @@ mod tests {
         let output = dir.join("test_pack_portals.prl");
 
         let geo_result = sample_geo_result();
-        let nodes = sample_nodes();
         let leaves = sample_leaves();
         let portals = PortalsSection {
             vertices: vec![[32.0, 0.0, 0.0], [32.0, 64.0, 0.0], [32.0, 64.0, 64.0]],
@@ -1110,7 +1099,6 @@ mod tests {
             &output,
             &geo_result,
             &texture_cache_keys,
-            &nodes,
             &leaves,
             &sample_tree(),
             &portals,
@@ -1175,7 +1163,6 @@ mod tests {
     fn pack_write_rejects_nonexistent_directory() {
         let output = Path::new("/nonexistent/deeply/nested/dir/test.prl");
         let geo_result = sample_geo_result();
-        let nodes = sample_nodes();
         let leaves = sample_leaves();
         let portals = PortalsSection {
             vertices: vec![],
@@ -1189,7 +1176,6 @@ mod tests {
             output,
             &geo_result,
             &texture_cache_keys,
-            &nodes,
             &leaves,
             &sample_tree(),
             &portals,
@@ -1277,7 +1263,6 @@ mod tests {
             &output,
             &geo_result,
             &texture_cache_keys,
-            &vis_result.nodes_section,
             &vis_result.leaves_section,
             &result.tree,
             &portals_section,

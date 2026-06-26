@@ -6,9 +6,11 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 pub(crate) mod lifecycle;
+pub(crate) mod session;
 pub(crate) mod worker;
 
 pub(crate) use lifecycle::FRONTEND_CLEAR_COLOR;
+pub(crate) use session::{BootSession, build_session};
 pub(crate) use worker::{LoadOutcome, spawn_level_worker};
 
 /// `Booting` = before `App::resumed()` (no window, no renderer).

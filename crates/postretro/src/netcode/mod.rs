@@ -444,6 +444,30 @@ impl NetEndpoint {
             }
         }
     }
+
+    /// Reset connected-client state that points at level-owned registry entities,
+    /// preserving the transport connection. Previously-known `NetworkId`s immediately
+    /// request fresh full baselines so unchanged acked remotes are not lost after the
+    /// local registry is cleared.
+    pub(crate) fn reset_level_scoped_client_state(&mut self) {
+        let NetEndpoint::Client {
+            client,
+            replication,
+            interpolation_delay,
+            prediction,
+            ..
+        } = self
+        else {
+            return;
+        };
+
+        let refresh_requests = replication.reset_for_level_unload();
+        for req in refresh_requests {
+            client.send_input(wire::encode(&wire::ClientMessage::BaselineRefresh(req)));
+        }
+        prediction.reset_for_level_unload();
+        interpolation_delay.reset_for_level_unload();
+    }
 }
 
 fn now() -> Duration {
@@ -570,6 +594,7 @@ fn payload_is_finite(payload: &ComponentPayload) -> bool {
         // Transform-only. Validate its floats now so a non-finite payload is
         // dropped at the ingest boundary rather than propagated.
         ComponentPayload::PlayerMovementState(m) => player_movement_is_finite(m),
+        ComponentPayload::MeshAnimationState(_) => true,
     }
 }
 
@@ -611,6 +636,10 @@ pub(crate) fn decode_snapshot(bytes: &[u8]) -> Result<SnapshotMessage, SnapshotD
 ///
 /// The mutable registry borrow is threaded in by the caller (`main.rs`), so this
 /// module never reaches into `App`.
+///
+/// Returns `true` when this receive pass materialized at least one remote-enemy
+/// presentation mesh, allowing the caller to resolve late-spawned animation clip
+/// indices against the already-loaded model tables.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn client_receive_and_apply(
     registry: &mut EntityRegistry,
@@ -620,11 +649,13 @@ pub(crate) fn client_receive_and_apply(
     state_slots: &mut state_slots::ClientStateApply,
     prediction: &mut ClientPrediction,
     descriptors: &[crate::scripting::data_descriptors::EntityTypeDescriptor],
+    agent_params: Option<crate::nav::NavAgentParams>,
     collision: &CollisionWorld,
     gravity: f32,
     tick_dt: f32,
     frame_dt: Duration,
-) {
+) -> bool {
+    let mut materialized_remote_enemy_presentation = false;
     for bytes in client.drain_snapshots() {
         let snapshot = match decode_snapshot(&bytes) {
             Ok(snapshot) => snapshot,
@@ -678,7 +709,18 @@ pub(crate) fn client_receive_and_apply(
         // rejects the snapshot). The entity is already mapped, so it interpolates regardless
         // of whether a mesh attached. Runs before the frame renders (Game-logic stage).
         for remote in &outcome.remote_enemies {
-            remote_materialize::materialize_armed_remote_enemy(remote, descriptors, registry);
+            let materialized = remote_materialize::materialize_armed_remote_enemy(
+                remote,
+                descriptors,
+                registry,
+                agent_params,
+            );
+            if materialized {
+                if let Some(state) = remote.initial_animation_state.as_deref() {
+                    client::apply_mesh_animation_state(registry, remote.entity_id, state, true);
+                }
+            }
+            materialized_remote_enemy_presentation |= materialized;
         }
         // M15 Phase 3 Task 5: reconcile the local predicted pawn against the
         // authoritative record this snapshot delivered — merge the movement subset,
@@ -712,6 +754,7 @@ pub(crate) fn client_receive_and_apply(
         let buffer = wire::encode(&wire::ClientMessage::BaselineRefresh(req));
         client.send_input(buffer);
     }
+    materialized_remote_enemy_presentation
 }
 
 /// Drive one connected-client predicted fixed tick (M15 Phase 3 Task 3). Sends

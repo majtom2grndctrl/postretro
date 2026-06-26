@@ -1,11 +1,12 @@
 // E10 (Networked Enemy Authority Baseline) Task 7: the integration harness proving
 // the WHOLE host→client enemy path end to end. A host registers a map-placed AI enemy
-// (Brain + Agent + MapPlacement) for replication; its authoritative Transform-only
-// snapshot rides the wire — through the dev in-memory `PacketConditioner` under a
-// conditioned link — to a connected client that materializes a remote PRESENTATION
-// entity (descriptor mesh only) and samples its pose through the Phase 2
-// `RemoteInterpolationBuffer`. The host owns AI/steering/damage/death; the client
-// carries NO local `Brain`/`Agent`/`Health`/`Weapon`/`PlayerMovement` for the enemy.
+// (Brain + Agent + MapPlacement) for replication; its authoritative Transform plus
+// optional mesh-animation state rides the wire — through the dev in-memory
+// `PacketConditioner` under a conditioned link — to a connected client that
+// materializes a remote PRESENTATION entity (descriptor mesh only) and samples its pose
+// through the Phase 2 `RemoteInterpolationBuffer`. The host owns
+// AI/steering/damage/death; the client carries NO local
+// `Brain`/`Agent`/`Health`/`Weapon`/`PlayerMovement` for the enemy.
 //
 // This drives the genuine production seams (Task 1 materialization, Task 3 wire
 // `entity_class`, Task 4 host registration, Task 5 client spawn suppression, Task 6
@@ -68,10 +69,10 @@ use postretro_net::harness::{LinkConfig, PacketConditioner, VirtualMillis};
 use postretro_net::replication::{EntitySnapshot, ServerReplication};
 use postretro_net::wire::{
     self, ComponentPayload, EntityRecord, NetworkId, RawSnapshotMessage, SnapshotMessage,
-    WireTransform,
+    WireMeshAnimationState, WireTransform,
 };
 
-use super::client::ClientReplication;
+use super::client::{ClientReplication, RemoteEnemyMaterialize};
 use super::interpolation::PoseSource;
 use super::remote_materialize::materialize_armed_remote_enemy;
 use super::replication::{ReplicableSet, host_register_map_enemies, produce_owned_snapshots};
@@ -152,6 +153,29 @@ fn agent() -> AgentComponent {
     AgentComponent::new(0.4, 1.6, 0.3, 3.5)
 }
 
+fn agent_params() -> crate::nav::NavAgentParams {
+    crate::nav::NavAgentParams {
+        radius: 0.4,
+        height: 1.6,
+        step_height: 0.3,
+        max_slope_deg: 45.0,
+    }
+}
+
+fn materialize_remote_enemy_presentation(
+    remote: &RemoteEnemyMaterialize,
+    descriptors: &[EntityTypeDescriptor],
+    registry: &mut EntityRegistry,
+) {
+    let materialized =
+        materialize_armed_remote_enemy(remote, descriptors, registry, Some(agent_params()));
+    if materialized {
+        if let Some(state) = remote.initial_animation_state.as_deref() {
+            super::client::apply_mesh_animation_state(registry, remote.entity_id, state, true);
+        }
+    }
+}
+
 fn map_placement_provenance(class: &str) -> DescriptorProvenance {
     DescriptorProvenance {
         canonical_name: class.to_string(),
@@ -194,6 +218,16 @@ fn enemy_descriptor(class: &str) -> EntityTypeDescriptor {
             looping: true,
             crossfade_ms: 150.0,
             interrupt: InterruptPolicy::Smooth,
+            clip_index: None,
+        },
+    );
+    states.insert(
+        "attack".to_string(),
+        AnimationState {
+            clip: "attack_clip".to_string(),
+            looping: false,
+            crossfade_ms: 50.0,
+            interrupt: InterruptPolicy::Snap,
             clip_index: None,
         },
     );
@@ -387,7 +421,7 @@ impl EnemyReplicationHarness {
             // Task 6 seam: materialize the descriptor presentation for each remote
             // enemy this snapshot first spawned (mesh only — never AI state).
             for remote in &outcome.remote_enemies {
-                materialize_armed_remote_enemy(
+                materialize_remote_enemy_presentation(
                     remote,
                     &self.descriptors,
                     &mut self.client_registry,
@@ -467,7 +501,11 @@ impl EnemyReplicationHarness {
             .client_replication
             .apply_snapshot(&mut self.client_registry, snapshot);
         for remote in &outcome.remote_enemies {
-            materialize_armed_remote_enemy(remote, &self.descriptors, &mut self.client_registry);
+            materialize_remote_enemy_presentation(
+                remote,
+                &self.descriptors,
+                &mut self.client_registry,
+            );
         }
         if let Some(ack) = &outcome.ack {
             self.server_replication.apply_ack(
@@ -567,6 +605,55 @@ fn connected_client_has_exactly_one_remote_enemy_and_no_local_authoritative_copy
     assert!(
         !descriptor_materializes_ai_enemy(&prop_descriptor("crate")),
         "the prop descriptor is NOT an AI enemy (kept on the client)"
+    );
+}
+
+// Regression: the harness materializes remote enemies directly, so it must replay the
+// spawn baseline's mesh-animation state just like `client_receive_and_apply`.
+#[test]
+fn remote_enemy_spawn_baseline_applies_initial_mesh_animation_state() {
+    let mut h = EnemyReplicationHarness::new(perfect_link());
+    let net_id = NetworkId(777);
+    let snapshot = SnapshotMessage {
+        sequence: 1,
+        server_tick: 1,
+        state_schema_fingerprint: [0u8; 32],
+        state_records: Vec::new(),
+        records: vec![EntityRecord::FullBaseline {
+            network_id: net_id.0,
+            baseline_id: 1,
+            last_processed_client_tick: None,
+            local_player: false,
+            entity_class: Some(ENEMY_CLASS.to_string()),
+            components: vec![
+                ComponentPayload::Transform(WireTransform {
+                    position: [0.0, 0.0, 0.0],
+                    rotation: [0.0, 0.0, 0.0, 1.0],
+                    scale: [1.0, 1.0, 1.0],
+                }),
+                ComponentPayload::MeshAnimationState(WireMeshAnimationState {
+                    current_state: "attack".to_string(),
+                }),
+            ],
+        }],
+    };
+
+    let outcome = h.inject_snapshot_to_client(&snapshot);
+
+    assert_eq!(
+        outcome.remote_enemies.len(),
+        1,
+        "the spawn baseline surfaces one remote enemy materialization request"
+    );
+    let remote = outcome.remote_enemies[0].entity_id;
+    let mesh = h
+        .client_registry
+        .get_component::<MeshComponent>(remote)
+        .expect("remote entity carries a MeshComponent after materialization");
+    assert_eq!(
+        mesh.animation.as_ref().unwrap().current_state,
+        "attack",
+        "spawn baseline MeshAnimationState is applied after descriptor materialization"
     );
 }
 
@@ -921,7 +1008,7 @@ fn late_joining_client_receives_only_live_enemies() {
             };
             let outcome = client_replication.apply_snapshot(&mut client_registry, &snapshot);
             for remote in &outcome.remote_enemies {
-                materialize_armed_remote_enemy(remote, &descriptors, &mut client_registry);
+                materialize_remote_enemy_presentation(remote, &descriptors, &mut client_registry);
             }
             if let Some(ack) = outcome.ack {
                 acks.push(ack);

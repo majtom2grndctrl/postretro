@@ -23,7 +23,9 @@ use crate::scripting::components::billboard_emitter::BillboardEmitterComponent;
 use crate::scripting::components::brain::{attach_brain, validate_brain_animation_states};
 use crate::scripting::components::health::HealthComponent;
 use crate::scripting::components::light::{FalloffKind, LightComponent, LightKind};
-use crate::scripting::components::mesh::{MeshAnimation, MeshComponent};
+use crate::scripting::components::mesh::{
+    MeshAnimation, MeshComponent, capsule_center_to_feet_origin_offset,
+};
 use crate::scripting::components::player_movement::PlayerMovementComponent;
 use crate::scripting::components::weapon::WeaponComponent;
 use crate::scripting::data_descriptors::{EntityTypeDescriptor, LightDescriptor};
@@ -38,7 +40,7 @@ use crate::scripting::registry::{ComponentKind, EntityId, EntityRegistry, Transf
 /// path until a navmesh is present. Values mirror the canonical human-ish agent
 /// the navmesh bake targets (`NavAgentParams` defaults), so a fallback capsule
 /// is plausibly sized even with no bake to read from.
-const DEFAULT_AGENT_PARAMS: NavAgentParams = NavAgentParams {
+pub(crate) const DEFAULT_AGENT_PARAMS: NavAgentParams = NavAgentParams {
     radius: 0.35,
     height: 1.8,
     step_height: 0.4,
@@ -69,35 +71,23 @@ fn apply_emitter_kvp_overrides(
             continue;
         };
         match field {
-            "rate" => {
-                if parse_into_f32(raw, &mut component.rate, entity, key) {
-                    applied.insert(DescriptorMapOverride::EmitterInitialRate);
-                }
+            "rate" if parse_into_f32(raw, &mut component.rate, entity, key) => {
+                applied.insert(DescriptorMapOverride::EmitterInitialRate);
             }
-            "spread" => {
-                if parse_into_f32(raw, &mut component.spread, entity, key) {
-                    applied.insert(DescriptorMapOverride::EmitterInitialSpread);
-                }
+            "spread" if parse_into_f32(raw, &mut component.spread, entity, key) => {
+                applied.insert(DescriptorMapOverride::EmitterInitialSpread);
             }
-            "lifetime" => {
-                if parse_into_f32(raw, &mut component.lifetime, entity, key) {
-                    applied.insert(DescriptorMapOverride::EmitterInitialLifetime);
-                }
+            "lifetime" if parse_into_f32(raw, &mut component.lifetime, entity, key) => {
+                applied.insert(DescriptorMapOverride::EmitterInitialLifetime);
             }
-            "buoyancy" => {
-                if parse_into_f32(raw, &mut component.buoyancy, entity, key) {
-                    applied.insert(DescriptorMapOverride::EmitterInitialBuoyancy);
-                }
+            "buoyancy" if parse_into_f32(raw, &mut component.buoyancy, entity, key) => {
+                applied.insert(DescriptorMapOverride::EmitterInitialBuoyancy);
             }
-            "drag" => {
-                if parse_into_f32(raw, &mut component.drag, entity, key) {
-                    applied.insert(DescriptorMapOverride::EmitterInitialDrag);
-                }
+            "drag" if parse_into_f32(raw, &mut component.drag, entity, key) => {
+                applied.insert(DescriptorMapOverride::EmitterInitialDrag);
             }
-            "spin_rate" => {
-                if parse_into_f32(raw, &mut component.spin_rate, entity, key) {
-                    applied.insert(DescriptorMapOverride::EmitterInitialSpinRate);
-                }
+            "spin_rate" if parse_into_f32(raw, &mut component.spin_rate, entity, key) => {
+                applied.insert(DescriptorMapOverride::EmitterInitialSpinRate);
             }
             "burst" => match raw.trim().parse::<u32>() {
                 Ok(v) => {
@@ -114,10 +104,8 @@ fn apply_emitter_kvp_overrides(
                     applied.insert(DescriptorMapOverride::EmitterInitialSprite);
                 }
             }
-            "color" => {
-                if parse_into_vec3(raw, &mut component.color, entity, key) {
-                    applied.insert(DescriptorMapOverride::EmitterInitialColor);
-                }
+            "color" if parse_into_vec3(raw, &mut component.color, entity, key) => {
+                applied.insert(DescriptorMapOverride::EmitterInitialColor);
             }
             "velocity" if parse_into_vec3(raw, &mut component.velocity, entity, key) => {
                 applied.insert(DescriptorMapOverride::EmitterInitialVelocity);
@@ -148,15 +136,11 @@ fn apply_light_kvp_overrides(
             // Mirror the validation applied at descriptor parse time: reject
             // negative or non-finite values at parse time so a bad override
             // never lands on the descriptor (e.g. `initial_intensity -5.0`).
-            "intensity" => {
-                if parse_into_nonneg_f32(raw, &mut descriptor.intensity, entity, key) {
-                    applied.insert(DescriptorMapOverride::LightInitialIntensity);
-                }
+            "intensity" if parse_into_nonneg_f32(raw, &mut descriptor.intensity, entity, key) => {
+                applied.insert(DescriptorMapOverride::LightInitialIntensity);
             }
-            "range" => {
-                if parse_into_nonneg_f32(raw, &mut descriptor.range, entity, key) {
-                    applied.insert(DescriptorMapOverride::LightInitialRange);
-                }
+            "range" if parse_into_nonneg_f32(raw, &mut descriptor.range, entity, key) => {
+                applied.insert(DescriptorMapOverride::LightInitialRange);
             }
             "is_dynamic" => match parse_bool(raw) {
                 Some(v) => {
@@ -253,6 +237,17 @@ fn is_directly_map_placeable(descriptor: &EntityTypeDescriptor) -> bool {
         || descriptor.movement.is_some()
         || descriptor.mesh.is_some()
         || descriptor.health.is_some()
+}
+
+fn ai_capsule_center_from_feet_offset(
+    descriptor: &EntityTypeDescriptor,
+    agent_params: Option<NavAgentParams>,
+) -> Vec3 {
+    if descriptor.ai.is_none() {
+        return Vec3::ZERO;
+    }
+    let params = agent_params.unwrap_or(DEFAULT_AGENT_PARAMS);
+    -capsule_center_to_feet_origin_offset(params.radius, params.height)
 }
 
 /// Whether materializing this descriptor would attach the engine-owned AI pair
@@ -426,27 +421,35 @@ fn attach_descriptor_components(
     }
 
     if let Some(mesh_desc) = descriptor.mesh.as_ref() {
+        let origin_offset = if descriptor.ai.is_some() {
+            let params = agent_params.unwrap_or(DEFAULT_AGENT_PARAMS);
+            capsule_center_to_feet_origin_offset(params.radius, params.height)
+        } else {
+            Vec3::ZERO
+        };
         // No `animations` block ⇒ stateless mesh (model handle only). Otherwise
         // copy the declared state map in via `MeshAnimation::new`: current =
         // default state, entry stamp pending (filled by the resolve pass), no
         // active fade. Parse-time validation guarantees `default_state`
         // is `Some` exactly when the map is non-empty and names a declared state.
         let component = match &mesh_desc.default_state {
-            Some(default_state) => MeshComponent {
-                model: mesh_desc.model.clone(),
-                animation: Some(MeshAnimation::new(
-                    mesh_desc.animations.clone(),
-                    default_state.clone(),
-                )),
-            },
+            Some(default_state) => MeshComponent::animated(
+                mesh_desc.model.clone(),
+                MeshAnimation::new(mesh_desc.animations.clone(), default_state.clone()),
+            ),
             None => MeshComponent::stateless(mesh_desc.model.clone()),
-        };
+        }
+        .with_origin_offset(origin_offset);
         let _ = registry.set_component(id, component);
         owned_components.insert(DescriptorComponentKind::Mesh);
     }
 
     if let Some(health_desc) = descriptor.health.as_ref() {
-        let component = HealthComponent::from_descriptor(health_desc);
+        let mut component = HealthComponent::from_descriptor(health_desc);
+        let origin_shift = ai_capsule_center_from_feet_offset(descriptor, agent_params);
+        if let Some(hitbox) = component.hitbox.as_mut() {
+            hitbox.offset -= origin_shift;
+        }
         let _ = registry.set_component(id, component);
         owned_components.insert(DescriptorComponentKind::Health);
     }
@@ -501,8 +504,9 @@ pub(super) fn spawn_descriptor_instance(
     spawn_path: DescriptorSpawnPath,
     agent_params: Option<NavAgentParams>,
 ) -> Option<EntityId> {
+    let origin_shift = ai_capsule_center_from_feet_offset(descriptor, agent_params);
     let transform = Transform {
-        position: entity.origin,
+        position: entity.origin + origin_shift,
         rotation: entity.rotation_quat(),
         scale: Vec3::ONE,
     };
@@ -2267,6 +2271,58 @@ mod tests {
         assert!(
             matches!(reg.has_component_kind(id, ComponentKind::Agent), Ok(true)),
             "ai descriptor materializes an Agent alongside the Brain"
+        );
+    }
+
+    #[test]
+    fn ai_descriptor_spawn_uses_capsule_center_transform_without_moving_authored_hitbox() {
+        use crate::nav::NavAgentParams;
+        use crate::scripting::components::health::HealthComponent;
+        use crate::scripting::data_descriptors::{HealthDescriptor, HitboxDescriptor};
+
+        let params = NavAgentParams {
+            radius: 0.4,
+            height: 1.6,
+            step_height: 0.3,
+            max_slope_deg: 45.0,
+        };
+        let mut descriptor = ai_enemy_descriptor("grunt");
+        descriptor.health = Some(HealthDescriptor {
+            max: 60.0,
+            hitbox: Some(HitboxDescriptor {
+                half_extents: [0.4, 0.9, 0.4],
+                offset: Some([0.0, 0.9, 0.0]),
+            }),
+            zone_multipliers: std::collections::HashMap::new(),
+        });
+        let placement = placement("grunt", &[]);
+        let authored_hitbox_center = placement.origin + Vec3::new(0.0, 0.9, 0.0);
+
+        let mut reg = EntityRegistry::new();
+        apply_data_archetype_dispatch(
+            &[placement],
+            &[descriptor],
+            &HashSet::new(),
+            &mut reg,
+            Some(params),
+        );
+
+        let (id, _) = reg
+            .iter_with_kind(ComponentKind::Agent)
+            .next()
+            .expect("ai descriptor materializes an Agent");
+        let transform = reg.get_component::<Transform>(id).unwrap();
+        assert_eq!(
+            transform.position,
+            Vec3::new(1.0, 2.8, 3.0),
+            "AI gameplay transform is normalized to capsule center at spawn"
+        );
+
+        let health = reg.get_component::<HealthComponent>(id).unwrap();
+        let hitbox = health.hitbox.expect("authored hitbox materialized");
+        assert!(
+            (transform.position + hitbox.offset - authored_hitbox_center).length() < 1.0e-5,
+            "spawn-time transform normalization must preserve the authored world hitbox"
         );
     }
 }

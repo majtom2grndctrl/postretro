@@ -30,11 +30,11 @@ Three channels, fixed layout, agreed by both peers (the layout is folded into th
 
 | Channel | Delivery | Carries |
 |---------|----------|---------|
-| Control | reliable-ordered | version handshake; later, spawn/despawn |
-| Snapshot | unreliable | full-state snapshots, latest-wins (a dropped snapshot is superseded by the next) |
-| Input | reliable-ordered | client input-command stream — carries `ClientMessage::Input` (Phase 3) |
+| Control | reliable-ordered | version handshake and typed rejects |
+| Snapshot | unreliable | server snapshots: entity records, state-slot records, server tick metadata |
+| Input | reliable-ordered | client input commands, replication acks, baseline-refresh requests, state-refresh requests |
 
-The Input channel is registered in Phase 1 only so the channel layout — and thus the transport protocol gate — is stable before it carries traffic. Reliability is matched to the data: control state must arrive and stay ordered; snapshots are disposable because the next one obsoletes the last.
+Reliability is matched to the data: control state and client→server repair/ack traffic must arrive ordered; snapshots are disposable because missing entity or state baselines are repaired by explicit refresh requests.
 
 ## Wire/codec invariants
 
@@ -43,11 +43,13 @@ The wire codec is **bitcode**, pinned to an exact version. bitcode owns endianne
 1. **Never persist bitcode bytes.** The format is not a storage format. It exists only between two live, version-matched peers.
 2. **Every connection is gated on the handshake** before any bitcode payload is decoded (see *Handshake* below). A version-mismatched peer is refused before a single message is interpreted.
 
-**No serde-internally-tagged enum crosses the wire.** The engine's `ComponentValue` is a `#[serde(tag = "kind")]` enum, which bitcode cannot round-trip (`DeserializeAnyNotSupported`). So replication does not send engine types: it sends dedicated **wire-mirror** types that derive bitcode's native `Encode`/`Decode`. The component payload carries an explicit `u16` discriminant **numeric-equal to the engine `ComponentKind`** (Transform = 0). The engine↔wire conversion lives in `crate::netcode`; the mirror types know nothing about glam component order or serde tags.
+**No serde-internally-tagged enum crosses the wire.** The engine's `ComponentValue` is a `#[serde(tag = "kind")]` enum, which bitcode cannot round-trip (`DeserializeAnyNotSupported`). So replication does not send engine types: it sends dedicated **wire-mirror** types that derive bitcode's native `Encode`/`Decode`. The component payload carries an explicit `u16` discriminant **numeric-equal to the engine `ComponentKind`**. Current entity payloads cover `Transform`, `PlayerMovementState`, and `MeshAnimationState`. `MeshAnimationState` carries only current state name; descriptor mesh data stays local. The engine↔wire conversion lives in `crate::netcode`; the mirror types know nothing about glam component order or serde tags.
 
-This discriminant equality is a load-bearing contract across the crate boundary: the net side and the engine side independently assert it (drift-guard tests on both sides), because a divergence silently mis-tags components on the wire. Phase 2 grows the payload by adding variants in the same numeric order — the envelope shape does not change.
+This discriminant equality is a load-bearing contract across the crate boundary: the net side and the engine side independently assert it (drift-guard tests on both sides), because a divergence silently mis-tags components on the wire. New payload variants are added in engine `ComponentKind` numeric order.
 
-**Snapshot envelope:** a server tick stamp (`u32`) plus a count-prefixed list of `(NetworkId, payload)` entries. bitcode length-prefixes the list — that *is* the count prefix; an empty snapshot encodes as count 0. Phase 1 sends **full state every snapshot — no delta.**
+**Snapshot envelope:** server tick metadata plus bitcode length-prefixed record lists. Entity records are per-client replication records: `FullBaseline`, `Delta`, or `Despawn`. `FullBaseline` establishes or refreshes the client's per-entity baseline; `Delta` applies only against the named baseline; `Despawn` is a tombstone and carries no components. State-slot records follow the same baseline/delta repair model for non-entity replicated state. Empty record lists are valid.
+
+Clients acknowledge replication progress over the reliable Input channel. Acks are monotonic and additive: omitted entities or state slots leave prior server-side ack state intact. A client that receives a delta for an unknown baseline does not guess; it requests a full baseline refresh and waits for repair.
 
 The codec surface is two functions (encode, decode) over these types. Decode of a short, corrupted, or over-long buffer is always a typed `Err`, never a panic — the transport must survive a hostile or truncated packet.
 
@@ -65,10 +67,12 @@ The two gates are not redundant. Gate 1 stops wire-incompatible peers cheaply at
 
 The net crate emits typed snapshots and **never mutates the registry.** All registry-touching replication lives in `crate::netcode`, which owns the two halves of the data path:
 
-- **Host serialize:** walk the replicable set (Phase 1: every entity carrying a `Transform`), stamp each `EntityId` to its stable `NetworkId`, convert to wire mirrors, build the tick-stamped snapshot. Borrows the registry **immutably**.
-- **Client apply:** for each entry, on first sight of a `NetworkId` spawn and record the mapping; otherwise mutate the mapped `EntityId`. The *only* registry-mutating path, and only on the client.
+- **Host serialize:** walk the authoritative replicable set, stamp each `EntityId` to its stable `NetworkId`, convert to wire mirrors, and build per-client baseline/delta/despawn records. Borrows the registry **immutably**.
+- **Client apply:** apply `FullBaseline`, `Delta`, and `Despawn` through the mapped `NetworkId→EntityId` state machine. Full baselines materialize or refresh entities; deltas mutate only when the referenced baseline is held; despawns remove mapped entities idempotently and drop their mappings.
 
 `NetworkId` is the network-stable identity assigned by the host; the host owns an `EntityId→NetworkId` allocator (monotonic, never recycled, stable for an entity's lifetime) and the client owns the inverse `NetworkId→EntityId` map. Stable ids keep the client's mapping coherent across snapshots. This is the network projection of the entity-model ownership rule (`entity_model.md` §6): game logic owns entities; replication is just another reader (host) and a controlled writer (client).
+
+Current component payloads are `Transform`, `PlayerMovementState`, and `MeshAnimationState`, added in `ComponentKind` numeric order. `MeshAnimationState` carries the current animation state name; descriptor mesh data stays local. Movement-authority ack metadata is valid only on records carrying `PlayerMovementState`. Despawn records carry tombstone metadata only, never component payloads.
 
 ## Role model
 
@@ -80,7 +84,7 @@ Role is selected once at startup from CLI flags; default is **single-player with
 | `--host [port]` | Listen server. Bare `--host` uses the default port. |
 | `--connect <ip:port>` | Client connecting to an explicit address. |
 
-`--host` and `--connect` are mutually exclusive. **Direct connect only** — no discovery, no matchmaking, no relay. Endpoint construction can fail (socket bind, transport init); a failure is logged and **degrades to single-player** rather than blocking boot — a netcode setup error never stops the engine from running. The Phase 1 client is a pure viewer of host-authoritative full-state.
+`--host` and `--connect` are mutually exclusive. **Direct connect only** — no discovery, no matchmaking, no relay. Endpoint construction can fail (socket bind, transport init); a failure is logged and **degrades to single-player** rather than blocking boot — a netcode setup error never stops the engine from running. Clients receive host-authoritative replication, predict their own pawn locally, and reconcile against host acks.
 
 ## Testing the conditioned link
 
@@ -176,13 +180,11 @@ the wrap-aware serial-number predicate (`client_tick_le`), correct across the u3
 
 ## Phase boundaries
 
-Phase 1 ships the durable shape above. The following are **deferred** and must not be read into the Phase 1 contracts:
+Epic 15 Phase 3 is the active contract: authoritative client-server co-op, entity baseline/delta/despawn replication, state-slot replication, snapshot interpolation, client input streaming, prediction, and reconciliation.
 
-- **Phase 2:** delta encoding, snapshot interpolation, time-sync, entity lifecycle (spawn/despawn over the control channel, remove-missing reconciliation), and the client→server input stream over the reserved Input channel.
-  - **Replicable-set policy and interest management** are deferred here: which entities are authoritative networked objects vs. client-cosmetic (particles/sprites) vs. static (baked lights/fog). Phase 1 replicates the full `Transform`-bearing set, which floods snapshots on FX-heavy maps — the campaign-test smoke emitters (each a `BillboardEmitter`/`ParticleState` entity) drowned the moving pawn in the two-process demo. The Phase 2 predicate scopes the wire to entities carrying an authoritative gameplay component (`PlayerMovement`/`Agent`/`Brain`/`Health`/movers); `BillboardEmitter`/`ParticleState`/`SpriteVisual`/`Light`/`FogVolume` are deterministic client-local or baked, identical on both ends from the shared `.prl`, and must stay off the wire.
-- **Phase 3:** client-side prediction and reconciliation. **Shipped.**
+Phase 1/2 plans are historical. Do not read their old full-snapshot, no-despawn, or single-component limits as current behavior.
 
-Phase 1 explicitly **never despawns:** a `NetworkId` absent from a later snapshot is left untouched; remove-missing is Phase 2's job. The component payload binds **only `Transform`** in Phase 1; other components join in the same `ComponentKind` numeric order without changing the envelope shape.
+Replicable-set policy is gameplay-authoritative first. Player pawns, AI/enemies, movers, and other networked gameplay objects go on the wire. Deterministic client-local or baked data — particles, sprite visuals, lights, fog volumes, and shared `.prl` map data — stays off the wire unless gameplay authority requires otherwise.
 
 ## Non-goals
 

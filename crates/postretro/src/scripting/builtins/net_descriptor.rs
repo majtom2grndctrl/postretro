@@ -8,9 +8,11 @@
 //      context/lib/build_pipeline.md §Built-in Classname Routing
 
 use super::MapEntity;
-use super::data_archetype::{find_descriptor, spawn_descriptor_instance};
+use super::data_archetype::{DEFAULT_AGENT_PARAMS, find_descriptor, spawn_descriptor_instance};
 use crate::nav::NavAgentParams;
-use crate::scripting::components::mesh::{MeshAnimation, MeshComponent};
+use crate::scripting::components::mesh::{
+    MeshAnimation, MeshComponent, capsule_center_to_feet_origin_offset,
+};
 use crate::scripting::components::player_movement::PlayerMovementComponent;
 use crate::scripting::data_descriptors::EntityTypeDescriptor;
 use crate::scripting::provenance::DescriptorSpawnPath;
@@ -129,10 +131,10 @@ pub(crate) fn spawn_net_slot_pawn(
 /// internals as the host's net-slot spawn (`PlayerMovementComponent::from_descriptor`,
 /// the body of `attach_descriptor_components`). This is the client counterpart to
 /// the host's [`spawn_net_slot_pawn`]: the host spawns the authoritative pawn from a
-/// descriptor and replicates only the mutable movement subset; the client receives a
-/// Transform-only baseline (the wire never carries descriptor-immutable tuning) and
-/// must materialize the matching component locally so the wire subset has something to
-/// merge onto and prediction/reconciliation can run.
+/// descriptor, while the client materializes descriptor movement tuning locally before
+/// replicated movement state merges onto it. The wire carries current movement state,
+/// not descriptor-immutable tuning, so prediction/reconciliation needs the matching
+/// local component first.
 ///
 /// `entity_class` is the descriptor class the host stamped on the wire (default
 /// `"player"` if the record carried none). The component is built from that class's
@@ -184,16 +186,16 @@ pub(crate) fn materialize_net_local_movement_component(
 
 /// Materialize the presentation-only components for a client's REMOTE enemy pawn
 /// (E10). A connected client does not simulate host-owned enemies: the host owns
-/// their AI, steering, damage, death, and despawn, and replicates only their
-/// position. The client receives a Transform-only baseline from the snapshot and
-/// must attach the descriptor's *presentation* surface locally so the remote enemy
-/// renders — but it must carry NO hidden authoritative state.
+/// their AI, steering, damage, death, and despawn, and replicates finite Transform
+/// plus optional current mesh animation state. The client attaches only the
+/// descriptor's *presentation* surface locally so the remote enemy renders, but it
+/// must carry NO hidden authoritative state.
 ///
 /// This attaches ONLY the descriptor's mesh block (`MeshComponent`, including its
-/// declared animation states + default state, via the same path
-/// `attach_descriptor_components` uses). It deliberately attaches NONE of
-/// `Brain`, `Agent`, `Health`, `Weapon`, or `PlayerMovement`: those are
-/// host-authoritative and a client carries no shadow copy.
+/// declared animation states + default state and any descriptor-driven render-origin
+/// offset, via the same path `attach_descriptor_components` uses). It deliberately
+/// attaches NONE of `Brain`, `Agent`, `Health`, `Weapon`, or `PlayerMovement`: those
+/// are host-authoritative and a client carries no shadow copy.
 ///
 /// `entity_class` is the descriptor class the host stamped on the wire. An
 /// unregistered class, or a descriptor with no mesh block, leaves the entity
@@ -210,6 +212,7 @@ pub(crate) fn materialize_net_remote_enemy_presentation(
     descriptors: &[EntityTypeDescriptor],
     registry: &mut EntityRegistry,
     id: EntityId,
+    agent_params: Option<NavAgentParams>,
 ) -> bool {
     // Idempotent: never clobber a live mesh component (and its animation state) on
     // a re-apply.
@@ -240,16 +243,20 @@ pub(crate) fn materialize_net_remote_enemy_presentation(
     // via `MeshAnimation::new` (current = default state, entry stamp pending). Parse
     // validation guarantees `default_state` is `Some` exactly when the map is
     // non-empty and names a declared state.
-    let component = match &mesh_desc.default_state {
-        Some(default_state) => MeshComponent {
-            model: mesh_desc.model.clone(),
-            animation: Some(MeshAnimation::new(
-                mesh_desc.animations.clone(),
-                default_state.clone(),
-            )),
-        },
-        None => MeshComponent::stateless(mesh_desc.model.clone()),
+    let origin_offset = if descriptor.ai.is_some() {
+        let params = agent_params.unwrap_or(DEFAULT_AGENT_PARAMS);
+        capsule_center_to_feet_origin_offset(params.radius, params.height)
+    } else {
+        glam::Vec3::ZERO
     };
+    let component = match &mesh_desc.default_state {
+        Some(default_state) => MeshComponent::animated(
+            mesh_desc.model.clone(),
+            MeshAnimation::new(mesh_desc.animations.clone(), default_state.clone()),
+        ),
+        None => MeshComponent::stateless(mesh_desc.model.clone()),
+    }
+    .with_origin_offset(origin_offset);
     // `set_component` only fails on a stale id; the caller proved the pawn live.
     let _ = registry.set_component(id, component);
     true
@@ -341,6 +348,7 @@ mod tests {
             &descriptors,
             &mut reg,
             id,
+            None,
         );
         assert!(
             attached,
@@ -368,6 +376,55 @@ mod tests {
             2,
             "both declared states are copied in"
         );
+        assert_eq!(
+            mesh.origin_offset,
+            glam::Vec3::ZERO,
+            "non-AI mesh-only descriptors keep a zero render-origin offset"
+        );
+    }
+
+    #[test]
+    fn remote_enemy_presentation_offsets_ai_mesh_from_capsule_center_to_feet() {
+        let mut descriptor = enemy_mesh_descriptor("decraniated_mob", true);
+        descriptor.ai = Some(crate::scripting::data_descriptors::AiDescriptor {
+            detection_range: 18.0,
+            attack_range: 2.0,
+            leash_range: 26.0,
+            attack_damage: 8.0,
+            attack_cooldown_ms: 1000.0,
+            move_speed: 3.5,
+            death_despawn_ms: 1500.0,
+            states: crate::scripting::data_descriptors::AiStateNames {
+                idle: "idle".into(),
+                alert: "idle".into(),
+                attack: "attack".into(),
+                death: "idle".into(),
+            },
+        });
+        let descriptors = vec![descriptor];
+        let mut reg = EntityRegistry::new();
+        let id = spawn_transform_only(&mut reg);
+        let params = NavAgentParams {
+            radius: 0.4,
+            height: 1.6,
+            step_height: 0.3,
+            max_slope_deg: 45.0,
+        };
+
+        assert!(materialize_net_remote_enemy_presentation(
+            "decraniated_mob",
+            &descriptors,
+            &mut reg,
+            id,
+            Some(params)
+        ));
+
+        let mesh = reg.get_component::<MeshComponent>(id).unwrap();
+        assert_eq!(
+            mesh.origin_offset,
+            capsule_center_to_feet_origin_offset(params.radius, params.height),
+            "client remote AI presentation uses the same capsule-center to feet offset as host materialization"
+        );
     }
 
     #[test]
@@ -380,7 +437,8 @@ mod tests {
             "prop_enemy",
             &descriptors,
             &mut reg,
-            id
+            id,
+            None
         ));
         let mesh = reg.get_component::<MeshComponent>(id).unwrap();
         assert_eq!(mesh.model, "decraniated");
@@ -396,7 +454,13 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let id = spawn_transform_only(&mut reg);
 
-        materialize_net_remote_enemy_presentation("decraniated_mob", &descriptors, &mut reg, id);
+        materialize_net_remote_enemy_presentation(
+            "decraniated_mob",
+            &descriptors,
+            &mut reg,
+            id,
+            None,
+        );
 
         // A connected client carries no hidden authoritative state for a remote
         // enemy: only presentation (mesh) is attached.
@@ -425,7 +489,8 @@ mod tests {
             "decraniated_mob",
             &descriptors,
             &mut reg,
-            id
+            id,
+            None
         ));
 
         // Mutate the live animation state so a second call that reset it would be
@@ -442,7 +507,8 @@ mod tests {
                 "decraniated_mob",
                 &descriptors,
                 &mut reg,
-                id
+                id,
+                None
             ),
             "a second apply reports presentation present"
         );
@@ -461,8 +527,13 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let id = spawn_transform_only(&mut reg);
 
-        let attached =
-            materialize_net_remote_enemy_presentation("not_a_class", &descriptors, &mut reg, id);
+        let attached = materialize_net_remote_enemy_presentation(
+            "not_a_class",
+            &descriptors,
+            &mut reg,
+            id,
+            None,
+        );
         assert!(!attached, "unknown class attaches nothing");
         assert_eq!(
             reg.has_component_kind(id, ComponentKind::Mesh),

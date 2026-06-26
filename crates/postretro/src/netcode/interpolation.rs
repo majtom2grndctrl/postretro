@@ -138,6 +138,11 @@ impl InterpolationDelayState {
         Self::default()
     }
 
+    /// Drop level-scoped delay feedback after remote interpolation buffers are reset.
+    pub(crate) fn reset_for_level_unload(&mut self) {
+        *self = Self::default();
+    }
+
     /// Delay in whole sim ticks using both measured jitter and recent starvation.
     pub(crate) fn delay_ticks(&self, jitter_micros: f64, micros_per_tick: u64) -> u32 {
         adaptive_interpolation_delay_ticks(

@@ -96,6 +96,10 @@ impl App {
     /// | `data_registry` reactions + crossings, presentation cells | persisted-state save path |
     /// | progress tracker, active wieldable, camera pose | |
     pub(crate) fn unload_level(&mut self) {
+        if let Some(endpoint) = self.net_endpoint.as_mut() {
+            endpoint.reset_level_scoped_client_state();
+        }
+
         if let Some(renderer) = self.renderer.as_mut() {
             renderer.release_level_resources();
         }

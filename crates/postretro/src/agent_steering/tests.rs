@@ -267,6 +267,39 @@ fn agent_reaching_destination_reports_arrived() {
 }
 
 #[test]
+fn idle_agent_without_destination_still_settles_to_ground() {
+    let wall = LWall::fixture();
+    let world = wall.collision_world();
+    let params = agent_params();
+
+    let mut registry = EntityRegistry::new();
+    let id = spawn_agent(&mut registry, 1.0, 6.0, &params);
+    {
+        let mut transform = *registry.get_component::<Transform>(id).unwrap();
+        transform.position.y = rest_y(&params) + 0.25;
+        registry.set_component(id, transform).unwrap();
+    }
+
+    for _ in 0..60 {
+        tick(&mut registry, &world, None, GRAVITY, DT);
+    }
+
+    let state = path_state(&registry, id).unwrap();
+    assert!(
+        (state.position.y - rest_y(&params)).abs() <= EPS,
+        "idle agent should settle to capsule-center rest height, got {:?}",
+        state.position
+    );
+    assert!(
+        registry
+            .get_component::<AgentComponent>(id)
+            .unwrap()
+            .is_grounded,
+        "idle agent should be grounded after settling"
+    );
+}
+
+#[test]
 fn agent_with_no_path_reports_blocked_and_holds_position() {
     // Destination outside every navmesh region: pathfinding returns None, so the
     // agent reports blocked and does NOT walk toward the raw destination (it

@@ -21,9 +21,10 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::wire::{
-    COMPONENT_KIND_PLAYER_MOVEMENT_STATE, COMPONENT_KIND_TRANSFORM, ComponentPayload, EntityRecord,
-    RECORD_KIND_DELTA, RECORD_KIND_DESPAWN, RECORD_KIND_FULL_BASELINE, RawComponentPayload,
-    RawEntityRecord, RawSnapshotMessage, SNAPSHOT_VERSION,
+    COMPONENT_KIND_MESH_ANIMATION_STATE, COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
+    COMPONENT_KIND_TRANSFORM, ComponentPayload, EntityRecord, RECORD_KIND_DELTA,
+    RECORD_KIND_DESPAWN, RECORD_KIND_FULL_BASELINE, RawComponentPayload, RawEntityRecord,
+    RawSnapshotMessage, SNAPSHOT_VERSION,
 };
 
 /// One replicable entity's owned, post-tick component state, keyed by its stable
@@ -61,12 +62,12 @@ pub struct EntitySnapshot {
     /// `last_processed_client_tick`.
     pub last_processed_client_tick: Option<u32>,
     /// The opaque descriptor-class identifier the engine glue materialized this
-    /// movement pawn from (e.g. `"player"`), or `None` for an unowned / non-movement
-    /// entity. Echoed verbatim into the record's `entity_class` so the recipient can
-    /// materialize the matching descriptor-backed component. A plain string id — the
-    /// tracker stays registry-blind and never resolves it. Like the other authority
-    /// metadata it is excluded from dirty detection (a class never changes for a live
-    /// pawn, but folding it into equality is unnecessary).
+    /// entity from (e.g. `"player"`). When provided, it can ride any non-despawn
+    /// record carrying a finite `Transform`; movement authority metadata remains
+    /// movement-only. Echoed verbatim into the record's `entity_class` so the
+    /// recipient can materialize the matching descriptor-backed component. A plain
+    /// string id — the tracker stays registry-blind and never resolves it. Excluded
+    /// from dirty detection because a class never changes for a live entity.
     pub entity_class: Option<String>,
 }
 
@@ -217,10 +218,9 @@ impl ServerReplication {
     /// the despawned entity and so never needs its tombstone. With no clients
     /// registered, `all()` over the empty client set is vacuously true, so any
     /// tombstone this runs against is dropped — harmless, since a later joiner gets
-    /// a live-only baseline. Note this runs only from `apply_ack`/`remove_client`,
-    /// never `ingest_tick`: a despawn recorded while zero clients are connected
-    /// lingers until the first client connects, receives the stale despawn, and
-    /// acks it (the apply is an idempotent no-op on the client).
+    /// a live-only baseline. `ingest_tick` calls this after recording despawns, so
+    /// entities that died while no clients were registered do not produce stale
+    /// despawns for later joiners.
     ///
     /// This is the bound on cumulative-despawn state: without it `self.tombstones`
     /// (and the per-snapshot encode loop over it) grows forever across a session's
@@ -318,6 +318,7 @@ impl ServerReplication {
                 },
             );
         }
+        self.prune_acked_tombstones();
     }
 
     /// Apply a client ack. Advances each named entity's per-client baseline only if
@@ -615,6 +616,7 @@ impl MovementAuthority {
         let carries_finite_transform = entity.components.iter().any(|c| match c {
             ComponentPayload::Transform(t) => t.all_finite(),
             ComponentPayload::PlayerMovementState(_) => false,
+            ComponentPayload::MeshAnimationState(_) => false,
         });
 
         // `entity_class` is valid on any finite-Transform record; movement metadata is
@@ -646,11 +648,19 @@ fn raw_from_payload(payload: &ComponentPayload) -> RawComponentPayload {
             component_kind: COMPONENT_KIND_TRANSFORM,
             transform: Some(*t),
             player_movement: None,
+            mesh_animation_state: None,
         },
         ComponentPayload::PlayerMovementState(m) => RawComponentPayload {
             component_kind: COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
             transform: None,
             player_movement: Some(*m),
+            mesh_animation_state: None,
+        },
+        ComponentPayload::MeshAnimationState(m) => RawComponentPayload {
+            component_kind: COMPONENT_KIND_MESH_ANIMATION_STATE,
+            transform: None,
+            player_movement: None,
+            mesh_animation_state: Some(m.clone()),
         },
     }
 }
@@ -1007,6 +1017,30 @@ mod tests {
         assert!(
             record_for(&snap4, 1).is_none(),
             "acked tombstone stops resending"
+        );
+    }
+
+    // Regression: an enemy that dies before any client connects must not leave a
+    // stale despawn tombstone for the first later joiner.
+    #[test]
+    fn despawn_recorded_with_zero_clients_is_pruned_before_late_join() {
+        let mut server = ServerReplication::new();
+        server.ingest_tick(vec![entity(1, vec![transform(0.0)])]);
+        server.ingest_tick(vec![]);
+        assert!(
+            server.tombstones.is_empty(),
+            "zero-client despawn tombstone pruned immediately"
+        );
+
+        server.register_client(CLIENT_A);
+        let snap = server.encode_for_client(CLIENT_A, 60).unwrap();
+        assert!(
+            record_for(&snap, 1).is_none(),
+            "late joiner does not receive stale despawn"
+        );
+        assert!(
+            typed_records(&snap).is_empty(),
+            "late join baseline contains only live entities"
         );
     }
 

@@ -38,8 +38,9 @@ pub(super) fn materialize_armed_local_pawn(
 /// Materialize the descriptor-backed *presentation* for a non-local remote enemy a
 /// snapshot just spawned (E10 Task 6). `apply_snapshot` spawned the entity
 /// Transform-only and mapped its `NetworkId` (so it joins the Phase 2 remote
-/// interpolation path); the host owns its AI/damage/death and replicates only its
-/// position, so the client attaches ONLY the descriptor's mesh and NONE of
+/// interpolation path). The host replicates finite Transform plus optional current
+/// mesh-animation state, while descriptor mesh data stays local and authoritative
+/// AI/damage/death stay host-only, so the client attaches ONLY presentation and NONE of
 /// `Brain`/`Agent`/`Health`/`Weapon`/`PlayerMovement`.
 ///
 /// The descriptor lookup lives here, NOT in `ClientReplication::apply_snapshot`: the
@@ -52,18 +53,21 @@ pub(super) fn materialize_armed_remote_enemy(
     remote: &RemoteEnemyMaterialize,
     descriptors: &[EntityTypeDescriptor],
     registry: &mut EntityRegistry,
-) {
+    agent_params: Option<crate::nav::NavAgentParams>,
+) -> bool {
     crate::scripting::builtins::net_descriptor::materialize_net_remote_enemy_presentation(
         &remote.entity_class,
         descriptors,
         registry,
         remote.entity_id,
-    );
+        agent_params,
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::nav::NavAgentParams;
     use crate::scripting::components::mesh::{AnimationState, InterruptPolicy, MeshComponent};
     use crate::scripting::data_descriptors::MeshDescriptor;
     use crate::scripting::registry::{ComponentKind, EntityId, Transform};
@@ -125,9 +129,16 @@ mod tests {
             &RemoteEnemyMaterialize {
                 entity_id: id,
                 entity_class: "decraniated_mob".to_string(),
+                initial_animation_state: None,
             },
             &descriptors,
             &mut reg,
+            Some(NavAgentParams {
+                radius: 0.4,
+                height: 1.6,
+                step_height: 0.3,
+                max_slope_deg: 45.0,
+            }),
         );
 
         // Presentation mesh is present and renders the descriptor model.
@@ -168,9 +179,11 @@ mod tests {
             &RemoteEnemyMaterialize {
                 entity_id: id,
                 entity_class: "no_such_class".to_string(),
+                initial_animation_state: None,
             },
             &descriptors,
             &mut reg,
+            None,
         );
 
         assert_eq!(
@@ -195,9 +208,10 @@ mod tests {
         let request = RemoteEnemyMaterialize {
             entity_id: id,
             entity_class: "decraniated_mob".to_string(),
+            initial_animation_state: None,
         };
 
-        materialize_armed_remote_enemy(&request, &descriptors, &mut reg);
+        materialize_armed_remote_enemy(&request, &descriptors, &mut reg, None);
 
         // Drive the live animation state forward so a reset would be observable.
         {
@@ -206,7 +220,7 @@ mod tests {
             reg.set_component(id, mesh).unwrap();
         }
 
-        materialize_armed_remote_enemy(&request, &descriptors, &mut reg);
+        materialize_armed_remote_enemy(&request, &descriptors, &mut reg, None);
 
         let mesh = reg.get_component::<MeshComponent>(id).unwrap();
         assert_eq!(

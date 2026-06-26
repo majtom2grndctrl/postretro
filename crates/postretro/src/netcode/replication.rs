@@ -16,8 +16,9 @@
 use std::collections::HashSet;
 
 use postretro_net::replication::EntitySnapshot;
-use postretro_net::wire::ComponentPayload;
+use postretro_net::wire::{ComponentPayload, WireMeshAnimationState};
 
+use crate::scripting::components::mesh::MeshComponent;
 use crate::scripting::components::player_movement::PlayerMovementComponent;
 use crate::scripting::registry::{ComponentKind, EntityId, EntityRegistry, Transform};
 
@@ -132,9 +133,8 @@ pub(crate) fn produce_owned_snapshots(
         // Task 4), so the recipient can materialize the matching descriptor-backed
         // component locally. Read from the entity's own `DescriptorProvenance`: a net-slot
         // movement pawn stamps `canonical_name` (the resolved `entity_class`, default
-        // `"player"`); a map-placed AI enemy stamps its descriptor class on its
-        // Transform-only record (the wire now allows `entity_class` on any non-despawn
-        // finite-`Transform` record). A non-descriptor entity stays `None`.
+        // `"player"`); a map-placed AI enemy stamps its descriptor class on any record
+        // carrying finite `Transform` data. A non-descriptor entity stays `None`.
         let entity_class = descriptor_entity_class(registry, id, &components);
         snapshots.push(EntitySnapshot {
             network_id,
@@ -148,10 +148,9 @@ pub(crate) fn produce_owned_snapshots(
 }
 
 /// Collect the wire-mirror payloads for one replicable entity, in a stable order:
-/// `Transform` first, then `PlayerMovementState` if present. Excluded presentation
-/// components are never collected. Returns an empty vec if the entity carries no
-/// replicable component (the entity still appears in the snapshot so the tracker
-/// can track its lifecycle, but with no payload).
+/// `Transform` first, then `PlayerMovementState` and mesh animation state if
+/// present. Descriptor-owned presentation data is never collected; the mesh
+/// payload carries only the current authoritative animation state.
 fn collect_payloads(registry: &EntityRegistry, id: EntityId) -> Vec<ComponentPayload> {
     let mut payloads = Vec::new();
     if let Ok(transform) = registry.get_component::<Transform>(id) {
@@ -183,6 +182,19 @@ fn collect_payloads(registry: &EntityRegistry, id: EntityId) -> Vec<ComponentPay
         );
         payloads.push(payload);
     }
+    if let Ok(mesh) = registry.get_component::<MeshComponent>(id) {
+        if let Some(animation) = mesh.animation.as_ref() {
+            let payload = ComponentPayload::MeshAnimationState(WireMeshAnimationState {
+                current_state: animation.current_state.clone(),
+            });
+            debug_assert_eq!(
+                component_kind_discriminant(ComponentKind::Mesh),
+                payload.kind(),
+                "engine/wire mesh discriminant diverged"
+            );
+            payloads.push(payload);
+        }
+    }
     payloads
 }
 
@@ -209,10 +221,13 @@ pub(crate) fn host_register_map_enemies(
     replicable: &mut ReplicableSet,
     tracked: &mut HashSet<EntityId>,
 ) {
-    // Drop any prior-level enemy registrations first. A reload bumps the registry
-    // generation on the old ids, so each previously-tracked id either no longer exists
-    // or is a different entity now — never the live enemy we are about to register.
-    for stale in tracked.drain() {
+    let stale_ids: Vec<EntityId> = tracked
+        .iter()
+        .copied()
+        .filter(|&id| !is_networked_ai_map_enemy(registry, id))
+        .collect();
+    for stale in stale_ids {
+        tracked.remove(&stale);
         replicable.unregister(stale);
         // Prune the dead EntityId mapping so the allocator map does not accrue one
         // entry per ever-spawned enemy. NetworkIds stay monotonic; only the stale
@@ -228,11 +243,12 @@ pub(crate) fn host_register_map_enemies(
         // Stamp the stable session-monotonic NetworkId and register for replication.
         // No `MovementOwners` entry: an AI enemy is host-authoritative and unowned by any
         // client, so its per-recipient `local_player` flag is false everywhere. Its class
-        // rides the Transform-only snapshot via `descriptor_entity_class`.
+        // rides the finite-Transform snapshot via `descriptor_entity_class`.
         allocator.stamp(id);
         replicable.register(id);
-        tracked.insert(id);
-        count += 1;
+        if tracked.insert(id) {
+            count += 1;
+        }
     }
     if count > 0 {
         log::info!("[Net] host registered {count} map-placed AI enemy/enemies for replication");
@@ -247,7 +263,9 @@ mod tests {
     use crate::scripting::components::agent::AgentComponent;
     use crate::scripting::components::brain::{AiStateMap, AiTuning, BrainComponent, LogicalState};
     use crate::scripting::components::health::HealthComponent;
-    use crate::scripting::components::mesh::MeshComponent;
+    use crate::scripting::components::mesh::{
+        AnimationState, InterruptPolicy, MeshAnimation, MeshComponent,
+    };
     use crate::scripting::provenance::{
         DescriptorComponentKind, DescriptorProvenance, DescriptorSpawnPath,
     };
@@ -285,6 +303,34 @@ mod tests {
         AgentComponent::new(0.4, 1.6, 0.3, 3.5)
     }
 
+    fn animated_mesh() -> MeshComponent {
+        let mut states = std::collections::HashMap::new();
+        states.insert(
+            "idle".to_string(),
+            AnimationState {
+                clip: "Idle".to_string(),
+                looping: true,
+                crossfade_ms: 150.0,
+                interrupt: InterruptPolicy::Smooth,
+                clip_index: Some(0),
+            },
+        );
+        states.insert(
+            "attack".to_string(),
+            AnimationState {
+                clip: "Attack".to_string(),
+                looping: false,
+                crossfade_ms: 150.0,
+                interrupt: InterruptPolicy::Smooth,
+                clip_index: Some(1),
+            },
+        );
+        MeshComponent::animated(
+            "decraniated".to_string(),
+            MeshAnimation::new(states, "idle".to_string()),
+        )
+    }
+
     fn provenance(name: &str, spawn_path: DescriptorSpawnPath) -> DescriptorProvenance {
         DescriptorProvenance {
             canonical_name: name.to_string(),
@@ -304,6 +350,7 @@ mod tests {
         });
         let _ = registry.set_component_value(id, ComponentValue::Brain(brain()));
         let _ = registry.set_component_value(id, ComponentValue::Agent(agent()));
+        let _ = registry.set_component(id, animated_mesh());
         let _ = registry.set_component(id, provenance(class, DescriptorSpawnPath::MapPlacement));
         id
     }
@@ -353,6 +400,31 @@ mod tests {
         // A NetworkId was stamped (stable on re-stamp).
         let net_id = allocator.stamp(enemy);
         assert_eq!(allocator.stamp(enemy), net_id, "stamped id is stable");
+    }
+
+    // Regression: re-running registration on the same loaded level used to drain the
+    // tracked set and forget the live enemy's allocator mapping, churning NetworkId.
+    #[test]
+    fn host_registration_is_noop_for_same_live_enemy() {
+        let mut registry = EntityRegistry::new();
+        let enemy = spawn_ai_map_enemy(&mut registry, "grunt");
+
+        let mut allocator = NetworkIdAllocator::new();
+        let mut set = ReplicableSet::new();
+        let mut tracked: HashSet<EntityId> = HashSet::new();
+        host_register_map_enemies(&registry, &mut allocator, &mut set, &mut tracked);
+        let first_network_id = allocator.stamp(enemy);
+
+        host_register_map_enemies(&registry, &mut allocator, &mut set, &mut tracked);
+        let second_network_id = allocator.stamp(enemy);
+
+        assert_eq!(
+            second_network_id, first_network_id,
+            "same live enemy keeps its NetworkId across repeated registration"
+        );
+        assert!(set.contains(enemy), "the live enemy remains registered");
+        assert_eq!(tracked.len(), 1, "tracking does not duplicate live enemies");
+        assert!(tracked.contains(&enemy));
     }
 
     // E10 Task 4: a non-AI static descriptor prop (MapPlacement, no Brain/Agent) is NOT
@@ -451,7 +523,7 @@ mod tests {
     }
 
     // E10 Task 4: snapshot production stamps `entity_class` from DescriptorProvenance for
-    // a registered map-placed AI enemy — its Transform-only record carries the class.
+    // a registered map-placed AI enemy — its finite-Transform record carries the class.
     #[test]
     fn producer_stamps_entity_class_for_registered_ai_enemy() {
         let mut registry = EntityRegistry::new();
@@ -478,12 +550,25 @@ mod tests {
             Some("grunt".to_string()),
             "the enemy's snapshot carries its descriptor class"
         );
-        // It rides a Transform-only record (no movement payload) and is unowned.
+        // It rides Transform + mesh animation state (no movement payload) and is unowned.
         assert!(
             snap.components
                 .iter()
-                .all(|c| matches!(c, ComponentPayload::Transform(_))),
-            "an AI enemy replicates Transform-only"
+                .any(|c| matches!(c, ComponentPayload::Transform(_))),
+            "an AI enemy replicates its Transform"
+        );
+        assert!(
+            snap.components
+                .iter()
+                .any(|c| matches!(c, ComponentPayload::MeshAnimationState(state) if state.current_state == "idle")),
+            "an AI enemy replicates its current mesh animation state"
+        );
+        assert!(
+            !snap
+                .components
+                .iter()
+                .any(|c| matches!(c, ComponentPayload::PlayerMovementState(_))),
+            "an AI enemy does not replicate player movement"
         );
         assert_eq!(snap.owner_client_id, None, "an AI enemy is host-unowned");
     }

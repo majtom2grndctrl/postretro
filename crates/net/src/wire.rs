@@ -50,7 +50,11 @@ pub struct NetworkId(pub u32);
 /// materialized from `Transform`-only snapshots. The bitcode byte layout of the
 /// record is unchanged (no field added/reordered), but the accepted-envelope set
 /// changed, so peers on the prior contract are refused by the version gate.
-pub const SNAPSHOT_VERSION: u16 = 6;
+///
+/// Bumped to 7 in E10 follow-up: `RawComponentPayload` gained a mesh-animation
+/// state slot so host-authoritative AI can replicate its current descriptor
+/// animation state without sending the full mesh descriptor.
+pub const SNAPSHOT_VERSION: u16 = 7;
 
 /// `record_kind` discriminant for a full-baseline (spawn / join / refresh) record.
 pub const RECORD_KIND_FULL_BASELINE: u16 = 0;
@@ -65,6 +69,9 @@ pub const COMPONENT_KIND_TRANSFORM: u16 = 0;
 /// `component_kind` discriminant for a `PlayerMovementState` payload. Numeric-equal
 /// to the engine `ComponentKind::PlayerMovement as u16` (Phase 2 = 6).
 pub const COMPONENT_KIND_PLAYER_MOVEMENT_STATE: u16 = 6;
+/// `component_kind` discriminant for a mesh-animation-state payload. Numeric-equal
+/// to the engine `ComponentKind::Mesh as u16` (Phase 2 = 9).
+pub const COMPONENT_KIND_MESH_ANIMATION_STATE: u16 = 9;
 
 /// Wire mirror of the engine `Transform`. Phase 2 replicates `position`,
 /// `rotation`, and `scale`.
@@ -167,6 +174,14 @@ impl WirePlayerMovementState {
     }
 }
 
+/// Wire mirror of the mutable mesh-animation state. Descriptor-owned data
+/// (model handle, state table, clips, fade policy) stays local on each peer; this
+/// carries only the authoritative current state name.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct WireMeshAnimationState {
+    pub current_state: String,
+}
+
 // ---------------------------------------------------------------------------
 // Raw encoded boundary
 // ---------------------------------------------------------------------------
@@ -181,11 +196,12 @@ impl WirePlayerMovementState {
 /// envelope, so the malformed-input tests exercise validation without relying on
 /// bitcode's internal enum tag (which would make an invalid tag a decode error
 /// instead of a testable rejected envelope).
-#[derive(Debug, Clone, Copy, PartialEq, Encode, Decode)]
+#[derive(Debug, Clone, PartialEq, Encode, Decode)]
 pub struct RawComponentPayload {
     pub component_kind: u16,
     pub transform: Option<WireTransform>,
     pub player_movement: Option<WirePlayerMovementState>,
+    pub mesh_animation_state: Option<WireMeshAnimationState>,
 }
 
 /// Raw per-entity lifecycle record. `record_kind` selects which logical record
@@ -271,10 +287,11 @@ pub struct RawSnapshotMessage {
 
 /// A validated component payload. Constructed only by [`RawComponentPayload::validate`],
 /// so a typed payload always has exactly the inner value its kind requires.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ComponentPayload {
     Transform(WireTransform),
     PlayerMovementState(WirePlayerMovementState),
+    MeshAnimationState(WireMeshAnimationState),
 }
 
 impl ComponentPayload {
@@ -286,6 +303,7 @@ impl ComponentPayload {
         match self {
             ComponentPayload::Transform(_) => COMPONENT_KIND_TRANSFORM,
             ComponentPayload::PlayerMovementState(_) => COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
+            ComponentPayload::MeshAnimationState(_) => COMPONENT_KIND_MESH_ANIMATION_STATE,
         }
     }
 }
@@ -465,8 +483,9 @@ impl RawComponentPayload {
         // Count populated slots once: a well-formed payload has exactly one, the
         // one its `component_kind` names. Any other slot being `Some` is a
         // mismatch regardless of the named kind (it makes the envelope ambiguous).
-        let populated =
-            usize::from(self.transform.is_some()) + usize::from(self.player_movement.is_some());
+        let populated = usize::from(self.transform.is_some())
+            + usize::from(self.player_movement.is_some())
+            + usize::from(self.mesh_animation_state.is_some());
 
         match self.component_kind {
             COMPONENT_KIND_TRANSFORM => match self.transform {
@@ -492,6 +511,15 @@ impl RawComponentPayload {
                         Err(ValidationError::NonFiniteMovementState)
                     }
                 }
+                Some(_) => Err(ValidationError::MismatchedComponentPayload(
+                    self.component_kind,
+                )),
+                None => Err(ValidationError::MissingComponentPayload(
+                    self.component_kind,
+                )),
+            },
+            COMPONENT_KIND_MESH_ANIMATION_STATE => match &self.mesh_animation_state {
+                Some(m) if populated == 1 => Ok(ComponentPayload::MeshAnimationState(m.clone())),
                 Some(_) => Err(ValidationError::MismatchedComponentPayload(
                     self.component_kind,
                 )),
@@ -633,6 +661,7 @@ impl RawEntityRecord {
             let carries_finite_transform = components.iter().any(|c| match c {
                 ComponentPayload::Transform(t) => t.all_finite(),
                 ComponentPayload::PlayerMovementState(_) => false,
+                ComponentPayload::MeshAnimationState(_) => false,
             });
             if !carries_finite_transform {
                 return Err(ValidationError::EntityClassWithoutTransform);
@@ -899,6 +928,7 @@ mod tests {
             component_kind: COMPONENT_KIND_TRANSFORM,
             transform: Some(sample_transform()),
             player_movement: None,
+            mesh_animation_state: None,
         }
     }
 
@@ -907,6 +937,18 @@ mod tests {
             component_kind: COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
             transform: None,
             player_movement: Some(sample_movement()),
+            mesh_animation_state: None,
+        }
+    }
+
+    fn raw_mesh_animation_payload(state: &str) -> RawComponentPayload {
+        RawComponentPayload {
+            component_kind: COMPONENT_KIND_MESH_ANIMATION_STATE,
+            transform: None,
+            player_movement: None,
+            mesh_animation_state: Some(WireMeshAnimationState {
+                current_state: state.to_string(),
+            }),
         }
     }
 
@@ -1059,6 +1101,20 @@ mod tests {
             };
             assert!(round_trips(&movement));
         }
+    }
+
+    #[test]
+    fn mesh_animation_state_round_trips_and_validates() {
+        let raw = raw_mesh_animation_payload("attack");
+        assert!(round_trips(&raw));
+        assert_eq!(
+            raw.validate(),
+            Ok(ComponentPayload::MeshAnimationState(
+                WireMeshAnimationState {
+                    current_state: "attack".to_string(),
+                },
+            ))
+        );
     }
 
     #[test]
@@ -1350,6 +1406,7 @@ mod tests {
                     component_kind: 1234, // not Transform/PlayerMovementState
                     transform: Some(sample_transform()),
                     player_movement: None,
+                    mesh_animation_state: None,
                 }],
             )],
             state_schema_fingerprint: [0u8; 32],
@@ -1369,6 +1426,7 @@ mod tests {
             component_kind: COMPONENT_KIND_TRANSFORM,
             transform: None, // kind says Transform but slot is empty
             player_movement: None,
+            mesh_animation_state: None,
         };
         assert_eq!(
             payload.validate(),
@@ -1385,6 +1443,7 @@ mod tests {
             component_kind: COMPONENT_KIND_TRANSFORM,
             transform: Some(sample_transform()),
             player_movement: Some(sample_movement()),
+            mesh_animation_state: None,
         };
         assert_eq!(
             payload.validate(),
@@ -1403,6 +1462,7 @@ mod tests {
             component_kind: COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
             transform: Some(sample_transform()),
             player_movement: None,
+            mesh_animation_state: None,
         };
         assert_eq!(
             payload.validate(),
@@ -1458,7 +1518,7 @@ mod tests {
 
     // Drift guard: the wire component discriminants MUST stay numeric-equal to the
     // engine `ComponentKind as u16` (crates/postretro/src/scripting/registry.rs):
-    // Transform = 0, PlayerMovement = 6 in Phase 2. The exhaustive match (no `_`
+    // Transform = 0, PlayerMovement = 6, Mesh = 9 in Phase 2. The exhaustive match (no `_`
     // arm) means a new `ComponentPayload` variant is a compile error here until its
     // expected discriminant is pinned — a silently-passing guard is the failure
     // mode this prevents. The engine side asserts the same mapping independently
@@ -1468,11 +1528,15 @@ mod tests {
         let cases = [
             ComponentPayload::Transform(sample_transform()),
             ComponentPayload::PlayerMovementState(sample_movement()),
+            ComponentPayload::MeshAnimationState(WireMeshAnimationState {
+                current_state: "idle".to_string(),
+            }),
         ];
         for payload in cases {
             let expected = match payload {
                 ComponentPayload::Transform(_) => 0,
                 ComponentPayload::PlayerMovementState(_) => 6,
+                ComponentPayload::MeshAnimationState(_) => 9,
             };
             assert_eq!(payload.kind(), expected);
         }
@@ -1915,6 +1979,7 @@ mod tests {
                 component_kind: COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
                 transform: None,
                 player_movement: Some(movement),
+                mesh_animation_state: None,
             };
             assert_eq!(
                 payload.validate(),
@@ -1937,6 +2002,7 @@ mod tests {
             component_kind: COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
             transform: None,
             player_movement: Some(movement),
+            mesh_animation_state: None,
         };
         assert_eq!(
             payload.validate(),
@@ -1963,6 +2029,7 @@ mod tests {
                 component_kind: COMPONENT_KIND_TRANSFORM,
                 transform: Some(transform),
                 player_movement: None,
+                mesh_animation_state: None,
             };
             assert_eq!(payload.validate(), Err(ValidationError::NonFiniteTransform));
         }
@@ -1986,6 +2053,7 @@ mod tests {
                 component_kind: COMPONENT_KIND_TRANSFORM,
                 transform: Some(bad_transform),
                 player_movement: None,
+                mesh_animation_state: None,
             }],
         );
         assert_eq!(record.validate(), Err(ValidationError::NonFiniteTransform));
@@ -2010,6 +2078,7 @@ mod tests {
                 component_kind: COMPONENT_KIND_TRANSFORM,
                 transform: Some(bad_transform),
                 player_movement: None,
+                mesh_animation_state: None,
             }],
         );
         record.has_entity_class = true;
@@ -2056,11 +2125,19 @@ mod tests {
                 component_kind: COMPONENT_KIND_TRANSFORM,
                 transform: Some(*t),
                 player_movement: None,
+                mesh_animation_state: None,
             },
             ComponentPayload::PlayerMovementState(m) => RawComponentPayload {
                 component_kind: COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
                 transform: None,
                 player_movement: Some(*m),
+                mesh_animation_state: None,
+            },
+            ComponentPayload::MeshAnimationState(m) => RawComponentPayload {
+                component_kind: COMPONENT_KIND_MESH_ANIMATION_STATE,
+                transform: None,
+                player_movement: None,
+                mesh_animation_state: Some(m.clone()),
             },
         }
     }

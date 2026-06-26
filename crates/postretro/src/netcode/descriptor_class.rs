@@ -27,8 +27,8 @@ use crate::scripting::registry::{ComponentKind, EntityId, EntityRegistry};
 /// - It is registry-blind about role: it does not check host/client. Host registration
 ///   (this task) gates on the role separately; connected-client spawn suppression (Task 5)
 ///   imports the same predicate to decide which descriptor placements NOT to spawn locally.
-/// - It is reachable from both the netcode/registration path and the
-///   descriptor-dispatch/lifecycle path via `crate::netcode::is_networked_ai_map_enemy`.
+/// - Both consumers (`replication.rs` host registration and `descriptor_entity_class`
+///   below) reach it via the direct submodule path, not a re-export.
 ///
 /// A stale/despawned id (`get_component` errors) returns `false`.
 pub(crate) fn is_networked_ai_map_enemy(registry: &EntityRegistry, id: EntityId) -> bool {

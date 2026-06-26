@@ -72,7 +72,12 @@ The net crate emits typed snapshots and **never mutates the registry.** All regi
 
 `NetworkId` is the network-stable identity assigned by the host; the host owns an `EntityId→NetworkId` allocator (monotonic, never recycled, stable for an entity's lifetime) and the client owns the inverse `NetworkId→EntityId` map. Stable ids keep the client's mapping coherent across snapshots. This is the network projection of the entity-model ownership rule (`entity_model.md` §6): game logic owns entities; replication is just another reader (host) and a controlled writer (client).
 
-Current component payloads are `Transform`, `PlayerMovementState`, and `MeshAnimationState`, added in `ComponentKind` numeric order. `MeshAnimationState` carries the current animation state name; descriptor mesh data stays local. Movement-authority ack metadata is valid only on records carrying `PlayerMovementState`. Despawn records carry tombstone metadata only, never component payloads.
+Current component payloads are `Transform`, `PlayerMovementState`, and `MeshAnimationState`, added in `ComponentKind` numeric order. `MeshAnimationState` carries the current animation state name; descriptor mesh data stays local. Two distinct metadata validity gates apply:
+
+- **Movement-authority metadata** (`local_player`, `last_processed_client_tick`): valid only on records carrying `PlayerMovementState`. No other record type may carry these fields.
+- **Descriptor `entity_class`**: valid on any non-despawn entity record (`FullBaseline` or `Delta`) that carries at least one finite `Transform` payload — it no longer requires `PlayerMovementState`. On despawn records, `entity_class` (and all metadata) remains invalid.
+
+Despawn records carry tombstone metadata only, never component payloads.
 
 ## Role model
 
@@ -185,6 +190,8 @@ Epic 15 Phase 3 is the active contract: authoritative client-server co-op, entit
 Phase 1/2 plans are historical. Do not read their old full-snapshot, no-despawn, or single-component limits as current behavior.
 
 Replicable-set policy is gameplay-authoritative first. Player pawns, AI/enemies, movers, and other networked gameplay objects go on the wire. Deterministic client-local or baked data — particles, sprite visuals, lights, fog volumes, and shared `.prl` map data — stays off the wire unless gameplay authority requires otherwise.
+
+**Connected-client AI-enemy spawn suppression.** A connected client does not spawn local authoritative copies of map-placed AI enemies. Those enemies are host-authoritative: the client receives them solely as host snapshots. Client-side materialization attaches only the descriptor's mesh presentation; `Brain`, `Agent`, `Health`, and `Weapon` components are never attached on the client for a remote enemy. Remote enemies are presentation-only — they carry no local simulation state.
 
 ## Non-goals
 

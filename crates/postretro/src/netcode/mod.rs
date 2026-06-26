@@ -48,11 +48,6 @@ mod enemy_replication_harness_test;
 
 pub(crate) use client::ClientReplication;
 pub(crate) use command_queue::{HostCommandQueues, MovementOwners, host_resolve_movement_inputs};
-// The shared map-enemy predicate (E10 Task 4): host enemy registration consumes it via
-// the direct submodule path; connected-client spawn suppression (Task 5) imports it from
-// this re-export. `allow(unused_imports)` until that importer lands.
-#[allow(unused_imports)]
-pub(crate) use descriptor_class::is_networked_ai_map_enemy;
 // `ResolvedCommand` / `ResolutionSource` are produced by the command queue and consumed
 // via the submodule path only; not re-exported here.
 pub(crate) use interpolation::{DemoMover, InterpolationDelayState};

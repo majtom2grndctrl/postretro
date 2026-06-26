@@ -60,7 +60,8 @@ Build the feature according to the task spec and context file conventions.
 
 Before reporting done:
 - All acceptance criteria met
-- `cargo check` passes
+- `cargo check` passes — you run solo and own the build, so this is your correctness signal; run it freely
+- Focused tests for the touched crate/module pass — `cargo test -p <crate> <name_filter>` (`--lib` to skip integration tests). Do not run the full workspace suite, and never run a bare `cargo test -p postretro-level-compiler` (cold `prl-build` bakes, ~1h); the caller's integration gate owns full-suite runs
 - New code follows conventions from the development guide
 - Tests exist where the testing guide says they should
 

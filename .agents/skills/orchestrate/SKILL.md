@@ -48,13 +48,16 @@ For each phase in the sequencing section:
 **Sequential:** One `worker` agent at a time. Use `model: "gpt-5.5"` with `reasoning_effort: "high"` for complex, cross-cutting, architectural, or integration-heavy tasks, and `reasoning_effort: "medium"` for bounded implementation tasks. Wait for completion before starting the next.
 
 **Concurrent:** Spawn all independent phase `worker` agents simultaneously via multiple `spawn_agent` calls in one message. Use `model: "gpt-5.5"` and choose `reasoning_effort: "medium"` or `"high"` per task complexity.
+
+> **Cargo under concurrency.** Concurrent agents must run in isolated worktrees (separate `target/` directories) — see `development_guide.md` §"Concurrent agents in isolated worktrees: cap at 3". With separate target dirs there is no shared build lock, so each agent may run `cargo check` and focused tests for its own task freely. If concurrent agents instead share one working tree's `target/`, do **not** have each run cargo — they serialize on cargo's build lock and churn each other's incremental cache; defer compile/test to a single post-phase pass (the pattern `/fix-review-findings` uses).
+
 **For each agent, provide:**
 1. The plan's **Shared Context** section
 2. The agent's **specific task** — description, acceptance criteria
 3. Instruction to read relevant `context/lib/` files for architectural guidance
 4. Instruction to follow `context/lib/development_guide.md` conventions
-5. Instruction to run `cargo check` before considering the task complete
-6. Instruction to run focused tests for the touched crate/module/behavior, not a full workspace `cargo test` by default. Full workspace tests are the coordinator's final gate.
+5. Instruction to run `cargo check` before considering the task complete (isolated-worktree agents only — see the cargo-under-concurrency note above)
+6. Instruction to run focused tests for the touched crate/module/behavior, not a full workspace `cargo test` by default — and, for concurrent agents, only when in an isolated worktree (see the note above). Full workspace tests are the coordinator's final gate. Never run a bare `cargo test -p postretro-level-compiler` (cold `prl-build` bakes, ~1h).
 
 **Do NOT provide:**
 - Other tasks' details (the agent doesn't need them)

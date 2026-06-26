@@ -48,13 +48,16 @@ For each phase in the sequencing section:
 **Sequential:** One Opus agent at a time. Wait for completion before starting the next.
 
 **Concurrent:** Spawn all phase Opus agents simultaneously via multiple Agent tool calls in one message.
+
+> **Cargo under concurrency.** Concurrent agents must run in isolated worktrees (separate `target/` directories) — see `development_guide.md` §"Concurrent agents in isolated worktrees: cap at 3". With separate target dirs there is no shared build lock, so each agent may run `cargo check` and focused tests for its own task freely. If concurrent agents instead share one working tree's `target/`, do **not** have each run cargo — they serialize on cargo's build lock and churn each other's incremental cache; defer compile/test to a single post-phase pass (the pattern `/fix-review-findings` uses).
+
 **For each agent, provide:**
 1. The plan's **Shared Context** section
 2. The agent's **specific task** — description, acceptance criteria
 3. Instruction to read relevant `context/lib/` files for architectural guidance
 4. Instruction to follow `context/lib/development_guide.md` conventions
-5. Instruction to run `cargo check` before considering the task complete
-6. Instruction to run **focused** tests for the touched crate/module/behavior — not a full workspace or full-crate `cargo test` by default. Full-suite runs are the coordinator's final gate, not a per-task step. Prefer `cargo test -p <crate> <name_filter>` (and `--lib` to skip integration tests). WARN agents: the `postretro-level-compiler` `tests/` integration suite shells out to `prl-build` and triggers cold SH/lightmap bakes (~1h) — never run a bare `cargo test -p postretro-level-compiler`, and never compile `stress-warren*`/`campaign-test` in a routine test.
+5. Instruction to run `cargo check` before considering the task complete (isolated-worktree agents only — see the cargo-under-concurrency note above)
+6. Instruction to run **focused** tests for the touched crate/module/behavior — not a full workspace or full-crate `cargo test` by default — and, for concurrent agents, only when in an isolated worktree (see the note above). Full-suite runs are the coordinator's final gate, not a per-task step. Prefer `cargo test -p <crate> <name_filter>` (and `--lib` to skip integration tests). WARN agents: the `postretro-level-compiler` `tests/` integration suite shells out to `prl-build` and triggers cold SH/lightmap bakes (~1h) — never run a bare `cargo test -p postretro-level-compiler`, and never compile `stress-warren*`/`campaign-test` in a routine test.
 
 **Do NOT provide:**
 - Other tasks' details (the agent doesn't need them)

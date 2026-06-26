@@ -134,8 +134,8 @@ struct EntityState {
 }
 
 /// A despawned entity awaiting per-client tombstone acks. Held until every client
-/// that ever knew the entity has acked the tombstone; resent in snapshots
-/// meanwhile.
+/// that was present for the entity has acked the tombstone; late joiners are
+/// pre-acked for already-active tombstones and receive only live baselines.
 #[derive(Debug, Clone, Copy)]
 struct Tombstone {
     tombstone_id: u32,
@@ -191,9 +191,21 @@ impl ServerReplication {
 
     /// Register a client so it is replicated to. Idempotent — re-registering an
     /// existing client leaves its ack state intact. A newly registered client holds
-    /// no acked baselines, so its first snapshot is all `FullBaseline` records.
+    /// no acked baselines, so its first snapshot is all `FullBaseline` records for
+    /// live entities. It is marked as having acked tombstones that were active
+    /// before it joined, since it never had mappings for those despawned entities.
     pub fn register_client(&mut self, client_id: u64) {
-        self.clients.entry(client_id).or_default();
+        if self.clients.contains_key(&client_id) {
+            return;
+        }
+
+        let mut state = ClientReplicationState::default();
+        state.acked_tombstones.extend(
+            self.tombstones
+                .iter()
+                .map(|(&network_id, tombstone)| (network_id, tombstone.tombstone_id)),
+        );
+        self.clients.insert(client_id, state);
     }
 
     /// Drop a client (disconnect). Removing its [`ClientReplicationState`] discards
@@ -620,8 +632,16 @@ impl MovementAuthority {
         });
 
         // `entity_class` is valid on any finite-Transform record; movement metadata is
-        // movement-only.
-        let attach_class = carries_finite_transform && entity.entity_class.is_some();
+        // movement-only. Empty class ids are equivalent to absent metadata on the
+        // producer side so the raw envelope stays valid.
+        let entity_class = if carries_finite_transform {
+            entity
+                .entity_class
+                .as_deref()
+                .filter(|class| !class.is_empty())
+        } else {
+            None
+        };
         Self {
             has_tick: carries_movement && entity.last_processed_client_tick.is_some(),
             tick: if carries_movement {
@@ -630,12 +650,8 @@ impl MovementAuthority {
                 0
             },
             local_player: carries_movement && entity.owner_client_id == Some(recipient),
-            has_entity_class: attach_class,
-            entity_class: if attach_class {
-                entity.entity_class.clone().unwrap_or_default()
-            } else {
-                String::new()
-            },
+            has_entity_class: entity_class.is_some(),
+            entity_class: entity_class.unwrap_or_default().to_string(),
         }
     }
 }
@@ -1041,6 +1057,51 @@ mod tests {
         assert!(
             typed_records(&snap).is_empty(),
             "late join baseline contains only live entities"
+        );
+    }
+
+    // Regression: a client joining after a despawn must not receive a tombstone for
+    // an entity it never mapped, even while an older client still needs that despawn.
+    #[test]
+    fn late_joiner_skips_tombstone_pending_for_existing_client() {
+        let mut server = ServerReplication::new();
+        server.register_client(CLIENT_A);
+        server.ingest_tick(vec![entity(1, vec![transform(0.0)])]);
+
+        let snap1 = server.encode_for_client(CLIENT_A, 60).unwrap();
+        let EntityRecord::FullBaseline { baseline_id, .. } = record_for(&snap1, 1).unwrap() else {
+            panic!("fb");
+        };
+        server.apply_ack(CLIENT_A, snap1.sequence, &[(1, baseline_id)], &[]);
+
+        server.ingest_tick(vec![]);
+        let snap2 = server.encode_for_client(CLIENT_A, 61).unwrap();
+        let tombstone_id = match record_for(&snap2, 1).expect("A sees despawn") {
+            EntityRecord::Despawn { tombstone_id, .. } => tombstone_id,
+            other => panic!("expected Despawn, got {other:?}"),
+        };
+
+        server.register_client(CLIENT_B);
+        let snap_b = server.encode_for_client(CLIENT_B, 62).unwrap();
+        assert!(
+            record_for(&snap_b, 1).is_none(),
+            "late client B never knew entity 1 and gets no stale despawn"
+        );
+        assert!(
+            typed_records(&snap_b).is_empty(),
+            "late client B receives the current live set only"
+        );
+
+        let snap_a = server.encode_for_client(CLIENT_A, 63).unwrap();
+        assert!(
+            matches!(record_for(&snap_a, 1), Some(EntityRecord::Despawn { .. })),
+            "existing client A still receives the unacked despawn"
+        );
+
+        server.apply_ack(CLIENT_A, snap_a.sequence, &[], &[(1, tombstone_id)]);
+        assert!(
+            server.tombstones.is_empty(),
+            "tombstone prunes once the present-at-despawn client acks"
         );
     }
 
@@ -1504,6 +1565,58 @@ mod tests {
                 );
             }
             other => panic!("expected FullBaseline, got {other:?}"),
+        }
+    }
+
+    // Regression: `Some("")` previously emitted `has_entity_class=true`, which raw
+    // validation rejects as empty present metadata.
+    #[test]
+    fn empty_entity_class_is_withheld_from_finite_transform_record() {
+        let mut server = ServerReplication::new();
+        server.register_client(CLIENT_A);
+        server.ingest_tick(vec![EntitySnapshot {
+            network_id: 1,
+            components: vec![transform(0.0)],
+            owner_client_id: None,
+            last_processed_client_tick: None,
+            entity_class: Some(String::new()),
+        }]);
+
+        let snap = server.encode_for_client(CLIENT_A, 60).unwrap();
+        let raw = snap
+            .records
+            .iter()
+            .find(|record| record.network_id == 1)
+            .expect("record present");
+        assert!(
+            !raw.has_entity_class,
+            "empty class is normalized to absent metadata"
+        );
+        assert!(
+            raw.entity_class.is_empty(),
+            "absent class leaves the raw string empty"
+        );
+
+        let typed = snap
+            .validate()
+            .expect("producer emits an entity_class shape accepted by validation");
+        match typed.records.as_slice() {
+            [
+                EntityRecord::FullBaseline {
+                    network_id,
+                    entity_class,
+                    components,
+                    ..
+                },
+            ] => {
+                assert_eq!(*network_id, 1);
+                assert_eq!(entity_class, &None);
+                assert!(
+                    matches!(components.as_slice(), [ComponentPayload::Transform(_)]),
+                    "finite Transform record remains otherwise intact"
+                );
+            }
+            other => panic!("expected one FullBaseline, got {other:?}"),
         }
     }
 

@@ -1,8 +1,5 @@
-// Host serialize-side derivation of a replicable entity's descriptor-class metadata
-// (the snapshot `entity_class`), read from its `DescriptorProvenance`, plus the shared
-// "is this a networked AI map enemy" predicate that gates host registration and
-// connected-client spawn suppression.
-// See: context/lib/networking.md · context/lib/entity_model.md §6
+// Descriptor-class metadata derivation and networked AI map-enemy classification.
+// See: context/lib/networking.md
 
 use postretro_net::wire::ComponentPayload;
 

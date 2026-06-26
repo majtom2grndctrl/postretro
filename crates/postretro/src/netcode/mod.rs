@@ -81,8 +81,8 @@ use postretro_net::timesync::{
 };
 use postretro_net::transport::{NetClient, NetServer};
 use postretro_net::wire::{
-    self, ComponentPayload, NetworkId, RawSnapshotMessage, SnapshotMessage, ValidationError,
-    WireError, WireMovementState, WirePlayerMovementState, WireTransform,
+    self, ComponentPayload, EntityRecord, NetworkId, RawSnapshotMessage, SnapshotMessage,
+    ValidationError, WireError, WireMovementState, WirePlayerMovementState, WireTransform,
 };
 
 use crate::collision::CollisionWorld;
@@ -659,6 +659,13 @@ pub(crate) fn client_receive_and_apply(
                 continue;
             }
         };
+        if descriptors.is_empty() && snapshot_requires_descriptor_table(&snapshot) {
+            log::trace!(
+                "[Net] deferring descriptor-backed snapshot {} until level descriptors load",
+                snapshot.sequence
+            );
+            continue;
+        }
         let mut outcome = replication.apply_snapshot(registry, &snapshot);
 
         // M15 Phase 3.5: apply this snapshot's replicated-state records. Validated as a
@@ -750,6 +757,14 @@ pub(crate) fn client_receive_and_apply(
         client.send_input(buffer);
     }
     materialized_remote_enemy_presentation
+}
+
+fn snapshot_requires_descriptor_table(snapshot: &SnapshotMessage) -> bool {
+    snapshot.records.iter().any(|record| match record {
+        EntityRecord::FullBaseline { entity_class, .. }
+        | EntityRecord::Delta { entity_class, .. } => entity_class.is_some(),
+        EntityRecord::Despawn { .. } => false,
+    })
 }
 
 /// Drive one connected-client predicted fixed tick (M15 Phase 3 Task 3). Sends
@@ -1398,11 +1413,11 @@ pub(crate) const REMOTE_CAPSULE_HALF_HEIGHT: f32 = 0.8;
 /// the pawn `Transform.position` convention (the collision capsule is symmetric
 /// about it; see `movement/substrate.rs`).
 ///
-/// Phase 1 wire-binds only `Transform`, so the client cannot distinguish a
-/// player pawn from an inert prop — every remote entity gets a capsule. On the
-/// sparse dev map this is effectively just the host pawn. Phase 2's
-/// replicable-set policy (with the full component set and interest management)
-/// will scope this to actual players; see `context/lib/networking.md`.
+/// The overlay draws replicated gameplay entities, not only players: mapped
+/// client remotes and host `ReplicableSet` entries can include map-placed AI
+/// enemies, pawns, movers, and other networked gameplay objects. The debug
+/// marker still uses standing-player capsule dimensions, so non-player enemies
+/// get an approximate marker until a later debug shape path specializes them.
 ///
 /// `dev-tools`-gated: the sole consumer is the client debug-capsule draw behind
 /// that feature (the debug-line renderer is `dev-tools` only).
@@ -1457,6 +1472,56 @@ mod tests {
                 .normalize(),
             scale: Vec3::splat(2.0),
         }
+    }
+
+    fn sample_wire_transform() -> WireTransform {
+        WireTransform {
+            position: [0.0, 0.0, 0.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: [1.0, 1.0, 1.0],
+        }
+    }
+
+    fn snapshot_with_record(record: EntityRecord) -> SnapshotMessage {
+        SnapshotMessage {
+            sequence: 1,
+            server_tick: 1,
+            records: vec![record],
+            state_schema_fingerprint: [0u8; 32],
+            state_records: Vec::new(),
+        }
+    }
+
+    // Regression: connected-client level unload can leave the transport connected
+    // while descriptors are empty. Descriptor-backed snapshots must not apply into
+    // that empty level state, but classless Transform traffic remains safe.
+    #[test]
+    fn descriptor_class_snapshots_require_descriptor_table() {
+        let classed = snapshot_with_record(EntityRecord::FullBaseline {
+            network_id: 7,
+            baseline_id: 1,
+            last_processed_client_tick: None,
+            local_player: false,
+            entity_class: Some("grunt".to_string()),
+            components: vec![ComponentPayload::Transform(sample_wire_transform())],
+        });
+        let classless = snapshot_with_record(EntityRecord::FullBaseline {
+            network_id: 8,
+            baseline_id: 1,
+            last_processed_client_tick: None,
+            local_player: false,
+            entity_class: None,
+            components: vec![ComponentPayload::Transform(sample_wire_transform())],
+        });
+
+        assert!(
+            snapshot_requires_descriptor_table(&classed),
+            "descriptor-backed baselines wait for the level descriptor table"
+        );
+        assert!(
+            !snapshot_requires_descriptor_table(&classless),
+            "classless transform replication can still apply without descriptors"
+        );
     }
 
     // --- Drift guard: Transform's wire discriminant is pinned to 0, equal to

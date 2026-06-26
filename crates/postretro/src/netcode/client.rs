@@ -1,15 +1,17 @@
-// Client-side replication apply: the `NetworkId -> EntityId` map, local
-// spawn/despawn, baseline-repair decisions, the pending-repair set, and
-// client-side ack production for M15 Phase 2.
+// Client-side snapshot apply/repair/ack state, plus local reconcile and
+// descriptor-remote materialization surfaces.
 // See: context/lib/networking.md
 //
-// This is the engine half of the Phase 2 *client* data path. The net crate is
+// This is the engine half of the client replication data path. The net crate is
 // registry-blind and keyed only by `NetworkId`; this module owns the engine side
 // that must know both halves: it decides how each validated `EntityRecord` mutates
 // the `EntityRegistry`, tracks which `baseline_id` it holds per entity, and decides
-// when an unappliable record needs a full-baseline refresh. All registry mutation
-// flows through the game-logic-owned apply primitives (`spawn`,
-// `set_component_value`, `despawn`) — the net crate never touches the registry.
+// when an unappliable record needs a full-baseline refresh. It also surfaces
+// authoritative local-pawn inputs for reconciliation and descriptor-class remote
+// requests for presentation materialization, including retries while a mapped remote
+// is still meshless. All registry mutation flows through the game-logic-owned apply
+// primitives (`spawn`, `set_component_value`, `despawn`) — the net crate never
+// touches the registry.
 //
 // State machine (per validated snapshot, applied in record order):
 //   - FullBaseline, unmapped: spawn (Transform required), apply present payloads,
@@ -169,12 +171,12 @@ pub(crate) struct LocalReconcileInput {
 /// (`client_receive_and_apply`, where the descriptor table is in scope) calls
 /// `materialize_net_remote_enemy_presentation` to attach ONLY the descriptor's mesh.
 ///
-/// Surfaced ONLY on the unmapped first-spawn of a non-local record carrying an
-/// `entity_class`. A later delta or re-baseline for the same `NetworkId` does NOT
-/// re-surface it (the entity is already mapped + live), and the helper is itself
-/// idempotent — so live mesh-animation state is never reset and no entity is
-/// re-spawned. The local predicted pawn is excluded: it has its own
-/// `armed_local_pawn` movement-path materialization and is never a remote enemy.
+/// Surfaced on the unmapped first-spawn of a non-local record carrying an
+/// `entity_class`, and on later descriptor-class records only while the mapped entity
+/// is still missing `Mesh`. The helper is idempotent, so retry repairs a
+/// transform-only remote without resetting an already-materialized mesh. The local
+/// predicted pawn is excluded: it has its own `armed_local_pawn` movement-path
+/// materialization and is never a remote enemy.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RemoteEnemyMaterialize {
     /// The mapped `EntityId` the spawn produced (Transform-only at this point).
@@ -234,10 +236,10 @@ pub(crate) struct ApplyOutcome {
     /// full baseline or a delta), not only the arming one — reconcile runs on every
     /// authoritative local update; the arming case is just the first.
     pub(crate) local_reconcile: Option<LocalReconcileInput>,
-    /// Non-local, descriptor-class-bearing entities this snapshot first spawned from a
-    /// full baseline (E10 Task 6), for the caller to materialize remote-enemy mesh
-    /// presentation. One entry per entity at its spawn moment; deltas and re-baselines
-    /// for an already-mapped id never re-surface here (no reset, no duplicate). The
+    /// Non-local, descriptor-class-bearing entities that need remote-enemy mesh
+    /// presentation. Usually one entry per spawn; mapped re-baselines or deltas can
+    /// surface another entry only while the entity is still meshless, so retry can
+    /// repair a failed materialization without duplicating an already-live mesh. The
     /// descriptor lookup deliberately does NOT happen here — descriptor tables are not
     /// in scope in this descriptor-blind apply path.
     pub(crate) remote_enemies: Vec<RemoteEnemyMaterialize>,
@@ -385,6 +387,8 @@ impl ClientReplication {
                         *baseline_ref,
                         *new_baseline_id,
                         components,
+                        *local_player,
+                        entity_class.as_deref(),
                         &mut outcome,
                     ) {
                         acked_baselines.push((*network_id, *new_baseline_id));
@@ -465,6 +469,14 @@ impl ClientReplication {
                     components,
                     outcome,
                 );
+                self.maybe_surface_remote_enemy_materialize(
+                    registry,
+                    existing,
+                    local_player,
+                    entity_class,
+                    components,
+                    outcome,
+                );
                 self.baselines.insert(network_id, baseline_id);
                 self.pending_repairs.remove(&network_id);
                 true
@@ -508,12 +520,11 @@ impl ClientReplication {
                 );
                 // E10 Task 6: a non-local baseline carrying a descriptor class is a
                 // remote enemy. Surface a presentation-materialization request for the
-                // caller (descriptor tables are not in scope here). Only on this
-                // first-spawn moment — a later delta/re-baseline finds the id already
-                // mapped + live and never reaches this branch, so the helper's
-                // idempotency is reinforced by never re-surfacing. The local pawn is
-                // excluded: its descriptor presentation rides `armed_local_pawn` on the
-                // movement path, never the remote-enemy mesh path.
+                // caller (descriptor tables are not in scope here). Later mapped
+                // descriptor records surface a retry only while the entity is still
+                // meshless. The local pawn is excluded: its descriptor presentation
+                // rides `armed_local_pawn` on the movement path, never the remote-enemy
+                // mesh path.
                 if !local_player {
                     if let Some(class) = entity_class {
                         outcome.remote_enemies.push(RemoteEnemyMaterialize {
@@ -540,6 +551,8 @@ impl ClientReplication {
         baseline_ref: u32,
         new_baseline_id: u32,
         components: &[ComponentPayload],
+        local_player: bool,
+        entity_class: Option<&str>,
         outcome: &mut ApplyOutcome,
     ) -> bool {
         // The client must hold the referenced baseline and a live mapped entity. If
@@ -562,12 +575,48 @@ impl ClientReplication {
         // Safe: `appliable` proved both are Some and the entity is live.
         let id = mapped.expect("appliable delta has a mapped entity");
         self.apply_components_to(registry, network_id, server_tick, id, components, outcome);
+        self.maybe_surface_remote_enemy_materialize(
+            registry,
+            id,
+            local_player,
+            entity_class,
+            components,
+            outcome,
+        );
         // Advance the stored baseline so the next delta chains from this one. An
         // empty-component delta is a valid no-op apply: it still advances the baseline
         // (the server bumped the baseline id even if the mirrors did not change the
         // applied set), so the client stays in step.
         self.baselines.insert(network_id, new_baseline_id);
         true
+    }
+
+    fn maybe_surface_remote_enemy_materialize(
+        &self,
+        registry: &EntityRegistry,
+        entity_id: EntityId,
+        local_player: bool,
+        entity_class: Option<&str>,
+        components: &[ComponentPayload],
+        outcome: &mut ApplyOutcome,
+    ) {
+        if local_player {
+            return;
+        }
+        let Some(class) = entity_class else {
+            return;
+        };
+        if registry
+            .has_component_kind(entity_id, ComponentKind::Mesh)
+            .unwrap_or(false)
+        {
+            return;
+        }
+        outcome.remote_enemies.push(RemoteEnemyMaterialize {
+            entity_id,
+            entity_class: class.to_string(),
+            initial_animation_state: first_mesh_animation_state(components),
+        });
     }
 
     /// Arm client prediction for the recipient-local movement pawn (M15 Phase 3
@@ -786,7 +835,7 @@ impl ClientReplication {
                 }
                 ComponentPayload::MeshAnimationState(wire) => {
                     let switched =
-                        apply_mesh_animation_state(registry, id, &wire.current_state, false);
+                        apply_mesh_animation_state(registry, id, &wire.current_state, true);
                     if !switched {
                         log::trace!(
                             "[Net] deferred mesh animation state `{}` for {network_id:?}",
@@ -1065,6 +1114,28 @@ mod tests {
         ComponentPayload::MeshAnimationState(WireMeshAnimationState {
             current_state: state.to_string(),
         })
+    }
+
+    fn unresolved_mesh() -> MeshComponent {
+        use crate::scripting::components::mesh::{
+            AnimationState, DEFAULT_CROSSFADE_MS, InterruptPolicy, MeshAnimation,
+        };
+        use std::collections::HashMap;
+
+        let unresolved = |clip: &str| AnimationState {
+            clip: clip.to_string(),
+            looping: true,
+            crossfade_ms: DEFAULT_CROSSFADE_MS,
+            interrupt: InterruptPolicy::Smooth,
+            clip_index: None,
+        };
+        let mut states = HashMap::new();
+        states.insert("idle".to_string(), unresolved("Idle"));
+        states.insert("attack".to_string(), unresolved("Attack"));
+        MeshComponent::animated(
+            "models/remote_enemy/scene.gltf".to_string(),
+            MeshAnimation::new(states, "idle".to_string()),
+        )
     }
 
     fn full_baseline(
@@ -2362,6 +2433,9 @@ mod tests {
         );
         let id = *client.map().get(&NetworkId(7)).unwrap();
         assert_eq!(spawn.remote_enemies.len(), 1);
+        registry
+            .set_component(id, MeshComponent::stateless("remote_enemy".to_string()))
+            .expect("test marks remote as already materialized");
 
         // A delta for the same (now mapped) id moves it but surfaces nothing.
         let delta_out = client.apply_snapshot(
@@ -2410,6 +2484,111 @@ mod tests {
         assert!(
             rebaseline.remote_enemies.is_empty(),
             "a re-baseline for a mapped remote enemy surfaces no new materialize request"
+        );
+    }
+
+    // Regression: if a descriptor-class baseline was applied while remote
+    // materialization could not attach a mesh, a later re-baseline must retry instead
+    // of leaving the mapped entity transform-only forever.
+    #[test]
+    fn remote_enemy_rebaseline_retries_when_mapped_entity_still_lacks_mesh() {
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+
+        let spawn = client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                0,
+                10,
+                vec![remote_enemy_baseline(
+                    7,
+                    1,
+                    "decraniated_mob",
+                    vec![transform_payload(0.0)],
+                )],
+            ),
+        );
+        let id = *client.map().get(&NetworkId(7)).unwrap();
+        assert_eq!(spawn.remote_enemies.len(), 1);
+        assert_eq!(
+            registry.has_component_kind(id, ComponentKind::Mesh),
+            Ok(false),
+            "test fixture leaves the first materialization unresolved"
+        );
+
+        let rebaseline = client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                1,
+                11,
+                vec![remote_enemy_baseline(
+                    7,
+                    2,
+                    "decraniated_mob",
+                    vec![transform_payload(2.0), mesh_animation_payload("attack")],
+                )],
+            ),
+        );
+
+        assert_eq!(
+            rebaseline.remote_enemies,
+            vec![RemoteEnemyMaterialize {
+                entity_id: id,
+                entity_class: "decraniated_mob".to_string(),
+                initial_animation_state: Some("attack".to_string()),
+            }],
+            "mapped descriptor remotes without Mesh retry materialization"
+        );
+    }
+
+    // Regression: a baseline can materialize a descriptor mesh, then a later delta in
+    // the same receive batch can arrive before clip indices resolve. The declared
+    // state name must be staged instead of dropped.
+    #[test]
+    fn remote_enemy_delta_applies_declared_animation_before_clips_resolve() {
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+
+        let spawn = client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                0,
+                10,
+                vec![remote_enemy_baseline(
+                    7,
+                    1,
+                    "decraniated_mob",
+                    vec![transform_payload(0.0)],
+                )],
+            ),
+        );
+        let id = spawn.remote_enemies[0].entity_id;
+        registry
+            .set_component(id, unresolved_mesh())
+            .expect("test simulates descriptor materialization before clip resolve");
+
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                1,
+                11,
+                vec![remote_enemy_delta(
+                    7,
+                    1,
+                    2,
+                    "decraniated_mob",
+                    vec![mesh_animation_payload("attack")],
+                )],
+            ),
+        );
+
+        let mesh = registry
+            .get_component::<MeshComponent>(id)
+            .expect("remote mesh remains attached");
+        assert_eq!(
+            mesh.animation.as_ref().unwrap().current_state,
+            "attack",
+            "declared unresolved mesh-animation deltas are staged by name"
         );
     }
 

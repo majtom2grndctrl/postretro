@@ -1,17 +1,6 @@
-// Engine-side Phase 2 replication glue: the replicable-set registration + predicate
-// and the owned post-tick snapshot producer that feeds `postretro-net`'s
-// `ServerReplication`.
+// Engine-side replication ownership for registered authoritative gameplay entities.
+// Produces owned snapshots for the registry-blind net-crate boundary.
 // See: context/lib/networking.md
-//
-// This is the engine half of M15 Phase 2 server replication. It owns the
-// `EntityId <-> NetworkId` bridge for replication: the net crate is registry-blind
-// and keyed only by `NetworkId`, so this module decides *which* entities replicate
-// (the Phase 2 replicable-set predicate) and copies their state into owned wire
-// mirrors keyed by `NetworkId`, then hands those to the net tracker.
-//
-// Owned post-tick rule: borrow the registry once, copy replicable state into owned
-// `EntitySnapshot`s (releasing the borrow), then hand them to the net crate for
-// per-client encoding. The registry is never held across the net-crate call.
 
 use std::collections::HashSet;
 
@@ -86,9 +75,9 @@ impl ReplicableSet {
 /// presentation entities (`BillboardEmitter`, `ParticleState`, `SpriteVisual`,
 /// `Light`, `FogVolume`) and ordinary static map transforms stay off the wire by
 /// default — they are simply never registered. The exclusion is also enforced
-/// structurally on the payload side: [`collect_payloads`] only pulls authoritative
-/// gameplay components (`Transform`; the movement subset later), never the
-/// presentation kinds, so a registered entity never leaks a baked/cosmetic payload.
+/// structurally on the payload side: [`collect_payloads`] only pulls wire-bound
+/// gameplay state plus current mesh animation state. Baked/cosmetic payloads stay
+/// local.
 ///
 /// `produce_owned_snapshots` consults the set directly via `iter`; this standalone
 /// single-entity predicate is exercised only by this module's tests.
@@ -103,9 +92,8 @@ pub(crate) fn is_replicable(set: &ReplicableSet, id: EntityId) -> bool {
 /// borrow before handing these to `postretro-net`.
 ///
 /// Stamps each replicable `EntityId` to its stable `NetworkId` via the allocator.
-/// Only registered entities are produced; the component order per entity is stable
-/// (`Transform` then `PlayerMovementState`) so the net crate's wire-mirror equality
-/// dirty-check is order-stable.
+/// Only registered entities are produced; component payload order is stable so the
+/// net crate's wire-mirror equality dirty-check is order-stable.
 pub(crate) fn produce_owned_snapshots(
     registry: &EntityRegistry,
     set: &ReplicableSet,
@@ -154,10 +142,8 @@ pub(crate) fn produce_owned_snapshots(
 fn collect_payloads(registry: &EntityRegistry, id: EntityId) -> Vec<ComponentPayload> {
     let mut payloads = Vec::new();
     if let Ok(transform) = registry.get_component::<Transform>(id) {
-        // The collection deliberately skips presentation kinds entirely by only
-        // pulling the wire-bound gameplay components (Transform today; the movement
-        // subset is added when a replicated entity carries a live
-        // PlayerMovementComponent — see below).
+        // Pull only the wire-bound authoritative state: transform, optional
+        // movement, and optional current mesh animation state.
         let payload = ComponentPayload::Transform(transform_to_wire(transform));
         // Live cross-check of the engine->wire discriminant mapping (the drift-guard
         // tests pin it both sides; a divergence would mis-tag replication).

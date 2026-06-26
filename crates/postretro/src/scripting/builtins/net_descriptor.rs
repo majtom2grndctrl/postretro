@@ -1,11 +1,5 @@
-// Descriptor materialization paths that `crate::netcode` (the engine's sole
-// registry-touching replication path) calls: host-side net-slot pawn spawn,
-// client-side local-movement materialization, and client-side remote-enemy
-// presentation. These reuse the same descriptor → component internals as the
-// data-archetype map sweep (`data_archetype.rs`) rather than reinventing them.
-//
-// See: context/lib/networking.md (replication ownership / role model)
-//      context/lib/build_pipeline.md §Built-in Classname Routing
+// Descriptor materialization helpers used by netcode replication.
+// See: context/lib/networking.md
 
 use super::MapEntity;
 use super::data_archetype::{DEFAULT_AGENT_PARAMS, find_descriptor, spawn_descriptor_instance};

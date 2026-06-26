@@ -206,8 +206,8 @@ pub struct RawComponentPayload {
 
 /// Raw per-entity lifecycle record. `record_kind` selects which logical record
 /// this is; the `baseline_id_or_ref` / `new_baseline_id_or_tombstone_id` / `reason`
-/// fields are overloaded per kind (see the `validate` mapping). Unused fields for a
-/// kind are ignored, so a `Despawn` need not zero its component list to be valid.
+/// fields are overloaded per kind (see the `validate` mapping). A `Despawn` ignores
+/// unrelated id fields, but it must not carry metadata or component payloads.
 #[derive(Debug, Clone, PartialEq, Encode, Decode)]
 pub struct RawEntityRecord {
     pub record_kind: u16,
@@ -243,9 +243,9 @@ pub struct RawEntityRecord {
     /// typed `EntityRecord::entity_class`). `false` ⇒ no class stamped (the typed
     /// value is `None`); `true` ⇒ the host stamped the descriptor class the pawn was
     /// materialized from (the typed value is `Some(entity_class)`). The flag is
-    /// required because an empty `String` is a legal-but-meaningless class; a `false`
-    /// flag paired with a non-empty class is a malformed envelope rejected at
-    /// `validate`.
+    /// required because an empty `String` is not a class value; `false` with a
+    /// non-empty class and `true` with an empty class are both malformed envelopes
+    /// rejected at `validate`.
     pub has_entity_class: bool,
     /// The opaque descriptor-class identifier the host materialized this entity from
     /// (e.g. `"player"`), so the client can materialize the matching descriptor-backed
@@ -405,6 +405,9 @@ pub enum ValidationError {
     /// (`has_last_processed_client_tick` / `local_player`) or an `entity_class`. A
     /// tombstone has no pawn state to ack and no descriptor class to materialize.
     MetadataOnDespawn,
+    /// A despawn record carried component payloads. Despawns are tombstone-only and
+    /// never carry replicated component state.
+    ComponentsOnDespawn,
     /// A record carried an `entity_class` (`has_entity_class = true`) but does not
     /// carry a structurally-valid finite `Transform` payload. The class names a
     /// descriptor the client materializes as a presentation entity, which rides the
@@ -413,6 +416,9 @@ pub enum ValidationError {
     /// `has_entity_class` was `false` but `entity_class` was non-empty — the "absent"
     /// flag cannot ride a real class value.
     MalformedEntityClassMetadata,
+    /// `has_entity_class` was `true` but `entity_class` was empty. The flag means a
+    /// concrete class value is present.
+    EmptyEntityClassMetadata,
     /// A `PlayerMovementState` payload carried a non-finite float (NaN/inf) in one
     /// of its replicated fields (velocity, timers, dash boost, crouch eye value, or
     /// capsule dimensions). Rejected before typed apply so no non-finite movement
@@ -453,7 +459,13 @@ impl std::fmt::Display for ValidationError {
                 "has_last_processed_client_tick=false but last_processed_client_tick={last_processed_client_tick} is nonzero"
             ),
             ValidationError::MetadataOnDespawn => {
-                write!(f, "movement-authority metadata on a despawn record")
+                write!(
+                    f,
+                    "movement-authority or entity_class metadata on a despawn record"
+                )
+            }
+            ValidationError::ComponentsOnDespawn => {
+                write!(f, "component payloads on a despawn record")
             }
             ValidationError::EntityClassWithoutTransform => write!(
                 f,
@@ -461,6 +473,9 @@ impl std::fmt::Display for ValidationError {
             ),
             ValidationError::MalformedEntityClassMetadata => {
                 write!(f, "has_entity_class=false but entity_class is non-empty")
+            }
+            ValidationError::EmptyEntityClassMetadata => {
+                write!(f, "has_entity_class=true but entity_class is empty")
             }
             ValidationError::NonFiniteMovementState => {
                 write!(f, "non-finite float in a PlayerMovementState payload")
@@ -565,10 +580,8 @@ impl RawEntityRecord {
                     components,
                 })
             }
-            // Despawn carries no components; any present are ignored, matching the
-            // overloaded-field rule (only the fields a kind names are read). It must
-            // not carry movement-authority metadata or an entity_class, though — a
-            // tombstone has no pawn state to ack and no descriptor class to materialize.
+            // Despawn is tombstone-only. It carries no component state and no
+            // metadata: no pawn state to ack and no descriptor class to materialize.
             RECORD_KIND_DESPAWN => {
                 if self.has_last_processed_client_tick
                     || self.last_processed_client_tick != 0
@@ -577,6 +590,9 @@ impl RawEntityRecord {
                     || !self.entity_class.is_empty()
                 {
                     return Err(ValidationError::MetadataOnDespawn);
+                }
+                if !self.components.is_empty() {
+                    return Err(ValidationError::ComponentsOnDespawn);
                 }
                 Ok(EntityRecord::Despawn {
                     network_id: self.network_id,
@@ -635,6 +651,7 @@ impl RawEntityRecord {
     ///
     /// Rules:
     /// - `has_entity_class = false` with a non-empty class is malformed.
+    /// - `has_entity_class = true` with an empty class is malformed.
     /// - an `entity_class` is valid only on a record carrying at least one
     ///   structurally-valid finite `Transform` payload (its position/rotation/scale
     ///   are all finite). It no longer requires a `PlayerMovementState`: a snapshot
@@ -658,6 +675,9 @@ impl RawEntityRecord {
         }
 
         if self.has_entity_class {
+            if self.entity_class.is_empty() {
+                return Err(ValidationError::EmptyEntityClassMetadata);
+            }
             let carries_finite_transform = components.iter().any(|c| match c {
                 ComponentPayload::Transform(t) => t.all_finite(),
                 ComponentPayload::PlayerMovementState(_) => false,
@@ -1295,21 +1315,11 @@ mod tests {
             version: SNAPSHOT_VERSION,
             sequence: 6,
             server_tick: 62,
-            // Components on a despawn are ignored, not rejected.
-            records: vec![raw_record(
-                RECORD_KIND_DESPAWN,
-                9,
-                0,
-                42,
-                7,
-                vec![raw_transform_payload()],
-            )],
+            records: vec![raw_record(RECORD_KIND_DESPAWN, 9, 0, 42, 7, Vec::new())],
             state_schema_fingerprint: [0u8; 32],
             state_records: Vec::new(),
         };
-        let typed = raw
-            .validate()
-            .expect("despawn validates, ignoring components");
+        let typed = raw.validate().expect("tombstone-only despawn validates");
         assert_eq!(
             typed.records,
             vec![EntityRecord::Despawn {
@@ -1318,6 +1328,19 @@ mod tests {
                 reason: 7,
             }]
         );
+    }
+
+    #[test]
+    fn validate_despawn_rejects_component_payloads() {
+        let record = raw_record(
+            RECORD_KIND_DESPAWN,
+            9,
+            0,
+            42,
+            7,
+            vec![raw_transform_payload()],
+        );
+        assert_eq!(record.validate(), Err(ValidationError::ComponentsOnDespawn));
     }
 
     // --- Malformed input: corrupt/short bytes are decode errors ---
@@ -1786,6 +1809,14 @@ mod tests {
         }
     }
 
+    #[test]
+    fn metadata_on_despawn_display_mentions_entity_class() {
+        let text = ValidationError::MetadataOnDespawn.to_string();
+        assert!(text.contains("movement-authority"));
+        assert!(text.contains("entity_class"));
+        assert!(text.contains("despawn"));
+    }
+
     // --- entity_class metadata (M15 Phase 3 Task 7) ---
 
     /// A movement record carrying `entity_class` round-trips raw -> wire -> typed with
@@ -1905,6 +1936,25 @@ mod tests {
         assert_eq!(
             record.validate(),
             Err(ValidationError::EntityClassWithoutTransform)
+        );
+    }
+
+    /// `has_entity_class = true` means a real class value is present; an empty
+    /// string cannot stand in for `Some`.
+    #[test]
+    fn empty_entity_class_with_present_flag_rejects() {
+        let mut record = raw_record(
+            RECORD_KIND_FULL_BASELINE,
+            1,
+            1,
+            0,
+            0,
+            vec![raw_transform_payload()],
+        );
+        record.has_entity_class = true;
+        assert_eq!(
+            record.validate(),
+            Err(ValidationError::EmptyEntityClassMetadata)
         );
     }
 

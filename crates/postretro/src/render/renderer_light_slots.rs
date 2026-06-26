@@ -8,14 +8,14 @@ impl Renderer {
     /// Sub-0.01 lights excluded from slot ranking — animated-dark lights don't waste a shadow slot.
     /// Short/empty `effective_brightness` = all-1.0 (first frame runs before bridge).
     ///
-    /// `reachable_leaf_aabbs` are the AABBs of the fog/light-reachable leaves —
-    /// the WIDER portal-reachable set (same source as `light_reachable_leaf_mask`)
-    /// that deliberately includes empty `face_count == 0` leaves, NOT the narrower
+    /// `reachable_cell_aabbs` are the AABBs of the fog/light-reachable cells —
+    /// the WIDER portal-reachable set (same source as `light_reachable_cell_mask`)
+    /// that deliberately includes empty `face_count == 0` cells, NOT the narrower
     /// drawable `VisibleCells` set. A light is shadow-eligible when its influence
-    /// sphere reaches one of these reachable leaves — NOT when the light's OWN leaf
+    /// sphere reaches one of these reachable cells — NOT when the light's OWN cell
     /// is in the camera PVS (the prior over-strict gate; see
     /// `crate::lighting::light_reaches_visible_cell`). Empty = DrawAll sentinel
-    /// (fallback visibility paths): every leaf-assigned light stays eligible.
+    /// (fallback visibility paths): every cell-assigned light stays eligible.
     ///
     /// The **candidate set** is `self.shadow_candidate_lights`
     /// (full level lights filtered by `is_dynamic`), which is the same set as
@@ -28,7 +28,7 @@ impl Renderer {
         camera_position: Vec3,
         camera_near_clip: f32,
         effective_brightness: &[f32],
-        reachable_leaf_aabbs: &[(Vec3, Vec3)],
+        reachable_cell_aabbs: &[(Vec3, Vec3)],
     ) {
         // Candidate set is `is_dynamic`-filtered; if the map has no dynamic
         // lights the pool stays empty — early-return without disturbing
@@ -38,22 +38,22 @@ impl Renderer {
         }
 
         // Shadow-slot eligibility: a light is eligible when its INFLUENCE volume
-        // reaches a fog/light-reachable leaf (`reachable_leaf_aabbs` = AABBs of the
-        // WIDER portal-reachable set, including empty `face_count == 0` leaves) —
-        // NOT when the light's own leaf is in the camera PVS. The light is a shadow
+        // reaches a fog/light-reachable cell (`reachable_cell_aabbs` = AABBs of the
+        // WIDER portal-reachable set, including empty `face_count == 0` cells) —
+        // NOT when the light's own cell is in the camera PVS. The light is a shadow
         // caster (onto receivers the camera sees); like a world occluder
         // (`shadow_cull.rs`) it need not sit in the camera PVS itself. The prior
-        // own-leaf-PVS gate dropped a light whose leaf left the shrinking PVS on
+        // own-cell-PVS gate dropped a light whose cell left the shrinking PVS on
         // pitch-down even though it still lit and shadowed geometry in view, so
         // entity shadows vanished.
         //
-        // Empty `reachable_leaf_aabbs` = DrawAll sentinel (fallback visibility
-        // paths) → all leaf-assigned lights eligible. ALPHA_LIGHT_LEAF_UNASSIGNED
-        // = degenerate (couldn't assign to a non-solid leaf) → always cull.
+        // Empty `reachable_cell_aabbs` = DrawAll sentinel (fallback visibility
+        // paths) → all cell-assigned lights eligible. ALPHA_LIGHT_LEAF_UNASSIGNED
+        // = degenerate (couldn't assign to a non-solid cell) → always cull.
         const BRIGHTNESS_SUPPRESSION_THRESHOLD: f32 = 0.01;
         let mut visible_lights = vec![false; self.shadow_candidate_lights.len()];
         for (i, light) in self.shadow_candidate_lights.iter().enumerate() {
-            let reaches_view = if light.leaf_index == ALPHA_LIGHT_LEAF_UNASSIGNED {
+            let reaches_view = if light.cell_index == ALPHA_LIGHT_LEAF_UNASSIGNED {
                 false
             } else {
                 let origin = Vec3::new(
@@ -64,7 +64,7 @@ impl Renderer {
                 crate::lighting::light_reaches_visible_cell(
                     origin,
                     light.falloff_range,
-                    reachable_leaf_aabbs,
+                    reachable_cell_aabbs,
                 )
             };
             if !reaches_view {
@@ -231,14 +231,15 @@ impl Renderer {
     ///
     /// Field guide (match these against the symptom):
     /// - `pitch` / `fwd` — camera look direction; `pitch` negative = looking down.
-    /// - `leaf` / `vis_leaves` — camera BSP leaf + the count of portal-reachable
-    ///   (fog/light-reachable) leaves. `vis_leaves` shrinking on pitch-down used
-    ///   to drop lights via the old own-leaf gate; the fix decouples eligibility
-    ///   from it (see `reach` below).
-    /// - Per light `Lk`: `pos`, `range`, `dyn`, `leaf`, `leaf_ok` (legacy: its own
-    ///   leaf is in the portal-reachable set — NO LONGER the eligibility criterion,
+    /// - `cell` / `vis_cells` — camera cell + portal-reachable
+    ///   (fog/light-reachable) cells, or `fallback_all_active` when the reachable
+    ///   AABB list is empty and every cell-assigned light stays eligible.
+    ///   `vis_cells` shrinking on pitch-down used to drop lights via the old
+    ///   own-cell gate; the fix decouples eligibility from it (see `reach` below).
+    /// - Per light `Lk`: `pos`, `range`, `dyn`, `cell`, `cell_ok` (legacy: its own
+    ///   cell is in the portal-reachable set — NO LONGER the eligibility criterion,
     ///   kept for diagnosis), `reach` (THE criterion: its influence sphere reaches
-    ///   a fog/light-reachable leaf), `bright` (live animated brightness), `elig`
+    ///   a fog/light-reachable cell), `bright` (live animated brightness), `elig`
     ///   (passed
     ///   the reach+brightness gate feeding `rank_lights`/`rank_point_lights`), and
     ///   `slot` (assigned SPOT shadow slot or `NONE:<reason>`) plus `cube`
@@ -252,10 +253,10 @@ impl Renderer {
         &mut self,
         view_proj: Mat4,
         visible: &VisibleCells,
-        light_reachable_leaf_mask: &[bool],
-        reachable_leaf_aabbs: &[(Vec3, Vec3)],
+        light_reachable_cell_mask: &[bool],
+        reachable_cell_aabbs: &[(Vec3, Vec3)],
         effective_brightness: &[f32],
-        camera_leaf: Option<u32>,
+        camera_cell: Option<u32>,
     ) {
         use crate::lighting::spot_shadow::NO_SHADOW_SLOT;
         use crate::prl::LightType;
@@ -274,9 +275,15 @@ impl Renderer {
         let fwd = (far_pt - near_pt).normalize_or_zero();
         let pitch_deg = fwd.y.clamp(-1.0, 1.0).asin().to_degrees();
 
-        let vis_leaves = match visible {
-            VisibleCells::DrawAll => light_reachable_leaf_mask.iter().filter(|&&b| b).count(),
-            VisibleCells::Culled(_) => light_reachable_leaf_mask.iter().filter(|&&b| b).count(),
+        let reachable_cell_count = light_reachable_cell_mask.iter().filter(|&&b| b).count();
+        let vis_cells = if reachable_cell_aabbs.is_empty() {
+            let mode = match visible {
+                VisibleCells::DrawAll => "draw_all",
+                VisibleCells::Culled(_) => "culled_empty",
+            };
+            format!("fallback_all_active({mode},mask={reachable_cell_count})")
+        } else {
+            reachable_cell_count.to_string()
         };
 
         // Per-candidate-light shadow status. Mirrors the eligibility logic in
@@ -293,20 +300,20 @@ impl Renderer {
         let mut cube_overflow: usize = 0;
         let mut light_lines: Vec<String> = Vec::new();
         for (i, light) in self.shadow_candidate_lights.iter().enumerate() {
-            // Legacy own-leaf-PVS membership (no longer the gate; kept so a reader
+            // Legacy own-cell-PVS membership (no longer the gate; kept so a reader
             // can SEE it diverge from `reach` — the whole point of the fix).
-            let leaf_ok = if light.leaf_index == ALPHA_LIGHT_LEAF_UNASSIGNED {
+            let cell_ok = if light.cell_index == ALPHA_LIGHT_LEAF_UNASSIGNED {
                 false
-            } else if light_reachable_leaf_mask.is_empty() {
+            } else if light_reachable_cell_mask.is_empty() {
                 true
             } else {
-                let li = light.leaf_index as usize;
-                li < light_reachable_leaf_mask.len() && light_reachable_leaf_mask[li]
+                let cell = light.cell_index as usize;
+                cell < light_reachable_cell_mask.len() && light_reachable_cell_mask[cell]
             };
             // THE eligibility criterion: influence sphere reaches a fog/light-
-            // reachable leaf. Mirrors `update_dynamic_light_slots` exactly (pure
+            // reachable cell. Mirrors `update_dynamic_light_slots` exactly (pure
             // read).
-            let reach = if light.leaf_index == ALPHA_LIGHT_LEAF_UNASSIGNED {
+            let reach = if light.cell_index == ALPHA_LIGHT_LEAF_UNASSIGNED {
                 false
             } else {
                 let origin = Vec3::new(
@@ -317,7 +324,7 @@ impl Renderer {
                 crate::lighting::light_reaches_visible_cell(
                     origin,
                     light.falloff_range,
-                    reachable_leaf_aabbs,
+                    reachable_cell_aabbs,
                 )
             };
             let bright =
@@ -398,15 +405,15 @@ impl Renderer {
             }
 
             light_lines.push(format!(
-                "L{i}[pos({:.0},{:.0},{:.0}) range={:.0} dyn={} ent={} leaf={} leaf_ok={} reach={} bright={:.2} elig={} {} {}]",
+                "L{i}[pos({:.0},{:.0},{:.0}) range={:.0} dyn={} ent={} cell={} cell_ok={} reach={} bright={:.2} elig={} {} {}]",
                 light.origin[0],
                 light.origin[1],
                 light.origin[2],
                 light.falloff_range,
                 light.is_dynamic as u8,
                 light.casts_entity_shadows as u8,
-                light.leaf_index as i64,
-                leaf_ok as u8,
+                light.cell_index as i64,
+                cell_ok as u8,
                 reach as u8,
                 bright,
                 elig as u8,
@@ -439,7 +446,7 @@ impl Renderer {
         let changed = fingerprint != self.shadow_debug_prev;
         self.shadow_debug_prev = fingerprint;
 
-        let leaf_str = camera_leaf
+        let cell_str = camera_cell
             .map(|l| l.to_string())
             .unwrap_or_else(|| "?".to_string());
         // Compact pool-saturation summary. `spot_overflow`/`cube_overflow` are
@@ -453,7 +460,7 @@ impl Renderer {
             0
         };
         log::info!(
-            "[shadow_dbg f={f}{}] cam: pitch={:.1}deg fwd({:.2},{:.2},{:.2}) eye({:.0},{:.0},{:.0}) leaf={leaf_str} vis_leaves={vis_leaves} | pools: spot={spot_used}/{} cube={cube_used}/{cube_pool_size} elig_spot={elig_spot} elig_cube={elig_cube} spot_overflow={spot_overflow} cube_overflow={cube_overflow} | casters: in_pvs={in_pvs} off_pvs={off_pvs} total={} | occupied_spot_slots={} occupied_cube_slots={} | lights[{}]: {}",
+            "[shadow_dbg f={f}{}] cam: pitch={:.1}deg fwd({:.2},{:.2},{:.2}) eye({:.0},{:.0},{:.0}) cell={cell_str} vis_cells={vis_cells} | pools: spot={spot_used}/{} cube={cube_used}/{cube_pool_size} elig_spot={elig_spot} elig_cube={elig_cube} spot_overflow={spot_overflow} cube_overflow={cube_overflow} | casters: in_pvs={in_pvs} off_pvs={off_pvs} total={} | occupied_spot_slots={} occupied_cube_slots={} | lights[{}]: {}",
             if changed { " CHANGED" } else { " (hb)" },
             pitch_deg,
             fwd.x,

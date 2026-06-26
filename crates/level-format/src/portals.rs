@@ -10,9 +10,9 @@ pub struct PortalRecord {
     pub vertex_start: u32,
     /// Number of vertices in this portal polygon.
     pub vertex_count: u32,
-    /// Leaf index on the front side of this portal.
+    /// Runtime cell id on the front side of this portal.
     pub front_leaf: u32,
-    /// Leaf index on the back side of this portal.
+    /// Runtime cell id on the back side of this portal.
     pub back_leaf: u32,
 }
 
@@ -69,12 +69,43 @@ impl PortalsSection {
         let portal_count = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
         let vertex_count = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
 
-        let expected_size = 8 + (vertex_count * 12) + (portal_count * PORTAL_RECORD_SIZE);
+        let vertex_bytes = vertex_count.checked_mul(12).ok_or_else(|| {
+            FormatError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "portals vertex count overflows section size",
+            ))
+        })?;
+        let portal_bytes = portal_count
+            .checked_mul(PORTAL_RECORD_SIZE)
+            .ok_or_else(|| {
+                FormatError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "portals portal count overflows section size",
+                ))
+            })?;
+        let expected_size = 8usize
+            .checked_add(vertex_bytes)
+            .and_then(|size| size.checked_add(portal_bytes))
+            .ok_or_else(|| {
+                FormatError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "portals declared counts overflow section size",
+                ))
+            })?;
         if data.len() < expected_size {
             return Err(FormatError::Io(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
                 format!(
                     "portals section too short: need {expected_size} bytes, got {}",
+                    data.len()
+                ),
+            )));
+        }
+        if data.len() > expected_size {
+            return Err(FormatError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "portals section has trailing bytes: expected {expected_size}, got {}",
                     data.len()
                 ),
             )));
@@ -220,7 +251,7 @@ mod tests {
     }
 
     #[test]
-    fn leaf_indices_preserved() {
+    fn cell_ids_preserved() {
         let section = sample_section();
         let bytes = section.to_bytes();
         let restored = PortalsSection::from_bytes(&bytes).unwrap();
@@ -244,6 +275,14 @@ mod tests {
         data[0..4].copy_from_slice(&1u32.to_le_bytes()); // portal_count
         data[4..8].copy_from_slice(&3u32.to_le_bytes()); // vertex_count
         let result = PortalsSection::from_bytes(&data);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_trailing_bytes() {
+        let mut bytes = sample_section().to_bytes();
+        bytes.extend_from_slice(&[0xab, 0xcd]);
+        let result = PortalsSection::from_bytes(&bytes);
         assert!(result.is_err());
     }
 }

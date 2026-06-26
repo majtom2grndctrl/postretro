@@ -65,19 +65,20 @@
 
 Single authoring pipeline: TrenchBroom `.map` → `prl-build` → `.prl`. Engine loads `.prl` as the sole runtime map format.
 
-prl-build uses a BSP tree as a compiler intermediate to produce cells, portal geometry, and per-cell draw chunks. The runtime consumes cells and portals; it does not walk BSP nodes for rendering or visibility. (`BspNodes`/`BspLeaves` sections are still emitted for camera-leaf lookup — replacing that with a cell-location section is a future step.) Portal traversal is the sole visibility path; the runtime falls back to per-leaf AABB frustum culling for solid-leaf, exterior-camera, and no-portals cases. Designed to subsume all baked data in engine-native coordinates. See `build_pipeline.md`.
+prl-build uses a BSP tree as a compiler intermediate to produce cells, portal geometry, and per-cell draw chunks. The runtime consumes cells, a cell locator, portals, and BVH arrays; it does not load or walk BSP nodes for rendering or visibility. Portal traversal is the sole visibility path; the runtime falls back to per-cell AABB frustum culling for solid-cell, exterior-camera, and no-portals cases. Designed to subsume all baked data in engine-native coordinates. See `build_pipeline.md`.
 
 ### PRL baked data
 
 | Data | Source |
 |------|--------|
 | Geometry | prl-build (brush-volume BSP → brush-side projection → pack) |
-| BSP tree | prl-build (compile-time scaffolding; BspNodes/BspLeaves used for camera-leaf lookup) |
+| BSP tree | prl-build (compile-time scaffolding only; not emitted as runtime spatial sections) |
 | Visibility | prl-build (portal generation — runtime traverses portal graph each frame) |
+| Cell locator | prl-build (compiler BSP-derived point-to-cell decision tree) |
 | Light entities | FGD entities parsed and translated to canonical format at compile time |
 | Indirect lighting | SH L2 irradiance volume baked from canonical lights |
-| Fog volumes | FGD brush entities resolved to BSP leaves at load time |
-| Acoustic zones | FGD brush entities resolved to BSP leaves at load time |
+| Fog volumes | FGD fog entities + `FogCellMasks` over runtime cells |
+| Acoustic zones | FGD brush entities intended to resolve through runtime cells for reverb |
 | Reflection probes | FGD point entities → baked cubemaps |
 
 Full detail (section inventory, SectionId registry): `build_pipeline.md`.

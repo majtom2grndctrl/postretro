@@ -191,15 +191,48 @@ impl GeometrySection {
         let index_count = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
         let face_count = u32::from_le_bytes([data[8], data[9], data[10], data[11]]) as usize;
 
+        let vertex_bytes = vertex_count.checked_mul(VERTEX_SIZE).ok_or_else(|| {
+            FormatError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "geometry vertex count overflows section size",
+            ))
+        })?;
+        let index_bytes = index_count.checked_mul(4).ok_or_else(|| {
+            FormatError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "geometry index count overflows section size",
+            ))
+        })?;
+        let face_bytes = face_count.checked_mul(FACE_SIZE).ok_or_else(|| {
+            FormatError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "geometry face count overflows section size",
+            ))
+        })?;
         let expected_size = HEADER_SIZE
-            + (vertex_count * VERTEX_SIZE)
-            + (index_count * 4)
-            + (face_count * FACE_SIZE);
+            .checked_add(vertex_bytes)
+            .and_then(|size| size.checked_add(index_bytes))
+            .and_then(|size| size.checked_add(face_bytes))
+            .ok_or_else(|| {
+                FormatError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "geometry declared counts overflow section size",
+                ))
+            })?;
         if data.len() < expected_size {
             return Err(FormatError::Io(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
                 format!(
                     "geometry section too short: need {expected_size} bytes, got {}",
+                    data.len()
+                ),
+            )));
+        }
+        if data.len() > expected_size {
+            return Err(FormatError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "geometry section has trailing bytes: expected {expected_size}, got {}",
                     data.len()
                 ),
             )));
@@ -289,12 +322,65 @@ impl GeometrySection {
             offset += FACE_SIZE;
         }
 
+        validate_geometry(&vertices, &indices)?;
+
         Ok(Self {
             vertices,
             indices,
             faces,
         })
     }
+}
+
+fn validate_geometry(vertices: &[Vertex], indices: &[u32]) -> crate::Result<()> {
+    for (vertex_idx, vertex) in vertices.iter().enumerate() {
+        if !vertex
+            .position
+            .iter()
+            .all(|component| component.is_finite())
+        {
+            return Err(FormatError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "geometry vertex {vertex_idx} has non-finite position {:?}",
+                    vertex.position
+                ),
+            )));
+        }
+        if !vertex.uv.iter().all(|component| component.is_finite()) {
+            return Err(FormatError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "geometry vertex {vertex_idx} has non-finite UV {:?}",
+                    vertex.uv
+                ),
+            )));
+        }
+    }
+
+    if indices.len() % 3 != 0 {
+        return Err(FormatError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "geometry index count {} is not divisible by 3",
+                indices.len()
+            ),
+        )));
+    }
+
+    for (index_idx, &vertex_index) in indices.iter().enumerate() {
+        if vertex_index as usize >= vertices.len() {
+            return Err(FormatError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "geometry index {index_idx} references vertex {vertex_index} out of range for {} vertices",
+                    vertices.len()
+                ),
+            )));
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -437,6 +523,47 @@ mod tests {
         let mut data = vec![0u8; 12];
         data[0] = 1; // vertex_count = 1, but body missing
         let result = GeometrySection::from_bytes(&data);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_trailing_bytes() {
+        let mut bytes = sample_section().to_bytes();
+        bytes.extend_from_slice(&[0xab, 0xcd]);
+        let result = GeometrySection::from_bytes(&bytes);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_index_count_not_divisible_by_three() {
+        let mut section = sample_section();
+        section.indices.push(0);
+        let result = GeometrySection::from_bytes(&section.to_bytes());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_index_past_vertex_count() {
+        let mut section = sample_section();
+        section.indices[2] = 999;
+        let result = GeometrySection::from_bytes(&section.to_bytes());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_non_finite_vertex_position() {
+        let mut section = sample_section();
+        section.vertices[1].position[0] = f32::NAN;
+        let result = GeometrySection::from_bytes(&section.to_bytes());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_non_finite_vertex_uv() {
+        // Regression: NaN/Inf base UVs reached renderer upload as malformed geometry.
+        let mut section = sample_section();
+        section.vertices[1].uv[0] = f32::INFINITY;
+        let result = GeometrySection::from_bytes(&section.to_bytes());
         assert!(result.is_err());
     }
 

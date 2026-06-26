@@ -1,5 +1,5 @@
 // BVH section: flat node + leaf arrays for runtime GPU and bake-time traversal.
-// See: context/plans/in-progress/bvh-foundation/1-compile-bvh.md
+// See: context/lib/build_pipeline.md and context/lib/rendering_pipeline.md
 
 use crate::FormatError;
 
@@ -84,8 +84,8 @@ pub struct BvhLeaf {
 pub struct BvhSection {
     pub nodes: Vec<BvhNode>,
     pub leaves: Vec<BvhLeaf>,
-    /// Index of the root node in `nodes`. Always 0 for non-empty trees built
-    /// by the compiler, but carried explicitly for forward compatibility.
+    /// Index of the root node in `nodes`. Reserved for future format changes;
+    /// currently must be 0 for all valid BVH sections.
     pub root_node_index: u32,
 }
 
@@ -186,12 +186,41 @@ impl BvhSection {
         let root_node_index = u32::from_le_bytes([data[8], data[9], data[10], data[11]]);
         // bytes 12..16 are header padding (ignored)
 
-        let expected_size = HEADER_SIZE + (node_count * NODE_STRIDE) + (leaf_count * LEAF_STRIDE);
+        let node_bytes = node_count.checked_mul(NODE_STRIDE).ok_or_else(|| {
+            FormatError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "bvh node count overflows section size",
+            ))
+        })?;
+        let leaf_bytes = leaf_count.checked_mul(LEAF_STRIDE).ok_or_else(|| {
+            FormatError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "bvh leaf count overflows section size",
+            ))
+        })?;
+        let expected_size = HEADER_SIZE
+            .checked_add(node_bytes)
+            .and_then(|size| size.checked_add(leaf_bytes))
+            .ok_or_else(|| {
+                FormatError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "bvh declared counts overflow section size",
+                ))
+            })?;
         if data.len() < expected_size {
             return Err(FormatError::Io(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
                 format!(
                     "bvh section too short: need {expected_size} bytes, got {}",
+                    data.len()
+                ),
+            )));
+        }
+        if data.len() > expected_size {
+            return Err(FormatError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "bvh section has trailing bytes: expected {expected_size}, got {}",
                     data.len()
                 ),
             )));
@@ -209,26 +238,33 @@ impl BvhSection {
         let mut offset = HEADER_SIZE;
 
         let mut nodes = Vec::with_capacity(node_count);
-        for _ in 0..node_count {
+        for node_idx in 0..node_count {
             let aabb_min = read_vec3(data, offset);
             let skip_index = read_u32(data, offset + 12);
             let aabb_max = read_vec3(data, offset + 16);
             let left_child_or_leaf_index = read_u32(data, offset + 28);
             let flags = read_u32(data, offset + 32);
-            // bytes 36..40 are node padding (ignored)
+            let padding = read_u32(data, offset + 36);
+            validate_aabb("node", node_idx, aabb_min, aabb_max)?;
+            if padding != 0 {
+                return Err(FormatError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("bvh node {node_idx} has nonzero reserved padding {padding}"),
+                )));
+            }
             nodes.push(BvhNode {
                 aabb_min,
                 skip_index,
                 aabb_max,
                 left_child_or_leaf_index,
                 flags,
-                _padding: 0,
+                _padding: padding,
             });
             offset += NODE_STRIDE;
         }
 
         let mut leaves = Vec::with_capacity(leaf_count);
-        for _ in 0..leaf_count {
+        for leaf_idx in 0..leaf_count {
             let aabb_min = read_vec3(data, offset);
             let material_bucket_id = read_u32(data, offset + 12);
             let aabb_max = read_vec3(data, offset + 16);
@@ -237,6 +273,7 @@ impl BvhSection {
             let cell_id = read_u32(data, offset + 36);
             let chunk_range_start = read_u32(data, offset + 40);
             let chunk_range_count = read_u32(data, offset + 44);
+            validate_aabb("leaf", leaf_idx, aabb_min, aabb_max)?;
             leaves.push(BvhLeaf {
                 aabb_min,
                 material_bucket_id,
@@ -250,12 +287,128 @@ impl BvhSection {
             offset += LEAF_STRIDE;
         }
 
+        validate_flat_traversal(&nodes, &leaves, root_node_index)?;
+
         Ok(Self {
             nodes,
             leaves,
             root_node_index,
         })
     }
+}
+
+fn validate_aabb(
+    record_kind: &str,
+    record_idx: usize,
+    aabb_min: [f32; 3],
+    aabb_max: [f32; 3],
+) -> crate::Result<()> {
+    for axis in 0..3 {
+        let min = aabb_min[axis];
+        let max = aabb_max[axis];
+        if !min.is_finite() || !max.is_finite() {
+            return Err(FormatError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "bvh {record_kind} {record_idx} has non-finite AABB axis {axis}: min={min}, max={max}"
+                ),
+            )));
+        }
+        if min > max {
+            return Err(FormatError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "bvh {record_kind} {record_idx} has inverted AABB axis {axis}: min={min}, max={max}"
+                ),
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_flat_traversal(
+    nodes: &[BvhNode],
+    leaves: &[BvhLeaf],
+    root_node_index: u32,
+) -> crate::Result<()> {
+    if nodes.is_empty() {
+        if root_node_index != 0 {
+            return Err(FormatError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("empty bvh has nonzero root_node_index {root_node_index}"),
+            )));
+        }
+        if !leaves.is_empty() {
+            return Err(FormatError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("bvh has {} leaves but no traversal nodes", leaves.len()),
+            )));
+        }
+        return Ok(());
+    }
+
+    if root_node_index != 0 {
+        return Err(FormatError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("bvh root_node_index {root_node_index} must be 0"),
+        )));
+    }
+
+    let node_count = nodes.len();
+    let mut leaf_reference_counts = vec![0u32; leaves.len()];
+    for (node_idx, node) in nodes.iter().enumerate() {
+        let skip_index = node.skip_index as usize;
+        if skip_index <= node_idx || skip_index > node_count {
+            return Err(FormatError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "bvh node {node_idx} skip_index {} must be in {}..={node_count}",
+                    node.skip_index,
+                    node_idx + 1
+                ),
+            )));
+        }
+
+        if node.flags & BVH_NODE_FLAG_LEAF != 0 {
+            let leaf_index = node.left_child_or_leaf_index as usize;
+            let Some(reference_count) = leaf_reference_counts.get_mut(leaf_index) else {
+                return Err(FormatError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "bvh leaf node {node_idx} references leaf {leaf_index} out of range for {} leaves",
+                        leaves.len()
+                    ),
+                )));
+            };
+            *reference_count += 1;
+            continue;
+        }
+
+        let left_child = node_idx + 1;
+        if left_child >= node_count || left_child >= skip_index {
+            return Err(FormatError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "bvh internal node {node_idx} has no valid implicit left child at {left_child} before skip_index {}",
+                    node.skip_index
+                ),
+            )));
+        }
+    }
+
+    for (leaf_idx, reference_count) in leaf_reference_counts.iter().enumerate() {
+        if *reference_count != 1 {
+            return Err(FormatError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "bvh leaf {leaf_idx} is referenced {reference_count} times by traversal nodes; expected exactly once"
+                ),
+            )));
+        }
+    }
+
+    Ok(())
 }
 
 fn read_u32(data: &[u8], at: usize) -> u32 {
@@ -384,10 +537,117 @@ mod tests {
     }
 
     #[test]
+    fn rejects_trailing_bytes() {
+        let mut bytes = sample_section().to_bytes();
+        bytes.extend_from_slice(&[0xab, 0xcd]);
+        let err = BvhSection::from_bytes(&bytes).unwrap_err();
+        assert!(matches!(err, FormatError::Io(_)), "got {err:?}");
+    }
+
+    #[test]
     fn rejects_malformed_root_index() {
         let mut bytes = sample_section().to_bytes();
         // node_count is the first u32. Set root_node_index past the end.
         bytes[8..12].copy_from_slice(&999u32.to_le_bytes());
+        let err = BvhSection::from_bytes(&bytes).unwrap_err();
+        assert!(matches!(err, FormatError::Io(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn rejects_nonzero_root_for_nonempty_tree() {
+        let mut bytes = sample_section().to_bytes();
+        bytes[8..12].copy_from_slice(&1u32.to_le_bytes());
+        let err = BvhSection::from_bytes(&bytes).unwrap_err();
+        assert!(matches!(err, FormatError::Io(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn rejects_leaves_without_nodes() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&[0u8; LEAF_STRIDE]);
+
+        let err = BvhSection::from_bytes(&bytes).unwrap_err();
+        assert!(matches!(err, FormatError::Io(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn rejects_skip_index_at_or_before_current_node() {
+        let mut bytes = sample_section().to_bytes();
+        let node_1_skip_offset = HEADER_SIZE + NODE_STRIDE + 12;
+        bytes[node_1_skip_offset..node_1_skip_offset + 4].copy_from_slice(&1u32.to_le_bytes());
+
+        let err = BvhSection::from_bytes(&bytes).unwrap_err();
+        assert!(matches!(err, FormatError::Io(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn rejects_skip_index_past_node_count() {
+        let mut bytes = sample_section().to_bytes();
+        let node_1_skip_offset = HEADER_SIZE + NODE_STRIDE + 12;
+        bytes[node_1_skip_offset..node_1_skip_offset + 4].copy_from_slice(&4u32.to_le_bytes());
+
+        let err = BvhSection::from_bytes(&bytes).unwrap_err();
+        assert!(matches!(err, FormatError::Io(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn rejects_internal_node_without_implicit_left_child() {
+        let mut bytes = sample_section().to_bytes();
+        let node_2_flags_offset = HEADER_SIZE + (2 * NODE_STRIDE) + 32;
+        bytes[node_2_flags_offset..node_2_flags_offset + 4].copy_from_slice(&0u32.to_le_bytes());
+
+        let err = BvhSection::from_bytes(&bytes).unwrap_err();
+        assert!(matches!(err, FormatError::Io(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn rejects_leaf_node_reference_out_of_range() {
+        let mut section = sample_section();
+        section.nodes[1].left_child_or_leaf_index = 99;
+
+        let err = BvhSection::from_bytes(&section.to_bytes()).unwrap_err();
+        assert!(matches!(err, FormatError::Io(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn rejects_duplicate_leaf_node_reference() {
+        // Regression: duplicate traversal references could omit a serialized leaf.
+        let mut section = sample_section();
+        section.nodes[2].left_child_or_leaf_index = 0;
+
+        let err = BvhSection::from_bytes(&section.to_bytes()).unwrap_err();
+        assert!(matches!(err, FormatError::Io(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn rejects_node_non_finite_aabb() {
+        let mut section = sample_section();
+        section.nodes[0].aabb_min[0] = f32::NAN;
+
+        let err = BvhSection::from_bytes(&section.to_bytes()).unwrap_err();
+        assert!(matches!(err, FormatError::Io(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn rejects_leaf_inverted_aabb() {
+        let mut section = sample_section();
+        section.leaves[0].aabb_min[1] = 3.0;
+
+        let err = BvhSection::from_bytes(&section.to_bytes()).unwrap_err();
+        assert!(matches!(err, FormatError::Io(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn rejects_nonzero_node_padding() {
+        let mut bytes = sample_section().to_bytes();
+        let node_0_padding_offset = HEADER_SIZE + 36;
+        bytes[node_0_padding_offset..node_0_padding_offset + 4]
+            .copy_from_slice(&7u32.to_le_bytes());
+
         let err = BvhSection::from_bytes(&bytes).unwrap_err();
         assert!(matches!(err, FormatError::Io(_)), "got {err:?}");
     }

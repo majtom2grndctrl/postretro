@@ -198,12 +198,13 @@ impl MeshRenderCollector {
             // Two-tier visibility. `forward_visible` is the camera portal-PVS test
             // that gates the forward draw. An instance that fails it is still kept
             // as an off-PVS shadow caster when it sits in a dynamic shadow light's
-            // influence volume — its leaf may have left the PVS (e.g. pitching down)
-            // while a receiver the camera still sees needs its shadow. In neither
-            // set → dropped, as before.
+            // influence volume — its runtime cell may have left the camera's
+            // portal-visible set (e.g. pitching down) while a receiver the camera
+            // still sees needs its shadow. In neither set → dropped, as before.
             //
-            // Regression: entity shadow caster dropped when its leaf left the camera
-            // PVS (pitch-down) — the forward cull pre-removed it before the depth pass.
+            // Regression: entity shadow caster dropped when its cell left the camera
+            // portal-visible set (pitch-down) — the forward cull pre-removed it
+            // before the depth pass.
             let forward_visible = mesh_visible(world, visible, current.position);
             if !forward_visible && !caster_in_shadow_light_volume(world, current.position) {
                 continue;
@@ -322,10 +323,11 @@ fn agent_feet_offset(registry: &EntityRegistry, id: crate::scripting::registry::
 /// treats the light as infinite-bound, matching the GPU early-out's "no record =
 /// always active" convention.
 ///
-/// Pure data logic — no GPU, no camera. Called for an entity whose leaf left the
-/// camera PVS: a hit keeps it as a shadow-only caster, a miss drops it, bounding
-/// off-screen pose cost to entities a dynamic shadow light could project. The final
-/// per-light cone/face trim happens later in `record_skinned_depth`.
+/// Pure data logic — no GPU, no camera. Called for an entity whose runtime cell
+/// left the camera's portal-visible set: a hit keeps it as a shadow-only caster,
+/// a miss drops it, bounding off-screen pose cost to entities a dynamic shadow
+/// light could project. The final per-light cone/face trim happens later in
+/// `record_skinned_depth`.
 fn caster_in_shadow_light_volume(world: &LevelWorld, pos: glam::Vec3) -> bool {
     world.lights.iter().enumerate().any(|(i, light)| {
         if !shadow_casting_dynamic_light(light) {
@@ -433,7 +435,7 @@ impl Default for MeshRenderCollector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::prl::{BspChild, LeafData, LevelWorld};
+    use crate::prl::{CellData, LevelWorld};
     use crate::scripting::components::mesh::MeshComponent;
     use crate::scripting::registry::EntityRegistry;
     use glam::Vec3;
@@ -452,25 +454,29 @@ mod tests {
     // The collector reuses the SAME pure cull the renderer pass documents
     // (`mesh_pass::mesh_visible`); membership behavior is covered by `mesh_pass`'s
     // own cull tests against a synthetic visible-set. Here we verify the
-    // collector's emit + transform composition against a minimal single-leaf
-    // world (leaf 0 spans all space, so any position lands in leaf 0).
+    // collector's emit + transform composition against a minimal single-cell
+    // world (cell 0 spans all space, so any position lands in cell 0).
 
-    fn single_leaf_world() -> LevelWorld {
+    fn single_cell_world() -> LevelWorld {
         LevelWorld {
             vertices: vec![],
             indices: vec![],
             face_meta: vec![],
-            nodes: vec![],
-            leaves: vec![LeafData {
+            cells: vec![CellData {
                 bounds_min: Vec3::splat(-1.0e6),
                 bounds_max: Vec3::splat(1.0e6),
                 face_start: 0,
                 face_count: 0,
+                portal_ref_start: 0,
+                portal_ref_count: 0,
                 is_solid: false,
+                is_exterior: false,
+                is_drawable: false,
             }],
-            root: BspChild::Leaf(0),
+            cell_portal_refs: vec![],
+            cell_locator_root: crate::prl::CellLocatorChild::Cell(0),
+            cell_locator_nodes: vec![],
             portals: vec![],
-            leaf_portals: vec![vec![]],
             has_portals: false,
             texture_names: vec![],
             texture_cache_keys: TextureCacheKeysSection { keys: vec![] },
@@ -505,10 +511,10 @@ mod tests {
     fn collect_emits_one_visible_mesh_instance() {
         let mut registry = EntityRegistry::new();
         let mut collector = MeshRenderCollector::new();
-        let world = single_leaf_world();
+        let world = single_cell_world();
         spawn_mesh(&mut registry, "decraniated", Vec3::new(1.0, 2.0, 3.0));
 
-        // Leaf 0 is the only visible cell; the mesh lands in it → draws.
+        // Cell 0 is the only visible cell; the mesh lands in it → draws.
         collector.collect(
             &registry,
             &world,
@@ -533,7 +539,7 @@ mod tests {
         // capsule-center correction is applied to entities with no agent.
         let mut registry = EntityRegistry::new();
         let mut collector = MeshRenderCollector::new();
-        let world = single_leaf_world();
+        let world = single_cell_world();
         spawn_mesh(&mut registry, "prop", Vec3::new(2.0, 4.0, 6.0));
 
         collector.collect(
@@ -565,7 +571,7 @@ mod tests {
 
         let mut registry = EntityRegistry::new();
         let mut collector = MeshRenderCollector::new();
-        let world = single_leaf_world();
+        let world = single_cell_world();
 
         // Spawn a mesh and attach an agent capsule (radius 0.35, height 1.8 →
         // half_height = 1.8/2 - 0.35 = 0.55; center-to-sole = 0.55 + 0.35 = 0.9).
@@ -610,7 +616,7 @@ mod tests {
     fn collect_emits_two_instances_of_same_model_at_distinct_transforms() {
         let mut registry = EntityRegistry::new();
         let mut collector = MeshRenderCollector::new();
-        let world = single_leaf_world();
+        let world = single_cell_world();
         spawn_mesh(&mut registry, "decraniated", Vec3::new(1.0, 0.0, 0.0));
         spawn_mesh(&mut registry, "decraniated", Vec3::new(5.0, 0.0, 0.0));
 
@@ -646,7 +652,7 @@ mod tests {
     fn collect_emits_distinct_models_with_their_handles() {
         let mut registry = EntityRegistry::new();
         let mut collector = MeshRenderCollector::new();
-        let world = single_leaf_world();
+        let world = single_cell_world();
         spawn_mesh(&mut registry, "grunt", Vec3::new(1.0, 0.0, 0.0));
         spawn_mesh(&mut registry, "drone", Vec3::new(2.0, 0.0, 0.0));
 
@@ -672,10 +678,10 @@ mod tests {
     fn collect_excludes_mesh_in_nonvisible_cell() {
         let mut registry = EntityRegistry::new();
         let mut collector = MeshRenderCollector::new();
-        let world = single_leaf_world();
+        let world = single_cell_world();
         spawn_mesh(&mut registry, "decraniated", Vec3::new(1.0, 2.0, 3.0));
 
-        // The mesh lands in leaf 0, but only leaf 1 is visible → culled out.
+        // The mesh lands in cell 0, but only cell 1 is visible → culled out.
         collector.collect(
             &registry,
             &world,
@@ -695,7 +701,7 @@ mod tests {
         // — proving it reads the interpolated transform, not current or spawn.
         let mut registry = EntityRegistry::new();
         let mut collector = MeshRenderCollector::new();
-        let world = single_leaf_world();
+        let world = single_cell_world();
         let id = registry.spawn(Transform::default());
         registry
             .set_component(id, MeshComponent::stateless("m".into()))
@@ -735,7 +741,7 @@ mod tests {
     fn collect_clears_between_frames_without_dropping_capacity() {
         let mut registry = EntityRegistry::new();
         let mut collector = MeshRenderCollector::new();
-        let world = single_leaf_world();
+        let world = single_cell_world();
         spawn_mesh(&mut registry, "decraniated", Vec3::ZERO);
         collector.collect(
             &registry,
@@ -837,7 +843,7 @@ mod tests {
         // A stateless prop_mesh: first clip (index 0), looped, time = anim_time +
         // per-instance phase. Two distinct seeds give distinct phases (not lock-step).
         let mut reg = EntityRegistry::new();
-        let world = single_leaf_world();
+        let world = single_cell_world();
         let mut collector = MeshRenderCollector::new();
         let mut tables = MeshClipTables::new();
         tables.insert(ModelHandle::from("prop"), &clip_meta(&[("spin", 4.0)]));
@@ -879,7 +885,7 @@ mod tests {
     #[test]
     fn collect_animated_plays_default_state_then_switched_state() {
         let mut reg = EntityRegistry::new();
-        let world = single_leaf_world();
+        let world = single_cell_world();
         let mut collector = MeshRenderCollector::new();
         let tables = grunt_tables();
         let id = spawn_animated(&mut reg, Vec3::ZERO);
@@ -927,7 +933,7 @@ mod tests {
         // the collector then emits a capture instruction keyed by the entity seed
         // and a snapshot fade leg, INSIDE the new idle fade window.
         let mut reg = EntityRegistry::new();
-        let world = single_leaf_world();
+        let world = single_cell_world();
         let mut collector = MeshRenderCollector::new();
         let tables = grunt_tables();
         let id = spawn_animated(&mut reg, Vec3::ZERO);
@@ -1003,7 +1009,7 @@ mod tests {
         // bucket, stride 1) must resample on every single collect — the resample
         // count equals the instance count each frame.
         let mut reg = EntityRegistry::new();
-        let world = single_leaf_world();
+        let world = single_cell_world();
         let mut collector = MeshRenderCollector::new();
         spawn_mesh(&mut reg, "decraniated", Vec3::ZERO);
 
@@ -1037,7 +1043,7 @@ mod tests {
         // a window of 4N frames the far instance resamples exactly N times, while
         // a near instance would have resampled 4N times.
         let mut reg = EntityRegistry::new();
-        let world = single_leaf_world();
+        let world = single_cell_world();
         let mut collector = MeshRenderCollector::new();
         spawn_mesh(&mut reg, "decraniated", Vec3::ZERO);
 
@@ -1076,7 +1082,7 @@ mod tests {
         // count is rarely both at once). Verify the two never both skip forever and
         // that there exists a frame where their resample decisions differ.
         let mut reg = EntityRegistry::new();
-        let world = single_leaf_world();
+        let world = single_cell_world();
         let mut collector = MeshRenderCollector::new();
         spawn_mesh(&mut reg, "decraniated", Vec3::ZERO);
         spawn_mesh(&mut reg, "decraniated", Vec3::ZERO);
@@ -1111,7 +1117,7 @@ mod tests {
         // time-slice. Drive it to a frame the stride would otherwise SKIP, then
         // switch state on that frame and confirm it resamples anyway.
         let mut reg = EntityRegistry::new();
-        let world = single_leaf_world();
+        let world = single_cell_world();
         let mut collector = MeshRenderCollector::new();
         let tables = grunt_tables();
         let id = spawn_animated(&mut reg, Vec3::ZERO);
@@ -1151,7 +1157,7 @@ mod tests {
         // visibly hitch). After the switch+resolve, several consecutive collects
         // inside the fade window must all resample even at the far stride.
         let mut reg = EntityRegistry::new();
-        let world = single_leaf_world();
+        let world = single_cell_world();
         let mut collector = MeshRenderCollector::new();
         let tables = grunt_tables();
         let id = spawn_animated(&mut reg, Vec3::ZERO);
@@ -1208,15 +1214,15 @@ mod tests {
             casts_entity_shadows: true,
             animated_slot: None,
             tags: vec![],
-            leaf_index: 0,
+            cell_index: 0,
             shadow_type: ShadowType::StaticLightMap,
         }
     }
 
-    /// Single-leaf world carrying one light + its parallel influence sphere, so a
+    /// Single-cell world carrying one light + its parallel influence sphere, so a
     /// test can place an entity out of the camera PVS but inside the light's volume.
     fn world_with_light(light: MapLight, influence: LightInfluence) -> LevelWorld {
-        let mut world = single_leaf_world();
+        let mut world = single_cell_world();
         world.lights = vec![light];
         world.light_influences = vec![influence];
         world
@@ -1277,10 +1283,10 @@ mod tests {
 
     #[test]
     fn collect_emits_off_pvs_entity_as_shadow_only_caster() {
-        // Regression: entity shadow caster dropped when its leaf left the camera
-        // PVS (pitch-down). Entity in leaf 0, camera PVS holds only leaf 1 → fails
-        // the forward cull, but sits in a dynamic spot light's volume, so the
-        // collector still emits it flagged `forward_visible = false`.
+        // Regression: entity shadow caster dropped when its cell left the camera's
+        // portal-visible set (pitch-down). Entity in cell 0, camera PVS holds only
+        // cell 1 → fails the forward cull, but sits in a dynamic spot light's
+        // volume, so the collector still emits it flagged `forward_visible = false`.
         let mut registry = EntityRegistry::new();
         let mut collector = MeshRenderCollector::new();
         let world = world_with_light(
@@ -1290,10 +1296,11 @@ mod tests {
                 radius: 20.0,
             },
         );
-        // Entity at the origin (well within the 20 m sphere), leaf 0.
+        // Entity at the origin (well within the 20 m sphere), cell 0.
         spawn_mesh(&mut registry, "decraniated", Vec3::new(1.0, 0.0, 0.0));
 
-        // PVS holds only leaf 1 → the entity's leaf 0 is NOT visible (pitch-down).
+        // Portal-visible set holds only cell 1 → the entity's cell 0 is not visible
+        // (pitch-down).
         collector.collect(
             &registry,
             &world,
@@ -1351,7 +1358,7 @@ mod tests {
         // the forward pass and the shadow passes), independent of any light volume.
         let mut registry = EntityRegistry::new();
         let mut collector = MeshRenderCollector::new();
-        let world = single_leaf_world();
+        let world = single_cell_world();
         spawn_mesh(&mut registry, "decraniated", Vec3::new(1.0, 0.0, 0.0));
 
         collector.collect(
@@ -1398,8 +1405,8 @@ mod tests {
             let pos = Vec3::new(px, py, pz);
             let expected = caster_in_shadow_light_volume(&world, pos);
 
-            // Collector run with the entity's leaf out of the PVS, at any camera
-            // eye, must agree with the pure predicate.
+            // Collector run with the entity's cell out of the portal-visible set,
+            // at any camera eye, must agree with the pure predicate.
             let mut registry = EntityRegistry::new();
             let mut collector = MeshRenderCollector::new();
             spawn_mesh(&mut registry, "decraniated", pos);

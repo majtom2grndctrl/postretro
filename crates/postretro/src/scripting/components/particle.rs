@@ -15,10 +15,10 @@ use crate::scripting::registry::EntityId;
 /// survives unchanged after its emitter despawns; `emitter` is a back-reference
 /// to the parent emitter entity whose **only** runtime role is spin-rate lookup
 /// in the sim tick — it is **not** consulted for render-collect culling. Each
-/// billboard is culled by the BSP leaf of *its own* world position (see
+/// billboard is culled by the runtime cell of *its own* world position (see
 /// `scripting/systems/particle_render.rs`). When the emitter has despawned the
 /// back-reference is stale, and the orphaned particle is culled or drawn by its
-/// own leaf exactly like any other particle.
+/// own cell exactly like any other particle.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct ParticleState {
     pub(crate) velocity: [f32; 3],

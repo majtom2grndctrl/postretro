@@ -38,7 +38,7 @@ pub enum DiagnosticAction {
     /// GPU cull pass, including skipped subtree descendants and leaves outside
     /// CPU-visible cells.
     ToggleWireframe,
-    /// Dump the next frame's portal walk (visited leaves, rejected portals,
+    /// Dump the next frame's portal walk (visited cells, rejected portals,
     /// reject reasons) to the log. One-shot per press.
     DumpPortalWalk,
     /// Flip the surface present mode between vsync on (`AutoVsync`) and

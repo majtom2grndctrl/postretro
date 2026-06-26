@@ -15,7 +15,7 @@ Audio is a self-contained subsystem. It does not depend on the renderer or wgpu.
 | **Receives** | Listener position and orientation, sound event requests |
 | **Produces** | Audio output (mixed and delivered to the OS by kira internally) |
 
-The boundary carries primitive types only. `ListenerState` (position + forward/up as `[f32; 3]`; world up is `[0, 1, 0]`) and `SoundRequest` (target bus, sound key, looping flag) cross the public API — no glam, no wgpu. Conversion from the glam-typed `Camera` happens at the frame-loop call site, not inside the module. A BSP leaf index is not yet part of the boundary; it will be added when reverb zone lookup is implemented.
+The boundary carries primitive types only. `ListenerState` (position + forward/up as `[f32; 3]`; world up is `[0, 1, 0]`) and `SoundRequest` (target bus, sound key, looping flag) cross the public API — no glam, no wgpu. Conversion from the glam-typed `Camera` happens at the frame-loop call site, not inside the module. A runtime cell id is not yet part of the boundary; it will be added when reverb zone lookup is implemented.
 
 Init is fault-tolerant: if the device or kira backend fails to start, the subsystem holds `None` and the game runs silent — never a crash, never a panic. Asset load and decode failures degrade the same way (warn, skip, no sound).
 
@@ -90,15 +90,15 @@ Will be placed in TrenchBroom via custom FGD. Mappers paint acoustic regions as 
 | `decay_time` | How long reverb tail persists |
 | `occlusion_factor` | How much geometry between source and listener dampens sound |
 
-### BSP Leaf Resolution
+### Runtime Cell Resolution
 
-At level load time, each `env_reverb_zone` brush will be resolved to the set of BSP leaves it contains. This is the same resolution strategy intended for fog volumes.
+Each `env_reverb_zone` brush will resolve to runtime cell IDs. It must use the `Cells`/`CellLocator` id space, not BSP leaf sections.
 
-At runtime, audio will look up the listener's current BSP leaf and check which (if any) reverb zone contains that leaf. Reverb parameters will apply per leaf — a listener crossing from one zone to another gets the new zone's parameters immediately.
+At runtime, audio will look up the listener's current runtime cell and check which (if any) reverb zone contains that cell. Reverb parameters will apply per cell — a listener crossing from one zone to another gets the new zone's parameters immediately.
 
-**Overlap rule:** when a BSP leaf belongs to multiple reverb zones, the smallest zone (fewest leaves) wins. A small tunnel zone inside a large outdoor zone produces tunnel reverb, not outdoor. No blending between zones — transitions are immediate on leaf crossing.
+**Overlap rule:** when a runtime cell belongs to multiple reverb zones, the smallest zone (fewest cells) wins. A small tunnel zone inside a large outdoor zone produces tunnel reverb, not outdoor. No blending between zones — transitions are immediate on cell crossing.
 
-Leaves outside any reverb zone will get no reverb effect (dry signal only).
+Cells outside any reverb zone will get no reverb effect (dry signal only).
 
 ---
 

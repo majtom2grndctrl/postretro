@@ -74,15 +74,16 @@ pub(crate) struct MeshInstanceInput {
     /// upgrades a miss to a resample regardless of this flag). A `Copy` bool —
     /// no per-instance heap.
     pub(crate) resample: bool,
-    /// In the camera's portal PVS. `true` → drawn by both the forward mesh pass
-    /// and the shadow depth passes. `false` → an off-PVS shadow caster: its leaf
-    /// left the PVS (e.g. pitching down) but it still sits in a dynamic shadow
-    /// light's influence volume, so it draws into shadow maps only. The collector
-    /// emits off-PVS instances only inside that light-volume union, bounding
-    /// off-screen pose cost.
+    /// In the camera's portal-visible cell set. `true` → drawn by both the
+    /// forward mesh pass and the shadow depth passes. `false` → a shadow caster
+    /// outside that cell set (e.g. pitching down) but still inside a dynamic
+    /// shadow light's influence volume, so it draws into shadow maps only. The
+    /// collector emits those instances only inside that light-volume union,
+    /// bounding off-screen pose cost.
     ///
-    /// Regression: entity shadow caster dropped when its leaf left the camera PVS
-    /// (pitch-down) — the forward cull pre-removed it before the depth pass.
+    /// Regression: entity shadow caster dropped when its cell left the camera's
+    /// portal-visible set (pitch-down) — the forward cull pre-removed it before
+    /// the depth pass.
     pub(crate) forward_visible: bool,
 }
 
@@ -528,7 +529,7 @@ mod tests {
             casts_entity_shadows: true,
             animated_slot: None,
             tags: vec![],
-            leaf_index: 0,
+            cell_index: 0,
             shadow_type: ShadowType::StaticLightMap,
         };
         let planes = cone_frustum_planes(&light_space_matrix(&light));
@@ -598,7 +599,7 @@ mod tests {
             casts_entity_shadows: true,
             animated_slot: None,
             tags: vec![],
-            leaf_index: 0,
+            cell_index: 0,
             shadow_type: ShadowType::StaticLightMap,
         };
         let planes = cone_frustum_planes(&light_space_matrix(&light));

@@ -75,10 +75,10 @@ impl ParticleRenderCollector {
     /// particle is gated against this frame's `visible` cell set, so off-screen /
     /// adjacent-room smoke is never packed for drawing. The world (`None` only
     /// when no level is loaded — particles cannot exist without an emitter, which
-    /// requires a level) supplies the `find_leaf` BSP query.
+    /// requires a level) supplies the point-to-cell query.
     ///
     /// Cull granularity is the **particle**, not its emitter. Each billboard is
-    /// gated by the BSP leaf of *its own* world position — the same
+    /// gated by the cell of *its own* world position — the same
     /// `transform.position` that `pack_particle_instance` writes into the GPU
     /// instance — so a smoke puff that has drifted into a portal-visible cell is
     /// drawn even when its emitter sits behind a wall, and a puff that drifted
@@ -89,13 +89,13 @@ impl ParticleRenderCollector {
     ///
     /// **Orphaned particles** (emitter despawned) need no special case: a
     /// particle always carries its own `Transform`, so it is culled or drawn by
-    /// its own leaf exactly like any other particle.
+    /// its own cell exactly like any other particle.
     ///
     /// **Cost.** The membership half of the cull
-    /// (`VisibleCells::Culled(leaves).contains`) is a linear scan, so testing it
-    /// per particle would be `O(particles × visible_leaves)`. Instead this builds
-    /// a `HashSet<u32>` of visible leaf indices **once per collect** and tests
-    /// each particle in `O(1)`; `find_leaf` itself is `O(tree depth)` and cheap.
+    /// (`VisibleCells::Culled(cells).contains`) is a linear scan, so testing it
+    /// per particle would be `O(particles x visible_cells)`. Instead this builds
+    /// a `HashSet<u32>` of visible cell ids **once per collect** and tests
+    /// each particle in `O(1)`; `locate_cell` itself is `O(tree depth)` and cheap.
     pub(crate) fn collect(
         &mut self,
         registry: &EntityRegistry,
@@ -106,12 +106,12 @@ impl ParticleRenderCollector {
             buf.clear();
         }
 
-        // Build the per-frame O(1) visible-leaf membership set once. `None` is
+        // Build the per-frame O(1) visible-cell membership set once. `None` is
         // the draw-all short-circuit (DrawAll, or no world loaded): every
-        // particle draws and no `find_leaf` descent runs. Otherwise the set is
-        // the visible leaf indices, hoisting `Culled(_).contains` (a linear
+        // particle draws and no locator descent runs. Otherwise the set is
+        // the visible cell ids, hoisting `Culled(_).contains` (a linear
         // scan) out of the per-particle loop.
-        let visible_leaves: Option<HashSet<u32>> = match (visible, world) {
+        let visible_cells: Option<HashSet<u32>> = match (visible, world) {
             (VisibleCells::Culled(cells), Some(_)) => Some(cells.iter().copied().collect()),
             _ => None,
         };
@@ -127,14 +127,14 @@ impl ParticleRenderCollector {
                 continue;
             };
 
-            // Per-billboard cull: test the particle's OWN leaf (from the same
+            // Per-billboard cull: test the particle's OWN cell (from the same
             // position that gets packed) against the visible set. `None` ⇒
-            // draw-all short-circuit, so skip the BSP descent entirely.
-            if let Some(leaves) = visible_leaves.as_ref() {
-                // `world` is `Some` whenever `visible_leaves` is `Some`.
-                let world = world.expect("visible_leaves implies a loaded world");
-                let leaf = world.find_leaf(transform.position) as u32;
-                if !leaves.contains(&leaf) {
+            // draw-all short-circuit, so skip the locator descent entirely.
+            if let Some(cells) = visible_cells.as_ref() {
+                // `world` is `Some` whenever `visible_cells` is `Some`.
+                let world = world.expect("visible_cells implies a loaded world");
+                let cell = world.locate_cell(transform.position) as u32;
+                if !cells.contains(&cell) {
                     continue;
                 }
             }
@@ -231,38 +231,42 @@ fn pack_particle_instance(
 mod tests {
     use super::*;
     use crate::fx::smoke::SPRITE_INSTANCE_SIZE;
-    use crate::prl::{BspChild, LeafData, LevelWorld};
+    use crate::prl::{CellData, LevelWorld};
     use crate::scripting::components::particle::ParticleState;
     use crate::scripting::components::sprite_visual::SpriteVisual;
     use crate::scripting::registry::{EntityId, EntityRegistry, Transform};
     use glam::Vec3;
     use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 
-    // The collector culls each billboard by the BSP leaf of *its own* world
+    // The collector culls each billboard by the runtime cell of *its own* world
     // position against the frame's visible set. The membership half mirrors the
-    // mesh path (`mesh_pass::mesh_visible_in_leaf`), whose own tests pin the
+    // mesh path (`mesh_pass::mesh_visible_in_cell`), whose own tests pin the
     // membership decision against a synthetic visible-set.
     //
-    // `single_leaf_world` is a minimal world where leaf 0 spans all space, so any
-    // position lands in leaf 0; a visible set of `Culled([0])` includes it and
+    // `single_cell_world` is a minimal world where cell 0 spans all space, so any
+    // position lands in cell 0; a visible set of `Culled([0])` includes it and
     // `Culled([1])` culls it. Used by the position-agnostic packing/fallback
-    // tests where every particle shares one leaf.
-    fn single_leaf_world() -> LevelWorld {
+    // tests where every particle shares one cell.
+    fn single_cell_world() -> LevelWorld {
         LevelWorld {
             vertices: vec![],
             indices: vec![],
             face_meta: vec![],
-            nodes: vec![],
-            leaves: vec![LeafData {
+            cells: vec![CellData {
                 bounds_min: Vec3::splat(-1.0e6),
                 bounds_max: Vec3::splat(1.0e6),
                 face_start: 0,
                 face_count: 0,
+                portal_ref_start: 0,
+                portal_ref_count: 0,
                 is_solid: false,
+                is_exterior: false,
+                is_drawable: false,
             }],
-            root: BspChild::Leaf(0),
+            cell_portal_refs: vec![],
+            cell_locator_root: crate::prl::CellLocatorChild::Cell(0),
+            cell_locator_nodes: vec![],
             portals: vec![],
-            leaf_portals: vec![vec![]],
             has_portals: false,
             texture_names: vec![],
             texture_cache_keys: TextureCacheKeysSection { keys: vec![] },
@@ -293,37 +297,44 @@ mod tests {
         }
     }
 
-    /// A world with two leaves split by the `x = 0` plane: a position with
-    /// `x >= 0` lands in **leaf 0** (front), `x < 0` lands in **leaf 1** (back).
+    /// A world with two cells split by the `x = 0` plane: a position with
+    /// `x >= 0` lands in **cell 0** (front), `x < 0` lands in **cell 1** (back).
     /// This lets a test place a particle and its emitter on opposite sides of
-    /// the plane so the cull decision keys on the particle's *own* leaf, not the
+    /// the plane so the cull decision keys on the particle's *own* cell, not the
     /// emitter's.
-    fn two_leaf_world() -> LevelWorld {
-        let mut world = single_leaf_world();
-        world.leaves = vec![
-            LeafData {
+    fn two_cell_world() -> LevelWorld {
+        let mut world = single_cell_world();
+        world.cells = vec![
+            CellData {
                 bounds_min: Vec3::new(0.0, -1.0e6, -1.0e6),
                 bounds_max: Vec3::splat(1.0e6),
                 face_start: 0,
                 face_count: 0,
+                portal_ref_start: 0,
+                portal_ref_count: 0,
                 is_solid: false,
+                is_exterior: false,
+                is_drawable: false,
             },
-            LeafData {
+            CellData {
                 bounds_min: Vec3::splat(-1.0e6),
                 bounds_max: Vec3::new(0.0, 1.0e6, 1.0e6),
                 face_start: 0,
                 face_count: 0,
+                portal_ref_start: 0,
+                portal_ref_count: 0,
                 is_solid: false,
+                is_exterior: false,
+                is_drawable: false,
             },
         ];
-        world.nodes = vec![crate::prl::NodeData {
+        world.cell_locator_root = crate::prl::CellLocatorChild::Node(0);
+        world.cell_locator_nodes = vec![crate::prl::CellLocatorNodeData {
             plane_normal: Vec3::new(1.0, 0.0, 0.0),
             plane_distance: 0.0,
-            front: BspChild::Leaf(0),
-            back: BspChild::Leaf(1),
+            front: crate::prl::CellLocatorChild::Cell(0),
+            back: crate::prl::CellLocatorChild::Cell(1),
         }];
-        world.root = BspChild::Node(0);
-        world.leaf_portals = vec![vec![], vec![]];
         world
     }
 
@@ -376,7 +387,7 @@ mod tests {
     /// Spawn a bare emitter entity (just a `Transform`) and return its id so a
     /// particle can back-reference it. The emitter's position is *not* consulted
     /// by the cull (that is per-particle now); these helpers place the emitter
-    /// only to prove the particle's own leaf — not its emitter's — drives the
+    /// only to prove the particle's own cell — not its emitter's — drives the
     /// decision.
     fn spawn_emitter(registry: &mut EntityRegistry, position: Vec3) -> EntityId {
         registry.spawn(Transform {
@@ -520,12 +531,12 @@ mod tests {
 
     #[test]
     fn collect_packs_particle_in_a_visible_cell() {
-        // Particle lands in leaf 0; the visible set includes leaf 0 → packed.
+        // Particle lands in cell 0; the visible set includes cell 0 => packed.
         // Mirrors `mesh_render::collect_emits_one_visible_*`.
         let mut registry = EntityRegistry::new();
         let mut collector = ParticleRenderCollector::new();
         collector.register_sprite("smoke");
-        let world = single_leaf_world();
+        let world = single_cell_world();
         spawn_particle(&mut registry, Vec3::new(1.0, 2.0, 3.0), "smoke", 0.4);
 
         collector.collect(&registry, Some(&world), &VisibleCells::Culled(vec![0]));
@@ -536,12 +547,12 @@ mod tests {
 
     #[test]
     fn collect_excludes_particle_in_a_nonvisible_cell() {
-        // Particle lands in leaf 0, but only leaf 1 is visible → culled out.
+        // Particle lands in cell 0, but only cell 1 is visible => culled out.
         // Mirrors `mesh_render::collect_excludes_mesh_in_nonvisible_cell`.
         let mut registry = EntityRegistry::new();
         let mut collector = ParticleRenderCollector::new();
         collector.register_sprite("smoke");
-        let world = single_leaf_world();
+        let world = single_cell_world();
         spawn_particle(&mut registry, Vec3::new(1.0, 2.0, 3.0), "smoke", 0.4);
 
         collector.collect(&registry, Some(&world), &VisibleCells::Culled(vec![1]));
@@ -554,23 +565,23 @@ mod tests {
     #[test]
     fn collect_draws_particle_that_drifted_into_view_from_a_hidden_emitter() {
         // The exact regression the per-emitter cull caused. The emitter sits in
-        // the BACK half (leaf 1, NOT visible), but the particle has drifted into
-        // the FRONT half (leaf 0, visible). The billboard must draw — it is in
-        // view — even though its emitter's leaf is culled.
+        // the BACK half (cell 1, NOT visible), but the particle has drifted into
+        // the FRONT half (cell 0, visible). The billboard must draw: it is in
+        // view, even though its emitter's cell is culled.
         let mut registry = EntityRegistry::new();
         let mut collector = ParticleRenderCollector::new();
         collector.register_sprite("smoke");
-        let world = two_leaf_world();
-        let emitter = spawn_emitter(&mut registry, Vec3::new(-5.0, 0.0, 0.0)); // leaf 1
+        let world = two_cell_world();
+        let emitter = spawn_emitter(&mut registry, Vec3::new(-5.0, 0.0, 0.0)); // cell 1
         spawn_particle_for(
             &mut registry,
-            Vec3::new(5.0, 0.0, 0.0), // leaf 0 — drifted into view
+            Vec3::new(5.0, 0.0, 0.0), // cell 0 - drifted into view
             "smoke",
             0.4,
             Some(emitter),
         );
 
-        // Only leaf 0 is visible (the emitter's leaf 1 is hidden behind a wall).
+        // Only cell 0 is visible (the emitter's cell 1 is hidden behind a wall).
         collector.collect(&registry, Some(&world), &VisibleCells::Culled(vec![0]));
         let pairs: Vec<(&str, &[u8])> = collector.iter_collections().collect();
         assert_eq!(
@@ -583,24 +594,24 @@ mod tests {
 
     #[test]
     fn collect_culls_particle_that_drifted_out_of_view_from_a_visible_emitter() {
-        // The mirror case. The emitter sits in the FRONT half (leaf 0, visible),
-        // but the particle has drifted into the BACK half (leaf 1, NOT visible).
+        // The mirror case. The emitter sits in the FRONT half (cell 0, visible),
+        // but the particle has drifted into the BACK half (cell 1, NOT visible).
         // The billboard must be culled — it is out of view — even though its
         // emitter is on-screen.
         let mut registry = EntityRegistry::new();
         let mut collector = ParticleRenderCollector::new();
         collector.register_sprite("smoke");
-        let world = two_leaf_world();
-        let emitter = spawn_emitter(&mut registry, Vec3::new(5.0, 0.0, 0.0)); // leaf 0
+        let world = two_cell_world();
+        let emitter = spawn_emitter(&mut registry, Vec3::new(5.0, 0.0, 0.0)); // cell 0
         spawn_particle_for(
             &mut registry,
-            Vec3::new(-5.0, 0.0, 0.0), // leaf 1 — drifted out of view
+            Vec3::new(-5.0, 0.0, 0.0), // cell 1 - drifted out of view
             "smoke",
             0.4,
             Some(emitter),
         );
 
-        // Only leaf 0 (the emitter's own leaf) is visible.
+        // Only cell 0 (the emitter's own cell) is visible.
         collector.collect(&registry, Some(&world), &VisibleCells::Culled(vec![0]));
         assert!(
             collector.iter_collections().next().is_none(),
@@ -609,26 +620,26 @@ mod tests {
     }
 
     #[test]
-    fn collect_culls_two_particles_of_one_emitter_independently_by_their_own_leaves() {
-        // Two particles share one emitter (in the visible front leaf 0) but have
-        // drifted apart: one stays in leaf 0 (visible), one crossed into leaf 1
+    fn collect_culls_two_particles_of_one_emitter_independently_by_their_own_cells() {
+        // Two particles share one emitter (in the visible front cell 0) but have
+        // drifted apart: one stays in cell 0 (visible), one crossed into cell 1
         // (hidden). The cull is per-particle, so exactly one draws — the shared
         // emitter does NOT gate both alike.
         let mut registry = EntityRegistry::new();
         let mut collector = ParticleRenderCollector::new();
         collector.register_sprite("smoke");
-        let world = two_leaf_world();
-        let emitter = spawn_emitter(&mut registry, Vec3::new(5.0, 0.0, 0.0)); // leaf 0
+        let world = two_cell_world();
+        let emitter = spawn_emitter(&mut registry, Vec3::new(5.0, 0.0, 0.0)); // cell 0
         spawn_particle_for(
             &mut registry,
-            Vec3::new(5.0, 0.0, 0.0), // leaf 0 — visible
+            Vec3::new(5.0, 0.0, 0.0), // cell 0 - visible
             "smoke",
             0.1,
             Some(emitter),
         );
         spawn_particle_for(
             &mut registry,
-            Vec3::new(-5.0, 0.0, 0.0), // leaf 1 — hidden
+            Vec3::new(-5.0, 0.0, 0.0), // cell 1 - hidden
             "smoke",
             0.2,
             Some(emitter),
@@ -639,7 +650,7 @@ mod tests {
         assert_eq!(
             pairs.len(),
             1,
-            "the leaf-0 particle draws, the leaf-1 one does not"
+            "the cell-0 particle draws, the cell-1 one does not"
         );
         assert_eq!(
             pairs[0].1.len(),
@@ -649,15 +660,15 @@ mod tests {
     }
 
     #[test]
-    fn collect_culls_or_draws_orphaned_particle_by_its_own_leaf() {
+    fn collect_culls_or_draws_orphaned_particle_by_its_own_cell() {
         // An orphaned particle (emitter despawned) gets no special case: it is
-        // culled or drawn purely by its own leaf, like any other particle.
+        // culled or drawn purely by its own cell, like any other particle.
         let mut registry = EntityRegistry::new();
         let mut collector = ParticleRenderCollector::new();
         collector.register_sprite("smoke");
-        let world = two_leaf_world();
+        let world = two_cell_world();
         let emitter = spawn_emitter(&mut registry, Vec3::new(5.0, 0.0, 0.0));
-        // Particle in the hidden back leaf 1.
+        // Particle in the hidden back cell 1.
         spawn_particle_for(
             &mut registry,
             Vec3::new(-5.0, 0.0, 0.0),
@@ -666,39 +677,39 @@ mod tests {
             Some(emitter),
         );
 
-        // Orphan it: its own leaf (1) is not visible → culled, no special case.
+        // Orphan it: its own cell (1) is not visible => culled, no special case.
         registry.despawn(emitter).unwrap();
         collector.collect(&registry, Some(&world), &VisibleCells::Culled(vec![0]));
         assert!(
             collector.iter_collections().next().is_none(),
-            "orphaned particle in a hidden leaf is culled by its own leaf"
+            "orphaned particle in a hidden cell is culled by its own cell"
         );
 
-        // Make the orphan's own leaf visible → it draws.
+        // Make the orphan's own cell visible => it draws.
         collector.collect(&registry, Some(&world), &VisibleCells::Culled(vec![1]));
         let pairs: Vec<(&str, &[u8])> = collector.iter_collections().collect();
-        assert_eq!(pairs.len(), 1, "orphaned particle in a visible leaf draws");
+        assert_eq!(pairs.len(), 1, "orphaned particle in a visible cell draws");
         assert_eq!(pairs[0].1.len(), SPRITE_INSTANCE_SIZE);
     }
 
     #[test]
-    fn collect_culls_particle_with_no_emitter_backref_by_its_own_leaf() {
-        // A particle with `emitter == None` is culled by its own leaf, same as
+    fn collect_culls_particle_with_no_emitter_backref_by_its_own_cell() {
+        // A particle with `emitter == None` is culled by its own cell, same as
         // any other — there is no orphan/no-backref escape hatch anymore.
         let mut registry = EntityRegistry::new();
         let mut collector = ParticleRenderCollector::new();
         collector.register_sprite("smoke");
-        let world = two_leaf_world();
-        // Particle in leaf 1, which is not visible → culled.
+        let world = two_cell_world();
+        // Particle in cell 1, which is not visible => culled.
         spawn_particle_for(&mut registry, Vec3::new(-5.0, 0.0, 0.0), "smoke", 0.4, None);
 
         collector.collect(&registry, Some(&world), &VisibleCells::Culled(vec![0]));
         assert!(
             collector.iter_collections().next().is_none(),
-            "no-backref particle in a hidden leaf is culled by its own leaf"
+            "no-backref particle in a hidden cell is culled by its own cell"
         );
 
-        // Its own leaf becomes visible → it draws.
+        // Its own cell becomes visible => it draws.
         collector.collect(&registry, Some(&world), &VisibleCells::Culled(vec![1]));
         let pairs: Vec<(&str, &[u8])> = collector.iter_collections().collect();
         assert_eq!(pairs.len(), 1);
@@ -708,13 +719,13 @@ mod tests {
     #[test]
     fn collect_draws_all_particles_when_visibility_is_draw_all() {
         // No portal culling this frame: every particle draws regardless of any
-        // leaf (no `find_leaf` descent runs) — no regression. Both particles are
-        // in the hidden back leaf 1, yet `DrawAll` packs both. Mirrors the mesh
+        // cell (no locator descent runs) — no regression. Both particles are
+        // in the hidden back cell 1, yet `DrawAll` packs both. Mirrors the mesh
         // draw-all path.
         let mut registry = EntityRegistry::new();
         let mut collector = ParticleRenderCollector::new();
         collector.register_sprite("smoke");
-        let world = two_leaf_world();
+        let world = two_cell_world();
         let emitter = spawn_emitter(&mut registry, Vec3::new(-5.0, 0.0, 0.0));
         spawn_particle_for(
             &mut registry,
@@ -739,8 +750,8 @@ mod tests {
 
     /// Sibling bench to `particle_sim::bench_500_particles_one_frame_*`,
     /// covering the **render-collect** path: 500 particles in a visible cell, so
-    /// each particle exercises the per-billboard cull — `find_leaf` plus the
-    /// O(1) `HashSet<u32>` visible-leaf membership test built once per collect —
+    /// each particle exercises the per-billboard cull — `locate_cell` plus the
+    /// O(1) `HashSet<u32>` visible-cell membership test built once per collect —
     /// and the `sprite_to_collection` resolution (the path that used to allocate
     /// a `String` per particle). Same 500-particle scale and < 500µs budget as
     /// the tick bench, so a regression on either hot path is caught.
@@ -750,7 +761,7 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let mut collector = ParticleRenderCollector::new();
         collector.register_sprite("smoke");
-        let world = single_leaf_world();
+        let world = single_cell_world();
         let emitter = spawn_emitter(&mut registry, Vec3::new(1.0, 2.0, 3.0));
         for i in 0..500 {
             spawn_particle_for(

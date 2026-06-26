@@ -45,8 +45,9 @@ pub struct GeometryResult {
 /// positions for texture projection.
 ///
 /// Only empty leaves contribute geometry. Solid leaves are skipped. The
-/// `leaf_index` field in `FaceMeta` stores the raw BSP leaf index — the
-/// same index the engine's `find_leaf()` returns at runtime. This index
+/// `leaf_index` field in `FaceMeta` stores the raw BSP leaf index. The
+/// compiler BSP leaf id is preserved as the runtime cell id in `Cells` and
+/// resolved through `CellLocator` / `LevelWorld::locate_cell`. This index
 /// becomes the BVH leaf's `cell_id` (one cell per BSP leaf), which the BVH
 /// traversal compute shader checks against the per-frame visible-cell
 /// bitmask before emitting a draw command.
@@ -374,8 +375,9 @@ fn valve_texel_uv(
 /// Build a list of (face_index, bsp_leaf_index) pairs ordered by BSP leaf.
 ///
 /// Iterates BSP leaves in order, skipping solid leaves. Each empty leaf's
-/// raw BSP index is used as the `leaf_index` in face metadata, matching
-/// the index the engine's `find_leaf()` returns at runtime.
+/// raw BSP index is used as the `leaf_index` in face metadata. The compiler
+/// BSP leaf id is preserved as the runtime cell id in `Cells` and resolved
+/// through `CellLocator` / `LevelWorld::locate_cell`.
 ///
 /// Leaves in `exterior_leaves` contribute no faces but are still iterated
 /// so the output ordering follows the full BSP leaf array.
@@ -723,9 +725,10 @@ mod tests {
         // Raw BSP indices:  0(solid), 1(empty), 2(solid), 3(empty), 4(empty)
         // Sequential empty: -, 0, -, 1, 2
         //
-        // The engine's find_leaf() returns raw BSP indices (1, 3, 4).
-        // leaf_index in FaceMeta must match these so the BVH leaf's
-        // cell_id lines up with the visible-cell bitmask at runtime.
+        // Compiler BSP leaf ids (1, 3, 4) are preserved as runtime cell ids
+        // through Cells / CellLocator / locate_cell.
+        // leaf_index in FaceMeta must match these so the BVH leaf's cell_id
+        // lines up with the visible-cell bitmask at runtime.
         let faces = vec![
             triangle_face(), // face 0 -> BSP leaf 1
             quad_face(),     // face 1 -> BSP leaf 3

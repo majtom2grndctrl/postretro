@@ -1,52 +1,53 @@
-// FogCellMasks PRL section (ID 31): per-BSP-leaf bitmask of overlapping fog
-// volumes. Bit `i` set in leaf `L`'s mask means fog volume `i` overlaps leaf
-// `L`. Used at runtime to OR together visible-cell masks into an active fog
+// FogCellMasks PRL section (ID 31): per-cell bitmask of overlapping fog
+// volumes. Bit `i` set in cell `C`'s mask means fog volume `i` overlaps cell
+// `C`. Used at runtime to OR together visible-cell masks into an active fog
 // volume set for the fog raymarch pass.
 // See: context/lib/build_pipeline.md §PRL section IDs
 // See: context/lib/rendering_pipeline.md §7.5
 //
 // On-disk layout (little-endian):
-//   u32  cell_count          — total BSP leaf count (solid + empty)
-//   u32  masks[cell_count]   — per-leaf fog volume bitmask
+//   u32  cell_count          — total runtime cell count (solid + empty/exterior)
+//   u32  masks[cell_count]   — per-cell fog volume bitmask
 //
-// Bits 0..=15 carry the volume bitmap (`MAX_FOG_VOLUMES = 16`). Bits 16..=31 are
-// reserved, written as zero, and ignored by the runtime fog-active computation
-// (AND-masked at union time, not stripped here) so the section can grow without
-// a format break.
+// Bits 0..=15 carry the fog-slot bitmap (`MAX_FOG_VOLUMES = 16`). Writers must
+// zero bits outside the canonical fog-volume slot range. The runtime loader
+// rejects out-of-slot bits before the fog pass sees this section.
 //
-// The section is optional: it is omitted from the PRL when the source map has
-// no `fog_volume` brushes. Absence at load time produces `None`.
+// The section is emitted when the PRL has canonical fog volumes (`fog_volume`
+// brushes, `fog_lamp`, or `fog_tube`). Absence is valid only when no canonical
+// fog volumes exist, or for helper callers that intentionally pass no mask
+// table.
 
 use crate::FormatError;
 
-/// Parsed FogCellMasks section: one `u32` mask per BSP leaf, in leaf-index
+/// Parsed FogCellMasks section: one `u32` mask per runtime cell, in cell-index
 /// order.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct FogCellMasksSection {
     pub masks: Vec<u32>,
 }
 
-/// OR together the per-leaf fog-volume bitmasks for every leaf in `visible_leaves`,
+/// OR together the per-cell fog-volume bitmasks for every cell in `visible_cells`,
 /// returning an `active_mask` whose bit `i` is set iff fog volume `i` overlaps at
-/// least one visible leaf.
+/// least one visible cell.
 ///
-/// Out-of-range leaf indices are silently skipped — no clamping or panic — so a
+/// Out-of-range cell indices are silently skipped — no clamping or panic — so a
 /// stale `VisibleCells` from a previous level cannot crash a frame mid-load.
 ///
 /// Hot path: called once per frame from the fog pass before the raymarch
 /// dispatch. Kept tight (no allocation, no bounds-check error path) so it stays
-/// well under the < 10 µs target on a 200-leaf input.
+/// well under the < 10 µs target on a 200-cell input.
 #[inline]
-pub fn union_active_mask(visible_leaves: &[u32], masks: &[u32]) -> u32 {
+pub fn union_active_mask(visible_cells: &[u32], masks: &[u32]) -> u32 {
     let mut active = 0u32;
-    for &leaf in visible_leaves {
+    for &cell in visible_cells {
         // Non-empty masks with an OOB index means stale VisibleCells — assert
         // in debug to surface the bug early without affecting release.
         debug_assert!(
-            masks.is_empty() || (leaf as usize) < masks.len(),
-            "leaf index {leaf} OOB — stale VisibleCells?"
+            masks.is_empty() || (cell as usize) < masks.len(),
+            "cell index {cell} OOB — stale VisibleCells?"
         );
-        if let Some(m) = masks.get(leaf as usize) {
+        if let Some(m) = masks.get(cell as usize) {
             active |= *m;
         }
     }
@@ -72,12 +73,28 @@ impl FogCellMasksSection {
         }
         let cell_count = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
 
-        let needed = 4usize.saturating_add(cell_count.saturating_mul(4));
-        if data.len() < needed {
+        let needed = 4usize
+            .checked_add(cell_count.checked_mul(4).ok_or_else(|| {
+                FormatError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "fog cell masks: cell_count multiplication overflow",
+                ))
+            })?)
+            .ok_or_else(|| {
+                FormatError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "fog cell masks: length overflow",
+                ))
+            })?;
+        if data.len() != needed {
             return Err(FormatError::Io(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
+                if data.len() < needed {
+                    std::io::ErrorKind::UnexpectedEof
+                } else {
+                    std::io::ErrorKind::InvalidData
+                },
                 format!(
-                    "fog cell masks: truncated — cell_count {cell_count} requires {needed} bytes, got {}",
+                    "fog cell masks: length mismatch — cell_count {cell_count} requires {needed} bytes, got {}",
                     data.len()
                 ),
             )));
@@ -110,7 +127,7 @@ mod tests {
     }
 
     #[test]
-    fn round_trip_several_leaves() {
+    fn round_trip_several_cells() {
         let section = FogCellMasksSection {
             masks: vec![
                 0x0000_0000,
@@ -153,7 +170,7 @@ mod tests {
         buf.extend_from_slice(&4u32.to_le_bytes());
         buf.extend_from_slice(&0u32.to_le_bytes());
         let err = FogCellMasksSection::from_bytes(&buf).unwrap_err();
-        assert!(err.to_string().contains("truncated"));
+        assert!(err.to_string().contains("length mismatch"));
     }
 
     #[test]
@@ -161,11 +178,22 @@ mod tests {
         let mut buf = Vec::new();
         buf.extend_from_slice(&u32::MAX.to_le_bytes());
         let err = FogCellMasksSection::from_bytes(&buf).unwrap_err();
-        assert!(err.to_string().contains("truncated"));
+        assert!(err.to_string().contains("length mismatch"));
     }
 
     #[test]
-    fn absent_section_yields_none_via_container() {
+    fn rejects_trailing_bytes() {
+        let mut buf = FogCellMasksSection {
+            masks: vec![0x1, 0x2],
+        }
+        .to_bytes();
+        buf.push(0);
+        let err = FogCellMasksSection::from_bytes(&buf).unwrap_err();
+        assert!(err.to_string().contains("length mismatch"));
+    }
+
+    #[test]
+    fn raw_container_lookup_reports_absent_section() {
         use crate::{SectionBlob, SectionId, read_container, read_section_data, write_prl};
         use std::io::Cursor;
 
@@ -181,7 +209,8 @@ mod tests {
         let mut cursor = Cursor::new(&buf);
         let meta = read_container(&mut cursor).unwrap();
 
-        // Looking up FogCellMasks in a file that omits it yields None.
+        // Raw section lookup reports absence. The runtime loader decides
+        // whether absence is valid from the canonical fog-volume table.
         let raw = read_section_data(&mut cursor, &meta, SectionId::FogCellMasks as u32).unwrap();
         assert!(raw.is_none());
     }
@@ -212,21 +241,21 @@ mod tests {
     }
 
     #[test]
-    fn union_active_mask_ors_visible_leaves() {
+    fn union_active_mask_ors_visible_cells() {
         let masks = vec![0b0001, 0b0010, 0b0100, 0b1000];
         let visible = vec![0u32, 2u32];
         assert_eq!(union_active_mask(&visible, &masks), 0b0101);
     }
 
-    // In debug builds, out-of-range leaf indices trigger a `debug_assert!` to
+    // In debug builds, out-of-range cell indices trigger a `debug_assert!` to
     // surface stale-VisibleCells bugs early. In release, the `.get()` bounds
     // check silently skips the OOB index so a stale VisibleCells from a
     // previous level cannot crash a frame mid-load.
     #[test]
     #[cfg(not(debug_assertions))]
-    fn union_active_mask_skips_out_of_range_leaves() {
+    fn union_active_mask_skips_out_of_range_cells() {
         let masks = vec![0b0001, 0b0010];
-        // leaf 99 is out of range — must not affect the result (release only;
+        // Cell 99 is out of range — must not affect the result (release only;
         // debug build panics at the assert instead).
         let visible = vec![0u32, 99u32, 1u32];
         assert_eq!(union_active_mask(&visible, &masks), 0b0011);
@@ -248,22 +277,22 @@ mod tests {
         assert_eq!(union_active_mask(&[], &[0xFFFF_FFFFu32]), 0);
     }
 
-    /// Correctness check on a 200-leaf input mirroring the bench's synthetic
+    /// Correctness check on a 200-cell input mirroring the bench's synthetic
     /// shape. Performance is owned by the criterion bench
     /// (`fog_cull_bench.rs`); this test only asserts the OR result is what we
     /// expect across a realistic-sized visible set so a logic regression
     /// surfaces in `cargo test` without timing-sensitive flakes on loaded CI
     /// machines.
     #[test]
-    fn union_active_mask_correct_on_200_leaves() {
-        let leaf_count = 1024usize;
-        let masks: Vec<u32> = (0..leaf_count).map(|i| 1u32 << ((i as u32) % 16)).collect();
-        let visible: Vec<u32> = (0..200u32).map(|i| (i * 5) % leaf_count as u32).collect();
+    fn union_active_mask_correct_on_200_cells() {
+        let cell_count = 1024usize;
+        let masks: Vec<u32> = (0..cell_count).map(|i| 1u32 << ((i as u32) % 16)).collect();
+        let visible: Vec<u32> = (0..200u32).map(|i| (i * 5) % cell_count as u32).collect();
 
-        // Reference: OR every visible leaf's mask the simple way.
+        // Reference: OR every visible cell's mask the simple way.
         let expected: u32 = visible
             .iter()
-            .map(|&leaf| masks[leaf as usize])
+            .map(|&cell| masks[cell as usize])
             .fold(0u32, |acc, m| acc | m);
 
         assert_eq!(union_active_mask(&visible, &masks), expected);

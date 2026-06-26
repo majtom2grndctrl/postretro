@@ -78,7 +78,99 @@ fn count_submitted_tree_walk(
         .count() as u32
 }
 
+/// CPU-derived submitted-leaf count for the candidate path: gathered candidate
+/// leaves whose AABB passes the frustum. Candidate gather already applies the
+/// visible-cell constraint, so this only mirrors the shader's frustum submit
+/// branch. Diagnostic only.
+fn count_submitted_candidates(
+    leaves: &[crate::geometry::BvhLeaf],
+    candidate_leaves: &[u32],
+    view_proj: &Mat4,
+) -> u32 {
+    let planes = crate::compute_cull::extract_frustum_planes_for_gpu(view_proj);
+    candidate_leaves
+        .iter()
+        .filter_map(|&leaf| leaves.get(leaf as usize))
+        .filter(|leaf| leaf.index_count != 0 && leaf_passes_frustum(leaf, &planes))
+        .count() as u32
+}
+
 impl Renderer {
+    /// Refresh dev-tools camera-cull diagnostics from the current frame's CPU
+    /// visibility inputs before the debug UI reads them. The tree-walk baseline
+    /// and candidate counts are both computed here so the Spatial tab does not
+    /// mix current cell visibility with later render-pass diagnostics.
+    #[cfg(feature = "dev-tools")]
+    pub fn refresh_camera_cull_diagnostics(
+        &mut self,
+        cam_vis: CameraCullVisibility<'_>,
+        view_proj: Mat4,
+    ) {
+        let visible: &VisibleCells = cam_vis.cells;
+        let Some(total_leaves) = self.compute_cull.as_ref().map(|cull| cull.total_leaves()) else {
+            self.camera_cull_diagnostics = CameraCullDiagnostics::default();
+            self.bvh_cull_diagnostics = None;
+            return;
+        };
+        self.bvh_cull_diagnostics = self
+            .compute_cull
+            .as_ref()
+            .map(|cull| cull.estimate_diagnostics(visible, &view_proj));
+
+        let candidate_counts = match (
+            self.cell_draw_index.as_ref(),
+            self.candidate_cull.as_mut(),
+            visible,
+            cam_vis.path,
+        ) {
+            (
+                Some(index),
+                Some(candidate),
+                VisibleCells::Culled(cells),
+                VisibilityPath::PrlPortal { .. },
+            ) => match candidate.gather(index, cells) {
+                crate::candidate_cull::GatherStatus::Ok => Some((
+                    candidate.candidates().len() as u32,
+                    count_submitted_candidates(
+                        &self.bvh_leaves,
+                        candidate.candidates(),
+                        &view_proj,
+                    ),
+                )),
+                crate::candidate_cull::GatherStatus::OutOfRange { cell_id } => {
+                    if !self.candidate_cull_oor_logged {
+                        log::warn!(
+                            "[Renderer] candidate cull: visible cell id {} out of \
+                             CellDrawIndex range ({} cells); using whole-BVH tree walk \
+                             for this frame",
+                            cell_id,
+                            index.cell_count,
+                        );
+                        self.candidate_cull_oor_logged = true;
+                    }
+                    None
+                }
+            },
+            _ => None,
+        };
+
+        self.camera_cull_diagnostics = if let Some((candidate_leaves, submitted_leaves)) =
+            candidate_counts
+        {
+            CameraCullDiagnostics {
+                path: CameraCullPath::Candidate { candidate_leaves },
+                total_leaves,
+                submitted_leaves,
+            }
+        } else {
+            CameraCullDiagnostics {
+                path: CameraCullPath::TreeWalk,
+                total_leaves,
+                submitted_leaves: count_submitted_tree_walk(&self.bvh_leaves, visible, &view_proj),
+            }
+        };
+    }
+
     /// Spot-shadow depth loop: per occupied slot, render world geometry (indirect,
     /// cone-culled) then skinned-entity occluders into that slot's depth map.
     /// Caller gates on `render_world && self.has_geometry && self.index_count > 0`.
@@ -392,12 +484,10 @@ impl Renderer {
 
         // Same submission as render passes — no readback or GPU sync between cull and draw.
         if render_world {
-            // Baseline cull-cost estimate, recomputed every frame independent of
-            // which GPU cull strategy dispatches below. It must live HERE, not as
-            // a side effect of the tree-walk dispatch, or candidate-eligible
-            // frames (which skip that dispatch) starve the baseline panel to zero.
-            // Read `compute_cull` immutably to an owned value, then assign the
-            // disjoint diagnostics field.
+            // Keep the pre-UI tree-walk baseline mirrored after pass recording
+            // for non-egui diagnostic readers. This remains independent of the
+            // active GPU cull strategy, so candidate frames never starve the
+            // baseline to zero.
             #[cfg(feature = "dev-tools")]
             {
                 self.bvh_cull_diagnostics = self
@@ -436,7 +526,7 @@ impl Renderer {
                         if !self.candidate_cull_oor_logged {
                             log::warn!(
                                 "[Renderer] candidate cull: visible cell id {} out of \
-                                 CellDrawIndex range ({} cells); using legacy tree walk \
+                                 CellDrawIndex range ({} cells); using whole-BVH tree walk \
                                  for this frame",
                                 cell_id,
                                 index.cell_count,
@@ -456,7 +546,7 @@ impl Renderer {
 
             // Single dispatch selection, consuming `cull_ts` (not `Copy`) in
             // exactly one arm. The candidate arm uses disjoint-field borrows:
-            // `compute_cull` immutably (for its shared camera leaf/indirect/status
+            // `compute_cull` immutably (for its shared BVH leaf/indirect/status
             // buffer accessors) and `candidate_cull` mutably — distinct struct
             // fields, so both are live at once. The candidate path writes the
             // SAME global indirect/status slots as the tree-walk fallback arm.
@@ -467,21 +557,13 @@ impl Renderer {
             ) {
                 (true, Some(cull), Some(candidate)) => {
                     // CPU-derived Spatial diagnostics: candidate count vs total
-                    // leaves, and submitted = candidates passing the frustum
+                    // BVH leaves, and submitted = candidates passing the frustum
                     // predicate. The gathered leaves live in the pipeline scratch
                     // (`candidate.candidates()`); read immutably here before the
                     // mutable `dispatch` borrow below.
                     let candidates = candidate.candidates();
-                    // `submitted_leaves` now comes from the GPU's own atomic
-                    // counter, read back deferred (a few frames stale by design,
-                    // see `CandidateCullPipeline::submitted_leaves`) — replacing
-                    // the per-frame CPU AABB-vs-frustum recompute. Dev-tools only,
-                    // matching the neighboring baseline diagnostic; shipping
-                    // builds don't allocate the readback ring or read it.
-                    #[cfg(feature = "dev-tools")]
-                    let submitted_leaves = candidate.submitted_leaves();
-                    #[cfg(not(feature = "dev-tools"))]
-                    let submitted_leaves = 0;
+                    let submitted_leaves =
+                        count_submitted_candidates(&self.bvh_leaves, candidates, &view_proj);
                     self.camera_cull_diagnostics = CameraCullDiagnostics {
                         path: CameraCullPath::Candidate {
                             candidate_leaves: candidates.len() as u32,

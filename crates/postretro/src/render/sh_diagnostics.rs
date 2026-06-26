@@ -73,11 +73,11 @@ fn delta_volume_visible(state: &ShDiagnosticsState, index: usize) -> bool {
 
 const COLOR_BASE_AABB: [u8; 4] = [255, 220, 80, 255];
 const COLOR_DELTA_AABB: [u8; 4] = [200, 120, 255, 255];
-/// Cell whose center sits in a leaf that the portal-reachable set covers
+/// Cell whose center sits in a runtime cell that the portal-reachable set covers
 /// for the current frame (i.e., visible per portal traversal / frustum).
 const COLOR_CELL_VISIBLE: [u8; 4] = [0, 230, 60, 200];
-/// Cell whose center sits in a leaf culled by portal traversal / frustum
-/// for the current frame, or in a solid leaf with no portal reach.
+/// Cell whose center sits in a cell culled by portal traversal / frustum
+/// for the current frame, or in a solid cell with no portal reach.
 const COLOR_CELL_CULLED: [u8; 4] = [0, 220, 220, 200];
 const COLOR_PROBE_VALID: [u8; 4] = [60, 230, 80, 255];
 const COLOR_PROBE_INVALID: [u8; 4] = [230, 60, 60, 255];
@@ -109,7 +109,7 @@ pub(super) fn emit(
     delta_vols: &[DeltaVolumeMeta],
     camera_pos: Vec3,
     world: &LevelWorld,
-    visible_leaf_mask: &[bool],
+    visible_cell_mask: &[bool],
     lines: &mut DebugLineRenderer,
 ) {
     // The frame loop clears the debug-line buffer unconditionally before
@@ -144,7 +144,7 @@ pub(super) fn emit(
             cell,
             camera_pos,
             world,
-            visible_leaf_mask,
+            visible_cell_mask,
             lines,
         );
     }
@@ -177,18 +177,18 @@ fn emit_cells(
     cell: Vec3,
     camera_pos: Vec3,
     world: &LevelWorld,
-    visible_leaf_mask: &[bool],
+    visible_cell_mask: &[bool],
     lines: &mut DebugLineRenderer,
 ) {
-    // Cell color reflects the portal-reachable leaf set built from
+    // Cell color reflects the portal-reachable cell set built from
     // `fog_reachable` — not the frustum+portal cull used by the wireframe
-    // overlay. Leaves reachable via portals are colored visible; all others
+    // overlay. Cells reachable via portals are colored visible; all others
     // are colored culled. No frustum check is applied here. An empty mask
-    // is the DrawAll sentinel — fallback paths (no portals, solid-leaf,
+    // is the DrawAll sentinel — fallback paths (no portals, solid-cell,
     // exterior camera, empty world) don't compute a portal set, so every
     // cell is treated as visible to avoid misleadingly cyan overlays.
     let r2 = state.cell_radius * state.cell_radius;
-    let draw_all = visible_leaf_mask.is_empty();
+    let draw_all = visible_cell_mask.is_empty();
     for z in 0..dims[2] {
         for y in 0..dims[1] {
             for x in 0..dims[0] {
@@ -199,11 +199,11 @@ fn emit_cells(
                 if (center - camera_pos).length_squared() > r2 {
                     continue;
                 }
-                let leaf_idx = world.find_leaf(center);
+                let cell_idx = world.locate_cell(center);
                 let visible = if draw_all {
                     true
                 } else {
-                    visible_leaf_mask.get(leaf_idx).copied().unwrap_or(false)
+                    visible_cell_mask.get(cell_idx).copied().unwrap_or(false)
                 };
                 let color = if visible {
                     COLOR_CELL_VISIBLE

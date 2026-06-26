@@ -16,7 +16,7 @@ TrenchBroom (.map) ──► prl-build (postretro-level-compiler) ──► PRL 
 Engine loads PRL + .prm sidecars at runtime (PNGs for UI only)
 ```
 
-prl-build builds a BSP tree as a compiler intermediate, generates portal geometry, builds a global BVH over all static triangles, and packs runtime data into a custom binary format. BSP drives spatial partitioning and portal generation at compile time; the runtime consumes cells, portals, and BVH arrays, and still descends the BspNodes/BspLeaves tree for camera-leaf (point→cell) lookup — replacing that lookup with a dedicated cell-location section is a future step. Engine loads via the `postretro-level-format` crate.
+prl-build builds a BSP tree as a compiler intermediate, generates portal geometry, builds a global BVH over all static triangles, and packs runtime data into a custom binary format. BSP drives spatial partitioning and portal generation at compile time only. Runtime consumes cells, a cell locator, portals, and BVH arrays; it does not load or walk `BspNodes` / `BspLeaves`. Engine loads via the `postretro-level-format` crate.
 
 ---
 
@@ -81,7 +81,7 @@ Project deliverable alongside the engine. Defines Postretro-specific entities fo
 - **`billboard_emitter`** — resolved at level load via the built-in classname dispatch table. The engine spawns an ECS entity with a `BillboardEmitterComponent` configured from the map's KVPs. See §Built-in classname routing below.
 - **`prop_mesh`** — resolved at level load via the built-in classname dispatch table. The engine spawns a `Transform` + `MeshComponent { model }` entity at `entity.origin`; the renderer loads and uploads the model into its handle→model cache once per distinct path. See §Built-in classname routing below.
 - **`env_cubemap`** — marks a position for offline cubemap baking. Bake tool is out of initial scope.
-- **`env_reverb_zone`** — resolved to BSP leaves at load time. Each leaf gets spatial reverb parameters for the audio subsystem.
+- **`env_reverb_zone`** — future audio input. Resolve through runtime cell IDs, not BSP leaves. Each matched cell gets spatial reverb parameters for the audio subsystem.
 
 ---
 
@@ -145,8 +145,6 @@ PRL header `version` is 4. Loading a file with any other version fails.
 
 | Section | ID | When present |
 |---------|-----|-------------|
-| BspNodes | 12 | Always |
-| BspLeaves | 13 | Always |
 | Portals | 15 | Always |
 | TextureNames | 16 | Always |
 | Geometry | 17 | Always |
@@ -170,6 +168,8 @@ PRL header `version` is 4. Loading a file with any other version fails.
 | DirectShVolume | 35 | When the map has static baked lights; dense baked static-direct octahedral irradiance for entities/billboards; BC6H at rest; no depth moments (read from id 34); same tile geometry as OctahedralShVolume; section-internal `DIRECT_SH_VOLUME_VERSION` (no `SH_VOLUME_VERSION` bump — legacy v7 maps still load) |
 | NavMesh | 36 | When the map has walkable navigation; baked regions/portals for runtime pathfinding |
 | CellDrawIndex | 37 | When the BVH has non-empty leaves (omitted for zero-leaf maps); independent of portal presence. Per-cell CSR of owned BVH-leaf spans driving the runtime candidate cull (`rendering_pipeline.md` §7.1) |
+| Cells | 38 | Always; runtime visibility units, preserving compiler spatial ids for cells, portal endpoints, fog masks, BVH leaf `cell_id`, and diagnostics |
+| CellLocator | 39 | Always; point-to-cell decision tree used by runtime visibility and object placement diagnostics |
 
 **Lightmap (id 22):** 28-byte little-endian header (width, height, `texel_density`, `irradiance_format`, `direction_format`, `irr_len`, `dir_len`) plus the irradiance and direction blobs. `irradiance_format` is `0 = Rgba16Float` (uncompressed, `width·height·8` bytes; debug-only) or `1 = Bc6hRgbUfloat` (BC6H block-compressed at rest, `ceil(width/4)·ceil(height/4)·16` bytes; the default — ~8× smaller on disk and in VRAM, hardware-decoded and hardware-filterable at runtime). `from_bytes` reads each blob by the stored `irr_len`/`dir_len`, so the format value alone selects the block math. The direction atlas stays `Rgba8Unorm` octahedral (`direction_format = 0`) on the nearest sampler — octahedral lerp ≠ slerp, so it is never compressed or linearly filtered. BC6H output is lossy, so the lightmap stage is exempt from the byte-identical determinism invariant (correctness is round-trip within tolerance; the cache keys on inputs regardless).
 
@@ -177,13 +177,17 @@ PRL header `version` is 4. Loading a file with any other version fails.
 
 **DirectShVolume (id 35):** baked static-direct octahedral irradiance for entities and billboards. Same tile geometry and probe ordering as `OctahedralShVolume` (id 34); carries no depth moments (read from id 34). Stored BC6H at rest. Emitted only when the map has static baked lights. Section-internal `DIRECT_SH_VOLUME_VERSION`; does not bump `SH_VOLUME_VERSION`, so legacy v7 maps continue to load. Runtime: sampled by skinned-mesh and billboard shaders, gated by `has_direct`; forward and fog pipelines bind but do not sample it.
 
-**CellDrawIndex (id 37):** per-cell CSR of each cell's owned BVH-leaf spans, baked from the already-sorted global leaf array joined to the BSP leaf records (a leaf is drawable when `index_count > 0` and its cell is `!is_solid && face_count > 0`). Layout: `version`, `cell_count` (= BSP leaf count), `span_count`, reserved, `cell_span_offset[cell_count + 1]` prefix sums, then `Span { leaf_start, leaf_count }[span_count]`. A cell touching K material buckets owns K disjoint spans (leaves are bucket-sorted). **Presence rule:** emitted whenever the BVH has non-empty leaves; omitted for zero-leaf maps; independent of portal presence. The runtime cross-validates it at load and drives the candidate cull from it (`rendering_pipeline.md` §7.1); absence or any validation failure routes the camera cull to the legacy tree walk. Derived from the BVH stage and baked uncached, like the BVH itself.
+**CellDrawIndex (id 37):** per-cell CSR of each cell's owned BVH-leaf spans, baked from the already-sorted global leaf array joined to the compiler cell records (a BVH leaf is drawable when `index_count > 0` and its cell is `!is_solid && face_count > 0`). Layout: `version`, `cell_count` (= `Cells.cell_count`), `span_count`, reserved, `cell_span_offset[cell_count + 1]` prefix sums, then `Span { leaf_start, leaf_count }[span_count]`. A cell touching K material buckets owns K disjoint spans (BVH leaves are bucket-sorted). **Presence rule:** emitted whenever the BVH has non-empty leaves; omitted for zero-leaf maps; independent of portal presence. The runtime cross-validates it at load and drives the candidate cull from it (`rendering_pipeline.md` §7.1); absence when required or any validation failure is a load error. Derived from the BVH stage and baked uncached, like the BVH itself.
+
+**Cells (id 38):** runtime visibility cell records copied from the compiler's final empty/solid/exterior partition. Cells preserve compiler spatial ids one-to-one so portal endpoints, BVH leaf `cell_id`, fog masks, and diagnostics share a stable id space without a runtime remap. Each cell stores bounds, solid/exterior/drawable flags, face range summary, and a range into the flat portal-reference list. BSP split planes are not serialized here.
+
+**CellLocator (id 39):** runtime point-to-cell locator. Version 1 encodes a validated decision tree derived from the compiler BSP, but the runtime contract is locator-to-cell, not BSP traversal. On-plane positions choose the front child. Runtime camera visibility, mesh/particle placement culling, and diagnostics use this locator through `LevelWorld::locate_cell`.
 
 **DeltaShVolumes (id 27):** sparse CSR companion for animated-light indirect deltas. The affinity-cell structure is unchanged: `affinity_factor = 4`, `affinity_dims = ceil(base_dims / 4)`, CSR `affinity_offsets`, flat `affinity_lights`, and one dense 64-probe sub-block per CSR entry in x-fastest in-cell order. Version 3 replaces each probe's old 28-half SH coefficient payload with one row-major `Rgba16Float` octahedral delta tile using the same default `tile_dimension = 6`, `tile_border = 1`, interior mapping, and wrap-border convention as `OctahedralShVolume`. The delta bake is indirect-only; animated direct lighting lives in `lm_anim`, so adding direct terms here would double-count. `DELTA_SH_VOLUMES_VERSION` is section-internal and stale pre-migration sections are rejected. Delta bakes are invoked directly from the compiler rather than through the build cache, so this migration has no cache key or stage version to bump.
 
 ### Runtime visibility
 
-Portal traversal is the sole visibility path: per-frame flood-fill from the camera leaf with frustum narrowing at each portal. The runtime falls back to per-leaf AABB frustum culling for solid-leaf, exterior-camera, and no-portals cases. See `rendering_pipeline.md` §2.
+Portal traversal is the sole visibility path: per-frame flood-fill from the camera cell with frustum narrowing at each portal. The runtime falls back to per-cell AABB frustum culling for solid-cell, exterior-camera, and no-portals cases. `CollisionWorld` remains the physics source of truth; cells and portals do not answer collision contacts. See `rendering_pipeline.md` §2.
 
 ---
 

@@ -1471,7 +1471,7 @@ impl MeshPass {
     ///
     /// Delegates to the GPU-free [`clip_by_name`] over the `model_clips` map, so
     /// the lookup is unit-testable without `MeshPass::new` (mirrors the
-    /// `mesh_visible` / `mesh_visible_in_leaf` split).
+    /// `mesh_visible` / `mesh_visible_in_cell` split).
     ///
     /// The query seam awaits its runtime consumer (clip-name resolution at level
     /// load); the free [`clip_by_name`] it wraps is exercised by the GPU-free
@@ -1905,42 +1905,41 @@ impl JointCounts for MeshPass {
 
 /// Pure cull decision for one skinned-mesh instance — GPU-free, unit-testable.
 ///
-/// An instance draws iff the visible set is `DrawAll`, or the BSP leaf its
-/// position lands in (cell id == leaf index in the current compiler) is a member
-/// of the visible cell set. Mirrors the world path's membership test
-/// (`cells.contains(&(find_leaf(pos) as u32))`).
+/// An instance draws iff the visible set is `DrawAll`, or the cell its
+/// position lands in is a member of the visible cell set. Mirrors the world
+/// path's membership test (`cells.contains(&(locate_cell(pos) as u32))`).
 ///
 /// The render-frame mesh collector (`scripting/systems/mesh_render.rs`) calls
 /// this (it holds the `LevelWorld` + the frame's `VisibleCells`) before pushing
 /// an instance into the draw list, so the renderer's GPU pass never needs a
 /// world reference. The cull tests the entity's CURRENT-TICK transform (stable
-/// per-tick visibility), not the sub-tick interpolated position. The `find_leaf`
+/// per-tick visibility), not the sub-tick interpolated position. The locator
 /// lookup and the membership decision are split so the decision is unit-testable
-/// without constructing a full `LevelWorld` (see [`mesh_visible_in_leaf`]).
+/// without constructing a full `LevelWorld` (see [`mesh_visible_in_cell`]).
 pub fn mesh_visible(world: &LevelWorld, visible: &VisibleCells, pos: glam::Vec3) -> bool {
-    // `DrawAll` short-circuits before the leaf lookup: every instance draws, so
-    // the (non-trivial) `find_leaf` BSP descent is pure waste on that path.
+    // `DrawAll` short-circuits before the cell lookup: every instance draws, so
+    // the locator descent is pure waste on that path.
     let VisibleCells::Culled(_) = visible else {
         return true;
     };
-    let leaf = world.find_leaf(pos) as u32;
-    mesh_visible_in_leaf(visible, leaf)
+    let cell = world.locate_cell(pos) as u32;
+    mesh_visible_in_cell(visible, cell)
 }
 
-/// Membership half of the cull decision: does `leaf_id` draw given `visible`?
-/// `DrawAll` always draws; otherwise the leaf must be in the visible cell set
-/// (cell id == leaf index). Pure data logic — no world, no GPU. Consumed by
-/// `mesh_visible` (the collector path) and the cull unit tests.
-pub fn mesh_visible_in_leaf(visible: &VisibleCells, leaf_id: u32) -> bool {
+/// Membership half of the cull decision: does `cell_id` draw given `visible`?
+/// `DrawAll` always draws; otherwise the cell must be in the visible cell set.
+/// Pure data logic — no world, no GPU. Consumed by `mesh_visible` (the
+/// collector path) and the cull unit tests.
+pub fn mesh_visible_in_cell(visible: &VisibleCells, cell_id: u32) -> bool {
     match visible {
         VisibleCells::DrawAll => true,
-        VisibleCells::Culled(cells) => cells.contains(&leaf_id),
+        VisibleCells::Culled(cells) => cells.contains(&cell_id),
     }
 }
 
 /// Look up an animation clip by authored `name` in a model-clip map. Pure data
 /// logic — no GPU, no `MeshPass`. Backs [`MeshPass::model_clip_by_name`] and is
-/// split out (the `model_bounds` / `mesh_visible_in_leaf` precedent) so the
+/// split out (the `model_bounds` / `mesh_visible_in_cell` precedent) so the
 /// clip-name query seam is testable without `MeshPass::new`, which needs a
 /// `wgpu::Device`.
 ///
@@ -1991,17 +1990,17 @@ mod tests {
 
     // The cull AC is verified against a SYNTHETIC visible-set (the plan permits
     // this in lieu of a full world / closed-portal arrangement). `mesh_visible`
-    // = `find_leaf` (covered by `prl.rs`'s own `find_leaf` tests) composed with
+    // = `locate_cell` (covered by `prl.rs`'s own locator tests) composed with
     // the membership decision below, so testing the decision pins the cull
     // behavior without constructing a heavyweight `LevelWorld`.
 
     #[test]
     fn mesh_cull_excludes_instance_in_nonvisible_cell() {
-        // Instance lands in leaf 1; the visible set holds only leaf 0.
+        // Instance lands in cell 1; the visible set holds only cell 0.
         let visible = VisibleCells::Culled(vec![0]);
         assert!(
-            !mesh_visible_in_leaf(&visible, 1),
-            "instance in leaf 1 must be culled when only leaf 0 is visible",
+            !mesh_visible_in_cell(&visible, 1),
+            "instance in cell 1 must be culled when only cell 0 is visible",
         );
     }
 
@@ -2009,16 +2008,16 @@ mod tests {
     fn mesh_cull_includes_instance_in_visible_cell() {
         let visible = VisibleCells::Culled(vec![0, 1]);
         assert!(
-            mesh_visible_in_leaf(&visible, 1),
-            "instance in leaf 1 must draw when leaf 1 is visible",
+            mesh_visible_in_cell(&visible, 1),
+            "instance in cell 1 must draw when cell 1 is visible",
         );
     }
 
     #[test]
     fn mesh_cull_includes_instance_on_draw_all() {
-        // DrawAll always draws regardless of the instance's leaf.
-        assert!(mesh_visible_in_leaf(&VisibleCells::DrawAll, 1));
-        assert!(mesh_visible_in_leaf(&VisibleCells::DrawAll, 999));
+        // DrawAll always draws regardless of the instance's cell.
+        assert!(mesh_visible_in_cell(&VisibleCells::DrawAll, 1));
+        assert!(mesh_visible_in_cell(&VisibleCells::DrawAll, 999));
     }
 
     #[test]

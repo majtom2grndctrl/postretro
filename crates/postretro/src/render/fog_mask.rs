@@ -4,20 +4,21 @@
 use super::*;
 
 /// Derives the per-frame active fog-volume bitmask from the wider
-/// fog-reachable leaf set produced by portal traversal.
+/// fog-reachable cell set produced by portal traversal.
 ///
-/// - `fog_reachable` non-empty + masks present: OR each reachable leaf's mask.
+/// - `fog_reachable` non-empty + masks present: OR each reachable cell's mask.
 /// - `fog_reachable` empty: portal isolation doesn't apply — empty world,
-///   solid-leaf camera, exterior camera, or no-portals map. Every canonical
+///   solid-cell camera, exterior camera, or no-portals map. Every canonical
 ///   slot stays active.
-/// - `fog_reachable` non-empty + masks absent: legacy-PRL fallback — keep all
-///   canonical slots active so a PRL without section 31 still renders fog.
+/// - `fog_reachable` non-empty + masks absent: caller supplied no mask table.
+///   Keep all canonical slots active. Modern PRL loading rejects missing
+///   `FogCellMasks` when canonical fog volumes exist.
 ///
-/// `camera_leaf`'s own fog mask bits are always unioned into the result when
-/// masks are present, regardless of whether the camera leaf appears in
-/// `fog_reachable`. Portal traversal can omit the camera leaf on transient
+/// `camera_cell`'s own fog mask bits are always unioned into the result when
+/// masks are present, regardless of whether the camera cell appears in
+/// `fog_reachable`. Portal traversal can omit the camera cell on transient
 /// frames (e.g., grazing a portal seam); unioning prevents fog the camera is
-/// inside from flickering off. Idempotent when the camera leaf is already in
+/// inside from flickering off. Idempotent when the camera cell is already in
 /// `fog_reachable`.
 ///
 /// Must be called after `FogPass::set_canonical_volumes`; before = 0
@@ -26,7 +27,7 @@ pub(crate) fn compute_fog_cell_mask(
     fog_reachable: &[u32],
     fog_cell_masks: Option<&[u32]>,
     canonical_volume_count: u32,
-    camera_leaf: Option<u32>,
+    camera_cell: Option<u32>,
 ) -> u32 {
     let all_slots_mask = if canonical_volume_count >= 32 {
         u32::MAX
@@ -35,27 +36,27 @@ pub(crate) fn compute_fog_cell_mask(
     };
     match (fog_reachable.is_empty(), fog_cell_masks) {
         // Empty fog_reachable: portal isolation doesn't apply — either the world is
-        // empty (DrawAll arm), or a non-portal fallback ran (solid-leaf, exterior,
+        // empty (DrawAll arm), or a non-portal fallback ran (solid-cell, exterior,
         // no-portals) and produced no fog_reachable set. All canonical slots active.
         (true, _) => all_slots_mask,
         // AND against `all_slots_mask` so reserved bits 16..32 in the baked
         // mask (or trailing bits past the loaded canonical count) cannot set
         // a phantom active slot the GPU buffer doesn't carry.
         //
-        // Union in the camera leaf's fog mask: portal traversal can omit the
-        // camera leaf from `fog_reachable` in transient frames (e.g., crossing
+        // Union in the camera cell's fog mask: portal traversal can omit the
+        // camera cell from `fog_reachable` in transient frames (e.g., crossing
         // a portal boundary), but fog the camera is inside must remain active
-        // to prevent flicker. Idempotent when the camera leaf is already in
+        // to prevent flicker. Idempotent when the camera cell is already in
         // `fog_reachable`.
         (false, Some(masks)) => {
             let mut active = union_active_mask(fog_reachable, masks);
-            if let Some(cl) = camera_leaf {
+            if let Some(cl) = camera_cell {
                 active |= masks.get(cl as usize).copied().unwrap_or(0);
             }
             active & all_slots_mask
         }
-        // Culled visibility + missing baked masks: fall back to "all slots
-        // visible" so a legacy PRL without section 31 still renders fog
+        // Culled visibility + no mask table from the caller: fall back to
+        // "all slots visible".
         // — `live_mask` will gate density-zero slots either way.
         // Note: when `canonical_volume_count == 0`, `all_slots_mask == 0` here,
         // so `active_count` will be 0 after repack and the fog pass is skipped

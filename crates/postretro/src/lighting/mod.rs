@@ -62,50 +62,50 @@ pub fn entity_occluder_eligible(light: &MapLight) -> bool {
 }
 
 /// Shadow-slot eligibility predicate: does this light's influence volume reach
-/// any leaf the camera can pull geometry from this frame?
+/// any cell the camera can pull geometry from this frame?
 ///
 /// A dynamic light is shadow-eligible when its influence sphere (`origin`,
-/// radius `falloff_range`) overlaps any AABB in `reachable_leaf_aabbs`. That set
-/// is the AABBs of the **fog/light-reachable leaves** — the *wider*
-/// portal-reachable set (the same one behind `light_reachable_leaf_mask`), which
-/// deliberately INCLUDES empty `face_count == 0` leaves (see
+/// radius `falloff_range`) overlaps any AABB in `reachable_cell_aabbs`. That set
+/// is the AABBs of the **fog/light-reachable cells** — the *wider*
+/// portal-reachable set (the same one behind `light_reachable_cell_mask`), which
+/// deliberately INCLUDES empty `face_count == 0` cells (see
 /// `visibility.rs`). It is NOT the narrower `VisibleCells` drawable set; using
 /// the wider set is intentional, because we are bounding light *influence* (an
-/// empty reachable leaf still bounds it) — narrowing it to the drawable set
-/// would re-drop lights in empty reachable leaves and reintroduce a variant of
+/// empty reachable cell still bounds it) — narrowing it to the drawable set
+/// would re-drop lights in empty reachable cells and reintroduce a variant of
 /// the bug below.
 ///
 /// This is the same principle the WORLD occluder cull already uses
 /// (`shadow_cull.rs`): a shadow caster — here the LIGHT — does not need its OWN
-/// leaf to be in the camera PVS; it only needs to be able to reach a receiver
+/// cell to be in the camera PVS; it only needs to be able to reach a receiver
 /// the camera sees.
 ///
-/// Replaces the prior over-strict gate that tested whether the light's own leaf
-/// was in the portal-reachable set. That gate dropped a light whose own leaf was
+/// Replaces the prior over-strict gate that tested whether the light's own cell
+/// was in the portal-reachable set. That gate dropped a light whose own cell was
 /// occluded from the camera even though the light still illuminated (and
 /// shadowed) geometry directly in view, so entity shadows vanished as the camera
-/// pitched down and the light's leaf left the shrinking PVS.
+/// pitched down and the light's cell left the shrinking PVS.
 ///
 /// Still a real cull: a light whose influence sphere reaches NONE of the
-/// reachable leaves returns `false` (distant lights that cannot affect the view
+/// reachable cells returns `false` (distant lights that cannot affect the view
 /// are skipped), so eligibility is not made unconditional.
 ///
-/// `reachable_leaf_aabbs` empty = DrawAll sentinel (fallback visibility paths) →
+/// `reachable_cell_aabbs` empty = DrawAll sentinel (fallback visibility paths) →
 /// always eligible, matching the empty-mask DrawAll contract the caller relies
-/// on. The test is a cheap sphere-vs-AABB squared-distance check per leaf with
+/// on. The test is a cheap sphere-vs-AABB squared-distance check per cell with
 /// an early-out on the first hit.
 pub fn light_reaches_visible_cell(
     origin: glam::Vec3,
     falloff_range: f32,
-    reachable_leaf_aabbs: &[(glam::Vec3, glam::Vec3)],
+    reachable_cell_aabbs: &[(glam::Vec3, glam::Vec3)],
 ) -> bool {
-    // DrawAll sentinel: no per-leaf set supplied → keep every light eligible.
-    if reachable_leaf_aabbs.is_empty() {
+    // DrawAll sentinel: no per-cell set supplied → keep every light eligible.
+    if reachable_cell_aabbs.is_empty() {
         return true;
     }
     let r = falloff_range.max(0.0);
     let r_sq = r * r;
-    reachable_leaf_aabbs.iter().any(|(min, max)| {
+    reachable_cell_aabbs.iter().any(|(min, max)| {
         // Closest point on the AABB to the light origin, then squared distance.
         let closest = origin.clamp(*min, *max);
         closest.distance_squared(origin) <= r_sq
@@ -321,7 +321,7 @@ mod tests {
             casts_entity_shadows: false,
             animated_slot: None,
             tags: vec![],
-            leaf_index: 0,
+            cell_index: 0,
             shadow_type: crate::prl::ShadowType::StaticLightMap,
         }
     }
@@ -341,7 +341,7 @@ mod tests {
             casts_entity_shadows: false,
             animated_slot: None,
             tags: vec![],
-            leaf_index: 0,
+            cell_index: 0,
             shadow_type: crate::prl::ShadowType::StaticLightMap,
         }
     }
@@ -361,7 +361,7 @@ mod tests {
             casts_entity_shadows: false,
             animated_slot: None,
             tags: vec![],
-            leaf_index: 0,
+            cell_index: 0,
             shadow_type: crate::prl::ShadowType::StaticLightMap,
         }
     }

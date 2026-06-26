@@ -221,11 +221,11 @@ impl Renderer {
     /// which one flips as the camera pitches down until an entity shadow vanishes.
     /// It changes no culling/selection state — it re-reads the values
     /// `update_dynamic_light_slots` just computed (the pool's `slot_assignment`,
-    /// the candidate lights, the live `effective_brightness`, the per-instance
-    /// `forward_visible` flags) and renders them human-readable.
+    /// the candidate lights, the live `effective_brightness`, and the mesh
+    /// visibility split) and renders them human-readable.
     ///
     /// Throttled: emits the full per-light table only when the decision
-    /// fingerprint changes (slot occupancy or the in-PVS/off-PVS caster split),
+    /// fingerprint changes (spot/cube slot occupancy or the mesh visibility split),
     /// plus a heartbeat every ~120 frames, so normal play with the flag on still
     /// stays quiet between transitions. Off by default → zero overhead.
     ///
@@ -247,8 +247,8 @@ impl Renderer {
     ///   blind spot where point lights only ever showed `NONE:not_spot`). NOTE
     ///   these read the STATIC load-time `shadow_candidate_lights` — a scripted
     ///   sweep light's animated position/cone is NOT reflected here.
-    /// - `casters`: `in_pvs` (drawn + shadowed normally) vs `off_pvs` (kept ONLY
-    ///   by the light-volume union — the `1354fdc` path) vs the total emitted.
+    /// - `casters`: `in_pvs` vs `off_pvs` from collected mesh draw inputs. The
+    ///   strict collector should keep `off_pvs=0`.
     pub(super) fn emit_shadow_debug(
         &mut self,
         view_proj: Mat4,
@@ -422,10 +422,8 @@ impl Renderer {
             ));
         }
 
-        // Entity shadow-caster split. `forward_visible` instances are in the
-        // camera PVS (drawn + shadowed normally); the rest were kept ONLY by the
-        // light-volume union (`caster_in_shadow_light_volume`, the `1354fdc`
-        // path) — i.e. off-PVS shadow-only casters.
+        // Mesh visibility split. The strict collector emits visible-only draw
+        // inputs, so `off_pvs` should stay zero outside synthetic/future callers.
         let in_pvs = self.mesh_draws.iter().filter(|m| m.forward_visible).count() as u32;
         let off_pvs = self
             .mesh_draws

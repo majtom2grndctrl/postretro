@@ -506,6 +506,15 @@ pub fn pack_and_write_portals(
     let locator_section = encode_cell_locator(tree)?;
     let locator_bytes = locator_section.to_bytes();
     let bvh_bytes = serialize_bvh_with_chunk_ranges(bvh, bvh_chunk_ranges);
+    anyhow::ensure!(
+        bvh.leaves.is_empty() || cell_draw_index_bytes.is_some(),
+        "CellDrawIndex section is required when Bvh contains {} leaf/leaves",
+        bvh.leaves.len()
+    );
+    anyhow::ensure!(
+        !bvh.leaves.is_empty() || cell_draw_index_bytes.is_none(),
+        "CellDrawIndex section must be omitted when Bvh has no leaves"
+    );
     let alpha_lights_bytes = alpha_lights.to_bytes();
     let light_influence_bytes = light_influence.to_bytes();
     let sh_volume_bytes = sh_volume.to_bytes();
@@ -840,6 +849,7 @@ mod tests {
     use super::*;
     use postretro_level_format::bsp::{BspLeafRecord, BspNodeRecord};
     use postretro_level_format::bvh::{BVH_NODE_FLAG_LEAF, BvhLeaf, BvhNode as FlatBvhNode};
+    use postretro_level_format::cell_draw_index::{CellDrawIndexSection, Span};
     use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
     use postretro_level_format::texture_names::TextureNamesSection;
 
@@ -888,6 +898,18 @@ mod tests {
         }
     }
 
+    fn empty_geo_result() -> GeometryResult {
+        GeometryResult {
+            geometry: GeometrySection {
+                vertices: Vec::new(),
+                indices: Vec::new(),
+                faces: Vec::new(),
+            },
+            texture_names: TextureNamesSection { names: Vec::new() },
+            face_index_ranges: Vec::new(),
+        }
+    }
+
     fn sample_nodes() -> BspNodesSection {
         BspNodesSection {
             nodes: vec![BspNodeRecord {
@@ -918,6 +940,12 @@ mod tests {
                 },
             ],
         }
+    }
+
+    fn empty_draw_leaves() -> BspLeavesSection {
+        let mut leaves = sample_leaves();
+        leaves.leaves[0].face_count = 0;
+        leaves
     }
 
     fn sample_tree() -> BspTree {
@@ -974,6 +1002,27 @@ mod tests {
             }],
             root_node_index: 0,
         }
+    }
+
+    fn empty_bvh() -> BvhSection {
+        BvhSection {
+            nodes: Vec::new(),
+            leaves: Vec::new(),
+            root_node_index: 0,
+        }
+    }
+
+    fn sample_cell_draw_index_bytes() -> Vec<u8> {
+        CellDrawIndexSection {
+            cell_count: 2,
+            span_count: 1,
+            cell_span_offset: vec![0, 1, 1],
+            spans: vec![Span {
+                leaf_start: 0,
+                leaf_count: 1,
+            }],
+        }
+        .to_bytes()
     }
 
     fn empty_alpha_lights() -> AlphaLightsSection {
@@ -1133,7 +1182,7 @@ mod tests {
             None,
             None,
             None,
-            None,
+            Some(sample_cell_draw_index_bytes()),
         )
         .expect("pack_and_write_portals should succeed");
 
@@ -1142,8 +1191,8 @@ mod tests {
 
         let mut cursor = Cursor::new(&data);
         let meta = read_container(&mut cursor).expect("should read container");
-        // Baseline modern sections plus always-emitted FogVolumes.
-        assert_eq!(meta.header.section_count, 13);
+        // Baseline modern sections plus always-emitted FogVolumes and required CellDrawIndex.
+        assert_eq!(meta.header.section_count, 14);
 
         assert!(meta.find_section(SectionId::Geometry as u32).is_some());
         assert!(meta.find_section(SectionId::TextureNames as u32).is_some());
@@ -1157,6 +1206,7 @@ mod tests {
         assert!(meta.find_section(SectionId::CellLocator as u32).is_some());
         assert!(meta.find_section(SectionId::Portals as u32).is_some());
         assert!(meta.find_section(SectionId::Bvh as u32).is_some());
+        assert!(meta.find_section(SectionId::CellDrawIndex as u32).is_some());
         assert!(meta.find_section(SectionId::AlphaLights as u32).is_some());
         assert!(
             meta.find_section(SectionId::LightInfluence as u32)
@@ -1168,6 +1218,118 @@ mod tests {
         );
         assert!(meta.find_section(SectionId::Lightmap as u32).is_some());
 
+        let _ = std::fs::remove_file(&output);
+    }
+
+    #[test]
+    fn pack_write_rejects_missing_cell_draw_index_for_non_empty_bvh() {
+        let dir = std::env::temp_dir().join("postretro_test_pack");
+        let _ = std::fs::create_dir_all(&dir);
+        let output = dir.join("test_pack_missing_cell_draw_index.prl");
+
+        let geo_result = sample_geo_result();
+        let nodes = sample_nodes();
+        let leaves = sample_leaves();
+        let portals = PortalsSection {
+            vertices: vec![],
+            portals: vec![],
+        };
+        let bvh = sample_bvh();
+        let alpha_lights = empty_alpha_lights();
+        let texture_cache_keys: HashMap<String, [u8; 32]> = HashMap::new();
+
+        let result = pack_and_write_portals(
+            &output,
+            &geo_result,
+            &texture_cache_keys,
+            &nodes,
+            &leaves,
+            &sample_tree(),
+            &portals,
+            &HashSet::new(),
+            &bvh,
+            &[],
+            &alpha_lights,
+            &empty_light_influence(),
+            &empty_sh_volume(),
+            None,
+            &placeholder_lightmap(),
+            &placeholder_chunk_light_list(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &FogVolumesSection::default(),
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let msg = result.expect_err("non-empty BVH without CellDrawIndex must fail");
+        assert!(
+            msg.to_string()
+                .contains("CellDrawIndex section is required"),
+            "got: {msg}"
+        );
+        let _ = std::fs::remove_file(&output);
+    }
+
+    #[test]
+    fn pack_write_allows_empty_bvh_without_cell_draw_index() {
+        let dir = std::env::temp_dir().join("postretro_test_pack");
+        let _ = std::fs::create_dir_all(&dir);
+        let output = dir.join("test_pack_empty_bvh_no_cell_draw_index.prl");
+
+        let geo_result = empty_geo_result();
+        let nodes = sample_nodes();
+        let leaves = empty_draw_leaves();
+        let portals = PortalsSection {
+            vertices: vec![],
+            portals: vec![],
+        };
+        let bvh = empty_bvh();
+        let alpha_lights = empty_alpha_lights();
+        let texture_cache_keys: HashMap<String, [u8; 32]> = HashMap::new();
+
+        pack_and_write_portals(
+            &output,
+            &geo_result,
+            &texture_cache_keys,
+            &nodes,
+            &leaves,
+            &sample_tree(),
+            &portals,
+            &HashSet::new(),
+            &bvh,
+            &[],
+            &alpha_lights,
+            &empty_light_influence(),
+            &empty_sh_volume(),
+            None,
+            &placeholder_lightmap(),
+            &placeholder_chunk_light_list(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &FogVolumesSection::default(),
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("empty BVH may omit CellDrawIndex");
+
+        let data = std::fs::read(&output).expect("should read output file");
+        let mut cursor = Cursor::new(&data);
+        let meta = read_container(&mut cursor).expect("should read container");
+        assert!(meta.find_section(SectionId::Bvh as u32).is_some());
+        assert!(meta.find_section(SectionId::CellDrawIndex as u32).is_none());
         let _ = std::fs::remove_file(&output);
     }
 
@@ -1212,7 +1374,7 @@ mod tests {
             None,
             None,
             None,
-            None,
+            Some(sample_cell_draw_index_bytes()),
         );
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
@@ -1273,6 +1435,11 @@ mod tests {
         let alpha_lights = encode_alpha_lights(&alpha_ns, &result.tree);
         let light_influence = encode_light_influence(&alpha_ns);
         let texture_cache_keys: HashMap<String, [u8; 32]> = HashMap::new();
+        let cell_draw_index_bytes = crate::cell_draw_index_bake::bake_cell_draw_index(
+            &bvh_section.leaves,
+            &vis_result.leaves_section.leaves,
+        )
+        .map(|section| section.to_bytes());
         pack_and_write_portals(
             &output,
             &geo_result,
@@ -1300,7 +1467,7 @@ mod tests {
             None,
             None,
             None,
-            None,
+            cell_draw_index_bytes,
         )
         .expect("full pipeline portal pack should succeed");
 
@@ -1308,8 +1475,8 @@ mod tests {
         let mut cursor = Cursor::new(&data);
         let meta = read_container(&mut cursor).expect("should read container");
 
-        // Baseline modern sections plus always-emitted FogVolumes.
-        assert_eq!(meta.header.section_count, 13);
+        // Baseline modern sections plus always-emitted FogVolumes and required CellDrawIndex.
+        assert_eq!(meta.header.section_count, 14);
         assert!(meta.find_section(SectionId::Geometry as u32).is_some());
         assert!(meta.find_section(SectionId::TextureNames as u32).is_some());
         assert!(
@@ -1318,6 +1485,7 @@ mod tests {
         );
         assert!(meta.find_section(SectionId::Portals as u32).is_some());
         assert!(meta.find_section(SectionId::Bvh as u32).is_some());
+        assert!(meta.find_section(SectionId::CellDrawIndex as u32).is_some());
         assert!(meta.find_section(SectionId::AlphaLights as u32).is_some());
         assert!(
             meta.find_section(SectionId::LightInfluence as u32)

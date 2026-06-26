@@ -223,6 +223,14 @@ impl FogVolumesSection {
         let pixel_scale = read_u32(data, &mut o, "pixel_scale")?;
         let initial_gravity = read_f32(data, &mut o, "initial_gravity")?;
         let count = read_u32(data, &mut o, "volume count")? as usize;
+        if count > MAX_FOG_VOLUMES {
+            return Err(FormatError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "fog volumes: volume count {count} exceeds MAX_FOG_VOLUMES {MAX_FOG_VOLUMES}"
+                ),
+            )));
+        }
 
         // Sanity-check: each fixed payload is 26 × f32 + 2 × u32 = 112 bytes
         // (includes plane_count and tag_count headers; planes and tags are
@@ -549,6 +557,17 @@ mod tests {
         buf.extend_from_slice(&u32::MAX.to_le_bytes()); // count = u32::MAX
         let err = FogVolumesSection::from_bytes(&buf).unwrap_err();
         assert!(err.to_string().contains("exceeds"));
+    }
+
+    #[test]
+    fn rejects_volume_count_over_renderer_slot_cap() {
+        let section = FogVolumesSection {
+            pixel_scale: 4,
+            initial_gravity: -9.81,
+            volumes: vec![FogVolumeRecord::default(); MAX_FOG_VOLUMES + 1],
+        };
+        let err = FogVolumesSection::from_bytes(&section.to_bytes()).unwrap_err();
+        assert!(err.to_string().contains("MAX_FOG_VOLUMES"));
     }
 
     fn make_volume(planes: Vec<[f32; 4]>, tags: Vec<String>) -> FogVolumeRecord {

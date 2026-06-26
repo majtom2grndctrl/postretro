@@ -422,8 +422,11 @@ pub struct LevelGeometry<'a> {
     /// double-count static-light occlusion. Legacy PRLs default to `Shadowed`.
     pub lightmap_mode: crate::prl::LightmapMode,
     /// Per-cell BVH-leaf draw index (PRL section 37), cross-validated at load.
-    /// `None` → the candidate-cull GPU path is unavailable and the camera cull
-    /// falls back to the current whole-BVH runtime tree walk.
+    /// `None` only for no installed level or an empty-BVH map. Non-empty BVHs
+    /// require this index at load; missing or invalid data is a load error.
+    /// Whole-BVH tree-walk fallback is a per-frame runtime path for `DrawAll`,
+    /// non-portal visibility, out-of-range gathered cell ids, or no candidate
+    /// cull pipeline.
     pub cell_draw_index: Option<&'a crate::prl::CellDrawIndex>,
     pub texture_materials: &'a [crate::material::Material],
 }
@@ -613,9 +616,12 @@ pub struct Renderer {
     pub(super) gpu_textures: Vec<GpuTexture>,
     pub(super) bvh_leaves: Vec<crate::geometry::BvhLeaf>,
     /// Per-cell BVH-leaf draw index (PRL section 37), cloned from the installed
-    /// `LevelGeometry`. `None` when the map has no valid index; absent means
-    /// the camera cull uses the whole-BVH tree walk. Cleared by
-    /// `release_level_resources`.
+    /// `LevelGeometry`. `None` only when no level is installed, the installed
+    /// map has an empty BVH, or resources were released. Non-empty BVHs require
+    /// this index at load; missing or invalid data is a load error. Whole-BVH
+    /// tree-walk fallback is a per-frame runtime path for `DrawAll`,
+    /// non-portal visibility, out-of-range gathered cell ids, or no candidate
+    /// cull pipeline.
     pub(super) cell_draw_index: Option<crate::prl::CellDrawIndex>,
     /// `None` for maps with no BVH.
     pub(super) compute_cull: Option<ComputeCullPipeline>,
@@ -714,7 +720,7 @@ pub struct Renderer {
     pub(super) shadow_debug_enabled: bool,
     /// Last `emit_shadow_debug` fingerprint, so the diagnostic logs on CHANGE
     /// (and every ~120 frames as a heartbeat) instead of spamming every frame.
-    /// `(slot-occupancy bits, off-PVS-caster count, in-PVS-caster count)`.
+    /// `(slot_occupancy, cube_occupancy, in_pvs, off_pvs)`.
     pub(super) shadow_debug_prev: (u128, u128, u32, u32),
 
     /// Idle (no draw) on maps with no registered collections. See §7.4.

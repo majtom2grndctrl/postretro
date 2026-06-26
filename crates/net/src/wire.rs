@@ -42,7 +42,19 @@ pub struct NetworkId(pub u32);
 /// `state_schema_fingerprint`/`state_records`, `AckMessage` gained
 /// `slot_baselines`, and `ClientMessage` gained `StateBaselineRefresh` — the
 /// snapshot, ack, and client-message bitcode layouts all changed.
-pub const SNAPSHOT_VERSION: u16 = 5;
+///
+/// Bumped to 6 in M15 E10 (networked enemy authority): the `entity_class`
+/// validation contract changed — a class may now ride any non-despawn record
+/// backed by a structurally-valid finite `Transform` (no `PlayerMovementState`
+/// required), so descriptor-backed remote *presentation* entities can be
+/// materialized from `Transform`-only snapshots. The bitcode byte layout of the
+/// record is unchanged (no field added/reordered), but the accepted-envelope set
+/// changed, so peers on the prior contract are refused by the version gate.
+///
+/// Bumped to 7 in E10 follow-up: `RawComponentPayload` gained a mesh-animation
+/// state slot so host-authoritative AI can replicate its current descriptor
+/// animation state without sending the full mesh descriptor.
+pub const SNAPSHOT_VERSION: u16 = 7;
 
 /// `record_kind` discriminant for a full-baseline (spawn / join / refresh) record.
 pub const RECORD_KIND_FULL_BASELINE: u16 = 0;
@@ -57,6 +69,9 @@ pub const COMPONENT_KIND_TRANSFORM: u16 = 0;
 /// `component_kind` discriminant for a `PlayerMovementState` payload. Numeric-equal
 /// to the engine `ComponentKind::PlayerMovement as u16` (Phase 2 = 6).
 pub const COMPONENT_KIND_PLAYER_MOVEMENT_STATE: u16 = 6;
+/// `component_kind` discriminant for a mesh-animation-state payload. Numeric-equal
+/// to the engine `ComponentKind::Mesh as u16` (Phase 2 = 9).
+pub const COMPONENT_KIND_MESH_ANIMATION_STATE: u16 = 9;
 
 /// Wire mirror of the engine `Transform`. Phase 2 replicates `position`,
 /// `rotation`, and `scale`.
@@ -69,6 +84,25 @@ pub struct WireTransform {
     pub position: [f32; 3],
     pub rotation: [f32; 4],
     pub scale: [f32; 3],
+}
+
+impl WireTransform {
+    /// Whether every replicated float is finite (no NaN/inf): position, rotation,
+    /// and scale. Registry-blind — operates only on the plain `[f32; N]` wire
+    /// fields, never an engine/glam type. Backs two rules at `validate`: it gates
+    /// the `Transform` component payload (a non-finite pose is rejected before
+    /// typed apply, so none reaches the registry) and it backs the `entity_class`
+    /// rule (a class may only ride a record carrying a finite `Transform`).
+    ///
+    /// `pub(crate)` so the production side (`MovementAuthority::for_recipient`) gates
+    /// `entity_class` on the SAME finite-`Transform` rule `validate` enforces on receipt,
+    /// keeping production and validation in lockstep.
+    #[must_use]
+    pub(crate) fn all_finite(&self) -> bool {
+        self.position.iter().all(|c| c.is_finite())
+            && self.rotation.iter().all(|c| c.is_finite())
+            && self.scale.iter().all(|c| c.is_finite())
+    }
 }
 
 /// Wire mirror of the engine player movement state machine's active state. Only
@@ -140,6 +174,14 @@ impl WirePlayerMovementState {
     }
 }
 
+/// Wire mirror of the mutable mesh-animation state. Descriptor-owned data
+/// (model handle, state table, clips, fade policy) stays local on each peer; this
+/// carries only the authoritative current state name.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct WireMeshAnimationState {
+    pub current_state: String,
+}
+
 // ---------------------------------------------------------------------------
 // Raw encoded boundary
 // ---------------------------------------------------------------------------
@@ -154,17 +196,18 @@ impl WirePlayerMovementState {
 /// envelope, so the malformed-input tests exercise validation without relying on
 /// bitcode's internal enum tag (which would make an invalid tag a decode error
 /// instead of a testable rejected envelope).
-#[derive(Debug, Clone, Copy, PartialEq, Encode, Decode)]
+#[derive(Debug, Clone, PartialEq, Encode, Decode)]
 pub struct RawComponentPayload {
     pub component_kind: u16,
     pub transform: Option<WireTransform>,
     pub player_movement: Option<WirePlayerMovementState>,
+    pub mesh_animation_state: Option<WireMeshAnimationState>,
 }
 
 /// Raw per-entity lifecycle record. `record_kind` selects which logical record
 /// this is; the `baseline_id_or_ref` / `new_baseline_id_or_tombstone_id` / `reason`
-/// fields are overloaded per kind (see the `validate` mapping). Unused fields for a
-/// kind are ignored, so a `Despawn` need not zero its component list to be valid.
+/// fields are overloaded per kind (see the `validate` mapping). A `Despawn` ignores
+/// unrelated id fields, but it must not carry metadata or component payloads.
 #[derive(Debug, Clone, PartialEq, Encode, Decode)]
 pub struct RawEntityRecord {
     pub record_kind: u16,
@@ -200,16 +243,17 @@ pub struct RawEntityRecord {
     /// typed `EntityRecord::entity_class`). `false` ⇒ no class stamped (the typed
     /// value is `None`); `true` ⇒ the host stamped the descriptor class the pawn was
     /// materialized from (the typed value is `Some(entity_class)`). The flag is
-    /// required because an empty `String` is a legal-but-meaningless class; a `false`
-    /// flag paired with a non-empty class is a malformed envelope rejected at
-    /// `validate`.
+    /// required because an empty `String` is not a class value; `false` with a
+    /// non-empty class and `true` with an empty class are both malformed envelopes
+    /// rejected at `validate`.
     pub has_entity_class: bool,
-    /// The opaque descriptor-class identifier the host materialized this movement
-    /// pawn from (e.g. `"player"`), so the client can materialize the matching
-    /// descriptor-backed component locally. Meaningful only when `has_entity_class`
-    /// is `true` and only on a movement record — a non-movement or despawn record
-    /// carrying it is rejected at `validate`. This is a plain string identifier, NOT
-    /// a descriptor type: the crate stays registry-blind and never resolves it.
+    /// The opaque descriptor-class identifier the host materialized this entity from
+    /// (e.g. `"player"`), so the client can materialize the matching descriptor-backed
+    /// presentation entity locally. Meaningful only when `has_entity_class` is `true`,
+    /// and valid only on a non-despawn record backed by a finite `Transform` — a
+    /// despawn record, or a record without a finite `Transform`, carrying it is
+    /// rejected at `validate`. This is a plain string identifier, NOT a descriptor
+    /// type: the crate stays registry-blind and never resolves it.
     pub entity_class: String,
     pub components: Vec<RawComponentPayload>,
 }
@@ -243,10 +287,11 @@ pub struct RawSnapshotMessage {
 
 /// A validated component payload. Constructed only by [`RawComponentPayload::validate`],
 /// so a typed payload always has exactly the inner value its kind requires.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ComponentPayload {
     Transform(WireTransform),
     PlayerMovementState(WirePlayerMovementState),
+    MeshAnimationState(WireMeshAnimationState),
 }
 
 impl ComponentPayload {
@@ -258,6 +303,7 @@ impl ComponentPayload {
         match self {
             ComponentPayload::Transform(_) => COMPONENT_KIND_TRANSFORM,
             ComponentPayload::PlayerMovementState(_) => COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
+            ComponentPayload::MeshAnimationState(_) => COMPONENT_KIND_MESH_ANIMATION_STATE,
         }
     }
 }
@@ -279,11 +325,12 @@ pub enum EntityRecord {
         /// True only in the snapshot sent to this pawn's owning client. Always `false`
         /// for non-local pawns and for non-movement records (enforced at `validate`).
         local_player: bool,
-        /// The opaque descriptor-class identifier the host materialized this movement
-        /// pawn from (e.g. `"player"`), or `None` for a non-movement record / a pawn
-        /// the host stamped no class for. `Some` only on a record carrying a
-        /// `PlayerMovementState` (enforced at `validate`). A plain string identifier,
-        /// never resolved by this registry-blind crate.
+        /// The opaque descriptor-class identifier the host materialized this entity
+        /// from (e.g. `"player"`), or `None` for a record the host stamped no class
+        /// for. `Some` only on a non-despawn record carrying a finite `Transform`
+        /// (enforced at `validate`) — the class names the descriptor the client
+        /// materializes, and that presentation entity rides the wire as a `Transform`.
+        /// A plain string identifier, never resolved by this registry-blind crate.
         entity_class: Option<String>,
         components: Vec<ComponentPayload>,
     },
@@ -358,18 +405,29 @@ pub enum ValidationError {
     /// (`has_last_processed_client_tick` / `local_player`) or an `entity_class`. A
     /// tombstone has no pawn state to ack and no descriptor class to materialize.
     MetadataOnDespawn,
+    /// A despawn record carried component payloads. Despawns are tombstone-only and
+    /// never carry replicated component state.
+    ComponentsOnDespawn,
     /// A record carried an `entity_class` (`has_entity_class = true`) but does not
-    /// carry a `PlayerMovementState` component. The class is only meaningful on a
-    /// movement pawn record (it names the descriptor the client materializes).
-    EntityClassWithoutMovement,
+    /// carry a structurally-valid finite `Transform` payload. The class names a
+    /// descriptor the client materializes as a presentation entity, which rides the
+    /// wire as a `Transform`; without a finite pose there is nothing to place.
+    EntityClassWithoutTransform,
     /// `has_entity_class` was `false` but `entity_class` was non-empty — the "absent"
     /// flag cannot ride a real class value.
     MalformedEntityClassMetadata,
+    /// `has_entity_class` was `true` but `entity_class` was empty. The flag means a
+    /// concrete class value is present.
+    EmptyEntityClassMetadata,
     /// A `PlayerMovementState` payload carried a non-finite float (NaN/inf) in one
     /// of its replicated fields (velocity, timers, dash boost, crouch eye value, or
     /// capsule dimensions). Rejected before typed apply so no non-finite movement
     /// state reaches the registry.
     NonFiniteMovementState,
+    /// A `Transform` payload carried a non-finite float (NaN/inf) in its position,
+    /// rotation, or scale. Rejected before typed apply so no non-finite pose reaches
+    /// the registry — and so a non-finite `Transform` cannot back an `entity_class`.
+    NonFiniteTransform,
 }
 
 impl std::fmt::Display for ValidationError {
@@ -401,17 +459,29 @@ impl std::fmt::Display for ValidationError {
                 "has_last_processed_client_tick=false but last_processed_client_tick={last_processed_client_tick} is nonzero"
             ),
             ValidationError::MetadataOnDespawn => {
-                write!(f, "movement-authority metadata on a despawn record")
+                write!(
+                    f,
+                    "movement-authority or entity_class metadata on a despawn record"
+                )
             }
-            ValidationError::EntityClassWithoutMovement => write!(
+            ValidationError::ComponentsOnDespawn => {
+                write!(f, "component payloads on a despawn record")
+            }
+            ValidationError::EntityClassWithoutTransform => write!(
                 f,
-                "entity_class on a record without a PlayerMovementState component"
+                "entity_class on a record without a finite Transform component"
             ),
             ValidationError::MalformedEntityClassMetadata => {
                 write!(f, "has_entity_class=false but entity_class is non-empty")
             }
+            ValidationError::EmptyEntityClassMetadata => {
+                write!(f, "has_entity_class=true but entity_class is empty")
+            }
             ValidationError::NonFiniteMovementState => {
                 write!(f, "non-finite float in a PlayerMovementState payload")
+            }
+            ValidationError::NonFiniteTransform => {
+                write!(f, "non-finite float in a Transform payload")
             }
         }
     }
@@ -428,12 +498,19 @@ impl RawComponentPayload {
         // Count populated slots once: a well-formed payload has exactly one, the
         // one its `component_kind` names. Any other slot being `Some` is a
         // mismatch regardless of the named kind (it makes the envelope ambiguous).
-        let populated =
-            usize::from(self.transform.is_some()) + usize::from(self.player_movement.is_some());
+        let populated = usize::from(self.transform.is_some())
+            + usize::from(self.player_movement.is_some())
+            + usize::from(self.mesh_animation_state.is_some());
 
         match self.component_kind {
             COMPONENT_KIND_TRANSFORM => match self.transform {
-                Some(t) if populated == 1 => Ok(ComponentPayload::Transform(t)),
+                Some(t) if populated == 1 => {
+                    if t.all_finite() {
+                        Ok(ComponentPayload::Transform(t))
+                    } else {
+                        Err(ValidationError::NonFiniteTransform)
+                    }
+                }
                 Some(_) => Err(ValidationError::MismatchedComponentPayload(
                     self.component_kind,
                 )),
@@ -449,6 +526,15 @@ impl RawComponentPayload {
                         Err(ValidationError::NonFiniteMovementState)
                     }
                 }
+                Some(_) => Err(ValidationError::MismatchedComponentPayload(
+                    self.component_kind,
+                )),
+                None => Err(ValidationError::MissingComponentPayload(
+                    self.component_kind,
+                )),
+            },
+            COMPONENT_KIND_MESH_ANIMATION_STATE => match &self.mesh_animation_state {
+                Some(m) if populated == 1 => Ok(ComponentPayload::MeshAnimationState(m.clone())),
                 Some(_) => Err(ValidationError::MismatchedComponentPayload(
                     self.component_kind,
                 )),
@@ -494,10 +580,8 @@ impl RawEntityRecord {
                     components,
                 })
             }
-            // Despawn carries no components; any present are ignored, matching the
-            // overloaded-field rule (only the fields a kind names are read). It must
-            // not carry movement-authority metadata or an entity_class, though — a
-            // tombstone has no pawn state to ack and no descriptor class to materialize.
+            // Despawn is tombstone-only. It carries no component state and no
+            // metadata: no pawn state to ack and no descriptor class to materialize.
             RECORD_KIND_DESPAWN => {
                 if self.has_last_processed_client_tick
                     || self.last_processed_client_tick != 0
@@ -506,6 +590,9 @@ impl RawEntityRecord {
                     || !self.entity_class.is_empty()
                 {
                     return Err(ValidationError::MetadataOnDespawn);
+                }
+                if !self.components.is_empty() {
+                    return Err(ValidationError::ComponentsOnDespawn);
                 }
                 Ok(EntityRecord::Despawn {
                     network_id: self.network_id,
@@ -558,12 +645,25 @@ impl RawEntityRecord {
     }
 
     /// Validate this record's `entity_class` metadata against its (already validated)
-    /// components, returning the typed `Option<String>`.
+    /// components, returning the typed `Option<String>`. Called only for non-despawn
+    /// records — a despawn carrying any `entity_class` is rejected up front in
+    /// [`RawEntityRecord::validate`] (`MetadataOnDespawn`).
     ///
-    /// Rules (mirroring the movement-authority metadata rules):
+    /// Rules:
     /// - `has_entity_class = false` with a non-empty class is malformed.
-    /// - an `entity_class` is only valid on a record carrying a `PlayerMovementState`;
-    ///   on any other record it is rejected.
+    /// - `has_entity_class = true` with an empty class is malformed.
+    /// - an `entity_class` is valid only on a record carrying at least one
+    ///   structurally-valid finite `Transform` payload (its position/rotation/scale
+    ///   are all finite). It no longer requires a `PlayerMovementState`: a snapshot
+    ///   tells the client "this remote entity is descriptor class X" so it can
+    ///   materialize the matching mesh, and that presentation entity rides the wire
+    ///   as a `Transform` only. The finiteness gate is the registry-blind
+    ///   [`WireTransform::all_finite`] — the same check that backs the `Transform`
+    ///   component payload — so a class can never name a descriptor backed by a
+    ///   non-finite pose. (A non-finite `Transform` is already rejected at
+    ///   component validation with `NonFiniteTransform`; this re-checks finiteness so
+    ///   the rule is self-contained and an empty/non-Transform record with a class is
+    ///   still rejected.)
     fn validate_entity_class(
         &self,
         components: &[ComponentPayload],
@@ -575,11 +675,16 @@ impl RawEntityRecord {
         }
 
         if self.has_entity_class {
-            let carries_movement = components
-                .iter()
-                .any(|c| matches!(c, ComponentPayload::PlayerMovementState(_)));
-            if !carries_movement {
-                return Err(ValidationError::EntityClassWithoutMovement);
+            if self.entity_class.is_empty() {
+                return Err(ValidationError::EmptyEntityClassMetadata);
+            }
+            let carries_finite_transform = components.iter().any(|c| match c {
+                ComponentPayload::Transform(t) => t.all_finite(),
+                ComponentPayload::PlayerMovementState(_) => false,
+                ComponentPayload::MeshAnimationState(_) => false,
+            });
+            if !carries_finite_transform {
+                return Err(ValidationError::EntityClassWithoutTransform);
             }
             Ok(Some(self.entity_class.clone()))
         } else {
@@ -843,6 +948,7 @@ mod tests {
             component_kind: COMPONENT_KIND_TRANSFORM,
             transform: Some(sample_transform()),
             player_movement: None,
+            mesh_animation_state: None,
         }
     }
 
@@ -851,6 +957,18 @@ mod tests {
             component_kind: COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
             transform: None,
             player_movement: Some(sample_movement()),
+            mesh_animation_state: None,
+        }
+    }
+
+    fn raw_mesh_animation_payload(state: &str) -> RawComponentPayload {
+        RawComponentPayload {
+            component_kind: COMPONENT_KIND_MESH_ANIMATION_STATE,
+            transform: None,
+            player_movement: None,
+            mesh_animation_state: Some(WireMeshAnimationState {
+                current_state: state.to_string(),
+            }),
         }
     }
 
@@ -1003,6 +1121,20 @@ mod tests {
             };
             assert!(round_trips(&movement));
         }
+    }
+
+    #[test]
+    fn mesh_animation_state_round_trips_and_validates() {
+        let raw = raw_mesh_animation_payload("attack");
+        assert!(round_trips(&raw));
+        assert_eq!(
+            raw.validate(),
+            Ok(ComponentPayload::MeshAnimationState(
+                WireMeshAnimationState {
+                    current_state: "attack".to_string(),
+                },
+            ))
+        );
     }
 
     #[test]
@@ -1183,21 +1315,11 @@ mod tests {
             version: SNAPSHOT_VERSION,
             sequence: 6,
             server_tick: 62,
-            // Components on a despawn are ignored, not rejected.
-            records: vec![raw_record(
-                RECORD_KIND_DESPAWN,
-                9,
-                0,
-                42,
-                7,
-                vec![raw_transform_payload()],
-            )],
+            records: vec![raw_record(RECORD_KIND_DESPAWN, 9, 0, 42, 7, Vec::new())],
             state_schema_fingerprint: [0u8; 32],
             state_records: Vec::new(),
         };
-        let typed = raw
-            .validate()
-            .expect("despawn validates, ignoring components");
+        let typed = raw.validate().expect("tombstone-only despawn validates");
         assert_eq!(
             typed.records,
             vec![EntityRecord::Despawn {
@@ -1206,6 +1328,19 @@ mod tests {
                 reason: 7,
             }]
         );
+    }
+
+    #[test]
+    fn validate_despawn_rejects_component_payloads() {
+        let record = raw_record(
+            RECORD_KIND_DESPAWN,
+            9,
+            0,
+            42,
+            7,
+            vec![raw_transform_payload()],
+        );
+        assert_eq!(record.validate(), Err(ValidationError::ComponentsOnDespawn));
     }
 
     // --- Malformed input: corrupt/short bytes are decode errors ---
@@ -1294,6 +1429,7 @@ mod tests {
                     component_kind: 1234, // not Transform/PlayerMovementState
                     transform: Some(sample_transform()),
                     player_movement: None,
+                    mesh_animation_state: None,
                 }],
             )],
             state_schema_fingerprint: [0u8; 32],
@@ -1313,6 +1449,7 @@ mod tests {
             component_kind: COMPONENT_KIND_TRANSFORM,
             transform: None, // kind says Transform but slot is empty
             player_movement: None,
+            mesh_animation_state: None,
         };
         assert_eq!(
             payload.validate(),
@@ -1329,6 +1466,7 @@ mod tests {
             component_kind: COMPONENT_KIND_TRANSFORM,
             transform: Some(sample_transform()),
             player_movement: Some(sample_movement()),
+            mesh_animation_state: None,
         };
         assert_eq!(
             payload.validate(),
@@ -1347,6 +1485,7 @@ mod tests {
             component_kind: COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
             transform: Some(sample_transform()),
             player_movement: None,
+            mesh_animation_state: None,
         };
         assert_eq!(
             payload.validate(),
@@ -1402,7 +1541,7 @@ mod tests {
 
     // Drift guard: the wire component discriminants MUST stay numeric-equal to the
     // engine `ComponentKind as u16` (crates/postretro/src/scripting/registry.rs):
-    // Transform = 0, PlayerMovement = 6 in Phase 2. The exhaustive match (no `_`
+    // Transform = 0, PlayerMovement = 6, Mesh = 9 in Phase 2. The exhaustive match (no `_`
     // arm) means a new `ComponentPayload` variant is a compile error here until its
     // expected discriminant is pinned — a silently-passing guard is the failure
     // mode this prevents. The engine side asserts the same mapping independently
@@ -1412,11 +1551,15 @@ mod tests {
         let cases = [
             ComponentPayload::Transform(sample_transform()),
             ComponentPayload::PlayerMovementState(sample_movement()),
+            ComponentPayload::MeshAnimationState(WireMeshAnimationState {
+                current_state: "idle".to_string(),
+            }),
         ];
         for payload in cases {
             let expected = match payload {
                 ComponentPayload::Transform(_) => 0,
                 ComponentPayload::PlayerMovementState(_) => 6,
+                ComponentPayload::MeshAnimationState(_) => 9,
             };
             assert_eq!(payload.kind(), expected);
         }
@@ -1666,6 +1809,14 @@ mod tests {
         }
     }
 
+    #[test]
+    fn metadata_on_despawn_display_mentions_entity_class() {
+        let text = ValidationError::MetadataOnDespawn.to_string();
+        assert!(text.contains("movement-authority"));
+        assert!(text.contains("entity_class"));
+        assert!(text.contains("despawn"));
+    }
+
     // --- entity_class metadata (M15 Phase 3 Task 7) ---
 
     /// A movement record carrying `entity_class` round-trips raw -> wire -> typed with
@@ -1713,10 +1864,11 @@ mod tests {
         );
     }
 
-    /// A delta movement record also carries `entity_class` through validation.
+    /// A delta record backed by a `Transform` also carries `entity_class` through
+    /// validation, with no `PlayerMovementState` required (E10).
     #[test]
     fn entity_class_round_trips_on_delta() {
-        let mut record = raw_record(RECORD_KIND_DELTA, 9, 2, 3, 0, vec![raw_movement_payload()]);
+        let mut record = raw_record(RECORD_KIND_DELTA, 9, 2, 3, 0, vec![raw_transform_payload()]);
         record.has_entity_class = true;
         record.entity_class = "boomer".to_string();
         let typed = record.validate().expect("delta entity_class validates");
@@ -1729,15 +1881,68 @@ mod tests {
                 last_processed_client_tick: None,
                 local_player: false,
                 entity_class: Some("boomer".to_string()),
-                components: vec![ComponentPayload::PlayerMovementState(sample_movement())],
+                components: vec![ComponentPayload::Transform(sample_transform())],
             }
         );
     }
 
-    /// `entity_class` on a record with no `PlayerMovementState` is rejected: the class
-    /// is only meaningful on a movement pawn (it names a descriptor to materialize).
+    /// E10: a non-despawn record backed by a finite `Transform` and carrying an
+    /// `entity_class` but NO `PlayerMovementState` now validates — the descriptor
+    /// class rides a `Transform`-only remote-presentation record. (Previously this
+    /// was rejected as `EntityClassWithoutMovement`.)
     #[test]
-    fn entity_class_on_non_movement_record_rejects() {
+    fn entity_class_on_transform_only_record_validates() {
+        let mut record = raw_record(
+            RECORD_KIND_FULL_BASELINE,
+            7,
+            2,
+            0,
+            0,
+            vec![raw_transform_payload()],
+        );
+        record.has_entity_class = true;
+        record.entity_class = "boomer".to_string();
+        let typed = record
+            .validate()
+            .expect("transform-only entity_class record validates");
+        assert_eq!(
+            typed,
+            EntityRecord::FullBaseline {
+                network_id: 7,
+                baseline_id: 2,
+                last_processed_client_tick: None,
+                local_player: false,
+                entity_class: Some("boomer".to_string()),
+                components: vec![ComponentPayload::Transform(sample_transform())],
+            }
+        );
+    }
+
+    /// `entity_class` on a record carrying no `Transform` at all (only a
+    /// `PlayerMovementState`) is rejected: the descriptor presentation entity rides
+    /// the wire as a `Transform`, so without one there is nothing to place.
+    #[test]
+    fn entity_class_without_transform_rejects() {
+        let mut record = raw_record(
+            RECORD_KIND_FULL_BASELINE,
+            1,
+            1,
+            0,
+            0,
+            vec![raw_movement_payload()],
+        );
+        record.has_entity_class = true;
+        record.entity_class = "player".to_string();
+        assert_eq!(
+            record.validate(),
+            Err(ValidationError::EntityClassWithoutTransform)
+        );
+    }
+
+    /// `has_entity_class = true` means a real class value is present; an empty
+    /// string cannot stand in for `Some`.
+    #[test]
+    fn empty_entity_class_with_present_flag_rejects() {
         let mut record = raw_record(
             RECORD_KIND_FULL_BASELINE,
             1,
@@ -1747,10 +1952,9 @@ mod tests {
             vec![raw_transform_payload()],
         );
         record.has_entity_class = true;
-        record.entity_class = "player".to_string();
         assert_eq!(
             record.validate(),
-            Err(ValidationError::EntityClassWithoutMovement)
+            Err(ValidationError::EmptyEntityClassMetadata)
         );
     }
 
@@ -1825,6 +2029,7 @@ mod tests {
                 component_kind: COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
                 transform: None,
                 player_movement: Some(movement),
+                mesh_animation_state: None,
             };
             assert_eq!(
                 payload.validate(),
@@ -1847,11 +2052,88 @@ mod tests {
             component_kind: COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
             transform: None,
             player_movement: Some(movement),
+            mesh_animation_state: None,
         };
         assert_eq!(
             payload.validate(),
             Err(ValidationError::NonFiniteMovementState)
         );
+    }
+
+    // --- Non-finite Transform rejection (E10) ---
+
+    /// Every replicated float of a `Transform` (position, rotation, scale) must be
+    /// finite; a NaN/inf in any is rejected before typed apply, so no non-finite
+    /// pose reaches the registry. Each case mutates exactly one field.
+    #[test]
+    fn non_finite_transform_rejects_each_field() {
+        let mutators: [fn(&mut WireTransform); 3] = [
+            |t| t.position[1] = f32::NAN,
+            |t| t.rotation[3] = f32::INFINITY,
+            |t| t.scale[0] = f32::NEG_INFINITY,
+        ];
+        for mutate in mutators {
+            let mut transform = sample_transform();
+            mutate(&mut transform);
+            let payload = RawComponentPayload {
+                component_kind: COMPONENT_KIND_TRANSFORM,
+                transform: Some(transform),
+                player_movement: None,
+                mesh_animation_state: None,
+            };
+            assert_eq!(payload.validate(), Err(ValidationError::NonFiniteTransform));
+        }
+    }
+
+    /// A record whose only `Transform` is non-finite is rejected at component
+    /// validation (`NonFiniteTransform`) — before the entity_class rule even runs.
+    #[test]
+    fn record_with_only_non_finite_transform_rejects() {
+        let bad_transform = WireTransform {
+            position: [0.0, f32::NAN, 0.0],
+            ..sample_transform()
+        };
+        let record = raw_record(
+            RECORD_KIND_FULL_BASELINE,
+            1,
+            1,
+            0,
+            0,
+            vec![RawComponentPayload {
+                component_kind: COMPONENT_KIND_TRANSFORM,
+                transform: Some(bad_transform),
+                player_movement: None,
+                mesh_animation_state: None,
+            }],
+        );
+        assert_eq!(record.validate(), Err(ValidationError::NonFiniteTransform));
+    }
+
+    /// An `entity_class` record backed only by a non-finite `Transform` is rejected:
+    /// the non-finite pose is caught at component validation, so the class never
+    /// rides a degenerate descriptor placement.
+    #[test]
+    fn entity_class_backed_by_non_finite_transform_rejects() {
+        let bad_transform = WireTransform {
+            scale: [f32::INFINITY, 1.0, 1.0],
+            ..sample_transform()
+        };
+        let mut record = raw_record(
+            RECORD_KIND_FULL_BASELINE,
+            1,
+            1,
+            0,
+            0,
+            vec![RawComponentPayload {
+                component_kind: COMPONENT_KIND_TRANSFORM,
+                transform: Some(bad_transform),
+                player_movement: None,
+                mesh_animation_state: None,
+            }],
+        );
+        record.has_entity_class = true;
+        record.entity_class = "player".to_string();
+        assert_eq!(record.validate(), Err(ValidationError::NonFiniteTransform));
     }
 
     // Drift guard: every `WireMovementState` variant's float payload is covered by
@@ -1893,11 +2175,19 @@ mod tests {
                 component_kind: COMPONENT_KIND_TRANSFORM,
                 transform: Some(*t),
                 player_movement: None,
+                mesh_animation_state: None,
             },
             ComponentPayload::PlayerMovementState(m) => RawComponentPayload {
                 component_kind: COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
                 transform: None,
                 player_movement: Some(*m),
+                mesh_animation_state: None,
+            },
+            ComponentPayload::MeshAnimationState(m) => RawComponentPayload {
+                component_kind: COMPONENT_KIND_MESH_ANIMATION_STATE,
+                transform: None,
+                player_movement: None,
+                mesh_animation_state: Some(m.clone()),
             },
         }
     }

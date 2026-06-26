@@ -11,7 +11,7 @@ use crate::frame_timing::InterpolableState;
 use crate::render;
 use crate::scripting::builtins::{
     PLAYER_START_CLASSNAME, apply_classname_dispatch, apply_data_archetype_dispatch,
-    spawn_from_player_starts,
+    filter_out_client_ai_enemies, spawn_from_player_starts, suppressed_ai_enemy_mesh_models,
 };
 use crate::scripting::reaction_dispatch::{
     fire_named_event_with_sequences, validate_scoped_sequence_primitives,
@@ -96,6 +96,10 @@ impl App {
     /// | `data_registry` reactions + crossings, presentation cells | persisted-state save path |
     /// | progress tracker, active wieldable, camera pose | |
     pub(crate) fn unload_level(&mut self) {
+        if let Some(endpoint) = self.net_endpoint.as_mut() {
+            endpoint.reset_level_scoped_client_state();
+        }
+
         if let Some(renderer) = self.renderer.as_mut() {
             renderer.release_level_resources();
         }
@@ -875,6 +879,14 @@ impl App {
         }
         self.level_timings.record("data_script");
 
+        // E10 AC #3: mesh model handles of the AI-enemy placements a connected
+        // client suppresses below. They never spawn a local `MeshComponent`, so
+        // the registry-driven model sweep cannot see them — but the host will
+        // materialize the remote enemy from a snapshot, and the draw planner
+        // needs the model already uploaded. Captured at the filter site and
+        // unioned into the level-load model sweep. Empty off a connected client.
+        let mut suppressed_enemy_models: Vec<String> = Vec::new();
+
         // Data-archetype sweep: `data_registry.entities` was populated from
         // `ModManifest.entities` at mod-init. Materialize every matching map
         // placement that the built-in dispatch did not already handle.
@@ -890,8 +902,40 @@ impl App {
             // path). The descriptor-spawned agent's capsule is seeded from this.
             let agent_params: Option<crate::nav::NavAgentParams> =
                 self.nav_graph.as_ref().map(|g| g.agent_params());
+            // E10 Task 5: a CONNECTED CLIENT must NOT spawn local authoritative
+            // copies of map-placed AI enemies (descriptors carrying an `ai`
+            // block, which would attach `Brain` + `Agent`). Those enemies are
+            // host-authoritative and arrive only via host snapshots; a locally
+            // dispatched copy would be a second, never-replicated brain. Filter
+            // the placements BEFORE dispatch — the live-component predicate
+            // `is_networked_ai_map_enemy` cannot help here (the components do not
+            // exist until materialization), so the descriptor's `ai` block is the
+            // pre-materialization classifier (see `filter_out_client_ai_enemies`).
+            // Single-player and the listen host keep every placement — their AI
+            // enemies must materialize locally (the host then registers them for
+            // outbound replication after this sweep). Non-AI placements (props,
+            // FX, lights, sprites) materialize on the client unchanged.
+            let suppress_ai_enemies = self.is_connected_client();
             let mut registry = self.script_ctx.registry.borrow_mut();
-            let map_entities = self.pending_map_entities.take().unwrap_or_default();
+            let mut map_entities = self.pending_map_entities.take().unwrap_or_default();
+            if suppress_ai_enemies {
+                // Capture the suppressed enemies' mesh models BEFORE dropping
+                // the placements (E10 AC #3): the client never spawns these
+                // locally, so the registry sweep cannot find their models, yet
+                // the host-replicated remote enemy must be drawable. The
+                // level-load sweep unions these into its upload set.
+                suppressed_enemy_models =
+                    suppressed_ai_enemy_mesh_models(&map_entities, &descriptors);
+                let kept = filter_out_client_ai_enemies(&map_entities, &descriptors);
+                let dropped = map_entities.len() - kept.len();
+                if dropped > 0 {
+                    log::info!(
+                        "[Loader] connected client: suppressing {dropped} map-placed AI enemy \
+                         placement(s); they arrive via host snapshots"
+                    );
+                }
+                map_entities = kept;
+            }
             let descriptor_handled = apply_data_archetype_dispatch(
                 &map_entities,
                 &descriptors,
@@ -978,6 +1022,14 @@ impl App {
             // Drop the registry borrow before touching `self.level` /
             // `self.camera`.
             drop(registry);
+
+            // E10 Task 4: register this level's map-placed AI enemies (the
+            // `apply_data_archetype_dispatch` sweep above spawned them) for outbound
+            // replication. Reload-safe and host-gated (a no-op off a listen host). Runs at
+            // the first borrow-free point after the dispatch — it takes its own registry
+            // borrow internally.
+            self.host_register_map_enemies_after_install();
+
             self.active_wieldable = active_wieldable;
             self.active_wieldable_descriptor = active_wieldable_descriptor;
 
@@ -1063,7 +1115,22 @@ impl App {
 
             let models = {
                 let registry = self.script_ctx.registry.borrow();
-                crate::distinct_mesh_models(&registry)
+                let mut models = crate::distinct_mesh_models(&registry);
+                // E10 AC #3: union the suppressed remote-enemy models. A
+                // connected client filtered these placements out before
+                // dispatch, so they have no live `MeshComponent` for
+                // `distinct_mesh_models` to find — but the host will replicate
+                // the enemy and the draw planner needs the model uploaded now.
+                // Dedup against the registry-driven set (a model also used by a
+                // locally-spawned mesh is already present). Empty on
+                // single-player / listen host, so those paths are unchanged.
+                let mut seen: std::collections::HashSet<String> = models.iter().cloned().collect();
+                for model in &suppressed_enemy_models {
+                    if seen.insert(model.clone()) {
+                        models.push(model.clone());
+                    }
+                }
+                models
             };
             for model in &models {
                 renderer.load_skinned_model(model, &self.content_root, &prm_cache_root);
@@ -2388,5 +2455,49 @@ mod tests {
         );
         assert!(matches!(app.boot_state, BootState::Loading));
         assert!(app.level_rx.is_some());
+    }
+
+    // E10 Task 5: the install path keys AI-enemy spawn suppression off
+    // `is_connected_client()`. Prove the role gate that drives the
+    // `filter_out_client_ai_enemies` branch in `install_level_payload` resolves
+    // correctly for each role — single-player and listen host keep every
+    // placement (no suppression), only the connected client suppresses.
+    #[test]
+    fn ai_enemy_suppression_gate_is_connected_client_only() {
+        use std::net::{Ipv4Addr, SocketAddr};
+
+        use crate::netcode::{NetEndpoint, NetRole};
+
+        // Single-player: net inert, no suppression.
+        let mut app = test_app();
+        app.net_endpoint = None;
+        assert!(
+            !app.is_connected_client(),
+            "single-player must keep map-placed AI enemies (no suppression)"
+        );
+
+        // Listen host: authoritative, keeps every placement and replicates them.
+        app.net_endpoint = Some(
+            NetEndpoint::from_role(&NetRole::Host { port: 0 })
+                .expect("host endpoint constructs")
+                .expect("host role yields an endpoint"),
+        );
+        assert!(
+            !app.is_connected_client(),
+            "listen host must keep map-placed AI enemies (it owns + replicates them)"
+        );
+
+        // Connected client: the only role that suppresses the local spawn.
+        app.net_endpoint = Some(
+            NetEndpoint::from_role(&NetRole::Connect {
+                addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
+            })
+            .expect("client endpoint constructs")
+            .expect("connect role yields an endpoint"),
+        );
+        assert!(
+            app.is_connected_client(),
+            "connected client must suppress local authoritative AI-enemy spawns"
+        );
     }
 }

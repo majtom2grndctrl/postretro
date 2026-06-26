@@ -335,6 +335,7 @@ mod tests {
             MeshComponent {
                 model: "grunt".into(),
                 animation: Some(MeshAnimation::new(states, "idle".into())),
+                origin_offset: glam::Vec3::ZERO,
             },
         )
         .unwrap();
@@ -366,6 +367,7 @@ mod tests {
             MeshComponent {
                 model: "grunt".into(),
                 animation: Some(MeshAnimation::new(states, "idle".into())),
+                origin_offset: glam::Vec3::ZERO,
             },
         )
         .unwrap();

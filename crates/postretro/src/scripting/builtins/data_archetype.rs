@@ -23,7 +23,9 @@ use crate::scripting::components::billboard_emitter::BillboardEmitterComponent;
 use crate::scripting::components::brain::{attach_brain, validate_brain_animation_states};
 use crate::scripting::components::health::HealthComponent;
 use crate::scripting::components::light::{FalloffKind, LightComponent, LightKind};
-use crate::scripting::components::mesh::{MeshAnimation, MeshComponent};
+use crate::scripting::components::mesh::{
+    MeshAnimation, MeshComponent, capsule_center_to_feet_origin_offset,
+};
 use crate::scripting::components::player_movement::PlayerMovementComponent;
 use crate::scripting::components::weapon::WeaponComponent;
 use crate::scripting::data_descriptors::{EntityTypeDescriptor, LightDescriptor};
@@ -38,7 +40,7 @@ use crate::scripting::registry::{ComponentKind, EntityId, EntityRegistry, Transf
 /// path until a navmesh is present. Values mirror the canonical human-ish agent
 /// the navmesh bake targets (`NavAgentParams` defaults), so a fallback capsule
 /// is plausibly sized even with no bake to read from.
-const DEFAULT_AGENT_PARAMS: NavAgentParams = NavAgentParams {
+pub(crate) const DEFAULT_AGENT_PARAMS: NavAgentParams = NavAgentParams {
     radius: 0.35,
     height: 1.8,
     step_height: 0.4,
@@ -69,35 +71,23 @@ fn apply_emitter_kvp_overrides(
             continue;
         };
         match field {
-            "rate" => {
-                if parse_into_f32(raw, &mut component.rate, entity, key) {
-                    applied.insert(DescriptorMapOverride::EmitterInitialRate);
-                }
+            "rate" if parse_into_f32(raw, &mut component.rate, entity, key) => {
+                applied.insert(DescriptorMapOverride::EmitterInitialRate);
             }
-            "spread" => {
-                if parse_into_f32(raw, &mut component.spread, entity, key) {
-                    applied.insert(DescriptorMapOverride::EmitterInitialSpread);
-                }
+            "spread" if parse_into_f32(raw, &mut component.spread, entity, key) => {
+                applied.insert(DescriptorMapOverride::EmitterInitialSpread);
             }
-            "lifetime" => {
-                if parse_into_f32(raw, &mut component.lifetime, entity, key) {
-                    applied.insert(DescriptorMapOverride::EmitterInitialLifetime);
-                }
+            "lifetime" if parse_into_f32(raw, &mut component.lifetime, entity, key) => {
+                applied.insert(DescriptorMapOverride::EmitterInitialLifetime);
             }
-            "buoyancy" => {
-                if parse_into_f32(raw, &mut component.buoyancy, entity, key) {
-                    applied.insert(DescriptorMapOverride::EmitterInitialBuoyancy);
-                }
+            "buoyancy" if parse_into_f32(raw, &mut component.buoyancy, entity, key) => {
+                applied.insert(DescriptorMapOverride::EmitterInitialBuoyancy);
             }
-            "drag" => {
-                if parse_into_f32(raw, &mut component.drag, entity, key) {
-                    applied.insert(DescriptorMapOverride::EmitterInitialDrag);
-                }
+            "drag" if parse_into_f32(raw, &mut component.drag, entity, key) => {
+                applied.insert(DescriptorMapOverride::EmitterInitialDrag);
             }
-            "spin_rate" => {
-                if parse_into_f32(raw, &mut component.spin_rate, entity, key) {
-                    applied.insert(DescriptorMapOverride::EmitterInitialSpinRate);
-                }
+            "spin_rate" if parse_into_f32(raw, &mut component.spin_rate, entity, key) => {
+                applied.insert(DescriptorMapOverride::EmitterInitialSpinRate);
             }
             "burst" => match raw.trim().parse::<u32>() {
                 Ok(v) => {
@@ -114,10 +104,8 @@ fn apply_emitter_kvp_overrides(
                     applied.insert(DescriptorMapOverride::EmitterInitialSprite);
                 }
             }
-            "color" => {
-                if parse_into_vec3(raw, &mut component.color, entity, key) {
-                    applied.insert(DescriptorMapOverride::EmitterInitialColor);
-                }
+            "color" if parse_into_vec3(raw, &mut component.color, entity, key) => {
+                applied.insert(DescriptorMapOverride::EmitterInitialColor);
             }
             "velocity" if parse_into_vec3(raw, &mut component.velocity, entity, key) => {
                 applied.insert(DescriptorMapOverride::EmitterInitialVelocity);
@@ -148,15 +136,11 @@ fn apply_light_kvp_overrides(
             // Mirror the validation applied at descriptor parse time: reject
             // negative or non-finite values at parse time so a bad override
             // never lands on the descriptor (e.g. `initial_intensity -5.0`).
-            "intensity" => {
-                if parse_into_nonneg_f32(raw, &mut descriptor.intensity, entity, key) {
-                    applied.insert(DescriptorMapOverride::LightInitialIntensity);
-                }
+            "intensity" if parse_into_nonneg_f32(raw, &mut descriptor.intensity, entity, key) => {
+                applied.insert(DescriptorMapOverride::LightInitialIntensity);
             }
-            "range" => {
-                if parse_into_nonneg_f32(raw, &mut descriptor.range, entity, key) {
-                    applied.insert(DescriptorMapOverride::LightInitialRange);
-                }
+            "range" if parse_into_nonneg_f32(raw, &mut descriptor.range, entity, key) => {
+                applied.insert(DescriptorMapOverride::LightInitialRange);
             }
             "is_dynamic" => match parse_bool(raw) {
                 Some(v) => {
@@ -238,7 +222,7 @@ fn warn_parse(entity: &MapEntity, key: &str, raw: &str) {
 /// Roadmap: composable archetypes, FGD generated from the registry, and a
 /// `mob_spawn` marker (mirroring `player_spawn`) will sit on this lookup.
 /// The abstraction grows from this single match site.
-fn find_descriptor<'a>(
+pub(crate) fn find_descriptor<'a>(
     descriptors: &'a [EntityTypeDescriptor],
     classname: &str,
 ) -> Option<&'a EntityTypeDescriptor> {
@@ -253,6 +237,120 @@ fn is_directly_map_placeable(descriptor: &EntityTypeDescriptor) -> bool {
         || descriptor.movement.is_some()
         || descriptor.mesh.is_some()
         || descriptor.health.is_some()
+}
+
+fn ai_capsule_center_from_feet_offset(
+    descriptor: &EntityTypeDescriptor,
+    agent_params: Option<NavAgentParams>,
+) -> Vec3 {
+    if descriptor.ai.is_none() {
+        return Vec3::ZERO;
+    }
+    let params = agent_params.unwrap_or(DEFAULT_AGENT_PARAMS);
+    -capsule_center_to_feet_origin_offset(params.radius, params.height)
+}
+
+/// Whether materializing this descriptor would attach the engine-owned AI pair
+/// (`ComponentKind::Brain` + `ComponentKind::Agent`) — i.e. whether the
+/// descriptor carries an `ai` block. This is the *pre-materialization* mirror of
+/// the live-component predicate `crate::netcode::is_networked_ai_map_enemy`,
+/// which can only inspect those components AFTER an entity exists: the `ai`
+/// block is the sole thing `attach_descriptor_components` keys the `Brain` +
+/// `Agent` attachment on, so `descriptor.ai.is_some()` holds exactly when that
+/// predicate would later return `true` for a `MapPlacement` spawn of this
+/// descriptor.
+///
+/// Used by the connected-client install path (E10 Task 5) to drop AI-enemy map
+/// placements *before* dispatch, since those enemies must arrive only as
+/// host-authoritative snapshots — never as locally-spawned authoritative copies.
+/// Keying on `ai.is_some()` (not classname strings, not
+/// `DescriptorProvenance.owned_components`, which never tracks AI) keeps the same
+/// single definition of "AI map enemy" the live predicate enforces.
+pub(crate) fn descriptor_materializes_ai_enemy(descriptor: &EntityTypeDescriptor) -> bool {
+    descriptor.ai.is_some()
+}
+
+/// Partition map placements for a **connected client** install (E10 Task 5):
+/// returns only the placements that should still materialize locally, dropping
+/// any whose matched descriptor would materialize an authoritative AI enemy
+/// ([`descriptor_materializes_ai_enemy`]). Those enemies are host-authoritative
+/// and reach the client solely via host snapshots (a later task materializes the
+/// remote presentation); spawning a local authoritative copy here would be a
+/// second, never-replicated brain.
+///
+/// Placements whose classname has no descriptor match are retained untouched —
+/// they are not AI enemies and the downstream dispatch handles their
+/// unknown-classname / built-in-collision diagnostics exactly as it would on a
+/// host. Single-player and listen-host installs never call this (they keep every
+/// placement); only the connected-client lifecycle path filters.
+pub(crate) fn filter_out_client_ai_enemies(
+    entities: &[MapEntity],
+    descriptors: &[EntityTypeDescriptor],
+) -> Vec<MapEntity> {
+    entities
+        .iter()
+        .filter(
+            |entity| match find_descriptor(descriptors, &entity.classname) {
+                Some(descriptor) => !descriptor_materializes_ai_enemy(descriptor),
+                // No descriptor match: not an AI enemy — retain for the normal
+                // unknown-classname diagnostics in dispatch.
+                None => true,
+            },
+        )
+        .cloned()
+        .collect()
+}
+
+/// Collect the distinct, non-empty mesh model handles referenced by the
+/// AI-enemy map placements a connected client suppresses
+/// ([`filter_out_client_ai_enemies`]), preserving first-seen order. GPU-free:
+/// this is the pure analogue of [`crate::distinct_mesh_models`] for placements
+/// that never spawn a local `MeshComponent` on a connected client, so the
+/// registry-driven sweep cannot see them.
+///
+/// Scoped to the classes the **map actually references** (the placements passed
+/// in), not every AI descriptor in the data registry — only enemies the host
+/// can replicate into this level need their model on the GPU. A placement is
+/// included only when its matched descriptor both materializes an AI enemy
+/// ([`descriptor_materializes_ai_enemy`]) AND carries a `mesh` block with a
+/// non-empty `model`; non-AI placements and AI descriptors without a renderable
+/// mesh contribute nothing.
+///
+/// Regression (E10 AC #3): a connected client filtered out the AI-enemy
+/// placement before dispatch, so its model was never in the registry-driven
+/// upload set; when the host snapshot later materialized the remote enemy the
+/// draw planner dropped it (no uploaded mesh in the model cache) and the real
+/// model never rendered — only a dev-tools debug capsule showed. The level-load
+/// sweep unions these handles with [`crate::distinct_mesh_models`] so the
+/// suppressed enemy's model is uploaded up front.
+///
+/// Each returned string is the VERBATIM renderer cache key (the descriptor's
+/// `mesh.model`), identical in shape to [`crate::distinct_mesh_models`] output,
+/// so the caller can dedup the two sets and upload each handle once.
+pub(crate) fn suppressed_ai_enemy_mesh_models(
+    entities: &[MapEntity],
+    descriptors: &[EntityTypeDescriptor],
+) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut ordered = Vec::new();
+    for entity in entities {
+        let Some(descriptor) = find_descriptor(descriptors, &entity.classname) else {
+            continue;
+        };
+        if !descriptor_materializes_ai_enemy(descriptor) {
+            continue;
+        }
+        let Some(mesh) = descriptor.mesh.as_ref() else {
+            continue;
+        };
+        if mesh.model.is_empty() {
+            continue;
+        }
+        if seen.insert(mesh.model.clone()) {
+            ordered.push(mesh.model.clone());
+        }
+    }
+    ordered
 }
 
 /// Attach descriptor components to an already-spawned entity. `initial_*` KVP
@@ -323,27 +421,35 @@ fn attach_descriptor_components(
     }
 
     if let Some(mesh_desc) = descriptor.mesh.as_ref() {
+        let origin_offset = if descriptor.ai.is_some() {
+            let params = agent_params.unwrap_or(DEFAULT_AGENT_PARAMS);
+            capsule_center_to_feet_origin_offset(params.radius, params.height)
+        } else {
+            Vec3::ZERO
+        };
         // No `animations` block ⇒ stateless mesh (model handle only). Otherwise
         // copy the declared state map in via `MeshAnimation::new`: current =
         // default state, entry stamp pending (filled by the resolve pass), no
         // active fade. Parse-time validation guarantees `default_state`
         // is `Some` exactly when the map is non-empty and names a declared state.
         let component = match &mesh_desc.default_state {
-            Some(default_state) => MeshComponent {
-                model: mesh_desc.model.clone(),
-                animation: Some(MeshAnimation::new(
-                    mesh_desc.animations.clone(),
-                    default_state.clone(),
-                )),
-            },
+            Some(default_state) => MeshComponent::animated(
+                mesh_desc.model.clone(),
+                MeshAnimation::new(mesh_desc.animations.clone(), default_state.clone()),
+            ),
             None => MeshComponent::stateless(mesh_desc.model.clone()),
-        };
+        }
+        .with_origin_offset(origin_offset);
         let _ = registry.set_component(id, component);
         owned_components.insert(DescriptorComponentKind::Mesh);
     }
 
     if let Some(health_desc) = descriptor.health.as_ref() {
-        let component = HealthComponent::from_descriptor(health_desc);
+        let mut component = HealthComponent::from_descriptor(health_desc);
+        let origin_shift = ai_capsule_center_from_feet_offset(descriptor, agent_params);
+        if let Some(hitbox) = component.hitbox.as_mut() {
+            hitbox.offset -= origin_shift;
+        }
         let _ = registry.set_component(id, component);
         owned_components.insert(DescriptorComponentKind::Health);
     }
@@ -390,7 +496,7 @@ fn attach_descriptor_components(
     }
 }
 
-fn spawn_descriptor_instance(
+pub(super) fn spawn_descriptor_instance(
     registry: &mut EntityRegistry,
     descriptor: &EntityTypeDescriptor,
     entity: &MapEntity,
@@ -398,8 +504,9 @@ fn spawn_descriptor_instance(
     spawn_path: DescriptorSpawnPath,
     agent_params: Option<NavAgentParams>,
 ) -> Option<EntityId> {
+    let origin_shift = ai_capsule_center_from_feet_offset(descriptor, agent_params);
     let transform = Transform {
-        position: entity.origin,
+        position: entity.origin + origin_shift,
         rotation: entity.rotation_quat(),
         scale: Vec3::ONE,
     };
@@ -664,172 +771,6 @@ pub(crate) fn spawn_from_player_starts(
     }
 }
 
-/// Spawn ONE descriptor-backed networked-slot player pawn from a `player_spawn`
-/// placement (M15 Phase 3 Task 4). This is the host-authoritative remote-pawn
-/// counterpart to [`spawn_from_player_starts`]: it reuses the same descriptor
-/// materialization internals ([`spawn_descriptor_instance`]) and the same
-/// `entity_class` KVP → `"player"`-default descriptor lookup, but it is deliberately
-/// NOT the local-player path:
-///
-/// - it does NOT call `mark_local_player_pawn` (a remote pawn is never the host's
-///   local player), and
-/// - it does NOT assign a global `active_wieldable` (the host does not wield a
-///   remote client's weapon).
-///
-/// The pawn's `defaultWeapon` still materializes a sibling weapon instance when the
-/// descriptor declares one (so the remote pawn is armed and replicates a weapon),
-/// but that weapon is never promoted to the host's active wieldable.
-///
-/// Provenance is stamped [`DescriptorSpawnPath::NetworkSlot`] so these pawns are
-/// distinguishable from map-start single-player spawns. The per-placement KVP bag is
-/// forwarded with `entity_class` stripped, matching `spawn_from_player_starts`.
-///
-/// Returns the spawned pawn `EntityId`, or `None` if the descriptor is unregistered
-/// or the registry is exhausted (logged, like the player-start path).
-pub(crate) fn spawn_net_slot_pawn(
-    placement: &MapEntity,
-    descriptors: &[EntityTypeDescriptor],
-    registry: &mut EntityRegistry,
-    agent_params: Option<NavAgentParams>,
-) -> Option<EntityId> {
-    let entity_class = placement
-        .key_values
-        .get("entity_class")
-        .map(String::as_str)
-        .unwrap_or("player");
-
-    let Some(descriptor) = find_descriptor(descriptors, entity_class) else {
-        log::warn!(
-            "[Net] {origin}: entity_class `{entity_class}` not registered; skipping net-slot spawn",
-            origin = placement.diagnostic_origin(),
-        );
-        return None;
-    };
-
-    let Some(id) = spawn_descriptor_instance(
-        registry,
-        descriptor,
-        placement,
-        // Attach the descriptor's own weapon component to the pawn just like the
-        // player-start path (so the remote pawn is armed); the sibling
-        // `defaultWeapon` instance below is what `spawn_from_player_starts` would
-        // promote to active — here it is spawned but never promoted.
-        true,
-        DescriptorSpawnPath::NetworkSlot,
-        agent_params,
-    ) else {
-        log::warn!(
-            "[Net] {origin}: entity registry exhausted; dropping net-slot pawn `{entity_class}`",
-            origin = placement.diagnostic_origin(),
-        );
-        return None;
-    };
-
-    // Forward the per-placement KVP bag (sans `entity_class`, a routing hint) so
-    // `getEntityProperty` works uniformly for net-slot pawns, matching the
-    // player-start path. Deliberately NO `mark_local_player_pawn` here.
-    let mut kvps = placement.key_values.clone();
-    kvps.remove("entity_class");
-    let _ = registry.set_map_kvps(id, kvps);
-
-    // Materialize the sibling defaultWeapon instance if the descriptor declares one,
-    // mirroring `spawn_from_player_starts` — but NEVER promote it to a global active
-    // wieldable. The host does not wield a remote client's weapon.
-    if let Some(default_weapon) = descriptor.default_weapon.as_deref() {
-        match find_descriptor(descriptors, default_weapon) {
-            Some(weapon_descriptor) if weapon_descriptor.weapon.is_some() => {
-                let weapon_entity = MapEntity {
-                    classname: default_weapon.to_string(),
-                    origin: placement.origin,
-                    angles: placement.angles,
-                    key_values: Default::default(),
-                    tags: vec![],
-                };
-                match spawn_descriptor_instance(
-                    registry,
-                    weapon_descriptor,
-                    &weapon_entity,
-                    true,
-                    DescriptorSpawnPath::DefaultWeapon,
-                    None,
-                ) {
-                    Some(weapon_id) => {
-                        let _ = registry.set_map_kvps(weapon_id, Default::default());
-                    }
-                    None => log::warn!(
-                        "[Net] {origin}: entity registry exhausted; dropping net-slot defaultWeapon `{default_weapon}`",
-                        origin = placement.diagnostic_origin(),
-                    ),
-                }
-            }
-            _ => log::warn!(
-                "[Net] {origin}: defaultWeapon `{default_weapon}` not registered or has no weapon component; net-slot pawn spawned unarmed",
-                origin = placement.diagnostic_origin(),
-            ),
-        }
-    }
-
-    Some(id)
-}
-
-/// Materialize the descriptor-derived `PlayerMovementComponent` for a client's LOCAL
-/// network pawn (M15 Phase 3 Task 7), reusing the same descriptor → component
-/// internals as the host's net-slot spawn (`PlayerMovementComponent::from_descriptor`,
-/// the body of [`attach_descriptor_components`]). This is the client counterpart to
-/// the host's [`spawn_net_slot_pawn`]: the host spawns the authoritative pawn from a
-/// descriptor and replicates only the mutable movement subset; the client receives a
-/// Transform-only baseline (the wire never carries descriptor-immutable tuning) and
-/// must materialize the matching component locally so the wire subset has something to
-/// merge onto and prediction/reconciliation can run.
-///
-/// `entity_class` is the descriptor class the host stamped on the wire (default
-/// `"player"` if the record carried none). The component is built from that class's
-/// `movement` block. Idempotent: a re-baseline / re-arm must not reset the live tick
-/// state, so an entity already carrying a `PlayerMovementComponent` is left untouched.
-///
-/// Returns `true` if a component is now present (materialized this call or already
-/// there), `false` if the descriptor is unregistered or has no movement block (logged)
-/// — in which case prediction stays inert for that pawn, exactly as before this path.
-///
-/// Deliberately does NOT call `mark_local_player_pawn` (the client's apply path owns
-/// that marker, set in `maybe_arm_local_pawn`) and attaches nothing but the movement
-/// component — no weapon, no provenance, no KVPs. It is a narrow local-state seam, not
-/// a full descriptor spawn.
-pub(crate) fn materialize_net_local_movement_component(
-    entity_class: &str,
-    descriptors: &[EntityTypeDescriptor],
-    registry: &mut EntityRegistry,
-    id: EntityId,
-) -> bool {
-    // Idempotent: never clobber a live component on a re-arm.
-    if matches!(
-        registry.has_component_kind(id, ComponentKind::PlayerMovement),
-        Ok(true)
-    ) {
-        return true;
-    }
-
-    let Some(descriptor) = find_descriptor(descriptors, entity_class) else {
-        log::warn!(
-            "[Net] local pawn entity_class `{entity_class}` not registered; movement \
-             prediction stays inert for this pawn"
-        );
-        return false;
-    };
-    let Some(movement_desc) = descriptor.movement.as_ref() else {
-        log::warn!(
-            "[Net] local pawn entity_class `{entity_class}` has no movement block; movement \
-             prediction stays inert for this pawn"
-        );
-        return false;
-    };
-
-    let component = PlayerMovementComponent::from_descriptor(movement_desc);
-    // `set_component` only fails on a stale id; the caller proved the pawn live.
-    let _ = registry.set_component(id, component);
-    true
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -837,21 +778,13 @@ mod tests {
         AirParams, CapsuleParams, FallParams, FireMode, GroundParams, PlayerMovementDescriptor,
         ResolutionMode, SpeedParams, WeaponDescriptor,
     };
-    use std::collections::HashMap;
 
-    fn placement(classname: &str, kvps: &[(&str, &str)]) -> MapEntity {
-        let mut kv = HashMap::new();
-        for (k, v) in kvps {
-            kv.insert((*k).to_string(), (*v).to_string());
-        }
-        MapEntity {
-            classname: classname.to_string(),
-            origin: Vec3::new(1.0, 2.0, 3.0),
-            angles: Vec3::ZERO,
-            key_values: kv,
-            tags: vec![],
-        }
-    }
+    // Shared descriptor/placement builders live in the sibling fixture module so
+    // the netcode agreement test can reuse them without a private-helper reach
+    // or a duplicate copy. See testing_guide.md §4.
+    use super::super::data_archetype_test_fixtures::{
+        ai_enemy_descriptor, mesh_descriptor, placement,
+    };
 
     fn light_descriptor(classname: &str, is_dynamic: bool) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
@@ -867,57 +800,6 @@ mod tests {
             movement: None,
             weapon: None,
             mesh: None,
-            health: None,
-            ai: None,
-        }
-    }
-
-    /// Build an `EntityTypeDescriptor` carrying only a mesh component. `animated`
-    /// selects between a stateless mesh (model only) and a two-state animated
-    /// mesh (`idle` default + `attack`), mirroring the validated descriptor shape
-    /// the mesh parser produces.
-    fn mesh_descriptor(classname: &str, animated: bool) -> EntityTypeDescriptor {
-        use crate::scripting::components::mesh::{AnimationState, InterruptPolicy};
-
-        let (animations, default_state) = if animated {
-            let mut states = HashMap::new();
-            states.insert(
-                "idle".to_string(),
-                AnimationState {
-                    clip: "idle_clip".to_string(),
-                    looping: true,
-                    crossfade_ms: 150.0,
-                    interrupt: InterruptPolicy::Smooth,
-                    clip_index: None,
-                },
-            );
-            states.insert(
-                "attack".to_string(),
-                AnimationState {
-                    clip: "attack_clip".to_string(),
-                    looping: false,
-                    crossfade_ms: 0.0,
-                    interrupt: InterruptPolicy::Snap,
-                    clip_index: None,
-                },
-            );
-            (states, Some("idle".to_string()))
-        } else {
-            (HashMap::new(), None)
-        };
-
-        EntityTypeDescriptor {
-            canonical_name: Some(classname.to_string()),
-            default_weapon: None,
-            light: None,
-            emitter: None,
-            movement: None,
-            weapon: None,
-            mesh: Some(crate::scripting::data_descriptors::MeshDescriptor {
-                model: "decraniated".to_string(),
-                animations,
-                default_state,
-            }),
             health: None,
             ai: None,
         }
@@ -2205,59 +2087,242 @@ mod tests {
         assert_eq!(light.origin, [7.0, 0.0, 0.0]);
     }
 
-    // --- spawn_net_slot_pawn (M15 Phase 3 Task 4) ----------------------------
+    // ---- E10 Task 5: connected-client AI-enemy spawn suppression ----
 
-    // A descriptor-backed net-slot pawn is a real PlayerMovement pawn from the
-    // placement, but — unlike spawn_from_player_starts — it is NEVER marked the local
-    // player and NEVER promotes a global active_wieldable. Provenance is NetworkSlot.
     #[test]
-    fn net_slot_pawn_is_player_movement_without_local_marker_or_active_wieldable() {
-        let mut reg = EntityRegistry::new();
-        let descriptors = vec![player_with_movement("player")];
-        let placement = spawn_point_at(Vec3::new(2.0, 1.0, -3.0), Vec3::ZERO, &[]);
+    fn descriptor_materializes_ai_enemy_keys_on_ai_block() {
+        // An `ai` block is the sole AI classifier; light/mesh/health-only
+        // descriptors are non-AI props.
+        assert!(descriptor_materializes_ai_enemy(&ai_enemy_descriptor(
+            "grunt"
+        )));
+        assert!(!descriptor_materializes_ai_enemy(&mesh_descriptor(
+            "prop", false
+        )));
+        assert!(!descriptor_materializes_ai_enemy(&light_descriptor(
+            "torch", true
+        )));
+    }
 
-        let id = spawn_net_slot_pawn(&placement, &descriptors, &mut reg, None)
-            .expect("net-slot pawn spawns from a player descriptor");
+    #[test]
+    fn client_filter_drops_ai_enemy_placements_keeps_props() {
+        // The connected-client pre-dispatch filter drops AI-enemy placements and
+        // keeps non-AI props in the same map.
+        let descriptors = vec![
+            ai_enemy_descriptor("grunt"),
+            mesh_descriptor("crate", false),
+        ];
+        let placements = vec![
+            placement("grunt", &[]),
+            placement("crate", &[]),
+            placement("grunt", &[]),
+        ];
 
-        // It is a movement pawn at the placement origin.
-        assert!(matches!(
-            reg.has_component_kind(
-                id,
-                crate::scripting::registry::ComponentKind::PlayerMovement
-            ),
-            Ok(true)
-        ));
-        assert_eq!(
-            reg.get_component::<Transform>(id).unwrap().position,
-            Vec3::new(2.0, 1.0, -3.0)
+        let kept = filter_out_client_ai_enemies(&placements, &descriptors);
+
+        assert_eq!(kept.len(), 1, "both grunt placements dropped, crate kept");
+        assert_eq!(kept[0].classname, "crate");
+    }
+
+    #[test]
+    fn suppressed_ai_enemy_mesh_models_collects_filtered_enemy_models_for_upload() {
+        // Regression (E10 AC #3): a connected client filters AI-enemy placements
+        // out before dispatch, so their model is absent from the registry-driven
+        // upload set; the host-replicated remote enemy then has no uploaded mesh
+        // and renders only a debug capsule. This pins the seam that feeds the
+        // suppressed enemies' models into the level-load upload union: the
+        // map-referenced AI enemy's model is collected; non-AI props and
+        // unknown classnames contribute nothing.
+        let descriptors = vec![
+            ai_enemy_descriptor("grunt"),
+            mesh_descriptor("crate", false),
+        ];
+        let placements = vec![
+            placement("grunt", &[]),
+            placement("crate", &[]),
+            placement("grunt", &[]),
+            placement("mystery", &[]),
+        ];
+
+        let models = suppressed_ai_enemy_mesh_models(&placements, &descriptors);
+
+        // Only the AI enemy's mesh model, deduped across both grunt placements;
+        // the non-AI crate and the unknown classname add nothing.
+        assert_eq!(models, vec!["decraniated".to_string()]);
+    }
+
+    #[test]
+    fn suppressed_ai_enemy_mesh_models_empty_without_ai_placements() {
+        // No map-referenced AI enemy ⇒ nothing to pre-upload (the single-player /
+        // listen-host case where the registry sweep already covers every mesh).
+        let descriptors = vec![mesh_descriptor("crate", false)];
+        let placements = vec![placement("crate", &[]), placement("mystery", &[])];
+
+        assert!(suppressed_ai_enemy_mesh_models(&placements, &descriptors).is_empty());
+    }
+
+    #[test]
+    fn client_filter_retains_unknown_classname_placements() {
+        // A placement with no descriptor match is not an AI enemy; the filter
+        // retains it so the dispatch's own unknown-classname diagnostics fire.
+        let descriptors = vec![ai_enemy_descriptor("grunt")];
+        let placements = vec![placement("mystery", &[]), placement("grunt", &[])];
+
+        let kept = filter_out_client_ai_enemies(&placements, &descriptors);
+
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].classname, "mystery");
+    }
+
+    #[test]
+    fn client_filtered_dispatch_spawns_no_brain_but_host_dispatch_does() {
+        // End-to-end on the dispatch seam: the SAME placements + descriptors
+        // produce a Brain-bearing entity through the unfiltered (host /
+        // single-player) path but NONE through the connected-client filtered
+        // path. The non-AI prop materializes in BOTH.
+        let descriptors = vec![
+            ai_enemy_descriptor("grunt"),
+            mesh_descriptor("crate", false),
+        ];
+        let placements = vec![placement("grunt", &[]), placement("crate", &[])];
+
+        // Host / single-player: every placement dispatched unfiltered.
+        let mut host_reg = EntityRegistry::new();
+        apply_data_archetype_dispatch(
+            &placements,
+            &descriptors,
+            &HashSet::new(),
+            &mut host_reg,
+            None,
         );
+        assert!(
+            host_reg
+                .iter_with_kind(ComponentKind::Brain)
+                .next()
+                .is_some(),
+            "host/single-player materializes the AI enemy locally"
+        );
+        let host_crates = host_reg
+            .iter_with_kind(ComponentKind::Mesh)
+            .filter(|(id, _)| {
+                host_reg
+                    .get_component::<DescriptorProvenance>(*id)
+                    .map(|p| p.canonical_name == "crate")
+                    .unwrap_or(false)
+            })
+            .count();
+        assert_eq!(host_crates, 1, "host materializes the non-AI prop");
 
-        // Provenance distinguishes it from a map-start single-player spawn.
-        let provenance = reg.get_component::<DescriptorProvenance>(id).unwrap();
-        assert_eq!(provenance.spawn_path, DescriptorSpawnPath::NetworkSlot);
-
-        // It is NOT the local player — the host never marks a remote pawn local, even
-        // though the player-start path would have marked the first such pawn.
-        assert_ne!(
-            reg.local_player_pawn(),
-            Some(id),
-            "a net-slot pawn is never the local player"
+        // Connected client: filter AI enemies before dispatch.
+        let mut client_reg = EntityRegistry::new();
+        let client_placements = filter_out_client_ai_enemies(&placements, &descriptors);
+        apply_data_archetype_dispatch(
+            &client_placements,
+            &descriptors,
+            &HashSet::new(),
+            &mut client_reg,
+            None,
+        );
+        assert!(
+            client_reg
+                .iter_with_kind(ComponentKind::Brain)
+                .next()
+                .is_none(),
+            "connected client must NOT spawn a local authoritative AI enemy"
+        );
+        assert!(
+            client_reg
+                .iter_with_kind(ComponentKind::Agent)
+                .next()
+                .is_none(),
+            "no Agent either — the AI pair is suppressed together"
+        );
+        let client_crates = client_reg
+            .iter_with_kind(ComponentKind::Mesh)
+            .filter(|(id, _)| {
+                client_reg
+                    .get_component::<DescriptorProvenance>(*id)
+                    .map(|p| p.canonical_name == "crate")
+                    .unwrap_or(false)
+            })
+            .count();
+        assert_eq!(
+            client_crates, 1,
+            "connected client still materializes the non-AI prop"
         );
     }
 
-    // The net-slot path defaults `entity_class` to "player", matching
-    // spawn_from_player_starts; an unregistered entity_class is skipped (None).
     #[test]
-    fn net_slot_pawn_defaults_to_player_and_skips_unknown_class() {
+    fn ai_descriptor_materialization_yields_live_brain_and_agent() {
+        // Invariant the suppression mechanism rests on: an `ai` descriptor
+        // materialization attaches BOTH live `Brain` and `Agent` columns. Without
+        // this, `is_networked_ai_map_enemy` (which reads those live columns) and
+        // the pre-materialization `descriptor_materializes_ai_enemy` could
+        // disagree.
+        let descriptors = vec![ai_enemy_descriptor("grunt")];
+        let placements = vec![placement("grunt", &[])];
         let mut reg = EntityRegistry::new();
-        let descriptors = vec![player_with_movement("player")];
+        apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg, None);
 
-        // Default entity_class -> "player".
-        let default_placement = spawn_point(&[]);
-        assert!(spawn_net_slot_pawn(&default_placement, &descriptors, &mut reg, None).is_some());
+        let (id, _) = reg
+            .iter_with_kind(ComponentKind::Brain)
+            .next()
+            .expect("ai descriptor materializes a Brain");
+        assert!(
+            matches!(reg.has_component_kind(id, ComponentKind::Agent), Ok(true)),
+            "ai descriptor materializes an Agent alongside the Brain"
+        );
+    }
 
-        // Explicit unknown entity_class -> skipped.
-        let unknown = spawn_point(&[("entity_class", "no_such_class")]);
-        assert!(spawn_net_slot_pawn(&unknown, &descriptors, &mut reg, None).is_none());
+    #[test]
+    fn ai_descriptor_spawn_uses_capsule_center_transform_without_moving_authored_hitbox() {
+        use crate::nav::NavAgentParams;
+        use crate::scripting::components::health::HealthComponent;
+        use crate::scripting::data_descriptors::{HealthDescriptor, HitboxDescriptor};
+
+        let params = NavAgentParams {
+            radius: 0.4,
+            height: 1.6,
+            step_height: 0.3,
+            max_slope_deg: 45.0,
+        };
+        let mut descriptor = ai_enemy_descriptor("grunt");
+        descriptor.health = Some(HealthDescriptor {
+            max: 60.0,
+            hitbox: Some(HitboxDescriptor {
+                half_extents: [0.4, 0.9, 0.4],
+                offset: Some([0.0, 0.9, 0.0]),
+            }),
+            zone_multipliers: std::collections::HashMap::new(),
+        });
+        let placement = placement("grunt", &[]);
+        let authored_hitbox_center = placement.origin + Vec3::new(0.0, 0.9, 0.0);
+
+        let mut reg = EntityRegistry::new();
+        apply_data_archetype_dispatch(
+            &[placement],
+            &[descriptor],
+            &HashSet::new(),
+            &mut reg,
+            Some(params),
+        );
+
+        let (id, _) = reg
+            .iter_with_kind(ComponentKind::Agent)
+            .next()
+            .expect("ai descriptor materializes an Agent");
+        let transform = reg.get_component::<Transform>(id).unwrap();
+        assert_eq!(
+            transform.position,
+            Vec3::new(1.0, 2.8, 3.0),
+            "AI gameplay transform is normalized to capsule center at spawn"
+        );
+
+        let health = reg.get_component::<HealthComponent>(id).unwrap();
+        let hitbox = health.hitbox.expect("authored hitbox materialized");
+        assert!(
+            (transform.position + hitbox.offset - authored_hitbox_center).length() < 1.0e-5,
+            "spawn-time transform normalization must preserve the authored world hitbox"
+        );
     }
 }

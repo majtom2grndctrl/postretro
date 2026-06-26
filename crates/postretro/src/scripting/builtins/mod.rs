@@ -8,7 +8,13 @@ use crate::scripting::registry::EntityRegistry;
 
 pub(crate) mod billboard_emitter;
 pub(crate) mod data_archetype;
+pub(crate) mod net_descriptor;
 pub(crate) mod prop_mesh;
+
+// Shared descriptor/placement builders used by both `data_archetype`'s own
+// `mod tests` and the netcode-side agreement test. See testing_guide.md §4.
+#[cfg(test)]
+pub(crate) mod data_archetype_test_fixtures;
 
 // Used by `main.rs` for the level-load sweep. The `gen-script-types` bin
 // includes the scripting tree via `#[path]` but never references this
@@ -17,6 +23,13 @@ pub(crate) mod prop_mesh;
 pub(crate) use data_archetype::apply_data_archetype_dispatch;
 #[allow(unused_imports)]
 pub(crate) use data_archetype::{PLAYER_START_CLASSNAME, spawn_from_player_starts};
+// Connected-client AI-enemy spawn suppression (E10 Task 5). `gen-script-types`
+// pulls in the scripting tree but never installs a level, so the import is
+// unused there.
+#[allow(unused_imports)]
+pub(crate) use data_archetype::{
+    descriptor_materializes_ai_enemy, filter_out_client_ai_enemies, suppressed_ai_enemy_mesh_models,
+};
 
 // Re-export so call sites that say `super::MapEntity` (handlers, tests) keep
 // working unchanged. The struct itself lives in `scripting::map_entity`.

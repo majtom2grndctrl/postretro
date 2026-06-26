@@ -382,6 +382,7 @@ impl UiTree {
     /// Side effects: stores each text node's freshly resolved (or displayed) string
     /// in `last_resolved` and marks it dirty when it changed; records each panel's
     /// resolved (or eased) fill in `last_resolved`; mutates per-node tween state.
+    #[allow(clippy::collapsible_match)]
     fn resolve_bindings(
         &mut self,
         slot_values: &HashMap<String, SlotValue>,

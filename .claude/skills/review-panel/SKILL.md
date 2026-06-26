@@ -48,18 +48,25 @@ Extract from `$ARGUMENTS`:
 - `reviewers:N` — force exactly N depth agents, bypassing the dispatch table
 - `model:opus|sonnet` — model for the depth agents (default: opus)
 
-### 2. Triage the diff
+### 2. Partition large diffs
 
-Scan the diff (~30s) before spawning. Produce two lists — they are what you brief the depth agents with:
+`git diff --stat` gives the line and file counts. Under ~1,500 changed lines, treat the diff as one slice and skip to triage.
+
+Above that, partition by crate, module, or path into ~1–1.5k-line slices, working from the stat alone — don't read the diff to split it. Each slice runs its own triage and panel (steps 3–4); a 7,000-line branch is ~5 slices. One triage pass can't hold a diff that large: it names the obvious flows and misses the rest, and a lone breadth agent drowns. Per-slice keeps triage sharp and each agent's load small.
+
+### 3. Triage each slice
+
+Scan the slice (~30s) before spawning. Produce three lists:
 
 - **Flows worth tracing** — 1–3 data paths that cross files or carry ordering/lifecycle/state logic. Name each flow's entry point and the files it touches.
-- **Contract surfaces touched** — any authored/public surface the diff changes (SDK types, descriptors, wire format, reaction set).
+- **Contract surfaces touched** — any authored/public surface the slice changes (SDK types, descriptors, wire format, reaction set).
+- **Flows that exit the slice** — any path crossing into another slice. These feed the seam pass (step 6); skip for a single-slice diff.
 
-A tracer with no named flow reviews like a generic reviewer and misses the seams. If triage yields no flows and no surfaces, the diff is mechanical.
+A tracer with no named flow reviews like a generic reviewer and misses the seams. If triage yields no flows and no surfaces, the slice is mechanical.
 
-### 3. Dispatch the panel
+### 4. Dispatch each slice's panel
 
-Size the panel from triage:
+Size each slice's panel from its triage:
 
 | Diff shape | Panel |
 |------------|-------|
@@ -69,20 +76,26 @@ Size the panel from triage:
 | Touches a contract surface | + 1 contract verifier |
 | Subtle invariants / many edge conditions | + 1 adversarial tester |
 
-**Floor.** Always run the hygiene+drift agent. For any diff carrying logic, run at least one depth agent alongside it — one agent reviewing everything loses the cross-check that makes this a panel. Typical panel is 2–3; rarely past 5, and only when the diff genuinely spans seams.
+**Floor.** Always run the hygiene+drift agent. For any slice carrying logic, run at least one depth agent alongside it — one agent reviewing everything loses the cross-check that makes this a panel. Typical slice panel is 2–3; rarely past 5. Counts and the cap-3 are per slice, not per branch.
 
 `reviewers:N` forces the depth-agent count to N and skips the table — triage still picks the lens mix (N=3 might be two tracers and one verifier). `model:sonnet` runs depth agents on Sonnet. The hygiene+drift agent is always Sonnet, unaffected by overrides.
 
-### 4. Spawn all agents in parallel
+### 5. Spawn all agents in parallel
 
-Launch every agent in a single message. No `isolation: "worktree"` needed — reviewers read code and report findings, they don't write files.
+Launch a slice's agents in a single message. Slices and the seam pass can run concurrently — triage is done, so nothing blocks. No `isolation: "worktree"` needed — reviewers read code and report findings, they don't write files.
 
 - **Each depth agent:** the shared preamble (below), then its lens prompt, then the specific flow or surface from triage. The lens governs — depth agents do not run the general code-review checklist; that is the breadth pass's job. Specified model (default: opus).
 - **Hygiene + drift agent (always Sonnet):** full content of `.claude/skills/code-review/SKILL.md` (the breadth checklist), then the hygiene+drift prompt (below).
 
 Every agent reports findings **bucketed by lens** so coverage per lens stays visible at aggregation.
 
-### 5. Aggregate results
+### 6. Seam pass
+
+Cross-slice flows are where partitioning would otherwise lose bugs — producer in one slice, consumer in another. The exit points from each slice's triage name them.
+
+Dispatch one correctness tracer per cross-slice flow (cap 3). Brief it with the flow's full path across slices, not either end alone. Skip for a single-slice diff.
+
+### 7. Aggregate results
 
 **Deduplicate.** If lenses flag the same issue (same file, same concern), keep the most specific description and note how many caught it. Agreement is strong signal.
 
@@ -90,12 +103,13 @@ Every agent reports findings **bucketed by lens** so coverage per lens stays vis
 
 **Keep comment drift separate** — present it as its own section, don't fold it into code findings.
 
-### 6. Present unified review
+### 8. Present unified review
 
 ```
 ## Review Panel Summary
 
 **Panel:** [lenses that ran and their model, e.g. "2 correctness tracers + 1 contract verifier (opus) + hygiene/drift (sonnet)"]
+**Scope:** [single panel, or "N slices + seam pass"]
 **Target:** [what was reviewed]
 **Verdict:** approve / request changes / needs discussion
 

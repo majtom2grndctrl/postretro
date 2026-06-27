@@ -193,7 +193,7 @@ Portal traversal is the sole visibility path: per-frame flood-fill from the came
 
 ## Navigation bake
 
-Walkable navigation is baked offline into a `NavMesh` PRL section (SectionId 36). Baked by `navmesh_bake.rs` after the BVH stage and before the lightmap bake; decoded by the runtime loader in `prl.rs`. The bake shipped via `plans/done/M10--navigation-representation/`. Runtime consumption — A* + funnel string-pull pathfinding and agent path-following over the regions/portals — is specced in `plans/ready/M10--pathfinding-path-following/`.
+Walkable navigation is baked offline into a `NavMesh` PRL section (SectionId 36). Baked after the BVH stage and before the lightmap bake; the runtime loader decodes it. The bake shipped via `plans/done/M10--navigation-representation/`. Runtime consumption — A* + funnel string-pull pathfinding and agent path-following over the regions/portals — is specced in `plans/ready/M10--pathfinding-path-following/`.
 
 **Query contract.** Runtime consumes convex walkable **regions joined by portals** — the pathfinding query surface (A* over regions, funnel over portal segments). The shape is the durable contract; the bake *algorithm* swaps behind it (rectangular decomposition first, a contour tracer later). Off-mesh links and hints (jump links, cover) extend it as future portal kinds / region attachments — additive, no format break. Seed of a broader baked spatial-AI layer.
 

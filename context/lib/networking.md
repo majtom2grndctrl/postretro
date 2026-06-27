@@ -10,7 +10,7 @@ This is **Epic 15 Phase 3**: authoritative client-server co-op with client-side 
 
 ## Crate boundary and ownership
 
-Netcode lives in a sibling crate, `postretro-net`, holding three concerns: the wire codec, the polled transport, and the dev-only latency harness. The dependency arrow points **one way** — `postretro → postretro-net`. The net crate never depends on the engine.
+Netcode lives in the `postretro-net` crate (`crates/net/`): the wire codec, the polled transport, the wire-side replication and state-slot trackers, time sync, and the dev-only latency harness. The dependency arrow points **one way** — `postretro → postretro-net`. The net crate never depends on the engine.
 
 `postretro-net` is **glam-free and postretro-free by construction.** Wire types use plain `[f32; N]` / `f32` / `bool` — never glam or engine types. The crate is never handed an `EntityRegistry` and has no notion of entities, components, or game state. It moves opaque, typed messages.
 
@@ -32,7 +32,7 @@ Three channels, fixed layout, agreed by both peers (the layout is folded into th
 |---------|----------|---------|
 | Control | reliable-ordered | version handshake and typed rejects |
 | Snapshot | unreliable | server snapshots: entity records, state-slot records, server tick metadata |
-| Input | reliable-ordered | client input commands, replication acks, baseline-refresh requests, state-refresh requests |
+| Input | reliable-ordered | client input commands, replication acks, baseline-refresh requests, state-refresh requests, time-sync probes |
 
 Reliability is matched to the data: control state and client→server repair/ack traffic must arrive ordered; snapshots are disposable because missing entity or state baselines are repaired by explicit refresh requests.
 
@@ -146,6 +146,10 @@ Verify, on the **client**:
 
 Tear down the `tc netem` qdisc when finished. As with the Phase 1/2 soak, the shaped link affects all loopback traffic for its duration.
 
+## Time sync
+
+A client clock-sync exchange (`postretro-net` `timesync` module) keeps the client's estimate of the server tick. The client periodically sends a probe on the reliable Input channel; the server echoes its current tick. The client measures round-trip against **its own** monotonic clock — the server's echoed time is telemetry, never compared cross-clock, because the two origins are unrelated. A pure estimator smooths a server-tick offset and a link-jitter estimate behind an injected clock, so tests drive it on the harness's virtual clock. The interpolation buffer reads the offset and jitter to size remote-pawn interpolation delay. Registry-blind and scalar-only, like the rest of the net crate.
+
 ## Host input command queue — gap policy and bounded playout
 
 The host holds a per-client queue of sanitized inbound `InputCommand`s and resolves
@@ -154,8 +158,8 @@ cursor (`last_processed_client_tick`, stamped into snapshot authority metadata).
 policies govern resolution:
 
 - **Hold-then-neutral gap policy.** When the exact next tick is missing, the host holds
-  the last resolved command for up to `INPUT_HOLD_TICKS` (rides out one dropped/late
-  packet), then synthesizes neutral input (a disconnected-but-not-yet-closed client
+  the last resolved command for up to `INPUT_HOLD_TICKS` (rides out a brief gap of
+  dropped or late packets), then synthesizes neutral input (a disconnected-but-not-yet-closed client
   cannot coast on stale intent). A client that has never sent a command resolves to
   nothing — its pawn holds its authoritative pose.
 

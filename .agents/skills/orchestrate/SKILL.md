@@ -48,13 +48,16 @@ For each phase in the sequencing section:
 **Sequential:** One `worker` agent at a time. Use `model: "gpt-5.5"` with `reasoning_effort: "high"` for complex, cross-cutting, architectural, or integration-heavy tasks, and `reasoning_effort: "medium"` for bounded implementation tasks. Wait for completion before starting the next.
 
 **Concurrent:** Spawn all independent phase `worker` agents simultaneously via multiple `spawn_agent` calls in one message. Use `model: "gpt-5.5"` and choose `reasoning_effort: "medium"` or `"high"` per task complexity.
+
+> **Cargo under concurrency.** Run concurrent agents in isolated worktrees — separate `target/` dirs, cap 3 (see `development_guide.md`). Separate target dirs have no shared build lock, so each agent runs `cargo check` and focused tests freely. Agents sharing one `target/` must not: they serialize on cargo's build lock and churn the incremental cache. Defer their compile/test to one post-phase pass, as `/fix-review-findings` does.
+
 **For each agent, provide:**
 1. The plan's **Shared Context** section
 2. The agent's **specific task** — description, acceptance criteria
 3. Instruction to read relevant `context/lib/` files for architectural guidance
 4. Instruction to follow `context/lib/development_guide.md` conventions
-5. Instruction to run `cargo check` before considering the task complete
-6. Instruction to run focused tests for the touched crate/module/behavior, not a full workspace `cargo test` by default. Full workspace tests are the coordinator's final gate.
+5. Instruction to run `cargo check` before considering the task complete (isolated worktrees only — see note above)
+6. Instruction to run focused tests for the touched crate/module/behavior, not a full workspace `cargo test` (concurrent agents: isolated worktrees only). Full workspace tests are the coordinator's final gate. Never run a bare `cargo test -p postretro-level-compiler` (cold `prl-build` bakes, ~1h).
 
 **Do NOT provide:**
 - Other tasks' details (the agent doesn't need them)

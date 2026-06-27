@@ -84,8 +84,8 @@ pub struct BvhLeaf {
 pub struct BvhSection {
     pub nodes: Vec<BvhNode>,
     pub leaves: Vec<BvhLeaf>,
-    /// Index of the root node in `nodes`. Reserved for future format changes;
-    /// currently must be 0 for all valid BVH sections.
+    /// Root node index within `nodes`. Must be 0 for all current compiler-emitted
+    /// sections; the loader rejects nonzero values.
     pub root_node_index: u32,
 }
 

@@ -12,7 +12,7 @@
 - **Testing** → `testing_guide.md`
 - **Rendering pipeline / lighting** → `rendering_pipeline.md`
 - **PRL format / level compiler / runtime portal vis** → `build_pipeline.md`
-- **Brush roles / which brushes participate in the BSP** → `build_pipeline.md` §Brush role spectrum
+- **Brush roles / which brushes participate in the BSP** → `build_pipeline.md` §Compiler pipeline
 - **Audio / spatial sound / reverb zones** → `audio.md`
 - **Entity model / game objects / sprites** → `entity_model.md`
 - **Build pipeline / FGD / TrenchBroom** → `build_pipeline.md`

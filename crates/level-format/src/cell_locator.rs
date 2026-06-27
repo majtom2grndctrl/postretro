@@ -197,9 +197,38 @@ fn validate_reachability(
     root: CellLocatorChild,
     nodes: &[CellLocatorNodeRecord],
 ) -> crate::Result<()> {
+    // Iterative tri-color DFS — avoids unbounded recursion on valid but near-linear
+    // chains (node[i].front = Node(i+1)) that would otherwise stack-overflow at load.
+    // Colors: 0 = unvisited (white), 1 = on stack (gray), 2 = done (black).
+    // Semantics are identical to the recursive form: gray on entry means cycle.
     let mut colors = vec![0u8; nodes.len()];
     if let CellLocatorChild::Node(root_idx) = root {
-        visit_node(root_idx as usize, nodes, &mut colors)?;
+        // Each stack entry is (node_index, phase): phase 0 = pre-visit, phase 1 = post-visit.
+        let mut stack: Vec<(usize, u8)> = vec![(root_idx as usize, 0)];
+        while let Some((node_index, phase)) = stack.pop() {
+            if phase == 1 {
+                // Post-visit: mark black.
+                colors[node_index] = 2;
+                continue;
+            }
+            match colors[node_index] {
+                1 => {
+                    return Err(locator_invalid(format!(
+                        "CellLocator contains a cycle involving node {node_index}"
+                    )));
+                }
+                2 => continue,
+                _ => {}
+            }
+            // Mark gray (on stack), then push post-visit sentinel followed by children.
+            colors[node_index] = 1;
+            stack.push((node_index, 1));
+            for child in [nodes[node_index].front, nodes[node_index].back] {
+                if let CellLocatorChild::Node(child_index) = child {
+                    stack.push((child_index as usize, 0));
+                }
+            }
+        }
     }
 
     if let Some(unreachable) = colors.iter().position(|&color| color == 0) {
@@ -208,31 +237,6 @@ fn validate_reachability(
         )));
     }
 
-    Ok(())
-}
-
-fn visit_node(
-    node_index: usize,
-    nodes: &[CellLocatorNodeRecord],
-    colors: &mut [u8],
-) -> crate::Result<()> {
-    match colors[node_index] {
-        1 => {
-            return Err(locator_invalid(format!(
-                "CellLocator contains a cycle involving node {node_index}"
-            )));
-        }
-        2 => return Ok(()),
-        _ => {}
-    }
-
-    colors[node_index] = 1;
-    for child in [nodes[node_index].front, nodes[node_index].back] {
-        if let CellLocatorChild::Node(child_index) = child {
-            visit_node(child_index as usize, nodes, colors)?;
-        }
-    }
-    colors[node_index] = 2;
     Ok(())
 }
 

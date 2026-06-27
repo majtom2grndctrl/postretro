@@ -20,7 +20,8 @@ This completes the boundary work `early-boot-solo-splash` deliberately deferred.
 
 ### Out of scope
 
-- A full typestate `enum App { Booting(BootApp), Running(SessionApp) }`. Considered and rejected: it fights winit's `ApplicationHandler` single-`&mut self` event API and over-models a single-window engine. `Option<Session>` gives the same compile-time guarantee with far less churn. Revisit only if the implementer finds `Option<Session>` insufficient.
+- Any phase-enum representation of session presence. Two alternatives to `Option<Session>` are rejected: a full typestate `enum App { Booting(BootApp), Running(SessionApp) }` (fights winit's `ApplicationHandler` single-`&mut self` event API, over-models a single-window engine), and a smaller `enum BootPhase { Booting, Session(Session) }` on `App` (a third phase representation that can desync from the existing `BootState`). `Option<Session>` gives the same compile-time guarantee, reuses the idiom already in the tree for `pending_session` and `renderer.full`, and keeps a single source of truth for phase. Revisit only if `Option<Session>` proves ergonomically insufficient.
+- A painted boot-path error indicator for session-build failure. The boot splash is deliberately text-free, so no legible error could be drawn; a script-runtime construction failure is developer/modder-facing and belongs in the log + non-zero exit (`development_guide.md` §6.2), not on screen.
 - Changing the steady-state gameplay frame order (Input → Game logic → Audio → Render → Present).
 - The renderer boot/full split (`Renderer::new` → `finish_full_init`). Already shipped and correct.
 - A wholesale `main.rs` module split. This refactor moves session code into a `session` module and shrinks `main.rs` as a side effect; it does not chase a line target.
@@ -92,9 +93,4 @@ The borrow-checker cost is bounded because the borrow of `self.session` and the 
 
 Why post-first-pixel build is behavior-preserving: session systems are unused during the boot splash, so constructing them after the first frame changes startup *timing*, not observable behavior — and strictly improves boot latency by moving script-VM construction off the critical path to first pixels.
 
-## Decisions
-
-- **`App.session: Option<Session>`, not a phase enum.** The codebase already models boot phase once (`BootState`) and already uses `Option<T>` for a not-yet-built subsystem in `pending_session` and `renderer.full`. A second `BootPhase` enum would be a third phase representation that can desync from `BootState`; the single install path already guarantees the only invariant the enum would add. Reuse the established idiom.
-- **Session-build failure logs and exits; no painted error frame.** A legible error frame needs text, and the boot splash is deliberately text-free (`early-boot-solo-splash` removed boot-path text rendering on purpose). The failure — script-runtime construction failing — is developer/modder-facing; its channel is the log + non-zero exit, matching the engine's init-failure convention (`development_guide.md` §6.2, `finish_renderer_full_init`). The boot splash paints a black frame and the process exits.
-
-Both follow the same rule, which the implementer should apply to any fork this spec didn't foresee: prefer the leaner option that reuses an idiom already in the tree over a new representation, absent a measured reason otherwise.
+Decision rule for forks this spec didn't foresee: prefer the leaner option that reuses an idiom already in the tree over a new representation, absent a measured reason otherwise. Both scope decisions above (`Option<Session>` over a phase enum; log-and-exit over a painted error frame) follow from it.

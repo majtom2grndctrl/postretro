@@ -3,12 +3,10 @@
 // (script context + runtime, registries, and every system that captures a
 // `ScriptCtx` clone or a registry reference), the player options + settings path,
 // the committed frontend declaration, the net endpoint, the audio subsystem, and
-// (dev-tools) the debug-UI state. Migrated off the `App` god-struct so boot code
-// cannot name a session field before install. Building the script tranche here
-// moves the heaviest startup init (`ScriptCtx::new` / `register_all` /
-// `ScriptRuntime::new`) behind first pixels. After Task 3, `Session::build` is the
-// sole session construction site and `App` holds only boot-lifetime fields plus
-// `session: Option<Session>`.
+// (dev-tools) the debug-UI state. `Session::build` is the sole session construction
+// site; `App` holds only boot-lifetime fields plus `session: Option<Session>`.
+// Building the script tranche here moves the heaviest startup init
+// (`ScriptCtx::new` / `register_all` / `ScriptRuntime::new`) behind first pixels.
 // See: context/lib/boot_sequence.md §1 (Deferred-session boundary and single commit)
 
 use std::path::PathBuf;
@@ -43,10 +41,10 @@ use crate::{audio, netcode, options};
 
 /// Live session-lifetime container, held on `App` as `Option<Session>` and built
 /// once after first pixels by [`Session::build`]. Owns EVERY session-lifetime
-/// field; none can be named while `App.session` is `None` (boot phase). After
-/// Task 3 there is no transient pre-window construction bundle — `Session::build`
-/// is the sole session construction site, and `App` holds only boot-lifetime
-/// fields plus `session: Option<Session>`.
+/// field; none can be named while `App.session` is `None` (boot phase).
+/// `Session::build` is the sole session construction site — there is no transient
+/// pre-window construction bundle. `App` holds only boot-lifetime fields plus
+/// `session: Option<Session>`.
 /// See: context/lib/boot_sequence.md §1.
 pub(crate) struct Session {
     /// Keyboard/mouse/gamepad action state. Seeded at build with the loaded
@@ -85,11 +83,12 @@ pub(crate) struct Session {
     /// build. See: context/lib/ui.md §1.
     pub(crate) modal_stack: render::ui::modal_stack::ModalStack,
 
-    // --- Scripting core (Task 2). The script runtime, the context handle every
-    // primitive closure captures, the Rust-side registries, and every system
-    // that holds a cloned `ScriptCtx` or a registry reference. The whole tranche
-    // is one indivisible group: `ScriptCtx` is `Clone` (`Rc`-backed) and is
-    // cloned into eight construction sites. See: context/lib/scripting.md. ---
+    // --- Scripting core. The script runtime, the context handle every primitive
+    // closure captures, the Rust-side registries, and every system that holds a
+    // cloned `ScriptCtx` or a registry reference. The whole tranche is one
+    // indivisible group: `ScriptCtx` is `Clone` (`Rc`-backed) and all clones are
+    // distributed at the single `Session::build` site.
+    // See: context/lib/scripting.md. ---
     /// The script VM runtime. Constructed once here (post-first-pixel); never
     /// recreated. See: context/lib/scripting.md.
     pub(crate) script_runtime: ScriptRuntime,
@@ -178,8 +177,8 @@ pub(crate) struct Session {
     /// CPU-only — no wgpu. See: context/lib/entity_model.md §7.
     pub(crate) hit_zone_store: scripting_systems::hit_zones::HitZoneStore,
 
-    // --- Remaining session state (Task 3). The last fields that lived directly
-    // on `App`; their migration here completes the boot/session split. ---
+    // --- Remaining session state: player options, settings path, frontend
+    // declaration, net endpoint, audio subsystem, and (dev-tools) debug-UI. ---
     /// Per-human runtime preferences loaded at build. Seeds input look
     /// preferences; `crouch_mode` is read each input tick by
     /// `resolve_crouch_intent`; `view_feel_scale` feeds `view_feel::evaluate`.
@@ -229,13 +228,13 @@ impl Session {
     /// Build ALL session-lifetime state AFTER the first visible frame,
     /// synchronously and whole-or-nothing. Runs entirely within the single
     /// install redraw — no `await`, no yield. This is the sole session
-    /// construction site (Task 3 collapsed the residual pre-window build). It
+    /// construction site; all `ScriptCtx` clones are distributed here. It
     /// builds, in boot-order:
     /// 1. player options I/O (load + first-run default write), seeding input;
     /// 2. the fault-tolerant audio subsystem (silent on kira failure);
     /// 3. the scripting bootstrap (`ScriptCtx::new` / `register_all` /
-    ///    `ScriptRuntime::new` / SDK-type emission), the Rust-side registries, the
-    ///    eight `ScriptCtx`-clone systems, and the input/UI/modal group;
+    ///    `ScriptRuntime::new` / SDK-type emission), the Rust-side registries,
+    ///    all `ScriptCtx`-clone consumers, and the input/UI/modal group;
     /// 4. the net endpoint (parse net args, build transport, degrade to
     ///    single-player on failure).
     ///
@@ -351,8 +350,8 @@ impl Session {
         let mut classname_dispatch = ClassnameDispatch::new();
         register_builtin_classnames(&mut classname_dispatch);
 
-        // The five subsystems that each capture a `ScriptCtx` clone, previously
-        // built inline in the `App` literal. They join the script tranche here.
+        // Subsystems that each capture a `ScriptCtx` clone (`Rc`-backed handle).
+        // All clones in the script tranche are distributed here.
         let player_hud_state =
             scripting_systems::ui_proxy::PlayerHudStatePublisher::new(script_ctx.clone());
         let flash_decay = scripting_systems::flash_decay::FlashDecay::new(script_ctx.clone());

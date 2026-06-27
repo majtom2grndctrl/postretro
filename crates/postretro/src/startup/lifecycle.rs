@@ -1,4 +1,5 @@
 //! Runtime level lifecycle state-machine helpers.
+//! See: context/lib/boot_sequence.md §1
 
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -90,7 +91,7 @@ impl App {
     /// | `self.level` (LevelWorld) | renderer device/queue, window |
     /// | per-level GPU resources (textures, geometry) | `script_ctx`, `ScriptRuntime` |
     /// | light bridge, fog bridge, collision world | slot table (no clear method — engine-global) |
-    /// | level sounds, sprite collections | entity-type registry (`data_registry.entities`), mod map catalog (`data_registry.maps`) |
+    /// | level sounds, sprite collections, `emitter_bridge`, `mesh_render`, `mesh_clip_tables`, `hit_zone_store` | entity-type registry (`data_registry.entities`), mod map catalog (`data_registry.maps`) |
     /// | `data_registry` reactions + crossings, presentation cells | persisted-state save path |
     /// | progress tracker, active wieldable, camera pose | |
     pub(crate) fn unload_level(&mut self) {
@@ -500,18 +501,20 @@ impl App {
         // before the data script runs, so any `world.getGravity()` call inside
         // `setupLevel` / `levelLoad` reactions sees the new value.
         script_ctx.gravity.set(world.initial_gravity);
-        if let Some(session) = self.session.as_mut() {
-            // Clear any in-flight `screen.flash` decay so a flash never bleeds
-            // across a level load.
-            session.flash_decay.reset();
-            // Clear any in-flight vignette/shake (SE) so neither bleeds across a
-            // level load — the slots reset to their identity rest values.
-            session.vignette_decay.reset();
-            session.shake_decay.reset();
-            // Reset the input-mode tracker so a mid-transition mode never bleeds
-            // across levels.
-            session.input_mode_tracker.reset();
-        }
+        let session = self
+            .session
+            .as_mut()
+            .expect("session installed before level install");
+        // Clear any in-flight `screen.flash` decay so a flash never bleeds
+        // across a level load.
+        session.flash_decay.reset();
+        // Clear any in-flight vignette/shake (SE) so neither bleeds across a
+        // level load — the slots reset to their identity rest values.
+        session.vignette_decay.reset();
+        session.shake_decay.reset();
+        // Reset the input-mode tracker so a mid-transition mode never bleeds
+        // across levels.
+        session.input_mode_tracker.reset();
         self.active_wieldable = None;
         self.active_wieldable_descriptor = None;
 
@@ -1115,8 +1118,12 @@ mod tests {
             exit_result: Ok(()),
             camera: Camera::new(Vec3::ZERO, 0.0, 0.0),
             // Tests exercise level load/unload in the Running state, which touches
-            // the session-owned modal stack and the whole script tranche; build
-            // the migrated group inline.
+            // the session-owned modal stack and the whole script tranche; construct
+            // a minimal `Session` inline. The registries (`classname_dispatch`,
+            // `sequence_registry`, `reaction_registry`, `system_registry`) are
+            // intentionally minimal/empty — these lifecycle tests exercise level
+            // load/unload plumbing, not reaction/classname dispatch; the real
+            // `Session::build` populates them.
             session: Some(crate::session::Session {
                 input_system: input::InputSystem::new(input::default_bindings()),
                 gameplay_input_latch: input::GameplayInputLatch::new(),
@@ -1214,9 +1221,9 @@ mod tests {
     }
 
     /// Clone the session-owned `ScriptCtx` handle (cheap `Rc` bump) for tests.
-    /// The whole script tranche moved onto `Session` (Task 2); this keeps the
-    /// many test reads of the shared registries one short call away without a
-    /// borrow fight against the non-`Clone` session subsystems.
+    /// The scripting core lives on `Session`; this keeps the many test reads of
+    /// the shared registries one short call away without a borrow fight against
+    /// the non-`Clone` session subsystems.
     fn script_ctx(app: &App) -> ScriptCtx {
         app.session
             .as_ref()

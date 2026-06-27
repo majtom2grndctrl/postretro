@@ -1,8 +1,7 @@
 // Session-lifetime boot construction: argument parsing, content-root selection,
 // `App` assembly, and the `PendingSessionInit` owner that constructs the entire
-// `Session` after the first visible logo frame. After Task 3 the residual
-// pre-window session build is gone — `Session::build` is the sole session
-// construction site, and `App` holds only boot-lifetime fields plus
+// `Session` after the first visible logo frame. `Session::build` is the sole
+// session construction site; `App` holds only boot-lifetime fields plus
 // `session: Option<Session>`.
 // See: context/lib/boot_sequence.md §1 (Boot Order, stages 1-4)
 
@@ -33,16 +32,16 @@ pub(crate) struct BootSession {
 }
 
 /// Deferred-startup owner. Carries the raw inputs needed to construct the entire
-/// `Session` AFTER the first visible logo frame paints. After Task 3 this is the
-/// SOLE session construction trigger: it hands its raw argv to [`Session::build`],
-/// which builds every session-lifetime field (options I/O, audio, the scripting
-/// core, input/UI/modal group, and the net endpoint). It is taken and consumed
-/// exactly once by `App::install_pending_session`; suspend/resume keeps it
-/// unconsumed until the install commits, so a resume that re-enters the splash
-/// loop never runs deferred init twice. See: context/lib/boot_sequence.md §1, §9.
+/// `Session` after the first visible logo frame paints. It hands its raw argv to
+/// [`Session::build`], the sole session construction site, which builds every
+/// session-lifetime field (options I/O, audio, the scripting core, input/UI/modal
+/// group, and the net endpoint). It is taken and consumed exactly once by
+/// `App::install_pending_session`; suspend/resume keeps it unconsumed until the
+/// install commits, so a resume that re-enters the splash loop never runs deferred
+/// init twice. See: context/lib/boot_sequence.md §1, §9.
 pub(crate) struct PendingSessionInit {
     /// Full `argv` (including `argv[0]`). Net args are parsed inside
-    /// `Session::build`, after first pixels — never before the event loop.
+    /// `Session::build` — never before the first visible frame.
     /// See: context/lib/networking.md.
     raw_args: Vec<String>,
 }
@@ -82,12 +81,12 @@ impl PendingSessionInit {
 ///
 /// Ordering: minimal pre-event-loop work (logging, boot-timing setup, raw arg
 /// collection, content-root / boot-map selection) runs first, THEN
-/// `EventLoop::new`. After Task 3 there is NO residual pre-window session build —
-/// the entire `Session` (options I/O, audio, the scripting bootstrap, the
-/// input/UI/modal group, and the net endpoint) is constructed post-first-pixel by
-/// `Session::build` through `PendingSessionInit`. Mod init, the hot-reload
-/// watcher, debug-UI lazy-init, and the level-load worker spawn likewise run on
-/// the splash frame loop so the first splash frame paints before any of that.
+/// `EventLoop::new`. The entire `Session` (options I/O, audio, the scripting
+/// bootstrap, the input/UI/modal group, and the net endpoint) is constructed
+/// post-first-pixel by `Session::build` through `PendingSessionInit`. Mod init,
+/// the hot-reload watcher, debug-UI lazy-init, and the level-load worker spawn
+/// likewise run on the splash frame loop so the first splash frame paints before
+/// any of that.
 /// See: context/lib/boot_sequence.md §1.
 pub(crate) fn build_session() -> Result<BootSession> {
     // Timing starts at session construction so the first stage captures the

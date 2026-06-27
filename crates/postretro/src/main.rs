@@ -307,10 +307,12 @@ fn main() -> Result<()> {
     env_logger::init();
     log::info!("[Engine] Postretro starting");
 
-    // Build session-lifetime boot state (args, content root, script runtime,
-    // registries, options, input) and the event loop. Mod init and the first
-    // level-load worker are deferred to the splash frame loop — see
-    // `startup::session::build_session`. See: context/lib/boot_sequence.md §1.
+    // Build boot-lifetime `App` state (args, content root, camera, frame
+    // timing, the `pending_session` bundle) and the event loop. The entire
+    // `Session` (options I/O, audio, scripting core, input/UI/modal group,
+    // net endpoint) is constructed post-first-pixel by `Session::build` via
+    // `install_pending_session`. Mod init and the first level-load worker are
+    // deferred to the splash loop. See: context/lib/boot_sequence.md §1.
     let startup::BootSession {
         event_loop,
         mut app,
@@ -379,8 +381,9 @@ pub(crate) struct App {
 
     camera: Camera,
 
-    /// Live session-lifetime container: the input/UI/modal field group, built
-    /// after the first visible frame by `Session::build` and installed through
+    /// Live session-lifetime container: all post-first-pixel subsystems
+    /// (scripting core, audio, net endpoint, input/UI/modal group, and their
+    /// bridges and registries), built by `Session::build` and installed through
     /// `PendingSessionInit::install`. `None` during boot (Booting/Splash before
     /// the install redraw) — boot-phase code physically cannot name a session
     /// field. Becomes `Some` for the rest of the run; a failed build exits boot.
@@ -2752,8 +2755,9 @@ impl App {
     /// Finish deferred session startup on the first visible logo frame. Takes
     /// (and thereby consumes) `pending_session` so the install commits at most
     /// once — a suspend/resume that re-enters the splash loop finds it `None`
-    /// and skips re-init. Builds and installs the migrated `Session` group and
-    /// sets up the net endpoint, both behind the logo pixels.
+    /// and skips re-init. Builds and installs the entire `Session` (options
+    /// I/O, audio, scripting core, input/UI/modal group, net endpoint) behind
+    /// the logo pixels, via `PendingSessionInit::install` → `Session::build`.
     ///
     /// Returns `true` on success (or when nothing was pending). On a `Session`
     /// build failure it stores the error in `exit_result`, logs it, exits the
@@ -3093,7 +3097,9 @@ impl App {
     }
 
     fn run_frontend_ui_logic(&mut self, event_loop: &ActiveEventLoop, frame_dt: f32) -> bool {
-        // Frontend runs post-install, so the session is present.
+        // Defensive guard: session is present for all normal frontend calls
+        // post-install, but a pre-install re-entry edge case could reach here
+        // before the session is built. Return a neutral `true` in that case.
         if self.session.is_none() {
             return true;
         }

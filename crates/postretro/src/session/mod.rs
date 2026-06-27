@@ -17,8 +17,6 @@ use anyhow::{Context, Result};
 
 use crate::input;
 use crate::render;
-use crate::scripting::runtime::Frontend;
-use crate::{audio, netcode, options};
 use crate::scripting::builtins::{
     ClassnameDispatch, register_builtins as register_builtin_classnames,
 };
@@ -34,12 +32,14 @@ use crate::scripting::reactions::registry::{
 use crate::scripting::reactions::system_commands::{
     SystemReactionRegistry, register_system_reaction_primitives,
 };
+use crate::scripting::runtime::Frontend;
 use crate::scripting::runtime::{ScriptRuntime, ScriptRuntimeConfig};
 use crate::scripting::sequence::SequencedPrimitiveRegistry;
 use crate::scripting::state_crossings::CrossingDetector;
 use crate::scripting::state_persistence::StateStoreLifecycle;
 use crate::scripting_systems;
 use crate::startup::StartupTimings;
+use crate::{audio, netcode, options};
 
 /// Live session-lifetime container, held on `App` as `Option<Session>` and built
 /// once after first pixels by [`Session::build`]. Owns EVERY session-lifetime
@@ -453,8 +453,7 @@ impl Session {
             flash_decay,
             vignette_decay,
             shake_decay,
-            presentation_cells:
-                scripting_systems::presentation_cells::PresentationCellStore::new(),
+            presentation_cells: scripting_systems::presentation_cells::PresentationCellStore::new(),
             input_mode_tracker,
             state_store_lifecycle: StateStoreLifecycle::default(),
             sequence_registry,

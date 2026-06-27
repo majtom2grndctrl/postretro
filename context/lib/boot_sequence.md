@@ -39,6 +39,18 @@ The two-frame delay is causal: pixels reach the user before any deferred session
 
 Session-dependent systems (script runtime/context, registries, options, input, modal stack/UI registrations, frontend/focus state, net endpoint) are grouped so boot paths before install touch only pending inputs plus boot window/renderer state. The pending session owner is consumed exactly once (take-on-install), so a suspend/resume re-entering the splash loop never re-runs deferred init. The redraw-path stale-script reload drain is gated behind that install — it never runs before the script runtime exists and the first logo frame paints.
 
+### Session boundary (type-enforced)
+
+All session-lifetime state — the scripting core (context, runtime, primitive/reaction/system/classname registries, every system holding a `ScriptCtx` clone or registry reference), the input/UI/modal group, player options + settings path, the committed frontend declaration, the net endpoint, audio, and (dev-tools) the debug UI — is owned by one `Session`, held as `App.session: Option<Session>`. Boot-lifetime fields (renderer, window, camera, boot timings, level worker, the pending-session owner) stay on `App`.
+
+The boundary is **type-enforced**: while `App.session` is `None` (Booting/Splash before install), boot-phase code physically cannot name a session field. There is no `session_mut()` accessor; handlers reach session state through a scoped `self.session.as_ref()/as_mut()` borrow disjoint from the renderer/window field paths.
+
+`Session::build` is the **sole** construction site: whole-or-nothing, synchronous (no `await`, no yield), post-first-pixel, run inside the single install redraw on the logo frame. It builds in boot order: player options I/O (seeds input), fault-tolerant audio, the scripting bootstrap + registries + `ScriptCtx`-clone systems + input/UI/modal group, then the net endpoint. The only fatal step is script-runtime construction; audio, net, and built-in UI-tree disk loads degrade in place.
+
+**Install / failure flow.** The pending-session owner is consumed once via `take_once(pending_session)` (single-commit guard). On success the built `Session` is stored and boot proceeds. On a `Session::build` `Err` the install stores the error in `exit_result`, requests `event_loop.exit()`, and early-returns from the install frame so no later step runs against a `None` session — mirroring the renderer full-init failure path. The build-result → action decision is a pure classifier, tested without a window or GPU.
+
+**Suspend/resume.** Suspend keeps an installed `Session` (and an unconsumed pending owner) alive; the single-commit `take_once` guard means a resume re-entering the splash loop never re-runs deferred init. Only window-derived session state (the dev-tools debug UI) is dropped on suspend and lazily rebuilt on the resumed logo frame.
+
 ### Startup timing vocabulary
 
 `StartupTimings` records ordered named stage marks (logged as `[Startup] …`). Boot marks in order: `args_parsed`, `event_loop_created`, `window_created`, `wgpu_init` (boot-ready renderer), `first_black_frame`, `splash_decoded`, `splash_uploaded`, `first_splash_frame`, `audio_init_complete`, `script_runtime_ctor` (post-first-pixel, inside `Session::build`), `net_endpoint_complete`, `session_init_complete`, `renderer_full_init_complete`, and (CLI-map boot) `boot_worker_dispatch`. `first_black_frame` / `first_splash_frame` are recorded only on the presented branch (after command submission + successful present). `first_black_frame` precedes the net/audio/debug-UI/mod/level-worker marks **and** `script_runtime_ctor` — the script runtime is now built behind first pixels in `Session::build`.
@@ -136,13 +148,13 @@ Platform suspend is a separate path: it clears renderer/window/fog/collision and
 
 | Scope | Cleared on |
 |-------|-----------|
-| Engine init (preludes, primitive registry, `ScriptCtx`, `ScriptRuntime`, Rust-side registries) | Process exit only — built once at startup, never recreated. |
+| Session-lifetime core (primitive registry, `ScriptCtx`, `ScriptRuntime`, Rust-side registries, input/UI/modal group, options, frontend, net endpoint, audio) | Process exit only. Owned by `Session`, built once post-first-pixel by `Session::build` (not pre-window), then held for the whole run via `App.session`; never recreated. Survives platform suspend. |
 | `data_registry.entities` (entity-type descriptors from `ModManifest.entities`) | Engine-global. Survives level unload; survives platform suspend. |
 | `data_registry.maps` (mod map catalog from `ModManifest.maps`) | Engine-global. Survives level unload; survives platform suspend. |
 | `data_registry.global_reactions` / `global_crossings` (definitions from `ModManifest.reactions` / `crossings`) | Engine-global. Survive level unload; survive platform suspend. |
 | Active per-level reactions/crossings (`data_registry.reactions` / `crossings`) and level-scope UI trees | Level unload. Active sets recompose on the next level load from current globals plus that level's catalog tags. |
 | Level world, collision world, fog bridge, light bridge, level sounds, sprite collections, per-level GPU resources | Level unload; also cleared/dropped by suspend or exit as applicable. |
-| Renderer device/queue, window, audio mixer | Dropped on exit; renderer/window cleared on suspend and rebuilt on resume. |
+| Renderer device/queue, window | Dropped on exit; cleared on suspend and rebuilt on resume. (Audio is session-owned — see the session-lifetime row; it survives suspend.) |
 
 Hot reload (debug only) stages entity descriptors, store declarations, the map catalog, and mod-global reaction/crossing definitions off-thread, then reconciles them on the main thread. Compatible store schemas preserve live values; incompatible changes reject the staged result and preserve the previous descriptors/catalog/globals. A successful staged commit atomically replaces the committed catalog and global reaction/crossing snapshots, then recomposes the active sets for the current level tags. Stale or failed staged results leave committed globals and active sets unchanged. Removed store declarations never clear committed stores.
 

@@ -236,9 +236,8 @@ impl App {
                 // aliases `session.script_runtime`, so lift the committed frontend
                 // into a local and assign `session.frontend` after that borrow ends
                 // (mirroring the theme/font deferral).
-                let mut committed_frontend: Option<
-                    Option<crate::scripting::runtime::Frontend>,
-                > = None;
+                let mut committed_frontend: Option<Option<crate::scripting::runtime::Frontend>> =
+                    None;
                 if let Some(manifest) = session.script_runtime.mod_manifest_mut() {
                     // Drain entity-type descriptors from the validated mod manifest
                     // into the engine-global `DataRegistry`. Runtime parses; caller
@@ -253,8 +252,7 @@ impl App {
                         &session.sequence_registry,
                     );
                     data_registry.replace_global_reactions(global_reactions);
-                    data_registry
-                        .replace_global_crossings(std::mem::take(&mut manifest.crossings));
+                    data_registry.replace_global_crossings(std::mem::take(&mut manifest.crossings));
                     drop(data_registry);
 
                     // Register mod-scope UI trees into the tiered registry at `Mod`

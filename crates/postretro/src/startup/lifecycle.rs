@@ -871,17 +871,13 @@ impl App {
                 crate::scripting::components::health::pawn_with_health(&registry)
             {
                 use crate::scripting::slot_table::NumericRange;
-                if let Err(err) = script_ctx
-                    .slot_table
-                    .borrow_mut()
-                    .set_engine_numeric_range(
-                        "player.health",
-                        NumericRange {
-                            min: 0.0,
-                            max: health.max,
-                        },
-                    )
-                {
+                if let Err(err) = script_ctx.slot_table.borrow_mut().set_engine_numeric_range(
+                    "player.health",
+                    NumericRange {
+                        min: 0.0,
+                        max: health.max,
+                    },
+                ) {
                     log::warn!("[Loader] failed to set player.health range: {err}");
                 }
             }
@@ -1149,16 +1145,15 @@ mod tests {
                 state_store_lifecycle: Default::default(),
                 sequence_registry: scripting::sequence::SequencedPrimitiveRegistry::new(),
                 reaction_registry: scripting::reactions::registry::ReactionPrimitiveRegistry::new(),
-                system_registry:
-                    scripting::reactions::system_commands::SystemReactionRegistry::new(),
+                system_registry: scripting::reactions::system_commands::SystemReactionRegistry::new(
+                ),
                 progress_tracker: reaction_dispatch::ProgressTracker::new(),
                 crossing_detector: scripting::state_crossings::CrossingDetector::new(),
                 classname_dispatch: scripting::builtins::ClassnameDispatch::new(),
                 light_bridge: scripting_systems::light_bridge::LightBridge::new(),
                 fog_volume_bridge: scripting_systems::fog_volume_bridge::FogVolumeBridge::new(),
                 emitter_bridge: scripting_systems::emitter_bridge::EmitterBridge::new(),
-                particle_render:
-                    scripting_systems::particle_render::ParticleRenderCollector::new(),
+                particle_render: scripting_systems::particle_render::ParticleRenderCollector::new(),
                 mesh_render: scripting_systems::mesh_render::MeshRenderCollector::new(),
                 mesh_clip_tables: scripting_systems::mesh_anim::MeshClipTables::new(),
                 hit_zone_store: scripting_systems::hit_zones::HitZoneStore::new(),
@@ -1493,11 +1488,9 @@ mod tests {
             .collect::<Vec<_>>();
         {
             let session = app.session.as_mut().expect("test app session installed");
-            session.light_bridge.populate_from_level(
-                &lights,
-                &mut ctx.registry.borrow_mut(),
-                0,
-            );
+            session
+                .light_bridge
+                .populate_from_level(&lights, &mut ctx.registry.borrow_mut(), 0);
             session
                 .fog_volume_bridge
                 .populate_from_level(&mut ctx.registry.borrow_mut(), &fog_records);
@@ -1832,12 +1825,17 @@ mod tests {
     fn frontend_population_pushes_menu_and_enqueues_one_background_catalog_load() {
         let mut app = test_app();
         app.boot_state = BootState::Frontend;
-        app.session.as_mut().unwrap().modal_stack.registry_mut().register(
-            "mainMenu",
-            render::ui::demo::build_frontend_menu_descriptor(),
-            render::ui::modal_stack::ScopeTier::Mod,
-            false,
-        );
+        app.session
+            .as_mut()
+            .unwrap()
+            .modal_stack
+            .registry_mut()
+            .register(
+                "mainMenu",
+                render::ui::demo::build_frontend_menu_descriptor(),
+                render::ui::modal_stack::ScopeTier::Mod,
+                false,
+            );
         app.session.as_mut().unwrap().frontend = Some(Frontend {
             menu_tree: "mainMenu".to_string(),
             background_level: Some("menu_backdrop".to_string()),
@@ -1851,7 +1849,10 @@ mod tests {
         app.populate_frontend();
         app.populate_frontend();
 
-        assert_eq!(app.session.as_mut().unwrap().modal_stack.active_name(), Some("mainMenu"));
+        assert_eq!(
+            app.session.as_mut().unwrap().modal_stack.active_name(),
+            Some("mainMenu")
+        );
         assert_eq!(
             app.session.as_mut().unwrap().modal_stack.top_capture_mode(),
             input::UiCaptureMode::Capture,
@@ -1872,12 +1873,17 @@ mod tests {
     fn frontend_population_falls_back_before_loading_backdrop_when_menu_is_unknown() {
         let mut app = test_app();
         app.boot_state = BootState::Frontend;
-        app.session.as_mut().unwrap().modal_stack.registry_mut().register(
-            render::ui::demo::FRONTEND_MENU_NAME,
-            render::ui::demo::build_frontend_menu_descriptor(),
-            render::ui::modal_stack::ScopeTier::Engine,
-            false,
-        );
+        app.session
+            .as_mut()
+            .unwrap()
+            .modal_stack
+            .registry_mut()
+            .register(
+                render::ui::demo::FRONTEND_MENU_NAME,
+                render::ui::demo::build_frontend_menu_descriptor(),
+                render::ui::modal_stack::ScopeTier::Engine,
+                false,
+            );
         app.session.as_mut().unwrap().frontend = Some(Frontend {
             menu_tree: "missingMenu".to_string(),
             background_level: Some("menu_backdrop".to_string()),
@@ -1916,18 +1922,28 @@ mod tests {
 
         let mut app = test_app();
         app.boot_state = BootState::Frontend;
-        app.session.as_mut().unwrap().modal_stack.registry_mut().register(
-            render::ui::demo::FRONTEND_MENU_NAME,
-            render::ui::demo::build_frontend_menu_descriptor(),
-            render::ui::modal_stack::ScopeTier::Engine,
-            false,
-        );
-        app.session.as_mut().unwrap().modal_stack.registry_mut().register(
-            "oldMenu",
-            render::ui::demo::build_frontend_menu_descriptor(),
-            render::ui::modal_stack::ScopeTier::Mod,
-            false,
-        );
+        app.session
+            .as_mut()
+            .unwrap()
+            .modal_stack
+            .registry_mut()
+            .register(
+                render::ui::demo::FRONTEND_MENU_NAME,
+                render::ui::demo::build_frontend_menu_descriptor(),
+                render::ui::modal_stack::ScopeTier::Engine,
+                false,
+            );
+        app.session
+            .as_mut()
+            .unwrap()
+            .modal_stack
+            .registry_mut()
+            .register(
+                "oldMenu",
+                render::ui::demo::build_frontend_menu_descriptor(),
+                render::ui::modal_stack::ScopeTier::Mod,
+                false,
+            );
         app.session.as_mut().unwrap().frontend = Some(Frontend {
             menu_tree: "oldMenu".to_string(),
             background_level: None,
@@ -1938,7 +1954,10 @@ mod tests {
             },
         });
         app.present_frontend_menu();
-        assert_eq!(app.session.as_mut().unwrap().modal_stack.active_name(), Some("oldMenu"));
+        assert_eq!(
+            app.session.as_mut().unwrap().modal_stack.active_name(),
+            Some("oldMenu")
+        );
 
         let staged = StagedManifestBuildResult {
             generation: 4,
@@ -2019,12 +2038,17 @@ mod tests {
         crate::scripting::reactions::system_commands::register_system_reaction_primitives(
             &mut app.session.as_mut().unwrap().system_registry,
         );
-        app.session.as_mut().unwrap().modal_stack.registry_mut().register(
-            render::ui::demo::FRONTEND_MENU_NAME,
-            render::ui::demo::build_frontend_menu_descriptor(),
-            render::ui::modal_stack::ScopeTier::Engine,
-            false,
-        );
+        app.session
+            .as_mut()
+            .unwrap()
+            .modal_stack
+            .registry_mut()
+            .register(
+                render::ui::demo::FRONTEND_MENU_NAME,
+                render::ui::demo::build_frontend_menu_descriptor(),
+                render::ui::modal_stack::ScopeTier::Engine,
+                false,
+            );
         app.present_frontend_menu();
         app.session.as_mut().unwrap().ui_focus_rects = Some(FocusRectList {
             rects: vec![FocusRect {
@@ -2184,13 +2208,22 @@ mod tests {
     #[test]
     fn load_level_system_command_queues_catalog_load_request() {
         let mut app = test_app();
-        app.session.as_mut().unwrap().modal_stack.registry_mut().register(
-            "deathScreen",
-            render::ui::demo::build_frontend_menu_descriptor(),
-            render::ui::modal_stack::ScopeTier::Mod,
-            false,
-        );
-        app.session.as_mut().unwrap().modal_stack.push_named("deathScreen", None);
+        app.session
+            .as_mut()
+            .unwrap()
+            .modal_stack
+            .registry_mut()
+            .register(
+                "deathScreen",
+                render::ui::demo::build_frontend_menu_descriptor(),
+                render::ui::modal_stack::ScopeTier::Mod,
+                false,
+            );
+        app.session
+            .as_mut()
+            .unwrap()
+            .modal_stack
+            .push_named("deathScreen", None);
 
         script_ctx(&app).system_commands.push(
             scripting::reactions::system_commands::SystemReactionCommand::LoadLevel {
@@ -2234,12 +2267,17 @@ mod tests {
     #[test]
     fn return_to_frontend_system_command_queues_unload_then_backdrop_load() {
         let mut app = test_app();
-        app.session.as_mut().unwrap().modal_stack.registry_mut().register(
-            "mainMenu",
-            render::ui::demo::build_frontend_menu_descriptor(),
-            render::ui::modal_stack::ScopeTier::Mod,
-            false,
-        );
+        app.session
+            .as_mut()
+            .unwrap()
+            .modal_stack
+            .registry_mut()
+            .register(
+                "mainMenu",
+                render::ui::demo::build_frontend_menu_descriptor(),
+                render::ui::modal_stack::ScopeTier::Mod,
+                false,
+            );
         app.session.as_mut().unwrap().frontend = Some(Frontend {
             menu_tree: "mainMenu".to_string(),
             background_level: Some("menuBackdrop".to_string()),

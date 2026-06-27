@@ -89,9 +89,7 @@ use crate::render::Renderer;
 use crate::scripting::data_descriptors::ModThemeTokens;
 use crate::scripting::reaction_dispatch::{fire_named_event, fire_named_event_with_sequences};
 use crate::scripting::reactions::system_commands::SystemReactionCommand;
-use crate::scripting::runtime::{
-    Frontend, MenuCamera, ReloadSummary, StagedManifestCommitOutcome,
-};
+use crate::scripting::runtime::{Frontend, MenuCamera, ReloadSummary, StagedManifestCommitOutcome};
 use crate::scripting::staged_manifest::{StagedManifestBuildResult, StagedManifestBuildStatus};
 use crate::scripting::state_persistence::{
     STATE_FILE_PATH, collect_persisted_state, save_persisted_state,
@@ -562,10 +560,15 @@ pub(crate) struct App {
     /// slow-motion seam — no script surface yet (engine-side field only).
     anim_time_scale: f64,
 
-    /// Per-stage durations for log line A — engine boot
-    /// (args_parsed, script_runtime_ctor, event_loop_created, window_created,
-    /// wgpu_init, first_black_frame, splash_decoded, splash_uploaded,
-    /// first_splash_frame).
+    /// Per-stage durations for the boot log line, in record order: args_parsed,
+    /// event_loop_created, window_created, wgpu_init, first_black_frame,
+    /// splash_decoded, splash_uploaded, first_splash_frame, then the
+    /// post-first-pixel deferred-session marks (audio_init_complete,
+    /// script_runtime_ctor, net_endpoint_complete, session_init_complete),
+    /// renderer_full_init_complete, and (CLI-map boot) boot_worker_dispatch. The
+    /// script runtime is constructed inside `Session::build`, so its mark fires
+    /// after the logo frame — not in early engine boot.
+    /// See: context/lib/boot_sequence.md §1.
     boot_timings: StartupTimings,
 
     /// Per-stage durations for log line B — mod init (mod_init,
@@ -977,8 +980,7 @@ impl ApplicationHandler for App {
                 .unwrap_or(InputFocus::Gameplay);
             // `debug_ui` is session-owned; borrow the session for it and the
             // window (a disjoint `self` field) together.
-            if let (Some(session), Some(ws)) =
-                (self.session.as_mut(), self.window_state.as_ref())
+            if let (Some(session), Some(ws)) = (self.session.as_mut(), self.window_state.as_ref())
                 && let Some(debug_ui) = session.debug_ui.as_mut()
             {
                 let response = debug_ui.on_window_event(&ws.window, &event);
@@ -1600,9 +1602,7 @@ impl ApplicationHandler for App {
                 // Bump the engine frame counter once per Game logic phase.
                 // Reserved for primitives that need a per-frame ordering stamp.
                 // See: context/lib/scripting.md
-                script_ctx
-                    .frame
-                    .set(script_ctx.frame.get().wrapping_add(1));
+                script_ctx.frame.set(script_ctx.frame.get().wrapping_add(1));
 
                 // Net poll (M15 Phase 1): non-blocking, once per frame, BEFORE
                 // the catch-up tick loop. The client applies received
@@ -1765,10 +1765,7 @@ impl ApplicationHandler for App {
                         // `camera` as disjoint field borrows; the post-movement
                         // closure captures these locals (not `self`) so it does not
                         // re-borrow `self.session`.
-                        let session = self
-                            .session
-                            .as_mut()
-                            .expect("running session installed");
+                        let session = self.session.as_mut().expect("running session installed");
                         let hit_zone_store = &session.hit_zone_store;
                         let progress_tracker = &mut session.progress_tracker;
                         let camera = &mut self.camera;
@@ -1792,11 +1789,7 @@ impl ApplicationHandler for App {
                                     let registry_ref = registry.borrow();
                                     // Host / single-player: no client-side correction
                                     // offset (the host pawn is authoritative).
-                                    follow_camera_to_local_pawn(
-                                        camera,
-                                        &registry_ref,
-                                        Vec3::ZERO,
-                                    );
+                                    follow_camera_to_local_pawn(camera, &registry_ref, Vec3::ZERO);
                                 }
 
                                 #[cfg(feature = "dev-tools")]
@@ -2209,10 +2202,7 @@ impl ApplicationHandler for App {
                     // The render-stage bridges + collectors live on `Session`;
                     // borrow it once here (disjoint from the `renderer` borrow of
                     // `self.renderer` and from the other `self` fields read below).
-                    let session = self
-                        .session
-                        .as_mut()
-                        .expect("running session installed");
+                    let session = self.session.as_mut().expect("running session installed");
                     // Emitter bridge — after script `tick` handler, before particle
                     // sim. Spawns new particles; the sim advances them the same
                     // frame so they don't appear stuck at origin.
@@ -2284,7 +2274,9 @@ impl ApplicationHandler for App {
                         // writes sampled values into each `FogVolumeComponent`
                         // so the existing pack path picks them up unchanged.
                         let mut registry = script_ctx.registry.borrow_mut();
-                        session.fog_volume_bridge.tick(&mut registry, self.script_time);
+                        session
+                            .fog_volume_bridge
+                            .tick(&mut registry, self.script_time);
                     }
                     let all_lights = {
                         let registry = script_ctx.registry.borrow();
@@ -2679,7 +2671,11 @@ impl ApplicationHandler for App {
         // Mirrors the `window_event` seam; the decision is the mode flag. A raw
         // delta carries no queueable intent (hover/look is not nav), so the
         // capture suppresses the forward but queues nothing.
-        if !session.ui_dispatch.dispatch_event(None).forwards_to_gameplay() {
+        if !session
+            .ui_dispatch
+            .dispatch_event(None)
+            .forwards_to_gameplay()
+        {
             return;
         }
         // Raw mouse deltas only rotate the camera while gameplay owns input.
@@ -2767,15 +2763,29 @@ impl App {
     /// also consumes `pending_session`, so a resumed boot does not retry.
     /// See: context/lib/boot_sequence.md §1, §9; development_guide.md §6.2.
     pub(crate) fn install_pending_session(&mut self, event_loop: &ActiveEventLoop) -> bool {
-        if let Some(pending) = crate::startup::take_once(&mut self.pending_session) {
-            if let Err(err) = pending.install(self) {
+        // The build-result → action decision is the pure `classify_session_install`
+        // classifier; this method only performs the side effects it names, so the
+        // boot-abort contract stays testable without a window/GPU/`Session`.
+        let build_result = crate::startup::take_once(&mut self.pending_session)
+            .map(|pending| pending.install(self));
+        let had_pending = build_result.is_some();
+        let build_succeeded = !matches!(build_result, Some(Err(_)));
+        match crate::startup::classify_session_install(had_pending, build_succeeded) {
+            crate::startup::SessionInstallStep::NothingPending
+            | crate::startup::SessionInstallStep::Installed => true,
+            crate::startup::SessionInstallStep::AbortBoot => {
+                // SAFETY of the unwraps: `AbortBoot` is only produced when
+                // `had_pending && !build_succeeded`, i.e. `Some(Err(_))`.
+                let err = match build_result {
+                    Some(Err(err)) => err,
+                    _ => unreachable!("AbortBoot implies a failed build result"),
+                };
                 log::error!("[Engine] session init failed: {err:#}");
                 self.exit_result = Err(err);
                 event_loop.exit();
-                return false;
+                false
             }
         }
-        true
     }
 
     /// Current boot phase for the suspend/resume contract (boot_sequence §1, §9).
@@ -3219,10 +3229,7 @@ impl App {
             // App methods. Scope the session borrow to the commit call so the App
             // methods below can re-borrow `self`.
             let outcome = {
-                let session = self
-                    .session
-                    .as_mut()
-                    .expect("frontend session installed");
+                let session = self.session.as_mut().expect("frontend session installed");
                 session.script_runtime.commit_staged_manifest_result(
                     &result,
                     &session.script_ctx,
@@ -3547,9 +3554,10 @@ impl App {
     /// The `on_commit` reaction reads the bound slot's value (the entered text); the
     /// reaction fires synchronously here so it observes the slot as last edited.
     fn commit_text_entry(&mut self) {
-        let on_commit = self.session.as_ref().and_then(|session| {
-            session.modal_stack.active_on_commit().map(str::to_string)
-        });
+        let on_commit = self
+            .session
+            .as_ref()
+            .and_then(|session| session.modal_stack.active_on_commit().map(str::to_string));
         if let Some(on_commit) = on_commit {
             if let Some(session) = self.session.as_ref() {
                 let _ = fire_named_event_with_sequences(
@@ -3749,17 +3757,14 @@ impl App {
                     // writable-slot gate as setState): readonly warns + no-ops;
                     // unknown/non-String slot logs — never a panic.
                     use crate::scripting::primitives::store::{TextEdit, apply_text_edit};
-                    if let Err(err) =
-                        apply_text_edit(&script_ctx, &slot, TextEdit::Append(&text))
-                    {
+                    if let Err(err) = apply_text_edit(&script_ctx, &slot, TextEdit::Append(&text)) {
                         log::warn!("[Scripting] appendText to `{slot}` failed: {err}");
                     }
                 }
                 SystemReactionCommand::BackspaceText { slot } => {
                     // Empty backspace is a silent no-op inside `apply_text_edit`.
                     use crate::scripting::primitives::store::{TextEdit, apply_text_edit};
-                    if let Err(err) = apply_text_edit(&script_ctx, &slot, TextEdit::Backspace)
-                    {
+                    if let Err(err) = apply_text_edit(&script_ctx, &slot, TextEdit::Backspace) {
                         log::warn!("[Scripting] backspaceText to `{slot}` failed: {err}");
                     }
                 }

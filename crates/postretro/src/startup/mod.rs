@@ -145,6 +145,52 @@ pub(crate) fn take_once<T>(slot: &mut Option<T>) -> Option<T> {
     slot.take()
 }
 
+/// Decision for the deferred-session install step, derived from whether a
+/// pending session was taken this frame and whether its `Session::build`
+/// succeeded. Pure classifier (paired with [`classify_session_install`]) so the
+/// build-failure boot-abort contract is auditable without a window, GPU, or a
+/// real `Session` — the caller performs the side effects keyed on the variant.
+///
+/// | Variant | Caller side effects |
+/// |---|---|
+/// | `NothingPending` | none — `pending_session` was already consumed (resume re-entry); boot continues |
+/// | `Installed` | none — the session is stored; boot continues this frame |
+/// | `AbortBoot` | store the build error in `exit_result`, request `event_loop.exit()`, early-return so no later step runs against a `None` session |
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SessionInstallStep {
+    /// No pending session this frame (already consumed by an earlier commit, e.g.
+    /// a suspend/resume re-entry). The install is a no-op; boot proceeds.
+    NothingPending,
+    /// `Session::build` succeeded and the session was installed. Boot proceeds.
+    Installed,
+    /// `Session::build` failed (a hard boot failure). The caller stores the error,
+    /// requests exit, and early-returns from the install frame.
+    AbortBoot,
+}
+
+/// Map the deferred-session install inputs to the step the caller must take.
+/// Pure — no window, no GPU, no `Session`. `had_pending` is whether
+/// `take_once(pending_session)` yielded a value this frame; `build_succeeded` is
+/// whether that value's `Session::build` returned `Ok`.
+///
+/// A failed build (`had_pending && !build_succeeded`) maps to `AbortBoot`: the
+/// caller stores the error in `exit_result`, exits the event loop, and runs no
+/// later step that frame. Because the pending owner is consumed by the same
+/// `take_once`, a resumed boot finds `NothingPending` and never retries.
+pub(crate) fn classify_session_install(
+    had_pending: bool,
+    build_succeeded: bool,
+) -> SessionInstallStep {
+    if !had_pending {
+        return SessionInstallStep::NothingPending;
+    }
+    if build_succeeded {
+        SessionInstallStep::Installed
+    } else {
+        SessionInstallStep::AbortBoot
+    }
+}
+
 /// The redraw path may drain stale script-reload requests only after the splash
 /// logo frame has presented THIS boot cycle. Pure predicate naming the guard so
 /// the per-boot ordering contract is testable without a window. The caller
@@ -262,11 +308,11 @@ mod tests {
             "event_loop_created",          // session::build_session (EventLoop::new)
             "window_created",              // main::resumed
             "wgpu_init",                   // main::resumed (Renderer::new, boot phase)
-            "first_black_frame",           // splash_lifecycle::run_splash_frame_zero (after present)
-            "splash_decoded",              // splash_lifecycle::run_splash_frame_zero
-            "splash_uploaded",             // splash_lifecycle::run_splash_frame_zero
-            "first_splash_frame",          // splash_lifecycle::paint_splash_after_black (after present)
-            "audio_init_complete",         // session::Session::build (post-first-pixel, before scripting)
+            "first_black_frame", // splash_lifecycle::run_splash_frame_zero (after present)
+            "splash_decoded",    // splash_lifecycle::run_splash_frame_zero
+            "splash_uploaded",   // splash_lifecycle::run_splash_frame_zero
+            "first_splash_frame", // splash_lifecycle::paint_splash_after_black (after present)
+            "audio_init_complete", // session::Session::build (post-first-pixel, before scripting)
             "script_runtime_ctor", // session::Session::build (post-first-pixel, inside install)
             "net_endpoint_complete", // session::Session::build (post-first-pixel, after scripting)
             "session_init_complete", // session::PendingSessionInit::install
@@ -490,6 +536,43 @@ mod tests {
     fn take_once_on_empty_slot_is_none() {
         let mut slot: Option<u32> = None;
         assert_eq!(take_once(&mut slot), None);
+    }
+
+    // --- Deferred-session install decision (build-failure boot-abort) ---
+
+    #[test]
+    fn classify_session_install_no_pending_is_nothing_pending() {
+        // `take_once` yielded nothing this frame (already consumed on an earlier
+        // commit / resume re-entry): the install is a no-op and boot proceeds.
+        // `build_succeeded` is irrelevant when nothing was pending.
+        assert_eq!(
+            classify_session_install(false, true),
+            SessionInstallStep::NothingPending,
+        );
+        assert_eq!(
+            classify_session_install(false, false),
+            SessionInstallStep::NothingPending,
+        );
+    }
+
+    #[test]
+    fn classify_session_install_pending_ok_build_installs() {
+        assert_eq!(
+            classify_session_install(true, true),
+            SessionInstallStep::Installed,
+        );
+    }
+
+    #[test]
+    fn classify_session_install_pending_failed_build_aborts_boot() {
+        // A `Session::build` `Err` maps to `AbortBoot`: the caller stores the
+        // error in `exit_result`, requests exit, and runs no later step that
+        // frame. The pure decision is tested here; the side effects live in
+        // `App::install_pending_session`. No window/GPU/`Session` needed.
+        assert_eq!(
+            classify_session_install(true, false),
+            SessionInstallStep::AbortBoot,
+        );
     }
 
     // --- Deferred-session guard before runtime exists ---

@@ -88,8 +88,10 @@ Also in `crates/postretro/src/geometry.rs`: add `pub lightmap_layer: u32` (4 byt
 In `crates/postretro/src/prl_loader.rs` in the `WorldVertex { … }` construction (the
 `.map(|v| WorldVertex { … })` closure, around line 1031): add
 `lightmap_layer: v.lightmap_layer as u32` (widening from u16). In
-`crates/postretro/src/render/renderer_geometry.rs`: extend the vertex serializer to write
-the new field. The on-disk `Vertex` stores `lightmap_layer: u16`; the GPU struct stores it
+`crates/postretro/src/render/renderer_geometry.rs`: in `cast_world_vertices_to_bytes`, append
+`lightmap_layer.to_ne_bytes()` after `lightmap_uv` as the last field (bytes 32–35 of the serialized
+layout), matching the `VertexAttribute { offset: 32 }` declared in Task 5. Declare `lightmap_layer`
+as the last field in the `WorldVertex` struct. The on-disk `Vertex` stores `lightmap_layer: u16`; the GPU struct stores it
 as `u32` so the wgpu vertex format is `VertexFormat::Uint32`.
 
 Note: `VERTEX_SIZE` in `geometry.rs` is a private `const`. The AC test asserting
@@ -102,7 +104,7 @@ Wire Format below. Decouple irradiance and direction: each has its own `(width, 
 texel_density, format, total_bytes)`. Add `pub layer_count: u32` to `LightmapSection`. Change the
 `irradiance` and `direction` `Vec<u8>` fields to hold layer-major blobs (all layers concatenated,
 each layer `width × height` texels in the declared format). Update `to_bytes`, `from_bytes`,
-`placeholder`, `encode_section` (lightmap_bake.rs:193, which constructs `LightmapSection { width, height, … }`), `log_stats` (lightmap_bake.rs:470, which reads `section.width`/`section.height`), `fake_section` (lightmap.rs test helper), and all existing tests. `from_bytes` must return `InvalidData` when `version ≠ 2`, naming the received value. Note: pre-v2 sections had no version field — their first u32 was `width`. The rejection test should feed a realistic pre-v2 blob (first u32 value ≠ 2, e.g. a typical width like 1024) rather than a synthetic `version=1` header that never existed on disk. Update `context/lib/build_pipeline.md` with the new layout description.
+`placeholder`, `log_stats` (lightmap_bake.rs:470, which reads `section.width`/`section.height`), `fake_section` (lightmap.rs test helper), and all existing tests. Do not update `encode_section` (lightmap_bake.rs:193) in this task — its full v2 rewrite (layer-major blobs, `layer_count` wiring) is owned by Task 3a. After Task 2, `encode_section` will not compile because it still constructs `LightmapSection { width, height, … }` using the removed fields; this is resolved in Phase 2. `from_bytes` must return `InvalidData` when `version ≠ 2`, naming the received value. Note: pre-v2 sections had no version field — their first u32 was `width`. The rejection test should feed a realistic pre-v2 blob (first u32 value ≠ 2, e.g. a typical width like 1024) rather than a synthetic `version=1` header that never existed on disk. Update `context/lib/build_pipeline.md` with the new layout description.
 
 ### Task 3a: Layer-aware bake atlas and incremental-cache seam
 
@@ -128,7 +130,10 @@ In `crates/level-compiler/src/lightmap_bake.rs`:
 - `bake_monolithic_atlas` / `bake_face_chart`: write each face's texels into its placement's layer
   slice (offset by `placement.layer × atlas_width × atlas_height`).
 - `PreparedAtlas` and `LightmapBakeOutput`: add `pub layer_count: u32`. `bake_lightmap` and
-  `prepare_atlas` propagate it (placeholder / empty-geometry paths use `layer_count = 1`).
+  `prepare_atlas` propagate it (placeholder / empty-geometry paths use `layer_count = 1`). Also
+  supply `layer_count` at the two `LightmapBakeOutput { … }` construction sites in `main.rs` (~lines
+  534 and 656). `SharedAtlas` does not need a `layer_count` field — the layer is carried on
+  individual `ChartPlacement.layer`.
 - `log_stats`: read `section.irr_width` / `section.irr_height` / `section.layer_count` (the v1
   `section.width` / `section.height` fields are gone after Task 2).
 
@@ -138,10 +143,16 @@ In `crates/level-compiler/src/lightmap_layer.rs` (the per-light incremental cach
   Update the `size_of::<LayerTexel>() == 40` static assertion to `== 44`.
 - `LightmapLayer`: add `pub layer_count: u32`; its `to_bytes` / `from_bytes` header grows from 12 to
   16 bytes (`atlas_width`, `atlas_height`, `layer_count`, texel `count`). Update `LAYER_HEADER_BYTES`.
-- `composite_layers`: size the output `CompositedAtlas` for `layer_count` layers and index each
-  texel at `t.layer × (atlas_w × atlas_h) + t.idx`.
+- `composite_layers`: read `layer_count` from `layers[0].layer_count` (all entries share the same
+  atlas layout); size the output `CompositedAtlas` for `layer_count` layers and index each texel at
+  `t.layer × (atlas_w × atlas_h) + t.idx`. No signature change — `layer_count` is now read from the
+  `LightmapLayer` slice rather than passed separately, so the call site in `main.rs` (~line 643)
+  needs no argument change.
 - `atlas_layout_fingerprint`: fold `p.layer` into the digest alongside `p.x` / `p.y` so a repack that
   changes layer assignment invalidates the per-light cache.
+- `bake_light_layer` (lightmap_layer.rs:~190–243), the sole `LayerTexel` producer: resolve each
+  texel's atlas layer from `placements[chart_index].layer` into `LayerTexel.layer`, and compute `idx`
+  as the within-layer `atlas_y * atlas_w + atlas_x` (not a global index across all layers).
 
 The incremental-bake cache's on-disk `LayerTexel` / `LightmapLayer` format changes, invalidating
 existing cache entries; they regenerate on the next bake (dev-local cache, never shipped).
@@ -176,8 +187,7 @@ leaf's charts never straddle a layer boundary; when a leaf's charts don't fit in
 free rectangles, open a new layer. All layers share the single `(atlas_width, atlas_height)` chosen
 to fit the largest leaf's charts up to `max_dim`. Add `const MAX_ATLAS_LAYERS: u32 = 256` and a new
 error variant `LightmapBakeError::LayerOverflow { layer_count: u32, max: u32 }`, returned when the
-layer count would exceed `MAX_ATLAS_LAYERS`. Per-layer dimensions stay power-of-two and multiples of
-4 (BC6H block alignment).
+layer count would exceed `MAX_ATLAS_LAYERS`. Remove the existing `LightmapBakeError::AtlasOverflow` variant — the multi-bin packer never fails on atlas area (it opens more layers instead); `LayerOverflow` is its replacement. `ChartTooLarge` is preserved for charts whose largest side exceeds `max_dim`. Per-layer dimensions stay power-of-two and multiples of 4 (BC6H block alignment).
 
 Direction reuses irradiance's placements and layer indices verbatim — same `(atlas_width,
 atlas_height)`, same per-face layer (see Decisions). There is no separate direction pack.
@@ -209,13 +219,12 @@ In `crates/postretro/src/lighting/lightmap.rs`:
 - `usable_atlas_dimensions` needs no signature change — `upload_irradiance_texture` and `upload_direction_texture` already receive `&LightmapSection` and can read `layer_count` directly from it.
 
 In `crates/postretro/src/render/renderer_init_resources.rs`: add
-`const REQUIRED_MAX_TEXTURE_ARRAY_LAYERS: u32 = 256`. Add the adapter pre-check that bails with a named `[Renderer]` error when `adapter_limits.max_texture_array_layers < REQUIRED_MAX_TEXTURE_ARRAY_LAYERS` — this produces the friendly diagnostic before `request_device` is called. The `required_limits` entry is the hard backstop that causes `request_device` to fail on non-conformant adapters; both mechanisms coexist intentionally. Also set
+`const REQUIRED_MAX_TEXTURE_ARRAY_LAYERS: u32 = 256`. Implement `fn array_layers_sufficient(limit: u32) -> bool { limit >= REQUIRED_MAX_TEXTURE_ARRAY_LAYERS }` in this file. Add the adapter pre-check that bails with a named `[Renderer]` error when `!array_layers_sufficient(adapter_limits.max_texture_array_layers)` — this produces the friendly diagnostic before `request_device` is called. The `required_limits` entry is the hard backstop that causes `request_device` to fail on non-conformant adapters; both mechanisms coexist intentionally. Also set
 `max_texture_array_layers: REQUIRED_MAX_TEXTURE_ARRAY_LAYERS` in the `required_limits`
 struct so the device is actually asked to provide this floor. Correct stale doc-comment references to `render::mod.rs`'s adapter pre-check in
 `crates/postretro/src/lighting/lightmap.rs` (~lines 112, 344) and
 `crates/level-compiler/src/lightmap_bake.rs` (~line 33) to point to `renderer_init_resources.rs`
-(grep `render::mod` to catch every stale pointer to the pre-check; leave unrelated `mod.rs`
-references such as `SHADER_SOURCE` alone).
+(grep `render::mod` to catch every stale pointer to the pre-check; ignore hits in files where `mod.rs` is referenced for unrelated reasons — only update references that point to the adapter pre-check).
 
 In `crates/postretro/src/prl_loader.rs`: update the `LightmapSection::from_bytes` call site (around
 the lightmap section read) to handle the new fields; extend the `info!` log to emit `[PRL] Lightmap: {w}x{h} atlas, {n} layer(s), …` matching the AC's expected prefix and `layer(s)` token.
@@ -266,9 +275,10 @@ SH/dynamic-direct BGL — a different layout entirely — so it is out of scope 
 
 **Phase 1 (sequential):** Task 1, then Task 2 — vertex and format contracts that all downstream
 tasks compile against. Task 2 depends on Task 1 only via the `Vertex::new` call-site audit. Note:
-after Task 2 the `postretro` crate does not build until Task 4 repoints the runtime `s.width` /
-`s.height` readers to `s.irr_width` / `s.irr_height`; only `postretro-level-format` builds at the
-Phase-1 boundary.
+after Task 2 neither `postretro` nor `postretro-level-compiler` builds: `postretro` because Task 4
+hasn't yet repointed `s.width`/`s.height` to `s.irr_width`/`s.irr_height`; `postretro-level-compiler`
+because `encode_section` still references the removed fields until Task 3a rewrites it. Only
+`postretro-level-format` builds at the Phase-1 boundary.
 
 **Phase 2 (concurrent):** Task 3a (layer-aware bake atlas + incremental-cache seam) and Task 4
 (runtime array-texture upload path) — independent once Tasks 1 and 2 are done.

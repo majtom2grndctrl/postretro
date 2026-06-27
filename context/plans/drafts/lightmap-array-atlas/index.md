@@ -64,7 +64,7 @@ leaf on a single layer and achieves 85–95% packing density vs the shelf packer
 - [ ] The adapter pre-check logs a `[Renderer]` error and aborts when `max_texture_array_layers` is
   below the required floor. Factor the comparison into a pure helper (e.g.
   `fn array_layers_sufficient(limit: u32) -> bool`) and unit-test it, since no real adapter exposes
-  `< 256` to exercise the full path. `filter_usable_section` returns `None` (and logs a `[Renderer]`
+  `< 256` to exercise the full path.
   `filter_usable_section` (which gains a `max_texture_array_layers` parameter, see Task 4) returns
   `None` (and logs a `[Renderer]` error) when a `LightmapSection` has
   `layer_count > max_texture_array_layers` (verified by a unit test passing a small layer limit and an

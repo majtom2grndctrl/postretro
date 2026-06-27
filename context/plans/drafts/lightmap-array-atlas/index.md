@@ -104,7 +104,7 @@ Wire Format below. Decouple irradiance and direction: each has its own `(width, 
 texel_density, format, total_bytes)`. Add `pub layer_count: u32` to `LightmapSection`. Change the
 `irradiance` and `direction` `Vec<u8>` fields to hold layer-major blobs (all layers concatenated,
 each layer `width × height` texels in the declared format). Update `to_bytes`, `from_bytes`,
-`placeholder`, `log_stats` (lightmap_bake.rs:470, which reads `section.width`/`section.height`), `fake_section` (lightmap.rs test helper), and all existing tests. Do not update `encode_section` (lightmap_bake.rs:193) in this task — its full v2 rewrite (layer-major blobs, `layer_count` wiring) is owned by Task 3a. After Task 2, `encode_section` will not compile because it still constructs `LightmapSection { width, height, … }` using the removed fields; this is resolved in Phase 2. `from_bytes` must return `InvalidData` when `version ≠ 2`, naming the received value. Note: pre-v2 sections had no version field — their first u32 was `width`. The rejection test should feed a realistic pre-v2 blob (first u32 value ≠ 2, e.g. a typical width like 1024) rather than a synthetic `version=1` header that never existed on disk. Update `context/lib/build_pipeline.md` with the new layout description.
+`placeholder`, `log_stats` (lightmap_bake.rs:470, which reads `section.width`/`section.height`), `fake_section` (lightmap.rs test helper), and all existing tests. Do not update `encode_section` (defined at lightmap_bake.rs:~172) in this task — its full v2 rewrite (layer-major blobs, `layer_count` wiring) is owned by Task 3a. After Task 2, `encode_section` will not compile because it still constructs `LightmapSection { width, height, … }` using the removed fields; this is resolved in Phase 2. `from_bytes` must return `InvalidData` when `version ≠ 2`, naming the received value. Note: pre-v2 sections had no version field — their first u32 was `width`. The rejection test should feed a realistic pre-v2 blob (first u32 value ≠ 2, e.g. a typical width like 1024) rather than a synthetic `version=1` header that never existed on disk. Update `context/lib/build_pipeline.md` with the new layout description.
 
 ### Task 3a: Layer-aware bake atlas and incremental-cache seam
 
@@ -126,7 +126,8 @@ In `crates/level-compiler/src/lightmap_bake.rs`:
   dilation must not bleed across layer boundaries.
 - `CompositedAtlas::encode_section`: emit the v2 multi-layer `LightmapSection` from Task 2 —
   layer-major blobs, `layer_count`, `irr_width/irr_height = atlas_width/atlas_height`,
-  `dir_width/dir_height = atlas_width/atlas_height`, `dir_texel_density = irr_texel_density`.
+  `dir_width/dir_height = atlas_width/atlas_height`. The method's existing `texel_density` parameter
+  writes both `irr_texel_density` and `dir_texel_density` (set them equal; see Decisions).
 - `bake_monolithic_atlas` / `bake_face_chart`: write each face's texels into its placement's layer
   slice (offset by `placement.layer × atlas_width × atlas_height`).
 - `PreparedAtlas` and `LightmapBakeOutput`: add `pub layer_count: u32`. `bake_lightmap` and
@@ -173,6 +174,10 @@ passes a small value directly. `PackOutput` is
 layers share one `(atlas_width, atlas_height)` (a `texture_2d_array` has a single per-layer
 dimension for all layers); each `ChartPlacement` carries its `layer` (Task 3a). This replaces
 `shelf_pack`'s `(u32, u32, Vec<ChartPlacement>)` return; update `prepare_atlas`'s destructure.
+`prepare_atlas` has two packer call sites: the main path and the no-static-lights branch (~247–256)
+that currently falls back to `(1, 1, vec![])` on error. Update both; the fallback must construct
+`PackOutput { layer_count: 1, atlas_width: 1, atlas_height: 1, placements: vec![] }` and populate
+`PreparedAtlas.layer_count` accordingly.
 
 Each chart carries its BVH leaf index. `Chart` does not currently have this field; add
 `pub leaf_index: u32`. `plan_charts` populates it from `geom.geometry.faces[face_index].leaf_index`
@@ -187,7 +192,7 @@ leaf's charts never straddle a layer boundary; when a leaf's charts don't fit in
 free rectangles, open a new layer. All layers share the single `(atlas_width, atlas_height)` chosen
 to fit the largest leaf's charts up to `max_dim`. Add `const MAX_ATLAS_LAYERS: u32 = 256` and a new
 error variant `LightmapBakeError::LayerOverflow { layer_count: u32, max: u32 }`, returned when the
-layer count would exceed `MAX_ATLAS_LAYERS`. Remove the existing `LightmapBakeError::AtlasOverflow` variant — the multi-bin packer never fails on atlas area (it opens more layers instead); `LayerOverflow` is its replacement. `ChartTooLarge` is preserved for charts whose largest side exceeds `max_dim`. Per-layer dimensions stay power-of-two and multiples of 4 (BC6H block alignment).
+layer count would exceed `MAX_ATLAS_LAYERS`. Remove the existing `LightmapBakeError::AtlasOverflow` variant — the multi-bin packer never fails on atlas area (it opens more layers instead); `LayerOverflow` is its replacement. `ChartTooLarge` is preserved for charts whose largest side exceeds `max_dim`. Also remove the two retry-on-overflow loops in `crates/level-compiler/src/main.rs` that pattern-matched on `AtlasOverflow`: `prepare_lightmap_atlas_with_retry` (~253–284) and the cold-path retry loop (~667–710). Both doubled `texel_density` and retried on area overflow — dead code once `pack_layers` opens new layers instead. Replace each with a single non-retrying `prepare_atlas` call. `ChartTooLarge` is a hard error (per-chart density coarsening is out of scope); propagate it to the caller. Per-layer dimensions stay power-of-two and multiples of 4 (BC6H block alignment).
 
 Direction reuses irradiance's placements and layer indices verbatim — same `(atlas_width,
 atlas_height)`, same per-face layer (see Decisions). There is no separate direction pack.
@@ -199,7 +204,9 @@ per-layer `(atlas_width, atlas_height)`. Its signature reads the layer from the 
 
 Add a unit test asserting the leaf-cohesion invariant. The two-layer bake test calls `pack_layers`
 directly with a small `max_dim` argument and two BVH leaves (self-contained in `lightmap_bake.rs`'s
-test module; does not touch the private `MAX_ATLAS_DIMENSION`).
+test module; does not touch the private `MAX_ATLAS_DIMENSION`). Delete the now-invalid tests that
+reference the removed symbols: `shelf_pack_overflows_past_8192_cap` (~lightmap_bake.rs:1988) and
+any test matching `LightmapBakeError::AtlasOverflow` (~lightmap_bake.rs:2475).
 
 ### Task 4: Runtime array texture pipeline
 

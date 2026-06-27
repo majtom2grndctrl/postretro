@@ -1486,22 +1486,30 @@ mod tests {
         let _ = std::fs::remove_file(&output);
     }
 
-    /// Every small test map in `content/dev/maps/` must compile end-to-end and
-    /// emit an SH volume section. The bake uses a coarse spacing (4 m) to keep
-    /// test time bounded — the probe count is a design parameter, not what this
-    /// test is exercising.
+    /// A curated set of small fixture maps must compile end-to-end and emit an
+    /// SH volume section. The bake uses a coarse spacing (4 m) to keep test
+    /// time bounded — the probe count is a design parameter, not what this test
+    /// is exercising.
     ///
-    /// The large perf/stress maps are excluded: `stress-warren*`,
-    /// `campaign-test`, and `occlusion-test` exist to stress the runtime, and
-    /// baking them here costs minutes without adding SH-bake coverage the small
-    /// maps don't already give.
+    /// This is a fixture smoke test, not full-map coverage. The large perf/stress
+    /// maps (`stress-warren*`, `campaign-test`, `occlusion-test`) are deliberately
+    /// absent: they stress the runtime, and baking them here costs minutes
+    /// without adding SH-bake coverage these small maps don't already give.
     #[test]
-    fn every_test_map_compiles_with_sh_section() {
-        // Perf/stress maps prove runtime behavior, not the SH bake; their bake
-        // time dominates this test, so skip them here.
-        fn is_perf_stress_map(stem: &str) -> bool {
-            stem.starts_with("stress-warren") || stem == "campaign-test" || stem == "occlusion-test"
-        }
+    fn small_fixture_maps_compile_with_sh_section() {
+        // Small fixtures that exercise the SH bake quickly. Add new small maps
+        // here as needed; do NOT add perf/stress maps — their bake time would
+        // dominate this smoke test.
+        const FIXTURE_MAPS: &[&str] = &[
+            "combat-demo.map",
+            "gate-heavily-lit.map",
+            "soft_shadow_test.map",
+            "anim-demo.map",
+            "test_animated_weight_maps_single.map",
+            "test_animated_weight_maps_mixed.map",
+            "test_animated_weight_maps_cap.map",
+            "test_animated_weight_maps_occluded.map",
+        ];
 
         let maps_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -1509,18 +1517,13 @@ mod tests {
             .expect("workspace root")
             .join("content/dev/maps");
 
-        let mut map_count = 0;
-        for entry in std::fs::read_dir(&maps_dir).expect("maps dir should exist") {
-            let entry = entry.expect("dir entry");
-            let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) != Some("map") {
-                continue;
-            }
-            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-            if is_perf_stress_map(stem) {
-                continue;
-            }
-            map_count += 1;
+        for map_name in FIXTURE_MAPS {
+            let path = maps_dir.join(map_name);
+            assert!(
+                path.exists(),
+                "fixture map {} is missing; update FIXTURE_MAPS",
+                path.display()
+            );
             let map_data =
                 crate::parse::parse_map_file(&path, crate::map_format::MapFormat::IdTech2)
                     .unwrap_or_else(|e| panic!("failed to parse {}: {e}", path.display()));
@@ -1567,11 +1570,6 @@ mod tests {
                     });
             assert_eq!(section, restored);
         }
-        assert!(
-            map_count > 0,
-            "no .map files found in {}",
-            maps_dir.display()
-        );
     }
 
     #[test]

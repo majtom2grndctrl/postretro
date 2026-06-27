@@ -14,12 +14,12 @@ use super::*;
 ///   Keep all canonical slots active. Modern PRL loading rejects missing
 ///   `FogCellMasks` when canonical fog volumes exist.
 ///
-/// `camera_cell`'s own fog mask bits are always unioned into the result when
-/// masks are present, regardless of whether the camera cell appears in
-/// `fog_reachable`. Portal traversal can omit the camera cell on transient
-/// frames (e.g., grazing a portal seam); unioning prevents fog the camera is
-/// inside from flickering off. Idempotent when the camera cell is already in
-/// `fog_reachable`.
+/// When `fog_reachable` is non-empty and masks are present, `camera_cell`'s
+/// own fog mask bits are unioned into the result regardless of whether the
+/// camera cell appears in `fog_reachable`. Portal traversal can omit the camera
+/// cell on transient frames (e.g., grazing a portal seam); unioning prevents
+/// fog the camera is inside from flickering off. Idempotent when the camera
+/// cell is already in `fog_reachable`.
 ///
 /// Must be called after `FogPass::set_canonical_volumes`; before = 0
 /// canonical count = 0 mask.

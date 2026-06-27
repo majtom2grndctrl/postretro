@@ -501,9 +501,11 @@ impl Renderer {
             //   * `VisibleCells::Culled` (a concrete visible-cell set), AND
             //   * portal-traversal provenance (`VisibilityPath::PrlPortal`).
             // The gather may still bail to the tree walk for THIS frame if a
-            // visible cell id is out of the index's range. Everything else
-            // (DrawAll, non-portal Culled fallbacks, missing index) routes to
-            // the unchanged tree walk. Gathered into the pipeline's reused
+            // visible cell id is out of the index's range. DrawAll and
+            // non-portal Culled fallbacks also route to the unchanged tree walk.
+            // `None` for the installed index means no installed level, an empty
+            // BVH map, or released resources; missing or invalid required PRL
+            // indexes fail at load time. Gathered into the pipeline's reused
             // scratch (no per-frame allocation): `cell_draw_index` borrowed
             // immutably and `candidate_cull` mutably — disjoint fields. The
             // returned flag only signals readiness; the gathered leaves live in
@@ -582,8 +584,9 @@ impl Renderer {
                         cull_ts,
                     );
                 }
-                // Tree-walk fallback (DrawAll, non-portal Culled, missing index,
-                // out-of-range cell id, or no candidate pipeline).
+                // Tree-walk fallback (DrawAll, non-portal Culled, out-of-range
+                // cell id, no installed level/empty BVH/released resources, or
+                // no candidate pipeline).
                 _ => {
                     if let Some(cull) = &mut self.compute_cull {
                         cull.dispatch(

@@ -1,15 +1,17 @@
-// Client-side replication apply: the `NetworkId -> EntityId` map, local
-// spawn/despawn, baseline-repair decisions, the pending-repair set, and
-// client-side ack production for M15 Phase 2.
+// Client-side snapshot apply/repair/ack state, plus local reconcile and
+// descriptor-remote materialization surfaces.
 // See: context/lib/networking.md
 //
-// This is the engine half of the Phase 2 *client* data path. The net crate is
+// This is the engine half of the client replication data path. The net crate is
 // registry-blind and keyed only by `NetworkId`; this module owns the engine side
 // that must know both halves: it decides how each validated `EntityRecord` mutates
 // the `EntityRegistry`, tracks which `baseline_id` it holds per entity, and decides
-// when an unappliable record needs a full-baseline refresh. All registry mutation
-// flows through the game-logic-owned apply primitives (`spawn`,
-// `set_component_value`, `despawn`) — the net crate never touches the registry.
+// when an unappliable record needs a full-baseline refresh. It also surfaces
+// authoritative local-pawn inputs for reconciliation and descriptor-class remote
+// requests for presentation materialization, including retries while a mapped remote
+// is still meshless. All registry mutation flows through the game-logic-owned apply
+// primitives (`spawn`, `set_component_value`, `despawn`) — the net crate never
+// touches the registry.
 //
 // State machine (per validated snapshot, applied in record order):
 //   - FullBaseline, unmapped: spawn (Transform required), apply present payloads,
@@ -35,6 +37,7 @@ use postretro_net::wire::{
     ComponentPayload, EntityRecord, NetworkId, SnapshotMessage, WirePlayerMovementState,
 };
 
+use crate::scripting::components::mesh::{FadeSourceKind, MeshComponent, switch_animation_state};
 use crate::scripting::registry::{
     ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform,
 };
@@ -55,6 +58,8 @@ pub(crate) struct InterpolationSampleStats {
 const REFRESH_REASON_UNKNOWN_BASELINE: u8 = 0;
 /// Reason: a `FullBaseline` named a `NetworkId` whose mapped `EntityId` was stale.
 const REFRESH_REASON_STALE_MAPPING: u8 = 1;
+/// Reason: local level unload cleared registry-backed entities but kept the transport.
+const REFRESH_REASON_LEVEL_RELOAD: u8 = 2;
 
 /// Repair-request resend cadence: one `BaselineRefreshRequest` per pending entity
 /// every 200 ms (5 Hz) until the matching full baseline arrives and clears it. The
@@ -158,6 +163,34 @@ pub(crate) struct LocalReconcileInput {
     pub(crate) acked_tick: Option<u32>,
 }
 
+/// A non-local, descriptor-class-bearing entity an `apply_snapshot` first spawned this
+/// snapshot, surfaced for the caller to materialize remote-enemy presentation (E10
+/// Task 6). `ClientReplication` spawns the entity Transform-only and maps its
+/// `NetworkId` (so it joins the remote interpolation path), but the descriptor tables
+/// are not in scope here — the net-facing apply is descriptor-blind. The caller
+/// (`client_receive_and_apply`, where the descriptor table is in scope) calls
+/// `materialize_net_remote_enemy_presentation` to attach ONLY the descriptor's mesh.
+///
+/// Surfaced on the unmapped first-spawn of a non-local record carrying an
+/// `entity_class`, and on later descriptor-class records only while the mapped entity
+/// is still missing `Mesh`. The helper is idempotent, so retry repairs a
+/// transform-only remote without resetting an already-materialized mesh. The local
+/// predicted pawn is excluded: it has its own `armed_local_pawn` movement-path
+/// materialization and is never a remote enemy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RemoteEnemyMaterialize {
+    /// The mapped `EntityId` the spawn produced (Transform-only at this point).
+    pub(crate) entity_id: EntityId,
+    /// The descriptor class the host stamped on the wire. The caller resolves this to
+    /// a descriptor and attaches its mesh; an unregistered class leaves the entity
+    /// transform-only (logged, not rejected).
+    pub(crate) entity_class: String,
+    /// Optional current mesh-animation state carried by the spawn baseline. It is
+    /// applied after descriptor mesh materialization so a client joining an already
+    /// active enemy does not miss the initial non-default animation state.
+    pub(crate) initial_animation_state: Option<String>,
+}
+
 /// The local-pawn baseline an `apply_snapshot` armed this snapshot (M15 Phase 3): the
 /// recipient-local `NetworkId` the host flagged `local_player: true`, the `EntityId` it
 /// mapped to, and the descriptor `entity_class` the host materialized the pawn from
@@ -203,11 +236,56 @@ pub(crate) struct ApplyOutcome {
     /// full baseline or a delta), not only the arming one — reconcile runs on every
     /// authoritative local update; the arming case is just the first.
     pub(crate) local_reconcile: Option<LocalReconcileInput>,
+    /// Non-local, descriptor-class-bearing entities that need remote-enemy mesh
+    /// presentation. Usually one entry per spawn; mapped re-baselines or deltas can
+    /// surface another entry only while the entity is still meshless, so retry can
+    /// repair a failed materialization without duplicating an already-live mesh. The
+    /// descriptor lookup deliberately does NOT happen here — descriptor tables are not
+    /// in scope in this descriptor-blind apply path.
+    pub(crate) remote_enemies: Vec<RemoteEnemyMaterialize>,
 }
 
 impl ClientReplication {
     pub(crate) fn new() -> Self {
         Self::default()
+    }
+
+    /// Clear registry-backed replication state for a connected-client level unload
+    /// while preserving connection-level snapshot ordering. Returns immediate refresh
+    /// requests for every previously-known `NetworkId` so the server re-sends full
+    /// baselines for unchanged, already-acked entities after the client registry is
+    /// cleared.
+    pub(crate) fn reset_for_level_unload(&mut self) -> Vec<BaselineRefreshRequest> {
+        let snapshot_sequence = self.latest_sequence.unwrap_or(0);
+        let known: Vec<(NetworkId, u32)> = self
+            .map
+            .keys()
+            .copied()
+            .map(|network_id| {
+                (
+                    network_id,
+                    self.baselines.get(&network_id).copied().unwrap_or(0),
+                )
+            })
+            .collect();
+
+        self.map.clear();
+        self.baselines.clear();
+        self.pending_repairs.clear();
+        self.interp = RemoteInterpolationBuffer::default();
+        self.local_pawn = None;
+
+        let mut requests = Vec::with_capacity(known.len());
+        for (network_id, missing_baseline_ref) in known {
+            self.queue_repair(
+                &mut requests,
+                snapshot_sequence,
+                network_id,
+                missing_baseline_ref,
+                REFRESH_REASON_LEVEL_RELOAD,
+            );
+        }
+        requests
     }
 
     /// Read-only view of the current `NetworkId -> EntityId` map. Test-only; the
@@ -271,6 +349,8 @@ impl ClientReplication {
                         NetworkId(*network_id),
                         *baseline_id,
                         components,
+                        *local_player,
+                        entity_class.as_deref(),
                         &mut outcome,
                     ) {
                         acked_baselines.push((*network_id, *baseline_id));
@@ -307,6 +387,8 @@ impl ClientReplication {
                         *baseline_ref,
                         *new_baseline_id,
                         components,
+                        *local_player,
+                        entity_class.as_deref(),
                         &mut outcome,
                     ) {
                         acked_baselines.push((*network_id, *new_baseline_id));
@@ -370,6 +452,8 @@ impl ClientReplication {
         network_id: NetworkId,
         baseline_id: u32,
         components: &[ComponentPayload],
+        local_player: bool,
+        entity_class: Option<&str>,
         outcome: &mut ApplyOutcome,
     ) -> bool {
         match self.map.get(&network_id).copied() {
@@ -382,6 +466,14 @@ impl ClientReplication {
                     network_id,
                     server_tick,
                     existing,
+                    components,
+                    outcome,
+                );
+                self.maybe_surface_remote_enemy_materialize(
+                    registry,
+                    existing,
+                    local_player,
+                    entity_class,
                     components,
                     outcome,
                 );
@@ -426,6 +518,22 @@ impl ClientReplication {
                     components,
                     outcome,
                 );
+                // E10 Task 6: a non-local baseline carrying a descriptor class is a
+                // remote enemy. Surface a presentation-materialization request for the
+                // caller (descriptor tables are not in scope here). Later mapped
+                // descriptor records surface a retry only while the entity is still
+                // meshless. The local pawn is excluded: its descriptor presentation
+                // rides `armed_local_pawn` on the movement path, never the remote-enemy
+                // mesh path.
+                if !local_player {
+                    if let Some(class) = entity_class {
+                        outcome.remote_enemies.push(RemoteEnemyMaterialize {
+                            entity_id: id,
+                            entity_class: class.to_string(),
+                            initial_animation_state: first_mesh_animation_state(components),
+                        });
+                    }
+                }
                 true
             }
         }
@@ -443,6 +551,8 @@ impl ClientReplication {
         baseline_ref: u32,
         new_baseline_id: u32,
         components: &[ComponentPayload],
+        local_player: bool,
+        entity_class: Option<&str>,
         outcome: &mut ApplyOutcome,
     ) -> bool {
         // The client must hold the referenced baseline and a live mapped entity. If
@@ -465,12 +575,48 @@ impl ClientReplication {
         // Safe: `appliable` proved both are Some and the entity is live.
         let id = mapped.expect("appliable delta has a mapped entity");
         self.apply_components_to(registry, network_id, server_tick, id, components, outcome);
+        self.maybe_surface_remote_enemy_materialize(
+            registry,
+            id,
+            local_player,
+            entity_class,
+            components,
+            outcome,
+        );
         // Advance the stored baseline so the next delta chains from this one. An
         // empty-component delta is a valid no-op apply: it still advances the baseline
         // (the server bumped the baseline id even if the mirrors did not change the
         // applied set), so the client stays in step.
         self.baselines.insert(network_id, new_baseline_id);
         true
+    }
+
+    fn maybe_surface_remote_enemy_materialize(
+        &self,
+        registry: &EntityRegistry,
+        entity_id: EntityId,
+        local_player: bool,
+        entity_class: Option<&str>,
+        components: &[ComponentPayload],
+        outcome: &mut ApplyOutcome,
+    ) {
+        if local_player {
+            return;
+        }
+        let Some(class) = entity_class else {
+            return;
+        };
+        if registry
+            .has_component_kind(entity_id, ComponentKind::Mesh)
+            .unwrap_or(false)
+        {
+            return;
+        }
+        outcome.remote_enemies.push(RemoteEnemyMaterialize {
+            entity_id,
+            entity_class: class.to_string(),
+            initial_animation_state: first_mesh_animation_state(components),
+        });
     }
 
     /// Arm client prediction for the recipient-local movement pawn (M15 Phase 3
@@ -687,6 +833,16 @@ impl ClientReplication {
                             });
                     }
                 }
+                ComponentPayload::MeshAnimationState(wire) => {
+                    let switched =
+                        apply_mesh_animation_state(registry, id, &wire.current_state, true);
+                    if !switched {
+                        log::trace!(
+                            "[Net] deferred mesh animation state `{}` for {network_id:?}",
+                            wire.current_state
+                        );
+                    }
+                }
             }
         }
     }
@@ -821,6 +977,15 @@ impl ClientReplication {
         self.baselines.get(&network_id).copied()
     }
 
+    /// Number of interpolation samples buffered for a mapped remote entity (tests).
+    /// Zero once the entity's buffer has been forgotten (despawn) or before any
+    /// Transform sample has been recorded. Used by the E10 enemy-replication harness
+    /// to prove the despawn apply forgets the `RemoteInterpolationBuffer` state.
+    #[cfg(test)]
+    pub(crate) fn sample_count(&self, network_id: NetworkId) -> usize {
+        self.interp.sample_count(network_id)
+    }
+
     /// The latest accepted snapshot sequence (tests / diagnostics).
     #[cfg(test)]
     pub(crate) fn latest_sequence(&self) -> Option<u32> {
@@ -840,6 +1005,49 @@ fn first_transform(
         }
         _ => None,
     })
+}
+
+fn first_mesh_animation_state(components: &[ComponentPayload]) -> Option<String> {
+    components.iter().find_map(|payload| match payload {
+        ComponentPayload::MeshAnimationState(wire) => Some(wire.current_state.clone()),
+        _ => None,
+    })
+}
+
+pub(crate) fn apply_mesh_animation_state(
+    registry: &mut EntityRegistry,
+    id: EntityId,
+    state: &str,
+    allow_unresolved_initial: bool,
+) -> bool {
+    if matches!(
+        switch_animation_state(registry, id, state),
+        crate::scripting::components::mesh::SwitchResult::Switched
+            | crate::scripting::components::mesh::SwitchResult::AlreadyInState
+    ) {
+        return true;
+    }
+
+    if !allow_unresolved_initial {
+        return false;
+    }
+
+    let Ok(mut mesh) = registry.get_component::<MeshComponent>(id).cloned() else {
+        return false;
+    };
+    let Some(animation) = mesh.animation.as_mut() else {
+        return false;
+    };
+    if !animation.states.contains_key(state) {
+        return false;
+    }
+    animation.current_state = state.to_string();
+    animation.entered_at = None;
+    animation.previous_state = None;
+    animation.previous_entered_at = None;
+    animation.fade_source = FadeSourceKind::Clip;
+    animation.interrupted_outgoing = None;
+    registry.set_component(id, mesh).is_ok()
 }
 
 /// Encode an ack and any refresh requests into `ClientMessage` byte buffers ready for
@@ -867,7 +1075,9 @@ mod tests {
     use crate::scripting::registry::Transform;
     use glam::Quat;
     use glam::Vec3;
-    use postretro_net::wire::{WireMovementState, WirePlayerMovementState, WireTransform};
+    use postretro_net::wire::{
+        WireMeshAnimationState, WireMovementState, WirePlayerMovementState, WireTransform,
+    };
 
     const EPSILON: f32 = 1e-6;
 
@@ -898,6 +1108,34 @@ mod tests {
             capsule_half_height: 0.8,
             capsule_eye_height: 1.5,
         })
+    }
+
+    fn mesh_animation_payload(state: &str) -> ComponentPayload {
+        ComponentPayload::MeshAnimationState(WireMeshAnimationState {
+            current_state: state.to_string(),
+        })
+    }
+
+    fn unresolved_mesh() -> MeshComponent {
+        use crate::scripting::components::mesh::{
+            AnimationState, DEFAULT_CROSSFADE_MS, InterruptPolicy, MeshAnimation,
+        };
+        use std::collections::HashMap;
+
+        let unresolved = |clip: &str| AnimationState {
+            clip: clip.to_string(),
+            looping: true,
+            crossfade_ms: DEFAULT_CROSSFADE_MS,
+            interrupt: InterruptPolicy::Smooth,
+            clip_index: None,
+        };
+        let mut states = HashMap::new();
+        states.insert("idle".to_string(), unresolved("Idle"));
+        states.insert("attack".to_string(), unresolved("Attack"));
+        MeshComponent::animated(
+            "models/remote_enemy/scene.gltf".to_string(),
+            MeshAnimation::new(states, "idle".to_string()),
+        )
     }
 
     fn full_baseline(
@@ -1757,6 +1995,75 @@ mod tests {
         );
     }
 
+    // Regression: connected-client level unload clears registry entities while the
+    // transport stays connected. The client must drop stale EntityId mappings and ask
+    // the server for fresh baselines, or unchanged acked remotes can disappear forever.
+    #[test]
+    fn level_unload_reset_clears_mappings_and_requests_refresh() {
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                10,
+                100,
+                vec![full_baseline(7, 3, vec![transform_payload(0.0)])],
+            ),
+        );
+        let old_entity = *client.map().get(&NetworkId(7)).expect("mapped");
+        assert!(registry.exists(old_entity));
+        assert!(client.presented_source(NetworkId(7), 100.0).is_some());
+
+        let refreshes = client.reset_for_level_unload();
+
+        assert!(client.map().is_empty(), "stale EntityId map is cleared");
+        assert_eq!(
+            client.stored_baseline(NetworkId(7)),
+            None,
+            "held baseline is cleared"
+        );
+        assert!(
+            client.presented_source(NetworkId(7), 100.0).is_none(),
+            "interpolation buffer is cleared"
+        );
+        assert!(
+            client.is_pending_repair(NetworkId(7)),
+            "old NetworkId remains pending so refreshes resend if needed"
+        );
+        assert_eq!(client.latest_sequence(), Some(10));
+        assert_eq!(refreshes.len(), 1);
+        assert_eq!(refreshes[0].snapshot_sequence, 10);
+        assert_eq!(refreshes[0].network_id, 7);
+        assert_eq!(refreshes[0].missing_baseline_ref, 3);
+        assert_eq!(refreshes[0].reason, REFRESH_REASON_LEVEL_RELOAD);
+
+        registry.clear_for_level_unload();
+        let outcome = client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                11,
+                110,
+                vec![full_baseline(7, 3, vec![transform_payload(2.0)])],
+            ),
+        );
+
+        assert!(
+            outcome.refresh_requests.is_empty(),
+            "refresh response applies"
+        );
+        assert!(
+            !client.is_pending_repair(NetworkId(7)),
+            "fresh full baseline clears pending repair"
+        );
+        let new_entity = *client.map().get(&NetworkId(7)).expect("remapped");
+        assert_ne!(
+            new_entity, old_entity,
+            "the NetworkId is remapped to a fresh level entity"
+        );
+        assert!(registry.exists(new_entity));
+        assert_eq!(entity_pos(&registry, new_entity), Vec3::new(2.0, 0.0, 0.0));
+    }
+
     // A local-player full baseline carries a movement payload (wire validation
     // requires `local_player: true` only on movement records).
     fn local_player_baseline(
@@ -1931,6 +2238,357 @@ mod tests {
         assert!(
             !ids.contains(&local),
             "the local predicted pawn must not be drawn as a remote debug capsule"
+        );
+    }
+
+    // A non-local full baseline carrying a descriptor class (a remote enemy).
+    fn remote_enemy_baseline(
+        network_id: u32,
+        baseline_id: u32,
+        entity_class: &str,
+        components: Vec<ComponentPayload>,
+    ) -> EntityRecord {
+        EntityRecord::FullBaseline {
+            network_id,
+            baseline_id,
+            last_processed_client_tick: None,
+            local_player: false,
+            entity_class: Some(entity_class.to_string()),
+            components,
+        }
+    }
+
+    fn remote_enemy_delta(
+        network_id: u32,
+        baseline_ref: u32,
+        new_baseline_id: u32,
+        entity_class: &str,
+        components: Vec<ComponentPayload>,
+    ) -> EntityRecord {
+        EntityRecord::Delta {
+            network_id,
+            baseline_ref,
+            new_baseline_id,
+            last_processed_client_tick: None,
+            local_player: false,
+            entity_class: Some(entity_class.to_string()),
+            components,
+        }
+    }
+
+    // --- E10 Task 6: an unmapped, non-local full baseline carrying an `entity_class`
+    // spawns Transform-only, maps the id (joins interpolation), and surfaces ONE
+    // remote-enemy materialize request carrying the mapped EntityId + class. ---
+    #[test]
+    fn non_local_class_bearing_baseline_surfaces_remote_enemy_materialize() {
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+
+        let out = client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                0,
+                10,
+                vec![remote_enemy_baseline(
+                    7,
+                    1,
+                    "decraniated_mob",
+                    vec![transform_payload(3.0)],
+                )],
+            ),
+        );
+
+        let id = *client
+            .map()
+            .get(&NetworkId(7))
+            .expect("remote enemy mapped");
+        // The entity spawned Transform-only at the baseline pose and joined the
+        // interpolation path (it is mapped, non-local).
+        assert!((entity_pos(&registry, id).x - 3.0).abs() < EPSILON);
+        // It is NOT marked the local pawn and reports no armed local pair.
+        assert_eq!(registry.local_player_pawn(), None);
+        assert!(out.armed_local_pawn.is_none());
+        // Exactly one remote-enemy materialize request, carrying the mapped id + class.
+        assert_eq!(
+            out.remote_enemies,
+            vec![RemoteEnemyMaterialize {
+                entity_id: id,
+                entity_class: "decraniated_mob".to_string(),
+                initial_animation_state: None,
+            }],
+            "first spawn surfaces one remote-enemy materialize request"
+        );
+    }
+
+    #[test]
+    fn remote_enemy_spawn_surfaces_initial_mesh_animation_state() {
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+
+        let out = client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                0,
+                10,
+                vec![remote_enemy_baseline(
+                    7,
+                    1,
+                    "decraniated_mob",
+                    vec![transform_payload(3.0), mesh_animation_payload("attack")],
+                )],
+            ),
+        );
+
+        let id = *client
+            .map()
+            .get(&NetworkId(7))
+            .expect("remote enemy mapped");
+        assert_eq!(
+            out.remote_enemies,
+            vec![RemoteEnemyMaterialize {
+                entity_id: id,
+                entity_class: "decraniated_mob".to_string(),
+                initial_animation_state: Some("attack".to_string()),
+            }],
+            "the spawn request carries the baseline's initial mesh animation state"
+        );
+    }
+
+    // --- E10 Task 6: a non-local baseline WITHOUT an entity_class surfaces no
+    // materialize request (the Phase 2 dumb mover stays mesh-less). ---
+    #[test]
+    fn non_local_classless_baseline_surfaces_no_remote_enemy() {
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+
+        let out = client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                0,
+                10,
+                vec![full_baseline(7, 1, vec![transform_payload(3.0)])],
+            ),
+        );
+
+        assert!(
+            client.map().contains_key(&NetworkId(7)),
+            "still spawns + maps (interpolation)"
+        );
+        assert!(
+            out.remote_enemies.is_empty(),
+            "a classless baseline surfaces no remote-enemy materialize request"
+        );
+    }
+
+    // --- E10 Task 6: the local pawn is excluded from the remote-enemy path even if a
+    // class rides its baseline — its descriptor presentation rides `armed_local_pawn`. ---
+    #[test]
+    fn local_player_baseline_surfaces_no_remote_enemy() {
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+
+        let out = client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                0,
+                10,
+                vec![local_player_baseline(
+                    7,
+                    1,
+                    vec![transform_payload(3.0), movement_payload()],
+                )],
+            ),
+        );
+
+        assert!(
+            out.armed_local_pawn.is_some(),
+            "the local pawn arms on the movement path"
+        );
+        assert!(
+            out.remote_enemies.is_empty(),
+            "the local pawn never rides the remote-enemy materialize path"
+        );
+    }
+
+    // --- E10 Task 6: a later delta and a re-baseline for the same NetworkId do NOT
+    // re-surface a materialize request (no duplicate spawn, no reset of mesh state). ---
+    #[test]
+    fn remote_enemy_delta_and_rebaseline_do_not_resurface_materialize() {
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+
+        // First spawn surfaces one request.
+        let spawn = client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                0,
+                10,
+                vec![remote_enemy_baseline(
+                    7,
+                    1,
+                    "decraniated_mob",
+                    vec![transform_payload(0.0)],
+                )],
+            ),
+        );
+        let id = *client.map().get(&NetworkId(7)).unwrap();
+        assert_eq!(spawn.remote_enemies.len(), 1);
+        registry
+            .set_component(id, MeshComponent::stateless("remote_enemy".to_string()))
+            .expect("test marks remote as already materialized");
+
+        // A delta for the same (now mapped) id moves it but surfaces nothing.
+        let delta_out = client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                1,
+                11,
+                vec![remote_enemy_delta(
+                    7,
+                    1,
+                    2,
+                    "decraniated_mob",
+                    vec![transform_payload(5.0)],
+                )],
+            ),
+        );
+        assert_eq!(
+            *client.map().get(&NetworkId(7)).unwrap(),
+            id,
+            "delta mutates the same entity, no respawn"
+        );
+        assert!(
+            delta_out.remote_enemies.is_empty(),
+            "a delta for a mapped remote enemy surfaces no new materialize request"
+        );
+
+        // A re-baseline (mapped + live) for the same id also surfaces nothing.
+        let rebaseline = client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                2,
+                12,
+                vec![remote_enemy_baseline(
+                    7,
+                    9,
+                    "decraniated_mob",
+                    vec![transform_payload(8.0)],
+                )],
+            ),
+        );
+        assert_eq!(
+            *client.map().get(&NetworkId(7)).unwrap(),
+            id,
+            "re-baseline updates in place, no respawn"
+        );
+        assert!(
+            rebaseline.remote_enemies.is_empty(),
+            "a re-baseline for a mapped remote enemy surfaces no new materialize request"
+        );
+    }
+
+    // Regression: if a descriptor-class baseline was applied while remote
+    // materialization could not attach a mesh, a later re-baseline must retry instead
+    // of leaving the mapped entity transform-only forever.
+    #[test]
+    fn remote_enemy_rebaseline_retries_when_mapped_entity_still_lacks_mesh() {
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+
+        let spawn = client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                0,
+                10,
+                vec![remote_enemy_baseline(
+                    7,
+                    1,
+                    "decraniated_mob",
+                    vec![transform_payload(0.0)],
+                )],
+            ),
+        );
+        let id = *client.map().get(&NetworkId(7)).unwrap();
+        assert_eq!(spawn.remote_enemies.len(), 1);
+        assert_eq!(
+            registry.has_component_kind(id, ComponentKind::Mesh),
+            Ok(false),
+            "test fixture leaves the first materialization unresolved"
+        );
+
+        let rebaseline = client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                1,
+                11,
+                vec![remote_enemy_baseline(
+                    7,
+                    2,
+                    "decraniated_mob",
+                    vec![transform_payload(2.0), mesh_animation_payload("attack")],
+                )],
+            ),
+        );
+
+        assert_eq!(
+            rebaseline.remote_enemies,
+            vec![RemoteEnemyMaterialize {
+                entity_id: id,
+                entity_class: "decraniated_mob".to_string(),
+                initial_animation_state: Some("attack".to_string()),
+            }],
+            "mapped descriptor remotes without Mesh retry materialization"
+        );
+    }
+
+    // Regression: a baseline can materialize a descriptor mesh, then a later delta in
+    // the same receive batch can arrive before clip indices resolve. The declared
+    // state name must be staged instead of dropped.
+    #[test]
+    fn remote_enemy_delta_applies_declared_animation_before_clips_resolve() {
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+
+        let spawn = client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                0,
+                10,
+                vec![remote_enemy_baseline(
+                    7,
+                    1,
+                    "decraniated_mob",
+                    vec![transform_payload(0.0)],
+                )],
+            ),
+        );
+        let id = spawn.remote_enemies[0].entity_id;
+        registry
+            .set_component(id, unresolved_mesh())
+            .expect("test simulates descriptor materialization before clip resolve");
+
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                1,
+                11,
+                vec![remote_enemy_delta(
+                    7,
+                    1,
+                    2,
+                    "decraniated_mob",
+                    vec![mesh_animation_payload("attack")],
+                )],
+            ),
+        );
+
+        let mesh = registry
+            .get_component::<MeshComponent>(id)
+            .expect("remote mesh remains attached");
+        assert_eq!(
+            mesh.animation.as_ref().unwrap().current_state,
+            "attack",
+            "declared unresolved mesh-animation deltas are staged by name"
         );
     }
 

@@ -3985,6 +3985,7 @@ impl App {
                 owners,
                 tick,
                 host_pawn: _,
+                map_enemies: _,
                 demo_mover: _,
                 state_slots,
             }) => {
@@ -4108,7 +4109,7 @@ impl App {
                 // disjoint RefCells; both borrows coexist for the duration of the apply.
                 let mut registry = self.script_ctx.registry.borrow_mut();
                 let mut slot_table = self.script_ctx.slot_table.borrow_mut();
-                netcode::client_receive_and_apply(
+                let materialized_remote_enemy_presentation = netcode::client_receive_and_apply(
                     &mut registry,
                     &mut slot_table,
                     client,
@@ -4116,11 +4117,15 @@ impl App {
                     state_slots,
                     prediction,
                     &net_descriptors,
+                    host_agent_params,
                     collision_world,
                     gravity,
                     crate::frame_timing::TICK_DURATION.as_secs_f32(),
                     dt,
                 );
+                if materialized_remote_enemy_presentation {
+                    resolve_mesh_entity_clips(&mut registry, &self.mesh_clip_tables);
+                }
                 // The interpolation-buffer sampling that writes presented remote poses
                 // runs in `net_sample_remote_interpolation`, AFTER the catch-up tick
                 // loop's stage-0 `snapshot_transforms` — so its previous/current
@@ -4149,6 +4154,7 @@ impl App {
             command_queues,
             owners,
             host_pawn: _,
+            map_enemies: _,
             demo_mover,
             state_slots,
         }) = self.net_endpoint.as_mut()
@@ -4303,6 +4309,32 @@ impl App {
             return;
         };
         netcode::host_register_own_pawn(allocator, replicable, host_pawn, pawn);
+    }
+
+    /// Register the listen host's map-placed AI enemies for outbound replication after a
+    /// level install (E10 Task 4). Map-placed descriptor enemies carrying `Brain` + `Agent`
+    /// are spawned by `apply_data_archetype_dispatch`; without registering them in the
+    /// `ReplicableSet` they never reach `produce_owned_snapshots`, so clients see no enemy.
+    ///
+    /// Host-gated: a no-op for single-player and the connected client (the endpoint is not
+    /// the `Host` variant). Thin delegation to `netcode::host_register_map_enemies`, which
+    /// sweeps the registry for AI map enemies, stamps each a `NetworkId`, registers it with
+    /// NO owner mapping (host-authoritative, never `local_player`), and tracks the ids in
+    /// the `Host` endpoint's `map_enemies` set so a level reload unregisters the stale ones
+    /// first. The enemies stay driven by the host's AI/steering systems — this only
+    /// replicates their `Transform` (and descriptor class) outbound.
+    fn host_register_map_enemies_after_install(&mut self) {
+        let Some(netcode::NetEndpoint::Host {
+            allocator,
+            replicable,
+            map_enemies,
+            ..
+        }) = self.net_endpoint.as_mut()
+        else {
+            return;
+        };
+        let registry = self.script_ctx.registry.borrow();
+        netcode::host_register_map_enemies(&registry, allocator, replicable, map_enemies);
     }
 
     /// Connected-client predicted fixed tick (M15 Phase 3 Task 3). Thin delegation
@@ -6512,6 +6544,7 @@ mod tests {
                 MeshComponent {
                     model: "models/descriptor_mob/scene.gltf".to_string(),
                     animation: Some(MeshAnimation::new(states, "idle".to_string())),
+                    origin_offset: glam::Vec3::ZERO,
                 },
             )
             .expect("freshly spawned id is live");
@@ -6552,6 +6585,82 @@ mod tests {
             .expect("animation block present");
         assert_eq!(anim.states.get("idle").unwrap().clip_index, Some(0));
         assert_eq!(anim.states.get("attack").unwrap().clip_index, Some(1));
+    }
+
+    #[test]
+    fn resolve_after_remote_enemy_materialization_uses_declared_default_clip_not_first_clip() {
+        use crate::scripting::components::mesh::{
+            AnimationState, DEFAULT_CROSSFADE_MS, InterruptPolicy, MeshComponent,
+        };
+        use crate::scripting::data_descriptors::{EntityTypeDescriptor, MeshDescriptor};
+        use crate::scripting::registry::{EntityRegistry, Transform};
+        use std::collections::HashMap;
+
+        let unresolved = |clip: &str, looping| AnimationState {
+            clip: clip.into(),
+            looping,
+            crossfade_ms: DEFAULT_CROSSFADE_MS,
+            interrupt: InterruptPolicy::Smooth,
+            clip_index: None,
+        };
+        let mut states = HashMap::new();
+        states.insert("idle".to_string(), unresolved("Idle", true));
+        states.insert("attack".to_string(), unresolved("Attack", false));
+
+        let descriptors = vec![EntityTypeDescriptor {
+            canonical_name: Some("remote_enemy".to_string()),
+            default_weapon: None,
+            light: None,
+            emitter: None,
+            movement: None,
+            weapon: None,
+            mesh: Some(MeshDescriptor {
+                model: "models/remote_enemy/scene.gltf".to_string(),
+                animations: states,
+                default_state: Some("idle".to_string()),
+            }),
+            health: None,
+            ai: None,
+        }];
+
+        let mut registry = EntityRegistry::new();
+        let id = registry.spawn(Transform::default());
+        crate::scripting::builtins::net_descriptor::materialize_net_remote_enemy_presentation(
+            "remote_enemy",
+            &descriptors,
+            &mut registry,
+            id,
+            None,
+        );
+
+        let mut tables = scripting_systems::mesh_anim::MeshClipTables::new();
+        let meta = vec![
+            crate::render::mesh_pass::ClipMetadata {
+                name: "Attack".to_string(),
+                duration: 0.8,
+            },
+            crate::render::mesh_pass::ClipMetadata {
+                name: "Idle".to_string(),
+                duration: 2.0,
+            },
+        ];
+        tables.insert(
+            crate::model::ModelHandle::from("models/remote_enemy/scene.gltf"),
+            &meta,
+        );
+
+        resolve_mesh_entity_clips(&mut registry, &tables);
+
+        let component = registry
+            .get_component::<MeshComponent>(id)
+            .expect("remote presentation mesh attached");
+        let anim = component
+            .animation
+            .as_ref()
+            .expect("animation block present");
+        assert_eq!(anim.current_state, "idle");
+        assert_eq!(anim.states.get("idle").unwrap().clip_index, Some(1));
+        assert_eq!(anim.states.get("attack").unwrap().clip_index, Some(0));
     }
 
     #[test]

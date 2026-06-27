@@ -1,3 +1,6 @@
+// Optional and derived PRL section packing helpers.
+// See: context/lib/build_pipeline.md
+
 use postretro_level_format::SectionBlob;
 use postretro_level_format::bvh::BvhSection;
 

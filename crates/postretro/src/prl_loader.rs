@@ -1,3 +1,6 @@
+// PRL section decoding and cross-validation for runtime level data.
+// See: context/lib/build_pipeline.md §PRL Compilation
+
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -253,8 +256,11 @@ fn section_validation_from_error(
 
 fn validate_cells_against_geometry(
     cells: &[CellData],
-    face_count: usize,
+    face_meta: &[FaceMeta],
 ) -> Result<(), PrlLoadError> {
+    let face_count = face_meta.len();
+    let mut claimed_by = vec![None; face_count];
+
     for (cell_idx, cell) in cells.iter().enumerate() {
         let end = cell
             .face_start
@@ -277,11 +283,81 @@ fn validate_cells_against_geometry(
                 ),
             ));
         }
+
+        for face_idx in cell.face_start..end {
+            let face_idx = face_idx as usize;
+            if let Some(previous_cell_idx) = claimed_by[face_idx] {
+                return Err(section_validation(
+                    "Cells",
+                    format!(
+                        "face {face_idx} is claimed by both cell {previous_cell_idx} and cell {cell_idx}"
+                    ),
+                ));
+            }
+            claimed_by[face_idx] = Some(cell_idx);
+
+            let face_owner = face_meta[face_idx].leaf_index as usize;
+            if face_owner != cell_idx {
+                return Err(section_validation(
+                    "Cells",
+                    format!(
+                        "cell {cell_idx} face range includes face {face_idx}, but Geometry leaf_index is {}",
+                        face_meta[face_idx].leaf_index
+                    ),
+                ));
+            }
+        }
+    }
+
+    for (face_idx, face) in face_meta.iter().enumerate() {
+        let owner = face.leaf_index as usize;
+        let owner_cell = &cells[owner];
+        if claimed_by[face_idx] != Some(owner) {
+            let owner_start = owner_cell.face_start;
+            let owner_end = owner_start
+                .checked_add(owner_cell.face_count)
+                .ok_or_else(|| {
+                    section_validation(
+                        "Cells",
+                        format!(
+                            "cell {owner} face_start {} + face_count {} overflows u32",
+                            owner_cell.face_start, owner_cell.face_count
+                        ),
+                    )
+                })?;
+            return Err(section_validation(
+                "Cells",
+                format!(
+                    "face {face_idx} has Geometry leaf_index {}, but owning cell range [{}..{}) does not cover it",
+                    face.leaf_index, owner_start, owner_end
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_face_meta_cells(
+    face_meta: &[FaceMeta],
+    cells: &[CellData],
+) -> Result<(), PrlLoadError> {
+    for (face_idx, face) in face_meta.iter().enumerate() {
+        if face.leaf_index as usize >= cells.len() {
+            return Err(section_validation(
+                "Geometry",
+                format!(
+                    "face {face_idx} leaf_index {} out of range for {} cells",
+                    face.leaf_index,
+                    cells.len()
+                ),
+            ));
+        }
     }
     Ok(())
 }
 
 fn validate_bvh_leaf_cells(bvh_leaves: &[BvhLeaf], cells: &[CellData]) -> Result<(), PrlLoadError> {
+    let mut cell_has_indexed_leaf = vec![false; cells.len()];
     for (leaf_idx, leaf) in bvh_leaves.iter().enumerate() {
         let cell = cells.get(leaf.cell_id as usize).ok_or_else(|| {
             section_validation(
@@ -300,6 +376,18 @@ fn validate_bvh_leaf_cells(bvh_leaves: &[BvhLeaf], cells: &[CellData]) -> Result
                     "BVH leaf {leaf_idx} references non-drawable cell {}",
                     leaf.cell_id
                 ),
+            ));
+        }
+        if leaf.index_count > 0 {
+            cell_has_indexed_leaf[leaf.cell_id as usize] = true;
+        }
+    }
+
+    for (cell_idx, cell) in cells.iter().enumerate() {
+        if cell.is_drawable && !cell_has_indexed_leaf[cell_idx] {
+            return Err(section_validation(
+                "Bvh",
+                format!("drawable cell {cell_idx} has no BVH leaf with drawable indices"),
             ));
         }
     }
@@ -373,6 +461,20 @@ fn validate_bvh_structure(bvh: &BvhTree, geometry_index_count: usize) -> Result<
         }
     }
 
+    for (leaf_idx, pair) in bvh.leaves.windows(2).enumerate() {
+        if pair[0].material_bucket_id > pair[1].material_bucket_id {
+            return Err(section_validation(
+                "Bvh",
+                format!(
+                    "BVH leaves must be sorted by material_bucket_id; leaf {leaf_idx} bucket {} precedes leaf {} bucket {}",
+                    pair[0].material_bucket_id,
+                    leaf_idx + 1,
+                    pair[1].material_bucket_id
+                ),
+            ));
+        }
+    }
+
     Ok(())
 }
 
@@ -404,12 +506,17 @@ fn validate_light_cells(lights: &[MapLight], cells: &[CellData]) -> Result<(), P
     Ok(())
 }
 
-fn all_fog_slots_mask(volume_count: usize) -> u32 {
-    debug_assert!(volume_count <= MAX_FOG_VOLUMES);
+fn all_fog_slots_mask(volume_count: usize) -> Result<u32, PrlLoadError> {
+    if volume_count > MAX_FOG_VOLUMES {
+        return Err(section_validation(
+            "FogVolumes",
+            format!("volume count {volume_count} exceeds MAX_FOG_VOLUMES {MAX_FOG_VOLUMES}"),
+        ));
+    }
     if volume_count == 0 {
-        0
+        Ok(0)
     } else {
-        (1u32 << volume_count) - 1
+        Ok((1u32 << volume_count) - 1)
     }
 }
 
@@ -418,6 +525,8 @@ fn validate_fog_cell_masks(
     cell_count: usize,
     fog_volume_count: usize,
 ) -> Result<Option<Vec<u32>>, PrlLoadError> {
+    let all_slots_mask = all_fog_slots_mask(fog_volume_count)?;
+
     let Some(masks) = masks else {
         if fog_volume_count == 0 {
             return Ok(None);
@@ -440,7 +549,6 @@ fn validate_fog_cell_masks(
         ));
     }
 
-    let all_slots_mask = all_fog_slots_mask(fog_volume_count);
     for (cell_idx, mask) in masks.iter().enumerate() {
         let extra = *mask & !all_slots_mask;
         if extra != 0 {
@@ -977,12 +1085,6 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         bvh.root_node_index,
     );
     debug_assert!(
-        bvh.leaves
-            .windows(2)
-            .all(|w| w[0].material_bucket_id <= w[1].material_bucket_id),
-        "BVH leaves must be sorted by material_bucket_id",
-    );
-    debug_assert!(
         bvh.nodes.is_empty() || (bvh.root_node_index as usize) < bvh.nodes.len(),
         "BVH root_node_index {} out of range for {} nodes",
         bvh.root_node_index,
@@ -1019,6 +1121,30 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
             Some(data) => CellsSection::from_bytes(&data)
                 .map_err(|err| section_validation_from_error("Cells", err))?,
             None => return Err(stale_section("Cells", SectionId::Cells)),
+        };
+    let cell_count = cells_section.cells.len();
+    let portal_ref_count = cells_section.portal_refs.len();
+    let (cells, cell_portal_refs) = convert_cells_section(cells_section);
+    validate_face_meta_cells(&face_meta, &cells)?;
+    validate_cells_against_geometry(&cells, &face_meta)?;
+    validate_bvh_leaf_cells(&bvh.leaves, &cells)?;
+    log::info!(
+        "[PRL] Cells: {} cells, {} portal refs loaded",
+        cell_count,
+        portal_ref_count,
+    );
+
+    let (cell_locator_root, cell_locator_nodes) =
+        match prl_format::read_section_data(&mut cursor, &meta, SectionId::CellLocator as u32)? {
+            Some(data) => {
+                let section = CellLocatorSection::from_bytes(&data, cells.len() as u32)
+                    .map_err(|err| section_validation_from_error("CellLocator", err))?;
+                let node_count = section.nodes.len();
+                let converted = convert_cell_locator_section(section);
+                log::info!("[PRL] CellLocator: {node_count} node(s) loaded");
+                converted
+            }
+            None => return Err(stale_section("CellLocator", SectionId::CellLocator)),
         };
 
     // Optional — older maps fall back to empty with a warning.
@@ -1358,7 +1484,8 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
     let (fog_volumes, fog_pixel_scale, initial_gravity): (Vec<FogVolumeRecord>, u32, f32) =
         match prl_format::read_section_data(&mut cursor, &meta, SectionId::FogVolumes as u32)? {
             Some(data) => {
-                let section = FogVolumesSection::from_bytes(&data)?;
+                let section = FogVolumesSection::from_bytes(&data)
+                    .map_err(|err| section_validation_from_error("FogVolumes", err))?;
                 log::info!(
                     "[PRL] FogVolumes: {} volumes, pixel_scale={}, initial_gravity={}",
                     section.volumes.len(),
@@ -1422,30 +1549,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
     let cell_draw_index_data =
         read_optional_section_data(&mut cursor, &meta, SectionId::CellDrawIndex as u32)?;
 
-    let cell_count = cells_section.cells.len();
-    let portal_ref_count = cells_section.portal_refs.len();
-    let (cells, cell_portal_refs) = convert_cells_section(cells_section);
-    validate_cells_against_geometry(&cells, face_meta.len())?;
-    validate_bvh_leaf_cells(&bvh.leaves, &cells)?;
     validate_light_cells(&lights, &cells)?;
-    log::info!(
-        "[PRL] Cells: {} cells, {} portal refs loaded",
-        cell_count,
-        portal_ref_count,
-    );
-
-    let (cell_locator_root, cell_locator_nodes) =
-        match prl_format::read_section_data(&mut cursor, &meta, SectionId::CellLocator as u32)? {
-            Some(data) => {
-                let section = CellLocatorSection::from_bytes(&data, cells.len() as u32)
-                    .map_err(|err| section_validation_from_error("CellLocator", err))?;
-                let node_count = section.nodes.len();
-                let converted = convert_cell_locator_section(section);
-                log::info!("[PRL] CellLocator: {node_count} node(s) loaded");
-                converted
-            }
-            None => return Err(stale_section("CellLocator", SectionId::CellLocator)),
-        };
 
     if has_legacy_bsp_nodes || has_legacy_bsp_leaves {
         let mut sections = Vec::new();

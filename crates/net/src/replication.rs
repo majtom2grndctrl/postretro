@@ -21,9 +21,10 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::wire::{
-    COMPONENT_KIND_PLAYER_MOVEMENT_STATE, COMPONENT_KIND_TRANSFORM, ComponentPayload, EntityRecord,
-    RECORD_KIND_DELTA, RECORD_KIND_DESPAWN, RECORD_KIND_FULL_BASELINE, RawComponentPayload,
-    RawEntityRecord, RawSnapshotMessage, SNAPSHOT_VERSION,
+    COMPONENT_KIND_MESH_ANIMATION_STATE, COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
+    COMPONENT_KIND_TRANSFORM, ComponentPayload, EntityRecord, RECORD_KIND_DELTA,
+    RECORD_KIND_DESPAWN, RECORD_KIND_FULL_BASELINE, RawComponentPayload, RawEntityRecord,
+    RawSnapshotMessage, SNAPSHOT_VERSION,
 };
 
 /// One replicable entity's owned, post-tick component state, keyed by its stable
@@ -61,12 +62,12 @@ pub struct EntitySnapshot {
     /// `last_processed_client_tick`.
     pub last_processed_client_tick: Option<u32>,
     /// The opaque descriptor-class identifier the engine glue materialized this
-    /// movement pawn from (e.g. `"player"`), or `None` for an unowned / non-movement
-    /// entity. Echoed verbatim into the record's `entity_class` so the recipient can
-    /// materialize the matching descriptor-backed component. A plain string id — the
-    /// tracker stays registry-blind and never resolves it. Like the other authority
-    /// metadata it is excluded from dirty detection (a class never changes for a live
-    /// pawn, but folding it into equality is unnecessary).
+    /// entity from (e.g. `"player"`). When provided, it can ride any non-despawn
+    /// record carrying a finite `Transform`; movement authority metadata remains
+    /// movement-only. Echoed verbatim into the record's `entity_class` so the
+    /// recipient can materialize the matching descriptor-backed component. A plain
+    /// string id — the tracker stays registry-blind and never resolves it. Excluded
+    /// from dirty detection because a class never changes for a live entity.
     pub entity_class: Option<String>,
 }
 
@@ -133,8 +134,8 @@ struct EntityState {
 }
 
 /// A despawned entity awaiting per-client tombstone acks. Held until every client
-/// that ever knew the entity has acked the tombstone; resent in snapshots
-/// meanwhile.
+/// that was present for the entity has acked the tombstone; late joiners are
+/// pre-acked for already-active tombstones and receive only live baselines.
 #[derive(Debug, Clone, Copy)]
 struct Tombstone {
     tombstone_id: u32,
@@ -190,9 +191,21 @@ impl ServerReplication {
 
     /// Register a client so it is replicated to. Idempotent — re-registering an
     /// existing client leaves its ack state intact. A newly registered client holds
-    /// no acked baselines, so its first snapshot is all `FullBaseline` records.
+    /// no acked baselines, so its first snapshot is all `FullBaseline` records for
+    /// live entities. It is marked as having acked tombstones that were active
+    /// before it joined, since it never had mappings for those despawned entities.
     pub fn register_client(&mut self, client_id: u64) {
-        self.clients.entry(client_id).or_default();
+        if self.clients.contains_key(&client_id) {
+            return;
+        }
+
+        let mut state = ClientReplicationState::default();
+        state.acked_tombstones.extend(
+            self.tombstones
+                .iter()
+                .map(|(&network_id, tombstone)| (network_id, tombstone.tombstone_id)),
+        );
+        self.clients.insert(client_id, state);
     }
 
     /// Drop a client (disconnect). Removing its [`ClientReplicationState`] discards
@@ -217,10 +230,9 @@ impl ServerReplication {
     /// the despawned entity and so never needs its tombstone. With no clients
     /// registered, `all()` over the empty client set is vacuously true, so any
     /// tombstone this runs against is dropped — harmless, since a later joiner gets
-    /// a live-only baseline. Note this runs only from `apply_ack`/`remove_client`,
-    /// never `ingest_tick`: a despawn recorded while zero clients are connected
-    /// lingers until the first client connects, receives the stale despawn, and
-    /// acks it (the apply is an idempotent no-op on the client).
+    /// a live-only baseline. `ingest_tick` calls this after recording despawns, so
+    /// entities that died while no clients were registered do not produce stale
+    /// despawns for later joiners.
     ///
     /// This is the bound on cumulative-despawn state: without it `self.tombstones`
     /// (and the per-snapshot encode loop over it) grows forever across a session's
@@ -318,6 +330,7 @@ impl ServerReplication {
                 },
             );
         }
+        self.prune_acked_tombstones();
     }
 
     /// Apply a client ack. Advances each named entity's per-client baseline only if
@@ -590,34 +603,55 @@ struct MovementAuthority {
 }
 
 impl MovementAuthority {
-    /// Resolve the authority metadata for `recipient`. Authority — including the
-    /// `entity_class` — rides ONLY a movement record: a pawn that carries no
-    /// `PlayerMovementState` payload emits all-absent metadata regardless of its
-    /// `owner_client_id`/`entity_class`, because `validate` rejects ack/local-player
-    /// metadata and `entity_class` on a non-movement record. `local_player` is `true`
-    /// only when the recipient is the tracked owner; `entity_class` is echoed to every
-    /// recipient (it is pawn state, not owner-private — a remote viewer materializes
-    /// the same descriptor for interpolation if it ever needs to).
+    /// Resolve the authority metadata for `recipient`. Two metadata classes ride a
+    /// record under DIFFERENT rules, mirroring the two `validate` gates (E10 Task 3/4):
+    ///
+    /// - **Movement authority** (`has_tick`/`last_processed_client_tick`, `local_player`)
+    ///   rides ONLY a movement record: an entity with no `PlayerMovementState` payload
+    ///   emits all-absent movement metadata regardless of its `owner_client_id`, because
+    ///   `validate` rejects ack/local-player metadata on a non-movement record.
+    ///   `local_player` is `true` only when the recipient is the tracked owner.
+    /// - **`entity_class`** rides any NON-DESPAWN record carrying a finite `Transform`
+    ///   (it no longer needs a `PlayerMovementState`): a host-authoritative map enemy
+    ///   replicates Transform-only, so its descriptor class must travel on that record.
+    ///   It is echoed to EVERY recipient (it is entity state, not owner-private — a
+    ///   remote viewer materializes the same descriptor for its presentation). Gated on
+    ///   the finite-`Transform` check `validate` enforces on receipt so production never
+    ///   stamps a class the validator would reject. (A despawn record never reaches
+    ///   here — this resolves only entity records the encode loop emits as
+    ///   baseline/delta.)
     fn for_recipient(entity: &EntityState, recipient: u64) -> Self {
         let carries_movement = entity
             .components
             .iter()
             .any(|c| matches!(c, ComponentPayload::PlayerMovementState(_)));
-        if !carries_movement {
-            return Self {
-                has_tick: false,
-                tick: 0,
-                local_player: false,
-                has_entity_class: false,
-                entity_class: String::new(),
-            };
-        }
+        let carries_finite_transform = entity.components.iter().any(|c| match c {
+            ComponentPayload::Transform(t) => t.all_finite(),
+            ComponentPayload::PlayerMovementState(_) => false,
+            ComponentPayload::MeshAnimationState(_) => false,
+        });
+
+        // `entity_class` is valid on any finite-Transform record; movement metadata is
+        // movement-only. Empty class ids are equivalent to absent metadata on the
+        // producer side so the raw envelope stays valid.
+        let entity_class = if carries_finite_transform {
+            entity
+                .entity_class
+                .as_deref()
+                .filter(|class| !class.is_empty())
+        } else {
+            None
+        };
         Self {
-            has_tick: entity.last_processed_client_tick.is_some(),
-            tick: entity.last_processed_client_tick.unwrap_or(0),
-            local_player: entity.owner_client_id == Some(recipient),
-            has_entity_class: entity.entity_class.is_some(),
-            entity_class: entity.entity_class.clone().unwrap_or_default(),
+            has_tick: carries_movement && entity.last_processed_client_tick.is_some(),
+            tick: if carries_movement {
+                entity.last_processed_client_tick.unwrap_or(0)
+            } else {
+                0
+            },
+            local_player: carries_movement && entity.owner_client_id == Some(recipient),
+            has_entity_class: entity_class.is_some(),
+            entity_class: entity_class.unwrap_or_default().to_string(),
         }
     }
 }
@@ -630,11 +664,19 @@ fn raw_from_payload(payload: &ComponentPayload) -> RawComponentPayload {
             component_kind: COMPONENT_KIND_TRANSFORM,
             transform: Some(*t),
             player_movement: None,
+            mesh_animation_state: None,
         },
         ComponentPayload::PlayerMovementState(m) => RawComponentPayload {
             component_kind: COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
             transform: None,
             player_movement: Some(*m),
+            mesh_animation_state: None,
+        },
+        ComponentPayload::MeshAnimationState(m) => RawComponentPayload {
+            component_kind: COMPONENT_KIND_MESH_ANIMATION_STATE,
+            transform: None,
+            player_movement: None,
+            mesh_animation_state: Some(m.clone()),
         },
     }
 }
@@ -991,6 +1033,75 @@ mod tests {
         assert!(
             record_for(&snap4, 1).is_none(),
             "acked tombstone stops resending"
+        );
+    }
+
+    // Regression: an enemy that dies before any client connects must not leave a
+    // stale despawn tombstone for the first later joiner.
+    #[test]
+    fn despawn_recorded_with_zero_clients_is_pruned_before_late_join() {
+        let mut server = ServerReplication::new();
+        server.ingest_tick(vec![entity(1, vec![transform(0.0)])]);
+        server.ingest_tick(vec![]);
+        assert!(
+            server.tombstones.is_empty(),
+            "zero-client despawn tombstone pruned immediately"
+        );
+
+        server.register_client(CLIENT_A);
+        let snap = server.encode_for_client(CLIENT_A, 60).unwrap();
+        assert!(
+            record_for(&snap, 1).is_none(),
+            "late joiner does not receive stale despawn"
+        );
+        assert!(
+            typed_records(&snap).is_empty(),
+            "late join baseline contains only live entities"
+        );
+    }
+
+    // Regression: a client joining after a despawn must not receive a tombstone for
+    // an entity it never mapped, even while an older client still needs that despawn.
+    #[test]
+    fn late_joiner_skips_tombstone_pending_for_existing_client() {
+        let mut server = ServerReplication::new();
+        server.register_client(CLIENT_A);
+        server.ingest_tick(vec![entity(1, vec![transform(0.0)])]);
+
+        let snap1 = server.encode_for_client(CLIENT_A, 60).unwrap();
+        let EntityRecord::FullBaseline { baseline_id, .. } = record_for(&snap1, 1).unwrap() else {
+            panic!("fb");
+        };
+        server.apply_ack(CLIENT_A, snap1.sequence, &[(1, baseline_id)], &[]);
+
+        server.ingest_tick(vec![]);
+        let snap2 = server.encode_for_client(CLIENT_A, 61).unwrap();
+        let tombstone_id = match record_for(&snap2, 1).expect("A sees despawn") {
+            EntityRecord::Despawn { tombstone_id, .. } => tombstone_id,
+            other => panic!("expected Despawn, got {other:?}"),
+        };
+
+        server.register_client(CLIENT_B);
+        let snap_b = server.encode_for_client(CLIENT_B, 62).unwrap();
+        assert!(
+            record_for(&snap_b, 1).is_none(),
+            "late client B never knew entity 1 and gets no stale despawn"
+        );
+        assert!(
+            typed_records(&snap_b).is_empty(),
+            "late client B receives the current live set only"
+        );
+
+        let snap_a = server.encode_for_client(CLIENT_A, 63).unwrap();
+        assert!(
+            matches!(record_for(&snap_a, 1), Some(EntityRecord::Despawn { .. })),
+            "existing client A still receives the unacked despawn"
+        );
+
+        server.apply_ack(CLIENT_A, snap_a.sequence, &[], &[(1, tombstone_id)]);
+        assert!(
+            server.tombstones.is_empty(),
+            "tombstone prunes once the present-at-despawn client acks"
         );
     }
 
@@ -1395,6 +1506,156 @@ mod tests {
                 last_processed_client_tick,
                 ..
             } => assert_eq!(last_processed_client_tick, Some(6)),
+            other => panic!("expected FullBaseline, got {other:?}"),
+        }
+    }
+
+    /// A host-authoritative map enemy snapshot: a Transform-only entity carrying an
+    /// `entity_class` but NO `PlayerMovementState`, unowned by any client — the shape the
+    /// E10 host enemy-registration glue produces.
+    fn enemy(network_id: u32, class: &str) -> EntitySnapshot {
+        EntitySnapshot {
+            network_id,
+            components: vec![transform(0.0)],
+            owner_client_id: None,
+            last_processed_client_tick: None,
+            entity_class: Some(class.to_string()),
+        }
+    }
+
+    // E10 Task 4: `entity_class` rides a non-movement finite-`Transform` record (a host
+    // enemy), while `local_player`/resolved-tick stay movement-only — they are withheld on
+    // a record without a `PlayerMovementState`. The encoded record validates (the wire
+    // accepts `entity_class` on a finite-Transform record since Task 3).
+    #[test]
+    fn entity_class_rides_transform_record_but_movement_metadata_withheld() {
+        let mut server = ServerReplication::new();
+        server.register_client(CLIENT_A);
+        server.ingest_tick(vec![enemy(1, "grunt")]);
+
+        let snap = server.encode_for_client(CLIENT_A, 60).unwrap();
+        // The whole snapshot validates: an entity_class on a finite-Transform record is
+        // accepted, so `typed_records` is non-empty.
+        match record_for(&snap, 1).expect("the enemy record is present and valid") {
+            EntityRecord::FullBaseline {
+                entity_class,
+                local_player,
+                last_processed_client_tick,
+                components,
+                ..
+            } => {
+                assert_eq!(
+                    entity_class,
+                    Some("grunt".to_string()),
+                    "the class rides the Transform-only enemy record"
+                );
+                assert!(
+                    !local_player,
+                    "a non-movement record never carries local_player"
+                );
+                assert_eq!(
+                    last_processed_client_tick, None,
+                    "a non-movement record carries no resolved-tick metadata"
+                );
+                assert!(
+                    components
+                        .iter()
+                        .all(|c| matches!(c, ComponentPayload::Transform(_))),
+                    "the enemy record is Transform-only"
+                );
+            }
+            other => panic!("expected FullBaseline, got {other:?}"),
+        }
+    }
+
+    // Regression: `Some("")` previously emitted `has_entity_class=true`, which raw
+    // validation rejects as empty present metadata.
+    #[test]
+    fn empty_entity_class_is_withheld_from_finite_transform_record() {
+        let mut server = ServerReplication::new();
+        server.register_client(CLIENT_A);
+        server.ingest_tick(vec![EntitySnapshot {
+            network_id: 1,
+            components: vec![transform(0.0)],
+            owner_client_id: None,
+            last_processed_client_tick: None,
+            entity_class: Some(String::new()),
+        }]);
+
+        let snap = server.encode_for_client(CLIENT_A, 60).unwrap();
+        let raw = snap
+            .records
+            .iter()
+            .find(|record| record.network_id == 1)
+            .expect("record present");
+        assert!(
+            !raw.has_entity_class,
+            "empty class is normalized to absent metadata"
+        );
+        assert!(
+            raw.entity_class.is_empty(),
+            "absent class leaves the raw string empty"
+        );
+
+        let typed = snap
+            .validate()
+            .expect("producer emits an entity_class shape accepted by validation");
+        match typed.records.as_slice() {
+            [
+                EntityRecord::FullBaseline {
+                    network_id,
+                    entity_class,
+                    components,
+                    ..
+                },
+            ] => {
+                assert_eq!(*network_id, 1);
+                assert_eq!(entity_class, &None);
+                assert!(
+                    matches!(components.as_slice(), [ComponentPayload::Transform(_)]),
+                    "finite Transform record remains otherwise intact"
+                );
+            }
+            other => panic!("expected one FullBaseline, got {other:?}"),
+        }
+    }
+
+    // E10 Task 4: an entity_class is withheld at production on a record that carries NO
+    // finite `Transform` — here a movement-only record (`PlayerMovementState` alone, no
+    // Transform). This mirrors the validate gate (`EntityClassWithoutTransform`) on the
+    // production side: the host never stamps a class the validator would reject. The
+    // record still encodes and validates because no class rides it.
+    #[test]
+    fn entity_class_withheld_when_no_finite_transform() {
+        let mut server = ServerReplication::new();
+        server.register_client(CLIENT_A);
+        // A movement-only record (no Transform component) that nonetheless carries an
+        // entity_class in its tracked state: production must drop the class.
+        server.ingest_tick(vec![EntitySnapshot {
+            network_id: 1,
+            components: vec![movement(1.0)],
+            owner_client_id: Some(CLIENT_A),
+            last_processed_client_tick: Some(3),
+            entity_class: Some("grunt".to_string()),
+        }]);
+
+        let snap = server.encode_for_client(CLIENT_A, 60).unwrap();
+        match record_for(&snap, 1).expect("record present and valid") {
+            EntityRecord::FullBaseline {
+                entity_class,
+                local_player,
+                ..
+            } => {
+                assert_eq!(
+                    entity_class, None,
+                    "no class is stamped without a finite Transform to back it"
+                );
+                // Movement metadata still rides this movement record for its owner.
+                assert!(
+                    local_player,
+                    "the owner still sees local_player on a movement record"
+                );
+            }
             other => panic!("expected FullBaseline, got {other:?}"),
         }
     }

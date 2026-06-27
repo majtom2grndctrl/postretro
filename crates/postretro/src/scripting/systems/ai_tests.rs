@@ -86,6 +86,7 @@ fn enemy_mesh() -> MeshComponent {
     MeshComponent {
         model: "grunt".into(),
         animation: Some(MeshAnimation::new(states, "idle".into())),
+        origin_offset: Vec3::ZERO,
     }
 }
 

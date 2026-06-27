@@ -6,11 +6,13 @@
 
 mod client;
 mod command_queue;
+mod descriptor_class;
 mod interpolation;
 mod lifecycle;
 mod movement_state;
 mod prediction;
 mod reconcile;
+mod remote_materialize;
 mod replication;
 // M15 Phase 3.5: the replicated-slot schema/fingerprint/lowering, the engine
 // production (`HostStateReplication`) and client apply (`ClientStateApply`) glue. The
@@ -37,6 +39,12 @@ mod boot_spawn_gate_test;
 // `StateBaselineRefresh` without reconnect.
 #[cfg(test)]
 mod state_slot_loss_harness_test;
+// E10 (Networked Enemy Authority Baseline) Task 7: the integration harness proving the
+// whole host→client enemy path end to end (host registration → wire → conditioned link
+// → client remote-presentation materialization → interpolation → despawn cleanup →
+// late join). Drives the genuine Task 1-6 seams; carries the manual loopback recipe.
+#[cfg(test)]
+mod enemy_replication_harness_test;
 
 pub(crate) use client::ClientReplication;
 pub(crate) use command_queue::{HostCommandQueues, MovementOwners, host_resolve_movement_inputs};
@@ -55,7 +63,7 @@ pub(crate) use prediction::{
 };
 #[allow(unused_imports)]
 pub(crate) use reconcile::reconcile_local_pawn;
-pub(crate) use replication::{ReplicableSet, produce_owned_snapshots};
+pub(crate) use replication::{ReplicableSet, host_register_map_enemies, produce_owned_snapshots};
 pub(crate) use wire_convert::sim_command_to_input;
 
 // The conversion/merge helpers (`wire_convert`, `movement_state`) live in their focused
@@ -73,8 +81,8 @@ use postretro_net::timesync::{
 };
 use postretro_net::transport::{NetClient, NetServer};
 use postretro_net::wire::{
-    self, ComponentPayload, NetworkId, RawSnapshotMessage, SnapshotMessage, ValidationError,
-    WireError, WireMovementState, WirePlayerMovementState, WireTransform,
+    self, ComponentPayload, EntityRecord, NetworkId, RawSnapshotMessage, SnapshotMessage,
+    ValidationError, WireError, WireMovementState, WirePlayerMovementState, WireTransform,
 };
 
 use crate::collision::CollisionWorld;
@@ -261,6 +269,14 @@ pub(crate) enum NetEndpoint {
         /// local-player marker exists; the host pawn stays the host's own
         /// `local_player_pawn` registry-side and is replicated outbound, that is all.
         host_pawn: Option<EntityId>,
+        /// E10 Task 4: the set of map-placed AI enemy `EntityId`s the host has registered
+        /// for outbound replication this level. The single owner of that id set so a level
+        /// reload has one place to clean up: `host_register_map_enemies` unregisters every
+        /// stale id here before registering the freshly-spawned level's enemies (the
+        /// registry bumps generations on despawn, so a reloaded enemy is a distinct
+        /// entity). Empty until the first level install registers enemies, and on a map
+        /// with no AI enemies.
+        map_enemies: std::collections::HashSet<EntityId>,
         /// Task 6 Phase 2 net-demo fixture. When the demo path is active
         /// (`POSTRETRO_NET_DEMO_MOVER=1`), the host spawns one deterministic
         /// AI-less mover ([`DemoMover`]) and stores its `EntityId` here; each tick
@@ -397,6 +413,7 @@ impl NetEndpoint {
                     command_queues: HostCommandQueues::new(),
                     owners: MovementOwners::new(),
                     host_pawn: None,
+                    map_enemies: std::collections::HashSet::new(),
                     demo_mover: DemoMoverState::from_env(),
                     state_slots: Box::new(state_slots::HostStateReplication::new()),
                 }))
@@ -421,6 +438,30 @@ impl NetEndpoint {
                 }))
             }
         }
+    }
+
+    /// Reset connected-client state that points at level-owned registry entities,
+    /// preserving the transport connection. Previously-known `NetworkId`s immediately
+    /// request fresh full baselines so unchanged acked remotes are not lost after the
+    /// local registry is cleared.
+    pub(crate) fn reset_level_scoped_client_state(&mut self) {
+        let NetEndpoint::Client {
+            client,
+            replication,
+            interpolation_delay,
+            prediction,
+            ..
+        } = self
+        else {
+            return;
+        };
+
+        let refresh_requests = replication.reset_for_level_unload();
+        for req in refresh_requests {
+            client.send_input(wire::encode(&wire::ClientMessage::BaselineRefresh(req)));
+        }
+        prediction.reset_for_level_unload();
+        interpolation_delay.reset_for_level_unload();
     }
 }
 
@@ -457,6 +498,21 @@ impl NetworkIdAllocator {
         self.next += 1;
         self.map.insert(id, net_id);
         net_id
+    }
+
+    /// Drop the dead `EntityId -> NetworkId` mapping for an entity that no longer
+    /// replicates (e.g. unregistered on level reload), so the map does not accrue
+    /// one dead entry per ever-spawned replicable for the host's lifetime. Does
+    /// not touch `next`: NetworkIds stay monotonic and are never recycled — only
+    /// the stale mapping entry is pruned.
+    pub(crate) fn forget(&mut self, id: EntityId) {
+        self.map.remove(&id);
+    }
+
+    /// Test-only: is an `EntityId -> NetworkId` mapping currently retained?
+    #[cfg(test)]
+    pub(crate) fn maps_entity(&self, id: EntityId) -> bool {
+        self.map.contains_key(&id)
     }
 }
 
@@ -533,6 +589,7 @@ fn payload_is_finite(payload: &ComponentPayload) -> bool {
         // Transform-only. Validate its floats now so a non-finite payload is
         // dropped at the ingest boundary rather than propagated.
         ComponentPayload::PlayerMovementState(m) => player_movement_is_finite(m),
+        ComponentPayload::MeshAnimationState(_) => true,
     }
 }
 
@@ -574,6 +631,10 @@ pub(crate) fn decode_snapshot(bytes: &[u8]) -> Result<SnapshotMessage, SnapshotD
 ///
 /// The mutable registry borrow is threaded in by the caller (`main.rs`), so this
 /// module never reaches into `App`.
+///
+/// Returns `true` when this receive pass materialized at least one remote-enemy
+/// presentation mesh, allowing the caller to resolve late-spawned animation clip
+/// indices against the already-loaded model tables.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn client_receive_and_apply(
     registry: &mut EntityRegistry,
@@ -583,11 +644,13 @@ pub(crate) fn client_receive_and_apply(
     state_slots: &mut state_slots::ClientStateApply,
     prediction: &mut ClientPrediction,
     descriptors: &[crate::scripting::data_descriptors::EntityTypeDescriptor],
+    agent_params: Option<crate::nav::NavAgentParams>,
     collision: &CollisionWorld,
     gravity: f32,
     tick_dt: f32,
     frame_dt: Duration,
-) {
+) -> bool {
+    let mut materialized_remote_enemy_presentation = false;
     for bytes in client.drain_snapshots() {
         let snapshot = match decode_snapshot(&bytes) {
             Ok(snapshot) => snapshot,
@@ -596,6 +659,13 @@ pub(crate) fn client_receive_and_apply(
                 continue;
             }
         };
+        if descriptors.is_empty() && snapshot_requires_descriptor_table(&snapshot) {
+            log::trace!(
+                "[Net] deferring descriptor-backed snapshot {} until level descriptors load",
+                snapshot.sequence
+            );
+            continue;
+        }
         let mut outcome = replication.apply_snapshot(registry, &snapshot);
 
         // M15 Phase 3.5: apply this snapshot's replicated-state records. Validated as a
@@ -625,26 +695,34 @@ pub(crate) fn client_receive_and_apply(
             }
         }
         // M15 Phase 3 Task 3 + Task 7: a `local_player` baseline arms client prediction
-        // with the marked local pawn AND materializes its descriptor-backed
-        // `PlayerMovementComponent` from the wire `entity_class` (default `"player"`).
-        // `apply_snapshot` spawned the pawn Transform-only; the descriptor-immutable
-        // movement tuning never crosses the wire, so the client materializes it locally
-        // from the same descriptor table both peers share — then the wire mutable subset
-        // has a component to merge onto and prediction/reconciliation light up. Materialize
-        // BEFORE reconcile (which merges onto the existing component) and arm BEFORE
-        // reconcile so the just-armed pawn reconciles on its arming snapshot too. The
-        // materialization itself lives behind a focused helper next to the host's
-        // net-slot spawn internals; this is the thin call. Re-arming the same pawn
-        // preserves unacked history; the helper is idempotent (a re-arm keeps live state).
+        // with the marked local pawn AND materializes its descriptor-backed presentation.
+        // Arm and materialize BEFORE reconcile so the just-armed pawn reconciles on its
+        // arming snapshot too; the materialization call-site glue lives in
+        // `remote_materialize` (the focused seam Task 6 extends to remote enemies).
         if let Some(armed) = &outcome.armed_local_pawn {
             prediction.arm(armed.network_id, armed.entity_id);
-            let entity_class = armed.entity_class.as_deref().unwrap_or("player");
-            crate::scripting::builtins::data_archetype::materialize_net_local_movement_component(
-                entity_class,
+            remote_materialize::materialize_armed_local_pawn(armed, descriptors, registry);
+        }
+        // E10 Task 6: each non-local baseline that just spawned a descriptor-class-bearing
+        // entity gets its remote-enemy presentation materialized here, where the descriptor
+        // table is in scope (the net-facing apply is descriptor-blind). The helper attaches
+        // ONLY the descriptor's mesh — no Brain/Agent/Health/Weapon/PlayerMovement — and is
+        // idempotent + unknown-class-tolerant (leaves the entity transform-only, never
+        // rejects the snapshot). The entity is already mapped, so it interpolates regardless
+        // of whether a mesh attached. Runs before the frame renders (Game-logic stage).
+        for remote in &outcome.remote_enemies {
+            let materialized = remote_materialize::materialize_armed_remote_enemy(
+                remote,
                 descriptors,
                 registry,
-                armed.entity_id,
+                agent_params,
             );
+            if materialized {
+                if let Some(state) = remote.initial_animation_state.as_deref() {
+                    client::apply_mesh_animation_state(registry, remote.entity_id, state, true);
+                }
+            }
+            materialized_remote_enemy_presentation |= materialized;
         }
         // M15 Phase 3 Task 5: reconcile the local predicted pawn against the
         // authoritative record this snapshot delivered — merge the movement subset,
@@ -678,6 +756,15 @@ pub(crate) fn client_receive_and_apply(
         let buffer = wire::encode(&wire::ClientMessage::BaselineRefresh(req));
         client.send_input(buffer);
     }
+    materialized_remote_enemy_presentation
+}
+
+fn snapshot_requires_descriptor_table(snapshot: &SnapshotMessage) -> bool {
+    snapshot.records.iter().any(|record| match record {
+        EntityRecord::FullBaseline { entity_class, .. }
+        | EntityRecord::Delta { entity_class, .. } => entity_class.is_some(),
+        EntityRecord::Despawn { .. } => false,
+    })
 }
 
 /// Drive one connected-client predicted fixed tick (M15 Phase 3 Task 3). Sends
@@ -1326,11 +1413,11 @@ pub(crate) const REMOTE_CAPSULE_HALF_HEIGHT: f32 = 0.8;
 /// the pawn `Transform.position` convention (the collision capsule is symmetric
 /// about it; see `movement/substrate.rs`).
 ///
-/// Phase 1 wire-binds only `Transform`, so the client cannot distinguish a
-/// player pawn from an inert prop — every remote entity gets a capsule. On the
-/// sparse dev map this is effectively just the host pawn. Phase 2's
-/// replicable-set policy (with the full component set and interest management)
-/// will scope this to actual players; see `context/lib/networking.md`.
+/// The overlay draws replicated gameplay entities, not only players: mapped
+/// client remotes and host `ReplicableSet` entries can include map-placed AI
+/// enemies, pawns, movers, and other networked gameplay objects. The debug
+/// marker still uses standing-player capsule dimensions, so non-player enemies
+/// get an approximate marker until a later debug shape path specializes them.
 ///
 /// `dev-tools`-gated: the sole consumer is the client debug-capsule draw behind
 /// that feature (the debug-line renderer is `dev-tools` only).
@@ -1385,6 +1472,56 @@ mod tests {
                 .normalize(),
             scale: Vec3::splat(2.0),
         }
+    }
+
+    fn sample_wire_transform() -> WireTransform {
+        WireTransform {
+            position: [0.0, 0.0, 0.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: [1.0, 1.0, 1.0],
+        }
+    }
+
+    fn snapshot_with_record(record: EntityRecord) -> SnapshotMessage {
+        SnapshotMessage {
+            sequence: 1,
+            server_tick: 1,
+            records: vec![record],
+            state_schema_fingerprint: [0u8; 32],
+            state_records: Vec::new(),
+        }
+    }
+
+    // Regression: connected-client level unload can leave the transport connected
+    // while descriptors are empty. Descriptor-backed snapshots must not apply into
+    // that empty level state, but classless Transform traffic remains safe.
+    #[test]
+    fn descriptor_class_snapshots_require_descriptor_table() {
+        let classed = snapshot_with_record(EntityRecord::FullBaseline {
+            network_id: 7,
+            baseline_id: 1,
+            last_processed_client_tick: None,
+            local_player: false,
+            entity_class: Some("grunt".to_string()),
+            components: vec![ComponentPayload::Transform(sample_wire_transform())],
+        });
+        let classless = snapshot_with_record(EntityRecord::FullBaseline {
+            network_id: 8,
+            baseline_id: 1,
+            last_processed_client_tick: None,
+            local_player: false,
+            entity_class: None,
+            components: vec![ComponentPayload::Transform(sample_wire_transform())],
+        });
+
+        assert!(
+            snapshot_requires_descriptor_table(&classed),
+            "descriptor-backed baselines wait for the level descriptor table"
+        );
+        assert!(
+            !snapshot_requires_descriptor_table(&classless),
+            "classless transform replication can still apply without descriptors"
+        );
     }
 
     // --- Drift guard: Transform's wire discriminant is pinned to 0, equal to

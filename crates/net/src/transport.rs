@@ -49,7 +49,7 @@ pub const PROTOCOL_ID: u32 = 0x_5052_4C33; // "PRL3" — Phase 3.5 adds the stat
 /// type changes (added field, reordered enum, bumped bitcode major). Carried as
 /// `ProtocolVersion::wire_version` and folded into the transport-level
 /// `protocol_id` so a wire-incompatible peer is refused at the netcode layer.
-pub const WIRE_VERSION: u32 = 4;
+pub const WIRE_VERSION: u32 = 5;
 
 /// Transport-level gate fed to renet_netcode as the netcode `protocol_id: u64`.
 /// Packs both hand-bumped consts so the encrypted handshake itself fails for any
@@ -76,8 +76,8 @@ pub const fn protocol_version() -> ProtocolVersion {
 ///
 /// - `Control` — reliable-ordered: the version handshake and spawn/despawn.
 ///   Order matters and loss is unacceptable.
-/// - `Snapshot` — unreliable: full-state snapshots, latest-wins; a dropped
-///   snapshot is superseded by the next one.
+/// - `Snapshot` — unreliable: snapshot replication records: full baselines,
+///   deltas, despawn tombstones, and state records. Ack/refresh repairs missed baselines.
 /// - `Input` — reliable-ordered: carries client→server acks, baseline-refresh
 ///   requests, and time-sync probes, plus server→client time-sync echoes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

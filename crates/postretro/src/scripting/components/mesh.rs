@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 
+use glam::Vec3;
 use serde::{Deserialize, Serialize};
 
 use crate::scripting::registry::{EntityId, EntityRegistry, RegistryError};
@@ -229,11 +230,19 @@ impl MeshAnimation {
 ///
 /// `animation` is `None` for stateless `prop_mesh` entities and `Some` for
 /// descriptor-spawned entities that declared an `animations` block.
+///
+/// `origin_offset` is a render-presentation offset applied after transform
+/// interpolation. It is zero for authored world-origin props. Descriptor AI
+/// meshes use it to render feet-at-origin art from capsule-center gameplay
+/// transforms, including remote enemies that intentionally carry no local
+/// `AgentComponent`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct MeshComponent {
     pub(crate) model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) animation: Option<MeshAnimation>,
+    #[serde(default, skip_serializing_if = "vec3_is_zero")]
+    pub(crate) origin_offset: Vec3,
 }
 
 impl MeshComponent {
@@ -243,8 +252,31 @@ impl MeshComponent {
         Self {
             model,
             animation: None,
+            origin_offset: Vec3::ZERO,
         }
     }
+
+    pub(crate) fn animated(model: String, animation: MeshAnimation) -> Self {
+        Self {
+            model,
+            animation: Some(animation),
+            origin_offset: Vec3::ZERO,
+        }
+    }
+
+    pub(crate) fn with_origin_offset(mut self, origin_offset: Vec3) -> Self {
+        self.origin_offset = origin_offset;
+        self
+    }
+}
+
+fn vec3_is_zero(value: &Vec3) -> bool {
+    *value == Vec3::ZERO
+}
+
+pub(crate) fn capsule_center_to_feet_origin_offset(radius: f32, height: f32) -> Vec3 {
+    let half_height = (height / 2.0 - radius).max(0.0);
+    Vec3::new(0.0, -(half_height + radius), 0.0)
 }
 
 /// Outcome of a switch attempt. The caller (the `setAnimationState` reaction)
@@ -564,6 +596,7 @@ mod tests {
             MeshComponent {
                 model: "decraniated".into(),
                 animation: Some(two_state_animation()),
+                origin_offset: Vec3::ZERO,
             },
         )
         .unwrap();
@@ -579,6 +612,7 @@ mod tests {
         // Stateless component omits the animation key entirely.
         let as_value = serde_json::to_value(&value).unwrap();
         assert!(as_value.get("animation").is_none());
+        assert!(as_value.get("origin_offset").is_none());
     }
 
     #[test]
@@ -594,6 +628,7 @@ mod tests {
         let value = MeshComponent {
             model: "decraniated".into(),
             animation: Some(two_state_animation()),
+            origin_offset: Vec3::ZERO,
         };
         let json = serde_json::to_value(&value).unwrap();
         // Serde renames: `loop`, `crossfadeMs`, `defaultState`.
@@ -707,6 +742,7 @@ mod tests {
             MeshComponent {
                 model: "m".into(),
                 animation: Some(MeshAnimation::new(states, "idle".into())),
+                origin_offset: Vec3::ZERO,
             },
         )
         .unwrap();
@@ -804,6 +840,7 @@ mod tests {
             MeshComponent {
                 model: "m".into(),
                 animation: Some(MeshAnimation::new(states, "idle".into())),
+                origin_offset: Vec3::ZERO,
             },
         )
         .unwrap();
@@ -864,6 +901,7 @@ mod tests {
             MeshComponent {
                 model: "m".into(),
                 animation: Some(MeshAnimation::new(states, "idle".into())),
+                origin_offset: Vec3::ZERO,
             },
         )
         .unwrap();
@@ -1219,6 +1257,7 @@ mod tests {
             MeshComponent {
                 model: "m".into(),
                 animation: Some(MeshAnimation::new(states, "idle".into())),
+                origin_offset: Vec3::ZERO,
             },
         )
         .unwrap();

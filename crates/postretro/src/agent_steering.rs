@@ -286,7 +286,30 @@ pub(crate) fn tick(
         agent.replan_cooldown_ticks = agent.replan_cooldown_ticks.saturating_sub(1);
 
         let Some(destination) = agent.destination else {
-            // No destination: idle. Persist the cooldown decrement and stop.
+            // No destination: idle steering, but still run the shared capsule
+            // settle path so spawned/stationary agents obey gravity and
+            // ground-stick before they ever acquire aggro.
+            let capsule = AgentCapsule {
+                radius: agent.radius,
+                half_height: agent.half_height(),
+                step_height: agent.step_height,
+            };
+            let result = collide_and_slide(
+                collision_world,
+                &capsule,
+                position,
+                Vec3::ZERO,
+                agent.velocity.y,
+                gravity,
+                dt,
+            );
+            agent.velocity = result.velocity;
+            agent.is_grounded = result.grounded;
+            if let Ok(transform) = registry.get_component::<Transform>(current.id) {
+                let mut t = *transform;
+                t.position = result.position;
+                let _ = registry.set_component(current.id, t);
+            }
             let _ = registry.set_component(current.id, agent);
             continue;
         };

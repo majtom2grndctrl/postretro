@@ -145,7 +145,7 @@ PRL header `version` is 4. Loading a file with any other version fails.
 
 | Section | ID | When present |
 |---------|-----|-------------|
-| Portals | 15 | Always |
+| Portals | 15 | Compiler emits every build; runtime treats missing, empty, decode/schema-failed, or polygon-unusable data as no usable portal graph; endpoint/adjacency mismatches are fatal when graph is otherwise usable |
 | TextureNames | 16 | Always |
 | Geometry | 17 | Always |
 | AlphaLights | 18 | Always |

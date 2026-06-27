@@ -204,6 +204,14 @@ impl ClientPrediction {
         Self::default()
     }
 
+    /// Drop level-scoped prediction state after a connected-client level unload.
+    /// The outbound command tick is connection-scoped and remains monotonic.
+    pub(crate) fn reset_for_level_unload(&mut self) {
+        self.armed = None;
+        self.history.clear();
+        self.presentation_offset = Vec3::ZERO;
+    }
+
     /// Arm (or re-arm) prediction with the local pawn baseline. Called by
     /// `ClientReplication` when it applies a full `local_player: true` baseline and
     /// has the stable `NetworkId -> EntityId` mapping. Re-arming to the SAME pawn is

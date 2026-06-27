@@ -17,7 +17,7 @@ fn compute_fog_cell_mask_culled_unions_visible_cell_masks() {
 #[test]
 fn compute_fog_cell_mask_drawall_returns_all_canonical_slots() {
     let masks = vec![0u32; 4]; // present but ignored on DrawAll path
-    // Empty fog_reachable signals DrawAll-equivalent (portal isolation N/A).
+    // Empty fog_reachable signals all-active fog fallback sentinel.
     assert_eq!(compute_fog_cell_mask(&[], Some(&masks), 3, Some(0)), 0b111);
     assert_eq!(compute_fog_cell_mask(&[], None, 3, Some(0)), 0b111);
 }

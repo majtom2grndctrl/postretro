@@ -38,7 +38,7 @@ pub(crate) struct BootSession {
 /// group, and the net endpoint). It is taken and consumed exactly once by
 /// `App::install_pending_session`; suspend/resume keeps it unconsumed until the
 /// install commits, so a resume that re-enters the splash loop never runs deferred
-/// init twice. See: context/lib/boot_sequence.md §1, §9.
+/// init twice. See: context/lib/boot_sequence.md §1, §5.
 pub(crate) struct PendingSessionInit {
     /// Full `argv` (including `argv[0]`). Net args are parsed inside
     /// `Session::build` — never before the first visible frame.
@@ -76,8 +76,9 @@ impl PendingSessionInit {
     }
 }
 
-/// Build the boot-lifetime `App` state (stages 1-4 of the boot order) and the
-/// winit event loop, returning the constructed `App` in the `Booting` state.
+/// Build the boot-lifetime `App` state (stages 1-3 of the boot order; stage 4 —
+/// window + boot-ready renderer — fires later in `resumed()`) and the winit
+/// event loop, returning the constructed `App` in the `Booting` state.
 ///
 /// Ordering: minimal pre-event-loop work (logging, boot-timing setup, raw arg
 /// collection, content-root / boot-map selection) runs first, THEN

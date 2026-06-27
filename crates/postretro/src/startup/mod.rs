@@ -74,7 +74,7 @@ impl SplashSource {
 }
 
 /// Boot phase derived from boot-relevant `App` state for the suspend/resume
-/// contract (boot_sequence §1, §9; rendering_pipeline §7.8). Pure classifier so
+/// contract (boot_sequence §1, §5; rendering_pipeline §7.8). Pure classifier so
 /// the resume re-entry behavior is auditable without a window or GPU:
 ///
 /// | Phase | Re-entry behavior on resume |
@@ -140,7 +140,7 @@ pub(crate) fn classify_boot_phase(
 /// suspend/resume cycle. Returns the owned value to install the first time the
 /// slot is `Some`, leaving `None` behind so a resume re-entry skips it. This is
 /// the `pending_session.take()` pattern named as a seam: a resume that re-enters
-/// the splash loop finds `None` and never re-installs. See: boot_sequence §9.
+/// the splash loop finds `None` and never re-installs. See: boot_sequence §1, §5.
 pub(crate) fn take_once<T>(slot: &mut Option<T>) -> Option<T> {
     slot.take()
 }

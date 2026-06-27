@@ -40,8 +40,9 @@ mod portal_vis;
 mod prl;
 mod render;
 mod scripting;
-// Live session-lifetime container (input/UI/modal group), held on `App` as
-// `Option<Session>` and built after the first visible frame.
+// Live session-lifetime container: all session-lifetime state (scripting core,
+// audio, net endpoint, input/UI/modal group, and their bridges and registries),
+// held on `App` as `Option<Session>` and built after the first visible frame.
 // See: context/lib/boot_sequence.md §1
 mod session;
 mod shadow_cull;
@@ -620,7 +621,7 @@ pub(crate) struct App {
     /// construction until `install_pending_session` consumes it on the first logo
     /// splash frame; `None` afterward. The `Option::take` is the single-commit
     /// guard so a suspend/resume re-entering the splash loop never runs deferred
-    /// init twice. See: context/lib/boot_sequence.md §1, §9.
+    /// init twice. See: context/lib/boot_sequence.md §1, §5.
     pending_session: Option<startup::PendingSessionInit>,
 
     /// The dev-tools "chase me" demo agent (spawned by `Alt+Shift+G`). `None`
@@ -934,7 +935,7 @@ impl ApplicationHandler for App {
         // Audit which boot phase a suspend interrupts. The resume path resets to
         // `Booting` and re-drives the splash loop; the single-commit guards
         // (`pending_session.take`, renderer full-ready idempotence) keep session
-        // init and renderer completion from re-running. See: boot_sequence §9.
+        // init and renderer completion from re-running. See: boot_sequence §1, §5.
         log::info!(
             "[Engine] Suspended during boot phase {:?}",
             self.boot_phase()
@@ -2765,7 +2766,7 @@ impl App {
     /// install frame before any later step runs against a `None` session —
     /// mirroring `finish_renderer_full_init`'s failure handling. A failed build
     /// also consumes `pending_session`, so a resumed boot does not retry.
-    /// See: context/lib/boot_sequence.md §1, §9; development_guide.md §6.2.
+    /// See: context/lib/boot_sequence.md §1, §5; development_guide.md §6.2.
     pub(crate) fn install_pending_session(&mut self, event_loop: &ActiveEventLoop) -> bool {
         // The build-result → action decision is the pure `classify_session_install`
         // classifier; this method only performs the side effects it names, so the
@@ -2792,7 +2793,7 @@ impl App {
         }
     }
 
-    /// Current boot phase for the suspend/resume contract (boot_sequence §1, §9).
+    /// Current boot phase for the suspend/resume contract (boot_sequence §1, §5).
     /// Derived purely from the splash schedule, whether the deferred session
     /// bundle is installed (`pending_session` consumed), and renderer full-ready.
     /// Used to log/audit which phase a suspend interrupts; the resume path itself
@@ -2820,7 +2821,7 @@ impl App {
     /// Idempotent across suspend/resume: rebuilt only when absent. `suspended()`
     /// drops `session.debug_ui` (and resets the boot state to `Booting`), so the
     /// re-run of the splash loop on resume reconstructs it here.
-    /// See: context/lib/boot_sequence.md §1, §9.
+    /// See: context/lib/boot_sequence.md §1, §5.
     #[cfg(feature = "dev-tools")]
     pub(crate) fn ensure_debug_ui(&mut self) {
         let Some(session) = self.session.as_mut() else {

@@ -219,7 +219,7 @@ pub(crate) struct Session {
     /// neither available at `Session::build` time, so it is lazy-initialized by
     /// `App::ensure_debug_ui` after install and reset to `None` on suspend (the
     /// window-derived state is rebuilt on resume). The GPU half lives on
-    /// `Renderer` as `debug_ui_gpu`. See: context/lib/boot_sequence.md §1, §9.
+    /// `Renderer` as `debug_ui_gpu`. See: context/lib/boot_sequence.md §1, §5.
     #[cfg(feature = "dev-tools")]
     pub(crate) debug_ui: Option<render::debug_ui::DebugUi>,
 }

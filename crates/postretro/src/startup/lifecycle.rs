@@ -76,6 +76,9 @@ impl App {
         // future surface re-creation re-runs `populate_from_level`.
         // collision_world is reset for the same reason — it must be in a
         // clean placeholder state before populate_from_level runs on resume.
+        // Called both from `unload_level` (session installed) and the suspend
+        // path (session may be absent if suspend arrives pre-install), so the
+        // fog-bridge clear is guarded — a no-op when there is no session yet.
         if let Some(session) = self.session.as_mut() {
             session.fog_volume_bridge.clear();
         }
@@ -93,6 +96,7 @@ impl App {
     /// | light bridge, fog bridge, collision world | slot table (no clear method — engine-global) |
     /// | level sounds, sprite collections, `emitter_bridge`, `mesh_render`, `mesh_clip_tables`, `hit_zone_store` | entity-type registry (`data_registry.entities`), mod map catalog (`data_registry.maps`) |
     /// | `data_registry` reactions + crossings, presentation cells | persisted-state save path |
+    /// | level-scope UI trees (`modal_stack` `ScopeTier::Level`) | |
     /// | progress tracker, active wieldable, camera pose | |
     pub(crate) fn unload_level(&mut self) {
         // `net_endpoint` and `audio` are session-owned; reset/release them through

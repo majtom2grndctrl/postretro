@@ -109,7 +109,7 @@ impl App {
         // Lazy-init the dev-tools debug UI now that the session exists and the
         // renderer/window are ready. Rebuilds on resume (which drops it), so a
         // suspend/resume re-entering this frame restores it without re-running the
-        // single-commit session install. See: context/lib/boot_sequence.md §1, §9.
+        // single-commit session install. See: context/lib/boot_sequence.md §1, §5.
         self.ensure_debug_ui();
         // The session is installed with `InputFocus::Gameplay`; capture the
         // cursor now (the work `resumed` used to do pre-install, deferred here

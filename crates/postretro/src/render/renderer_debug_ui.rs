@@ -18,11 +18,17 @@ impl Renderer {
     /// session, used by the acceptance criteria to verify lazy init.
     #[cfg(feature = "dev-tools")]
     pub fn ensure_debug_ui_gpu(&mut self) {
-        if self.debug_ui_gpu.is_none() {
-            self.debug_ui_gpu = Some(debug_ui::DebugUiGpu::new(
-                &self.device,
-                self.surface_config.format,
-            ));
+        let Self {
+            device,
+            surface_config,
+            full,
+            ..
+        } = self;
+        let full = full
+            .as_mut()
+            .expect("ensure_debug_ui_gpu is a full-ready dev-tools path");
+        if full.debug_ui_gpu.is_none() {
+            full.debug_ui_gpu = Some(debug_ui::DebugUiGpu::new(device, surface_config.format));
             log::info!("[DebugUi] GPU renderer initialized");
         }
     }
@@ -55,28 +61,34 @@ impl Renderer {
         };
 
         self.ensure_debug_ui_gpu();
-        let gpu = self
+        // Boot fields (device/queue) and the full-phase `debug_ui_gpu` co-occur in
+        // the upload/record statements below, so destructure once after the
+        // self-method call above.
+        let Self {
+            device,
+            queue,
+            full,
+            ..
+        } = self;
+        let full = full
+            .as_mut()
+            .expect("render_debug_ui is a full-ready dev-tools path");
+        let gpu = full
             .debug_ui_gpu
             .as_mut()
             .expect("ensure_debug_ui_gpu populated debug_ui_gpu");
 
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("egui Encoder"),
-            });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("egui Encoder"),
+        });
 
         for (id, image_delta) in &textures_delta.set {
             gpu.renderer
-                .update_texture(&self.device, &self.queue, *id, image_delta);
+                .update_texture(device, queue, *id, image_delta);
         }
-        let user_cmd_bufs = gpu.renderer.update_buffers(
-            &self.device,
-            &self.queue,
-            &mut encoder,
-            &paint_jobs,
-            &screen_desc,
-        );
+        let user_cmd_bufs =
+            gpu.renderer
+                .update_buffers(device, queue, &mut encoder, &paint_jobs, &screen_desc);
 
         {
             let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -101,7 +113,7 @@ impl Renderer {
             gpu.renderer.free_texture(id);
         }
 
-        self.queue.submit(
+        queue.submit(
             user_cmd_bufs
                 .into_iter()
                 .chain(std::iter::once(encoder.finish())),

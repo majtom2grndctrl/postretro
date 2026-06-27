@@ -2365,7 +2365,7 @@ impl ApplicationHandler for App {
                         self.script_time as f32,
                     );
 
-                    if renderer.is_ready() {
+                    if renderer.is_full_ready() {
                         // Particle render — packs `SpriteInstance` bytes per
                         // collection; the collector never touches wgpu directly.
                         {
@@ -3018,7 +3018,8 @@ impl App {
     /// failure (`NeedsRedraw`) requests another redraw without advancing.
     fn paint_splash(&mut self, _event_loop: &ActiveEventLoop) -> render::splash_pass::PresentOutcome {
         match self.renderer.as_mut() {
-            Some(renderer) if renderer.is_ready() => renderer.render_splash_frame(),
+            // Splash requires only boot-ready (surface/device/queue/boot-splash).
+            Some(renderer) if renderer.is_boot_ready() => renderer.render_splash_frame(),
             // Surface not yet configured: nothing presented, ask to redraw.
             _ => render::splash_pass::PresentOutcome::NeedsRedraw,
         }
@@ -3155,7 +3156,8 @@ impl App {
         let Some(renderer) = self.renderer.as_mut() else {
             return;
         };
-        if !renderer.is_ready() {
+        // Frontend renders through the full UI/scene path — requires full-ready.
+        if !renderer.is_full_ready() {
             return;
         }
 

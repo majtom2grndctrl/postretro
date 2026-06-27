@@ -164,7 +164,10 @@ impl Renderer {
     /// Flushed to GPU on the next `update_per_frame_uniforms` call.
     #[allow(dead_code)]
     pub fn set_animated_light_active(&mut self, slot: usize, active: bool) {
-        self.sh_volume_resources.animation.set_active(slot, active);
+        self.full_mut()
+            .sh_volume_resources
+            .animation
+            .set_active(slot, active);
     }
 
     /// Overwrite the entire 48-byte animation descriptor at `slot` in the
@@ -178,7 +181,8 @@ impl Renderer {
         slot: u32,
         bytes: &[u8; sh_volume::ANIMATION_DESCRIPTOR_SIZE],
     ) {
-        self.sh_volume_resources
+        self.full_mut()
+            .sh_volume_resources
             .animation
             .write_descriptor(slot as usize, bytes);
     }
@@ -190,20 +194,23 @@ impl Renderer {
     /// re-patching the shadow slot, so the bridge's sentinel slot persists and
     /// the forward shader never samples the shadow map for that frame.
     pub fn upload_bridge_lights(&mut self, lights_bytes: &[u8]) {
+        let Self { queue, full, .. } = self;
+        let full = full
+            .as_mut()
+            .expect("renderer full-init must complete before full-ready paths run");
         debug_assert_eq!(
             lights_bytes.len(),
-            self.level_lights.len() * GPU_LIGHT_SIZE,
+            full.level_lights.len() * GPU_LIGHT_SIZE,
             "bridge produced {} bytes; expected {} × {} = {}",
             lights_bytes.len(),
-            self.level_lights.len(),
+            full.level_lights.len(),
             GPU_LIGHT_SIZE,
-            self.level_lights.len() * GPU_LIGHT_SIZE,
+            full.level_lights.len() * GPU_LIGHT_SIZE,
         );
         if lights_bytes.is_empty() {
             return;
         }
-        self.queue
-            .write_buffer(&self.lights_buffer, 0, lights_bytes);
+        queue.write_buffer(&full.lights_buffer, 0, lights_bytes);
         // Keep the CPU mirror in lock-step with the GPU buffer. The bridge
         // packs animated base data with sentinel shadow slots; the shadow pool
         // (`update_dynamic_light_slots`) then patches the real slot field onto
@@ -212,19 +219,23 @@ impl Renderer {
         // checks `last_lights_upload.len() == expected_len` and takes the fallback
         // full static-repack path when the lengths mismatch, clobbering the
         // animated base data written here with static bytes.
-        self.last_lights_upload.clear();
-        self.last_lights_upload.extend_from_slice(lights_bytes);
+        full.last_lights_upload.clear();
+        full.last_lights_upload.extend_from_slice(lights_bytes);
     }
 
     /// Mismatched length logs a warning and skips upload — fail soft over crashing the frame.
     pub fn upload_bridge_descriptors(&mut self, descriptor_bytes: &[u8]) {
-        let expected = self.level_lights.len() * sh_volume::ANIMATION_DESCRIPTOR_SIZE;
+        let Self { queue, full, .. } = self;
+        let full = full
+            .as_ref()
+            .expect("renderer full-init must complete before full-ready paths run");
+        let expected = full.level_lights.len() * sh_volume::ANIMATION_DESCRIPTOR_SIZE;
         if descriptor_bytes.len() != expected {
             log::warn!(
                 "[Renderer] upload_bridge_descriptors: bridge produced {} bytes; \
                  expected {} × {} = {}. Skipping upload.",
                 descriptor_bytes.len(),
-                self.level_lights.len(),
+                full.level_lights.len(),
                 sh_volume::ANIMATION_DESCRIPTOR_SIZE,
                 expected,
             );
@@ -233,8 +244,8 @@ impl Renderer {
         if descriptor_bytes.is_empty() {
             return;
         }
-        self.queue.write_buffer(
-            &self.sh_volume_resources.scripted_light_descriptors,
+        queue.write_buffer(
+            &full.sh_volume_resources.scripted_light_descriptors,
             0,
             descriptor_bytes,
         );
@@ -245,9 +256,13 @@ impl Renderer {
         if samples_bytes.is_empty() {
             return;
         }
-        let offset = self.sh_volume_resources.scripted_sample_byte_offset as u64;
-        self.queue.write_buffer(
-            &self.sh_volume_resources.animation.anim_samples,
+        let Self { queue, full, .. } = self;
+        let full = full
+            .as_ref()
+            .expect("renderer full-init must complete before full-ready paths run");
+        let offset = full.sh_volume_resources.scripted_sample_byte_offset as u64;
+        queue.write_buffer(
+            &full.sh_volume_resources.animation.anim_samples,
             offset,
             samples_bytes,
         );
@@ -255,11 +270,11 @@ impl Renderer {
 
     /// Divide by 4 for float index; pass as `fgd_sample_float_count` to `LightBridge`.
     pub fn scripted_sample_byte_offset(&self) -> usize {
-        self.sh_volume_resources.scripted_sample_byte_offset
+        self.full().sh_volume_resources.scripted_sample_byte_offset
     }
 
     pub fn level_lights(&self) -> &[MapLight] {
-        &self.level_lights
+        &self.full().level_lights
     }
 
     /// Collects dynamic spots with a shadow slot this frame.
@@ -267,7 +282,8 @@ impl Renderer {
     /// Pre-multiplies color × intensity × brightness; mirrors `FogVolumeBridge::update_points`.
     pub(super) fn collect_fog_spot_lights(&self) -> Vec<crate::fx::fog_volume::FogSpotLight> {
         const BRIGHTNESS_SUPPRESSION_THRESHOLD: f32 = 0.01;
-        let slot_assignment = &self.spot_shadow_pool.slot_assignment;
+        let full = self.full();
+        let slot_assignment = &full.spot_shadow_pool.slot_assignment;
         if slot_assignment.is_empty() {
             return Vec::new();
         }
@@ -276,13 +292,13 @@ impl Renderer {
             if slot == crate::lighting::spot_shadow::NO_SHADOW_SLOT {
                 continue;
             }
-            let Some(light) = self.level_lights.get(light_idx) else {
+            let Some(light) = full.level_lights.get(light_idx) else {
                 continue;
             };
             if !matches!(light.light_type, crate::prl::LightType::Spot) {
                 continue;
             }
-            let multiplier = self
+            let multiplier = full
                 .light_effective_brightness
                 .get(light_idx)
                 .copied()
@@ -297,8 +313,7 @@ impl Renderer {
                 light.origin[1] as f32,
                 light.origin[2] as f32,
             );
-            if !sphere_intersects_any_fog_aabb(center, light.falloff_range, &self.active_fog_aabbs)
-            {
+            if !sphere_intersects_any_fog_aabb(center, light.falloff_range, &full.active_fog_aabbs) {
                 continue;
             }
             let intensity = light.intensity * multiplier;
@@ -328,7 +343,7 @@ impl Renderer {
     pub fn upload_fog_volumes(&mut self, bytes: &[u8], planes: &[Vec<[f32; 4]>], live_mask: u32) {
         let stride = std::mem::size_of::<crate::fx::fog_volume::FogVolume>();
         if bytes.is_empty() {
-            self.fog.set_canonical_volumes(&[], &[], 0);
+            self.full_mut().fog.set_canonical_volumes(&[], &[], 0);
             return;
         }
         if bytes.len() % stride != 0 {
@@ -339,11 +354,13 @@ impl Renderer {
                 stride,
             );
             // Zero the canonical list — otherwise stale volumes from the previous frame persist.
-            self.fog.set_canonical_volumes(&[], &[], 0);
+            self.full_mut().fog.set_canonical_volumes(&[], &[], 0);
             return;
         }
         let volumes: &[crate::fx::fog_volume::FogVolume] = bytemuck::cast_slice(bytes);
-        self.fog.set_canonical_volumes(volumes, planes, live_mask);
+        self.full_mut()
+            .fog
+            .set_canonical_volumes(volumes, planes, live_mask);
     }
 
     /// Installs per-cell fog visibility masks for a freshly loaded level and
@@ -358,23 +375,29 @@ impl Renderer {
     /// at level-load boundaries — mid-session fog-volume hot-reloads must use
     /// a different seam that preserves hysteresis state.
     pub fn install_fog_cell_masks_for_level(&mut self, masks: Option<Vec<u32>>) {
-        self.fog_cell_masks = masks;
-        self.fog.clear_for_level_load();
+        let full = self.full_mut();
+        full.fog_cell_masks = masks;
+        full.fog.clear_for_level_load();
     }
 
     /// Must be called after bridge AABB cache is populated and before `collect_fog_spot_lights`.
     /// CPU-side culling data only — can't go through `upload_fog_volumes`.
     /// Empty slice clears the cache so spots aren't kept against a volume that turned off.
     pub fn set_fog_aabbs(&mut self, aabbs: &[(Vec3, Vec3)]) {
-        self.active_fog_aabbs.clear();
-        self.active_fog_aabbs.extend_from_slice(aabbs);
+        let full = self.full_mut();
+        full.active_fog_aabbs.clear();
+        full.active_fog_aabbs.extend_from_slice(aabbs);
     }
 
     /// Bytes: tightly packed `[FogPointLight]`. Empty input zeroes `point_count`.
     pub fn upload_fog_points(&mut self, bytes: &[u8]) {
         let stride = std::mem::size_of::<crate::fx::fog_volume::FogPointLight>();
+        let Self { queue, full, .. } = self;
+        let full = full
+            .as_mut()
+            .expect("renderer full-init must complete before full-ready paths run");
         if bytes.is_empty() {
-            self.fog.point_count = 0;
+            full.fog.point_count = 0;
             return;
         }
         if bytes.len() % stride != 0 {
@@ -384,27 +407,37 @@ impl Renderer {
                 bytes.len(),
                 stride,
             );
-            self.fog.point_count = 0;
+            full.fog.point_count = 0;
             return;
         }
         let points: &[crate::fx::fog_volume::FogPointLight] = bytemuck::cast_slice(bytes);
-        self.fog.upload_points(&self.queue, points);
+        full.fog.upload_points(queue, points);
     }
 
     /// Set the global `fog_pixel_scale` from worldspawn. No-op when unchanged.
     pub fn set_fog_pixel_scale(&mut self, scale: u32) {
-        self.fog.set_pixel_scale(
-            &self.device,
+        let Self {
+            device,
+            surface_config,
+            full,
+            ..
+        } = self;
+        let full = full
+            .as_mut()
+            .expect("renderer full-init must complete before full-ready paths run");
+        full.fog.set_pixel_scale(
+            device,
             scale,
-            self.surface_config.width,
-            self.surface_config.height,
-            &self.depth_view,
+            surface_config.width,
+            surface_config.height,
+            &full.depth_view,
         );
     }
 
     pub fn set_light_effective_brightness(&mut self, effective_brightness: &[f32]) {
-        self.light_effective_brightness.clear();
-        self.light_effective_brightness
+        let full = self.full_mut();
+        full.light_effective_brightness.clear();
+        full.light_effective_brightness
             .extend_from_slice(effective_brightness);
     }
 }

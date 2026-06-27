@@ -18,14 +18,24 @@ impl Renderer {
         prm_cache_root: &Path,
         texture_materials: &[Material],
     ) {
+        let Self {
+            device,
+            queue,
+            full,
+            ..
+        } = self;
+        let full = full
+            .as_mut()
+            .expect("renderer full-init must complete before full-ready paths run");
+
         // Cache materials so `install_level_geometry` can also recompute the
         // per-leaf material lookup without re-deriving them. (Mirrors the
         // pre-refactor flow where geometry install populated this field.)
-        self.stored_texture_materials = texture_materials.to_vec();
+        full.stored_texture_materials = texture_materials.to_vec();
 
         let loaded = load_textures(
-            &self.device,
-            &self.queue,
+            device,
+            queue,
             texture_names,
             texture_cache_keys,
             prm_cache_root,
@@ -36,14 +46,14 @@ impl Renderer {
         // entry seeded in `Renderer::new` covers placeholders; new mip counts
         // beyond `1` arrive here when real textures load.
         for tex in &loaded {
-            self.mip_count_aniso_samplers
+            full.mip_count_aniso_samplers
                 .entry(tex.mip_count)
-                .or_insert_with(|| create_mip_aniso_sampler(&self.device, tex.mip_count));
+                .or_insert_with(|| create_mip_aniso_sampler(device, tex.mip_count));
         }
 
         let mut gpu_textures: Vec<GpuTexture> = Vec::with_capacity(loaded.len());
         for (idx, tex) in loaded.iter().enumerate() {
-            let aniso_sampler = self
+            let aniso_sampler = full
                 .mip_count_aniso_samplers
                 .get(&tex.mip_count)
                 .expect("aniso mip sampler must have been eagerly populated");
@@ -52,8 +62,8 @@ impl Renderer {
                 .copied()
                 .unwrap_or(crate::material::Material::Default);
             let bind_group = build_material_bind_group(
-                &self.device,
-                &self.texture_bind_group_layout,
+                device,
+                &full.texture_bind_group_layout,
                 tex,
                 aniso_sampler,
                 material,
@@ -65,28 +75,28 @@ impl Renderer {
         if gpu_textures.is_empty() {
             // No textures referenced by the level — keep the placeholder slot
             // so the world pipeline still has a bind group bound.
-            let placeholder = placeholder_loaded_texture(&self.device, &self.queue);
-            let aniso_sampler = self
+            let placeholder = placeholder_loaded_texture(device, queue);
+            let aniso_sampler = full
                 .mip_count_aniso_samplers
                 .get(&1)
                 .expect("mip_count 1 aniso sampler is seeded at Renderer::new");
             let bind_group = build_material_bind_group(
-                &self.device,
-                &self.texture_bind_group_layout,
+                device,
+                &full.texture_bind_group_layout,
                 &placeholder,
                 aniso_sampler,
                 crate::material::Material::Default,
                 "Placeholder Material",
             );
-            self.loaded_textures = vec![placeholder];
-            self.gpu_textures = vec![GpuTexture { bind_group }];
+            full.loaded_textures = vec![placeholder];
+            full.gpu_textures = vec![GpuTexture { bind_group }];
             log::info!("[Renderer] Textures installed: 1 (placeholder fallback)");
             return;
         }
 
-        self.loaded_textures = loaded;
-        self.gpu_textures = gpu_textures;
-        log::info!("[Renderer] Textures installed: {}", self.gpu_textures.len());
+        full.loaded_textures = loaded;
+        full.gpu_textures = gpu_textures;
+        log::info!("[Renderer] Textures installed: {}", full.gpu_textures.len());
     }
 
     /// Load one skinned model into the renderer's model cache: parse the glTF,
@@ -165,8 +175,14 @@ impl Renderer {
         // `handle` (the verbatim cache key) was derived alongside the open path
         // by `resolve_model_open_path_and_handle` — see this method's doc. The
         // FULL clip set is handed to the cache; clip selection is a sibling plan.
-        self.mesh_pass.insert_model(
-            &self.device,
+        // `resolve_skinned_model_material` (a `&mut self` helper) already ran
+        // above into `submesh_materials`, so destructuring `self` here is safe.
+        let Self { device, full, .. } = self;
+        let full = full
+            .as_mut()
+            .expect("renderer full-init must complete before full-ready paths run");
+        full.mesh_pass.insert_model(
+            device,
             handle,
             &mesh,
             submesh_materials,
@@ -191,7 +207,8 @@ impl Renderer {
     /// [`Renderer::skinned_model_clip_by_name`]). Consumed by the level-load model
     /// sweep (`main.rs`) to build the game-side clip tables.
     pub fn skinned_model_clip_metadata(&self, model_handle: &str) -> Vec<mesh_pass::ClipMetadata> {
-        self.mesh_pass
+        self.full()
+            .mesh_pass
             .model_clip_metadata(&crate::model::ModelHandle::from(model_handle))
     }
 
@@ -202,8 +219,8 @@ impl Renderer {
     /// groups + palette runs and records the draws; it needs no world reference
     /// because the cull already happened game-side.
     pub fn set_mesh_draws(&mut self, instances: &[mesh_instances::MeshInstanceInput]) {
-        self.mesh_draws.clear();
-        self.mesh_draws.extend_from_slice(instances);
+        self.full_mut().mesh_draws.clear();
+        self.full_mut().mesh_draws.extend_from_slice(instances);
     }
 
     /// Reset per-level transient mesh-pass state at level load. `pub` forwarder
@@ -212,7 +229,7 @@ impl Renderer {
     /// `"smooth"`-interrupt snapshot store and the per-entity palette cache —
     /// entity seeds are not stable across levels, so stale state must not survive.
     pub fn clear_mesh_pass_for_level_load(&mut self) {
-        self.mesh_pass.clear_for_level_load();
+        self.full_mut().mesh_pass.clear_for_level_load();
     }
 
     /// Resolve each submesh's material key (content-hash hex → `.prm`) to a
@@ -235,6 +252,16 @@ impl Renderer {
     ) -> Vec<(wgpu::BindGroup, std::ops::Range<u32>)> {
         let plan = plan_submesh_materials(&model.submeshes);
 
+        let Self {
+            device,
+            queue,
+            full,
+            ..
+        } = self;
+        let full = full
+            .as_mut()
+            .expect("renderer full-init must complete before full-ready paths run");
+
         // Build one material bind group per distinct key (deduped). Indexed
         // parallel to `plan.distinct_keys` so each submesh draw indexes into it.
         let distinct_bind_groups: Vec<wgpu::BindGroup> = plan
@@ -243,20 +270,20 @@ impl Renderer {
             .map(|key_hex| {
                 let key = parse_blake3_key(key_hex);
                 let tex = load_model_diffuse_texture(
-                    &self.device,
-                    &self.queue,
+                    device,
+                    queue,
                     key_hex,
                     key,
                     prm_cache_root,
                 );
 
-                let aniso_sampler = self
+                let aniso_sampler = full
                     .mip_count_aniso_samplers
                     .entry(tex.mip_count)
-                    .or_insert_with(|| create_mip_aniso_sampler(&self.device, tex.mip_count));
+                    .or_insert_with(|| create_mip_aniso_sampler(device, tex.mip_count));
                 build_material_bind_group(
-                    &self.device,
-                    &self.texture_bind_group_layout,
+                    device,
+                    &full.texture_bind_group_layout,
                     &tex,
                     aniso_sampler,
                     Material::Default,
@@ -284,7 +311,7 @@ impl Renderer {
         let mut normalized = vec![false; world.vertices.len()];
         for leaf in &world.bvh.leaves {
             let tex_idx = leaf.material_bucket_id as usize;
-            let tex = match self.loaded_textures.get(tex_idx) {
+            let tex = match self.full().loaded_textures.get(tex_idx) {
                 Some(t) => t,
                 None => continue,
             };

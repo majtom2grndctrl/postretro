@@ -104,6 +104,16 @@ impl App {
         self.swap_mod_splash_override_if_pending();
         log::info!("{}", self.mod_timings.summary());
 
+        // Full renderer initialization runs after the first visible logo frame
+        // and completes BEFORE the splash clears and before any Frontend /
+        // Loading-completion / Running / UI / scene path executes (boot_sequence
+        // §1, rendering_pipeline §7.8). Idempotent: a suspend→resume that recreated
+        // the surface re-runs this without re-running deferred session init. A
+        // hard failure here is a renderer init failure — exit non-zero.
+        if !self.finish_renderer_full_init(event_loop) {
+            return false;
+        }
+
         let Some(map_path) = self.map_path.clone() else {
             if let Some(renderer) = self.renderer.as_mut() {
                 renderer.clear_splash();
@@ -128,6 +138,28 @@ impl App {
         self.splash_frame += 1;
         self.request_redraw();
         false
+    }
+
+    /// Complete full renderer initialization (idempotent / restartable across
+    /// surface recreation). Returns `true` on success or when no renderer is
+    /// present (nothing to finish); on a hard renderer-init failure it stores the
+    /// error, exits the event loop, and returns `false`. Records
+    /// `renderer_full_init_complete` into `boot_timings`.
+    ///
+    /// Called once per boot after the logo frame presents, and again on resume if
+    /// the surface was recreated — the renderer's `ensure_full_ready` no-ops when
+    /// already full-ready, so the steady boot path pays nothing on re-entry.
+    fn finish_renderer_full_init(&mut self, event_loop: &ActiveEventLoop) -> bool {
+        let Some(renderer) = self.renderer.as_mut() else {
+            return true;
+        };
+        if let Err(err) = renderer.ensure_full_ready() {
+            self.exit_result = Err(err);
+            event_loop.exit();
+            return false;
+        }
+        self.boot_timings.record("renderer_full_init_complete");
+        true
     }
 
     /// Paint the now-decoded splash and emit log line A. Records

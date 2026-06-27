@@ -4,16 +4,20 @@
 use super::super::*;
 
 // Regression guard for the exact bug this fix closes: the renderer must thread
-// `self.ambient_floor` into the mesh `write_light_params` call so the
-// diagnostics ambient-floor slider reaches skinned meshes (it was silently
+// the renderer-owned `ambient_floor` into the mesh `write_light_params` call so
+// the diagnostics ambient-floor slider reaches skinned meshes (it was silently
 // dropped, leaving shadowed mesh faces black). A behavioral assertion needs a
-// GPU, so this pins the call-site source: if the `self.ambient_floor` argument
-// is removed or renamed, the contract fails here before it reaches a frame.
+// GPU, so this pins the call-site source: if the `ambient_floor` argument is
+// removed or renamed, the contract fails here before it reaches a frame.
+//
+// After the boot/full renderer split (`FullRenderer`), `mesh_pass`/`ambient_floor`
+// moved off `self` into the destructured `full` local, so the call site reads
+// `full.mesh_pass.write_light_params(... full.ambient_floor ...)`.
 #[test]
 fn renderer_threads_ambient_floor_into_mesh_write_light_params() {
     let src = include_str!("../renderer_render_frame.rs");
     let call = src
-        .split("self.mesh_pass.write_light_params(")
+        .split("mesh_pass.write_light_params(")
         .nth(1)
         .expect("mesh_pass.write_light_params call site must exist");
     let args = call
@@ -21,8 +25,8 @@ fn renderer_threads_ambient_floor_into_mesh_write_light_params() {
         .expect("call must terminate with );")
         .0;
     assert!(
-        args.contains("self.ambient_floor"),
-        "mesh write_light_params call must pass self.ambient_floor (the \
+        args.contains("ambient_floor"),
+        "mesh write_light_params call must pass the renderer ambient_floor (the \
              ambient-floor slider must reach skinned meshes)",
     );
 }

@@ -431,6 +431,17 @@ pub struct LevelGeometry<'a> {
     pub texture_materials: &'a [crate::material::Material],
 }
 
+/// Boot-phase renderer: the minimal GPU state needed to present the boot splash
+/// before the heavier renderer pipelines/resources are built. `Renderer::new`
+/// builds only this; `finish_full_init` builds the `FullRenderer` from it.
+///
+/// Phase split (see context/lib/boot_sequence.md §1, rendering_pipeline.md §7.8):
+/// - **Boot-ready** — `device`/`queue`/`surface`/`surface_config`/`boot_splash`
+///   exist; `is_boot_ready()` is true after `new`. The splash path needs only
+///   this. Device creation already requests the FULL feature/limit set
+///   (`request_renderer_device`) because wgpu features can't be added later.
+/// - **Full-ready** — `full` is `Some`; every steady-state path (Frontend,
+///   Loading completion, Running, UI pass, scene render) requires it.
 pub struct Renderer {
     pub(super) device: wgpu::Device,
     pub(super) queue: wgpu::Queue,
@@ -438,6 +449,36 @@ pub struct Renderer {
     pub(super) surface_config: wgpu::SurfaceConfiguration,
     pub(super) is_surface_configured: bool,
 
+    /// `has_multi_draw_indirect` flag cached for `finish_full_init` and
+    /// `install_level_geometry`. Boot-phase: derived from the adapter, needed to
+    /// build the full renderer and re-build it across surface recreation.
+    pub(super) has_multi_draw_indirect: bool,
+    /// Adapter `CUBE_ARRAY_TEXTURES` support, cached at boot so `finish_full_init`
+    /// can rebuild the full renderer (cube shadow pool + shared group-5 BGL) from
+    /// boot state alone. `Some` cube pool iff this is true (see `FullRenderer`).
+    pub(super) cube_array_supported: bool,
+
+    /// Renderer-owned boot splash pass: clears the swapchain and draws the
+    /// decoded logo as a single textured quad. Independent of the UI pass — the
+    /// boot path uses it directly so first pixels reach the window before the
+    /// full renderer (and UI system) initialize. Holds the uploaded logo between
+    /// `install_splash_pixels` and `clear_splash`; its `Option<InstalledLogo>` is
+    /// the renderer's "logo-installed" phase bit. See: context/lib/boot_sequence.md §1.
+    pub(super) boot_splash: splash_pass::BootSplashPass,
+
+    /// Full-phase renderer state. `None` until `finish_full_init` builds it;
+    /// `is_full_ready()` mirrors `is_some()`. Rebuilt (the old box dropped, GPU
+    /// resources released) on surface recreation, so full init is idempotent /
+    /// restartable across suspend→resume. Built purely from boot state with no
+    /// level loaded (`geometry = None`); level data installs later.
+    pub(super) full: Option<Box<FullRenderer>>,
+}
+
+/// Full-phase renderer: all the steady-state pipelines, passes, and resources.
+/// Built by `finish_full_init` from boot state alone (no level loaded). Every
+/// field here was previously inline on `Renderer`; the split lets the boot
+/// splash present before any of this is constructed.
+pub(super) struct FullRenderer {
     pub(super) pipeline: wgpu::RenderPipeline,
     pub(super) depth_prepass_pipeline: wgpu::RenderPipeline,
     /// `Some` when `POSTRETRO_GPU_TIMING=1` AND adapter supports `TIMESTAMP_QUERY`;
@@ -467,8 +508,6 @@ pub struct Renderer {
     /// so keep them resident for the level's lifetime.
     #[allow(dead_code)]
     pub(super) loaded_textures: Vec<LoadedTexture>,
-    /// `has_multi_draw_indirect` flag cached for `install_level_geometry`.
-    pub(super) has_multi_draw_indirect: bool,
     /// Per-texture material properties derived from texture names. Set by
     /// `install_level_geometry`; consumed by `install_textures` to populate
     /// per-material shininess uniforms.
@@ -773,13 +812,6 @@ pub struct Renderer {
     /// list on the gameplay path (`render_frame_indirect`). Owns all UI GPU state.
     pub(super) ui: ui::UiPass,
 
-    /// Renderer-owned boot splash pass: clears the swapchain and draws the
-    /// decoded logo as a single textured quad. Independent of the UI pass — the
-    /// boot path uses it directly so first pixels reach the window before the UI
-    /// system initializes. Holds the uploaded logo between `install_splash_pixels`
-    /// and `clear_splash`. See: context/lib/boot_sequence.md §1.
-    pub(super) boot_splash: splash_pass::BootSplashPass,
-
     /// Key→bind-group registry for gameplay/frontend `image` widget assets. The
     /// gameplay UI pass resolves image batches' asset keys through it. The boot
     /// splash does NOT use this — it owns its own logo texture in `boot_splash`.
@@ -822,4 +854,26 @@ pub struct Renderer {
     /// active volume. Empty list short-circuits to "pass everything" —
     /// conservative because the fog pass itself is gated by `FogPass::active`.
     pub(super) active_fog_aabbs: Vec<(Vec3, Vec3)>,
+}
+
+impl Renderer {
+    /// Borrow the full-phase state. Panics if called before `finish_full_init`
+    /// — every caller is on a full-ready-gated path (Frontend/Loading/Running/
+    /// UI/scene), so reaching here boot-only is a logic error, not a runtime case.
+    #[inline]
+    #[track_caller]
+    pub(super) fn full(&self) -> &FullRenderer {
+        self.full
+            .as_ref()
+            .expect("renderer full-init must complete before full-ready paths run")
+    }
+
+    /// Mutable twin of `full`. Same full-ready contract.
+    #[inline]
+    #[track_caller]
+    pub(super) fn full_mut(&mut self) -> &mut FullRenderer {
+        self.full
+            .as_mut()
+            .expect("renderer full-init must complete before full-ready paths run")
+    }
 }

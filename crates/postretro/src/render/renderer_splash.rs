@@ -79,7 +79,7 @@ impl Renderer {
     /// gameplay/frontend render call; the UI pass reads it when it records. Keeps
     /// the render signature stable. The boot splash does NOT use this.
     pub fn set_ui_snapshot(&mut self, snapshot: ui::UiReadSnapshot) {
-        self.ui_snapshot = snapshot;
+        self.full_mut().ui_snapshot = snapshot;
     }
 
     /// Export the flat hit-test / focus rect list for the TOP gameplay-UI stack
@@ -88,14 +88,22 @@ impl Renderer {
     /// laid out the stack) and feeds it to the focus engine the NEXT frame
     /// (N→N+1 in reverse). Empty when no gameplay layer is active. See: ui.md §4.
     pub fn export_ui_focus_rects(&self) -> ui::tree::FocusRectList {
-        let viewport = [self.surface_config.width, self.surface_config.height];
+        let Self {
+            surface_config,
+            full,
+            ..
+        } = self;
+        let full = full
+            .as_ref()
+            .expect("renderer full-init must complete before full-ready paths run");
+        let viewport = [surface_config.width, surface_config.height];
         // Resolve each focusable button's `selected`/`checked` predicate (M13 G2)
         // against the same frame snapshot the draw build used, so the a11y readback
         // matches the author-wired highlight.
-        self.ui.export_top_focus_rects(
+        full.ui.export_top_focus_rects(
             viewport,
-            &self.ui_snapshot.slot_values,
-            &self.ui_snapshot.cell_values,
+            &full.ui_snapshot.slot_values,
+            &full.ui_snapshot.cell_values,
         )
     }
 
@@ -113,8 +121,9 @@ impl Renderer {
     // engine, not the CPU test suite; the merge it relies on is covered in
     // `theme.rs`.
     pub fn set_ui_theme(&mut self, theme: ui::theme::UiTheme) {
-        self.ui_theme = theme;
-        self.ui_theme_generation = self.ui_theme_generation.wrapping_add(1);
+        let full = self.full_mut();
+        full.ui_theme = theme;
+        full.ui_theme_generation = full.ui_theme_generation.wrapping_add(1);
     }
 
     /// Install a runtime UI font face from owned TTF/OTF bytes (the net-new
@@ -126,6 +135,6 @@ impl Renderer {
     /// mismatch), so the caller surfaces a named diagnostic and skips rather than
     /// leaving a `font` token silently resolving to a system fallback.
     pub fn register_ui_font(&mut self, family: &str, ttf_bytes: Vec<u8>) -> bool {
-        self.ui.register_font(family, ttf_bytes)
+        self.full_mut().ui.register_font(family, ttf_bytes)
     }
 }

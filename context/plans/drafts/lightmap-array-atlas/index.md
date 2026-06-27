@@ -274,8 +274,8 @@ are five in `crates/postretro/src/render/renderer_init_pipelines.rs`: `Textured 
 `Depth Pre-Pass Pipeline` (~line 311), and `Spot Shadow Depth Pipeline` (~line 402). Each must update
 `array_stride` to 36. Only the forward-pass `Textured Pipeline` layout also adds
 `VertexAttribute { offset: 32, format: VertexFormat::Uint32, shader_location: 5 }` (it feeds
-`forward.wgsl`'s `vs_main`; confirm by the `Textured Pipeline` label and its `lightmap_uv_packed`
-attribute at shader_location 4). The other four need the stride bump only — they do not read
+`forward.wgsl`'s `vs_main`; confirm by the `Textured Pipeline` label and its `lightmap_uv`
+attribute at shader_location 4, offset 28). The other four need the stride bump only — they do not read
 `lightmap_layer`. The dummy-vertex buffer sizing (`vec![0u8; WorldVertex::STRIDE]`, ~line 468) tracks
 the constant automatically. Only `forward.wgsl`'s `VertexInput` gains `@location(5)`; the
 depth-prepass and spot-shadow shaders keep their `VertexInput` unchanged (they do not read the layer).

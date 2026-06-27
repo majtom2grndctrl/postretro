@@ -92,7 +92,9 @@ The borrow-checker cost is bounded because the borrow of `self.session` and the 
 
 Why post-first-pixel build is behavior-preserving: session systems are unused during the boot splash, so constructing them after the first frame changes startup *timing*, not observable behavior — and strictly improves boot latency by moving script-VM construction off the critical path to first pixels.
 
-## Open questions
+## Decisions
 
-- `Option<Session>` vs a tiny two-state `enum BootPhase { Booting, Session(Session) }` on `App`. Both give the compile-time guarantee. `Option` is lighter and matches the existing `pending_session`/`renderer.full` idiom; lead with it unless the implementer hits an ergonomic wall. Not a blocker — decide during Task 1.
-- Failure UX for post-first-pixel session-build failure: the spec mandates clean exit with a non-zero result. Whether to first paint a one-frame error indicator through the boot splash pass is out of scope here; a black-frame-then-exit is acceptable.
+- **`App.session: Option<Session>`, not a phase enum.** The codebase already models boot phase once (`BootState`) and already uses `Option<T>` for a not-yet-built subsystem in `pending_session` and `renderer.full`. A second `BootPhase` enum would be a third phase representation that can desync from `BootState`; the single install path already guarantees the only invariant the enum would add. Reuse the established idiom.
+- **Session-build failure logs and exits; no painted error frame.** A legible error frame needs text, and the boot splash is deliberately text-free (`early-boot-solo-splash` removed boot-path text rendering on purpose). The failure — script-runtime construction failing — is developer/modder-facing; its channel is the log + non-zero exit, matching the engine's init-failure convention (`development_guide.md` §6.2, `finish_renderer_full_init`). The boot splash paints a black frame and the process exits.
+
+Both follow the same rule, which the implementer should apply to any fork this spec didn't foresee: prefer the leaner option that reuses an idiom already in the tree over a new representation, absent a measured reason otherwise.

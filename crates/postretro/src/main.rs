@@ -86,23 +86,37 @@ use crate::camera::Camera;
 use crate::frame_timing::{FrameRateMeter, FrameTiming, InterpolableState};
 use crate::input::{Action, ButtonState, DiagnosticAction, InputFocus};
 use crate::render::Renderer;
-use crate::scripting::builtins::ClassnameDispatch;
-use crate::scripting::ctx::ScriptCtx;
 use crate::scripting::data_descriptors::ModThemeTokens;
-use crate::scripting::reaction_dispatch::{
-    ProgressTracker, fire_named_event, fire_named_event_with_sequences,
-};
-use crate::scripting::reactions::registry::ReactionPrimitiveRegistry;
-use crate::scripting::reactions::system_commands::{SystemReactionCommand, SystemReactionRegistry};
+use crate::scripting::reaction_dispatch::{fire_named_event, fire_named_event_with_sequences};
+use crate::scripting::reactions::system_commands::SystemReactionCommand;
 use crate::scripting::runtime::{
-    Frontend, MenuCamera, ReloadSummary, ScriptRuntime, StagedManifestCommitOutcome,
+    Frontend, MenuCamera, ReloadSummary, StagedManifestCommitOutcome,
 };
-use crate::scripting::sequence::SequencedPrimitiveRegistry;
 use crate::scripting::staged_manifest::{StagedManifestBuildResult, StagedManifestBuildStatus};
-use crate::scripting::state_crossings::CrossingDetector;
 use crate::scripting::state_persistence::{
-    STATE_FILE_PATH, StateStoreLifecycle, collect_persisted_state, save_persisted_state,
+    STATE_FILE_PATH, collect_persisted_state, save_persisted_state,
 };
+// Script-tranche types moved onto `Session` (Task 2); after migration these are
+// referenced in `main.rs` only by the `#[cfg(test)] mod tests` `test_app()`
+// builder, so they are gated test-only to keep the bin build warning-free.
+#[cfg(test)]
+use crate::scripting::builtins::ClassnameDispatch;
+#[cfg(test)]
+use crate::scripting::ctx::ScriptCtx;
+#[cfg(test)]
+use crate::scripting::reaction_dispatch::ProgressTracker;
+#[cfg(test)]
+use crate::scripting::reactions::registry::ReactionPrimitiveRegistry;
+#[cfg(test)]
+use crate::scripting::reactions::system_commands::SystemReactionRegistry;
+#[cfg(test)]
+use crate::scripting::runtime::ScriptRuntime;
+#[cfg(test)]
+use crate::scripting::sequence::SequencedPrimitiveRegistry;
+#[cfg(test)]
+use crate::scripting::state_crossings::CrossingDetector;
+#[cfg(test)]
+use crate::scripting::state_persistence::StateStoreLifecycle;
 use crate::startup::{
     BootState, FRONTEND_CLEAR_COLOR, InFlightLevelLoad, LevelRequest, LevelSource, LoadOutcome,
     SplashSource, StartupTimings,
@@ -466,46 +480,6 @@ pub(crate) struct App {
     /// unreadable and the OS may throttle it.
     last_title_update: Instant,
 
-    script_runtime: ScriptRuntime,
-
-    /// Holds the entity registry shared by the light bridge and the script
-    /// runtime. Outlives the renderer so device resets preserve scripted
-    /// light state. See: context/lib/scripting.md
-    script_ctx: ScriptCtx,
-
-    /// Publishes live pawn HP and max HP into the player HUD slots each frame.
-    /// See: context/lib/scripting.md §5 for the store contract.
-    player_hud_state: scripting_systems::ui_proxy::PlayerHudStatePublisher,
-
-    /// App-side flash-decay state for the engine-owned `screen.flash` surface.
-    /// A drained `FlashScreen` system-reaction command starts a flash; this
-    /// writes the decaying RGBA into `screen.flash` each game-logic tick. Reset
-    /// on level load. See: context/lib/ui.md §3.
-    flash_decay: scripting_systems::flash_decay::FlashDecay,
-
-    /// App-side vignette-decay state for the engine-owned `screen.vignette`
-    /// surface (SE). A drained vignette system-reaction command (Task 3) starts a
-    /// rise/peak/decay envelope; this writes the enveloped RGBA into
-    /// `screen.vignette` each game-logic tick (beside `flash_decay.tick`). Reset
-    /// on level load. See: context/lib/ui.md §3.
-    vignette_decay: scripting_systems::vignette_decay::VignetteDecay,
-
-    /// App-side screen-shake state for the engine-owned `screen.shake` surface
-    /// (SE). A drained shake system-reaction command (Task 3) starts a decaying
-    /// oscillation; this writes the current `[dx, dy]` offset into `screen.shake`
-    /// each game-logic tick (beside `flash_decay.tick`). Reset on level load.
-    /// See: context/lib/ui.md §3.
-    shake_decay: scripting_systems::shake_decay::ShakeDecay,
-
-    /// App-side presentation-cell store for `ui.createLocalState()` (M13 G1b,
-    /// Task 5). Seeded from a tree's declared `localState` initials when its scope
-    /// first composes, written by the drained `CellWrite` reaction at the
-    /// game-logic stage, reconciled/cleared against the composed-scope-id set at
-    /// the compose step, and snapshotted onto `cell_values` for `{ local }` bind
-    /// resolution. Presentation-only — NEVER the authoritative store.
-    /// See: context/lib/ui.md §3/§6.
-    presentation_cells: scripting_systems::presentation_cells::PresentationCellStore,
-
     /// The currently committed mod theme override. Successful staged mod-init
     /// commits replace this complete snapshot before a fresh merge over engine
     /// defaults reaches the renderer.
@@ -515,13 +489,6 @@ pub(crate) struct App {
     /// commits replace this complete snapshot; omission falls back to the
     /// engine/default frontend behavior.
     frontend: Option<Frontend>,
-
-    /// App-side input-mode tracker (M13 Goal F, Task 5). Observes the input
-    /// phase's mode signals (mouse motion vs. nav input), debounces them, writes
-    /// the engine-owned `input.mode` enum slot, and drives `ui_input_mode`. The
-    /// store write is app composition — the input subsystem's contract output
-    /// stays the action snapshot. Reset on level load. See: context/lib/input.md §7.
-    input_mode_tracker: scripting_systems::input_mode::InputModeTracker,
 
     /// The mode signal observed during THIS frame's input phase, resolved into
     /// `input_mode_tracker` at the head of the game-logic phase. Mouse motion
@@ -551,54 +518,6 @@ pub(crate) struct App {
     /// ring around it. `None` when nothing is focused.
     ui_focused_id: Option<String>,
 
-    /// Gates the one-time persistence overlay and clean-exit save.
-    state_store_lifecycle: StateStoreLifecycle,
-
-    /// Consulted by `fire_named_event_with_sequences` for `Sequence` steps.
-    /// No per-level state — entity lookups go through `ScriptCtx`, which the
-    /// level-unload path clears separately. See: context/lib/scripting.md §2
-    sequence_registry: SequencedPrimitiveRegistry,
-
-    /// Resolved by name when a `Primitive` reaction fires.
-    /// See: context/lib/scripting.md §2
-    reaction_registry: ReactionPrimitiveRegistry,
-
-    /// Resolved by name when a `Primitive` reaction with no `tag` fires — the
-    /// system-reaction arm. Handlers enqueue typed commands onto
-    /// `script_ctx.system_commands`, drained once per frame.
-    /// See: context/lib/scripting.md §10.4
-    system_registry: SystemReactionRegistry,
-
-    /// Per-tag kill-count subscriptions. Cleared on level unload; survives
-    /// hot-reload. See: context/lib/scripting.md §2
-    progress_tracker: ProgressTracker,
-
-    /// State-crossing watchers (M13 HUD dynamics). Built from the data
-    /// registry's `crossings` at level load; checked each frame after
-    /// the HUD publisher / other slot writes settle and before the UI snapshot
-    /// build.
-    /// Cleared on level unload with the rest of the per-level state.
-    /// See: context/lib/scripting.md §10.4
-    crossing_detector: CrossingDetector,
-
-    /// Maps `classname` strings to engine spawn handlers. Survives level
-    /// unload — built-in handlers carry no per-level state.
-    /// See: context/lib/scripting.md
-    classname_dispatch: ClassnameDispatch,
-
-    /// Runs between Game Logic and Render; uploads repacked GpuLight bytes
-    /// when any `LightComponent` is dirty. See: context/lib/scripting.md
-    light_bridge: scripting_systems::light_bridge::LightBridge,
-
-    /// Per-level fog-volume registry side-table; packs `FogVolume` GPU bytes
-    /// each frame from `FogVolumeComponent` mutations. See:
-    /// context/lib/rendering_pipeline.md §7.5
-    fog_volume_bridge: scripting_systems::fog_volume_bridge::FogVolumeBridge,
-
-    /// Walks every `BillboardEmitterComponent` after game logic and before
-    /// particle sim. See: context/lib/scripting.md
-    emitter_bridge: scripting_systems::emitter_bridge::EmitterBridge,
-
     /// Per-emitter live-particle tally, produced by `particle_sim::tick` and
     /// consumed by the next frame's `emitter_bridge.update` for cap headroom.
     /// Owned here (not re-allocated per frame) so the collapsed pass reuses one
@@ -608,32 +527,6 @@ pub(crate) struct App {
     /// World-space static-geometry collider built from PRL static geometry.
     /// See: context/lib/entity_model.md §7
     collision_world: collision::CollisionWorld,
-
-    /// Packs `SpriteInstance` bytes per collection in the Render stage;
-    /// never touches wgpu directly. See: context/lib/scripting.md
-    particle_render: scripting_systems::particle_render::ParticleRenderCollector,
-
-    /// Packs per-instance skinned-mesh world matrices in the Render stage
-    /// (cull applied via `mesh_pass::mesh_visible`); never touches wgpu.
-    /// See: context/lib/scripting.md
-    mesh_render: scripting_systems::mesh_render::MeshRenderCollector,
-
-    /// Game-side per-model animation clip tables (name → glTF index + per-index
-    /// duration), built at the level-load model sweep from each uploaded model's
-    /// renderer clip metadata. Owned beside `mesh_render`: the collector consults
-    /// it to compute per-instance sample times, and the level-load validation
-    /// resolves each mesh entity's `AnimationState.clip_index` against it. Cleared
-    /// on level unload. See: context/lib/scripting.md §10.3.
-    mesh_clip_tables: scripting_systems::mesh_anim::MeshClipTables,
-
-    /// Game-side skeletal hit-zone store: per model TYPE, the CPU skeleton,
-    /// clips, authored joint-zone table, and a derived broad-phase bound swept
-    /// from the clips. Re-loaded game-side (independent of the renderer's
-    /// moved-away copy) at the level-load model sweep and cleared on level
-    /// change, beside `mesh_clip_tables`. CPU-only — no wgpu. Nothing consumes it
-    /// yet besides tests; the Task 4 raycast facility threads it through.
-    /// See: context/lib/entity_model.md §7.
-    hit_zone_store: scripting_systems::hit_zones::HitZoneStore,
 
     /// Active wieldable instance equipped by the player. The companion
     /// descriptor name lets mod-init hot reload refresh authored weapon stats
@@ -1563,8 +1456,9 @@ impl ApplicationHandler for App {
                 // a capturing tree being on the stack (applied in `reconcile_ui_focus`).
                 // See: context/lib/input.md §7.
                 let mode_signal = self.pending_mode_signal.take();
-                let resolved_input_mode = self.input_mode_tracker.update(mode_signal, frame_dt);
                 if let Some(session) = self.session.as_mut() {
+                    let resolved_input_mode =
+                        session.input_mode_tracker.update(mode_signal, frame_dt);
                     session.ui_input_mode = resolved_input_mode;
                 }
 
@@ -1735,12 +1629,24 @@ impl ApplicationHandler for App {
                     gameplay_snapshot
                 };
 
+                // The script tranche lives on `Session` (built post-first-pixel).
+                // Clone the `ScriptCtx` handle once for this Game-logic phase (cheap
+                // `Rc` bump) so the many `script_ctx.*` reads below borrow nothing of
+                // `self`; the non-`Clone` session subsystems are reached through
+                // disjoint scoped `self.session.as_mut()` borrows at each site.
+                let script_ctx = self
+                    .session
+                    .as_ref()
+                    .expect("running session installed")
+                    .script_ctx
+                    .clone();
+
                 // Bump the engine frame counter once per Game logic phase.
                 // Reserved for primitives that need a per-frame ordering stamp.
                 // See: context/lib/scripting.md
-                self.script_ctx
+                script_ctx
                     .frame
-                    .set(self.script_ctx.frame.get().wrapping_add(1));
+                    .set(script_ctx.frame.get().wrapping_add(1));
 
                 // Net poll (M15 Phase 1): non-blocking, once per frame, BEFORE
                 // the catch-up tick loop. The client applies received
@@ -1791,7 +1697,7 @@ impl ApplicationHandler for App {
                         //     engine is navigable without a player spawn (dev maps,
                         //     levels without a player descriptor).
                         let has_player_pawn = {
-                            let registry = self.script_ctx.registry.borrow();
+                            let registry = script_ctx.registry.borrow();
                             has_player_pawn(&registry)
                         };
 
@@ -1859,7 +1765,7 @@ impl ApplicationHandler for App {
                                 self.net_endpoint.as_ref(),
                             );
                             if has_player_pawn {
-                                let registry_ref = self.script_ctx.registry.borrow();
+                                let registry_ref = script_ctx.registry.borrow();
                                 follow_camera_to_local_pawn(
                                     &mut self.camera,
                                     &registry_ref,
@@ -1885,15 +1791,29 @@ impl ApplicationHandler for App {
                         let remote_movement_events = self.host_drive_remote_movement(tick_dt);
                         pending_movement_events.extend(remote_movement_events);
 
+                        // Borrow the two session-owned `simulate_tick` inputs
+                        // (hit-zone store, progress tracker) and the boot-owned
+                        // `camera` as disjoint field borrows; the post-movement
+                        // closure captures these locals (not `self`) so it does not
+                        // re-borrow `self.session`.
+                        let session = self
+                            .session
+                            .as_mut()
+                            .expect("running session installed");
+                        let hit_zone_store = &session.hit_zone_store;
+                        let progress_tracker = &mut session.progress_tracker;
+                        let camera = &mut self.camera;
+                        #[cfg(feature = "dev-tools")]
+                        let debug_chase_agent = self.debug_chase_agent;
                         let tick_events = sim::simulate_tick(
-                            self.script_ctx.registry.clone(),
+                            script_ctx.registry.clone(),
                             &self.collision_world,
-                            &self.hit_zone_store,
+                            hit_zone_store,
                             self.nav_graph.as_ref(),
-                            self.script_ctx.gravity.get(),
+                            script_ctx.gravity.get(),
                             self.active_wieldable,
                             self.anim_time,
-                            &mut self.progress_tracker,
+                            progress_tracker,
                             &mut self.ai_warned,
                             &command,
                             |registry| {
@@ -1904,7 +1824,7 @@ impl ApplicationHandler for App {
                                     // Host / single-player: no client-side correction
                                     // offset (the host pawn is authoritative).
                                     follow_camera_to_local_pawn(
-                                        &mut self.camera,
+                                        camera,
                                         &registry_ref,
                                         Vec3::ZERO,
                                     );
@@ -1915,12 +1835,12 @@ impl ApplicationHandler for App {
                                     let mut registry_ref = registry.borrow_mut();
                                     update_debug_chase_agent_destination(
                                         &mut registry_ref,
-                                        self.debug_chase_agent,
-                                        self.camera.position,
+                                        debug_chase_agent,
+                                        camera.position,
                                     );
                                 }
 
-                                build_post_movement_command(&self.camera)
+                                build_post_movement_command(camera)
                             },
                             tick_dt,
                         );
@@ -1952,27 +1872,29 @@ impl ApplicationHandler for App {
                 // Drain collected post-tick events after all ticks complete so
                 // reactions observe the final state of every entity.
                 for event_name in &pending_movement_events {
-                    let _ = fire_named_event(event_name, &self.script_ctx.data_registry.borrow());
+                    let _ = fire_named_event(event_name, &script_ctx.data_registry.borrow());
                 }
                 for event_name in &pending_ai_events {
-                    let _ = fire_named_event(event_name, &self.script_ctx.data_registry.borrow());
+                    let _ = fire_named_event(event_name, &script_ctx.data_registry.borrow());
                 }
                 for event_name in &pending_weapon_events {
-                    let _ = fire_named_event(event_name, &self.script_ctx.data_registry.borrow());
+                    let _ = fire_named_event(event_name, &script_ctx.data_registry.borrow());
                 }
                 // Death events drain through the sequence-aware dispatcher in
                 // their OWN loop: a `progress` reaction that names a sequence
                 // would no-op under plain `fire_named_event`. Chained-event names
                 // are discarded (`let _ =`), matching the drains above.
-                for event_name in &pending_death_events {
-                    let _ = fire_named_event_with_sequences(
-                        event_name,
-                        &self.script_ctx.data_registry.borrow(),
-                        &self.sequence_registry,
-                        &self.reaction_registry,
-                        &self.system_registry,
-                        &self.script_ctx,
-                    );
+                if let Some(session) = self.session.as_ref() {
+                    for event_name in &pending_death_events {
+                        let _ = fire_named_event_with_sequences(
+                            event_name,
+                            &script_ctx.data_registry.borrow(),
+                            &session.sequence_registry,
+                            &session.reaction_registry,
+                            &session.system_registry,
+                            &script_ctx,
+                        );
+                    }
                 }
 
                 // System-reaction command drain — runs AFTER every post-tick
@@ -1984,7 +1906,7 @@ impl ApplicationHandler for App {
                 // NOTE: a SECOND drain runs later this frame, after the state
                 // crossings fire (see the crossing-detection block below), so
                 // crossing-enqueued commands land this frame, not the next.
-                if !self.script_ctx.system_commands.is_empty() {
+                if !script_ctx.system_commands.is_empty() {
                     self.dispatch_system_commands();
                 }
 
@@ -1998,22 +1920,27 @@ impl ApplicationHandler for App {
                 // server writes them through the state-slot apply path, so a client
                 // must not overwrite the replicated values from its own (non-
                 // authoritative) pawn. Host and single-player keep publishing.
-                self.player_hud_state
-                    .tick_for_role(self.is_connected_client());
+                let is_connected_client = self.is_connected_client();
+                if let Some(session) = self.session.as_mut() {
+                    session.player_hud_state.tick_for_role(is_connected_client);
+                }
                 // Flash-decay state writes the engine-owned `screen.flash`
                 // surface at the same game-logic stage as the HUD publisher, so
                 // the UI snapshot below freezes this frame's flash color. Runs
                 // after the first command drain so a flash started this frame
                 // publishes immediately; the crossing drain below may start
                 // another, decayed starting next frame.
-                self.flash_decay.tick(frame_dt);
-                // Vignette- and shake-decay drivers (SE) write the engine-owned
-                // `screen.vignette` and `screen.shake` surfaces at the same
-                // game-logic stage as `flash_decay.tick`, so the UI snapshot below
-                // freezes this frame's vignette color and shake offset. Delta-driven
-                // from `frame_dt` (not wall-clock) like the flash decay.
-                self.vignette_decay.tick(frame_dt);
-                self.shake_decay.tick(frame_dt);
+                if let Some(session) = self.session.as_mut() {
+                    session.flash_decay.tick(frame_dt);
+                    // Vignette- and shake-decay drivers (SE) write the engine-owned
+                    // `screen.vignette` and `screen.shake` surfaces at the same
+                    // game-logic stage as `flash_decay.tick`, so the UI snapshot
+                    // below freezes this frame's vignette color and shake offset.
+                    // Delta-driven from `frame_dt` (not wall-clock) like the flash
+                    // decay.
+                    session.vignette_decay.tick(frame_dt);
+                    session.shake_decay.tick(frame_dt);
+                }
 
                 // State-crossing detection (M13 HUD dynamics). Runs AFTER the
                 // frame's slot writes (game logic + HUD publisher) settle, so
@@ -2023,20 +1950,22 @@ impl ApplicationHandler for App {
                 // through Task 2's shared named-reaction path; any system
                 // reactions thereby enqueued are drained immediately below so
                 // crossing-fired commands land in this frame, not the next.
-                let crossing_events = self
-                    .crossing_detector
-                    .detect(&self.script_ctx.slot_table.borrow());
-                for event_name in &crossing_events {
-                    let _ = fire_named_event_with_sequences(
-                        event_name,
-                        &self.script_ctx.data_registry.borrow(),
-                        &self.sequence_registry,
-                        &self.reaction_registry,
-                        &self.system_registry,
-                        &self.script_ctx,
-                    );
+                if let Some(session) = self.session.as_mut() {
+                    let crossing_events = session
+                        .crossing_detector
+                        .detect(&script_ctx.slot_table.borrow());
+                    for event_name in &crossing_events {
+                        let _ = fire_named_event_with_sequences(
+                            event_name,
+                            &script_ctx.data_registry.borrow(),
+                            &session.sequence_registry,
+                            &session.reaction_registry,
+                            &session.system_registry,
+                            &script_ctx,
+                        );
+                    }
                 }
-                if !self.script_ctx.system_commands.is_empty() {
+                if !script_ctx.system_commands.is_empty() {
                     self.dispatch_system_commands();
                 }
 
@@ -2138,7 +2067,7 @@ impl ApplicationHandler for App {
                 // `view_feel`; another pawn's preset must not leak onto the
                 // selected camera.
                 let view_feel_inputs = {
-                    let registry = self.script_ctx.registry.borrow();
+                    let registry = script_ctx.registry.borrow();
                     followed_player_pawn(&registry).and_then(|id| {
                         registry
                             .get_component::<
@@ -2295,15 +2224,22 @@ impl ApplicationHandler for App {
                 };
 
                 if let Some(renderer) = self.renderer.as_mut() {
+                    // The render-stage bridges + collectors live on `Session`;
+                    // borrow it once here (disjoint from the `renderer` borrow of
+                    // `self.renderer` and from the other `self` fields read below).
+                    let session = self
+                        .session
+                        .as_mut()
+                        .expect("running session installed");
                     // Emitter bridge — after script `tick` handler, before particle
                     // sim. Spawns new particles; the sim advances them the same
                     // frame so they don't appear stuck at origin.
                     {
-                        let mut registry = self.script_ctx.registry.borrow_mut();
+                        let mut registry = script_ctx.registry.borrow_mut();
                         // Cap headroom comes from the previous frame's sim tally
                         // (see particle_sim::tick) — the bridge no longer walks the
                         // ParticleState column itself.
-                        self.emitter_bridge.update(
+                        session.emitter_bridge.update(
                             &mut registry,
                             frame_dt,
                             self.script_time as f32,
@@ -2316,11 +2252,11 @@ impl ApplicationHandler for App {
                     // Refills `particle_live_counts` with this tick's per-emitter
                     // survivor count for the next frame's bridge headroom.
                     {
-                        let mut registry = self.script_ctx.registry.borrow_mut();
+                        let mut registry = script_ctx.registry.borrow_mut();
                         scripting_systems::particle_sim::tick(
                             &mut registry,
                             frame_dt,
-                            self.script_ctx.gravity.get(),
+                            script_ctx.gravity.get(),
                             &mut self.particle_live_counts,
                         );
                     }
@@ -2329,8 +2265,8 @@ impl ApplicationHandler for App {
                     // mutated `LightComponent` data before `render_frame_indirect`
                     // allocates slots, so scripted lights reflect their new state.
                     {
-                        let mut registry = self.script_ctx.registry.borrow_mut();
-                        if let Some(update) = self
+                        let mut registry = script_ctx.registry.borrow_mut();
+                        if let Some(update) = session
                             .light_bridge
                             .update(&mut registry, self.script_time as f32)
                         {
@@ -2365,23 +2301,24 @@ impl ApplicationHandler for App {
                         // before `update_volumes` packs the GPU buffer — `tick`
                         // writes sampled values into each `FogVolumeComponent`
                         // so the existing pack path picks them up unchanged.
-                        let mut registry = self.script_ctx.registry.borrow_mut();
-                        self.fog_volume_bridge.tick(&mut registry, self.script_time);
+                        let mut registry = script_ctx.registry.borrow_mut();
+                        session.fog_volume_bridge.tick(&mut registry, self.script_time);
                     }
                     let all_lights = {
-                        let registry = self.script_ctx.registry.borrow();
+                        let registry = script_ctx.registry.borrow();
                         if let Some((bytes, planes, live_mask)) =
-                            self.fog_volume_bridge.update_volumes(&registry)
+                            session.fog_volume_bridge.update_volumes(&registry)
                         {
                             renderer.upload_fog_volumes(bytes, planes, live_mask);
                         } else {
                             renderer.upload_fog_volumes(&[], &[], 0);
                         }
-                        renderer.set_fog_aabbs(self.fog_volume_bridge.active_aabbs());
-                        self.light_bridge
+                        renderer.set_fog_aabbs(session.fog_volume_bridge.active_aabbs());
+                        session
+                            .light_bridge
                             .collect_all_as_map_lights(&registry, self.script_time as f32)
                     };
-                    let point_bytes = self.fog_volume_bridge.update_points(&all_lights);
+                    let point_bytes = session.fog_volume_bridge.update_points(&all_lights);
                     renderer.upload_fog_points(point_bytes);
 
                     renderer.update_per_frame_uniforms(
@@ -2398,20 +2335,20 @@ impl ApplicationHandler for App {
                     // Particle render — packs `SpriteInstance` bytes per
                     // collection; the collector never touches wgpu directly.
                     {
-                        let registry = self.script_ctx.registry.borrow();
+                        let registry = script_ctx.registry.borrow();
                         // Cull non-visible emitters at render-collect, mirroring
                         // the mesh path below: thread the level world + this
                         // frame's visible-cell set so off-screen / adjacent-room
                         // smoke is never packed for drawing. `visible_cells` is
                         // still live here (reclaimed after the frame).
-                        self.particle_render.collect(
+                        session.particle_render.collect(
                             &registry,
                             self.level.as_ref(),
                             &visible_cells,
                         );
                     }
                     let particle_collections: Vec<(&str, &[u8])> =
-                        self.particle_render.iter_collections().collect();
+                        session.particle_render.iter_collections().collect();
 
                     // Mesh render — emits per-instance inputs (model handle +
                     // interpolated transform + phase seed) for skinned-mesh
@@ -2429,29 +2366,29 @@ impl ApplicationHandler for App {
                         // collector, so same-tick switches have all landed and
                         // the last target's stamp is concrete. See mesh.rs.
                         {
-                            let mut registry = self.script_ctx.registry.borrow_mut();
+                            let mut registry = script_ctx.registry.borrow_mut();
                             crate::scripting::components::mesh::resolve_pending_animation_stamps(
                                 &mut registry,
                                 self.anim_time,
                             );
                         }
-                        let registry = self.script_ctx.registry.borrow();
+                        let registry = script_ctx.registry.borrow();
                         // Same frame alpha the player camera reads from
                         // `frame_timing` — interpolate each mesh between its
                         // previous- and current-tick transforms.
-                        self.mesh_render.collect(
+                        session.mesh_render.collect(
                             &registry,
                             world,
                             &visible_cells,
                             frame_result.alpha,
                             self.anim_time,
-                            &self.mesh_clip_tables,
+                            &session.mesh_clip_tables,
                             // Camera eye position — the same value that seeds
                             // the portal flood-fill — drives the per-instance
                             // animation time-slicing distance bucket.
                             interp.position,
                         );
-                        renderer.set_mesh_draws(self.mesh_render.instances());
+                        renderer.set_mesh_draws(session.mesh_render.instances());
                     }
 
                     // Build the egui UI before `render_frame_indirect` so
@@ -2538,7 +2475,7 @@ impl ApplicationHandler for App {
                         if let Some(agent) = self.debug_chase_agent {
                             use crate::scripting::components::agent::AgentComponent;
                             use crate::scripting::registry::Transform;
-                            let registry = self.script_ctx.registry.borrow();
+                            let registry = script_ctx.registry.borrow();
                             if let Ok(component) = registry.get_component::<AgentComponent>(agent) {
                                 let position = registry
                                     .get_component::<Transform>(agent)
@@ -2560,7 +2497,7 @@ impl ApplicationHandler for App {
                         // (registry read, no wgpu), the renderer owns the draw.
                         // No-op for single-player and the host.
                         if let Some(endpoint) = self.net_endpoint.as_ref() {
-                            let registry = self.script_ctx.registry.borrow();
+                            let registry = script_ctx.registry.borrow();
                             let centers = netcode::remote_entity_positions(endpoint, &registry);
                             renderer.emit_remote_entity_markers(
                                 &centers,
@@ -2588,13 +2525,15 @@ impl ApplicationHandler for App {
                         .as_ref()
                         .map(|frontend| frontend.menu_tree.as_str())
                         .unwrap_or(render::ui::demo::FRONTEND_MENU_NAME);
-                    let session = self.session.as_ref().expect("running session installed");
+                    // Reuse the `session` borrow taken at the top of this render
+                    // block (the `particle_collections` borrow keeps it alive); a
+                    // second `self.session.as_mut()` here would alias it.
                     let frontend_menu_is_top =
                         session.modal_stack.active_name() == Some(frontend_menu_name);
                     let ui_snapshot = Self::build_ui_read_snapshot(
                         &session.modal_stack,
-                        &mut self.presentation_cells,
-                        &self.script_ctx.slot_table.borrow(),
+                        &mut session.presentation_cells,
+                        &script_ctx.slot_table.borrow(),
                         self.script_time,
                         session.ui_input_mode,
                         self.ui_focused_id.clone(),
@@ -2786,12 +2725,19 @@ impl ApplicationHandler for App {
         // and save-game sync for net sessions is a non-goal. Single-player (`None`) and
         // the host (`NetEndpoint::Host`) save unchanged — only `NetEndpoint::Client`
         // skips the clean-exit save.
-        if should_save_persisted_state(
-            self.state_store_lifecycle.can_save(),
-            self.is_connected_client(),
-        ) {
+        let can_save = self
+            .session
+            .as_ref()
+            .is_some_and(|session| session.state_store_lifecycle.can_save());
+        if should_save_persisted_state(can_save, self.is_connected_client()) {
             let state_path = Path::new(STATE_FILE_PATH);
-            let collected = collect_persisted_state(&self.script_ctx.slot_table.borrow());
+            let script_ctx = self
+                .session
+                .as_ref()
+                .expect("session installed at clean exit")
+                .script_ctx
+                .clone();
+            let collected = collect_persisted_state(&script_ctx.slot_table.borrow());
             for warning in collected.warnings {
                 log::warn!("[State] {warning}");
             }
@@ -2902,10 +2848,13 @@ impl App {
     /// redraw path so the splash logo frame can gate it behind deferred-session
     /// commit (`pending_session` consumed). See: context/lib/boot_sequence.md §1.
     fn drain_script_reload_requests(&mut self) {
-        match self.script_runtime.drain_reload_requests() {
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        match session.script_runtime.drain_reload_requests() {
             Ok(summary) => {
                 if reload_summary_requires_mod_init(summary) {
-                    match self
+                    match session
                         .script_runtime
                         .enqueue_staged_manifest_build(&self.content_root)
                     {
@@ -3181,10 +3130,10 @@ impl App {
         }
 
         let mode_signal = self.pending_mode_signal.take();
-        let ui_input_mode = self.input_mode_tracker.update(mode_signal, frame_dt);
 
         let ui_intents = {
             let session = self.session.as_mut().expect("frontend session installed");
+            let ui_input_mode = session.input_mode_tracker.update(mode_signal, frame_dt);
             session.ui_input_mode = ui_input_mode;
             let ui_intents = session.ui_dispatch.take_ready();
             session.ui_dispatch.advance_frame();
@@ -3248,7 +3197,11 @@ impl App {
             return false;
         }
 
-        if !self.script_ctx.system_commands.is_empty() {
+        let has_system_commands = self
+            .session
+            .as_ref()
+            .is_some_and(|session| !session.script_ctx.system_commands.is_empty());
+        if has_system_commands {
             self.dispatch_system_commands();
         }
         self.reconcile_ui_focus();
@@ -3258,21 +3211,38 @@ impl App {
     }
 
     fn poll_staged_manifest_results(&mut self) {
-        for result in self.script_runtime.poll_staged_manifest_builds() {
-            let outcome = self.script_runtime.commit_staged_manifest_result(
-                &result,
-                &self.script_ctx,
-                &self.sequence_registry,
-            );
+        let staged = match self.session.as_mut() {
+            Some(session) => session.script_runtime.poll_staged_manifest_builds(),
+            None => return,
+        };
+        for result in staged {
+            // `commit_staged_manifest_result` and the active-set recompose touch
+            // the session-owned runtime/ctx/registry; the rebuild + UI commit are
+            // App methods. Scope the session borrow to the commit call so the App
+            // methods below can re-borrow `self`.
+            let outcome = {
+                let session = self
+                    .session
+                    .as_mut()
+                    .expect("frontend session installed");
+                session.script_runtime.commit_staged_manifest_result(
+                    &result,
+                    &session.script_ctx,
+                    &session.sequence_registry,
+                )
+            };
             if matches!(
                 outcome,
                 scripting::runtime::StagedManifestCommitOutcome::Committed { .. }
             ) && self.has_installed_level()
             {
-                self.script_ctx
-                    .data_registry
-                    .borrow_mut()
-                    .recompose_active_sets(&self.active_level_tags);
+                if let Some(session) = self.session.as_ref() {
+                    session
+                        .script_ctx
+                        .data_registry
+                        .borrow_mut()
+                        .recompose_active_sets(&self.active_level_tags);
+                }
                 self.rebuild_active_reaction_subscribers();
             }
             self.commit_staged_ui_manifest(&result, &outcome);
@@ -3283,13 +3253,13 @@ impl App {
         self.apply_frontend_menu_camera_pose_if_top();
         self.reconcile_ui_focus();
         let frontend_menu_is_top = self.frontend_menu_is_top();
-        let Some(session) = self.session.as_ref() else {
+        let Some(session) = self.session.as_mut() else {
             return;
         };
         let ui_snapshot = Self::build_ui_read_snapshot(
             &session.modal_stack,
-            &mut self.presentation_cells,
-            &self.script_ctx.slot_table.borrow(),
+            &mut session.presentation_cells,
+            &session.script_ctx.slot_table.borrow(),
             self.script_time,
             session.ui_input_mode,
             self.ui_focused_id.clone(),
@@ -3413,10 +3383,16 @@ impl App {
             return;
         };
 
+        let script_ctx = self
+            .session
+            .as_ref()
+            .expect("frontend session installed")
+            .script_ctx
+            .clone();
         // The slider's current value: its bound slot reading, or `min` as a floor
         // when the slot is unset or non-numeric (a sane starting point).
         let current = {
-            let table = self.script_ctx.slot_table.borrow();
+            let table = script_ctx.slot_table.borrow();
             match table.get(&slot).and_then(|r| r.value.as_ref()) {
                 Some(crate::scripting::slot_table::SlotValue::Number(n)) => *n,
                 _ => min,
@@ -3426,7 +3402,7 @@ impl App {
         // Peel off captured nav intents (mutating `nav_intents`) and compute the
         // stepped value; emit one `setState` for the new clamped value.
         if let Some(next) = input::capture_slider_step(&interaction, current, nav_intents) {
-            self.script_ctx
+            script_ctx
                 .system_commands
                 .push(SystemReactionCommand::SetState {
                     slot,
@@ -3457,14 +3433,16 @@ impl App {
                 UiButtonAction::ExitToDesktop => self.pending_exit_to_desktop = true,
                 UiButtonAction::QuitToMenu => self.return_to_frontend(),
                 UiButtonAction::NamedReaction => {
-                    let _ = fire_named_event_with_sequences(
-                        &on_press,
-                        &self.script_ctx.data_registry.borrow(),
-                        &self.sequence_registry,
-                        &self.reaction_registry,
-                        &self.system_registry,
-                        &self.script_ctx,
-                    );
+                    if let Some(session) = self.session.as_ref() {
+                        let _ = fire_named_event_with_sequences(
+                            &on_press,
+                            &session.script_ctx.data_registry.borrow(),
+                            &session.sequence_registry,
+                            &session.reaction_registry,
+                            &session.system_registry,
+                            &session.script_ctx,
+                        );
+                    }
                 }
             }
         }
@@ -3524,7 +3502,9 @@ impl App {
                     slot: target.clone(),
                 },
             };
-            self.script_ctx.system_commands.push(command);
+            if let Some(session) = self.session.as_ref() {
+                session.script_ctx.system_commands.push(command);
+            }
         }
 
         match resolution.disposition {
@@ -3573,14 +3553,16 @@ impl App {
             session.modal_stack.active_on_commit().map(str::to_string)
         });
         if let Some(on_commit) = on_commit {
-            let _ = fire_named_event_with_sequences(
-                &on_commit,
-                &self.script_ctx.data_registry.borrow(),
-                &self.sequence_registry,
-                &self.reaction_registry,
-                &self.system_registry,
-                &self.script_ctx,
-            );
+            if let Some(session) = self.session.as_ref() {
+                let _ = fire_named_event_with_sequences(
+                    &on_commit,
+                    &session.script_ctx.data_registry.borrow(),
+                    &session.sequence_registry,
+                    &session.reaction_registry,
+                    &session.system_registry,
+                    &session.script_ctx,
+                );
+            }
         }
         if let Some(session) = self.session.as_mut() {
             session.modal_stack.pop();
@@ -3620,7 +3602,19 @@ impl App {
     ///   backspace is a silent no-op; unknown/non-String slot logs). M13 Text
     ///   Entry, Task 1.
     fn dispatch_system_commands(&mut self) {
-        for command in self.script_ctx.system_commands.take() {
+        // `dispatch_system_commands` stays on `App` (it calls App-bound lifecycle
+        // methods and touches `self.audio`). The script tranche is session-owned;
+        // clone the `ScriptCtx` handle so the queue drain + the store-write arms
+        // borrow nothing of `self`, and route the decay/presentation arms through
+        // scoped `self.session.as_mut()` borrows. See: context/lib/boot_sequence.md §1.
+        let Some(script_ctx) = self
+            .session
+            .as_ref()
+            .map(|session| session.script_ctx.clone())
+        else {
+            return;
+        };
+        for command in script_ctx.system_commands.take() {
             match command {
                 SystemReactionCommand::PlaySound { sound, bus } => {
                     if let Some(audio) = &mut self.audio {
@@ -3653,7 +3647,9 @@ impl App {
                     // No gamepad subsystem ⇒ nothing to vibrate.
                 }
                 SystemReactionCommand::FlashScreen { color, duration_ms } => {
-                    self.flash_decay.start(color, duration_ms);
+                    if let Some(session) = self.session.as_mut() {
+                        session.flash_decay.start(color, duration_ms);
+                    }
                 }
                 SystemReactionCommand::Vignette {
                     color,
@@ -3667,7 +3663,11 @@ impl App {
                     let tint = color.unwrap_or([0.0, 0.0, 0.0]);
                     let rise_ms = duration_ms * VIGNETTE_RISE_FRACTION;
                     let decay_ms = duration_ms - rise_ms;
-                    self.vignette_decay.start(tint, strength, rise_ms, decay_ms);
+                    if let Some(session) = self.session.as_mut() {
+                        session
+                            .vignette_decay
+                            .start(tint, strength, rise_ms, decay_ms);
+                    }
                 }
                 SystemReactionCommand::ScreenShake {
                     amplitude,
@@ -3676,7 +3676,9 @@ impl App {
                 } => {
                     // Pass the optional frequency straight through: the driver
                     // applies its 18 Hz default when it is `None`.
-                    self.shake_decay.start(amplitude, duration_ms, frequency);
+                    if let Some(session) = self.session.as_mut() {
+                        session.shake_decay.start(amplitude, duration_ms, frequency);
+                    }
                 }
                 SystemReactionCommand::PushTree { tree, on_commit } => {
                     // Resolve the registered tree by name onto the modal stack.
@@ -3716,7 +3718,7 @@ impl App {
                     // slot warns and no-ops; an unknown slot or type mismatch logs
                     // and is skipped — never a panic. NEVER the engine bypass.
                     if let Err(err) = crate::scripting::primitives::store::write_state_slot_json(
-                        &self.script_ctx,
+                        &script_ctx,
                         &slot,
                         &value,
                     ) {
@@ -3730,7 +3732,9 @@ impl App {
                     // with a warn — never a panic, never a store write.
                     match scripting_systems::presentation_cells::json_to_cell_value(&value) {
                         Some(cell_value) => {
-                            self.presentation_cells.write(scope, cell, cell_value);
+                            if let Some(session) = self.session.as_mut() {
+                                session.presentation_cells.write(scope, cell, cell_value);
+                            }
                         }
                         None => log::warn!(
                             "[Scripting] cellWrite to `{scope}.{cell}` carried an unusable value; skipped"
@@ -3743,7 +3747,7 @@ impl App {
                     // unknown/non-String slot logs — never a panic.
                     use crate::scripting::primitives::store::{TextEdit, apply_text_edit};
                     if let Err(err) =
-                        apply_text_edit(&self.script_ctx, &slot, TextEdit::Append(&text))
+                        apply_text_edit(&script_ctx, &slot, TextEdit::Append(&text))
                     {
                         log::warn!("[Scripting] appendText to `{slot}` failed: {err}");
                     }
@@ -3751,14 +3755,14 @@ impl App {
                 SystemReactionCommand::BackspaceText { slot } => {
                     // Empty backspace is a silent no-op inside `apply_text_edit`.
                     use crate::scripting::primitives::store::{TextEdit, apply_text_edit};
-                    if let Err(err) = apply_text_edit(&self.script_ctx, &slot, TextEdit::Backspace)
+                    if let Err(err) = apply_text_edit(&script_ctx, &slot, TextEdit::Backspace)
                     {
                         log::warn!("[Scripting] backspaceText to `{slot}` failed: {err}");
                     }
                 }
                 SystemReactionCommand::ClearText { slot } => {
                     use crate::scripting::primitives::store::{TextEdit, apply_text_edit};
-                    if let Err(err) = apply_text_edit(&self.script_ctx, &slot, TextEdit::Clear) {
+                    if let Err(err) = apply_text_edit(&script_ctx, &slot, TextEdit::Clear) {
                         log::warn!("[Scripting] clearText to `{slot}` failed: {err}");
                     }
                 }
@@ -3775,6 +3779,17 @@ impl App {
     /// serializes post-loop instead.
     fn net_poll_and_apply(&mut self, frame_dt: f32) {
         let dt = std::time::Duration::from_secs_f32(frame_dt);
+        // `net_poll_and_apply` stays on `App` (it mutates `self.net_endpoint`). The
+        // script tranche is session-owned; clone the `ScriptCtx` handle before the
+        // `net_endpoint` borrow so the registry/data-registry/gravity reads below
+        // borrow nothing of `self`. See: context/lib/boot_sequence.md §1.
+        let Some(script_ctx) = self
+            .session
+            .as_ref()
+            .map(|session| session.script_ctx.clone())
+        else {
+            return;
+        };
         // Capture the host's descriptor-spawn inputs before the `net_endpoint` borrow:
         // the accept arm materializes each accepted client's descriptor-backed remote
         // pawn (M15 Phase 3 Task 4), and these reads alias `self.script_ctx` /
@@ -3791,7 +3806,7 @@ impl App {
             self.net_endpoint,
             Some(netcode::NetEndpoint::Host { .. } | netcode::NetEndpoint::Client { .. })
         ) {
-            self.script_ctx.data_registry.borrow().entities.clone()
+            script_ctx.data_registry.borrow().entities.clone()
         } else {
             Vec::new()
         };
@@ -3801,7 +3816,7 @@ impl App {
         // through `client_receive_and_apply`. Capture the gravity scalar before the
         // endpoint borrow (a `Cell` copy); the collision world is read by-reference
         // inside the client arm (a disjoint field from `net_endpoint`).
-        let gravity = self.script_ctx.gravity.get();
+        let gravity = script_ctx.gravity.get();
         let collision_world = &self.collision_world;
         match self.net_endpoint.as_mut() {
             None => {}
@@ -3836,7 +3851,7 @@ impl App {
                         // `Closed` only. Both paths mutate the registry, so take one
                         // game-logic-owned borrow when either has work.
                         if !poll.handshakes.is_empty() || !poll.lifecycle.is_empty() {
-                            let mut registry = self.script_ctx.registry.borrow_mut();
+                            let mut registry = script_ctx.registry.borrow_mut();
                             for outcome in &poll.handshakes {
                                 match outcome {
                                     HandshakeOutcome::Accepted { client_id } => {
@@ -3929,7 +3944,7 @@ impl App {
                 // Drive the 5 Hz time-sync send loop + echo ingest. The client's
                 // local sim tick is the engine frame counter; the estimator reads
                 // its own monotonic clock for send/receive microseconds.
-                let client_tick = self.script_ctx.frame.get() as u32;
+                let client_tick = script_ctx.frame.get() as u32;
                 netcode::client_drive_time_sync(client, time_sync, client_tick);
                 // Decode + apply every snapshot received this frame through the
                 // Phase 2 client state machine, arm prediction off any `local_player`
@@ -3937,8 +3952,8 @@ impl App {
                 // path, send the resulting acks + baseline-refresh requests, and advance
                 // the pending-repair 5 Hz cadence. The registry and slot table are
                 // disjoint RefCells; both borrows coexist for the duration of the apply.
-                let mut registry = self.script_ctx.registry.borrow_mut();
-                let mut slot_table = self.script_ctx.slot_table.borrow_mut();
+                let mut registry = script_ctx.registry.borrow_mut();
+                let mut slot_table = script_ctx.slot_table.borrow_mut();
                 let materialized_remote_enemy_presentation = netcode::client_receive_and_apply(
                     &mut registry,
                     &mut slot_table,
@@ -3954,7 +3969,12 @@ impl App {
                     dt,
                 );
                 if materialized_remote_enemy_presentation {
-                    resolve_mesh_entity_clips(&mut registry, &self.mesh_clip_tables);
+                    let mesh_clip_tables = &self
+                        .session
+                        .as_ref()
+                        .expect("running session installed")
+                        .mesh_clip_tables;
+                    resolve_mesh_entity_clips(&mut registry, mesh_clip_tables);
                 }
                 // The interpolation-buffer sampling that writes presented remote poses
                 // runs in `net_sample_remote_interpolation`, AFTER the catch-up tick
@@ -3974,6 +3994,15 @@ impl App {
     /// sends each accepted client a per-client delta snapshot over the snapshot
     /// channel. No-op for single-player and the client.
     fn net_serialize_and_send(&mut self) {
+        // Session-owned `ScriptCtx` cloned before the `net_endpoint` borrow (this
+        // method stays on `App`). See: context/lib/boot_sequence.md §1.
+        let Some(script_ctx) = self
+            .session
+            .as_ref()
+            .map(|session| session.script_ctx.clone())
+        else {
+            return;
+        };
         let Some(netcode::NetEndpoint::Host {
             server,
             allocator,
@@ -3997,7 +4026,7 @@ impl App {
         // its pose is in the replicable set when `host_replicate` ingests below. A
         // no-op on an ordinary host.
         {
-            let mut registry = self.script_ctx.registry.borrow_mut();
+            let mut registry = script_ctx.registry.borrow_mut();
             netcode::host_drive_demo_mover(&mut registry, demo_mover, allocator, replicable, *tick);
         }
 
@@ -4009,8 +4038,8 @@ impl App {
             // publisher have already settled the slot table by this post-tick point; the
             // descriptor-fed health projection reads live `HealthComponent`s, so it sees
             // this frame's settled HP regardless of the host HUD publisher's later tick.
-            let registry = self.script_ctx.registry.borrow();
-            let slot_table = self.script_ctx.slot_table.borrow();
+            let registry = script_ctx.registry.borrow();
+            let slot_table = script_ctx.slot_table.borrow();
             netcode::host_replicate(
                 &registry,
                 &slot_table,
@@ -4042,6 +4071,13 @@ impl App {
     /// clobber the presented pose, and before the render stage reads entities.
     /// No-op for single-player and the host (no client interpolation buffers).
     fn net_sample_remote_interpolation(&mut self, frame_dt: f32) {
+        let Some(script_ctx) = self
+            .session
+            .as_ref()
+            .map(|session| session.script_ctx.clone())
+        else {
+            return;
+        };
         let Some(netcode::NetEndpoint::Client {
             replication,
             time_sync,
@@ -4051,7 +4087,7 @@ impl App {
         else {
             return;
         };
-        let mut registry = self.script_ctx.registry.borrow_mut();
+        let mut registry = script_ctx.registry.borrow_mut();
         netcode::client_sample_interpolation(
             &mut registry,
             replication,
@@ -4085,6 +4121,13 @@ impl App {
     /// Returns the aggregated remote movement events for the caller to fold into the
     /// frame's pending movement-event drain.
     fn host_drive_remote_movement(&mut self, tick_dt: f32) -> Vec<&'static str> {
+        let Some(script_ctx) = self
+            .session
+            .as_ref()
+            .map(|session| session.script_ctx.clone())
+        else {
+            return Vec::new();
+        };
         let Some(netcode::NetEndpoint::Host {
             command_queues,
             owners,
@@ -4097,11 +4140,11 @@ impl App {
         if pawn_inputs.is_empty() {
             return Vec::new();
         }
-        let mut registry = self.script_ctx.registry.borrow_mut();
+        let mut registry = script_ctx.registry.borrow_mut();
         sim::run_host_movement_tick(
             &mut registry,
             &self.collision_world,
-            self.script_ctx.gravity.get(),
+            script_ctx.gravity.get(),
             &pawn_inputs,
             tick_dt,
         )
@@ -4121,6 +4164,13 @@ impl App {
     /// replicate). The host pawn stays driven locally by `simulate_tick` — this only
     /// replicates its Transform + PlayerMovementState outbound.
     fn host_register_own_pawn_after_install(&mut self) {
+        let Some(script_ctx) = self
+            .session
+            .as_ref()
+            .map(|session| session.script_ctx.clone())
+        else {
+            return;
+        };
         let Some(netcode::NetEndpoint::Host {
             allocator,
             replicable,
@@ -4131,7 +4181,7 @@ impl App {
             return;
         };
         let pawn = {
-            let registry = self.script_ctx.registry.borrow();
+            let registry = script_ctx.registry.borrow();
             registry.local_player_pawn()
         };
         let Some(pawn) = pawn else {
@@ -4154,6 +4204,13 @@ impl App {
     /// first. The enemies stay driven by the host's AI/steering systems — this only
     /// replicates their `Transform` (and descriptor class) outbound.
     fn host_register_map_enemies_after_install(&mut self) {
+        let Some(script_ctx) = self
+            .session
+            .as_ref()
+            .map(|session| session.script_ctx.clone())
+        else {
+            return;
+        };
         let Some(netcode::NetEndpoint::Host {
             allocator,
             replicable,
@@ -4163,7 +4220,7 @@ impl App {
         else {
             return;
         };
-        let registry = self.script_ctx.registry.borrow();
+        let registry = script_ctx.registry.borrow();
         netcode::host_register_map_enemies(&registry, allocator, replicable, map_enemies);
     }
 
@@ -4175,14 +4232,21 @@ impl App {
     /// caller skips `simulate_tick`'s local gameplay movement when this path runs —
     /// AI / weapons / death stay host-authoritative and arrive via snapshots.
     fn client_predict_movement_tick(&mut self, command: &sim::SimCommand, tick_dt: f32) -> bool {
+        let Some(script_ctx) = self
+            .session
+            .as_ref()
+            .map(|session| session.script_ctx.clone())
+        else {
+            return false;
+        };
         let Some(netcode::NetEndpoint::Client {
             client, prediction, ..
         }) = self.net_endpoint.as_mut()
         else {
             return false;
         };
-        let gravity = self.script_ctx.gravity.get();
-        let mut registry = self.script_ctx.registry.borrow_mut();
+        let gravity = script_ctx.gravity.get();
+        let mut registry = script_ctx.registry.borrow_mut();
         netcode::client_predict_tick(
             &mut registry,
             client,
@@ -4458,7 +4522,13 @@ impl App {
         let params = nav_graph.agent_params();
         let spawn_pos = self.camera.position;
 
-        let mut registry = self.script_ctx.registry.borrow_mut();
+        let script_ctx = self
+            .session
+            .as_ref()
+            .expect("running session installed")
+            .script_ctx
+            .clone();
+        let mut registry = script_ctx.registry.borrow_mut();
         let entity = registry.spawn(Transform {
             position: spawn_pos,
             ..Transform::default()

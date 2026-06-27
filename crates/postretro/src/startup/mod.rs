@@ -251,21 +251,23 @@ mod tests {
     /// Boot-timing marks in the exact order the boot path records them, valid
     /// (logo-present) path. Each entry names its `record(...)` call site so the
     /// sequence stays tied to the source — a moved or renamed mark forces a diff
-    /// here. Net/audio/debug-UI/mod/level-worker marks are the ones the spec
-    /// requires `first_black_frame` to precede; `script_runtime_ctor` is the one
-    /// it must NOT (the runtime is built pre-window, before the black frame).
+    /// here. Net/audio/debug-UI/mod/level-worker marks AND `script_runtime_ctor`
+    /// are the marks the spec requires `first_black_frame` to precede: the script
+    /// runtime is now constructed inside `Session::build` (post-first-pixel), so
+    /// its mark fires after the logo frame, beside the other deferred-session
+    /// marks. See: context/lib/boot_sequence.md §1.
     fn boot_mark_order_valid_path() -> Vec<&'static str> {
         vec![
             "args_parsed",                 // session::build_session
             "event_loop_created",          // session::build_session (EventLoop::new)
-            "script_runtime_ctor", // session::build_session (SessionServices::build) — pre-window
-            "window_created",      // main::resumed
-            "wgpu_init",           // main::resumed (Renderer::new, boot phase)
-            "first_black_frame",   // splash_lifecycle::run_splash_frame_zero (after present)
-            "splash_decoded",      // splash_lifecycle::run_splash_frame_zero
-            "splash_uploaded",     // splash_lifecycle::run_splash_frame_zero
-            "first_splash_frame",  // splash_lifecycle::paint_splash_after_black (after present)
-            "audio_init_complete", // main::install_post_splash_services
+            "window_created",              // main::resumed
+            "wgpu_init",                   // main::resumed (Renderer::new, boot phase)
+            "first_black_frame",           // splash_lifecycle::run_splash_frame_zero (after present)
+            "splash_decoded",              // splash_lifecycle::run_splash_frame_zero
+            "splash_uploaded",             // splash_lifecycle::run_splash_frame_zero
+            "first_splash_frame",          // splash_lifecycle::paint_splash_after_black (after present)
+            "audio_init_complete",         // main::install_post_splash_services
+            "script_runtime_ctor", // session::Session::build (post-first-pixel, inside install)
             "net_endpoint_complete", // session::PendingSessionInit::install
             "session_init_complete", // session::PendingSessionInit::install
             "renderer_full_init_complete", // splash_lifecycle::finish_renderer_full_init
@@ -282,9 +284,9 @@ mod tests {
 
     // Drift guard for the boot ordering contract. Replays the boot marks through
     // the real recorder in source order, then asserts the spec's relative-order
-    // claims: first_black_frame precedes net/audio/debug-UI/mod/level-worker
-    // marks, and does NOT precede script_runtime_ctor (script runtime is built
-    // pre-window). See: boot_sequence §1, early-boot-solo-splash AC #1.
+    // claims: first_black_frame precedes the deferred-session marks INCLUDING
+    // script_runtime_ctor, because the script runtime is now constructed inside
+    // `Session::build` (post-first-pixel). See: boot_sequence §1.
     #[test]
     fn boot_order_first_black_frame_precedes_session_audio_net_and_worker_marks() {
         let mut t = StartupTimings::new();
@@ -293,9 +295,11 @@ mod tests {
         }
         let black = index_of(&t.entries, "first_black_frame");
 
-        // first_black_frame precedes the deferred-service marks the spec pins.
+        // first_black_frame precedes the deferred-service marks the spec pins —
+        // and now also `script_runtime_ctor`, which moved behind first pixels.
         for after in [
             "audio_init_complete",
+            "script_runtime_ctor",
             "net_endpoint_complete",
             "session_init_complete",
             "renderer_full_init_complete",
@@ -307,11 +311,12 @@ mod tests {
             );
         }
 
-        // Coordinator resolution: the script runtime is constructed pre-window,
-        // so its mark precedes first_black_frame — first_black does NOT precede it.
+        // The script runtime is built inside `Session::build` on the logo frame,
+        // so its mark follows `first_splash_frame` (the logo present).
         assert!(
-            index_of(&t.entries, "script_runtime_ctor") < black,
-            "script_runtime_ctor is built pre-window, before the first black frame",
+            index_of(&t.entries, "first_splash_frame")
+                < index_of(&t.entries, "script_runtime_ctor"),
+            "script_runtime_ctor is built post-first-pixel, after the logo frame presents",
         );
     }
 

@@ -75,7 +75,9 @@ impl App {
         // future surface re-creation re-runs `populate_from_level`.
         // collision_world is reset for the same reason — it must be in a
         // clean placeholder state before populate_from_level runs on resume.
-        self.fog_volume_bridge.clear();
+        if let Some(session) = self.session.as_mut() {
+            session.fog_volume_bridge.clear();
+        }
         self.collision_world.clear();
         self.active_wieldable = None;
         self.active_wieldable_descriptor = None;
@@ -105,10 +107,6 @@ impl App {
 
         self.level = None;
         self.clear_surface_lifetime_level_state();
-        self.light_bridge.clear();
-        self.particle_render.reset_for_level();
-        self.mesh_clip_tables.clear();
-        self.hit_zone_store.clear();
         self.nav_graph = None;
         // The registry is cleared below, retiring the chase agent's entity slot;
         // drop the handle so a stale id is never re-targeted after unload.
@@ -116,24 +114,29 @@ impl App {
         {
             self.debug_chase_agent = None;
         }
-        self.mesh_render.clear();
         self.particle_live_counts.clear();
-        self.emitter_bridge.clear();
-        self.progress_tracker.clear();
-        self.crossing_detector.clear();
-        self.script_ctx.data_registry.borrow_mut().clear();
-        self.active_level_tags.clear();
-        self.active_level_source = None;
-        self.script_ctx
-            .registry
-            .borrow_mut()
-            .clear_for_level_unload();
-        self.presentation_cells.clear();
         if let Some(session) = self.session.as_mut() {
+            session.light_bridge.clear();
+            session.particle_render.reset_for_level();
+            session.mesh_clip_tables.clear();
+            session.hit_zone_store.clear();
+            session.mesh_render.clear();
+            session.emitter_bridge.clear();
+            session.progress_tracker.clear();
+            session.crossing_detector.clear();
+            session.script_ctx.data_registry.borrow_mut().clear();
+            session
+                .script_ctx
+                .registry
+                .borrow_mut()
+                .clear_for_level_unload();
+            session.presentation_cells.clear();
             session
                 .modal_stack
                 .clear_script_tree_tier(render::ui::modal_stack::ScopeTier::Level);
         }
+        self.active_level_tags.clear();
+        self.active_level_source = None;
 
         self.builtin_handled = None;
         self.pending_spawn_points = None;
@@ -274,15 +277,18 @@ impl App {
     }
 
     pub(crate) fn rebuild_active_reaction_subscribers(&mut self) {
-        self.progress_tracker.clear();
-        self.progress_tracker.initialize(
-            &self.script_ctx.data_registry.borrow(),
-            &self.script_ctx.registry.borrow(),
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        session.progress_tracker.clear();
+        session.progress_tracker.initialize(
+            &session.script_ctx.data_registry.borrow(),
+            &session.script_ctx.registry.borrow(),
         );
-        self.crossing_detector.clear();
-        self.crossing_detector.initialize(
-            &self.script_ctx.data_registry.borrow(),
-            &self.script_ctx.slot_table.borrow(),
+        session.crossing_detector.clear();
+        session.crossing_detector.initialize(
+            &session.script_ctx.data_registry.borrow(),
+            &session.script_ctx.slot_table.borrow(),
         );
     }
 
@@ -290,7 +296,8 @@ impl App {
         match source {
             LevelSource::Catalog(id) => {
                 let entry = {
-                    let data_registry = self.script_ctx.data_registry.borrow();
+                    let session = self.session.as_ref()?;
+                    let data_registry = session.script_ctx.data_registry.borrow();
                     data_registry
                         .maps
                         .iter()
@@ -472,20 +479,35 @@ impl App {
     /// is `Some` and `world` is populated.
     fn install_level_payload(&mut self, mut world: prl::LevelWorld, prm_cache_root: PathBuf) {
         self.retain_active_level_tags_for_install();
+        // The whole script tranche lives on `Session` (built post-first-pixel).
+        // Level install only runs in Loading/Running, where the session is
+        // installed. Clone the `ScriptCtx` handle (cheap `Rc` bump) so the many
+        // `script_ctx.*` reads below borrow nothing of `self` — the non-`Clone`
+        // session subsystems (bridges, collectors, registries) are reached
+        // through disjoint `self.session.as_mut()` borrows at each site, kept
+        // disjoint from the long-lived `renderer` borrow.
+        let script_ctx = self
+            .session
+            .as_ref()
+            .expect("session installed before level install")
+            .script_ctx
+            .clone();
         // Reset world gravity to the freshly-loaded level's authored value
         // before the data script runs, so any `world.getGravity()` call inside
         // `setupLevel` / `levelLoad` reactions sees the new value.
-        self.script_ctx.gravity.set(world.initial_gravity);
-        // Clear any in-flight `screen.flash` decay so a flash never bleeds
-        // across a level load.
-        self.flash_decay.reset();
-        // Clear any in-flight vignette/shake (SE) so neither bleeds across a
-        // level load — the slots reset to their identity rest values.
-        self.vignette_decay.reset();
-        self.shake_decay.reset();
-        // Reset the input-mode tracker so a mid-transition mode never bleeds
-        // across levels.
-        self.input_mode_tracker.reset();
+        script_ctx.gravity.set(world.initial_gravity);
+        if let Some(session) = self.session.as_mut() {
+            // Clear any in-flight `screen.flash` decay so a flash never bleeds
+            // across a level load.
+            session.flash_decay.reset();
+            // Clear any in-flight vignette/shake (SE) so neither bleeds across a
+            // level load — the slots reset to their identity rest values.
+            session.vignette_decay.reset();
+            session.shake_decay.reset();
+            // Reset the input-mode tracker so a mid-transition mode never bleeds
+            // across levels.
+            session.input_mode_tracker.reset();
+        }
         self.active_wieldable = None;
         self.active_wieldable_descriptor = None;
 
@@ -561,20 +583,23 @@ impl App {
         {
             let level_lights = renderer.level_lights().to_vec();
             let fgd_sample_float_count = (renderer.scripted_sample_byte_offset() / 4) as u32;
-            let mut registry = self.script_ctx.registry.borrow_mut();
-            self.light_bridge.populate_from_level(
-                &level_lights,
-                &mut registry,
-                fgd_sample_float_count,
-            );
+            let mut registry = script_ctx.registry.borrow_mut();
+            self.session
+                .as_mut()
+                .expect("session installed before level install")
+                .light_bridge
+                .populate_from_level(&level_lights, &mut registry, fgd_sample_float_count);
         }
 
         // Fog volumes — one entity per record + a renderer-side pixel-scale
         // push. Done after light bridge populate so the registry's first fog
         // entity-id always lands after the light entities.
         if let Some(world) = self.level.as_ref() {
-            let mut registry = self.script_ctx.registry.borrow_mut();
-            self.fog_volume_bridge
+            let mut registry = script_ctx.registry.borrow_mut();
+            self.session
+                .as_mut()
+                .expect("session installed before level install")
+                .fog_volume_bridge
                 .populate_from_level(&mut registry, &world.fog_volumes);
             renderer.set_fog_pixel_scale(world.fog_pixel_scale);
             renderer.install_fog_cell_masks_for_level(world.fog_cell_masks.clone());
@@ -599,7 +624,7 @@ impl App {
         // handled classnames is stashed and consumed by the data-archetype sweep
         // below, after the data script populates `data_registry.entities`.
         if let Some(world) = self.level.as_ref() {
-            let mut registry = self.script_ctx.registry.borrow_mut();
+            let mut registry = script_ctx.registry.borrow_mut();
             let all_entities: Vec<crate::scripting::map_entity::MapEntity> =
                 world.map_entities.iter().cloned().map(Into::into).collect();
             let (spawn_points, map_entities): (Vec<_>, Vec<_>) = all_entities
@@ -611,8 +636,15 @@ impl App {
             // placements later to materialize each accepted client's descriptor pawn.
             self.host_spawn_points = spawn_points.clone();
             self.pending_spawn_points = Some(spawn_points);
-            let handled =
-                apply_classname_dispatch(&map_entities, &self.classname_dispatch, &mut registry);
+            let handled = apply_classname_dispatch(
+                &map_entities,
+                &self
+                    .session
+                    .as_ref()
+                    .expect("session installed before level install")
+                    .classname_dispatch,
+                &mut registry,
+            );
             if !map_entities.is_empty() {
                 log::info!(
                     "[Loader] dispatched {total} map entities; {built_in} classname(s) handled by built-in handlers",
@@ -632,7 +664,12 @@ impl App {
         {
             use crate::scripting::components::billboard_emitter::BillboardEmitterComponent;
             use crate::scripting::registry::{ComponentKind, ComponentValue};
-            let registry = self.script_ctx.registry.borrow();
+            let registry = script_ctx.registry.borrow();
+            let particle_render = &mut self
+                .session
+                .as_mut()
+                .expect("session installed before level install")
+                .particle_render;
             let mut registered: std::collections::HashSet<String> =
                 std::collections::HashSet::new();
             for (_id, value) in registry.iter_with_kind(ComponentKind::BillboardEmitter) {
@@ -653,7 +690,7 @@ impl App {
                         }]
                     });
                 renderer.register_smoke_collection(&collection, &frames, 0.3, c.lifetime);
-                self.particle_render.register_sprite(&collection);
+                particle_render.register_sprite(&collection);
             }
         }
 
@@ -661,29 +698,30 @@ impl App {
         // manifest so the level still loads. Even levels without a data script
         // compose against mod-global reactions/crossings.
         if let Some(world) = &self.level {
+            let session = self
+                .session
+                .as_mut()
+                .expect("session installed before level install");
             let mut manifest = if let Some(data_script) = &world.data_script {
-                self.script_runtime
+                session
+                    .script_runtime
                     .run_data_script(data_script, &self.content_root)
             } else {
                 crate::scripting::data_descriptors::LevelManifest::default()
             };
             if world.data_script.is_some() {
                 manifest.reactions =
-                    validate_sequence_primitives(manifest.reactions, &self.sequence_registry);
+                    validate_sequence_primitives(manifest.reactions, &session.sequence_registry);
                 // Register level-scope UI trees before the data-script VM context
                 // drops and before the manifest is consumed by the data registry.
                 // Level install runs in Loading/Running, where the session is
                 // installed.
-                self.session
-                    .as_mut()
-                    .expect("session installed before level install")
-                    .modal_stack
-                    .register_script_trees(
-                        std::mem::take(&mut manifest.ui_trees),
-                        render::ui::modal_stack::ScopeTier::Level,
-                    );
+                session.modal_stack.register_script_trees(
+                    std::mem::take(&mut manifest.ui_trees),
+                    render::ui::modal_stack::ScopeTier::Level,
+                );
             }
-            self.script_ctx
+            script_ctx
                 .data_registry
                 .borrow_mut()
                 .populate_from_manifest(manifest, &self.active_level_tags);
@@ -704,14 +742,14 @@ impl App {
         // placement that the built-in dispatch did not already handle.
         if self.level.is_some() {
             let handled = self.builtin_handled.take().unwrap_or_default();
-            let descriptors = self.script_ctx.data_registry.borrow().entities.clone();
+            let descriptors = script_ctx.data_registry.borrow().entities.clone();
             // Read the baked navmesh agent params into a local BEFORE borrowing
             // the registry: `agent_params()` borrows `self.nav_graph`, and the
-            // dispatch borrows `self.script_ctx.registry` mutably — both off the
-            // same `self`. Reading into an owned `Option<NavAgentParams>` first
-            // keeps the two borrows disjoint. `None` when the map has no navmesh
-            // (the agent then falls back to an engine-default capsule and cannot
-            // path). The descriptor-spawned agent's capsule is seeded from this.
+            // dispatch borrows the (session-owned) entity registry mutably.
+            // Reading into an owned `Option<NavAgentParams>` first keeps the two
+            // borrows disjoint. `None` when the map has no navmesh (the agent then
+            // falls back to an engine-default capsule and cannot path). The
+            // descriptor-spawned agent's capsule is seeded from this.
             let agent_params: Option<crate::nav::NavAgentParams> =
                 self.nav_graph.as_ref().map(|g| g.agent_params());
             // E10 Task 5: a CONNECTED CLIENT must NOT spawn local authoritative
@@ -728,7 +766,7 @@ impl App {
             // outbound replication after this sweep). Non-AI placements (props,
             // FX, lights, sprites) materialize on the client unchanged.
             let suppress_ai_enemies = self.is_connected_client();
-            let mut registry = self.script_ctx.registry.borrow_mut();
+            let mut registry = script_ctx.registry.borrow_mut();
             let mut map_entities = self.pending_map_entities.take().unwrap_or_default();
             if suppress_ai_enemies {
                 // Capture the suppressed enemies' mesh models BEFORE dropping
@@ -815,8 +853,7 @@ impl App {
                 crate::scripting::components::health::pawn_with_health(&registry)
             {
                 use crate::scripting::slot_table::NumericRange;
-                if let Err(err) = self
-                    .script_ctx
+                if let Err(err) = script_ctx
                     .slot_table
                     .borrow_mut()
                     .set_engine_numeric_range(
@@ -859,11 +896,15 @@ impl App {
             }
 
             // Re-borrow for the dynamic-light absorb step below.
-            let registry = self.script_ctx.registry.borrow();
+            let registry = script_ctx.registry.borrow();
 
             // Pick up any descriptor-spawned `LightComponent`s so they
             // participate in the per-frame light bridge pack.
-            self.light_bridge.absorb_dynamic_lights(&registry);
+            self.session
+                .as_mut()
+                .expect("session installed before level install")
+                .light_bridge
+                .absorb_dynamic_lights(&registry);
         }
 
         // Descriptor-spawned emitters may carry sprite collections not seen
@@ -873,7 +914,12 @@ impl App {
             use crate::scripting::components::billboard_emitter::BillboardEmitterComponent;
             use crate::scripting::registry::{ComponentKind, ComponentValue};
             let texture_root = self.content_root.join("textures");
-            let registry = self.script_ctx.registry.borrow();
+            let registry = script_ctx.registry.borrow();
+            let particle_render = &mut self
+                .session
+                .as_mut()
+                .expect("session installed before level install")
+                .particle_render;
             let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
             for (_id, value) in registry.iter_with_kind(ComponentKind::BillboardEmitter) {
                 let ComponentValue::BillboardEmitter(c) = value else {
@@ -893,7 +939,7 @@ impl App {
                         }]
                     });
                 renderer.register_smoke_collection(&collection, &frames, 0.3, c.lifetime);
-                self.particle_render.register_sprite(&collection);
+                particle_render.register_sprite(&collection);
             }
 
             let collection = weapon::impact_sprite_collection();
@@ -911,22 +957,29 @@ impl App {
                 0.45,
                 weapon::impact_lifetime(),
             );
-            self.particle_render.register_sprite(collection);
+            particle_render.register_sprite(collection);
         }
         self.level_timings.record("archetype_sweep");
 
         // Level-load model sweep. Runs AFTER both classname dispatch and the
         // data-archetype sweep so this single sweep sees EVERY mesh entity.
         if let Some(renderer) = self.renderer.as_mut() {
+            // `mesh_clip_tables` / `hit_zone_store` are session-owned; borrow the
+            // session once for this block (disjoint from the `renderer` borrow of
+            // `self.renderer`). `content_root` reads stay through `self`.
+            let session = self
+                .session
+                .as_mut()
+                .expect("session installed before level install");
             // Clear per-level transient mesh-pass state at the model-cache install
             // seam, and reset the game-side clip/hit-zone tables before rebuilding
             // them for this level.
             renderer.clear_mesh_pass_for_level_load();
-            self.mesh_clip_tables.clear();
-            self.hit_zone_store.clear();
+            session.mesh_clip_tables.clear();
+            session.hit_zone_store.clear();
 
             let models = {
-                let registry = self.script_ctx.registry.borrow();
+                let registry = session.script_ctx.registry.borrow();
                 let mut models = crate::distinct_mesh_models(&registry);
                 // E10 AC #3: union the suppressed remote-enemy models. A
                 // connected client filtered these placements out before
@@ -950,11 +1003,13 @@ impl App {
                 // metadata (glTF index order). A failed load cached nothing, so the
                 // metadata is empty and the table maps no clips.
                 let meta = renderer.skinned_model_clip_metadata(model);
-                self.mesh_clip_tables
+                session
+                    .mesh_clip_tables
                     .insert(crate::model::ModelHandle::from(model.clone()), &meta);
                 // Build this model's game-side hit-zone entry by re-loading the
                 // glTF independently.
-                self.hit_zone_store
+                session
+                    .hit_zone_store
                     .insert_from_load(model, &self.content_root);
             }
             if !models.is_empty() {
@@ -967,27 +1022,29 @@ impl App {
             // Resolve every animated mesh entity's state map against its model's
             // clip table.
             crate::resolve_mesh_entity_clips(
-                &mut self.script_ctx.registry.borrow_mut(),
-                &self.mesh_clip_tables,
+                &mut session.script_ctx.registry.borrow_mut(),
+                &session.mesh_clip_tables,
             );
 
             // Warn once per archetype per declared `health.zoneMultipliers` tag
             // that names no zone on its mesh model.
             crate::warn_unknown_zone_multipliers(
-                &self.script_ctx.data_registry.borrow().entities,
-                &self.hit_zone_store,
+                &session.script_ctx.data_registry.borrow().entities,
+                &session.hit_zone_store,
             );
         }
         self.level_timings.record("model_load");
 
-        fire_named_event_with_sequences(
-            "levelLoad",
-            &self.script_ctx.data_registry.borrow(),
-            &self.sequence_registry,
-            &self.reaction_registry,
-            &self.system_registry,
-            &self.script_ctx,
-        );
+        if let Some(session) = self.session.as_ref() {
+            fire_named_event_with_sequences(
+                "levelLoad",
+                &script_ctx.data_registry.borrow(),
+                &session.sequence_registry,
+                &session.reaction_registry,
+                &session.system_registry,
+                &script_ctx,
+            );
+        }
         self.level_timings.record("level_load_event");
         self.script_time = 0.0;
         // Animation clock is level-relative like `script_time`. The scale field
@@ -1045,7 +1102,8 @@ mod tests {
             exit_result: Ok(()),
             camera: Camera::new(Vec3::ZERO, 0.0, 0.0),
             // Tests exercise level load/unload in the Running state, which touches
-            // the session-owned modal stack; build the migrated group inline.
+            // the session-owned modal stack and the whole script tranche; build
+            // the migrated group inline.
             session: Some(crate::session::Session {
                 input_system: input::InputSystem::new(input::default_bindings()),
                 gameplay_input_latch: input::GameplayInputLatch::new(),
@@ -1056,6 +1114,37 @@ mod tests {
                 ui_focus_rects: None,
                 ui_input_mode: input::InputMode::default(),
                 modal_stack: render::ui::modal_stack::ModalStack::new(),
+                script_runtime,
+                script_ctx: script_ctx.clone(),
+                player_hud_state: scripting_systems::ui_proxy::PlayerHudStatePublisher::new(
+                    script_ctx.clone(),
+                ),
+                flash_decay: scripting_systems::flash_decay::FlashDecay::new(script_ctx.clone()),
+                vignette_decay: scripting_systems::vignette_decay::VignetteDecay::new(
+                    script_ctx.clone(),
+                ),
+                shake_decay: scripting_systems::shake_decay::ShakeDecay::new(script_ctx.clone()),
+                presentation_cells:
+                    scripting_systems::presentation_cells::PresentationCellStore::new(),
+                input_mode_tracker: scripting_systems::input_mode::InputModeTracker::new(
+                    script_ctx.clone(),
+                ),
+                state_store_lifecycle: Default::default(),
+                sequence_registry: scripting::sequence::SequencedPrimitiveRegistry::new(),
+                reaction_registry: scripting::reactions::registry::ReactionPrimitiveRegistry::new(),
+                system_registry:
+                    scripting::reactions::system_commands::SystemReactionRegistry::new(),
+                progress_tracker: reaction_dispatch::ProgressTracker::new(),
+                crossing_detector: scripting::state_crossings::CrossingDetector::new(),
+                classname_dispatch: scripting::builtins::ClassnameDispatch::new(),
+                light_bridge: scripting_systems::light_bridge::LightBridge::new(),
+                fog_volume_bridge: scripting_systems::fog_volume_bridge::FogVolumeBridge::new(),
+                emitter_bridge: scripting_systems::emitter_bridge::EmitterBridge::new(),
+                particle_render:
+                    scripting_systems::particle_render::ParticleRenderCollector::new(),
+                mesh_render: scripting_systems::mesh_render::MeshRenderCollector::new(),
+                mesh_clip_tables: scripting_systems::mesh_anim::MeshClipTables::new(),
+                hit_zone_store: scripting_systems::hit_zones::HitZoneStore::new(),
             }),
             crouch_toggle_active: false,
             ai_warned: std::collections::HashSet::new(),
@@ -1071,40 +1160,14 @@ mod tests {
             frame_rate_meter: FrameRateMeter::new(),
             title_buffer: String::new(),
             last_title_update: Instant::now(),
-            script_runtime,
-            script_ctx: script_ctx.clone(),
-            player_hud_state: scripting_systems::ui_proxy::PlayerHudStatePublisher::new(
-                script_ctx.clone(),
-            ),
-            flash_decay: scripting_systems::flash_decay::FlashDecay::new(script_ctx.clone()),
-            vignette_decay: scripting_systems::vignette_decay::VignetteDecay::new(
-                script_ctx.clone(),
-            ),
-            shake_decay: scripting_systems::shake_decay::ShakeDecay::new(script_ctx.clone()),
-            presentation_cells: scripting_systems::presentation_cells::PresentationCellStore::new(),
             mod_theme_override: Default::default(),
             frontend: None,
-            input_mode_tracker: scripting_systems::input_mode::InputModeTracker::new(script_ctx),
             pending_mode_signal: None,
             pending_menu_toggle: false,
             pending_exit_to_desktop: false,
             ui_focused_id: None,
-            state_store_lifecycle: Default::default(),
-            sequence_registry: scripting::sequence::SequencedPrimitiveRegistry::new(),
-            reaction_registry: scripting::reactions::registry::ReactionPrimitiveRegistry::new(),
-            system_registry: scripting::reactions::system_commands::SystemReactionRegistry::new(),
-            progress_tracker: reaction_dispatch::ProgressTracker::new(),
-            crossing_detector: scripting::state_crossings::CrossingDetector::new(),
-            classname_dispatch: scripting::builtins::ClassnameDispatch::new(),
-            light_bridge: scripting_systems::light_bridge::LightBridge::new(),
-            fog_volume_bridge: scripting_systems::fog_volume_bridge::FogVolumeBridge::new(),
-            emitter_bridge: scripting_systems::emitter_bridge::EmitterBridge::new(),
             particle_live_counts: std::collections::HashMap::new(),
             collision_world: collision::CollisionWorld::new(),
-            particle_render: scripting_systems::particle_render::ParticleRenderCollector::new(),
-            mesh_render: scripting_systems::mesh_render::MeshRenderCollector::new(),
-            mesh_clip_tables: scripting_systems::mesh_anim::MeshClipTables::new(),
-            hit_zone_store: scripting_systems::hit_zones::HitZoneStore::new(),
             active_wieldable: None,
             active_wieldable_descriptor: None,
             boot_state: BootState::Running,
@@ -1137,8 +1200,21 @@ mod tests {
         }
     }
 
+    /// Clone the session-owned `ScriptCtx` handle (cheap `Rc` bump) for tests.
+    /// The whole script tranche moved onto `Session` (Task 2); this keeps the
+    /// many test reads of the shared registries one short call away without a
+    /// borrow fight against the non-`Clone` session subsystems.
+    fn script_ctx(app: &App) -> ScriptCtx {
+        app.session
+            .as_ref()
+            .expect("test app session installed")
+            .script_ctx
+            .clone()
+    }
+
     fn slot_snapshot(app: &App) -> BTreeMap<String, SlotRecord> {
-        let slots = app.script_ctx.slot_table.borrow();
+        let ctx = script_ctx(app);
+        let slots = ctx.slot_table.borrow();
         let first_name = slots
             .iter()
             .next()
@@ -1381,29 +1457,33 @@ mod tests {
 
     fn install_cpu_fixture(app: &mut App, fixture: CpuFixture) {
         app.level = Some(level_world(fixture.name, fixture.triangle_count));
-        app.script_ctx
-            .data_registry
-            .borrow_mut()
-            .populate_from_manifest(
-                crate::scripting::data_descriptors::LevelManifest {
-                    reactions: vec![named_reaction(fixture.reaction_name)],
-                    crossings: Vec::new(),
-                    ui_trees: Vec::new(),
-                },
-                &[],
-            );
+        let ctx = script_ctx(app);
+        ctx.data_registry.borrow_mut().populate_from_manifest(
+            crate::scripting::data_descriptors::LevelManifest {
+                reactions: vec![named_reaction(fixture.reaction_name)],
+                crossings: Vec::new(),
+                ui_trees: Vec::new(),
+            },
+            &[],
+        );
 
         let lights = (0..fixture.light_count)
             .map(|i| map_light(fixture.light_tag, [i as f64, 2.0, 3.0]))
             .collect::<Vec<_>>();
-        app.light_bridge
-            .populate_from_level(&lights, &mut app.script_ctx.registry.borrow_mut(), 0);
-
         let fog_records = (0..fixture.fog_count)
             .map(|i| fog_record(fixture.fog_tag, i as f32 * 4.0))
             .collect::<Vec<_>>();
-        app.fog_volume_bridge
-            .populate_from_level(&mut app.script_ctx.registry.borrow_mut(), &fog_records);
+        {
+            let session = app.session.as_mut().expect("test app session installed");
+            session.light_bridge.populate_from_level(
+                &lights,
+                &mut ctx.registry.borrow_mut(),
+                0,
+            );
+            session
+                .fog_volume_bridge
+                .populate_from_level(&mut ctx.registry.borrow_mut(), &fog_records);
+        }
 
         if let Some(world) = app.level.as_ref() {
             app.collision_world.populate_from_level(world);
@@ -1413,7 +1493,7 @@ mod tests {
     #[test]
     fn unload_level_preserves_slot_table_and_entity_type_registry() {
         let mut app = test_app();
-        app.script_ctx
+        script_ctx(&app)
             .slot_table
             .borrow_mut()
             .insert_namespace(
@@ -1432,7 +1512,7 @@ mod tests {
                 )],
             )
             .unwrap();
-        app.script_ctx
+        script_ctx(&app)
             .data_registry
             .borrow_mut()
             .upsert_entity_type(descriptor("global_grunt"));
@@ -1451,15 +1531,26 @@ mod tests {
         );
         app.script_time = 12.5;
         app.anim_time = 3.25;
-        app.presentation_cells.write(
-            "level_panel".to_string(),
-            "count".to_string(),
-            SlotValue::Number(11.0),
+        app.session
+            .as_mut()
+            .expect("test app session installed")
+            .presentation_cells
+            .write(
+                "level_panel".to_string(),
+                "count".to_string(),
+                SlotValue::Number(11.0),
+            );
+        assert!(
+            !app.session
+                .as_ref()
+                .expect("test app session installed")
+                .presentation_cells
+                .snapshot()
+                .is_empty()
         );
-        assert!(!app.presentation_cells.snapshot().is_empty());
 
         let slots_before = slot_snapshot(&app);
-        app.script_ctx
+        script_ctx(&app)
             .data_registry
             .borrow_mut()
             .replace_maps(vec![ModMapEntry {
@@ -1469,7 +1560,8 @@ mod tests {
                 tags: vec!["campaign".to_string()],
             }]);
         let data_before = {
-            let data_registry = app.script_ctx.data_registry.borrow();
+            let ctx = script_ctx(&app);
+            let data_registry = ctx.data_registry.borrow();
             (data_registry.entities.clone(), data_registry.maps.clone())
         };
 
@@ -1477,7 +1569,8 @@ mod tests {
 
         assert_eq!(slot_snapshot(&app), slots_before);
         let data_after = {
-            let data_registry = app.script_ctx.data_registry.borrow();
+            let ctx = script_ctx(&app);
+            let data_registry = ctx.data_registry.borrow();
             (data_registry.entities.clone(), data_registry.maps.clone())
         };
         assert_eq!(data_after, data_before);
@@ -1485,7 +1578,14 @@ mod tests {
         assert!(app.level.is_none());
         assert_eq!(app.script_time, 0.0);
         assert_eq!(app.anim_time, 0.0);
-        assert!(app.presentation_cells.snapshot().is_empty());
+        assert!(
+            app.session
+                .as_ref()
+                .expect("test app session installed")
+                .presentation_cells
+                .snapshot()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -1504,8 +1604,22 @@ mod tests {
                 triangle_count: 2,
             },
         );
-        assert_eq!(app.light_bridge.light_count(), 2);
-        assert_eq!(app.fog_volume_bridge.entity_count(), 2);
+        assert_eq!(
+            app.session
+                .as_ref()
+                .expect("test app session installed")
+                .light_bridge
+                .light_count(),
+            2
+        );
+        assert_eq!(
+            app.session
+                .as_ref()
+                .expect("test app session installed")
+                .fog_volume_bridge
+                .entity_count(),
+            2
+        );
         assert_eq!(app.collision_world.triangle_count(), 2);
 
         app.unload_level();
@@ -1523,7 +1637,8 @@ mod tests {
             },
         );
 
-        let data_registry = app.script_ctx.data_registry.borrow();
+        let ctx = script_ctx(&app);
+        let data_registry = ctx.data_registry.borrow();
         assert_eq!(data_registry.reactions.len(), 1);
         assert_eq!(data_registry.reactions[0].name, "combatWave");
         assert!(
@@ -1535,16 +1650,17 @@ mod tests {
         );
         drop(data_registry);
 
-        assert_eq!(app.light_bridge.light_count(), 1);
-        let light_id = app.light_bridge.entity_for_map_index(0).unwrap();
+        let session = app.session.as_ref().expect("test app session installed");
+        assert_eq!(session.light_bridge.light_count(), 1);
+        let light_id = session.light_bridge.entity_for_map_index(0).unwrap();
         assert_eq!(
-            app.script_ctx.registry.borrow().get_tags(light_id).unwrap(),
+            ctx.registry.borrow().get_tags(light_id).unwrap(),
             &["combat_only"],
         );
 
-        assert_eq!(app.fog_volume_bridge.entity_count(), 1);
-        assert_eq!(app.fog_volume_bridge.cached_aabb_count(), 1);
-        assert!(app.fog_volume_bridge.active_aabbs().is_empty());
+        assert_eq!(session.fog_volume_bridge.entity_count(), 1);
+        assert_eq!(session.fog_volume_bridge.cached_aabb_count(), 1);
+        assert!(session.fog_volume_bridge.active_aabbs().is_empty());
         assert_eq!(app.collision_world.triangle_count(), 1);
         assert_eq!(app.collision_world.vertex_count(), 3);
     }
@@ -1609,7 +1725,7 @@ mod tests {
         let mut app = test_app();
         app.boot_state = BootState::Frontend;
         app.content_root = PathBuf::from("content/mod");
-        app.script_ctx
+        script_ctx(&app)
             .data_registry
             .borrow_mut()
             .replace_maps(vec![catalog_map(
@@ -1643,7 +1759,7 @@ mod tests {
         let mut app = test_app();
         app.boot_state = BootState::Running;
         app.level = Some(level_world(FIXTURE_MAP_A, 1));
-        app.script_ctx
+        script_ctx(&app)
             .data_registry
             .borrow_mut()
             .replace_maps(vec![catalog_map(
@@ -1883,7 +1999,7 @@ mod tests {
         let mut app = test_app();
         app.boot_state = BootState::Frontend;
         crate::scripting::reactions::system_commands::register_system_reaction_primitives(
-            &mut app.system_registry,
+            &mut app.session.as_mut().unwrap().system_registry,
         );
         app.session.as_mut().unwrap().modal_stack.registry_mut().register(
             render::ui::demo::FRONTEND_MENU_NAME,
@@ -1911,7 +2027,7 @@ mod tests {
             initial_focus: Some("play".to_string()),
             restore_on_return: false,
         });
-        app.script_ctx
+        script_ctx(&app)
             .data_registry
             .borrow_mut()
             .reactions
@@ -1943,7 +2059,7 @@ mod tests {
         let mut app = test_app();
         app.boot_state = BootState::Frontend;
         app.content_root = PathBuf::from("content/mod");
-        app.script_ctx
+        script_ctx(&app)
             .data_registry
             .borrow_mut()
             .replace_maps(vec![catalog_map(
@@ -1968,7 +2084,7 @@ mod tests {
             "catalog tags must be present before worker delivery and data-script install",
         );
         assert!(
-            app.script_ctx.data_registry.borrow().reactions.is_empty(),
+            script_ctx(&app).data_registry.borrow().reactions.is_empty(),
             "data script has not run while load metadata is already available",
         );
 
@@ -1980,7 +2096,7 @@ mod tests {
         let mut app = test_app();
         app.boot_state = BootState::Frontend;
         app.content_root = PathBuf::from("content/mod");
-        app.script_ctx
+        script_ctx(&app)
             .data_registry
             .borrow_mut()
             .replace_maps(vec![catalog_map(
@@ -2058,7 +2174,7 @@ mod tests {
         );
         app.session.as_mut().unwrap().modal_stack.push_named("deathScreen", None);
 
-        app.script_ctx.system_commands.push(
+        script_ctx(&app).system_commands.push(
             scripting::reactions::system_commands::SystemReactionCommand::LoadLevel {
                 map: "e1m1".to_string(),
             },
@@ -2083,7 +2199,7 @@ mod tests {
             "content/dev/maps/raw-dev-map.prl",
         )));
 
-        app.script_ctx
+        script_ctx(&app)
             .system_commands
             .push(scripting::reactions::system_commands::SystemReactionCommand::RestartLevel);
         app.dispatch_system_commands();
@@ -2116,7 +2232,7 @@ mod tests {
             },
         });
 
-        app.script_ctx
+        script_ctx(&app)
             .system_commands
             .push(scripting::reactions::system_commands::SystemReactionCommand::ReturnToFrontend);
         app.dispatch_system_commands();
@@ -2142,24 +2258,25 @@ mod tests {
         app.boot_state = BootState::Frontend;
         app.level = None;
         app.active_level_tags.clear();
-        app.script_ctx
+        script_ctx(&app)
             .data_registry
             .borrow_mut()
             .replace_global_reactions(vec![scoped_global_progress("waveDone", "wave1", "powerOn")]);
-        app.script_ctx
+        script_ctx(&app)
             .data_registry
             .borrow_mut()
             .replace_global_crossings(vec![scoped_global_crossing("test.health", "healthLow")]);
 
         if app.has_installed_level() {
-            app.script_ctx
+            script_ctx(&app)
                 .data_registry
                 .borrow_mut()
                 .recompose_active_sets(&app.active_level_tags);
             app.rebuild_active_reaction_subscribers();
         }
 
-        let registry = app.script_ctx.data_registry.borrow();
+        let ctx = script_ctx(&app);
+        let registry = ctx.data_registry.borrow();
         assert!(
             registry.reactions.is_empty(),
             "unscoped globals must not repopulate active reactions after unload",
@@ -2176,27 +2293,28 @@ mod tests {
         app.boot_state = BootState::Running;
         app.level = Some(level_world("raw_dev_level", 1));
         app.active_level_tags.clear();
-        app.script_ctx
+        script_ctx(&app)
             .data_registry
             .borrow_mut()
             .replace_global_reactions(vec![scoped_global_progress("waveDone", "wave1", "powerOn")]);
-        app.script_ctx
+        script_ctx(&app)
             .data_registry
             .borrow_mut()
             .replace_global_crossings(vec![scoped_global_crossing("test.health", "healthLow")]);
         {
-            let mut entities = app.script_ctx.registry.borrow_mut();
+            let ctx = script_ctx(&app);
+            let mut entities = ctx.registry.borrow_mut();
             let id = entities.spawn(Transform::default());
             entities.set_tags(id, vec!["wave1".to_string()]).unwrap();
         }
-        app.script_ctx
+        script_ctx(&app)
             .slot_table
             .borrow_mut()
             .insert("test.health".to_string(), number_slot(75.0))
             .expect("test slot should be vacant");
 
         if app.has_installed_level() {
-            app.script_ctx
+            script_ctx(&app)
                 .data_registry
                 .borrow_mut()
                 .recompose_active_sets(&app.active_level_tags);
@@ -2204,19 +2322,26 @@ mod tests {
         }
 
         assert_eq!(
-            app.progress_tracker
+            app.session
+                .as_mut()
+                .expect("test app session installed")
+                .progress_tracker
                 .on_entity_killed(&["wave1".to_string()]),
             vec!["powerOn".to_string()],
         );
-        app.script_ctx
+        script_ctx(&app)
             .slot_table
             .borrow_mut()
             .get_mut("test.health")
             .expect("test slot should exist")
             .value = Some(SlotValue::Number(25.0));
+        let ctx = script_ctx(&app);
         assert_eq!(
-            app.crossing_detector
-                .detect(&app.script_ctx.slot_table.borrow()),
+            app.session
+                .as_mut()
+                .expect("test app session installed")
+                .crossing_detector
+                .detect(&ctx.slot_table.borrow()),
             vec!["healthLow".to_string()],
         );
     }

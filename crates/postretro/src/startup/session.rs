@@ -15,28 +15,9 @@ use winit::event_loop::EventLoop;
 use crate::camera::Camera;
 use crate::frame_timing::{FrameRateMeter, FrameTiming, InterpolableState};
 use crate::input;
-use crate::scripting::builtins::{
-    ClassnameDispatch, register_builtins as register_builtin_classnames,
-};
-use crate::scripting::ctx::ScriptCtx;
 use crate::scripting::data_descriptors::ModThemeTokens;
-use crate::scripting::primitives::light::register_sequenced_light_primitives;
-use crate::scripting::primitives::register_all;
-use crate::scripting::primitives_registry::PrimitiveRegistry;
-use crate::scripting::reaction_dispatch::ProgressTracker;
-use crate::scripting::reactions::registry::{
-    ReactionPrimitiveRegistry, register_emitter_reaction_primitives,
-    register_fog_reaction_primitives, register_sequenced_fog_primitives,
-};
-use crate::scripting::reactions::system_commands::{
-    SystemReactionRegistry, register_system_reaction_primitives,
-};
-use crate::scripting::runtime::{ScriptRuntime, ScriptRuntimeConfig};
-use crate::scripting::sequence::SequencedPrimitiveRegistry;
-use crate::scripting::state_crossings::CrossingDetector;
-use crate::scripting::state_persistence::StateStoreLifecycle;
 use crate::startup::StartupTimings;
-use crate::{App, collision, netcode, options, scripting_systems, view_feel};
+use crate::{App, collision, netcode, options, view_feel};
 
 /// Dev-default boot map when no content root or map argument is supplied. Used by
 /// `content_root_from_map` to derive the default `content/dev` root.
@@ -85,10 +66,14 @@ impl PendingSessionInit {
     /// Caller guards single-commit via `Option::take` on `app.pending_session`,
     /// so this never runs twice across a suspend/resume.
     pub(crate) fn install(self, app: &mut App) -> Result<()> {
-        // Migrated input/UI/modal group: built post-first-pixel, synchronously,
-        // whole-or-nothing. A hard failure propagates so the caller exits boot.
-        app.session =
-            Some(crate::session::Session::build(&self.input_seed).context("failed to build session")?);
+        // Migrated input/UI/modal group AND the scripting core: built
+        // post-first-pixel, synchronously, whole-or-nothing. A hard failure
+        // propagates so the caller exits boot. `boot_timings` is threaded in so
+        // `Session::build` records `script_runtime_ctor` where the runtime is now
+        // constructed (behind first pixels). See: context/lib/boot_sequence.md §1.
+        let session = crate::session::Session::build(&self.input_seed, &mut app.boot_timings)
+            .context("failed to build session")?;
+        app.session = Some(session);
 
         // M15 Phase 1 net role (default single-player). A malformed flag or a
         // failed transport construction degrades to single-player (net inert)
@@ -132,61 +117,17 @@ impl PendingSessionInit {
 /// construction grouping ("build before any path can use them"); the `App` owns
 /// the fields after assembly. See: context/lib/boot_sequence.md §1.
 struct SessionServices {
-    script_ctx: ScriptCtx,
-    script_runtime: ScriptRuntime,
-    sequence_registry: SequencedPrimitiveRegistry,
-    reaction_registry: ReactionPrimitiveRegistry,
-    system_registry: SystemReactionRegistry,
-    classname_dispatch: ClassnameDispatch,
     player_options: options::PlayerOptions,
     settings_path: Option<PathBuf>,
 }
 
 impl SessionServices {
-    /// Build the session-lifetime systems. Runs AFTER `EventLoop::new` so the
-    /// scripting bootstrap, registries, options I/O, input seeding, and UI
-    /// registration all follow event-loop creation. Net setup is NOT here — it
+    /// Build the residual pre-window session-lifetime services. Runs AFTER
+    /// `EventLoop::new`. Today this is only player options I/O — the scripting
+    /// core (script runtime/context, registries, the `ScriptCtx`-clone systems)
+    /// migrated into `Session::build`, which runs post-first-pixel, and net setup
     /// defers past first pixels through `PendingSessionInit`.
     fn build() -> Result<Self> {
-        // Scripting bootstrap: primitive registry, runtime construction, and SDK
-        // type emission. See: context/lib/scripting.md
-        let script_ctx = ScriptCtx::new();
-        let mut script_registry = PrimitiveRegistry::new();
-        register_all(&mut script_registry, script_ctx.clone());
-        let script_runtime = ScriptRuntime::new(
-            &script_registry,
-            &ScriptRuntimeConfig::default(),
-            &script_ctx,
-        )
-        .context("failed to construct script runtime")?;
-        // See `ScriptRuntime::new` for why this runs here rather than in the
-        // constructor. See: context/lib/scripting.md §7.
-        crate::scripting::typedef::emit_sdk_types_in_debug(&script_registry);
-
-        // Rust-only handlers on the sequence-dispatch path — distinct from the
-        // script-facing primitive registry (these never run inside QuickJS/Luau).
-        let mut sequence_registry = SequencedPrimitiveRegistry::new();
-        register_sequenced_light_primitives(&mut sequence_registry, script_ctx.clone());
-        register_sequenced_fog_primitives(&mut sequence_registry, script_ctx.clone());
-
-        // Reaction-primitive handlers invoked by name when a `Primitive` reaction
-        // fires. Populated once at startup; survives level reloads.
-        let mut reaction_registry = ReactionPrimitiveRegistry::new();
-        register_emitter_reaction_primitives(&mut reaction_registry);
-        register_fog_reaction_primitives(&mut reaction_registry);
-
-        // System-reaction handlers (no entity targets) — the second arm of the
-        // shared named-reaction vocabulary. They enqueue typed commands onto
-        // `script_ctx.system_commands`, drained once per frame after the
-        // post-tick event drains. See: context/lib/scripting.md §10.4.
-        let mut system_registry = SystemReactionRegistry::new();
-        register_system_reaction_primitives(&mut system_registry);
-
-        // Built-in classname dispatch — survives level unload because handlers
-        // describe engine types, not per-level state. See: context/lib/scripting.md
-        let mut classname_dispatch = ClassnameDispatch::new();
-        register_builtin_classnames(&mut classname_dispatch);
-
         // Player options load before `InputSystem` is constructed so the loaded
         // look preferences seed input at startup. On first boot (no file
         // present), write defaults so the human gets an editable starting file —
@@ -232,12 +173,6 @@ impl SessionServices {
         // no construction dependency crosses the dual-construction boundary.
 
         Ok(Self {
-            script_ctx,
-            script_runtime,
-            sequence_registry,
-            reaction_registry,
-            system_registry,
-            classname_dispatch,
             player_options,
             settings_path,
         })
@@ -249,9 +184,10 @@ impl SessionServices {
 ///
 /// Ordering: minimal pre-event-loop work (logging, boot-timing setup, raw arg
 /// collection, content-root / boot-map selection) runs first, THEN
-/// `EventLoop::new`, THEN the `SessionServices` build (scripting bootstrap incl.
-/// the script primitive registry, the Rust-only registries, options I/O, input
-/// seeding, and built-in UI registration). Net-role parsing and
+/// `EventLoop::new`, THEN the residual `SessionServices` build (options I/O
+/// only). The scripting bootstrap (script runtime/context, registries, the
+/// `ScriptCtx`-clone systems) and built-in UI registration moved into
+/// `Session::build`, post-first-pixel. Net-role parsing and
 /// `NetEndpoint::from_role` are NOT done here — they defer past the first logo
 /// frame through `PendingSessionInit`. Mod init, the hot-reload watcher, and the
 /// level-load worker spawn likewise run on the splash frame loop so the first
@@ -276,8 +212,11 @@ pub(crate) fn build_session() -> Result<BootSession> {
     let event_loop = EventLoop::new().context("failed to create event loop")?;
     boot_timings.record("event_loop_created");
 
-    let session = SessionServices::build()?;
-    boot_timings.record("script_runtime_ctor");
+    // Residual pre-window services (options I/O only). The
+    // `script_runtime_ctor` mark is NO LONGER recorded here — the script runtime
+    // is now constructed in `Session::build` post-first-pixel, and the mark fires
+    // there. See: context/lib/boot_sequence.md §1.
+    let services = SessionServices::build()?;
 
     // Camera starts at a placeholder; `install_level_payload` repositions it
     // to the first `player_spawn` or the level geometry center
@@ -286,15 +225,9 @@ pub(crate) fn build_session() -> Result<BootSession> {
     let initial_state = InterpolableState::new(initial_camera_pos);
 
     let SessionServices {
-        script_ctx,
-        script_runtime,
-        sequence_registry,
-        reaction_registry,
-        system_registry,
-        classname_dispatch,
         player_options,
         settings_path,
-    } = session;
+    } = services;
 
     // Capture the migrated `InputSystem`'s look-preference seed before
     // `player_options` moves into the `App` literal. `player_options` stays on
@@ -333,40 +266,17 @@ pub(crate) fn build_session() -> Result<BootSession> {
         frame_rate_meter: FrameRateMeter::new(),
         title_buffer: String::with_capacity(256),
         last_title_update: Instant::now(),
-        script_runtime,
-        player_hud_state: scripting_systems::ui_proxy::PlayerHudStatePublisher::new(
-            script_ctx.clone(),
-        ),
-        flash_decay: scripting_systems::flash_decay::FlashDecay::new(script_ctx.clone()),
-        vignette_decay: scripting_systems::vignette_decay::VignetteDecay::new(script_ctx.clone()),
-        shake_decay: scripting_systems::shake_decay::ShakeDecay::new(script_ctx.clone()),
-        presentation_cells: scripting_systems::presentation_cells::PresentationCellStore::new(),
+        // The scripting core (script runtime/context, registries, the
+        // `ScriptCtx`-clone systems) is owned by `Session`, built post-first-pixel
+        // by `PendingSessionInit::install`. See: context/lib/boot_sequence.md §1.
         mod_theme_override: ModThemeTokens::default(),
         frontend: None,
-        input_mode_tracker: scripting_systems::input_mode::InputModeTracker::new(
-            script_ctx.clone(),
-        ),
         pending_mode_signal: None,
         pending_menu_toggle: false,
         pending_exit_to_desktop: false,
         ui_focused_id: None,
-        script_ctx,
-        state_store_lifecycle: StateStoreLifecycle::default(),
-        sequence_registry,
-        reaction_registry,
-        system_registry,
-        progress_tracker: ProgressTracker::new(),
-        crossing_detector: CrossingDetector::new(),
-        classname_dispatch,
-        light_bridge: scripting_systems::light_bridge::LightBridge::new(),
-        fog_volume_bridge: scripting_systems::fog_volume_bridge::FogVolumeBridge::new(),
-        emitter_bridge: scripting_systems::emitter_bridge::EmitterBridge::new(),
         particle_live_counts: std::collections::HashMap::new(),
         collision_world: collision::CollisionWorld::new(),
-        particle_render: scripting_systems::particle_render::ParticleRenderCollector::new(),
-        mesh_render: scripting_systems::mesh_render::MeshRenderCollector::new(),
-        mesh_clip_tables: scripting_systems::mesh_anim::MeshClipTables::new(),
-        hit_zone_store: scripting_systems::hit_zones::HitZoneStore::new(),
         active_wieldable: None,
         active_wieldable_descriptor: None,
         builtin_handled: None,

@@ -208,83 +208,99 @@ impl App {
         // Mod init runs before the worker spawns so declarations and entity
         // descriptors commit together, then persistence overlays defaults once
         // before any level work begins.
+        // The script runtime + context now live on `Session` (built earlier this
+        // frame by `install_pending_session`). Borrow the session for the manifest
+        // drain; theme/font install needs `&mut self`, so the manifest's theme/font
+        // payload is lifted into locals and applied after the session borrow ends.
         let script_root = self.content_root.join("scripts");
-        self.script_runtime
-            .compile_stale_scripts(&script_root, &self.content_root);
-        if let Err(err) = self.script_runtime.run_mod_init(&self.content_root) {
-            log::error!("[Scripting] mod_init failed: {err}");
-        } else {
-            let has_manifest = self.script_runtime.mod_manifest().is_some();
-            if let Some(manifest) = self.script_runtime.mod_manifest_mut() {
-                // Drain entity-type descriptors from the validated mod manifest
-                // into the engine-global `DataRegistry`. Runtime parses; caller
-                // owns lifecycle. See: context/lib/boot_sequence.md §3.
-                let mut data_registry = self.script_ctx.data_registry.borrow_mut();
-                for desc in std::mem::take(&mut manifest.entities) {
-                    data_registry.upsert_entity_type(desc);
-                }
-                data_registry.replace_maps(std::mem::take(&mut manifest.maps));
-                let global_reactions = validate_scoped_sequence_primitives(
-                    std::mem::take(&mut manifest.reactions),
-                    &self.sequence_registry,
-                );
-                data_registry.replace_global_reactions(global_reactions);
-                data_registry.replace_global_crossings(std::mem::take(&mut manifest.crossings));
-                drop(data_registry);
+        let content_root = self.content_root.clone();
+        let mut deferred_theme_fonts: Option<(
+            crate::scripting::data_descriptors::ModThemeTokens,
+            crate::scripting::data_descriptors::ModFontAssets,
+        )> = None;
+        {
+            let session = self
+                .session
+                .as_mut()
+                .expect("session installed before mod init");
+            session
+                .script_runtime
+                .compile_stale_scripts(&script_root, &content_root);
+            if let Err(err) = session.script_runtime.run_mod_init(&content_root) {
+                log::error!("[Scripting] mod_init failed: {err}");
+            } else {
+                let has_manifest = session.script_runtime.mod_manifest().is_some();
+                if let Some(manifest) = session.script_runtime.mod_manifest_mut() {
+                    // Drain entity-type descriptors from the validated mod manifest
+                    // into the engine-global `DataRegistry`. Runtime parses; caller
+                    // owns lifecycle. See: context/lib/boot_sequence.md §3.
+                    let mut data_registry = session.script_ctx.data_registry.borrow_mut();
+                    for desc in std::mem::take(&mut manifest.entities) {
+                        data_registry.upsert_entity_type(desc);
+                    }
+                    data_registry.replace_maps(std::mem::take(&mut manifest.maps));
+                    let global_reactions = validate_scoped_sequence_primitives(
+                        std::mem::take(&mut manifest.reactions),
+                        &session.sequence_registry,
+                    );
+                    data_registry.replace_global_reactions(global_reactions);
+                    data_registry
+                        .replace_global_crossings(std::mem::take(&mut manifest.crossings));
+                    drop(data_registry);
 
-                // Register mod-scope UI trees into the tiered registry at `Mod`
-                // tier, before the mod-init VM context drops. The session is
-                // installed earlier this frame (`install_pending_session` ran
-                // just above), so it is `Some` here.
-                self.session
-                    .as_mut()
-                    .expect("session installed before mod init")
-                    .modal_stack
-                    .register_script_trees(
+                    // Register mod-scope UI trees into the tiered registry at `Mod`
+                    // tier, before the mod-init VM context drops.
+                    session.modal_stack.register_script_trees(
                         std::mem::take(&mut manifest.ui_trees),
                         render::ui::modal_stack::ScopeTier::Mod,
                     );
 
-                self.frontend = manifest.frontend.take();
-                let mod_theme = std::mem::take(&mut manifest.theme);
-                let mod_fonts = std::mem::take(&mut manifest.fonts);
-                self.install_mod_ui_theme_and_fonts(mod_theme, mod_fonts);
-            }
-
-            if self
-                .state_store_lifecycle
-                .should_restore_after_mod_init(has_manifest)
-            {
-                let state_path = Path::new(STATE_FILE_PATH);
-                match load_persisted_state(state_path) {
-                    Ok(Some(persisted)) => {
-                        let warnings = overlay_persisted_state(
-                            &mut self.script_ctx.slot_table.borrow_mut(),
-                            &persisted,
-                        );
-                        for warning in warnings {
-                            log::warn!("[State] {warning}");
-                        }
-                        log::info!(
-                            "[State] restored persistent slots from {}",
-                            state_path.display()
-                        );
-                    }
-                    Ok(None) => {}
-                    Err(error) => log::warn!(
-                        "[State] failed to load persistent slots from {}: {error}; using declared defaults",
-                        state_path.display()
-                    ),
+                    self.frontend = manifest.frontend.take();
+                    let mod_theme = std::mem::take(&mut manifest.theme);
+                    let mod_fonts = std::mem::take(&mut manifest.fonts);
+                    deferred_theme_fonts = Some((mod_theme, mod_fonts));
                 }
-                self.state_store_lifecycle.mark_restore_completed();
+
+                if session
+                    .state_store_lifecycle
+                    .should_restore_after_mod_init(has_manifest)
+                {
+                    let state_path = Path::new(STATE_FILE_PATH);
+                    match load_persisted_state(state_path) {
+                        Ok(Some(persisted)) => {
+                            let warnings = overlay_persisted_state(
+                                &mut session.script_ctx.slot_table.borrow_mut(),
+                                &persisted,
+                            );
+                            for warning in warnings {
+                                log::warn!("[State] {warning}");
+                            }
+                            log::info!(
+                                "[State] restored persistent slots from {}",
+                                state_path.display()
+                            );
+                        }
+                        Ok(None) => {}
+                        Err(error) => log::warn!(
+                            "[State] failed to load persistent slots from {}: {error}; using declared defaults",
+                            state_path.display()
+                        ),
+                    }
+                    session.state_store_lifecycle.mark_restore_completed();
+                }
+            }
+            // Hot-reload watcher (debug-only); release builds no-op.
+            if let Err(err) = session
+                .script_runtime
+                .start_watcher(&script_root, &content_root)
+            {
+                log::error!("[Scripting] start_watcher failed: {err}");
             }
         }
-        // Hot-reload watcher (debug-only); release builds no-op.
-        if let Err(err) = self
-            .script_runtime
-            .start_watcher(&script_root, &self.content_root)
-        {
-            log::error!("[Scripting] start_watcher failed: {err}");
+        // Theme/font install borrows `&mut self` (renderer, etc.), so it runs after
+        // the session borrow above has ended.
+        if let Some((mod_theme, mod_fonts)) = deferred_theme_fonts {
+            self.install_mod_ui_theme_and_fonts(mod_theme, mod_fonts);
         }
         self.mod_timings.record("mod_init");
     }

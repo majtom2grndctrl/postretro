@@ -1,25 +1,49 @@
 // Live session-lifetime runtime container, built after the first visible frame.
-// Owns the input/UI/modal field group migrated off the `App` god-struct so boot
-// code cannot name a session field before install.
+// Owns the input/UI/modal field group AND the scripting core (script context +
+// runtime, registries, and every system that captures a `ScriptCtx` clone or a
+// registry reference), migrated off the `App` god-struct so boot code cannot name
+// a session field before install. Building the script tranche here moves the
+// heaviest startup init (`ScriptCtx::new` / `register_all` / `ScriptRuntime::new`)
+// behind first pixels.
 // See: context/lib/boot_sequence.md §1 (Deferred-session boundary and single commit)
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::input;
 use crate::render;
+use crate::scripting::builtins::{
+    ClassnameDispatch, register_builtins as register_builtin_classnames,
+};
+use crate::scripting::ctx::ScriptCtx;
+use crate::scripting::primitives::light::register_sequenced_light_primitives;
+use crate::scripting::primitives::register_all;
+use crate::scripting::primitives_registry::PrimitiveRegistry;
+use crate::scripting::reaction_dispatch::ProgressTracker;
+use crate::scripting::reactions::registry::{
+    ReactionPrimitiveRegistry, register_emitter_reaction_primitives,
+    register_fog_reaction_primitives, register_sequenced_fog_primitives,
+};
+use crate::scripting::reactions::system_commands::{
+    SystemReactionRegistry, register_system_reaction_primitives,
+};
+use crate::scripting::runtime::{ScriptRuntime, ScriptRuntimeConfig};
+use crate::scripting::sequence::SequencedPrimitiveRegistry;
+use crate::scripting::state_crossings::CrossingDetector;
+use crate::scripting::state_persistence::StateStoreLifecycle;
+use crate::scripting_systems;
+use crate::startup::StartupTimings;
 
 /// Live session-lifetime container, held on `App` as `Option<Session>` and built
 /// once after first pixels by [`Session::build`]. Owns the input/UI/modal field
-/// group: every field here is session-lifetime, and none can be named while
-/// `App.session` is `None` (boot phase). The opposite of `SessionServices` (a
-/// transient pre-window construction bundle that `build_session` destructures and
-/// discards) — `Session` is the live runtime owner.
+/// group and the scripting core: every field here is session-lifetime, and none
+/// can be named while `App.session` is `None` (boot phase). The opposite of
+/// `SessionServices` (a transient pre-window construction bundle that
+/// `build_session` destructures and discards) — `Session` is the live runtime
+/// owner.
 ///
-/// This is the Task-1 migrated group only. `script_ctx`/`script_runtime` (Task 2)
-/// and `net_endpoint`/`audio` (Task 3) still live on `App` until their migrations
-/// land; `PendingSessionInit` carries the inputs for both construction sites until
-/// Task 3 collapses them. The group holds no `ScriptCtx` clone or registry handle,
-/// so it is severable from the script tranche and buildable in isolation.
+/// This is the Task-1 + Task-2 migrated group. `net_endpoint`/`audio` (Task 3)
+/// still live on `App` until their migration lands; `PendingSessionInit` carries
+/// the inputs for both construction sites until Task 3 collapses them.
 /// See: context/lib/boot_sequence.md §1.
 pub(crate) struct Session {
     /// Keyboard/mouse/gamepad action state. Seeded at build with the loaded
@@ -57,6 +81,99 @@ pub(crate) struct Session {
     /// Gameplay-UI modal stack + named-tree registry. Built-in trees register at
     /// build. See: context/lib/ui.md §1.
     pub(crate) modal_stack: render::ui::modal_stack::ModalStack,
+
+    // --- Scripting core (Task 2). The script runtime, the context handle every
+    // primitive closure captures, the Rust-side registries, and every system
+    // that holds a cloned `ScriptCtx` or a registry reference. The whole tranche
+    // is one indivisible group: `ScriptCtx` is `Clone` (`Rc`-backed) and is
+    // cloned into eight construction sites. See: context/lib/scripting.md. ---
+    /// The script VM runtime. Constructed once here (post-first-pixel); never
+    /// recreated. See: context/lib/scripting.md.
+    pub(crate) script_runtime: ScriptRuntime,
+
+    /// Holds the entity registry shared by the light bridge and the script
+    /// runtime. Outlives the renderer so device resets preserve scripted light
+    /// state. See: context/lib/scripting.md.
+    pub(crate) script_ctx: ScriptCtx,
+
+    /// Publishes live pawn HP and max HP into the player HUD slots each frame.
+    /// See: context/lib/scripting.md §5 for the store contract.
+    pub(crate) player_hud_state: scripting_systems::ui_proxy::PlayerHudStatePublisher,
+
+    /// App-side flash-decay state for the engine-owned `screen.flash` surface.
+    /// See: context/lib/ui.md §3.
+    pub(crate) flash_decay: scripting_systems::flash_decay::FlashDecay,
+
+    /// App-side vignette-decay state for the engine-owned `screen.vignette`
+    /// surface. See: context/lib/ui.md §3.
+    pub(crate) vignette_decay: scripting_systems::vignette_decay::VignetteDecay,
+
+    /// App-side screen-shake state for the engine-owned `screen.shake` surface.
+    /// See: context/lib/ui.md §3.
+    pub(crate) shake_decay: scripting_systems::shake_decay::ShakeDecay,
+
+    /// Presentation-cell store for `ui.createLocalState()`. Presentation-only —
+    /// NEVER the authoritative store. See: context/lib/ui.md §3/§6.
+    pub(crate) presentation_cells: scripting_systems::presentation_cells::PresentationCellStore,
+
+    /// App-side input-mode tracker: observes mode signals, debounces them, writes
+    /// the engine-owned `input.mode` slot, drives `ui_input_mode`.
+    /// See: context/lib/input.md §7.
+    pub(crate) input_mode_tracker: scripting_systems::input_mode::InputModeTracker,
+
+    /// Gates the one-time persistence overlay and clean-exit save.
+    pub(crate) state_store_lifecycle: StateStoreLifecycle,
+
+    /// Consulted by `fire_named_event_with_sequences` for `Sequence` steps.
+    /// See: context/lib/scripting.md §2.
+    pub(crate) sequence_registry: SequencedPrimitiveRegistry,
+
+    /// Resolved by name when a `Primitive` reaction fires.
+    /// See: context/lib/scripting.md §2.
+    pub(crate) reaction_registry: ReactionPrimitiveRegistry,
+
+    /// Resolved by name when a `Primitive` reaction with no `tag` fires — the
+    /// system-reaction arm. See: context/lib/scripting.md §10.4.
+    pub(crate) system_registry: SystemReactionRegistry,
+
+    /// Per-tag kill-count subscriptions. See: context/lib/scripting.md §2.
+    pub(crate) progress_tracker: ProgressTracker,
+
+    /// State-crossing watchers (M13 HUD dynamics). See: context/lib/scripting.md §10.4.
+    pub(crate) crossing_detector: CrossingDetector,
+
+    /// Maps `classname` strings to engine spawn handlers. Survives level unload.
+    /// See: context/lib/scripting.md.
+    pub(crate) classname_dispatch: ClassnameDispatch,
+
+    /// Repacks `GpuLight` bytes when any `LightComponent` is dirty.
+    /// See: context/lib/scripting.md.
+    pub(crate) light_bridge: scripting_systems::light_bridge::LightBridge,
+
+    /// Per-level fog-volume registry side-table; packs `FogVolume` GPU bytes.
+    /// See: context/lib/rendering_pipeline.md §7.5.
+    pub(crate) fog_volume_bridge: scripting_systems::fog_volume_bridge::FogVolumeBridge,
+
+    /// Walks every `BillboardEmitterComponent` after game logic and before
+    /// particle sim. See: context/lib/scripting.md.
+    pub(crate) emitter_bridge: scripting_systems::emitter_bridge::EmitterBridge,
+
+    /// Packs `SpriteInstance` bytes per collection in the Render stage; never
+    /// touches wgpu directly. See: context/lib/scripting.md.
+    pub(crate) particle_render: scripting_systems::particle_render::ParticleRenderCollector,
+
+    /// Packs per-instance skinned-mesh world matrices in the Render stage; never
+    /// touches wgpu. See: context/lib/scripting.md.
+    pub(crate) mesh_render: scripting_systems::mesh_render::MeshRenderCollector,
+
+    /// Game-side per-model animation clip tables (name → glTF index + per-index
+    /// duration). Cleared on level unload. See: context/lib/scripting.md §10.3.
+    pub(crate) mesh_clip_tables: scripting_systems::mesh_anim::MeshClipTables,
+
+    /// Game-side skeletal hit-zone store: per model TYPE, the CPU skeleton,
+    /// clips, authored joint-zone table, and a derived broad-phase bound.
+    /// CPU-only — no wgpu. See: context/lib/entity_model.md §7.
+    pub(crate) hit_zone_store: scripting_systems::hit_zones::HitZoneStore,
 }
 
 /// Look-preference seed for `InputSystem`, captured pre-window from the loaded
@@ -71,18 +188,83 @@ pub(crate) struct InputSeed {
 }
 
 impl Session {
-    /// Build the migrated input/UI/modal session group AFTER the first visible
-    /// frame, synchronously and whole-or-nothing. Runs entirely within the single
-    /// install redraw — no `await`, no yield. Absorbs the migrated-field work that
-    /// previously ran in `install_pending_session` / `install_post_splash_services`
-    /// and the pre-window `build_session` literal.
+    /// Build the migrated input/UI/modal group AND the scripting core AFTER the
+    /// first visible frame, synchronously and whole-or-nothing. Runs entirely
+    /// within the single install redraw — no `await`, no yield. Absorbs the work
+    /// that previously ran pre-window: the scripting bootstrap
+    /// (`ScriptCtx::new` / `register_all` / `ScriptRuntime::new` / SDK-type
+    /// emission), the Rust-side registries, the eight `ScriptCtx`-clone systems,
+    /// and the migrated input/UI/modal group.
     ///
-    /// The only fallible step is the built-in UI tree registration's disk loads;
-    /// those degrade per-tree (a missing/malformed asset warns and skips that
-    /// screen) rather than failing the build, so `Session::build` returns `Err`
-    /// only if a future step adds a hard failure. The `Result` signature is the
-    /// contract the install path relies on. See: context/lib/boot_sequence.md §1.
-    pub(crate) fn build(input_seed: &InputSeed) -> Result<Self> {
+    /// `boot_timings` is threaded in so the `script_runtime_ctor` mark records
+    /// where the runtime is now constructed (post-first-pixel) rather than firing
+    /// pre-window with nothing behind it. The mark is recorded right after the
+    /// runtime is built, before the migrated input/UI work, mirroring its old
+    /// position relative to the rest of the scripting bootstrap.
+    ///
+    /// The only fallible steps are the script-runtime construction (a hard boot
+    /// failure) and the built-in UI tree registration's disk loads (those degrade
+    /// per-tree). `Session::build` returns `Err` on a runtime-construction
+    /// failure; the install path stores it in `exit_result` and exits boot.
+    /// See: context/lib/boot_sequence.md §1.
+    pub(crate) fn build(
+        input_seed: &InputSeed,
+        boot_timings: &mut StartupTimings,
+    ) -> Result<Self> {
+        // Scripting bootstrap: primitive registry, runtime construction, and SDK
+        // type emission. Moved here from pre-window `SessionServices::build` so it
+        // runs behind first pixels. See: context/lib/scripting.md.
+        let script_ctx = ScriptCtx::new();
+        let mut script_registry = PrimitiveRegistry::new();
+        register_all(&mut script_registry, script_ctx.clone());
+        let script_runtime = ScriptRuntime::new(
+            &script_registry,
+            &ScriptRuntimeConfig::default(),
+            &script_ctx,
+        )
+        .context("failed to construct script runtime")?;
+        // See `ScriptRuntime::new` for why this runs here rather than in the
+        // constructor. See: context/lib/scripting.md §7.
+        crate::scripting::typedef::emit_sdk_types_in_debug(&script_registry);
+        // The runtime is now constructed behind first pixels; record the mark
+        // where it actually fires so the boot order line proves first pixels
+        // precede `script_runtime_ctor`. See: context/lib/boot_sequence.md §1.
+        boot_timings.record("script_runtime_ctor");
+
+        // Rust-only handlers on the sequence-dispatch path — distinct from the
+        // script-facing primitive registry (these never run inside QuickJS/Luau).
+        let mut sequence_registry = SequencedPrimitiveRegistry::new();
+        register_sequenced_light_primitives(&mut sequence_registry, script_ctx.clone());
+        register_sequenced_fog_primitives(&mut sequence_registry, script_ctx.clone());
+
+        // Reaction-primitive handlers invoked by name when a `Primitive` reaction
+        // fires. Populated once at startup; survives level reloads.
+        let mut reaction_registry = ReactionPrimitiveRegistry::new();
+        register_emitter_reaction_primitives(&mut reaction_registry);
+        register_fog_reaction_primitives(&mut reaction_registry);
+
+        // System-reaction handlers (no entity targets) — the second arm of the
+        // shared named-reaction vocabulary. They enqueue typed commands onto
+        // `script_ctx.system_commands`. See: context/lib/scripting.md §10.4.
+        let mut system_registry = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut system_registry);
+
+        // Built-in classname dispatch — survives level unload because handlers
+        // describe engine types, not per-level state. See: context/lib/scripting.md.
+        let mut classname_dispatch = ClassnameDispatch::new();
+        register_builtin_classnames(&mut classname_dispatch);
+
+        // The five subsystems that each capture a `ScriptCtx` clone, previously
+        // built inline in the `App` literal. They join the script tranche here.
+        let player_hud_state =
+            scripting_systems::ui_proxy::PlayerHudStatePublisher::new(script_ctx.clone());
+        let flash_decay = scripting_systems::flash_decay::FlashDecay::new(script_ctx.clone());
+        let vignette_decay =
+            scripting_systems::vignette_decay::VignetteDecay::new(script_ctx.clone());
+        let shake_decay = scripting_systems::shake_decay::ShakeDecay::new(script_ctx.clone());
+        let input_mode_tracker =
+            scripting_systems::input_mode::InputModeTracker::new(script_ctx.clone());
+
         let mut input_system = input::InputSystem::new(input::default_bindings());
         input_system.set_mouse_sensitivity(input_seed.mouse_sensitivity);
         input_system.set_invert_y(input_seed.invert_y);
@@ -136,6 +318,29 @@ impl Session {
             ui_focus_rects: None,
             ui_input_mode: input::InputMode::default(),
             modal_stack,
+            script_runtime,
+            script_ctx,
+            player_hud_state,
+            flash_decay,
+            vignette_decay,
+            shake_decay,
+            presentation_cells:
+                scripting_systems::presentation_cells::PresentationCellStore::new(),
+            input_mode_tracker,
+            state_store_lifecycle: StateStoreLifecycle::default(),
+            sequence_registry,
+            reaction_registry,
+            system_registry,
+            progress_tracker: ProgressTracker::new(),
+            crossing_detector: CrossingDetector::new(),
+            classname_dispatch,
+            light_bridge: scripting_systems::light_bridge::LightBridge::new(),
+            fog_volume_bridge: scripting_systems::fog_volume_bridge::FogVolumeBridge::new(),
+            emitter_bridge: scripting_systems::emitter_bridge::EmitterBridge::new(),
+            particle_render: scripting_systems::particle_render::ParticleRenderCollector::new(),
+            mesh_render: scripting_systems::mesh_render::MeshRenderCollector::new(),
+            mesh_clip_tables: scripting_systems::mesh_anim::MeshClipTables::new(),
+            hit_zone_store: scripting_systems::hit_zones::HitZoneStore::new(),
         })
     }
 }

@@ -114,7 +114,7 @@ Adjacent work discovered during implementation gets a follow-up task, not a scop
 
 In the per-frame hot path, three levers carry most of the weight:
 
-- **Bound the work before optimizing the unit.** The engine's measured wins come from visibility and culling — portal vis, PVS, per-region BVH, cone/frustum culls — and from ranking to a fixed budget, then dropping the overflow. Cap how much runs per frame first.
+- **Bound the work before optimizing the unit.** The engine's measured wins come from visibility and culling — portal traversal, cell-indexed draw candidates, BVH cone/frustum culls — and from ranking to a fixed budget, then dropping the overflow. Cap how much runs per frame first.
 - **Bake over compute** (architectural invariant — see [Architecture Index](./index.md) §2). Precompute offline — lightmaps, SH irradiance, portal visibility, BVH — so the runtime stays cheap. Reach for a baked input before a per-frame computation.
 - **Spend GPU budgets deliberately.** VRAM sits on a fixed memory floor; per-stage sampled-texture and binding slots are hard, low ceilings — several pinned by regression tests. Init-time allocations (shadow pools, atlases) and binding counts are up-front budget decisions, not later tuning. Treat a new large allocation or a new sampled binding as drawing down a fixed pool.
 
@@ -209,7 +209,7 @@ In Rust, ownership semantics *are* the data contract. When defining how subsyste
 | Mechanism | Use for | Notes |
 |-----------|---------|-------|
 | `Result<T, E>` | Operations that can fail | Default error path |
-| `Option<T>` | Absence is normal, not an error | e.g., optional lightmap section |
+| `Option<T>` | Absence is normal, not an error | e.g., optional content sidecar |
 | `thiserror` | Error types at subsystem boundaries | Typed, matchable errors |
 | Ad-hoc errors | Internal helpers | Convert at the boundary |
 | `anyhow` | Top-level application code only | Main loop, initialization — not subsystem code |
@@ -289,7 +289,7 @@ File headers orient a reader, not educate them. Two lines: what this file owns, 
 **Good:**
 ```
 // Lightmap atlas packing and upload to GPU.
-// See: context/rendering_pipeline.md §3
+// See: context/lib/rendering_pipeline.md §3
 ```
 
 **Too much:**

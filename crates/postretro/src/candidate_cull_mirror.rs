@@ -151,15 +151,11 @@ impl SyntheticWorld {
     /// cross-validated) `CellDrawIndex`. Reuses the LOADED CSR — not a rebuild —
     /// so the heavy stress-map probe compares the candidate path against the
     /// exact baked index the runtime would consume. Per-cell drawability comes
-    /// from the BSP leaf records (`!is_solid && face_count > 0`), the same
-    /// predicate the gather and the tree walk apply.
+    /// from the explicit runtime cell records, the same predicate the gather
+    /// and the tree walk apply.
     #[cfg(test)]
     pub(crate) fn from_level_world(world: &crate::prl::LevelWorld, index: CellDrawIndex) -> Self {
-        let cell_drawable: Vec<bool> = world
-            .leaves
-            .iter()
-            .map(|leaf| !leaf.is_solid && leaf.face_count > 0)
-            .collect();
+        let cell_drawable: Vec<bool> = world.cells.iter().map(|cell| cell.is_drawable).collect();
         SyntheticWorld {
             leaves: world.bvh.leaves.clone(),
             cell_drawable,

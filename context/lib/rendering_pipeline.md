@@ -27,13 +27,13 @@ Game logic runs at a fixed timestep decoupled from render rate. Renderer interpo
 
 ## 2. Visibility and Traversal
 
-Visibility is computed per frame from baked portal geometry — the id Tech 4 approach. Precomputed PVS lengthens compile cycles and fights dynamic geometry; per-frame portal traversal is cheap at modern leaf counts.
+Visibility is computed per frame from baked portal geometry — the id Tech 4 approach. Precomputed visibility sets lengthen compile cycles and fight dynamic geometry; per-frame portal traversal is cheap at modern cell counts.
 
 Portal traversal is the sole visibility path.
 
 **Portal traversal.** CPU flood-fill. At each portal, clip the portal polygon against the current frustum. A non-empty clip result confirms visibility and narrows the frustum for the next hop. Produces a visible-cell bitmask consumed by the BVH traversal compute pass (§5).
 
-**Fallback paths.** Solid-leaf camera, exterior-camera, and no-portals cases fall back to per-leaf AABB frustum culling against all leaves. See `build_pipeline.md` §Runtime visibility for the compile-side picture.
+**Fallback paths.** Solid-cell camera, exterior-camera, and no-portals cases fall back to per-cell AABB frustum culling against all cells. See `build_pipeline.md` §Runtime visibility for the compile-side picture.
 
 ---
 
@@ -108,11 +108,11 @@ The seams that keep direct and indirect disjoint — tier routing, the position-
 
 ## 5. Cells, BVH, and Draw Leaves
 
-**Cell** = opaque visibility unit. One cell per empty BSP leaf.
+**Cell** = opaque visibility unit. Cells are serialized runtime records derived from the compiler BSP output. BSP itself is compile-only scaffolding and is not loaded by the renderer.
 
 World geometry is organized into a global BVH at compile time. Each BVH leaf covers one `(face, material_bucket)` pair. Leaves are sorted by material bucket so each bucket owns a contiguous slot range in the indirect buffer.
 
-**Draw flow.** Portal traversal (§2) produces a visible-cell bitmask → the camera cull (§7.1) writes or zeros each leaf's indirect buffer slot, via either the candidate path (gathers only the visible cells' leaves from the baked `CellDrawIndex` CSR) or the tree-walk fallback (walks the whole BVH, testing each leaf's AABB and cell bit) → opaque pass issues one `multi_draw_indexed_indirect` call per material bucket against its contiguous slot range.
+**Draw flow.** Portal traversal (§2) produces a visible-cell bitmask → the camera cull (§7.1) writes or zeros each leaf's indirect buffer slot, via either the candidate path (gathers only the visible cells' leaves from the baked `CellDrawIndex` CSR) or the tree-walk fallback (walks the whole BVH, testing each leaf's AABB and cell bit) → opaque pass issues one `multi_draw_indexed_indirect` call per material bucket against its contiguous slot range. `CellDrawIndex` is required for non-empty BVH maps; missing or invalid required indexes fail load.
 
 **Global vs. per-region.** One BVH over all static geometry. Global wins on shader simplicity and tree quality. Per-region is the pivot path if a cell-heavy map regresses on frame time — tighter cache behavior at the cost of more bookkeeping and storage buffers. Pivot only when global is measured to fall short. No hardware ray tracing — not in baseline wgpu.
 
@@ -140,12 +140,12 @@ UVs computed from face projection data at compile time; GPU sampler uses repeat 
 
 1. **Portal traversal** (CPU) — §2 flood-fill produces the visible-cell bitmask.
 2. **Camera cull** (compute) — writes or zeros each leaf's global indirect slot via one of two paths; both share the global per-leaf slot layout, so the draw path (`bucket_ranges`, §7.3) is byte-for-byte identical regardless of which ran.
-   - **Candidate cull** (`candidate_cull.wgsl`) — the fast path. Eligible iff a valid baked `CellDrawIndex` (build_pipeline.md, id 37) is loaded, this frame's visibility is `VisibleCells::Culled`, AND its provenance is `VisibilityPath::PrlPortal`. The CPU expands the visible cells' owned BVH-leaf spans from the CSR into a flat candidate-leaf list (deduping visible cell ids first, so a repeated cell never double-writes a slot), clears the camera indirect and cull-status ranges to zero, then dispatches one invocation per candidate leaf. Each invocation frustum-tests its leaf and writes that leaf's existing global slot (submit) or leaves it cleared (frustum reject). Non-candidate leaves stay cleared — so cull cost scales with *visible* geometry, not the whole tree. An out-of-range visible cell id falls back to the tree walk for that frame.
-   - **Tree walk** (`bvh_cull.wgsl`) — the fallback. Walks the whole global BVH in one invocation; tests each leaf AABB against the frustum and the leaf's cell bit; writes or zeros the leaf's slot. Selected for `DrawAll`, non-portal `Culled` fallbacks (solid-leaf / exterior / no-portals), a missing or invalid index, and the out-of-range case above. Shadow cone cull (step 6) always uses the tree walk.
+   - **Candidate cull** (`candidate_cull.wgsl`) — the fast path. Eligible iff a valid baked `CellDrawIndex` (build_pipeline.md, id 37) is loaded, this frame's visibility is `VisibleCells::Culled`, AND its provenance is `VisibilityPath::PrlPortal`. Non-empty BVH maps require the index at load time; absence or validation failure is a load error, not a runtime fallback. The CPU expands the visible cells' owned BVH-leaf spans from the CSR into a flat candidate-leaf list (deduping visible cell ids first, so a repeated cell never double-writes a slot), clears the camera indirect and cull-status ranges to zero, then dispatches one invocation per candidate leaf. Each invocation frustum-tests its leaf and writes that leaf's existing global slot (submit) or leaves it cleared (frustum reject). Non-candidate leaves stay cleared — so cull cost scales with *visible* geometry, not the whole tree. An out-of-range visible cell id falls back to the tree walk for that frame.
+   - **Tree walk** (`bvh_cull.wgsl`) — the runtime fallback. Walks the whole global BVH in one invocation; tests each leaf AABB against the frustum and the leaf's cell bit; writes or zeros the leaf's slot. Selected for `DrawAll`, non-portal `Culled` fallbacks (solid-cell / exterior / no-portals), and the out-of-range visible-cell case above. Shadow cone cull (step 6) always uses the tree walk.
 3. **Light list upload** — uploads the active dynamic light array and per-light influence volumes to GPU storage buffers.
 4. **Animated lightmap compose** (compute) — composites per-texel animated-light contributions into the atlas using pre-baked weight maps and runtime-evaluated Catmull-Rom curves. The atlas is zero-initialized by wgpu at creation and the compose pass writes every texel the forward pass samples, so no per-frame clear is needed. Culls dispatch tiles against the visible-cell bitmask so invisible rooms' animated lights don't waste GPU cycles. Runs after BVH cull and before the depth prepass. See §4 "Animated lights". **Atlas validity invariant:** the atlas holds valid data only for cells visible this frame. Any future pass that samples the animated lightmap atlas (e.g. reflection probes, alternate cameras) must use the same frame's `VisibleCells`, or skip animated-lit chunks — sampling the atlas for invisible cells yields stale prior-frame contents.
 5. **SH compose pass** (compute) — reads the static base octahedral irradiance atlas and per-light delta tile data; evaluates animation curves for each light at the current frame time; accumulates total indirect contributions and writes to the composed atlas. Runs unconditionally (no culling). See §4 "Animated SH delta volumes".
-6. **Shadow cone cull** (compute) — for each occupied shadow slot, dispatches BVH traversal gated by that slot's cone frustum only. The visible-cells buffer is all-ones (no camera-PVS AND): an occluder outside the camera PVS can still cast a shadow onto a visible receiver. Each slot writes into its own sub-region of a single shared indirect buffer. Runs after the camera cull compute pass and before the shadow depth render passes. World geometry only; no entity/skinned-mesh shadow culling. Entity instances are not in the world BVH — they are CPU-culled per slot in steps 7–8.
+6. **Shadow cone cull** (compute) — for each occupied shadow slot, dispatches BVH traversal gated by that slot's cone frustum only. The visible-cells buffer is all-ones: an occluder outside the camera's portal-visible set can still cast a shadow onto a visible receiver. Each slot writes into its own sub-region of a single shared indirect buffer. Runs after the camera cull compute pass and before the shadow depth render passes. World geometry only; no entity/skinned-mesh shadow culling. Entity instances are not in the world BVH — they are CPU-culled per slot in steps 7–8.
 
 7. **Spot-shadow depth passes** — one render pass per occupied slot; slots with no ranked light are skipped. Each pass draws from its indirect sub-region via `multi_draw_indexed_indirect` per material bucket (same per-bucket contiguous layout as §5). **Fallback:** when no BVH is present (no-BVH maps), the pass falls back to an unconditional draw of all world geometry. Runs before the depth pre-pass so shadow maps are fully written before the forward pass samples them.
 
@@ -196,11 +196,11 @@ Temporal smoothing also creates headroom to march coarser (raise `fog.step_size`
 
 **Ambient scatter.** Fog samples irradiance from the same composed octahedral atlas (group 3) used by the forward and billboard passes. The fog pass keeps the stable world-up atlas read as the isotropic baseline, then blends toward a view-derived atlas read when authored `scatter_bias` is above zero. Each read is the same 8-probe loop used by the other samplers: one hardware-bilinear octahedral tap per probe direction, validity-weighted and renormalized. The compiler translates `scatter_bias` to a forward-scatter Henyey-Greenstein `g` value; `g = 0` preserves the flat haze path. `ambient_scatter` scales only the ambient indirect term, so dynamic spot and point-light scatter remain visible when ambient scatter is zero. When no SH volume is present (`has_sh_volume == 0`) the ambient contribution is zero. Per-volume scatter tint and saturation remain available via the `tint` and `saturation` KVPs on fog entities. Fog uses the shared no-depth SH helper with backface rejection disabled; Chebyshev depth visibility stays off for fog.
 
-**Portal-driven volume culling.** Each frame, before dispatching the raymarch, the renderer reduces the per-sample AABB-test loop to only volumes reachable from the camera cell. Per-leaf `u32` bitmasks are baked at compile time into PRL section 31 (`FogCellMasks`); bit `i` set in leaf `L`'s mask means volume `i` overlaps leaf `L`'s bounds (conservative AABB-vs-AABB, no boundary pop). At runtime:
+**Portal-driven volume culling.** Each frame, before dispatching the raymarch, the renderer reduces the per-sample AABB-test loop to only volumes reachable from the camera cell. Per-cell `u32` bitmasks are baked at compile time into PRL section 31 (`FogCellMasks`); bit `i` set in cell `C`'s mask means volume `i` overlaps cell `C`'s bounds (conservative AABB-vs-AABB, no boundary pop). At runtime:
 
-- `VisibleCells::Culled(leaves)` + masks present: OR every *fog-reachable* leaf's mask (portal-traversal reachability — empty leaves included, solid leaves excluded), then unconditionally OR the camera's current leaf's mask, then AND with `all_slots_mask = (1 << canonical_volume_count) - 1`.
-- `VisibleCells::Culled(leaves)` + masks absent: legacy-PRL fallback — keep all canonical slots active (`active_mask = all_slots_mask`). Section 30 can ship without section 31, so absence does **not** imply zero volumes.
-- `VisibleCells::Culled(leaves)` + empty `fog_reachable` (solid-leaf camera, exterior, or no-portals map): OR produces zero; unconditional camera-leaf OR still runs, then AND with `all_slots_mask` — net result is all canonical slots active. `DrawAll` is never returned for these cases; the empty-world arm is the only source of `DrawAll`, and fog volumes cannot exist in an empty world, so `DrawAll` is unreachable in practice.
+- `VisibleCells::Culled(cells)` + masks present: OR every *fog-reachable* cell's mask (portal-traversal reachability — empty cells included, solid cells excluded), then unconditionally OR the camera's current cell's mask, then AND with `all_slots_mask = (1 << canonical_volume_count) - 1`.
+- `VisibleCells::Culled(cells)` + masks absent: stale/corrupt modern PRLs fail load before this point; valid modern maps with no fog volumes keep all canonical slots inactive.
+- `VisibleCells::Culled(cells)` + empty `fog_reachable` (solid-cell camera, exterior, or no-portals map): portal isolation does not apply, so the renderer returns `all_slots_mask` directly. Camera-cell union is skipped on this path. `DrawAll` is never returned for these cases; the empty-world arm is the only source of `DrawAll`, and fog volumes cannot exist in an empty world, so `DrawAll` is unreachable in practice.
 
 The active set is repacked densely into the GPU fog buffer in ascending source-index order; volume indices in the GPU buffer are not stable across frames. `FogParams.active_count = active_mask.count_ones()` controls the WGSL raymarch loop bound. The shader respects `active_count`, so trailing slots past it are stale-but-safe. A separate `live_mask` suppresses density-zero slots inside that loop. When `active_count == 0` the pass is skipped via `FogPass::active()`. Volumes that recently left the reachable set are held active for a brief time-based hysteresis window (framerate-independent) to absorb single-frame portal-narrowing transients. See `context/plans/done/perf-portal-fog-culling/index.md`.
 
@@ -221,10 +221,10 @@ Immediate-mode line segments uploaded from a CPU buffer each frame. Depth-tested
 Spatial diagnostics use this pass for CPU-authored structural overlays:
 
 - **BVH leaf AABBs** come from the renderer-owned CPU copy of compiled `BvhLeaf` records loaded from the PRL BVH section. They default to stable cell-id coloring, have a local deterministic budget (`max_boxes`, `stride`, optional visible-cells-only filter), and do not read back GPU cull status. Depth-tested is the default; x-ray is an explicit mode.
-- **BSP cell bounds** come from decoded `LevelWorld.leaves`. Solid cells are skipped. Drawable visible cells are colored from the current frame's drawable `VisibleCells::Culled` set; `VisibleCells::DrawAll` uses a distinct fallback color so it does not look like a successful portal walk.
+- **Cell bounds** come from decoded `LevelWorld.cells`. Solid cells are skipped. Drawable visible cells are colored from the current frame's drawable `VisibleCells::Culled` set; `VisibleCells::DrawAll` uses a distinct fallback color so it does not look like a successful portal walk.
 - **Portal edges** come from decoded `LevelWorld.portals` polygon edges. They use the same depth-tested/x-ray selector as the other Spatial context overlays.
 
-Spatial visible-cell coloring is derived from the drawable `VisibleCells` result that feeds world rendering, not from fog/light reachability masks. The wider `fog_reachable` / light-reachable sets include empty leaves for volume and dynamic-light isolation and must not drive first-pass Spatial visibility colors.
+Spatial visible-cell coloring is derived from the drawable `VisibleCells` result that feeds world rendering, not from fog/light reachability masks. The wider `fog_reachable` / light-reachable sets include empty cells for volume and dynamic-light isolation and must not drive first-pass Spatial visibility colors.
 
 ### 7.8 Screen-space effects resolve pass
 
@@ -261,7 +261,7 @@ The skinned-mesh render pass owns all wgpu for skinned models. It uploads a mesh
 
 **Shared bone-palette storage buffer.** All skinned instances' palettes live in one shared storage buffer. Each instance occupies a contiguous run; a per-instance **base index** selects its run, and the vertex shader addresses a joint as `base_index + joint`. One buffer for the whole frame, one small per-draw scalar — not a buffer or bind group per instance.
 
-The mesh is not in the world depth pre-pass, so it depth-tests `Less` against the world depth *and* writes its own depth (self-occludes correctly), in a dedicated render pass that loads the existing depth attachment writably. Instance culling is the caller's job — a pure leaf-membership test (does the instance's BSP leaf fall in the frame's visible-cell set) mirroring the world path, decided CPU-side before the draw is recorded.
+The mesh is not in the world depth pre-pass, so it depth-tests `Less` against the world depth *and* writes its own depth (self-occludes correctly), in a dedicated render pass that loads the existing depth attachment writably. Instance culling is the caller's job — a pure cell-membership test (does the instance's located cell fall in the frame's visible-cell set) mirroring the world path, decided CPU-side before the draw is recorded.
 
 ### Bind-group allocation (differs from §10)
 
@@ -344,7 +344,7 @@ Camera position and orientation produce a view matrix each frame, feeding:
 
 ### GPU Pass Timing
 
-Set `POSTRETRO_GPU_TIMING=1` to enable per-pass GPU timing. Requires adapter support for `TIMESTAMP_QUERY`; silently disabled if the feature is absent. Passes measured: `cull`, `animated_lm_compose`, `depth_prepass`, `sdf_shadow`, `forward`, `sh_compose`. Results are averaged over a 120-frame window and logged via `log::info!` at the window boundary. Use with `RUST_LOG=info` to see output. SH sampling is not separately timestamp-bracketed because it runs inside the forward fragment shader; measure it as `forward` timing deltas before/after the octahedral migration and with Probe Occlusion on/off.
+Set `POSTRETRO_GPU_TIMING=1` to enable per-pass GPU timing. Requires adapter support for `TIMESTAMP_QUERY`; silently disabled if the feature is absent. Passes measured: `cull`, `animated_lm_compose`, `depth_prepass`, `sdf_shadow`, `forward`, `sh_compose`, `smoke`. Results are averaged over a 120-frame window and logged via `log::info!` at the window boundary. Use with `RUST_LOG=info` to see output. SH sampling is not separately timestamp-bracketed because it runs inside the forward fragment shader; measure it as `forward` timing deltas before/after the octahedral migration and with Probe Occlusion on/off.
 
 ### Debug-Line Renderer
 

@@ -1,41 +1,32 @@
-// PRL level loading: reads .prl files, populates LevelWorld (BSP, BVH, lights,
+// PRL level loading: reads .prl files, populates LevelWorld (cells, BVH, lights,
 // portals, fog volumes, scripted entities, and worldspawn metadata).
 // See: context/lib/build_pipeline.md §PRL Compilation
 
-use std::collections::HashSet;
-use std::path::Path;
-
 use glam::Vec3;
-use postretro_level_format::alpha_lights::{
-    AlphaFalloffModel, AlphaLightType, AlphaLightsSection, AlphaShadowType,
-};
+use postretro_level_format as prl_format;
 use postretro_level_format::animated_light_chunks::AnimatedLightChunksSection;
 use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection;
-use postretro_level_format::bsp::{BspLeavesSection, BspNodesSection};
-use postretro_level_format::bvh::{BVH_NODE_FLAG_LEAF, BvhSection};
-use postretro_level_format::cell_draw_index::{CELL_DRAW_INDEX_VERSION, CellDrawIndexSection};
+use postretro_level_format::cell_draw_index::CellDrawIndexSection;
 use postretro_level_format::chunk_light_list::ChunkLightListSection;
 use postretro_level_format::data_script::DataScriptSection;
-use postretro_level_format::delta_sh_volumes::{AFFINITY_FACTOR, DeltaShVolumesSection};
+use postretro_level_format::delta_sh_volumes::DeltaShVolumesSection;
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
-use postretro_level_format::fog_cell_masks::FogCellMasksSection;
-use postretro_level_format::fog_volumes::{FogVolumeRecord, FogVolumesSection};
-use postretro_level_format::geometry::{GeometrySection, NO_TEXTURE};
-use postretro_level_format::light_influence::LightInfluenceSection;
-use postretro_level_format::light_tags::LightTagsSection;
+use postretro_level_format::fog_volumes::FogVolumeRecord;
 use postretro_level_format::lightmap::LightmapSection;
-use postretro_level_format::map_entity::{MapEntityRecord, MapEntitySection};
+use postretro_level_format::map_entity::MapEntityRecord;
 use postretro_level_format::navmesh::NavMeshSection;
-use postretro_level_format::portals::PortalsSection;
 use postretro_level_format::sdf_atlas::SdfAtlasSection;
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
-use postretro_level_format::texture_names::TextureNamesSection;
-use postretro_level_format::{self as prl_format, SectionId};
 use thiserror::Error;
 
-use crate::geometry::{BvhLeaf, BvhNode, BvhTree, WorldVertex};
-use crate::material::{self, Material};
+use crate::geometry::{BvhTree, WorldVertex};
+use crate::material::Material;
+
+#[path = "prl_loader.rs"]
+mod prl_loader;
+
+pub use prl_loader::load_prl;
 
 #[derive(Debug, Error)]
 pub enum PrlLoadError {
@@ -45,12 +36,19 @@ pub enum PrlLoadError {
     IoError(#[from] std::io::Error),
     #[error("PRL format error: {0}")]
     FormatError(#[from] prl_format::FormatError),
-    #[error("PRL file has no geometry section")]
-    NoGeometry,
     #[error(
-        "PRL file has no BVH section — pre-BVH maps are not supported; recompile with `prl-build`"
+        "PRL file is missing required {section} section (id {id}) — stale format; recompile with `prl-build`"
     )]
-    NoBvh,
+    StaleFormatMissingSection { section: &'static str, id: u32 },
+    #[error(
+        "PRL file contains modern Cells/CellLocator sections plus legacy runtime BSP section(s) {sections} — ambiguous stale format; recompile with `prl-build`"
+    )]
+    AmbiguousRuntimeBspSections { sections: String },
+    #[error("{section} validation error: {message}")]
+    SectionValidation {
+        section: &'static str,
+        message: String,
+    },
     #[error(
         "PRL file is missing the worldspawn `initialGravity` value (carried in the FogVolumes section, required since M7); recompile with `prl-build`"
     )]
@@ -96,6 +94,8 @@ pub enum PrlLoadError {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FaceMeta {
+    /// Runtime cell id for this face. Field name preserved from the `Geometry` wire type
+    /// (`GeometrySection` uses `leaf_index`); the value is a runtime cell id.
     pub leaf_index: u32,
     pub texture_index: Option<u32>,
     #[allow(dead_code)]
@@ -104,34 +104,62 @@ pub struct FaceMeta {
     pub material: Material,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BspChild {
-    Node(usize),
-    Leaf(usize),
-}
-
 #[derive(Debug, Clone)]
-pub struct NodeData {
-    pub plane_normal: Vec3,
-    pub plane_distance: f32,
-    pub front: BspChild,
-    pub back: BspChild,
-}
-
-#[derive(Debug, Clone)]
-pub struct LeafData {
+pub struct CellData {
     pub bounds_min: Vec3,
     pub bounds_max: Vec3,
     pub face_start: u32,
     pub face_count: u32,
+    pub portal_ref_start: u32,
+    pub portal_ref_count: u32,
     pub is_solid: bool,
+    pub is_exterior: bool,
+    pub is_drawable: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CellLocatorChild {
+    Node(usize),
+    Cell(usize),
+}
+
+#[derive(Debug, Clone)]
+pub struct CellLocatorNodeData {
+    pub plane_normal: Vec3,
+    pub plane_distance: f32,
+    pub front: CellLocatorChild,
+    pub back: CellLocatorChild,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(not(any(feature = "dev-tools", test)), allow(dead_code))]
+pub enum CellLocatorSide {
+    Front,
+    Back,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(not(any(feature = "dev-tools", test)), allow(dead_code))]
+pub struct CellLocatorTraceStep {
+    pub node_index: usize,
+    pub signed_distance: f32,
+    pub selected_side: CellLocatorSide,
+    pub selected_child: CellLocatorChild,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(not(any(feature = "dev-tools", test)), allow(dead_code))]
+pub struct CellLocatorTrace {
+    pub root: CellLocatorChild,
+    pub steps: Vec<CellLocatorTraceStep>,
+    pub result_cell: usize,
 }
 
 #[derive(Debug, Clone)]
 pub struct PortalData {
     pub polygon: Vec<Vec3>, // convex, world space
-    pub front_leaf: usize,
-    pub back_leaf: usize,
+    pub front_cell: usize,
+    pub back_cell: usize,
 }
 
 /// Mirrors `postretro-level-compiler::map_data::LightType` at the wire boundary.
@@ -204,9 +232,10 @@ pub struct MapLight {
     /// From LightTags section (ID 26). Space-delimited on wire; split here.
     /// `world.query({ tag: "t" })` matches when any tag equals `"t"`.
     pub tags: Vec<String>,
-    /// `u32::MAX` (`ALPHA_LIGHT_LEAF_UNASSIGNED`) = couldn't assign to a non-solid leaf;
-    /// excluded from portal-graph reachability and chunk light lists.
-    pub leaf_index: u32,
+    /// Runtime cell id for portal-graph reachability and chunk light lists.
+    /// `u32::MAX` (`ALPHA_LIGHT_LEAF_UNASSIGNED` on the legacy wire) means the
+    /// compiler/runtime could not assign the light to a non-solid cell.
+    pub cell_index: u32,
     /// How this baked-tier light's **direct** shadow resolves (FGD
     /// `_shadow_type`). `Sdf`-typed lights take the runtime per-light SDF
     /// visibility + diffuse path in the forward shader (flagged via
@@ -238,8 +267,8 @@ pub enum LightmapMode {
 
 /// Runtime view of the `CellDrawIndex` PRL section (id 37): each cell's owned
 /// BVH-leaf spans in CSR layout. Held as the format type after the loader has
-/// cross-validated it against the BVH leaf array and BSP leaf count. A stable
-/// runtime name so the candidate-cull GPU path consumes one type.
+/// cross-validated it against the BVH leaf array and loaded Cells section. A
+/// stable runtime name so the candidate-cull GPU path consumes one type.
 pub type CellDrawIndex = CellDrawIndexSection;
 
 #[derive(Debug)]
@@ -247,13 +276,13 @@ pub struct LevelWorld {
     pub vertices: Vec<WorldVertex>,
     pub indices: Vec<u32>,
     pub face_meta: Vec<FaceMeta>,
-    pub leaves: Vec<LeafData>,
-    pub nodes: Vec<NodeData>,
-    /// Single-leaf tree → `BspChild::Leaf(0)`.
-    pub root: BspChild,
+    /// Preferred spatial contract: runtime cells preserving compiler cell ids.
+    pub cells: Vec<CellData>,
+    /// Flat portal-index adjacency referenced by `cells[*].portal_ref_*`.
+    pub cell_portal_refs: Vec<u32>,
+    pub cell_locator_root: CellLocatorChild,
+    pub cell_locator_nodes: Vec<CellLocatorNodeData>,
     pub portals: Vec<PortalData>,
-    /// `leaf_portals[i]` = all portal indices touching leaf `i`.
-    pub leaf_portals: Vec<Vec<usize>>,
     pub has_portals: bool,
     pub texture_names: Vec<String>,
     /// Per-texture blake3 cache keys (PRL section 32), parallel to `texture_names`.
@@ -308,10 +337,8 @@ pub struct LevelWorld {
     pub fog_pixel_scale: u32,
     /// Seeds `App::current_gravity` so `world.getGravity()` sees the authored value before scripts run.
     pub initial_gravity: f32,
-    /// `masks[L]` has bit `i` set when fog volume `i` overlaps leaf `L`.
-    /// `None` = legacy PRL without section 31: `compute_fog_cell_mask` treats
-    /// `(Culled, None)` as all canonical slots active. Section 30 may be
-    /// present without section 31.
+    /// `masks[C]` has bit `i` set when fog volume `i` overlaps cell `C`.
+    /// `None` only when the map has no canonical fog volumes.
     pub fog_cell_masks: Option<Vec<u32>>,
     /// Baked navigation graph (PRL section 36). `None` for maps without a
     /// navmesh bake; the runtime nav query surface (`crate::nav::NavGraph`) is
@@ -321,1202 +348,158 @@ pub struct LevelWorld {
     #[allow(dead_code)]
     pub navmesh: Option<NavMeshSection>,
     /// Per-cell BVH-leaf draw index (PRL section 37), cross-validated against
-    /// the BVH leaf array and BSP leaf count. `None` when the section is absent
-    /// or any cross-section invariant fails — the camera cull then falls back to
-    /// the legacy tree-walk. A malformed index degrades the load (logs
-    /// once, continues) rather than failing it.
+    /// the BVH leaf array and loaded Cells section. `None` only for empty-BVH
+    /// maps, where the section must be omitted.
     pub cell_draw_index: Option<CellDrawIndex>,
 }
 
 impl LevelWorld {
-    /// On-plane position → front child. Empty tree → leaf 0.
-    pub fn find_leaf(&self, position: Vec3) -> usize {
-        let mut current = self.root;
+    /// Locate the runtime cell containing `position`.
+    ///
+    /// On-plane positions choose the front child, matching the temporary
+    /// compiler-side BSP traversal.
+    pub fn locate_cell(&self, position: Vec3) -> usize {
+        let mut current = self.cell_locator_root;
 
         loop {
             match current {
-                BspChild::Leaf(leaf_idx) => return leaf_idx,
-                BspChild::Node(node_idx) => {
-                    let node = &self.nodes[node_idx];
+                CellLocatorChild::Cell(cell_idx) => return cell_idx,
+                CellLocatorChild::Node(node_idx) => {
+                    let node = &self.cell_locator_nodes[node_idx];
                     let side = node.plane_normal.dot(position) - node.plane_distance;
-                    if side >= 0.0 {
-                        current = node.front;
-                    } else {
-                        current = node.back;
-                    }
+                    current = if side >= 0.0 { node.front } else { node.back };
                 }
             }
         }
+    }
+
+    /// Trace the same point-to-cell descent as [`Self::locate_cell`] for
+    /// diagnostics. Keeps UI code from duplicating locator traversal.
+    #[cfg(any(feature = "dev-tools", test))]
+    pub fn trace_locate_cell(&self, position: Vec3) -> CellLocatorTrace {
+        let mut current = self.cell_locator_root;
+        let mut steps = Vec::new();
+
+        loop {
+            match current {
+                CellLocatorChild::Cell(result_cell) => {
+                    return CellLocatorTrace {
+                        root: self.cell_locator_root,
+                        steps,
+                        result_cell,
+                    };
+                }
+                CellLocatorChild::Node(node_index) => {
+                    let node = &self.cell_locator_nodes[node_index];
+                    let signed_distance = node.plane_normal.dot(position) - node.plane_distance;
+                    let (selected_side, selected_child) = if signed_distance >= 0.0 {
+                        (CellLocatorSide::Front, node.front)
+                    } else {
+                        (CellLocatorSide::Back, node.back)
+                    };
+                    steps.push(CellLocatorTraceStep {
+                        node_index,
+                        signed_distance,
+                        selected_side,
+                        selected_child,
+                    });
+                    current = selected_child;
+                }
+            }
+        }
+    }
+
+    pub fn cell_count(&self) -> usize {
+        self.cells.len()
+    }
+
+    pub fn cell_portal_count(&self, cell_idx: usize) -> usize {
+        let Some((start, end)) = self.cell_portal_range(cell_idx) else {
+            return 0;
+        };
+        self.cell_portal_refs
+            .get(start..end)
+            .map_or(0, <[u32]>::len)
+    }
+
+    pub fn cell_portal_index(&self, cell_idx: usize, offset: usize) -> Option<usize> {
+        let (start, end) = self.cell_portal_range(cell_idx)?;
+        let idx = start.checked_add(offset)?;
+        if idx >= end {
+            return None;
+        }
+        self.cell_portal_refs
+            .get(idx)
+            .map(|&portal| portal as usize)
+    }
+
+    pub fn cell_is_solid(&self, cell_idx: usize) -> bool {
+        self.cells
+            .get(cell_idx)
+            .map(|cell| cell.is_solid)
+            .unwrap_or(false)
+    }
+
+    pub fn cell_face_count(&self, cell_idx: usize) -> u32 {
+        self.cells
+            .get(cell_idx)
+            .map(|cell| cell.face_count)
+            .unwrap_or(0)
+    }
+
+    pub fn cell_bounds(&self, cell_idx: usize) -> Option<(Vec3, Vec3)> {
+        self.cells
+            .get(cell_idx)
+            .map(|cell| (cell.bounds_min, cell.bounds_max))
     }
 
     pub fn spawn_position(&self) -> Vec3 {
         let mut mins = Vec3::splat(f32::MAX);
         let mut maxs = Vec3::splat(f32::MIN);
-        for leaf in &self.leaves {
-            if leaf.is_solid || leaf.face_count == 0 {
+        for cell in &self.cells {
+            if cell.is_solid || cell.face_count == 0 {
                 continue;
             }
-            mins = mins.min(leaf.bounds_min);
-            maxs = maxs.max(leaf.bounds_max);
+            mins = mins.min(cell.bounds_min);
+            maxs = maxs.max(cell.bounds_max);
         }
         (mins + maxs) * 0.5
     }
-}
 
-#[allow(dead_code)]
-pub fn face_leaf_indices(world: &LevelWorld) -> Vec<u32> {
-    let mut indices = vec![0u32; world.face_meta.len()];
-    for (leaf_idx, leaf) in world.leaves.iter().enumerate() {
-        let start = leaf.face_start as usize;
-        let count = leaf.face_count as usize;
-        for face_idx in start..start + count {
-            if let Some(slot) = indices.get_mut(face_idx) {
-                *slot = leaf_idx as u32;
-            }
-        }
+    fn cell_portal_range(&self, cell_idx: usize) -> Option<(usize, usize)> {
+        let cell = self.cells.get(cell_idx)?;
+        let start = cell.portal_ref_start as usize;
+        let count = cell.portal_ref_count as usize;
+        let end = start.checked_add(count)?;
+        Some((start, end))
     }
-    indices
-}
-
-// Positive → Node(v); negative → Leaf(-1 - v).
-fn decode_child(value: i32) -> BspChild {
-    if value >= 0 {
-        BspChild::Node(value as usize)
-    } else {
-        BspChild::Leaf((-1 - value) as usize)
-    }
-}
-
-fn convert_alpha_lights(section: AlphaLightsSection) -> Vec<MapLight> {
-    section
-        .lights
-        .into_iter()
-        .map(|r| {
-            let light_type = match r.light_type {
-                AlphaLightType::Point => LightType::Point,
-                AlphaLightType::Spot => LightType::Spot,
-                AlphaLightType::Directional => LightType::Directional,
-            };
-            let falloff_model = match r.falloff_model {
-                AlphaFalloffModel::Linear => FalloffModel::Linear,
-                AlphaFalloffModel::InverseDistance => FalloffModel::InverseDistance,
-                AlphaFalloffModel::InverseSquared => FalloffModel::InverseSquared,
-            };
-            let shadow_type = match r.shadow_type {
-                AlphaShadowType::StaticLightMap => ShadowType::StaticLightMap,
-                AlphaShadowType::Sdf => ShadowType::Sdf,
-            };
-            MapLight {
-                origin: r.origin,
-                light_type,
-                intensity: r.intensity,
-                color: r.color,
-                falloff_model,
-                falloff_range: r.falloff_range,
-                cone_angle_inner: r.cone_angle_inner,
-                cone_angle_outer: r.cone_angle_outer,
-                cone_direction: r.cone_direction,
-                is_dynamic: r.is_dynamic,
-                casts_entity_shadows: r.casts_entity_shadows,
-                animated_slot: None, // populated from ShVolume slot table later in load
-                tags: vec![],        // populated by LightTags section pass below
-                leaf_index: r.leaf_index,
-                shadow_type,
-            }
-        })
-        .collect()
-}
-
-fn convert_bvh_section(section: BvhSection) -> BvhTree {
-    let nodes = section
-        .nodes
-        .into_iter()
-        .map(|n| BvhNode {
-            aabb_min: n.aabb_min,
-            skip_index: n.skip_index,
-            aabb_max: n.aabb_max,
-            left_child_or_leaf_index: n.left_child_or_leaf_index,
-            flags: n.flags,
-        })
-        .collect();
-
-    let leaves = section
-        .leaves
-        .into_iter()
-        .map(|l| BvhLeaf {
-            aabb_min: l.aabb_min,
-            material_bucket_id: l.material_bucket_id,
-            aabb_max: l.aabb_max,
-            index_offset: l.index_offset,
-            index_count: l.index_count,
-            cell_id: l.cell_id,
-            chunk_range_start: l.chunk_range_start,
-            chunk_range_count: l.chunk_range_count,
-        })
-        .collect();
-
-    BvhTree {
-        nodes,
-        leaves,
-        root_node_index: section.root_node_index,
-    }
-}
-
-/// Expected DeltaShVolumes affinity grid dims for a given base SH grid:
-/// `ceil(base_dims / factor)` along each axis. The compiler bakes the affinity
-/// grid this way; the loader rejects any section whose stored dims disagree.
-/// Pure so the validation rule is unit-testable without a `.prl` file.
-pub(crate) fn expected_affinity_dims(base_dims: [u32; 3], factor: u8) -> [u32; 3] {
-    let f = factor as u32;
-    [
-        base_dims[0].div_ceil(f),
-        base_dims[1].div_ceil(f),
-        base_dims[2].div_ceil(f),
-    ]
-}
-
-/// Validate a loaded DeltaShVolumes section against the engine's invariants.
-/// `base` is the base OctahedralShVolume (id 34), or `None` if that section was
-/// absent. Pure so the reject paths are unit-testable.
-///
-/// Rejects (clear typed error, no panic):
-/// - `affinity_factor` != the engine's compiled-in `AFFINITY_FACTOR`,
-/// - base ShVolume absent while a delta section is present,
-/// - `affinity_dims` != `ceil(base_dims / affinity_factor)`,
-/// - delta tile geometry differs from the base atlas tile geometry.
-pub(crate) fn validate_delta_sh(
-    section: &DeltaShVolumesSection,
-    base: Option<&OctahedralShVolumeSection>,
-) -> Result<(), PrlLoadError> {
-    // affinity_factor is locked to the compose pass `@workgroup_size(4,4,4)`.
-    if section.affinity_factor != AFFINITY_FACTOR {
-        return Err(PrlLoadError::DeltaShAffinityFactorMismatch {
-            found: section.affinity_factor,
-            expected: AFFINITY_FACTOR,
-        });
-    }
-
-    // The base grid's dims derive the expected affinity dims; the compose pass
-    // cannot run without it.
-    let Some(base) = base else {
-        return Err(PrlLoadError::DeltaShMissingBaseVolume);
-    };
-    let base_dims = base.grid_dimensions;
-
-    let expected = expected_affinity_dims(base_dims, AFFINITY_FACTOR);
-    if section.affinity_dims != expected {
-        return Err(PrlLoadError::DeltaShAffinityDimsMismatch {
-            found: section.affinity_dims,
-            base_dims,
-            factor: AFFINITY_FACTOR as u32,
-            expected,
-        });
-    }
-
-    if section.tile_dimension != base.tile_dimension || section.tile_border != base.tile_border {
-        return Err(PrlLoadError::DeltaShTileGeometryMismatch {
-            found_dimension: section.tile_dimension,
-            found_border: section.tile_border,
-            base_dimension: base.tile_dimension,
-            base_border: base.tile_border,
-        });
-    }
-
-    Ok(())
-}
-
-/// Cross-validate a decoded `CellDrawIndex` section against the runtime BVH
-/// leaf array and the BSP leaf count. `from_bytes` already enforced structural
-/// CSR invariants (version, length, monotonic offsets, non-empty spans, no
-/// `leaf_start + leaf_count` overflow); this layer enforces every invariant that
-/// requires the *other* sections to be present.
-///
-/// Pure (no I/O, no logging) so each reject path is unit-testable without a
-/// `.prl`. Returns `Err(reason)` describing the first failing invariant; the
-/// loader logs the reason once under `[Loader]` and degrades the index to
-/// `None` (legacy tree-walk camera cull), never failing the whole load.
-///
-/// Rejected cases (cell id == BSP leaf index == BVH `cell_id`):
-/// - unsupported `version`,
-/// - `cell_count != leaves.len()` (BSP leaf count),
-/// - `cell_span_offset[0] != 0`, non-monotonic offsets, or
-///   `cell_span_offset[cell_count] != span_count`,
-/// - any span outside `[0, total_leaves)` (checked-add),
-/// - any span whose leaves don't all carry `BvhLeaf.cell_id == cell`,
-/// - any span covering a non-drawable leaf, or any span on a non-drawable cell,
-/// - any span crossing a material-bucket boundary,
-/// - spans out of ascending `leaf_start` order within a cell,
-/// - adjacent same-cell/same-bucket spans that form a non-maximal run,
-/// - overlapping / duplicate leaf coverage,
-/// - any drawable leaf missing from the index,
-/// - any non-drawable cell with a non-empty CSR row.
-///
-/// `version` is taken from the section header; `from_bytes` already rejects a
-/// non-matching version, but the explicit guard keeps the rule local and lets a
-/// future structurally-valid version bump be rejected here too.
-pub(crate) fn validate_cell_draw_index(
-    section: &CellDrawIndexSection,
-    bvh_leaves: &[BvhLeaf],
-    leaves: &[LeafData],
-    version: u32,
-) -> Result<(), String> {
-    if version != CELL_DRAW_INDEX_VERSION {
-        return Err(format!(
-            "unsupported version {version}, expected {CELL_DRAW_INDEX_VERSION}"
-        ));
-    }
-
-    let bsp_leaf_count = leaves.len();
-    let cell_count = section.cell_count as usize;
-    if cell_count != bsp_leaf_count {
-        return Err(format!(
-            "cell_count {cell_count} != BSP leaf count {bsp_leaf_count}"
-        ));
-    }
-
-    // Re-check the CSR offset invariants here too: a structurally-valid section
-    // for a *future* version could reach this layer, and the validity of every
-    // span lookup below depends on these. (from_bytes guards the current shape.)
-    let offsets = &section.cell_span_offset;
-    if offsets.len() != cell_count + 1 {
-        return Err(format!(
-            "offset table length {} != cell_count + 1 ({})",
-            offsets.len(),
-            cell_count + 1
-        ));
-    }
-    if offsets[0] != 0 {
-        return Err(format!("offset[0] {} != 0", offsets[0]));
-    }
-    for w in offsets.windows(2) {
-        if w[1] < w[0] {
-            return Err(format!("non-monotonic offsets: {} after {}", w[1], w[0]));
-        }
-    }
-    if offsets[cell_count] != section.span_count {
-        return Err(format!(
-            "offset[cell_count] {} != span_count {}",
-            offsets[cell_count], section.span_count
-        ));
-    }
-    if section.spans.len() != section.span_count as usize {
-        return Err(format!(
-            "span array length {} != span_count {}",
-            section.spans.len(),
-            section.span_count
-        ));
-    }
-
-    let total_leaves = bvh_leaves.len();
-
-    // A cell (BSP leaf) is drawable iff it is non-solid and carries faces. A BVH
-    // leaf is drawable iff it has indices AND its cell is drawable. Both halves
-    // join through `cell_id == BSP leaf index`.
-    let cell_is_drawable = |cell: usize| -> bool {
-        match leaves.get(cell) {
-            Some(l) => !l.is_solid && l.face_count > 0,
-            None => false,
-        }
-    };
-    let leaf_is_drawable = |leaf: &BvhLeaf| -> bool {
-        leaf.index_count > 0 && cell_is_drawable(leaf.cell_id as usize)
-    };
-
-    // Coverage map over every BVH leaf: which leaves a cell row claims.
-    let mut covered = vec![false; total_leaves];
-
-    for cell in 0..cell_count {
-        let start = offsets[cell] as usize;
-        let end = offsets[cell + 1] as usize;
-        let cell_spans = &section.spans[start..end];
-
-        let mut prev_end: Option<u32> = None; // exclusive end of previous span
-        let mut prev_bucket: Option<u32> = None;
-
-        for span in cell_spans {
-            let leaf_start = span.leaf_start;
-            let leaf_count = span.leaf_count;
-            // Structural guard re-asserted for non-current versions.
-            if leaf_count == 0 {
-                return Err(format!("cell {cell} has an empty span"));
-            }
-            let span_end = match leaf_start.checked_add(leaf_count) {
-                Some(e) => e,
-                None => {
-                    return Err(format!(
-                        "cell {cell} span leaf_start {leaf_start} + leaf_count {leaf_count} \
-                         overflows u32"
-                    ));
-                }
-            };
-            if span_end as usize > total_leaves {
-                return Err(format!(
-                    "cell {cell} span [{leaf_start}, {span_end}) exceeds total BVH leaves \
-                     {total_leaves}"
-                ));
-            }
-
-            // Ascending, non-overlapping `leaf_start` within the cell.
-            if let Some(pe) = prev_end {
-                if leaf_start < pe {
-                    return Err(format!(
-                        "cell {cell} spans out of order / overlapping: span starting \
-                         {leaf_start} follows a span ending {pe}"
-                    ));
-                }
-            }
-
-            let span_bucket = bvh_leaves[leaf_start as usize].material_bucket_id;
-
-            // Every leaf in the span: belongs to this cell, is drawable, shares
-            // one material bucket, and is not already covered.
-            for idx in leaf_start..span_end {
-                let leaf = &bvh_leaves[idx as usize];
-                if leaf.cell_id as usize != cell {
-                    return Err(format!(
-                        "cell {cell} span covers BVH leaf {idx} whose cell_id is {} \
-                         (wrong cell)",
-                        leaf.cell_id
-                    ));
-                }
-                if leaf.material_bucket_id != span_bucket {
-                    return Err(format!(
-                        "cell {cell} span [{leaf_start}, {span_end}) crosses material bucket \
-                         boundary at leaf {idx} (bucket {} != {span_bucket})",
-                        leaf.material_bucket_id
-                    ));
-                }
-                if !leaf_is_drawable(leaf) {
-                    return Err(format!(
-                        "cell {cell} span covers non-drawable BVH leaf {idx} \
-                         (index_count {} on a {} cell)",
-                        leaf.index_count,
-                        if cell_is_drawable(cell) {
-                            "drawable"
-                        } else {
-                            "non-drawable"
-                        }
-                    ));
-                }
-                if covered[idx as usize] {
-                    return Err(format!(
-                        "cell {cell} span re-covers already-claimed BVH leaf {idx} \
-                         (overlap / duplicate)"
-                    ));
-                }
-                covered[idx as usize] = true;
-            }
-
-            // Non-maximal run: an adjacent same-bucket span that abuts the
-            // previous one (prev_end == leaf_start) could have been one span.
-            if let (Some(pe), Some(pb)) = (prev_end, prev_bucket) {
-                if pe == leaf_start && pb == span_bucket {
-                    return Err(format!(
-                        "cell {cell} has a non-maximal run: spans abutting at leaf \
-                         {leaf_start} in bucket {span_bucket} should be one span"
-                    ));
-                }
-            }
-
-            prev_end = Some(span_end);
-            prev_bucket = Some(span_bucket);
-        }
-    }
-
-    // Cross-check both directions:
-    //   - every drawable BVH leaf must be covered by exactly one span,
-    //   - non-drawable cells must have an empty CSR row.
-    let mut cell_has_drawable_leaf = vec![false; cell_count];
-    for (idx, leaf) in bvh_leaves.iter().enumerate() {
-        if leaf_is_drawable(leaf) {
-            // `leaf_is_drawable` already required `cell_id` to name a drawable
-            // BSP leaf, so the cast is in range here.
-            cell_has_drawable_leaf[leaf.cell_id as usize] = true;
-            if !covered[idx] {
-                return Err(format!(
-                    "drawable BVH leaf {idx} (cell {}) is missing from the draw index",
-                    leaf.cell_id
-                ));
-            }
-        }
-    }
-
-    for cell in 0..cell_count {
-        let row_empty = offsets[cell] == offsets[cell + 1];
-        if !cell_has_drawable_leaf[cell] && !row_empty {
-            return Err(format!("non-drawable cell {cell} has a non-empty CSR row"));
-        }
-    }
-
-    Ok(())
-}
-
-/// Read an optional section's raw bytes by id, or `None` if the section is
-/// absent from the container.
-///
-/// Generic over `section_id` so any optional PRL section routes through the
-/// same read point. Wraps `prl_format::read_section_data`; the `FormatError`
-/// converts into `PrlLoadError` via the `#[from]` impl on the error enum.
-fn read_optional_section_data<R: std::io::Read + std::io::Seek>(
-    cursor: &mut R,
-    meta: &prl_format::ContainerMeta,
-    section_id: u32,
-) -> Result<Option<Vec<u8>>, PrlLoadError> {
-    Ok(prl_format::read_section_data(cursor, meta, section_id)?)
-}
-
-pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
-    let path_ref = Path::new(path);
-    if !path_ref.exists() {
-        return Err(PrlLoadError::FileNotFound(path.to_string()));
-    }
-
-    let file_data = std::fs::read(path_ref)?;
-    let mut cursor = std::io::Cursor::new(&file_data);
-
-    let meta = prl_format::read_container(&mut cursor)?;
-
-    let geom_data = prl_format::read_section_data(&mut cursor, &meta, SectionId::Geometry as u32)?
-        .ok_or(PrlLoadError::NoGeometry)?;
-    let geom = GeometrySection::from_bytes(&geom_data)?;
-
-    let texture_names_data =
-        read_optional_section_data(&mut cursor, &meta, SectionId::TextureNames as u32)?;
-    let texture_names_section = match texture_names_data {
-        Some(data) => Some(TextureNamesSection::from_bytes(&data)?),
-        None => None,
-    };
-    let texture_names: Vec<String> = texture_names_section.map(|s| s.names).unwrap_or_default();
-
-    // Required. Absence means the file is corrupt or was produced by a writer
-    // that omitted section 32; reject so the texture cache never silently
-    // degrades every surface to a placeholder on a bad file.
-    let texture_cache_keys_data =
-        prl_format::read_section_data(&mut cursor, &meta, SectionId::TextureCacheKeys as u32)?
-            .ok_or(PrlLoadError::NoTextureCacheKeys)?;
-    let texture_cache_keys = TextureCacheKeysSection::from_bytes(&texture_cache_keys_data)?;
-
-    let mut warned_prefixes = HashSet::new();
-    let vertices: Vec<WorldVertex> = geom
-        .vertices
-        .iter()
-        .map(|v| WorldVertex {
-            position: v.position,
-            base_uv: v.uv, // raw texel-space; normalized after texture dimensions are known
-            normal_oct: v.normal_oct,
-            tangent_packed: v.tangent_packed,
-            lightmap_uv: v.lightmap_uv,
-        })
-        .collect();
-
-    let face_meta: Vec<FaceMeta> = geom
-        .faces
-        .iter()
-        .map(|f| {
-            let (tex_idx, tex_name) = if f.texture_index == NO_TEXTURE {
-                (None, String::new())
-            } else {
-                let name = texture_names
-                    .get(f.texture_index as usize)
-                    .cloned()
-                    .unwrap_or_default();
-                (Some(f.texture_index), name)
-            };
-            let mat = material::derive_material(&tex_name, &mut warned_prefixes);
-            FaceMeta {
-                leaf_index: f.leaf_index,
-                texture_index: tex_idx,
-                texture_dimensions: (64, 64),
-                texture_name: tex_name,
-                material: mat,
-            }
-        })
-        .collect();
-
-    let indices = geom.indices;
-
-    log::info!(
-        "[PRL] Geometry: {} vertices, {} indices, {} faces, {} textures referenced",
-        vertices.len(),
-        indices.len(),
-        face_meta.len(),
-        texture_names.len()
-    );
-
-    // Required. Pre-BVH maps must be rebuilt with `prl-build`.
-    let bvh_data = prl_format::read_section_data(&mut cursor, &meta, SectionId::Bvh as u32)?
-        .ok_or(PrlLoadError::NoBvh)?;
-    let bvh_section = BvhSection::from_bytes(&bvh_data)?;
-    let bvh = convert_bvh_section(bvh_section);
-    log::info!(
-        "[PRL] BVH: {} nodes, {} leaves, root={}",
-        bvh.nodes.len(),
-        bvh.leaves.len(),
-        bvh.root_node_index,
-    );
-    debug_assert!(
-        bvh.leaves
-            .windows(2)
-            .all(|w| w[0].material_bucket_id <= w[1].material_bucket_id),
-        "BVH leaves must be sorted by material_bucket_id",
-    );
-    debug_assert!(
-        bvh.nodes.is_empty() || (bvh.root_node_index as usize) < bvh.nodes.len(),
-        "BVH root_node_index {} out of range for {} nodes",
-        bvh.root_node_index,
-        bvh.nodes.len(),
-    );
-    // Flag-bit sanity: every node's flags must be either clean (internal) or
-    // exactly the leaf bit — the compiler doesn't use the reserved bits yet.
-    debug_assert!(
-        bvh.nodes
-            .iter()
-            .all(|n| n.flags == 0 || n.flags == BVH_NODE_FLAG_LEAF),
-        "BVH nodes carry unexpected flag bits",
-    );
-
-    // Absent for single-leaf trees.
-    let nodes_section =
-        match prl_format::read_section_data(&mut cursor, &meta, SectionId::BspNodes as u32)? {
-            Some(data) => Some(BspNodesSection::from_bytes(&data)?),
-            None => None,
-        };
-
-    let leaves_section =
-        match prl_format::read_section_data(&mut cursor, &meta, SectionId::BspLeaves as u32)? {
-            Some(data) => Some(BspLeavesSection::from_bytes(&data)?),
-            None => None,
-        };
-
-    let portals_section =
-        match prl_format::read_section_data(&mut cursor, &meta, SectionId::Portals as u32)? {
-            Some(data) => Some(PortalsSection::from_bytes(&data)?),
-            None => None,
-        };
-
-    // Optional — older maps fall back to empty with a warning.
-    let mut lights: Vec<MapLight> = match prl_format::read_section_data(
-        &mut cursor,
-        &meta,
-        SectionId::AlphaLights as u32,
-    )? {
-        Some(data) => {
-            let section = AlphaLightsSection::from_bytes(&data)?;
-            let count = section.lights.len();
-            let converted = convert_alpha_lights(section);
-            log::info!("[PRL] AlphaLights: {count} lights loaded");
-            converted
-        }
-        None => {
-            log::warn!(
-                "[PRL] AlphaLights section missing — map predates the lighting foundation milestone; recompile with `prl-build` for lights to appear"
-            );
-            Vec::new()
-        }
-    };
-
-    // 1:1 with AlphaLights; count mismatch = format error. Absence = no tags.
-    if let Some(data) =
-        prl_format::read_section_data(&mut cursor, &meta, SectionId::LightTags as u32)?
-    {
-        let section = LightTagsSection::from_bytes(&data)?;
-        if section.tags.len() != lights.len() {
-            return Err(PrlLoadError::FormatError(prl_format::FormatError::Io(
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!(
-                        "LightTags count ({}) does not match AlphaLights count ({})",
-                        section.tags.len(),
-                        lights.len()
-                    ),
-                ),
-            )));
-        }
-        let mut tagged = 0usize;
-        for (light, tag_str) in lights.iter_mut().zip(section.tags) {
-            let tag_list: Vec<String> = tag_str.split_whitespace().map(|t| t.to_string()).collect();
-            if !tag_list.is_empty() {
-                tagged += 1;
-                light.tags = tag_list;
-            }
-        }
-        log::info!("[PRL] LightTags: {tagged} tagged lights");
-    }
-
-    // Optional — absent → all lights treated as infinite-bound.
-    let light_influences: Vec<crate::lighting::influence::LightInfluence> =
-        match prl_format::read_section_data(&mut cursor, &meta, SectionId::LightInfluence as u32)? {
-            Some(data) => {
-                let section = LightInfluenceSection::from_bytes(&data)?;
-                if section.records.len() != lights.len() {
-                    return Err(PrlLoadError::FormatError(prl_format::FormatError::Io(
-                        std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            format!(
-                                "LightInfluence record count ({}) does not match AlphaLights count ({})",
-                                section.records.len(),
-                                lights.len()
-                            ),
-                        ),
-                    )));
-                }
-                let converted: Vec<_> = section
-                    .records
-                    .into_iter()
-                    .map(|r| crate::lighting::influence::LightInfluence {
-                        center: glam::Vec3::from(r.center),
-                        radius: r.radius,
-                    })
-                    .collect();
-                log::info!("[PRL] LightInfluence: {} records loaded", converted.len());
-                converted
-            }
-            None => {
-                log::warn!("[Loader] LightInfluence section missing, no spatial culling this map");
-                Vec::new()
-            }
-        };
-
-    let sh_volume: Option<OctahedralShVolumeSection> = match prl_format::read_section_data(
-        &mut cursor,
-        &meta,
-        SectionId::OctahedralShVolume as u32,
-    )? {
-        Some(data) => {
-            let section = OctahedralShVolumeSection::from_bytes(&data)?;
-            log::info!(
-                "[PRL] OctahedralShVolume: {}×{}×{} grid ({} probes, {}×{} atlas, tile {} + border {}, {} tile(s)/row, {} animated layers)",
-                section.grid_dimensions[0],
-                section.grid_dimensions[1],
-                section.grid_dimensions[2],
-                section.probes.len(),
-                section.atlas_dimensions[0],
-                section.atlas_dimensions[1],
-                section.tile_dimension,
-                section.tile_border,
-                section.atlas_tiles_per_row,
-                section.animation_descriptors.len(),
-            );
-            Some(section)
-        }
-        None => return Err(PrlLoadError::NoOctahedralShVolume),
-    };
-
-    // Task 2c: populate `MapLight.animated_slot` from the SH-volume slot
-    // table. Resolution happens once here (load time), not per
-    // `setLightAnimation` call. Legacy PRLs lack the table — every slot stays
-    // `None` and the bridge takes the legacy `is_dynamic`-gated path.
-    if let Some(sh) = sh_volume.as_ref()
-        && !sh.slot_for_map_light.is_empty()
-    {
-        use postretro_level_format::sh_volume::ANIMATED_SLOT_NONE;
-        if sh.slot_for_map_light.len() != lights.len() {
-            log::warn!(
-                "[PRL] OctahedralShVolume slot_for_map_light count ({}) != AlphaLights count ({}); skipping animated-slot resolution",
-                sh.slot_for_map_light.len(),
-                lights.len(),
-            );
-        } else {
-            let mut resolved = 0usize;
-            for (light, &slot) in lights.iter_mut().zip(sh.slot_for_map_light.iter()) {
-                if slot != ANIMATED_SLOT_NONE {
-                    light.animated_slot = Some(slot);
-                    resolved += 1;
-                }
-            }
-            log::info!("[PRL] Resolved {resolved} map-light → animated-slot mapping(s)");
-        }
-    }
-
-    // Optional — absent → 1×1 white placeholder; bumped-Lambert degrades to flat white.
-    let lightmap: Option<LightmapSection> =
-        match prl_format::read_section_data(&mut cursor, &meta, SectionId::Lightmap as u32)? {
-            Some(data) => {
-                let section = LightmapSection::from_bytes(&data)?;
-                log::info!(
-                    "[PRL] Lightmap: {}x{} atlas ({} B irradiance, {} B direction)",
-                    section.width,
-                    section.height,
-                    section.irradiance.len(),
-                    section.direction.len(),
-                );
-                Some(section)
-            }
-            None => {
-                log::warn!(
-                    "[PRL] Lightmap section missing — static direct lighting disabled for this map"
-                );
-                None
-            }
-        };
-
-    // Optional — absent → no static-occluder SDF; runtime shadow pass disabled.
-    // An empty-geometry section (zero grid dims) is also a valid "no SDF"
-    // marker; the renderer collapses it to the same disabled state.
-    let sdf_atlas: Option<SdfAtlasSection> = match prl_format::read_section_data(
-        &mut cursor,
-        &meta,
-        SectionId::SdfAtlas as u32,
-    )? {
-        Some(data) => {
-            let section = SdfAtlasSection::from_bytes(&data)?;
-            log::info!(
-                "[PRL] SdfAtlas: grid={}×{}×{}, voxel_size={:.4}m, brick={} voxels, {} surface bricks",
-                section.grid_dims[0],
-                section.grid_dims[1],
-                section.grid_dims[2],
-                section.voxel_size_m,
-                section.brick_size_voxels,
-                section.surface_brick_count,
-            );
-            Some(section)
-        }
-        None => {
-            log::info!(
-                "[PRL] SdfAtlas section missing — runtime SDF shadow pass disabled (legacy PRL or no SDF bake)"
-            );
-            None
-        }
-    };
-
-    // Optional — absent → full spec-buffer scan fallback.
-    let chunk_light_list: Option<ChunkLightListSection> = match prl_format::read_section_data(
-        &mut cursor,
-        &meta,
-        SectionId::ChunkLightList as u32,
-    )? {
-        Some(data) => {
-            let section = ChunkLightListSection::from_bytes(&data)?;
-            log::info!(
-                "[PRL] ChunkLightList: {}×{}×{} grid, {} indices",
-                section.grid_dimensions[0],
-                section.grid_dimensions[1],
-                section.grid_dimensions[2],
-                section.light_indices.len(),
-            );
-            Some(section)
-        }
-        None => {
-            log::info!(
-                "[PRL] ChunkLightList section missing — specular path uses full-buffer fallback"
-            );
-            None
-        }
-    };
-
-    // Optional — cross-checked against weight-map chunk count at runtime.
-    let animated_light_chunks: Option<AnimatedLightChunksSection> =
-        match prl_format::read_section_data(
-            &mut cursor,
-            &meta,
-            SectionId::AnimatedLightChunks as u32,
-        )? {
-            Some(data) => {
-                let section = AnimatedLightChunksSection::from_bytes(&data)?;
-                log::info!(
-                    "[PRL] AnimatedLightChunks: {} chunks, {} flat indices",
-                    section.chunks.len(),
-                    section.light_indices.len(),
-                );
-                Some(section)
-            }
-            None => None,
-        };
-
-    // Optional — absent → 1×1 zero atlas on animated-contribution slot.
-    let animated_light_weight_maps: Option<AnimatedLightWeightMapsSection> =
-        match prl_format::read_section_data(
-            &mut cursor,
-            &meta,
-            SectionId::AnimatedLightWeightMaps as u32,
-        )? {
-            Some(data) => {
-                let section = AnimatedLightWeightMapsSection::from_bytes(&data)?;
-                log::info!(
-                    "[PRL] AnimatedLightWeightMaps: {} chunks, {} covered texels, {} weight entries",
-                    section.chunk_rects.len(),
-                    section.offset_counts.len(),
-                    section.texel_lights.len(),
-                );
-                Some(section)
-            }
-            None => None,
-        };
-
-    // Optional — absent → SH compose pass falls back to base→total copy.
-    let delta_sh_volumes: Option<DeltaShVolumesSection> = match prl_format::read_section_data(
-        &mut cursor,
-        &meta,
-        SectionId::DeltaShVolumes as u32,
-    )? {
-        Some(data) => {
-            let section = DeltaShVolumesSection::from_bytes(&data)?;
-
-            // Validation (mirrors the section-version reject path): a mismatched
-            // bake must fail the load with a clear error rather than feed the
-            // compose pass garbage. `sh_volume` (id 20) was loaded above.
-            validate_delta_sh(&section, sh_volume.as_ref())?;
-
-            log::info!(
-                "[PRL] DeltaShVolumes: {} animated light(s), affinity grid {}×{}×{} \
-                 ({} CSR entr(y/ies), {} delta subblock halves)",
-                section.animation_descriptor_indices.len(),
-                section.affinity_dims[0],
-                section.affinity_dims[1],
-                section.affinity_dims[2],
-                section.affinity_lights.len(),
-                section.delta_subblocks.len(),
-            );
-            Some(section)
-        }
-        None => None,
-    };
-
-    // Optional — absent for legacy v7 maps (no `SH_VOLUME_VERSION` bump) and for
-    // maps with no static lights. Dynamic objects fall back to indirect-only.
-    let direct_sh_volume: Option<DirectShVolumeSection> = match prl_format::read_section_data(
-        &mut cursor,
-        &meta,
-        SectionId::DirectShVolume as u32,
-    )? {
-        Some(data) => {
-            let section = DirectShVolumeSection::from_bytes(&data)?;
-            log::info!(
-                "[PRL] DirectShVolume: {}×{}×{} grid ({} probes, {}×{} atlas, tile {} + border {}, {} tile(s)/row, format {}, {} atlas byte(s))",
-                section.grid_dimensions[0],
-                section.grid_dimensions[1],
-                section.grid_dimensions[2],
-                section.total_probes(),
-                section.atlas_dimensions[0],
-                section.atlas_dimensions[1],
-                section.tile_dimension,
-                section.tile_border,
-                section.atlas_tiles_per_row,
-                section.irradiance_format,
-                section.atlas.len(),
-            );
-            Some(section)
-        }
-        None => None,
-    };
-
-    // Optional — absent when map has no `data_script` worldspawn KVP.
-    let data_script: Option<DataScriptSection> =
-        match prl_format::read_section_data(&mut cursor, &meta, SectionId::DataScript as u32)? {
-            Some(data) => {
-                let section = DataScriptSection::from_bytes(&data)?;
-                log::info!(
-                    "[PRL] DataScript: {} bytes from `{}`",
-                    section.compiled_bytes.len(),
-                    section.source_path,
-                );
-                Some(section)
-            }
-            None => None,
-        };
-
-    // Optional — absent when no non-light, non-worldspawn entities exist.
-    let map_entities: Vec<MapEntityRecord> =
-        match prl_format::read_section_data(&mut cursor, &meta, SectionId::MapEntity as u32)? {
-            Some(data) => {
-                let section = MapEntitySection::from_bytes(&data)?;
-                log::info!("[PRL] MapEntity: {} entities", section.entries.len());
-                section.entries
-            }
-            None => Vec::new(),
-        };
-
-    // Required — carries `initial_gravity` alongside fog volumes. Absence = pre-gravity PRL;
-    // rejected so the engine never silently falls back to a hardcoded default.
-    let (fog_volumes, fog_pixel_scale, initial_gravity): (Vec<FogVolumeRecord>, u32, f32) =
-        match prl_format::read_section_data(&mut cursor, &meta, SectionId::FogVolumes as u32)? {
-            Some(data) => {
-                let section = FogVolumesSection::from_bytes(&data)?;
-                log::info!(
-                    "[PRL] FogVolumes: {} volumes, pixel_scale={}, initial_gravity={}",
-                    section.volumes.len(),
-                    section.pixel_scale,
-                    section.initial_gravity,
-                );
-                (
-                    section.volumes,
-                    section.pixel_scale,
-                    section.initial_gravity,
-                )
-            }
-            None => return Err(PrlLoadError::NoWorldspawnGravity),
-        };
-
-    // Optional — absent for legacy PRLs or maps with no fog entities.
-    // None → `compute_fog_cell_mask` treats all canonical slots active.
-    let fog_cell_masks: Option<Vec<u32>> =
-        match prl_format::read_section_data(&mut cursor, &meta, SectionId::FogCellMasks as u32)? {
-            Some(data) => {
-                let section = FogCellMasksSection::from_bytes(&data)?;
-                log::info!("[PRL] FogCellMasks: {} cells", section.masks.len());
-                Some(section.masks)
-            }
-            None => None,
-        };
-
-    // Optional — absent → no runtime navigation (logged at info, mirroring the
-    // SdfAtlas precedent for the absent-section case). A malformed body warns
-    // and decodes to None (softer than SdfAtlas, which propagates with `?` and
-    // fails the load): nothing depends on the navmesh yet, so warn-and-continue
-    // is intentional rather than making a malformed navmesh unplayable.
-    let navmesh: Option<NavMeshSection> =
-        match prl_format::read_section_data(&mut cursor, &meta, SectionId::NavMesh as u32)? {
-            Some(data) => match NavMeshSection::from_bytes(&data) {
-                Ok(section) => {
-                    log::info!(
-                        "[PRL] NavMesh: {}×{} grid, cell_size={:.4}m, {} region(s), {} portal(s)",
-                        section.dim_x,
-                        section.dim_z,
-                        section.cell_size,
-                        section.regions.len(),
-                        section.portals.len(),
-                    );
-                    Some(section)
-                }
-                Err(err) => {
-                    log::warn!("[PRL] NavMesh section malformed, ignoring: {err}");
-                    None
-                }
-            },
-            None => {
-                log::info!("[PRL] NavMesh section missing — no runtime navigation for this map");
-                None
-            }
-        };
-
-    // Optional — absent → legacy tree-walk camera cull. Decoded here
-    // via the generic read seam; cross-validated against the BVH leaf array and
-    // BSP leaves only *after* `leaves` is built below. A malformed or
-    // cross-inconsistent index degrades to `None` (logged once under [Loader]),
-    // never failing the load. Hold the raw bytes for now.
-    let cell_draw_index_data =
-        read_optional_section_data(&mut cursor, &meta, SectionId::CellDrawIndex as u32)?;
-
-    let has_portals = portals_section.is_some();
-
-    let nodes: Vec<NodeData> = match &nodes_section {
-        Some(section) => section
-            .nodes
-            .iter()
-            .map(|n| NodeData {
-                plane_normal: Vec3::from(n.plane_normal),
-                plane_distance: n.plane_distance,
-                front: decode_child(n.front),
-                back: decode_child(n.back),
-            })
-            .collect(),
-        None => Vec::new(),
-    };
-
-    let leaves: Vec<LeafData> = match &leaves_section {
-        Some(leaf_sec) => leaf_sec
-            .leaves
-            .iter()
-            .map(|lr| LeafData {
-                bounds_min: Vec3::from(lr.bounds_min),
-                bounds_max: Vec3::from(lr.bounds_max),
-                face_start: lr.face_start,
-                face_count: lr.face_count,
-                is_solid: lr.is_solid != 0,
-            })
-            .collect(),
-        None => {
-            log::warn!("[PRL] No BSP leaves section — creating single-leaf fallback");
-            let mut mins = Vec3::splat(f32::MAX);
-            let mut maxs = Vec3::splat(f32::MIN);
-            for v in &vertices {
-                let pos = Vec3::from(v.position);
-                mins = mins.min(pos);
-                maxs = maxs.max(pos);
-            }
-            vec![LeafData {
-                bounds_min: mins,
-                bounds_max: maxs,
-                face_start: 0,
-                face_count: face_meta.len() as u32,
-                is_solid: false,
-            }]
-        }
-    };
-
-    // FogCellMasks is indexed by leaf id; a length mismatch means the masks
-    // can't be safely consulted. Drop them and let the renderer fall back to
-    // "all canonical slots active" (see `compute_fog_cell_mask`).
-    let fog_cell_masks = match fog_cell_masks {
-        Some(masks) if masks.len() != leaves.len() => {
-            log::warn!(
-                "[Loader] FogCellMasks length ({}) does not match leaves length ({}); ignoring masks (all slots active)",
-                masks.len(),
-                leaves.len(),
-            );
-            None
-        }
-        other => other,
-    };
-
-    // Decode + cross-validate the CellDrawIndex (id 37) now that `leaves` (BSP
-    // leaf flags) and `bvh` are both available. Any failure — malformed body,
-    // unsupported version, or a cross-section invariant — degrades to `None`
-    // (legacy tree-walk camera cull), logging once under [Loader]. The
-    // header version is read straight from the raw bytes so the explicit
-    // version guard is exercised even though `from_bytes` parses only v1.
-    let cell_draw_index: Option<CellDrawIndex> = match cell_draw_index_data {
-        Some(data) => {
-            let header_version = data
-                .get(0..4)
-                .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
-            match CellDrawIndexSection::from_bytes(&data) {
-                Ok(section) => {
-                    let version = header_version.unwrap_or(CELL_DRAW_INDEX_VERSION);
-                    match validate_cell_draw_index(&section, &bvh.leaves, &leaves, version) {
-                        Ok(()) => {
-                            log::info!(
-                                "[PRL] CellDrawIndex: {} cells, {} spans (candidate-cull index loaded)",
-                                section.cell_count,
-                                section.span_count,
-                            );
-                            Some(section)
-                        }
-                        Err(reason) => {
-                            log::warn!(
-                                "[Loader] CellDrawIndex section invalid ({reason}); ignoring index, camera cull falls back to legacy tree-walk"
-                            );
-                            None
-                        }
-                    }
-                }
-                Err(err) => {
-                    log::warn!(
-                        "[Loader] CellDrawIndex section malformed ({err}); ignoring index, camera cull falls back to legacy tree-walk"
-                    );
-                    None
-                }
-            }
-        }
-        None => None,
-    };
-
-    let root = if nodes.is_empty() {
-        BspChild::Leaf(0)
-    } else {
-        BspChild::Node(0)
-    };
-
-    let (portals, leaf_portals) = if let Some(ps) = &portals_section {
-        let portal_data: Vec<PortalData> = ps
-            .portals
-            .iter()
-            .map(|pr| {
-                let start = pr.vertex_start as usize;
-                let count = pr.vertex_count as usize;
-                let end = start + count;
-                if end > ps.vertices.len() {
-                    return Err(PrlLoadError::FormatError(prl_format::FormatError::Io(
-                        std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            format!(
-                                "portal vertex range {}..{} exceeds vertex count {}",
-                                start,
-                                end,
-                                ps.vertices.len()
-                            ),
-                        ),
-                    )));
-                }
-                let polygon: Vec<Vec3> = ps.vertices[start..end]
-                    .iter()
-                    .map(|v| Vec3::from(*v))
-                    .collect();
-                Ok(PortalData {
-                    polygon,
-                    front_leaf: pr.front_leaf as usize,
-                    back_leaf: pr.back_leaf as usize,
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-
-        let mut adjacency = vec![Vec::new(); leaves.len()];
-        for (portal_idx, portal) in portal_data.iter().enumerate() {
-            if portal.front_leaf < adjacency.len() {
-                adjacency[portal.front_leaf].push(portal_idx);
-            }
-            if portal.back_leaf < adjacency.len() {
-                adjacency[portal.back_leaf].push(portal_idx);
-            }
-        }
-
-        (portal_data, adjacency)
-    } else {
-        (Vec::new(), vec![Vec::new(); leaves.len()])
-    };
-
-    log::info!(
-        "[PRL] Loaded: {} vertices, {} indices ({} triangles), {} faces, {} nodes, {} leaves, bvh=[{} nodes, {} leaves], portals={}, textures={}",
-        vertices.len(),
-        indices.len(),
-        indices.len() / 3,
-        face_meta.len(),
-        nodes.len(),
-        leaves.len(),
-        bvh.nodes.len(),
-        bvh.leaves.len(),
-        portals.len(),
-        texture_names.len(),
-    );
-
-    Ok(LevelWorld {
-        vertices,
-        indices,
-        face_meta,
-        leaves,
-        nodes,
-        root,
-        portals,
-        leaf_portals,
-        has_portals,
-        texture_names,
-        texture_cache_keys,
-        bvh,
-        lights,
-        light_influences,
-        sh_volume,
-        lightmap,
-        // Task 2a will read this from the lightmap section's mode marker.
-        // Until then every PRL parses as Shadowed — `main`-equivalent so
-        // Task 5's forward pass skips the SDF visibility multiply.
-        lightmap_mode: LightmapMode::default(),
-        sdf_atlas,
-        chunk_light_list,
-        animated_light_chunks,
-        animated_light_weight_maps,
-        delta_sh_volumes,
-        direct_sh_volume,
-        data_script,
-        map_entities,
-        fog_volumes,
-        fog_pixel_scale,
-        initial_gravity,
-        fog_cell_masks,
-        navmesh,
-        cell_draw_index,
-    })
 }
 
 #[cfg(test)]
 mod tests {
+    use super::prl_loader::{expected_affinity_dims, validate_cell_draw_index, validate_delta_sh};
     use super::*;
-    use postretro_level_format::bsp::{
-        BspLeafRecord, BspLeavesSection, BspNodeRecord, BspNodesSection,
+    use crate::geometry::BvhLeaf;
+    use postretro_level_format::SectionId;
+    use postretro_level_format::alpha_lights::{
+        ALPHA_LIGHT_LEAF_UNASSIGNED, AlphaFalloffModel, AlphaLightType, AlphaLightsSection,
+        AlphaShadowType,
     };
     use postretro_level_format::bvh::{
-        BvhLeaf as FormatBvhLeaf, BvhNode as FormatBvhNode, BvhSection,
+        BVH_NODE_FLAG_LEAF, BvhLeaf as FormatBvhLeaf, BvhNode as FormatBvhNode, BvhSection,
     };
+    use postretro_level_format::cell_locator::{
+        CellLocatorChild as FormatCellLocatorChild, CellLocatorNodeRecord, CellLocatorSection,
+    };
+    use postretro_level_format::cells::{
+        CELL_FLAG_DRAWABLE, CELL_FLAG_EXTERIOR, CELL_FLAG_SOLID, CellRecord, CellsSection,
+    };
+    use postretro_level_format::fog_volumes::{
+        FogVolumeRecord, FogVolumesSection, MAX_FOG_VOLUMES,
+    };
+    use postretro_level_format::geometry::NO_TEXTURE;
     use postretro_level_format::geometry::{FaceMeta as FormatFaceMeta, GeometrySection, Vertex};
+    use postretro_level_format::portals::{PortalRecord, PortalsSection};
 
     use postretro_level_format::delta_sh_volumes::{
         AFFINITY_FACTOR, DEFAULT_DELTA_PROBE_F16_STRIDE, DeltaShVolumesSection, PROBES_PER_CELL,
@@ -1660,19 +643,23 @@ mod tests {
         }
     }
 
-    fn simple_leaf(
+    fn simple_cell(
         bounds_min: Vec3,
         bounds_max: Vec3,
         face_start: u32,
         face_count: u32,
         is_solid: bool,
-    ) -> LeafData {
-        LeafData {
+    ) -> CellData {
+        CellData {
             bounds_min,
             bounds_max,
             face_start,
             face_count,
+            portal_ref_start: 0,
+            portal_ref_count: 0,
             is_solid,
+            is_exterior: false,
+            is_drawable: !is_solid && face_count > 0,
         }
     }
 
@@ -1681,21 +668,15 @@ mod tests {
             vertices: vec![],
             indices: vec![],
             face_meta: vec![],
-            nodes: vec![NodeData {
-                plane_normal: Vec3::X,
-                plane_distance: 0.0,
-                front: BspChild::Leaf(0),
-                back: BspChild::Leaf(1),
-            }],
-            leaves: vec![
-                simple_leaf(
+            cells: vec![
+                simple_cell(
                     Vec3::new(0.0, -100.0, -100.0),
                     Vec3::new(100.0, 100.0, 100.0),
                     0,
                     1,
                     false,
                 ),
-                simple_leaf(
+                simple_cell(
                     Vec3::new(-100.0, -100.0, -100.0),
                     Vec3::new(0.0, 100.0, 100.0),
                     1,
@@ -1703,9 +684,15 @@ mod tests {
                     false,
                 ),
             ],
-            root: BspChild::Node(0),
+            cell_portal_refs: vec![],
+            cell_locator_root: CellLocatorChild::Node(0),
+            cell_locator_nodes: vec![CellLocatorNodeData {
+                plane_normal: Vec3::X,
+                plane_distance: 0.0,
+                front: CellLocatorChild::Cell(0),
+                back: CellLocatorChild::Cell(1),
+            }],
             portals: vec![],
-            leaf_portals: vec![vec![], vec![]],
             has_portals: false,
             texture_names: vec![],
             texture_cache_keys: TextureCacheKeysSection { keys: vec![] },
@@ -1733,40 +720,66 @@ mod tests {
     }
 
     #[test]
-    fn find_leaf_front_side() {
+    fn locate_cell_front_side() {
         let world = two_leaf_world();
-        assert_eq!(world.find_leaf(Vec3::new(10.0, 0.0, 0.0)), 0);
+        assert_eq!(world.locate_cell(Vec3::new(10.0, 0.0, 0.0)), 0);
     }
 
     #[test]
-    fn find_leaf_back_side() {
+    fn locate_cell_back_side() {
         let world = two_leaf_world();
-        assert_eq!(world.find_leaf(Vec3::new(-10.0, 0.0, 0.0)), 1);
+        assert_eq!(world.locate_cell(Vec3::new(-10.0, 0.0, 0.0)), 1);
     }
 
     #[test]
-    fn find_leaf_on_plane_goes_front() {
+    fn locate_cell_on_plane_goes_front() {
         let world = two_leaf_world();
-        assert_eq!(world.find_leaf(Vec3::ZERO), 0);
+        assert_eq!(world.locate_cell(Vec3::ZERO), 0);
     }
 
     #[test]
-    fn find_leaf_single_leaf_tree() {
+    fn locate_cell_returns_expected_probe_cells() {
+        let world = two_leaf_world();
+        for (probe, expected) in [
+            (Vec3::new(10.0, 0.0, 0.0), 0),
+            (Vec3::new(-10.0, 0.0, 0.0), 1),
+            (Vec3::ZERO, 0),
+        ] {
+            assert_eq!(world.locate_cell(probe), expected);
+        }
+    }
+
+    #[test]
+    fn trace_locate_cell_reports_descent_path_and_result() {
+        let world = two_leaf_world();
+        let trace = world.trace_locate_cell(Vec3::new(-10.0, 0.0, 0.0));
+
+        assert_eq!(trace.root, CellLocatorChild::Node(0));
+        assert_eq!(trace.result_cell, 1);
+        assert_eq!(trace.steps.len(), 1);
+        assert_eq!(trace.steps[0].node_index, 0);
+        assert!(trace.steps[0].signed_distance < 0.0);
+        assert_eq!(trace.steps[0].selected_side, CellLocatorSide::Back);
+        assert_eq!(trace.steps[0].selected_child, CellLocatorChild::Cell(1));
+    }
+
+    #[test]
+    fn locate_cell_single_cell_tree() {
         let world = LevelWorld {
             vertices: vec![],
             indices: vec![],
             face_meta: vec![],
-            nodes: vec![],
-            leaves: vec![simple_leaf(
+            cells: vec![simple_cell(
                 Vec3::splat(-100.0),
                 Vec3::splat(100.0),
                 0,
                 0,
                 false,
             )],
-            root: BspChild::Leaf(0),
+            cell_portal_refs: vec![],
+            cell_locator_root: CellLocatorChild::Cell(0),
+            cell_locator_nodes: vec![],
             portals: vec![],
-            leaf_portals: vec![vec![]],
             has_portals: false,
             texture_names: vec![],
             texture_cache_keys: TextureCacheKeysSection { keys: vec![] },
@@ -1791,36 +804,23 @@ mod tests {
             navmesh: None,
             cell_draw_index: None,
         };
-        assert_eq!(world.find_leaf(Vec3::new(50.0, 50.0, 50.0)), 0);
+        assert_eq!(world.locate_cell(Vec3::new(50.0, 50.0, 50.0)), 0);
     }
 
     #[test]
-    fn decode_child_positive_is_node() {
-        assert_eq!(decode_child(0), BspChild::Node(0));
-        assert_eq!(decode_child(5), BspChild::Node(5));
-    }
-
-    #[test]
-    fn decode_child_negative_is_leaf() {
-        assert_eq!(decode_child(-1), BspChild::Leaf(0));
-        assert_eq!(decode_child(-6), BspChild::Leaf(5));
-        assert_eq!(decode_child(-101), BspChild::Leaf(100));
-    }
-
-    #[test]
-    fn spawn_position_centers_non_solid_leaves() {
+    fn spawn_position_centers_non_solid_cells() {
         let world = LevelWorld {
             vertices: vec![],
             indices: vec![],
             face_meta: vec![simple_face_meta()],
-            nodes: vec![],
-            leaves: vec![
-                simple_leaf(Vec3::ZERO, Vec3::splat(10.0), 0, 1, false),
-                simple_leaf(Vec3::ZERO, Vec3::ZERO, 0, 0, true),
+            cells: vec![
+                simple_cell(Vec3::ZERO, Vec3::splat(10.0), 0, 1, false),
+                simple_cell(Vec3::ZERO, Vec3::ZERO, 0, 0, true),
             ],
-            root: BspChild::Leaf(0),
+            cell_portal_refs: vec![],
+            cell_locator_root: CellLocatorChild::Cell(0),
+            cell_locator_nodes: vec![],
             portals: vec![],
-            leaf_portals: vec![vec![], vec![]],
             has_portals: false,
             texture_names: vec![],
             texture_cache_keys: TextureCacheKeysSection { keys: vec![] },
@@ -1848,49 +848,6 @@ mod tests {
 
         let spawn = world.spawn_position();
         assert!((spawn - Vec3::splat(5.0)).length() < 0.01);
-    }
-
-    #[test]
-    fn face_leaf_indices_maps_faces_to_leaves() {
-        let world = LevelWorld {
-            vertices: vec![],
-            indices: vec![],
-            face_meta: vec![simple_face_meta(), simple_face_meta(), simple_face_meta()],
-            nodes: vec![],
-            leaves: vec![
-                simple_leaf(Vec3::ZERO, Vec3::ZERO, 0, 2, false),
-                simple_leaf(Vec3::ZERO, Vec3::ZERO, 2, 1, false),
-            ],
-            root: BspChild::Leaf(0),
-            portals: vec![],
-            leaf_portals: vec![vec![], vec![]],
-            has_portals: false,
-            texture_names: vec![],
-            texture_cache_keys: TextureCacheKeysSection { keys: vec![] },
-            bvh: empty_bvh(),
-            lights: vec![],
-            light_influences: vec![],
-            sh_volume: None,
-            lightmap: None,
-            lightmap_mode: LightmapMode::Shadowed,
-            sdf_atlas: None,
-            chunk_light_list: None,
-            animated_light_chunks: None,
-            animated_light_weight_maps: None,
-            delta_sh_volumes: None,
-            direct_sh_volume: None,
-            data_script: None,
-            map_entities: Vec::new(),
-            fog_volumes: Vec::new(),
-            fog_pixel_scale: 4,
-            initial_gravity: -9.81,
-            fog_cell_masks: None,
-            navmesh: None,
-            cell_draw_index: None,
-        };
-
-        let indices = face_leaf_indices(&world);
-        assert_eq!(indices, vec![0, 0, 1]);
     }
 
     #[test]
@@ -1933,6 +890,14 @@ mod tests {
                     texture_index: NO_TEXTURE,
                 },
             ],
+        }
+    }
+
+    fn empty_geometry() -> GeometrySection {
+        GeometrySection {
+            vertices: Vec::new(),
+            indices: Vec::new(),
+            faces: Vec::new(),
         }
     }
 
@@ -2007,11 +972,101 @@ mod tests {
     ) -> std::path::PathBuf {
         if !sections
             .iter()
+            .any(|section| section.section_id == SectionId::Cells as u32)
+        {
+            sections.push(default_cells_blob());
+        }
+        if !sections
+            .iter()
+            .any(|section| section.section_id == SectionId::CellLocator as u32)
+        {
+            sections.push(default_cell_locator_blob());
+        }
+        let fixture_bvh_has_leaves = sections
+            .iter()
+            .find(|section| section.section_id == SectionId::Bvh as u32)
+            .and_then(|section| BvhSection::from_bytes(&section.data).ok())
+            .is_some_and(|section| !section.leaves.is_empty());
+        if fixture_bvh_has_leaves
+            && !sections
+                .iter()
+                .any(|section| section.section_id == SectionId::CellDrawIndex as u32)
+        {
+            sections.push(default_cell_draw_index_blob());
+        }
+        if !sections
+            .iter()
             .any(|section| section.section_id == SectionId::OctahedralShVolume as u32)
         {
             sections.push(default_octahedral_sh_volume_blob());
         }
         write_prl_fixture_raw(sections, name)
+    }
+
+    fn default_cells_blob() -> prl_format::SectionBlob {
+        let section = CellsSection {
+            cells: vec![
+                CellRecord {
+                    bounds_min: [0.0, 0.0, 0.0],
+                    bounds_max: [2.0, 2.0, 2.0],
+                    flags: CELL_FLAG_DRAWABLE,
+                    face_start: 0,
+                    face_count: 1,
+                    portal_ref_start: 0,
+                    portal_ref_count: 0,
+                },
+                CellRecord {
+                    bounds_min: [9.0, 0.0, 0.0],
+                    bounds_max: [12.0, 2.0, 2.0],
+                    flags: CELL_FLAG_DRAWABLE,
+                    face_start: 1,
+                    face_count: 1,
+                    portal_ref_start: 0,
+                    portal_ref_count: 0,
+                },
+            ],
+            portal_refs: Vec::new(),
+        };
+        cells_blob(section)
+    }
+
+    fn cells_blob(section: CellsSection) -> prl_format::SectionBlob {
+        prl_format::SectionBlob {
+            section_id: SectionId::Cells as u32,
+            version: 1,
+            data: section.to_bytes(),
+        }
+    }
+
+    fn default_cell_locator_blob() -> prl_format::SectionBlob {
+        prl_format::SectionBlob {
+            section_id: SectionId::CellLocator as u32,
+            version: 1,
+            data: two_leaf_locator_section(5.0).to_bytes(),
+        }
+    }
+
+    fn default_cell_draw_index_blob() -> prl_format::SectionBlob {
+        let section = postretro_level_format::cell_draw_index::CellDrawIndexSection {
+            cell_count: 2,
+            span_count: 2,
+            cell_span_offset: vec![0, 1, 2],
+            spans: vec![
+                postretro_level_format::cell_draw_index::Span {
+                    leaf_start: 0,
+                    leaf_count: 1,
+                },
+                postretro_level_format::cell_draw_index::Span {
+                    leaf_start: 1,
+                    leaf_count: 1,
+                },
+            ],
+        };
+        prl_format::SectionBlob {
+            section_id: SectionId::CellDrawIndex as u32,
+            version: 1,
+            data: section.to_bytes(),
+        }
     }
 
     fn default_octahedral_sh_volume_blob() -> prl_format::SectionBlob {
@@ -2044,6 +1099,19 @@ mod tests {
         }
     }
 
+    fn fog_volumes_blob_with_count(count: usize) -> prl_format::SectionBlob {
+        prl_format::SectionBlob {
+            section_id: SectionId::FogVolumes as u32,
+            version: 1,
+            data: FogVolumesSection {
+                pixel_scale: 4,
+                initial_gravity: -9.81,
+                volumes: vec![FogVolumeRecord::default(); count],
+            }
+            .to_bytes(),
+        }
+    }
+
     fn default_texture_cache_keys_blob() -> prl_format::SectionBlob {
         prl_format::SectionBlob {
             section_id: SectionId::TextureCacheKeys as u32,
@@ -2052,37 +1120,92 @@ mod tests {
         }
     }
 
+    fn two_leaf_locator_section(plane_distance: f32) -> CellLocatorSection {
+        CellLocatorSection {
+            root: FormatCellLocatorChild::Node(0),
+            nodes: vec![CellLocatorNodeRecord {
+                plane_normal: [1.0, 0.0, 0.0],
+                plane_distance,
+                front: FormatCellLocatorChild::Cell(0),
+                back: FormatCellLocatorChild::Cell(1),
+            }],
+        }
+    }
+
     #[test]
-    fn load_prl_round_trip_with_bsp_sections() {
+    fn load_prl_round_trip_with_cells_and_locator() {
         let geom = sample_geometry();
         let bvh = sample_bvh_section();
 
-        let nodes = BspNodesSection {
-            nodes: vec![BspNodeRecord {
-                plane_normal: [1.0, 0.0, 0.0],
-                plane_distance: 5.0,
-                front: -1,
-                back: -2,
-            }],
-        };
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: geom.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: bvh.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::CellLocator as u32,
+                version: 1,
+                data: two_leaf_locator_section(5.0).to_bytes(),
+            },
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
 
-        let leaves = BspLeavesSection {
-            leaves: vec![
-                BspLeafRecord {
-                    face_start: 0,
-                    face_count: 1,
+        let tmp = write_prl_fixture(sections, "postretro_test_bvh_round_trip.prl");
+        let world = load_prl(tmp.to_str().unwrap()).unwrap();
+
+        assert_eq!(world.vertices.len(), 6);
+        assert_eq!(world.indices.len(), 6);
+        assert_eq!(world.face_meta.len(), 2);
+        assert_eq!(world.bvh.nodes.len(), 3);
+        assert_eq!(world.bvh.leaves.len(), 2);
+        assert_eq!(world.cells.len(), 2);
+        assert_eq!(world.cell_locator_root, CellLocatorChild::Node(0));
+        assert_eq!(world.cell_locator_nodes.len(), 1);
+        for (probe, expected) in [
+            (Vec3::new(10.0, 0.0, 0.0), 0),
+            (Vec3::new(0.0, 0.0, 0.0), 1),
+            (Vec3::new(5.0, 0.0, 0.0), 0),
+        ] {
+            assert_eq!(world.locate_cell(probe), expected);
+        }
+
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_decodes_cells_section_into_level_world() {
+        let geom = sample_geometry();
+        let bvh = sample_bvh_section();
+
+        let cells = CellsSection {
+            cells: vec![
+                CellRecord {
                     bounds_min: [0.0, 0.0, 0.0],
                     bounds_max: [2.0, 2.0, 2.0],
-                    is_solid: 0,
-                },
-                BspLeafRecord {
-                    face_start: 1,
+                    flags: CELL_FLAG_DRAWABLE,
+                    face_start: 0,
                     face_count: 1,
+                    portal_ref_start: 0,
+                    portal_ref_count: 2,
+                },
+                CellRecord {
                     bounds_min: [9.0, 0.0, 0.0],
                     bounds_max: [12.0, 2.0, 2.0],
-                    is_solid: 0,
+                    flags: CELL_FLAG_DRAWABLE,
+                    face_start: 1,
+                    face_count: 1,
+                    portal_ref_start: 0,
+                    portal_ref_count: 0,
                 },
             ],
+            portal_refs: vec![4, 7],
         };
 
         let sections = vec![
@@ -2097,38 +1220,717 @@ mod tests {
                 data: bvh.to_bytes(),
             },
             prl_format::SectionBlob {
-                section_id: SectionId::BspNodes as u32,
+                section_id: SectionId::Cells as u32,
                 version: 1,
-                data: nodes.to_bytes(),
-            },
-            prl_format::SectionBlob {
-                section_id: SectionId::BspLeaves as u32,
-                version: 1,
-                data: leaves.to_bytes(),
+                data: cells.to_bytes(),
             },
             default_texture_cache_keys_blob(),
             default_fog_volumes_blob(),
         ];
 
-        let tmp = write_prl_fixture(sections, "postretro_test_bvh_round_trip.prl");
-        let world = load_prl(tmp.to_str().unwrap()).unwrap();
+        let tmp = write_prl_fixture(sections, "postretro_test_cells_load.prl");
+        let world = load_prl(tmp.to_str().unwrap()).expect("should load");
 
-        assert_eq!(world.vertices.len(), 6);
-        assert_eq!(world.indices.len(), 6);
-        assert_eq!(world.face_meta.len(), 2);
-        assert_eq!(world.nodes.len(), 1);
-        assert_eq!(world.leaves.len(), 2);
-        assert_eq!(world.bvh.nodes.len(), 3);
-        assert_eq!(world.bvh.leaves.len(), 2);
-        assert_eq!(world.root, BspChild::Node(0));
-        assert_eq!(world.find_leaf(Vec3::new(10.0, 0.0, 0.0)), 0);
-        assert_eq!(world.find_leaf(Vec3::new(0.0, 0.0, 0.0)), 1);
+        assert_eq!(world.cells.len(), 2);
+        assert_eq!(world.cell_portal_refs, vec![4, 7]);
+        assert!(world.cells[0].is_drawable);
+        assert!(!world.cells[0].is_solid);
+        assert_eq!(world.cells[0].portal_ref_count, 2);
+        assert!(!world.cells[1].is_solid);
+        assert!(world.cells[1].is_drawable);
 
         std::fs::remove_file(&tmp).ok();
     }
 
     #[test]
-    fn load_prl_rejects_missing_bvh_section() {
+    fn load_prl_malformed_portals_use_no_portals_fallback() {
+        let portals = PortalsSection {
+            vertices: Vec::new(),
+            portals: vec![PortalRecord {
+                vertex_start: 0,
+                vertex_count: 3,
+                front_leaf: 0,
+                back_leaf: 1,
+            }],
+        };
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: sample_geometry().to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: sample_bvh_section().to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Portals as u32,
+                version: 1,
+                data: portals.to_bytes(),
+            },
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+
+        let tmp = write_prl_fixture(sections, "postretro_test_malformed_portals_fallback.prl");
+        let world = load_prl(tmp.to_str().unwrap()).expect("malformed portals should fall back");
+        assert!(!world.has_portals);
+        assert!(world.portals.is_empty());
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_portals_trailing_bytes_use_no_portals_fallback() {
+        let mut portals = PortalsSection {
+            vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            portals: vec![PortalRecord {
+                vertex_start: 0,
+                vertex_count: 3,
+                front_leaf: 0,
+                back_leaf: 1,
+            }],
+        }
+        .to_bytes();
+        portals.extend_from_slice(&[0xab, 0xcd]);
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: sample_geometry().to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: sample_bvh_section().to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Portals as u32,
+                version: 1,
+                data: portals,
+            },
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+
+        let tmp = write_prl_fixture(sections, "postretro_test_portals_trailing_fallback.prl");
+        let world = load_prl(tmp.to_str().unwrap()).expect("malformed portals should fall back");
+        assert!(!world.has_portals);
+        assert!(world.portals.is_empty());
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_degenerate_two_vertex_portal_uses_no_portals_fallback() {
+        let portals = PortalsSection {
+            vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+            portals: vec![PortalRecord {
+                vertex_start: 0,
+                vertex_count: 2,
+                front_leaf: 0,
+                back_leaf: 1,
+            }],
+        };
+        let cells = CellsSection {
+            cells: vec![
+                CellRecord {
+                    bounds_min: [0.0, 0.0, 0.0],
+                    bounds_max: [2.0, 2.0, 2.0],
+                    flags: CELL_FLAG_DRAWABLE,
+                    face_start: 0,
+                    face_count: 1,
+                    portal_ref_start: 0,
+                    portal_ref_count: 1,
+                },
+                CellRecord {
+                    bounds_min: [9.0, 0.0, 0.0],
+                    bounds_max: [12.0, 2.0, 2.0],
+                    flags: CELL_FLAG_DRAWABLE,
+                    face_start: 1,
+                    face_count: 1,
+                    portal_ref_start: 1,
+                    portal_ref_count: 1,
+                },
+            ],
+            portal_refs: vec![0, 0],
+        };
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: sample_geometry().to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: sample_bvh_section().to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Cells as u32,
+                version: 1,
+                data: cells.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Portals as u32,
+                version: 1,
+                data: portals.to_bytes(),
+            },
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+
+        let tmp = write_prl_fixture(sections, "postretro_test_two_vertex_portal_fallback.prl");
+        let world = load_prl(tmp.to_str().unwrap()).expect("degenerate portal should fall back");
+        assert!(!world.has_portals);
+        assert!(world.portals.is_empty());
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_collapsed_portal_polygon_uses_no_portals_fallback() {
+        let portals = PortalsSection {
+            vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]],
+            portals: vec![PortalRecord {
+                vertex_start: 0,
+                vertex_count: 3,
+                front_leaf: 0,
+                back_leaf: 1,
+            }],
+        };
+        let cells = CellsSection {
+            cells: vec![
+                CellRecord {
+                    bounds_min: [0.0, 0.0, 0.0],
+                    bounds_max: [2.0, 2.0, 2.0],
+                    flags: CELL_FLAG_DRAWABLE,
+                    face_start: 0,
+                    face_count: 1,
+                    portal_ref_start: 0,
+                    portal_ref_count: 1,
+                },
+                CellRecord {
+                    bounds_min: [9.0, 0.0, 0.0],
+                    bounds_max: [12.0, 2.0, 2.0],
+                    flags: CELL_FLAG_DRAWABLE,
+                    face_start: 1,
+                    face_count: 1,
+                    portal_ref_start: 1,
+                    portal_ref_count: 1,
+                },
+            ],
+            portal_refs: vec![0, 0],
+        };
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: sample_geometry().to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: sample_bvh_section().to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Cells as u32,
+                version: 1,
+                data: cells.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Portals as u32,
+                version: 1,
+                data: portals.to_bytes(),
+            },
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+
+        let tmp = write_prl_fixture(sections, "postretro_test_collapsed_portal_fallback.prl");
+        let world = load_prl(tmp.to_str().unwrap()).expect("collapsed portal should fall back");
+        assert!(!world.has_portals);
+        assert!(world.portals.is_empty());
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_rejects_same_endpoint_portal_when_graph_is_usable() {
+        let portals = PortalsSection {
+            vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            portals: vec![PortalRecord {
+                vertex_start: 0,
+                vertex_count: 3,
+                front_leaf: 0,
+                back_leaf: 0,
+            }],
+        };
+        let cells = CellsSection {
+            cells: vec![
+                CellRecord {
+                    bounds_min: [0.0, 0.0, 0.0],
+                    bounds_max: [2.0, 2.0, 2.0],
+                    flags: CELL_FLAG_DRAWABLE,
+                    face_start: 0,
+                    face_count: 1,
+                    portal_ref_start: 0,
+                    portal_ref_count: 1,
+                },
+                CellRecord {
+                    bounds_min: [9.0, 0.0, 0.0],
+                    bounds_max: [12.0, 2.0, 2.0],
+                    flags: CELL_FLAG_DRAWABLE,
+                    face_start: 1,
+                    face_count: 1,
+                    portal_ref_start: 0,
+                    portal_ref_count: 0,
+                },
+            ],
+            portal_refs: vec![0],
+        };
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: sample_geometry().to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: sample_bvh_section().to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Cells as u32,
+                version: 1,
+                data: cells.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Portals as u32,
+                version: 1,
+                data: portals.to_bytes(),
+            },
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+
+        let tmp = write_prl_fixture(sections, "postretro_test_same_endpoint_portal.prl");
+        let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PrlLoadError::SectionValidation {
+                    section: "Portals",
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_rejects_portal_adjacency_mismatch_when_graph_is_usable() {
+        let portals = PortalsSection {
+            vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            portals: vec![PortalRecord {
+                vertex_start: 0,
+                vertex_count: 3,
+                front_leaf: 0,
+                back_leaf: 1,
+            }],
+        };
+        let cells = CellsSection {
+            cells: vec![
+                CellRecord {
+                    bounds_min: [0.0, 0.0, 0.0],
+                    bounds_max: [2.0, 2.0, 2.0],
+                    flags: CELL_FLAG_DRAWABLE,
+                    face_start: 0,
+                    face_count: 1,
+                    portal_ref_start: 0,
+                    portal_ref_count: 1,
+                },
+                CellRecord {
+                    bounds_min: [9.0, 0.0, 0.0],
+                    bounds_max: [12.0, 2.0, 2.0],
+                    flags: CELL_FLAG_DRAWABLE,
+                    face_start: 1,
+                    face_count: 1,
+                    portal_ref_start: 0,
+                    portal_ref_count: 0,
+                },
+            ],
+            portal_refs: vec![0],
+        };
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: sample_geometry().to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: sample_bvh_section().to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Cells as u32,
+                version: 1,
+                data: cells.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Portals as u32,
+                version: 1,
+                data: portals.to_bytes(),
+            },
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+
+        let tmp = write_prl_fixture(sections, "postretro_test_portal_adjacency_mismatch.prl");
+        let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PrlLoadError::SectionValidation {
+                    section: "Portals",
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_rejects_missing_geometry_section_as_stale_format() {
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: sample_bvh_section().to_bytes(),
+            },
+            default_cell_draw_index_blob(),
+            default_texture_cache_keys_blob(),
+        ];
+        let tmp = write_prl_fixture(sections, "postretro_test_missing_geometry.prl");
+        let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PrlLoadError::StaleFormatMissingSection {
+                    section: "Geometry",
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_rejects_malformed_geometry_section_as_section_validation() {
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: vec![0],
+            },
+            default_texture_cache_keys_blob(),
+        ];
+        let tmp = write_prl_fixture(sections, "postretro_test_malformed_geometry.prl");
+        let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PrlLoadError::SectionValidation {
+                    section: "Geometry",
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_rejects_geometry_trailing_bytes_as_section_validation() {
+        let mut geometry = sample_geometry().to_bytes();
+        geometry.extend_from_slice(&[0xab, 0xcd]);
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: geometry,
+            },
+            default_texture_cache_keys_blob(),
+        ];
+        let tmp = write_prl_fixture(sections, "postretro_test_geometry_trailing.prl");
+        let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PrlLoadError::SectionValidation {
+                    section: "Geometry",
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_rejects_geometry_index_past_vertex_count() {
+        let mut geometry = sample_geometry();
+        geometry.indices[2] = 999;
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: geometry.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: sample_bvh_section().to_bytes(),
+            },
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+        let tmp = write_prl_fixture(sections, "postretro_test_geometry_bad_index.prl");
+        let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PrlLoadError::SectionValidation {
+                    section: "Geometry",
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_rejects_face_meta_cell_id_out_of_range() {
+        let mut geometry = sample_geometry();
+        geometry.faces[1].leaf_index = 99;
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: geometry.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: sample_bvh_section().to_bytes(),
+            },
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+        let tmp = write_prl_fixture(sections, "postretro_test_face_meta_cell_oob.prl");
+        let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PrlLoadError::SectionValidation {
+                    section: "Geometry",
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
+        assert!(err.to_string().contains("leaf_index"), "got {err}");
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_rejects_cell_face_range_with_wrong_face_owner() {
+        let mut geometry = sample_geometry();
+        geometry.faces[1].leaf_index = 0;
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: geometry.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: sample_bvh_section().to_bytes(),
+            },
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+        let tmp = write_prl_fixture(sections, "postretro_test_cell_face_wrong_owner.prl");
+        let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PrlLoadError::SectionValidation {
+                    section: "Cells",
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
+        assert!(
+            err.to_string().contains("face range includes face"),
+            "got {err}"
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_rejects_face_missing_from_owning_cell_range() {
+        let cells = CellsSection {
+            cells: vec![
+                CellRecord {
+                    bounds_min: [0.0, 0.0, 0.0],
+                    bounds_max: [2.0, 2.0, 2.0],
+                    flags: CELL_FLAG_DRAWABLE,
+                    face_start: 0,
+                    face_count: 1,
+                    portal_ref_start: 0,
+                    portal_ref_count: 0,
+                },
+                CellRecord {
+                    bounds_min: [9.0, 0.0, 0.0],
+                    bounds_max: [12.0, 2.0, 2.0],
+                    flags: 0,
+                    face_start: 0,
+                    face_count: 0,
+                    portal_ref_start: 0,
+                    portal_ref_count: 0,
+                },
+            ],
+            portal_refs: Vec::new(),
+        };
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: sample_geometry().to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: sample_bvh_section().to_bytes(),
+            },
+            cells_blob(cells),
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+        let tmp = write_prl_fixture(sections, "postretro_test_face_missing_from_owner.prl");
+        let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PrlLoadError::SectionValidation {
+                    section: "Cells",
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
+        assert!(err.to_string().contains("owning cell range"), "got {err}");
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_rejects_duplicate_cell_face_ownership() {
+        let mut geometry = sample_geometry();
+        geometry.faces[1].leaf_index = 0;
+        let cells = CellsSection {
+            cells: vec![
+                CellRecord {
+                    bounds_min: [0.0, 0.0, 0.0],
+                    bounds_max: [2.0, 2.0, 2.0],
+                    flags: CELL_FLAG_DRAWABLE,
+                    face_start: 0,
+                    face_count: 2,
+                    portal_ref_start: 0,
+                    portal_ref_count: 0,
+                },
+                CellRecord {
+                    bounds_min: [9.0, 0.0, 0.0],
+                    bounds_max: [12.0, 2.0, 2.0],
+                    flags: CELL_FLAG_DRAWABLE,
+                    face_start: 1,
+                    face_count: 1,
+                    portal_ref_start: 0,
+                    portal_ref_count: 0,
+                },
+            ],
+            portal_refs: Vec::new(),
+        };
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: geometry.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: sample_bvh_section().to_bytes(),
+            },
+            cells_blob(cells),
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+        let tmp = write_prl_fixture(sections, "postretro_test_duplicate_face_owner.prl");
+        let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PrlLoadError::SectionValidation {
+                    section: "Cells",
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
+        assert!(err.to_string().contains("claimed by both"), "got {err}");
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_rejects_non_finite_geometry_position() {
+        let mut geometry = sample_geometry();
+        geometry.vertices[0].position[1] = f32::INFINITY;
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: geometry.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: sample_bvh_section().to_bytes(),
+            },
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+        let tmp = write_prl_fixture(sections, "postretro_test_geometry_non_finite.prl");
+        let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PrlLoadError::SectionValidation {
+                    section: "Geometry",
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_rejects_missing_bvh_section_as_stale_format() {
         let geom = sample_geometry();
         let sections = vec![
             prl_format::SectionBlob {
@@ -2140,7 +1942,699 @@ mod tests {
         ];
         let tmp = write_prl_fixture(sections, "postretro_test_missing_bvh.prl");
         let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
-        assert!(matches!(err, PrlLoadError::NoBvh), "got {err:?}");
+        assert!(
+            matches!(
+                err,
+                PrlLoadError::StaleFormatMissingSection { section: "Bvh", .. }
+            ),
+            "got {err:?}"
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_rejects_malformed_bvh_section_as_section_validation() {
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: sample_geometry().to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: vec![0],
+            },
+            default_texture_cache_keys_blob(),
+        ];
+        let tmp = write_prl_fixture(sections, "postretro_test_malformed_bvh.prl");
+        let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
+        assert!(
+            matches!(err, PrlLoadError::SectionValidation { section: "Bvh", .. }),
+            "got {err:?}"
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_rejects_bvh_non_finite_aabb() {
+        let mut bvh = sample_bvh_section();
+        bvh.nodes[0].aabb_max[2] = f32::NAN;
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: sample_geometry().to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: bvh.to_bytes(),
+            },
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+        let tmp = write_prl_fixture(sections, "postretro_test_bvh_non_finite_aabb.prl");
+        let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
+        assert!(
+            matches!(err, PrlLoadError::SectionValidation { section: "Bvh", .. }),
+            "got {err:?}"
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_rejects_bvh_inverted_leaf_aabb() {
+        let mut bvh = sample_bvh_section();
+        bvh.leaves[1].aabb_min[0] = 20.0;
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: sample_geometry().to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: bvh.to_bytes(),
+            },
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+        let tmp = write_prl_fixture(sections, "postretro_test_bvh_inverted_aabb.prl");
+        let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
+        assert!(
+            matches!(err, PrlLoadError::SectionValidation { section: "Bvh", .. }),
+            "got {err:?}"
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_rejects_bvh_nonzero_node_padding() {
+        let mut bvh = sample_bvh_section().to_bytes();
+        let node_0_padding_offset = postretro_level_format::bvh::HEADER_SIZE + 36;
+        bvh[node_0_padding_offset..node_0_padding_offset + 4].copy_from_slice(&1u32.to_le_bytes());
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: sample_geometry().to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: bvh,
+            },
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+        let tmp = write_prl_fixture(sections, "postretro_test_bvh_node_padding.prl");
+        let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
+        assert!(
+            matches!(err, PrlLoadError::SectionValidation { section: "Bvh", .. }),
+            "got {err:?}"
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_rejects_bvh_skip_index_at_current_node_as_section_validation() {
+        let mut bvh = sample_bvh_section().to_bytes();
+        let node_1_skip_offset = postretro_level_format::bvh::HEADER_SIZE
+            + postretro_level_format::bvh::NODE_STRIDE
+            + 12;
+        bvh[node_1_skip_offset..node_1_skip_offset + 4].copy_from_slice(&1u32.to_le_bytes());
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: sample_geometry().to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: bvh,
+            },
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+        let tmp = write_prl_fixture(sections, "postretro_test_bvh_bad_skip.prl");
+        let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
+        assert!(
+            matches!(err, PrlLoadError::SectionValidation { section: "Bvh", .. }),
+            "got {err:?}"
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_rejects_bvh_leaves_without_nodes_as_section_validation() {
+        let mut bvh = Vec::new();
+        bvh.extend_from_slice(&0u32.to_le_bytes());
+        bvh.extend_from_slice(&1u32.to_le_bytes());
+        bvh.extend_from_slice(&0u32.to_le_bytes());
+        bvh.extend_from_slice(&0u32.to_le_bytes());
+        bvh.extend_from_slice(&[0u8; postretro_level_format::bvh::LEAF_STRIDE]);
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: sample_geometry().to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: bvh,
+            },
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+        let tmp = write_prl_fixture(sections, "postretro_test_bvh_leaves_without_nodes.prl");
+        let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
+        assert!(
+            matches!(err, PrlLoadError::SectionValidation { section: "Bvh", .. }),
+            "got {err:?}"
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_rejects_bvh_leaf_index_range_past_geometry_indices() {
+        let mut bvh = sample_bvh_section();
+        bvh.leaves[0].index_offset = 5;
+        bvh.leaves[0].index_count = 3;
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: sample_geometry().to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: bvh.to_bytes(),
+            },
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+        let tmp = write_prl_fixture(sections, "postretro_test_bvh_leaf_index_oob.prl");
+        let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
+        assert!(
+            matches!(err, PrlLoadError::SectionValidation { section: "Bvh", .. }),
+            "got {err:?}"
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_rejects_bvh_leaf_index_offset_inside_triangle() {
+        let mut bvh = sample_bvh_section();
+        bvh.leaves[0].index_offset = 1;
+        bvh.leaves[0].index_count = 3;
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: sample_geometry().to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: bvh.to_bytes(),
+            },
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+        let tmp = write_prl_fixture(
+            sections,
+            "postretro_test_bvh_leaf_index_offset_mid_triangle.prl",
+        );
+        let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
+        assert!(
+            matches!(err, PrlLoadError::SectionValidation { section: "Bvh", .. }),
+            "got {err:?}"
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_rejects_bvh_leaf_partial_triangle_index_count() {
+        let mut bvh = sample_bvh_section();
+        bvh.leaves[0].index_offset = 0;
+        bvh.leaves[0].index_count = 2;
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: sample_geometry().to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: bvh.to_bytes(),
+            },
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+        let tmp = write_prl_fixture(
+            sections,
+            "postretro_test_bvh_leaf_partial_triangle_count.prl",
+        );
+        let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
+        assert!(
+            matches!(err, PrlLoadError::SectionValidation { section: "Bvh", .. }),
+            "got {err:?}"
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_rejects_bvh_leaf_index_range_overflow() {
+        let mut bvh = sample_bvh_section();
+        bvh.leaves[0].index_offset = u32::MAX;
+        bvh.leaves[0].index_count = 3;
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: sample_geometry().to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: bvh.to_bytes(),
+            },
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+        let tmp = write_prl_fixture(sections, "postretro_test_bvh_leaf_index_overflow.prl");
+        let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
+        assert!(
+            matches!(err, PrlLoadError::SectionValidation { section: "Bvh", .. }),
+            "got {err:?}"
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_rejects_bvh_leaf_node_reference_out_of_range() {
+        let mut bvh = sample_bvh_section();
+        bvh.nodes[1].left_child_or_leaf_index = 99;
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: sample_geometry().to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: bvh.to_bytes(),
+            },
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+        let tmp = write_prl_fixture(sections, "postretro_test_bvh_leaf_node_ref.prl");
+        let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
+        assert!(
+            matches!(err, PrlLoadError::SectionValidation { section: "Bvh", .. }),
+            "got {err:?}"
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_rejects_duplicate_bvh_leaf_node_reference() {
+        let mut bvh = sample_bvh_section();
+        bvh.nodes[2].left_child_or_leaf_index = 0;
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: sample_geometry().to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: bvh.to_bytes(),
+            },
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+        let tmp = write_prl_fixture(sections, "postretro_test_bvh_duplicate_leaf_node_ref.prl");
+        let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
+        assert!(
+            matches!(err, PrlLoadError::SectionValidation { section: "Bvh", .. }),
+            "got {err:?}"
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_rejects_bvh_node_unknown_flags() {
+        let mut bvh = sample_bvh_section();
+        bvh.nodes[0].flags = 0x2;
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: sample_geometry().to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: bvh.to_bytes(),
+            },
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+        let tmp = write_prl_fixture(sections, "postretro_test_bvh_node_flags.prl");
+        let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
+        assert!(
+            matches!(err, PrlLoadError::SectionValidation { section: "Bvh", .. }),
+            "got {err:?}"
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_rejects_unsorted_bvh_material_buckets() {
+        let mut bvh = sample_bvh_section();
+        bvh.leaves[0].material_bucket_id = 1;
+        bvh.leaves[1].material_bucket_id = 0;
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: sample_geometry().to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: bvh.to_bytes(),
+            },
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+        let tmp = write_prl_fixture(sections, "postretro_test_bvh_unsorted_buckets.prl");
+        let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
+        assert!(
+            matches!(err, PrlLoadError::SectionValidation { section: "Bvh", .. }),
+            "got {err:?}"
+        );
+        assert!(err.to_string().contains("material_bucket_id"), "got {err}");
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_rejects_missing_cells_section_as_stale_format() {
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: sample_geometry().to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: sample_bvh_section().to_bytes(),
+            },
+            default_cell_locator_blob(),
+            default_cell_draw_index_blob(),
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+            default_octahedral_sh_volume_blob(),
+        ];
+        let tmp = write_prl_fixture_raw(sections, "postretro_test_missing_cells.prl");
+        let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PrlLoadError::StaleFormatMissingSection {
+                    section: "Cells",
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_rejects_malformed_cells_section_as_section_validation() {
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: sample_geometry().to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: sample_bvh_section().to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Cells as u32,
+                version: 1,
+                data: vec![0],
+            },
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+            default_octahedral_sh_volume_blob(),
+        ];
+        let tmp = write_prl_fixture(sections, "postretro_test_malformed_cells.prl");
+        let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PrlLoadError::SectionValidation {
+                    section: "Cells",
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_rejects_missing_cell_locator_section_as_stale_format() {
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: sample_geometry().to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: sample_bvh_section().to_bytes(),
+            },
+            default_cells_blob(),
+            default_cell_draw_index_blob(),
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+            default_octahedral_sh_volume_blob(),
+        ];
+        let tmp = write_prl_fixture_raw(sections, "postretro_test_missing_cell_locator.prl");
+        let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PrlLoadError::StaleFormatMissingSection {
+                    section: "CellLocator",
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_rejects_missing_cell_locator_before_missing_octahedral_sh_volume() {
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: sample_geometry().to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: sample_bvh_section().to_bytes(),
+            },
+            default_cells_blob(),
+            default_cell_draw_index_blob(),
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+        let tmp = write_prl_fixture_raw(
+            sections,
+            "postretro_test_missing_cell_locator_before_sh.prl",
+        );
+        let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PrlLoadError::StaleFormatMissingSection {
+                    section: "CellLocator",
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_rejects_malformed_cell_locator_section_as_section_validation() {
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: sample_geometry().to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: sample_bvh_section().to_bytes(),
+            },
+            default_cells_blob(),
+            prl_format::SectionBlob {
+                section_id: SectionId::CellLocator as u32,
+                version: 1,
+                data: vec![0],
+            },
+            default_cell_draw_index_blob(),
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+            default_octahedral_sh_volume_blob(),
+        ];
+        let tmp = write_prl_fixture_raw(sections, "postretro_test_malformed_cell_locator.prl");
+        let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PrlLoadError::SectionValidation {
+                    section: "CellLocator",
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_rejects_malformed_cell_locator_before_missing_octahedral_sh_volume() {
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: sample_geometry().to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: sample_bvh_section().to_bytes(),
+            },
+            default_cells_blob(),
+            prl_format::SectionBlob {
+                section_id: SectionId::CellLocator as u32,
+                version: 1,
+                data: vec![0],
+            },
+            default_cell_draw_index_blob(),
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+        let tmp = write_prl_fixture_raw(
+            sections,
+            "postretro_test_malformed_cell_locator_before_sh.prl",
+        );
+        let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PrlLoadError::SectionValidation {
+                    section: "CellLocator",
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_rejects_modern_prl_with_legacy_bsp_nodes_as_ambiguous() {
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: sample_geometry().to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: sample_bvh_section().to_bytes(),
+            },
+            default_cells_blob(),
+            default_cell_locator_blob(),
+            default_cell_draw_index_blob(),
+            prl_format::SectionBlob {
+                section_id: SectionId::BspNodes as u32,
+                version: 1,
+                data: vec![0],
+            },
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+            default_octahedral_sh_volume_blob(),
+        ];
+        let tmp = write_prl_fixture_raw(sections, "postretro_test_ambiguous_bsp_nodes.prl");
+        let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
+        assert!(
+            matches!(err, PrlLoadError::AmbiguousRuntimeBspSections { .. }),
+            "got {err:?}"
+        );
+        assert!(err.to_string().contains("BspNodes"));
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_rejects_modern_prl_with_legacy_bsp_leaves_as_ambiguous() {
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: sample_geometry().to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: sample_bvh_section().to_bytes(),
+            },
+            default_cells_blob(),
+            default_cell_locator_blob(),
+            default_cell_draw_index_blob(),
+            prl_format::SectionBlob {
+                section_id: SectionId::BspLeaves as u32,
+                version: 1,
+                data: vec![0],
+            },
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+            default_octahedral_sh_volume_blob(),
+        ];
+        let tmp = write_prl_fixture_raw(sections, "postretro_test_ambiguous_bsp_leaves.prl");
+        let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
+        assert!(
+            matches!(err, PrlLoadError::AmbiguousRuntimeBspSections { .. }),
+            "got {err:?}"
+        );
+        assert!(err.to_string().contains("BspLeaves"));
         std::fs::remove_file(&tmp).ok();
     }
 
@@ -2159,6 +2653,9 @@ mod tests {
                 version: 1,
                 data: bvh.to_bytes(),
             },
+            default_cells_blob(),
+            default_cell_locator_blob(),
+            default_cell_draw_index_blob(),
             default_texture_cache_keys_blob(),
             default_fog_volumes_blob(),
         ];
@@ -2234,7 +2731,7 @@ mod tests {
                     cone_direction: [0.0, -0.70710677, -0.70710677],
                     is_dynamic: false,
                     casts_entity_shadows: false,
-                    leaf_index: 2,
+                    leaf_index: ALPHA_LIGHT_LEAF_UNASSIGNED,
                     shadow_type: AlphaShadowType::StaticLightMap,
                 },
             ],
@@ -2277,18 +2774,245 @@ mod tests {
         assert_eq!(world.lights[0].intensity, 300.0);
         assert_eq!(world.lights[0].falloff_model, FalloffModel::InverseSquared);
         assert!((world.lights[0].falloff_range - 50.0).abs() < 1e-5);
-        assert_eq!(world.lights[0].leaf_index, 0);
+        assert_eq!(world.lights[0].cell_index, 0);
 
         assert_eq!(world.lights[1].light_type, LightType::Spot);
         assert_eq!(world.lights[1].falloff_model, FalloffModel::Linear);
         assert!((world.lights[1].cone_angle_inner - std::f32::consts::FRAC_PI_6).abs() < 1e-4);
         assert!((world.lights[1].cone_angle_outer - std::f32::consts::FRAC_PI_4).abs() < 1e-4);
         assert_eq!(world.lights[1].cone_direction, [0.0, -1.0, 0.0]);
-        assert_eq!(world.lights[1].leaf_index, 1);
+        assert_eq!(world.lights[1].cell_index, 1);
 
         assert_eq!(world.lights[2].light_type, LightType::Directional);
-        assert_eq!(world.lights[2].leaf_index, 2);
+        assert_eq!(world.lights[2].cell_index, ALPHA_LIGHT_LEAF_UNASSIGNED);
 
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    fn empty_bvh_blob() -> prl_format::SectionBlob {
+        prl_format::SectionBlob {
+            section_id: SectionId::Bvh as u32,
+            version: 1,
+            data: BvhSection {
+                nodes: Vec::new(),
+                leaves: Vec::new(),
+                root_node_index: 0,
+            }
+            .to_bytes(),
+        }
+    }
+
+    fn cells_with_second_flag(second_flags: u32) -> CellsSection {
+        CellsSection {
+            cells: vec![
+                CellRecord {
+                    bounds_min: [0.0, 0.0, 0.0],
+                    bounds_max: [2.0, 2.0, 2.0],
+                    flags: 0,
+                    face_start: 0,
+                    face_count: 0,
+                    portal_ref_start: 0,
+                    portal_ref_count: 0,
+                },
+                CellRecord {
+                    bounds_min: [9.0, 0.0, 0.0],
+                    bounds_max: [12.0, 2.0, 2.0],
+                    flags: second_flags,
+                    face_start: 0,
+                    face_count: 0,
+                    portal_ref_start: 0,
+                    portal_ref_count: 0,
+                },
+            ],
+            portal_refs: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn load_prl_allows_light_in_exterior_cell() {
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: empty_geometry().to_bytes(),
+            },
+            empty_bvh_blob(),
+            prl_format::SectionBlob {
+                section_id: SectionId::Cells as u32,
+                version: 1,
+                data: cells_with_second_flag(CELL_FLAG_EXTERIOR).to_bytes(),
+            },
+            default_cell_locator_blob(),
+            prl_format::SectionBlob {
+                section_id: SectionId::AlphaLights as u32,
+                version: 1,
+                data: sample_alpha_lights().to_bytes(),
+            },
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+
+        let tmp = write_prl_fixture(sections, "postretro_test_exterior_light.prl");
+        let world = load_prl(tmp.to_str().unwrap()).expect("exterior light placement is valid");
+        assert_eq!(world.lights[1].cell_index, 1);
+        assert!(world.cells[1].is_exterior);
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_rejects_light_in_solid_cell() {
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: empty_geometry().to_bytes(),
+            },
+            empty_bvh_blob(),
+            prl_format::SectionBlob {
+                section_id: SectionId::Cells as u32,
+                version: 1,
+                data: cells_with_second_flag(CELL_FLAG_SOLID).to_bytes(),
+            },
+            default_cell_locator_blob(),
+            prl_format::SectionBlob {
+                section_id: SectionId::AlphaLights as u32,
+                version: 1,
+                data: sample_alpha_lights().to_bytes(),
+            },
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+
+        let tmp = write_prl_fixture(sections, "postretro_test_solid_light.prl");
+        let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PrlLoadError::SectionValidation {
+                    section: "AlphaLights",
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_rejects_zero_leaf_bvh_with_drawable_geometry() {
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: sample_geometry().to_bytes(),
+            },
+            empty_bvh_blob(),
+            default_cells_blob(),
+            default_cell_locator_blob(),
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+
+        let tmp = write_prl_fixture(sections, "postretro_test_empty_bvh_with_geometry.prl");
+        let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
+        assert!(
+            matches!(err, PrlLoadError::SectionValidation { section: "Bvh", .. }),
+            "got {err:?}"
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_rejects_bvh_leaf_without_indices_for_drawable_cell() {
+        let geometry = GeometrySection {
+            vertices: vec![sample_vertex(0.0), sample_vertex(1.0), sample_vertex(1.5)],
+            indices: vec![0, 1, 2],
+            faces: vec![FormatFaceMeta {
+                leaf_index: 0,
+                texture_index: NO_TEXTURE,
+            }],
+        };
+        let bvh = BvhSection {
+            nodes: vec![FormatBvhNode {
+                aabb_min: [0.0, 0.0, 0.0],
+                skip_index: 1,
+                aabb_max: [2.0, 2.0, 2.0],
+                left_child_or_leaf_index: 0,
+                flags: BVH_NODE_FLAG_LEAF,
+                _padding: 0,
+            }],
+            leaves: vec![FormatBvhLeaf {
+                aabb_min: [0.0, 0.0, 0.0],
+                material_bucket_id: 0,
+                aabb_max: [2.0, 2.0, 2.0],
+                index_offset: 0,
+                index_count: 0,
+                cell_id: 0,
+                chunk_range_start: 0,
+                chunk_range_count: 0,
+            }],
+            root_node_index: 0,
+        };
+        let cells = CellsSection {
+            cells: vec![CellRecord {
+                bounds_min: [0.0, 0.0, 0.0],
+                bounds_max: [2.0, 2.0, 2.0],
+                flags: CELL_FLAG_DRAWABLE,
+                face_start: 0,
+                face_count: 1,
+                portal_ref_start: 0,
+                portal_ref_count: 0,
+            }],
+            portal_refs: Vec::new(),
+        };
+        let locator = CellLocatorSection {
+            root: FormatCellLocatorChild::Cell(0),
+            nodes: Vec::new(),
+        };
+        let cell_draw_index = CellDrawIndexSection {
+            cell_count: 1,
+            span_count: 0,
+            cell_span_offset: vec![0, 0],
+            spans: Vec::new(),
+        };
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: geometry.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: bvh.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Cells as u32,
+                version: 1,
+                data: cells.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::CellLocator as u32,
+                version: 1,
+                data: locator.to_bytes(),
+            },
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+            default_octahedral_sh_volume_blob(),
+            cell_draw_index_blob(&cell_draw_index),
+        ];
+
+        // Regression: a drawable cell with real Geometry but only zero-index BVH
+        // leaves used to load, leaving the renderer with no drawable work.
+        let tmp = write_prl_fixture_raw(
+            sections,
+            "postretro_test_zero_index_bvh_leaf_for_drawable_cell.prl",
+        );
+        let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
+        assert!(
+            matches!(err, PrlLoadError::SectionValidation { section: "Bvh", .. }),
+            "got {err:?}"
+        );
         std::fs::remove_file(&tmp).ok();
     }
 
@@ -2509,26 +3233,8 @@ mod tests {
 
         let geom = sample_geometry();
         let bvh = sample_bvh_section();
-        let leaves = BspLeavesSection {
-            leaves: vec![
-                BspLeafRecord {
-                    face_start: 0,
-                    face_count: 1,
-                    bounds_min: [0.0, 0.0, 0.0],
-                    bounds_max: [2.0, 2.0, 2.0],
-                    is_solid: 0,
-                },
-                BspLeafRecord {
-                    face_start: 1,
-                    face_count: 1,
-                    bounds_min: [9.0, 0.0, 0.0],
-                    bounds_max: [12.0, 2.0, 2.0],
-                    is_solid: 0,
-                },
-            ],
-        };
         let masks = FogCellMasksSection {
-            masks: vec![0x0000_0001, 0x0000_8000],
+            masks: vec![0x0000_0001, 0x0000_0001],
         };
 
         let sections = vec![
@@ -2543,17 +3249,12 @@ mod tests {
                 data: bvh.to_bytes(),
             },
             prl_format::SectionBlob {
-                section_id: SectionId::BspLeaves as u32,
-                version: 1,
-                data: leaves.to_bytes(),
-            },
-            prl_format::SectionBlob {
                 section_id: SectionId::FogCellMasks as u32,
                 version: 1,
                 data: masks.to_bytes(),
             },
             default_texture_cache_keys_blob(),
-            default_fog_volumes_blob(),
+            fog_volumes_blob_with_count(1),
         ];
 
         let tmp = write_prl_fixture(sections, "postretro_test_fog_cell_masks.prl");
@@ -2561,38 +3262,20 @@ mod tests {
 
         assert_eq!(
             world.fog_cell_masks,
-            Some(vec![0x0000_0001u32, 0x0000_8000])
+            Some(vec![0x0000_0001u32, 0x0000_0001])
         );
 
         std::fs::remove_file(&tmp).ok();
     }
 
     #[test]
-    fn load_prl_drops_fog_cell_masks_when_length_mismatches_leaves() {
+    fn load_prl_rejects_fog_cell_masks_when_length_mismatches_cells() {
         use postretro_level_format::fog_cell_masks::FogCellMasksSection;
 
         let geom = sample_geometry();
         let bvh = sample_bvh_section();
-        // Two leaves but only one mask — truncated FogCellMasks must degrade
-        // to None so the renderer's "all slots active" fallback engages.
-        let leaves = BspLeavesSection {
-            leaves: vec![
-                BspLeafRecord {
-                    face_start: 0,
-                    face_count: 1,
-                    bounds_min: [0.0, 0.0, 0.0],
-                    bounds_max: [2.0, 2.0, 2.0],
-                    is_solid: 0,
-                },
-                BspLeafRecord {
-                    face_start: 1,
-                    face_count: 1,
-                    bounds_min: [9.0, 0.0, 0.0],
-                    bounds_max: [12.0, 2.0, 2.0],
-                    is_solid: 0,
-                },
-            ],
-        };
+        // Two cells but only one mask: Task 5 makes this fatal and validates
+        // against Cells.cell_count, not removed runtime BSP sections.
         let masks = FogCellMasksSection {
             masks: vec![0x0000_0001],
         };
@@ -2609,49 +3292,78 @@ mod tests {
                 data: bvh.to_bytes(),
             },
             prl_format::SectionBlob {
-                section_id: SectionId::BspLeaves as u32,
-                version: 1,
-                data: leaves.to_bytes(),
-            },
-            prl_format::SectionBlob {
                 section_id: SectionId::FogCellMasks as u32,
                 version: 1,
                 data: masks.to_bytes(),
             },
             default_texture_cache_keys_blob(),
-            default_fog_volumes_blob(),
+            fog_volumes_blob_with_count(1),
         ];
 
         let tmp = write_prl_fixture(sections, "postretro_test_fog_cell_masks_truncated.prl");
-        let world = load_prl(tmp.to_str().unwrap()).expect("should load");
+        let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
         assert!(
-            world.fog_cell_masks.is_none(),
-            "truncated FogCellMasks should be dropped to None"
+            matches!(
+                err,
+                PrlLoadError::SectionValidation {
+                    section: "FogCellMasks",
+                    ..
+                }
+            ),
+            "got {err:?}"
         );
-        assert_eq!(world.leaves.len(), 2);
 
         std::fs::remove_file(&tmp).ok();
     }
 
     #[test]
-    fn load_prl_drops_fog_cell_masks_when_masks_longer_than_leaves() {
+    fn load_prl_rejects_malformed_fog_cell_masks_as_section_validation() {
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: sample_geometry().to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: sample_bvh_section().to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::FogCellMasks as u32,
+                version: 1,
+                data: vec![0],
+            },
+            default_texture_cache_keys_blob(),
+            fog_volumes_blob_with_count(1),
+        ];
+
+        let tmp = write_prl_fixture(sections, "postretro_test_malformed_fog_cell_masks.prl");
+        let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PrlLoadError::SectionValidation {
+                    section: "FogCellMasks",
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
+
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_rejects_fog_cell_masks_when_masks_longer_than_cells() {
         use postretro_level_format::fog_cell_masks::FogCellMasksSection;
 
         let geom = sample_geometry();
         let bvh = sample_bvh_section();
-        // One leaf but two masks — oversized FogCellMasks must degrade
-        // to None so the renderer's "all slots active" fallback engages.
-        let leaves = BspLeavesSection {
-            leaves: vec![BspLeafRecord {
-                face_start: 0,
-                face_count: 1,
-                bounds_min: [0.0, 0.0, 0.0],
-                bounds_max: [2.0, 2.0, 2.0],
-                is_solid: 0,
-            }],
-        };
+        // Two cells but three masks: Task 5 makes this fatal and validates
+        // against Cells.cell_count, not removed runtime BSP sections.
         let masks = FogCellMasksSection {
-            masks: vec![0x0000_0001, 0x0000_0002],
+            masks: vec![0x0000_0001, 0x0000_0001, 0x0000_0001],
         };
 
         let sections = vec![
@@ -2666,9 +3378,48 @@ mod tests {
                 data: bvh.to_bytes(),
             },
             prl_format::SectionBlob {
-                section_id: SectionId::BspLeaves as u32,
+                section_id: SectionId::FogCellMasks as u32,
                 version: 1,
-                data: leaves.to_bytes(),
+                data: masks.to_bytes(),
+            },
+            default_texture_cache_keys_blob(),
+            fog_volumes_blob_with_count(1),
+        ];
+
+        let tmp = write_prl_fixture(sections, "postretro_test_fog_cell_masks_oversized.prl");
+        let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PrlLoadError::SectionValidation {
+                    section: "FogCellMasks",
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
+
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_rejects_fog_cell_masks_bits_outside_canonical_slots() {
+        use postretro_level_format::fog_cell_masks::FogCellMasksSection;
+
+        let masks = FogCellMasksSection {
+            // One canonical fog slot means bit 1 is outside all_slots_mask.
+            masks: vec![0x0000_0001, 0x0000_0002],
+        };
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: sample_geometry().to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: sample_bvh_section().to_bytes(),
             },
             prl_format::SectionBlob {
                 section_id: SectionId::FogCellMasks as u32,
@@ -2676,17 +3427,54 @@ mod tests {
                 data: masks.to_bytes(),
             },
             default_texture_cache_keys_blob(),
-            default_fog_volumes_blob(),
+            fog_volumes_blob_with_count(1),
         ];
 
-        let tmp = write_prl_fixture(sections, "postretro_test_fog_cell_masks_oversized.prl");
-        let world = load_prl(tmp.to_str().unwrap()).expect("should load");
+        let tmp = write_prl_fixture(sections, "postretro_test_fog_cell_masks_extra_bits.prl");
+        let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
         assert!(
-            world.fog_cell_masks.is_none(),
-            "oversized FogCellMasks should be dropped to None"
+            matches!(
+                err,
+                PrlLoadError::SectionValidation {
+                    section: "FogCellMasks",
+                    ..
+                }
+            ),
+            "got {err:?}"
         );
-        assert_eq!(world.leaves.len(), 1);
+        std::fs::remove_file(&tmp).ok();
+    }
 
+    #[test]
+    fn load_prl_rejects_fog_volume_count_over_renderer_slot_cap() {
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: sample_geometry().to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: sample_bvh_section().to_bytes(),
+            },
+            default_texture_cache_keys_blob(),
+            fog_volumes_blob_with_count(MAX_FOG_VOLUMES + 1),
+        ];
+
+        let tmp = write_prl_fixture(sections, "postretro_test_too_many_fog_volumes.prl");
+        let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PrlLoadError::SectionValidation {
+                    section: "FogVolumes",
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
+        assert!(err.to_string().contains("MAX_FOG_VOLUMES"), "got {err}");
         std::fs::remove_file(&tmp).ok();
     }
 
@@ -2948,17 +3736,17 @@ mod tests {
         }
     }
 
-    /// BSP leaf with only the drawability-relevant flags set.
-    fn bsp_leaf(is_solid: bool, face_count: u32) -> LeafData {
-        simple_leaf(Vec3::ZERO, Vec3::splat(1.0), 0, face_count, is_solid)
+    /// Cell with only the drawability-relevant flags set.
+    fn draw_index_cell(is_solid: bool, face_count: u32) -> CellData {
+        simple_cell(Vec3::ZERO, Vec3::splat(1.0), 0, face_count, is_solid)
     }
 
     /// Two drawable cells, one drawable BVH leaf each, all in bucket 0.
     /// cell 0 → bvh leaf 0, cell 1 → bvh leaf 1.
-    fn two_cell_setup() -> (Vec<BvhLeaf>, Vec<LeafData>) {
+    fn two_cell_setup() -> (Vec<BvhLeaf>, Vec<CellData>) {
         let bvh_leaves = vec![rt_bvh_leaf(0, 3, 0), rt_bvh_leaf(0, 3, 1)];
-        let leaves = vec![bsp_leaf(false, 1), bsp_leaf(false, 1)];
-        (bvh_leaves, leaves)
+        let cells = vec![draw_index_cell(false, 1), draw_index_cell(false, 1)];
+        (bvh_leaves, cells)
     }
 
     fn valid_two_cell_section() -> CellDrawIndexSection {
@@ -3002,8 +3790,8 @@ mod tests {
     #[test]
     fn validate_cell_draw_index_rejects_wrong_cell_count() {
         let (bvh_leaves, _) = two_cell_setup();
-        // Only one BSP leaf but the section declares two cells.
-        let leaves = vec![bsp_leaf(false, 1)];
+        // Only one cell but the section declares two cells.
+        let leaves = vec![draw_index_cell(false, 1)];
         let section = valid_two_cell_section();
         let err = validate_cell_draw_index(&section, &bvh_leaves, &leaves, CELL_DRAW_INDEX_VERSION)
             .unwrap_err();
@@ -3028,7 +3816,7 @@ mod tests {
     fn validate_cell_draw_index_rejects_wrong_cell_span() {
         // bvh leaf 1 belongs to cell 1, but here cell 0 claims [0,2).
         let bvh_leaves = vec![rt_bvh_leaf(0, 3, 0), rt_bvh_leaf(0, 3, 1)];
-        let leaves = vec![bsp_leaf(false, 1), bsp_leaf(false, 1)];
+        let leaves = vec![draw_index_cell(false, 1), draw_index_cell(false, 1)];
         let section = CellDrawIndexSection {
             cell_count: 2,
             span_count: 1,
@@ -3048,7 +3836,7 @@ mod tests {
         // cell 1's BVH leaf has zero indices — not drawable, but the index
         // tries to cover it.
         let bvh_leaves = vec![rt_bvh_leaf(0, 3, 0), rt_bvh_leaf(0, 0, 1)];
-        let leaves = vec![bsp_leaf(false, 1), bsp_leaf(false, 1)];
+        let leaves = vec![draw_index_cell(false, 1), draw_index_cell(false, 1)];
         let section = valid_two_cell_section();
         let err = validate_cell_draw_index(&section, &bvh_leaves, &leaves, CELL_DRAW_INDEX_VERSION)
             .unwrap_err();
@@ -3059,7 +3847,7 @@ mod tests {
     fn validate_cell_draw_index_rejects_span_on_non_drawable_cell() {
         // cell 1 is solid (non-drawable) but the index gives it a span.
         let bvh_leaves = vec![rt_bvh_leaf(0, 3, 0), rt_bvh_leaf(0, 3, 1)];
-        let leaves = vec![bsp_leaf(false, 1), bsp_leaf(true, 0)];
+        let leaves = vec![draw_index_cell(false, 1), draw_index_cell(true, 0)];
         let section = valid_two_cell_section();
         let err = validate_cell_draw_index(&section, &bvh_leaves, &leaves, CELL_DRAW_INDEX_VERSION)
             .unwrap_err();
@@ -3072,13 +3860,13 @@ mod tests {
     // case; this isolates the other non-drawable sub-case so both halves of
     // `cell_is_drawable = !is_solid && face_count > 0` are pinned. The validator
     // already enforces this via the in-span `!leaf_is_drawable` check (a leaf is
-    // drawable only if its cell is), so it must return Err and degrade-to-legacy.
+    // drawable only if its cell is), so it must return Err.
     #[test]
     fn validate_cell_draw_index_rejects_index_count_leaf_on_zero_face_cell() {
         // cell 1: non-solid but zero faces → non-drawable. Its BVH leaf has
         // index_count == 3 (> 0), yet the index tries to cover it.
         let bvh_leaves = vec![rt_bvh_leaf(0, 3, 0), rt_bvh_leaf(0, 3, 1)];
-        let leaves = vec![bsp_leaf(false, 1), bsp_leaf(false, 0)];
+        let leaves = vec![draw_index_cell(false, 1), draw_index_cell(false, 0)];
         let section = valid_two_cell_section();
         let err = validate_cell_draw_index(&section, &bvh_leaves, &leaves, CELL_DRAW_INDEX_VERSION)
             .unwrap_err();
@@ -3090,7 +3878,7 @@ mod tests {
         // cell 0 owns two BVH leaves in different buckets; one span can't cover
         // both.
         let bvh_leaves = vec![rt_bvh_leaf(0, 3, 0), rt_bvh_leaf(1, 3, 0)];
-        let leaves = vec![bsp_leaf(false, 1)];
+        let leaves = vec![draw_index_cell(false, 1)];
         let section = CellDrawIndexSection {
             cell_count: 1,
             span_count: 1,
@@ -3110,7 +3898,7 @@ mod tests {
         // cell 0 owns leaves 0,1 in the same bucket but splits them into two
         // abutting spans that should have been one.
         let bvh_leaves = vec![rt_bvh_leaf(0, 3, 0), rt_bvh_leaf(0, 3, 0)];
-        let leaves = vec![bsp_leaf(false, 1)];
+        let leaves = vec![draw_index_cell(false, 1)];
         let section = CellDrawIndexSection {
             cell_count: 1,
             span_count: 2,
@@ -3156,7 +3944,7 @@ mod tests {
         // the in-span drawability check fires first — both surface the
         // "non-drawable cell shouldn't have a row" intent.
         let bvh_leaves = vec![rt_bvh_leaf(0, 3, 0), rt_bvh_leaf(0, 0, 1)];
-        let leaves = vec![bsp_leaf(false, 1), bsp_leaf(true, 0)];
+        let leaves = vec![draw_index_cell(false, 1), draw_index_cell(true, 0)];
         let section = valid_two_cell_section();
         let err = validate_cell_draw_index(&section, &bvh_leaves, &leaves, CELL_DRAW_INDEX_VERSION)
             .unwrap_err();
@@ -3171,7 +3959,7 @@ mod tests {
         // Two cells, but both spans cover bvh leaf 0 (cell 1's span re-covers).
         // Construct directly to bypass structural CSR checks at this layer.
         let bvh_leaves = vec![rt_bvh_leaf(0, 3, 0), rt_bvh_leaf(0, 3, 1)];
-        let leaves = vec![bsp_leaf(false, 1), bsp_leaf(false, 1)];
+        let leaves = vec![draw_index_cell(false, 1), draw_index_cell(false, 1)];
         // cell 0 → [0,1); cell 1 → also [0,1) (wrong + overlap). The wrong-cell
         // check trips first, which is itself a rejection — assert it fails.
         let section = CellDrawIndexSection {
@@ -3203,34 +3991,6 @@ mod tests {
         }
     }
 
-    /// BspLeaves matching `sample_bvh_section` (two non-solid leaves with faces),
-    /// so the loaded `LevelWorld.leaves` join makes both cells drawable.
-    fn two_drawable_bsp_leaves_blob() -> prl_format::SectionBlob {
-        let leaves = BspLeavesSection {
-            leaves: vec![
-                BspLeafRecord {
-                    face_start: 0,
-                    face_count: 1,
-                    bounds_min: [0.0, 0.0, 0.0],
-                    bounds_max: [2.0, 2.0, 2.0],
-                    is_solid: 0,
-                },
-                BspLeafRecord {
-                    face_start: 1,
-                    face_count: 1,
-                    bounds_min: [9.0, 0.0, 0.0],
-                    bounds_max: [12.0, 2.0, 2.0],
-                    is_solid: 0,
-                },
-            ],
-        };
-        prl_format::SectionBlob {
-            section_id: SectionId::BspLeaves as u32,
-            version: 1,
-            data: leaves.to_bytes(),
-        }
-    }
-
     fn base_cell_draw_index_sections() -> Vec<prl_format::SectionBlob> {
         vec![
             prl_format::SectionBlob {
@@ -3243,22 +4003,65 @@ mod tests {
                 version: 1,
                 data: sample_bvh_section().to_bytes(),
             },
-            two_drawable_bsp_leaves_blob(),
+            default_cells_blob(),
+            default_cell_locator_blob(),
             default_texture_cache_keys_blob(),
             default_fog_volumes_blob(),
         ]
     }
 
     #[test]
-    fn load_prl_absent_cell_draw_index_yields_none() {
-        let tmp = write_prl_fixture(
-            base_cell_draw_index_sections(),
-            "postretro_test_no_cell_draw_index.prl",
-        );
-        let world = load_prl(tmp.to_str().unwrap()).expect("legacy PRL without index must load");
+    fn load_prl_absent_cell_draw_index_for_nonempty_bvh_is_error() {
+        let mut sections = base_cell_draw_index_sections();
+        sections.push(default_octahedral_sh_volume_blob());
+        let tmp = write_prl_fixture_raw(sections, "postretro_test_no_cell_draw_index.prl");
+        let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
         assert!(
-            world.cell_draw_index.is_none(),
-            "absent CellDrawIndex section should yield None (legacy tree-walk selection)"
+            matches!(
+                err,
+                PrlLoadError::SectionValidation {
+                    section: "CellDrawIndex",
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_rejects_cell_draw_index_for_empty_bvh() {
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: empty_geometry().to_bytes(),
+            },
+            empty_bvh_blob(),
+            prl_format::SectionBlob {
+                section_id: SectionId::Cells as u32,
+                version: 1,
+                data: cells_with_second_flag(0).to_bytes(),
+            },
+            default_cell_locator_blob(),
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+            cell_draw_index_blob(&valid_two_cell_section()),
+        ];
+        let tmp = write_prl_fixture(
+            sections,
+            "postretro_test_empty_bvh_with_cell_draw_index.prl",
+        );
+        let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PrlLoadError::SectionValidation {
+                    section: "CellDrawIndex",
+                    ..
+                }
+            ),
+            "got {err:?}"
         );
         std::fs::remove_file(&tmp).ok();
     }
@@ -3278,16 +4081,15 @@ mod tests {
         std::fs::remove_file(&tmp).ok();
     }
 
-    /// Every representative invalid section must degrade to `None` while the
-    /// rest of the load continues (the geometry/leaves still parse).
+    /// Every representative invalid section is fatal once the BVH is non-empty.
     #[test]
-    fn load_prl_invalid_cell_draw_index_degrades_to_none() {
+    fn load_prl_invalid_cell_draw_index_is_error() {
         // (label, section) pairs covering the representative reject cases.
         let cases: Vec<(&str, CellDrawIndexSection)> = vec![
             (
                 "wrong cell_count",
                 CellDrawIndexSection {
-                    cell_count: 3, // BVH/BSP topology has 2 cells
+                    cell_count: 3, // topology has 2 cells
                     span_count: 2,
                     cell_span_offset: vec![0, 1, 2, 2],
                     spans: vec![
@@ -3353,22 +4155,26 @@ mod tests {
                 sections,
                 &format!("postretro_test_invalid_cell_draw_index_{i}.prl"),
             );
-            let world = load_prl(tmp.to_str().unwrap())
-                .unwrap_or_else(|e| panic!("[{label}] load must continue, got error: {e:?}"));
+            let err = load_prl(tmp.to_str().unwrap())
+                .err()
+                .unwrap_or_else(|| panic!("[{label}] load should fail"));
             assert!(
-                world.cell_draw_index.is_none(),
-                "[{label}] invalid index must degrade to None"
+                matches!(
+                    err,
+                    PrlLoadError::SectionValidation {
+                        section: "CellDrawIndex",
+                        ..
+                    }
+                ),
+                "[{label}] expected CellDrawIndex validation error, got {err:?}"
             );
-            // Load did not fail: the rest of the world still parsed.
-            assert_eq!(world.leaves.len(), 2, "[{label}] leaves must still load");
-            assert_eq!(world.bvh.leaves.len(), 2, "[{label}] bvh must still load");
             std::fs::remove_file(&tmp).ok();
         }
     }
 
-    /// A bucket-crossing span is a degradation case at the load layer too.
+    /// A bucket-crossing span is fatal at the load layer too.
     #[test]
-    fn load_prl_bucket_crossing_cell_draw_index_degrades_to_none() {
+    fn load_prl_bucket_crossing_cell_draw_index_is_error() {
         // Build a BVH whose two leaves for cell 0 sit in different buckets, then
         // hand the index a single span covering both.
         let bvh = BvhSection {
@@ -3397,16 +4203,6 @@ mod tests {
             ],
             root_node_index: 0,
         };
-        // One drawable BSP leaf (cell 0).
-        let bsp_leaves = BspLeavesSection {
-            leaves: vec![BspLeafRecord {
-                face_start: 0,
-                face_count: 1,
-                bounds_min: [0.0, 0.0, 0.0],
-                bounds_max: [12.0, 2.0, 2.0],
-                is_solid: 0,
-            }],
-        };
         let section = CellDrawIndexSection {
             cell_count: 1,
             span_count: 1,
@@ -3416,12 +4212,32 @@ mod tests {
                 leaf_count: 2, // crosses bucket 0 → 1
             }],
         };
+        let cells = CellsSection {
+            cells: vec![CellRecord {
+                bounds_min: [0.0, 0.0, 0.0],
+                bounds_max: [12.0, 2.0, 2.0],
+                flags: CELL_FLAG_DRAWABLE,
+                face_start: 0,
+                face_count: 2,
+                portal_ref_start: 0,
+                portal_ref_count: 0,
+            }],
+            portal_refs: Vec::new(),
+        };
+        let locator = CellLocatorSection {
+            root: FormatCellLocatorChild::Cell(0),
+            nodes: Vec::new(),
+        };
+        let mut geometry = sample_geometry();
+        for face in &mut geometry.faces {
+            face.leaf_index = 0;
+        }
 
         let sections = vec![
             prl_format::SectionBlob {
                 section_id: SectionId::Geometry as u32,
                 version: 1,
-                data: sample_geometry().to_bytes(),
+                data: geometry.to_bytes(),
             },
             prl_format::SectionBlob {
                 section_id: SectionId::Bvh as u32,
@@ -3429,9 +4245,14 @@ mod tests {
                 data: bvh.to_bytes(),
             },
             prl_format::SectionBlob {
-                section_id: SectionId::BspLeaves as u32,
+                section_id: SectionId::Cells as u32,
                 version: 1,
-                data: bsp_leaves.to_bytes(),
+                data: cells.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::CellLocator as u32,
+                version: 1,
+                data: locator.to_bytes(),
             },
             default_texture_cache_keys_blob(),
             default_fog_volumes_blob(),
@@ -3441,10 +4262,16 @@ mod tests {
             sections,
             "postretro_test_bucket_crossing_cell_draw_index.prl",
         );
-        let world = load_prl(tmp.to_str().unwrap()).expect("load must continue (degrade)");
+        let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
         assert!(
-            world.cell_draw_index.is_none(),
-            "bucket-crossing index must degrade to None"
+            matches!(
+                err,
+                PrlLoadError::SectionValidation {
+                    section: "CellDrawIndex",
+                    ..
+                }
+            ),
+            "got {err:?}"
         );
         std::fs::remove_file(&tmp).ok();
     }

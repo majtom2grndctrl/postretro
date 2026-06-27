@@ -7,6 +7,8 @@ pub mod animated_light_weight_maps;
 pub mod bsp;
 pub mod bvh;
 pub mod cell_draw_index;
+pub mod cell_locator;
+pub mod cells;
 pub mod chunk_light_list;
 pub mod data_script;
 pub mod delta_sh_volumes;
@@ -68,17 +70,18 @@ pub type Result<T> = std::result::Result<T, FormatError>;
 
 /// Known section type IDs.
 ///
-/// Retired IDs are intentionally omitted so they cannot be re-used by accident.
+/// Retired runtime BSP IDs are retained only so modern PRLs containing them
+/// can be rejected; other retired IDs are omitted to avoid accidental reuse.
 /// The loader skips unknown IDs gracefully; older `.prl` files produced before
 /// the BVH refactor will fail to decode because the geometry format changed
 /// and a `Bvh` section is now required.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum SectionId {
-    /// Flat array of BSP interior nodes (splitting planes + child references).
+    /// Legacy BSP node section ID. Retained only to detect stale-format PRLs.
     BspNodes = 12,
 
-    /// Flat array of BSP leaf records (face ranges, bounds).
+    /// Legacy BSP leaf section ID. Retained only to detect stale-format PRLs.
     BspLeaves = 13,
 
     // 14 (LeafPvs) retired — precomputed PVS removed; portal traversal is the only vis path.
@@ -168,9 +171,10 @@ pub enum SectionId {
     /// See `fog_volumes::FogVolumesSection`.
     FogVolumes = 30,
 
-    /// Per-BSP-leaf bitmask of overlapping fog volumes (bit `i` = volume `i`
-    /// overlaps this leaf). Solid leaves are always zero. Optional — emitted
-    /// only when at least one `fog_volume` brush entity is present.
+    /// Per-cell bitmask of overlapping fog volumes (bit `i` = volume `i`
+    /// overlaps this cell). Emitted when the map has canonical fog volumes:
+    /// `fog_volume`, `fog_lamp`, or `fog_tube`. Absence is valid only when no
+    /// canonical fog volumes exist.
     /// See `fog_cell_masks::FogCellMasksSection`.
     FogCellMasks = 31,
 
@@ -213,9 +217,21 @@ pub enum SectionId {
 
     /// Per-cell draw index: each cell's owned BVH-leaf spans, baked as a CSR
     /// (offset table + flat span payload) so the runtime camera cull gathers
-    /// only visible cells' leaves as candidates. Optional — absence is a valid
-    /// "no draw index" load. See `cell_draw_index::CellDrawIndexSection`.
+    /// only visible cells' leaves as candidates. Required when the BVH has
+    /// non-empty leaves; omitted only for zero-leaf maps. Missing or invalid
+    /// data when required is a load error.
+    /// See `cell_draw_index::CellDrawIndexSection`.
     CellDrawIndex = 37,
+
+    /// Runtime visibility cells, preserving the compiler BSP leaf id space
+    /// one-to-one. Carries cell bounds, flags, face ranges, and per-cell portal
+    /// adjacency ranges without BSP split planes. See `cells::CellsSection`.
+    Cells = 38,
+
+    /// Point-to-cell lookup decision tree. Version 1 mirrors the compiler BSP
+    /// split planes but its terminal children are cell ids, not BSP leaf
+    /// records. See `cell_locator::CellLocatorSection`.
+    CellLocator = 39,
 }
 
 impl SectionId {
@@ -246,6 +262,8 @@ impl SectionId {
             35 => Some(Self::DirectShVolume),
             36 => Some(Self::NavMesh),
             37 => Some(Self::CellDrawIndex),
+            38 => Some(Self::Cells),
+            39 => Some(Self::CellLocator),
             _ => None,
         }
     }

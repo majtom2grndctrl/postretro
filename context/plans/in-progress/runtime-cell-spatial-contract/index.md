@@ -93,8 +93,9 @@ It depends on that plan landing first. This checkout already has
       are updated with the new contracts: BSP is compile-only scaffolding,
       runtime visibility uses cells and portals, and collision uses
       `CollisionWorld`.
-- [ ] Cell diagnostics show current cell, portal-reachable drawable cells,
-      fog-reachable cells, locator path, and candidate BVH leaf counts.
+- [ ] Spatial diagnostics show labeled fields for current cell,
+      portal-reachable drawable cells, fog-reachable cells, locator path, and
+      candidate BVH leaf counts.
 - [ ] Fog/light reachability keeps the wider portal-reachable cell set:
       non-solid empty cells are included, and an empty set is the all-active
       fallback sentinel (the solid-camera / exterior / no-portals case: all
@@ -191,6 +192,26 @@ Cell flag combinations are fixed:
 - Empty interior cells are non-solid, non-exterior, have `face_count == 0`, and
   `drawable == false`.
 
+Task-owned wire contract:
+
+```text
+u32 version = 1
+u32 cell_count
+u32 portal_ref_total
+u32 reserved = 0
+CellRecord cells[cell_count]
+u32 portal_refs[portal_ref_total]
+```
+
+`cell_count` must be greater than zero. Each `CellRecord` stores
+`bounds_min[3]`, `bounds_max[3]`, `flags`, `face_start`, `face_count`,
+`portal_ref_start`, and `portal_ref_count`. Flag bits are: bit 0 `solid`, bit 1
+`exterior`, bit 2 `drawable`. Unknown bits are invalid. Section byte length
+must exactly match the declared counts. Reject trailing bytes, truncated records,
+and count multiplication overflow as named `Cells` validation errors. Normalize
+`face_start` to `0` when `face_count == 0`. Normalize `portal_ref_start` to `0`
+when `portal_ref_count == 0`.
+
 ### Task 3: Add the `CellLocator` Section
 
 Add a `CellLocator` PRL section in `postretro-level-format`. Register
@@ -217,13 +238,34 @@ Task 3. They may remain load fixtures through Task 5 without `find_leaf`
 comparison. They become invalid in Task 6, when ambiguous legacy-section
 rejection starts.
 
+Task-owned wire contract:
+
+```text
+u32 version = 1
+u32 node_count
+u32 root_kind        // 0 = cell, 1 = node
+u32 root_index
+CellLocatorNode nodes[node_count]
+```
+
+Each `CellLocatorNode` stores `plane_normal[3]`, `plane_distance`,
+`front_kind`, `front_index`, `back_kind`, and `back_index`. Kind values are
+only `0` for cell and `1` for node. Plane values must be finite, and normals
+must be nonzero. Node references must be in range. Cell references must be in
+range. Section byte length must exactly match `node_count`. Reject trailing
+bytes, truncated records, and count multiplication overflow as named
+`CellLocator` validation errors. Reject cycles and unreachable nodes.
+
 ### Task 4: Migrate Runtime Visibility Callers
 
 Change `determine_visible_cells` to seed visibility from `locate_cell`. Change
 portal traversal inputs and diagnostics to use cell terminology. Migrate mesh
 and particle culling call sites that currently descend BSP for object positions
-(non-visibility `find_leaf` callers: `mesh_pass.rs`, `particle_render.rs`,
-`sh_diagnostics.rs`; plus `determine_visible_cells` in `visibility.rs`).
+(non-visibility `find_leaf` callers:
+`crates/postretro/src/render/mesh_pass.rs`,
+`crates/postretro/src/scripting/systems/particle_render.rs`,
+`crates/postretro/src/render/sh_diagnostics.rs`; plus
+`determine_visible_cells` in `crates/postretro/src/visibility.rs`).
 Keep `VisibleCells` behavior stable for the renderer: it carries drawable cell
 ids or `DrawAll`. Preserve the wider fog/light reachability set as cell ids. It
 includes empty non-solid cells for volume and dynamic-light gating. An empty
@@ -232,11 +274,20 @@ not `VisibleCells::DrawAll`, which fog never returns).
 
 This task owns callers in visibility, portal traversal, mesh render collection,
 particle render collection, dynamic light reachability, SH diagnostics, fog
-masking, and spatial diagnostics. Remove `LevelWorld::find_leaf` after those
-callers migrate. It does not change portal clipping or frustum math. Add a
-fixture test capturing `VisibleCells::Culled` for fixture cameras before and
-after migration and asserting equality — not just `locate_cell` vs `find_leaf`
-point parity — to protect the 'portal traversal output matches the old path' AC.
+masking, spatial diagnostics, animated-lightmap visibility, candidate-cull
+mirrors, and shadow-pass diagnostics. Audit with `rg` for `world.leaves`,
+`LeafData`, `leaf_portals`, `leaf_index`, `VisibleCells`, and `fog_reachable`;
+expected runtime files include `crates/postretro/src/render/renderer_diagnostics.rs`,
+`crates/postretro/src/render/debug_ui/mod.rs`,
+`crates/postretro/src/candidate_cull_mirror.rs`,
+`crates/postretro/src/render/animated_lightmap.rs`, and
+`crates/postretro/src/render/renderer_shadow_passes.rs`. Remove
+`LevelWorld::find_leaf` after those callers migrate. It does not change portal
+clipping or frustum math. While both lookup paths exist, freeze fixture expected
+`VisibleCells::Culled` outputs for fixture cameras. After migration, assert the
+cell-locator path still produces those frozen outputs — not just `locate_cell`
+vs `find_leaf` point parity — to protect the 'portal traversal output matches
+the old path' AC.
 
 Mesh and particle object visibility remains membership-based against
 `VisibleCells`. If `locate_cell(pos)` returns a cell id not in
@@ -253,8 +304,8 @@ Map lights and runtime light bridge records become cell-semantic. Rename
 `MapLight.leaf_index` call sites must be updated; examples include `prl.rs`,
 `renderer_light_slots.rs`, and the `convert_alpha_lights` copy site. Also update
 `MapLightShape.leaf_index` and the `component_to_map_light(... leaf_index)`
-parameter in `light_bridge.rs`. The compiler/wire-side
-`AlphaLightRecord.leaf_index` and the
+parameter in `crates/postretro/src/scripting/systems/light_bridge.rs`. The
+compiler/wire-side `AlphaLightRecord.leaf_index` and the
 `ALPHA_LIGHT_LEAF_UNASSIGNED` (= `u32::MAX`) constant (`alpha_lights.rs`) may
 keep legacy names with cell-id comments — they are wire/compiler types, not
 scripting typedefs. Preserve `u32::MAX` as the unassigned sentinel.
@@ -329,8 +380,11 @@ retarget it to `Cells.cell_count`. The existing `FogCellMasks` length check
 Missing `Cells` / `CellLocator` sections are stale-format. Present but malformed
 or invalid `Cells` / `CellLocator` sections are named validation errors.
 Present `Cells` or `CellLocator` sections with unsupported `version` values are
-named unsupported-version validation errors for that section. Both are fatal
-and name the section or sections.
+named unsupported-version validation errors for that section. All are fatal and
+name the section or sections. Exact-length, trailing-byte, truncated-record, and
+count-overflow checks belong to section parsing. Cross-section mismatches belong
+to loader validation. Malformed `Geometry`, `Bvh`, required `CellDrawIndex`, and
+required `FogCellMasks` also fail load instead of warning and dropping data.
 
 Portal usability is an explicit behavior change. Current code treats any
 present `Portals` section as `has_portals`. Target behavior treats missing,
@@ -368,14 +422,22 @@ PRLs that also contain `BspNodes` or `BspLeaves` are rejected with a named
 ambiguous/stale-format error.
 
 This task must not change compiler BSP construction. It only changes what the
-compiler writes into PRL and what the runtime accepts from PRL.
+compiler writes into PRL and what the runtime accepts from PRL. Remove runtime
+`BspNodes` / `BspLeaves` decoding and storage from `LevelWorld`; any remaining
+BSP section helpers must be compiler-side or migration-test-only.
 
 ### Task 7: Diagnostics and Documentation
 
 Update dev-tool overlays to label cells, portals, and BVH leaves without BSP
-terminology. Add diagnostics that show all five items the Cell-diagnostics AC requires:
-current cell, portal-reachable drawable cells, fog-reachable cells, locator
-status (descent path/result), and candidate BVH leaf counts.
+terminology. Update the Spatial diagnostics tab and backing renderer diagnostics
+data in `crates/postretro/src/render/debug_ui/mod.rs`,
+`crates/postretro/src/render/renderer_debug_ui.rs`, and
+`crates/postretro/src/render/renderer_diagnostics.rs`. Show labeled fields for
+all five items the Cell-diagnostics AC requires: current cell,
+portal-reachable drawable cells, fog-reachable cells, locator status (descent
+path/result), and candidate BVH leaf counts. Task 3 or Task 4 must expose a
+traceable locator API or companion diagnostic call so this task can display the
+descent path without reimplementing locator traversal.
 
 Task 7 updates `context/lib/build_pipeline.md`,
 `context/lib/rendering_pipeline.md`, and `context/lib/entity_model.md` after

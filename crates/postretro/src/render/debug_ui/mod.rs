@@ -11,9 +11,11 @@ use super::CameraCullPath;
 use super::CellOverlayState;
 use super::DynamicDirectIsolation;
 use super::LightingIsolation;
+use super::LocatorDiagnostics;
 use super::PortalOverlayState;
 use super::Renderer;
 use super::SdfShadowMode;
+use super::SpatialCellSetDiagnostics;
 use super::WorldWireframeMode;
 use super::frame_timing::FrameTimingSnapshot;
 use super::sh_diagnostics::{MarkerMode, ShDiagnosticsState};
@@ -517,7 +519,100 @@ fn draw_performance_tab(ui: &mut egui::Ui, frame_timing: Option<&FrameTimingSnap
         });
 }
 
+fn cell_set_diagnostic_label(value: SpatialCellSetDiagnostics, empty_note: &str) -> String {
+    match value {
+        SpatialCellSetDiagnostics::DrawAll => "DrawAll".to_string(),
+        SpatialCellSetDiagnostics::Cells { count } if count == 0 && !empty_note.is_empty() => {
+            format!("0 ({empty_note})")
+        }
+        SpatialCellSetDiagnostics::Cells { count } => count.to_string(),
+    }
+}
+
+fn locator_child_label(child: crate::prl::CellLocatorChild) -> String {
+    match child {
+        crate::prl::CellLocatorChild::Node(index) => format!("node {index}"),
+        crate::prl::CellLocatorChild::Cell(index) => format!("cell {index}"),
+    }
+}
+
+fn locator_path_label(trace: &crate::prl::CellLocatorTrace) -> String {
+    if trace.steps.is_empty() {
+        return format!("root {}", locator_child_label(trace.root));
+    }
+
+    let mut parts = Vec::with_capacity(trace.steps.len() + 1);
+    parts.push(format!("root {}", locator_child_label(trace.root)));
+    for step in &trace.steps {
+        let side = match step.selected_side {
+            crate::prl::CellLocatorSide::Front => "front",
+            crate::prl::CellLocatorSide::Back => "back",
+        };
+        parts.push(format!(
+            "node {} {side} ({:.3}) -> {}",
+            step.node_index,
+            step.signed_distance,
+            locator_child_label(step.selected_child)
+        ));
+    }
+    parts.join(" | ")
+}
+
 fn draw_spatial_tab(ui: &mut egui::Ui, state: &mut DiagnosticsState, renderer: &mut Renderer) {
+    egui::CollapsingHeader::new("Cell visibility")
+        .default_open(true)
+        .show(ui, |ui| {
+            let diagnostics = renderer.spatial_diagnostics();
+            egui::Grid::new("cell_visibility_diagnostics_grid")
+                .num_columns(2)
+                .striped(true)
+                .show(ui, |ui| {
+                    ui.label("Current cell");
+                    ui.label(
+                        diagnostics
+                            .current_cell
+                            .map(|cell| cell.to_string())
+                            .unwrap_or_else(|| "No level".to_string()),
+                    );
+                    ui.end_row();
+
+                    ui.label("Portal-reachable drawable cells");
+                    ui.label(cell_set_diagnostic_label(
+                        diagnostics.portal_drawable_cells,
+                        "",
+                    ));
+                    ui.end_row();
+
+                    ui.label("Fog-reachable cells");
+                    ui.label(cell_set_diagnostic_label(
+                        diagnostics.fog_reachable_cells,
+                        "fallback/all active",
+                    ));
+                    ui.end_row();
+
+                    match &diagnostics.locator {
+                        LocatorDiagnostics::NoLevel => {
+                            ui.label("Locator status");
+                            ui.label("No level");
+                            ui.end_row();
+                        }
+                        LocatorDiagnostics::Trace(trace) => {
+                            ui.label("Locator status");
+                            ui.label("OK");
+                            ui.end_row();
+
+                            ui.label("Locator result");
+                            ui.label(format!("cell {}", trace.result_cell));
+                            ui.end_row();
+
+                            ui.label("Locator descent path");
+                            ui.label(locator_path_label(trace));
+                            ui.end_row();
+                        }
+                    }
+                });
+        });
+
     egui::CollapsingHeader::new("BVH cull baseline (full tree walk)")
         .default_open(true)
         .show(ui, |ui| {
@@ -536,7 +631,7 @@ fn draw_spatial_tab(ui: &mut egui::Ui, state: &mut DiagnosticsState, renderer: &
                     ui.label(diagnostics.estimated_node_visits.to_string());
                     ui.end_row();
 
-                    ui.label("Leaf tests");
+                    ui.label("BVH leaf tests");
                     ui.label(diagnostics.leaf_tests.to_string());
                     ui.end_row();
 
@@ -548,7 +643,7 @@ fn draw_spatial_tab(ui: &mut egui::Ui, state: &mut DiagnosticsState, renderer: &
                     ui.label(diagnostics.visible_cell_rejects.to_string());
                     ui.end_row();
 
-                    ui.label("Submitted leaves");
+                    ui.label("Submitted BVH leaves");
                     ui.label(diagnostics.submitted_leaves.to_string());
                     ui.end_row();
 
@@ -594,14 +689,11 @@ fn draw_spatial_tab(ui: &mut egui::Ui, state: &mut DiagnosticsState, renderer: &
             }
         });
 
-    egui::CollapsingHeader::new("BSP cell bounds")
+    egui::CollapsingHeader::new("Cell bounds")
         .default_open(true)
         .show(ui, |ui| {
             if ui
-                .checkbox(
-                    &mut state.cell_overlay_visible,
-                    "Show drawable BSP cell bounds",
-                )
+                .checkbox(&mut state.cell_overlay_visible, "Show runtime cell bounds")
                 .changed()
             {
                 renderer.set_cell_overlay_visible(state.cell_overlay_visible);
@@ -720,12 +812,12 @@ fn draw_spatial_tab(ui: &mut egui::Ui, state: &mut DiagnosticsState, renderer: &
                 CameraCullPath::Candidate { candidate_leaves } => {
                     ("Candidate (visible-cell)", candidate_leaves.to_string())
                 }
-                CameraCullPath::TreeWalk => ("Tree walk (legacy)", "—".to_string()),
+                CameraCullPath::TreeWalk => ("Tree walk (whole BVH)", "n/a".to_string()),
             };
             ui.label(format!("Path: {path_label}"));
-            ui.label(format!("Candidate leaves: {candidate_label}"));
-            ui.label(format!("Total leaves: {}", diag.total_leaves));
-            ui.label(format!("Submitted leaves: {}", diag.submitted_leaves));
+            ui.label(format!("Candidate BVH leaves: {candidate_label}"));
+            ui.label(format!("Total BVH leaves: {}", diag.total_leaves));
+            ui.label(format!("Submitted BVH leaves: {}", diag.submitted_leaves));
             // Candidate vs total exposes future indirect-compaction headroom.
             if let Some(candidates) = diag.candidate_leaves() {
                 if diag.total_leaves > 0 {

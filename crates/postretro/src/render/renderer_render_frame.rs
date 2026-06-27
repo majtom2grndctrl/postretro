@@ -9,10 +9,10 @@ impl Renderer {
     pub fn render_frame_indirect(
         &mut self,
         cam_vis: CameraCullVisibility<'_>,
-        light_reachable_leaf_mask: &[bool],
-        reachable_leaf_aabbs: &[(Vec3, Vec3)],
+        light_reachable_cell_mask: &[bool],
+        reachable_cell_aabbs: &[(Vec3, Vec3)],
         fog_reachable: &[u32],
-        camera_leaf: Option<u32>,
+        camera_cell: Option<u32>,
         view_proj: Mat4,
         particle_collections: &[(&str, &[u8])],
         now_seconds: f64,
@@ -70,7 +70,7 @@ impl Renderer {
                 self.last_camera_position,
                 crate::lighting::spot_shadow::SHADOW_NEAR_CLIP,
                 &eff_brightness,
-                reachable_leaf_aabbs,
+                reachable_cell_aabbs,
             );
             // Env-gated diagnostics (POSTRETRO_SHADOW_DEBUG=1) — read-only, runs
             // right after slot assignment so it sees this frame's decisions. No
@@ -79,10 +79,10 @@ impl Renderer {
                 self.emit_shadow_debug(
                     view_proj,
                     visible,
-                    light_reachable_leaf_mask,
-                    reachable_leaf_aabbs,
+                    light_reachable_cell_mask,
+                    reachable_cell_aabbs,
                     &eff_brightness,
-                    camera_leaf,
+                    camera_cell,
                 );
             }
             self.light_effective_brightness = eff_brightness;
@@ -346,7 +346,7 @@ impl Renderer {
                 fog_reachable,
                 self.fog_cell_masks.as_deref(),
                 self.fog.canonical_volume_count(),
-                camera_leaf,
+                camera_cell,
             );
             self.fog.repack_active(&self.queue, cell_mask, now_seconds);
         }

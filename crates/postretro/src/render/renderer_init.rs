@@ -582,6 +582,7 @@ impl Renderer {
             debug_prev_visible: ("init", usize::MAX),
             candidate_cull_oor_logged: false,
             camera_cull_diagnostics: crate::render::CameraCullDiagnostics::default(),
+            spatial_diagnostics: crate::render::SpatialDiagnostics::default(),
             bvh_cull_diagnostics: None,
             shadow_debug_enabled: std::env::var("POSTRETRO_SHADOW_DEBUG").ok().as_deref()
                 == Some("1"),

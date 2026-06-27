@@ -25,7 +25,7 @@ struct DfsState<'a> {
     camera_position: Vec3,
     trace: Option<String>,
     visible: Vec<bool>,
-    leaf_count: usize,
+    cell_count: usize,
     considered: u32,
     accepted: u32,
     rejected_solid: u32,
@@ -35,29 +35,29 @@ struct DfsState<'a> {
     rejected_path_cycle: u32,
     rejected_depth_limit: u32,
     depth_limit_warned: bool,
-    camera_leaf: usize,
+    camera_cell: usize,
 }
 
 /// Cycle prevention keys on *portals crossed in the current chain*, not on
-/// leaves reached globally — keying on leaves would silently drop every chain
-/// after the first to arrive at a leaf, losing whichever carried the widest
+/// cells reached globally — keying on cells would silently drop every chain
+/// after the first to arrive at a cell, losing whichever carried the widest
 /// sub-frustum. The visible set is the union across all chains.
 ///
 /// By induction, every narrowed frustum is a strict subset of the camera
-/// frustum, so a per-leaf AABB cull is redundant and omitted.
+/// frustum, so a per-cell AABB cull is redundant and omitted.
 ///
 /// `capture: true` emits per-portal events to the `postretro::portal_trace`
 /// target as a single batched log message. Triggered by `Alt+Shift+1`; see
 /// `context/lib/input.md` §7.
 pub fn portal_traverse(
     camera_position: Vec3,
-    camera_leaf: usize,
+    camera_cell: usize,
     frustum: &Frustum,
     world: &LevelWorld,
     capture: bool,
 ) -> Vec<bool> {
     let (visible, trace) =
-        portal_traverse_inner(camera_position, camera_leaf, frustum, world, capture);
+        portal_traverse_inner(camera_position, camera_cell, frustum, world, capture);
     // One `log::info!` call: one timestamp/target prefix per traced frame
     // instead of one per event.
     if let Some(buf) = trace {
@@ -70,13 +70,13 @@ pub fn portal_traverse(
 // directly without wiring a test logger.
 fn portal_traverse_inner(
     camera_position: Vec3,
-    camera_leaf: usize,
+    camera_cell: usize,
     frustum: &Frustum,
     world: &LevelWorld,
     capture: bool,
 ) -> (Vec<bool>, Option<String>) {
-    let leaf_count = world.leaves.len();
-    let visible = vec![false; leaf_count];
+    let cell_count = world.cell_count();
+    let visible = vec![false; cell_count];
 
     let mut trace = if capture {
         Some(String::with_capacity(512))
@@ -84,39 +84,40 @@ fn portal_traverse_inner(
         None
     };
 
-    // Out-of-range camera leaf: emit a single `leaf_oor` line into the buffer
-    // and bail. `world.leaves[camera_leaf]` would panic, so this path must run
-    // before any header write that reads the leaf.
-    if camera_leaf >= leaf_count {
+    // Out-of-range camera cell: emit a single `cell_oor` line into the buffer
+    // and bail before any header write that reads the cell.
+    if camera_cell >= cell_count {
         if let Some(buf) = trace.as_mut() {
             let _ = writeln!(
                 buf,
-                "abort leaf_oor cam=({:.2},{:.2},{:.2}) leaf={} leaves={}",
-                camera_position.x, camera_position.y, camera_position.z, camera_leaf, leaf_count,
+                "abort cell_oor cam=({:.2},{:.2},{:.2}) cell={} cells={}",
+                camera_position.x, camera_position.y, camera_position.z, camera_cell, cell_count,
             );
         }
         return (visible, trace);
     }
 
-    // `solid` is omitted from the header — solid leaves short-circuit in
+    // `solid` is omitted from the header — solid cells short-circuit in
     // `determine_visible_cells` before reaching `portal_traverse`.
     if let Some(buf) = trace.as_mut() {
-        let leaf = &world.leaves[camera_leaf];
+        let (bounds_min, bounds_max) = world
+            .cell_bounds(camera_cell)
+            .unwrap_or((Vec3::ZERO, Vec3::ZERO));
         let _ = writeln!(
             buf,
-            "cam=({:.2},{:.2},{:.2}) leaf={} faces={} bnds=({:.2},{:.2},{:.2})..({:.2},{:.2},{:.2}) leaves={}",
+            "cam=({:.2},{:.2},{:.2}) cell={} faces={} bnds=({:.2},{:.2},{:.2})..({:.2},{:.2},{:.2}) cells={}",
             camera_position.x,
             camera_position.y,
             camera_position.z,
-            camera_leaf,
-            leaf.face_count,
-            leaf.bounds_min.x,
-            leaf.bounds_min.y,
-            leaf.bounds_min.z,
-            leaf.bounds_max.x,
-            leaf.bounds_max.y,
-            leaf.bounds_max.z,
-            leaf_count,
+            camera_cell,
+            world.cell_face_count(camera_cell),
+            bounds_min.x,
+            bounds_min.y,
+            bounds_min.z,
+            bounds_max.x,
+            bounds_max.y,
+            bounds_max.z,
+            cell_count,
         );
     }
 
@@ -125,7 +126,7 @@ fn portal_traverse_inner(
         camera_position,
         trace,
         visible,
-        leaf_count,
+        cell_count,
         considered: 0,
         accepted: 0,
         rejected_solid: 0,
@@ -135,7 +136,7 @@ fn portal_traverse_inner(
         rejected_path_cycle: 0,
         rejected_depth_limit: 0,
         depth_limit_warned: false,
-        camera_leaf,
+        camera_cell,
     };
 
     // The render pipeline uses a 0.1-unit near clip for depth-buffer
@@ -156,7 +157,7 @@ fn portal_traverse_inner(
     let mut clip_scratch_b: Vec<Vec3> = Vec::new();
     flood(
         &mut state,
-        camera_leaf,
+        camera_cell,
         &visibility_frustum,
         &mut path,
         &mut clip_scratch_a,
@@ -202,14 +203,14 @@ fn portal_traverse_inner(
 // (Doom 3, `neo/renderer/RenderWorld_portals.cpp`).
 fn flood(
     state: &mut DfsState,
-    leaf: usize,
+    cell: usize,
     frustum: &Frustum,
     path: &mut Vec<usize>,
     clip_scratch_a: &mut Vec<Vec3>,
     clip_scratch_b: &mut Vec<Vec3>,
 ) {
-    // Every chain that reaches this leaf contributes to the visible union.
-    state.visible[leaf] = true;
+    // Every chain that reaches this cell contributes to the visible union.
+    state.visible[cell] = true;
 
     if path.len() >= MAX_PORTAL_CHAIN_DEPTH {
         state.rejected_depth_limit += 1;
@@ -221,38 +222,41 @@ fn flood(
             log::warn!(
                 target: "postretro::portal_trace",
                 "[portal_trace] chain depth limit reached (MAX_PORTAL_CHAIN_DEPTH={}) \
-                 camera_leaf={} truncated_at_leaf={} — visible set conservative \
+                 camera_cell={} truncated_at_cell={} — visible set conservative \
                  past this point",
                 MAX_PORTAL_CHAIN_DEPTH,
-                state.camera_leaf,
-                leaf,
+                state.camera_cell,
+                cell,
             );
         }
         // The `log::warn!` fires once per walk; the trace line fires every
         // time the limit is hit so the event appears inline in the capture.
         if let Some(buf) = state.trace.as_mut() {
-            let _ = writeln!(buf, "  rej leaf={} depth", leaf);
+            let _ = writeln!(buf, "  rej cell={} depth", cell);
         }
         return;
     }
 
-    let outbound_len = state.world.leaf_portals[leaf].len();
+    let outbound_len = state.world.cell_portal_count(cell);
 
     // Index rather than iterate: re-borrowing `state.world` each step avoids
     // holding a long-lived borrow across the recursive call (`state` is `&mut`).
     for i in 0..outbound_len {
-        let portal_idx = state.world.leaf_portals[leaf][i];
+        let Some(portal_idx) = state.world.cell_portal_index(cell, i) else {
+            state.rejected_invalid += 1;
+            continue;
+        };
         let portal = &state.world.portals[portal_idx];
 
-        let neighbor = if portal.front_leaf == leaf {
-            portal.back_leaf
+        let neighbor = if portal.front_cell == cell {
+            portal.back_cell
         } else {
-            portal.front_leaf
+            portal.front_cell
         };
 
         state.considered += 1;
 
-        if neighbor >= state.leaf_count {
+        if neighbor >= state.cell_count {
             state.rejected_invalid += 1;
             continue;
         }
@@ -263,7 +267,7 @@ fn flood(
             continue;
         }
 
-        if state.world.leaves[neighbor].is_solid {
+        if state.world.cell_is_solid(neighbor) {
             state.rejected_solid += 1;
             // For `solid` rejects the clip hasn't run yet, so the "clipped
             // verts" half of the v=c/p pair isn't meaningful. Print only the
@@ -272,7 +276,7 @@ fn flood(
                 let _ = writeln!(
                     buf,
                     "  rej {}->{} v={} solid",
-                    leaf,
+                    cell,
                     neighbor,
                     portal.polygon.len(),
                 );
@@ -316,7 +320,7 @@ fn flood(
                 let _ = writeln!(
                     buf,
                     "  rej {}->{} v={}/{} clip",
-                    leaf,
+                    cell,
                     neighbor,
                     clipped_len,
                     portal.polygon.len(),
@@ -331,7 +335,7 @@ fn flood(
                 let _ = writeln!(
                     buf,
                     "  rej {}->{} v={}/{} narrow",
-                    leaf,
+                    cell,
                     neighbor,
                     clipped_len,
                     portal.polygon.len(),
@@ -342,7 +346,7 @@ fn flood(
 
         state.accepted += 1;
         if let Some(buf) = state.trace.as_mut() {
-            let _ = writeln!(buf, "  acc {}->{} v={}", leaf, neighbor, clipped_len);
+            let _ = writeln!(buf, "  acc {}->{} v={}", cell, neighbor, clipped_len);
         }
 
         // Push/pop so sibling branches at this depth see an unchanged path.
@@ -649,7 +653,7 @@ pub fn narrow_frustum(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::prl::{BspChild, LeafData, LevelWorld, NodeData, PortalData};
+    use crate::prl::{CellData, LevelWorld, PortalData};
     use crate::visibility::{FrustumPlane, is_aabb_outside_frustum};
     use glam::Mat4;
 
@@ -711,78 +715,50 @@ mod tests {
         extract_test_frustum(proj * view)
     }
 
-    /// Build a three-leaf chain: A (leaf 0) -- portal 0 -- B (leaf 1) -- portal 1 -- C (leaf 2)
-    /// arranged along the X axis.
-    fn three_leaf_chain() -> LevelWorld {
-        let portal_0 = PortalData {
-            polygon: vec![
-                Vec3::new(32.0, 0.0, 0.0),
-                Vec3::new(32.0, 64.0, 0.0),
-                Vec3::new(32.0, 64.0, 64.0),
-                Vec3::new(32.0, 0.0, 64.0),
-            ],
-            front_leaf: 0,
-            back_leaf: 1,
-        };
-        let portal_1 = PortalData {
-            polygon: vec![
-                Vec3::new(64.0, 0.0, 0.0),
-                Vec3::new(64.0, 64.0, 0.0),
-                Vec3::new(64.0, 64.0, 64.0),
-                Vec3::new(64.0, 0.0, 64.0),
-            ],
-            front_leaf: 1,
-            back_leaf: 2,
-        };
+    fn test_cell(bounds_min: Vec3, bounds_max: Vec3, is_solid: bool) -> CellData {
+        CellData {
+            bounds_min,
+            bounds_max,
+            face_start: 0,
+            face_count: 0,
+            portal_ref_start: 0,
+            portal_ref_count: 0,
+            is_solid,
+            is_exterior: false,
+            is_drawable: false,
+        }
+    }
 
+    fn set_portal_refs(cells: &mut [CellData], refs_by_cell: &[&[u32]]) -> Vec<u32> {
+        let mut refs = Vec::new();
+        for (cell, cell_refs) in cells.iter_mut().zip(refs_by_cell.iter()) {
+            if cell_refs.is_empty() {
+                cell.portal_ref_start = 0;
+                cell.portal_ref_count = 0;
+            } else {
+                cell.portal_ref_start = refs.len() as u32;
+                cell.portal_ref_count = cell_refs.len() as u32;
+                refs.extend_from_slice(cell_refs);
+            }
+        }
+        refs
+    }
+
+    fn test_world(
+        mut cells: Vec<CellData>,
+        refs_by_cell: &[&[u32]],
+        portals: Vec<PortalData>,
+    ) -> LevelWorld {
+        let cell_portal_refs = set_portal_refs(&mut cells, refs_by_cell);
         LevelWorld {
             vertices: vec![],
             indices: vec![],
             face_meta: vec![],
-            nodes: vec![
-                NodeData {
-                    plane_normal: Vec3::X,
-                    plane_distance: 32.0,
-                    front: BspChild::Node(1),
-                    back: BspChild::Leaf(0),
-                },
-                NodeData {
-                    plane_normal: Vec3::X,
-                    plane_distance: 64.0,
-                    front: BspChild::Leaf(2),
-                    back: BspChild::Leaf(1),
-                },
-            ],
-            leaves: vec![
-                LeafData {
-                    bounds_min: Vec3::new(0.0, 0.0, 0.0),
-                    bounds_max: Vec3::new(32.0, 64.0, 64.0),
-                    face_start: 0,
-                    face_count: 0,
-                    is_solid: false,
-                },
-                LeafData {
-                    bounds_min: Vec3::new(32.0, 0.0, 0.0),
-                    bounds_max: Vec3::new(64.0, 64.0, 64.0),
-                    face_start: 0,
-                    face_count: 0,
-                    is_solid: false,
-                },
-                LeafData {
-                    bounds_min: Vec3::new(64.0, 0.0, 0.0),
-                    bounds_max: Vec3::new(96.0, 64.0, 64.0),
-                    face_start: 0,
-                    face_count: 0,
-                    is_solid: false,
-                },
-            ],
-            root: BspChild::Node(0),
-            portals: vec![portal_0, portal_1],
-            leaf_portals: vec![
-                vec![0],    // leaf 0 touches portal 0
-                vec![0, 1], // leaf 1 touches portals 0 and 1
-                vec![1],    // leaf 2 touches portal 1
-            ],
+            cells,
+            cell_portal_refs,
+            cell_locator_root: crate::prl::CellLocatorChild::Cell(0),
+            cell_locator_nodes: vec![],
+            portals,
             has_portals: true,
             texture_names: vec![],
             texture_cache_keys:
@@ -814,100 +790,112 @@ mod tests {
         }
     }
 
+    fn empty_test_world() -> LevelWorld {
+        let mut world = test_world(Vec::new(), &[], Vec::new());
+        world.has_portals = false;
+        world
+    }
+
+    /// Build a three-cell chain: A (cell 0) -- portal 0 -- B (cell 1) -- portal 1 -- C (cell 2)
+    /// arranged along the X axis.
+    fn three_cell_chain() -> LevelWorld {
+        let portal_0 = PortalData {
+            polygon: vec![
+                Vec3::new(32.0, 0.0, 0.0),
+                Vec3::new(32.0, 64.0, 0.0),
+                Vec3::new(32.0, 64.0, 64.0),
+                Vec3::new(32.0, 0.0, 64.0),
+            ],
+            front_cell: 0,
+            back_cell: 1,
+        };
+        let portal_1 = PortalData {
+            polygon: vec![
+                Vec3::new(64.0, 0.0, 0.0),
+                Vec3::new(64.0, 64.0, 0.0),
+                Vec3::new(64.0, 64.0, 64.0),
+                Vec3::new(64.0, 0.0, 64.0),
+            ],
+            front_cell: 1,
+            back_cell: 2,
+        };
+
+        test_world(
+            vec![
+                test_cell(Vec3::new(0.0, 0.0, 0.0), Vec3::new(32.0, 64.0, 64.0), false),
+                test_cell(
+                    Vec3::new(32.0, 0.0, 0.0),
+                    Vec3::new(64.0, 64.0, 64.0),
+                    false,
+                ),
+                test_cell(
+                    Vec3::new(64.0, 0.0, 0.0),
+                    Vec3::new(96.0, 64.0, 64.0),
+                    false,
+                ),
+            ],
+            &[&[0], &[0, 1], &[1]],
+            vec![portal_0, portal_1],
+        )
+    }
+
     #[test]
-    fn portal_traverse_camera_leaf_always_visible() {
-        let world = three_leaf_chain();
-        // Camera in leaf 0, looking away from all portals.
+    fn portal_traverse_camera_cell_always_visible() {
+        let world = three_cell_chain();
+        // Camera in cell 0, looking away from all portals.
         let frustum = make_camera_frustum(Vec3::new(16.0, 32.0, 32.0), Vec3::NEG_X);
         let visible = portal_traverse(Vec3::new(16.0, 32.0, 32.0), 0, &frustum, &world, false);
-        assert!(visible[0], "camera leaf should always be visible");
+        assert!(visible[0], "camera cell should always be visible");
     }
 
     #[test]
     fn portal_traverse_straight_corridor_sees_all_three() {
-        let world = three_leaf_chain();
-        // Camera in leaf 0, looking through portals toward +X.
+        let world = three_cell_chain();
+        // Camera in cell 0, looking through portals toward +X.
         let camera_pos = Vec3::new(16.0, 32.0, 32.0);
         let frustum = make_camera_frustum(camera_pos, Vec3::X);
         let visible = portal_traverse(camera_pos, 0, &frustum, &world, false);
-        assert!(visible[0], "camera leaf A should be visible");
-        assert!(visible[1], "leaf B should be visible through portal 0");
-        assert!(visible[2], "leaf C should be visible through portals 0+1");
+        assert!(visible[0], "camera cell A should be visible");
+        assert!(visible[1], "cell B should be visible through portal 0");
+        assert!(visible[2], "cell C should be visible through portals 0+1");
     }
 
     #[test]
     fn portal_traverse_looking_away_hides_distant_leaves() {
-        let world = three_leaf_chain();
-        // Camera in leaf 0, looking away from the portals (toward -X).
+        let world = three_cell_chain();
+        // Camera in cell 0, looking away from the portals (toward -X).
         let camera_pos = Vec3::new(16.0, 32.0, 32.0);
         let frustum = make_camera_frustum(camera_pos, Vec3::NEG_X);
         let visible = portal_traverse(camera_pos, 0, &frustum, &world, false);
-        assert!(visible[0], "camera leaf should be visible");
+        assert!(visible[0], "camera cell should be visible");
         // Portals are at X=32 and X=64, camera looks toward -X, so they're behind.
         assert!(
             !visible[1],
-            "leaf B should not be visible when looking away"
+            "cell B should not be visible when looking away"
         );
         assert!(
             !visible[2],
-            "leaf C should not be visible when looking away"
+            "cell C should not be visible when looking away"
         );
     }
 
     #[test]
     fn portal_traverse_skips_solid_neighbors() {
-        let mut world = three_leaf_chain();
-        world.leaves[1].is_solid = true;
+        let mut world = three_cell_chain();
+        world.cells[1].is_solid = true;
 
         let camera_pos = Vec3::new(16.0, 32.0, 32.0);
         let frustum = make_camera_frustum(camera_pos, Vec3::X);
         let visible = portal_traverse(camera_pos, 0, &frustum, &world, false);
-        assert!(visible[0], "camera leaf should be visible");
-        assert!(!visible[1], "solid leaf should not be visible");
-        // Leaf 2 is behind solid leaf 1, so it can't be reached.
-        assert!(!visible[2], "leaf behind solid should not be visible");
+        assert!(visible[0], "camera cell should be visible");
+        assert!(!visible[1], "solid cell should not be visible");
+        // Cell 2 is behind solid cell 1, so it can't be reached.
+        assert!(!visible[2], "cell behind solid should not be visible");
     }
 
     #[test]
     fn portal_traverse_empty_world() {
-        let world = LevelWorld {
-            vertices: vec![],
-            indices: vec![],
-            face_meta: vec![],
-            nodes: vec![],
-            leaves: vec![],
-            root: BspChild::Leaf(0),
-            portals: vec![],
-            leaf_portals: vec![],
-            has_portals: false,
-            texture_names: vec![],
-            texture_cache_keys:
-                postretro_level_format::texture_cache_keys::TextureCacheKeysSection { keys: vec![] },
-            bvh: crate::geometry::BvhTree {
-                nodes: vec![],
-                leaves: vec![],
-                root_node_index: 0,
-            },
-            lights: vec![],
-            light_influences: vec![],
-            sh_volume: None,
-            lightmap: None,
-            lightmap_mode: crate::prl::LightmapMode::Shadowed,
-            sdf_atlas: None,
-            chunk_light_list: None,
-            animated_light_chunks: None,
-            animated_light_weight_maps: None,
-            delta_sh_volumes: None,
-            direct_sh_volume: None,
-            data_script: None,
-            map_entities: Vec::new(),
-            fog_volumes: Vec::new(),
-            fog_pixel_scale: 4,
-            initial_gravity: -9.81,
-            fog_cell_masks: None,
-            navmesh: None,
-            cell_draw_index: None,
-        };
+        let world = empty_test_world();
 
         let frustum = make_camera_frustum(Vec3::ZERO, Vec3::NEG_Z);
         let visible = portal_traverse(Vec3::ZERO, 0, &frustum, &world, false);
@@ -927,8 +915,8 @@ mod tests {
                 Vec3::new(32.0, 64.0, 64.0),
                 Vec3::new(32.0, 0.0, 64.0),
             ],
-            front_leaf: 0,
-            back_leaf: 1,
+            front_cell: 0,
+            back_cell: 1,
         };
         // Portal 1 is on the Z=64 plane — perpendicular to the camera's line of sight.
         // Positioned far to the +Z side of the corridor.
@@ -939,80 +927,37 @@ mod tests {
                 Vec3::new(64.0, 64.0, 200.0),
                 Vec3::new(32.0, 64.0, 200.0),
             ],
-            front_leaf: 1,
-            back_leaf: 2,
+            front_cell: 1,
+            back_cell: 2,
         };
 
-        let world = LevelWorld {
-            vertices: vec![],
-            indices: vec![],
-            face_meta: vec![],
-            nodes: vec![],
-            leaves: vec![
-                LeafData {
-                    bounds_min: Vec3::new(0.0, 0.0, 0.0),
-                    bounds_max: Vec3::new(32.0, 64.0, 64.0),
-                    face_start: 0,
-                    face_count: 0,
-                    is_solid: false,
-                },
-                LeafData {
-                    bounds_min: Vec3::new(32.0, 0.0, 0.0),
-                    bounds_max: Vec3::new(64.0, 64.0, 200.0),
-                    face_start: 0,
-                    face_count: 0,
-                    is_solid: false,
-                },
-                LeafData {
-                    bounds_min: Vec3::new(32.0, 0.0, 200.0),
-                    bounds_max: Vec3::new(64.0, 64.0, 264.0),
-                    face_start: 0,
-                    face_count: 0,
-                    is_solid: false,
-                },
+        let world = test_world(
+            vec![
+                test_cell(Vec3::new(0.0, 0.0, 0.0), Vec3::new(32.0, 64.0, 64.0), false),
+                test_cell(
+                    Vec3::new(32.0, 0.0, 0.0),
+                    Vec3::new(64.0, 64.0, 200.0),
+                    false,
+                ),
+                test_cell(
+                    Vec3::new(32.0, 0.0, 200.0),
+                    Vec3::new(64.0, 64.0, 264.0),
+                    false,
+                ),
             ],
-            root: BspChild::Leaf(0),
-            portals: vec![portal_0, portal_1],
-            leaf_portals: vec![vec![0], vec![0, 1], vec![1]],
-            has_portals: true,
-            texture_names: vec![],
-            texture_cache_keys:
-                postretro_level_format::texture_cache_keys::TextureCacheKeysSection { keys: vec![] },
-            bvh: crate::geometry::BvhTree {
-                nodes: vec![],
-                leaves: vec![],
-                root_node_index: 0,
-            },
-            lights: vec![],
-            light_influences: vec![],
-            sh_volume: None,
-            lightmap: None,
-            lightmap_mode: crate::prl::LightmapMode::Shadowed,
-            sdf_atlas: None,
-            chunk_light_list: None,
-            animated_light_chunks: None,
-            animated_light_weight_maps: None,
-            delta_sh_volumes: None,
-            direct_sh_volume: None,
-            data_script: None,
-            map_entities: Vec::new(),
-            fog_volumes: Vec::new(),
-            fog_pixel_scale: 4,
-            initial_gravity: -9.81,
-            fog_cell_masks: None,
-            navmesh: None,
-            cell_draw_index: None,
-        };
+            &[&[0], &[0, 1], &[1]],
+            vec![portal_0, portal_1],
+        );
 
-        // Camera in leaf A, looking straight along +X toward portal 0.
+        // Camera in cell A, looking straight along +X toward portal 0.
         let camera_pos = Vec3::new(16.0, 32.0, 32.0);
         let frustum = make_camera_frustum(camera_pos, Vec3::X);
         let visible = portal_traverse(camera_pos, 0, &frustum, &world, false);
-        assert!(visible[0], "camera leaf A should be visible");
-        assert!(visible[1], "leaf B should be visible through portal 0");
+        assert!(visible[0], "camera cell A should be visible");
+        assert!(visible[1], "cell B should be visible through portal 0");
         assert!(
             !visible[2],
-            "leaf C should not be visible — portal 1 is around the corner at Z=200"
+            "cell C should not be visible — portal 1 is around the corner at Z=200"
         );
     }
 
@@ -1077,7 +1022,7 @@ mod tests {
     ///
     /// In the broken `test-2.prl` trace, this was the failure along chain
     /// `41 → 43 → 38 → 37 → 31 → 30`: `rej 43->38 v=5/4 narrow` broke the
-    /// only chain that reached leaf 30, the leaf holding the missing wall
+    /// only chain that reached cell 30, the cell holding the missing wall
     /// and ceiling panels.
     ///
     /// The fix is the three-state `FRONT`/`BACK`/`ON` classifier from
@@ -1194,10 +1139,10 @@ mod tests {
         // Room layout with NARROW portals (2 units wide) matching the pillar
         // gap dimensions that cause issues in portal generation:
         //
-        // Leaf A (camera room, X=0..120) --[portal 0 at X=120, Z=62..64]--> Leaf B (left gap)
-        //                                --[portal 1 at X=120, Z=66..68]--> Leaf C (right gap)
-        // Leaf B --[portal 2 at X=136, Z=62..64]--> Leaf D (far room, X=136..256)
-        // Leaf C --[portal 3 at X=136, Z=66..68]--> Leaf D
+        // Cell A (camera room, X=0..120) --[portal 0 at X=120, Z=62..64]--> Cell B (left gap)
+        //                                --[portal 1 at X=120, Z=66..68]--> Cell C (right gap)
+        // Cell B --[portal 2 at X=136, Z=62..64]--> Cell D (far room, X=136..256)
+        // Cell C --[portal 3 at X=136, Z=66..68]--> Cell D
         //
         // The portals are only 2 units wide (matching a narrow doorway gap).
         let portal_a_b = PortalData {
@@ -1207,8 +1152,8 @@ mod tests {
                 Vec3::new(120.0, 112.0, 64.0),
                 Vec3::new(120.0, 16.0, 64.0),
             ],
-            front_leaf: 0,
-            back_leaf: 1,
+            front_cell: 0,
+            back_cell: 1,
         };
         let portal_a_c = PortalData {
             polygon: vec![
@@ -1217,8 +1162,8 @@ mod tests {
                 Vec3::new(120.0, 112.0, 68.0),
                 Vec3::new(120.0, 16.0, 68.0),
             ],
-            front_leaf: 0,
-            back_leaf: 2,
+            front_cell: 0,
+            back_cell: 2,
         };
         let portal_b_d = PortalData {
             polygon: vec![
@@ -1227,8 +1172,8 @@ mod tests {
                 Vec3::new(136.0, 112.0, 64.0),
                 Vec3::new(136.0, 16.0, 64.0),
             ],
-            front_leaf: 1,
-            back_leaf: 3,
+            front_cell: 1,
+            back_cell: 3,
         };
         let portal_c_d = PortalData {
             polygon: vec![
@@ -1237,123 +1182,51 @@ mod tests {
                 Vec3::new(136.0, 112.0, 68.0),
                 Vec3::new(136.0, 16.0, 68.0),
             ],
-            front_leaf: 2,
-            back_leaf: 3,
+            front_cell: 2,
+            back_cell: 3,
         };
 
-        let world = LevelWorld {
-            vertices: vec![],
-            indices: vec![],
-            face_meta: vec![],
-            nodes: vec![
-                // Root splits at X=120
-                NodeData {
-                    plane_normal: Vec3::X,
-                    plane_distance: 120.0,
-                    front: BspChild::Node(1),
-                    back: BspChild::Leaf(0),
-                },
-                // Split at X=136
-                NodeData {
-                    plane_normal: Vec3::X,
-                    plane_distance: 136.0,
-                    front: BspChild::Leaf(3),
-                    back: BspChild::Node(2),
-                },
-                // Split at Z=65 (between the two gaps) to separate B and C
-                NodeData {
-                    plane_normal: Vec3::Z,
-                    plane_distance: 65.0,
-                    front: BspChild::Leaf(2),
-                    back: BspChild::Leaf(1),
-                },
+        let world = test_world(
+            vec![
+                test_cell(
+                    Vec3::new(0.0, 0.0, 0.0),
+                    Vec3::new(120.0, 128.0, 128.0),
+                    false,
+                ),
+                test_cell(
+                    Vec3::new(120.0, 16.0, 62.0),
+                    Vec3::new(136.0, 112.0, 64.0),
+                    false,
+                ),
+                test_cell(
+                    Vec3::new(120.0, 16.0, 66.0),
+                    Vec3::new(136.0, 112.0, 68.0),
+                    false,
+                ),
+                test_cell(
+                    Vec3::new(136.0, 0.0, 0.0),
+                    Vec3::new(256.0, 128.0, 128.0),
+                    false,
+                ),
             ],
-            leaves: vec![
-                // Leaf 0: camera room (A), X=0..120
-                LeafData {
-                    bounds_min: Vec3::new(0.0, 0.0, 0.0),
-                    bounds_max: Vec3::new(120.0, 128.0, 128.0),
-                    face_start: 0,
-                    face_count: 0,
-                    is_solid: false,
-                },
-                // Leaf 1: left gap passage (B), Z=62..64
-                LeafData {
-                    bounds_min: Vec3::new(120.0, 16.0, 62.0),
-                    bounds_max: Vec3::new(136.0, 112.0, 64.0),
-                    face_start: 0,
-                    face_count: 0,
-                    is_solid: false,
-                },
-                // Leaf 2: right gap passage (C), Z=66..68
-                LeafData {
-                    bounds_min: Vec3::new(120.0, 16.0, 66.0),
-                    bounds_max: Vec3::new(136.0, 112.0, 68.0),
-                    face_start: 0,
-                    face_count: 0,
-                    is_solid: false,
-                },
-                // Leaf 3: far room (D), X=136..256
-                LeafData {
-                    bounds_min: Vec3::new(136.0, 0.0, 0.0),
-                    bounds_max: Vec3::new(256.0, 128.0, 128.0),
-                    face_start: 0,
-                    face_count: 0,
-                    is_solid: false,
-                },
-            ],
-            root: BspChild::Node(0),
-            portals: vec![portal_a_b, portal_a_c, portal_b_d, portal_c_d],
-            leaf_portals: vec![
-                vec![0, 1], // leaf A touches portal 0 (A-B) and portal 1 (A-C)
-                vec![0, 2], // leaf B touches portal 0 (A-B) and portal 2 (B-D)
-                vec![1, 3], // leaf C touches portal 1 (A-C) and portal 3 (C-D)
-                vec![2, 3], // leaf D touches portal 2 (B-D) and portal 3 (C-D)
-            ],
-            has_portals: true,
-            texture_names: vec![],
-            texture_cache_keys:
-                postretro_level_format::texture_cache_keys::TextureCacheKeysSection { keys: vec![] },
-            bvh: crate::geometry::BvhTree {
-                nodes: vec![],
-                leaves: vec![],
-                root_node_index: 0,
-            },
-            lights: vec![],
-            light_influences: vec![],
-            sh_volume: None,
-            lightmap: None,
-            lightmap_mode: crate::prl::LightmapMode::Shadowed,
-            sdf_atlas: None,
-            chunk_light_list: None,
-            animated_light_chunks: None,
-            animated_light_weight_maps: None,
-            delta_sh_volumes: None,
-            direct_sh_volume: None,
-            data_script: None,
-            map_entities: Vec::new(),
-            fog_volumes: Vec::new(),
-            fog_pixel_scale: 4,
-            initial_gravity: -9.81,
-            fog_cell_masks: None,
-            navmesh: None,
-            cell_draw_index: None,
-        };
+            &[&[0, 1], &[0, 2], &[1, 3], &[2, 3]],
+            vec![portal_a_b, portal_a_c, portal_b_d, portal_c_d],
+        );
 
         // Camera looking through the LEFT passage (Z=63, center of Z=62..64 gap).
-        // Camera is in leaf A, looking toward +X.
+        // Camera is in cell A, looking toward +X.
         {
             let camera_pos = Vec3::new(16.0, 64.0, 63.0);
             let frustum = make_camera_frustum(camera_pos, Vec3::X);
             let visible = portal_traverse(camera_pos, 0, &frustum, &world, false);
-            assert!(visible[0], "camera leaf A should be visible");
+            assert!(visible[0], "camera cell A should be visible");
             assert!(
                 visible[1],
-                "leaf B (left gap) should be visible when looking through left doorway"
+                "cell B (left gap) should be visible when looking through left doorway"
             );
             assert!(
                 visible[3],
-                "leaf D (far room) should be visible through left passage (A->B->D). \
+                "cell D (far room) should be visible through left passage (A->B->D). \
                  If not, the narrow frustum through the 2-unit-wide portal A-B may be \
                  rejecting the 2-unit-wide portal B-D."
             );
@@ -1364,14 +1237,14 @@ mod tests {
             let camera_pos = Vec3::new(16.0, 64.0, 67.0);
             let frustum = make_camera_frustum(camera_pos, Vec3::X);
             let visible = portal_traverse(camera_pos, 0, &frustum, &world, false);
-            assert!(visible[0], "camera leaf A should be visible");
+            assert!(visible[0], "camera cell A should be visible");
             assert!(
                 visible[2],
-                "leaf C (right gap) should be visible when looking through right doorway"
+                "cell C (right gap) should be visible when looking through right doorway"
             );
             assert!(
                 visible[3],
-                "leaf D (far room) should be visible through right passage (A->C->D). \
+                "cell D (far room) should be visible through right passage (A->C->D). \
                  If not, the narrow frustum through the 2-unit-wide portal A-C may be \
                  rejecting the 2-unit-wide portal C-D."
             );
@@ -1538,7 +1411,7 @@ mod tests {
     #[test]
     fn multi_hop_narrowed_frustums_preserve_strict_subset_invariant() {
         // Three collinear portals along +X. After clipping+narrowing at each
-        // hop, every leaf visible in the narrowed frustum must also be inside
+        // hop, every cell visible in the narrowed frustum must also be inside
         // the original camera frustum.
         let camera_pos = Vec3::new(0.0, 0.0, 0.0);
         let parent = make_camera_frustum(camera_pos, Vec3::X);
@@ -1665,16 +1538,16 @@ mod tests {
 
     #[test]
     fn portal_traverse_straddling_portal_hides_unreachable_side_branch() {
-        // Straight-through layout: camera in leaf 0 looking +X.
+        // Straight-through layout: camera in cell 0 looking +X.
         // Portal 0 (A -> B) straddles the camera's side plane — it extends
         // far beyond the frustum to the +Y direction. Without polygon
         // clipping, frustum narrowing through the un-clipped portal could
         // produce a cone that extends into -Y regions the camera cannot see
         // and incorrectly admit off-axis neighbors.
         //
-        // This test asserts that with clipping in place, leaf B is still
-        // visible (the portal is in view) and a far off-axis leaf C reached
-        // through an orthogonal portal at leaf B is correctly hidden.
+        // This test asserts that with clipping in place, cell B is still
+        // visible (the portal is in view) and a far off-axis cell C reached
+        // through an orthogonal portal at cell B is correctly hidden.
         let portal_a_b = PortalData {
             polygon: vec![
                 // 1000-unit-tall portal at X=10, centered on Z=0.
@@ -1683,11 +1556,11 @@ mod tests {
                 Vec3::new(10.0, 500.0, 1.0),
                 Vec3::new(10.0, -500.0, 1.0),
             ],
-            front_leaf: 0,
-            back_leaf: 1,
+            front_cell: 0,
+            back_cell: 1,
         };
         // Portal 1 (B -> C) is far out in +Y, well outside the camera's
-        // actual view cone even though leaf B is reachable.
+        // actual view cone even though cell B is reachable.
         let portal_b_c = PortalData {
             polygon: vec![
                 Vec3::new(15.0, 400.0, -1.0),
@@ -1695,88 +1568,49 @@ mod tests {
                 Vec3::new(20.0, 400.0, 1.0),
                 Vec3::new(15.0, 400.0, 1.0),
             ],
-            front_leaf: 1,
-            back_leaf: 2,
+            front_cell: 1,
+            back_cell: 2,
         };
 
-        let world = LevelWorld {
-            vertices: vec![],
-            indices: vec![],
-            face_meta: vec![],
-            nodes: vec![],
-            leaves: vec![
-                LeafData {
-                    bounds_min: Vec3::new(0.0, -500.0, -500.0),
-                    bounds_max: Vec3::new(10.0, 500.0, 500.0),
-                    face_start: 0,
-                    face_count: 0,
-                    is_solid: false,
-                },
-                LeafData {
-                    bounds_min: Vec3::new(10.0, -500.0, -500.0),
-                    bounds_max: Vec3::new(25.0, 500.0, 500.0),
-                    face_start: 0,
-                    face_count: 0,
-                    is_solid: false,
-                },
-                LeafData {
-                    bounds_min: Vec3::new(15.0, 400.0, -500.0),
-                    bounds_max: Vec3::new(25.0, 600.0, 500.0),
-                    face_start: 0,
-                    face_count: 0,
-                    is_solid: false,
-                },
+        let world = test_world(
+            vec![
+                test_cell(
+                    Vec3::new(0.0, -500.0, -500.0),
+                    Vec3::new(10.0, 500.0, 500.0),
+                    false,
+                ),
+                test_cell(
+                    Vec3::new(10.0, -500.0, -500.0),
+                    Vec3::new(25.0, 500.0, 500.0),
+                    false,
+                ),
+                test_cell(
+                    Vec3::new(15.0, 400.0, -500.0),
+                    Vec3::new(25.0, 600.0, 500.0),
+                    false,
+                ),
             ],
-            root: BspChild::Leaf(0),
-            portals: vec![portal_a_b, portal_b_c],
-            leaf_portals: vec![vec![0], vec![0, 1], vec![1]],
-            has_portals: true,
-            texture_names: vec![],
-            texture_cache_keys:
-                postretro_level_format::texture_cache_keys::TextureCacheKeysSection { keys: vec![] },
-            bvh: crate::geometry::BvhTree {
-                nodes: vec![],
-                leaves: vec![],
-                root_node_index: 0,
-            },
-            lights: vec![],
-            light_influences: vec![],
-            sh_volume: None,
-            lightmap: None,
-            lightmap_mode: crate::prl::LightmapMode::Shadowed,
-            sdf_atlas: None,
-            chunk_light_list: None,
-            animated_light_chunks: None,
-            animated_light_weight_maps: None,
-            delta_sh_volumes: None,
-            direct_sh_volume: None,
-            data_script: None,
-            map_entities: Vec::new(),
-            fog_volumes: Vec::new(),
-            fog_pixel_scale: 4,
-            initial_gravity: -9.81,
-            fog_cell_masks: None,
-            navmesh: None,
-            cell_draw_index: None,
-        };
+            &[&[0], &[0, 1], &[1]],
+            vec![portal_a_b, portal_b_c],
+        );
 
         let camera_pos = Vec3::new(1.0, 0.0, 0.0);
         let frustum = make_camera_frustum(camera_pos, Vec3::X);
         let visible = portal_traverse(camera_pos, 0, &frustum, &world, false);
 
-        assert!(visible[0], "camera leaf should always be visible");
+        assert!(visible[0], "camera cell should always be visible");
         assert!(
             visible[1],
-            "leaf B should be visible through the straddling portal"
+            "cell B should be visible through the straddling portal"
         );
         assert!(
             !visible[2],
-            "leaf C should be hidden: portal 1 is far off-axis and \
+            "cell C should be hidden: portal 1 is far off-axis and \
              unreachable through the clipped sight cone"
         );
     }
 
-    /// Regression test for the "two paths to the same leaf, narrower path
+    /// Regression test for the "two paths to the same cell, narrower path
     /// wins, downstream reach is lost" topology fixed by per-chain DFS.
     ///
     /// Topology (abstract; bounding boxes are not used by portal_traverse):
@@ -1805,7 +1639,7 @@ mod tests {
     ///   cone at X=30 (clips to empty) and **inside** the wide C-path cone
     ///   (passes through cleanly).
     ///
-    /// Under BFS-keyed-on-leaves (the former implementation):
+    /// Under BFS-keyed-on-cells (the former implementation):
     ///   A's outbound iteration order is [0, 1] → A→B runs first → X marked
     ///   visible with the narrow frustum planted by the B-path → A→C→X is
     ///   then rejected by the already-visited early-skip → X's outbound
@@ -1815,7 +1649,7 @@ mod tests {
     ///   Both A→B→X and A→C→X chains run independently. The C-path produces
     ///   a wide frustum at X that does not clip X→Y to empty → Y visible.
     ///
-    /// The test asserts visibility of all five leaves. The BFS topology fails
+    /// The test asserts visibility of all five cells. The BFS topology fails
     /// on `visible[4]` (Y) and DFS passes.
     #[test]
     fn portal_traverse_two_paths_to_same_leaf_uses_widest_frustum() {
@@ -1827,8 +1661,8 @@ mod tests {
                 Vec3::new(10.0, 0.05, 0.05),
                 Vec3::new(10.0, -0.05, 0.05),
             ],
-            front_leaf: 0, // A
-            back_leaf: 1,  // B
+            front_cell: 0, // A
+            back_cell: 1,  // B
         };
 
         // Portal 1: A→C, WIDE aperture at X=10 (same spatial position as
@@ -1841,8 +1675,8 @@ mod tests {
                 Vec3::new(10.0, 2.0, 2.0),
                 Vec3::new(10.0, -2.0, 2.0),
             ],
-            front_leaf: 0, // A
-            back_leaf: 2,  // C
+            front_cell: 0, // A
+            back_cell: 2,  // C
         };
 
         // Portal 2: B→X at X=20.
@@ -1853,8 +1687,8 @@ mod tests {
                 Vec3::new(20.0, 1.0, 1.0),
                 Vec3::new(20.0, -1.0, 1.0),
             ],
-            front_leaf: 1, // B
-            back_leaf: 3,  // X
+            front_cell: 1, // B
+            back_cell: 3,  // X
         };
 
         // Portal 3: C→X at X=20 (same spatial position as portal 2).
@@ -1865,8 +1699,8 @@ mod tests {
                 Vec3::new(20.0, 1.0, 1.0),
                 Vec3::new(20.0, -1.0, 1.0),
             ],
-            front_leaf: 2, // C
-            back_leaf: 3,  // X
+            front_cell: 2, // C
+            back_cell: 3,  // X
         };
 
         // Portal 4: X→Y at X=30, offset to Y=1..2 so it sits outside the
@@ -1878,71 +1712,32 @@ mod tests {
                 Vec3::new(30.0, 2.0, 0.5),
                 Vec3::new(30.0, 1.0, 0.5),
             ],
-            front_leaf: 3, // X
-            back_leaf: 4,  // Y
+            front_cell: 3, // X
+            back_cell: 4,  // Y
         };
 
-        let leaf_template = || LeafData {
-            bounds_min: Vec3::new(-1000.0, -1000.0, -1000.0),
-            bounds_max: Vec3::new(1000.0, 1000.0, 1000.0),
-            face_start: 0,
-            face_count: 0,
-            is_solid: false,
+        let cell_template = || {
+            test_cell(
+                Vec3::new(-1000.0, -1000.0, -1000.0),
+                Vec3::new(1000.0, 1000.0, 1000.0),
+                false,
+            )
         };
 
-        let world = LevelWorld {
-            vertices: vec![],
-            indices: vec![],
-            face_meta: vec![],
-            nodes: vec![],
-            leaves: vec![
-                leaf_template(), // 0: A
-                leaf_template(), // 1: B
-                leaf_template(), // 2: C
-                leaf_template(), // 3: X
-                leaf_template(), // 4: Y
+        let world = test_world(
+            vec![
+                cell_template(), // 0: A
+                cell_template(), // 1: B
+                cell_template(), // 2: C
+                cell_template(), // 3: X
+                cell_template(), // 4: Y
             ],
-            root: BspChild::Leaf(0),
-            portals: vec![portal_a_b, portal_a_c, portal_b_x, portal_c_x, portal_x_y],
             // Iteration order matters: A lists portal 0 (narrow) BEFORE
             // portal 1 (wide) so BFS would deterministically plant the
             // narrow frustum at X first.
-            leaf_portals: vec![
-                vec![0, 1],    // A touches portals 0, 1
-                vec![0, 2],    // B touches portals 0, 2
-                vec![1, 3],    // C touches portals 1, 3
-                vec![2, 3, 4], // X touches portals 2, 3, 4
-                vec![4],       // Y touches portal 4
-            ],
-            has_portals: true,
-            texture_names: vec![],
-            texture_cache_keys:
-                postretro_level_format::texture_cache_keys::TextureCacheKeysSection { keys: vec![] },
-            bvh: crate::geometry::BvhTree {
-                nodes: vec![],
-                leaves: vec![],
-                root_node_index: 0,
-            },
-            lights: vec![],
-            light_influences: vec![],
-            sh_volume: None,
-            lightmap: None,
-            lightmap_mode: crate::prl::LightmapMode::Shadowed,
-            sdf_atlas: None,
-            chunk_light_list: None,
-            animated_light_chunks: None,
-            animated_light_weight_maps: None,
-            delta_sh_volumes: None,
-            direct_sh_volume: None,
-            data_script: None,
-            map_entities: Vec::new(),
-            fog_volumes: Vec::new(),
-            fog_pixel_scale: 4,
-            initial_gravity: -9.81,
-            fog_cell_masks: None,
-            navmesh: None,
-            cell_draw_index: None,
-        };
+            &[&[0, 1], &[0, 2], &[1, 3], &[2, 3, 4], &[4]],
+            vec![portal_a_b, portal_a_c, portal_b_x, portal_c_x, portal_x_y],
+        );
 
         // Camera at origin looking +X. The camera frustum is wide enough that
         // both A-outbound portals are accepted on the first hop.
@@ -1950,17 +1745,17 @@ mod tests {
         let frustum = make_camera_frustum(camera_pos, Vec3::X);
         let visible = portal_traverse(camera_pos, 0, &frustum, &world, false);
 
-        assert!(visible[0], "leaf A (camera) must be visible");
-        assert!(visible[1], "leaf B must be visible (A→B direct)");
-        assert!(visible[2], "leaf C must be visible (A→C direct)");
+        assert!(visible[0], "cell A (camera) must be visible");
+        assert!(visible[1], "cell B must be visible (A→B direct)");
+        assert!(visible[2], "cell C must be visible (A→C direct)");
         assert!(
             visible[3],
-            "leaf X must be visible (reachable via either path)"
+            "cell X must be visible (reachable via either path)"
         );
         assert!(
             visible[4],
-            "leaf Y must be visible via the A→C→X→Y chain. Under the \
-             previous BFS-keyed-on-leaves implementation, the A→B→X chain \
+            "cell Y must be visible via the A→C→X→Y chain. Under the \
+             previous BFS-keyed-on-cells implementation, the A→B→X chain \
              would plant a narrow frustum at X that clips X→Y to empty, \
              and the wider A→C→X chain would be dropped by the \
              visible[X] early-skip before it ever reached X→Y."
@@ -1970,7 +1765,7 @@ mod tests {
     /// Regression probe: camera sits 0.03 units from a vertical portal
     /// wall, reproducing the blank-frame scenario captured from
     /// `test-3.prl` at 2026-04-11T22:52:11Z. Camera at `(4.91, 0.92,
-    /// -14.67)` inside leaf 99 whose -X wall is on `x = 4.88`.
+    /// -14.67)` inside cell 99 whose -X wall is on `x = 4.88`.
     ///
     /// **Root cause (confirmed by diagnostic trace on 2026-04-11):** the
     /// render-pipeline near clip (`camera::NEAR = 0.1`) is baked into the
@@ -1983,8 +1778,8 @@ mod tests {
     /// ≈ 0) makes the portal reach its neighbor on this exact fixture.
     ///
     /// The test geometry is copied from the live trace verbatim — same
-    /// camera position, same leaf bounds, same 6.5×4.88 portal rectangle.
-    /// Leaf A is the camera leaf (+X side), leaf B is the -X neighbor.
+    /// camera position, same cell bounds, same 6.5×4.88 portal rectangle.
+    /// Cell A is the camera cell (+X side), cell B is the -X neighbor.
     ///
     /// Routes through `visibility::extract_frustum_planes` directly
     /// rather than the module-private `extract_test_frustum` copy to
@@ -2001,63 +1796,26 @@ mod tests {
                 Vec3::new(4.88, 4.88, -11.38),
                 Vec3::new(4.88, 4.88, -17.88),
             ],
-            front_leaf: 0,
-            back_leaf: 1,
+            front_cell: 0,
+            back_cell: 1,
         };
 
-        let world = LevelWorld {
-            vertices: vec![],
-            indices: vec![],
-            face_meta: vec![],
-            nodes: vec![],
-            leaves: vec![
-                LeafData {
-                    bounds_min: Vec3::new(4.88, 0.00, -17.88),
-                    bounds_max: Vec3::new(11.38, 4.88, -11.38),
-                    face_start: 0,
-                    face_count: 0,
-                    is_solid: false,
-                },
-                LeafData {
-                    bounds_min: Vec3::new(-50.00, 0.00, -17.88),
-                    bounds_max: Vec3::new(4.88, 4.88, -11.38),
-                    face_start: 0,
-                    face_count: 0,
-                    is_solid: false,
-                },
+        let world = test_world(
+            vec![
+                test_cell(
+                    Vec3::new(4.88, 0.00, -17.88),
+                    Vec3::new(11.38, 4.88, -11.38),
+                    false,
+                ),
+                test_cell(
+                    Vec3::new(-50.00, 0.00, -17.88),
+                    Vec3::new(4.88, 4.88, -11.38),
+                    false,
+                ),
             ],
-            root: BspChild::Leaf(0),
-            portals: vec![portal],
-            leaf_portals: vec![vec![0], vec![0]],
-            has_portals: true,
-            texture_names: vec![],
-            texture_cache_keys:
-                postretro_level_format::texture_cache_keys::TextureCacheKeysSection { keys: vec![] },
-            bvh: crate::geometry::BvhTree {
-                nodes: vec![],
-                leaves: vec![],
-                root_node_index: 0,
-            },
-            lights: vec![],
-            light_influences: vec![],
-            sh_volume: None,
-            lightmap: None,
-            lightmap_mode: crate::prl::LightmapMode::Shadowed,
-            sdf_atlas: None,
-            chunk_light_list: None,
-            animated_light_chunks: None,
-            animated_light_weight_maps: None,
-            delta_sh_volumes: None,
-            direct_sh_volume: None,
-            data_script: None,
-            map_entities: Vec::new(),
-            fog_volumes: Vec::new(),
-            fog_pixel_scale: 4,
-            initial_gravity: -9.81,
-            fog_cell_masks: None,
-            navmesh: None,
-            cell_draw_index: None,
-        };
+            &[&[0], &[0]],
+            vec![portal],
+        );
 
         // Camera pose from the captured blank-frame trace. The live trace
         // did not record view direction; -X stares straight at the portal
@@ -2091,10 +1849,10 @@ mod tests {
 
         let visible = portal_traverse(camera_pos, 0, &frustum, &world, false);
 
-        assert!(visible[0], "camera leaf must always be visible");
+        assert!(visible[0], "camera cell must always be visible");
         assert!(
             visible[1],
-            "leaf B must be reachable through the portal even when the \
+            "cell B must be reachable through the portal even when the \
              camera sits 0.03 units from the portal plane. Failure here \
              means the visibility frustum's near plane (inherited from \
              the render pipeline's 0.1-unit near clip) is clipping the \
@@ -2109,16 +1867,16 @@ mod tests {
     /// `occlusion-test.prl` at 2026-04-17T04:50:11Z. The live trace at
     /// frame 360 showed `cam=(-34.54, 6.50, -13.00) leaf=31` with all 7
     /// outbound portals rejecting `v=0/4 clip` and `reach=1` — the
-    /// renderer fell back to drawing just the camera leaf while the
+    /// renderer fell back to drawing just the camera cell while the
     /// player could see into several neighbors. The camera Z matched the
-    /// leaf's max-Z face to the float, and adjacent frames oscillated
+    /// cell's max-Z face to the float, and adjacent frames oscillated
     /// between two view-proj hashes (sub-texel camera jitter), one of
     /// which clipped every portal to empty.
     ///
     /// Setup:
-    /// - Leaf A: a slab `x ∈ [−36.37, −34.34], y ∈ [0, 13], z ∈ [−13.41, −13.00]`
-    ///   matching leaf 31's bounds from the trace.
-    /// - Portal on leaf A's `+Z` face (`z = −13.00`), shared with leaf B
+    /// - Cell A: a slab `x ∈ [−36.37, −34.34], y ∈ [0, 13], z ∈ [−13.41, −13.00]`
+    ///   matching cell 31's bounds from the trace.
+    /// - Portal on cell A's `+Z` face (`z = −13.00`), shared with cell B
     ///   on the `+Z` side.
     /// - Camera at `(−34.54, 6.50, −13.00)` — the same position as the
     ///   captured trace, sitting exactly on the portal plane.
@@ -2127,7 +1885,7 @@ mod tests {
     /// If the near-plane slide leaves portal vertices sitting exactly on
     /// the slid plane and any side/near plane's `CLIP_EPSILON`
     /// classification rejects them as BACK, Sutherland-Hodgman clips the
-    /// polygon to empty and `leaf B` is unreachable — the blank-frame
+    /// polygon to empty and `cell B` is unreachable — the blank-frame
     /// bug, but for the "camera on the portal plane" case rather than
     /// "0.03 units in front of it".
     #[test]
@@ -2135,7 +1893,7 @@ mod tests {
         use crate::camera;
         use crate::visibility::extract_frustum_planes;
 
-        // Portal on the +Z face of leaf A, shared with leaf B. Vertices
+        // Portal on the +Z face of cell A, shared with cell B. Vertices
         // are all at z = -13.00 (the plane the camera will sit on).
         let portal = PortalData {
             polygon: vec![
@@ -2144,66 +1902,29 @@ mod tests {
                 Vec3::new(-34.34, 13.00, -13.00),
                 Vec3::new(-36.37, 13.00, -13.00),
             ],
-            front_leaf: 0,
-            back_leaf: 1,
+            front_cell: 0,
+            back_cell: 1,
         };
 
-        let world = LevelWorld {
-            vertices: vec![],
-            indices: vec![],
-            face_meta: vec![],
-            nodes: vec![],
-            leaves: vec![
-                // Leaf A — camera leaf, matches bounds of leaf 31 from
+        let world = test_world(
+            vec![
+                // Cell A — camera cell, matches bounds of legacy leaf 31 from
                 // the live trace.
-                LeafData {
-                    bounds_min: Vec3::new(-36.37, 0.00, -13.41),
-                    bounds_max: Vec3::new(-34.34, 13.00, -13.00),
-                    face_start: 0,
-                    face_count: 0,
-                    is_solid: false,
-                },
-                // Leaf B — neighbor on the +Z side of the portal.
-                LeafData {
-                    bounds_min: Vec3::new(-36.37, 0.00, -13.00),
-                    bounds_max: Vec3::new(-34.34, 13.00, -5.00),
-                    face_start: 0,
-                    face_count: 0,
-                    is_solid: false,
-                },
+                test_cell(
+                    Vec3::new(-36.37, 0.00, -13.41),
+                    Vec3::new(-34.34, 13.00, -13.00),
+                    false,
+                ),
+                // Cell B — neighbor on the +Z side of the portal.
+                test_cell(
+                    Vec3::new(-36.37, 0.00, -13.00),
+                    Vec3::new(-34.34, 13.00, -5.00),
+                    false,
+                ),
             ],
-            root: BspChild::Leaf(0),
-            portals: vec![portal],
-            leaf_portals: vec![vec![0], vec![0]],
-            has_portals: true,
-            texture_names: vec![],
-            texture_cache_keys:
-                postretro_level_format::texture_cache_keys::TextureCacheKeysSection { keys: vec![] },
-            bvh: crate::geometry::BvhTree {
-                nodes: vec![],
-                leaves: vec![],
-                root_node_index: 0,
-            },
-            lights: vec![],
-            light_influences: vec![],
-            sh_volume: None,
-            lightmap: None,
-            lightmap_mode: crate::prl::LightmapMode::Shadowed,
-            sdf_atlas: None,
-            chunk_light_list: None,
-            animated_light_chunks: None,
-            animated_light_weight_maps: None,
-            delta_sh_volumes: None,
-            direct_sh_volume: None,
-            data_script: None,
-            map_entities: Vec::new(),
-            fog_volumes: Vec::new(),
-            fog_pixel_scale: 4,
-            initial_gravity: -9.81,
-            fog_cell_masks: None,
-            navmesh: None,
-            cell_draw_index: None,
-        };
+            &[&[0], &[0]],
+            vec![portal],
+        );
 
         // Camera pose from the captured blank-frame trace. z = -13.00
         // puts the camera exactly on the portal plane.
@@ -2218,10 +1939,10 @@ mod tests {
 
         let visible = portal_traverse(camera_pos, 0, &frustum, &world, false);
 
-        assert!(visible[0], "camera leaf must always be visible");
+        assert!(visible[0], "camera cell must always be visible");
         assert!(
             visible[1],
-            "leaf B must be reachable through the portal when the camera \
+            "cell B must be reachable through the portal when the camera \
              sits exactly on the portal plane and looks through it. \
              Failure here means Sutherland-Hodgman is being used even \
              though the view-frustum cross-section at apex depth is a \
@@ -2239,22 +1960,22 @@ mod tests {
     /// would buy nothing over reading the source-of-truth string.
     #[test]
     fn portal_traverse_capture_emits_compact_header_fields() {
-        let world = three_leaf_chain();
+        let world = three_cell_chain();
         let camera_pos = Vec3::new(16.0, 32.0, 32.0);
         let frustum = make_camera_frustum(camera_pos, Vec3::X);
         let (_visible, trace) = portal_traverse_inner(camera_pos, 0, &frustum, &world, true);
         let buf = trace.expect("capture: true should produce a trace buffer");
 
-        // Header fields — these are the new per-frame camera-leaf diagnostics
+        // Header fields — these are the per-frame camera-cell diagnostics
         // added for the flicker bug hunt.
         assert!(buf.contains("cam=("), "header missing cam=(: {buf}");
-        assert!(buf.contains("leaf="), "header missing leaf=: {buf}");
+        assert!(buf.contains("cell="), "header missing cell=: {buf}");
         assert!(buf.contains("faces="), "header missing faces=: {buf}");
         assert!(buf.contains("bnds=("), "header missing bnds=(: {buf}");
-        assert!(buf.contains("leaves="), "header missing leaves=: {buf}");
+        assert!(buf.contains("cells="), "header missing cells=: {buf}");
 
         // At least one accepted/rejected event line under the header. The
-        // straight corridor walks into leaf B and leaf C, so there's at
+        // straight corridor walks into cell B and cell C, so there's at
         // least one `  acc ` line.
         let has_event = buf
             .lines()

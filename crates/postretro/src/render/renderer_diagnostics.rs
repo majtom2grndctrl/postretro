@@ -60,21 +60,21 @@ const COLOR_PORTAL_EDGE: [u8; 4] = [255, 214, 92, 255];
 
 #[cfg(any(feature = "dev-tools", test))]
 fn cell_overlay_kind(
-    leaf_index: usize,
-    leaf: &crate::prl::LeafData,
+    cell_index: usize,
+    cell: &crate::prl::CellData,
     visible_cells: &crate::visibility::VisibleCells,
 ) -> Option<CellOverlayKind> {
-    if leaf.is_solid {
+    if cell.is_solid {
         return None;
     }
 
-    if leaf.face_count == 0 {
+    if !cell.is_drawable {
         return Some(CellOverlayKind::Empty);
     }
 
     match visible_cells {
         crate::visibility::VisibleCells::Culled(cells) => {
-            if cells.contains(&(leaf_index as u32)) {
+            if cells.contains(&(cell_index as u32)) {
                 Some(CellOverlayKind::DrawableVisible)
             } else {
                 Some(CellOverlayKind::DrawableHidden)
@@ -86,11 +86,11 @@ fn cell_overlay_kind(
 
 #[cfg(any(feature = "dev-tools", test))]
 fn cell_overlay_color(
-    leaf_index: usize,
-    leaf: &crate::prl::LeafData,
+    cell_index: usize,
+    cell: &crate::prl::CellData,
     visible_cells: &crate::visibility::VisibleCells,
 ) -> Option<[u8; 4]> {
-    match cell_overlay_kind(leaf_index, leaf, visible_cells)? {
+    match cell_overlay_kind(cell_index, cell, visible_cells)? {
         CellOverlayKind::DrawableVisible => Some(COLOR_CELL_VISIBLE),
         CellOverlayKind::DrawableHidden => Some(COLOR_CELL_HIDDEN),
         CellOverlayKind::DrawableDrawAllFallback => Some(COLOR_CELL_DRAW_ALL_FALLBACK),
@@ -176,20 +176,20 @@ pub(super) fn emit_cell_overlay(
     state: CellOverlayState,
     lines: &mut super::debug_lines::DebugLineRenderer,
 ) {
-    if !state.visible || world.leaves.is_empty() {
+    if !state.visible || world.cells.is_empty() {
         return;
     }
 
-    for (leaf_index, leaf) in world.leaves.iter().enumerate() {
-        let Some(color) = cell_overlay_color(leaf_index, leaf, visible_cells) else {
+    for (cell_index, cell) in world.cells.iter().enumerate() {
+        let Some(color) = cell_overlay_color(cell_index, cell, visible_cells) else {
             continue;
         };
         match state.depth_mode {
             BvhOverlayDepthMode::DepthTested => {
-                lines.push_aabb(leaf.bounds_min, leaf.bounds_max, color);
+                lines.push_aabb(cell.bounds_min, cell.bounds_max, color);
             }
             BvhOverlayDepthMode::XRayAlwaysOnTop => {
-                lines.push_aabb_overlay(leaf.bounds_min, leaf.bounds_max, color);
+                lines.push_aabb_overlay(cell.bounds_min, cell.bounds_max, color);
             }
         }
     }
@@ -220,9 +220,9 @@ pub(super) fn emit_portal_overlay(
 }
 
 impl Renderer {
-    /// The full tree-walk cull-cost baseline computed this frame by
-    /// `record_pre_scene_compute`, independent of the active GPU cull path.
-    /// `None` when no cull pipeline is loaded.
+    /// The full tree-walk cull-cost baseline computed from this frame's
+    /// pre-UI visibility, independent of the active GPU cull path. `None` when
+    /// no cull pipeline is loaded.
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
     pub fn visibility_diagnostics(&self) -> Option<crate::compute_cull::BvhCullDiagnostics> {
         self.bvh_cull_diagnostics
@@ -279,16 +279,16 @@ impl Renderer {
     /// (Timeout/Occluded/Outdated) where `render_frame_indirect` skips its
     /// debug-line render pass.
     ///
-    /// `visible_leaf_mask` is the same portal-reachable leaf mask passed to
-    /// `render_frame_indirect`; the cells overlay colors each cell by the
-    /// frame-visibility of the leaf its center sits in.
+    /// `visible_cell_mask` is the same portal-reachable cell mask passed to
+    /// `render_frame_indirect`; the cells overlay colors each marker by the
+    /// frame-visibility of the cell its center sits in.
     #[cfg(feature = "dev-tools")]
     pub fn emit_sh_diagnostics(
         &mut self,
         state: &sh_diagnostics::ShDiagnosticsState,
         camera_pos: Vec3,
         world: &crate::prl::LevelWorld,
-        visible_leaf_mask: &[bool],
+        visible_cell_mask: &[bool],
     ) {
         // Drive the live atlas readback only while the irradiance overlay is
         // actually drawn — every other frame it costs nothing.
@@ -303,7 +303,7 @@ impl Renderer {
             &self.sh_delta_volumes_meta,
             camera_pos,
             world,
-            visible_leaf_mask,
+            visible_cell_mask,
             &mut self.debug_lines,
         );
     }
@@ -449,12 +449,25 @@ impl Renderer {
         self.cell_overlay.depth_mode = mode;
     }
 
-    /// Last frame's CPU-derived camera-cull diagnostics: which path ran
-    /// (candidate vs tree walk), candidate/total/submitted leaf counts.
-    /// Surfaced in the Spatial diagnostics tab. Diagnostic only.
+    /// Current frame's camera-cull diagnostics: which path runs (candidate vs
+    /// tree walk), candidate/total/submitted BVH leaf counts. Surfaced in the
+    /// Spatial diagnostics tab. Diagnostic only.
     #[cfg(feature = "dev-tools")]
     pub fn camera_cull_diagnostics(&self) -> CameraCullDiagnostics {
         self.camera_cull_diagnostics
+    }
+
+    /// Publish this frame's CPU-side cell visibility and locator diagnostics.
+    /// Called after visibility determination, before the debug UI renders.
+    #[cfg(feature = "dev-tools")]
+    pub fn set_spatial_diagnostics(&mut self, diagnostics: SpatialDiagnostics) {
+        self.spatial_diagnostics = diagnostics;
+    }
+
+    /// Last published cell visibility and locator diagnostics for the Spatial tab.
+    #[cfg(feature = "dev-tools")]
+    pub fn spatial_diagnostics(&self) -> &SpatialDiagnostics {
+        &self.spatial_diagnostics
     }
 
     #[cfg(feature = "dev-tools")]
@@ -496,7 +509,7 @@ impl Renderer {
         );
     }
 
-    /// Emit BSP cell bounds colored from the current frame's drawable
+    /// Emit runtime cell bounds colored from the current frame's drawable
     /// `VisibleCells`. This intentionally ignores fog/light reachable masks:
     /// `Culled` is the exact visible drawable set, and `DrawAll` uses a distinct
     /// fallback color so it does not read as a successful portal traversal.
@@ -539,13 +552,17 @@ mod tests {
         }
     }
 
-    fn bsp_leaf(is_solid: bool, face_count: u32) -> crate::prl::LeafData {
-        crate::prl::LeafData {
+    fn cell(is_solid: bool, face_count: u32) -> crate::prl::CellData {
+        crate::prl::CellData {
             bounds_min: Vec3::ZERO,
             bounds_max: Vec3::ONE,
             face_start: 0,
             face_count,
+            portal_ref_start: 0,
+            portal_ref_count: 0,
             is_solid,
+            is_exterior: false,
+            is_drawable: !is_solid && face_count > 0,
         }
     }
 
@@ -644,7 +661,7 @@ mod tests {
     #[test]
     fn cell_overlay_color_uses_drawable_visible_cells() {
         let visible = crate::visibility::VisibleCells::Culled(vec![2]);
-        let drawable = bsp_leaf(false, 1);
+        let drawable = cell(false, 1);
 
         assert_eq!(
             cell_overlay_color(2, &drawable, &visible),
@@ -658,7 +675,7 @@ mod tests {
 
     #[test]
     fn cell_overlay_draw_all_uses_distinct_fallback_color() {
-        let drawable = bsp_leaf(false, 1);
+        let drawable = cell(false, 1);
 
         assert_eq!(
             cell_overlay_color(0, &drawable, &crate::visibility::VisibleCells::DrawAll),
@@ -671,9 +688,9 @@ mod tests {
     fn cell_overlay_skips_solid_and_marks_empty_non_solid_cells_neutral() {
         let visible = crate::visibility::VisibleCells::Culled(vec![0]);
 
-        assert_eq!(cell_overlay_color(0, &bsp_leaf(true, 1), &visible), None);
+        assert_eq!(cell_overlay_color(0, &cell(true, 1), &visible), None);
         assert_eq!(
-            cell_overlay_color(0, &bsp_leaf(false, 0), &visible),
+            cell_overlay_color(0, &cell(false, 0), &visible),
             Some(COLOR_CELL_EMPTY),
         );
     }
@@ -682,8 +699,8 @@ mod tests {
     fn portal_edges_close_polygon_loop() {
         let portal = crate::prl::PortalData {
             polygon: vec![Vec3::ZERO, Vec3::X, Vec3::Y],
-            front_leaf: 0,
-            back_leaf: 1,
+            front_cell: 0,
+            back_cell: 1,
         };
 
         assert_eq!(

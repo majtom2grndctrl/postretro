@@ -2465,8 +2465,8 @@ impl ApplicationHandler for App {
                 // eye — re-adding the offset here would double-count it and re-introduce
                 // the ∝-velocity oscillation it was moved to fix. `frame_timing`
                 // interpolates between consecutive PRESENTED poses, so the smoothed
-                // correction reaches the view matrix, camera uniforms, BSP camera-leaf
-                // lookup, and portal apex continuously across each reconcile snap.
+                // correction reaches the view matrix, camera uniforms, cell locator,
+                // and portal apex continuously across each reconcile snap.
                 // Single-player and the host carry a ZERO offset, so this is the bare
                 // interpolated eye for them, unchanged.
                 let presented_eye = interp.position;
@@ -2543,9 +2543,9 @@ impl ApplicationHandler for App {
                 let view_proj = render_camera.view_projection;
                 // The render eye and matrix are assembled together.
                 // Portal traversal, camera uniforms, and every render-stage
-                // distance/leaf query must use the same point. Using the
+                // distance/cell query must use the same point. Using the
                 // unbobbed interpolated position here can put the visibility
-                // apex in a different BSP leaf or on the opposite side of a
+                // apex in a different cell or on the opposite side of a
                 // portal plane, causing one-frame clear-color holes.
                 let render_eye_position = render_camera.eye_position;
 
@@ -2565,7 +2565,7 @@ impl ApplicationHandler for App {
                             visible_cells: VisibleCells::DrawAll,
                             fog_reachable: Vec::new(),
                             stats: VisibilityStats {
-                                camera_leaf: 0,
+                                camera_cell: 0,
                                 total_faces: 0,
                                 drawn_faces: 0,
                                 path: VisibilityPath::EmptyWorldFallback,
@@ -2580,16 +2580,42 @@ impl ApplicationHandler for App {
                     stats,
                 } = vis_result;
 
-                // Build the per-leaf bool mask for `update_dynamic_light_slots`
+                #[cfg(feature = "dev-tools")]
+                if let Some(renderer) = self.renderer.as_mut() {
+                    let locator = match self.level.as_ref() {
+                        Some(world) => render::LocatorDiagnostics::Trace(
+                            world.trace_locate_cell(render_eye_position),
+                        ),
+                        None => render::LocatorDiagnostics::NoLevel,
+                    };
+                    renderer.set_spatial_diagnostics(render::SpatialDiagnostics {
+                        current_cell: self.level.as_ref().map(|_| stats.camera_cell),
+                        portal_drawable_cells:
+                            render::SpatialCellSetDiagnostics::from_visible_cells(&visible_cells),
+                        fog_reachable_cells: render::SpatialCellSetDiagnostics::from_cell_slice(
+                            &fog_reachable,
+                        ),
+                        locator,
+                    });
+                    renderer.refresh_camera_cull_diagnostics(
+                        CameraCullVisibility {
+                            cells: &visible_cells,
+                            path: stats.path,
+                        },
+                        view_proj,
+                    );
+                }
+
+                // Build the per-cell bool mask for `update_dynamic_light_slots`
                 // from the wider fog/light-reachable set so dynamic lights in
-                // empty (face_count == 0) portal-reachable leaves stay
+                // empty (face_count == 0) portal-reachable cells stay
                 // eligible. Empty slice = DrawAll sentinel: keep every
-                // leaf-assigned light eligible on fallback paths.
-                let light_reachable_leaf_mask: Vec<bool> = match self.level.as_ref() {
+                // cell-assigned light eligible on fallback paths.
+                let light_reachable_cell_mask: Vec<bool> = match self.level.as_ref() {
                     None => Vec::new(),
                     Some(_) if fog_reachable.is_empty() => Vec::new(),
                     Some(world) => {
-                        let mut mask = vec![false; world.leaves.len()];
+                        let mut mask = vec![false; world.cell_count()];
                         for &id in &fog_reachable {
                             let i = id as usize;
                             if i < mask.len() {
@@ -2600,25 +2626,25 @@ impl ApplicationHandler for App {
                     }
                 };
 
-                // AABBs of the fog/light-reachable leaves — the WIDER
-                // portal-reachable set (same source as `light_reachable_leaf_mask`,
+                // AABBs of the fog/light-reachable cells — the WIDER
+                // portal-reachable set (same source as `light_reachable_cell_mask`,
                 // built from `fog_reachable`), which deliberately includes empty
-                // `face_count == 0` leaves. Feeds the dynamic-light shadow-slot
+                // `face_count == 0` cells. Feeds the dynamic-light shadow-slot
                 // eligibility test: a light is shadow-eligible when its influence
-                // sphere reaches one of these reachable leaves — NOT when its own
-                // leaf is in the camera PVS (see
+                // sphere reaches one of these reachable cells — NOT when its own
+                // cell is in the camera PVS (see
                 // `lighting::light_reaches_visible_cell`). Intentionally the wider
                 // set, not the narrower drawable `visible_cells`, so a light in an
-                // empty reachable leaf still counts. Empty = DrawAll sentinel
+                // empty reachable cell still counts. Empty = DrawAll sentinel
                 // (fallback visibility paths): every light eligible.
-                let reachable_leaf_aabbs: Vec<(glam::Vec3, glam::Vec3)> = match self.level.as_ref()
+                let reachable_cell_aabbs: Vec<(glam::Vec3, glam::Vec3)> = match self.level.as_ref()
                 {
                     None => Vec::new(),
                     Some(_) if fog_reachable.is_empty() => Vec::new(),
                     Some(world) => fog_reachable
                         .iter()
-                        .filter_map(|&id| world.leaves.get(id as usize))
-                        .map(|leaf| (leaf.bounds_min, leaf.bounds_max))
+                        .filter_map(|&id| world.cells.get(id as usize))
+                        .map(|cell| (cell.bounds_min, cell.bounds_max))
                         .collect(),
                 };
 
@@ -2841,11 +2867,11 @@ impl ApplicationHandler for App {
                                         &debug_ui.sh_diagnostics_state,
                                         render_eye_position,
                                         world,
-                                        &light_reachable_leaf_mask,
+                                        &light_reachable_cell_mask,
                                     );
                                 }
                                 let bvh_visible_cell_mask =
-                                    drawable_visible_cell_mask(world.leaves.len(), &visible_cells);
+                                    drawable_visible_cell_mask(world.cell_count(), &visible_cells);
                                 renderer
                                     .emit_bvh_overlay_diagnostics(bvh_visible_cell_mask.as_deref());
                                 renderer.emit_cell_overlay_diagnostics(world, &visible_cells);
@@ -2935,10 +2961,10 @@ impl ApplicationHandler for App {
                                 cells: &visible_cells,
                                 path: stats.path,
                             },
-                            &light_reachable_leaf_mask,
-                            &reachable_leaf_aabbs,
+                            &light_reachable_cell_mask,
+                            &reachable_cell_aabbs,
                             &fog_reachable,
-                            Some(stats.camera_leaf),
+                            Some(stats.camera_cell),
                             view_proj,
                             &particle_collections,
                             self.script_time,
@@ -3000,13 +3026,13 @@ impl ApplicationHandler for App {
                 }
 
                 let pos = render_eye_position;
-                let region_label = "leaf";
+                let region_label = "cell";
                 let path_label = match stats.path {
                     VisibilityPath::PrlPortal { .. } => "prl-portal",
                     VisibilityPath::NoPortalsFallback => "no-portals",
                     VisibilityPath::EmptyWorldFallback => "empty",
-                    VisibilityPath::SolidLeafFallback => "solid-leaf",
-                    VisibilityPath::ExteriorCameraFallback => "exterior",
+                    VisibilityPath::SolidCellFallback => "solid-cell",
+                    VisibilityPath::ExteriorCellFallback => "exterior",
                 };
                 let walk_reach_col = match stats.walk_reach() {
                     Some(walk) => format!(" walk:{walk}"),
@@ -3014,7 +3040,7 @@ impl ApplicationHandler for App {
                 };
                 log::debug!(
                     "[Diagnostics] {region_label}:{} path:{path_label} | draw:{} all:{}{walk_reach_col} | pos: ({:.0}, {:.0}, {:.0})",
-                    stats.camera_leaf,
+                    stats.camera_cell,
                     stats.drawn_faces,
                     stats.total_faces,
                     pos.x,
@@ -3035,7 +3061,7 @@ impl ApplicationHandler for App {
                         let _ = write!(
                             &mut self.title_buffer,
                             "Postretro | {region_label}:{} path:{path_label} | draw:{} all:{}{walk_reach_col} | pos: ({:.0}, {:.0}, {:.0})",
-                            stats.camera_leaf,
+                            stats.camera_cell,
                             stats.drawn_faces,
                             stats.total_faces,
                             pos.x,

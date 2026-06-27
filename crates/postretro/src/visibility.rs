@@ -4,7 +4,7 @@
 use glam::{Mat4, Vec3, Vec4};
 
 use crate::portal_vis;
-use crate::prl::LevelWorld;
+use crate::prl::{CellData, LevelWorld};
 
 /// Result of per-frame visibility determination for the GPU-driven indirect
 /// draw path. Portal DFS still determines the visible cell set; the BVH
@@ -13,7 +13,7 @@ use crate::prl::LevelWorld;
 pub enum VisibleCells {
     /// Specific cells are visible; pass to the compute cull shader.
     Culled(Vec<u32>),
-    /// All cells are visible (empty world or missing visibility data).
+    /// All cells are visible because there are no cells to cull.
     DrawAll,
 }
 
@@ -34,8 +34,8 @@ pub struct CameraCullVisibility<'a> {
 /// Per-frame visibility pipeline statistics for diagnostics.
 #[derive(Debug, Clone)]
 pub struct VisibilityStats {
-    /// BSP leaf the camera currently occupies.
-    pub camera_leaf: u32,
+    /// Runtime cell the camera currently occupies.
+    pub camera_cell: u32,
     /// Total faces in the level.
     pub total_faces: u32,
     /// Faces submitted to the renderer this frame, after every narrowing
@@ -56,31 +56,31 @@ pub struct VisibilityStats {
 pub enum VisibilityPath {
     /// Primary PRL rendering path using per-frame portal traversal.
     /// Portal traversal narrows the frustum at every hop, so no separate
-    /// AABB cull runs on this path and `drawn_faces == walk_reach`.
-    /// `walk_reach` counts only drawable leaves (`face_count > 0`); the
-    /// wider `fog_reachable` set (which includes empty leaves) is tracked
+    /// AABB cull runs on this path.
+    /// `walk_reach` counts only drawable cells (`face_count > 0`); the
+    /// wider `fog_reachable` set (which includes empty cells) is tracked
     /// separately on `VisibilityResult` and is not reflected here.
     PrlPortal { walk_reach: u32 },
-    /// Fallback: world has no leaves to cull against. DrawAll with every
+    /// Fallback: world has no cells to cull against. DrawAll with every
     /// face in the level submitted.
     EmptyWorldFallback,
     /// Fallback: camera position lies inside solid geometry (clipped
-    /// into a wall). All non-solid non-zero-face leaves are drawn,
+    /// into a wall). All drawable cells are drawn,
     /// subject to AABB frustum culling.
-    SolidLeafFallback,
-    /// Fallback: camera is in an exterior leaf (empty, no faces). The
+    SolidCellFallback,
+    /// Fallback: camera is in an exterior cell. The
     /// camera has left the playable interior — spectator, noclip, debug
-    /// fly. All non-solid non-zero-face leaves are drawn, subject to
+    /// fly. All drawable cells are drawn, subject to
     /// AABB frustum culling.
-    ExteriorCameraFallback,
-    /// Fallback: portal data missing from the level file. All non-solid
-    /// non-zero-face leaves are submitted, subject to AABB frustum culling.
+    ExteriorCellFallback,
+    /// Fallback: portal data missing from the level file. All drawable cells
+    /// are submitted, subject to AABB frustum culling.
     NoPortalsFallback,
 }
 
 impl VisibilityStats {
-    /// On the PRL portal-traversal path, the count of faces the portal
-    /// walk can reach from the camera leaf. `None` on every other path.
+    /// On the PRL portal-traversal path, the count of cells the portal
+    /// walk can reach from the camera cell. `None` on every other path.
     pub fn walk_reach(&self) -> Option<u32> {
         match self.path {
             VisibilityPath::PrlPortal { walk_reach } => Some(walk_reach),
@@ -89,16 +89,16 @@ impl VisibilityStats {
     }
 }
 
-/// Per-frame visibility output. Carries two leaf sets:
+/// Per-frame visibility output. Carries two cell sets:
 ///
 /// - `visible_cells`: drawable set — faces submitted to the renderer
-///   (portal-reachable, `!is_solid`, `face_count > 0`).
+///   (portal-reachable drawable cells).
 /// - `fog_reachable`: wider set used for portal-isolated effects (fog
-///   culling, dynamic-light leaf gating). Same portal-reachability and
+///   culling, dynamic-light cell gating). Same portal-reachability and
 ///   `!is_solid` predicates as `visible_cells`, but without the
-///   `face_count > 0` filter — empty leaves still bound light/fog
+///   `face_count > 0` filter — empty cells still bound light/fog
 ///   influence even though they have no geometry to draw. Do not add the
-///   `face_count > 0` predicate to this set; empty leaves must remain
+///   `face_count > 0` predicate to this set; empty cells must remain
 ///   eligible for fog and dynamic-light gating (that predicate's removal
 ///   is the point of this field). Populated only on the portal path;
 ///   empty on every fallback (where the downstream consumer treats empty
@@ -250,109 +250,106 @@ pub(crate) fn is_aabb_outside_frustum(mins: Vec3, maxs: Vec3, frustum: &Frustum)
     false
 }
 
-// --- Shared leaf-level visibility determination ---
+// --- Shared cell-level visibility determination ---
 
 /// Internal classification of which visibility path was selected.
 #[derive(Debug, Clone, Copy)]
-enum LeafVisPath {
+enum CellVisPath {
     EmptyWorld,
-    SolidLeaf,
-    ExteriorCamera,
+    SolidCell,
+    ExteriorCell,
     Portal,
     NoPortals,
 }
 
-/// Internal result of shared leaf-level visibility determination.
-struct LeafVisResult {
-    /// Visible leaf indices, or `None` for the empty-world DrawAll case.
-    leaves: Option<Vec<usize>>,
-    /// Wider, fog/light-reachable leaf set. Same predicates as `leaves`
+/// Internal result of shared cell-level visibility determination.
+struct CellVisResult {
+    /// Visible cell indices, or `None` for the empty-world DrawAll case.
+    cells: Option<Vec<usize>>,
+    /// Wider, fog/light-reachable cell set. Same predicates as `cells`
     /// minus the `face_count > 0` filter. Populated only on the portal
     /// path; empty on every other variant.
     fog_reachable: Vec<u32>,
-    camera_leaf: u32,
+    camera_cell: u32,
     total_faces: u32,
-    path: LeafVisPath,
+    path: CellVisPath,
     /// The camera frustum extracted for this frame.
     frustum: Frustum,
 }
 
-/// Collect all non-solid non-empty leaves that pass AABB frustum culling.
-fn visible_leaves_frustum_all(leaves: &[crate::prl::LeafData], frustum: &Frustum) -> Vec<usize> {
-    leaves
+/// Collect all drawable cells that pass AABB frustum culling.
+fn visible_cells_frustum_all(cells: &[CellData], frustum: &Frustum) -> Vec<usize> {
+    cells
         .iter()
         .enumerate()
-        .filter(|(_, leaf)| {
-            !leaf.is_solid
-                && leaf.face_count > 0
-                && !is_aabb_outside_frustum(leaf.bounds_min, leaf.bounds_max, frustum)
+        .filter(|(_, cell)| {
+            cell.is_drawable && !is_aabb_outside_frustum(cell.bounds_min, cell.bounds_max, frustum)
         })
         .map(|(i, _)| i)
         .collect()
 }
 
-/// Shared leaf-level visibility determination. Identifies which leaves are
+/// Shared cell-level visibility determination. Identifies which cells are
 /// visible and through which path. `determine_visible_cells` delegates here.
-fn determine_visible_leaf_set(
+fn determine_visible_cell_set(
     camera_position: Vec3,
     view_proj: Mat4,
     world: &LevelWorld,
     capture_portal_walk: bool,
-) -> LeafVisResult {
+) -> CellVisResult {
     let total_faces = world.face_meta.len() as u32;
     let frustum = extract_frustum_planes(view_proj);
 
-    if world.leaves.is_empty() {
-        return LeafVisResult {
-            leaves: None,
+    if world.cells.is_empty() {
+        return CellVisResult {
+            cells: None,
             fog_reachable: Vec::new(),
-            camera_leaf: 0,
+            camera_cell: 0,
             total_faces,
-            path: LeafVisPath::EmptyWorld,
+            path: CellVisPath::EmptyWorld,
             frustum,
         };
     }
 
-    let camera_leaf_idx = world.find_leaf(camera_position);
+    let camera_cell_idx = world.locate_cell(camera_position);
 
-    // Solid leaf fallback.
+    // Solid cell fallback.
     let in_solid = world
-        .leaves
-        .get(camera_leaf_idx)
-        .is_some_and(|l| l.is_solid);
+        .cells
+        .get(camera_cell_idx)
+        .is_some_and(|cell| cell.is_solid);
 
     if in_solid {
         log::warn!(
-            "[Visibility] path=SolidLeafFallback camera in solid leaf {}",
-            camera_leaf_idx,
+            "[Visibility] path=SolidCellFallback camera in solid cell {}",
+            camera_cell_idx,
         );
-        let visible = visible_leaves_frustum_all(&world.leaves, &frustum);
-        return LeafVisResult {
-            leaves: Some(visible),
+        let visible = visible_cells_frustum_all(&world.cells, &frustum);
+        return CellVisResult {
+            cells: Some(visible),
             fog_reachable: Vec::new(),
-            camera_leaf: camera_leaf_idx as u32,
+            camera_cell: camera_cell_idx as u32,
             total_faces,
-            path: LeafVisPath::SolidLeaf,
+            path: CellVisPath::SolidCell,
             frustum,
         };
     }
 
-    // Exterior camera fallback: camera is in an empty leaf with no faces
-    // (the structural signature of exterior leaves after the compiler strips
-    // their face data). Frustum-cull every non-solid non-zero-face leaf.
+    // Exterior camera fallback: camera is in a compiler-marked exterior cell.
+    // Frustum-cull every drawable cell.
     let in_exterior = world
-        .leaves
-        .get(camera_leaf_idx)
-        .is_some_and(|l| !l.is_solid && l.face_count == 0);
+        .cells
+        .get(camera_cell_idx)
+        .is_some_and(|cell| cell.is_exterior);
 
     if in_exterior {
-        let visible = visible_leaves_frustum_all(&world.leaves, &frustum);
-        return LeafVisResult {
-            leaves: Some(visible),
+        let visible = visible_cells_frustum_all(&world.cells, &frustum);
+        return CellVisResult {
+            cells: Some(visible),
             fog_reachable: Vec::new(),
-            camera_leaf: camera_leaf_idx as u32,
+            camera_cell: camera_cell_idx as u32,
             total_faces,
-            path: LeafVisPath::ExteriorCamera,
+            path: CellVisPath::ExteriorCell,
             frustum,
         };
     }
@@ -361,101 +358,97 @@ fn determine_visible_leaf_set(
         // Runtime portal traversal. Polygon-vs-frustum clipping at each hop
         // keeps every narrowed frustum a strict subset of the camera frustum,
         // so the reachability bitset is also the final visibility set — no
-        // per-leaf AABB cull needed on this path.
+        // per-cell AABB cull needed on this path.
         let portal_visible = portal_vis::portal_traverse(
             camera_position,
-            camera_leaf_idx,
+            camera_cell_idx,
             &frustum,
             world,
             capture_portal_walk,
         );
 
-        let leaves: Vec<usize> = world
-            .leaves
+        let cells: Vec<usize> = world
+            .cells
             .iter()
             .enumerate()
-            .filter(|(leaf_idx, leaf)| {
-                !leaf.is_solid
-                    && leaf.face_count > 0
-                    && portal_visible.get(*leaf_idx).copied().unwrap_or(false)
+            .filter(|(cell_idx, cell)| {
+                cell.is_drawable && portal_visible.get(*cell_idx).copied().unwrap_or(false)
             })
             .map(|(i, _)| i)
             .collect();
 
-        // Wider set for fog and dynamic-light leaf gating: drop the
-        // `face_count > 0` predicate so empty leaves on the portal walk
+        // Wider set for fog and dynamic-light cell gating: drop the
+        // `face_count > 0` predicate so empty cells on the portal walk
         // still bound light/fog influence. `!is_solid` and the portal
         // reachability bit stay.
         let fog_reachable: Vec<u32> = world
-            .leaves
+            .cells
             .iter()
             .enumerate()
-            .filter(|(leaf_idx, leaf)| {
-                !leaf.is_solid && portal_visible.get(*leaf_idx).copied().unwrap_or(false)
+            .filter(|(cell_idx, cell)| {
+                !cell.is_solid && portal_visible.get(*cell_idx).copied().unwrap_or(false)
             })
             .map(|(i, _)| i as u32)
             .collect();
 
-        return LeafVisResult {
-            leaves: Some(leaves),
+        return CellVisResult {
+            cells: Some(cells),
             fog_reachable,
-            camera_leaf: camera_leaf_idx as u32,
+            camera_cell: camera_cell_idx as u32,
             total_faces,
-            path: LeafVisPath::Portal,
+            path: CellVisPath::Portal,
             frustum,
         };
     }
 
-    // No portals: frustum-cull all non-solid non-empty leaves.
-    let visible = visible_leaves_frustum_all(&world.leaves, &frustum);
-    LeafVisResult {
-        leaves: Some(visible),
+    // No portals: frustum-cull all drawable cells.
+    let visible = visible_cells_frustum_all(&world.cells, &frustum);
+    CellVisResult {
+        cells: Some(visible),
         fog_reachable: Vec::new(),
-        camera_leaf: camera_leaf_idx as u32,
+        camera_cell: camera_cell_idx as u32,
         total_faces,
-        path: LeafVisPath::NoPortals,
+        path: CellVisPath::NoPortals,
         frustum,
     }
 }
 
-/// Count non-zero-index-count faces across the given visible leaves, and
+/// Count non-zero-index-count faces across the given visible cells, and
 /// convert the internal path tag to the public `VisibilityPath`. Shared by
 /// both adapter functions to avoid duplicating stats logic.
 fn build_visibility_stats(
-    result: &LeafVisResult,
-    visible_leaves: &[usize],
+    result: &CellVisResult,
+    visible_cells: &[usize],
     world: &LevelWorld,
 ) -> VisibilityStats {
     let mut drawn_faces = 0u32;
-    for &leaf_idx in visible_leaves {
-        let leaf = &world.leaves[leaf_idx];
-        drawn_faces += leaf.face_count;
+    for &cell_idx in visible_cells {
+        let cell = &world.cells[cell_idx];
+        drawn_faces += cell.face_count;
     }
 
     let path = match result.path {
-        LeafVisPath::SolidLeaf => VisibilityPath::SolidLeafFallback,
-        LeafVisPath::ExteriorCamera => VisibilityPath::ExteriorCameraFallback,
-        // Portal: drawn_faces == walk_reach by construction (no separate
-        // AABB cull after portal narrowing).
-        LeafVisPath::Portal => VisibilityPath::PrlPortal {
-            walk_reach: drawn_faces,
+        CellVisPath::SolidCell => VisibilityPath::SolidCellFallback,
+        CellVisPath::ExteriorCell => VisibilityPath::ExteriorCellFallback,
+        CellVisPath::Portal => VisibilityPath::PrlPortal {
+            walk_reach: visible_cells.len() as u32,
         },
-        LeafVisPath::NoPortals => VisibilityPath::NoPortalsFallback,
-        LeafVisPath::EmptyWorld => VisibilityPath::EmptyWorldFallback,
+        CellVisPath::NoPortals => VisibilityPath::NoPortalsFallback,
+        CellVisPath::EmptyWorld => VisibilityPath::EmptyWorldFallback,
     };
 
-    if matches!(result.path, LeafVisPath::Portal) {
+    if matches!(result.path, CellVisPath::Portal) {
         log::trace!(
-            "[Visibility] path=PrlPortal leaf={}, walk_reach={}, drawn_faces={}, total_faces={}",
-            result.camera_leaf,
-            drawn_faces,
+            "[Visibility] path=PrlPortal cell={}, walk_reach={}, drawn_faces={}, total_faces={}",
+            result.camera_cell,
+            visible_cells.len(),
             drawn_faces,
             result.total_faces,
         );
     }
 
     VisibilityStats {
-        camera_leaf: result.camera_leaf,
+        camera_cell: result.camera_cell,
         total_faces: result.total_faces,
         drawn_faces,
         path,
@@ -468,14 +461,10 @@ fn build_visibility_stats(
 /// fallback and produce the set of visible cell IDs consumed by the BVH
 /// traversal compute shader (via the visible-cell bitmask).
 ///
-/// Pipeline: BSP tree descent to find the camera leaf, portal traversal for
-/// visible leaves, frustum culling discards leaves whose AABB falls entirely
-/// outside the view frustum. Fallbacks (solid leaf, exterior camera, empty
+/// Pipeline: cell locator to find the camera cell, portal traversal for
+/// visible cells, frustum culling discards cells whose AABB falls entirely
+/// outside the view frustum. Fallbacks (solid cell, exterior camera, empty
 /// world, no portal data) all feed the same downstream bitmask path.
-///
-/// Cell IDs equal BSP leaf indices in the current compiler. The compute
-/// shader performs per-leaf AABB frustum culling, so this function only
-/// needs to identify potentially-visible cells.
 ///
 /// `scratch` is cleared and reused to avoid per-frame allocation. The caller
 /// reclaims it from `VisibleCells::Culled` after the compute pass consumes it.
@@ -486,12 +475,12 @@ pub fn determine_visible_cells(
     capture_portal_walk: bool,
     scratch: &mut Vec<u32>,
 ) -> (VisibilityResult, Frustum) {
-    let result = determine_visible_leaf_set(camera_position, view_proj, world, capture_portal_walk);
+    let result = determine_visible_cell_set(camera_position, view_proj, world, capture_portal_walk);
 
-    let visible_leaves = match result.leaves {
+    let visible_cells = match result.cells {
         None => {
             let stats = VisibilityStats {
-                camera_leaf: result.camera_leaf,
+                camera_cell: result.camera_cell,
                 total_faces: result.total_faces,
                 drawn_faces: result.total_faces,
                 path: VisibilityPath::EmptyWorldFallback,
@@ -505,15 +494,15 @@ pub fn determine_visible_cells(
                 result.frustum,
             );
         }
-        Some(ref leaves) => leaves,
+        Some(ref cells) => cells,
     };
 
     scratch.clear();
-    for &leaf_idx in visible_leaves {
-        scratch.push(leaf_idx as u32);
+    for &cell_idx in visible_cells {
+        scratch.push(cell_idx as u32);
     }
 
-    let stats = build_visibility_stats(&result, visible_leaves, world);
+    let stats = build_visibility_stats(&result, visible_cells, world);
     let fog_reachable = result.fog_reachable;
     (
         VisibilityResult {
@@ -734,11 +723,11 @@ mod tests {
         );
     }
 
-    // -- PRL leaf-based visibility tests --
+    // -- PRL cell-based visibility tests --
 
     use crate::geometry::{BvhTree, WorldVertex};
     use crate::material::Material;
-    use crate::prl::{BspChild, FaceMeta as PrlFaceMeta, LeafData, LevelWorld, NodeData};
+    use crate::prl::{FaceMeta as PrlFaceMeta, LevelWorld};
 
     fn zero_vertex() -> WorldVertex {
         WorldVertex {
@@ -768,54 +757,55 @@ mod tests {
         }
     }
 
-    fn prl_leaf(
+    fn prl_cell(
         bounds_min: Vec3,
         bounds_max: Vec3,
         face_start: u32,
         face_count: u32,
         is_solid: bool,
-    ) -> LeafData {
-        LeafData {
+        is_exterior: bool,
+    ) -> CellData {
+        CellData {
             bounds_min,
             bounds_max,
             face_start,
             face_count,
+            portal_ref_start: 0,
+            portal_ref_count: 0,
             is_solid,
+            is_exterior,
+            is_drawable: !is_solid && !is_exterior && face_count > 0,
         }
     }
 
-    /// Two-leaf PRL world. BSP node splits at X=0: front (X >= 0) -> leaf 0,
-    /// back (X < 0) -> leaf 1.
-    fn two_leaf_prl_world() -> LevelWorld {
+    /// Two-cell PRL world. The locator returns cell 0 for these tests.
+    fn two_cell_prl_world() -> LevelWorld {
         LevelWorld {
             vertices: vec![zero_vertex(); 6],
             indices: vec![0, 1, 2, 3, 4, 5],
             face_meta: vec![prl_face_meta(), prl_face_meta()],
-            nodes: vec![NodeData {
-                plane_normal: Vec3::X,
-                plane_distance: 0.0,
-                front: BspChild::Leaf(0),
-                back: BspChild::Leaf(1),
-            }],
-            leaves: vec![
-                prl_leaf(
+            cells: vec![
+                prl_cell(
                     Vec3::new(0.0, -100.0, -100.0),
                     Vec3::new(100.0, 100.0, 100.0),
                     0,
                     1,
                     false,
+                    false,
                 ),
-                prl_leaf(
+                prl_cell(
                     Vec3::new(-100.0, -100.0, -100.0),
                     Vec3::new(0.0, 100.0, 100.0),
                     1,
                     1,
                     false,
+                    false,
                 ),
             ],
-            root: BspChild::Node(0),
+            cell_portal_refs: vec![],
+            cell_locator_root: crate::prl::CellLocatorChild::Cell(0),
+            cell_locator_nodes: vec![],
             portals: vec![],
-            leaf_portals: vec![vec![], vec![]],
             has_portals: false,
             texture_names: vec![],
             texture_cache_keys:
@@ -844,15 +834,15 @@ mod tests {
     }
 
     #[test]
-    fn visible_cells_returns_camera_leaf() {
-        let world = two_leaf_prl_world();
+    fn visible_cells_returns_camera_cell() {
+        let world = two_cell_prl_world();
         let vp = wide_view_proj(Vec3::new(50.0, 0.0, 0.0));
         let mut scratch = Vec::new();
         let (result, _frustum) =
             determine_visible_cells(Vec3::new(50.0, 0.0, 0.0), vp, &world, false, &mut scratch);
         match result.visible_cells {
             VisibleCells::Culled(cells) => {
-                assert!(cells.contains(&0), "camera leaf 0 should be visible");
+                assert!(cells.contains(&0), "camera cell 0 should be visible");
             }
             VisibleCells::DrawAll => panic!("expected Culled"),
         }
@@ -871,11 +861,11 @@ mod tests {
             vertices: vec![],
             indices: vec![],
             face_meta: vec![],
-            nodes: vec![],
-            leaves: vec![],
-            root: BspChild::Leaf(0),
+            cells: vec![],
+            cell_portal_refs: vec![],
+            cell_locator_root: crate::prl::CellLocatorChild::Cell(0),
+            cell_locator_nodes: vec![],
             portals: vec![],
-            leaf_portals: vec![],
             has_portals: false,
             texture_names: vec![],
             texture_cache_keys:
@@ -915,10 +905,10 @@ mod tests {
     }
 
     #[test]
-    fn visible_cells_frustum_culling_removes_offscreen_leaf() {
-        let world = two_leaf_prl_world();
+    fn visible_cells_frustum_culling_removes_offscreen_cell() {
+        let world = two_cell_prl_world();
         let position = Vec3::new(50.0, 0.0, 0.0);
-        // Looking down +X, away from leaf 1.
+        // Looking down +X, away from cell 1.
         let view = Mat4::look_at_rh(position, position + Vec3::X, Vec3::Y);
         let proj = Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, 1.0, 0.1, 4096.0);
         let vp = proj * view;
@@ -927,7 +917,7 @@ mod tests {
         let (result, _frustum) = determine_visible_cells(position, vp, &world, false, &mut scratch);
         match result.visible_cells {
             VisibleCells::Culled(cells) => {
-                assert_eq!(cells.len(), 1, "should cull leaf behind camera");
+                assert_eq!(cells.len(), 1, "should cull cell behind camera");
                 assert_eq!(cells[0], 0);
             }
             VisibleCells::DrawAll => panic!("expected Culled"),
@@ -939,48 +929,71 @@ mod tests {
     }
 
     #[test]
-    fn visible_cells_solid_leaf_fallback() {
-        let mut world = two_leaf_prl_world();
-        // Mark leaf 0 as solid so the camera at X=50 lands in it.
-        world.leaves[0].is_solid = true;
+    fn portal_stats_walk_reach_counts_drawable_cells_not_faces() {
+        let mut world = two_cell_prl_world();
+        world.cells[0].face_count = 2;
+        world.cells[1].face_count = 3;
+        let result = CellVisResult {
+            cells: Some(vec![0, 1]),
+            fog_reachable: Vec::new(),
+            camera_cell: 0,
+            total_faces: 5,
+            path: CellVisPath::Portal,
+            frustum: extract_frustum_planes(wide_view_proj(Vec3::ZERO)),
+        };
+
+        let stats = build_visibility_stats(&result, &[0, 1], &world);
+
+        assert_eq!(stats.drawn_faces, 5);
+        assert_eq!(stats.walk_reach(), Some(2));
+    }
+
+    #[test]
+    fn visible_cells_solid_cell_fallback() {
+        let mut world = two_cell_prl_world();
+        // Mark cell 0 as solid so the camera at X=50 lands in it.
+        world.cells[0].is_solid = true;
+        world.cells[0].is_drawable = false;
         let vp = wide_view_proj(Vec3::new(50.0, 0.0, 0.0));
         let mut scratch = Vec::new();
         let (result, _frustum) =
             determine_visible_cells(Vec3::new(50.0, 0.0, 0.0), vp, &world, false, &mut scratch);
-        // Solid fallback draws all non-solid non-zero leaves.
+        // Solid fallback draws all drawable cells.
         match result.visible_cells {
             VisibleCells::Culled(cells) => {
-                assert!(cells.contains(&1), "non-solid leaf 1 should be visible");
-                assert!(!cells.contains(&0), "solid leaf 0 should not appear");
+                assert!(cells.contains(&1), "non-solid cell 1 should be visible");
+                assert!(!cells.contains(&0), "solid cell 0 should not appear");
             }
             VisibleCells::DrawAll => panic!("expected Culled"),
         }
         assert!(matches!(
             result.stats.path,
-            VisibilityPath::SolidLeafFallback
+            VisibilityPath::SolidCellFallback
         ));
         assert!(result.fog_reachable.is_empty());
     }
 
     #[test]
     fn visible_cells_exterior_camera_fallback() {
-        let mut world = two_leaf_prl_world();
-        // Make leaf 0 exterior (empty, non-solid).
-        world.leaves[0].face_count = 0;
+        let mut world = two_cell_prl_world();
+        // Make cell 0 exterior.
+        world.cells[0].face_count = 0;
+        world.cells[0].is_drawable = false;
+        world.cells[0].is_exterior = true;
         let vp = wide_view_proj(Vec3::new(50.0, 0.0, 0.0));
         let mut scratch = Vec::new();
         let (result, _frustum) =
             determine_visible_cells(Vec3::new(50.0, 0.0, 0.0), vp, &world, false, &mut scratch);
         match result.visible_cells {
             VisibleCells::Culled(cells) => {
-                // Leaf 1 still has faces; leaf 0 is excluded (zero face count).
+                // Cell 1 still has faces; cell 0 is excluded (exterior).
                 assert!(cells.contains(&1));
             }
             VisibleCells::DrawAll => panic!("expected Culled"),
         }
         assert!(matches!(
             result.stats.path,
-            VisibilityPath::ExteriorCameraFallback
+            VisibilityPath::ExteriorCellFallback
         ));
         assert!(result.fog_reachable.is_empty());
     }

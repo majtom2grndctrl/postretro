@@ -56,7 +56,7 @@ impl WorldWireframeMode {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Off => "Off",
-            Self::CullStatusTrianglesAlwaysOnTop => "Cull-status triangles (all leaves, x-ray)",
+            Self::CullStatusTrianglesAlwaysOnTop => "Cull-status triangles (all BVH leaves, x-ray)",
             Self::VisibleTrianglesDepthTested => "CPU-visible triangles (depth-tested)",
         }
     }
@@ -186,15 +186,15 @@ pub enum CameraCullPath {
     /// Visible-cell candidate cull (valid `CellDrawIndex` + `Culled` + portal
     /// provenance). `candidate_leaves` is the gathered candidate count.
     Candidate { candidate_leaves: u32 },
-    /// Legacy whole-BVH tree walk (`DrawAll`, non-portal fallback, missing /
-    /// invalid index, or an out-of-range visible cell id).
+    /// Whole-BVH tree walk (`DrawAll`, non-portal `Culled` fallback, or an
+    /// out-of-range visible cell id).
     TreeWalk,
 }
 
-/// CPU-derived camera-cull diagnostics for the Spatial tab. Captured each frame
-/// in `record_pre_scene_compute`. Exposes candidate-vs-total leaves so a future
-/// optional indirect-compaction pass is a measured decision, not a guess. Not a
-/// perf gate; reads no GPU buffers.
+/// CPU-derived camera-cull diagnostics for the Spatial tab. Refreshed after
+/// camera visibility is known and before debug UI renders. Exposes
+/// candidate-vs-total leaves so a future optional indirect-compaction pass is a
+/// measured decision, not a guess. Not a perf gate; reads no GPU buffers.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CameraCullDiagnostics {
     /// Which path the frame used.
@@ -202,11 +202,8 @@ pub struct CameraCullDiagnostics {
     /// Total BVH leaves in the level (the tree walk's working set).
     pub total_leaves: u32,
     /// Leaves submitted this frame (passed the frustum predicate and, on the
-    /// candidate path, were gathered from visible cells). On the candidate path
-    /// this is a GPU-readback value: the candidate kernel's own atomic tally,
-    /// deferred-mapped over a small ring, so it lags the current frame by a few
-    /// frames and may not exactly match the live candidate count. On the tree
-    /// walk it remains CPU-derived. Diagnostic only; never gates behavior.
+    /// candidate path, were gathered from visible cells). CPU-derived for both
+    /// cull paths so it matches the current Spatial diagnostics frame.
     pub submitted_leaves: u32,
 }
 
@@ -228,6 +225,59 @@ impl CameraCullDiagnostics {
         match self.path {
             CameraCullPath::Candidate { candidate_leaves } => Some(candidate_leaves),
             CameraCullPath::TreeWalk => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+pub enum SpatialCellSetDiagnostics {
+    DrawAll,
+    Cells { count: u32 },
+}
+
+impl SpatialCellSetDiagnostics {
+    #[cfg(any(feature = "dev-tools", test))]
+    pub fn from_visible_cells(cells: &crate::visibility::VisibleCells) -> Self {
+        match cells {
+            crate::visibility::VisibleCells::Culled(cells) => Self::Cells {
+                count: cells.len() as u32,
+            },
+            crate::visibility::VisibleCells::DrawAll => Self::DrawAll,
+        }
+    }
+
+    #[cfg(any(feature = "dev-tools", test))]
+    pub fn from_cell_slice(cells: &[u32]) -> Self {
+        Self::Cells {
+            count: cells.len() as u32,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+pub enum LocatorDiagnostics {
+    NoLevel,
+    Trace(crate::prl::CellLocatorTrace),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+pub struct SpatialDiagnostics {
+    pub current_cell: Option<u32>,
+    pub portal_drawable_cells: SpatialCellSetDiagnostics,
+    pub fog_reachable_cells: SpatialCellSetDiagnostics,
+    pub locator: LocatorDiagnostics,
+}
+
+impl Default for SpatialDiagnostics {
+    fn default() -> Self {
+        Self {
+            current_cell: None,
+            portal_drawable_cells: SpatialCellSetDiagnostics::DrawAll,
+            fog_reachable_cells: SpatialCellSetDiagnostics::Cells { count: 0 },
+            locator: LocatorDiagnostics::NoLevel,
         }
     }
 }
@@ -258,6 +308,25 @@ mod tests {
     }
 
     #[test]
+    fn spatial_cell_set_diagnostics_counts_culled_cells() {
+        let cells = crate::visibility::VisibleCells::Culled(vec![1, 2, 3]);
+        assert_eq!(
+            SpatialCellSetDiagnostics::from_visible_cells(&cells),
+            SpatialCellSetDiagnostics::Cells { count: 3 }
+        );
+        assert_eq!(
+            SpatialCellSetDiagnostics::from_visible_cells(
+                &crate::visibility::VisibleCells::DrawAll
+            ),
+            SpatialCellSetDiagnostics::DrawAll
+        );
+        assert_eq!(
+            SpatialCellSetDiagnostics::from_cell_slice(&[4, 5]),
+            SpatialCellSetDiagnostics::Cells { count: 2 }
+        );
+    }
+
+    #[test]
     fn world_wireframe_modes_define_final_spatial_contract() {
         assert_eq!(
             WorldWireframeMode::ALL_VARIANTS,
@@ -270,7 +339,7 @@ mod tests {
         assert_eq!(WorldWireframeMode::Off.label(), "Off");
         assert_eq!(
             WorldWireframeMode::CullStatusTrianglesAlwaysOnTop.label(),
-            "Cull-status triangles (all leaves, x-ray)",
+            "Cull-status triangles (all BVH leaves, x-ray)",
         );
         assert_eq!(
             WorldWireframeMode::VisibleTrianglesDepthTested.label(),
@@ -353,8 +422,11 @@ pub struct LevelGeometry<'a> {
     /// double-count static-light occlusion. Legacy PRLs default to `Shadowed`.
     pub lightmap_mode: crate::prl::LightmapMode,
     /// Per-cell BVH-leaf draw index (PRL section 37), cross-validated at load.
-    /// `None` → the candidate-cull GPU path is unavailable and the camera cull
-    /// falls back to the legacy tree-walk.
+    /// `None` only for no installed level or an empty-BVH map. Non-empty BVHs
+    /// require this index at load; missing or invalid data is a load error.
+    /// Whole-BVH tree-walk fallback is a per-frame runtime path for `DrawAll`,
+    /// non-portal visibility, out-of-range gathered cell ids, or no candidate
+    /// cull pipeline.
     pub cell_draw_index: Option<&'a crate::prl::CellDrawIndex>,
     pub texture_materials: &'a [crate::material::Material],
 }
@@ -544,9 +616,12 @@ pub struct Renderer {
     pub(super) gpu_textures: Vec<GpuTexture>,
     pub(super) bvh_leaves: Vec<crate::geometry::BvhLeaf>,
     /// Per-cell BVH-leaf draw index (PRL section 37), cloned from the installed
-    /// `LevelGeometry`. `None` when the map has no valid index — the
-    /// candidate-cull GPU path consumes this; absent → legacy tree-walk camera
-    /// cull. Cleared by `release_level_resources`.
+    /// `LevelGeometry`. `None` only when no level is installed, the installed
+    /// map has an empty BVH, or resources were released. Non-empty BVHs require
+    /// this index at load; missing or invalid data is a load error. Whole-BVH
+    /// tree-walk fallback is a per-frame runtime path for `DrawAll`,
+    /// non-portal visibility, out-of-range gathered cell ids, or no candidate
+    /// cull pipeline.
     pub(super) cell_draw_index: Option<crate::prl::CellDrawIndex>,
     /// `None` for maps with no BVH.
     pub(super) compute_cull: Option<ComputeCullPipeline>,
@@ -555,7 +630,7 @@ pub struct Renderer {
     /// invocation per candidate leaf, writing the SAME global indirect/status
     /// slots as `compute_cull`. Built in lockstep with `compute_cull`; used only
     /// on candidate-eligible frames (valid index + `Culled` + `PrlPortal`),
-    /// otherwise the legacy tree walk runs. `None` for maps with no BVH.
+    /// otherwise the whole-BVH tree walk runs. `None` for maps with no BVH.
     pub(super) candidate_cull: Option<crate::candidate_cull::CandidateCullPipeline>,
     /// Per-slot cone cull for the spot-shadow depth passes. Sibling to
     /// `compute_cull`, sharing its read-only BVH node/leaf buffers. `None` for
@@ -615,19 +690,23 @@ pub struct Renderer {
     /// not every frame. Reset on each level install so a later level's corrupt
     /// index still warns once.
     pub(super) candidate_cull_oor_logged: bool,
-    /// CPU-derived camera-cull diagnostics from the last `record_pre_scene_compute`
-    /// (candidate vs tree-walk path, candidate/total/submitted leaves). Read by
-    /// the Spatial diagnostics tab (dev-tools). Diagnostic only — never gates
-    /// behavior.
+    /// Camera-cull diagnostics for the current Spatial tab frame (candidate vs
+    /// tree-walk path, candidate/total/submitted leaves). Refreshed before the
+    /// debug UI reads it, then recomputed during pass recording. Diagnostic only
+    /// — never gates behavior.
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
     pub(super) camera_cull_diagnostics: CameraCullDiagnostics,
+    /// Last CPU-side visibility/locator snapshot published by the app after
+    /// camera visibility runs. Read by the Spatial diagnostics tab.
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub(super) spatial_diagnostics: SpatialDiagnostics,
 
-    /// Full tree-walk cull-cost estimate, recomputed every frame in
-    /// `record_pre_scene_compute` independent of which GPU cull strategy ran.
-    /// This is the baseline the candidate path beats — it must not be a side
-    /// effect of the tree-walk dispatch, or candidate-eligible frames starve it
-    /// to zero. `None` when no cull pipeline is loaded (no level / no BVH). Read
-    /// by the baseline diagnostics panel (dev-tools).
+    /// Full tree-walk cull-cost estimate, refreshed from the current frame's
+    /// visibility independent of which GPU cull strategy ran. This is the
+    /// baseline the candidate path beats — it must not be a side effect of the
+    /// tree-walk dispatch, or candidate-eligible frames starve it to zero.
+    /// `None` when no cull pipeline is loaded (no level / no BVH). Read by the
+    /// baseline diagnostics panel (dev-tools).
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
     pub(super) bvh_cull_diagnostics: Option<crate::compute_cull::BvhCullDiagnostics>,
 
@@ -641,7 +720,7 @@ pub struct Renderer {
     pub(super) shadow_debug_enabled: bool,
     /// Last `emit_shadow_debug` fingerprint, so the diagnostic logs on CHANGE
     /// (and every ~120 frames as a heartbeat) instead of spamming every frame.
-    /// `(slot-occupancy bits, off-PVS-caster count, in-PVS-caster count)`.
+    /// `(slot_occupancy, cube_occupancy, in_pvs, off_pvs)`.
     pub(super) shadow_debug_prev: (u128, u128, u32, u32),
 
     /// Idle (no draw) on maps with no registered collections. See §7.4.
@@ -734,13 +813,10 @@ pub struct Renderer {
     /// are skipped (see `FogPass::active`).
     pub(super) fog: FogPass,
 
-    /// Per-BSP-leaf bitmask of overlapping fog volumes, loaded from PRL section
-    /// 31 at level load. When `Some`, the fog pass ORs the masks of visible
-    /// leaves each frame to derive the active fog-volume set, culling volumes
-    /// not reachable from the camera. When `None` (maps predating section 31 or
-    /// maps with no fog volume entities), culling is disabled and
-    /// `compute_fog_cell_mask` falls back to `all_slots_mask` — all canonical
-    /// slots are treated as active.
+    /// Per-cell bitmask of overlapping fog volumes, loaded from PRL section 31
+    /// at level load. When `Some`, the fog pass ORs the masks of reachable
+    /// cells each frame to derive the active fog-volume set, culling volumes
+    /// not reachable from the camera.
     pub(super) fog_cell_masks: Option<Vec<u32>>,
 
     /// (min, max) AABBs of fog volumes that are active this frame. Refreshed

@@ -74,15 +74,10 @@ pub(crate) struct MeshInstanceInput {
     /// upgrades a miss to a resample regardless of this flag). A `Copy` bool —
     /// no per-instance heap.
     pub(crate) resample: bool,
-    /// In the camera's portal PVS. `true` → drawn by both the forward mesh pass
-    /// and the shadow depth passes. `false` → an off-PVS shadow caster: its leaf
-    /// left the PVS (e.g. pitching down) but it still sits in a dynamic shadow
-    /// light's influence volume, so it draws into shadow maps only. The collector
-    /// emits off-PVS instances only inside that light-volume union, bounding
-    /// off-screen pose cost.
-    ///
-    /// Regression: entity shadow caster dropped when its leaf left the camera PVS
-    /// (pitch-down) — the forward cull pre-removed it before the depth pass.
+    /// In the camera's portal-visible cell set. The mesh collector emits only
+    /// visible instances, so live frame inputs are `true`. The planner keeps this
+    /// flag to preserve a defensive forward-draw filter for synthetic or future
+    /// callers.
     pub(crate) forward_visible: bool,
 }
 
@@ -117,10 +112,9 @@ pub(crate) struct PlannedInstance {
     /// so a culled instance re-entering view never shows a stale pose. `Copy`
     /// bool — no per-instance heap.
     pub(crate) resample: bool,
-    /// Carried verbatim from [`MeshInstanceInput::forward_visible`]. Forward and
-    /// off-PVS casters share one plan — one posed palette/instance buffer, one
-    /// budget — so the shadow depth pass and the forward pass read identical poses;
-    /// `record_draws` filters the forward pass to `true` instances.
+    /// Carried verbatim from [`MeshInstanceInput::forward_visible`]. Live collector
+    /// inputs are visible-only; `record_draws` still filters this flag so mixed
+    /// synthetic inputs cannot draw non-forward instances.
     pub(crate) forward_visible: bool,
 }
 
@@ -186,10 +180,9 @@ pub(crate) trait JointCounts {
 /// model is absent from `joints` (never uploaded) is silently skipped and not
 /// counted as a budget drop.
 ///
-/// `instances` carries both forward-visible instances and off-PVS shadow casters
-/// under one combined budget, so an off-screen caster draws down the same
-/// `MAX_INSTANCES`/palette pool as the on-screen set. The forward set is budgeted
-/// first (below), so an off-PVS caster can never evict an on-screen instance.
+/// The mesh collector emits visible-only instances. If a synthetic or future
+/// caller passes mixed visibility flags, the forward-visible set is budgeted
+/// first so non-forward instances cannot evict drawable meshes.
 ///
 /// The returned plan's groups carry dense instance offsets so the GPU layer can
 /// write one flat instance SSBO and issue one instanced draw per group.
@@ -202,8 +195,8 @@ pub(crate) fn plan_mesh_frame(
     let mut instance_count: usize = 0;
     let mut dropped: u32 = 0;
 
-    // Budget forward-visible instances before off-PVS casters, so an off-screen
-    // caster only consumes leftover budget and can never evict a forward instance.
+    // Budget forward-visible instances first. Live collector input is visible-only,
+    // but mixed synthetic input should never evict a forward instance.
     // Two passes over the slice, no clone.
     let forward_first = instances
         .iter()
@@ -442,33 +435,32 @@ mod tests {
         assert_eq!(total, MAX_INSTANCES, "surviving instances match the count");
     }
 
-    /// An off-PVS shadow caster (`forward_visible == false`) for the same model.
-    fn shadow_caster(model: &str, x: f32, seed: u32) -> MeshInstanceInput {
+    /// A synthetic non-forward-visible instance for planner guard tests.
+    fn non_forward_instance(model: &str, x: f32, seed: u32) -> MeshInstanceInput {
         let mut i = instance(model, x, seed);
         i.forward_visible = false;
         i
     }
 
     #[test]
-    fn plan_budgets_forward_visible_before_off_pvs_casters() {
-        // Regression guard: an off-screen shadow caster must not evict an on-screen
-        // forward instance. Budget of 2, off-PVS caster listed first — both forward
-        // instances survive and the off-PVS caster is the one dropped.
+    fn plan_budgets_forward_visible_before_non_forward_inputs() {
+        // Defensive guard for mixed synthetic input. Budget of 2, non-forward
+        // instance listed first — both forward instances survive.
         let per = (MAX_PALETTE_ENTRIES / 2) as u32; // two runs fill the palette budget
         let joints = joints(&[("grunt", per)]);
         let instances = [
-            shadow_caster("grunt", 99.0, 2), // off-PVS, listed first
-            instance("grunt", 1.0, 0),       // forward-visible
-            instance("grunt", 2.0, 1),       // forward-visible
+            non_forward_instance("grunt", 99.0, 2), // non-forward, listed first
+            instance("grunt", 1.0, 0),              // forward-visible
+            instance("grunt", 2.0, 1),              // forward-visible
         ];
         let plan = plan_mesh_frame(&instances, &joints);
 
         assert_eq!(plan.instance_count, 2, "two instances fit the budget");
         assert_eq!(
             plan.dropped, 1,
-            "the off-PVS caster is dropped, not a forward one"
+            "the non-forward instance is dropped, not a forward one"
         );
-        // Survivors are seeds 0 and 1 (forward); seed 2 (off-PVS) was evicted.
+        // Survivors are seeds 0 and 1 (forward); seed 2 (non-forward) was evicted.
         let seeds: Vec<u32> = plan
             .groups
             .iter()
@@ -476,7 +468,7 @@ mod tests {
             .collect();
         assert!(
             seeds.contains(&0) && seeds.contains(&1) && !seeds.contains(&2),
-            "forward-visible instances survive over the off-PVS caster: {seeds:?}",
+            "forward-visible instances survive over the non-forward input: {seeds:?}",
         );
         assert!(
             plan.groups
@@ -528,7 +520,7 @@ mod tests {
             casts_entity_shadows: true,
             animated_slot: None,
             tags: vec![],
-            leaf_index: 0,
+            cell_index: 0,
             shadow_type: ShadowType::StaticLightMap,
         };
         let planes = cone_frustum_planes(&light_space_matrix(&light));
@@ -598,7 +590,7 @@ mod tests {
             casts_entity_shadows: true,
             animated_slot: None,
             tags: vec![],
-            leaf_index: 0,
+            cell_index: 0,
             shadow_type: ShadowType::StaticLightMap,
         };
         let planes = cone_frustum_planes(&light_space_matrix(&light));

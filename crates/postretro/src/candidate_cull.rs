@@ -119,12 +119,13 @@ pub(crate) fn gather_candidate_leaves(
 /// atomic counter. Follows the SH irradiance readback precedent
 /// (`render/sh_diagnostics.rs`): a ring of `MAP_READ` buffers, one targeted per
 /// frame, mapped a few frames later so the map never stalls the frame. The most
-/// recent successfully-mapped value is the diagnostic the panel reads; it lags
-/// the current frame's true count by the ring depth (a few frames), which is
-/// acceptable for a measurement-oriented Spatial-tab readout.
+/// recent successfully-mapped value lags the current frame's true count by the
+/// ring depth (a few frames), so it must be labeled as delayed anywhere it is
+/// surfaced.
 ///
-/// Dev-tools-only: shipping builds neither allocate the ring nor poll/map, since
-/// the `submitted_leaves` panel that consumes it is itself dev-tools-gated.
+/// Dev-tools-only: shipping builds neither allocate the ring nor poll/map. The
+/// live Spatial tab uses CPU-side same-frame counts; this readback remains a
+/// delayed GPU-side probe for candidate-cull debugging.
 #[cfg(feature = "dev-tools")]
 struct SubmittedCounterReadback {
     /// Ring of 4-byte `MAP_READ | COPY_DST` buffers. The dispatch copies the
@@ -141,7 +142,7 @@ struct SubmittedCounterReadback {
     copied_pending: Vec<bool>,
     /// Next ring slot a dispatch copies into.
     write_index: usize,
-    /// Most-recent successfully-mapped count (the deferred result the panel reads).
+    /// Most-recent successfully-mapped count. Delayed; do not present as current-frame data.
     latest: u32,
 }
 
@@ -532,13 +533,6 @@ impl CandidateCullPipeline {
     #[cfg(feature = "dev-tools")]
     pub fn post_submit(&mut self, device: &wgpu::Device) {
         self.submitted_readback.post_submit(device);
-    }
-
-    /// Most-recent successfully-mapped GPU submitted-leaf count. Lags the current
-    /// frame by the readback ring depth (a few frames) by design. Dev-tools only.
-    #[cfg(feature = "dev-tools")]
-    pub fn submitted_leaves(&self) -> u32 {
-        self.submitted_readback.latest
     }
 }
 

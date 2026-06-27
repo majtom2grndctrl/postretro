@@ -1,11 +1,9 @@
-// AlphaLights PRL section (ID 18): flat per-light record array for the
-// direct-lighting path in sub-plan 3 of the Lighting Foundation plan.
+// AlphaLights PRL section (ID 18): flat per-light record array for runtime
+// direct lighting.
 //
-// **INTERIM FORMAT.** This section exists to unblock direct lighting before
-// the entity system lands. Do not build stable consumers against this layout
-// — it will be replaced by proper entity serialization in Milestone 6+.
-// See: context/plans/done/lighting-foundation/1-fgd-canonical.md
-//      §AlphaLights PRL section
+// Durable format context lives in `context/lib/build_pipeline.md` under the
+// PRL section inventory and entity resolution. Historical plans are not the
+// contract for this section.
 
 use crate::FormatError;
 
@@ -79,7 +77,7 @@ impl AlphaShadowType {
 }
 
 /// One serialised light record. Fixed-size on disk:
-/// `ALPHA_LIGHT_RECORD_SIZE` (74) bytes per record.
+/// `ALPHA_LIGHT_RECORD_SIZE` bytes per record.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AlphaLightRecord {
     /// World position, engine meters (Y-up).
@@ -112,10 +110,10 @@ pub struct AlphaLightRecord {
     /// it on any non-dynamic (baked-tier) light, so a `true` here always implies
     /// `is_dynamic`.
     pub casts_entity_shadows: bool,
-    /// BSP leaf index containing the light origin, baked at compile time for
-    /// the runtime PVS cull. `u32::MAX` is the reserved sentinel for
-    /// "unassigned / cannot determine leaf" (e.g. the light origin landed in
-    /// a solid leaf — a map-authoring error). Runtime culls these and warns.
+    /// Runtime cell id containing the light origin, or
+    /// `ALPHA_LIGHT_LEAF_UNASSIGNED` when the compiler could not assign one.
+    /// The Rust field name preserves the legacy wire name for compatibility;
+    /// current runtime consumers treat the value as a cell id.
     pub leaf_index: u32,
     /// How this baked-tier light's direct shadow resolves (FGD `_shadow_type`,
     /// 2 values). The direct techniques are disjoint, so no light's
@@ -125,9 +123,9 @@ pub struct AlphaLightRecord {
     pub shadow_type: AlphaShadowType,
 }
 
-/// Sentinel `leaf_index` for lights whose origin could not be assigned to a
-/// non-solid leaf at compile time. Runtime consumers cull these and emit a
-/// warning at load.
+/// Sentinel `leaf_index` wire value for lights whose origin could not be
+/// assigned to a runtime cell. Runtime consumers cull these and emit a warning
+/// at load.
 pub const ALPHA_LIGHT_LEAF_UNASSIGNED: u32 = u32::MAX;
 
 /// Byte size of a single serialised `AlphaLightRecord` in the current layout.

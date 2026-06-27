@@ -670,7 +670,7 @@ mod tests {
             casts_entity_shadows: false,
             animated_slot: None,
             tags: vec![],
-            leaf_index: 0,
+            cell_index: 0,
             shadow_type: crate::prl::ShadowType::StaticLightMap,
         }
     }

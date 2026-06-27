@@ -1,9 +1,9 @@
 // Fog cell masks bake: produces the FogCellMasks PRL section (ID 31).
 //
-// For each BSP leaf, sets bit `i` of its mask when fog volume `i` intersects
-// the leaf's exact BSP convex region. Solid leaves are written as `0`. The
-// runtime unions visible-cell masks each frame to derive the active fog-volume
-// set.
+// For each runtime cell, sets bit `i` of its mask when fog volume `i` intersects
+// the cell's exact BSP convex region. Compiler BSP leaf ids are preserved as
+// runtime cell ids, so solid leaves are written as `0`. The runtime unions
+// visible-cell masks each frame to derive the active fog-volume set.
 //
 // Intersection uses a two-stage test:
 //   1. AABB fast-reject: if the fog's AABB does not overlap the leaf's bounds
@@ -26,7 +26,7 @@ use postretro_level_format::fog_volumes::MAX_FOG_VOLUMES;
 use crate::map_data::MapFogVolume;
 use crate::partition::{Aabb, BspTree};
 
-/// Bake the per-leaf fog-volume bitmask section.
+/// Bake the per-cell fog-volume bitmask section.
 ///
 /// Returns `None` when `fog_volumes` is empty so the caller can omit the
 /// section entirely.

@@ -4,26 +4,29 @@
 use super::super::*;
 
 #[test]
-fn compute_fog_cell_mask_culled_unions_visible_leaf_masks() {
-    let masks = vec![0b001u32, 0b010, 0b101, 0b000]; // 4 leaves, 3 fog volumes
+fn compute_fog_cell_mask_culled_unions_visible_cell_masks() {
+    let masks = vec![0b001u32, 0b010, 0b101, 0b000]; // 4 cells, 3 fog volumes
     let fog_reachable = [1u32, 2];
     let active = compute_fog_cell_mask(&fog_reachable, Some(&masks), 3, Some(1));
-    // leaf1→0b010, leaf2→0b101 → OR 0b111; camera-leaf union (camera_leaf=1,
+    // cell1→0b010, cell2→0b101 → OR 0b111; camera-cell union (camera_cell=1,
     // already in reachable set) is idempotent here — see
-    // compute_fog_cell_mask_camera_leaf_union_is_idempotent_when_already_reachable
+    // compute_fog_cell_mask_camera_cell_union_is_idempotent_when_already_reachable
     assert_eq!(active, 0b111);
 }
 
 #[test]
 fn compute_fog_cell_mask_drawall_returns_all_canonical_slots() {
     let masks = vec![0u32; 4]; // present but ignored on DrawAll path
-    // Empty fog_reachable signals DrawAll-equivalent (portal isolation N/A).
+    // Empty fog_reachable signals all-active fog fallback sentinel.
     assert_eq!(compute_fog_cell_mask(&[], Some(&masks), 3, Some(0)), 0b111);
     assert_eq!(compute_fog_cell_mask(&[], None, 3, Some(0)), 0b111);
 }
 
 #[test]
-fn compute_fog_cell_mask_culled_without_baked_masks_falls_back_to_all_slots() {
+fn compute_fog_cell_mask_caller_without_mask_table_gets_all_slots() {
+    // Helper-level contract: a caller that passes no mask table gets a
+    // conservative all-slots result. Modern PRL load rejects canonical fog
+    // volumes without FogCellMasks before reaching renderer fog culling.
     let fog_reachable = [0u32, 1, 2];
     assert_eq!(
         compute_fog_cell_mask(&fog_reachable, None, 4, Some(0)),
@@ -41,19 +44,19 @@ fn compute_fog_cell_mask_zero_canonical_volumes_returns_zero() {
 }
 
 #[test]
-fn compute_fog_cell_mask_unions_camera_leaf_when_absent_from_fog_reachable() {
-    // Camera in leaf 3 (not in fog_reachable). Its 0b100 bit must still appear.
-    // Regression: portal traversal can transiently omit the camera leaf,
+fn compute_fog_cell_mask_unions_camera_cell_when_absent_from_fog_reachable() {
+    // Camera in cell 3 (not in fog_reachable). Its 0b100 bit must still appear.
+    // Regression: portal traversal can transiently omit the camera cell,
     // causing fog the camera is inside to flicker off.
     let masks = vec![0b001u32, 0b010, 0b000, 0b100];
     let fog_reachable = [0u32, 1];
     let active = compute_fog_cell_mask(&fog_reachable, Some(&masks), 3, Some(3));
-    // 0b001 | 0b010 (union) | 0b100 (camera leaf) = 0b111
+    // 0b001 | 0b010 (union) | 0b100 (camera cell) = 0b111
     assert_eq!(active, 0b111);
 }
 
 #[test]
-fn compute_fog_cell_mask_camera_leaf_union_is_idempotent_when_already_reachable() {
+fn compute_fog_cell_mask_camera_cell_union_is_idempotent_when_already_reachable() {
     let masks = vec![0b001u32, 0b010, 0b100];
     let fog_reachable = [0u32, 2];
     let with_cam = compute_fog_cell_mask(&fog_reachable, Some(&masks), 3, Some(2));

@@ -15,8 +15,8 @@
 | Cross-subsystem interactions | Map loader producing data the renderer consumes, game events triggering audio, input state driving game logic |
 | Data-driven behavior | Texture name prefix → material enum derivation, PRL section presence/absence shaping renderer paths |
 | Boundary parsing | PRL loading, FGD entity parsing, config file parsing — anywhere external data enters the engine |
-| Domain logic | BSP traversal ordering, lightmap atlas packing, collision detection, entity resolution from BSP leaves |
-| Degradation paths | Missing optional PRL sections (lightmaps, portals), malformed textures, absent assets |
+| Domain logic | Cell-locator ordering, lightmap atlas packing, collision detection, point-to-cell visibility lookup |
+| Degradation paths | Missing assets, malformed textures, absent optional content sidecars, no-portals visibility fallback |
 
 ### Decision criteria
 

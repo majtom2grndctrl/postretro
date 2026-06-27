@@ -96,7 +96,7 @@ pub(crate) struct LightBridge {
 #[derive(Debug, Clone)]
 struct MapLightShape {
     is_dynamic: bool,
-    leaf_index: u32,
+    cell_index: u32,
     /// Cached `MapLight.animated_slot` so the bridge can route
     /// `setLightAnimation` writes to the animated-compose descriptor buffer
     /// without re-querying the source. Task 2c.
@@ -167,7 +167,7 @@ impl LightBridge {
                     component,
                     self.cached_origins_f64[map_idx],
                     self.shape[map_idx].is_dynamic,
-                    self.shape[map_idx].leaf_index,
+                    self.shape[map_idx].cell_index,
                 );
                 Some((map_light, brightness))
             })
@@ -212,7 +212,7 @@ impl LightBridge {
             self.entity_ids.push(id);
             self.shape.push(MapLightShape {
                 is_dynamic: light.is_dynamic,
-                leaf_index: light.leaf_index,
+                cell_index: light.cell_index,
                 animated_slot: light.animated_slot,
             });
             self.cached_origins_f64.push(light.origin);
@@ -237,9 +237,9 @@ impl LightBridge {
     ///
     /// Descriptor-spawned lights are always dynamic
     /// (`data_archetype.rs` forces `is_dynamic = true` regardless of source);
-    /// they have no leaf assignment yet, so `leaf_index` is recorded as
-    /// `u32::MAX` — the unassigned sentinel. Replace with a real leaf index
-    /// when BSP-leaf assignment for runtime-spawned lights is implemented.
+    /// they have no cell assignment yet, so `cell_index` is recorded as
+    /// `u32::MAX` — the unassigned sentinel. Replace with a real cell index
+    /// when runtime-spawned light cell assignment is implemented.
     /// The cached f64 origin mirrors the f32 component origin
     /// (descriptor-spawn is f32 from the start; there is no f64 source).
     pub(crate) fn absorb_dynamic_lights(&mut self, registry: &EntityRegistry) {
@@ -274,7 +274,7 @@ impl LightBridge {
             self.entity_ids.push(id);
             self.shape.push(MapLightShape {
                 is_dynamic: true,
-                leaf_index: u32::MAX,
+                cell_index: u32::MAX,
                 // Script-spawned dynamic lights have no baked slot; the
                 // bridge routes them via the legacy forward path.
                 animated_slot: None,
@@ -411,7 +411,7 @@ impl LightBridge {
                 component,
                 self.cached_origins_f64[map_idx],
                 self.shape[map_idx].is_dynamic,
-                self.shape[map_idx].leaf_index,
+                self.shape[map_idx].cell_index,
             );
             lights_bytes.extend_from_slice(&pack_light(&map_light));
 
@@ -528,7 +528,7 @@ fn component_to_map_light(
     component: &LightComponent,
     origin_f64: [f64; 3],
     is_dynamic: bool,
-    leaf_index: u32,
+    cell_index: u32,
 ) -> MapLight {
     let light_type = match component.light_type {
         LightKind::Point => LightType::Point,
@@ -559,7 +559,7 @@ fn component_to_map_light(
         casts_entity_shadows: false,
         animated_slot: None,
         tags: vec![],
-        leaf_index,
+        cell_index,
         // Script-spawned lights have no authoring surface for `_shadow_type`
         // and `LightComponent` does not carry it; default `StaticLightMap`
         // (same gap as `casts_entity_shadows` above). Preserving the tag
@@ -742,7 +742,7 @@ mod tests {
             casts_entity_shadows: false,
             animated_slot: None,
             tags: vec![],
-            leaf_index: 0,
+            cell_index: 0,
             shadow_type: crate::prl::ShadowType::StaticLightMap,
         }
     }
@@ -762,7 +762,7 @@ mod tests {
             casts_entity_shadows: true,
             animated_slot: None,
             tags: vec![],
-            leaf_index: 0,
+            cell_index: 0,
             shadow_type: crate::prl::ShadowType::StaticLightMap,
         }
     }

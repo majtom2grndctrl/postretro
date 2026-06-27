@@ -22,7 +22,7 @@ This is not a full ECS. There is no archetype storage, no query planner, no syst
 
 Every entity carries a `Transform` (position, rotation, scale in world space). `Transform` is the only component guaranteed present at spawn.
 
-BSP leaf tracking is camera-only. The camera's current leaf is computed each frame for visibility. Entities do not track which leaf they occupy.
+Runtime cell lookup is transient. The camera is located each frame for portal traversal, and render collectors may locate an entity or particle position for visibility culling. Entities do not persistently track which cell they occupy.
 
 ### Components
 
@@ -137,9 +137,9 @@ Game logic owns entities exclusively. No other subsystem creates, modifies, or d
 | **Audio** | Not yet implemented. Planned to consume movement events for spatial sound. |
 | **Input** | No direct entity interaction; input state flows through game logic |
 
-### BSP Leaf Linkage
+### Cell Linkage
 
-The camera's current BSP leaf is computed each frame for portal-visibility culling. Entities do not track a leaf index; there is no per-entity leaf update.
+Runtime cells are visibility IDs, not entity ownership. `LevelWorld::locate_cell` maps a point to a cell for camera visibility, render-side entity/particle culling, and diagnostics. The entity registry stores no cell index and runs no per-entity cell update. BSP is compile-only scaffolding and is not part of the entity runtime model.
 
 ---
 
@@ -147,7 +147,7 @@ The camera's current BSP leaf is computed each frame for portal-visibility culli
 
 ### World Collision
 
-Entities collide against static world geometry. At level load, PRL static geometry is built into a `parry3d` trimesh held by `CollisionWorld`. Queries use `parry3d::query::*` free functions against this collider — no `QueryPipeline`.
+Entities collide against static world geometry. At level load, PRL static geometry is built into a `parry3d` trimesh held by `CollisionWorld`. Queries use `parry3d::query::*` free functions against this collider — no `QueryPipeline`. Runtime cells and portals do not answer collision contacts.
 
 **Skeletal hit zones.** An entity is hitscan-targetable iff it has health **and** (an authored AABB hitbox **or** a zone-bearing skinned model — a glTF whose joints carry hit-zone `extras`). A zone-bearing model is tested against bone-posed capsules, not the AABB. The standalone entity-raycast facility (`scripting_systems::hit_zones::nearest_entity_hit`) resolves the nearest targetable entity for any ray: broad phase is the authored AABB for AABB-only entities and a clip-swept derived bound for zone-bearing ones; narrow phase is the AABB slab test or, per tagged joint, a `parry3d` ray-vs-capsule test (segment from the joint's posed origin to its first child's, a sphere for a tagged leaf; radius = the joint's authored `hitZoneRadius` or the engine default 0.12 m). The model→world transform uses the entity's game-tick position + yaw only (no pitch/roll/scale). The weapon's hitscan delegates to this facility and keeps only world-vs-entity nearest-of resolution; the struck zone tag rides on `WeaponImpact.zone`. General division: **spatial structure rides on the asset** (per-joint hit-zone tags in the glTF), **balance rides in the script** (per-zone damage multipliers in `health.zoneMultipliers`, applied at the weapon damage site).
 

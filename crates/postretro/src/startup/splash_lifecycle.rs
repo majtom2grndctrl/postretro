@@ -94,6 +94,12 @@ impl App {
             self.request_redraw();
             return false;
         }
+        // First pixels are now on screen (black frame 0, logo frame 1). Finish
+        // deferred session startup — net-endpoint setup — before any mod-supplied
+        // or net-dependent work runs. Guarded single-commit via `Option::take`,
+        // so a suspend/resume re-entering this frame never re-runs it.
+        // See: context/lib/boot_sequence.md §1, §9.
+        self.install_pending_session();
         self.run_deferred_mod_init();
         self.swap_mod_splash_override_if_pending();
         log::info!("{}", self.mod_timings.summary());

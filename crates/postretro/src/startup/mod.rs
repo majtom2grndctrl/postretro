@@ -11,7 +11,7 @@ pub(crate) mod splash_lifecycle;
 pub(crate) mod worker;
 
 pub(crate) use lifecycle::FRONTEND_CLEAR_COLOR;
-pub(crate) use session::{BootSession, build_session};
+pub(crate) use session::{BootSession, PendingSessionInit, build_session};
 pub(crate) use worker::{LoadOutcome, spawn_level_worker};
 
 /// `Booting` = before `App::resumed()` (no window, no renderer).

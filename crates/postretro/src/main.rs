@@ -788,6 +788,14 @@ pub(crate) struct App {
     /// subsystem never touches the registry — `crate::netcode` owns that seam.
     net_endpoint: Option<netcode::NetEndpoint>,
 
+    /// Deferred-startup owner: the raw inputs needed to finish session startup
+    /// (net-endpoint setup today) AFTER the first visible logo frame. `Some`
+    /// from boot construction until `install_pending_session` consumes it on the
+    /// first logo splash frame; `None` afterward. The `Option::take` is the
+    /// single-commit guard so a suspend/resume re-entering the splash loop never
+    /// runs deferred init twice. See: context/lib/boot_sequence.md §1, §9.
+    pending_session: Option<startup::PendingSessionInit>,
+
     /// CPU-side egui state. `None` until `resumed()` initialises the renderer
     /// (the constructor needs the device's `max_texture_dimension_2d` limit).
     /// GPU half lives on `Renderer` as `debug_ui_gpu`; lazy-initialized on
@@ -1450,32 +1458,19 @@ impl ApplicationHandler for App {
                 let frame_dt = frame_result.frame_dt;
                 let ticks = frame_result.ticks;
 
-                // Drain changed paths every frame — unconditionally — so the
-                // watcher channel does not back up even when the summary is
-                // empty. ScriptRuntime checks them against the active
-                // dependency set before queuing the serialized staged build.
-                match self.script_runtime.drain_reload_requests() {
-                    Ok(summary) => {
-                        if reload_summary_requires_mod_init(summary) {
-                            match self
-                                .script_runtime
-                                .enqueue_staged_manifest_build(&self.content_root)
-                            {
-                                Ok(Some(generation)) => log::info!(
-                                    "[Scripting] active mod-init dependency changed - queued staged generation {generation}",
-                                ),
-                                Ok(None) => {}
-                                Err(err) => {
-                                    log::error!(
-                                        "[Scripting] failed to queue staged mod-init: {err}",
-                                    );
-                                }
-                            }
-                        }
-                    }
-                    Err(err) => {
-                        log::error!("[Scripting] drain_reload_requests failed: {err}");
-                    }
+                // Drain changed paths every frame so the watcher channel does
+                // not back up even when the summary is empty. ScriptRuntime
+                // checks them against the active dependency set before queuing
+                // the serialized staged build.
+                //
+                // Guarded behind "deferred session init committed" (`pending_session`
+                // consumed) — which only happens after the first visible logo
+                // frame — so reload draining never runs before the splash logo
+                // paints. The watcher itself starts during the deferred mod init
+                // that follows the same logo frame, so there is nothing to drain
+                // earlier. See: context/lib/boot_sequence.md §1.
+                if self.pending_session.is_none() {
+                    self.drain_script_reload_requests();
                 }
 
                 if !self.drive_boot_state_for_redraw(event_loop) {
@@ -2792,6 +2787,45 @@ impl ApplicationHandler for App {
 }
 
 impl App {
+    /// Finish deferred session startup on the first visible logo frame. Takes
+    /// (and thereby consumes) `pending_session` so the install commits at most
+    /// once — a suspend/resume that re-enters the splash loop finds it `None`
+    /// and skips re-init. Net setup runs here, behind the logo pixels.
+    /// See: context/lib/boot_sequence.md §1, §9.
+    pub(crate) fn install_pending_session(&mut self) {
+        if let Some(pending) = self.pending_session.take() {
+            pending.install(self);
+        }
+    }
+
+    /// Drain the hot-reload watcher's changed-path channel and queue a staged
+    /// mod-init build when an active dependency changed. Extracted from the
+    /// redraw path so the splash logo frame can gate it behind deferred-session
+    /// commit (`pending_session` consumed). See: context/lib/boot_sequence.md §1.
+    fn drain_script_reload_requests(&mut self) {
+        match self.script_runtime.drain_reload_requests() {
+            Ok(summary) => {
+                if reload_summary_requires_mod_init(summary) {
+                    match self
+                        .script_runtime
+                        .enqueue_staged_manifest_build(&self.content_root)
+                    {
+                        Ok(Some(generation)) => log::info!(
+                            "[Scripting] active mod-init dependency changed - queued staged generation {generation}",
+                        ),
+                        Ok(None) => {}
+                        Err(err) => {
+                            log::error!("[Scripting] failed to queue staged mod-init: {err}");
+                        }
+                    }
+                }
+            }
+            Err(err) => {
+                log::error!("[Scripting] drain_reload_requests failed: {err}");
+            }
+        }
+    }
+
     /// Commit staged UI trees and theme only after the matching staged script
     /// manifest has already passed descriptor/store reconciliation.
     fn commit_staged_ui_manifest(

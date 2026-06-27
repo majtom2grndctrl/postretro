@@ -1116,6 +1116,7 @@ mod tests {
             level_requests: VecDeque::new(),
             boot_load: false,
             net_endpoint: None,
+            pending_session: None,
             #[cfg(feature = "dev-tools")]
             debug_ui: None,
             #[cfg(feature = "dev-tools")]

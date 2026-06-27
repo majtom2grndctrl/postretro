@@ -1107,6 +1107,11 @@ impl ApplicationHandler for App {
     }
 
     fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
+        // Audit which boot phase a suspend interrupts. The resume path resets to
+        // `Booting` and re-drives the splash loop; the single-commit guards
+        // (`pending_session.take`, renderer full-ready idempotence) keep session
+        // init and renderer completion from re-running. See: boot_sequence §9.
+        log::info!("[Engine] Suspended during boot phase {:?}", self.boot_phase());
         self.window_state = None;
         self.renderer = None;
         // Re-built on the next `resumed()` since it borrows the new window
@@ -1124,7 +1129,6 @@ impl ApplicationHandler for App {
         self.level_rx = None;
         self.level_worker = None;
         self.reset_boot_state_after_suspend();
-        log::info!("[Engine] Suspended");
     }
 
     fn window_event(
@@ -1453,7 +1457,7 @@ impl ApplicationHandler for App {
                 // paints. The watcher itself starts during the deferred mod init
                 // that follows the same logo frame, so there is nothing to drain
                 // earlier. See: context/lib/boot_sequence.md §1.
-                if self.pending_session.is_none() {
+                if crate::startup::boot_allows_reload_drain(self.pending_session.is_none()) {
                     self.drain_script_reload_requests();
                 }
 
@@ -2777,9 +2781,25 @@ impl App {
     /// and skips re-init. Net setup runs here, behind the logo pixels.
     /// See: context/lib/boot_sequence.md §1, §9.
     pub(crate) fn install_pending_session(&mut self) {
-        if let Some(pending) = self.pending_session.take() {
+        if let Some(pending) = crate::startup::take_once(&mut self.pending_session) {
             pending.install(self);
         }
+    }
+
+    /// Current boot phase for the suspend/resume contract (boot_sequence §1, §9).
+    /// Derived purely from the splash schedule, whether the deferred session
+    /// bundle is installed (`pending_session` consumed), and renderer full-ready.
+    /// Used to log/audit which phase a suspend interrupts; the resume path itself
+    /// resets to `Booting` and re-drives the splash loop, where the single-commit
+    /// guards keep session init from re-running.
+    pub(crate) fn boot_phase(&self) -> crate::startup::BootPhase {
+        crate::startup::classify_boot_phase(
+            self.splash_frame,
+            self.pending_session.is_none(),
+            self.renderer
+                .as_ref()
+                .is_some_and(Renderer::is_full_ready),
+        )
     }
 
     /// Build the fault-tolerant audio subsystem and (in dev-tools builds) the

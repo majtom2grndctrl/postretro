@@ -124,6 +124,10 @@ impl App {
             self.populate_frontend();
             self.drain_level_requests();
             self.splash_frame += 1;
+            // Final boot summary: the post-logo marks (session/audio/net/full-init)
+            // append after the `first_splash_frame` line, so this logs the full
+            // auditable boot order in one place. See: boot_sequence §1.
+            log::info!("{}", self.boot_timings.summary());
             log::info!("[Engine] no boot map supplied; entering frontend");
             self.request_redraw();
             return false;
@@ -131,13 +135,18 @@ impl App {
 
         // Route boot-map loading through the same request queue runtime
         // transitions use. PRL parse still runs off the main thread, and
-        // `Loading` keeps painting while it waits.
+        // `Loading` keeps painting while it waits. The boot worker dispatch is
+        // recorded into `boot_timings` so the boot order line proves first
+        // pixels precede the level-worker spawn. See: boot_sequence §1.
         self.boot_load = true;
+        self.boot_timings.record("boot_worker_dispatch");
         self.enqueue_level_request(LevelRequest::Load(LevelSource::Path(map_path)));
         self.boot_state = BootState::Loading;
         self.drain_level_requests();
 
         self.splash_frame += 1;
+        // Final boot summary with the full mark set (see the no-map branch above).
+        log::info!("{}", self.boot_timings.summary());
         self.request_redraw();
         false
     }

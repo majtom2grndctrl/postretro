@@ -94,15 +94,19 @@ impl App {
     /// | `data_registry` reactions + crossings, presentation cells | persisted-state save path |
     /// | progress tracker, active wieldable, camera pose | |
     pub(crate) fn unload_level(&mut self) {
-        if let Some(endpoint) = self.net_endpoint.as_mut() {
-            endpoint.reset_level_scoped_client_state();
+        // `net_endpoint` and `audio` are session-owned; reset/release them through
+        // the session borrow.
+        if let Some(session) = self.session.as_mut() {
+            if let Some(endpoint) = session.net_endpoint.as_mut() {
+                endpoint.reset_level_scoped_client_state();
+            }
+            if let Some(audio) = session.audio.as_mut() {
+                audio.release_level_sounds();
+            }
         }
 
         if let Some(renderer) = self.renderer.as_mut() {
             renderer.release_level_resources();
-        }
-        if let Some(audio) = &mut self.audio {
-            audio.release_level_sounds();
         }
 
         self.level = None;
@@ -554,16 +558,23 @@ impl App {
 
         // Reseed the SH diagnostic per-light visibility bitmap to match the
         // freshly-installed level's animated-light count. Reset `seeded` so the
-        // panel re-pulls defaults on the next open.
+        // panel re-pulls defaults on the next open. `debug_ui` is session-owned;
+        // read the renderer's delta count (disjoint `self.renderer` borrow) first.
         #[cfg(feature = "dev-tools")]
-        if let Some(debug_ui) = self.debug_ui.as_mut() {
+        {
             let delta_count = renderer.sh_delta_volumes().len();
-            debug_ui.sh_diagnostics_state.per_light_visible.clear();
-            debug_ui
-                .sh_diagnostics_state
-                .per_light_visible
-                .resize(delta_count, false);
-            debug_ui.sh_diagnostics_state.seeded = false;
+            if let Some(debug_ui) = self
+                .session
+                .as_mut()
+                .and_then(|session| session.debug_ui.as_mut())
+            {
+                debug_ui.sh_diagnostics_state.per_light_visible.clear();
+                debug_ui
+                    .sh_diagnostics_state
+                    .per_light_visible
+                    .resize(delta_count, false);
+                debug_ui.sh_diagnostics_state.seeded = false;
+            }
         }
 
         // Build the runtime navigation graph once, from the baked navmesh
@@ -614,9 +625,16 @@ impl App {
         // Sound registry follows level lifetime, parallel to textures: load the
         // level's sounds from `sounds/` here, release them at unload. Fault-
         // tolerant — a missing directory or undecodable file warns and is
-        // skipped. Silent if audio init failed (`audio` is `None`).
-        if let Some(audio) = &mut self.audio {
-            audio.load_level_sounds(&self.content_root);
+        // skipped. Silent if audio init failed (`audio` is `None`). Audio is
+        // session-owned; clone the content root first so the `self.session` borrow
+        // does not alias the `self.content_root` read.
+        let content_root = self.content_root.clone();
+        if let Some(audio) = self
+            .session
+            .as_mut()
+            .and_then(|session| session.audio.as_mut())
+        {
+            audio.load_level_sounds(&content_root);
         }
         self.level_timings.record("audio_load");
 
@@ -1093,7 +1111,6 @@ mod tests {
         let initial_state = InterpolableState::new(Vec3::ZERO);
         App {
             renderer: None,
-            audio: None,
             window_state: None,
             level: None,
             nav_graph: None,
@@ -1145,11 +1162,16 @@ mod tests {
                 mesh_render: scripting_systems::mesh_render::MeshRenderCollector::new(),
                 mesh_clip_tables: scripting_systems::mesh_anim::MeshClipTables::new(),
                 hit_zone_store: scripting_systems::hit_zones::HitZoneStore::new(),
+                player_options: options::PlayerOptions::default(),
+                settings_path: None,
+                frontend: None,
+                net_endpoint: None,
+                audio: None,
+                #[cfg(feature = "dev-tools")]
+                debug_ui: None,
             }),
             crouch_toggle_active: false,
             ai_warned: std::collections::HashSet::new(),
-            player_options: options::PlayerOptions::default(),
-            settings_path: None,
             cursor_pos: None,
             nav_stick_tracker: input::StickNavTracker::new(),
             frame_timing: FrameTiming::new(initial_state),
@@ -1161,7 +1183,6 @@ mod tests {
             title_buffer: String::new(),
             last_title_update: Instant::now(),
             mod_theme_override: Default::default(),
-            frontend: None,
             pending_mode_signal: None,
             pending_menu_toggle: false,
             pending_exit_to_desktop: false,
@@ -1191,10 +1212,7 @@ mod tests {
             level_worker: None,
             level_requests: VecDeque::new(),
             boot_load: false,
-            net_endpoint: None,
             pending_session: None,
-            #[cfg(feature = "dev-tools")]
-            debug_ui: None,
             #[cfg(feature = "dev-tools")]
             debug_chase_agent: None,
         }
@@ -1820,7 +1838,7 @@ mod tests {
             render::ui::modal_stack::ScopeTier::Mod,
             false,
         );
-        app.frontend = Some(Frontend {
+        app.session.as_mut().unwrap().frontend = Some(Frontend {
             menu_tree: "mainMenu".to_string(),
             background_level: Some("menu_backdrop".to_string()),
             camera: MenuCamera {
@@ -1860,7 +1878,7 @@ mod tests {
             render::ui::modal_stack::ScopeTier::Engine,
             false,
         );
-        app.frontend = Some(Frontend {
+        app.session.as_mut().unwrap().frontend = Some(Frontend {
             menu_tree: "missingMenu".to_string(),
             background_level: Some("menu_backdrop".to_string()),
             camera: MenuCamera {
@@ -1910,7 +1928,7 @@ mod tests {
             render::ui::modal_stack::ScopeTier::Mod,
             false,
         );
-        app.frontend = Some(Frontend {
+        app.session.as_mut().unwrap().frontend = Some(Frontend {
             menu_tree: "oldMenu".to_string(),
             background_level: None,
             camera: MenuCamera {
@@ -2222,7 +2240,7 @@ mod tests {
             render::ui::modal_stack::ScopeTier::Mod,
             false,
         );
-        app.frontend = Some(Frontend {
+        app.session.as_mut().unwrap().frontend = Some(Frontend {
             menu_tree: "mainMenu".to_string(),
             background_level: Some("menuBackdrop".to_string()),
             camera: MenuCamera {
@@ -2412,14 +2430,14 @@ mod tests {
 
         // Single-player: net inert, no suppression.
         let mut app = test_app();
-        app.net_endpoint = None;
+        app.session.as_mut().unwrap().net_endpoint = None;
         assert!(
             !app.is_connected_client(),
             "single-player must keep map-placed AI enemies (no suppression)"
         );
 
         // Listen host: authoritative, keeps every placement and replicates them.
-        app.net_endpoint = Some(
+        app.session.as_mut().unwrap().net_endpoint = Some(
             NetEndpoint::from_role(&NetRole::Host { port: 0 })
                 .expect("host endpoint constructs")
                 .expect("host role yields an endpoint"),
@@ -2430,7 +2448,7 @@ mod tests {
         );
 
         // Connected client: the only role that suppresses the local spawn.
-        app.net_endpoint = Some(
+        app.session.as_mut().unwrap().net_endpoint = Some(
             NetEndpoint::from_role(&NetRole::Connect {
                 addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
             })

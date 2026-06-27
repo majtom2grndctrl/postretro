@@ -1,16 +1,24 @@
 // Live session-lifetime runtime container, built after the first visible frame.
-// Owns the input/UI/modal field group AND the scripting core (script context +
-// runtime, registries, and every system that captures a `ScriptCtx` clone or a
-// registry reference), migrated off the `App` god-struct so boot code cannot name
-// a session field before install. Building the script tranche here moves the
-// heaviest startup init (`ScriptCtx::new` / `register_all` / `ScriptRuntime::new`)
-// behind first pixels.
+// Owns EVERY session-lifetime field: the input/UI/modal group, the scripting core
+// (script context + runtime, registries, and every system that captures a
+// `ScriptCtx` clone or a registry reference), the player options + settings path,
+// the committed frontend declaration, the net endpoint, the audio subsystem, and
+// (dev-tools) the debug-UI state. Migrated off the `App` god-struct so boot code
+// cannot name a session field before install. Building the script tranche here
+// moves the heaviest startup init (`ScriptCtx::new` / `register_all` /
+// `ScriptRuntime::new`) behind first pixels. After Task 3, `Session::build` is the
+// sole session construction site and `App` holds only boot-lifetime fields plus
+// `session: Option<Session>`.
 // See: context/lib/boot_sequence.md §1 (Deferred-session boundary and single commit)
+
+use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 
 use crate::input;
 use crate::render;
+use crate::scripting::runtime::Frontend;
+use crate::{audio, netcode, options};
 use crate::scripting::builtins::{
     ClassnameDispatch, register_builtins as register_builtin_classnames,
 };
@@ -34,16 +42,11 @@ use crate::scripting_systems;
 use crate::startup::StartupTimings;
 
 /// Live session-lifetime container, held on `App` as `Option<Session>` and built
-/// once after first pixels by [`Session::build`]. Owns the input/UI/modal field
-/// group and the scripting core: every field here is session-lifetime, and none
-/// can be named while `App.session` is `None` (boot phase). The opposite of
-/// `SessionServices` (a transient pre-window construction bundle that
-/// `build_session` destructures and discards) — `Session` is the live runtime
-/// owner.
-///
-/// This is the Task-1 + Task-2 migrated group. `net_endpoint`/`audio` (Task 3)
-/// still live on `App` until their migration lands; `PendingSessionInit` carries
-/// the inputs for both construction sites until Task 3 collapses them.
+/// once after first pixels by [`Session::build`]. Owns EVERY session-lifetime
+/// field; none can be named while `App.session` is `None` (boot phase). After
+/// Task 3 there is no transient pre-window construction bundle — `Session::build`
+/// is the sole session construction site, and `App` holds only boot-lifetime
+/// fields plus `session: Option<Session>`.
 /// See: context/lib/boot_sequence.md §1.
 pub(crate) struct Session {
     /// Keyboard/mouse/gamepad action state. Seeded at build with the loaded
@@ -174,46 +177,140 @@ pub(crate) struct Session {
     /// clips, authored joint-zone table, and a derived broad-phase bound.
     /// CPU-only — no wgpu. See: context/lib/entity_model.md §7.
     pub(crate) hit_zone_store: scripting_systems::hit_zones::HitZoneStore,
-}
 
-/// Look-preference seed for `InputSystem`, captured pre-window from the loaded
-/// `PlayerOptions` (which stays on `App` until a later task) and carried through
-/// `PendingSessionInit` to the post-first-pixel `Session::build`. Keeping the two
-/// scalars (not a `PlayerOptions` borrow) keeps the migrated build independent of
-/// the not-yet-migrated `player_options` field — no construction dependency
-/// crosses the dual-construction boundary. See: context/lib/player_options.md §3.
-pub(crate) struct InputSeed {
-    pub(crate) mouse_sensitivity: f32,
-    pub(crate) invert_y: bool,
+    // --- Remaining session state (Task 3). The last fields that lived directly
+    // on `App`; their migration here completes the boot/session split. ---
+    /// Per-human runtime preferences loaded at build. Seeds input look
+    /// preferences; `crouch_mode` is read each input tick by
+    /// `resolve_crouch_intent`; `view_feel_scale` feeds `view_feel::evaluate`.
+    /// Owned (not `Option`) — defaults stand in when no settings file exists.
+    /// See: context/lib/player_options.md
+    pub(crate) player_options: options::PlayerOptions,
+
+    /// Resolved `settings.toml` path. Inner `Option` is genuine runtime absence:
+    /// `None` when the platform exposes no config directory (the engine then runs
+    /// on in-memory defaults without persistence). Held for the future M13
+    /// settings menu's save path; no reader yet.
+    /// See: context/lib/player_options.md
+    #[allow(dead_code)]
+    pub(crate) settings_path: Option<PathBuf>,
+
+    /// Currently committed mod frontend declaration. Successful staged mod-init
+    /// commits replace this snapshot. Inner `Option` is genuine runtime absence:
+    /// `None` falls back to the engine/default frontend behavior.
+    /// See: context/lib/boot_sequence.md §4.
+    pub(crate) frontend: Option<Frontend>,
+
+    /// Network endpoint (M15 Phase 1). Inner `Option` is genuine runtime absence:
+    /// `None` for single-player (net inert); `Host`/`Client` once a
+    /// `--host`/`--connect` role's transport is constructed. A malformed net flag
+    /// or a failed transport construction degrades to single-player rather than
+    /// blocking boot. The net subsystem never touches the registry —
+    /// `crate::netcode` owns that seam. See: context/lib/networking.md.
+    pub(crate) net_endpoint: Option<netcode::NetEndpoint>,
+
+    /// Audio subsystem. Inner `Option` is genuine runtime absence: `None` if kira
+    /// init fails — the game then runs silent, never a crash.
+    /// See: context/lib/audio.md §1.
+    pub(crate) audio: Option<audio::Audio>,
+
+    /// CPU-side egui debug-UI state (dev-tools only). Inner `Option` is a genuine
+    /// runtime/lazy state, NOT "session not yet installed": the constructor needs
+    /// the boot-ready renderer's `max_texture_dimension_2d` limit and the window,
+    /// neither available at `Session::build` time, so it is lazy-initialized by
+    /// `App::ensure_debug_ui` after install and reset to `None` on suspend (the
+    /// window-derived state is rebuilt on resume). The GPU half lives on
+    /// `Renderer` as `debug_ui_gpu`. See: context/lib/boot_sequence.md §1, §9.
+    #[cfg(feature = "dev-tools")]
+    pub(crate) debug_ui: Option<render::debug_ui::DebugUi>,
 }
 
 impl Session {
-    /// Build the migrated input/UI/modal group AND the scripting core AFTER the
-    /// first visible frame, synchronously and whole-or-nothing. Runs entirely
-    /// within the single install redraw — no `await`, no yield. Absorbs the work
-    /// that previously ran pre-window: the scripting bootstrap
-    /// (`ScriptCtx::new` / `register_all` / `ScriptRuntime::new` / SDK-type
-    /// emission), the Rust-side registries, the eight `ScriptCtx`-clone systems,
-    /// and the migrated input/UI/modal group.
+    /// Build ALL session-lifetime state AFTER the first visible frame,
+    /// synchronously and whole-or-nothing. Runs entirely within the single
+    /// install redraw — no `await`, no yield. This is the sole session
+    /// construction site (Task 3 collapsed the residual pre-window build). It
+    /// builds, in boot-order:
+    /// 1. player options I/O (load + first-run default write), seeding input;
+    /// 2. the fault-tolerant audio subsystem (silent on kira failure);
+    /// 3. the scripting bootstrap (`ScriptCtx::new` / `register_all` /
+    ///    `ScriptRuntime::new` / SDK-type emission), the Rust-side registries, the
+    ///    eight `ScriptCtx`-clone systems, and the input/UI/modal group;
+    /// 4. the net endpoint (parse net args, build transport, degrade to
+    ///    single-player on failure).
     ///
-    /// `boot_timings` is threaded in so the `script_runtime_ctor` mark records
-    /// where the runtime is now constructed (post-first-pixel) rather than firing
-    /// pre-window with nothing behind it. The mark is recorded right after the
-    /// runtime is built, before the migrated input/UI work, mirroring its old
-    /// position relative to the rest of the scripting bootstrap.
+    /// `frontend` starts `None` (mod-init commits it later this frame) and
+    /// `debug_ui` starts `None` (lazy-initialized by `App::ensure_debug_ui` once
+    /// the renderer/window are available — see its field doc).
     ///
-    /// The only fallible steps are the script-runtime construction (a hard boot
-    /// failure) and the built-in UI tree registration's disk loads (those degrade
-    /// per-tree). `Session::build` returns `Err` on a runtime-construction
-    /// failure; the install path stores it in `exit_result` and exits boot.
+    /// `boot_timings` is threaded in so the deferred-session marks
+    /// (`audio_init_complete`, `script_runtime_ctor`, `net_endpoint_complete`)
+    /// record where the work now runs (post-first-pixel). `audio_init_complete`
+    /// precedes `script_runtime_ctor`, mirroring the prior boot order.
+    ///
+    /// The only fallible step is the script-runtime construction (a hard boot
+    /// failure); audio, net, and the built-in UI tree disk loads all degrade in
+    /// place. `Session::build` returns `Err` on a runtime-construction failure;
+    /// the install path stores it in `exit_result` and exits boot.
     /// See: context/lib/boot_sequence.md §1.
-    pub(crate) fn build(
-        input_seed: &InputSeed,
-        boot_timings: &mut StartupTimings,
-    ) -> Result<Self> {
-        // Scripting bootstrap: primitive registry, runtime construction, and SDK
-        // type emission. Moved here from pre-window `SessionServices::build` so it
-        // runs behind first pixels. See: context/lib/scripting.md.
+    pub(crate) fn build(raw_args: &[String], boot_timings: &mut StartupTimings) -> Result<Self> {
+        // 1. Player options load first so the loaded look preferences seed the
+        //    `InputSystem` constructed below. On first boot (no file present),
+        //    write defaults so the human gets an editable starting file — the only
+        //    `save` call until the M13 settings menu lands. A missing config dir
+        //    or a save failure is logged, not fatal: boot proceeds on in-memory
+        //    defaults. See: context/lib/player_options.md §3.
+        let settings_path = options::settings_path();
+        let player_options = match &settings_path {
+            Some(path) => {
+                // `load` returns defaults for both missing and malformed files,
+                // so detect first-run by probing existence before loading. A
+                // malformed file exists, so it is never overwritten here.
+                let existed = path.exists();
+                let options = options::PlayerOptions::load(path);
+                if !existed {
+                    match options.save(path) {
+                        Ok(()) => log::info!(
+                            "[Options] no settings file found; wrote defaults to {}",
+                            path.display()
+                        ),
+                        Err(err) => log::warn!(
+                            "[Options] failed to write default settings to {}: {err}; \
+                             running on in-memory defaults",
+                            path.display()
+                        ),
+                    }
+                }
+                options
+            }
+            None => {
+                log::warn!(
+                    "[Options] no platform config directory; running on in-memory \
+                     defaults without persistence"
+                );
+                options::PlayerOptions::default()
+            }
+        };
+
+        // 2. Audio: fault-tolerant. A kira/device failure logs and runs silent
+        //    (`audio` stays `None`) — never a crash. `audio_init_complete` is
+        //    recorded before the scripting bootstrap so the boot order keeps
+        //    audio ahead of `script_runtime_ctor`. See: context/lib/audio.md §1.
+        let audio = match audio::Audio::new() {
+            Ok(audio) => {
+                log::info!("[Audio] Initialized");
+                Some(audio)
+            }
+            Err(err) => {
+                log::error!("[Audio] Init failed, running silent: {err}");
+                None
+            }
+        };
+        boot_timings.record("audio_init_complete");
+
+        // 3. Scripting bootstrap: primitive registry, runtime construction, and
+        //    SDK type emission. Runs behind first pixels.
+        //    See: context/lib/scripting.md.
         let script_ctx = ScriptCtx::new();
         let mut script_registry = PrimitiveRegistry::new();
         register_all(&mut script_registry, script_ctx.clone());
@@ -266,8 +363,8 @@ impl Session {
             scripting_systems::input_mode::InputModeTracker::new(script_ctx.clone());
 
         let mut input_system = input::InputSystem::new(input::default_bindings());
-        input_system.set_mouse_sensitivity(input_seed.mouse_sensitivity);
-        input_system.set_invert_y(input_seed.invert_y);
+        input_system.set_mouse_sensitivity(player_options.mouse_sensitivity);
+        input_system.set_invert_y(player_options.invert_y);
 
         // Register engine built-in trees through the one shared load-and-register
         // path (`tree_asset::register_tree_from_disk`): each built-in screen's
@@ -308,6 +405,38 @@ impl Session {
             );
         }
 
+        // 4. Net endpoint (M15 Phase 1, default single-player). A malformed flag
+        //    or a failed transport construction degrades to single-player (net
+        //    inert) rather than blocking boot — the engine is playable without
+        //    networking. The net subsystem never touches the registry.
+        //    See: context/lib/networking.md.
+        let net_role = match netcode::parse_net_config(raw_args) {
+            Ok(config) => config.role,
+            Err(err) => {
+                log::error!("[Net] CLI parse failed ({err}); starting single-player");
+                netcode::NetRole::SinglePlayer
+            }
+        };
+        let net_endpoint = match netcode::NetEndpoint::from_role(&net_role) {
+            Ok(endpoint) => {
+                match &net_role {
+                    netcode::NetRole::SinglePlayer => {}
+                    netcode::NetRole::Host { port } => {
+                        log::info!("[Net] hosting (listen server) on port {port}");
+                    }
+                    netcode::NetRole::Connect { addr } => {
+                        log::info!("[Net] connecting to {addr}");
+                    }
+                }
+                endpoint
+            }
+            Err(err) => {
+                log::error!("[Net] endpoint setup failed ({err}); starting single-player");
+                None
+            }
+        };
+        boot_timings.record("net_endpoint_complete");
+
         Ok(Self {
             input_system,
             gameplay_input_latch: input::GameplayInputLatch::new(),
@@ -341,6 +470,17 @@ impl Session {
             mesh_render: scripting_systems::mesh_render::MeshRenderCollector::new(),
             mesh_clip_tables: scripting_systems::mesh_anim::MeshClipTables::new(),
             hit_zone_store: scripting_systems::hit_zones::HitZoneStore::new(),
+            player_options,
+            settings_path,
+            // Committed by mod-init later this same install frame; engine/default
+            // frontend until then.
+            frontend: None,
+            net_endpoint,
+            audio,
+            // Lazy: built by `App::ensure_debug_ui` once the renderer/window are
+            // available, reset on suspend. See the field doc.
+            #[cfg(feature = "dev-tools")]
+            debug_ui: None,
         })
     }
 }

@@ -96,27 +96,14 @@ use crate::scripting::staged_manifest::{StagedManifestBuildResult, StagedManifes
 use crate::scripting::state_persistence::{
     STATE_FILE_PATH, collect_persisted_state, save_persisted_state,
 };
-// Script-tranche types moved onto `Session` (Task 2); after migration these are
-// referenced in `main.rs` only by the `#[cfg(test)] mod tests` `test_app()`
-// builder, so they are gated test-only to keep the bin build warning-free.
-#[cfg(test)]
-use crate::scripting::builtins::ClassnameDispatch;
+// Session-owned types referenced in `main.rs` only by `#[cfg(test)]` code, so
+// they are gated test-only to keep the bin build warning-free.
 #[cfg(test)]
 use crate::scripting::ctx::ScriptCtx;
 #[cfg(test)]
 use crate::scripting::reaction_dispatch::ProgressTracker;
 #[cfg(test)]
-use crate::scripting::reactions::registry::ReactionPrimitiveRegistry;
-#[cfg(test)]
-use crate::scripting::reactions::system_commands::SystemReactionRegistry;
-#[cfg(test)]
 use crate::scripting::runtime::ScriptRuntime;
-#[cfg(test)]
-use crate::scripting::sequence::SequencedPrimitiveRegistry;
-#[cfg(test)]
-use crate::scripting::state_crossings::CrossingDetector;
-#[cfg(test)]
-use crate::scripting::state_persistence::StateStoreLifecycle;
 use crate::startup::{
     BootState, FRONTEND_CLEAR_COLOR, InFlightLevelLoad, LevelRequest, LevelSource, LoadOutcome,
     SplashSource, StartupTimings,
@@ -374,11 +361,6 @@ fn resolve_crouch_intent(mode: options::CrouchMode, button: ButtonState, latch: 
 pub(crate) struct App {
     renderer: Option<Renderer>,
 
-    /// Audio subsystem. `None` until `resumed()` builds it after the renderer,
-    /// and stays `None` if kira init fails — the game then runs silent.
-    /// See: context/lib/audio.md
-    audio: Option<audio::Audio>,
-
     window_state: Option<WindowState>,
     level: Option<prl::LevelWorld>,
     /// Runtime navigation graph, built once when a level with a baked navmesh
@@ -421,19 +403,6 @@ pub(crate) struct App {
     /// no path. Lives on `App` (the AI tick owner), threaded into
     /// `scripting_systems::ai::run_ai_tick`. See: scripting/systems/ai.rs.
     ai_warned: std::collections::HashSet<String>,
-
-    /// Per-human runtime preferences loaded at boot. Seeds input look
-    /// preferences during init; `crouch_mode` is read each input tick by
-    /// `resolve_crouch_intent`. Settings-menu UI (M13) remains future.
-    /// See: context/lib/player_options.md
-    player_options: options::PlayerOptions,
-
-    /// Resolved `settings.toml` path, or `None` when the platform exposes no
-    /// config directory (the engine then runs on in-memory defaults). Held for
-    /// the future M13 settings menu's save path; no reader yet.
-    /// See: context/lib/player_options.md
-    #[allow(dead_code)]
-    settings_path: Option<PathBuf>,
 
     /// Last cursor position in device pixels, tracked from winit `CursorMoved`
     /// while the cursor is released (UI mode). Tracked *state*, never queued:
@@ -484,11 +453,6 @@ pub(crate) struct App {
     /// commits replace this complete snapshot before a fresh merge over engine
     /// defaults reaches the renderer.
     mod_theme_override: ModThemeTokens,
-
-    /// Currently committed mod frontend declaration. Successful staged mod-init
-    /// commits replace this complete snapshot; omission falls back to the
-    /// engine/default frontend behavior.
-    frontend: Option<Frontend>,
 
     /// The mode signal observed during THIS frame's input phase, resolved into
     /// `input_mode_tracker` at the head of the game-logic phase. Mouse motion
@@ -645,27 +609,13 @@ pub(crate) struct App {
     /// returns an empty payload.
     boot_load: bool,
 
-    /// Optional network endpoint (M15 Phase 1). `None` for single-player (net
-    /// inert); `Host`/`Client` once a `--host`/`--connect` role's transport is
-    /// constructed. Polled once per frame in `RedrawRequested` before the
-    /// catch-up tick loop; the host serializes + sends after the loop. The net
-    /// subsystem never touches the registry — `crate::netcode` owns that seam.
-    net_endpoint: Option<netcode::NetEndpoint>,
-
-    /// Deferred-startup owner: the raw inputs needed to finish session startup
-    /// (net-endpoint setup today) AFTER the first visible logo frame. `Some`
-    /// from boot construction until `install_pending_session` consumes it on the
-    /// first logo splash frame; `None` afterward. The `Option::take` is the
-    /// single-commit guard so a suspend/resume re-entering the splash loop never
-    /// runs deferred init twice. See: context/lib/boot_sequence.md §1, §9.
+    /// Deferred-startup owner: the raw inputs (`argv`) needed to construct the
+    /// entire `Session` AFTER the first visible logo frame. `Some` from boot
+    /// construction until `install_pending_session` consumes it on the first logo
+    /// splash frame; `None` afterward. The `Option::take` is the single-commit
+    /// guard so a suspend/resume re-entering the splash loop never runs deferred
+    /// init twice. See: context/lib/boot_sequence.md §1, §9.
     pending_session: Option<startup::PendingSessionInit>,
-
-    /// CPU-side egui state. `None` until `resumed()` initialises the renderer
-    /// (the constructor needs the device's `max_texture_dimension_2d` limit).
-    /// GPU half lives on `Renderer` as `debug_ui_gpu`; lazy-initialized on
-    /// first panel open.
-    #[cfg(feature = "dev-tools")]
-    debug_ui: Option<render::debug_ui::DebugUi>,
 
     /// The dev-tools "chase me" demo agent (spawned by `Alt+Shift+G`). `None`
     /// until first spawned; spawned at most once per level (cleared on level
@@ -951,11 +901,12 @@ impl ApplicationHandler for App {
         self.window_state = Some(WindowState { window });
         self.apply_mod_ui_theme_to_renderer();
 
-        // Audio init, dev debug-UI creation, and net-endpoint setup are deferred
-        // out of this pre-redraw path: they run on the first visible logo frame
-        // (or the fallback black frame) via `install_post_splash_services` /
-        // `install_pending_session` in `run_splash_frame_one`, so the OS window
-        // opens as fast as practical. See: context/lib/boot_sequence.md §1.
+        // Audio init, net-endpoint setup, and dev debug-UI creation are deferred
+        // out of this pre-redraw path: audio + net build inside `Session::build`
+        // (via `install_pending_session`) and the debug UI lazy-builds via
+        // `ensure_debug_ui`, all on the first visible logo frame (or the fallback
+        // black frame) in `run_splash_frame_one`, so the OS window opens as fast
+        // as practical. See: context/lib/boot_sequence.md §1.
 
         // Input focus is now session-owned: the session is built later this boot
         // (post-first-pixel) with `InputFocus::Gameplay`, and the cursor is
@@ -984,11 +935,12 @@ impl ApplicationHandler for App {
         );
         self.window_state = None;
         self.renderer = None;
-        // Re-built on the next `resumed()` since it borrows the new window
-        // and reads the new renderer's device limits.
+        // Session-owned debug UI is reset here (it borrows the window and reads
+        // the renderer's device limits); `ensure_debug_ui` rebuilds it on the next
+        // resumed splash loop. The rest of the session survives suspend.
         #[cfg(feature = "dev-tools")]
-        {
-            self.debug_ui = None;
+        if let Some(session) = self.session.as_mut() {
+            session.debug_ui = None;
         }
         self.clear_surface_lifetime_level_state();
         // Drop any in-flight level-load worker handoff. On resume the splash
@@ -1023,7 +975,11 @@ impl ApplicationHandler for App {
                 .as_ref()
                 .map(|session| session.input_focus)
                 .unwrap_or(InputFocus::Gameplay);
-            if let (Some(debug_ui), Some(ws)) = (self.debug_ui.as_mut(), self.window_state.as_ref())
+            // `debug_ui` is session-owned; borrow the session for it and the
+            // window (a disjoint `self` field) together.
+            if let (Some(session), Some(ws)) =
+                (self.session.as_mut(), self.window_state.as_ref())
+                && let Some(debug_ui) = session.debug_ui.as_mut()
             {
                 let response = debug_ui.on_window_event(&ws.window, &event);
                 if focus != InputFocus::Gameplay {
@@ -1671,8 +1627,15 @@ impl ApplicationHandler for App {
                 let mut pending_death_events: Vec<String> = Vec::new();
 
                 if let Some(snapshot) = gameplay_snapshot.as_ref() {
+                    // `player_options` is session-owned; copy the crouch mode out
+                    // before the `&mut self.crouch_toggle_active` borrow.
+                    let crouch_mode = self
+                        .session
+                        .as_ref()
+                        .map(|session| session.player_options.crouch_mode)
+                        .unwrap_or_default();
                     let crouch_intent = resolve_crouch_intent(
-                        self.player_options.crouch_mode,
+                        crouch_mode,
                         snapshot.button(Action::Crouch),
                         &mut self.crouch_toggle_active,
                     );
@@ -1762,7 +1725,9 @@ impl ApplicationHandler for App {
                             // render-rate interpolation between consecutive presented poses
                             // IS the smoother; the offset decays once per tick here.
                             let presentation_offset = netcode::client_local_presentation_offset(
-                                self.net_endpoint.as_ref(),
+                                self.session
+                                    .as_ref()
+                                    .and_then(|session| session.net_endpoint.as_ref()),
                             );
                             if has_player_pawn {
                                 let registry_ref = script_ctx.registry.borrow();
@@ -1778,7 +1743,11 @@ impl ApplicationHandler for App {
                             // the render stage reads the interpolated presented eye
                             // directly and must NOT re-add the offset (it is already in
                             // the pose), so there is no double-count.
-                            netcode::client_decay_local_correction(self.net_endpoint.as_mut());
+                            netcode::client_decay_local_correction(
+                                self.session
+                                    .as_mut()
+                                    .and_then(|session| session.net_endpoint.as_mut()),
+                            );
                             self.frame_timing
                                 .push_state(InterpolableState::new(self.camera.position));
                             continue;
@@ -1985,12 +1954,18 @@ impl ApplicationHandler for App {
                 // aim ray's direction so it includes pitch, unlike yaw-only
                 // `forward()`, and `up` is world up per the `ListenerState`
                 // contract. Guarded for the silent (init-failed) case.
-                if let Some(audio) = &mut self.audio {
-                    let listener = audio::ListenerState {
-                        position: self.camera.position.to_array(),
-                        forward: self.camera.aim_ray().1.to_array(),
-                        up: [0.0, 1.0, 0.0],
-                    };
+                // Audio is session-owned; build the primitive listener from the
+                // disjoint `self.camera` field first, then borrow the subsystem.
+                let listener = audio::ListenerState {
+                    position: self.camera.position.to_array(),
+                    forward: self.camera.aim_ray().1.to_array(),
+                    up: [0.0, 1.0, 0.0],
+                };
+                if let Some(audio) = self
+                    .session
+                    .as_mut()
+                    .and_then(|session| session.audio.as_mut())
+                {
                     audio.update(listener, frame_dt);
                 }
 
@@ -2081,6 +2056,13 @@ impl ApplicationHandler for App {
                             })
                     })
                 };
+                // `player_options` is session-owned; copy the accessibility scale
+                // out before the `&mut self.view_feel_state` borrow below.
+                let view_feel_scale = self
+                    .session
+                    .as_ref()
+                    .map(|session| session.player_options.view_feel_scale)
+                    .unwrap_or(1.0);
                 let (vf_roll, vf_yaw_offset, vf_pitch_offset, vf_eye_offset) =
                     if let Some((params, velocity, is_grounded)) = view_feel_inputs {
                         let (horizontal_speed, lateral_velocity) =
@@ -2098,7 +2080,7 @@ impl ApplicationHandler for App {
                             frame_dt,
                             // Accessibility scale (D6): owned/clamped by the
                             // options module; passed verbatim, not re-clamped.
-                            self.player_options.view_feel_scale,
+                            view_feel_scale,
                         );
                         view_feel::map_output_to_camera(&output, camera_right)
                     } else {
@@ -2403,8 +2385,11 @@ impl ApplicationHandler for App {
                         f32,
                     )> = {
                         let mut out = None;
+                        // `debug_ui` is session-owned; reach it through the
+                        // already-held `session` borrow (the window is a disjoint
+                        // `self` field).
                         if let (Some(debug_ui), Some(ws)) =
-                            (self.debug_ui.as_mut(), self.window_state.as_ref())
+                            (session.debug_ui.as_mut(), self.window_state.as_ref())
                         {
                             if debug_ui.is_visible() {
                                 let window = &ws.window;
@@ -2447,7 +2432,7 @@ impl ApplicationHandler for App {
                         // mutated state, before `render_frame_indirect`
                         // draws the debug-line pass.
                         if let Some(world) = self.level.as_ref() {
-                            if let Some(debug_ui) = self.debug_ui.as_ref() {
+                            if let Some(debug_ui) = session.debug_ui.as_ref() {
                                 renderer.emit_sh_diagnostics(
                                     &debug_ui.sh_diagnostics_state,
                                     render_eye_position,
@@ -2496,7 +2481,7 @@ impl ApplicationHandler for App {
                         // delegation — `netcode` collects the centers
                         // (registry read, no wgpu), the renderer owns the draw.
                         // No-op for single-player and the host.
-                        if let Some(endpoint) = self.net_endpoint.as_ref() {
+                        if let Some(endpoint) = session.net_endpoint.as_ref() {
                             let registry = script_ctx.registry.borrow();
                             let centers = netcode::remote_entity_positions(endpoint, &registry);
                             renderer.emit_remote_entity_markers(
@@ -2520,7 +2505,7 @@ impl ApplicationHandler for App {
                     // gameplay gets always-on HUD/base layers, while a top
                     // frontend menu suppresses those layers and presents only
                     // the menu over its optional backdrop.
-                    let frontend_menu_name = self
+                    let frontend_menu_name = session
                         .frontend
                         .as_ref()
                         .map(|frontend| frontend.menu_tree.as_str())
@@ -2753,8 +2738,12 @@ impl ApplicationHandler for App {
         }
 
         // Release the level's sound registry at teardown too, mirroring the
-        // runtime level-unload path.
-        if let Some(audio) = &mut self.audio {
+        // runtime level-unload path. Audio is session-owned.
+        if let Some(audio) = self
+            .session
+            .as_mut()
+            .and_then(|session| session.audio.as_mut())
+        {
             audio.release_level_sounds();
         }
         self.renderer = None;
@@ -2803,45 +2792,39 @@ impl App {
         )
     }
 
-    /// Build the fault-tolerant audio subsystem and (in dev-tools builds) the
-    /// debug-UI state on the first visible logo frame — alongside net-endpoint
-    /// setup — so none of this work runs before first pixels. Records
-    /// `audio_init_complete` into `boot_timings`.
+    /// Lazily build the (dev-tools-only) session-owned debug-UI state once the
+    /// renderer/window are available, after the session is installed. The
+    /// constructor needs the boot-ready device's `max_texture_dimension_2d` limit
+    /// and the window — neither is available at `Session::build` time, so this
+    /// runs on the first visible logo frame right after `install_pending_session`
+    /// and again on resume (which drops the window-derived state).
     ///
-    /// Idempotent across suspend/resume: both are rebuilt only when absent.
-    /// `suspended()` drops them (and resets the boot state to `Booting`), so the
-    /// re-run of the splash loop on resume reconstructs them here; the steady
-    /// single-boot pass builds each exactly once.
+    /// The audio subsystem and net endpoint, which used to build alongside this,
+    /// now build inside `Session::build` (the sole session construction site), so
+    /// the only work left here is the genuinely renderer-dependent debug UI.
     ///
-    /// Audio failure logs and runs silent (`audio` stays `None`) — never a crash.
-    /// See: context/lib/audio.md §1, context/lib/boot_sequence.md §1.
-    pub(crate) fn install_post_splash_services(&mut self) {
-        if self.audio.is_none() {
-            match audio::Audio::new() {
-                Ok(audio) => {
-                    self.audio = Some(audio);
-                    log::info!("[Audio] Initialized");
-                }
-                Err(err) => {
-                    log::error!("[Audio] Init failed, running silent: {err}");
-                    self.audio = None;
-                }
-            }
+    /// Idempotent across suspend/resume: rebuilt only when absent. `suspended()`
+    /// drops `session.debug_ui` (and resets the boot state to `Booting`), so the
+    /// re-run of the splash loop on resume reconstructs it here.
+    /// See: context/lib/boot_sequence.md §1, §9.
+    #[cfg(feature = "dev-tools")]
+    pub(crate) fn ensure_debug_ui(&mut self) {
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        if session.debug_ui.is_some() {
+            return;
         }
-        self.boot_timings.record("audio_init_complete");
-
-        // Debug UI is CPU-side egui state needing only the window and the boot-
-        // ready device's texture-size limit (its GPU half lazy-inits full-ready
-        // on first panel open), so it builds here behind the logo frame.
-        #[cfg(feature = "dev-tools")]
-        if self.debug_ui.is_none() {
-            if let (Some(renderer), Some(ws)) = (self.renderer.as_ref(), self.window_state.as_ref())
-            {
-                let max_texture = renderer.max_texture_dimension_2d();
-                self.debug_ui = Some(render::debug_ui::DebugUi::new(&ws.window, max_texture));
-            }
+        if let (Some(renderer), Some(ws)) = (self.renderer.as_ref(), self.window_state.as_ref()) {
+            let max_texture = renderer.max_texture_dimension_2d();
+            session.debug_ui = Some(render::debug_ui::DebugUi::new(&ws.window, max_texture));
         }
     }
+
+    /// No-op in non-dev-tools builds: debug UI does not exist, audio and net are
+    /// built inside `Session::build`.
+    #[cfg(not(feature = "dev-tools"))]
+    pub(crate) fn ensure_debug_ui(&mut self) {}
 
     /// Drain the hot-reload watcher's changed-path channel and queue a staged
     /// mod-init build when an active dependency changed. Extracted from the
@@ -2892,7 +2875,9 @@ impl App {
                 .replace_script_tree_tier(ui_trees, render::ui::modal_stack::ScopeTier::Mod);
         }
         self.commit_mod_ui_theme(theme);
-        self.frontend = frontend;
+        if let Some(session) = self.session.as_mut() {
+            session.frontend = frontend;
+        }
         if frontend_was_top || self.boot_state == BootState::Frontend {
             self.present_frontend_menu();
         }
@@ -2922,8 +2907,9 @@ impl App {
     }
 
     fn frontend_menu_tree_name(&self) -> &str {
-        self.frontend
+        self.session
             .as_ref()
+            .and_then(|session| session.frontend.as_ref())
             .map(|frontend| frontend.menu_tree.as_str())
             .unwrap_or(render::ui::demo::FRONTEND_MENU_NAME)
     }
@@ -2941,16 +2927,24 @@ impl App {
     }
 
     fn populate_frontend(&mut self) {
-        if self.present_frontend_menu()
-            && let Some(source) = frontend_background_level_source(self.frontend.as_ref())
-        {
+        let presented = self.present_frontend_menu();
+        let source = self
+            .session
+            .as_ref()
+            .and_then(|session| frontend_background_level_source(session.frontend.as_ref()));
+        if presented && let Some(source) = source {
             self.enqueue_level_request(LevelRequest::Load(source));
         }
     }
 
     fn return_to_frontend(&mut self) {
         self.present_frontend_menu();
-        for request in frontend_return_requests(self.frontend.as_ref()) {
+        let requests = self
+            .session
+            .as_ref()
+            .map(|session| frontend_return_requests(session.frontend.as_ref()))
+            .unwrap_or_else(|| frontend_return_requests(None));
+        for request in requests {
             self.enqueue_level_request(request);
         }
     }
@@ -2966,7 +2960,11 @@ impl App {
     }
 
     fn apply_frontend_menu_camera_pose_if_top(&mut self) {
-        let Some(frontend) = self.frontend.clone() else {
+        let Some(frontend) = self
+            .session
+            .as_ref()
+            .and_then(|session| session.frontend.clone())
+        else {
             return;
         };
         if !self.frontend_menu_is_top() {
@@ -3603,10 +3601,11 @@ impl App {
     ///   Entry, Task 1.
     fn dispatch_system_commands(&mut self) {
         // `dispatch_system_commands` stays on `App` (it calls App-bound lifecycle
-        // methods and touches `self.audio`). The script tranche is session-owned;
-        // clone the `ScriptCtx` handle so the queue drain + the store-write arms
-        // borrow nothing of `self`, and route the decay/presentation arms through
-        // scoped `self.session.as_mut()` borrows. See: context/lib/boot_sequence.md §1.
+        // methods). The script tranche, audio, and the decay/presentation systems
+        // are all session-owned; clone the `ScriptCtx` handle so the queue drain +
+        // the store-write arms borrow nothing of `self`, and route the audio and
+        // decay/presentation arms through scoped `self.session.as_mut()` borrows.
+        // See: context/lib/boot_sequence.md §1.
         let Some(script_ctx) = self
             .session
             .as_ref()
@@ -3617,7 +3616,11 @@ impl App {
         for command in script_ctx.system_commands.take() {
             match command {
                 SystemReactionCommand::PlaySound { sound, bus } => {
-                    if let Some(audio) = &mut self.audio {
+                    if let Some(audio) = self
+                        .session
+                        .as_mut()
+                        .and_then(|session| session.audio.as_mut())
+                    {
                         // The reaction surface has no per-voice volume or looping
                         // yet (deferred); a one-shot on the named bus is the whole
                         // contract. Default to the SFX bus when none is named.
@@ -3779,10 +3782,11 @@ impl App {
     /// serializes post-loop instead.
     fn net_poll_and_apply(&mut self, frame_dt: f32) {
         let dt = std::time::Duration::from_secs_f32(frame_dt);
-        // `net_poll_and_apply` stays on `App` (it mutates `self.net_endpoint`). The
-        // script tranche is session-owned; clone the `ScriptCtx` handle before the
-        // `net_endpoint` borrow so the registry/data-registry/gravity reads below
-        // borrow nothing of `self`. See: context/lib/boot_sequence.md §1.
+        // `net_poll_and_apply` stays on `App` (it drives `net_endpoint`, now
+        // session-owned). Clone the `ScriptCtx` handle up front so the
+        // registry/data-registry/gravity reads borrow nothing of `self`; the
+        // `session` re-borrow for `net_endpoint` happens after these owned/disjoint
+        // captures. See: context/lib/boot_sequence.md §1.
         let Some(script_ctx) = self
             .session
             .as_ref()
@@ -3802,23 +3806,35 @@ impl App {
         // `PlayerMovementComponent` from the wire `entity_class` (Task 7). Both peers
         // load the same content, so the same descriptor table serves both roles — clone
         // it for either networked role before the `net_endpoint` borrow.
-        let net_descriptors: Vec<crate::scripting::data_descriptors::EntityTypeDescriptor> = if matches!(
-            self.net_endpoint,
+        let is_networked = matches!(
+            self.session
+                .as_ref()
+                .and_then(|session| session.net_endpoint.as_ref()),
             Some(netcode::NetEndpoint::Host { .. } | netcode::NetEndpoint::Client { .. })
-        ) {
-            script_ctx.data_registry.borrow().entities.clone()
-        } else {
-            Vec::new()
-        };
+        );
+        let net_descriptors: Vec<crate::scripting::data_descriptors::EntityTypeDescriptor> =
+            if is_networked {
+                script_ctx.data_registry.borrow().entities.clone()
+            } else {
+                Vec::new()
+            };
         let host_agent_params = self.nav_graph.as_ref().map(|g| g.agent_params());
         let host_spawn_points = std::mem::take(&mut self.host_spawn_points);
         // M15 Phase 3 Task 5: the client reconcile replay threads collision + gravity
         // through `client_receive_and_apply`. Capture the gravity scalar before the
         // endpoint borrow (a `Cell` copy); the collision world is read by-reference
-        // inside the client arm (a disjoint field from `net_endpoint`).
+        // inside the client arm (a disjoint `self` field from `self.session`).
         let gravity = script_ctx.gravity.get();
         let collision_world = &self.collision_world;
-        match self.net_endpoint.as_mut() {
+        // `net_endpoint` and `mesh_clip_tables` are both session-owned but distinct
+        // fields; bind the session once and reach each as a disjoint field borrow,
+        // so the client arm's `mesh_clip_tables` read does not re-borrow the
+        // session while the `net_endpoint` match holds it.
+        let Some(session) = self.session.as_mut() else {
+            self.host_spawn_points = host_spawn_points;
+            return;
+        };
+        match session.net_endpoint.as_mut() {
             None => {}
             Some(netcode::NetEndpoint::Host {
                 server,
@@ -3969,12 +3985,9 @@ impl App {
                     dt,
                 );
                 if materialized_remote_enemy_presentation {
-                    let mesh_clip_tables = &self
-                        .session
-                        .as_ref()
-                        .expect("running session installed")
-                        .mesh_clip_tables;
-                    resolve_mesh_entity_clips(&mut registry, mesh_clip_tables);
+                    // `mesh_clip_tables` is a disjoint field of the same `session`
+                    // bound for the `net_endpoint` match above.
+                    resolve_mesh_entity_clips(&mut registry, &session.mesh_clip_tables);
                 }
                 // The interpolation-buffer sampling that writes presented remote poses
                 // runs in `net_sample_remote_interpolation`, AFTER the catch-up tick
@@ -4016,7 +4029,10 @@ impl App {
             map_enemies: _,
             demo_mover,
             state_slots,
-        }) = self.net_endpoint.as_mut()
+        }) = self
+            .session
+            .as_mut()
+            .and_then(|session| session.net_endpoint.as_mut())
         else {
             return;
         };
@@ -4083,7 +4099,10 @@ impl App {
             time_sync,
             interpolation_delay,
             ..
-        }) = self.net_endpoint.as_mut()
+        }) = self
+            .session
+            .as_mut()
+            .and_then(|session| session.net_endpoint.as_mut())
         else {
             return;
         };
@@ -4102,7 +4121,9 @@ impl App {
     /// `sim::simulate_tick`; the host and single-player keep the full sim path.
     fn is_connected_client(&self) -> bool {
         matches!(
-            self.net_endpoint.as_ref(),
+            self.session
+                .as_ref()
+                .and_then(|session| session.net_endpoint.as_ref()),
             Some(netcode::NetEndpoint::Client { .. })
         )
     }
@@ -4132,7 +4153,10 @@ impl App {
             command_queues,
             owners,
             ..
-        }) = self.net_endpoint.as_mut()
+        }) = self
+            .session
+            .as_mut()
+            .and_then(|session| session.net_endpoint.as_mut())
         else {
             return Vec::new();
         };
@@ -4176,7 +4200,10 @@ impl App {
             replicable,
             host_pawn,
             ..
-        }) = self.net_endpoint.as_mut()
+        }) = self
+            .session
+            .as_mut()
+            .and_then(|session| session.net_endpoint.as_mut())
         else {
             return;
         };
@@ -4216,7 +4243,10 @@ impl App {
             replicable,
             map_enemies,
             ..
-        }) = self.net_endpoint.as_mut()
+        }) = self
+            .session
+            .as_mut()
+            .and_then(|session| session.net_endpoint.as_mut())
         else {
             return;
         };
@@ -4241,7 +4271,10 @@ impl App {
         };
         let Some(netcode::NetEndpoint::Client {
             client, prediction, ..
-        }) = self.net_endpoint.as_mut()
+        }) = self
+            .session
+            .as_mut()
+            .and_then(|session| session.net_endpoint.as_mut())
         else {
             return false;
         };
@@ -4447,7 +4480,11 @@ impl App {
             // silent (init-failed) case; needs a level loaded for the sound
             // registry to hold the fixture, otherwise `play` warns gracefully.
             DiagnosticAction::PlayTestSfx => {
-                if let Some(audio) = &mut self.audio {
+                if let Some(audio) = self
+                    .session
+                    .as_mut()
+                    .and_then(|session| session.audio.as_mut())
+                {
                     audio.play(audio::SoundRequest {
                         bus: "sfx".to_string(),
                         sound: "sfx/test_tone".to_string(),
@@ -4462,7 +4499,11 @@ impl App {
             // call is needed here.
             #[cfg(feature = "dev-tools")]
             DiagnosticAction::ToggleDebugPanel => {
-                let now_visible = if let Some(debug_ui) = self.debug_ui.as_mut() {
+                let now_visible = if let Some(debug_ui) = self
+                    .session
+                    .as_mut()
+                    .and_then(|session| session.debug_ui.as_mut())
+                {
                     let v = !debug_ui.is_visible();
                     debug_ui.set_visible(v);
                     v

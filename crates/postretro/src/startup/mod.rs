@@ -266,9 +266,9 @@ mod tests {
             "splash_decoded",              // splash_lifecycle::run_splash_frame_zero
             "splash_uploaded",             // splash_lifecycle::run_splash_frame_zero
             "first_splash_frame",          // splash_lifecycle::paint_splash_after_black (after present)
-            "audio_init_complete",         // main::install_post_splash_services
+            "audio_init_complete",         // session::Session::build (post-first-pixel, before scripting)
             "script_runtime_ctor", // session::Session::build (post-first-pixel, inside install)
-            "net_endpoint_complete", // session::PendingSessionInit::install
+            "net_endpoint_complete", // session::Session::build (post-first-pixel, after scripting)
             "session_init_complete", // session::PendingSessionInit::install
             "renderer_full_init_complete", // splash_lifecycle::finish_renderer_full_init
             "boot_worker_dispatch", // splash_lifecycle::run_splash_frame_one (boot-map path)

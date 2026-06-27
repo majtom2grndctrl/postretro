@@ -94,21 +94,23 @@ impl App {
             self.request_redraw();
             return false;
         }
-        // First pixels are now on screen (black frame 0, logo frame 1). Finish
-        // deferred session startup before any mod-supplied or net-dependent work
-        // runs. Net-endpoint setup is `Option::take`-guarded single-commit;
-        // audio + dev debug-UI rebuild whenever absent (suspend drops them), so a
-        // suspend/resume re-entering this frame restores them without re-running
-        // net init. See: context/lib/boot_sequence.md §1, §9.
-        self.install_post_splash_services();
-        // Build + install the migrated `Session` group ahead of the renderer
-        // full-init check (and the mod-init / frontend / loading transitions that
-        // follow), so a build failure exits boot before any later step runs
-        // against a `None` session. Mirrors `finish_renderer_full_init`'s early
-        // return. See: context/lib/boot_sequence.md §1.
+        // First pixels are now on screen (black frame 0, logo frame 1). Build +
+        // install the whole `Session` (options, audio, scripting core,
+        // input/UI/modal group, net endpoint) ahead of the renderer full-init
+        // check (and the mod-init / frontend / loading transitions that follow),
+        // so a build failure exits boot before any later step runs against a
+        // `None` session. Session install is `Option::take`-guarded single-commit;
+        // audio + net are built inside it once. Mirrors
+        // `finish_renderer_full_init`'s early return.
+        // See: context/lib/boot_sequence.md §1.
         if !self.install_pending_session(event_loop) {
             return false;
         }
+        // Lazy-init the dev-tools debug UI now that the session exists and the
+        // renderer/window are ready. Rebuilds on resume (which drops it), so a
+        // suspend/resume re-entering this frame restores it without re-running the
+        // single-commit session install. See: context/lib/boot_sequence.md §1, §9.
+        self.ensure_debug_ui();
         // The session is installed with `InputFocus::Gameplay`; capture the
         // cursor now (the work `resumed` used to do pre-install, deferred here
         // since focus is session-owned). A capturing frontend tree releases it
@@ -230,6 +232,13 @@ impl App {
                 log::error!("[Scripting] mod_init failed: {err}");
             } else {
                 let has_manifest = session.script_runtime.mod_manifest().is_some();
+                // `frontend` is session-owned now; the `manifest` borrow below
+                // aliases `session.script_runtime`, so lift the committed frontend
+                // into a local and assign `session.frontend` after that borrow ends
+                // (mirroring the theme/font deferral).
+                let mut committed_frontend: Option<
+                    Option<crate::scripting::runtime::Frontend>,
+                > = None;
                 if let Some(manifest) = session.script_runtime.mod_manifest_mut() {
                     // Drain entity-type descriptors from the validated mod manifest
                     // into the engine-global `DataRegistry`. Runtime parses; caller
@@ -255,10 +264,15 @@ impl App {
                         render::ui::modal_stack::ScopeTier::Mod,
                     );
 
-                    self.frontend = manifest.frontend.take();
+                    committed_frontend = Some(manifest.frontend.take());
                     let mod_theme = std::mem::take(&mut manifest.theme);
                     let mod_fonts = std::mem::take(&mut manifest.fonts);
                     deferred_theme_fonts = Some((mod_theme, mod_fonts));
+                }
+                // The `manifest` borrow has ended; commit the frontend onto the
+                // session.
+                if let Some(frontend) = committed_frontend {
+                    session.frontend = frontend;
                 }
 
                 if session

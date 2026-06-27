@@ -1,7 +1,9 @@
 // Session-lifetime boot construction: argument parsing, content-root selection,
-// the `SessionServices` build (script runtime/registries, options I/O, input
-// seeding, UI registration), `App` assembly, and the `PendingSessionInit` owner
-// that finishes net-endpoint setup after the first visible logo frame.
+// `App` assembly, and the `PendingSessionInit` owner that constructs the entire
+// `Session` after the first visible logo frame. After Task 3 the residual
+// pre-window session build is gone — `Session::build` is the sole session
+// construction site, and `App` holds only boot-lifetime fields plus
+// `session: Option<Session>`.
 // See: context/lib/boot_sequence.md §1 (Boot Order, stages 1-4)
 
 use std::collections::VecDeque;
@@ -17,7 +19,7 @@ use crate::frame_timing::{FrameRateMeter, FrameTiming, InterpolableState};
 use crate::input;
 use crate::scripting::data_descriptors::ModThemeTokens;
 use crate::startup::StartupTimings;
-use crate::{App, collision, netcode, options, view_feel};
+use crate::{App, collision, view_feel};
 
 /// Dev-default boot map when no content root or map argument is supplied. Used by
 /// `content_root_from_map` to derive the default `content/dev` root.
@@ -30,34 +32,30 @@ pub(crate) struct BootSession {
     pub(crate) app: App,
 }
 
-/// Deferred-startup owner. Carries the raw inputs needed to finish session
-/// startup AFTER the first visible logo frame paints. Two construction sites read
-/// from it until Task 3 collapses them: the migrated input/UI/modal group is built
-/// here via [`Session::build`] (using `input_seed`), and the net endpoint is set
-/// up (parse the raw net args, build the transport, fall back to single-player on
-/// parse/setup failure). It is taken and consumed exactly once by
-/// `App::install_pending_session`; suspend/resume keeps it unconsumed until the
-/// install commits, so a resume that re-enters the splash loop never runs deferred
-/// init twice. See: context/lib/boot_sequence.md §1, §9.
+/// Deferred-startup owner. Carries the raw inputs needed to construct the entire
+/// `Session` AFTER the first visible logo frame paints. After Task 3 this is the
+/// SOLE session construction trigger: it hands its raw argv to [`Session::build`],
+/// which builds every session-lifetime field (options I/O, audio, the scripting
+/// core, input/UI/modal group, and the net endpoint). It is taken and consumed
+/// exactly once by `App::install_pending_session`; suspend/resume keeps it
+/// unconsumed until the install commits, so a resume that re-enters the splash
+/// loop never runs deferred init twice. See: context/lib/boot_sequence.md §1, §9.
 pub(crate) struct PendingSessionInit {
-    /// Full `argv` (including `argv[0]`). Net args are parsed here, after first
-    /// pixels — never before the event loop. See: context/lib/networking.md.
+    /// Full `argv` (including `argv[0]`). Net args are parsed inside
+    /// `Session::build`, after first pixels — never before the event loop.
+    /// See: context/lib/networking.md.
     raw_args: Vec<String>,
-
-    /// Look-preference seed for the migrated `Session`'s `InputSystem`, captured
-    /// pre-window from the loaded `PlayerOptions` so the post-first-pixel build
-    /// needs no `player_options` borrow (which is not in the migrated group).
-    /// See: context/lib/player_options.md §3.
-    input_seed: crate::session::InputSeed,
 }
 
 impl PendingSessionInit {
-    /// Finish session startup after the first logo frame. Builds the migrated
-    /// input/UI/modal `Session` group (whole-or-nothing) and installs it into
-    /// `app.session`, then parses the raw net args and installs the endpoint into
-    /// `app.net_endpoint`, degrading to single-player (net inert) on parse or
-    /// transport-setup failure. Records the `net_endpoint_complete` and
-    /// `session_init_complete` boot-timing marks.
+    /// Construct the whole `Session` after the first logo frame and install it
+    /// into `app.session`. `Session::build` runs synchronously, whole-or-nothing:
+    /// it builds options I/O, the fault-tolerant audio subsystem, the scripting
+    /// core + input/UI/modal group, and the net endpoint (degrading to
+    /// single-player on parse/transport failure). It records the
+    /// `audio_init_complete`, `script_runtime_ctor`, and `net_endpoint_complete`
+    /// boot-timing marks; this method records the trailing `session_init_complete`
+    /// mark once the session is installed.
     ///
     /// Returns `Err` if the `Session` build fails; the caller stores it in
     /// `exit_result`, logs, exits the event loop, and early-returns from the
@@ -66,132 +64,31 @@ impl PendingSessionInit {
     /// Caller guards single-commit via `Option::take` on `app.pending_session`,
     /// so this never runs twice across a suspend/resume.
     pub(crate) fn install(self, app: &mut App) -> Result<()> {
-        // Migrated input/UI/modal group AND the scripting core: built
-        // post-first-pixel, synchronously, whole-or-nothing. A hard failure
-        // propagates so the caller exits boot. `boot_timings` is threaded in so
-        // `Session::build` records `script_runtime_ctor` where the runtime is now
-        // constructed (behind first pixels). See: context/lib/boot_sequence.md §1.
-        let session = crate::session::Session::build(&self.input_seed, &mut app.boot_timings)
+        // The sole session construction site. A hard failure (script-runtime
+        // construction) propagates so the caller exits boot; audio and net
+        // degrade in place inside `build`. `boot_timings` is threaded in so the
+        // deferred-session marks record behind first pixels.
+        // See: context/lib/boot_sequence.md §1.
+        let session = crate::session::Session::build(&self.raw_args, &mut app.boot_timings)
             .context("failed to build session")?;
         app.session = Some(session);
-
-        // M15 Phase 1 net role (default single-player). A malformed flag or a
-        // failed transport construction degrades to single-player (net inert)
-        // rather than blocking boot — the engine is playable without networking.
-        let net_role = match netcode::parse_net_config(&self.raw_args) {
-            Ok(config) => config.role,
-            Err(err) => {
-                log::error!("[Net] CLI parse failed ({err}); starting single-player");
-                netcode::NetRole::SinglePlayer
-            }
-        };
-        app.net_endpoint = match netcode::NetEndpoint::from_role(&net_role) {
-            Ok(endpoint) => {
-                match &net_role {
-                    netcode::NetRole::SinglePlayer => {}
-                    netcode::NetRole::Host { port } => {
-                        log::info!("[Net] hosting (listen server) on port {port}");
-                    }
-                    netcode::NetRole::Connect { addr } => {
-                        log::info!("[Net] connecting to {addr}");
-                    }
-                }
-                endpoint
-            }
-            Err(err) => {
-                log::error!("[Net] endpoint setup failed ({err}); starting single-player");
-                None
-            }
-        };
-        app.boot_timings.record("net_endpoint_complete");
         app.boot_timings.record("session_init_complete");
         Ok(())
     }
 }
 
-/// Session-lifetime service bundle, built once after `EventLoop::new` and folded
-/// into the `App` literal. Groups the session-dependent systems the spec calls
-/// out: the script context/runtime, the Rust-only handler registries, player
-/// options + settings path, the input system, the modal stack with its built-in
-/// UI registrations, and the script-derived per-frame systems. The bundle is the
-/// construction grouping ("build before any path can use them"); the `App` owns
-/// the fields after assembly. See: context/lib/boot_sequence.md §1.
-struct SessionServices {
-    player_options: options::PlayerOptions,
-    settings_path: Option<PathBuf>,
-}
-
-impl SessionServices {
-    /// Build the residual pre-window session-lifetime services. Runs AFTER
-    /// `EventLoop::new`. Today this is only player options I/O — the scripting
-    /// core (script runtime/context, registries, the `ScriptCtx`-clone systems)
-    /// migrated into `Session::build`, which runs post-first-pixel, and net setup
-    /// defers past first pixels through `PendingSessionInit`.
-    fn build() -> Result<Self> {
-        // Player options load before `InputSystem` is constructed so the loaded
-        // look preferences seed input at startup. On first boot (no file
-        // present), write defaults so the human gets an editable starting file —
-        // the only `save` call until the M13 settings menu lands. Missing config
-        // dir or a save failure is logged, not fatal: boot proceeds on in-memory
-        // defaults. See: context/lib/player_options.md §3
-        let settings_path = options::settings_path();
-        let player_options = match &settings_path {
-            Some(path) => {
-                // `load` returns defaults for both missing and malformed files,
-                // so detect first-run by probing existence before loading. A
-                // malformed file exists, so it is never overwritten here.
-                let existed = path.exists();
-                let options = options::PlayerOptions::load(path);
-                if !existed {
-                    match options.save(path) {
-                        Ok(()) => log::info!(
-                            "[Options] no settings file found; wrote defaults to {}",
-                            path.display()
-                        ),
-                        Err(err) => log::warn!(
-                            "[Options] failed to write default settings to {}: {err}; \
-                             running on in-memory defaults",
-                            path.display()
-                        ),
-                    }
-                }
-                options
-            }
-            None => {
-                log::warn!(
-                    "[Options] no platform config directory; running on in-memory \
-                     defaults without persistence"
-                );
-                options::PlayerOptions::default()
-            }
-        };
-
-        // Input seeding and built-in UI tree registration moved into
-        // `Session::build`, which runs post-first-pixel. `player_options` stays
-        // here (still an `App` field); the two look-preference scalars ride
-        // `PendingSessionInit::input_seed` to the migrated `InputSystem` build so
-        // no construction dependency crosses the dual-construction boundary.
-
-        Ok(Self {
-            player_options,
-            settings_path,
-        })
-    }
-}
-
-/// Build all session-lifetime boot state (stages 1-4 of the boot order) and the
+/// Build the boot-lifetime `App` state (stages 1-4 of the boot order) and the
 /// winit event loop, returning the constructed `App` in the `Booting` state.
 ///
 /// Ordering: minimal pre-event-loop work (logging, boot-timing setup, raw arg
 /// collection, content-root / boot-map selection) runs first, THEN
-/// `EventLoop::new`, THEN the residual `SessionServices` build (options I/O
-/// only). The scripting bootstrap (script runtime/context, registries, the
-/// `ScriptCtx`-clone systems) and built-in UI registration moved into
-/// `Session::build`, post-first-pixel. Net-role parsing and
-/// `NetEndpoint::from_role` are NOT done here — they defer past the first logo
-/// frame through `PendingSessionInit`. Mod init, the hot-reload watcher, and the
-/// level-load worker spawn likewise run on the splash frame loop so the first
-/// splash frame paints before any of that. See: context/lib/boot_sequence.md §1.
+/// `EventLoop::new`. After Task 3 there is NO residual pre-window session build —
+/// the entire `Session` (options I/O, audio, the scripting bootstrap, the
+/// input/UI/modal group, and the net endpoint) is constructed post-first-pixel by
+/// `Session::build` through `PendingSessionInit`. Mod init, the hot-reload
+/// watcher, debug-UI lazy-init, and the level-load worker spawn likewise run on
+/// the splash frame loop so the first splash frame paints before any of that.
+/// See: context/lib/boot_sequence.md §1.
 pub(crate) fn build_session() -> Result<BootSession> {
     // Timing starts at session construction so the first stage captures the
     // args_parsed → wgpu_init gap. See `StartupTimings` doc comment for
@@ -207,16 +104,12 @@ pub(crate) fn build_session() -> Result<BootSession> {
     log::info!("[Engine] Content root: {}", content_root.display());
     boot_timings.record("args_parsed");
 
-    // Event loop is created AHEAD of the scripting bootstrap and net-endpoint
-    // setup so the window can come up as early as practical.
+    // Event loop is created AHEAD of the whole session build (options I/O, audio,
+    // the scripting bootstrap, and net-endpoint setup) so the window can come up
+    // as early as practical. The entire `Session` is built post-first-pixel by
+    // `PendingSessionInit::install`. See: context/lib/boot_sequence.md §1.
     let event_loop = EventLoop::new().context("failed to create event loop")?;
     boot_timings.record("event_loop_created");
-
-    // Residual pre-window services (options I/O only). The
-    // `script_runtime_ctor` mark is NO LONGER recorded here — the script runtime
-    // is now constructed in `Session::build` post-first-pixel, and the mark fires
-    // there. See: context/lib/boot_sequence.md §1.
-    let services = SessionServices::build()?;
 
     // Camera starts at a placeholder; `install_level_payload` repositions it
     // to the first `player_spawn` or the level geometry center
@@ -224,24 +117,8 @@ pub(crate) fn build_session() -> Result<BootSession> {
     let initial_camera_pos = Vec3::new(0.0, 200.0, 500.0);
     let initial_state = InterpolableState::new(initial_camera_pos);
 
-    let SessionServices {
-        player_options,
-        settings_path,
-    } = services;
-
-    // Capture the migrated `InputSystem`'s look-preference seed before
-    // `player_options` moves into the `App` literal. `player_options` stays on
-    // `App` (not in the Task-1 group); the two scalars ride
-    // `PendingSessionInit::input_seed` so the post-first-pixel `Session::build`
-    // never borrows the not-yet-migrated field. See: boot_sequence §1.
-    let input_seed = crate::session::InputSeed {
-        mouse_sensitivity: player_options.mouse_sensitivity,
-        invert_y: player_options.invert_y,
-    };
-
     let app = App {
         renderer: None,
-        audio: None,
         window_state: None,
         level: None,
         nav_graph: None,
@@ -249,13 +126,12 @@ pub(crate) fn build_session() -> Result<BootSession> {
         content_root,
         exit_result: Ok(()),
         camera: Camera::new(initial_camera_pos, 0.0, 0.0),
-        // Session-lifetime input/UI/modal group is built post-first-pixel by
+        // The entire `Session` (options, audio, scripting core, input/UI/modal
+        // group, net endpoint) is built post-first-pixel by
         // `PendingSessionInit::install`; `None` through the boot phase.
         session: None,
         crouch_toggle_active: false,
         ai_warned: std::collections::HashSet::new(),
-        player_options,
-        settings_path,
         cursor_pos: None,
         nav_stick_tracker: input::StickNavTracker::new(),
         frame_timing: FrameTiming::new(initial_state),
@@ -266,11 +142,10 @@ pub(crate) fn build_session() -> Result<BootSession> {
         frame_rate_meter: FrameRateMeter::new(),
         title_buffer: String::with_capacity(256),
         last_title_update: Instant::now(),
-        // The scripting core (script runtime/context, registries, the
-        // `ScriptCtx`-clone systems) is owned by `Session`, built post-first-pixel
+        // Every session-lifetime field (scripting core, options, frontend, net
+        // endpoint, audio, debug UI) is owned by `Session`, built post-first-pixel
         // by `PendingSessionInit::install`. See: context/lib/boot_sequence.md §1.
         mod_theme_override: ModThemeTokens::default(),
-        frontend: None,
         pending_mode_signal: None,
         pending_menu_toggle: false,
         pending_exit_to_desktop: false,
@@ -300,15 +175,7 @@ pub(crate) fn build_session() -> Result<BootSession> {
         level_worker: None,
         level_requests: VecDeque::new(),
         boot_load: false,
-        // Net endpoint is built after first pixels by `PendingSessionInit`; until
-        // then the engine is single-player inert (`None`).
-        net_endpoint: None,
-        pending_session: Some(PendingSessionInit {
-            raw_args: args,
-            input_seed,
-        }),
-        #[cfg(feature = "dev-tools")]
-        debug_ui: None,
+        pending_session: Some(PendingSessionInit { raw_args: args }),
         #[cfg(feature = "dev-tools")]
         debug_chase_agent: None,
     };

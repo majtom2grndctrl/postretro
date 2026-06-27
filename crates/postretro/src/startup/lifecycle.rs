@@ -129,8 +129,11 @@ impl App {
             .borrow_mut()
             .clear_for_level_unload();
         self.presentation_cells.clear();
-        self.modal_stack
-            .clear_script_tree_tier(render::ui::modal_stack::ScopeTier::Level);
+        if let Some(session) = self.session.as_mut() {
+            session
+                .modal_stack
+                .clear_script_tree_tier(render::ui::modal_stack::ScopeTier::Level);
+        }
 
         self.builtin_handled = None;
         self.pending_spawn_points = None;
@@ -669,10 +672,16 @@ impl App {
                     validate_sequence_primitives(manifest.reactions, &self.sequence_registry);
                 // Register level-scope UI trees before the data-script VM context
                 // drops and before the manifest is consumed by the data registry.
-                self.modal_stack.register_script_trees(
-                    std::mem::take(&mut manifest.ui_trees),
-                    render::ui::modal_stack::ScopeTier::Level,
-                );
+                // Level install runs in Loading/Running, where the session is
+                // installed.
+                self.session
+                    .as_mut()
+                    .expect("session installed before level install")
+                    .modal_stack
+                    .register_script_trees(
+                        std::mem::take(&mut manifest.ui_trees),
+                        render::ui::modal_stack::ScopeTier::Level,
+                    );
             }
             self.script_ctx
                 .data_registry
@@ -1035,15 +1044,23 @@ mod tests {
             content_root: PathBuf::from("content/dev"),
             exit_result: Ok(()),
             camera: Camera::new(Vec3::ZERO, 0.0, 0.0),
-            input_system: input::InputSystem::new(input::default_bindings()),
-            gameplay_input_latch: input::GameplayInputLatch::new(),
+            // Tests exercise level load/unload in the Running state, which touches
+            // the session-owned modal stack; build the migrated group inline.
+            session: Some(crate::session::Session {
+                input_system: input::InputSystem::new(input::default_bindings()),
+                gameplay_input_latch: input::GameplayInputLatch::new(),
+                ui_dispatch: input::UiDispatch::new(),
+                gamepad_system: None,
+                input_focus: InputFocus::Gameplay,
+                ui_focus: input::UiFocusEngine::new(),
+                ui_focus_rects: None,
+                ui_input_mode: input::InputMode::default(),
+                modal_stack: render::ui::modal_stack::ModalStack::new(),
+            }),
             crouch_toggle_active: false,
             ai_warned: std::collections::HashSet::new(),
             player_options: options::PlayerOptions::default(),
             settings_path: None,
-            input_focus: InputFocus::Gameplay,
-            ui_dispatch: input::UiDispatch::new(),
-            gamepad_system: None,
             cursor_pos: None,
             nav_stick_tracker: input::StickNavTracker::new(),
             frame_timing: FrameTiming::new(initial_state),
@@ -1065,12 +1082,8 @@ mod tests {
             ),
             shake_decay: scripting_systems::shake_decay::ShakeDecay::new(script_ctx.clone()),
             presentation_cells: scripting_systems::presentation_cells::PresentationCellStore::new(),
-            modal_stack: render::ui::modal_stack::ModalStack::new(),
             mod_theme_override: Default::default(),
             frontend: None,
-            ui_focus: input::UiFocusEngine::new(),
-            ui_focus_rects: None,
-            ui_input_mode: input::InputMode::default(),
             input_mode_tracker: scripting_systems::input_mode::InputModeTracker::new(script_ctx),
             pending_mode_signal: None,
             pending_menu_toggle: false,
@@ -1685,7 +1698,7 @@ mod tests {
     fn frontend_population_pushes_menu_and_enqueues_one_background_catalog_load() {
         let mut app = test_app();
         app.boot_state = BootState::Frontend;
-        app.modal_stack.registry_mut().register(
+        app.session.as_mut().unwrap().modal_stack.registry_mut().register(
             "mainMenu",
             render::ui::demo::build_frontend_menu_descriptor(),
             render::ui::modal_stack::ScopeTier::Mod,
@@ -1704,9 +1717,9 @@ mod tests {
         app.populate_frontend();
         app.populate_frontend();
 
-        assert_eq!(app.modal_stack.active_name(), Some("mainMenu"));
+        assert_eq!(app.session.as_mut().unwrap().modal_stack.active_name(), Some("mainMenu"));
         assert_eq!(
-            app.modal_stack.top_capture_mode(),
+            app.session.as_mut().unwrap().modal_stack.top_capture_mode(),
             input::UiCaptureMode::Capture,
             "frontend menu must suppress gameplay through the capture-mode path",
         );
@@ -1725,7 +1738,7 @@ mod tests {
     fn frontend_population_falls_back_before_loading_backdrop_when_menu_is_unknown() {
         let mut app = test_app();
         app.boot_state = BootState::Frontend;
-        app.modal_stack.registry_mut().register(
+        app.session.as_mut().unwrap().modal_stack.registry_mut().register(
             render::ui::demo::FRONTEND_MENU_NAME,
             render::ui::demo::build_frontend_menu_descriptor(),
             render::ui::modal_stack::ScopeTier::Engine,
@@ -1744,12 +1757,12 @@ mod tests {
         app.populate_frontend();
 
         assert_eq!(
-            app.modal_stack.active_name(),
+            app.session.as_mut().unwrap().modal_stack.active_name(),
             Some(render::ui::demo::FRONTEND_MENU_NAME),
             "unknown mod frontend menus must reveal the engine fallback",
         );
         assert_eq!(
-            app.modal_stack.top_capture_mode(),
+            app.session.as_mut().unwrap().modal_stack.top_capture_mode(),
             input::UiCaptureMode::Capture
         );
         assert_eq!(
@@ -1769,13 +1782,13 @@ mod tests {
 
         let mut app = test_app();
         app.boot_state = BootState::Frontend;
-        app.modal_stack.registry_mut().register(
+        app.session.as_mut().unwrap().modal_stack.registry_mut().register(
             render::ui::demo::FRONTEND_MENU_NAME,
             render::ui::demo::build_frontend_menu_descriptor(),
             render::ui::modal_stack::ScopeTier::Engine,
             false,
         );
-        app.modal_stack.registry_mut().register(
+        app.session.as_mut().unwrap().modal_stack.registry_mut().register(
             "oldMenu",
             render::ui::demo::build_frontend_menu_descriptor(),
             render::ui::modal_stack::ScopeTier::Mod,
@@ -1791,7 +1804,7 @@ mod tests {
             },
         });
         app.present_frontend_menu();
-        assert_eq!(app.modal_stack.active_name(), Some("oldMenu"));
+        assert_eq!(app.session.as_mut().unwrap().modal_stack.active_name(), Some("oldMenu"));
 
         let staged = StagedManifestBuildResult {
             generation: 4,
@@ -1833,7 +1846,7 @@ mod tests {
 
         app.commit_staged_ui_manifest(&staged, &committed);
         assert_eq!(
-            app.modal_stack.active_name(),
+            app.session.as_mut().unwrap().modal_stack.active_name(),
             Some("newMenu"),
             "staged replacement updates the active frontend modal clone",
         );
@@ -1853,12 +1866,12 @@ mod tests {
 
         app.commit_staged_ui_manifest(&omitted, &omitted_committed);
         assert_eq!(
-            app.modal_stack.active_name(),
+            app.session.as_mut().unwrap().modal_stack.active_name(),
             Some(render::ui::demo::FRONTEND_MENU_NAME),
             "staged omission replaces the active frontend modal with the engine fallback",
         );
         assert_eq!(
-            app.modal_stack.top_capture_mode(),
+            app.session.as_mut().unwrap().modal_stack.top_capture_mode(),
             input::UiCaptureMode::Capture
         );
     }
@@ -1872,14 +1885,14 @@ mod tests {
         crate::scripting::reactions::system_commands::register_system_reaction_primitives(
             &mut app.system_registry,
         );
-        app.modal_stack.registry_mut().register(
+        app.session.as_mut().unwrap().modal_stack.registry_mut().register(
             render::ui::demo::FRONTEND_MENU_NAME,
             render::ui::demo::build_frontend_menu_descriptor(),
             render::ui::modal_stack::ScopeTier::Engine,
             false,
         );
         app.present_frontend_menu();
-        app.ui_focus_rects = Some(FocusRectList {
+        app.session.as_mut().unwrap().ui_focus_rects = Some(FocusRectList {
             rects: vec![FocusRect {
                 id: "play".to_string(),
                 rect: [0.0, 0.0, 100.0, 32.0],
@@ -1920,7 +1933,7 @@ mod tests {
             Some(LevelRequest::Load(LevelSource::Catalog("e1m1".to_string()))),
         );
         assert!(
-            app.modal_stack.is_empty(),
+            app.session.as_mut().unwrap().modal_stack.is_empty(),
             "frontend activation clears the menu before gameplay load starts",
         );
     }
@@ -2037,13 +2050,13 @@ mod tests {
     #[test]
     fn load_level_system_command_queues_catalog_load_request() {
         let mut app = test_app();
-        app.modal_stack.registry_mut().register(
+        app.session.as_mut().unwrap().modal_stack.registry_mut().register(
             "deathScreen",
             render::ui::demo::build_frontend_menu_descriptor(),
             render::ui::modal_stack::ScopeTier::Mod,
             false,
         );
-        app.modal_stack.push_named("deathScreen", None);
+        app.session.as_mut().unwrap().modal_stack.push_named("deathScreen", None);
 
         app.script_ctx.system_commands.push(
             scripting::reactions::system_commands::SystemReactionCommand::LoadLevel {
@@ -2058,7 +2071,7 @@ mod tests {
         );
         assert!(app.level_requests.is_empty());
         assert!(
-            app.modal_stack.is_empty(),
+            app.session.as_mut().unwrap().modal_stack.is_empty(),
             "starting gameplay clears the initiating modal before controls return",
         );
     }
@@ -2087,7 +2100,7 @@ mod tests {
     #[test]
     fn return_to_frontend_system_command_queues_unload_then_backdrop_load() {
         let mut app = test_app();
-        app.modal_stack.registry_mut().register(
+        app.session.as_mut().unwrap().modal_stack.registry_mut().register(
             "mainMenu",
             render::ui::demo::build_frontend_menu_descriptor(),
             render::ui::modal_stack::ScopeTier::Mod,
@@ -2109,7 +2122,7 @@ mod tests {
         app.dispatch_system_commands();
 
         assert_eq!(
-            app.modal_stack.active_name(),
+            app.session.as_mut().unwrap().modal_stack.active_name(),
             Some("mainMenu"),
             "returning to frontend presents the menu before backdrop reload",
         );

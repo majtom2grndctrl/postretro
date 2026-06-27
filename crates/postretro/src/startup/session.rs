@@ -14,7 +14,7 @@ use winit::event_loop::EventLoop;
 
 use crate::camera::Camera;
 use crate::frame_timing::{FrameRateMeter, FrameTiming, InterpolableState};
-use crate::input::{self, InputFocus};
+use crate::input;
 use crate::scripting::builtins::{
     ClassnameDispatch, register_builtins as register_builtin_classnames,
 };
@@ -36,7 +36,7 @@ use crate::scripting::sequence::SequencedPrimitiveRegistry;
 use crate::scripting::state_crossings::CrossingDetector;
 use crate::scripting::state_persistence::StateStoreLifecycle;
 use crate::startup::StartupTimings;
-use crate::{App, collision, netcode, options, render, scripting_systems, view_feel};
+use crate::{App, collision, netcode, options, scripting_systems, view_feel};
 
 /// Dev-default boot map when no content root or map argument is supplied. Used by
 /// `content_root_from_map` to derive the default `content/dev` root.
@@ -50,27 +50,46 @@ pub(crate) struct BootSession {
 }
 
 /// Deferred-startup owner. Carries the raw inputs needed to finish session
-/// startup AFTER the first visible logo frame paints. Today that work is the net
-/// endpoint setup (parse the raw net args, build the transport, fall back to
-/// single-player on parse/setup failure). It is taken and consumed exactly once
-/// by `App::install_pending_session`; suspend/resume keeps it unconsumed until
-/// the install commits, so a resume that re-enters the splash loop never runs
-/// deferred init twice. See: context/lib/boot_sequence.md §1, §9.
+/// startup AFTER the first visible logo frame paints. Two construction sites read
+/// from it until Task 3 collapses them: the migrated input/UI/modal group is built
+/// here via [`Session::build`] (using `input_seed`), and the net endpoint is set
+/// up (parse the raw net args, build the transport, fall back to single-player on
+/// parse/setup failure). It is taken and consumed exactly once by
+/// `App::install_pending_session`; suspend/resume keeps it unconsumed until the
+/// install commits, so a resume that re-enters the splash loop never runs deferred
+/// init twice. See: context/lib/boot_sequence.md §1, §9.
 pub(crate) struct PendingSessionInit {
     /// Full `argv` (including `argv[0]`). Net args are parsed here, after first
     /// pixels — never before the event loop. See: context/lib/networking.md.
     raw_args: Vec<String>,
+
+    /// Look-preference seed for the migrated `Session`'s `InputSystem`, captured
+    /// pre-window from the loaded `PlayerOptions` so the post-first-pixel build
+    /// needs no `player_options` borrow (which is not in the migrated group).
+    /// See: context/lib/player_options.md §3.
+    input_seed: crate::session::InputSeed,
 }
 
 impl PendingSessionInit {
-    /// Finish session startup after the first logo frame. Parses the raw net
-    /// args and installs the endpoint into `app.net_endpoint`, degrading to
-    /// single-player (net inert) on parse or transport-setup failure. Records the
-    /// `net_endpoint_complete` and `session_init_complete` boot-timing marks.
+    /// Finish session startup after the first logo frame. Builds the migrated
+    /// input/UI/modal `Session` group (whole-or-nothing) and installs it into
+    /// `app.session`, then parses the raw net args and installs the endpoint into
+    /// `app.net_endpoint`, degrading to single-player (net inert) on parse or
+    /// transport-setup failure. Records the `net_endpoint_complete` and
+    /// `session_init_complete` boot-timing marks.
+    ///
+    /// Returns `Err` if the `Session` build fails; the caller stores it in
+    /// `exit_result`, logs, exits the event loop, and early-returns from the
+    /// install frame so no later step runs against a `None` session.
     ///
     /// Caller guards single-commit via `Option::take` on `app.pending_session`,
     /// so this never runs twice across a suspend/resume.
-    pub(crate) fn install(self, app: &mut App) {
+    pub(crate) fn install(self, app: &mut App) -> Result<()> {
+        // Migrated input/UI/modal group: built post-first-pixel, synchronously,
+        // whole-or-nothing. A hard failure propagates so the caller exits boot.
+        app.session =
+            Some(crate::session::Session::build(&self.input_seed).context("failed to build session")?);
+
         // M15 Phase 1 net role (default single-player). A malformed flag or a
         // failed transport construction degrades to single-player (net inert)
         // rather than blocking boot — the engine is playable without networking.
@@ -101,6 +120,7 @@ impl PendingSessionInit {
         };
         app.boot_timings.record("net_endpoint_complete");
         app.boot_timings.record("session_init_complete");
+        Ok(())
     }
 }
 
@@ -120,8 +140,6 @@ struct SessionServices {
     classname_dispatch: ClassnameDispatch,
     player_options: options::PlayerOptions,
     settings_path: Option<PathBuf>,
-    input_system: input::InputSystem,
-    modal_stack: render::ui::modal_stack::ModalStack,
 }
 
 impl SessionServices {
@@ -207,55 +225,11 @@ impl SessionServices {
             }
         };
 
-        let mut input_system = input::InputSystem::new(input::default_bindings());
-        input_system.set_mouse_sensitivity(player_options.mouse_sensitivity);
-        input_system.set_invert_y(player_options.invert_y);
-
-        // Register engine built-in trees at boot through the one shared
-        // load-and-register path (`tree_asset::register_tree_from_disk`): each
-        // built-in screen's `AnchoredTree` is authored in
-        // `content/base/ui/<file>.json` and loaded from disk so a layout edit +
-        // reload changes it with no Rust change. A missing/malformed asset warns
-        // once and skips the registration — that screen is unavailable, the
-        // engine still boots.
-        //
-        // The HUD registers under `HUD_NAME` and is resolved by name as the
-        // always-on bottom passthrough layer each frame (the snapshot reads the
-        // registry, not a builder). The pause menu registers under
-        // `PAUSE_MENU_NAME` so `nav.menu` (gamepad Start / Escape-from-gameplay)
-        // can push it; the keyboard under `KEYBOARD_TREE_NAME` so a `showDialog
-        // { tree: "keyboard", onCommit }` resolves it.
-        let mut modal_stack = render::ui::modal_stack::ModalStack::new();
-        {
-            let registry = modal_stack.registry_mut();
-            // The HUD is always-on: it composes as the bottom base layer every
-            // gameplay frame (resolved through the always-on read seam). The
-            // pause menu and keyboard are pushed-only modals — not always-on.
-            render::ui::tree_asset::register_tree_from_disk(
-                registry,
-                render::ui::tree_asset::HUD_NAME,
-                "hud.json",
-                true,
-            );
-            render::ui::tree_asset::register_tree_from_disk(
-                registry,
-                render::ui::demo::PAUSE_MENU_NAME,
-                "pauseMenu.json",
-                false,
-            );
-            render::ui::tree_asset::register_tree_from_disk(
-                registry,
-                render::ui::demo::FRONTEND_MENU_NAME,
-                "frontendMenu.json",
-                false,
-            );
-            render::ui::tree_asset::register_tree_from_disk(
-                registry,
-                render::ui::keyboard_asset::KEYBOARD_TREE_NAME,
-                "keyboard.json",
-                false,
-            );
-        }
+        // Input seeding and built-in UI tree registration moved into
+        // `Session::build`, which runs post-first-pixel. `player_options` stays
+        // here (still an `App` field); the two look-preference scalars ride
+        // `PendingSessionInit::input_seed` to the migrated `InputSystem` build so
+        // no construction dependency crosses the dual-construction boundary.
 
         Ok(Self {
             script_ctx,
@@ -266,8 +240,6 @@ impl SessionServices {
             classname_dispatch,
             player_options,
             settings_path,
-            input_system,
-            modal_stack,
         })
     }
 }
@@ -322,9 +294,17 @@ pub(crate) fn build_session() -> Result<BootSession> {
         classname_dispatch,
         player_options,
         settings_path,
-        input_system,
-        modal_stack,
     } = session;
+
+    // Capture the migrated `InputSystem`'s look-preference seed before
+    // `player_options` moves into the `App` literal. `player_options` stays on
+    // `App` (not in the Task-1 group); the two scalars ride
+    // `PendingSessionInit::input_seed` so the post-first-pixel `Session::build`
+    // never borrows the not-yet-migrated field. See: boot_sequence §1.
+    let input_seed = crate::session::InputSeed {
+        mouse_sensitivity: player_options.mouse_sensitivity,
+        invert_y: player_options.invert_y,
+    };
 
     let app = App {
         renderer: None,
@@ -336,15 +316,13 @@ pub(crate) fn build_session() -> Result<BootSession> {
         content_root,
         exit_result: Ok(()),
         camera: Camera::new(initial_camera_pos, 0.0, 0.0),
-        input_system,
-        gameplay_input_latch: input::GameplayInputLatch::new(),
+        // Session-lifetime input/UI/modal group is built post-first-pixel by
+        // `PendingSessionInit::install`; `None` through the boot phase.
+        session: None,
         crouch_toggle_active: false,
         ai_warned: std::collections::HashSet::new(),
         player_options,
         settings_path,
-        input_focus: InputFocus::Gameplay,
-        ui_dispatch: input::UiDispatch::new(),
-        gamepad_system: input::gamepad::GamepadSystem::new(),
         cursor_pos: None,
         nav_stick_tracker: input::StickNavTracker::new(),
         frame_timing: FrameTiming::new(initial_state),
@@ -363,12 +341,8 @@ pub(crate) fn build_session() -> Result<BootSession> {
         vignette_decay: scripting_systems::vignette_decay::VignetteDecay::new(script_ctx.clone()),
         shake_decay: scripting_systems::shake_decay::ShakeDecay::new(script_ctx.clone()),
         presentation_cells: scripting_systems::presentation_cells::PresentationCellStore::new(),
-        modal_stack,
         mod_theme_override: ModThemeTokens::default(),
         frontend: None,
-        ui_focus: input::UiFocusEngine::new(),
-        ui_focus_rects: None,
-        ui_input_mode: input::InputMode::default(),
         input_mode_tracker: scripting_systems::input_mode::InputModeTracker::new(
             script_ctx.clone(),
         ),
@@ -419,7 +393,10 @@ pub(crate) fn build_session() -> Result<BootSession> {
         // Net endpoint is built after first pixels by `PendingSessionInit`; until
         // then the engine is single-player inert (`None`).
         net_endpoint: None,
-        pending_session: Some(PendingSessionInit { raw_args: args }),
+        pending_session: Some(PendingSessionInit {
+            raw_args: args,
+            input_seed,
+        }),
         #[cfg(feature = "dev-tools")]
         debug_ui: None,
         #[cfg(feature = "dev-tools")]

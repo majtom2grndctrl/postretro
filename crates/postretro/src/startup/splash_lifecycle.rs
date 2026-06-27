@@ -101,7 +101,19 @@ impl App {
         // suspend/resume re-entering this frame restores them without re-running
         // net init. See: context/lib/boot_sequence.md §1, §9.
         self.install_post_splash_services();
-        self.install_pending_session();
+        // Build + install the migrated `Session` group ahead of the renderer
+        // full-init check (and the mod-init / frontend / loading transitions that
+        // follow), so a build failure exits boot before any later step runs
+        // against a `None` session. Mirrors `finish_renderer_full_init`'s early
+        // return. See: context/lib/boot_sequence.md §1.
+        if !self.install_pending_session(event_loop) {
+            return false;
+        }
+        // The session is installed with `InputFocus::Gameplay`; capture the
+        // cursor now (the work `resumed` used to do pre-install, deferred here
+        // since focus is session-owned). A capturing frontend tree releases it
+        // again on the first `reconcile_ui_focus`.
+        self.set_input_focus(crate::input::InputFocus::Gameplay);
         self.run_deferred_mod_init();
         self.swap_mod_splash_override_if_pending();
         log::info!("{}", self.mod_timings.summary());
@@ -221,11 +233,17 @@ impl App {
                 drop(data_registry);
 
                 // Register mod-scope UI trees into the tiered registry at `Mod`
-                // tier, before the mod-init VM context drops.
-                self.modal_stack.register_script_trees(
-                    std::mem::take(&mut manifest.ui_trees),
-                    render::ui::modal_stack::ScopeTier::Mod,
-                );
+                // tier, before the mod-init VM context drops. The session is
+                // installed earlier this frame (`install_pending_session` ran
+                // just above), so it is `Some` here.
+                self.session
+                    .as_mut()
+                    .expect("session installed before mod init")
+                    .modal_stack
+                    .register_script_trees(
+                        std::mem::take(&mut manifest.ui_trees),
+                        render::ui::modal_stack::ScopeTier::Mod,
+                    );
 
                 self.frontend = manifest.frontend.take();
                 let mod_theme = std::mem::take(&mut manifest.theme);

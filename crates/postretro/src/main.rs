@@ -40,6 +40,10 @@ mod portal_vis;
 mod prl;
 mod render;
 mod scripting;
+// Live session-lifetime container (input/UI/modal group), held on `App` as
+// `Option<Session>` and built after the first visible frame.
+// See: context/lib/boot_sequence.md §1
+mod session;
 mod shadow_cull;
 mod sim;
 mod startup;
@@ -380,8 +384,14 @@ pub(crate) struct App {
     exit_result: Result<()>,
 
     camera: Camera,
-    input_system: input::InputSystem,
-    gameplay_input_latch: input::GameplayInputLatch,
+
+    /// Live session-lifetime container: the input/UI/modal field group, built
+    /// after the first visible frame by `Session::build` and installed through
+    /// `PendingSessionInit::install`. `None` during boot (Booting/Splash before
+    /// the install redraw) — boot-phase code physically cannot name a session
+    /// field. Becomes `Some` for the rest of the run; a failed build exits boot.
+    /// See: context/lib/boot_sequence.md §1.
+    session: Option<session::Session>,
 
     /// Persistent crouch toggle latch for `CrouchMode::Toggle`. Flipped on each
     /// `Action::Crouch` press rising edge by the input layer; fed into
@@ -410,21 +420,6 @@ pub(crate) struct App {
     /// See: context/lib/player_options.md
     #[allow(dead_code)]
     settings_path: Option<PathBuf>,
-
-    /// Coarse owner of keyboard/mouse focus. Drives pointer-lock acquire/release
-    /// via `set_input_focus`. See: context/lib/input.md
-    input_focus: InputFocus,
-
-    /// Input-stage UI-dispatch seam: decides whether an event is consumed by the
-    /// UI layer (capture) or forwarded to gameplay (passthrough), ahead of the
-    /// gameplay input forward. Goal A leaves the mode at its inert `Passthrough`
-    /// default (no live UI descriptor yet), so the seam does not change gameplay
-    /// forwarding; Task 4 sources the mode from the active splash descriptor.
-    /// Captured events cross to game logic no earlier than the next frame
-    /// (N→N+1). `InputFocus::Menu` is the intended structural home for capture;
-    /// Goal A makes no live focus change. See: context/lib/input.md
-    ui_dispatch: input::UiDispatch,
-    gamepad_system: Option<input::gamepad::GamepadSystem>,
 
     /// Last cursor position in device pixels, tracked from winit `CursorMoved`
     /// while the cursor is released (UI mode). Tracked *state*, never queued:
@@ -511,14 +506,6 @@ pub(crate) struct App {
     /// See: context/lib/ui.md §3/§6.
     presentation_cells: scripting_systems::presentation_cells::PresentationCellStore,
 
-    /// Gameplay-UI modal stack + named-tree registry. Consumes Goal E's
-    /// `PushTree`/`PopTree` system commands (resolving names through its registry,
-    /// unknown name warns + no-op) and exposes an engine push/pop API for
-    /// pause/dialog. The HUD is republished as the stack's bottom layer each
-    /// frame; the top tree's capture mode drives the input seam + `InputFocus`.
-    /// Engine built-in trees register at boot. See: context/lib/ui.md §1.
-    modal_stack: render::ui::modal_stack::ModalStack,
-
     /// The currently committed mod theme override. Successful staged mod-init
     /// commits replace this complete snapshot before a fresh merge over engine
     /// defaults reaches the renderer.
@@ -528,25 +515,6 @@ pub(crate) struct App {
     /// commits replace this complete snapshot; omission falls back to the
     /// engine/default frontend behavior.
     frontend: Option<Frontend>,
-
-    /// App-side UI focus engine (M13 Goal F, Task 3). Runs in the game-logic
-    /// phase: consumes the drained nav intents + tracked cursor, moves focus
-    /// through the top stack tree by policy, runs the dt-clocked hold-to-repeat
-    /// timer, and yields the focused node id that rides the next snapshot to drive
-    /// the focus ring. See: context/lib/ui.md §4.
-    ui_focus: input::UiFocusEngine,
-
-    /// The focus rect list the renderer exported for the top stack tree LAST
-    /// frame — the reverse twin of the app→renderer snapshot. The focus engine
-    /// consumes it the following game-logic phase (N→N+1 applied in reverse), so
-    /// the focus ring may trail a focus change by one frame. `None` until the
-    /// first gameplay frame exports one.
-    ui_focus_rects: Option<render::ui::tree::FocusRectList>,
-
-    /// Pointer-vs-focus interaction mode taken as an input by the focus engine
-    /// (hover moves focus only in `Pointer` mode). Driven each input phase from
-    /// `input_mode_tracker` (mouse motion → `Pointer`; nav input → `Focus`).
-    ui_input_mode: input::InputMode,
 
     /// App-side input-mode tracker (M13 Goal F, Task 5). Observes the input
     /// phase's mode signals (mouse motion vs. nav input), debounces them, writes
@@ -1096,7 +1064,10 @@ impl ApplicationHandler for App {
         // `install_pending_session` in `run_splash_frame_one`, so the OS window
         // opens as fast as practical. See: context/lib/boot_sequence.md §1.
 
-        self.set_input_focus(InputFocus::Gameplay);
+        // Input focus is now session-owned: the session is built later this boot
+        // (post-first-pixel) with `InputFocus::Gameplay`, and the cursor is
+        // captured by the first `reconcile_ui_focus` once gameplay runs. Boot /
+        // splash needs no pointer lock, so nothing to set here pre-install.
         self.frame_timing.last_frame = Instant::now();
         self.enter_splash_state();
 
@@ -1151,10 +1122,18 @@ impl ApplicationHandler for App {
         #[cfg(feature = "dev-tools")]
         let egui_consumed: bool = {
             let mut consumed = false;
+            // `input_focus` is session-owned; before the session installs it is
+            // effectively `Gameplay` (no UI consumer), so egui consumption is
+            // ignored. The debug UI itself only exists post-install.
+            let focus = self
+                .session
+                .as_ref()
+                .map(|session| session.input_focus)
+                .unwrap_or(InputFocus::Gameplay);
             if let (Some(debug_ui), Some(ws)) = (self.debug_ui.as_mut(), self.window_state.as_ref())
             {
                 let response = debug_ui.on_window_event(&ws.window, &event);
-                if self.input_focus != InputFocus::Gameplay {
+                if focus != InputFocus::Gameplay {
                     consumed = response.consumed;
                 }
             }
@@ -1269,6 +1248,17 @@ impl ApplicationHandler for App {
                     // split needs the "is a capturing tree on the stack?" flag,
                     // sourced from the modal stack's top capture mode.
                     // See: context/lib/input.md
+                    // The UI seam and gameplay forward are session-owned; boot
+                    // phase (pre-install) ignores gameplay/UI key input. The
+                    // diagnostic resolver above already ran so dev chords still
+                    // work during boot. Mode-signal / menu-toggle votes are
+                    // collected here and applied after the session borrow ends.
+                    let Some(session) = self.session.as_mut() else {
+                        return;
+                    };
+                    let mut record_nav_signal = false;
+                    let mut set_menu_toggle = false;
+
                     // A directional key RELEASE stops the focus engine's
                     // hold-to-repeat (the press-edge queue carries no release, so
                     // the focus ring's repeat clock is cleared here). Cancel never
@@ -1282,7 +1272,7 @@ impl ApplicationHandler for App {
                                 | winit::keyboard::KeyCode::ArrowRight
                         )
                     {
-                        self.ui_focus.release_repeat();
+                        session.ui_focus.release_repeat();
                     }
                     // A confirm key (Enter) RELEASE stops the activation-repeat clock
                     // (M13 Text-Entry, Task 2): a held `repeatOnHold` button stops
@@ -1294,7 +1284,7 @@ impl ApplicationHandler for App {
                             winit::keyboard::KeyCode::Enter | winit::keyboard::KeyCode::NumpadEnter
                         )
                     {
-                        self.ui_focus.release_confirm_repeat();
+                        session.ui_focus.release_confirm_repeat();
                     }
                     // Text-entry routing (M13 Text-Entry, Task 3): while a text-entry
                     // tree is the top of the modal stack, hardware key-down events
@@ -1304,7 +1294,7 @@ impl ApplicationHandler for App {
                     // a non-control printable `KeyEvent.text` becomes a `Text` intent.
                     // Enter/Escape ride the queue as `nav.confirm`/`nav.cancel`, which
                     // the focus-resolution stage intercepts for commit/cancel.
-                    let text_entry_open = self.modal_stack.active_text_entry_target().is_some();
+                    let text_entry_open = session.modal_stack.active_text_entry_target().is_some();
                     // Text entry intentionally honors OS key-repeat (Text-Entry AC4:
                     // hardware-key repeat comes from the OS): a held Backspace/letter
                     // appends/deletes on each auto-repeat. All OTHER UI input stays
@@ -1313,9 +1303,7 @@ impl ApplicationHandler for App {
                     let nav_intent = if pressed && (!key_event.repeat || text_entry_open) {
                         if text_entry_open {
                             // A key inside text entry is always a `focus`-mode signal.
-                            self.record_mode_signal(
-                                scripting_systems::input_mode::ModeSignal::NavInput,
-                            );
+                            record_nav_signal = true;
                             match input::text_entry_key(
                                 &key_event.logical_key,
                                 key_event.text.as_deref(),
@@ -1342,37 +1330,44 @@ impl ApplicationHandler for App {
                             // capture mode, so it IS the "capturing tree present"
                             // predicate. See: context/lib/input.md §7
                             let capturing =
-                                self.ui_dispatch.mode() == input::UiCaptureMode::Capture;
+                                session.ui_dispatch.mode() == input::UiCaptureMode::Capture;
                             let intent = input::nav_intent_for_key(code, capturing);
                             if intent.is_some() {
                                 // A nav key (arrows/enter/escape/tab) is a `focus`-mode
                                 // signal — it switches the interaction mode off pointer.
-                                self.record_mode_signal(
-                                    scripting_systems::input_mode::ModeSignal::NavInput,
-                                );
+                                record_nav_signal = true;
                             }
                             // Escape-from-gameplay maps to `nav.menu` (opens the pause
                             // menu). The seam is `Passthrough` from gameplay and queues
                             // nothing, so route the toggle through the punch-through flag.
                             if intent == Some(input::NavIntent::Menu) {
-                                self.pending_menu_toggle = true;
+                                set_menu_toggle = true;
                             }
                             intent.map(input::UiIntentPayload::Nav)
                         }
                     } else {
                         None
                     };
-                    if self
+                    if session
                         .ui_dispatch
                         .dispatch_event(nav_intent)
                         .forwards_to_gameplay()
-                        && self.input_focus == InputFocus::Gameplay
+                        && session.input_focus == InputFocus::Gameplay
                     {
                         // Only Gameplay forwards keys to the action system. When
                         // the debug panel (or future menu) owns focus, WASD must
                         // not drive the camera even though egui leaves
                         // `consumed = false` for non-text widgets like sliders.
-                        self.input_system.handle_keyboard_event(code, pressed);
+                        session.input_system.handle_keyboard_event(code, pressed);
+                    }
+
+                    if record_nav_signal {
+                        self.record_mode_signal(
+                            scripting_systems::input_mode::ModeSignal::NavInput,
+                        );
+                    }
+                    if set_menu_toggle {
+                        self.pending_menu_toggle = true;
                     }
                 }
             }
@@ -1390,7 +1385,11 @@ impl ApplicationHandler for App {
                     (true, Some(pos)) => Some(input::UiIntentPayload::PointerClick { pos }),
                     _ => None,
                 };
-                if !self
+                // Boot phase ignores mouse input until the session installs.
+                let Some(session) = self.session.as_mut() else {
+                    return;
+                };
+                if !session
                     .ui_dispatch
                     .dispatch_event(click_intent)
                     .forwards_to_gameplay()
@@ -1400,8 +1399,9 @@ impl ApplicationHandler for App {
                 // Same focus gate as the keyboard path: mouse-button actions
                 // (fire, alt-fire) must not fire while DevTools/Menu owns
                 // input. See: context/lib/input.md §5
-                if self.input_focus == InputFocus::Gameplay {
-                    self.input_system
+                if session.input_focus == InputFocus::Gameplay {
+                    session
+                        .input_system
                         .handle_mouse_button(button, state.is_pressed());
                 }
             }
@@ -1432,13 +1432,18 @@ impl ApplicationHandler for App {
                     // chose; the stored focus is untouched on focus loss so
                     // this restores the pre-blur state.
                     self.reapply_focus();
-                } else if let Some(ws) = self.window_state.as_ref() {
+                } else {
                     // Release the cursor while unfocused but leave
                     // `input_focus` alone — the user's chosen focus mode
-                    // outlives transient OS focus loss.
-                    input::cursor::release_cursor(&ws.window);
-                    self.input_system.clear_all();
-                    self.gameplay_input_latch.clear();
+                    // outlives transient OS focus loss. Input clears are
+                    // session-owned; nothing to clear before install.
+                    if let Some(ws) = self.window_state.as_ref() {
+                        input::cursor::release_cursor(&ws.window);
+                    }
+                    if let Some(session) = self.session.as_mut() {
+                        session.input_system.clear_all();
+                        session.gameplay_input_latch.clear();
+                    }
                     self.diagnostic_inputs.clear_modifiers();
                 }
             }
@@ -1491,55 +1496,62 @@ impl ApplicationHandler for App {
                 // while a capturing tree owns input (`Capture` mode); under
                 // `Passthrough` they are dropped here, exactly as keyboard
                 // events forward through the seam. See: context/lib/input.md §7
-                if let Some(gp) = &mut self.gamepad_system {
-                    let gp_nav = gp.update(&mut self.input_system, &mut self.nav_stick_tracker);
-                    // Advance any active rumble's timeout in the input stage and
-                    // stop it once its duration elapses (the rumble started by a
-                    // drained `Rumble` command on a prior frame).
-                    gp.tick_rumble(frame_dt);
-                    // A confirm (South) RELEASE stops the focus engine's
-                    // activation-repeat clock (M13 Text-Entry, Task 2): a held
-                    // `repeatOnHold` button stops re-firing once South releases, the
-                    // gamepad twin of the keyboard Enter-release path above.
-                    if gp_nav.confirm_released {
-                        self.ui_focus.release_confirm_repeat();
-                    }
-                    // No directional input held (D-pad up + stick in the dead zone)
-                    // RELEASES the focus engine's directional hold-to-repeat clock,
-                    // mirroring the keyboard arrow-key-up path above. Without it a
-                    // press that armed the clock would free-run on dt until the next
-                    // stack/intent change (runaway focus-scroll on a `repeat` tree).
-                    if gp_nav.directional_released {
-                        self.ui_focus.release_repeat();
-                    }
-                    // Any gamepad nav intent (stick edge, D-pad, face/system
-                    // button) is a `focus`-mode signal — recorded regardless of
-                    // capture mode so a `nav.menu` opened from gameplay also flips
-                    // the interaction mode off pointer.
-                    if !gp_nav.nav_intents.is_empty() {
-                        self.record_mode_signal(
-                            scripting_systems::input_mode::ModeSignal::NavInput,
-                        );
-                    }
-                    // `nav.menu` (gamepad Start) toggles the pause menu. It must
-                    // work from gameplay, where the seam is `Passthrough` and queues
-                    // nothing — route it through the punch-through flag regardless of
-                    // capture mode. Other nav intents only enqueue while a capturing
-                    // tree owns input.
-                    let capture = self.ui_dispatch.mode() == input::UiCaptureMode::Capture;
-                    for intent in gp_nav.nav_intents {
-                        if intent == input::NavIntent::Menu {
-                            // `pending_menu_toggle` fully handles the toggle; the
-                            // focus engine treats a queued `Nav(Menu)` as a no-op, so
-                            // enqueuing it would be a dead intent. Skip the enqueue.
-                            self.pending_menu_toggle = true;
-                            continue;
+                // Reached only in Running (Frontend returned above), so the
+                // session is installed. Disjoint borrows of the session group and
+                // the non-session `nav_stick_tracker`; mode-signal and menu-toggle
+                // votes are collected and applied after the borrow ends.
+                let (gamepad_nav_seen, gamepad_menu_toggle) = {
+                    let App {
+                        session,
+                        nav_stick_tracker,
+                        ..
+                    } = self;
+                    let mut nav_seen = false;
+                    let mut menu_toggle = false;
+                    if let Some(session) = session.as_mut() {
+                        if let Some(gp) = session.gamepad_system.as_mut() {
+                            let gp_nav = gp.update(&mut session.input_system, nav_stick_tracker);
+                            // Advance any active rumble's timeout in the input stage
+                            // and stop it once its duration elapses (started by a
+                            // drained `Rumble` command on a prior frame).
+                            gp.tick_rumble(frame_dt);
+                            // A confirm (South) RELEASE stops the activation-repeat
+                            // clock — the gamepad twin of the keyboard Enter-release.
+                            if gp_nav.confirm_released {
+                                session.ui_focus.release_confirm_repeat();
+                            }
+                            // No directional input held releases the directional
+                            // hold-to-repeat clock, mirroring the arrow-key-up path.
+                            if gp_nav.directional_released {
+                                session.ui_focus.release_repeat();
+                            }
+                            // Any gamepad nav intent is a `focus`-mode signal.
+                            nav_seen = !gp_nav.nav_intents.is_empty();
+                            // `nav.menu` (gamepad Start) toggles the pause menu via
+                            // the punch-through flag (Passthrough queues nothing);
+                            // other nav intents enqueue only while capturing.
+                            let capture =
+                                session.ui_dispatch.mode() == input::UiCaptureMode::Capture;
+                            for intent in gp_nav.nav_intents {
+                                if intent == input::NavIntent::Menu {
+                                    menu_toggle = true;
+                                    continue;
+                                }
+                                if capture {
+                                    session
+                                        .ui_dispatch
+                                        .enqueue_intent(input::UiIntentPayload::Nav(intent));
+                                }
+                            }
                         }
-                        if capture {
-                            self.ui_dispatch
-                                .enqueue_intent(input::UiIntentPayload::Nav(intent));
-                        }
                     }
+                    (nav_seen, menu_toggle)
+                };
+                if gamepad_nav_seen {
+                    self.record_mode_signal(scripting_systems::input_mode::ModeSignal::NavInput);
+                }
+                if gamepad_menu_toggle {
+                    self.pending_menu_toggle = true;
                 }
 
                 // Resolve this frame's input-mode signal into the engine-owned
@@ -1550,9 +1562,11 @@ impl ApplicationHandler for App {
                 // mode is observation-only here; its cursor/ring EFFECT is gated on
                 // a capturing tree being on the stack (applied in `reconcile_ui_focus`).
                 // See: context/lib/input.md §7.
-                self.ui_input_mode = self
-                    .input_mode_tracker
-                    .update(self.pending_mode_signal.take(), frame_dt);
+                let mode_signal = self.pending_mode_signal.take();
+                let resolved_input_mode = self.input_mode_tracker.update(mode_signal, frame_dt);
+                if let Some(session) = self.session.as_mut() {
+                    session.ui_input_mode = resolved_input_mode;
+                }
 
                 // Game-logic phase begins here. Read the UI captures made
                 // available by the *previous* frame, THEN promote this frame's
@@ -1566,10 +1580,13 @@ impl ApplicationHandler for App {
                 // ordering because both calls run here at game-logic time. The
                 // modal stack consumes the drained intents; the drain marks the
                 // seam where game logic reads them. See: context/lib/input.md
-                let ui_intents = self.ui_dispatch.take_ready();
-                self.ui_dispatch.advance_frame();
-                let ui_captured_gameplay_at_frame_start =
-                    self.ui_dispatch.mode() == input::UiCaptureMode::Capture;
+                let (ui_intents, ui_captured_gameplay_at_frame_start) = {
+                    let session = self.session.as_mut().expect("running session installed");
+                    let ui_intents = session.ui_dispatch.take_ready();
+                    session.ui_dispatch.advance_frame();
+                    let captured = session.ui_dispatch.mode() == input::UiCaptureMode::Capture;
+                    (ui_intents, captured)
+                };
 
                 // Text-entry resolution (M13 Text-Entry, Task 3): while a text-entry
                 // tree is the top of the modal stack, the drained intents drive the
@@ -1625,21 +1642,24 @@ impl ApplicationHandler for App {
                 // The active (top) tree key: the modal stack's top entry name, else
                 // the always-on HUD. `None` is never the gameplay case (the HUD is
                 // always present), but the engine handles it.
-                let active_key = self
-                    .modal_stack
-                    .active_name()
-                    .map(str::to_string)
-                    .unwrap_or_else(|| render::ui::tree_asset::HUD_NAME.to_string());
                 let cursor = self.cursor_pos;
-                let focus_result = self.ui_focus.tick(
-                    Some(active_key.as_str()),
-                    self.ui_focus_rects.as_ref(),
-                    &nav_intents,
-                    cursor,
-                    &click_positions,
-                    self.ui_input_mode,
-                    frame_dt,
-                );
+                let focus_result = {
+                    let session = self.session.as_mut().expect("running session installed");
+                    let active_key = session
+                        .modal_stack
+                        .active_name()
+                        .map(str::to_string)
+                        .unwrap_or_else(|| render::ui::tree_asset::HUD_NAME.to_string());
+                    session.ui_focus.tick(
+                        Some(active_key.as_str()),
+                        session.ui_focus_rects.as_ref(),
+                        &nav_intents,
+                        cursor,
+                        &click_positions,
+                        session.ui_input_mode,
+                        frame_dt,
+                    )
+                };
                 self.ui_focused_id = focus_result.focused.clone();
 
                 // Button activation: a `confirm` (gamepad
@@ -1670,41 +1690,50 @@ impl ApplicationHandler for App {
                 if self.pending_menu_toggle {
                     self.pending_menu_toggle = false;
                     self.toggle_pause_menu();
-                } else if focus_result.cancelled
-                    && !text_entry_consumed_nav
-                    && self.modal_stack.active_name() == Some(render::ui::demo::PAUSE_MENU_NAME)
-                {
-                    self.modal_stack.pop();
+                } else if focus_result.cancelled && !text_entry_consumed_nav {
+                    if let Some(session) = self.session.as_mut() {
+                        if session.modal_stack.active_name()
+                            == Some(render::ui::demo::PAUSE_MENU_NAME)
+                        {
+                            session.modal_stack.pop();
+                        }
+                    }
                 }
 
-                let ui_captures_gameplay = gameplay_capture_gate_for_frame(
-                    ui_captured_gameplay_at_frame_start,
-                    &self.modal_stack,
-                );
+                let ui_captures_gameplay = {
+                    let session = self.session.as_ref().expect("running session installed");
+                    gameplay_capture_gate_for_frame(
+                        ui_captured_gameplay_at_frame_start,
+                        &session.modal_stack,
+                    )
+                };
 
                 // drain_look_inputs() must precede snapshot(); both touch
                 // mouse_axes and look state belongs to the render-rate path.
                 // Capturing UI still drains raw input to prevent stale deltas from
                 // replaying later, but the consumed look is neutral so player aim
                 // cannot move while a modal owns input.
-                let drained_look = self.input_system.drain_look_inputs();
-                let look = if ui_captures_gameplay {
-                    input::LookInputs::default()
-                } else {
-                    drained_look
+                let gameplay_snapshot = {
+                    let session = self.session.as_mut().expect("running session installed");
+                    let drained_look = session.input_system.drain_look_inputs();
+                    let look = if ui_captures_gameplay {
+                        input::LookInputs::default()
+                    } else {
+                        drained_look
+                    };
+                    let frame_snapshot = session.input_system.snapshot();
+                    let gameplay_snapshot = gameplay_snapshot_for_capture_state(
+                        &mut session.gameplay_input_latch,
+                        &frame_snapshot,
+                        ticks,
+                        ui_captures_gameplay,
+                    );
+                    // Apply look rotation once at render rate, not once per tick —
+                    // so zero-tick frames still consume accumulated mouse motion.
+                    self.camera
+                        .rotate(look.yaw_delta(frame_dt), look.pitch_delta(frame_dt));
+                    gameplay_snapshot
                 };
-                let frame_snapshot = self.input_system.snapshot();
-                let gameplay_snapshot = gameplay_snapshot_for_capture_state(
-                    &mut self.gameplay_input_latch,
-                    &frame_snapshot,
-                    ticks,
-                    ui_captures_gameplay,
-                );
-
-                // Apply look rotation once at render rate, not once per tick —
-                // so zero-tick frames still consume accumulated mouse motion.
-                self.camera
-                    .rotate(look.yaw_delta(frame_dt), look.pitch_delta(frame_dt));
 
                 // Bump the engine frame counter once per Game logic phase.
                 // Reserved for primitives that need a per-frame ordering stamp.
@@ -2559,14 +2588,15 @@ impl ApplicationHandler for App {
                         .as_ref()
                         .map(|frontend| frontend.menu_tree.as_str())
                         .unwrap_or(render::ui::demo::FRONTEND_MENU_NAME);
+                    let session = self.session.as_ref().expect("running session installed");
                     let frontend_menu_is_top =
-                        self.modal_stack.active_name() == Some(frontend_menu_name);
+                        session.modal_stack.active_name() == Some(frontend_menu_name);
                     let ui_snapshot = Self::build_ui_read_snapshot(
-                        &self.modal_stack,
+                        &session.modal_stack,
                         &mut self.presentation_cells,
                         &self.script_ctx.slot_table.borrow(),
                         self.script_time,
-                        self.ui_input_mode,
+                        session.ui_input_mode,
                         self.ui_focused_id.clone(),
                         frontend_menu_is_top,
                     );
@@ -2604,7 +2634,10 @@ impl ApplicationHandler for App {
                     // out). The focus engine consumes it next frame's game-logic
                     // phase — the reverse N→N+1 the focus ring's one-frame trail
                     // comes from. See: context/lib/ui.md §4.
-                    self.ui_focus_rects = Some(renderer.export_ui_focus_rects());
+                    let exported_rects = renderer.export_ui_focus_rects();
+                    if let Some(session) = self.session.as_mut() {
+                        session.ui_focus_rects = Some(exported_rects);
+                    }
                     if let Some(surface_texture) = surface_texture {
                         #[cfg(feature = "dev-tools")]
                         {
@@ -2713,22 +2746,26 @@ impl ApplicationHandler for App {
         _device_id: DeviceId,
         event: DeviceEvent,
     ) {
+        // Boot phase ignores device input until the session is installed.
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
         // UI-dispatch seam, ahead of the gameplay forward: a captured raw
         // delta is consumed by the UI layer and must not reach the look path.
         // Mirrors the `window_event` seam; the decision is the mode flag. A raw
         // delta carries no queueable intent (hover/look is not nav), so the
         // capture suppresses the forward but queues nothing.
-        if !self.ui_dispatch.dispatch_event(None).forwards_to_gameplay() {
+        if !session.ui_dispatch.dispatch_event(None).forwards_to_gameplay() {
             return;
         }
         // Raw mouse deltas only rotate the camera while gameplay owns input.
         // When the debug panel (DevTools) or a menu is open, the cursor is
         // released and raw deltas must not leak into the look path.
-        if self.input_focus != InputFocus::Gameplay {
+        if session.input_focus != InputFocus::Gameplay {
             return;
         }
         if let DeviceEvent::MouseMotion { delta } = event {
-            self.input_system.handle_mouse_delta(delta.0, delta.1);
+            session.input_system.handle_mouse_delta(delta.0, delta.1);
         }
     }
 
@@ -2784,12 +2821,26 @@ impl App {
     /// Finish deferred session startup on the first visible logo frame. Takes
     /// (and thereby consumes) `pending_session` so the install commits at most
     /// once — a suspend/resume that re-enters the splash loop finds it `None`
-    /// and skips re-init. Net setup runs here, behind the logo pixels.
-    /// See: context/lib/boot_sequence.md §1, §9.
-    pub(crate) fn install_pending_session(&mut self) {
+    /// and skips re-init. Builds and installs the migrated `Session` group and
+    /// sets up the net endpoint, both behind the logo pixels.
+    ///
+    /// Returns `true` on success (or when nothing was pending). On a `Session`
+    /// build failure it stores the error in `exit_result`, logs it, exits the
+    /// event loop, and returns `false`, so the caller early-returns from the
+    /// install frame before any later step runs against a `None` session —
+    /// mirroring `finish_renderer_full_init`'s failure handling. A failed build
+    /// also consumes `pending_session`, so a resumed boot does not retry.
+    /// See: context/lib/boot_sequence.md §1, §9; development_guide.md §6.2.
+    pub(crate) fn install_pending_session(&mut self, event_loop: &ActiveEventLoop) -> bool {
         if let Some(pending) = crate::startup::take_once(&mut self.pending_session) {
-            pending.install(self);
+            if let Err(err) = pending.install(self) {
+                log::error!("[Engine] session init failed: {err:#}");
+                self.exit_result = Err(err);
+                event_loop.exit();
+                return false;
+            }
         }
+        true
     }
 
     /// Current boot phase for the suspend/resume contract (boot_sequence §1, §9).
@@ -2886,8 +2937,11 @@ impl App {
         };
         let frontend_was_top = self.frontend_menu_is_top();
         let tree_count = ui_trees.len();
-        self.modal_stack
-            .replace_script_tree_tier(ui_trees, render::ui::modal_stack::ScopeTier::Mod);
+        if let Some(session) = self.session.as_mut() {
+            session
+                .modal_stack
+                .replace_script_tree_tier(ui_trees, render::ui::modal_stack::ScopeTier::Mod);
+        }
         self.commit_mod_ui_theme(theme);
         self.frontend = frontend;
         if frontend_was_top || self.boot_state == BootState::Frontend {
@@ -2927,9 +2981,11 @@ impl App {
 
     fn present_frontend_menu(&mut self) -> bool {
         let menu_tree = self.frontend_menu_tree_name().to_string();
-        let presented = self
-            .modal_stack
-            .replace_with_frontend_menu(&menu_tree, render::ui::demo::FRONTEND_MENU_NAME);
+        let presented = self.session.as_mut().and_then(|session| {
+            session
+                .modal_stack
+                .replace_with_frontend_menu(&menu_tree, render::ui::demo::FRONTEND_MENU_NAME)
+        });
         self.apply_frontend_menu_camera_pose_if_top();
         self.reconcile_ui_focus();
         presented.is_some()
@@ -2951,7 +3007,10 @@ impl App {
     }
 
     fn frontend_menu_is_top(&self) -> bool {
-        self.modal_stack.active_name().is_some_and(|active| {
+        let Some(session) = self.session.as_ref() else {
+            return false;
+        };
+        session.modal_stack.active_name().is_some_and(|active| {
             active == self.frontend_menu_tree_name()
                 || active == render::ui::demo::FRONTEND_MENU_NAME
         })
@@ -3077,37 +3136,60 @@ impl App {
     }
 
     fn run_frontend_ui_logic(&mut self, event_loop: &ActiveEventLoop, frame_dt: f32) -> bool {
-        if let Some(gp) = &mut self.gamepad_system {
-            let gp_nav = gp.update(&mut self.input_system, &mut self.nav_stick_tracker);
-            gp.tick_rumble(frame_dt);
-            if gp_nav.confirm_released {
-                self.ui_focus.release_confirm_repeat();
-            }
-            if gp_nav.directional_released {
-                self.ui_focus.release_repeat();
-            }
-            if !gp_nav.nav_intents.is_empty() {
-                self.record_mode_signal(scripting_systems::input_mode::ModeSignal::NavInput);
-            }
-            let capture = self.ui_dispatch.mode() == input::UiCaptureMode::Capture;
-            for intent in gp_nav.nav_intents {
-                if intent == input::NavIntent::Menu {
-                    self.pending_menu_toggle = false;
-                    continue;
-                }
-                if capture {
-                    self.ui_dispatch
-                        .enqueue_intent(input::UiIntentPayload::Nav(intent));
-                }
-            }
+        // Frontend runs post-install, so the session is present.
+        if self.session.is_none() {
+            return true;
         }
 
-        self.ui_input_mode = self
-            .input_mode_tracker
-            .update(self.pending_mode_signal.take(), frame_dt);
+        // Gamepad poll: disjoint borrows of the session group and the
+        // non-session `nav_stick_tracker`. A nav intent votes `focus` mode;
+        // recorded after the borrow ends.
+        let nav_input_seen = {
+            let App {
+                session,
+                nav_stick_tracker,
+                ..
+            } = self;
+            let session = session.as_mut().expect("frontend session installed");
+            let mut nav_input_seen = false;
+            if let Some(gp) = session.gamepad_system.as_mut() {
+                let gp_nav = gp.update(&mut session.input_system, nav_stick_tracker);
+                gp.tick_rumble(frame_dt);
+                if gp_nav.confirm_released {
+                    session.ui_focus.release_confirm_repeat();
+                }
+                if gp_nav.directional_released {
+                    session.ui_focus.release_repeat();
+                }
+                nav_input_seen = !gp_nav.nav_intents.is_empty();
+                let capture = session.ui_dispatch.mode() == input::UiCaptureMode::Capture;
+                for intent in gp_nav.nav_intents {
+                    if intent == input::NavIntent::Menu {
+                        continue;
+                    }
+                    if capture {
+                        session
+                            .ui_dispatch
+                            .enqueue_intent(input::UiIntentPayload::Nav(intent));
+                    }
+                }
+            }
+            nav_input_seen
+        };
+        if nav_input_seen {
+            self.record_mode_signal(scripting_systems::input_mode::ModeSignal::NavInput);
+        }
 
-        let ui_intents = self.ui_dispatch.take_ready();
-        self.ui_dispatch.advance_frame();
+        let mode_signal = self.pending_mode_signal.take();
+        let ui_input_mode = self.input_mode_tracker.update(mode_signal, frame_dt);
+
+        let ui_intents = {
+            let session = self.session.as_mut().expect("frontend session installed");
+            session.ui_input_mode = ui_input_mode;
+            let ui_intents = session.ui_dispatch.take_ready();
+            session.ui_dispatch.advance_frame();
+            ui_intents
+        };
         let text_entry_consumed_nav = self.resolve_text_entry_intents(&ui_intents);
 
         let mut nav_intents: Vec<input::NavIntent> = Vec::new();
@@ -3128,26 +3210,33 @@ impl App {
         }
         self.apply_slider_nav_capture(&mut nav_intents);
 
-        let active_key = self
-            .modal_stack
-            .active_name()
-            .map(str::to_string)
-            .unwrap_or_else(|| self.frontend_menu_tree_name().to_string());
-        let focus_result = self.ui_focus.tick(
-            Some(active_key.as_str()),
-            self.ui_focus_rects.as_ref(),
-            &nav_intents,
-            self.cursor_pos,
-            &click_positions,
-            self.ui_input_mode,
-            frame_dt,
-        );
+        let frontend_menu_tree_name = self.frontend_menu_tree_name().to_string();
+        let cursor_pos = self.cursor_pos;
+        let focus_result = {
+            let session = self.session.as_mut().expect("frontend session installed");
+            let active_key = session
+                .modal_stack
+                .active_name()
+                .map(str::to_string)
+                .unwrap_or(frontend_menu_tree_name);
+            session.ui_focus.tick(
+                Some(active_key.as_str()),
+                session.ui_focus_rects.as_ref(),
+                &nav_intents,
+                cursor_pos,
+                &click_positions,
+                session.ui_input_mode,
+                frame_dt,
+            )
+        };
         self.ui_focused_id = focus_result.focused.clone();
         if focus_result.confirmed {
             self.fire_focused_button_activation(focus_result.focused.as_deref());
         }
         if focus_result.cancelled && !text_entry_consumed_nav {
-            self.modal_stack.pop();
+            if let Some(session) = self.session.as_mut() {
+                session.modal_stack.pop();
+            }
         }
         self.pending_menu_toggle = false;
 
@@ -3194,12 +3283,15 @@ impl App {
         self.apply_frontend_menu_camera_pose_if_top();
         self.reconcile_ui_focus();
         let frontend_menu_is_top = self.frontend_menu_is_top();
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
         let ui_snapshot = Self::build_ui_read_snapshot(
-            &self.modal_stack,
+            &session.modal_stack,
             &mut self.presentation_cells,
             &self.script_ctx.slot_table.borrow(),
             self.script_time,
-            self.ui_input_mode,
+            session.ui_input_mode,
             self.ui_focused_id.clone(),
             frontend_menu_is_top,
         );
@@ -3240,7 +3332,10 @@ impl App {
                 return;
             }
         };
-        self.ui_focus_rects = Some(renderer.export_ui_focus_rects());
+        let exported_rects = renderer.export_ui_focus_rects();
+        if let Some(session) = self.session.as_mut() {
+            session.ui_focus_rects = Some(exported_rects);
+        }
         if let Some(surface_texture) = surface_texture {
             surface_texture.present();
         }
@@ -3295,7 +3390,11 @@ impl App {
         let Some(focused_id) = self.ui_focused_id.as_deref() else {
             return;
         };
-        let Some(rects) = self.ui_focus_rects.as_ref() else {
+        let Some(rects) = self
+            .session
+            .as_ref()
+            .and_then(|session| session.ui_focus_rects.as_ref())
+        else {
             return;
         };
         // Resolve the focused slider's interaction + its bound slot (clone out so
@@ -3341,9 +3440,18 @@ impl App {
     /// named-reaction path, so gamepad confirm and pointer click produce the same
     /// observable effect.
     fn fire_focused_button_activation(&mut self, focused_id: Option<&str>) {
-        let on_press = focused_button_on_press(self.ui_focus_rects.as_ref(), focused_id);
+        let on_press = focused_button_on_press(
+            self.session
+                .as_ref()
+                .and_then(|session| session.ui_focus_rects.as_ref()),
+            focused_id,
+        );
         if let Some(on_press) = on_press {
-            match route_ui_button_action(&on_press, &mut self.modal_stack) {
+            let action = match self.session.as_mut() {
+                Some(session) => route_ui_button_action(&on_press, &mut session.modal_stack),
+                None => return,
+            };
+            match action {
                 UiButtonAction::CommitTextEntry => self.commit_text_entry(),
                 UiButtonAction::CloseDialog => {}
                 UiButtonAction::ExitToDesktop => self.pending_exit_to_desktop = true,
@@ -3380,11 +3488,12 @@ impl App {
     /// on the N+1 frame — the system's defining N→N+1 ordering. Commit and cancel act
     /// on the stack immediately at this game-logic phase; the seam reconciles next.
     fn resolve_text_entry_intents(&mut self, ui_intents: &[input::UiIntent]) -> bool {
-        let Some(target) = self
-            .modal_stack
-            .active_text_entry_target()
-            .map(str::to_string)
-        else {
+        let Some(target) = self.session.as_ref().and_then(|session| {
+            session
+                .modal_stack
+                .active_text_entry_target()
+                .map(str::to_string)
+        }) else {
             return false;
         };
 
@@ -3437,7 +3546,11 @@ impl App {
         let Some(focused_id) = self.ui_focused_id.as_deref() else {
             return false;
         };
-        let Some(rects) = self.ui_focus_rects.as_ref() else {
+        let Some(rects) = self
+            .session
+            .as_ref()
+            .and_then(|session| session.ui_focus_rects.as_ref())
+        else {
             return false;
         };
         rects
@@ -3456,7 +3569,10 @@ impl App {
     /// The `on_commit` reaction reads the bound slot's value (the entered text); the
     /// reaction fires synchronously here so it observes the slot as last edited.
     fn commit_text_entry(&mut self) {
-        if let Some(on_commit) = self.modal_stack.active_on_commit().map(str::to_string) {
+        let on_commit = self.session.as_ref().and_then(|session| {
+            session.modal_stack.active_on_commit().map(str::to_string)
+        });
+        if let Some(on_commit) = on_commit {
             let _ = fire_named_event_with_sequences(
                 &on_commit,
                 &self.script_ctx.data_registry.borrow(),
@@ -3466,14 +3582,18 @@ impl App {
                 &self.script_ctx,
             );
         }
-        self.modal_stack.pop();
+        if let Some(session) = self.session.as_mut() {
+            session.modal_stack.pop();
+        }
     }
 
     /// Cancel the open text-entry surface (M13 Text-Entry, Task 3): pop the tree
     /// WITHOUT firing `on_commit`. Edits already applied to the bound slot are
     /// discarded simply by the opener not acting on them — there is no rollback.
     fn cancel_text_entry(&mut self) {
-        self.modal_stack.pop();
+        if let Some(session) = self.session.as_mut() {
+            session.modal_stack.pop();
+        }
     }
 
     /// Drain the system-reaction command queue and route each typed command to
@@ -3523,7 +3643,11 @@ impl App {
                     weak,
                     duration_ms,
                 } => {
-                    if let Some(gp) = &mut self.gamepad_system {
+                    if let Some(gp) = self
+                        .session
+                        .as_mut()
+                        .and_then(|session| session.gamepad_system.as_mut())
+                    {
                         gp.rumble(strong, weak, duration_ms);
                     }
                     // No gamepad subsystem ⇒ nothing to vibrate.
@@ -3561,15 +3685,21 @@ impl App {
                     // text-entry commit path, then pops the entry. The capture mode
                     // lives on the registered tree's envelope (read after the drain by
                     // `reconcile_ui_focus`), not on the command.
-                    self.modal_stack.push_named(&tree, on_commit);
+                    if let Some(session) = self.session.as_mut() {
+                        session.modal_stack.push_named(&tree, on_commit);
+                    }
                 }
                 SystemReactionCommand::LoadLevel { map } => {
-                    self.modal_stack.clear_pushed();
+                    if let Some(session) = self.session.as_mut() {
+                        session.modal_stack.clear_pushed();
+                    }
                     self.enqueue_level_request(LevelRequest::Load(LevelSource::Catalog(map)));
                 }
                 SystemReactionCommand::RestartLevel => {
                     if let Some(source) = self.active_level_source.clone() {
-                        self.modal_stack.clear_pushed();
+                        if let Some(session) = self.session.as_mut() {
+                            session.modal_stack.clear_pushed();
+                        }
                         self.enqueue_level_request(LevelRequest::Load(source));
                     }
                 }
@@ -3577,7 +3707,9 @@ impl App {
                     self.return_to_frontend();
                 }
                 SystemReactionCommand::PopTree => {
-                    self.modal_stack.pop();
+                    if let Some(session) = self.session.as_mut() {
+                        session.modal_stack.pop();
+                    }
                 }
                 SystemReactionCommand::SetState { slot, value } => {
                     // Readonly-gated JSON write at the game-logic stage: a readonly
@@ -4075,16 +4207,21 @@ impl App {
     /// and clearing carry-over input state so keys/mouse held during the
     /// transition do not stick in the new mode.
     fn set_input_focus(&mut self, focus: InputFocus) {
-        self.input_focus = focus;
-        let Some(ws) = self.window_state.as_ref() else {
+        // Disjoint field borrows: the session group plus the non-session window
+        // and diagnostic state all mutate here. No-op if the session is not yet
+        // installed (focus transitions only happen post-install).
+        let Some(session) = self.session.as_mut() else {
             return;
         };
-        match focus {
-            InputFocus::Gameplay => {
-                input::cursor::capture_cursor(&ws.window);
-            }
-            InputFocus::DevTools | InputFocus::Menu => {
-                input::cursor::release_cursor(&ws.window);
+        session.input_focus = focus;
+        if let Some(ws) = self.window_state.as_ref() {
+            match focus {
+                InputFocus::Gameplay => {
+                    input::cursor::capture_cursor(&ws.window);
+                }
+                InputFocus::DevTools | InputFocus::Menu => {
+                    input::cursor::release_cursor(&ws.window);
+                }
             }
         }
         // Both directions clear: returning to Gameplay must not see keys that
@@ -4096,8 +4233,8 @@ impl App {
         // the panel). Closing the panel without releasing requires re-pressing
         // those modifiers. Accepted because the symmetric stale-state
         // protection is worth more than the one-keystroke regression.
-        self.input_system.clear_all();
-        self.gameplay_input_latch.clear();
+        session.input_system.clear_all();
+        session.gameplay_input_latch.clear();
         self.diagnostic_inputs.clear_modifiers();
     }
 
@@ -4122,7 +4259,9 @@ impl App {
     /// `pending_menu_toggle`. The capture-mode + cursor effect follows on the next
     /// `reconcile_ui_focus` (this game-logic phase).
     fn toggle_pause_menu(&mut self) {
-        apply_pause_menu_nav_policy(&mut self.modal_stack);
+        if let Some(session) = self.session.as_mut() {
+            apply_pause_menu_nav_policy(&mut session.modal_stack);
+        }
     }
 
     /// Reconcile the input-dispatch seam and coarse focus with the modal stack's
@@ -4147,16 +4286,24 @@ impl App {
     /// and set `DevTools`); this reconcile never overrides that — the modal stack
     /// is gameplay UI, and the debug overlay is a separate, dev-only consumer.
     fn reconcile_ui_focus(&mut self) {
-        let mode = self.modal_stack.top_capture_mode();
-        self.ui_dispatch.set_mode(mode);
+        // Read the session-owned inputs up front, then drop the borrow before
+        // `set_input_focus` (which re-borrows the session). No-op before install.
+        let (mode, current_focus) = {
+            let Some(session) = self.session.as_mut() else {
+                return;
+            };
+            let mode = session.modal_stack.top_capture_mode();
+            session.ui_dispatch.set_mode(mode);
+            (mode, session.input_focus)
+        };
 
         // The debug overlay owns focus while open — don't fight it.
-        if self.input_focus == InputFocus::DevTools {
+        if current_focus == InputFocus::DevTools {
             return;
         }
 
         let want_menu = matches!(mode, input::UiCaptureMode::Capture);
-        match (want_menu, self.input_focus) {
+        match (want_menu, current_focus) {
             // A capturing tree opened (or stayed open): enter Menu, release cursor.
             (true, InputFocus::Gameplay) => self.set_input_focus(InputFocus::Menu),
             // The capturing tree(s) closed: hand the cursor back to gameplay.
@@ -4169,10 +4316,15 @@ impl App {
         // is up. `set_input_focus(Menu)` released the cursor (visible) above; in
         // `focus` mode we additionally hide it so directional nav isn't cluttered
         // by a stray pointer. Mode is inert otherwise (no capturing tree).
-        if want_menu && self.input_focus == InputFocus::Menu {
-            if let Some(ws) = self.window_state.as_ref() {
-                ws.window
-                    .set_cursor_visible(self.ui_input_mode.cursor_visible());
+        let cursor_visible = self
+            .session
+            .as_ref()
+            .map(|session| (session.input_focus, session.ui_input_mode.cursor_visible()));
+        if let Some((InputFocus::Menu, visible)) = cursor_visible {
+            if want_menu {
+                if let Some(ws) = self.window_state.as_ref() {
+                    ws.window.set_cursor_visible(visible);
+                }
             }
         }
     }
@@ -4190,10 +4342,13 @@ impl App {
     /// focus. Called on window re-focus so the cursor mode matches the user's
     /// chosen focus after transient OS focus loss.
     fn reapply_focus(&mut self) {
+        let Some(focus) = self.session.as_ref().map(|session| session.input_focus) else {
+            return;
+        };
         let Some(ws) = self.window_state.as_ref() else {
             return;
         };
-        match self.input_focus {
+        match focus {
             InputFocus::Gameplay => input::cursor::capture_cursor(&ws.window),
             InputFocus::DevTools | InputFocus::Menu => input::cursor::release_cursor(&ws.window),
         }

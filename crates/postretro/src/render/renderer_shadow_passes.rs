@@ -763,15 +763,14 @@ impl Renderer {
             && !full.bvh_leaves.is_empty()
         {
             if let Some(cull) = &full.compute_cull {
-                let cull_status_bind_group =
-                    device.create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: Some("Wireframe Cull Status BG"),
-                        layout: &full.wireframe_cull_status_bgl,
-                        entries: &[wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: cull.cull_status_buffer().as_entire_binding(),
-                        }],
-                    });
+                let cull_status_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("Wireframe Cull Status BG"),
+                    layout: &full.wireframe_cull_status_bgl,
+                    entries: &[wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: cull.cull_status_buffer().as_entire_binding(),
+                    }],
+                });
 
                 let mut overlay_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("Wireframe Overlay Pass"),

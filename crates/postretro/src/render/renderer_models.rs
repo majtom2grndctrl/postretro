@@ -181,14 +181,8 @@ impl Renderer {
         let full = full
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
-        full.mesh_pass.insert_model(
-            device,
-            handle,
-            &mesh,
-            submesh_materials,
-            skeleton,
-            clips,
-        );
+        full.mesh_pass
+            .insert_model(device, handle, &mesh, submesh_materials, skeleton, clips);
 
         log::info!(
             "[Model] skinned model uploaded: {} clip(s) parsed, {} tag(s)",
@@ -269,13 +263,7 @@ impl Renderer {
             .iter()
             .map(|key_hex| {
                 let key = parse_blake3_key(key_hex);
-                let tex = load_model_diffuse_texture(
-                    device,
-                    queue,
-                    key_hex,
-                    key,
-                    prm_cache_root,
-                );
+                let tex = load_model_diffuse_texture(device, queue, key_hex, key, prm_cache_root);
 
                 let aniso_sampler = full
                     .mip_count_aniso_samplers

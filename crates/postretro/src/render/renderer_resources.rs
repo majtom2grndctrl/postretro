@@ -181,23 +181,21 @@ impl Renderer {
                 packed
             }
         };
-        let spec_lights_buffer =
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Spec-Only Lights Storage Buffer"),
-                contents: &spec_lights_data,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            });
+        let spec_lights_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Spec-Only Lights Storage Buffer"),
+            contents: &spec_lights_data,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
 
         let chunk_grid = match geometry.chunk_light_list {
             Some(sec) => ChunkGrid::from_section(sec),
             None => ChunkGrid::fallback(),
         };
-        let chunk_grid_info_buffer =
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Chunk Grid Info Uniform"),
-                contents: &chunk_grid.grid_info,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            });
+        let chunk_grid_info_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Chunk Grid Info Uniform"),
+            contents: &chunk_grid.grid_info,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
         let chunk_grid_offsets_buffer =
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("Chunk Grid Offset Table"),
@@ -276,8 +274,7 @@ impl Renderer {
             cube_sampling_view,
         );
 
-        full.sdf_atlas_resources =
-            SdfAtlasResources::new(device, queue, geometry.sdf_atlas);
+        full.sdf_atlas_resources = SdfAtlasResources::new(device, queue, geometry.sdf_atlas);
         full.lightmap_mode = geometry.lightmap_mode;
         let compose_sh_volume = geometry
             .sh_volume
@@ -385,9 +382,10 @@ impl Renderer {
         // Rebuild the candidate-cull path in lockstep with `compute_cull`, sized
         // to the freshly-installed leaf count. Empty-geometry install → `None`,
         // so `release_level_resources` drops it for free.
-        full.candidate_cull = full.compute_cull.as_ref().map(|c| {
-            crate::candidate_cull::CandidateCullPipeline::new(device, c.total_leaves())
-        });
+        full.candidate_cull = full
+            .compute_cull
+            .as_ref()
+            .map(|c| crate::candidate_cull::CandidateCullPipeline::new(device, c.total_leaves()));
 
         // Rebuild the shadow cull owner against the freshly-uploaded BVH
         // buffers — its per-slot bind groups reference the camera cull's

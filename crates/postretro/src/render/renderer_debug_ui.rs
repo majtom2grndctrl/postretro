@@ -83,8 +83,7 @@ impl Renderer {
         });
 
         for (id, image_delta) in &textures_delta.set {
-            gpu.renderer
-                .update_texture(device, queue, *id, image_delta);
+            gpu.renderer.update_texture(device, queue, *id, image_delta);
         }
         let user_cmd_bufs =
             gpu.renderer

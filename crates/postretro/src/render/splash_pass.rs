@@ -354,7 +354,10 @@ mod tests {
             w / h,
         );
         // Centered: equal margins on each axis.
-        assert!((x - (1280.0 - w) * 0.5).abs() < EPS, "centered horizontally");
+        assert!(
+            (x - (1280.0 - w) * 0.5).abs() < EPS,
+            "centered horizontally"
+        );
         assert!((y - (720.0 - h) * 0.5).abs() < EPS, "centered vertically");
     }
 

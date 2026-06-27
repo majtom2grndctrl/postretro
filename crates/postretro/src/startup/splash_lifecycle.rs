@@ -6,6 +6,7 @@ use std::path::Path;
 
 use winit::event_loop::ActiveEventLoop;
 
+use crate::App;
 use crate::render;
 use crate::render::splash_pass::PresentOutcome;
 use crate::scripting::reaction_dispatch::validate_scoped_sequence_primitives;
@@ -13,7 +14,6 @@ use crate::scripting::state_persistence::{
     STATE_FILE_PATH, load_persisted_state, overlay_persisted_state,
 };
 use crate::startup::{BootState, LevelRequest, LevelSource, SplashSource, StartupTimings};
-use crate::App;
 
 impl App {
     /// Drive one Splash-state frame. Returns `false` when the splash frame was

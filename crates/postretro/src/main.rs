@@ -308,7 +308,10 @@ fn main() -> Result<()> {
     // registries, options, input) and the event loop. Mod init and the first
     // level-load worker are deferred to the splash frame loop — see
     // `startup::session::build_session`. See: context/lib/boot_sequence.md §1.
-    let startup::BootSession { event_loop, mut app } = startup::build_session()?;
+    let startup::BootSession {
+        event_loop,
+        mut app,
+    } = startup::build_session()?;
 
     event_loop
         .run_app(&mut app)
@@ -1111,7 +1114,10 @@ impl ApplicationHandler for App {
         // `Booting` and re-drives the splash loop; the single-commit guards
         // (`pending_session.take`, renderer full-ready idempotence) keep session
         // init and renderer completion from re-running. See: boot_sequence §9.
-        log::info!("[Engine] Suspended during boot phase {:?}", self.boot_phase());
+        log::info!(
+            "[Engine] Suspended during boot phase {:?}",
+            self.boot_phase()
+        );
         self.window_state = None;
         self.renderer = None;
         // Re-built on the next `resumed()` since it borrows the new window
@@ -2796,9 +2802,7 @@ impl App {
         crate::startup::classify_boot_phase(
             self.splash_frame,
             self.pending_session.is_none(),
-            self.renderer
-                .as_ref()
-                .is_some_and(Renderer::is_full_ready),
+            self.renderer.as_ref().is_some_and(Renderer::is_full_ready),
         )
     }
 
@@ -3060,7 +3064,10 @@ impl App {
     /// seam stays passthrough during boot). Returns the present outcome so the
     /// splash schedule advances only on a presented frame; a transient surface
     /// failure (`NeedsRedraw`) requests another redraw without advancing.
-    fn paint_splash(&mut self, _event_loop: &ActiveEventLoop) -> render::splash_pass::PresentOutcome {
+    fn paint_splash(
+        &mut self,
+        _event_loop: &ActiveEventLoop,
+    ) -> render::splash_pass::PresentOutcome {
         match self.renderer.as_mut() {
             // Splash requires only boot-ready (surface/device/queue/boot-splash).
             Some(renderer) if renderer.is_boot_ready() => renderer.render_splash_frame(),

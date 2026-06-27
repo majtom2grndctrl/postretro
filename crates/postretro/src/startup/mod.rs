@@ -253,20 +253,20 @@ mod tests {
     /// it must NOT (the runtime is built pre-window, before the black frame).
     fn boot_mark_order_valid_path() -> Vec<&'static str> {
         vec![
-            "args_parsed",            // session::build_session
-            "event_loop_created",     // session::build_session (EventLoop::new)
-            "script_runtime_ctor",    // session::build_session (SessionServices::build) — pre-window
-            "window_created",         // main::resumed
-            "wgpu_init",              // main::resumed (Renderer::new, boot phase)
-            "first_black_frame",      // splash_lifecycle::run_splash_frame_zero (after present)
-            "splash_decoded",         // splash_lifecycle::run_splash_frame_zero
-            "splash_uploaded",        // splash_lifecycle::run_splash_frame_zero
-            "first_splash_frame",     // splash_lifecycle::paint_splash_after_black (after present)
-            "audio_init_complete",    // main::install_post_splash_services
-            "net_endpoint_complete",  // session::PendingSessionInit::install
-            "session_init_complete",  // session::PendingSessionInit::install
+            "args_parsed",                 // session::build_session
+            "event_loop_created",          // session::build_session (EventLoop::new)
+            "script_runtime_ctor", // session::build_session (SessionServices::build) — pre-window
+            "window_created",      // main::resumed
+            "wgpu_init",           // main::resumed (Renderer::new, boot phase)
+            "first_black_frame",   // splash_lifecycle::run_splash_frame_zero (after present)
+            "splash_decoded",      // splash_lifecycle::run_splash_frame_zero
+            "splash_uploaded",     // splash_lifecycle::run_splash_frame_zero
+            "first_splash_frame",  // splash_lifecycle::paint_splash_after_black (after present)
+            "audio_init_complete", // main::install_post_splash_services
+            "net_endpoint_complete", // session::PendingSessionInit::install
+            "session_init_complete", // session::PendingSessionInit::install
             "renderer_full_init_complete", // splash_lifecycle::finish_renderer_full_init
-            "boot_worker_dispatch",   // splash_lifecycle::run_splash_frame_one (boot-map path)
+            "boot_worker_dispatch", // splash_lifecycle::run_splash_frame_one (boot-map path)
         ]
     }
 
@@ -366,7 +366,10 @@ mod tests {
         let logo = index_of(&t.entries, "first_splash_frame");
         let session = index_of(&t.entries, "session_init_complete");
 
-        assert!(black < decoded, "decode runs after the black frame presents");
+        assert!(
+            black < decoded,
+            "decode runs after the black frame presents"
+        );
         assert!(decoded < uploaded, "upload follows decode");
         assert!(uploaded < logo, "logo frame follows upload");
         assert!(logo < session, "session install follows the logo frame");
@@ -424,7 +427,10 @@ mod tests {
     fn classify_boot_phase_logo_presented_pre_install_is_deferred_session() {
         // Frame advanced past the logo but the session bundle is not yet
         // installed: the single deferred-session commit happens in this phase.
-        assert_eq!(classify_boot_phase(2, false, false), BootPhase::DeferredSession);
+        assert_eq!(
+            classify_boot_phase(2, false, false),
+            BootPhase::DeferredSession
+        );
     }
 
     #[test]
@@ -449,8 +455,14 @@ mod tests {
     fn classify_boot_phase_session_installed_ignores_splash_frame() {
         // Once the session is installed, the phase tracks renderer completion
         // regardless of the (now-irrelevant) splash schedule value.
-        assert_eq!(classify_boot_phase(1, true, false), BootPhase::FullRendererPending);
-        assert_eq!(classify_boot_phase(0, true, true), BootPhase::FullRendererComplete);
+        assert_eq!(
+            classify_boot_phase(1, true, false),
+            BootPhase::FullRendererPending
+        );
+        assert_eq!(
+            classify_boot_phase(0, true, true),
+            BootPhase::FullRendererComplete
+        );
     }
 
     // --- Single-commit guard (no duplicate session init across resume) ---

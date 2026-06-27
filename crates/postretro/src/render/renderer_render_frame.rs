@@ -97,49 +97,48 @@ impl Renderer {
         // `instance_buffer` between this point and the forward `record_draws`, so
         // an entity and its shadow are sampled at the identical pose (no one-frame
         // lag). The plan is held in `mesh_frame_plan` and consumed by both passes.
-        let mesh_frame_plan: Option<mesh_instances::MeshFramePlan> =
-            if render_world && self.full().mesh_pass.has_model() && !self.full().mesh_draws.is_empty()
-            {
-                // Plan: group instances by model, assign each a contiguous palette
-                // run, drop any overflow past the fixed budget. GPU-free.
-                let plan = mesh_instances::plan_mesh_frame(
-                    &self.full().mesh_draws,
-                    &self.full().mesh_pass,
-                );
+        let mesh_frame_plan: Option<mesh_instances::MeshFramePlan> = if render_world
+            && self.full().mesh_pass.has_model()
+            && !self.full().mesh_draws.is_empty()
+        {
+            // Plan: group instances by model, assign each a contiguous palette
+            // run, drop any overflow past the fixed budget. GPU-free.
+            let plan =
+                mesh_instances::plan_mesh_frame(&self.full().mesh_draws, &self.full().mesh_pass);
 
-                // Overflow drops excess instances rather than corrupting the
-                // palette or panicking — rate-limited warning. Covers BOTH the
-                // palette-slot cap and the instance-count cap (the latter is what
-                // fires for rigid / zero-joint props, which consume no slots).
-                if plan.dropped > 0 {
-                    let now = now_seconds as f32;
-                    if now - self.full().mesh_overflow_last_warn >= 1.0 {
-                        log::warn!(
-                            "[Renderer] skinned-mesh budget exceeded: dropped {} instance(s) \
+            // Overflow drops excess instances rather than corrupting the
+            // palette or panicking — rate-limited warning. Covers BOTH the
+            // palette-slot cap and the instance-count cap (the latter is what
+            // fires for rigid / zero-joint props, which consume no slots).
+            if plan.dropped > 0 {
+                let now = now_seconds as f32;
+                if now - self.full().mesh_overflow_last_warn >= 1.0 {
+                    log::warn!(
+                        "[Renderer] skinned-mesh budget exceeded: dropped {} instance(s) \
                              (budget {} palette slots / {} instances); excess not drawn",
-                            plan.dropped,
-                            mesh_instances::MAX_PALETTE_ENTRIES,
-                            mesh_instances::MAX_INSTANCES,
-                        );
-                        self.full_mut().mesh_overflow_last_warn = now;
-                    }
+                        plan.dropped,
+                        mesh_instances::MAX_PALETTE_ENTRIES,
+                        mesh_instances::MAX_INSTANCES,
+                    );
+                    self.full_mut().mesh_overflow_last_warn = now;
                 }
+            }
 
-                // Sample every instance's clip into its palette run + write the
-                // per-instance SSBO. The ONLY per-frame write to these buffers —
-                // both the shadow loop and the forward draw read them unchanged.
-                {
-                    let Self { queue, full, .. } = self;
-                    let full = full
-                        .as_mut()
-                        .expect("renderer full-init must complete before full-ready paths run");
-                    full.mesh_pass
-                        .plan_and_upload(queue, &plan, &mut full.bone_palette_scratch);
-                }
-                (!plan.groups.is_empty()).then_some(plan)
-            } else {
-                None
-            };
+            // Sample every instance's clip into its palette run + write the
+            // per-instance SSBO. The ONLY per-frame write to these buffers —
+            // both the shadow loop and the forward draw read them unchanged.
+            {
+                let Self { queue, full, .. } = self;
+                let full = full
+                    .as_mut()
+                    .expect("renderer full-init must complete before full-ready paths run");
+                full.mesh_pass
+                    .plan_and_upload(queue, &plan, &mut full.bone_palette_scratch);
+            }
+            (!plan.groups.is_empty()).then_some(plan)
+        } else {
+            None
+        };
 
         if render_world && self.full().has_geometry && self.full().index_count > 0 {
             self.record_spot_shadow_depth(&mut encoder, mesh_frame_plan.as_ref());
@@ -322,7 +321,9 @@ impl Renderer {
         }
 
         // After opaque forward, before wireframe. Alpha additive; depth test on, write off.
-        if render_world && self.full().smoke_pass.has_any_sheet() && !particle_collections.is_empty()
+        if render_world
+            && self.full().smoke_pass.has_any_sheet()
+            && !particle_collections.is_empty()
         {
             let smoke_ts = self
                 .full()

@@ -207,7 +207,11 @@ impl Renderer {
             vertex_uniforms[slot_usize * stride..slot_usize * stride + MAT_BYTES]
                 .copy_from_slice(&bytes);
         }
-        queue.write_buffer(&full.spot_shadow_pool.matrices_buffer, 0, &fragment_matrices);
+        queue.write_buffer(
+            &full.spot_shadow_pool.matrices_buffer,
+            0,
+            &fragment_matrices,
+        );
         queue.write_buffer(&full.shadow_vs_uniform_buffer, 0, &vertex_uniforms);
 
         full.spot_shadow_pool.slot_assignment = slot_assignment;
@@ -325,9 +329,12 @@ impl Renderer {
                     reachable_cell_aabbs,
                 )
             };
-            let bright =
-                level_brightness_for_candidate(&self.full().level_lights, light, effective_brightness)
-                    .unwrap_or(1.0);
+            let bright = level_brightness_for_candidate(
+                &self.full().level_lights,
+                light,
+                effective_brightness,
+            )
+            .unwrap_or(1.0);
             let is_spot = light.light_type == LightType::Spot;
             let is_point = light.light_type == LightType::Point;
             let elig = reach && bright >= BRIGHTNESS_SUPPRESSION_THRESHOLD;

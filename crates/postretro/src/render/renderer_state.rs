@@ -69,7 +69,10 @@ impl Renderer {
     /// `AVG_WINDOW_FRAMES` frames.
     #[cfg(feature = "dev-tools")]
     pub fn frame_timing_snapshot(&self) -> Option<&frame_timing::FrameTimingSnapshot> {
-        self.full().frame_timing.as_ref().and_then(|t| t.last_window())
+        self.full()
+            .frame_timing
+            .as_ref()
+            .and_then(|t| t.last_window())
     }
 
     /// Rebuilds the swapchain via surface.configure (Alt+Shift+V diagnostic chord).
@@ -205,7 +208,10 @@ impl Renderer {
 
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
     pub fn sdf_open_space_skip_threshold(&self) -> f32 {
-        self.full().sdf_shadow_pass.tuning().open_space_skip_threshold
+        self.full()
+            .sdf_shadow_pass
+            .tuning()
+            .open_space_skip_threshold
     }
 
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]

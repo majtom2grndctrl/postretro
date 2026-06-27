@@ -27,7 +27,9 @@ impl Renderer {
             return;
         }
         let Self { device, full, .. } = self;
-        let full = full.as_mut().expect("full renderer present (checked above)");
+        let full = full
+            .as_mut()
+            .expect("full renderer present (checked above)");
         let (_depth_texture, depth_view) = create_depth_texture(device, width, height);
         full.depth_view = depth_view;
         // `scene_color` is surface-sized; recreate it (and rebuild the resolve

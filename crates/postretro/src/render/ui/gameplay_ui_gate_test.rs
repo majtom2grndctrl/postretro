@@ -13,9 +13,9 @@
 // integer pixel snapping — by asserting a representative composite tree produces a
 // non-empty, well-snapped draw list. No GPU adapter, no wgpu call.
 //
-// CRITICAL: the early-out is gameplay-path-only. The splash path opens the pass
-// unconditionally for its frame-0 black clear (`record_splash_ui`), so this gate
-// asserts ONLY the gameplay predicate — it does not touch the splash clear.
+// CRITICAL: the early-out is gameplay-path-only. The boot splash is a separate
+// renderer-owned pass (`BootSplashPass`) that always clears the swapchain, so
+// this gate asserts ONLY the gameplay predicate — it does not touch the splash.
 //
 // See: context/lib/ui.md
 

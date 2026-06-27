@@ -175,10 +175,11 @@ impl UiTree {
     /// the cached `taffy::Layout` rects are read back unchanged. Draw-list
     /// production (via `collect_draw_data`) always runs after the layout gate.
     ///
-    /// This is the splash/fresh path: a fresh `UiTree` is always dirty, so the
-    /// gate never short-circuits here. The gameplay path uses
-    /// `build_draw_data_retained`, which retains the tree across frames and
-    /// benefits from the gate.
+    /// The fresh-build path: a fresh `UiTree` is always dirty, so the gate never
+    /// short-circuits here. Production gameplay uses `build_draw_data_retained`,
+    /// which retains the tree across frames and benefits from the gate; this
+    /// fresh build now backs the layout/theming/binding unit tests, which drive a
+    /// one-shot `UiTree` without the retained bookkeeping.
     ///
     /// `slot_values` is the frame's resolved state-store read snapshot (cloned
     /// out of the live `SlotTable`, keyed by dotted slot name). Bound text/panel
@@ -186,6 +187,7 @@ impl UiTree {
     /// an absent slot falls back to the literal descriptor value. Layout never
     /// depends on it — only the drawn payload does — so binding never re-triggers
     /// a recompute.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn build_draw_data(
         &mut self,
         device_size: [u32; 2],

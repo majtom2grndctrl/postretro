@@ -7,6 +7,7 @@ use std::path::Path;
 use winit::event_loop::ActiveEventLoop;
 
 use crate::render;
+use crate::render::splash_pass::PresentOutcome;
 use crate::scripting::reaction_dispatch::validate_scoped_sequence_primitives;
 use crate::scripting::state_persistence::{
     STATE_FILE_PATH, load_persisted_state, overlay_persisted_state,
@@ -42,8 +43,16 @@ impl App {
     /// First Splash frame: paint a black screen, then decode + upload the base
     /// splash so a subsequent frame can show it. The splash texture is not yet
     /// decoded, so the splash pass clears to black and draws nothing.
+    ///
+    /// `first_black_frame` is recorded — and the decode/upload runs — only after
+    /// the black frame actually presents. A transient surface failure requests
+    /// another redraw WITHOUT advancing the schedule, so the timing marks a real
+    /// presented frame.
     fn run_splash_frame_zero(&mut self, event_loop: &ActiveEventLoop) -> bool {
-        self.paint_splash(event_loop);
+        if self.paint_splash(event_loop) == PresentOutcome::NeedsRedraw {
+            self.request_redraw();
+            return false;
+        }
         self.boot_timings.record("first_black_frame");
 
         // Now that the OS window is showing a black frame, decode and upload the
@@ -54,7 +63,7 @@ impl App {
             Ok(loaded) => {
                 self.boot_timings.record("splash_decoded");
                 if let Some(renderer) = self.renderer.as_mut() {
-                    let dims = renderer.install_splash_from_loaded(&loaded);
+                    let dims = renderer.install_splash_pixels(&loaded);
                     log::info!("[Engine] Splash loaded: {}×{}", dims[0], dims[1]);
                 }
                 self.boot_timings.record("splash_uploaded");
@@ -78,7 +87,13 @@ impl App {
     /// scripts touch the engine, then run the deferred mod init and exit Splash
     /// — to Loading with a boot map, or Frontend without one.
     fn run_splash_frame_one(&mut self, event_loop: &ActiveEventLoop) -> bool {
-        self.paint_splash_after_black(event_loop);
+        // Run deferred mod init + the boot transition only after the splash
+        // (logo) frame actually presents — a transient surface failure just
+        // re-requests the redraw, holding the schedule on frame 1.
+        if self.paint_splash_after_black(event_loop) == PresentOutcome::NeedsRedraw {
+            self.request_redraw();
+            return false;
+        }
         self.run_deferred_mod_init();
         self.swap_mod_splash_override_if_pending();
         log::info!("{}", self.mod_timings.summary());
@@ -109,13 +124,19 @@ impl App {
         false
     }
 
-    /// Paint the now-decoded splash and emit log line A. Resets `mod_timings`
-    /// so the cursor starts at the top of this frame, not at App construction.
-    fn paint_splash_after_black(&mut self, event_loop: &ActiveEventLoop) {
-        self.paint_splash(event_loop);
+    /// Paint the now-decoded splash and emit log line A. Records
+    /// `first_splash_frame` and resets `mod_timings` only after the logo frame
+    /// presents; on a transient surface failure it returns `NeedsRedraw` so the
+    /// caller holds the schedule and re-requests a redraw.
+    fn paint_splash_after_black(&mut self, event_loop: &ActiveEventLoop) -> PresentOutcome {
+        let outcome = self.paint_splash(event_loop);
+        if outcome == PresentOutcome::NeedsRedraw {
+            return outcome;
+        }
         self.boot_timings.record("first_splash_frame");
         log::info!("{}", self.boot_timings.summary());
         self.mod_timings = StartupTimings::new();
+        outcome
     }
 
     /// Run `mod_init` and commit its validated manifest into the engine-global
@@ -210,7 +231,7 @@ impl App {
             match render::splash::load_splash(&source) {
                 Ok(loaded) => {
                     if let Some(renderer) = self.renderer.as_mut() {
-                        let dims = renderer.install_splash_from_loaded(&loaded);
+                        let dims = renderer.install_splash_pixels(&loaded);
                         log::info!("[Engine] Mod splash loaded: {}×{}", dims[0], dims[1]);
                     }
                     self.mod_timings.record("mod_splash_swap");

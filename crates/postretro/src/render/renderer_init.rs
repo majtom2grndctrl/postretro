@@ -452,6 +452,10 @@ impl Renderer {
         // and the gameplay path both record through it.
         let ui = ui::UiPass::new(&device, &queue, surface_format);
 
+        // Renderer-owned boot splash pass (clear + logo quad). Built here so the
+        // splash path can present before the UI system is exercised.
+        let boot_splash = splash_pass::BootSplashPass::new(&device, surface_format);
+
         let mut fog = FogPass::new(
             &device,
             surface_config.width,
@@ -595,7 +599,7 @@ impl Renderer {
             spot_entity_occluders_submitted: 0,
             cube_entity_occluders_submitted: 0,
             ui,
-            splash_logo_size: None,
+            boot_splash,
             ui_images: ui::UiImageRegistry::default(),
             ui_snapshot: ui::UiReadSnapshot::default(),
             ui_theme: ui::theme::UiTheme::engine_default(),

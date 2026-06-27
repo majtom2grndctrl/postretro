@@ -57,13 +57,6 @@ pub(crate) mod modal_stack;
 
 pub(crate) use self::text::UiText;
 
-/// Splash content descriptor loaded from `content/base/ui/splash.json`.
-/// `build_splash_descriptor` clones the once-loaded tree and substitutes the
-/// per-call version line; falls back to a minimal in-code tree when the JSON is
-/// absent or malformed. G1 script-ingestion seam: the body is authored in the
-/// JSON, not in Rust.
-pub(crate) mod splash;
-
 /// Demo gameplay HUD + pause-menu wiring. Both screens are now JSON-authored
 /// (`content/base/ui/hud.json`, `pauseMenu.json`), loaded through `tree_asset` and
 /// resolved by name from the registry; `demo` holds the `PAUSE_MENU_NAME` constant
@@ -82,18 +75,6 @@ pub(crate) mod tree_asset;
 /// `keyboard` name. Read from disk (not embedded) so a layout edit + reload
 /// changes the keyboard with no Rust change.
 pub(crate) mod keyboard_asset;
-
-/// Hard-gate CPU draw-list / layout assertion for the splash: pins the
-/// device-pixel quad rects (anchor, scale, snap, 9-slice corners) the splash
-/// projects to. Pure CPU — no GPU adapter.
-#[cfg(test)]
-mod splash_layout_test;
-
-/// Optional headless golden: renders the splash UI pass into an offscreen target
-/// and asserts tolerance-scoped structural properties of the readback. Self-skips
-/// when no GPU adapter is present — never the hard gate.
-#[cfg(test)]
-mod splash_golden_test;
 
 /// Hard-gate CPU assertion for the gameplay UI path: the renderer builds a
 /// non-empty draw list from a fixture descriptor tree, and an empty tree
@@ -121,8 +102,8 @@ mod theme_gate_test;
 
 /// Shared headless GPU harness for the UI offscreen golden tests: the
 /// `pollster` device init (self-skip on no adapter) and the offscreen-texture
-/// readback. Used by `multi_batch_test`, `splash_golden_test`, and
-/// `multi_layer_text_golden_test`. See `testing_guide.md` §3/§4.
+/// readback. Used by `multi_batch_test` and `multi_layer_text_golden_test`.
+/// See `testing_guide.md` §3/§4.
 #[cfg(test)]
 mod gpu_test_harness;
 
@@ -303,19 +284,17 @@ impl From<descriptor::CaptureMode> for crate::input::UiCaptureMode {
 /// call — NOT threaded as a render parameter, so both render signatures stay
 /// stable.
 ///
-/// Carries the splash version/tagline line, the gameplay UI modal stack (a Vec of
-/// trees drawn bottom→top), and the frame's resolved slot values. The renderer
-/// reads `version_line` on the splash path and `trees`/`slot_values` on the
-/// gameplay path. Descriptors are carried here — never laid-out rects;
-/// taffy/glyphon live in the renderer per renderer-owns-GPU. Slot values are
-/// cloned out of the live `SlotTable` once per frame so the renderer never borrows
-/// the live store — preserving the renderer/game-logic boundary. Value-less slots
-/// are omitted; a present key always carries a resolved value.
+/// Carries the gameplay UI modal stack (a Vec of trees drawn bottom→top) and the
+/// frame's resolved slot values. The renderer reads `trees`/`slot_values` on the
+/// gameplay path. The boot splash does NOT use this — it is a renderer-owned
+/// pass independent of the UI system. Descriptors are carried here — never
+/// laid-out rects; taffy/glyphon live in the renderer per renderer-owns-GPU.
+/// Slot values are cloned out of the live `SlotTable` once per frame so the
+/// renderer never borrows the live store — preserving the renderer/game-logic
+/// boundary. Value-less slots are omitted; a present key always carries a
+/// resolved value.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct UiReadSnapshot {
-    /// Version/tagline string the splash's shaped-text line renders. Read only on
-    /// the splash path; empty on the gameplay path.
-    pub version_line: String,
     /// The gameplay UI modal stack for this frame, drawn bottom→top (`trees[0]`
     /// is the bottom, the last entry is the top/active tree). Empty (the default)
     /// on the splash path and whenever gameplay publishes no UI — the renderer's
@@ -352,21 +331,6 @@ pub(crate) struct UiReadSnapshot {
 }
 
 impl UiReadSnapshot {
-    /// Snapshot carrying the splash version/tagline line (splash path). The
-    /// slot-value map and tree stack stay empty — the splash has no store-bound
-    /// widgets and never routes through the modal stack.
-    pub fn with_version_line(version_line: impl Into<String>) -> Self {
-        Self {
-            version_line: version_line.into(),
-            trees: Vec::new(),
-            slot_values: std::collections::HashMap::new(),
-            cell_values: tree::CellValues::new(),
-            // Splash/fresh path takes no time — inertness is structural.
-            time_seconds: 0.0,
-            focused_id: None,
-        }
-    }
-
     /// Snapshot carrying the gameplay UI modal stack (the content side) plus the
     /// frame's resolved slot-value snapshot and the deterministic frame time. The
     /// renderer lays each tree out bottom→top into the UI draw list, resolves
@@ -381,7 +345,6 @@ impl UiReadSnapshot {
         focused_id: Option<String>,
     ) -> Self {
         Self {
-            version_line: String::new(),
             trees,
             slot_values,
             cell_values,
@@ -414,32 +377,14 @@ struct UiImageEntry {
 }
 
 impl UiImageRegistry {
-    /// Register (or replace) the bind group + owning texture for `key`. The
-    /// texture is held so its view outlives every draw that binds the group.
-    pub fn register(
-        &mut self,
-        key: impl Into<String>,
-        texture: wgpu::Texture,
-        bind_group: wgpu::BindGroup,
-    ) {
-        let key = key.into();
-        self.entries.insert(
-            key,
-            UiImageEntry {
-                _texture: texture,
-                bind_group,
-            },
-        );
-    }
-
     /// Resolve `key` to its bind group, or `None` if no such key is registered.
+    /// The live read side: `UiComposition::from_layer_draws` resolves each
+    /// gameplay image batch's asset key through here. No production writer exists
+    /// yet — the boot splash owns its logo in `BootSplashPass`, and the demo HUD
+    /// has no `image` nodes — so the registry currently resolves nothing; the
+    /// writer lands with the first gameplay image node.
     pub fn resolve(&self, key: &str) -> Option<&wgpu::BindGroup> {
         self.entries.get(key).map(|e| &e.bind_group)
-    }
-
-    /// Drop all registered images (splash teardown).
-    pub fn clear(&mut self) {
-        self.entries.clear();
     }
 }
 
@@ -462,8 +407,6 @@ const INSTANCE_SIZE: usize = std::mem::size_of::<UiInstance>();
 /// color target with no depth attachment so glyphon's text draw can share the pass.
 pub(crate) struct UiPass {
     pipeline: wgpu::RenderPipeline,
-    bind_group_layout: wgpu::BindGroupLayout,
-    sampler: wgpu::Sampler,
     uniform_buffer: wgpu::Buffer,
     instance_buffer: wgpu::Buffer,
     instance_capacity: usize,
@@ -584,13 +527,11 @@ impl<'a> UiComposition<'a> {
         Self { batches, texts }
     }
 
-    /// Splash constructor: a single-layer composition from already-assembled
-    /// batches and text. The splash's quads come from a standalone `panel_list`
-    /// (`layout::project`) plus a background fill — not a `UiDrawData` — so it
-    /// takes ownership of the assembled `Vec<UiBatch<'a>>`/`Vec<UiText>` (each
-    /// `UiBatch<'a>` still borrows its underlying draw list). The splash has no
-    /// image-registry fold of its own (the logo batch is assembled by the caller
-    /// and passed in `batches`).
+    /// Constructor from already-assembled batches and text — a single-layer
+    /// composition that does not fold a `UiDrawData` stack. Now only the
+    /// multi-batch headless regression uses it directly (the boot splash moved
+    /// off the UI pass); kept for that test's disjoint-region coverage.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn from_batches(batches: Vec<UiBatch<'a>>, texts: Vec<UiText>) -> Self {
         Self { batches, texts }
     }
@@ -783,8 +724,6 @@ impl UiPass {
 
         Self {
             pipeline,
-            bind_group_layout,
-            sampler,
             uniform_buffer,
             instance_buffer,
             instance_capacity: INITIAL_INSTANCE_CAPACITY,
@@ -809,73 +748,6 @@ impl UiPass {
     /// resolving to a system fallback.
     pub fn register_font(&mut self, family: &str, ttf_bytes: Vec<u8>) -> bool {
         self.text.register_font(family, ttf_bytes)
-    }
-
-    /// Build a bind group for a caller-bound image texture (e.g. the logo). One
-    /// batch per bound texture, so the image draws as a separate instanced draw.
-    pub fn make_texture_bind_group(
-        &self,
-        device: &wgpu::Device,
-        view: &wgpu::TextureView,
-    ) -> wgpu::BindGroup {
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("UI Image Bind Group"),
-            layout: &self.bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: self.uniform_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
-                },
-            ],
-        })
-    }
-
-    /// Lay a descriptor tree out into device-pixel draw data, threading the
-    /// pass's glyphon `FontSystem` so text nodes size from real shaped-run
-    /// metrics (the taffy↔glyphon measure seam). SPLASH path only — the gameplay
-    /// path uses the retained `layout_gameplay_tree`. Turns the draw data into
-    /// `UiBatch`es. Layout (taffy) runs on the CPU here — no `wgpu` call — so the
-    /// GPU stays untouched until `encode`.
-    ///
-    /// Builds a FRESH `UiTree` every call: the splash re-derives its descriptor
-    /// each frame, is transient, and carries no bindings — so the dirty-gate never
-    /// fires on this path and retaining it would only add bookkeeping. The
-    /// gameplay path retains its tree across frames via `layout_gameplay_tree`,
-    /// where the dirty-gate and bound-value diff pay off.
-    ///
-    /// `image_sizes` maps each referenced `image` asset key to its natural
-    /// reference size; the measure seam sizes image nodes from it (content-driven,
-    /// like text). The splash passes the logo's size; the gameplay path passes an
-    /// empty map (the demo HUD has no image nodes).
-    ///
-    /// `slot_values` is the frame's resolved state-store read snapshot, keyed by
-    /// dotted slot name. Bound text/panel nodes resolve their drawn string/color
-    /// against it at draw-data build time; an absent slot falls back to the literal
-    /// descriptor value. The splash passes an empty map (its tree has no binds);
-    /// gameplay passes the snapshot's `slot_values`.
-    pub fn layout_tree(
-        &mut self,
-        tree: &descriptor::AnchoredTree,
-        viewport: [u32; 2],
-        image_sizes: &tree::ImageSizes,
-        slot_values: &std::collections::HashMap<String, crate::scripting::slot_table::SlotValue>,
-        theme: &theme::UiTheme,
-    ) -> tree::UiDrawData {
-        let mut ui_tree = tree::UiTree::from_descriptor(tree, theme);
-        ui_tree.build_draw_data(
-            viewport,
-            self.text.font_system_mut(),
-            image_sizes,
-            slot_values,
-        )
     }
 
     /// Lay out ONE modal-stack layer's descriptor tree through the RETAINED
@@ -1178,9 +1050,9 @@ pub(crate) fn push_focus_ring(quads: &mut UiDrawList, rect: [f32; 4], inset: f32
 
 /// Upload a CPU RGBA8 `UiTexture` and return the GPU texture. sRGB format so
 /// image content decodes on sample (white encodes to white, so the panel texel
-/// stays neutral). Mirrors `render::splash::upload_splash_texture` — kept local
-/// so the UI pass owns its own upload path. Used here for the 1×1 white texel;
-/// the splash logo image goes through `render::splash::upload_splash_texture`.
+/// stays neutral). Kept local so the UI pass owns its own upload path. Used here
+/// for the 1×1 white texel; the boot splash logo uploads through its own
+/// renderer-owned `BootSplashPass::install_logo`.
 fn upload_ui_texture(device: &wgpu::Device, queue: &wgpu::Queue, tex: &UiTexture) -> wgpu::Texture {
     let size = wgpu::Extent3d {
         width: tex.width,

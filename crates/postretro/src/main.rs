@@ -300,13 +300,6 @@ fn reload_summary_requires_mod_init(summary: ReloadSummary) -> bool {
     summary.mod_init
 }
 
-/// Version/tagline line the boot splash's shaped-text element renders. Sourced
-/// from the build's `CARGO_PKG_VERSION` so the read-handle snapshot carries a
-/// real value. Flows through `UiReadSnapshot::version_line`.
-fn splash_version_line() -> String {
-    format!("postretro v{}", env!("CARGO_PKG_VERSION"))
-}
-
 fn main() -> Result<()> {
     env_logger::init();
     log::info!("[Engine] Postretro starting");
@@ -2982,33 +2975,18 @@ impl App {
         }
     }
 
-    /// Paint a single splash-phase frame via `UiPass::encode`. Always clears
-    /// to black. When a splash descriptor is installed, the pass also records
-    /// a fullscreen background fill, a framed 9-slice panel, the centered logo
-    /// image, and a shaped-text line as instanced quads plus glyphon text. The
-    /// first frame has no descriptor installed yet and renders only the clear.
-    fn paint_splash(&mut self, event_loop: &ActiveEventLoop) {
-        if let Some(renderer) = self.renderer.as_mut() {
-            if !renderer.is_ready() {
-                return;
-            }
-            // Drive the input-dispatch seam from the active splash descriptor's
-            // capture mode (splash is non-interactive -> Passthrough). No-op when
-            // no splash is installed (frame 0). Locks the Task 5 seam wiring.
-            if let Some(mode) = renderer.splash_capture_mode() {
-                self.ui_dispatch.set_mode(mode);
-            }
-            // Publish the once-per-frame read snapshot just before the render
-            // call (the splash phase render path). The version/tagline line the
-            // shaped-text element renders rides through here, exercising the
-            // once-per-frame contract with a real value.
-            renderer.set_ui_snapshot(render::ui::UiReadSnapshot::with_version_line(
-                splash_version_line(),
-            ));
-            if let Err(err) = renderer.render_splash_frame() {
-                self.exit_result = Err(err);
-                event_loop.exit();
-            }
+    /// Paint a single boot-splash frame through the renderer-owned splash pass:
+    /// clear to black, then draw the logo quad once one is installed. The boot
+    /// splash is independent of the UI system — `paint_splash` publishes no UI
+    /// snapshot and does not query the renderer for a capture mode (the input
+    /// seam stays passthrough during boot). Returns the present outcome so the
+    /// splash schedule advances only on a presented frame; a transient surface
+    /// failure (`NeedsRedraw`) requests another redraw without advancing.
+    fn paint_splash(&mut self, _event_loop: &ActiveEventLoop) -> render::splash_pass::PresentOutcome {
+        match self.renderer.as_mut() {
+            Some(renderer) if renderer.is_ready() => renderer.render_splash_frame(),
+            // Surface not yet configured: nothing presented, ask to redraw.
+            _ => render::splash_pass::PresentOutcome::NeedsRedraw,
         }
     }
 

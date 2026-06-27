@@ -19,8 +19,9 @@ pub use diagnostics::{DiagnosticAction, DiagnosticInputs, default_diagnostic_cho
 pub use focus::InputFocus;
 pub use look::LookInputs;
 pub use types::{Action, AxisSource, AxisValue, Binding, ButtonState, PhysicalInput};
-// `UiCaptureMode` is the capture/passthrough mode flag, driven by the active UI
-// descriptor via `Renderer::splash_capture_mode`.
+// `UiCaptureMode` is the capture/passthrough mode flag, driven by the active
+// gameplay UI descriptor via `UiDispatch::set_mode`. The boot splash leaves the
+// default `Passthrough`.
 pub use ui_dispatch::{UiCaptureMode, UiDispatch};
 // `UiDispatchOutcome` is `dispatch_event`'s per-event return type. `UiIntent`
 // is the queued kinded capture; `UiIntentPayload`/`PointerPos` are its payload

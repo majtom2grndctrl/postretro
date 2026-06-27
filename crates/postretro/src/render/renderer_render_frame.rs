@@ -426,8 +426,8 @@ impl Renderer {
         // owns layout) and records its draw data. EMPTY-TREE EARLY-OUT: when the
         // snapshot carries no tree, or the tree lays out empty, the pass is
         // skipped entirely — no `begin_render_pass`. This is the gameplay-path-
-        // only early-out (A follow-up #3); the splash path opens the pass
-        // unconditionally for its frame-0 black clear (see `record_splash_ui`).
+        // only early-out (A follow-up #3); the boot splash is a separate
+        // renderer-owned pass (`BootSplashPass`) that always clears the swapchain.
         let ui_viewport = [self.surface_config.width, self.surface_config.height];
         // Modal stack: lay out and record each layer bottom→top (`trees[0]` is the
         // bottom HUD, the last entry the top/active modal). Each layer keeps its
@@ -455,8 +455,8 @@ impl Renderer {
         let mut layer_draws: Vec<ui::tree::UiDrawData> = Vec::with_capacity(stack.len());
         for (layer, tree) in stack.iter().enumerate() {
             // Image sizes are optional for gameplay layers — an `image` node with
-            // no size entry measures to zero. The splash supplies its logo size
-            // separately in `record_splash_ui`.
+            // no size entry measures to zero. The boot splash sizes its logo in
+            // its own `BootSplashPass`, independent of this gameplay path.
             // Bound text/panel nodes resolve against the snapshot's slot values
             // (disjoint field borrow from `&mut self.ui`). The cloned `stack`
             // above already released the snapshot, so this borrow is clean.

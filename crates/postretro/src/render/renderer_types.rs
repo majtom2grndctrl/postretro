@@ -773,19 +773,16 @@ pub struct Renderer {
     /// list on the gameplay path (`render_frame_indirect`). Owns all UI GPU state.
     pub(super) ui: ui::UiPass,
 
-    /// The active splash logo's natural reference size (logical-reference px,
-    /// `[width, height]`), derived from the uploaded texture's decoded pixel dims.
-    /// `Some` between `install_splash_from_loaded` and `clear_splash`; the splash
-    /// descriptor tree is rebuilt each frame and this size threads into the
-    /// measure seam (keyed by `splash::SPLASH_LOGO_ASSET`) so the logo `image`
-    /// node sizes content-driven from the real asset. `None` (frame 0 before
-    /// install, and after level handoff) records no splash quads.
-    pub(super) splash_logo_size: Option<[f32; 2]>,
+    /// Renderer-owned boot splash pass: clears the swapchain and draws the
+    /// decoded logo as a single textured quad. Independent of the UI pass — the
+    /// boot path uses it directly so first pixels reach the window before the UI
+    /// system initializes. Holds the uploaded logo between `install_splash_pixels`
+    /// and `clear_splash`. See: context/lib/boot_sequence.md §1.
+    pub(super) boot_splash: splash_pass::BootSplashPass,
 
-    /// Key→bind-group registry for `image` widget assets (only the
-    /// pre-registered splash logo key). `install_splash_from_loaded` registers
-    /// the uploaded logo PNG under `splash::SPLASH_LOGO_ASSET`; the UI pass
-    /// resolves image batches' asset keys through it. Cleared by `clear_splash`.
+    /// Key→bind-group registry for gameplay/frontend `image` widget assets. The
+    /// gameplay UI pass resolves image batches' asset keys through it. The boot
+    /// splash does NOT use this — it owns its own logo texture in `boot_splash`.
     pub(super) ui_images: ui::UiImageRegistry,
 
     /// Once-per-frame published read snapshot: the splash version/tagline line
@@ -798,9 +795,9 @@ pub struct Renderer {
     /// color/spacing/font slots against at build time. Defaults to
     /// `UiTheme::engine_default()` at construction; `set_ui_theme` installs an
     /// override (e.g. from a mod's theme document) and bumps `ui_theme_generation`.
-    /// Both render paths (`record_splash_ui`, the gameplay block) resolve against
-    /// this same instance — the splash's literals resolve to themselves, so the
-    /// splash output is unchanged.
+    /// The gameplay render path resolves descriptor-tree tokens against this
+    /// instance. The boot splash is renderer-owned (`BootSplashPass`) and does
+    /// not use the theme.
     pub(super) ui_theme: ui::theme::UiTheme,
     /// Monotonic UI theme generation, bumped by `set_ui_theme`. The retained
     /// gameplay tree records the generation it was built against; a bump

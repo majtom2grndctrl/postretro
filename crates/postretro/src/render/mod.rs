@@ -21,6 +21,7 @@ pub mod sh_diagnostics;
 pub mod sh_volume;
 pub mod smoke;
 pub mod splash;
+pub mod splash_pass;
 pub mod ui;
 
 #[cfg(test)]

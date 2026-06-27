@@ -1486,12 +1486,23 @@ mod tests {
         let _ = std::fs::remove_file(&output);
     }
 
-    /// Every test map in `content/dev/maps/` must compile end-to-end and emit an
-    /// SH volume section. The bake uses a coarse spacing (4 m) to keep test
-    /// time bounded — the probe count is a design parameter, not what this
+    /// Every small test map in `content/dev/maps/` must compile end-to-end and
+    /// emit an SH volume section. The bake uses a coarse spacing (4 m) to keep
+    /// test time bounded — the probe count is a design parameter, not what this
     /// test is exercising.
+    ///
+    /// The large perf/stress maps are excluded: `stress-warren*`,
+    /// `campaign-test`, and `occlusion-test` exist to stress the runtime, and
+    /// baking them here costs minutes without adding SH-bake coverage the small
+    /// maps don't already give.
     #[test]
     fn every_test_map_compiles_with_sh_section() {
+        // Perf/stress maps prove runtime behavior, not the SH bake; their bake
+        // time dominates this test, so skip them here.
+        fn is_perf_stress_map(stem: &str) -> bool {
+            stem.starts_with("stress-warren") || stem == "campaign-test" || stem == "occlusion-test"
+        }
+
         let maps_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .and_then(|p| p.parent())
@@ -1503,6 +1514,10 @@ mod tests {
             let entry = entry.expect("dir entry");
             let path = entry.path();
             if path.extension().and_then(|s| s.to_str()) != Some("map") {
+                continue;
+            }
+            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            if is_perf_stress_map(stem) {
                 continue;
             }
             map_count += 1;

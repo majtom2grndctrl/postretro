@@ -95,10 +95,12 @@ impl App {
             return false;
         }
         // First pixels are now on screen (black frame 0, logo frame 1). Finish
-        // deferred session startup — net-endpoint setup — before any mod-supplied
-        // or net-dependent work runs. Guarded single-commit via `Option::take`,
-        // so a suspend/resume re-entering this frame never re-runs it.
-        // See: context/lib/boot_sequence.md §1, §9.
+        // deferred session startup before any mod-supplied or net-dependent work
+        // runs. Net-endpoint setup is `Option::take`-guarded single-commit;
+        // audio + dev debug-UI rebuild whenever absent (suspend drops them), so a
+        // suspend/resume re-entering this frame restores them without re-running
+        // net init. See: context/lib/boot_sequence.md §1, §9.
+        self.install_post_splash_services();
         self.install_pending_session();
         self.run_deferred_mod_init();
         self.swap_mod_splash_override_if_pending();

@@ -1087,27 +1087,11 @@ impl ApplicationHandler for App {
         self.window_state = Some(WindowState { window });
         self.apply_mod_ui_theme_to_renderer();
 
-        // Fault-tolerant audio init: on failure log and run silent, never
-        // crash. See: context/lib/audio.md §1.
-        match audio::Audio::new() {
-            Ok(audio) => {
-                self.audio = Some(audio);
-                log::info!("[Audio] Initialized");
-            }
-            Err(err) => {
-                log::error!("[Audio] Init failed, running silent: {err}");
-                self.audio = None;
-            }
-        }
-
-        #[cfg(feature = "dev-tools")]
-        {
-            if let (Some(renderer), Some(ws)) = (self.renderer.as_ref(), self.window_state.as_ref())
-            {
-                let max_texture = renderer.max_texture_dimension_2d();
-                self.debug_ui = Some(render::debug_ui::DebugUi::new(&ws.window, max_texture));
-            }
-        }
+        // Audio init, dev debug-UI creation, and net-endpoint setup are deferred
+        // out of this pre-redraw path: they run on the first visible logo frame
+        // (or the fallback black frame) via `install_post_splash_services` /
+        // `install_pending_session` in `run_splash_frame_one`, so the OS window
+        // opens as fast as practical. See: context/lib/boot_sequence.md §1.
 
         self.set_input_focus(InputFocus::Gameplay);
         self.frame_timing.last_frame = Instant::now();
@@ -2795,6 +2779,46 @@ impl App {
     pub(crate) fn install_pending_session(&mut self) {
         if let Some(pending) = self.pending_session.take() {
             pending.install(self);
+        }
+    }
+
+    /// Build the fault-tolerant audio subsystem and (in dev-tools builds) the
+    /// debug-UI state on the first visible logo frame — alongside net-endpoint
+    /// setup — so none of this work runs before first pixels. Records
+    /// `audio_init_complete` into `boot_timings`.
+    ///
+    /// Idempotent across suspend/resume: both are rebuilt only when absent.
+    /// `suspended()` drops them (and resets the boot state to `Booting`), so the
+    /// re-run of the splash loop on resume reconstructs them here; the steady
+    /// single-boot pass builds each exactly once.
+    ///
+    /// Audio failure logs and runs silent (`audio` stays `None`) — never a crash.
+    /// See: context/lib/audio.md §1, context/lib/boot_sequence.md §1.
+    pub(crate) fn install_post_splash_services(&mut self) {
+        if self.audio.is_none() {
+            match audio::Audio::new() {
+                Ok(audio) => {
+                    self.audio = Some(audio);
+                    log::info!("[Audio] Initialized");
+                }
+                Err(err) => {
+                    log::error!("[Audio] Init failed, running silent: {err}");
+                    self.audio = None;
+                }
+            }
+        }
+        self.boot_timings.record("audio_init_complete");
+
+        // Debug UI is CPU-side egui state needing only the window and the boot-
+        // ready device's texture-size limit (its GPU half lazy-inits full-ready
+        // on first panel open), so it builds here behind the logo frame.
+        #[cfg(feature = "dev-tools")]
+        if self.debug_ui.is_none() {
+            if let (Some(renderer), Some(ws)) = (self.renderer.as_ref(), self.window_state.as_ref())
+            {
+                let max_texture = renderer.max_texture_dimension_2d();
+                self.debug_ui = Some(render::debug_ui::DebugUi::new(&ws.window, max_texture));
+            }
         }
     }
 

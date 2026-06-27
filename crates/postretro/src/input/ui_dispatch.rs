@@ -6,14 +6,14 @@
 //! and gameplay forwarding — mirroring the `egui_consumed` gate in
 //! `App::window_event`. The capture decision is sourced from the active UI
 //! descriptor's capture mode. The modal stack drives `Capture` from the top
-//! tree (via `App::reconcile_ui_focus`); the splash path (via
-//! `Renderer::splash_capture_mode`) drives `Passthrough` — the seam is inert
-//! against gameplay while the splash is shown.
+//! tree (via `App::reconcile_ui_focus`). The boot splash is renderer-owned and
+//! never touches this seam: it leaves the default `Passthrough` in place, so the
+//! seam is inert against gameplay while the splash is shown.
 //!
 //! `InputFocus::Menu` is the intended *structural* home for UI capture — the
-//! gate a menu/modal system flips. The current splash makes no live focus
-//! change and enters no `Menu` state; the capture/passthrough decision is the
-//! mode flag at this seam alone.
+//! gate a menu/modal system flips. The boot splash makes no live focus change
+//! and enters no `Menu` state; the capture/passthrough decision is the mode flag
+//! at this seam alone.
 //!
 //! ## Intent vocabulary
 //!
@@ -44,12 +44,10 @@
 use super::ui_nav::NavIntent;
 
 /// Whether the active UI layer captures input events or lets them pass through to
-/// gameplay. The active UI descriptor sets the mode via `set_mode`; the splash
-/// descriptor sources the value from `Renderer::splash_capture_mode`.
-///
-/// The splash is non-interactive, so it installs `Passthrough` — the seam is
-/// inert against gameplay while the splash is shown. A capturing UI (menu or
-/// modal) drives `Capture` to queue events for next-frame game logic.
+/// gameplay. The active gameplay UI descriptor sets the mode via `set_mode`. The
+/// boot splash is renderer-owned and leaves the default `Passthrough` — it never
+/// drives this seam. A capturing UI (menu or modal) drives `Capture` to queue
+/// events for next-frame game logic.
 #[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum UiCaptureMode {
@@ -146,8 +144,9 @@ pub struct UiIntent {
 /// frame N+1's `take_ready`.
 #[derive(Debug, Default)]
 pub struct UiDispatch {
-    /// Capture/passthrough mode for the active UI layer. Set by the active UI
-    /// descriptor via `set_mode`; sourced from `Renderer::splash_capture_mode`.
+    /// Capture/passthrough mode for the active UI layer. Set by the active
+    /// gameplay UI descriptor via `set_mode`; the boot splash leaves the default
+    /// `Passthrough` and never drives it.
     mode: UiCaptureMode,
 
     /// Captures recorded during the current frame's Input stage. Promoted to
@@ -169,9 +168,9 @@ impl UiDispatch {
     }
 
     /// Set the active capture/passthrough mode. Called from
-    /// `App::reconcile_ui_focus` (modal-stack top → `Capture`) and from
-    /// `App::paint_splash` (splash path, always `Passthrough`) — the splash is
-    /// non-interactive, so the seam is inert against gameplay while it is shown.
+    /// `App::reconcile_ui_focus` (modal-stack top → `Capture`). The boot splash
+    /// does not call this — it leaves the default `Passthrough`, so the seam is
+    /// inert against gameplay while the splash is shown.
     pub fn set_mode(&mut self, mode: UiCaptureMode) {
         self.mode = mode;
     }

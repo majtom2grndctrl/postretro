@@ -77,7 +77,11 @@ impl Anchor {
     }
 
     /// Fractional position of the anchor in `[0,1]` along each axis: x grows
-    /// right, y grows down (top-left origin, matching device-pixel rects).
+    /// right, y grows down (top-left origin, matching device-pixel rects). Now
+    /// only the projection-path layout tests reach this (the boot splash no
+    /// longer projects through `layout`); `tree` carries its own
+    /// `anchor_fractions`.
+    #[cfg_attr(not(test), allow(dead_code))]
     fn fractions(self) -> (f32, f32) {
         let (fx, fy) = match self {
             Anchor::TopLeft => (0.0, 0.0),
@@ -178,7 +182,10 @@ pub fn device_scale(device_size: [u32; 2]) -> f32 {
 /// Logical canvas origin in device pixels: the top-left of the scaled
 /// 1280x720 canvas, centered in the backbuffer so the letterbox margin is
 /// split evenly. Combined with `device_scale` this maps logical-reference
-/// coordinates to device pixels: `device = origin + logical * scale`.
+/// coordinates to device pixels: `device = origin + logical * scale`. Now
+/// test-only: the boot splash and gameplay paths project through `tree`, which
+/// owns its own `canvas_origin`.
+#[cfg_attr(not(test), allow(dead_code))]
 fn canvas_origin(device_size: [u32; 2], scale: f32) -> [f32; 2] {
     let scaled_w = REFERENCE_WIDTH * scale;
     let scaled_h = REFERENCE_HEIGHT * scale;
@@ -194,7 +201,9 @@ fn canvas_origin(device_size: [u32; 2], scale: f32) -> [f32; 2] {
 /// as `snapped_right - snapped_left`) avoids subpixel edge blur on panels and
 /// images. Margins scale and snap the same way so the shader's corner regions
 /// stay on pixel boundaries. Text is NOT routed through here — glyphon keeps AA
-/// sub-pixel positions.
+/// sub-pixel positions. Test-only since the boot splash stopped projecting
+/// through `layout`.
+#[cfg_attr(not(test), allow(dead_code))]
 fn project_element(elem: &UiElement, device_size: [u32; 2], scale: f32) -> UiInstance {
     let origin = canvas_origin(device_size, scale);
     let (afx, afy) = elem.anchor.fractions();
@@ -239,7 +248,9 @@ fn project_element(elem: &UiElement, device_size: [u32; 2], scale: f32) -> UiIns
 /// Project a slice of logical-reference elements into a device-pixel draw list.
 /// Pure: takes logical inputs + the device backbuffer size, returns a
 /// `UiDrawList` with no GPU interaction. Element order is preserved (draw order).
-/// Callable from tests with no GPU context.
+/// Callable from tests with no GPU context. Test-only now: the boot splash no
+/// longer projects through this path.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn project(elements: &[UiElement], device_size: [u32; 2]) -> UiDrawList {
     let scale = device_scale(device_size);
     let mut list = UiDrawList::new();

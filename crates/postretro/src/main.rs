@@ -74,7 +74,7 @@ use anyhow::{Context, Result};
 use glam::Vec3;
 use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, DeviceId, KeyEvent, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{Key, NamedKey, PhysicalKey};
 use winit::window::{Window, WindowAttributes};
 
@@ -82,27 +82,16 @@ use crate::camera::Camera;
 use crate::frame_timing::{FrameRateMeter, FrameTiming, InterpolableState};
 use crate::input::{Action, ButtonState, DiagnosticAction, InputFocus};
 use crate::render::Renderer;
-use crate::scripting::builtins::{
-    ClassnameDispatch, register_builtins as register_builtin_classnames,
-};
+use crate::scripting::builtins::ClassnameDispatch;
 use crate::scripting::ctx::ScriptCtx;
 use crate::scripting::data_descriptors::ModThemeTokens;
-use crate::scripting::primitives::light::register_sequenced_light_primitives;
-use crate::scripting::primitives::register_all;
-use crate::scripting::primitives_registry::PrimitiveRegistry;
 use crate::scripting::reaction_dispatch::{
     ProgressTracker, fire_named_event, fire_named_event_with_sequences,
 };
-use crate::scripting::reactions::registry::{
-    ReactionPrimitiveRegistry, register_emitter_reaction_primitives,
-    register_fog_reaction_primitives, register_sequenced_fog_primitives,
-};
-use crate::scripting::reactions::system_commands::{
-    SystemReactionCommand, SystemReactionRegistry, register_system_reaction_primitives,
-};
+use crate::scripting::reactions::registry::ReactionPrimitiveRegistry;
+use crate::scripting::reactions::system_commands::{SystemReactionCommand, SystemReactionRegistry};
 use crate::scripting::runtime::{
-    Frontend, MenuCamera, ReloadSummary, ScriptRuntime, ScriptRuntimeConfig,
-    StagedManifestCommitOutcome,
+    Frontend, MenuCamera, ReloadSummary, ScriptRuntime, StagedManifestCommitOutcome,
 };
 use crate::scripting::sequence::SequencedPrimitiveRegistry;
 use crate::scripting::staged_manifest::{StagedManifestBuildResult, StagedManifestBuildStatus};
@@ -114,11 +103,14 @@ use crate::startup::{
     BootState, FRONTEND_CLEAR_COLOR, InFlightLevelLoad, LevelRequest, LevelSource, LoadOutcome,
     SplashSource, StartupTimings,
 };
+// Positional-map-path recovery lives with boot construction; re-exported at the
+// crate root so `crate::resolve_map_path` keeps resolving for the netcode CLI
+// tests. Test-only: the boot path calls it through `startup::session`.
+#[cfg(test)]
+pub(crate) use crate::startup::session::resolve_map_path;
 use crate::visibility::{
     CameraCullVisibility, VisibilityPath, VisibilityResult, VisibilityStats, VisibleCells,
 };
-
-const DEFAULT_MAP_PATH: &str = "content/dev/maps/campaign-test.prl";
 
 /// Fraction of a vignette reaction's single `durationMs` spent ramping in. The
 /// author supplies one duration (mirroring `flashScreen`); the drain splits it
@@ -161,89 +153,6 @@ fn apply_menu_camera_pose(
     camera.yaw = menu_camera.yaw;
     camera.pitch = menu_camera.pitch;
     frame_timing.hold_state(InterpolableState::new(position));
-}
-
-fn resolve_map_path(args: &[String]) -> Option<String> {
-    let mut iter = args.iter().skip(1).peekable();
-    while let Some(arg) = iter.next() {
-        if arg == "--content-root" || arg == "--mod" {
-            if iter.peek().is_some_and(|value| !value.starts_with("--")) {
-                let _ = iter.next();
-            }
-            continue;
-        }
-        if arg.starts_with("--content-root=") || arg.starts_with("--mod=") || arg.starts_with("--")
-        {
-            continue;
-        }
-        return Some(arg.clone());
-    }
-    None
-}
-
-fn mod_arg(args: &[String]) -> Option<PathBuf> {
-    let mut iter = args.iter().skip(1).peekable();
-    while let Some(arg) = iter.next() {
-        if arg == "--content-root" {
-            if iter.peek().is_some_and(|value| !value.starts_with("--")) {
-                let _ = iter.next();
-            }
-            continue;
-        }
-        if arg == "--mod" {
-            return iter
-                .next_if(|value| !value.is_empty() && !value.starts_with("--"))
-                .map(PathBuf::from);
-        }
-        if let Some(value) = arg.strip_prefix("--mod=") {
-            if !value.is_empty() {
-                return Some(PathBuf::from(value));
-            }
-        }
-    }
-    None
-}
-
-fn content_root_arg(args: &[String]) -> Option<PathBuf> {
-    let mut iter = args.iter().skip(1).peekable();
-    while let Some(arg) = iter.next() {
-        if arg == "--mod" {
-            if iter.peek().is_some_and(|value| !value.starts_with("--")) {
-                let _ = iter.next();
-            }
-            continue;
-        }
-        if arg == "--content-root" {
-            return iter
-                .next_if(|value| !value.is_empty() && !value.starts_with("--"))
-                .map(PathBuf::from);
-        }
-        if let Some(value) = arg.strip_prefix("--content-root=") {
-            if !value.is_empty() {
-                return Some(PathBuf::from(value));
-            }
-        }
-    }
-    None
-}
-
-fn resolve_content_root(args: &[String], map_path: Option<&str>) -> PathBuf {
-    mod_arg(args)
-        .or_else(|| content_root_arg(args))
-        .unwrap_or_else(|| content_root_from_map(map_path))
-}
-
-fn content_root_from_map(map_path: Option<&str>) -> PathBuf {
-    // `Path::new("maps/test.prl").parent()` returns `Some("maps")`, and
-    // `"maps".parent()` returns `Some("")` — an empty path, not `None`. Filter
-    // out the empty case so the `unwrap_or` fallback to `"."` actually fires.
-    let map_path = map_path.unwrap_or(DEFAULT_MAP_PATH);
-    Path::new(map_path)
-        .parent()
-        .and_then(|maps_dir| maps_dir.parent())
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."))
-        .to_path_buf()
 }
 
 /// Collect the distinct, non-empty `MeshComponent.model` handles currently in
@@ -391,298 +300,18 @@ fn reload_summary_requires_mod_init(summary: ReloadSummary) -> bool {
     summary.mod_init
 }
 
-/// Version/tagline line the boot splash's shaped-text element renders. Sourced
-/// from the build's `CARGO_PKG_VERSION` so the read-handle snapshot carries a
-/// real value. Flows through `UiReadSnapshot::version_line`.
-fn splash_version_line() -> String {
-    format!("postretro v{}", env!("CARGO_PKG_VERSION"))
-}
-
 fn main() -> Result<()> {
     env_logger::init();
     log::info!("[Engine] Postretro starting");
 
-    // Timing starts at process entry so the first stage captures the
-    // args_parsed → wgpu_init gap. See `StartupTimings` doc comment for
-    // the per-line stage layout.
-    let mut boot_timings = StartupTimings::new();
-
-    let args: Vec<String> = std::env::args().collect();
-
-    let map_path = resolve_map_path(&args);
-    let content_root = resolve_content_root(&args, map_path.as_deref());
-    log::info!("[Engine] Content root: {}", content_root.display());
-
-    // M15 Phase 1 net role (default single-player). A malformed flag or a failed
-    // transport construction degrades to single-player (net inert) rather than
-    // blocking boot — the engine is playable without networking.
-    let net_role = match netcode::parse_net_config(&args) {
-        Ok(config) => config.role,
-        Err(err) => {
-            log::error!("[Net] CLI parse failed ({err}); starting single-player");
-            netcode::NetRole::SinglePlayer
-        }
-    };
-    let net_endpoint = match netcode::NetEndpoint::from_role(&net_role) {
-        Ok(endpoint) => {
-            match &net_role {
-                netcode::NetRole::SinglePlayer => {}
-                netcode::NetRole::Host { port } => {
-                    log::info!("[Net] hosting (listen server) on port {port}");
-                }
-                netcode::NetRole::Connect { addr } => {
-                    log::info!("[Net] connecting to {addr}");
-                }
-            }
-            endpoint
-        }
-        Err(err) => {
-            log::error!("[Net] endpoint setup failed ({err}); starting single-player");
-            None
-        }
-    };
-
-    boot_timings.record("args_parsed");
-
-    // Camera starts at a placeholder; `install_level_payload` repositions it
-    // to the first `player_spawn` or the level geometry center
-    // (`spawn_position()`) when no player start exists.
-    let initial_camera_pos = Vec3::new(0.0, 200.0, 500.0);
-
-    let initial_state = InterpolableState::new(initial_camera_pos);
-
-    // Scripting bootstrap: primitive registry, runtime construction, and SDK type emission.
-    // See: context/lib/scripting.md
-    let script_ctx = ScriptCtx::new();
-    let mut script_registry = PrimitiveRegistry::new();
-    register_all(&mut script_registry, script_ctx.clone());
-    let script_runtime = ScriptRuntime::new(
-        &script_registry,
-        &ScriptRuntimeConfig::default(),
-        &script_ctx,
-    )
-    .context("failed to construct script runtime")?;
-    // See `ScriptRuntime::new` for why this runs here rather than in the constructor.
-    // See: context/lib/scripting.md §7.
-    crate::scripting::typedef::emit_sdk_types_in_debug(&script_registry);
-    boot_timings.record("script_runtime_ctor");
-
-    let event_loop = EventLoop::new().context("failed to create event loop")?;
-    boot_timings.record("event_loop_created");
-
-    // Rust-only handlers on the sequence-dispatch path — distinct from the
-    // script-facing primitive registry (these never run inside QuickJS/Luau).
-    let mut sequence_registry = SequencedPrimitiveRegistry::new();
-    register_sequenced_light_primitives(&mut sequence_registry, script_ctx.clone());
-    register_sequenced_fog_primitives(&mut sequence_registry, script_ctx.clone());
-
-    // Reaction-primitive handlers invoked by name when a `Primitive` reaction
-    // fires. Populated once at startup; survives level reloads.
-    let mut reaction_registry = ReactionPrimitiveRegistry::new();
-    register_emitter_reaction_primitives(&mut reaction_registry);
-    register_fog_reaction_primitives(&mut reaction_registry);
-
-    // System-reaction handlers (no entity targets) — the second arm of the
-    // shared named-reaction vocabulary. They enqueue typed commands onto
-    // `script_ctx.system_commands`, drained once per frame after the post-tick
-    // event drains. See: context/lib/scripting.md §10.4.
-    let mut system_registry = SystemReactionRegistry::new();
-    register_system_reaction_primitives(&mut system_registry);
-
-    // Built-in classname dispatch — survives level unload because handlers
-    // describe engine types, not per-level state. See: context/lib/scripting.md
-    let mut classname_dispatch = ClassnameDispatch::new();
-    register_builtin_classnames(&mut classname_dispatch);
-
-    // Player options load before `InputSystem` is constructed so the loaded
-    // look preferences seed input at startup. On first boot (no file present),
-    // write defaults so the human gets an editable starting file — the only
-    // `save` call until the M13 settings menu lands. Missing config dir or a
-    // save failure is logged, not fatal: boot proceeds on in-memory defaults.
-    // See: context/lib/player_options.md §3
-    let settings_path = options::settings_path();
-    let player_options = match &settings_path {
-        Some(path) => {
-            // `load` returns defaults for both missing and malformed files, so
-            // detect first-run by probing existence before loading. A malformed
-            // file exists, so it is never overwritten here.
-            let existed = path.exists();
-            let options = options::PlayerOptions::load(path);
-            if !existed {
-                match options.save(path) {
-                    Ok(()) => log::info!(
-                        "[Options] no settings file found; wrote defaults to {}",
-                        path.display()
-                    ),
-                    Err(err) => log::warn!(
-                        "[Options] failed to write default settings to {}: {err}; \
-                         running on in-memory defaults",
-                        path.display()
-                    ),
-                }
-            }
-            options
-        }
-        None => {
-            log::warn!(
-                "[Options] no platform config directory; running on in-memory \
-                 defaults without persistence"
-            );
-            options::PlayerOptions::default()
-        }
-    };
-
-    // Mod init, hot-reload watcher start, and the level-load worker spawn
-    // are all deferred to the splash frame loop so the first splash frame
-    // paints before any of those run — the user sees pixels before any
-    // mod-supplied work executes.
-    // See: context/lib/boot_sequence.md §1 (Splash state machine)
-
-    let mut input_system = input::InputSystem::new(input::default_bindings());
-    input_system.set_mouse_sensitivity(player_options.mouse_sensitivity);
-    input_system.set_invert_y(player_options.invert_y);
-
-    let mut app = App {
-        renderer: None,
-        audio: None,
-        window_state: None,
-        level: None,
-        nav_graph: None,
-        map_path: map_path.map(PathBuf::from),
-        content_root,
-        exit_result: Ok(()),
-        camera: Camera::new(initial_camera_pos, 0.0, 0.0),
-        input_system,
-        gameplay_input_latch: input::GameplayInputLatch::new(),
-        crouch_toggle_active: false,
-        ai_warned: std::collections::HashSet::new(),
-        player_options,
-        settings_path,
-        input_focus: InputFocus::Gameplay,
-        ui_dispatch: input::UiDispatch::new(),
-        gamepad_system: input::gamepad::GamepadSystem::new(),
-        cursor_pos: None,
-        nav_stick_tracker: input::StickNavTracker::new(),
-        frame_timing: FrameTiming::new(initial_state),
-        view_feel_state: view_feel::ViewFeelState::default(),
-        diagnostic_inputs: input::DiagnosticInputs::new(input::default_diagnostic_chords()),
-        capture_portal_walk_next_frame: false,
-        scratch_cells: Vec::new(),
-        frame_rate_meter: FrameRateMeter::new(),
-        title_buffer: String::with_capacity(256),
-        last_title_update: Instant::now(),
-        script_runtime,
-        player_hud_state: scripting_systems::ui_proxy::PlayerHudStatePublisher::new(
-            script_ctx.clone(),
-        ),
-        flash_decay: scripting_systems::flash_decay::FlashDecay::new(script_ctx.clone()),
-        vignette_decay: scripting_systems::vignette_decay::VignetteDecay::new(script_ctx.clone()),
-        shake_decay: scripting_systems::shake_decay::ShakeDecay::new(script_ctx.clone()),
-        presentation_cells: scripting_systems::presentation_cells::PresentationCellStore::new(),
-        modal_stack: {
-            // Register engine built-in trees at boot through the one shared
-            // load-and-register path (`tree_asset::register_tree_from_disk`): each
-            // built-in screen's `AnchoredTree` is authored in
-            // `content/base/ui/<file>.json` and loaded from disk so a layout edit +
-            // reload changes it with no Rust change. A missing/malformed asset warns
-            // once and skips the registration — that screen is unavailable, the
-            // engine still boots.
-            //
-            // The HUD registers under `HUD_NAME` and is resolved by name as the
-            // always-on bottom passthrough layer each frame (the snapshot reads the
-            // registry, not a builder). The pause menu registers under
-            // `PAUSE_MENU_NAME` so `nav.menu` (gamepad Start / Escape-from-gameplay)
-            // can push it; the keyboard under `KEYBOARD_TREE_NAME` so a `showDialog
-            // { tree: "keyboard", onCommit }` resolves it.
-            let mut stack = render::ui::modal_stack::ModalStack::new();
-            let registry = stack.registry_mut();
-            // The HUD is always-on: it composes as the bottom base layer every
-            // gameplay frame (resolved through the always-on read seam). The pause
-            // menu and keyboard are pushed-only modals — not always-on.
-            render::ui::tree_asset::register_tree_from_disk(
-                registry,
-                render::ui::tree_asset::HUD_NAME,
-                "hud.json",
-                true,
-            );
-            render::ui::tree_asset::register_tree_from_disk(
-                registry,
-                render::ui::demo::PAUSE_MENU_NAME,
-                "pauseMenu.json",
-                false,
-            );
-            render::ui::tree_asset::register_tree_from_disk(
-                registry,
-                render::ui::demo::FRONTEND_MENU_NAME,
-                "frontendMenu.json",
-                false,
-            );
-            render::ui::tree_asset::register_tree_from_disk(
-                registry,
-                render::ui::keyboard_asset::KEYBOARD_TREE_NAME,
-                "keyboard.json",
-                false,
-            );
-            stack
-        },
-        mod_theme_override: ModThemeTokens::default(),
-        frontend: None,
-        ui_focus: input::UiFocusEngine::new(),
-        ui_focus_rects: None,
-        ui_input_mode: input::InputMode::default(),
-        input_mode_tracker: scripting_systems::input_mode::InputModeTracker::new(
-            script_ctx.clone(),
-        ),
-        pending_mode_signal: None,
-        pending_menu_toggle: false,
-        pending_exit_to_desktop: false,
-        ui_focused_id: None,
-        script_ctx,
-        state_store_lifecycle: StateStoreLifecycle::default(),
-        sequence_registry,
-        reaction_registry,
-        system_registry,
-        progress_tracker: ProgressTracker::new(),
-        crossing_detector: CrossingDetector::new(),
-        classname_dispatch,
-        light_bridge: scripting_systems::light_bridge::LightBridge::new(),
-        fog_volume_bridge: scripting_systems::fog_volume_bridge::FogVolumeBridge::new(),
-        emitter_bridge: scripting_systems::emitter_bridge::EmitterBridge::new(),
-        particle_live_counts: std::collections::HashMap::new(),
-        collision_world: collision::CollisionWorld::new(),
-        particle_render: scripting_systems::particle_render::ParticleRenderCollector::new(),
-        mesh_render: scripting_systems::mesh_render::MeshRenderCollector::new(),
-        mesh_clip_tables: scripting_systems::mesh_anim::MeshClipTables::new(),
-        hit_zone_store: scripting_systems::hit_zones::HitZoneStore::new(),
-        active_wieldable: None,
-        active_wieldable_descriptor: None,
-        builtin_handled: None,
-        pending_spawn_points: None,
-        host_spawn_points: Vec::new(),
-        pending_map_entities: None,
-        script_time: 0.0,
-        anim_time: 0.0,
-        anim_time_scale: 1.0,
-        boot_state: App::initial_boot_state(),
-        splash_frame: 0,
-        pending_level_log: false,
-        pending_splash_override: None,
-        boot_timings,
-        mod_timings: StartupTimings::new(),
-        level_timings: StartupTimings::new(),
-        active_level_tags: Vec::new(),
-        active_level_source: None,
-        level_load: None,
-        level_rx: None,
-        level_worker: None,
-        level_requests: VecDeque::new(),
-        boot_load: false,
-        net_endpoint,
-        #[cfg(feature = "dev-tools")]
-        debug_ui: None,
-        #[cfg(feature = "dev-tools")]
-        debug_chase_agent: None,
-    };
+    // Build session-lifetime boot state (args, content root, script runtime,
+    // registries, options, input) and the event loop. Mod init and the first
+    // level-load worker are deferred to the splash frame loop — see
+    // `startup::session::build_session`. See: context/lib/boot_sequence.md §1.
+    let startup::BootSession {
+        event_loop,
+        mut app,
+    } = startup::build_session()?;
 
     event_loop
         .run_app(&mut app)
@@ -1162,6 +791,14 @@ pub(crate) struct App {
     /// subsystem never touches the registry — `crate::netcode` owns that seam.
     net_endpoint: Option<netcode::NetEndpoint>,
 
+    /// Deferred-startup owner: the raw inputs needed to finish session startup
+    /// (net-endpoint setup today) AFTER the first visible logo frame. `Some`
+    /// from boot construction until `install_pending_session` consumes it on the
+    /// first logo splash frame; `None` afterward. The `Option::take` is the
+    /// single-commit guard so a suspend/resume re-entering the splash loop never
+    /// runs deferred init twice. See: context/lib/boot_sequence.md §1, §9.
+    pending_session: Option<startup::PendingSessionInit>,
+
     /// CPU-side egui state. `None` until `resumed()` initialises the renderer
     /// (the constructor needs the device's `max_texture_dimension_2d` limit).
     /// GPU half lives on `Renderer` as `debug_ui_gpu`; lazy-initialized on
@@ -1453,27 +1090,11 @@ impl ApplicationHandler for App {
         self.window_state = Some(WindowState { window });
         self.apply_mod_ui_theme_to_renderer();
 
-        // Fault-tolerant audio init: on failure log and run silent, never
-        // crash. See: context/lib/audio.md §1.
-        match audio::Audio::new() {
-            Ok(audio) => {
-                self.audio = Some(audio);
-                log::info!("[Audio] Initialized");
-            }
-            Err(err) => {
-                log::error!("[Audio] Init failed, running silent: {err}");
-                self.audio = None;
-            }
-        }
-
-        #[cfg(feature = "dev-tools")]
-        {
-            if let (Some(renderer), Some(ws)) = (self.renderer.as_ref(), self.window_state.as_ref())
-            {
-                let max_texture = renderer.max_texture_dimension_2d();
-                self.debug_ui = Some(render::debug_ui::DebugUi::new(&ws.window, max_texture));
-            }
-        }
+        // Audio init, dev debug-UI creation, and net-endpoint setup are deferred
+        // out of this pre-redraw path: they run on the first visible logo frame
+        // (or the fallback black frame) via `install_post_splash_services` /
+        // `install_pending_session` in `run_splash_frame_one`, so the OS window
+        // opens as fast as practical. See: context/lib/boot_sequence.md §1.
 
         self.set_input_focus(InputFocus::Gameplay);
         self.frame_timing.last_frame = Instant::now();
@@ -1489,6 +1110,14 @@ impl ApplicationHandler for App {
     }
 
     fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
+        // Audit which boot phase a suspend interrupts. The resume path resets to
+        // `Booting` and re-drives the splash loop; the single-commit guards
+        // (`pending_session.take`, renderer full-ready idempotence) keep session
+        // init and renderer completion from re-running. See: boot_sequence §9.
+        log::info!(
+            "[Engine] Suspended during boot phase {:?}",
+            self.boot_phase()
+        );
         self.window_state = None;
         self.renderer = None;
         // Re-built on the next `resumed()` since it borrows the new window
@@ -1506,7 +1135,6 @@ impl ApplicationHandler for App {
         self.level_rx = None;
         self.level_worker = None;
         self.reset_boot_state_after_suspend();
-        log::info!("[Engine] Suspended");
     }
 
     fn window_event(
@@ -1824,32 +1452,21 @@ impl ApplicationHandler for App {
                 let frame_dt = frame_result.frame_dt;
                 let ticks = frame_result.ticks;
 
-                // Drain changed paths every frame — unconditionally — so the
-                // watcher channel does not back up even when the summary is
-                // empty. ScriptRuntime checks them against the active
-                // dependency set before queuing the serialized staged build.
-                match self.script_runtime.drain_reload_requests() {
-                    Ok(summary) => {
-                        if reload_summary_requires_mod_init(summary) {
-                            match self
-                                .script_runtime
-                                .enqueue_staged_manifest_build(&self.content_root)
-                            {
-                                Ok(Some(generation)) => log::info!(
-                                    "[Scripting] active mod-init dependency changed - queued staged generation {generation}",
-                                ),
-                                Ok(None) => {}
-                                Err(err) => {
-                                    log::error!(
-                                        "[Scripting] failed to queue staged mod-init: {err}",
-                                    );
-                                }
-                            }
-                        }
-                    }
-                    Err(err) => {
-                        log::error!("[Scripting] drain_reload_requests failed: {err}");
-                    }
+                // Drain changed paths every frame so the watcher channel does
+                // not back up even when the summary is empty. ScriptRuntime
+                // checks them against the active dependency set before queuing
+                // the serialized staged build.
+                //
+                // Guarded behind the per-boot signal "the splash logo frame has
+                // presented this boot cycle" (`splash_frame >= 2`: frame 0 = black,
+                // frame 1 = logo) — so reload draining never runs before the splash
+                // logo paints, and a suspend→resume re-blocks it until the resumed
+                // logo repaints (suspend resets `splash_frame` to 0). Past the logo
+                // also guarantees the script runtime exists: the watcher starts in
+                // the deferred mod init on the logo frame, and the runtime is
+                // session-lifetime. See: context/lib/boot_sequence.md §1.
+                if crate::startup::boot_allows_reload_drain(self.splash_frame >= 2) {
+                    self.drain_script_reload_requests();
                 }
 
                 if !self.drive_boot_state_for_redraw(event_loop) {
@@ -2744,277 +2361,275 @@ impl ApplicationHandler for App {
                         self.script_time as f32,
                     );
 
-                    if renderer.is_ready() {
-                        // Particle render — packs `SpriteInstance` bytes per
-                        // collection; the collector never touches wgpu directly.
-                        {
-                            let registry = self.script_ctx.registry.borrow();
-                            // Cull non-visible emitters at render-collect, mirroring
-                            // the mesh path below: thread the level world + this
-                            // frame's visible-cell set so off-screen / adjacent-room
-                            // smoke is never packed for drawing. `visible_cells` is
-                            // still live here (reclaimed after the frame).
-                            self.particle_render.collect(
-                                &registry,
-                                self.level.as_ref(),
-                                &visible_cells,
-                            );
-                        }
-                        let particle_collections: Vec<(&str, &[u8])> =
-                            self.particle_render.iter_collections().collect();
-
-                        // Mesh render — emits per-instance inputs (model handle +
-                        // interpolated transform + phase seed) for skinned-mesh
-                        // entities, culling each against this frame's visible set
-                        // via `mesh_pass::mesh_visible`. Like the particle collector
-                        // it never touches wgpu; the renderer consumes the inputs
-                        // via `set_mesh_draws`. Runs before `render_frame_indirect`,
-                        // while `visible_cells` is still live (it is reclaimed into
-                        // scratch after).
-                        if let Some(world) = self.level.as_ref() {
-                            // Resolve pass: fill every pending animation entry
-                            // stamp from this frame's post-advance animation clock
-                            // before the collector samples poses. Runs with a
-                            // mutable registry, immediately before the (read-only)
-                            // collector, so same-tick switches have all landed and
-                            // the last target's stamp is concrete. See mesh.rs.
-                            {
-                                let mut registry = self.script_ctx.registry.borrow_mut();
-                                crate::scripting::components::mesh::resolve_pending_animation_stamps(
-                                    &mut registry,
-                                    self.anim_time,
-                                );
-                            }
-                            let registry = self.script_ctx.registry.borrow();
-                            // Same frame alpha the player camera reads from
-                            // `frame_timing` — interpolate each mesh between its
-                            // previous- and current-tick transforms.
-                            self.mesh_render.collect(
-                                &registry,
-                                world,
-                                &visible_cells,
-                                frame_result.alpha,
-                                self.anim_time,
-                                &self.mesh_clip_tables,
-                                // Camera eye position — the same value that seeds
-                                // the portal flood-fill — drives the per-instance
-                                // animation time-slicing distance bucket.
-                                interp.position,
-                            );
-                            renderer.set_mesh_draws(self.mesh_render.instances());
-                        }
-
-                        // Build the egui UI before `render_frame_indirect` so
-                        // the SH diagnostic overlay can push debug lines that
-                        // the frame's debug-line pass will pick up. Tessellated
-                        // paint jobs are stashed and consumed after the frame
-                        // by `render_debug_ui`.
-                        #[cfg(feature = "dev-tools")]
-                        let debug_ui_frame: Option<(
-                            egui::TexturesDelta,
-                            Vec<egui::epaint::ClippedPrimitive>,
-                            f32,
-                        )> = {
-                            let mut out = None;
-                            if let (Some(debug_ui), Some(ws)) =
-                                (self.debug_ui.as_mut(), self.window_state.as_ref())
-                            {
-                                if debug_ui.is_visible() {
-                                    let window = &ws.window;
-                                    let raw_input = debug_ui.winit_state.take_egui_input(window);
-                                    let timing_snapshot = renderer.frame_timing_snapshot().cloned();
-                                    let panel_state = &mut debug_ui.panel_state;
-                                    let sh_state = &mut debug_ui.sh_diagnostics_state;
-                                    let ctx_clone = debug_ui.ctx.clone();
-                                    let full_output = ctx_clone.run_ui(raw_input, |ui| {
-                                        render::debug_ui::draw_diagnostics_panel(
-                                            ui.ctx(),
-                                            panel_state,
-                                            sh_state,
-                                            renderer,
-                                            timing_snapshot.as_ref(),
-                                        );
-                                    });
-                                    debug_ui.winit_state.handle_platform_output(
-                                        window,
-                                        full_output.platform_output,
-                                    );
-                                    let paint_jobs = debug_ui.ctx.tessellate(
-                                        full_output.shapes,
-                                        full_output.pixels_per_point,
-                                    );
-                                    out = Some((
-                                        full_output.textures_delta,
-                                        paint_jobs,
-                                        window.scale_factor() as f32,
-                                    ));
-                                }
-                            }
-                            // Clear the debug-line buffer unconditionally each
-                            // frame so any producer starts fresh. This is the
-                            // single lifecycle owner of the buffer: it handles
-                            // early-returns in `render_frame_indirect`
-                            // (Timeout/Occluded/Outdated) and level unloads
-                            // cleanly, and keeps any future debug-line producer
-                            // from colliding with the SH diagnostic pass.
-                            renderer.clear_debug_lines();
-                            // Emit SH diagnostic debug lines now — after UI
-                            // mutated state, before `render_frame_indirect`
-                            // draws the debug-line pass.
-                            if let Some(world) = self.level.as_ref() {
-                                if let Some(debug_ui) = self.debug_ui.as_ref() {
-                                    renderer.emit_sh_diagnostics(
-                                        &debug_ui.sh_diagnostics_state,
-                                        render_eye_position,
-                                        world,
-                                        &light_reachable_cell_mask,
-                                    );
-                                }
-                                let bvh_visible_cell_mask =
-                                    drawable_visible_cell_mask(world.cell_count(), &visible_cells);
-                                renderer
-                                    .emit_bvh_overlay_diagnostics(bvh_visible_cell_mask.as_deref());
-                                renderer.emit_cell_overlay_diagnostics(world, &visible_cells);
-                                renderer.emit_portal_overlay_diagnostics(world);
-                            }
-                            // Navmesh overlay: append region rectangles + portal
-                            // edges. No-op unless the `Alt+Shift+N` toggle is on
-                            // and the map carried a baked navmesh.
-                            if let Some(nav_graph) = self.nav_graph.as_ref() {
-                                renderer.emit_nav_diagnostics(nav_graph);
-                            }
-                            // Chase-agent path overlay: corridor + funnel
-                            // waypoints for the `Alt+Shift+G` demo agent. Reads
-                            // the live agent component and hands plain geometry to
-                            // the renderer (no wgpu outside the renderer module).
-                            // Same toggle as the navmesh overlay.
-                            if let Some(agent) = self.debug_chase_agent {
-                                use crate::scripting::components::agent::AgentComponent;
-                                use crate::scripting::registry::Transform;
-                                let registry = self.script_ctx.registry.borrow();
-                                if let Ok(component) =
-                                    registry.get_component::<AgentComponent>(agent)
-                                {
-                                    let position = registry
-                                        .get_component::<Transform>(agent)
-                                        .map(|t| t.position)
-                                        .unwrap_or(Vec3::ZERO);
-                                    renderer.emit_agent_path_overlay(
-                                        position,
-                                        &component.path,
-                                        component.waypoint_cursor,
-                                        component.radius,
-                                    );
-                                }
-                            }
-                            // Remote-entity wireframe (M15 Phase 1): on the client
-                            // path only, draw a capsule at each replicated remote
-                            // entity so the host's moving pawn is visible rather
-                            // than an invisible bare-Transform ghost. Thin
-                            // delegation — `netcode` collects the centers
-                            // (registry read, no wgpu), the renderer owns the draw.
-                            // No-op for single-player and the host.
-                            if let Some(endpoint) = self.net_endpoint.as_ref() {
-                                let registry = self.script_ctx.registry.borrow();
-                                let centers = netcode::remote_entity_positions(endpoint, &registry);
-                                renderer.emit_remote_entity_markers(
-                                    &centers,
-                                    netcode::REMOTE_CAPSULE_RADIUS,
-                                    netcode::REMOTE_CAPSULE_HALF_HEIGHT,
-                                );
-                            }
-                            out
-                        };
-
-                        // Publish the once-per-frame read snapshot just before
-                        // the gameplay render call, mirroring the splash path so
-                        // the once-per-frame contract holds on both. Game logic and
-                        // audio have already run this frame, so the slot snapshot
-                        // freezes the settled store state (frame order: Input →
-                        // Game logic → Audio → Render). The renderer reads these
-                        // cloned values, never the live `SlotTable`.
-                        //
-                        // Modal stack compose stays behind one helper so normal
-                        // gameplay gets always-on HUD/base layers, while a top
-                        // frontend menu suppresses those layers and presents only
-                        // the menu over its optional backdrop.
-                        let frontend_menu_name = self
-                            .frontend
-                            .as_ref()
-                            .map(|frontend| frontend.menu_tree.as_str())
-                            .unwrap_or(render::ui::demo::FRONTEND_MENU_NAME);
-                        let frontend_menu_is_top =
-                            self.modal_stack.active_name() == Some(frontend_menu_name);
-                        let ui_snapshot = Self::build_ui_read_snapshot(
-                            &self.modal_stack,
-                            &mut self.presentation_cells,
-                            &self.script_ctx.slot_table.borrow(),
-                            self.script_time,
-                            self.ui_input_mode,
-                            self.ui_focused_id.clone(),
-                            frontend_menu_is_top,
+                    // This gameplay block runs only in Running (the redraw
+                    // path reaches here solely when `boot_state == Running`,
+                    // set after full renderer init), so the renderer is always
+                    // full-ready; the mesh-collect + draw submission below runs
+                    // unconditionally, like the `full_mut`-backed uploads above.
+                    // Particle render — packs `SpriteInstance` bytes per
+                    // collection; the collector never touches wgpu directly.
+                    {
+                        let registry = self.script_ctx.registry.borrow();
+                        // Cull non-visible emitters at render-collect, mirroring
+                        // the mesh path below: thread the level world + this
+                        // frame's visible-cell set so off-screen / adjacent-room
+                        // smoke is never packed for drawing. `visible_cells` is
+                        // still live here (reclaimed after the frame).
+                        self.particle_render.collect(
+                            &registry,
+                            self.level.as_ref(),
+                            &visible_cells,
                         );
-                        renderer.set_ui_snapshot(ui_snapshot);
+                    }
+                    let particle_collections: Vec<(&str, &[u8])> =
+                        self.particle_render.iter_collections().collect();
 
-                        let surface_texture = match renderer.render_frame_indirect(
-                            CameraCullVisibility {
-                                cells: &visible_cells,
-                                path: stats.path,
-                            },
-                            &light_reachable_cell_mask,
-                            &reachable_cell_aabbs,
-                            &fog_reachable,
-                            Some(stats.camera_cell),
-                            view_proj,
-                            &particle_collections,
-                            self.script_time,
-                            render::ClearColor {
-                                r: 0.05,
-                                g: 0.05,
-                                b: 0.08,
-                                a: 1.0,
-                            },
-                            true,
-                        ) {
-                            Ok(opt) => opt,
-                            Err(err) => {
-                                self.exit_result = Err(err);
-                                event_loop.exit();
-                                return;
+                    // Mesh render — emits per-instance inputs (model handle +
+                    // interpolated transform + phase seed) for skinned-mesh
+                    // entities, culling each against this frame's visible set
+                    // via `mesh_pass::mesh_visible`. Like the particle collector
+                    // it never touches wgpu; the renderer consumes the inputs
+                    // via `set_mesh_draws`. Runs before `render_frame_indirect`,
+                    // while `visible_cells` is still live (it is reclaimed into
+                    // scratch after).
+                    if let Some(world) = self.level.as_ref() {
+                        // Resolve pass: fill every pending animation entry
+                        // stamp from this frame's post-advance animation clock
+                        // before the collector samples poses. Runs with a
+                        // mutable registry, immediately before the (read-only)
+                        // collector, so same-tick switches have all landed and
+                        // the last target's stamp is concrete. See mesh.rs.
+                        {
+                            let mut registry = self.script_ctx.registry.borrow_mut();
+                            crate::scripting::components::mesh::resolve_pending_animation_stamps(
+                                &mut registry,
+                                self.anim_time,
+                            );
+                        }
+                        let registry = self.script_ctx.registry.borrow();
+                        // Same frame alpha the player camera reads from
+                        // `frame_timing` — interpolate each mesh between its
+                        // previous- and current-tick transforms.
+                        self.mesh_render.collect(
+                            &registry,
+                            world,
+                            &visible_cells,
+                            frame_result.alpha,
+                            self.anim_time,
+                            &self.mesh_clip_tables,
+                            // Camera eye position — the same value that seeds
+                            // the portal flood-fill — drives the per-instance
+                            // animation time-slicing distance bucket.
+                            interp.position,
+                        );
+                        renderer.set_mesh_draws(self.mesh_render.instances());
+                    }
+
+                    // Build the egui UI before `render_frame_indirect` so
+                    // the SH diagnostic overlay can push debug lines that
+                    // the frame's debug-line pass will pick up. Tessellated
+                    // paint jobs are stashed and consumed after the frame
+                    // by `render_debug_ui`.
+                    #[cfg(feature = "dev-tools")]
+                    let debug_ui_frame: Option<(
+                        egui::TexturesDelta,
+                        Vec<egui::epaint::ClippedPrimitive>,
+                        f32,
+                    )> = {
+                        let mut out = None;
+                        if let (Some(debug_ui), Some(ws)) =
+                            (self.debug_ui.as_mut(), self.window_state.as_ref())
+                        {
+                            if debug_ui.is_visible() {
+                                let window = &ws.window;
+                                let raw_input = debug_ui.winit_state.take_egui_input(window);
+                                let timing_snapshot = renderer.frame_timing_snapshot().cloned();
+                                let panel_state = &mut debug_ui.panel_state;
+                                let sh_state = &mut debug_ui.sh_diagnostics_state;
+                                let ctx_clone = debug_ui.ctx.clone();
+                                let full_output = ctx_clone.run_ui(raw_input, |ui| {
+                                    render::debug_ui::draw_diagnostics_panel(
+                                        ui.ctx(),
+                                        panel_state,
+                                        sh_state,
+                                        renderer,
+                                        timing_snapshot.as_ref(),
+                                    );
+                                });
+                                debug_ui
+                                    .winit_state
+                                    .handle_platform_output(window, full_output.platform_output);
+                                let paint_jobs = debug_ui
+                                    .ctx
+                                    .tessellate(full_output.shapes, full_output.pixels_per_point);
+                                out = Some((
+                                    full_output.textures_delta,
+                                    paint_jobs,
+                                    window.scale_factor() as f32,
+                                ));
                             }
-                        };
-                        // Read back the focus rect list the renderer just exported
-                        // for the top stack layer (the gameplay render above laid it
-                        // out). The focus engine consumes it next frame's game-logic
-                        // phase — the reverse N→N+1 the focus ring's one-frame trail
-                        // comes from. See: context/lib/ui.md §4.
-                        self.ui_focus_rects = Some(renderer.export_ui_focus_rects());
-                        if let Some(surface_texture) = surface_texture {
-                            #[cfg(feature = "dev-tools")]
-                            {
-                                if let Some((textures_delta, paint_jobs, scale)) = debug_ui_frame {
-                                    if let Err(err) = renderer.render_debug_ui(
-                                        &surface_texture,
-                                        textures_delta,
-                                        paint_jobs,
-                                        scale,
-                                    ) {
-                                        self.exit_result = Err(err);
-                                        event_loop.exit();
-                                        return;
-                                    }
+                        }
+                        // Clear the debug-line buffer unconditionally each
+                        // frame so any producer starts fresh. This is the
+                        // single lifecycle owner of the buffer: it handles
+                        // early-returns in `render_frame_indirect`
+                        // (Timeout/Occluded/Outdated) and level unloads
+                        // cleanly, and keeps any future debug-line producer
+                        // from colliding with the SH diagnostic pass.
+                        renderer.clear_debug_lines();
+                        // Emit SH diagnostic debug lines now — after UI
+                        // mutated state, before `render_frame_indirect`
+                        // draws the debug-line pass.
+                        if let Some(world) = self.level.as_ref() {
+                            if let Some(debug_ui) = self.debug_ui.as_ref() {
+                                renderer.emit_sh_diagnostics(
+                                    &debug_ui.sh_diagnostics_state,
+                                    render_eye_position,
+                                    world,
+                                    &light_reachable_cell_mask,
+                                );
+                            }
+                            let bvh_visible_cell_mask =
+                                drawable_visible_cell_mask(world.cell_count(), &visible_cells);
+                            renderer.emit_bvh_overlay_diagnostics(bvh_visible_cell_mask.as_deref());
+                            renderer.emit_cell_overlay_diagnostics(world, &visible_cells);
+                            renderer.emit_portal_overlay_diagnostics(world);
+                        }
+                        // Navmesh overlay: append region rectangles + portal
+                        // edges. No-op unless the `Alt+Shift+N` toggle is on
+                        // and the map carried a baked navmesh.
+                        if let Some(nav_graph) = self.nav_graph.as_ref() {
+                            renderer.emit_nav_diagnostics(nav_graph);
+                        }
+                        // Chase-agent path overlay: corridor + funnel
+                        // waypoints for the `Alt+Shift+G` demo agent. Reads
+                        // the live agent component and hands plain geometry to
+                        // the renderer (no wgpu outside the renderer module).
+                        // Same toggle as the navmesh overlay.
+                        if let Some(agent) = self.debug_chase_agent {
+                            use crate::scripting::components::agent::AgentComponent;
+                            use crate::scripting::registry::Transform;
+                            let registry = self.script_ctx.registry.borrow();
+                            if let Ok(component) = registry.get_component::<AgentComponent>(agent) {
+                                let position = registry
+                                    .get_component::<Transform>(agent)
+                                    .map(|t| t.position)
+                                    .unwrap_or(Vec3::ZERO);
+                                renderer.emit_agent_path_overlay(
+                                    position,
+                                    &component.path,
+                                    component.waypoint_cursor,
+                                    component.radius,
+                                );
+                            }
+                        }
+                        // Remote-entity wireframe (M15 Phase 1): on the client
+                        // path only, draw a capsule at each replicated remote
+                        // entity so the host's moving pawn is visible rather
+                        // than an invisible bare-Transform ghost. Thin
+                        // delegation — `netcode` collects the centers
+                        // (registry read, no wgpu), the renderer owns the draw.
+                        // No-op for single-player and the host.
+                        if let Some(endpoint) = self.net_endpoint.as_ref() {
+                            let registry = self.script_ctx.registry.borrow();
+                            let centers = netcode::remote_entity_positions(endpoint, &registry);
+                            renderer.emit_remote_entity_markers(
+                                &centers,
+                                netcode::REMOTE_CAPSULE_RADIUS,
+                                netcode::REMOTE_CAPSULE_HALF_HEIGHT,
+                            );
+                        }
+                        out
+                    };
+
+                    // Publish the once-per-frame read snapshot just before
+                    // the gameplay render call, mirroring the splash path so
+                    // the once-per-frame contract holds on both. Game logic and
+                    // audio have already run this frame, so the slot snapshot
+                    // freezes the settled store state (frame order: Input →
+                    // Game logic → Audio → Render). The renderer reads these
+                    // cloned values, never the live `SlotTable`.
+                    //
+                    // Modal stack compose stays behind one helper so normal
+                    // gameplay gets always-on HUD/base layers, while a top
+                    // frontend menu suppresses those layers and presents only
+                    // the menu over its optional backdrop.
+                    let frontend_menu_name = self
+                        .frontend
+                        .as_ref()
+                        .map(|frontend| frontend.menu_tree.as_str())
+                        .unwrap_or(render::ui::demo::FRONTEND_MENU_NAME);
+                    let frontend_menu_is_top =
+                        self.modal_stack.active_name() == Some(frontend_menu_name);
+                    let ui_snapshot = Self::build_ui_read_snapshot(
+                        &self.modal_stack,
+                        &mut self.presentation_cells,
+                        &self.script_ctx.slot_table.borrow(),
+                        self.script_time,
+                        self.ui_input_mode,
+                        self.ui_focused_id.clone(),
+                        frontend_menu_is_top,
+                    );
+                    renderer.set_ui_snapshot(ui_snapshot);
+
+                    let surface_texture = match renderer.render_frame_indirect(
+                        CameraCullVisibility {
+                            cells: &visible_cells,
+                            path: stats.path,
+                        },
+                        &light_reachable_cell_mask,
+                        &reachable_cell_aabbs,
+                        &fog_reachable,
+                        Some(stats.camera_cell),
+                        view_proj,
+                        &particle_collections,
+                        self.script_time,
+                        render::ClearColor {
+                            r: 0.05,
+                            g: 0.05,
+                            b: 0.08,
+                            a: 1.0,
+                        },
+                        true,
+                    ) {
+                        Ok(opt) => opt,
+                        Err(err) => {
+                            self.exit_result = Err(err);
+                            event_loop.exit();
+                            return;
+                        }
+                    };
+                    // Read back the focus rect list the renderer just exported
+                    // for the top stack layer (the gameplay render above laid it
+                    // out). The focus engine consumes it next frame's game-logic
+                    // phase — the reverse N→N+1 the focus ring's one-frame trail
+                    // comes from. See: context/lib/ui.md §4.
+                    self.ui_focus_rects = Some(renderer.export_ui_focus_rects());
+                    if let Some(surface_texture) = surface_texture {
+                        #[cfg(feature = "dev-tools")]
+                        {
+                            if let Some((textures_delta, paint_jobs, scale)) = debug_ui_frame {
+                                if let Err(err) = renderer.render_debug_ui(
+                                    &surface_texture,
+                                    textures_delta,
+                                    paint_jobs,
+                                    scale,
+                                ) {
+                                    self.exit_result = Err(err);
+                                    event_loop.exit();
+                                    return;
                                 }
                             }
-                            surface_texture.present();
                         }
-                        if self.pending_level_log {
-                            // First level frame just submitted — close out
-                            // log line C with the present-cost of the frame
-                            // the user is about to see.
-                            self.level_timings.record("first_level_frame");
-                            log::info!("{}", self.level_timings.summary());
-                            self.pending_level_log = false;
-                        }
+                        surface_texture.present();
+                    }
+                    if self.pending_level_log {
+                        // First level frame just submitted — close out
+                        // log line C with the present-cost of the frame
+                        // the user is about to see.
+                        self.level_timings.record("first_level_frame");
+                        log::info!("{}", self.level_timings.summary());
+                        self.pending_level_log = false;
                     }
                 }
 
@@ -3166,6 +2781,99 @@ impl ApplicationHandler for App {
 }
 
 impl App {
+    /// Finish deferred session startup on the first visible logo frame. Takes
+    /// (and thereby consumes) `pending_session` so the install commits at most
+    /// once — a suspend/resume that re-enters the splash loop finds it `None`
+    /// and skips re-init. Net setup runs here, behind the logo pixels.
+    /// See: context/lib/boot_sequence.md §1, §9.
+    pub(crate) fn install_pending_session(&mut self) {
+        if let Some(pending) = crate::startup::take_once(&mut self.pending_session) {
+            pending.install(self);
+        }
+    }
+
+    /// Current boot phase for the suspend/resume contract (boot_sequence §1, §9).
+    /// Derived purely from the splash schedule, whether the deferred session
+    /// bundle is installed (`pending_session` consumed), and renderer full-ready.
+    /// Used to log/audit which phase a suspend interrupts; the resume path itself
+    /// resets to `Booting` and re-drives the splash loop, where the single-commit
+    /// guards keep session init from re-running.
+    pub(crate) fn boot_phase(&self) -> crate::startup::BootPhase {
+        crate::startup::classify_boot_phase(
+            self.splash_frame,
+            self.pending_session.is_none(),
+            self.renderer.as_ref().is_some_and(Renderer::is_full_ready),
+        )
+    }
+
+    /// Build the fault-tolerant audio subsystem and (in dev-tools builds) the
+    /// debug-UI state on the first visible logo frame — alongside net-endpoint
+    /// setup — so none of this work runs before first pixels. Records
+    /// `audio_init_complete` into `boot_timings`.
+    ///
+    /// Idempotent across suspend/resume: both are rebuilt only when absent.
+    /// `suspended()` drops them (and resets the boot state to `Booting`), so the
+    /// re-run of the splash loop on resume reconstructs them here; the steady
+    /// single-boot pass builds each exactly once.
+    ///
+    /// Audio failure logs and runs silent (`audio` stays `None`) — never a crash.
+    /// See: context/lib/audio.md §1, context/lib/boot_sequence.md §1.
+    pub(crate) fn install_post_splash_services(&mut self) {
+        if self.audio.is_none() {
+            match audio::Audio::new() {
+                Ok(audio) => {
+                    self.audio = Some(audio);
+                    log::info!("[Audio] Initialized");
+                }
+                Err(err) => {
+                    log::error!("[Audio] Init failed, running silent: {err}");
+                    self.audio = None;
+                }
+            }
+        }
+        self.boot_timings.record("audio_init_complete");
+
+        // Debug UI is CPU-side egui state needing only the window and the boot-
+        // ready device's texture-size limit (its GPU half lazy-inits full-ready
+        // on first panel open), so it builds here behind the logo frame.
+        #[cfg(feature = "dev-tools")]
+        if self.debug_ui.is_none() {
+            if let (Some(renderer), Some(ws)) = (self.renderer.as_ref(), self.window_state.as_ref())
+            {
+                let max_texture = renderer.max_texture_dimension_2d();
+                self.debug_ui = Some(render::debug_ui::DebugUi::new(&ws.window, max_texture));
+            }
+        }
+    }
+
+    /// Drain the hot-reload watcher's changed-path channel and queue a staged
+    /// mod-init build when an active dependency changed. Extracted from the
+    /// redraw path so the splash logo frame can gate it behind deferred-session
+    /// commit (`pending_session` consumed). See: context/lib/boot_sequence.md §1.
+    fn drain_script_reload_requests(&mut self) {
+        match self.script_runtime.drain_reload_requests() {
+            Ok(summary) => {
+                if reload_summary_requires_mod_init(summary) {
+                    match self
+                        .script_runtime
+                        .enqueue_staged_manifest_build(&self.content_root)
+                    {
+                        Ok(Some(generation)) => log::info!(
+                            "[Scripting] active mod-init dependency changed - queued staged generation {generation}",
+                        ),
+                        Ok(None) => {}
+                        Err(err) => {
+                            log::error!("[Scripting] failed to queue staged mod-init: {err}");
+                        }
+                    }
+                }
+            }
+            Err(err) => {
+                log::error!("[Scripting] drain_reload_requests failed: {err}");
+            }
+        }
+    }
+
     /// Commit staged UI trees and theme only after the matching staged script
     /// manifest has already passed descriptor/store reconciliation.
     fn commit_staged_ui_manifest(
@@ -3349,33 +3057,22 @@ impl App {
         }
     }
 
-    /// Paint a single splash-phase frame via `UiPass::encode`. Always clears
-    /// to black. When a splash descriptor is installed, the pass also records
-    /// a fullscreen background fill, a framed 9-slice panel, the centered logo
-    /// image, and a shaped-text line as instanced quads plus glyphon text. The
-    /// first frame has no descriptor installed yet and renders only the clear.
-    fn paint_splash(&mut self, event_loop: &ActiveEventLoop) {
-        if let Some(renderer) = self.renderer.as_mut() {
-            if !renderer.is_ready() {
-                return;
-            }
-            // Drive the input-dispatch seam from the active splash descriptor's
-            // capture mode (splash is non-interactive -> Passthrough). No-op when
-            // no splash is installed (frame 0). Locks the Task 5 seam wiring.
-            if let Some(mode) = renderer.splash_capture_mode() {
-                self.ui_dispatch.set_mode(mode);
-            }
-            // Publish the once-per-frame read snapshot just before the render
-            // call (the splash phase render path). The version/tagline line the
-            // shaped-text element renders rides through here, exercising the
-            // once-per-frame contract with a real value.
-            renderer.set_ui_snapshot(render::ui::UiReadSnapshot::with_version_line(
-                splash_version_line(),
-            ));
-            if let Err(err) = renderer.render_splash_frame() {
-                self.exit_result = Err(err);
-                event_loop.exit();
-            }
+    /// Paint a single boot-splash frame through the renderer-owned splash pass:
+    /// clear to black, then draw the logo quad once one is installed. The boot
+    /// splash is independent of the UI system — `paint_splash` publishes no UI
+    /// snapshot and does not query the renderer for a capture mode (the input
+    /// seam stays passthrough during boot). Returns the present outcome so the
+    /// splash schedule advances only on a presented frame; a transient surface
+    /// failure (`NeedsRedraw`) requests another redraw without advancing.
+    fn paint_splash(
+        &mut self,
+        _event_loop: &ActiveEventLoop,
+    ) -> render::splash_pass::PresentOutcome {
+        match self.renderer.as_mut() {
+            // Splash requires only boot-ready (surface/device/queue/boot-splash).
+            Some(renderer) if renderer.is_boot_ready() => renderer.render_splash_frame(),
+            // Surface not yet configured: nothing presented, ask to redraw.
+            _ => render::splash_pass::PresentOutcome::NeedsRedraw,
         }
     }
 
@@ -3510,7 +3207,8 @@ impl App {
         let Some(renderer) = self.renderer.as_mut() else {
             return;
         };
-        if !renderer.is_ready() {
+        // Frontend renders through the full UI/scene path — requires full-ready.
+        if !renderer.is_full_ready() {
             return;
         }
 
@@ -4667,6 +4365,9 @@ mod tests {
         AirParams, CapsuleParams, FallParams, ForgivenessParams, GroundParams,
         PlayerMovementDescriptor, SpeedParams,
     };
+    use crate::scripting::primitives::register_all;
+    use crate::scripting::primitives_registry::PrimitiveRegistry;
+    use crate::scripting::runtime::ScriptRuntimeConfig;
 
     // M15 Phase 3.5 Task 5: a connected client skips the clean-exit `state.json` save;
     // single-player and the host still save. `is_connected_client` is `true` only for
@@ -5902,159 +5603,6 @@ mod tests {
             "render_camera view projection must differ after applying mouse-driven yaw; \
              baseline={:?} rotated={:?}",
             baseline_cols, rotated_cols,
-        );
-    }
-
-    #[test]
-    fn content_root_from_map_returns_grandparent_for_standard_path() {
-        assert_eq!(
-            content_root_from_map(Some("content/dev/maps/campaign-test.prl")),
-            PathBuf::from("content/dev"),
-        );
-    }
-
-    #[test]
-    fn content_root_from_map_returns_grandparent_for_mod_path() {
-        assert_eq!(
-            content_root_from_map(Some("content/base/maps/e1m1.prl")),
-            PathBuf::from("content/base"),
-        );
-    }
-
-    // Regression: `Path::new("maps/test.prl").parent().and_then(parent)` returns
-    // `Some("")` (an empty path), not `None`, so the prior `unwrap_or` fallback
-    // was bypassed and the function returned `""` instead of `"."`.
-    #[test]
-    fn content_root_from_map_returns_dot_for_single_segment_parent() {
-        assert_eq!(
-            content_root_from_map(Some("maps/test.prl")),
-            PathBuf::from(".")
-        );
-    }
-
-    #[test]
-    fn content_root_from_map_returns_dot_for_bare_filename() {
-        assert_eq!(content_root_from_map(Some("test.prl")), PathBuf::from("."));
-    }
-
-    #[test]
-    fn resolve_map_path_returns_none_when_no_positional_map_is_supplied() {
-        let args = vec!["postretro".to_string()];
-        assert_eq!(resolve_map_path(&args), None);
-    }
-
-    #[test]
-    fn content_root_from_map_uses_default_dev_root_without_map() {
-        assert_eq!(content_root_from_map(None), PathBuf::from("content/dev"));
-    }
-
-    #[test]
-    fn content_root_arg_overrides_default_root() {
-        let args = vec![
-            "postretro".to_string(),
-            "--content-root".to_string(),
-            "content/base".to_string(),
-        ];
-        assert_eq!(content_root_arg(&args), Some(PathBuf::from("content/base")));
-    }
-
-    #[test]
-    fn mod_arg_selects_content_root() {
-        let args = vec![
-            "postretro".to_string(),
-            "--mod".to_string(),
-            "content/mods/my-campaign".to_string(),
-        ];
-        assert_eq!(
-            mod_arg(&args),
-            Some(PathBuf::from("content/mods/my-campaign")),
-        );
-        assert_eq!(
-            resolve_content_root(&args, None),
-            PathBuf::from("content/mods/my-campaign"),
-        );
-    }
-
-    #[test]
-    fn mod_arg_accepts_equals_form_without_creating_a_map_arg() {
-        let args = vec![
-            "postretro".to_string(),
-            "--mod=content/mods/my-campaign".to_string(),
-        ];
-        assert_eq!(
-            mod_arg(&args),
-            Some(PathBuf::from("content/mods/my-campaign")),
-        );
-        assert_eq!(resolve_map_path(&args), None);
-        assert_eq!(
-            resolve_content_root(&args, None),
-            PathBuf::from("content/mods/my-campaign"),
-        );
-    }
-
-    #[test]
-    fn mod_arg_missing_value_does_not_consume_next_flag_or_corrupt_map_arg() {
-        let args = vec![
-            "postretro".to_string(),
-            "--mod".to_string(),
-            "--content-root".to_string(),
-            "content/base".to_string(),
-            "maps/dev.prl".to_string(),
-        ];
-
-        assert_eq!(mod_arg(&args), None);
-        assert_eq!(content_root_arg(&args), Some(PathBuf::from("content/base")));
-        assert_eq!(resolve_map_path(&args).as_deref(), Some("maps/dev.prl"));
-    }
-
-    #[test]
-    fn mod_arg_empty_equals_value_is_ignored() {
-        let args = vec![
-            "postretro".to_string(),
-            "--mod=".to_string(),
-            "maps/dev.prl".to_string(),
-        ];
-
-        assert_eq!(mod_arg(&args), None);
-        assert_eq!(resolve_map_path(&args).as_deref(), Some("maps/dev.prl"));
-    }
-
-    #[test]
-    fn resolve_map_path_skips_mod_value() {
-        let args = vec![
-            "postretro".to_string(),
-            "--mod".to_string(),
-            "content/mods/my-campaign".to_string(),
-        ];
-        assert_eq!(resolve_map_path(&args), None);
-    }
-
-    #[test]
-    fn resolve_map_path_returns_bare_map_after_selected_mod() {
-        let args = vec![
-            "postretro".to_string(),
-            "--mod".to_string(),
-            "content/mods/my-campaign".to_string(),
-            "maps/dev-bypass.prl".to_string(),
-        ];
-        let map_path = resolve_map_path(&args);
-        assert_eq!(map_path, Some("maps/dev-bypass.prl".to_string()));
-        assert_eq!(
-            resolve_content_root(&args, map_path.as_deref()),
-            PathBuf::from("content/mods/my-campaign"),
-        );
-    }
-
-    #[test]
-    fn resolve_map_path_skips_content_root_value() {
-        let args = vec![
-            "postretro".to_string(),
-            "--content-root=content/base".to_string(),
-            "content/base/maps/e1m1.prl".to_string(),
-        ];
-        assert_eq!(
-            resolve_map_path(&args),
-            Some("content/base/maps/e1m1.prl".to_string()),
         );
     }
 

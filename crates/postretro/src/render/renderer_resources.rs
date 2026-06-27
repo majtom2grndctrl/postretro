@@ -13,9 +13,18 @@ impl Renderer {
         spec_intensity: f32,
         lifetime: f32,
     ) {
-        self.smoke_pass.register_collection(
-            &self.device,
-            &self.queue,
+        let Self {
+            device,
+            queue,
+            full,
+            ..
+        } = self;
+        let full = full
+            .as_mut()
+            .expect("renderer full-init must complete before full-ready paths run");
+        full.smoke_pass.register_collection(
+            device,
+            queue,
             collection,
             frames,
             spec_intensity,
@@ -61,12 +70,12 @@ impl Renderer {
         };
         self.install_level_geometry(&empty_geometry);
 
-        self.smoke_pass.clear_collections();
-        self.mesh_pass.release_level_resources();
-        self.mesh_draws.clear();
-        self.bone_palette_scratch.clear();
-        self.fog_cell_masks = None;
-        self.active_fog_aabbs.clear();
+        self.full_mut().smoke_pass.clear_collections();
+        self.full_mut().mesh_pass.release_level_resources();
+        self.full_mut().mesh_draws.clear();
+        self.full_mut().bone_palette_scratch.clear();
+        self.full_mut().fog_cell_masks = None;
+        self.full_mut().active_fog_aabbs.clear();
         self.upload_fog_volumes(&[], &[], 0);
         self.upload_fog_points(&[]);
         self.set_fog_pixel_scale(0);
@@ -75,6 +84,18 @@ impl Renderer {
     /// Replaces dummy buffers with real geometry; rebuilds lighting, SH, lightmap, and cull pipeline.
     /// See: context/lib/boot_sequence.md §3 (Level Install Order)
     pub fn install_level_geometry(&mut self, geometry: &LevelGeometry<'_>) {
+        let Self {
+            device,
+            queue,
+            has_multi_draw_indirect,
+            full,
+            ..
+        } = self;
+        let full = full
+            .as_mut()
+            .expect("renderer full-init must complete before full-ready paths run");
+        let has_multi_draw_indirect = *has_multi_draw_indirect;
+
         let has_geometry = !geometry.vertices.is_empty() && !geometry.indices.is_empty();
 
         // --- Vertex / index buffers ---
@@ -92,21 +113,17 @@ impl Renderer {
                 0u32,
             )
         };
-        self.vertex_buffer = self
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("World Vertex Buffer"),
-                contents: &vertex_data,
-                usage: wgpu::BufferUsages::VERTEX,
-            });
-        self.index_buffer = self
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("World Index Buffer"),
-                contents: &index_data,
-                usage: wgpu::BufferUsages::INDEX,
-            });
-        self.index_count = index_count;
+        full.vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("World Vertex Buffer"),
+            contents: &vertex_data,
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        full.index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("World Index Buffer"),
+            contents: &index_data,
+            usage: wgpu::BufferUsages::INDEX,
+        });
+        full.index_count = index_count;
 
         // --- Wireframe index buffer ---
         let (wireframe_index_data, wireframe_index_count) = if has_geometry {
@@ -116,50 +133,45 @@ impl Renderer {
         } else {
             (vec![0u8; 4], 0u32)
         };
-        self.wireframe_index_buffer =
-            self.device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Wireframe Line Index Buffer"),
-                    contents: &wireframe_index_data,
-                    usage: wgpu::BufferUsages::INDEX,
-                });
-        self.wireframe_index_count = wireframe_index_count;
+        full.wireframe_index_buffer =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Wireframe Line Index Buffer"),
+                contents: &wireframe_index_data,
+                usage: wgpu::BufferUsages::INDEX,
+            });
+        full.wireframe_index_count = wireframe_index_count;
 
         // --- Lights + lighting bind group ---
         let (level_lights, dynamic_influences) =
             filter_dynamic_lights(geometry.lights, geometry.light_influences);
         let (shadow_candidate_lights, _) =
             filter_entity_shadow_candidates(geometry.lights, geometry.light_influences);
-        self.light_count = level_lights.len() as u32;
+        full.light_count = level_lights.len() as u32;
 
         let lights_data = if !level_lights.is_empty() {
             pack_lights(&level_lights)
         } else {
             vec![0u8; GPU_LIGHT_SIZE]
         };
-        let lights_buffer = self
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Direct Lights Storage Buffer"),
-                contents: &lights_data,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            });
-        self.lights_buffer = lights_buffer;
-        self.level_lights = level_lights;
-        self.shadow_candidate_lights = shadow_candidate_lights;
+        let lights_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Direct Lights Storage Buffer"),
+            contents: &lights_data,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
+        full.lights_buffer = lights_buffer;
+        full.level_lights = level_lights;
+        full.shadow_candidate_lights = shadow_candidate_lights;
 
         let influence_data = if !dynamic_influences.is_empty() {
             influence::pack_influence(&dynamic_influences)
         } else {
             vec![0u8; 16]
         };
-        let influence_buffer = self
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Light Influence Storage Buffer"),
-                contents: &influence_data,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            });
+        let influence_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Light Influence Storage Buffer"),
+            contents: &influence_data,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
 
         let spec_lights_data = {
             let packed = pack_spec_lights(geometry.lights);
@@ -169,47 +181,41 @@ impl Renderer {
                 packed
             }
         };
-        let spec_lights_buffer =
-            self.device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Spec-Only Lights Storage Buffer"),
-                    contents: &spec_lights_data,
-                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                });
+        let spec_lights_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Spec-Only Lights Storage Buffer"),
+            contents: &spec_lights_data,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
 
         let chunk_grid = match geometry.chunk_light_list {
             Some(sec) => ChunkGrid::from_section(sec),
             None => ChunkGrid::fallback(),
         };
-        let chunk_grid_info_buffer =
-            self.device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Chunk Grid Info Uniform"),
-                    contents: &chunk_grid.grid_info,
-                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                });
+        let chunk_grid_info_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Chunk Grid Info Uniform"),
+            contents: &chunk_grid.grid_info,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
         let chunk_grid_offsets_buffer =
-            self.device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Chunk Grid Offset Table"),
-                    contents: &chunk_grid.offset_table,
-                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                });
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Chunk Grid Offset Table"),
+                contents: &chunk_grid.offset_table,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            });
         let chunk_grid_indices_buffer =
-            self.device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Chunk Grid Index List"),
-                    contents: &chunk_grid.index_list,
-                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                });
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Chunk Grid Index List"),
+                contents: &chunk_grid.index_list,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            });
 
-        self.lighting_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        full.lighting_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Lighting Bind Group"),
-            layout: &self.lighting_bind_group_layout,
+            layout: &full.lighting_bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: self.lights_buffer.as_entire_binding(),
+                    resource: full.lights_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
@@ -235,13 +241,13 @@ impl Renderer {
         });
 
         // --- SH volume, sh_compose, lightmap, animated lightmap ---
-        self.sh_volume_resources = ShVolumeResources::new(
-            &self.device,
-            &self.queue,
+        full.sh_volume_resources = ShVolumeResources::new(
+            device,
+            queue,
             geometry.sh_volume,
             geometry.direct_sh_volume,
-            self.level_lights.len(),
-            self.probe_occlusion_enabled,
+            full.level_lights.len(),
+            full.probe_occlusion_enabled,
         );
 
         // Rebuild the mesh group-2 dynamic-direct light bind group over the
@@ -255,50 +261,49 @@ impl Renderer {
         // renderer's lifetime — the pools are never recreated), supplied here so the
         // shadow bindings rebind alongside the reallocated b0–b4. The cube view is
         // `Some` iff `cube_shadow_pool` is present (the `Some`-iff-layout invariant).
-        let cube_sampling_view = self.cube_shadow_pool.as_ref().map(|p| &p.sampling_view);
-        self.mesh_pass.rebuild_light_bind_group(
-            &self.device,
-            &self.lights_buffer,
+        let cube_sampling_view = full.cube_shadow_pool.as_ref().map(|p| &p.sampling_view);
+        full.mesh_pass.rebuild_light_bind_group(
+            device,
+            &full.lights_buffer,
             &influence_buffer,
-            &self.sh_volume_resources.scripted_light_descriptors,
-            &self.sh_volume_resources.animation.anim_samples,
-            &self.spot_shadow_pool.array_view,
-            &self.spot_shadow_pool.compare_sampler,
-            &self.spot_shadow_pool.matrices_buffer,
+            &full.sh_volume_resources.scripted_light_descriptors,
+            &full.sh_volume_resources.animation.anim_samples,
+            &full.spot_shadow_pool.array_view,
+            &full.spot_shadow_pool.compare_sampler,
+            &full.spot_shadow_pool.matrices_buffer,
             cube_sampling_view,
         );
 
-        self.sdf_atlas_resources =
-            SdfAtlasResources::new(&self.device, &self.queue, geometry.sdf_atlas);
-        self.lightmap_mode = geometry.lightmap_mode;
+        full.sdf_atlas_resources = SdfAtlasResources::new(device, queue, geometry.sdf_atlas);
+        full.lightmap_mode = geometry.lightmap_mode;
         let compose_sh_volume = geometry
             .sh_volume
-            .filter(|_| self.sh_volume_resources.present);
+            .filter(|_| full.sh_volume_resources.present);
         let compose_delta_sh_volumes = geometry
             .delta_sh_volumes
-            .filter(|_| self.sh_volume_resources.present);
-        self.sh_compose = ShComposeResources::new(
-            &self.device,
-            &self.sh_volume_resources,
+            .filter(|_| full.sh_volume_resources.present);
+        full.sh_compose = ShComposeResources::new(
+            device,
+            &full.sh_volume_resources,
             compose_sh_volume,
             compose_delta_sh_volumes,
-            &self.uniform_bind_group_layout,
+            &full.uniform_bind_group_layout,
         );
         #[cfg(feature = "dev-tools")]
         {
-            self.sh_delta_volumes_meta = collect_delta_volume_meta(geometry.delta_sh_volumes);
+            full.sh_delta_volumes_meta = collect_delta_volume_meta(geometry.delta_sh_volumes);
             // Atlas dims (hence readback buffer size) change per level — rebuild.
-            self.sh_probe_readback = sh_diagnostics::ShProbeReadback::new(
-                &self.device,
-                self.sh_volume_resources.grid_dimensions,
-                self.sh_volume_resources.atlas_dimensions,
-                self.sh_volume_resources.tile_dimension,
-                self.sh_volume_resources.tile_border,
-                self.sh_volume_resources.atlas_tiles_per_row,
+            full.sh_probe_readback = sh_diagnostics::ShProbeReadback::new(
+                device,
+                full.sh_volume_resources.grid_dimensions,
+                full.sh_volume_resources.atlas_dimensions,
+                full.sh_volume_resources.tile_dimension,
+                full.sh_volume_resources.tile_border,
+                full.sh_volume_resources.atlas_tiles_per_row,
             );
         }
 
-        let lightmap_bgl = crate::lighting::lightmap::bind_group_layout(&self.device);
+        let lightmap_bgl = crate::lighting::lightmap::bind_group_layout(device);
         let animated_lm_debug = animated_lightmap::AnimatedLmDebugConfig::from_env();
         let bvh_leaves: Vec<crate::geometry::BvhLeaf> = geometry.bvh.leaves.clone();
         // Match the animated atlas to the static lightmap atlas the same way the
@@ -306,30 +311,30 @@ impl Renderer {
         // dimensions (see `usable_atlas_dimensions`).
         let lightmap_atlas_dimensions = crate::lighting::lightmap::usable_atlas_dimensions(
             geometry.lightmap,
-            self.device.limits().max_texture_dimension_2d,
+            device.limits().max_texture_dimension_2d,
         );
 
         let animated_lightmap_result = animated_lightmap::AnimatedLightmapResources::new(
-            &self.device,
+            device,
             geometry.animated_light_weight_maps,
             geometry.animated_light_chunks,
             &bvh_leaves,
-            &self.sh_volume_resources.animation,
-            &self.uniform_bind_group_layout,
+            &full.sh_volume_resources.animation,
+            &full.uniform_bind_group_layout,
             lightmap_atlas_dimensions,
             animated_lm_debug,
         );
         match animated_lightmap_result {
             Ok(al) => {
-                self.lightmap_resources = LightmapResources::new(
-                    &self.device,
-                    &self.queue,
+                full.lightmap_resources = LightmapResources::new(
+                    device,
+                    queue,
                     geometry.lightmap,
                     &lightmap_bgl,
                     &al.forward_view,
                     &al.direction_forward_view,
                 );
-                self.animated_lightmap = al;
+                full.animated_lightmap = al;
             }
             Err(msg) => {
                 log::error!(
@@ -343,11 +348,11 @@ impl Renderer {
         // allocated; the dispatch is gated on `sdf_atlas_resources.present`,
         // which `install_level_geometry` may have just flipped.
         let sdf_shadow_sh_grid =
-            build_sdf_shadow_sh_grid(geometry.sh_volume, self.sh_volume_resources.present);
-        self.sdf_shadow_pass.rebuild_for_level(
-            &self.device,
-            &self.depth_view,
-            self.sh_volume_resources.make_depth_moment_view(),
+            build_sdf_shadow_sh_grid(geometry.sh_volume, full.sh_volume_resources.present);
+        full.sdf_shadow_pass.rebuild_for_level(
+            device,
+            &full.depth_view,
+            full.sh_volume_resources.make_depth_moment_view(),
             sdf_shadow::SdfShadowLightBuffers {
                 spec_lights: &spec_lights_buffer,
                 chunk_grid_info: &chunk_grid_info_buffer,
@@ -358,18 +363,18 @@ impl Renderer {
         );
 
         // --- BVH + compute cull ---
-        self.bvh_leaves = bvh_leaves;
+        full.bvh_leaves = bvh_leaves;
         // Per-cell draw index for the candidate-cull path. Cloned alongside the
         // BVH leaves; the empty-geometry install path clears it to `None`, so
         // `release_level_resources` drops it for free.
-        self.cell_draw_index = geometry.cell_draw_index.cloned();
+        full.cell_draw_index = geometry.cell_draw_index.cloned();
         // Reset per-level so a corrupt index on a later level still warns once.
-        self.candidate_cull_oor_logged = false;
-        self.compute_cull = if !self.bvh_leaves.is_empty() {
+        full.candidate_cull_oor_logged = false;
+        full.compute_cull = if !full.bvh_leaves.is_empty() {
             Some(ComputeCullPipeline::new(
-                &self.device,
+                device,
                 geometry.bvh,
-                self.has_multi_draw_indirect,
+                has_multi_draw_indirect,
             ))
         } else {
             None
@@ -377,16 +382,17 @@ impl Renderer {
         // Rebuild the candidate-cull path in lockstep with `compute_cull`, sized
         // to the freshly-installed leaf count. Empty-geometry install → `None`,
         // so `release_level_resources` drops it for free.
-        self.candidate_cull = self.compute_cull.as_ref().map(|c| {
-            crate::candidate_cull::CandidateCullPipeline::new(&self.device, c.total_leaves())
-        });
+        full.candidate_cull = full
+            .compute_cull
+            .as_ref()
+            .map(|c| crate::candidate_cull::CandidateCullPipeline::new(device, c.total_leaves()));
 
         // Rebuild the shadow cull owner against the freshly-uploaded BVH
         // buffers — its per-slot bind groups reference the camera cull's
         // node/leaf storage, so a stale reference would point at the old BVH.
-        self.shadow_cull = self.compute_cull.as_ref().map(|c| {
+        full.shadow_cull = full.compute_cull.as_ref().map(|c| {
             crate::shadow_cull::ShadowCullPipeline::new(
-                &self.device,
+                device,
                 c.node_buffer(),
                 c.leaf_buffer(),
                 c.total_leaves(),
@@ -395,17 +401,17 @@ impl Renderer {
             )
         });
 
-        self.has_geometry = has_geometry;
-        self.last_lights_upload.clear();
-        self.lights_pack_scratch.clear();
-        self.light_effective_brightness.clear();
-        self.stored_texture_materials = geometry.texture_materials.to_vec();
+        full.has_geometry = has_geometry;
+        full.last_lights_upload.clear();
+        full.lights_pack_scratch.clear();
+        full.light_effective_brightness.clear();
+        full.stored_texture_materials = geometry.texture_materials.to_vec();
 
         if has_geometry {
             log::info!(
                 "[Renderer] Geometry installed: {} indices, bvh_leaves={}",
-                self.index_count,
-                self.bvh_leaves.len(),
+                full.index_count,
+                full.bvh_leaves.len(),
             );
         }
     }

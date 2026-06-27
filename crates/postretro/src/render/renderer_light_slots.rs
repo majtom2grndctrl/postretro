@@ -33,7 +33,7 @@ impl Renderer {
         // Candidate set is `is_dynamic`-filtered; if the map has no dynamic
         // lights the pool stays empty — early-return without disturbing
         // previous slots.
-        if self.shadow_candidate_lights.is_empty() {
+        if self.full().shadow_candidate_lights.is_empty() {
             return;
         }
 
@@ -51,8 +51,8 @@ impl Renderer {
         // paths) → all cell-assigned lights eligible. ALPHA_LIGHT_LEAF_UNASSIGNED
         // = degenerate (couldn't assign to a non-solid cell) → always cull.
         const BRIGHTNESS_SUPPRESSION_THRESHOLD: f32 = 0.01;
-        let mut visible_lights = vec![false; self.shadow_candidate_lights.len()];
-        for (i, light) in self.shadow_candidate_lights.iter().enumerate() {
+        let mut visible_lights = vec![false; self.full().shadow_candidate_lights.len()];
+        for (i, light) in self.full().shadow_candidate_lights.iter().enumerate() {
             let reaches_view = if light.cell_index == ALPHA_LIGHT_LEAF_UNASSIGNED {
                 false
             } else {
@@ -74,8 +74,8 @@ impl Renderer {
             // forward / scripted-bridge index space). For candidates not in
             // `level_lights` we have no per-frame brightness — treat as 1.0.
             let b = level_brightness_for_candidate(
-                &self.level_lights,
-                &self.shadow_candidate_lights[i],
+                &self.full().level_lights,
+                &self.full().shadow_candidate_lights[i],
                 effective_brightness,
             )
             .unwrap_or(1.0);
@@ -86,7 +86,7 @@ impl Renderer {
         }
 
         let slot_assignment = SpotShadowPool::rank_lights(
-            &self.shadow_candidate_lights,
+            &self.full().shadow_candidate_lights,
             camera_position,
             camera_near_clip,
             &visible_lights,
@@ -97,7 +97,7 @@ impl Renderer {
         // when the pool is disabled), which is patched into the light buffer
         // below alongside the spot slots. Runs before the patch block so both
         // slot fields land in one upload.
-        let stride = self.shadow_vs_stride as usize;
+        let stride = self.full().shadow_vs_stride as usize;
         let cube_slot_assignment = self.update_cube_light_slots(
             camera_position,
             camera_near_clip,
@@ -112,16 +112,16 @@ impl Renderer {
         // is in `level_lights` and receives its slot normally. The cube
         // assignment is re-keyed the same way (empty → all-sentinel).
         let level_slots = slot_assignment_for_level_lights(
-            &self.level_lights,
-            &self.shadow_candidate_lights,
+            &self.full().level_lights,
+            &self.full().shadow_candidate_lights,
             &slot_assignment,
         );
         let level_cube_slots = if cube_slot_assignment.is_empty() {
-            vec![crate::lighting::spot_shadow::NO_SHADOW_SLOT; self.level_lights.len()]
+            vec![crate::lighting::spot_shadow::NO_SHADOW_SLOT; self.full().level_lights.len()]
         } else {
             slot_assignment_for_level_lights(
-                &self.level_lights,
-                &self.shadow_candidate_lights,
+                &self.full().level_lights,
+                &self.full().shadow_candidate_lights,
                 &cube_slot_assignment,
             )
         };
@@ -136,29 +136,32 @@ impl Renderer {
         // bridge's sentinel slot would clobber the shadow. The spot slot rides
         // `cone_angles_and_pad.z` and the cube slot rides `.w` — disjoint bytes,
         // so the two patches compose. See `upload_bridge_lights`.
-        let expected_len = self.level_lights.len() * crate::lighting::GPU_LIGHT_SIZE;
-        if self.last_lights_upload.len() == expected_len {
+        let Self { queue, full, .. } = self;
+        let full = full
+            .as_mut()
+            .expect("renderer full-init must complete before full-ready paths run");
+        let expected_len = full.level_lights.len() * crate::lighting::GPU_LIGHT_SIZE;
+        if full.last_lights_upload.len() == expected_len {
             let spot_changed =
-                crate::lighting::patch_shadow_slots(&mut self.last_lights_upload, &level_slots);
+                crate::lighting::patch_shadow_slots(&mut full.last_lights_upload, &level_slots);
             let cube_changed =
-                crate::lighting::patch_cube_slots(&mut self.last_lights_upload, &level_cube_slots);
+                crate::lighting::patch_cube_slots(&mut full.last_lights_upload, &level_cube_slots);
             if spot_changed || cube_changed {
-                self.queue
-                    .write_buffer(&self.lights_buffer, 0, &self.last_lights_upload);
+                queue.write_buffer(&full.lights_buffer, 0, &full.last_lights_upload);
             }
         } else {
             // Mirror not yet sized to the current light set (before the first
             // bridge upload, or the light count changed): full static pack so
             // frame-zero still uploads valid lights + slots and seeds the mirror.
-            let mut scratch = std::mem::take(&mut self.lights_pack_scratch);
-            pack_lights_with_slots_into(&mut scratch, &self.level_lights, &level_slots);
+            let mut scratch = std::mem::take(&mut full.lights_pack_scratch);
+            pack_lights_with_slots_into(&mut scratch, &full.level_lights, &level_slots);
             crate::lighting::patch_cube_slots(&mut scratch, &level_cube_slots);
-            if scratch != self.last_lights_upload {
-                self.queue.write_buffer(&self.lights_buffer, 0, &scratch);
-                self.last_lights_upload.clear();
-                self.last_lights_upload.extend_from_slice(&scratch);
+            if scratch != full.last_lights_upload {
+                queue.write_buffer(&full.lights_buffer, 0, &scratch);
+                full.last_lights_upload.clear();
+                full.last_lights_upload.extend_from_slice(&scratch);
             }
-            self.lights_pack_scratch = scratch;
+            full.lights_pack_scratch = scratch;
         }
 
         // Upload slot matrices to both fragment-side storage (group 5 binding 2)
@@ -173,25 +176,25 @@ impl Renderer {
         // Reset the per-slot cone-matrix stash; reoccupied slots overwrite, the
         // rest stay `None` so the GPU cone cull skips them this frame. The
         // entity-occluder gate resets to `false` in lockstep.
-        self.spot_shadow_pool.slot_cone_matrices =
+        full.spot_shadow_pool.slot_cone_matrices =
             [None; crate::lighting::spot_shadow::SHADOW_POOL_SIZE];
-        self.spot_shadow_pool.slot_entity_eligible =
+        full.spot_shadow_pool.slot_entity_eligible =
             [false; crate::lighting::spot_shadow::SHADOW_POOL_SIZE];
         for (light_idx, &slot) in slot_assignment.iter().enumerate() {
             if slot == crate::lighting::spot_shadow::NO_SHADOW_SLOT {
                 continue;
             }
-            let candidate = &self.shadow_candidate_lights[light_idx];
+            let candidate = &full.shadow_candidate_lights[light_idx];
             let m = crate::lighting::spot_shadow::light_space_matrix(candidate);
             // Stash the SAME light-space matrix uploaded to bind-group-5 below —
             // the shadow-depth render loop reads it to build this slot's cone
             // cull frustum planes (one source of truth, no recomputation).
-            self.spot_shadow_pool.slot_cone_matrices[slot as usize] = Some(m);
+            full.spot_shadow_pool.slot_cone_matrices[slot as usize] = Some(m);
             // Record whether this slot's occupant renders entity occluders. The
             // shadow-depth loop draws skinned occluders into the slot only when
             // this is set; an ineligible (e.g. toggle-off dynamic) slot keeps its
             // world shadow but draws none.
-            self.spot_shadow_pool.slot_entity_eligible[slot as usize] =
+            full.spot_shadow_pool.slot_entity_eligible[slot as usize] =
                 crate::lighting::entity_occluder_eligible(candidate);
             let cols = m.to_cols_array();
             let mut bytes = [0u8; MAT_BYTES];
@@ -204,15 +207,14 @@ impl Renderer {
             vertex_uniforms[slot_usize * stride..slot_usize * stride + MAT_BYTES]
                 .copy_from_slice(&bytes);
         }
-        self.queue.write_buffer(
-            &self.spot_shadow_pool.matrices_buffer,
+        queue.write_buffer(
+            &full.spot_shadow_pool.matrices_buffer,
             0,
             &fragment_matrices,
         );
-        self.queue
-            .write_buffer(&self.shadow_vs_uniform_buffer, 0, &vertex_uniforms);
+        queue.write_buffer(&full.shadow_vs_uniform_buffer, 0, &vertex_uniforms);
 
-        self.spot_shadow_pool.slot_assignment = slot_assignment;
+        full.spot_shadow_pool.slot_assignment = slot_assignment;
     }
 
     /// Env-gated shadow-pipeline diagnostics (`POSTRETRO_SHADOW_DEBUG=1`).
@@ -262,13 +264,13 @@ impl Renderer {
         use crate::prl::LightType;
 
         const BRIGHTNESS_SUPPRESSION_THRESHOLD: f32 = 0.01;
-        let f = self.debug_frame;
+        let f = self.full().debug_frame;
 
         // Camera forward = -Z row of the view matrix recovered from view_proj is
         // awkward; instead read the cached eye + derive a forward proxy from the
         // inverse view-projection (project a point down the -Z clip axis). Cheap
         // and only runs under the flag.
-        let eye = self.last_camera_position;
+        let eye = self.full().last_camera_position;
         let inv = view_proj.inverse();
         let near_pt = inv.project_point3(glam::Vec3::new(0.0, 0.0, 0.0));
         let far_pt = inv.project_point3(glam::Vec3::new(0.0, 0.0, 1.0));
@@ -299,7 +301,7 @@ impl Renderer {
         let mut spot_overflow: usize = 0;
         let mut cube_overflow: usize = 0;
         let mut light_lines: Vec<String> = Vec::new();
-        for (i, light) in self.shadow_candidate_lights.iter().enumerate() {
+        for (i, light) in self.full().shadow_candidate_lights.iter().enumerate() {
             // Legacy own-cell-PVS membership (no longer the gate; kept so a reader
             // can SEE it diverge from `reach` — the whole point of the fix).
             let cell_ok = if light.cell_index == ALPHA_LIGHT_LEAF_UNASSIGNED {
@@ -327,9 +329,12 @@ impl Renderer {
                     reachable_cell_aabbs,
                 )
             };
-            let bright =
-                level_brightness_for_candidate(&self.level_lights, light, effective_brightness)
-                    .unwrap_or(1.0);
+            let bright = level_brightness_for_candidate(
+                &self.full().level_lights,
+                light,
+                effective_brightness,
+            )
+            .unwrap_or(1.0);
             let is_spot = light.light_type == LightType::Spot;
             let is_point = light.light_type == LightType::Point;
             let elig = reach && bright >= BRIGHTNESS_SUPPRESSION_THRESHOLD;
@@ -337,6 +342,7 @@ impl Renderer {
             // SPOT slot assigned to this candidate (slot_assignment is
             // candidate-indexed). Reason codes explain a NONE.
             let slot = self
+                .full()
                 .spot_shadow_pool
                 .slot_assignment
                 .get(i)
@@ -368,7 +374,7 @@ impl Renderer {
             // CUBE (point-light) slot — closes the prior blind spot. The cube
             // pool's `slot_assignment` is candidate-indexed (same as spot).
             // `None` pool = adapter lacks CUBE_ARRAY_TEXTURES (point shadows off).
-            let cube_str = match self.cube_shadow_pool.as_ref() {
+            let cube_str = match self.full().cube_shadow_pool.as_ref() {
                 None if is_point => "NONE:cube_pool_off".to_string(),
                 None => "NONE:not_point".to_string(),
                 Some(pool) => {
@@ -400,7 +406,7 @@ impl Renderer {
             // A point light that passed the gate is an eligible candidate for the
             // cube pool (only counted when the pool exists; with the pool off the
             // reason is `cube_pool_off`, not overflow).
-            if elig && is_point && self.cube_shadow_pool.is_some() {
+            if elig && is_point && self.full().cube_shadow_pool.is_some() {
                 elig_cube += 1;
             }
 
@@ -424,8 +430,14 @@ impl Renderer {
 
         // Mesh visibility split. The strict collector emits visible-only draw
         // inputs, so `off_pvs` should stay zero outside synthetic/future callers.
-        let in_pvs = self.mesh_draws.iter().filter(|m| m.forward_visible).count() as u32;
+        let in_pvs = self
+            .full()
+            .mesh_draws
+            .iter()
+            .filter(|m| m.forward_visible)
+            .count() as u32;
         let off_pvs = self
+            .full()
             .mesh_draws
             .iter()
             .filter(|m| !m.forward_visible)
@@ -438,11 +450,11 @@ impl Renderer {
         // simultaneous spot flip.
         let fingerprint = (slot_occupancy, cube_occupancy, in_pvs, off_pvs);
         let heartbeat = f % 120 == 0;
-        if fingerprint == self.shadow_debug_prev && !heartbeat {
+        if fingerprint == self.full().shadow_debug_prev && !heartbeat {
             return;
         }
-        let changed = fingerprint != self.shadow_debug_prev;
-        self.shadow_debug_prev = fingerprint;
+        let changed = fingerprint != self.full().shadow_debug_prev;
+        self.full_mut().shadow_debug_prev = fingerprint;
 
         let cell_str = camera_cell
             .map(|l| l.to_string())
@@ -452,7 +464,7 @@ impl Renderer {
         // than the capped pool can shadow, so some were dropped by ranking.
         let spot_used = slot_occupancy.count_ones() as usize;
         let cube_used = cube_occupancy.count_ones() as usize;
-        let cube_pool_size = if self.cube_shadow_pool.is_some() {
+        let cube_pool_size = if self.full().cube_shadow_pool.is_some() {
             crate::lighting::cube_shadow::CUBE_COUNT
         } else {
             0
@@ -468,7 +480,7 @@ impl Renderer {
             eye.y,
             eye.z,
             crate::lighting::spot_shadow::SHADOW_POOL_SIZE,
-            self.mesh_draws.len(),
+            self.full().mesh_draws.len(),
             slot_occupancy.count_ones(),
             cube_occupancy.count_ones(),
             light_lines.len(),
@@ -503,12 +515,17 @@ impl Renderer {
     ) -> Vec<u32> {
         use crate::lighting::cube_shadow;
 
-        let Some(pool) = self.cube_shadow_pool.as_mut() else {
+        let Self { queue, full, .. } = self;
+        let full = full
+            .as_mut()
+            .expect("renderer full-init must complete before full-ready paths run");
+
+        let Some(pool) = full.cube_shadow_pool.as_mut() else {
             return Vec::new();
         };
 
         let slot_assignment = cube_shadow::rank_point_lights(
-            &self.shadow_candidate_lights,
+            &full.shadow_candidate_lights,
             camera_position,
             camera_near_clip,
             visible_lights,
@@ -536,7 +553,7 @@ impl Renderer {
             if slot == crate::lighting::spot_shadow::NO_SHADOW_SLOT {
                 continue;
             }
-            let candidate = &self.shadow_candidate_lights[light_idx];
+            let candidate = &full.shadow_candidate_lights[light_idx];
             // Cube faces are entity-only: an ineligible point light draws
             // nothing, so it needs no per-face matrices either.
             let eligible = crate::lighting::entity_occluder_eligible(candidate);
@@ -567,8 +584,7 @@ impl Renderer {
                 }
             }
         }
-        self.queue
-            .write_buffer(&self.cube_shadow_vs_uniform_buffer, 0, &vertex_uniforms);
+        queue.write_buffer(&full.cube_shadow_vs_uniform_buffer, 0, &vertex_uniforms);
 
         pool.slot_assignment = slot_assignment;
         // Return the SHADER-facing assignment (ineligible lights masked to the

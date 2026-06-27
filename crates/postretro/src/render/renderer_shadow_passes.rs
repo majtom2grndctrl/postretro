@@ -107,19 +107,20 @@ impl Renderer {
         view_proj: Mat4,
     ) {
         let visible: &VisibleCells = cam_vis.cells;
-        let Some(total_leaves) = self.compute_cull.as_ref().map(|cull| cull.total_leaves()) else {
-            self.camera_cull_diagnostics = CameraCullDiagnostics::default();
-            self.bvh_cull_diagnostics = None;
+        let full = self.full_mut();
+        let Some(total_leaves) = full.compute_cull.as_ref().map(|cull| cull.total_leaves()) else {
+            full.camera_cull_diagnostics = CameraCullDiagnostics::default();
+            full.bvh_cull_diagnostics = None;
             return;
         };
-        self.bvh_cull_diagnostics = self
+        full.bvh_cull_diagnostics = full
             .compute_cull
             .as_ref()
             .map(|cull| cull.estimate_diagnostics(visible, &view_proj));
 
         let candidate_counts = match (
-            self.cell_draw_index.as_ref(),
-            self.candidate_cull.as_mut(),
+            full.cell_draw_index.as_ref(),
+            full.candidate_cull.as_mut(),
             visible,
             cam_vis.path,
         ) {
@@ -132,13 +133,13 @@ impl Renderer {
                 crate::candidate_cull::GatherStatus::Ok => Some((
                     candidate.candidates().len() as u32,
                     count_submitted_candidates(
-                        &self.bvh_leaves,
+                        &full.bvh_leaves,
                         candidate.candidates(),
                         &view_proj,
                     ),
                 )),
                 crate::candidate_cull::GatherStatus::OutOfRange { cell_id } => {
-                    if !self.candidate_cull_oor_logged {
+                    if !full.candidate_cull_oor_logged {
                         log::warn!(
                             "[Renderer] candidate cull: visible cell id {} out of \
                              CellDrawIndex range ({} cells); using whole-BVH tree walk \
@@ -146,7 +147,7 @@ impl Renderer {
                             cell_id,
                             index.cell_count,
                         );
-                        self.candidate_cull_oor_logged = true;
+                        full.candidate_cull_oor_logged = true;
                     }
                     None
                 }
@@ -154,7 +155,7 @@ impl Renderer {
             _ => None,
         };
 
-        self.camera_cull_diagnostics = if let Some((candidate_leaves, submitted_leaves)) =
+        full.camera_cull_diagnostics = if let Some((candidate_leaves, submitted_leaves)) =
             candidate_counts
         {
             CameraCullDiagnostics {
@@ -166,7 +167,7 @@ impl Renderer {
             CameraCullDiagnostics {
                 path: CameraCullPath::TreeWalk,
                 total_leaves,
-                submitted_leaves: count_submitted_tree_walk(&self.bvh_leaves, visible, &view_proj),
+                submitted_leaves: count_submitted_tree_walk(&full.bvh_leaves, visible, &view_proj),
             }
         };
     }
@@ -179,8 +180,12 @@ impl Renderer {
         encoder: &mut wgpu::CommandEncoder,
         mesh_frame_plan: Option<&mesh_instances::MeshFramePlan>,
     ) {
-        let stride = self.shadow_vs_stride;
-        let slot_assignment = self.spot_shadow_pool.slot_assignment.clone();
+        let Self { queue, full, .. } = self;
+        let full = full
+            .as_mut()
+            .expect("renderer full-init must complete before full-ready paths run");
+        let stride = full.shadow_vs_stride;
+        let slot_assignment = full.spot_shadow_pool.slot_assignment.clone();
         let mut used_slots: Vec<u32> = slot_assignment
             .iter()
             .copied()
@@ -192,23 +197,23 @@ impl Renderer {
         // Reset the per-frame entity-occluder counter; the per-slot cull
         // tallies into it below. Mirrors `shadow-cone-cull`'s submitted
         // counter — pure CPU, no GPU readback.
-        self.spot_entity_occluders_submitted = 0;
+        full.spot_entity_occluders_submitted = 0;
 
         // Per-slot GPU cone cull: one compute pass loops the occupied slots,
         // dispatching BVH traversal into each slot's indirect sub-region
         // gated by that slot's cone frustum planes. Runs after the camera
         // BVH cull and before the per-slot depth render passes below, so the
         // sub-regions are populated when each slot draws indirect.
-        if let Some(shadow_cull) = &self.shadow_cull {
+        if let Some(shadow_cull) = &full.shadow_cull {
             shadow_cull.dispatch_occupied_slots(
-                &self.queue,
+                queue,
                 encoder,
-                &self.spot_shadow_pool.slot_cone_matrices,
+                &full.spot_shadow_pool.slot_cone_matrices,
             );
         }
 
         for slot in used_slots {
-            let view = &self.spot_shadow_pool.views[slot as usize];
+            let view = &full.spot_shadow_pool.views[slot as usize];
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Spot Shadow Depth Pass"),
                 color_attachments: &[],
@@ -223,19 +228,19 @@ impl Renderer {
                 timestamp_writes: None,
                 ..Default::default()
             });
-            pass.set_pipeline(&self.shadow_depth_pipeline);
-            pass.set_bind_group(0, &self.shadow_vs_bind_group, &[slot * stride]);
-            pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            pass.set_pipeline(&full.shadow_depth_pipeline);
+            pass.set_bind_group(0, &full.shadow_vs_bind_group, &[slot * stride]);
+            pass.set_vertex_buffer(0, full.vertex_buffer.slice(..));
+            pass.set_index_buffer(full.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             // Indirect cone-culled draw from this slot's sub-region. The
             // depth-only shadow pipeline has no group-1 material slot, so
             // `None` skips the texture bind (matching the depth pre-pass).
             // Fall back to the full unconditional draw if the shadow cull
             // owner is absent (no BVH).
-            if let Some(shadow_cull) = &self.shadow_cull {
+            if let Some(shadow_cull) = &full.shadow_cull {
                 shadow_cull.draw_slot_indirect(&mut pass, slot, None);
             } else {
-                pass.draw_indexed(0..self.index_count, 0, 0..1);
+                pass.draw_indexed(0..full.index_count, 0, 0..1);
             }
 
             // Skinned ENTITY occluders into the SAME slot, through the
@@ -257,17 +262,17 @@ impl Renderer {
             //      only instances whose transformed bound intersects this
             //      slot's cone are submitted.
             if let Some(plan) = &mesh_frame_plan {
-                if self.spot_shadow_pool.slot_entity_eligible[slot as usize] {
+                if full.spot_shadow_pool.slot_entity_eligible[slot as usize] {
                     if let Some(cone_matrix) =
-                        self.spot_shadow_pool.slot_cone_matrices[slot as usize]
+                        full.spot_shadow_pool.slot_cone_matrices[slot as usize]
                     {
                         let cone_planes =
                             crate::lighting::cone_frustum::cone_frustum_planes(&cone_matrix);
-                        self.spot_entity_occluders_submitted +=
-                            self.mesh_pass.record_skinned_depth(
+                        full.spot_entity_occluders_submitted +=
+                            full.mesh_pass.record_skinned_depth(
                                 &mut pass,
                                 plan,
-                                &self.shadow_vs_bind_group,
+                                &full.shadow_vs_bind_group,
                                 slot * stride,
                                 &cone_planes,
                             );
@@ -285,8 +290,9 @@ impl Renderer {
         encoder: &mut wgpu::CommandEncoder,
         mesh_frame_plan: Option<&mesh_instances::MeshFramePlan>,
     ) {
-        if let Some(pool) = &self.cube_shadow_pool {
-            let stride = self.shadow_vs_stride;
+        let full = self.full_mut();
+        if let Some(pool) = &full.cube_shadow_pool {
+            let stride = full.shadow_vs_stride;
             for layer in 0..pool.face_matrices.len() {
                 let face_matrix_opt = pool.face_matrices[layer];
                 // Only occupied faces are touched; an occupied face ALWAYS gets
@@ -323,10 +329,10 @@ impl Renderer {
                     // VS uniform buffer — one source of truth for cull + projection.
                     let face_planes =
                         crate::lighting::cone_frustum::cone_frustum_planes(&face_matrix);
-                    self.cube_entity_occluders_submitted += self.mesh_pass.record_skinned_depth(
+                    full.cube_entity_occluders_submitted += full.mesh_pass.record_skinned_depth(
                         &mut pass,
                         plan,
-                        &self.cube_shadow_vs_bind_group,
+                        &full.cube_shadow_vs_bind_group,
                         layer as u32 * stride,
                         &face_planes,
                     );
@@ -400,8 +406,12 @@ impl Renderer {
         view_proj: Mat4,
         render_world: bool,
     ) {
+        let Self { queue, full, .. } = self;
+        let full = full
+            .as_mut()
+            .expect("renderer full-init must complete before full-ready paths run");
         if render_world {
-            let depth_ts = self
+            let depth_ts = full
                 .frame_timing
                 .as_ref()
                 .map(|t| t.render_pass_writes(TIMING_PAIR_DEPTH_PREPASS));
@@ -411,7 +421,7 @@ impl Renderer {
                 // MRT was removed with the animated dominant-direction trace.
                 color_attachments: &[],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.depth_view,
+                    view: &full.depth_view,
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Clear(1.0),
                         store: wgpu::StoreOp::Store,
@@ -422,13 +432,13 @@ impl Renderer {
                 ..Default::default()
             });
 
-            if self.has_geometry && self.index_count > 0 {
-                depth_pass.set_pipeline(&self.depth_prepass_pipeline);
-                depth_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-                depth_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-                depth_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            if full.has_geometry && full.index_count > 0 {
+                depth_pass.set_pipeline(&full.depth_prepass_pipeline);
+                depth_pass.set_bind_group(0, &full.uniform_bind_group, &[]);
+                depth_pass.set_vertex_buffer(0, full.vertex_buffer.slice(..));
+                depth_pass.set_index_buffer(full.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
 
-                if let Some(cull) = &self.compute_cull {
+                if let Some(cull) = &full.compute_cull {
                     cull.draw_indirect(&mut depth_pass, None); // None = no texture bind (group 0 only)
                 }
             }
@@ -438,8 +448,8 @@ impl Renderer {
         // consumes scene depth, and before the forward pass that samples the
         // shadow factor. Skipped when no SDF atlas is loaded; forward-side
         // atlas/mode flags gate consumption so stale target contents are ignored.
-        if render_world && self.sdf_atlas_resources.present {
-            let sdf_ts = self
+        if render_world && full.sdf_atlas_resources.present {
+            let sdf_ts = full
                 .frame_timing
                 .as_ref()
                 .map(|t| t.compute_pass_writes(TIMING_PAIR_SDF_SHADOW));
@@ -449,18 +459,18 @@ impl Renderer {
             // per-light visibility floats. The mode value (3 = debug paths,
             // 4 = normals) is threaded so the shader picks the right encoding;
             // 0 means "not a debug mode" (production path).
-            let sdf_debug_mode = match self.sdf_shadow_mode {
+            let sdf_debug_mode = match full.sdf_shadow_mode {
                 SdfShadowMode::VisualizeDebugPaths => SdfShadowMode::VisualizeDebugPaths as u32,
                 SdfShadowMode::VisualizeNormals => SdfShadowMode::VisualizeNormals as u32,
                 _ => 0,
             };
-            self.sdf_shadow_pass.dispatch(
-                &self.queue,
+            full.sdf_shadow_pass.dispatch(
+                queue,
                 encoder,
-                &self.sdf_atlas_resources,
+                &full.sdf_atlas_resources,
                 SdfShadowFrameInputs {
                     inv_view_proj,
-                    camera_position: self.last_camera_position.into(),
+                    camera_position: full.last_camera_position.into(),
                 },
                 sdf_ts,
                 sdf_debug_mode,
@@ -481,6 +491,15 @@ impl Renderer {
         render_world: bool,
     ) {
         let visible: &VisibleCells = cam_vis.cells;
+        let Self {
+            device,
+            queue,
+            full,
+            ..
+        } = self;
+        let full = full
+            .as_mut()
+            .expect("renderer full-init must complete before full-ready paths run");
 
         // Same submission as render passes — no readback or GPU sync between cull and draw.
         if render_world {
@@ -490,7 +509,7 @@ impl Renderer {
             // baseline to zero.
             #[cfg(feature = "dev-tools")]
             {
-                self.bvh_cull_diagnostics = self
+                full.bvh_cull_diagnostics = full
                     .compute_cull
                     .as_ref()
                     .map(|cull| cull.estimate_diagnostics(visible, &view_proj));
@@ -512,8 +531,8 @@ impl Renderer {
             // the pipeline (`candidate.candidates()`), read after this borrow
             // ends in the dispatch match below.
             let candidates_ready: bool = match (
-                self.cell_draw_index.as_ref(),
-                self.candidate_cull.as_mut(),
+                full.cell_draw_index.as_ref(),
+                full.candidate_cull.as_mut(),
                 visible,
                 cam_vis.path,
             ) {
@@ -525,7 +544,7 @@ impl Renderer {
                 ) => match candidate.gather(index, cells) {
                     crate::candidate_cull::GatherStatus::Ok => true,
                     crate::candidate_cull::GatherStatus::OutOfRange { cell_id } => {
-                        if !self.candidate_cull_oor_logged {
+                        if !full.candidate_cull_oor_logged {
                             log::warn!(
                                 "[Renderer] candidate cull: visible cell id {} out of \
                                  CellDrawIndex range ({} cells); using whole-BVH tree walk \
@@ -533,7 +552,7 @@ impl Renderer {
                                 cell_id,
                                 index.cell_count,
                             );
-                            self.candidate_cull_oor_logged = true;
+                            full.candidate_cull_oor_logged = true;
                         }
                         false
                     }
@@ -541,7 +560,7 @@ impl Renderer {
                 _ => false,
             };
 
-            let cull_ts = self
+            let cull_ts = full
                 .frame_timing
                 .as_ref()
                 .map(|t| t.compute_pass_writes(TIMING_PAIR_CULL));
@@ -554,8 +573,8 @@ impl Renderer {
             // SAME global indirect/status slots as the tree-walk fallback arm.
             match (
                 candidates_ready,
-                self.compute_cull.as_ref(),
-                self.candidate_cull.as_mut(),
+                full.compute_cull.as_ref(),
+                full.candidate_cull.as_mut(),
             ) {
                 (true, Some(cull), Some(candidate)) => {
                     // CPU-derived Spatial diagnostics: candidate count vs total
@@ -565,8 +584,8 @@ impl Renderer {
                     // mutable `dispatch` borrow below.
                     let candidates = candidate.candidates();
                     let submitted_leaves =
-                        count_submitted_candidates(&self.bvh_leaves, candidates, &view_proj);
-                    self.camera_cull_diagnostics = CameraCullDiagnostics {
+                        count_submitted_candidates(&full.bvh_leaves, candidates, &view_proj);
+                    full.camera_cull_diagnostics = CameraCullDiagnostics {
                         path: CameraCullPath::Candidate {
                             candidate_leaves: candidates.len() as u32,
                         },
@@ -574,8 +593,8 @@ impl Renderer {
                         submitted_leaves,
                     };
                     candidate.dispatch(
-                        &self.device,
-                        &self.queue,
+                        device,
+                        queue,
                         encoder,
                         cull.leaf_buffer(),
                         cull.indirect_buffer(),
@@ -588,24 +607,17 @@ impl Renderer {
                 // cell id, no installed level/empty BVH/released resources, or
                 // no candidate pipeline).
                 _ => {
-                    if let Some(cull) = &mut self.compute_cull {
-                        cull.dispatch(
-                            &self.device,
-                            &self.queue,
-                            encoder,
-                            visible,
-                            &view_proj,
-                            cull_ts,
-                        );
+                    if let Some(cull) = &mut full.compute_cull {
+                        cull.dispatch(device, queue, encoder, visible, &view_proj, cull_ts);
                     }
                     // Tree-walk diagnostics: submitted = drawable, visible-cell,
                     // frustum-passing leaves over the WHOLE leaf array.
-                    if let Some(cull) = self.compute_cull.as_ref() {
-                        self.camera_cull_diagnostics = CameraCullDiagnostics {
+                    if let Some(cull) = full.compute_cull.as_ref() {
+                        full.camera_cull_diagnostics = CameraCullDiagnostics {
                             path: CameraCullPath::TreeWalk,
                             total_leaves: cull.total_leaves(),
                             submitted_leaves: count_submitted_tree_walk(
-                                &self.bvh_leaves,
+                                &full.bvh_leaves,
                                 visible,
                                 &view_proj,
                             ),
@@ -614,20 +626,20 @@ impl Renderer {
                 }
             }
 
-            if let Some(cull) = &self.compute_cull {
+            if let Some(cull) = &full.compute_cull {
                 if log::log_enabled!(log::Level::Debug) {
-                    let f = self.debug_frame;
+                    let f = full.debug_frame;
 
                     let bm = cull.debug_bitmask_fingerprint();
-                    if bm != self.debug_prev_bitmask {
+                    if bm != full.debug_prev_bitmask {
                         log::debug!(
                             "[cull f={f}] visible-cell bitmask changed: pop={} hash={:#010x} (was pop={} hash={:#010x})",
                             bm.0,
                             bm.1,
-                            self.debug_prev_bitmask.0,
-                            self.debug_prev_bitmask.1,
+                            full.debug_prev_bitmask.0,
+                            full.debug_prev_bitmask.1,
                         );
-                        self.debug_prev_bitmask = bm;
+                        full.debug_prev_bitmask = bm;
                     }
 
                     let mut vp_hash = 0u32;
@@ -638,39 +650,39 @@ impl Renderer {
                         vp_hash ^= col.z.to_bits().rotate_left(13);
                         vp_hash ^= col.w.to_bits().rotate_left(19);
                     }
-                    if vp_hash != self.debug_prev_vp_hash {
+                    if vp_hash != full.debug_prev_vp_hash {
                         log::debug!("[cull f={f}] view_proj changed: hash={:#010x}", vp_hash);
-                        self.debug_prev_vp_hash = vp_hash;
+                        full.debug_prev_vp_hash = vp_hash;
                     }
 
                     let cur_vis = match visible {
                         VisibleCells::Culled(cells) => ("Culled", cells.len()),
                         VisibleCells::DrawAll => ("DrawAll", 0),
                     };
-                    if cur_vis != self.debug_prev_visible {
+                    if cur_vis != full.debug_prev_visible {
                         log::debug!(
                             "[cull f={f}] VisibleCells changed: {}(n={}) (was {}(n={}))",
                             cur_vis.0,
                             cur_vis.1,
-                            self.debug_prev_visible.0,
-                            self.debug_prev_visible.1,
+                            full.debug_prev_visible.0,
+                            full.debug_prev_visible.1,
                         );
-                        self.debug_prev_visible = cur_vis;
+                        full.debug_prev_visible = cur_vis;
                     }
                 }
             }
         }
 
         // Before depth pre-pass: storage→sampled barrier must resolve before forward sampling.
-        if render_world && self.animated_lightmap.is_active() {
-            let animated_ts = self
+        if render_world && full.animated_lightmap.is_active() {
+            let animated_ts = full
                 .frame_timing
                 .as_ref()
                 .map(|t| t.compute_pass_writes(TIMING_PAIR_ANIMATED_LM_COMPOSE));
-            self.animated_lightmap.dispatch(
-                &self.queue,
+            full.animated_lightmap.dispatch(
+                queue,
                 encoder,
-                &self.uniform_bind_group,
+                &full.uniform_bind_group,
                 visible,
                 animated_ts,
             );
@@ -678,12 +690,12 @@ impl Renderer {
 
         // Before depth pre-pass: storage-write → sampled-read barrier for SH.
         if render_world {
-            let sh_compose_ts = self
+            let sh_compose_ts = full
                 .frame_timing
                 .as_ref()
                 .map(|t| t.compute_pass_writes(TIMING_PAIR_SH_COMPOSE));
-            self.sh_compose
-                .dispatch(encoder, &self.uniform_bind_group, sh_compose_ts);
+            full.sh_compose
+                .dispatch(encoder, &full.uniform_bind_group, sh_compose_ts);
         }
     }
 }
@@ -693,11 +705,20 @@ impl Renderer {
     /// Encode + submit the SH atlas readback copy after the frame submit. A no-op
     /// unless the diagnostics irradiance overlay requested a copy this frame.
     pub(super) fn encode_sh_probe_readback(&mut self) {
+        let Self {
+            device,
+            queue,
+            full,
+            ..
+        } = self;
+        let full = full
+            .as_mut()
+            .expect("renderer full-init must complete before full-ready paths run");
         // Capture the just-composed SH atlas for the live irradiance overlay.
         // Separate submission so the boundary orders this copy after the compose
         // storage writes (see the note at the compose dispatch above). Skipped
         // unless the overlay is active.
-        if self.sh_probe_readback.wants_copy() {
+        if full.sh_probe_readback.wants_copy() {
             // Block until the compose submit above has fully retired before the
             // copy reads `total`. A submission boundary alone does not hard-sync
             // the compute storage writes against the copy on the Metal backend:
@@ -705,18 +726,16 @@ impl Renderer {
             // copy catches the last-written (high-z) texels mid-flight and reads
             // foreign/zero garbage. Only reached while the overlay is active, so
             // the per-readback stall is confined to debug sessions.
-            let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+            let _ = device.poll(wgpu::PollType::wait_indefinitely());
             let mut readback_encoder =
-                self.device
-                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                        label: Some("SH Readback Encoder"),
-                    });
-            self.sh_probe_readback.encode_copy(
+                device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("SH Readback Encoder"),
+                });
+            full.sh_probe_readback.encode_copy(
                 &mut readback_encoder,
-                &self.sh_volume_resources.total_atlas_texture,
+                &full.sh_volume_resources.total_atlas_texture,
             );
-            self.queue
-                .submit(std::iter::once(readback_encoder.finish()));
+            queue.submit(std::iter::once(readback_encoder.finish()));
         }
     }
 }
@@ -733,22 +752,25 @@ impl Renderer {
         render_world: bool,
         visible: &VisibleCells,
     ) {
+        let Self { device, full, .. } = self;
+        let full = full
+            .as_ref()
+            .expect("renderer full-init must complete before full-ready paths run");
         if render_world
-            && self.wireframe_enabled
-            && self.has_geometry
-            && self.wireframe_index_count > 0
-            && !self.bvh_leaves.is_empty()
+            && full.wireframe_enabled
+            && full.has_geometry
+            && full.wireframe_index_count > 0
+            && !full.bvh_leaves.is_empty()
         {
-            if let Some(cull) = &self.compute_cull {
-                let cull_status_bind_group =
-                    self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: Some("Wireframe Cull Status BG"),
-                        layout: &self.wireframe_cull_status_bgl,
-                        entries: &[wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: cull.cull_status_buffer().as_entire_binding(),
-                        }],
-                    });
+            if let Some(cull) = &full.compute_cull {
+                let cull_status_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("Wireframe Cull Status BG"),
+                    layout: &full.wireframe_cull_status_bgl,
+                    entries: &[wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: cull.cull_status_buffer().as_entire_binding(),
+                    }],
+                });
 
                 let mut overlay_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("Wireframe Overlay Pass"),
@@ -762,7 +784,7 @@ impl Renderer {
                         },
                     })],
                     depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                        view: &self.depth_view,
+                        view: &full.depth_view,
                         depth_ops: Some(wgpu::Operations {
                             load: wgpu::LoadOp::Load,
                             store: wgpu::StoreOp::Store,
@@ -772,28 +794,28 @@ impl Renderer {
                     ..Default::default()
                 });
 
-                let pipeline = match self.world_wireframe_mode {
+                let pipeline = match full.world_wireframe_mode {
                     WorldWireframeMode::Off => return,
                     WorldWireframeMode::CullStatusTrianglesAlwaysOnTop => {
-                        &self.wireframe_cull_status_pipeline
+                        &full.wireframe_cull_status_pipeline
                     }
                     WorldWireframeMode::VisibleTrianglesDepthTested => {
-                        &self.wireframe_visible_pipeline
+                        &full.wireframe_visible_pipeline
                     }
                 };
 
                 overlay_pass.set_pipeline(pipeline);
-                overlay_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+                overlay_pass.set_bind_group(0, &full.uniform_bind_group, &[]);
                 overlay_pass.set_bind_group(1, &cull_status_bind_group, &[]);
-                overlay_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+                overlay_pass.set_vertex_buffer(0, full.vertex_buffer.slice(..));
                 overlay_pass.set_index_buffer(
-                    self.wireframe_index_buffer.slice(..),
+                    full.wireframe_index_buffer.slice(..),
                     wgpu::IndexFormat::Uint32,
                 );
 
                 // instance_index = leaf index so shader looks up per-leaf cull status.
-                for (leaf_idx, leaf) in self.bvh_leaves.iter().enumerate() {
-                    if !wireframe_draws_leaf(self.world_wireframe_mode, visible, leaf) {
+                for (leaf_idx, leaf) in full.bvh_leaves.iter().enumerate() {
+                    if !wireframe_draws_leaf(full.world_wireframe_mode, visible, leaf) {
                         continue;
                     }
                     let wire_offset = leaf.index_offset * 2;

@@ -23,7 +23,7 @@ impl Renderer {
         // from `cam_vis` (set + path provenance) inside `record_pre_scene_compute`.
         let visible: &VisibleCells = cam_vis.cells;
 
-        self.debug_frame = self.debug_frame.wrapping_add(1);
+        self.full_mut().debug_frame = self.full().debug_frame.wrapping_add(1);
         let output = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(tex) => tex,
             wgpu::CurrentSurfaceTexture::Suboptimal(tex) => {
@@ -65,9 +65,10 @@ impl Renderer {
 
         // mem::take avoids a simultaneous borrow of self; returned after call to reuse the allocation.
         if render_world {
-            let eff_brightness = std::mem::take(&mut self.light_effective_brightness);
+            let eff_brightness = std::mem::take(&mut self.full_mut().light_effective_brightness);
+            let last_camera_position = self.full().last_camera_position;
             self.update_dynamic_light_slots(
-                self.last_camera_position,
+                last_camera_position,
                 crate::lighting::spot_shadow::SHADOW_NEAR_CLIP,
                 &eff_brightness,
                 reachable_cell_aabbs,
@@ -75,7 +76,7 @@ impl Renderer {
             // Env-gated diagnostics (POSTRETRO_SHADOW_DEBUG=1) — read-only, runs
             // right after slot assignment so it sees this frame's decisions. No
             // effect on culling/selection. Skipped entirely when disabled.
-            if self.shadow_debug_enabled {
+            if self.full().shadow_debug_enabled {
                 self.emit_shadow_debug(
                     view_proj,
                     visible,
@@ -85,7 +86,7 @@ impl Renderer {
                     camera_cell,
                 );
             }
-            self.light_effective_brightness = eff_brightness;
+            self.full_mut().light_effective_brightness = eff_brightness;
         }
 
         // --- Skinned-mesh pose/upload HOIST ----------------------------------
@@ -96,41 +97,50 @@ impl Renderer {
         // `instance_buffer` between this point and the forward `record_draws`, so
         // an entity and its shadow are sampled at the identical pose (no one-frame
         // lag). The plan is held in `mesh_frame_plan` and consumed by both passes.
-        let mesh_frame_plan: Option<mesh_instances::MeshFramePlan> =
-            if render_world && self.mesh_pass.has_model() && !self.mesh_draws.is_empty() {
-                // Plan: group instances by model, assign each a contiguous palette
-                // run, drop any overflow past the fixed budget. GPU-free.
-                let plan = mesh_instances::plan_mesh_frame(&self.mesh_draws, &self.mesh_pass);
+        let mesh_frame_plan: Option<mesh_instances::MeshFramePlan> = if render_world
+            && self.full().mesh_pass.has_model()
+            && !self.full().mesh_draws.is_empty()
+        {
+            // Plan: group instances by model, assign each a contiguous palette
+            // run, drop any overflow past the fixed budget. GPU-free.
+            let plan =
+                mesh_instances::plan_mesh_frame(&self.full().mesh_draws, &self.full().mesh_pass);
 
-                // Overflow drops excess instances rather than corrupting the
-                // palette or panicking — rate-limited warning. Covers BOTH the
-                // palette-slot cap and the instance-count cap (the latter is what
-                // fires for rigid / zero-joint props, which consume no slots).
-                if plan.dropped > 0 {
-                    let now = now_seconds as f32;
-                    if now - self.mesh_overflow_last_warn >= 1.0 {
-                        log::warn!(
-                            "[Renderer] skinned-mesh budget exceeded: dropped {} instance(s) \
+            // Overflow drops excess instances rather than corrupting the
+            // palette or panicking — rate-limited warning. Covers BOTH the
+            // palette-slot cap and the instance-count cap (the latter is what
+            // fires for rigid / zero-joint props, which consume no slots).
+            if plan.dropped > 0 {
+                let now = now_seconds as f32;
+                if now - self.full().mesh_overflow_last_warn >= 1.0 {
+                    log::warn!(
+                        "[Renderer] skinned-mesh budget exceeded: dropped {} instance(s) \
                              (budget {} palette slots / {} instances); excess not drawn",
-                            plan.dropped,
-                            mesh_instances::MAX_PALETTE_ENTRIES,
-                            mesh_instances::MAX_INSTANCES,
-                        );
-                        self.mesh_overflow_last_warn = now;
-                    }
+                        plan.dropped,
+                        mesh_instances::MAX_PALETTE_ENTRIES,
+                        mesh_instances::MAX_INSTANCES,
+                    );
+                    self.full_mut().mesh_overflow_last_warn = now;
                 }
+            }
 
-                // Sample every instance's clip into its palette run + write the
-                // per-instance SSBO. The ONLY per-frame write to these buffers —
-                // both the shadow loop and the forward draw read them unchanged.
-                self.mesh_pass
-                    .plan_and_upload(&self.queue, &plan, &mut self.bone_palette_scratch);
-                (!plan.groups.is_empty()).then_some(plan)
-            } else {
-                None
-            };
+            // Sample every instance's clip into its palette run + write the
+            // per-instance SSBO. The ONLY per-frame write to these buffers —
+            // both the shadow loop and the forward draw read them unchanged.
+            {
+                let Self { queue, full, .. } = self;
+                let full = full
+                    .as_mut()
+                    .expect("renderer full-init must complete before full-ready paths run");
+                full.mesh_pass
+                    .plan_and_upload(queue, &plan, &mut full.bone_palette_scratch);
+            }
+            (!plan.groups.is_empty()).then_some(plan)
+        } else {
+            None
+        };
 
-        if render_world && self.has_geometry && self.index_count > 0 {
+        if render_world && self.full().has_geometry && self.full().index_count > 0 {
             self.record_spot_shadow_depth(&mut encoder, mesh_frame_plan.as_ref());
         }
 
@@ -158,7 +168,7 @@ impl Renderer {
         // lit — the view-dependent symptom. The clear is now unconditional and
         // the occluder draw is the only mesh-plan-gated step, mirroring the spot
         // path's "every occupied slot gets a Clear(1.0) baseline" invariant.
-        self.cube_entity_occluders_submitted = 0;
+        self.full_mut().cube_entity_occluders_submitted = 0;
         if render_world {
             self.record_cube_shadow_depth(&mut encoder, mesh_frame_plan.as_ref());
         }
@@ -168,21 +178,26 @@ impl Renderer {
         // Post-scene compositor seam: every gameplay scene + UI pass renders into
         // `scene_color` (the offscreen target) instead of the swapchain `view`.
         // The resolve pass below is the sole swapchain writer for the gameplay
-        // path. Borrowing the field-method here keeps `scene_color` a disjoint
-        // borrow from the `&mut self.ui` / `&mut self.debug_lines` passes that
-        // also run in this region. The splash path is unaffected — it writes the
-        // swapchain directly and never touches this target.
-        let scene_color = self.screen_effects.scene_color_view();
+        // path. The view is cloned (wgpu `TextureView` is `Arc`-backed) into an
+        // OWNED handle so it no longer borrows `self.full()` — the post-split
+        // `full()`/`full_mut()` accessors borrow ALL of `self`, so holding a
+        // borrow of `screen_effects` across the later `&mut self` pass/helper
+        // calls (ui, debug_lines, wireframe overlay) would conflict. The owned
+        // clone preserves the disjoint-borrow behavior the inline-field layout
+        // had. The splash path is unaffected — it writes the swapchain directly
+        // and never touches this target.
+        let scene_color = self.full().screen_effects.scene_color_view().clone();
 
         {
             let forward_ts = self
+                .full()
                 .frame_timing
                 .as_ref()
                 .map(|t| t.render_pass_writes(TIMING_PAIR_FORWARD));
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Textured Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: scene_color,
+                    view: &scene_color,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -191,7 +206,7 @@ impl Renderer {
                     },
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.depth_view,
+                    view: &self.full().depth_view,
                     // Forward pass uses `depth_compare: Equal` with depth
                     // writes disabled — the depth buffer is read-only here.
                     // Task 5 of sdf-static-occluder-shadows samples this
@@ -208,19 +223,21 @@ impl Renderer {
                 ..Default::default()
             });
 
-            if render_world && self.has_geometry && self.index_count > 0 {
-                render_pass.set_pipeline(&self.pipeline);
-                render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-                render_pass.set_bind_group(2, &self.lighting_bind_group, &[]);
-                render_pass.set_bind_group(3, &self.sh_volume_resources.bind_group, &[]);
-                render_pass.set_bind_group(4, &self.lightmap_resources.bind_group, &[]);
-                render_pass.set_bind_group(5, &self.spot_shadow_pool.bind_group, &[]);
-                render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-                render_pass
-                    .set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            if render_world && self.full().has_geometry && self.full().index_count > 0 {
+                render_pass.set_pipeline(&self.full().pipeline);
+                render_pass.set_bind_group(0, &self.full().uniform_bind_group, &[]);
+                render_pass.set_bind_group(2, &self.full().lighting_bind_group, &[]);
+                render_pass.set_bind_group(3, &self.full().sh_volume_resources.bind_group, &[]);
+                render_pass.set_bind_group(4, &self.full().lightmap_resources.bind_group, &[]);
+                render_pass.set_bind_group(5, &self.full().spot_shadow_pool.bind_group, &[]);
+                render_pass.set_vertex_buffer(0, self.full().vertex_buffer.slice(..));
+                render_pass.set_index_buffer(
+                    self.full().index_buffer.slice(..),
+                    wgpu::IndexFormat::Uint32,
+                );
 
-                if let Some(cull) = &self.compute_cull {
-                    let gpu_textures = &self.gpu_textures;
+                if let Some(cull) = &self.full().compute_cull {
+                    let gpu_textures = &self.full().gpu_textures;
                     cull.draw_indirect(
                         &mut render_pass,
                         Some(&|pass, bucket| {
@@ -257,17 +274,23 @@ impl Renderer {
                 // dynamic-direct term participates in the lighting-isolation debug
                 // modes exactly as the world dynamic term does (the shader derives
                 // `use_dynamic` from it, mirroring forward.wgsl).
-                self.mesh_pass.write_light_params(
-                    &self.queue,
-                    self.light_count,
-                    self.mesh_dynamic_time,
-                    self.lighting_isolation as u32,
-                    self.ambient_floor,
-                );
+                {
+                    let Self { queue, full, .. } = self;
+                    let full = full
+                        .as_mut()
+                        .expect("renderer full-init must complete before full-ready paths run");
+                    full.mesh_pass.write_light_params(
+                        queue,
+                        full.light_count,
+                        full.mesh_dynamic_time,
+                        full.lighting_isolation as u32,
+                        full.ambient_floor,
+                    );
+                }
                 let mut mesh_enc = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("Skinned Mesh Pass"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: scene_color,
+                        view: &scene_color,
                         depth_slice: None,
                         resolve_target: None,
                         ops: wgpu::Operations {
@@ -276,7 +299,7 @@ impl Renderer {
                         },
                     })],
                     depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                        view: &self.depth_view,
+                        view: &self.full().depth_view,
                         depth_ops: Some(wgpu::Operations {
                             load: wgpu::LoadOp::Load,
                             store: wgpu::StoreOp::Store,
@@ -286,27 +309,31 @@ impl Renderer {
                     timestamp_writes: None,
                     ..Default::default()
                 });
-                mesh_enc.set_bind_group(0, &self.uniform_bind_group, &[]);
+                mesh_enc.set_bind_group(0, &self.full().uniform_bind_group, &[]);
                 // Group 4 = SH irradiance volume (baked indirect) + the mesh-only
                 // dynamic-direct params uniform (binding 16). The mesh SUPERSET bind
                 // group: shared SH entries the forward/billboard/fog passes hold PLUS
                 // the dynamic-direct knobs (group 3 = instance data; group 2
                 // unallocated).
-                mesh_enc.set_bind_group(4, &self.sh_volume_resources.mesh_bind_group, &[]);
-                self.mesh_pass.record_draws(&mut mesh_enc, plan);
+                mesh_enc.set_bind_group(4, &self.full().sh_volume_resources.mesh_bind_group, &[]);
+                self.full_mut().mesh_pass.record_draws(&mut mesh_enc, plan);
             }
         }
 
         // After opaque forward, before wireframe. Alpha additive; depth test on, write off.
-        if render_world && self.smoke_pass.has_any_sheet() && !particle_collections.is_empty() {
+        if render_world
+            && self.full().smoke_pass.has_any_sheet()
+            && !particle_collections.is_empty()
+        {
             let smoke_ts = self
+                .full()
                 .frame_timing
                 .as_ref()
                 .map(|t| t.render_pass_writes(TIMING_PAIR_SMOKE));
             let mut smoke_pass_enc = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Billboard Sprite Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: scene_color,
+                    view: &scene_color,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -315,7 +342,7 @@ impl Renderer {
                     },
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.depth_view,
+                    view: &self.full().depth_view,
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
@@ -325,17 +352,28 @@ impl Renderer {
                 timestamp_writes: smoke_ts,
                 ..Default::default()
             });
-            smoke_pass_enc.set_bind_group(0, &self.uniform_bind_group, &[]);
-            smoke_pass_enc.set_bind_group(2, &self.lighting_bind_group, &[]);
-            smoke_pass_enc.set_bind_group(3, &self.sh_volume_resources.bind_group, &[]);
+            smoke_pass_enc.set_bind_group(0, &self.full().uniform_bind_group, &[]);
+            smoke_pass_enc.set_bind_group(2, &self.full().lighting_bind_group, &[]);
+            smoke_pass_enc.set_bind_group(3, &self.full().sh_volume_resources.bind_group, &[]);
             // One shared instance buffer, drawn per collection from its own
             // 256-byte-aligned dynamic offset.
-            self.smoke_pass.record_draws(
-                &self.device,
-                &self.queue,
-                &mut smoke_pass_enc,
-                particle_collections,
-            );
+            {
+                let Self {
+                    device,
+                    queue,
+                    full,
+                    ..
+                } = self;
+                let full = full
+                    .as_mut()
+                    .expect("renderer full-init must complete before full-ready paths run");
+                full.smoke_pass.record_draws(
+                    device,
+                    queue,
+                    &mut smoke_pass_enc,
+                    particle_collections,
+                );
+            }
         }
 
         // Volumetric fog: low-res compute raymarch + additive composite.
@@ -344,27 +382,45 @@ impl Renderer {
         if render_world {
             let cell_mask = compute_fog_cell_mask(
                 fog_reachable,
-                self.fog_cell_masks.as_deref(),
-                self.fog.canonical_volume_count(),
+                self.full().fog_cell_masks.as_deref(),
+                self.full().fog.canonical_volume_count(),
                 camera_cell,
             );
-            self.fog.repack_active(&self.queue, cell_mask, now_seconds);
+            {
+                let Self { queue, full, .. } = self;
+                let full = full
+                    .as_mut()
+                    .expect("renderer full-init must complete before full-ready paths run");
+                full.fog.repack_active(queue, cell_mask, now_seconds);
+            }
         }
-        if render_world && self.fog.active() {
+        if render_world && self.full().fog.active() {
             // Spots before params so FogParams.spot_count reflects this frame's count.
             let fog_spots = self.collect_fog_spot_lights();
-            self.fog.upload_spots(&self.queue, &fog_spots);
+            {
+                let Self { queue, full, .. } = self;
+                let full = full
+                    .as_mut()
+                    .expect("renderer full-init must complete before full-ready paths run");
+                full.fog.upload_spots(queue, &fog_spots);
+            }
 
             let inv_view_proj = view_proj.inverse();
-            self.fog.upload_params(
-                &self.queue,
-                inv_view_proj,
-                self.last_camera_position,
-                crate::camera::NEAR,
-                crate::camera::FAR,
-            );
+            {
+                let Self { queue, full, .. } = self;
+                let full = full
+                    .as_mut()
+                    .expect("renderer full-init must complete before full-ready paths run");
+                full.fog.upload_params(
+                    queue,
+                    inv_view_proj,
+                    full.last_camera_position,
+                    crate::camera::NEAR,
+                    crate::camera::FAR,
+                );
+            }
 
-            let (scatter_w, scatter_h) = self.fog.scatter_dims();
+            let (scatter_w, scatter_h) = self.full().fog.scatter_dims();
             // 8×8 matches @workgroup_size(8,8); div_ceil covers edge pixels.
             let groups_x = scatter_w.div_ceil(8);
             let groups_y = scatter_h.div_ceil(8);
@@ -373,18 +429,18 @@ impl Renderer {
                     label: Some("Fog Raymarch Pass"),
                     timestamp_writes: None,
                 });
-                raymarch.set_pipeline(&self.fog.raymarch_pipeline);
-                raymarch.set_bind_group(0, &self.uniform_bind_group, &[]);
-                raymarch.set_bind_group(3, &self.sh_volume_resources.bind_group, &[]);
-                raymarch.set_bind_group(5, &self.spot_shadow_pool.bind_group, &[]);
-                raymarch.set_bind_group(6, &self.fog.bind_group, &[]);
+                raymarch.set_pipeline(&self.full().fog.raymarch_pipeline);
+                raymarch.set_bind_group(0, &self.full().uniform_bind_group, &[]);
+                raymarch.set_bind_group(3, &self.full().sh_volume_resources.bind_group, &[]);
+                raymarch.set_bind_group(5, &self.full().spot_shadow_pool.bind_group, &[]);
+                raymarch.set_bind_group(6, &self.full().fog.bind_group, &[]);
                 raymarch.dispatch_workgroups(groups_x, groups_y, 1);
             }
 
             let mut composite = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Fog Composite Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: scene_color,
+                    view: &scene_color,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -395,21 +451,25 @@ impl Renderer {
                 depth_stencil_attachment: None,
                 ..Default::default()
             });
-            composite.set_pipeline(&self.fog.composite_pipeline);
-            composite.set_bind_group(0, &self.fog.composite_bind_group, &[]);
+            composite.set_pipeline(&self.full().fog.composite_pipeline);
+            composite.set_bind_group(0, &self.full().fog.composite_bind_group, &[]);
             composite.draw(0..3, 0..1); // fullscreen triangle from vertex_index — no vertex buffer
         }
 
-        self.record_wireframe_overlay(&mut encoder, scene_color, render_world, visible);
+        self.record_wireframe_overlay(&mut encoder, &scene_color, render_world, visible);
 
         #[cfg(feature = "dev-tools")]
         if render_world {
-            self.debug_lines.render(
-                &self.queue,
+            let Self { queue, full, .. } = self;
+            let full = full
+                .as_mut()
+                .expect("renderer full-init must complete before full-ready paths run");
+            full.debug_lines.render(
+                queue,
                 &mut encoder,
-                scene_color,
-                &self.depth_view,
-                &self.uniform_bind_group,
+                &scene_color,
+                &full.depth_view,
+                &full.uniform_bind_group,
             );
             // Buffer is cleared by the frame loop (via `clear_debug_lines`)
             // before the next frame's emit call — that single owner handles
@@ -426,16 +486,34 @@ impl Renderer {
         // owns layout) and records its draw data. EMPTY-TREE EARLY-OUT: when the
         // snapshot carries no tree, or the tree lays out empty, the pass is
         // skipped entirely — no `begin_render_pass`. This is the gameplay-path-
-        // only early-out (A follow-up #3); the splash path opens the pass
-        // unconditionally for its frame-0 black clear (see `record_splash_ui`).
+        // only early-out (A follow-up #3); the boot splash is a separate
+        // renderer-owned pass (`BootSplashPass`) that always clears the swapchain.
         let ui_viewport = [self.surface_config.width, self.surface_config.height];
+        // Destructure boot (`device`/`queue`) + `full` once for the whole UI
+        // region: the layout/focus-ring/encode/resolve statements interleave a
+        // `&mut full.ui` (or `&mut full.screen_effects`) borrow with disjoint
+        // `&full.ui_snapshot` / `&full.ui_theme` reads in single statements — the
+        // `full_mut()` accessor borrows ALL of `self`, so it cannot coexist with
+        // those argument reads. The destructure restores the disjoint-field
+        // borrows the inline layout had. Closed before the submit/readback tail,
+        // which calls `&mut self` helpers (`encode_sh_probe_readback`) and the
+        // boot `queue.submit` that need `self` intact.
+        let Self {
+            device,
+            queue,
+            full,
+            ..
+        } = self;
+        let full = full
+            .as_mut()
+            .expect("renderer full-init must complete before full-ready paths run");
         // Modal stack: lay out and record each layer bottom→top (`trees[0]` is the
         // bottom HUD, the last entry the top/active modal). Each layer keeps its
         // own retained tree + dirty gate, so a frozen lower layer recomputes
         // nothing while the top animates. Painter's order is the stack order: a
         // later layer's quads composite over the earlier ones into the same view
         // (LoadOp::Load). Empty/empty-laying-out layers early-out individually.
-        let stack: Vec<ui::descriptor::AnchoredTree> = self
+        let stack: Vec<ui::descriptor::AnchoredTree> = full
             .ui_snapshot
             .trees
             .iter()
@@ -455,21 +533,21 @@ impl Renderer {
         let mut layer_draws: Vec<ui::tree::UiDrawData> = Vec::with_capacity(stack.len());
         for (layer, tree) in stack.iter().enumerate() {
             // Image sizes are optional for gameplay layers — an `image` node with
-            // no size entry measures to zero. The splash supplies its logo size
-            // separately in `record_splash_ui`.
+            // no size entry measures to zero. The boot splash sizes its logo in
+            // its own `BootSplashPass`, independent of this gameplay path.
             // Bound text/panel nodes resolve against the snapshot's slot values
             // (disjoint field borrow from `&mut self.ui`). The cloned `stack`
             // above already released the snapshot, so this borrow is clean.
-            let mut draw = self.ui.layout_gameplay_tree(
+            let mut draw = full.ui.layout_gameplay_tree(
                 layer,
                 tree,
                 ui_viewport,
                 &ui::tree::ImageSizes::new(),
-                &self.ui_snapshot.slot_values,
-                &self.ui_snapshot.cell_values,
-                &self.ui_theme,
-                self.ui_theme_generation,
-                self.ui_snapshot.time_seconds,
+                &full.ui_snapshot.slot_values,
+                &full.ui_snapshot.cell_values,
+                &full.ui_theme,
+                full.ui_theme_generation,
+                full.ui_snapshot.time_seconds,
             );
             // Focus ring (M13 Goal F, Task 3): only the TOP layer takes focus, so
             // draw the engine ring around the focused node's rect on it. The
@@ -479,16 +557,16 @@ impl Renderer {
             // layer's quad list so it composites over the layer's own quads.
             let is_top = layer + 1 == stack.len();
             if is_top {
-                if let Some(focused) = self.ui_snapshot.focused_id.as_deref() {
-                    let focus_rects = self.ui.export_top_focus_rects(
+                if let Some(focused) = full.ui_snapshot.focused_id.as_deref() {
+                    let focus_rects = full.ui.export_top_focus_rects(
                         ui_viewport,
-                        &self.ui_snapshot.slot_values,
-                        &self.ui_snapshot.cell_values,
+                        &full.ui_snapshot.slot_values,
+                        &full.ui_snapshot.cell_values,
                     );
                     if let Some(fr) = focus_rects.rects.iter().find(|r| r.id == focused) {
-                        let inset = self.ui_theme.spacing("xs").unwrap_or(0.0)
+                        let inset = full.ui_theme.spacing("xs").unwrap_or(0.0)
                             * ui::layout::device_scale(ui_viewport);
-                        let ring_color = self
+                        let ring_color = full
                             .ui_theme
                             .color("focus.ring")
                             .unwrap_or([1.0, 0.0, 1.0, 1.0]);
@@ -506,15 +584,15 @@ impl Renderer {
         // layer's shaped glyphs) is unrepresentable. The white bind group is cloned
         // out first so the `&self.ui_images` borrow the fold takes can coexist with
         // the `&mut self.ui` encode call below.
-        let white_bg = self.ui.white_bind_group().clone();
+        let white_bg = full.ui.white_bind_group().clone();
         let composition =
-            ui::UiComposition::from_layer_draws(&layer_draws, &white_bg, &self.ui_images);
+            ui::UiComposition::from_layer_draws(&layer_draws, &white_bg, &full.ui_images);
         if !composition.is_empty() {
-            self.ui.encode(
-                &self.device,
-                &self.queue,
+            full.ui.encode(
+                device,
+                queue,
                 &mut encoder,
-                scene_color,
+                &scene_color,
                 ui_viewport,
                 wgpu::LoadOp::Load,
                 &composition,
@@ -522,7 +600,7 @@ impl Renderer {
         }
         // Drop retained state for any layers popped since last frame (stack
         // shrank), so freed modal trees release their layout cache.
-        self.ui.truncate_gameplay_stack(stack.len());
+        full.ui.truncate_gameplay_stack(stack.len());
 
         // Post-scene compositor resolve: blit `scene_color` into the swapchain
         // `view`, composing flash/vignette/shake from the frame's UI slot
@@ -530,40 +608,62 @@ impl Renderer {
         // resolve — the sole swapchain writer for the gameplay path, run every
         // frame (never skipped at rest). At-rest slot values pack to the identity
         // uniform, so the output stays byte-identical to the pre-SE blit.
-        self.screen_effects.encode_resolve(
-            &self.queue,
+        full.screen_effects.encode_resolve(
+            queue,
             &mut encoder,
             &view,
-            &self.ui_snapshot.slot_values,
+            &full.ui_snapshot.slot_values,
         );
 
-        if let Some(timing) = &self.frame_timing {
+        if let Some(timing) = &full.frame_timing {
             timing.encode_resolve(&mut encoder);
         }
 
-        self.queue.submit(std::iter::once(encoder.finish()));
+        // Last use of the UI-region destructure: the boot `queue` local submits.
+        // After this statement NLL releases the `&mut self` reborrow, so the
+        // submit/readback tail below may touch `self` again (the
+        // `encode_sh_probe_readback` helper takes `&mut self`).
+        queue.submit(std::iter::once(encoder.finish()));
 
         #[cfg(feature = "dev-tools")]
         self.encode_sh_probe_readback();
 
-        if let Some(timing) = self.frame_timing.as_mut() {
-            timing.post_submit(&self.device);
+        {
+            let Self { device, full, .. } = self;
+            let full = full
+                .as_mut()
+                .expect("renderer full-init must complete before full-ready paths run");
+            if let Some(timing) = full.frame_timing.as_mut() {
+                timing.post_submit(device);
+            }
         }
 
         // Drive the SH readback map and, when a frame's data has landed, swap it
         // into the probe-marker source so the next overlay frame shows live
         // (base + animated-delta) irradiance instead of the static bake.
         #[cfg(feature = "dev-tools")]
-        if let Some(live_irradiance) = self.sh_probe_readback.post_submit(&self.device) {
-            self.sh_volume_resources.probe_irradiance = live_irradiance;
+        {
+            let Self { device, full, .. } = self;
+            let full = full
+                .as_mut()
+                .expect("renderer full-init must complete before full-ready paths run");
+            if let Some(live_irradiance) = full.sh_probe_readback.post_submit(device) {
+                full.sh_volume_resources.probe_irradiance = live_irradiance;
+            }
         }
 
         // Drive the candidate cull's deferred submitted-leaf counter readback so
         // the Spatial-tab "Submitted leaves" count reflects the GPU's own tally
         // (a few frames stale by design) instead of a per-frame CPU recompute.
         #[cfg(feature = "dev-tools")]
-        if let Some(candidate) = self.candidate_cull.as_mut() {
-            candidate.post_submit(&self.device);
+        {
+            let Self { device, full, .. } = self;
+            let full = full
+                .as_mut()
+                .expect("renderer full-init must complete before full-ready paths run");
+            if let Some(candidate) = full.candidate_cull.as_mut() {
+                candidate.post_submit(device);
+            }
         }
 
         // Caller (`App`) presents after optionally appending the egui overlay

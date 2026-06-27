@@ -225,14 +225,14 @@ impl Renderer {
     /// no cull pipeline is loaded.
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
     pub fn visibility_diagnostics(&self) -> Option<crate::compute_cull::BvhCullDiagnostics> {
-        self.bvh_cull_diagnostics
+        self.full().bvh_cull_diagnostics
     }
 
     /// `true` when the loaded map carries a baked SH volume. The diagnostic
     /// panel queries this to render either live controls or a disabled-state label.
     #[cfg(feature = "dev-tools")]
     pub fn has_sh_volume(&self) -> bool {
-        self.sh_volume_resources.present
+        self.full().sh_volume_resources.present
     }
 
     /// `true` when the loaded map carries a baked SDF static-occluder atlas.
@@ -242,7 +242,7 @@ impl Renderer {
     /// cleanly to `main`-equivalent lighting.
     #[allow(dead_code)]
     pub fn has_sdf_atlas(&self) -> bool {
-        self.sdf_atlas_resources.present
+        self.full().sdf_atlas_resources.present
     }
 
     /// Borrow the SDF atlas resources. The SDF shadow pass consumes the
@@ -250,7 +250,7 @@ impl Renderer {
     /// gets only an upsampled shadow-factor texture in group 5.
     #[allow(dead_code)]
     pub fn sdf_atlas_resources(&self) -> &SdfAtlasResources {
-        &self.sdf_atlas_resources
+        &self.full().sdf_atlas_resources
     }
 
     /// Lightmap bake mode read from the PRL (Shadowed = visibility baked in).
@@ -260,14 +260,14 @@ impl Renderer {
     /// only for legacy-PRL compatibility.
     #[allow(dead_code)]
     pub fn lightmap_mode(&self) -> crate::prl::LightmapMode {
-        self.lightmap_mode
+        self.full().lightmap_mode
     }
 
     /// Per-animated-light delta-volume metadata for the SH diagnostic overlay.
     /// Empty when the map has no delta SH volumes.
     #[cfg(feature = "dev-tools")]
     pub fn sh_delta_volumes(&self) -> &[sh_volume::DeltaVolumeMeta] {
-        &self.sh_delta_volumes_meta
+        &self.full().sh_delta_volumes_meta
     }
 
     /// Emits SH diagnostic line segments into the renderer's per-frame debug-line
@@ -292,19 +292,20 @@ impl Renderer {
     ) {
         // Drive the live atlas readback only while the irradiance overlay is
         // actually drawn — every other frame it costs nothing.
+        let full = self.full_mut();
         let want_live_irradiance = state.show_markers
             && state.marker_mode == sh_diagnostics::MarkerMode::Irradiance
-            && self.sh_volume_resources.present;
-        self.sh_probe_readback.set_wanted(want_live_irradiance);
+            && full.sh_volume_resources.present;
+        full.sh_probe_readback.set_wanted(want_live_irradiance);
 
         sh_diagnostics::emit(
             state,
-            &self.sh_volume_resources,
-            &self.sh_delta_volumes_meta,
+            &full.sh_volume_resources,
+            &full.sh_delta_volumes_meta,
             camera_pos,
             world,
             visible_cell_mask,
-            &mut self.debug_lines,
+            &mut full.debug_lines,
         );
     }
 
@@ -314,10 +315,10 @@ impl Renderer {
     /// pass, mirroring `emit_sh_diagnostics`.
     #[cfg(feature = "dev-tools")]
     pub fn emit_nav_diagnostics(&mut self, graph: &crate::nav::NavGraph) {
-        if !self.show_navmesh {
+        if !self.full().show_navmesh {
             return;
         }
-        nav_diagnostics::emit(graph, &mut self.debug_lines);
+        nav_diagnostics::emit(graph, &mut self.full_mut().debug_lines);
     }
 
     /// Emit agent path/corridor diagnostic debug lines: the corridor from the
@@ -339,10 +340,16 @@ impl Renderer {
         cursor: usize,
         radius: f32,
     ) {
-        if !self.show_navmesh {
+        if !self.full().show_navmesh {
             return;
         }
-        nav_diagnostics::emit_agent_path(position, path, cursor, radius, &mut self.debug_lines);
+        nav_diagnostics::emit_agent_path(
+            position,
+            path,
+            cursor,
+            radius,
+            &mut self.full_mut().debug_lines,
+        );
     }
 
     /// Draw an "ugly-but-honest" wireframe capsule at each replicated remote
@@ -367,86 +374,89 @@ impl Renderer {
     #[cfg(feature = "dev-tools")]
     pub fn emit_remote_entity_markers(&mut self, centers: &[Vec3], radius: f32, half_height: f32) {
         const REMOTE_ENTITY_COLOR: [u8; 4] = [0, 255, 255, 255]; // cyan
+        let debug_lines = &mut self.full_mut().debug_lines;
         for &center in centers {
-            self.debug_lines
-                .push_capsule_overlay(center, radius, half_height, REMOTE_ENTITY_COLOR);
+            debug_lines.push_capsule_overlay(center, radius, half_height, REMOTE_ENTITY_COLOR);
         }
     }
 
     /// Flip the navmesh overlay on/off. Bound to `Alt+Shift+N`.
     #[cfg(feature = "dev-tools")]
     pub fn toggle_navmesh_overlay(&mut self) -> bool {
-        self.show_navmesh = !self.show_navmesh;
+        let full = self.full_mut();
+        full.show_navmesh = !full.show_navmesh;
         log::info!(
             "[Renderer] Navmesh overlay: {}",
-            if self.show_navmesh { "on" } else { "off" },
+            if full.show_navmesh { "on" } else { "off" },
         );
-        self.show_navmesh
+        full.show_navmesh
     }
 
     pub fn toggle_wireframe(&mut self) -> bool {
-        let next_mode =
-            if self.world_wireframe_mode == WorldWireframeMode::CullStatusTrianglesAlwaysOnTop {
-                WorldWireframeMode::Off
-            } else {
-                WorldWireframeMode::CullStatusTrianglesAlwaysOnTop
-            };
+        let next_mode = if self.full().world_wireframe_mode
+            == WorldWireframeMode::CullStatusTrianglesAlwaysOnTop
+        {
+            WorldWireframeMode::Off
+        } else {
+            WorldWireframeMode::CullStatusTrianglesAlwaysOnTop
+        };
         self.set_world_wireframe_mode(next_mode);
         log::info!(
             "[Renderer] Wireframe overlay: {}",
-            self.world_wireframe_mode.label(),
+            self.full().world_wireframe_mode.label(),
         );
-        self.wireframe_enabled
+        self.full().wireframe_enabled
     }
 
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
     pub fn world_wireframe_mode(&self) -> WorldWireframeMode {
-        self.world_wireframe_mode
+        self.full().world_wireframe_mode
     }
 
     pub fn set_world_wireframe_mode(&mut self, mode: WorldWireframeMode) {
-        self.world_wireframe_mode = mode;
-        self.wireframe_enabled = mode != WorldWireframeMode::Off;
+        let full = self.full_mut();
+        full.world_wireframe_mode = mode;
+        full.wireframe_enabled = mode != WorldWireframeMode::Off;
     }
 
     #[cfg(feature = "dev-tools")]
     pub fn bvh_overlay_state(&self) -> BvhOverlayState {
-        self.bvh_overlay
+        self.full().bvh_overlay
     }
 
     #[cfg(feature = "dev-tools")]
     pub fn set_bvh_overlay_visible(&mut self, visible: bool) {
-        self.bvh_overlay.visible = visible;
+        self.full_mut().bvh_overlay.visible = visible;
     }
 
     #[cfg(feature = "dev-tools")]
     pub fn set_bvh_overlay_color_mode(&mut self, mode: BvhOverlayColorMode) {
-        self.bvh_overlay.color_mode = mode;
+        self.full_mut().bvh_overlay.color_mode = mode;
     }
 
     #[cfg(feature = "dev-tools")]
     pub fn set_bvh_overlay_depth_mode(&mut self, mode: BvhOverlayDepthMode) {
-        self.bvh_overlay.depth_mode = mode;
+        self.full_mut().bvh_overlay.depth_mode = mode;
     }
 
     #[cfg(feature = "dev-tools")]
     pub fn set_bvh_overlay_budget(&mut self, budget: BvhOverlayBudget) {
-        self.bvh_overlay.budget = budget.sanitized();
+        self.full_mut().bvh_overlay.budget = budget.sanitized();
     }
 
     #[cfg(feature = "dev-tools")]
     pub fn cell_overlay_state(&self) -> CellOverlayState {
-        self.cell_overlay
+        self.full().cell_overlay
     }
 
     #[cfg(feature = "dev-tools")]
     pub fn set_cell_overlay_visible(&mut self, visible: bool) {
-        self.cell_overlay.visible = visible;
+        self.full_mut().cell_overlay.visible = visible;
     }
 
     #[cfg(feature = "dev-tools")]
     pub fn set_cell_overlay_depth_mode(&mut self, mode: BvhOverlayDepthMode) {
-        self.cell_overlay.depth_mode = mode;
+        self.full_mut().cell_overlay.depth_mode = mode;
     }
 
     /// Current frame's camera-cull diagnostics: which path runs (candidate vs
@@ -454,44 +464,45 @@ impl Renderer {
     /// Spatial diagnostics tab. Diagnostic only.
     #[cfg(feature = "dev-tools")]
     pub fn camera_cull_diagnostics(&self) -> CameraCullDiagnostics {
-        self.camera_cull_diagnostics
+        self.full().camera_cull_diagnostics
     }
 
     /// Publish this frame's CPU-side cell visibility and locator diagnostics.
     /// Called after visibility determination, before the debug UI renders.
     #[cfg(feature = "dev-tools")]
     pub fn set_spatial_diagnostics(&mut self, diagnostics: SpatialDiagnostics) {
-        self.spatial_diagnostics = diagnostics;
+        self.full_mut().spatial_diagnostics = diagnostics;
     }
 
     /// Last published cell visibility and locator diagnostics for the Spatial tab.
     #[cfg(feature = "dev-tools")]
     pub fn spatial_diagnostics(&self) -> &SpatialDiagnostics {
-        &self.spatial_diagnostics
+        &self.full().spatial_diagnostics
     }
 
     #[cfg(feature = "dev-tools")]
     pub fn portal_overlay_state(&self) -> PortalOverlayState {
-        self.portal_overlay
+        self.full().portal_overlay
     }
 
     #[cfg(feature = "dev-tools")]
     pub fn set_portal_overlay_visible(&mut self, visible: bool) {
-        self.portal_overlay.visible = visible;
+        self.full_mut().portal_overlay.visible = visible;
     }
 
     #[cfg(feature = "dev-tools")]
     pub fn set_portal_overlay_depth_mode(&mut self, mode: BvhOverlayDepthMode) {
-        self.portal_overlay.depth_mode = mode;
+        self.full_mut().portal_overlay.depth_mode = mode;
     }
 
     #[cfg(feature = "dev-tools")]
     #[allow(dead_code)]
     pub fn bvh_overlay_leaf_indices(&self, visible_cells: Option<&[bool]>) -> Vec<usize> {
-        if !self.bvh_overlay.visible {
+        let full = self.full();
+        if !full.bvh_overlay.visible {
             return Vec::new();
         }
-        select_bvh_overlay_leaf_indices(&self.bvh_leaves, self.bvh_overlay.budget, visible_cells)
+        select_bvh_overlay_leaf_indices(&full.bvh_leaves, full.bvh_overlay.budget, visible_cells)
     }
 
     /// Emit compiled BVH leaf AABBs into the per-frame debug-line buffer.
@@ -501,11 +512,12 @@ impl Renderer {
     /// leaves; it does not read back GPU cull status.
     #[cfg(feature = "dev-tools")]
     pub fn emit_bvh_overlay_diagnostics(&mut self, visible_cells: Option<&[bool]>) {
+        let full = self.full_mut();
         emit_bvh_overlay(
-            &self.bvh_leaves,
-            self.bvh_overlay,
+            &full.bvh_leaves,
+            full.bvh_overlay,
             visible_cells,
-            &mut self.debug_lines,
+            &mut full.debug_lines,
         );
     }
 
@@ -519,11 +531,12 @@ impl Renderer {
         world: &crate::prl::LevelWorld,
         visible_cells: &crate::visibility::VisibleCells,
     ) {
+        let full = self.full_mut();
         emit_cell_overlay(
             world,
             visible_cells,
-            self.cell_overlay,
-            &mut self.debug_lines,
+            full.cell_overlay,
+            &mut full.debug_lines,
         );
     }
 
@@ -531,7 +544,8 @@ impl Renderer {
     /// buffer. Consumes only `LevelWorld` CPU data.
     #[cfg(feature = "dev-tools")]
     pub fn emit_portal_overlay_diagnostics(&mut self, world: &crate::prl::LevelWorld) {
-        emit_portal_overlay(world, self.portal_overlay, &mut self.debug_lines);
+        let full = self.full_mut();
+        emit_portal_overlay(world, full.portal_overlay, &mut full.debug_lines);
     }
 }
 

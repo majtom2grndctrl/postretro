@@ -537,8 +537,7 @@ impl<'a> UiComposition<'a> {
     }
 
     /// `true` when the composition records nothing — no quad batches and no text.
-    /// The gameplay path early-outs the UI pass on this; the splash path opens the
-    /// pass regardless for its frame-0 black clear.
+    /// The gameplay path early-outs the UI pass on this.
     pub fn is_empty(&self) -> bool {
         self.batches.is_empty() && self.texts.is_empty()
     }

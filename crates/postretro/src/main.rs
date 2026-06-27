@@ -1457,13 +1457,15 @@ impl ApplicationHandler for App {
                 // checks them against the active dependency set before queuing
                 // the serialized staged build.
                 //
-                // Guarded behind "deferred session init committed" (`pending_session`
-                // consumed) — which only happens after the first visible logo
-                // frame — so reload draining never runs before the splash logo
-                // paints. The watcher itself starts during the deferred mod init
-                // that follows the same logo frame, so there is nothing to drain
-                // earlier. See: context/lib/boot_sequence.md §1.
-                if crate::startup::boot_allows_reload_drain(self.pending_session.is_none()) {
+                // Guarded behind the per-boot signal "the splash logo frame has
+                // presented this boot cycle" (`splash_frame >= 2`: frame 0 = black,
+                // frame 1 = logo) — so reload draining never runs before the splash
+                // logo paints, and a suspend→resume re-blocks it until the resumed
+                // logo repaints (suspend resets `splash_frame` to 0). Past the logo
+                // also guarantees the script runtime exists: the watcher starts in
+                // the deferred mod init on the logo frame, and the runtime is
+                // session-lifetime. See: context/lib/boot_sequence.md §1.
+                if crate::startup::boot_allows_reload_drain(self.splash_frame >= 2) {
                     self.drain_script_reload_requests();
                 }
 
@@ -2359,277 +2361,275 @@ impl ApplicationHandler for App {
                         self.script_time as f32,
                     );
 
-                    if renderer.is_full_ready() {
-                        // Particle render — packs `SpriteInstance` bytes per
-                        // collection; the collector never touches wgpu directly.
-                        {
-                            let registry = self.script_ctx.registry.borrow();
-                            // Cull non-visible emitters at render-collect, mirroring
-                            // the mesh path below: thread the level world + this
-                            // frame's visible-cell set so off-screen / adjacent-room
-                            // smoke is never packed for drawing. `visible_cells` is
-                            // still live here (reclaimed after the frame).
-                            self.particle_render.collect(
-                                &registry,
-                                self.level.as_ref(),
-                                &visible_cells,
-                            );
-                        }
-                        let particle_collections: Vec<(&str, &[u8])> =
-                            self.particle_render.iter_collections().collect();
-
-                        // Mesh render — emits per-instance inputs (model handle +
-                        // interpolated transform + phase seed) for skinned-mesh
-                        // entities, culling each against this frame's visible set
-                        // via `mesh_pass::mesh_visible`. Like the particle collector
-                        // it never touches wgpu; the renderer consumes the inputs
-                        // via `set_mesh_draws`. Runs before `render_frame_indirect`,
-                        // while `visible_cells` is still live (it is reclaimed into
-                        // scratch after).
-                        if let Some(world) = self.level.as_ref() {
-                            // Resolve pass: fill every pending animation entry
-                            // stamp from this frame's post-advance animation clock
-                            // before the collector samples poses. Runs with a
-                            // mutable registry, immediately before the (read-only)
-                            // collector, so same-tick switches have all landed and
-                            // the last target's stamp is concrete. See mesh.rs.
-                            {
-                                let mut registry = self.script_ctx.registry.borrow_mut();
-                                crate::scripting::components::mesh::resolve_pending_animation_stamps(
-                                    &mut registry,
-                                    self.anim_time,
-                                );
-                            }
-                            let registry = self.script_ctx.registry.borrow();
-                            // Same frame alpha the player camera reads from
-                            // `frame_timing` — interpolate each mesh between its
-                            // previous- and current-tick transforms.
-                            self.mesh_render.collect(
-                                &registry,
-                                world,
-                                &visible_cells,
-                                frame_result.alpha,
-                                self.anim_time,
-                                &self.mesh_clip_tables,
-                                // Camera eye position — the same value that seeds
-                                // the portal flood-fill — drives the per-instance
-                                // animation time-slicing distance bucket.
-                                interp.position,
-                            );
-                            renderer.set_mesh_draws(self.mesh_render.instances());
-                        }
-
-                        // Build the egui UI before `render_frame_indirect` so
-                        // the SH diagnostic overlay can push debug lines that
-                        // the frame's debug-line pass will pick up. Tessellated
-                        // paint jobs are stashed and consumed after the frame
-                        // by `render_debug_ui`.
-                        #[cfg(feature = "dev-tools")]
-                        let debug_ui_frame: Option<(
-                            egui::TexturesDelta,
-                            Vec<egui::epaint::ClippedPrimitive>,
-                            f32,
-                        )> = {
-                            let mut out = None;
-                            if let (Some(debug_ui), Some(ws)) =
-                                (self.debug_ui.as_mut(), self.window_state.as_ref())
-                            {
-                                if debug_ui.is_visible() {
-                                    let window = &ws.window;
-                                    let raw_input = debug_ui.winit_state.take_egui_input(window);
-                                    let timing_snapshot = renderer.frame_timing_snapshot().cloned();
-                                    let panel_state = &mut debug_ui.panel_state;
-                                    let sh_state = &mut debug_ui.sh_diagnostics_state;
-                                    let ctx_clone = debug_ui.ctx.clone();
-                                    let full_output = ctx_clone.run_ui(raw_input, |ui| {
-                                        render::debug_ui::draw_diagnostics_panel(
-                                            ui.ctx(),
-                                            panel_state,
-                                            sh_state,
-                                            renderer,
-                                            timing_snapshot.as_ref(),
-                                        );
-                                    });
-                                    debug_ui.winit_state.handle_platform_output(
-                                        window,
-                                        full_output.platform_output,
-                                    );
-                                    let paint_jobs = debug_ui.ctx.tessellate(
-                                        full_output.shapes,
-                                        full_output.pixels_per_point,
-                                    );
-                                    out = Some((
-                                        full_output.textures_delta,
-                                        paint_jobs,
-                                        window.scale_factor() as f32,
-                                    ));
-                                }
-                            }
-                            // Clear the debug-line buffer unconditionally each
-                            // frame so any producer starts fresh. This is the
-                            // single lifecycle owner of the buffer: it handles
-                            // early-returns in `render_frame_indirect`
-                            // (Timeout/Occluded/Outdated) and level unloads
-                            // cleanly, and keeps any future debug-line producer
-                            // from colliding with the SH diagnostic pass.
-                            renderer.clear_debug_lines();
-                            // Emit SH diagnostic debug lines now — after UI
-                            // mutated state, before `render_frame_indirect`
-                            // draws the debug-line pass.
-                            if let Some(world) = self.level.as_ref() {
-                                if let Some(debug_ui) = self.debug_ui.as_ref() {
-                                    renderer.emit_sh_diagnostics(
-                                        &debug_ui.sh_diagnostics_state,
-                                        render_eye_position,
-                                        world,
-                                        &light_reachable_cell_mask,
-                                    );
-                                }
-                                let bvh_visible_cell_mask =
-                                    drawable_visible_cell_mask(world.cell_count(), &visible_cells);
-                                renderer
-                                    .emit_bvh_overlay_diagnostics(bvh_visible_cell_mask.as_deref());
-                                renderer.emit_cell_overlay_diagnostics(world, &visible_cells);
-                                renderer.emit_portal_overlay_diagnostics(world);
-                            }
-                            // Navmesh overlay: append region rectangles + portal
-                            // edges. No-op unless the `Alt+Shift+N` toggle is on
-                            // and the map carried a baked navmesh.
-                            if let Some(nav_graph) = self.nav_graph.as_ref() {
-                                renderer.emit_nav_diagnostics(nav_graph);
-                            }
-                            // Chase-agent path overlay: corridor + funnel
-                            // waypoints for the `Alt+Shift+G` demo agent. Reads
-                            // the live agent component and hands plain geometry to
-                            // the renderer (no wgpu outside the renderer module).
-                            // Same toggle as the navmesh overlay.
-                            if let Some(agent) = self.debug_chase_agent {
-                                use crate::scripting::components::agent::AgentComponent;
-                                use crate::scripting::registry::Transform;
-                                let registry = self.script_ctx.registry.borrow();
-                                if let Ok(component) =
-                                    registry.get_component::<AgentComponent>(agent)
-                                {
-                                    let position = registry
-                                        .get_component::<Transform>(agent)
-                                        .map(|t| t.position)
-                                        .unwrap_or(Vec3::ZERO);
-                                    renderer.emit_agent_path_overlay(
-                                        position,
-                                        &component.path,
-                                        component.waypoint_cursor,
-                                        component.radius,
-                                    );
-                                }
-                            }
-                            // Remote-entity wireframe (M15 Phase 1): on the client
-                            // path only, draw a capsule at each replicated remote
-                            // entity so the host's moving pawn is visible rather
-                            // than an invisible bare-Transform ghost. Thin
-                            // delegation — `netcode` collects the centers
-                            // (registry read, no wgpu), the renderer owns the draw.
-                            // No-op for single-player and the host.
-                            if let Some(endpoint) = self.net_endpoint.as_ref() {
-                                let registry = self.script_ctx.registry.borrow();
-                                let centers = netcode::remote_entity_positions(endpoint, &registry);
-                                renderer.emit_remote_entity_markers(
-                                    &centers,
-                                    netcode::REMOTE_CAPSULE_RADIUS,
-                                    netcode::REMOTE_CAPSULE_HALF_HEIGHT,
-                                );
-                            }
-                            out
-                        };
-
-                        // Publish the once-per-frame read snapshot just before
-                        // the gameplay render call, mirroring the splash path so
-                        // the once-per-frame contract holds on both. Game logic and
-                        // audio have already run this frame, so the slot snapshot
-                        // freezes the settled store state (frame order: Input →
-                        // Game logic → Audio → Render). The renderer reads these
-                        // cloned values, never the live `SlotTable`.
-                        //
-                        // Modal stack compose stays behind one helper so normal
-                        // gameplay gets always-on HUD/base layers, while a top
-                        // frontend menu suppresses those layers and presents only
-                        // the menu over its optional backdrop.
-                        let frontend_menu_name = self
-                            .frontend
-                            .as_ref()
-                            .map(|frontend| frontend.menu_tree.as_str())
-                            .unwrap_or(render::ui::demo::FRONTEND_MENU_NAME);
-                        let frontend_menu_is_top =
-                            self.modal_stack.active_name() == Some(frontend_menu_name);
-                        let ui_snapshot = Self::build_ui_read_snapshot(
-                            &self.modal_stack,
-                            &mut self.presentation_cells,
-                            &self.script_ctx.slot_table.borrow(),
-                            self.script_time,
-                            self.ui_input_mode,
-                            self.ui_focused_id.clone(),
-                            frontend_menu_is_top,
+                    // This gameplay block runs only in Running (the redraw
+                    // path reaches here solely when `boot_state == Running`,
+                    // set after full renderer init), so the renderer is always
+                    // full-ready; the mesh-collect + draw submission below runs
+                    // unconditionally, like the `full_mut`-backed uploads above.
+                    // Particle render — packs `SpriteInstance` bytes per
+                    // collection; the collector never touches wgpu directly.
+                    {
+                        let registry = self.script_ctx.registry.borrow();
+                        // Cull non-visible emitters at render-collect, mirroring
+                        // the mesh path below: thread the level world + this
+                        // frame's visible-cell set so off-screen / adjacent-room
+                        // smoke is never packed for drawing. `visible_cells` is
+                        // still live here (reclaimed after the frame).
+                        self.particle_render.collect(
+                            &registry,
+                            self.level.as_ref(),
+                            &visible_cells,
                         );
-                        renderer.set_ui_snapshot(ui_snapshot);
+                    }
+                    let particle_collections: Vec<(&str, &[u8])> =
+                        self.particle_render.iter_collections().collect();
 
-                        let surface_texture = match renderer.render_frame_indirect(
-                            CameraCullVisibility {
-                                cells: &visible_cells,
-                                path: stats.path,
-                            },
-                            &light_reachable_cell_mask,
-                            &reachable_cell_aabbs,
-                            &fog_reachable,
-                            Some(stats.camera_cell),
-                            view_proj,
-                            &particle_collections,
-                            self.script_time,
-                            render::ClearColor {
-                                r: 0.05,
-                                g: 0.05,
-                                b: 0.08,
-                                a: 1.0,
-                            },
-                            true,
-                        ) {
-                            Ok(opt) => opt,
-                            Err(err) => {
-                                self.exit_result = Err(err);
-                                event_loop.exit();
-                                return;
+                    // Mesh render — emits per-instance inputs (model handle +
+                    // interpolated transform + phase seed) for skinned-mesh
+                    // entities, culling each against this frame's visible set
+                    // via `mesh_pass::mesh_visible`. Like the particle collector
+                    // it never touches wgpu; the renderer consumes the inputs
+                    // via `set_mesh_draws`. Runs before `render_frame_indirect`,
+                    // while `visible_cells` is still live (it is reclaimed into
+                    // scratch after).
+                    if let Some(world) = self.level.as_ref() {
+                        // Resolve pass: fill every pending animation entry
+                        // stamp from this frame's post-advance animation clock
+                        // before the collector samples poses. Runs with a
+                        // mutable registry, immediately before the (read-only)
+                        // collector, so same-tick switches have all landed and
+                        // the last target's stamp is concrete. See mesh.rs.
+                        {
+                            let mut registry = self.script_ctx.registry.borrow_mut();
+                            crate::scripting::components::mesh::resolve_pending_animation_stamps(
+                                &mut registry,
+                                self.anim_time,
+                            );
+                        }
+                        let registry = self.script_ctx.registry.borrow();
+                        // Same frame alpha the player camera reads from
+                        // `frame_timing` — interpolate each mesh between its
+                        // previous- and current-tick transforms.
+                        self.mesh_render.collect(
+                            &registry,
+                            world,
+                            &visible_cells,
+                            frame_result.alpha,
+                            self.anim_time,
+                            &self.mesh_clip_tables,
+                            // Camera eye position — the same value that seeds
+                            // the portal flood-fill — drives the per-instance
+                            // animation time-slicing distance bucket.
+                            interp.position,
+                        );
+                        renderer.set_mesh_draws(self.mesh_render.instances());
+                    }
+
+                    // Build the egui UI before `render_frame_indirect` so
+                    // the SH diagnostic overlay can push debug lines that
+                    // the frame's debug-line pass will pick up. Tessellated
+                    // paint jobs are stashed and consumed after the frame
+                    // by `render_debug_ui`.
+                    #[cfg(feature = "dev-tools")]
+                    let debug_ui_frame: Option<(
+                        egui::TexturesDelta,
+                        Vec<egui::epaint::ClippedPrimitive>,
+                        f32,
+                    )> = {
+                        let mut out = None;
+                        if let (Some(debug_ui), Some(ws)) =
+                            (self.debug_ui.as_mut(), self.window_state.as_ref())
+                        {
+                            if debug_ui.is_visible() {
+                                let window = &ws.window;
+                                let raw_input = debug_ui.winit_state.take_egui_input(window);
+                                let timing_snapshot = renderer.frame_timing_snapshot().cloned();
+                                let panel_state = &mut debug_ui.panel_state;
+                                let sh_state = &mut debug_ui.sh_diagnostics_state;
+                                let ctx_clone = debug_ui.ctx.clone();
+                                let full_output = ctx_clone.run_ui(raw_input, |ui| {
+                                    render::debug_ui::draw_diagnostics_panel(
+                                        ui.ctx(),
+                                        panel_state,
+                                        sh_state,
+                                        renderer,
+                                        timing_snapshot.as_ref(),
+                                    );
+                                });
+                                debug_ui
+                                    .winit_state
+                                    .handle_platform_output(window, full_output.platform_output);
+                                let paint_jobs = debug_ui
+                                    .ctx
+                                    .tessellate(full_output.shapes, full_output.pixels_per_point);
+                                out = Some((
+                                    full_output.textures_delta,
+                                    paint_jobs,
+                                    window.scale_factor() as f32,
+                                ));
                             }
-                        };
-                        // Read back the focus rect list the renderer just exported
-                        // for the top stack layer (the gameplay render above laid it
-                        // out). The focus engine consumes it next frame's game-logic
-                        // phase — the reverse N→N+1 the focus ring's one-frame trail
-                        // comes from. See: context/lib/ui.md §4.
-                        self.ui_focus_rects = Some(renderer.export_ui_focus_rects());
-                        if let Some(surface_texture) = surface_texture {
-                            #[cfg(feature = "dev-tools")]
-                            {
-                                if let Some((textures_delta, paint_jobs, scale)) = debug_ui_frame {
-                                    if let Err(err) = renderer.render_debug_ui(
-                                        &surface_texture,
-                                        textures_delta,
-                                        paint_jobs,
-                                        scale,
-                                    ) {
-                                        self.exit_result = Err(err);
-                                        event_loop.exit();
-                                        return;
-                                    }
+                        }
+                        // Clear the debug-line buffer unconditionally each
+                        // frame so any producer starts fresh. This is the
+                        // single lifecycle owner of the buffer: it handles
+                        // early-returns in `render_frame_indirect`
+                        // (Timeout/Occluded/Outdated) and level unloads
+                        // cleanly, and keeps any future debug-line producer
+                        // from colliding with the SH diagnostic pass.
+                        renderer.clear_debug_lines();
+                        // Emit SH diagnostic debug lines now — after UI
+                        // mutated state, before `render_frame_indirect`
+                        // draws the debug-line pass.
+                        if let Some(world) = self.level.as_ref() {
+                            if let Some(debug_ui) = self.debug_ui.as_ref() {
+                                renderer.emit_sh_diagnostics(
+                                    &debug_ui.sh_diagnostics_state,
+                                    render_eye_position,
+                                    world,
+                                    &light_reachable_cell_mask,
+                                );
+                            }
+                            let bvh_visible_cell_mask =
+                                drawable_visible_cell_mask(world.cell_count(), &visible_cells);
+                            renderer.emit_bvh_overlay_diagnostics(bvh_visible_cell_mask.as_deref());
+                            renderer.emit_cell_overlay_diagnostics(world, &visible_cells);
+                            renderer.emit_portal_overlay_diagnostics(world);
+                        }
+                        // Navmesh overlay: append region rectangles + portal
+                        // edges. No-op unless the `Alt+Shift+N` toggle is on
+                        // and the map carried a baked navmesh.
+                        if let Some(nav_graph) = self.nav_graph.as_ref() {
+                            renderer.emit_nav_diagnostics(nav_graph);
+                        }
+                        // Chase-agent path overlay: corridor + funnel
+                        // waypoints for the `Alt+Shift+G` demo agent. Reads
+                        // the live agent component and hands plain geometry to
+                        // the renderer (no wgpu outside the renderer module).
+                        // Same toggle as the navmesh overlay.
+                        if let Some(agent) = self.debug_chase_agent {
+                            use crate::scripting::components::agent::AgentComponent;
+                            use crate::scripting::registry::Transform;
+                            let registry = self.script_ctx.registry.borrow();
+                            if let Ok(component) = registry.get_component::<AgentComponent>(agent) {
+                                let position = registry
+                                    .get_component::<Transform>(agent)
+                                    .map(|t| t.position)
+                                    .unwrap_or(Vec3::ZERO);
+                                renderer.emit_agent_path_overlay(
+                                    position,
+                                    &component.path,
+                                    component.waypoint_cursor,
+                                    component.radius,
+                                );
+                            }
+                        }
+                        // Remote-entity wireframe (M15 Phase 1): on the client
+                        // path only, draw a capsule at each replicated remote
+                        // entity so the host's moving pawn is visible rather
+                        // than an invisible bare-Transform ghost. Thin
+                        // delegation — `netcode` collects the centers
+                        // (registry read, no wgpu), the renderer owns the draw.
+                        // No-op for single-player and the host.
+                        if let Some(endpoint) = self.net_endpoint.as_ref() {
+                            let registry = self.script_ctx.registry.borrow();
+                            let centers = netcode::remote_entity_positions(endpoint, &registry);
+                            renderer.emit_remote_entity_markers(
+                                &centers,
+                                netcode::REMOTE_CAPSULE_RADIUS,
+                                netcode::REMOTE_CAPSULE_HALF_HEIGHT,
+                            );
+                        }
+                        out
+                    };
+
+                    // Publish the once-per-frame read snapshot just before
+                    // the gameplay render call, mirroring the splash path so
+                    // the once-per-frame contract holds on both. Game logic and
+                    // audio have already run this frame, so the slot snapshot
+                    // freezes the settled store state (frame order: Input →
+                    // Game logic → Audio → Render). The renderer reads these
+                    // cloned values, never the live `SlotTable`.
+                    //
+                    // Modal stack compose stays behind one helper so normal
+                    // gameplay gets always-on HUD/base layers, while a top
+                    // frontend menu suppresses those layers and presents only
+                    // the menu over its optional backdrop.
+                    let frontend_menu_name = self
+                        .frontend
+                        .as_ref()
+                        .map(|frontend| frontend.menu_tree.as_str())
+                        .unwrap_or(render::ui::demo::FRONTEND_MENU_NAME);
+                    let frontend_menu_is_top =
+                        self.modal_stack.active_name() == Some(frontend_menu_name);
+                    let ui_snapshot = Self::build_ui_read_snapshot(
+                        &self.modal_stack,
+                        &mut self.presentation_cells,
+                        &self.script_ctx.slot_table.borrow(),
+                        self.script_time,
+                        self.ui_input_mode,
+                        self.ui_focused_id.clone(),
+                        frontend_menu_is_top,
+                    );
+                    renderer.set_ui_snapshot(ui_snapshot);
+
+                    let surface_texture = match renderer.render_frame_indirect(
+                        CameraCullVisibility {
+                            cells: &visible_cells,
+                            path: stats.path,
+                        },
+                        &light_reachable_cell_mask,
+                        &reachable_cell_aabbs,
+                        &fog_reachable,
+                        Some(stats.camera_cell),
+                        view_proj,
+                        &particle_collections,
+                        self.script_time,
+                        render::ClearColor {
+                            r: 0.05,
+                            g: 0.05,
+                            b: 0.08,
+                            a: 1.0,
+                        },
+                        true,
+                    ) {
+                        Ok(opt) => opt,
+                        Err(err) => {
+                            self.exit_result = Err(err);
+                            event_loop.exit();
+                            return;
+                        }
+                    };
+                    // Read back the focus rect list the renderer just exported
+                    // for the top stack layer (the gameplay render above laid it
+                    // out). The focus engine consumes it next frame's game-logic
+                    // phase — the reverse N→N+1 the focus ring's one-frame trail
+                    // comes from. See: context/lib/ui.md §4.
+                    self.ui_focus_rects = Some(renderer.export_ui_focus_rects());
+                    if let Some(surface_texture) = surface_texture {
+                        #[cfg(feature = "dev-tools")]
+                        {
+                            if let Some((textures_delta, paint_jobs, scale)) = debug_ui_frame {
+                                if let Err(err) = renderer.render_debug_ui(
+                                    &surface_texture,
+                                    textures_delta,
+                                    paint_jobs,
+                                    scale,
+                                ) {
+                                    self.exit_result = Err(err);
+                                    event_loop.exit();
+                                    return;
                                 }
                             }
-                            surface_texture.present();
                         }
-                        if self.pending_level_log {
-                            // First level frame just submitted — close out
-                            // log line C with the present-cost of the frame
-                            // the user is about to see.
-                            self.level_timings.record("first_level_frame");
-                            log::info!("{}", self.level_timings.summary());
-                            self.pending_level_log = false;
-                        }
+                        surface_texture.present();
+                    }
+                    if self.pending_level_log {
+                        // First level frame just submitted — close out
+                        // log line C with the present-cost of the frame
+                        // the user is about to see.
+                        self.level_timings.record("first_level_frame");
+                        log::info!("{}", self.level_timings.summary());
+                        self.pending_level_log = false;
                     }
                 }
 

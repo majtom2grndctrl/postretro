@@ -145,13 +145,16 @@ pub(crate) fn take_once<T>(slot: &mut Option<T>) -> Option<T> {
     slot.take()
 }
 
-/// The boot timing recorder may drain stale script-reload requests only after
-/// the deferred session install commits — i.e. after `pending_session` is
-/// consumed. Pure predicate naming the redraw-path guard so the ordering
-/// contract (no reload drain before the first logo frame + an installed script
-/// runtime) is testable without a window. See: boot_sequence §1.
-pub(crate) fn boot_allows_reload_drain(session_installed: bool) -> bool {
-    session_installed
+/// The redraw path may drain stale script-reload requests only after the splash
+/// logo frame has presented THIS boot cycle. Pure predicate naming the guard so
+/// the per-boot ordering contract is testable without a window. The caller
+/// passes `splash_frame >= 2` (frame 0 = black, frame 1 = logo); on suspend the
+/// frame counter resets to 0, so a resumed boot re-blocks the drain until its
+/// own logo frame repaints. Past the logo also guarantees the script runtime
+/// exists, since deferred session install runs on the logo frame and the runtime
+/// is session-lifetime. See: boot_sequence §1.
+pub(crate) fn boot_allows_reload_drain(logo_frame_shown: bool) -> bool {
+    logo_frame_shown
 }
 
 /// Named stage timings for the three startup log lines (engine boot, mod init, level load).
@@ -487,17 +490,18 @@ mod tests {
     // --- Deferred-session guard before runtime exists ---
 
     #[test]
-    fn boot_allows_reload_drain_only_after_session_installed() {
-        // Before install (pending_session still Some -> session_installed false),
-        // the redraw path must NOT drain script reloads: the watcher does not
-        // exist yet and the first logo frame has not painted.
+    fn boot_allows_reload_drain_only_after_logo_frame_shown() {
+        // Before the logo frame presents this boot cycle (splash_frame < 2 ->
+        // logo_frame_shown false), the redraw path must NOT drain script reloads:
+        // the first logo frame has not painted yet, and on a resumed boot the
+        // watcher's drain must wait for the resumed logo too.
         assert!(
             !boot_allows_reload_drain(false),
-            "no reload drain before deferred session install",
+            "no reload drain before the logo frame paints this boot cycle",
         );
         assert!(
             boot_allows_reload_drain(true),
-            "reload drain allowed once the session bundle is installed",
+            "reload drain allowed once the logo frame has presented this boot cycle",
         );
     }
 }

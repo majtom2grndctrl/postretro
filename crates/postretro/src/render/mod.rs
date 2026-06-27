@@ -37,6 +37,7 @@ mod pipeline_layout;
 mod renderer_debug_ui;
 mod renderer_diagnostics;
 mod renderer_frame;
+mod renderer_full_init;
 mod renderer_geometry;
 mod renderer_init;
 mod renderer_init_pipelines;
@@ -103,5 +104,6 @@ pub(crate) use renderer_lighting::*;
 pub(crate) use renderer_types::*;
 
 // Internal init/render helpers used by the `impl Renderer` files via `use super::*`.
+use renderer_full_init::*;
 use renderer_init_pipelines::*;
 use renderer_init_resources::*;

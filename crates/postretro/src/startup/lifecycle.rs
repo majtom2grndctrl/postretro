@@ -364,7 +364,7 @@ impl App {
                 false
             }
             LoadingPoll::Pending => {
-                self.paint_splash(event_loop);
+                let _ = self.paint_splash(event_loop); // Loading redraws unconditionally; the outcome doesn't drive state advance here.
                 self.request_redraw();
                 false
             }

@@ -18,6 +18,11 @@ leaf on a single layer and achieves 85–95% packing density vs the shelf packer
 - Replace `shelf_pack` with a leaf-aware MaxRects multi-bin packer. Hard invariant: all charts for
   one BVH leaf land on a single layer (bake-time assertion in unit tests). Add `MAX_ATLAS_LAYERS`
   constant (= 256). Add `LightmapBakeError::LayerOverflow` for when charts exceed this cap.
+- Make the compiler bake atlas layer-aware: `ChartPlacement.layer`, layer-major `CompositedAtlas`,
+  per-layer dilation, and the `lightmap_layer.rs` incremental-cache seam (`LayerTexel`,
+  `LightmapLayer`, `composite_layers`, `atlas_layout_fingerprint`) all grow a layer dimension so the
+  byte-identity cache-exactness gate still holds. The incremental-cache on-disk format bumps
+  (dev-local, regenerated on next bake).
 - Update `assign_lightmap_uvs` to write `lightmap_layer` per vertex from packer output.
 - Runtime: `texture_2d_array` texture creation for irradiance (binding 0) and direction (binding 1);
   `D2Array` view dimension in BGL entries for those two bindings. Animated atlas bindings (3, 5)
@@ -53,10 +58,15 @@ leaf on a single layer and achieves 85–95% packing density vs the shelf packer
   asserts correct layer assignments, valid per-vertex `lightmap_layer` values, and the leaf-cohesion
   invariant. (GPU rendering of both layers is verified manually via `cargo run` with a map that
   triggers overflow.)
+- [ ] `cargo test -p postretro-level-compiler` includes a multi-layer byte-identity test asserting
+  the per-light composite (`composite_layers` → `CompositedAtlas`) equals the monolithic bake for a
+  two-layer atlas, extending the existing single-layer cache-exactness gate to multi-layer.
 - [ ] The adapter pre-check logs a `[Renderer]` error and aborts when `max_texture_array_layers` is
-  below the required floor. `filter_usable_section` returns `None` (and logs a `[Renderer]` error)
-  when a `LightmapSection` has `layer_count > max_texture_array_layers` (verified by a unit test
-  constructing an oversize section).
+  below the required floor. Factor the comparison into a pure helper (e.g.
+  `fn array_layers_sufficient(limit: u32) -> bool`) and unit-test it, since no real adapter exposes
+  `< 256` to exercise the full path. `filter_usable_section` returns `None` (and logs a `[Renderer]`
+  error) when a `LightmapSection` has `layer_count > max_texture_array_layers` (verified by a unit
+  test constructing an oversize section).
 - [ ] `prl_loader` logs `[PRL] Lightmap: …x… atlas, N layer(s) …` at `info` level when a
   lightmap section is present (prefix stays `[PRL]`, not `[Renderer]`).
 - [ ] A unit test in `crates/level-format/src/geometry.rs` asserts that a `Vertex` with a non-zero `lightmap_layer` round-trips through `to_bytes`/`from_bytes` with the layer value preserved. A unit test in `crates/postretro/src/render/renderer_geometry.rs` (or `prl_loader.rs`) asserts that `WorldVertex.lightmap_layer` is serialized at byte offset 32 (i.e. the 4-byte `u32` starting at byte 32 of the serialized `WorldVertex` matches `lightmap_layer`).
@@ -68,14 +78,16 @@ leaf on a single layer and achieves 85–95% packing density vs the shelf packer
 In `crates/level-format/src/geometry.rs`: add `pub lightmap_layer: u16` and 2 bytes of explicit
 padding to `Vertex` after `lightmap_uv`. Update `VERTEX_SIZE` from 32 to 36. Update `to_bytes` to
 serialize `lightmap_layer` as `u16` LE then two zero padding bytes. Update `from_bytes` to read and
-discard padding. Update `Vertex::new` to accept `lightmap_layer: u16`; all current call sites in the
-compiler pass `0` (real layer values come in Task 3). Rename the test
+discard padding. Update `Vertex::new` to accept `lightmap_layer: u16`; all current call sites — including
+`#[cfg(test)]` modules in `geometry.rs`, `lightmap_bake.rs`, and any other crate (grep `Vertex::new`
+to enumerate) — pass `0` (real layer values come in Task 3b). Rename the test
 `vertex_is_32_bytes_face_is_8_bytes` and fix its expected byte count to 36.
 
 Also in `crates/postretro/src/geometry.rs`: add `pub lightmap_layer: u32` (4 bytes) to
 `WorldVertex`, the GPU-side runtime struct, and bump `WorldVertex::STRIDE` from 32 to 36.
-In `crates/postretro/src/prl_loader.rs` in the `WorldVertex { … }` construction (around
-line 1036): add `lightmap_layer: v.lightmap_layer as u32` (widening from u16). In
+In `crates/postretro/src/prl_loader.rs` in the `WorldVertex { … }` construction (the
+`.map(|v| WorldVertex { … })` closure, around line 1031): add
+`lightmap_layer: v.lightmap_layer as u32` (widening from u16). In
 `crates/postretro/src/render/renderer_geometry.rs`: extend the vertex serializer to write
 the new field. The on-disk `Vertex` stores `lightmap_layer: u16`; the GPU struct stores it
 as `u32` so the wgpu vertex format is `VertexFormat::Uint32`.
@@ -92,31 +104,92 @@ texel_density, format, total_bytes)`. Add `pub layer_count: u32` to `LightmapSec
 each layer `width × height` texels in the declared format). Update `to_bytes`, `from_bytes`,
 `placeholder`, `encode_section` (lightmap_bake.rs:193, which constructs `LightmapSection { width, height, … }`), `log_stats` (lightmap_bake.rs:470, which reads `section.width`/`section.height`), `fake_section` (lightmap.rs test helper), and all existing tests. `from_bytes` must return `InvalidData` when `version ≠ 2`, naming the received value. Note: pre-v2 sections had no version field — their first u32 was `width`. The rejection test should feed a realistic pre-v2 blob (first u32 value ≠ 2, e.g. a typical width like 1024) rather than a synthetic `version=1` header that never existed on disk. Update `context/lib/build_pipeline.md` with the new layout description.
 
-### Task 3: Leaf-aware MaxRects multi-bin packer
+### Task 3a: Layer-aware bake atlas and incremental-cache seam
+
+Multi-layer makes the compiler's bake atlas layer-indexed. This is the largest task: the
+`CompositedAtlas` is the byte-identity comparison seam between the monolithic bake and the per-light
+incremental composite (`lightmap_layer.rs`), so every structure on that seam grows a layer dimension
+in lockstep or the cache exactness gate breaks.
+
+In `crates/level-compiler/src/chart_raster.rs`: add `pub layer: u32` to `ChartPlacement` (currently
+`{ x, y }`). Every placement producer and consumer threads the layer through.
+
+In `crates/level-compiler/src/lightmap_bake.rs`:
+- `CompositedAtlas` (`{ irradiance: Vec<f32>, direction: Vec<Vec3>, coverage: Vec<bool>,
+  atlas_width, atlas_height }`): add `pub layer_count: u32`. The three buffers become layer-major,
+  sized `layer_count × atlas_width × atlas_height` (irradiance ×4 floats). `zeroed` takes
+  `(atlas_w, atlas_h, layer_count)`. Texel addressing becomes
+  `layer × (atlas_width × atlas_height) + y × atlas_width + x`.
+- `CompositedAtlas::dilate`: run edge dilation per layer over each layer's slice independently —
+  dilation must not bleed across layer boundaries.
+- `CompositedAtlas::encode_section`: emit the v2 multi-layer `LightmapSection` from Task 2 —
+  layer-major blobs, `layer_count`, `irr_width/irr_height = atlas_width/atlas_height`,
+  `dir_width/dir_height = atlas_width/atlas_height`, `dir_texel_density = irr_texel_density`.
+- `bake_monolithic_atlas` / `bake_face_chart`: write each face's texels into its placement's layer
+  slice (offset by `placement.layer × atlas_width × atlas_height`).
+- `PreparedAtlas` and `LightmapBakeOutput`: add `pub layer_count: u32`. `bake_lightmap` and
+  `prepare_atlas` propagate it (placeholder / empty-geometry paths use `layer_count = 1`).
+- `log_stats`: read `section.irr_width` / `section.irr_height` / `section.layer_count` (the v1
+  `section.width` / `section.height` fields are gone after Task 2).
+
+In `crates/level-compiler/src/lightmap_layer.rs` (the per-light incremental cache):
+- `LayerTexel`: add `pub layer: u32` (keep `idx` as the within-layer `y × atlas_width + x`). A single
+  global `u32` index would overflow at large multi-layer sizes, so the layer is carried explicitly.
+  Update the `size_of::<LayerTexel>() == 40` static assertion to `== 44`.
+- `LightmapLayer`: add `pub layer_count: u32`; its `to_bytes` / `from_bytes` header grows from 12 to
+  16 bytes (`atlas_width`, `atlas_height`, `layer_count`, texel `count`). Update `LAYER_HEADER_BYTES`.
+- `composite_layers`: size the output `CompositedAtlas` for `layer_count` layers and index each
+  texel at `t.layer × (atlas_w × atlas_h) + t.idx`.
+- `atlas_layout_fingerprint`: fold `p.layer` into the digest alongside `p.x` / `p.y` so a repack that
+  changes layer assignment invalidates the per-light cache.
+
+The incremental-bake cache's on-disk `LayerTexel` / `LightmapLayer` format changes, invalidating
+existing cache entries; they regenerate on the next bake (dev-local cache, never shipped).
+
+In `crates/level-compiler/src/animated_light_weight_maps.rs`: the animated-chunk baker consumes
+`atlas_width` + placements to resolve chunk rects. Animated stays single-layer (out of scope), so
+animated chunks live only on layer 0; assert or filter that the placements it consumes are
+`layer == 0`. (Faces on layers ≥ 1 receive no animated lighting — see Task 5's shader guard.)
+
+### Task 3b: Leaf-aware MaxRects packer and per-vertex layer assignment
 
 In `crates/level-compiler/src/lightmap_bake.rs`: replace `shelf_pack` with `pack_layers`,
-implementing MaxRects multi-bin packing. `pack_layers` takes `(charts: &[Chart], max_dim: u32) -> Result<PackOutput, LightmapBakeError>` where `max_dim` is the per-layer maximum width/height; production callers pass `MAX_ATLAS_DIMENSION` and the unit test passes a small value directly. Each chart must carry its BVH leaf index. `Chart` does not currently have this field;
-add `pub leaf_index: u32` to `Chart`. The leaf index is populated from
-`faces[face_index].leaf_index` (the `FaceMeta.leaf_index` on the BSP cell leaf)
-when charts are constructed.
+implementing leaf-aware MaxRects multi-bin packing. `pack_layers` takes
+`(charts: &[Chart], max_dim: u32) -> Result<PackOutput, LightmapBakeError>` where `max_dim` is the
+per-layer maximum width/height; production callers pass `MAX_ATLAS_DIMENSION` and the unit test
+passes a small value directly. `PackOutput` is
+`{ layer_count: u32, atlas_width: u32, atlas_height: u32, placements: Vec<ChartPlacement> }` — all
+layers share one `(atlas_width, atlas_height)` (a `texture_2d_array` has a single per-layer
+dimension for all layers); each `ChartPlacement` carries its `layer` (Task 3a). This replaces
+`shelf_pack`'s `(u32, u32, Vec<ChartPlacement>)` return; update `prepare_atlas`'s destructure.
 
-Note: the compiler module `lightmap_layer.rs` and the build-cache key namespace
-`"lightmap_layer"` refer to per-light incremental bake layers — a distinct concept from
-the atlas array layer index this task introduces. Do not conflate the two in code comments
-or cache key strings.
+Each chart carries its BVH leaf index. `Chart` does not currently have this field; add
+`pub leaf_index: u32`. `plan_charts` populates it from `geom.geometry.faces[face_index].leaf_index`
+(`FaceMeta.leaf_index`), which is 1:1 with chart index. `empty_chart()` sets `leaf_index: u32::MAX`.
 
-The packer's hard invariant:
-all charts belonging to one BVH leaf are placed on a single layer; when a leaf's charts don't fit
-on the current layer, open a new one. Add `const MAX_ATLAS_LAYERS: u32 = 256` and a new error
-variant `LightmapBakeError::LayerOverflow { layer_count: u32, max: u32 }`. Per-layer dimensions stay
-power-of-two and multiples of 4 (BC6H block alignment). Direction charts pack separately at their
-own density but share the same `layer_count` and use the same layer index per face as irradiance.
+Note: the compiler module `lightmap_layer.rs` and the build-cache key namespace `"lightmap_layer"`
+refer to per-light incremental bake layers — a distinct concept from the atlas array layer index
+this task introduces. Do not conflate the two in code comments or cache key strings.
 
-Update `assign_lightmap_uvs` to also write `lightmap_layer` into each vertex from the `pack_layers`
-output. Add a unit test asserting the leaf-cohesion invariant.
-The two-layer bake test must call `pack_layers` directly with a small max-dimension argument
-(not via the private `MAX_ATLAS_DIMENSION` constant) so the test is self-contained within
-`lightmap_bake.rs`'s test module.
+The packer's hard invariant: all charts belonging to one BVH leaf are placed on a single layer. A
+leaf's charts never straddle a layer boundary; when a leaf's charts don't fit in the current layer's
+free rectangles, open a new layer. All layers share the single `(atlas_width, atlas_height)` chosen
+to fit the largest leaf's charts up to `max_dim`. Add `const MAX_ATLAS_LAYERS: u32 = 256` and a new
+error variant `LightmapBakeError::LayerOverflow { layer_count: u32, max: u32 }`, returned when the
+layer count would exceed `MAX_ATLAS_LAYERS`. Per-layer dimensions stay power-of-two and multiples of
+4 (BC6H block alignment).
+
+Direction reuses irradiance's placements and layer indices verbatim — same `(atlas_width,
+atlas_height)`, same per-face layer (see Decisions). There is no separate direction pack.
+
+Update `assign_lightmap_uvs` to also write `lightmap_layer` into each vertex from `PackOutput`: each
+vertex's `lightmap_layer = placement.layer`, and its `lightmap_uv` normalizes against the shared
+per-layer `(atlas_width, atlas_height)`. Its signature reads the layer from the threaded
+`placements` (which now carry `layer`).
+
+Add a unit test asserting the leaf-cohesion invariant. The two-layer bake test calls `pack_layers`
+directly with a small `max_dim` argument and two BVH leaves (self-contained in `lightmap_bake.rs`'s
+test module; does not touch the private `MAX_ATLAS_DIMENSION`).
 
 ### Task 4: Runtime array texture pipeline
 
@@ -138,9 +211,11 @@ In `crates/postretro/src/lighting/lightmap.rs`:
 In `crates/postretro/src/render/renderer_init_resources.rs`: add
 `const REQUIRED_MAX_TEXTURE_ARRAY_LAYERS: u32 = 256`. Add the adapter pre-check that bails with a named `[Renderer]` error when `adapter_limits.max_texture_array_layers < REQUIRED_MAX_TEXTURE_ARRAY_LAYERS` — this produces the friendly diagnostic before `request_device` is called. The `required_limits` entry is the hard backstop that causes `request_device` to fail on non-conformant adapters; both mechanisms coexist intentionally. Also set
 `max_texture_array_layers: REQUIRED_MAX_TEXTURE_ARRAY_LAYERS` in the `required_limits`
-struct so the device is actually asked to provide this floor. Correct stale doc-comment
-references to `render::mod.rs` in `crates/postretro/src/lighting/lightmap.rs` and
-`crates/level-compiler/src/lightmap_bake.rs` to point to `renderer_init_resources.rs`.
+struct so the device is actually asked to provide this floor. Correct stale doc-comment references to `render::mod.rs`'s adapter pre-check in
+`crates/postretro/src/lighting/lightmap.rs` (~lines 112, 344) and
+`crates/level-compiler/src/lightmap_bake.rs` (~line 33) to point to `renderer_init_resources.rs`
+(grep `render::mod` to catch every stale pointer to the pre-check; leave unrelated `mod.rs`
+references such as `SHADER_SOURCE` alone).
 
 In `crates/postretro/src/prl_loader.rs`: update the `LightmapSection::from_bytes` call site (around
 the lightmap section read) to handle the new fields; extend the `info!` log to emit `[PRL] Lightmap: {w}x{h} atlas, {n} layer(s), …` matching the AC's expected prefix and `layer(s)` token.
@@ -156,11 +231,17 @@ In `crates/postretro/src/shaders/forward.wgsl`:
 - Change `sample_lightmap_irradiance`'s signature to `fn sample_lightmap_irradiance(uv: vec2<f32>, layer: u32)`, update its `textureSample` call to pass `layer` as the array index, and update its call site in `fs_main` to pass `in.lightmap_layer`. Update the `textureSample(lightmap_direction, …)` call similarly.
 - Animated atlas sample calls (`animated_lm_atlas`, `animated_lm_direction`) are unchanged.
 
-Update every `wgpu::VertexBufferLayout` that uses `WorldVertex::STRIDE` as its `array_stride`.
-This includes the forward pass, the depth prepass, and any shadow-depth pipeline variants in
-`crates/postretro/src/render/renderer_init_pipelines.rs`. Each layout must: (a) update
-`array_stride` to 36, and (b) add `VertexAttribute { offset: 32, format: VertexFormat::Uint32, shader_location: 5 }` for the forward-pass layout only (the layout that feeds `forward.wgsl`'s `vs_main`; in `renderer_init_pipelines.rs` this is the layout at approx. line 64 — confirm by the pipeline label or the fact it includes the `lightmap_uv_packed` attribute at shader_location 4). The depth prepass and shadow pipelines need
-the updated stride but do not need the new attribute (they do not read `lightmap_layer`).
+Update every `wgpu::VertexBufferLayout` that uses `WorldVertex::STRIDE` as its `array_stride`. There
+are five in `crates/postretro/src/render/renderer_init_pipelines.rs`: `Textured Pipeline` (forward,
+~line 65), `Wireframe Cull Status Pipeline` (~line 170), `Wireframe Visible Pipeline` (~line 235),
+`Depth Pre-Pass Pipeline` (~line 311), and `Spot Shadow Depth Pipeline` (~line 402). Each must update
+`array_stride` to 36. Only the forward-pass `Textured Pipeline` layout also adds
+`VertexAttribute { offset: 32, format: VertexFormat::Uint32, shader_location: 5 }` (it feeds
+`forward.wgsl`'s `vs_main`; confirm by the `Textured Pipeline` label and its `lightmap_uv_packed`
+attribute at shader_location 4). The other four need the stride bump only — they do not read
+`lightmap_layer`. The dummy-vertex buffer sizing (`vec![0u8; WorldVertex::STRIDE]`, ~line 468) tracks
+the constant automatically. Only `forward.wgsl`'s `VertexInput` gains `@location(5)`; the
+depth-prepass and spot-shadow shaders keep their `VertexInput` unchanged (they do not read the layer).
 
 Animated atlas limitation: faces on atlas layers ≥ 1 receive no animated lighting. The
 animated atlas is single-layer and covers layer-0 UV space only; sampling it at a layer-1
@@ -175,7 +256,7 @@ UV yields incorrect results. Guard the animated atlas sample in the fragment sha
 
 The default `anim_dir_sample = vec4<f32>(0.5, 1.0, 0.5, 0.0)` sets `.a = 0.0`, which is the zero-coverage sentinel the existing `use_correction_anim` gate keys on — layer ≥ 1 faces take the static-only path.
 
-Note: the existing shader has separate `let lm_anim` (~line 687) and `let anim_dir_sample` (~line 718) declarations 31 lines apart. To apply this guard, convert both to `var`, hoist `var anim_dir_sample` up before `var lm_anim`, and replace both `let` assignments with the guarded block above.
+Note: the existing shader has separate `let lm_anim` (~line 687) and `let anim_dir_sample` (~line 718) declarations 31 lines apart. To apply this guard, convert both to `var`, hoist `var anim_dir_sample` up before `var lm_anim`, and replace both `let` assignments with the guarded block above. Leave the downstream `dom_anim`, `anim_covered`, and `use_correction_anim` lines intact — they now consume the hoisted `var`s; the guard changes only how `lm_anim` / `anim_dir_sample` are assigned, not the correction math that follows.
 
 Update the doc-comment above the animated atlas bindings (group 4 bindings 3 and 5) to
 note this limitation. Note: `skinned_mesh.wgsl` also uses `@group(4)` but for the
@@ -184,13 +265,17 @@ SH/dynamic-direct BGL — a different layout entirely — so it is out of scope 
 ## Sequencing
 
 **Phase 1 (sequential):** Task 1, then Task 2 — vertex and format contracts that all downstream
-tasks compile against. Task 2 depends on Task 1 only via the `Vertex::new` call-site audit.
+tasks compile against. Task 2 depends on Task 1 only via the `Vertex::new` call-site audit. Note:
+after Task 2 the `postretro` crate does not build until Task 4 repoints the runtime `s.width` /
+`s.height` readers to `s.irr_width` / `s.irr_height`; only `postretro-level-format` builds at the
+Phase-1 boundary.
 
-**Phase 2 (concurrent):** Task 3 and Task 4 — compiler packer and runtime upload path are
-independent once Tasks 1 and 2 are done.
+**Phase 2 (concurrent):** Task 3a (layer-aware bake atlas + incremental-cache seam) and Task 4
+(runtime array-texture upload path) — independent once Tasks 1 and 2 are done.
 
-**Phase 3 (sequential):** Task 5 — shader consumes the `D2Array` BGL from Task 4 and the
-`lightmap_layer` vertex attribute from Task 1.
+**Phase 3 (concurrent):** Task 3b (leaf-aware `pack_layers` + per-vertex layer assignment, consuming
+Task 3a's `ChartPlacement.layer` and layer-major `CompositedAtlas`) and Task 5 (shader, consuming
+Task 4's `D2Array` BGL and Task 1's `lightmap_layer` vertex attribute).
 
 ## Wire format
 
@@ -236,7 +321,24 @@ The trailer round-trip test in Task 2 must cover a multi-layer section.
 Parsers must reject sections where `version ≠ 2` with an `InvalidData` error naming the
 received value. Parsers must also continue to reject `irr_format ∉ {0, 1}` and
 `dir_format ≠ 0` with `InvalidData` (preserving the existing checks from the v1 parser).
-Single-layer bakes write `layer_count = 1`; the v2 wire layout is always used.
+Single-layer bakes write `layer_count = 1`; the v2 wire layout is always used. v2 `from_bytes`
+keeps the v1 behavior of ignoring bytes past the LMOD trailer (forward-compat slack); it does not
+reject trailing bytes.
+
+### LightmapLayer incremental-cache blob (compiler-internal, dev-local)
+
+Native-endian (never shipped, never read cross-architecture). Header grows 12 → 16 bytes:
+
+```
+  u32  atlas_width      per-layer texel width
+  u32  atlas_height     per-layer texel height
+  u32  layer_count      number of atlas layers
+  u32  count            number of LayerTexel entries that follow
+```
+
+Followed by `count` × `LayerTexel` (44 bytes each: within-layer `idx` = `y × atlas_width + x`,
+`layer`, `irradiance[3]`, `weighted_dir[3]`, `fallback_normal[3]`). The format bump invalidates
+existing cache entries; they regenerate on the next bake.
 
 ## Decisions
 
@@ -245,3 +347,10 @@ Single-layer bakes write `layer_count = 1`; the v2 wire layout is always used.
   no visual benefit for a retro boomer shooter aesthetic. The wire format retains independent
   `dir_width`/`dir_height` fields so a coarser-direction optimisation can land without a format
   version bump, but `pack_layers` (this plan) sets `dir_width = irr_width` and `dir_height = irr_height`, and writes `dir_texel_density = irr_texel_density`.
+- **Layer-aware bake atlas (not tall-buffer slicing)**: the compiler's `CompositedAtlas` and the
+  per-light incremental-cache seam (`LayerTexel`, `LightmapLayer`, `composite_layers`,
+  `atlas_layout_fingerprint`) become genuinely layer-indexed rather than stacking layers in one tall
+  2D buffer. This keeps each structure's layer semantics explicit and the byte-identity cache gate
+  intact. Cost: the on-disk incremental-cache format bumps (header +4 bytes, `LayerTexel` 40 → 44
+  bytes), invalidating existing cache entries — acceptable because the cache is dev-local and
+  regenerates on the next bake.

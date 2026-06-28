@@ -1,7 +1,7 @@
 # Scripting-Core Extraction + Primitive-Handler Relocation
 
-> **Status:** draft
-> **Related:** `context/lib/scripting.md` · `context/lib/boot_sequence.md` §1 · `context/lib/build_pipeline.md` · `context/lib/development_guide.md` · `context/plans/drafts/compile-time-reduction/` (Task 6 follow-up) · sibling `research.md`
+> **Status:** draft — **NEEDS REBASE.** Orchestration of this spec blocked in Phase 2: Task 2 (extract `entity-core`) assumed `scripting/components/` was a clean VM-free leaf, which is false. The VM-free floor is larger and layered — re-scoped in `context/plans/drafts/engine-data-floor/`. **Task 2 here is superseded** by that plan; Task 3 reshapes to pull the VM-coupled remainder and enable `script-ffi` on the floor crates; Tasks 4–6 (ScriptingCore sub-struct, test relocation, handler relocation) ride unchanged on top. Rebase onto the floor (replace Task 2 with "depend on the floor crates") and re-review before re-orchestrating.
+> **Related:** `context/plans/drafts/engine-data-floor/` (the foundation this rebases onto) · `context/lib/scripting.md` §12 · `context/lib/build_pipeline.md` · `context/lib/development_guide.md` · `context/plans/drafts/compile-time-reduction/` · sibling `research.md`
 
 ## Goal
 

@@ -374,14 +374,19 @@ Start the node set minimal: named-input leaves, arithmetic, `clamp`, `lerp`, `se
 
 ## 12. Crate Architecture
 
-> Two-crate split established by `plans/ready/scripting-core-extraction/` — design intent until it ships. The boundary contracts below are durable; the working crate names are not.
+> Specced in `plans/ready/engine-data-floor/` (design intent until it ships; the crates do not exist yet). The boundary contracts below are durable.
 
-Scripting spans two crates so routine engine edits stop recompiling the VM bindings:
+The engine data sits in a **VM-free two-layer floor** beneath the VM-coupled runtime, so routine engine edits stop recompiling the VM bindings. Dependency flows one way, top to bottom:
 
-- **Scripting data model — VM-free.** Entity registry, components, `ScriptCtx` and its backing state registries. Default build pulls no VM. Non-scripting subsystems (movement, netcode, render) depend on it and treat `EntityId` as an opaque handle.
-- **Scripting runtime — VM-coupled.** Primitive registry, the QuickJS and Luau subsystems, marshalling, IR substrate, typedef generator. Depends on the data-model crate with VM marshalling enabled.
+- **`postretro-foundation` (lower).** The IR evaluation substrate core, the movement/IR cluster (`MovementScope` + `PlayerMovementComponent`), the *foundation-clean* leaf data the subsystems share — value types (the glam-wrapping newtypes), the descriptors that reference only foundation types, the pure validators, and the sunk subsystem PODs (damage/nav/map-entry). Default build pulls no VM.
+- **`postretro-entities` (upper).** The entity registry and `ComponentValue`, the components, `ScriptCtx` and its backing registries (slot table, command queue, data registry), and the descriptors that reference an entities-resident type. Depends on the foundation.
+- **VM-coupled runtime** (`postretro`; later `scripting-core`). Primitive registry, the QuickJS and Luau subsystems, the marshalling converters and the script-store scope adapter, the typedef generator. Depends on both floor crates with VM marshalling enabled.
 
-**FFI marshalling is an orphan-rule boundary.** A VM marshalling impl for a type must live in the crate that owns the type — an impl for a foreign type written in a third crate is an orphan violation. So the data-model crate carries the marshalling impls for its own types behind an **optional feature** that pulls the VMs; only the runtime crate enables it. Foreign types (e.g. glam vectors) are wrapped in local newtypes to satisfy the rule. Precedent: `crates/level-format`'s optional `serde` / `gltf-resolve` features. Feature unification compiles the data-model crate once with marshalling on in the full build, but the VM deps stay upstream — editing a handler or bridge never rebuilds them. **That is the compile firewall.**
+Gameplay subsystems (movement, nav, weapon, ai) and non-scripting consumers (netcode, sim, startup) depend *up* on the floor and treat `EntityId` as an opaque handle.
+
+**Descriptor partition rule.** A descriptor type belongs in `postretro-foundation` only if *every type it references* is foundation-resident; if it references any entities-resident type — `EntityId`, a component, or a component's state enum — it belongs in `postretro-entities` with the registry. ("`EntityId`-free" is necessary but not sufficient: an aggregate like the entity-type descriptor is `EntityId`-free yet embeds components, so it lives up.)
+
+**FFI marshalling is an orphan-rule boundary.** A VM marshalling impl for a type must live in the crate that owns the type — an impl for a foreign type written in a third crate is an orphan violation. So each floor crate carries the marshalling impls for its own types behind an **optional `script-ffi` feature** that pulls the VMs, off by default. No crate enables it unconditionally: the runtime enables `postretro-entities`'s feature, which *forwards* to `postretro-foundation`'s. Foreign types (e.g. glam vectors) wrap in local newtypes to satisfy the rule. Precedent: `crates/level-format`'s optional `serde` / `gltf-resolve` features. Default builds have no VM deps — editing a handler or bridge never rebuilds them. **That is the compile firewall.** (The layering mirrors Unreal's `Core` → `CoreUObject` and Bevy's `bevy_reflect` → `bevy_ecs`.)
 
 **Handler placement.** Script-callable handlers co-locate with the subsystem they expose (subsystem module trees within the engine binary, not new crates). Reaction handlers are VM-free and relocate whole. Primitive handlers carry marshalling that stays in the runtime crate — only the pure logic relocates, the runtime-side wiring calling the subsystem function with native Rust args, never VM types. Aggregation stays explicit (no `inventory` / `linkme`): the registrars are invoked from the single runtime construction site.
 

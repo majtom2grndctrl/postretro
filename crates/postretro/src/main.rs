@@ -906,7 +906,18 @@ impl ApplicationHandler for App {
 
         self.renderer = Some(renderer);
         self.window_state = Some(WindowState { window });
-        self.apply_mod_ui_theme_to_renderer();
+        // NOTE: the committed mod theme is NOT applied here. `Renderer::new`
+        // returns a boot-ready renderer with `full: None`, and `set_ui_theme`
+        // (reached via `apply_mod_ui_theme_to_renderer`) is a full-ready path
+        // that touches `Renderer::full` — calling it now would panic on the
+        // full-ready guard (renderer_splash.rs). The full renderer is built
+        // later this boot in `run_splash_frame_one::finish_renderer_full_init`,
+        // and the committed theme (engine-default or mod override) is installed
+        // right after, inside `run_deferred_mod_init`. That path also re-runs on
+        // resume (the splash loop replays from frame 0), so the rebuilt full
+        // renderer re-receives the theme there — making an apply here redundant
+        // as well as unsafe. A no-mod-theme boot needs no apply at all: the
+        // full renderer is constructed with `UiTheme::engine_default()`.
 
         // Audio init, net-endpoint setup, and dev debug-UI creation are deferred
         // out of this pre-redraw path: audio + net build inside `Session::build`

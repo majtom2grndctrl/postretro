@@ -116,19 +116,25 @@ impl App {
         // since focus is session-owned). A capturing frontend tree releases it
         // again on the first `reconcile_ui_focus`.
         self.set_input_focus(crate::input::InputFocus::Gameplay);
-        self.run_deferred_mod_init();
-        self.swap_mod_splash_override_if_pending();
-        log::info!("{}", self.mod_timings.summary());
 
         // Full renderer initialization runs after the first visible logo frame
         // and completes BEFORE the splash clears and before any Frontend /
-        // Loading-completion / Running / UI / scene path executes (boot_sequence
-        // §1, rendering_pipeline §7.8). Idempotent: a suspend→resume that recreated
-        // the surface re-runs this without re-running deferred session init. A
-        // hard failure here is a renderer init failure — exit non-zero.
+        // Loading-completion / Running / UI / scene path executes — AND before
+        // `run_deferred_mod_init`, whose mod-theme / mod-font install drains
+        // (`set_ui_theme` / `register_ui_font`) are full-ready renderer paths
+        // that touch `Renderer::full` and panic if it is not yet built
+        // (renderer_splash.rs full-ready guard). Session build is CPU-side state
+        // and stays ahead of this; only the full-ready-dependent mod-init step
+        // had to move behind it (boot_sequence §1, rendering_pipeline §7.8).
+        // Idempotent: a suspend→resume that recreated the surface re-runs this
+        // without re-running deferred session init. A hard failure here is a
+        // renderer init failure — exit non-zero.
         if !self.finish_renderer_full_init(event_loop) {
             return false;
         }
+        self.run_deferred_mod_init();
+        self.swap_mod_splash_override_if_pending();
+        log::info!("{}", self.mod_timings.summary());
 
         let Some(map_path) = self.map_path.clone() else {
             if let Some(renderer) = self.renderer.as_mut() {

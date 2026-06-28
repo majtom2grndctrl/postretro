@@ -429,6 +429,55 @@ mod tests {
         assert!(logo < session, "session install follows the logo frame");
     }
 
+    /// The ordered steps `run_splash_frame_one` runs after the logo frame
+    /// presents, each named for its call site. Mirrors the source so a reorder
+    /// forces a diff here — the splash-frame-one twin of `boot_mark_order_valid_path`.
+    /// `finish_renderer_full_init` builds `Renderer::full`; `run_deferred_mod_init`
+    /// then installs the mod theme/fonts via `set_ui_theme`/`register_ui_font`,
+    /// which are full-ready renderer paths that panic if `full` is not yet built.
+    /// See: context/lib/boot_sequence.md §1, rendering_pipeline §7.8.
+    fn splash_frame_one_step_order() -> Vec<&'static str> {
+        vec![
+            "install_pending_session", // Session::build (CPU-side; failure early-returns)
+            "ensure_debug_ui",         // boot-ready only (device limit + window)
+            "set_input_focus",         // session-owned state
+            "finish_renderer_full_init", // builds Renderer::full (full-ready)
+            "run_deferred_mod_init",   // mod theme/font install → FULL-READY renderer paths
+            "swap_mod_splash_override_if_pending",
+        ]
+    }
+
+    fn step_index(steps: &[&'static str], name: &str) -> usize {
+        steps
+            .iter()
+            .position(|s| *s == name)
+            .unwrap_or_else(|| panic!("step `{name}` must be present"))
+    }
+
+    /// Regression guard for the boot panic at the renderer full-ready guard
+    /// (`renderer_splash.rs`: "renderer full-init must complete before full-ready
+    /// paths run"). `run_deferred_mod_init` drains the mod manifest's theme/font
+    /// payload through `set_ui_theme` / `register_ui_font`, both of which touch
+    /// `Renderer::full`. They MUST run only after `finish_renderer_full_init` has
+    /// built it. Session construction is CPU-side and stays ahead of full-init.
+    #[test]
+    fn splash_frame_one_full_init_precedes_full_ready_mod_init() {
+        let steps = splash_frame_one_step_order();
+
+        assert!(
+            step_index(&steps, "finish_renderer_full_init")
+                < step_index(&steps, "run_deferred_mod_init"),
+            "renderer full-init must precede the full-ready mod-theme/font install",
+        );
+        // Session install (and its failure early-return) stays ahead of full-init,
+        // preserving the whole-or-nothing, single-commit session-build contract.
+        assert!(
+            step_index(&steps, "install_pending_session")
+                < step_index(&steps, "finish_renderer_full_init"),
+            "session build (CPU-side, failure-early-return) precedes renderer full-init",
+        );
+    }
+
     #[test]
     fn worker_entries_splice_preserves_chronological_order() {
         let mut t = StartupTimings::new();

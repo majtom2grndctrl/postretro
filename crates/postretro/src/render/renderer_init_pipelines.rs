@@ -95,6 +95,13 @@ pub(crate) fn build_renderer_pipelines(
                         shader_location: 4,
                         format: wgpu::VertexFormat::Uint16x2,
                     },
+                    // lightmap_layer: u32 at offset 32 — atlas array slice
+                    // selecting the static lightmap layer for this face.
+                    wgpu::VertexAttribute {
+                        offset: 32,
+                        shader_location: 5,
+                        format: wgpu::VertexFormat::Uint32,
+                    },
                 ],
             }],
             compilation_options: wgpu::PipelineCompilationOptions::default(),

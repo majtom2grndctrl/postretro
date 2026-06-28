@@ -92,8 +92,8 @@ Structural surgery (Phases 2–4) is serialized deliberately; the flip fan-out i
 ## Rough sketch
 
 **Crate layout (two layers, one-way edge).**
-- `crates/foundation/` (`postretro-foundation`): IR evaluator core + movement/IR cluster + `EntityId`-free descriptor & value PODs + sunk subsystem PODs. Default = no VMs. `script-ffi = ["dep:rquickjs","dep:mlua"]` compiles its types' FFI impls.
-- `crates/entities/` (`postretro-entities`): registry + `ComponentValue` + remaining components + `ScriptCtx` + registries + `DataRegistry` + the reaction/crossing descriptors. Depends on `postretro-foundation` with `default-features = false`; its `script-ffi` forwards to the foundation's (`script-ffi = ["dep:rquickjs","dep:mlua","postretro-foundation/script-ffi"]`) so a default `cargo tree` of this crate stays VM-free.
+- `crates/foundation/` (`postretro-foundation`): IR evaluator core + movement/IR cluster + foundation-clean descriptor & value PODs + sunk subsystem PODs. Default = no VMs. `script-ffi = ["dep:rquickjs","dep:mlua"]` compiles its types' FFI impls.
+- `crates/entities/` (`postretro-entities`): registry + `ComponentValue` + remaining components + `ScriptCtx` + registries + `DataRegistry` + the entities-bound descriptors (reaction/crossing, `MeshDescriptor`, `EntityTypeDescriptor`). Depends on `postretro-foundation` with `default-features = false`; its `script-ffi` forwards to the foundation's (`script-ffi = ["dep:rquickjs","dep:mlua","postretro-foundation/script-ffi"]`) so a default `cargo tree` of this crate stays VM-free.
 
 **Why layered, not one crate.** The `{IR core + MovementScope + PlayerMovementComponent + descriptor PODs}` cluster has no edge up into `EntityId`/`EntityRegistry`/`ComponentValue` (research.md §3) — a clean one-way edge. One crate would force the foundation and the registry to recompile together for no structural reason; both grow under Epic 16 (combat adds descriptors and IR adoption; the registry grows components). Splitting lets each recompile independently. (This `postretro-foundation` → `postretro-entities` layering mirrors Unreal's `Core` → `CoreUObject` and Bevy's `bevy_reflect` → `bevy_ecs`.)
 

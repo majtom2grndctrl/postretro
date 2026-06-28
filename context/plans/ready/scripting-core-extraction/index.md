@@ -130,7 +130,4 @@ Structural surgery (Phases 2–3) is serialized deliberately; the handler fan-ou
 - **`entity-core` is one crate**, not two — registry + components + ctx + data_registry + slot_table + command queue ship together as the scripting data model. (Splitting pure-registry from broader script-state would multiply Task 2 call-site churn for no compile-firewall gain; the whole cluster is the dependency floor.)
 - **Cross-runtime tests land in `scripting-core/tests/`.** A standalone `scripting-integration` crate is the fallback only if a test drags handler-specific fixtures that don't belong in `scripting-core`.
 - **A1 (primitive-handler marshalling):** the `primitives/*` marshalling newtypes and their `register_*` wiring stay in `scripting-core`; only the pure handler logic relocates to subsystems (see Scope, Task 6).
-
-## Open questions
-
-- If Task 6's handler count makes the spec unwieldy at orchestration time, Phase 5 may split into its own follow-up spec — the Phase 1–4 boundary is independently shippable.
+- **Phase 5 stays in this spec — not split out.** Task 6's handler relocation is ~8 independent, low-conflict families across subsystems — the shape `/orchestrate` fans out well, so handler count is not a reason to split. Keeping it unified maximizes progress in one orchestration session and avoids re-opening `Session::build` in a later spec (Task 4 and Task 6 both touch its registration block; doing them in one spec touches the file once). The firewall (Phases 1–4) and the co-location (Phase 5) land together. The Phase 1–4 boundary remains independently shippable if implementation later forces a stop, but that is a fallback, not the plan.

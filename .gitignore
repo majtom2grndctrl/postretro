@@ -19,12 +19,20 @@ target
 # Compiled map assets (only *.map source files are tracked)
 *.bsp
 *.prl
+# Exception: the committed stress-warren-overflow build, for direct download
+# (verifies the multi-layer lightmap atlas without a local ~25-min bake).
+!content/base/maps/stress-warren-overflow.prl
 # Autosave maps (local, not version controlled)
 **/maps/autosave/
 autosave/
 
-# prl-build cache directories (stage cache + .prm mip cache)
-.build-caches/
+# prl-build cache directories. The stage cache (prl-cache) stays ignored; the
+# .prm texture-mip sidecars are excepted so the overflow build downloads with
+# real textures rather than placeholders.
+.build-caches/*
+!.build-caches/prm-cache/
+.build-caches/prm-cache/*
+!.build-caches/prm-cache/*.prm
 
 # Distribution artifacts
 dist/

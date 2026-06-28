@@ -536,6 +536,10 @@ mod tests {
     use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
     use postretro_level_format::texture_names::TextureNamesSection;
 
+    /// One per-texel contribution term for `expected_atlas_from_texels`:
+    /// `(layer, within-layer idx, irradiance, weighted_dir, fallback_normal)`.
+    type ContribTerm = (u32, u32, [f32; 3], [f32; 3], [f32; 3]);
+
     const AREA_SAMPLES: u32 = 16;
     const DENSITY: f32 = 0.25;
 
@@ -700,8 +704,7 @@ mod tests {
         atlas_w: u32,
         atlas_h: u32,
         layer_count: u32,
-        // (layer, idx, irradiance, weighted_dir, fallback_normal) per contribution.
-        contributions: &[(u32, u32, [f32; 3], [f32; 3], [f32; 3])],
+        contributions: &[ContribTerm],
     ) -> CompositedAtlas {
         let plane = (atlas_w * atlas_h) as usize;
         let texel_count = plane * layer_count as usize;
@@ -811,7 +814,7 @@ mod tests {
         let mut composite = composite_layers(&layers, atlas_w, atlas_h);
         composite.dilate();
 
-        let contributions: Vec<(u32, u32, [f32; 3], [f32; 3], [f32; 3])> = a_texels
+        let contributions: Vec<ContribTerm> = a_texels
             .iter()
             .chain(b_texels.iter())
             .map(|t| {

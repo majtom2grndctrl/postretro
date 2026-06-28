@@ -6587,7 +6587,7 @@ mod tests {
             "engine-owned screen.shake defaults to zero offset and is cloned",
         );
         assert!(
-            snapshot.get("player.maxHealth").is_none(),
+            !snapshot.contains_key("player.maxHealth"),
             "value-less slots are skipped",
         );
         assert_eq!(

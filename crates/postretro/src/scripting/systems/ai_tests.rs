@@ -1189,9 +1189,8 @@ fn integrated_chase_loop_keeps_all_chasers_moving_past_replan_budget() {
     // every chaser would replan up to the budget EVERY tick — ~budget * ticks
     // total. With the fix, after the initial plan each chaser only replans on the
     // staleness window (REPLAN_STALENESS_TICKS), so the total is far lower.
-    let unbounded = (agent_steering::REPLAN_BUDGET_PER_TICK * ticks) as u32;
-    let staleness_bound =
-        chaser_count * (ticks as u32 / agent_steering::REPLAN_STALENESS_TICKS + 2);
+    let unbounded = agent_steering::REPLAN_BUDGET_PER_TICK * ticks;
+    let staleness_bound = chaser_count * (ticks / agent_steering::REPLAN_STALENESS_TICKS + 2);
     assert!(
         total_replans <= staleness_bound,
         "stationary target replanned too often: {total_replans} replans over {ticks} ticks \

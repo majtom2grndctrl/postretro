@@ -17,49 +17,76 @@ pub const IRRADIANCE_TEXEL_BYTES: usize = 8;
 /// texels into unused neighbours doesn't corrupt direction decode.
 pub const DIRECTION_TEXEL_BYTES: usize = 4;
 
-/// Fixed 28-byte header preceding the two texel blobs.
-const HEADER_SIZE: usize = 28;
+/// v2 section format version. Pre-v2 sections had no version field (their first
+/// u32 was `width`); `from_bytes` rejects any value other than this.
+pub const LIGHTMAP_SECTION_VERSION: u32 = 2;
 
-/// Directional lightmap atlas.
+/// Fixed 48-byte v2 header preceding the two layer-major texel blobs.
+const HEADER_SIZE: usize = 48;
+
+/// Directional lightmap atlas (multi-layer, format version 2).
+///
+/// Irradiance and direction are independent `texture_2d_array` atlases sharing
+/// a single `layer_count`. Their per-layer dimensions and texel densities are
+/// decoupled — the irradiance and direction atlases need not match in size.
+/// Charts that overflow one layer spill into additional layers, so the blob for
+/// each atlas is layer-major: layer 0's texels, then layer 1's, and so on.
 ///
 /// On-disk layout (all little-endian):
 ///
 /// ```text
-///   Header (28 bytes):
-///     u32 width
-///     u32 height
-///     f32 texel_density_meters   (world-space size of one atlas texel)
-///     u32 irradiance_format      (0 = Rgba16Float, 1 = Bc6hRgbUfloat)
-///     u32 direction_format       (0 = Rgba8Unorm octahedral)
-///     u32 irradiance_byte_count  (irr_len)
-///     u32 direction_byte_count   (dir_len)
+///   Header (48 bytes):
+///     u32 version            (= LIGHTMAP_SECTION_VERSION = 2)
+///     u32 layer_count        (shared by both atlases; >= 1)
+///     u32 irr_width          (per-layer texel width;  pow2, >= 4)
+///     u32 irr_height         (per-layer texel height; pow2, >= 4)
+///     f32 irr_texel_density  (m/texel at bake time; informational)
+///     u32 irr_format         (0 = Rgba16Float, 1 = Bc6hRgbUfloat)
+///     u32 irr_total_bytes    (byte count for ALL irradiance layers combined)
+///     u32 dir_width          (per-layer texel width;  pow2, >= 4)
+///     u32 dir_height         (per-layer texel height; pow2, >= 4)
+///     f32 dir_texel_density  (m/texel; informational; may differ from irr)
+///     u32 dir_format         (0 = Rgba8Unorm octahedral; only defined value)
+///     u32 dir_total_bytes    (byte count for ALL direction layers combined)
 ///
-///   Irradiance blob (irr_len bytes, format-dependent):
-///     Rgba16Float: u16 × 4 × width × height  row-major (y * width + x)
-///     Bc6hRgbUfloat: ceil(w/4)·ceil(h/4)·16  bytes of Mode-11 blocks
+///   Irradiance blob (irr_total_bytes bytes): layer-major.
+///     Each layer is irr_width × irr_height texels in irr_format layout:
+///       Rgba16Float:   u16 × 4 per texel, row-major (y * irr_width + x)
+///       Bc6hRgbUfloat: ceil(w/4)·ceil(h/4)·16 bytes of row-major 4×4 blocks
 ///
-///   Direction blob (dir_len bytes):
-///     u8 × 4 × width × height    row-major (y * width + x)
+///   Direction blob (dir_total_bytes bytes): layer-major.
+///     Each layer is dir_width × dir_height × 4 bytes (Rgba8Unorm octahedral,
+///     row-major y * dir_width + x).
+///
+///   Optional LMOD trailer (8 bytes; omitted when mode = Shadowed), at offset
+///   48 + irr_total_bytes + dir_total_bytes:
+///     u32 magic (= LIGHTMAP_MODE_TRAILER_MAGIC)
+///     u32 mode  (LightmapMode discriminant — 0 = shadowed, 1 = unshadowed)
 /// ```
 ///
-/// The header carries explicit `irr_len`/`dir_len` byte counts; `from_bytes`
-/// slices the irradiance blob by the stored length without recomputing block math.
+/// The header carries explicit `irr_total_bytes`/`dir_total_bytes`; `from_bytes`
+/// slices each blob by the stored length without recomputing per-layer block math.
 ///
 /// Irradiance texels for atlas positions not covered by any face chart are
 /// zero. Edge dilation is applied at bake time so bilinear sampling at chart
 /// boundaries pulls valid neighbours instead of black.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LightmapSection {
-    pub width: u32,
-    pub height: u32,
-    /// World-space meters-per-texel used at bake time. Informational — the
-    /// runtime samples the atlas through per-vertex lightmap UVs and does not
-    /// need to derive world-space sizes from this field.
-    pub texel_density: f32,
-    /// Raw bytes for the irradiance blob. Layout depends on
-    /// `irradiance_format`: `IRRADIANCE_FORMAT_RGBA16F` (0) is row-major
-    /// `Rgba16Float` (`w·h·8` bytes); `IRRADIANCE_FORMAT_BC6H` (1) is
-    /// row-major 4×4 `Bc6hRgbUfloat` blocks (`ceil(w/4)·ceil(h/4)·16` bytes).
+    /// Number of array layers shared by the irradiance and direction atlases.
+    /// Always `>= 1`; single-layer bakes write `1`.
+    pub layer_count: u32,
+    /// Per-layer irradiance texel width.
+    pub irr_width: u32,
+    /// Per-layer irradiance texel height.
+    pub irr_height: u32,
+    /// World-space meters-per-texel used at bake time for the irradiance atlas.
+    /// Informational — the runtime samples through per-vertex lightmap UVs and
+    /// does not derive world-space sizes from this field.
+    pub irr_texel_density: f32,
+    /// Layer-major irradiance blob (all layers concatenated). Layout per layer
+    /// depends on `irr_format`: `IRRADIANCE_FORMAT_RGBA16F` (0) is row-major
+    /// `Rgba16Float` (`w·h·8` bytes per layer); `IRRADIANCE_FORMAT_BC6H` (1) is
+    /// row-major 4×4 `Bc6hRgbUfloat` blocks (`ceil(w/4)·ceil(h/4)·16` per layer).
     pub irradiance: Vec<u8>,
     /// Format tag for `irradiance` — one of `IRRADIANCE_FORMAT_RGBA16F` or
     /// `IRRADIANCE_FORMAT_BC6H`. Written into the section header; the runtime
@@ -67,7 +94,14 @@ pub struct LightmapSection {
     /// always emits RGBA16F; the bake chooses BC6H vs RGBA16F via
     /// `LightmapConfig::uncompressed_irradiance`.
     pub irradiance_format: u32,
-    /// Raw bytes for direction texels (Rgba8Unorm, octahedral, row-major).
+    /// Per-layer direction texel width.
+    pub dir_width: u32,
+    /// Per-layer direction texel height.
+    pub dir_height: u32,
+    /// World-space meters-per-texel used at bake time for the direction atlas.
+    /// Informational; may differ from `irr_texel_density`.
+    pub dir_texel_density: f32,
+    /// Layer-major direction blob (Rgba8Unorm, octahedral, row-major per layer).
     pub direction: Vec<u8>,
     /// Which bake produced the irradiance. `Shadowed` (default) folds static-light
     /// shadows into irradiance — the `main` behavior, written without a trailer so
@@ -82,7 +116,7 @@ pub struct LightmapSection {
 /// bypass (`LightmapConfig::uncompressed_irradiance = true`), and (2) all
 /// placeholder sections (`LightmapSection::placeholder` always emits RGBA16F —
 /// placeholders never go through BC6H). `from_bytes`/`to_bytes` read and write
-/// the blob by the stored `irr_len`, not by recomputing `w·h·8`.
+/// the blob by the stored `irr_total_bytes`, not by recomputing per-layer `w·h·8`.
 pub const IRRADIANCE_FORMAT_RGBA16F: u32 = 0;
 
 /// Format tag for the irradiance blob. Block-compressed `Bc6hRgbUfloat` — 4×4
@@ -107,8 +141,9 @@ pub const DIRECTION_FORMAT_OCT_RGBA8: u32 = 0;
 ///   u32 mode          (LightmapMode discriminant — 0 = shadowed, 1 = unshadowed)
 /// ```
 ///
-/// The base `from_bytes` parser only consumes `HEADER_SIZE + irr_len + dir_len`
-/// bytes; trailing bytes are silently ignored. Legacy PRLs (no trailer) parse
+/// The base `from_bytes` parser only consumes `HEADER_SIZE + irr_total_bytes +
+/// dir_total_bytes` bytes; trailing bytes are silently ignored. Sections written
+/// without a trailer (shadowed bake) parse
 /// as `LightmapMode::Shadowed` — `main`'s baked-shadow behavior. The shadowed
 /// bake writes no trailer, preserving byte-for-byte parity with `main`.
 pub const LIGHTMAP_MODE_TRAILER_MAGIC: u32 = u32::from_le_bytes(*b"LMOD");
@@ -159,19 +194,23 @@ impl LightmapSection {
         // to (128, 255). Alpha 0xFF.
         let direction = vec![128u8, 255, 128, 255];
         Self {
-            width: 1,
-            height: 1,
-            texel_density: 1.0,
+            layer_count: 1,
+            irr_width: 1,
+            irr_height: 1,
+            irr_texel_density: 1.0,
             irradiance,
             irradiance_format: IRRADIANCE_FORMAT_RGBA16F,
+            dir_width: 1,
+            dir_height: 1,
+            dir_texel_density: 1.0,
             direction,
             mode: LightmapMode::Shadowed,
         }
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
-        let irr_len = self.irradiance.len() as u32;
-        let dir_len = self.direction.len() as u32;
+        let irr_total_bytes = self.irradiance.len() as u32;
+        let dir_total_bytes = self.direction.len() as u32;
         // Shadowed mode is the legacy/default — write no trailer so output is
         // byte-identical to `main` for the same bake inputs.
         let trailer_bytes = if self.mode == LightmapMode::Shadowed {
@@ -182,13 +221,18 @@ impl LightmapSection {
         let mut buf = Vec::with_capacity(
             HEADER_SIZE + self.irradiance.len() + self.direction.len() + trailer_bytes,
         );
-        buf.extend_from_slice(&self.width.to_le_bytes());
-        buf.extend_from_slice(&self.height.to_le_bytes());
-        buf.extend_from_slice(&self.texel_density.to_le_bytes());
+        buf.extend_from_slice(&LIGHTMAP_SECTION_VERSION.to_le_bytes());
+        buf.extend_from_slice(&self.layer_count.to_le_bytes());
+        buf.extend_from_slice(&self.irr_width.to_le_bytes());
+        buf.extend_from_slice(&self.irr_height.to_le_bytes());
+        buf.extend_from_slice(&self.irr_texel_density.to_le_bytes());
         buf.extend_from_slice(&self.irradiance_format.to_le_bytes());
+        buf.extend_from_slice(&irr_total_bytes.to_le_bytes());
+        buf.extend_from_slice(&self.dir_width.to_le_bytes());
+        buf.extend_from_slice(&self.dir_height.to_le_bytes());
+        buf.extend_from_slice(&self.dir_texel_density.to_le_bytes());
         buf.extend_from_slice(&DIRECTION_FORMAT_OCT_RGBA8.to_le_bytes());
-        buf.extend_from_slice(&irr_len.to_le_bytes());
-        buf.extend_from_slice(&dir_len.to_le_bytes());
+        buf.extend_from_slice(&dir_total_bytes.to_le_bytes());
         buf.extend_from_slice(&self.irradiance);
         buf.extend_from_slice(&self.direction);
         if self.mode != LightmapMode::Shadowed {
@@ -205,16 +249,31 @@ impl LightmapSection {
                 "lightmap section too short for header",
             )));
         }
-        let width = u32::from_le_bytes(data[0..4].try_into().unwrap());
-        let height = u32::from_le_bytes(data[4..8].try_into().unwrap());
-        let texel_density = f32::from_le_bytes(data[8..12].try_into().unwrap());
-        let irr_format = u32::from_le_bytes(data[12..16].try_into().unwrap());
-        let dir_format = u32::from_le_bytes(data[16..20].try_into().unwrap());
-        let irr_len = u32::from_le_bytes(data[20..24].try_into().unwrap()) as usize;
-        let dir_len = u32::from_le_bytes(data[24..28].try_into().unwrap()) as usize;
+        let version = u32::from_le_bytes(data[0..4].try_into().unwrap());
+        // Pre-v2 sections carried no version field — their first u32 was `width`.
+        // Reject anything that isn't the v2 marker, naming the value seen on disk.
+        if version != LIGHTMAP_SECTION_VERSION {
+            return Err(FormatError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "unsupported lightmap section version: {version} (expected {LIGHTMAP_SECTION_VERSION})"
+                ),
+            )));
+        }
+        let layer_count = u32::from_le_bytes(data[4..8].try_into().unwrap());
+        let irr_width = u32::from_le_bytes(data[8..12].try_into().unwrap());
+        let irr_height = u32::from_le_bytes(data[12..16].try_into().unwrap());
+        let irr_texel_density = f32::from_le_bytes(data[16..20].try_into().unwrap());
+        let irr_format = u32::from_le_bytes(data[20..24].try_into().unwrap());
+        let irr_total_bytes = u32::from_le_bytes(data[24..28].try_into().unwrap()) as usize;
+        let dir_width = u32::from_le_bytes(data[28..32].try_into().unwrap());
+        let dir_height = u32::from_le_bytes(data[32..36].try_into().unwrap());
+        let dir_texel_density = f32::from_le_bytes(data[36..40].try_into().unwrap());
+        let dir_format = u32::from_le_bytes(data[40..44].try_into().unwrap());
+        let dir_total_bytes = u32::from_le_bytes(data[44..48].try_into().unwrap()) as usize;
 
         // Accept both the uncompressed RGBA16F layout and the BC6H block layout.
-        // `from_bytes` reads the blob by the stored `irr_len`, not by recomputing
+        // `from_bytes` reads the blob by the stored byte count, not by recomputing
         // block math, so the only per-format work here is gating the tag value.
         if irr_format != IRRADIANCE_FORMAT_RGBA16F && irr_format != IRRADIANCE_FORMAT_BC6H {
             return Err(FormatError::Io(std::io::Error::new(
@@ -229,7 +288,7 @@ impl LightmapSection {
             )));
         }
 
-        let expected = HEADER_SIZE + irr_len + dir_len;
+        let expected = HEADER_SIZE + irr_total_bytes + dir_total_bytes;
         if data.len() < expected {
             return Err(FormatError::Io(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
@@ -241,15 +300,15 @@ impl LightmapSection {
         }
 
         let irr_start = HEADER_SIZE;
-        let dir_start = irr_start + irr_len;
+        let dir_start = irr_start + irr_total_bytes;
         let irradiance = data[irr_start..dir_start].to_vec();
-        let direction = data[dir_start..dir_start + dir_len].to_vec();
+        let direction = data[dir_start..dir_start + dir_total_bytes].to_vec();
 
         // Optional bake-mode trailer. Legacy PRLs (and shadowed-bake output) omit
         // it entirely; absence reads as `Shadowed` so missing-marker behavior
         // matches `main`. A present trailer's magic must match to be honored; any
         // other trailing bytes are ignored as forward-compat slack.
-        let trailer_start = dir_start + dir_len;
+        let trailer_start = dir_start + dir_total_bytes;
         let mode = if data.len() >= trailer_start + 8 {
             let magic =
                 u32::from_le_bytes(data[trailer_start..trailer_start + 4].try_into().unwrap());
@@ -273,11 +332,15 @@ impl LightmapSection {
         };
 
         Ok(Self {
-            width,
-            height,
-            texel_density,
+            layer_count,
+            irr_width,
+            irr_height,
+            irr_texel_density,
             irradiance,
             irradiance_format: irr_format,
+            dir_width,
+            dir_height,
+            dir_texel_density,
             direction,
             mode,
         })
@@ -381,8 +444,8 @@ mod tests {
     }
 
     #[test]
-    fn round_trip_real_atlas() {
-        // Small 2×2 atlas with distinct per-texel values.
+    fn round_trip_real_atlas_single_layer() {
+        // Single-layer 2×2 atlas with distinct per-texel values.
         let mut irradiance = Vec::new();
         for i in 0..4 {
             let v = f32_to_f16_bits(i as f32 * 0.25);
@@ -394,17 +457,69 @@ mod tests {
             .flat_map(|i| [i as u8 * 30, i as u8 * 20, 128, 255])
             .collect();
         let section = LightmapSection {
-            width: 2,
-            height: 2,
-            texel_density: 0.04,
+            layer_count: 1,
+            irr_width: 2,
+            irr_height: 2,
+            irr_texel_density: 0.04,
             irradiance,
             irradiance_format: IRRADIANCE_FORMAT_RGBA16F,
+            dir_width: 2,
+            dir_height: 2,
+            dir_texel_density: 0.04,
             direction,
             mode: LightmapMode::Shadowed,
         };
         let bytes = section.to_bytes();
         let restored = LightmapSection::from_bytes(&bytes).unwrap();
         assert_eq!(section, restored);
+    }
+
+    #[test]
+    fn round_trip_real_atlas_multi_layer() {
+        // Three layers, with irradiance and direction sized differently to
+        // exercise the decoupled dimensions. Irradiance: 2×2 RGBA16F per layer
+        // (2·2·8 = 32 bytes/layer). Direction: 4×2 RGBA8 per layer (4·2·4 = 32
+        // bytes/layer). Blobs are layer-major.
+        let layer_count = 3u32;
+        let irr_w = 2u32;
+        let irr_h = 2u32;
+        let dir_w = 4u32;
+        let dir_h = 2u32;
+
+        let mut irradiance = Vec::new();
+        for layer in 0..layer_count {
+            for texel in 0..(irr_w * irr_h) {
+                let v = f32_to_f16_bits((layer * 4 + texel) as f32 * 0.1);
+                for _ in 0..4 {
+                    irradiance.extend_from_slice(&v.to_le_bytes());
+                }
+            }
+        }
+        let mut direction = Vec::new();
+        for layer in 0..layer_count {
+            for texel in 0..(dir_w * dir_h) {
+                let base = (layer * 8 + texel) as u8;
+                direction.extend_from_slice(&[base, base.wrapping_add(7), 128, 255]);
+            }
+        }
+
+        let section = LightmapSection {
+            layer_count,
+            irr_width: irr_w,
+            irr_height: irr_h,
+            irr_texel_density: 0.04,
+            irradiance,
+            irradiance_format: IRRADIANCE_FORMAT_RGBA16F,
+            dir_width: dir_w,
+            dir_height: dir_h,
+            dir_texel_density: 0.08,
+            direction,
+            mode: LightmapMode::Shadowed,
+        };
+        let bytes = section.to_bytes();
+        let restored = LightmapSection::from_bytes(&bytes).unwrap();
+        assert_eq!(section, restored);
+        assert_eq!(restored.layer_count, 3);
     }
 
     #[test]
@@ -423,9 +538,39 @@ mod tests {
     }
 
     #[test]
-    fn unshadowed_mode_round_trips_via_trailer() {
-        let mut section = LightmapSection::placeholder();
-        section.mode = LightmapMode::Unshadowed;
+    fn unshadowed_mode_round_trips_via_trailer_multi_layer() {
+        // Multi-layer section so the trailer offset lands past concatenated
+        // layer-major blobs, not just a single layer.
+        let layer_count = 2u32;
+        let irr_w = 2u32;
+        let irr_h = 2u32;
+        let dir_w = 2u32;
+        let dir_h = 2u32;
+        let mut irradiance = Vec::new();
+        for layer in 0..layer_count {
+            for texel in 0..(irr_w * irr_h) {
+                let v = f32_to_f16_bits((layer * 4 + texel) as f32 * 0.2);
+                for _ in 0..4 {
+                    irradiance.extend_from_slice(&v.to_le_bytes());
+                }
+            }
+        }
+        let direction: Vec<u8> = (0..(layer_count * dir_w * dir_h))
+            .flat_map(|i| [i as u8, (i as u8).wrapping_add(3), 128, 255])
+            .collect();
+        let section = LightmapSection {
+            layer_count,
+            irr_width: irr_w,
+            irr_height: irr_h,
+            irr_texel_density: 0.04,
+            irradiance,
+            irradiance_format: IRRADIANCE_FORMAT_RGBA16F,
+            dir_width: dir_w,
+            dir_height: dir_h,
+            dir_texel_density: 0.04,
+            direction,
+            mode: LightmapMode::Unshadowed,
+        };
         let bytes = section.to_bytes();
         let restored = LightmapSection::from_bytes(&bytes).unwrap();
         assert_eq!(restored.mode, LightmapMode::Unshadowed);
@@ -454,11 +599,15 @@ mod tests {
         let irradiance: Vec<u8> = (0..32).collect();
         let direction: Vec<u8> = (0..32 * 4).map(|i| (i & 0xff) as u8).collect();
         let section = LightmapSection {
-            width: 8,
-            height: 4,
-            texel_density: 0.04,
+            layer_count: 1,
+            irr_width: 8,
+            irr_height: 4,
+            irr_texel_density: 0.04,
             irradiance,
             irradiance_format: IRRADIANCE_FORMAT_BC6H,
+            dir_width: 8,
+            dir_height: 4,
+            dir_texel_density: 0.04,
             direction,
             mode: LightmapMode::Shadowed,
         };
@@ -482,16 +631,41 @@ mod tests {
     fn rejects_unsupported_irradiance_format() {
         let mut section = LightmapSection::placeholder();
         let mut bytes = section.to_bytes();
-        // Corrupt irradiance format tag at offset 12..16.
-        bytes[12..16].copy_from_slice(&99u32.to_le_bytes());
+        // Corrupt irradiance format tag at v2 offset 20..24.
+        bytes[20..24].copy_from_slice(&99u32.to_le_bytes());
         assert!(LightmapSection::from_bytes(&bytes).is_err());
-        // Also corrupt direction format tag at offset 16..20.
+        // Also corrupt direction format tag at v2 offset 40..44.
         bytes = section.to_bytes();
-        bytes[16..20].copy_from_slice(&7u32.to_le_bytes());
+        bytes[40..44].copy_from_slice(&7u32.to_le_bytes());
         assert!(LightmapSection::from_bytes(&bytes).is_err());
         // Suppress unused-must-use warning on `section`.
-        section.width = 1;
+        section.layer_count = 1;
         let _ = section;
+    }
+
+    #[test]
+    fn rejects_pre_v2_section() {
+        // Pre-v2 sections had no version field — their first u32 was `width`,
+        // typically a sizeable atlas dimension. Feed a realistic pre-v2 28-byte
+        // header (width=1024, height=1024, density, RGBA16F, OCT_RGBA8, irr_len,
+        // dir_len) plus a body. `from_bytes` reads the leading 1024 as the
+        // version and must reject it as InvalidData.
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&1024u32.to_le_bytes()); // width (read as version)
+        bytes.extend_from_slice(&1024u32.to_le_bytes()); // height
+        bytes.extend_from_slice(&0.04f32.to_le_bytes()); // texel_density
+        bytes.extend_from_slice(&IRRADIANCE_FORMAT_RGBA16F.to_le_bytes());
+        bytes.extend_from_slice(&DIRECTION_FORMAT_OCT_RGBA8.to_le_bytes());
+        bytes.extend_from_slice(&64u32.to_le_bytes()); // irr_len
+        bytes.extend_from_slice(&32u32.to_le_bytes()); // dir_len
+        bytes.extend_from_slice(&[0u8; 64]); // irradiance body
+        bytes.extend_from_slice(&[0u8; 32]); // direction body
+
+        let err = LightmapSection::from_bytes(&bytes).unwrap_err();
+        match err {
+            FormatError::Io(e) => assert_eq!(e.kind(), std::io::ErrorKind::InvalidData),
+            other => panic!("expected InvalidData, got {other:?}"),
+        }
     }
 
     #[test]

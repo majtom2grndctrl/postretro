@@ -1232,23 +1232,27 @@ mod tests {
         // like — resolves to the section's own width/height under a generous
         // device limit.
         let section = LightmapSection {
-            width: 4096,
-            height: 2048,
-            texel_density: 1.0,
+            layer_count: 1,
+            irr_width: 4096,
+            irr_height: 2048,
+            irr_texel_density: 1.0,
             irradiance: vec![0u8; 4096 * 2048 * 8],
             irradiance_format: IRRADIANCE_FORMAT_RGBA16F,
+            dir_width: 4096,
+            dir_height: 2048,
+            dir_texel_density: 1.0,
             direction: vec![0u8; 4096 * 2048 * 4],
             mode: LightmapMode::Shadowed,
         };
         assert_eq!(
-            usable_atlas_dimensions(Some(&section), 8192),
+            usable_atlas_dimensions(Some(&section), 8192, 256),
             Some((4096, 2048)),
             "animated atlas size must equal the loaded lightmap dimensions",
         );
 
         // Absent / oversize sections resolve to `None`, which drives the
         // animated path to its dummy-atlas early-out (no valid coordinate space).
-        assert_eq!(usable_atlas_dimensions(None, 8192), None);
-        assert_eq!(usable_atlas_dimensions(Some(&section), 1024), None);
+        assert_eq!(usable_atlas_dimensions(None, 8192, 256), None);
+        assert_eq!(usable_atlas_dimensions(Some(&section), 1024, 256), None);
     }
 }

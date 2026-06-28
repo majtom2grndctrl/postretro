@@ -205,6 +205,7 @@ pub(crate) fn build_full_renderer(
     let lightmap_atlas_dimensions = crate::lighting::lightmap::usable_atlas_dimensions(
         geometry.and_then(|g| g.lightmap),
         device.limits().max_texture_dimension_2d,
+        device.limits().max_texture_array_layers,
     );
     let animated_lightmap = animated_lightmap::AnimatedLightmapResources::new(
         device,

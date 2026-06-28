@@ -1,7 +1,6 @@
-// Per-light lightmap contribution layers: bake one static light's irradiance +
-// unnormalized weighted direction across the shared atlas, cache it, and
-// composite the layers back into a byte-identical pre-BC6H atlas.
-// See: context/plans/done/incremental-bake-per-element/index.md
+// Per-light lightmap contribution layers: cache, then composite back into a
+// byte-identical pre-BC6H atlas.
+// See: context/lib/build_pipeline.md (Lightmap id 22)
 
 use glam::Vec3;
 
@@ -20,7 +19,7 @@ use glam::DVec3;
 /// invalidates all cached layers and forces a re-bake. Each cached stage owns
 /// its own version constant and bumps independently — the layer codec evolves
 /// separately from the per-group SH and animated-weight-map stages.
-pub const LAYER_FORMAT_VERSION: u32 = 2;
+pub const LAYER_FORMAT_VERSION: u32 = 3;
 
 /// Bump when the composite/dilate/`encode_section` pipeline or
 /// `LightmapSection::to_bytes` serialization changes. Folded into the
@@ -53,8 +52,13 @@ pub const LIGHTMAP_SECTION_VERSION: u32 = 1;
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct LayerTexel {
-    /// Linear atlas texel index (`y * atlas_width + x`).
+    /// Within-layer linear atlas texel index (`y * atlas_width + x`). The atlas
+    /// layer is carried separately in `layer`, so this index is NOT a global
+    /// index across layers.
     pub idx: u32,
+    /// Atlas array layer this texel lives on. Resolved from the owning chart's
+    /// `ChartPlacement.layer` at bake time.
+    pub layer: u32,
     /// Shadowed irradiance contribution (RGB).
     pub irradiance: [f32; 3],
     /// Unnormalized weighted direction (`to_light * luminance`).
@@ -65,7 +69,7 @@ pub struct LayerTexel {
 
 // Pins the fixed codec stride: `to_bytes`/`from_bytes` cast the blob directly
 // via bytemuck; any field change that shifts the stride breaks the on-disk format.
-const _: () = assert!(std::mem::size_of::<LayerTexel>() == 40);
+const _: () = assert!(std::mem::size_of::<LayerTexel>() == 44);
 
 /// One light's contribution across the shared atlas.
 ///
@@ -84,6 +88,9 @@ const _: () = assert!(std::mem::size_of::<LayerTexel>() == 40);
 pub struct LightmapLayer {
     pub atlas_width: u32,
     pub atlas_height: u32,
+    /// Number of atlas array layers this layer's texels span. Shared across all
+    /// of a build's layers (they all bake against the same atlas layout).
+    pub layer_count: u32,
     /// Covered texels in ascending atlas order. The bake walks charts then
     /// interior rows/columns, which is the same deterministic order the
     /// monolithic bake uses, so the encoding is reproducible.
@@ -91,23 +98,25 @@ pub struct LightmapLayer {
 }
 
 /// Fixed-layout header preceding the texel block in a layer blob: atlas
-/// dimensions plus the texel count, three native-endian `u32`s (12 bytes).
-const LAYER_HEADER_BYTES: usize = 3 * std::mem::size_of::<u32>();
+/// dimensions, the array layer count, and the texel count, four native-endian
+/// `u32`s (16 bytes).
+const LAYER_HEADER_BYTES: usize = 4 * std::mem::size_of::<u32>();
 
 impl LightmapLayer {
     /// Serialize to a fixed-layout native-endian byte blob for the cache.
     ///
-    /// A 12-byte header (`atlas_width`, `atlas_height`, texel `count`, native
-    /// `u32`s) followed by the `[LayerTexel]` block copied verbatim via
-    /// `bytemuck::cast_slice`. The blob is compiler-internal and dev-local (never
-    /// shipped, never read across architectures, matching the layer cache), so
-    /// native-endian is fine and lets the body be a bulk memory copy instead of
-    /// a per-field encode.
+    /// A 16-byte header (`atlas_width`, `atlas_height`, `layer_count`, texel
+    /// `count`, native `u32`s) followed by the `[LayerTexel]` block copied
+    /// verbatim via `bytemuck::cast_slice`. The blob is compiler-internal and
+    /// dev-local (never shipped, never read across architectures, matching the
+    /// layer cache), so native-endian is fine and lets the body be a bulk memory
+    /// copy instead of a per-field encode.
     pub fn to_bytes(&self) -> Vec<u8> {
         let texel_bytes = bytemuck::cast_slice::<LayerTexel, u8>(&self.texels);
         let mut out = Vec::with_capacity(LAYER_HEADER_BYTES + texel_bytes.len());
         out.extend_from_slice(&self.atlas_width.to_ne_bytes());
         out.extend_from_slice(&self.atlas_height.to_ne_bytes());
+        out.extend_from_slice(&self.layer_count.to_ne_bytes());
         out.extend_from_slice(&(self.texels.len() as u32).to_ne_bytes());
         out.extend_from_slice(texel_bytes);
         out
@@ -122,11 +131,12 @@ impl LightmapLayer {
             log::warn!("[Compiler] corrupt lightmap layer (truncated header), re-baking");
             return None;
         }
-        // Header is 3 native-endian u32s; the slice lengths are fixed above, so
+        // Header is 4 native-endian u32s; the slice lengths are fixed above, so
         // the `try_into`s cannot fail.
         let atlas_width = u32::from_ne_bytes(bytes[0..4].try_into().unwrap());
         let atlas_height = u32::from_ne_bytes(bytes[4..8].try_into().unwrap());
-        let count = u32::from_ne_bytes(bytes[8..12].try_into().unwrap()) as usize;
+        let layer_count = u32::from_ne_bytes(bytes[8..12].try_into().unwrap());
+        let count = u32::from_ne_bytes(bytes[12..16].try_into().unwrap()) as usize;
 
         let payload = &bytes[LAYER_HEADER_BYTES..];
         // A count that overflows means the blob is malformed; the codec's contract
@@ -153,6 +163,7 @@ impl LightmapLayer {
         Some(Self {
             atlas_width,
             atlas_height,
+            layer_count,
             texels,
         })
     }
@@ -198,6 +209,16 @@ pub fn bake_light_layer(
     let atlas_w = atlas.atlas_width;
     let mut texels: Vec<LayerTexel> = Vec::new();
 
+    // The atlas array layer count: the highest layer any chart landed on, plus
+    // one. The multi-bin packer (`pack_layers`) spills leaves onto higher layers,
+    // so this is `1` only when every chart fits a single layer.
+    let layer_count = atlas
+        .placements
+        .iter()
+        .map(|p| p.layer + 1)
+        .max()
+        .unwrap_or(1);
+
     for (face_idx, placement) in atlas.placements.iter().enumerate() {
         let chart = &atlas.charts[face_idx];
         if chart.uv_extent[0] <= 0.0 || chart.uv_extent[1] <= 0.0 {
@@ -210,6 +231,8 @@ pub fn bake_light_layer(
             for tx in 0..interior_w {
                 let atlas_x = placement.x as i32 + padding + tx;
                 let atlas_y = placement.y as i32 + padding + ty;
+                // Within-layer index — the atlas layer rides in `LayerTexel.layer`,
+                // not folded into `idx`.
                 let idx = (atlas_y as u32 * atlas_w + atlas_x as u32) as usize;
 
                 let world_p = chart_texel_world_position(chart, tx, ty, interior_w, interior_h);
@@ -227,6 +250,7 @@ pub fn bake_light_layer(
 
                 texels.push(LayerTexel {
                     idx: idx as u32,
+                    layer: placement.layer,
                     irradiance: irr.to_array(),
                     weighted_dir: weighted_dir.to_array(),
                     fallback_normal: surface_normal.to_array(),
@@ -238,6 +262,7 @@ pub fn bake_light_layer(
     LightmapLayer {
         atlas_width: atlas_w,
         atlas_height: atlas.atlas_height,
+        layer_count,
         texels,
     }
 }
@@ -257,8 +282,13 @@ pub fn bake_light_layer(
 /// The returned atlas is **not yet dilated**; the caller runs
 /// [`CompositedAtlas::dilate`] to match the monolithic post-dilation seam.
 pub fn composite_layers(layers: &[LightmapLayer], atlas_w: u32, atlas_h: u32) -> CompositedAtlas {
-    let mut atlas = CompositedAtlas::zeroed(atlas_w, atlas_h);
-    let texel_count = (atlas_w * atlas_h) as usize;
+    // All entries share the same atlas layout; read the array layer count from
+    // any of them. The fallback guards the empty-slice case (no panic) and keeps
+    // single-layer output when there are no layers to composite.
+    let layer_count = layers.first().map_or(1, |l| l.layer_count);
+    let mut atlas = CompositedAtlas::zeroed(atlas_w, atlas_h, layer_count);
+    let plane = (atlas_w * atlas_h) as usize;
+    let texel_count = plane * layer_count as usize;
 
     // Accumulate the unnormalized weighted direction separately; `atlas.direction`
     // holds the final normalized result, so it cannot double as the accumulator.
@@ -267,7 +297,9 @@ pub fn composite_layers(layers: &[LightmapLayer], atlas_w: u32, atlas_h: u32) ->
 
     for layer in layers {
         for t in &layer.texels {
-            let idx = t.idx as usize;
+            // Resolve the global layer-major index from the within-layer `idx`
+            // plus the texel's atlas layer.
+            let idx = t.layer as usize * plane + t.idx as usize;
             atlas.irradiance[idx * 4] += t.irradiance[0];
             atlas.irradiance[idx * 4 + 1] += t.irradiance[1];
             atlas.irradiance[idx * 4 + 2] += t.irradiance[2];
@@ -317,7 +349,7 @@ pub fn geometry_world_aabb(geometry: &GeometryResult) -> (DVec3, DVec3) {
 /// dimensions and the per-chart placements so an atlas repack (which shifts every
 /// placement) invalidates all layers by changing this fingerprint.
 ///
-/// `ChartPlacement` does not derive `Serialize`, so this folds its `x`/`y`
+/// `ChartPlacement` does not derive `Serialize`, so this folds its `x`/`y`/`layer`
 /// fields directly into the digest — the deterministically-derived proxy-bytes
 /// fingerprint the animated-weight-map stage uses for its non-`Serialize` atlas
 /// types. Charts are covered transitively: placements are a deterministic
@@ -330,6 +362,9 @@ fn atlas_layout_fingerprint(atlas: &SharedAtlas<'_>) -> Vec<u8> {
     for p in atlas.placements {
         hasher.update(&p.x.to_le_bytes());
         hasher.update(&p.y.to_le_bytes());
+        // Fold the atlas layer so a repack that moves a chart to a different
+        // array layer (same x/y) still invalidates the per-light cache.
+        hasher.update(&p.layer.to_le_bytes());
     }
     hasher.finalize().as_bytes().to_vec()
 }
@@ -500,6 +535,10 @@ mod tests {
     use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
     use postretro_level_format::texture_names::TextureNamesSection;
 
+    /// One per-texel contribution term for `expected_atlas_from_texels`:
+    /// `(layer, within-layer idx, irradiance, weighted_dir, fallback_normal)`.
+    type ContribTerm = (u32, u32, [f32; 3], [f32; 3], [f32; 3]);
+
     const AREA_SAMPLES: u32 = 16;
     const DENSITY: f32 = 0.25;
 
@@ -510,10 +549,18 @@ mod tests {
             let n = [0.0, 1.0, 0.0];
             let t = [1.0, 0.0, 0.0];
             vec![
-                Vertex::new([x, 0.0, z], [0.0, 0.0], n, t, true, [0.0, 0.0]),
-                Vertex::new([x + 1.0, 0.0, z], [1.0, 0.0], n, t, true, [0.0, 0.0]),
-                Vertex::new([x + 1.0, 0.0, z + 1.0], [1.0, 1.0], n, t, true, [0.0, 0.0]),
-                Vertex::new([x, 0.0, z + 1.0], [0.0, 1.0], n, t, true, [0.0, 0.0]),
+                Vertex::new([x, 0.0, z], [0.0, 0.0], n, t, true, [0.0, 0.0], 0),
+                Vertex::new([x + 1.0, 0.0, z], [1.0, 0.0], n, t, true, [0.0, 0.0], 0),
+                Vertex::new(
+                    [x + 1.0, 0.0, z + 1.0],
+                    [1.0, 1.0],
+                    n,
+                    t,
+                    true,
+                    [0.0, 0.0],
+                    0,
+                ),
+                Vertex::new([x, 0.0, z + 1.0], [0.0, 1.0], n, t, true, [0.0, 0.0], 0),
             ]
         };
         let mut vertices = mk(0.0, 0.0);
@@ -609,6 +656,7 @@ mod tests {
             &mono_prepared.placements,
             mono_prepared.atlas_width,
             mono_prepared.atlas_height,
+            mono_prepared.layer_count,
             AREA_SAMPLES,
         );
 
@@ -640,6 +688,150 @@ mod tests {
         assert_eq!(
             mono_atlas, composite,
             "per-light composite must equal the monolithic atlas bit-for-bit"
+        );
+    }
+
+    /// Build the monolithic-equivalent `CompositedAtlas` directly from a set of
+    /// per-light, per-texel terms over a `layer_count`-layer atlas, mirroring what
+    /// `bake_face_chart` + `composite_layers` jointly produce: sum each light's
+    /// irradiance and weighted direction per texel, set alpha/coverage on covered
+    /// texels, normalize the summed direction (falling back to the surface
+    /// normal), then dilate. This is the "expected" side the per-light composite
+    /// must reproduce bit-for-bit — assembled the same way the single-layer gate
+    /// assembles its expected atlas, generalized to multiple layers.
+    fn expected_atlas_from_texels(
+        atlas_w: u32,
+        atlas_h: u32,
+        layer_count: u32,
+        contributions: &[ContribTerm],
+    ) -> CompositedAtlas {
+        let plane = (atlas_w * atlas_h) as usize;
+        let texel_count = plane * layer_count as usize;
+        let mut atlas = CompositedAtlas::zeroed(atlas_w, atlas_h, layer_count);
+        let mut weighted_dir = vec![Vec3::ZERO; texel_count];
+        let mut fallback = vec![Vec3::Y; texel_count];
+
+        for &(layer, idx, irr, wd, fb) in contributions {
+            let gidx = layer as usize * plane + idx as usize;
+            atlas.irradiance[gidx * 4] += irr[0];
+            atlas.irradiance[gidx * 4 + 1] += irr[1];
+            atlas.irradiance[gidx * 4 + 2] += irr[2];
+            weighted_dir[gidx] += Vec3::from_array(wd);
+            fallback[gidx] = Vec3::from_array(fb);
+            atlas.coverage[gidx] = true;
+        }
+        for gidx in 0..texel_count {
+            if !atlas.coverage[gidx] {
+                continue;
+            }
+            atlas.irradiance[gidx * 4 + 3] = 1.0;
+            let wd = weighted_dir[gidx];
+            atlas.direction[gidx] = if wd.length_squared() > 1.0e-8 {
+                wd.normalize()
+            } else {
+                fallback[gidx]
+            };
+        }
+        atlas.dilate();
+        atlas
+    }
+
+    /// Multi-layer byte-identity gate: the per-light `composite_layers` output
+    /// equals the monolithic-equivalent atlas bit-for-bit for a TWO-layer atlas.
+    /// Extends the single-layer `composite_matches_monolithic_atlas_bit_for_bit`
+    /// gate to the array dimension.
+    ///
+    /// The fixture is hand-built (not routed through `prepare_atlas`, which is
+    /// hardcoded single-layer): two `LightmapLayer` entries with `layer_count = 2`
+    /// carrying texels on layer 0 AND layer 1, with distinct irradiance and
+    /// weighted-direction terms — including a covered-but-dark texel (zero
+    /// weighted direction) so the fallback-normal branch is exercised per layer.
+    /// The same terms assemble the expected monolithic atlas, so a layer-addressing
+    /// bug (e.g. dilation bleeding across the layer boundary, or `idx` folding the
+    /// layer in) breaks the equality.
+    #[test]
+    fn multi_layer_composite_matches_monolithic_bit_for_bit() {
+        // Small atlas so dilation has covered + uncovered texels to fill, on each
+        // of two layers independently.
+        let atlas_w = 8u32;
+        let atlas_h = 8u32;
+        let layer_count = 2u32;
+
+        let mk_idx = |x: u32, y: u32| y * atlas_w + x;
+
+        // Light A: a lit texel on each layer at different (x, y).
+        let a_texels = vec![
+            LayerTexel {
+                idx: mk_idx(2, 2),
+                layer: 0,
+                irradiance: [0.4, 0.1, 0.2],
+                weighted_dir: [0.0, 1.0, 0.5],
+                fallback_normal: [0.0, 1.0, 0.0],
+            },
+            LayerTexel {
+                idx: mk_idx(5, 4),
+                layer: 1,
+                irradiance: [0.0, 0.0, 0.0], // covered-but-dark on layer 1
+                weighted_dir: [0.0, 0.0, 0.0], // → fallback-normal branch
+                fallback_normal: [1.0, 0.0, 0.0],
+            },
+        ];
+        // Light B: overlaps A's layer-0 texel (sum + direction accumulate) and
+        // adds its own lit texel on layer 1.
+        let b_texels = vec![
+            LayerTexel {
+                idx: mk_idx(2, 2),
+                layer: 0,
+                irradiance: [0.3, 0.2, 0.0],
+                weighted_dir: [1.0, 0.0, 0.0],
+                fallback_normal: [0.0, 1.0, 0.0],
+            },
+            LayerTexel {
+                idx: mk_idx(5, 4),
+                layer: 1,
+                irradiance: [0.6, 0.5, 0.4],
+                weighted_dir: [0.0, 0.0, 1.0],
+                fallback_normal: [1.0, 0.0, 0.0],
+            },
+        ];
+
+        let layers = vec![
+            LightmapLayer {
+                atlas_width: atlas_w,
+                atlas_height: atlas_h,
+                layer_count,
+                texels: a_texels.clone(),
+            },
+            LightmapLayer {
+                atlas_width: atlas_w,
+                atlas_height: atlas_h,
+                layer_count,
+                texels: b_texels.clone(),
+            },
+        ];
+
+        let mut composite = composite_layers(&layers, atlas_w, atlas_h);
+        composite.dilate();
+
+        let contributions: Vec<ContribTerm> = a_texels
+            .iter()
+            .chain(b_texels.iter())
+            .map(|t| {
+                (
+                    t.layer,
+                    t.idx,
+                    t.irradiance,
+                    t.weighted_dir,
+                    t.fallback_normal,
+                )
+            })
+            .collect();
+        let expected = expected_atlas_from_texels(atlas_w, atlas_h, layer_count, &contributions);
+
+        assert_eq!(composite.layer_count, 2, "composite must report two layers");
+        assert_eq!(
+            composite, expected,
+            "two-layer per-light composite must equal the monolithic atlas bit-for-bit"
         );
     }
 
@@ -1078,6 +1270,7 @@ mod tests {
                 &mono_prepared.placements,
                 mono_prepared.atlas_width,
                 mono_prepared.atlas_height,
+                mono_prepared.layer_count,
                 AREA_SAMPLES,
             );
 

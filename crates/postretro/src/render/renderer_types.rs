@@ -282,103 +282,6 @@ impl Default for SpatialDiagnostics {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn camera_cull_diagnostics_reports_candidate_leaves_per_path() {
-        let candidate = CameraCullDiagnostics {
-            path: CameraCullPath::Candidate {
-                candidate_leaves: 7,
-            },
-            total_leaves: 100,
-            submitted_leaves: 3,
-        };
-        assert_eq!(candidate.candidate_leaves(), Some(7));
-
-        let tree_walk = CameraCullDiagnostics {
-            path: CameraCullPath::TreeWalk,
-            total_leaves: 100,
-            submitted_leaves: 42,
-        };
-        assert_eq!(tree_walk.candidate_leaves(), None);
-        // Default is the tree-walk path with zeroed counts.
-        assert_eq!(CameraCullDiagnostics::default().candidate_leaves(), None);
-    }
-
-    #[test]
-    fn spatial_cell_set_diagnostics_counts_culled_cells() {
-        let cells = crate::visibility::VisibleCells::Culled(vec![1, 2, 3]);
-        assert_eq!(
-            SpatialCellSetDiagnostics::from_visible_cells(&cells),
-            SpatialCellSetDiagnostics::Cells { count: 3 }
-        );
-        assert_eq!(
-            SpatialCellSetDiagnostics::from_visible_cells(
-                &crate::visibility::VisibleCells::DrawAll
-            ),
-            SpatialCellSetDiagnostics::DrawAll
-        );
-        assert_eq!(
-            SpatialCellSetDiagnostics::from_cell_slice(&[4, 5]),
-            SpatialCellSetDiagnostics::Cells { count: 2 }
-        );
-    }
-
-    #[test]
-    fn world_wireframe_modes_define_final_spatial_contract() {
-        assert_eq!(
-            WorldWireframeMode::ALL_VARIANTS,
-            [
-                WorldWireframeMode::Off,
-                WorldWireframeMode::CullStatusTrianglesAlwaysOnTop,
-                WorldWireframeMode::VisibleTrianglesDepthTested,
-            ],
-        );
-        assert_eq!(WorldWireframeMode::Off.label(), "Off");
-        assert_eq!(
-            WorldWireframeMode::CullStatusTrianglesAlwaysOnTop.label(),
-            "Cull-status triangles (all BVH leaves, x-ray)",
-        );
-        assert_eq!(
-            WorldWireframeMode::VisibleTrianglesDepthTested.label(),
-            "CPU-visible triangles (depth-tested)",
-        );
-    }
-
-    #[test]
-    fn spatial_overlay_defaults_are_off_depth_tested_and_cell_colored() {
-        assert_eq!(
-            BvhOverlayState::default(),
-            BvhOverlayState {
-                visible: false,
-                color_mode: BvhOverlayColorMode::CellId,
-                depth_mode: BvhOverlayDepthMode::DepthTested,
-                budget: BvhOverlayBudget {
-                    max_boxes: 512,
-                    stride: 1,
-                    visible_cells_only: false,
-                },
-            },
-        );
-        assert_eq!(
-            CellOverlayState::default(),
-            CellOverlayState {
-                visible: false,
-                depth_mode: BvhOverlayDepthMode::DepthTested,
-            },
-        );
-        assert_eq!(
-            PortalOverlayState::default(),
-            PortalOverlayState {
-                visible: false,
-                depth_mode: BvhOverlayDepthMode::DepthTested,
-            },
-        );
-    }
-}
-
 /// Hardware anisotropy cap for the Post Retro filtering pool. wgpu 29 requires
 /// `anisotropy_clamp >= 1`; 16 is the common ceiling exposed by desktop adapters
 /// and the visual point of diminishing returns for grazing-angle sharpness.
@@ -875,5 +778,102 @@ impl Renderer {
         self.full
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn camera_cull_diagnostics_reports_candidate_leaves_per_path() {
+        let candidate = CameraCullDiagnostics {
+            path: CameraCullPath::Candidate {
+                candidate_leaves: 7,
+            },
+            total_leaves: 100,
+            submitted_leaves: 3,
+        };
+        assert_eq!(candidate.candidate_leaves(), Some(7));
+
+        let tree_walk = CameraCullDiagnostics {
+            path: CameraCullPath::TreeWalk,
+            total_leaves: 100,
+            submitted_leaves: 42,
+        };
+        assert_eq!(tree_walk.candidate_leaves(), None);
+        // Default is the tree-walk path with zeroed counts.
+        assert_eq!(CameraCullDiagnostics::default().candidate_leaves(), None);
+    }
+
+    #[test]
+    fn spatial_cell_set_diagnostics_counts_culled_cells() {
+        let cells = crate::visibility::VisibleCells::Culled(vec![1, 2, 3]);
+        assert_eq!(
+            SpatialCellSetDiagnostics::from_visible_cells(&cells),
+            SpatialCellSetDiagnostics::Cells { count: 3 }
+        );
+        assert_eq!(
+            SpatialCellSetDiagnostics::from_visible_cells(
+                &crate::visibility::VisibleCells::DrawAll
+            ),
+            SpatialCellSetDiagnostics::DrawAll
+        );
+        assert_eq!(
+            SpatialCellSetDiagnostics::from_cell_slice(&[4, 5]),
+            SpatialCellSetDiagnostics::Cells { count: 2 }
+        );
+    }
+
+    #[test]
+    fn world_wireframe_modes_define_final_spatial_contract() {
+        assert_eq!(
+            WorldWireframeMode::ALL_VARIANTS,
+            [
+                WorldWireframeMode::Off,
+                WorldWireframeMode::CullStatusTrianglesAlwaysOnTop,
+                WorldWireframeMode::VisibleTrianglesDepthTested,
+            ],
+        );
+        assert_eq!(WorldWireframeMode::Off.label(), "Off");
+        assert_eq!(
+            WorldWireframeMode::CullStatusTrianglesAlwaysOnTop.label(),
+            "Cull-status triangles (all BVH leaves, x-ray)",
+        );
+        assert_eq!(
+            WorldWireframeMode::VisibleTrianglesDepthTested.label(),
+            "CPU-visible triangles (depth-tested)",
+        );
+    }
+
+    #[test]
+    fn spatial_overlay_defaults_are_off_depth_tested_and_cell_colored() {
+        assert_eq!(
+            BvhOverlayState::default(),
+            BvhOverlayState {
+                visible: false,
+                color_mode: BvhOverlayColorMode::CellId,
+                depth_mode: BvhOverlayDepthMode::DepthTested,
+                budget: BvhOverlayBudget {
+                    max_boxes: 512,
+                    stride: 1,
+                    visible_cells_only: false,
+                },
+            },
+        );
+        assert_eq!(
+            CellOverlayState::default(),
+            CellOverlayState {
+                visible: false,
+                depth_mode: BvhOverlayDepthMode::DepthTested,
+            },
+        );
+        assert_eq!(
+            PortalOverlayState::default(),
+            PortalOverlayState {
+                visible: false,
+                depth_mode: BvhOverlayDepthMode::DepthTested,
+            },
+        );
     }
 }

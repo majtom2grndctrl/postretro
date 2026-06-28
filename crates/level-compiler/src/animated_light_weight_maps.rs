@@ -170,6 +170,29 @@ fn bake_one_chunk(
     let face_index = chunk.face_index as usize;
     let chart = &inputs.face_charts[face_index];
     let placement = inputs.face_placements[face_index];
+
+    // Animated weight maps are single-layer: their atlas covers only layer 0.
+    // A face that the multi-bin packer spilled onto a higher layer (on overflow
+    // maps) has no animated atlas slot, so skip it — a degenerate 1×1 zero-count
+    // rect contributes nothing. NOT an assert: faces on layers >= 1 legitimately
+    // exist, and aborting the bake on them would be wrong.
+    if placement.layer != 0 {
+        return ChunkBakeResult {
+            rect: ChunkAtlasRect {
+                atlas_x: placement.x,
+                atlas_y: placement.y,
+                width: 1,
+                height: 1,
+                texel_offset: 0,
+            },
+            offset_counts: vec![TexelLightEntry {
+                offset: 0,
+                count: 0,
+            }],
+            texel_lights: Vec::new(),
+        };
+    }
+
     let (interior_w, interior_h) = chart_interior_dims(chart);
 
     let (atlas_x, atlas_y, width, height) = chunk_atlas_rect(
@@ -503,7 +526,7 @@ mod tests {
         let n = [0.0, normal_y, 0.0];
         let t = [1.0, 0.0, 0.0];
         vec![
-            Vertex::new([vertex_base, y, 0.0], [0.0, 0.0], n, t, true, [0.0, 0.0]),
+            Vertex::new([vertex_base, y, 0.0], [0.0, 0.0], n, t, true, [0.0, 0.0], 0),
             Vertex::new(
                 [vertex_base + 1.0, y, 0.0],
                 [1.0, 0.0],
@@ -511,6 +534,7 @@ mod tests {
                 t,
                 true,
                 [0.0, 0.0],
+                0,
             ),
             Vertex::new(
                 [vertex_base + 1.0, y, 1.0],
@@ -519,8 +543,9 @@ mod tests {
                 t,
                 true,
                 [0.0, 0.0],
+                0,
             ),
-            Vertex::new([vertex_base, y, 1.0], [0.0, 1.0], n, t, true, [0.0, 0.0]),
+            Vertex::new([vertex_base, y, 1.0], [0.0, 1.0], n, t, true, [0.0, 0.0], 0),
         ]
     }
 
@@ -554,6 +579,7 @@ mod tests {
                 [1.0, 0.0, 0.0],
                 true,
                 [0.0, 0.0],
+                0,
             ),
             Vertex::new(
                 [2.0, 0.5, -1.0],
@@ -562,6 +588,7 @@ mod tests {
                 [1.0, 0.0, 0.0],
                 true,
                 [0.0, 0.0],
+                0,
             ),
             Vertex::new(
                 [2.0, 0.5, 2.0],
@@ -570,6 +597,7 @@ mod tests {
                 [1.0, 0.0, 0.0],
                 true,
                 [0.0, 0.0],
+                0,
             ),
             Vertex::new(
                 [-1.0, 0.5, 2.0],
@@ -578,6 +606,7 @@ mod tests {
                 [1.0, 0.0, 0.0],
                 true,
                 [0.0, 0.0],
+                0,
             ),
         ];
         vertices.extend(ceiling);
@@ -624,6 +653,7 @@ mod tests {
                 [1.0, 0.0, 0.0],
                 true,
                 [0.0, 0.0],
+                0,
             ),
             Vertex::new(
                 [0.5, 0.5, -1.0],
@@ -632,6 +662,7 @@ mod tests {
                 [1.0, 0.0, 0.0],
                 true,
                 [0.0, 0.0],
+                0,
             ),
             Vertex::new(
                 [0.5, 0.5, 2.0],
@@ -640,6 +671,7 @@ mod tests {
                 [1.0, 0.0, 0.0],
                 true,
                 [0.0, 0.0],
+                0,
             ),
             Vertex::new(
                 [-1.0, 0.5, 2.0],
@@ -648,6 +680,7 @@ mod tests {
                 [1.0, 0.0, 0.0],
                 true,
                 [0.0, 0.0],
+                0,
             ),
         ];
         vertices.extend(blocker);
@@ -1232,8 +1265,13 @@ mod tests {
             normal: glam::Vec3::Y,
             width_texels: 8,
             height_texels: 8,
+            leaf_index: 0,
         };
-        let placement = ChartPlacement { x: 0, y: 0 };
+        let placement = ChartPlacement {
+            x: 0,
+            y: 0,
+            layer: 0,
+        };
         let atlas_size = 64u32;
 
         // Splits the chart's U range at uv=0.5 — what `recurse` does on a
@@ -1306,8 +1344,13 @@ mod tests {
             normal: glam::Vec3::Y,
             width_texels: 3,
             height_texels: 322,
+            leaf_index: 0,
         };
-        let placement = ChartPlacement { x: 0, y: 0 };
+        let placement = ChartPlacement {
+            x: 0,
+            y: 0,
+            layer: 0,
+        };
         let atlas_size = 4096u32;
 
         // A.uv_max and B.uv_min are intended-equal but drift apart by ~2e-7;
@@ -1347,6 +1390,7 @@ mod tests {
             normal: glam::Vec3::Y,
             width_texels: 8,
             height_texels: 8,
+            leaf_index: 0,
         };
         let atlas_size = 64u32;
 
@@ -1354,6 +1398,7 @@ mod tests {
         let placement = ChartPlacement {
             x: atlas_size - 1,
             y: atlas_size - 1,
+            layer: 0,
         };
         let (ax, ay, w, h) = chunk_atlas_rect(
             &chart,
@@ -1381,6 +1426,7 @@ mod tests {
         let placement_past = ChartPlacement {
             x: atlas_size + 100,
             y: atlas_size + 100,
+            layer: 0,
         };
         let (ax2, ay2, w2, h2) = chunk_atlas_rect(
             &chart,

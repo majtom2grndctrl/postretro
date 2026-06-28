@@ -7,9 +7,10 @@ use crate::octahedral;
 /// Sentinel value for `FaceMeta.texture_index`: face has no texture (checkerboard fallback).
 pub const NO_TEXTURE: u32 = u32::MAX;
 
-/// 32-byte vertex: position (f32x3) + base UV (f32x2) + octahedral normal
+/// 36-byte vertex: position (f32x3) + base UV (f32x2) + octahedral normal
 /// (u16x2) + octahedral tangent with bitangent sign (u16x2) + lightmap UV
-/// (u16x2, normalized 0..65535 → 0..1 atlas space).
+/// (u16x2, normalized 0..65535 → 0..1 atlas space) + lightmap array layer
+/// (u16) + 2 bytes padding.
 ///
 /// The bitangent sign is packed into the MSB of `tangent_packed[1]`: the lower
 /// 15 bits hold the octahedral v-component, and bit 15 is 1 for positive
@@ -30,6 +31,11 @@ pub struct Vertex {
     /// Lightmap atlas UV, quantized 0..65535 → 0..1. Zero on vertices that
     /// don't belong to any baked chart (runtime binds a 1×1 white fallback).
     pub lightmap_uv: [u16; 2],
+    /// Atlas array layer this vertex's lightmap chart lives in. Selects the
+    /// `texture_2d_array` slice sampled at `lightmap_uv` in the hot path.
+    pub lightmap_layer: u16,
+    /// Explicit padding to keep the on-disk vertex 4-byte aligned at 36 bytes.
+    pub _padding: u16,
 }
 
 impl Vertex {
@@ -46,6 +52,7 @@ impl Vertex {
         tangent: [f32; 3],
         bitangent_sign: bool,
         lightmap_uv: [f32; 2],
+        lightmap_layer: u16,
     ) -> Self {
         let normal_oct = octahedral::encode(normal[0], normal[1], normal[2]);
         let tangent_oct = octahedral::encode(tangent[0], tangent[1], tangent[2]);
@@ -60,6 +67,8 @@ impl Vertex {
             normal_oct,
             tangent_packed,
             lightmap_uv,
+            lightmap_layer,
+            _padding: 0,
         }
     }
 
@@ -115,16 +124,17 @@ pub struct FaceMeta {
 ///   u32  vertex_count
 ///   u32  index_count
 ///   u32  face_count
-///   Vertex   * vertex_count    (32 bytes each)
+///   Vertex   * vertex_count    (36 bytes each)
 ///   u32      * index_count      (triangle indices)
 ///   FaceMeta * face_count       (8 bytes each: leaf_index, texture_index)
 ///
-/// Per-vertex on-disk (32 bytes):
+/// Per-vertex on-disk (36 bytes):
 ///   f32 x, f32 y, f32 z                     (position, 12 bytes)
 ///   f32 u, f32 v                             (base UV, 8 bytes)
 ///   u16 normal_u, u16 normal_v               (octahedral normal, 4 bytes)
 ///   u16 tangent_u, u16 tangent_v_with_sign   (octahedral tangent + sign, 4 bytes)
 ///   u16 lm_u, u16 lm_v                       (quantized lightmap UV, 4 bytes)
+///   u16 lm_layer, u16 padding                (lightmap array layer + pad, 4 bytes)
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct GeometrySection {
@@ -133,7 +143,7 @@ pub struct GeometrySection {
     pub faces: Vec<FaceMeta>,
 }
 
-const VERTEX_SIZE: usize = 32;
+const VERTEX_SIZE: usize = 36;
 const FACE_SIZE: usize = 8;
 const HEADER_SIZE: usize = 12;
 
@@ -165,6 +175,8 @@ impl GeometrySection {
             buf.extend_from_slice(&v.tangent_packed[1].to_le_bytes());
             buf.extend_from_slice(&v.lightmap_uv[0].to_le_bytes());
             buf.extend_from_slice(&v.lightmap_uv[1].to_le_bytes());
+            buf.extend_from_slice(&v.lightmap_layer.to_le_bytes());
+            buf.extend_from_slice(&0u16.to_le_bytes()); // padding
         }
 
         for &idx in &self.indices {
@@ -278,6 +290,8 @@ impl GeometrySection {
             let tangent_v_with_sign = u16::from_le_bytes([data[offset + 26], data[offset + 27]]);
             let lm_u = u16::from_le_bytes([data[offset + 28], data[offset + 29]]);
             let lm_v = u16::from_le_bytes([data[offset + 30], data[offset + 31]]);
+            let lm_layer = u16::from_le_bytes([data[offset + 32], data[offset + 33]]);
+            // Bytes 34..35 are padding; read and discard.
 
             vertices.push(Vertex {
                 position: [x, y, z],
@@ -285,6 +299,8 @@ impl GeometrySection {
                 normal_oct: [normal_u, normal_v],
                 tangent_packed: [tangent_u, tangent_v_with_sign],
                 lightmap_uv: [lm_u, lm_v],
+                lightmap_layer: lm_layer,
+                _padding: 0,
             });
             offset += VERTEX_SIZE;
         }
@@ -397,6 +413,7 @@ mod tests {
                     [1.0, 0.0, 0.0],
                     true,
                     [0.1, 0.2],
+                    0,
                 ),
                 Vertex::new(
                     [4.0, 5.0, 6.0],
@@ -405,6 +422,7 @@ mod tests {
                     [1.0, 0.0, 0.0],
                     false,
                     [0.3, 0.4],
+                    0,
                 ),
                 Vertex::new(
                     [7.0, 8.0, 9.0],
@@ -413,6 +431,7 @@ mod tests {
                     [0.0, 0.0, 1.0],
                     true,
                     [0.5, 0.6],
+                    0,
                 ),
             ],
             indices: vec![0, 1, 2],
@@ -432,12 +451,26 @@ mod tests {
     }
 
     #[test]
-    fn vertex_is_32_bytes_face_is_8_bytes() {
-        // 3 vertices produce header(12) + verts(3*32) + indices(3*4) + faces(1*8)
+    fn vertex_is_36_bytes_face_is_8_bytes() {
+        // 3 vertices produce header(12) + verts(3*36) + indices(3*4) + faces(1*8)
         let section = sample_section();
         let bytes = section.to_bytes();
-        let expected = 12 + (3 * 32) + (3 * 4) + 8;
+        let expected = 12 + (3 * 36) + (3 * 4) + 8;
         assert_eq!(bytes.len(), expected);
+    }
+
+    #[test]
+    fn vertex_size_const_is_36() {
+        assert_eq!(VERTEX_SIZE, 36);
+    }
+
+    #[test]
+    fn lightmap_layer_round_trips() {
+        let mut section = sample_section();
+        section.vertices[1].lightmap_layer = 7;
+        let bytes = section.to_bytes();
+        let restored = GeometrySection::from_bytes(&bytes).unwrap();
+        assert_eq!(restored.vertices[1].lightmap_layer, 7);
     }
 
     #[test]
@@ -577,6 +610,7 @@ mod tests {
                 [1.0, 0.0, 0.0],
                 true,
                 [0.0, 0.0],
+                0,
             )],
             indices: vec![],
             faces: vec![FaceMeta {

@@ -168,10 +168,10 @@ fn soft_shadow_test_map_compiles_to_a_baked_lightmap() {
     // A real (non-placeholder) atlas: the six static lights bake into it, so it
     // must be larger than the 1x1 placeholder and carry irradiance bytes.
     assert!(
-        lightmap.width > 1 && lightmap.height > 1,
+        lightmap.irr_width > 1 && lightmap.irr_height > 1,
         "soft-shadow map must bake a real lightmap atlas, got {}x{}",
-        lightmap.width,
-        lightmap.height,
+        lightmap.irr_width,
+        lightmap.irr_height,
     );
     assert!(
         !lightmap.irradiance.is_empty(),

@@ -836,7 +836,7 @@ mod tests {
             .map(|s| sample_time(duration, s))
             .collect();
         assert_eq!(times.len(), BOUND_SAMPLES_PER_CLIP);
-        assert!(
+        const _: () = assert!(
             BOUND_SAMPLES_PER_CLIP >= 8,
             "plan floor: ≥8 samples per clip"
         );

@@ -1034,6 +1034,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
             normal_oct: v.normal_oct,
             tangent_packed: v.tangent_packed,
             lightmap_uv: v.lightmap_uv,
+            lightmap_layer: v.lightmap_layer as u32,
         })
         .collect();
 
@@ -1287,9 +1288,10 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
             Some(data) => {
                 let section = LightmapSection::from_bytes(&data)?;
                 log::info!(
-                    "[PRL] Lightmap: {}x{} atlas ({} B irradiance, {} B direction)",
-                    section.width,
-                    section.height,
+                    "[PRL] Lightmap: {}x{} atlas, {} layer(s), {} B irradiance, {} B direction",
+                    section.irr_width,
+                    section.irr_height,
+                    section.layer_count,
                     section.irradiance.len(),
                     section.direction.len(),
                 );

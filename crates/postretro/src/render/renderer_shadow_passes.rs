@@ -342,60 +342,6 @@ impl Renderer {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn leaf(cell_id: u32) -> crate::geometry::BvhLeaf {
-        crate::geometry::BvhLeaf {
-            aabb_min: [0.0; 3],
-            material_bucket_id: 0,
-            aabb_max: [1.0; 3],
-            index_offset: 0,
-            index_count: 3,
-            cell_id,
-            chunk_range_start: 0,
-            chunk_range_count: 0,
-        }
-    }
-
-    #[test]
-    fn cull_status_wireframe_draws_every_leaf() {
-        let visible = VisibleCells::Culled(vec![2]);
-
-        assert!(wireframe_draws_leaf(
-            WorldWireframeMode::CullStatusTrianglesAlwaysOnTop,
-            &visible,
-            &leaf(1),
-        ));
-    }
-
-    #[test]
-    fn visible_wireframe_draws_only_cpu_visible_cells() {
-        let visible = VisibleCells::Culled(vec![2, 4]);
-
-        assert!(wireframe_draws_leaf(
-            WorldWireframeMode::VisibleTrianglesDepthTested,
-            &visible,
-            &leaf(2),
-        ));
-        assert!(!wireframe_draws_leaf(
-            WorldWireframeMode::VisibleTrianglesDepthTested,
-            &visible,
-            &leaf(3),
-        ));
-    }
-
-    #[test]
-    fn visible_wireframe_draws_all_for_draw_all_visibility() {
-        assert!(wireframe_draws_leaf(
-            WorldWireframeMode::VisibleTrianglesDepthTested,
-            &VisibleCells::DrawAll,
-            &leaf(999),
-        ));
-    }
-}
-
 impl Renderer {
     /// Depth pre-pass (writes the scene depth buffer for the forward Equal test)
     /// followed by the half-res SDF shadow dispatch. Both run before `scene_color`
@@ -825,5 +771,59 @@ impl Renderer {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn leaf(cell_id: u32) -> crate::geometry::BvhLeaf {
+        crate::geometry::BvhLeaf {
+            aabb_min: [0.0; 3],
+            material_bucket_id: 0,
+            aabb_max: [1.0; 3],
+            index_offset: 0,
+            index_count: 3,
+            cell_id,
+            chunk_range_start: 0,
+            chunk_range_count: 0,
+        }
+    }
+
+    #[test]
+    fn cull_status_wireframe_draws_every_leaf() {
+        let visible = VisibleCells::Culled(vec![2]);
+
+        assert!(wireframe_draws_leaf(
+            WorldWireframeMode::CullStatusTrianglesAlwaysOnTop,
+            &visible,
+            &leaf(1),
+        ));
+    }
+
+    #[test]
+    fn visible_wireframe_draws_only_cpu_visible_cells() {
+        let visible = VisibleCells::Culled(vec![2, 4]);
+
+        assert!(wireframe_draws_leaf(
+            WorldWireframeMode::VisibleTrianglesDepthTested,
+            &visible,
+            &leaf(2),
+        ));
+        assert!(!wireframe_draws_leaf(
+            WorldWireframeMode::VisibleTrianglesDepthTested,
+            &visible,
+            &leaf(3),
+        ));
+    }
+
+    #[test]
+    fn visible_wireframe_draws_all_for_draw_all_visibility() {
+        assert!(wireframe_draws_leaf(
+            WorldWireframeMode::VisibleTrianglesDepthTested,
+            &VisibleCells::DrawAll,
+            &leaf(999),
+        ));
     }
 }

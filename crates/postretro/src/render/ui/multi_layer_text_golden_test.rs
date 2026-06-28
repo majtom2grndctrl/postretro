@@ -46,8 +46,10 @@ const TARGET_H: u32 = 720;
 
 /// The two layers' text. Disjoint ink footprints so a per-band ink-mass scan
 /// discriminates which string painted a band:
-///   - S0 (bottom): a short run — little ink.
-///   - S1 (top): a long run — much more ink.
+///
+/// - S0 (bottom): a short run — little ink.
+/// - S1 (top): a long run — much more ink.
+///
 /// Under the historical clobber the bottom band would render S1's glyphs (heavy
 /// ink) instead of S0's, so the bottom-band ink mass jumps from ~S0 to ~S1.
 const S0: &str = "HP";

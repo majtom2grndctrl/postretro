@@ -194,8 +194,8 @@ struct AnimationDescriptor {
 
 // Group 4 — baked directional lightmap (static direct lighting).
 // See context/lib/rendering_pipeline.md §4.
-@group(4) @binding(0) var lightmap_irradiance: texture_2d<f32>;
-@group(4) @binding(1) var lightmap_direction: texture_2d<f32>;
+@group(4) @binding(0) var lightmap_irradiance: texture_2d_array<f32>;
+@group(4) @binding(1) var lightmap_direction: texture_2d_array<f32>;
 // Non-filtering (Nearest) sampler — used only for the octahedral direction
 // texture (binding 1): linear interpolation of octahedral unit vectors does
 // not commute with slerp.
@@ -206,6 +206,13 @@ struct AnimationDescriptor {
 // irradiance (Lambert already baked in); `.a` is a coverage flag reserved
 // for debug visualization. When the PRL has no animated weight maps, this
 // slot binds a 1×1 zero texture so the fragment shader reads 0.
+//
+// SINGLE-LAYER LIMITATION: this animated atlas (and `animated_lm_direction`
+// at binding 5) is a plain `texture_2d` covering atlas layer 0 only — unlike
+// the static `lightmap_irradiance`/`lightmap_direction` array textures at
+// bindings 0/1. Faces whose `lightmap_layer >= 1` therefore receive NO
+// animated lighting; the fragment shader guards both samples behind
+// `in.lightmap_layer == 0u` and falls back to the static-only path otherwise.
 @group(4) @binding(3) var animated_lm_atlas: texture_2d<f32>;
 // Filtering (Linear) sampler — used for the irradiance + animated atlases so
 // baked penumbra ramps read as continuous gradients under magnification.
@@ -220,9 +227,9 @@ struct AnimationDescriptor {
 @group(4) @binding(5) var animated_lm_direction: texture_2d<f32>;
 
 // Sample the irradiance atlas with hardware bilinear filtering through the
-// linear sampler at binding 4.
-fn sample_lightmap_irradiance(uv: vec2<f32>) -> vec3<f32> {
-    return textureSample(lightmap_irradiance, lightmap_filtering_sampler, uv).rgb;
+// linear sampler at binding 4. `layer` selects the atlas array slice.
+fn sample_lightmap_irradiance(uv: vec2<f32>, layer: u32) -> vec3<f32> {
+    return textureSample(lightmap_irradiance, lightmap_filtering_sampler, uv, i32(layer)).rgb;
 }
 
 // Same for the animated-light contribution atlas.
@@ -276,6 +283,7 @@ struct VertexInput {
     @location(2) normal_oct: vec2<u32>,
     @location(3) tangent_packed: vec2<u32>,
     @location(4) lightmap_uv_packed: vec2<u32>,
+    @location(5) lightmap_layer: u32,
 };
 
 struct VertexOutput {
@@ -289,6 +297,7 @@ struct VertexOutput {
     @location(3) bitangent_sign: f32,
     @location(4) world_position: vec3<f32>,
     @location(5) lightmap_uv: vec2<f32>,
+    @location(6) @interpolate(flat) lightmap_layer: u32,
 };
 
 fn oct_decode(enc: vec2<u32>) -> vec3<f32> {
@@ -327,6 +336,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
         f32(in.lightmap_uv_packed.x) / 65535.0,
         f32(in.lightmap_uv_packed.y) / 65535.0,
     );
+    out.lightmap_layer = in.lightmap_layer;
 
     return out;
 }
@@ -681,10 +691,21 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // binding 4) so baked penumbra ramps read as continuous gradients under
         // magnification. The direction channel below stays on the nearest
         // sampler (octahedral lerp ≠ slerp).
-        let lm_irr = sample_lightmap_irradiance(in.lightmap_uv);
+        let lm_irr = sample_lightmap_irradiance(in.lightmap_uv, in.lightmap_layer);
         // Pre-shaded Lambert irradiance from the animated compose pre-pass.
         // Uncovered atlas texels are zero so this is safe to add unconditionally.
-        let lm_anim = sample_lightmap_animated(in.lightmap_uv);
+        //
+        // Animated-layer guard: the animated atlas + direction (bindings 3, 5)
+        // are single-layer `texture_2d` covering atlas layer 0 only. Faces on
+        // layers >= 1 get NO animated lighting — `lm_anim` stays zero and
+        // `anim_dir_sample.a` stays 0.0 (the zero-coverage sentinel the
+        // `use_correction_anim` gate keys on), so they take the static-only path.
+        var lm_anim = vec3<f32>(0.0);
+        var anim_dir_sample = vec4<f32>(0.5, 1.0, 0.5, 0.0);
+        if in.lightmap_layer == 0u {
+            lm_anim = sample_lightmap_animated(in.lightmap_uv);
+            anim_dir_sample = textureSample(animated_lm_direction, lightmap_sampler, in.lightmap_uv);
+        }
 
         // Bumped-Lambert correction: the baker pre-multiplied by mesh-normal NdotL
         // using the dominant incident direction. Divide out mesh NdotL and
@@ -692,7 +713,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // detail. lm_anim gets the same correction below via its own fused animated
         // dominant direction, so style-animated lights respond to normal-map detail
         // identically to static ones.
-        let dom = decode_lightmap_direction(textureSample(lightmap_direction, lightmap_sampler, in.lightmap_uv));
+        let dom = decode_lightmap_direction(textureSample(lightmap_direction, lightmap_sampler, in.lightmap_uv, i32(in.lightmap_layer)));
         let n_dot_l_mesh = max(dot(mesh_n, dom), 0.0);
         let n_dot_l_bump = max(dot(N_bump, dom), 0.0);
         // NDOTL_EPS is a tight cosine floor (~0.57° from grazing) — a divide-by-zero
@@ -714,8 +735,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // and 4.0 cap are shared with the static path. The compose pass clears
         // coverage to 0.0 for uncovered/canceling texels (oct decode of those
         // yields a valid-but-meaningless direction, so a NaN sentinel no longer
-        // works) — the use_correction_anim gate reads .a to skip them.
-        let anim_dir_sample = textureSample(animated_lm_direction, lightmap_sampler, in.lightmap_uv);
+        // works) — the use_correction_anim gate reads .a to skip them. The
+        // sample itself is hoisted above into the animated-layer guard so faces
+        // on atlas layers >= 1 keep the zero-coverage sentinel.
         let dom_anim = decode_lightmap_direction(anim_dir_sample);
         let n_dot_l_mesh_anim = max(dot(mesh_n, dom_anim), 0.0);
         let n_dot_l_bump_anim = max(dot(N_bump, dom_anim), 0.0);

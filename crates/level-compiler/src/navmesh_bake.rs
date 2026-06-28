@@ -813,6 +813,7 @@ mod tests {
                     [1.0, 0.0, 0.0],
                     true,
                     [0.0, 0.0],
+                    0,
                 ));
             }
             indices.extend_from_slice(&[base, base + 1, base + 2]);

@@ -30,6 +30,7 @@ fn cast_world_vertices_roundtrips() {
             normal_oct: [32768, 32768],
             tangent_packed: [65535, 32768],
             lightmap_uv: [100, 200],
+            lightmap_layer: 0,
         },
         crate::geometry::WorldVertex {
             position: [4.0, 5.0, 6.0],
@@ -37,11 +38,12 @@ fn cast_world_vertices_roundtrips() {
             normal_oct: [0, 32768],
             tangent_packed: [32768, 0],
             lightmap_uv: [0, 0],
+            lightmap_layer: 0,
         },
     ];
     let bytes = cast_world_vertices_to_bytes(&input);
-    // 2 vertices * 32 bytes = 64 bytes
-    assert_eq!(bytes.len(), 64);
+    // 2 vertices * 36 bytes = 72 bytes
+    assert_eq!(bytes.len(), 72);
 
     let pos_x = f32::from_ne_bytes(bytes[0..4].try_into().unwrap());
     let pos_y = f32::from_ne_bytes(bytes[4..8].try_into().unwrap());

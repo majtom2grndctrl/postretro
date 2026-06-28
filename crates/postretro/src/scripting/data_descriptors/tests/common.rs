@@ -74,5 +74,4 @@ pub(crate) const UI_ALL_KINDS_JS: &str = r#"({
 /// images carry `decorative: true` — the bridge enforces the M13 G2 image
 /// name-XOR-decorative precondition, so a bare-asset image is no longer valid
 /// authored input through the live path.
-
 pub(crate) const UI_ALL_KINDS_WIRE: &str = r#"{"anchor":"center","offset":[10.0,-20.0],"root":{"kind":"vstack","gap":4.0,"padding":8.0,"align":"start","children":[{"kind":"text","content":"hello","fontSize":18.0,"color":[1.0,1.0,1.0,1.0]},{"kind":"panel","fill":[0.1,0.2,0.3,1.0],"border":{"texture":"ui/frame","slice":[8.0,8.0,8.0,8.0],"tint":[1.0,1.0,1.0,1.0]}},{"kind":"hstack","gap":2.0,"padding":0.0,"align":"center","children":[{"kind":"image","asset":"ui/logo","decorative":true},{"kind":"spacer","flexGrow":1.0}]},{"kind":"grid","gap":1.0,"padding":3.0,"align":"stretch","cols":2,"children":[{"kind":"image","asset":"ui/icon","decorative":true}]}]}}"#;

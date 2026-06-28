@@ -20,12 +20,15 @@ pub struct WorldVertex {
     /// did not receive a lightmap chart (runtime renders against the
     /// placeholder atlas in that case).
     pub lightmap_uv: [u16; 2],
+    /// Atlas array layer sampled at `lightmap_uv`. Widened from the on-disk
+    /// `u16` so the vertex format is a single `Uint32` attribute.
+    pub lightmap_layer: u32,
 }
 
 impl WorldVertex {
     /// Stride in bytes: 12 (pos) + 8 (base uv) + 4 (normal) + 4 (tangent) + 4
-    /// (lightmap uv) = 32 bytes.
-    pub const STRIDE: usize = 32;
+    /// (lightmap uv) + 4 (lightmap layer) = 36 bytes.
+    pub const STRIDE: usize = 36;
 }
 
 /// One flat BVH node, matching the WGSL `BvhNode` struct byte-for-byte.

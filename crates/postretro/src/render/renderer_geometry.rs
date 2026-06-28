@@ -34,6 +34,7 @@ pub(crate) fn cast_world_vertices_to_bytes(data: &[crate::geometry::WorldVertex]
         for &c in &vertex.lightmap_uv {
             bytes.extend_from_slice(&c.to_ne_bytes());
         }
+        bytes.extend_from_slice(&vertex.lightmap_layer.to_ne_bytes());
     }
     bytes
 }
@@ -86,5 +87,26 @@ pub fn level_world_to_geometry<'a>(
         lightmap_mode: world.lightmap_mode,
         cell_draw_index: world.cell_draw_index.as_ref(),
         texture_materials,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::geometry::WorldVertex;
+
+    #[test]
+    fn lightmap_layer_serialized_at_byte_offset_32() {
+        let vertex = WorldVertex {
+            position: [0.0, 0.0, 0.0],
+            base_uv: [0.0, 0.0],
+            normal_oct: [0, 0],
+            tangent_packed: [0, 0],
+            lightmap_uv: [0, 0],
+            lightmap_layer: 0x1234_5678,
+        };
+        let bytes = cast_world_vertices_to_bytes(&[vertex]);
+        let layer = u32::from_ne_bytes([bytes[32], bytes[33], bytes[34], bytes[35]]);
+        assert_eq!(layer, 0x1234_5678);
     }
 }

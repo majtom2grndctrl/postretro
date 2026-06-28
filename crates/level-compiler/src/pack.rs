@@ -718,10 +718,11 @@ pub fn pack_and_write_portals(
         );
     }
     log::info!(
-        "  Lightmap: {} bytes ({}x{})",
+        "  Lightmap: {} bytes ({}x{}x{})",
         lightmap_bytes.len(),
-        lightmap.width,
-        lightmap.height,
+        lightmap.irr_width,
+        lightmap.irr_height,
+        lightmap.layer_count,
     );
     log::info!(
         "  ChunkLightList: {} bytes (has_grid={}, {} chunks, {} indices)",
@@ -865,6 +866,7 @@ mod tests {
                         [1.0, 0.0, 0.0],
                         true,
                         [0.0, 0.0],
+                        0,
                     ),
                     Vertex::new(
                         [4.0, 5.0, 6.0],
@@ -873,6 +875,7 @@ mod tests {
                         [1.0, 0.0, 0.0],
                         true,
                         [0.0, 0.0],
+                        0,
                     ),
                     Vertex::new(
                         [7.0, 8.0, 9.0],
@@ -881,6 +884,7 @@ mod tests {
                         [1.0, 0.0, 0.0],
                         true,
                         [0.0, 0.0],
+                        0,
                     ),
                 ],
                 indices: vec![0, 1, 2],

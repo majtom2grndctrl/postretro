@@ -19,9 +19,10 @@ target
 # Compiled map assets (only *.map source files are tracked)
 *.bsp
 *.prl
-# Exception: the committed stress-warren-overflow build, for direct download
-# (verifies the multi-layer lightmap atlas without a local ~25-min bake).
-!content/base/maps/stress-warren-overflow.prl
+# Exception: committed stress-warren-overflow builds, for direct download
+# (verify the multi-layer atlas without a local bake; -disc-bc6h / -disc-rgba16f
+# are the same map differing only in irradiance format, for the layer-bug A/B).
+!content/base/maps/stress-warren-overflow*.prl
 # Autosave maps (local, not version controlled)
 **/maps/autosave/
 autosave/

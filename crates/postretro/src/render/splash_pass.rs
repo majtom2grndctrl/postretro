@@ -16,6 +16,33 @@ const SPLASH_WGSL: &str = include_str!("../shaders/splash.wgsl");
 // shader, same as the world/UI texture path.
 const SPLASH_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
+/// Clear color for the boot/splash pass — used for BOTH the frame-0 black-window
+/// replacement (no logo bound) and the area behind the logo quad on the logo
+/// frame, so the boot is one seamless color rather than a black flash with a
+/// mismatched border around the splash art.
+///
+/// MUST match the background color of the splash art
+/// (`content/base/textures/splash/postretro-ascii-art.png`), whose uniform
+/// background is sRGB 8-bit `(28, 33, 39)`. The logo PNG draws over this clear as
+/// an `Rgba8UnormSrgb` texture, so the cleared region and the image's own
+/// background must resolve to the same on-screen color with no seam.
+///
+/// Color space: the boot/splash surface is an **sRGB** swapchain format (init
+/// picks the first `is_srgb()` surface format; see `renderer_init.rs`). wgpu
+/// writes a clear `wgpu::Color` into the attachment WITHOUT gamma conversion and
+/// the hardware applies the linear→sRGB encode on store, so the components here
+/// are the **linear** form of the sRGB-8 background (sRGB→linear per channel:
+/// `c/12.92` for `c <= 0.04045`, else `((c+0.055)/1.055)^2.4`, `c = srgb8/255`):
+///   R 28/255 → 0.011612, G 33/255 → 0.015209, B 39/255 → 0.020289.
+/// This matches how `FRONTEND_CLEAR_COLOR` authors linear values for the same
+/// sRGB attachment (`startup/lifecycle.rs`).
+const SPLASH_CLEAR_COLOR: wgpu::Color = wgpu::Color {
+    r: 0.011612,
+    g: 0.015209,
+    b: 0.020289,
+    a: 1.0,
+};
+
 /// Fraction of the smaller window axis the logo's bounding box is allowed to
 /// fill, so the logo always sits inside a margin regardless of window size. The
 /// logo keeps its source aspect ratio and is centered; whichever axis binds
@@ -49,7 +76,8 @@ struct SplashUniform {
 
 /// The uploaded logo plus its decoded pixel dimensions. Held by the pass between
 /// `install_logo` and `clear`; `None` before the logo is installed (frame 0) and
-/// after the boot→content handoff, when the pass records only the black clear.
+/// after the boot→content handoff, when the pass records only the splash clear
+/// (`SPLASH_CLEAR_COLOR`, the splash art's background color).
 struct InstalledLogo {
     /// Kept alive so the bind group's texture view stays valid for every draw.
     _texture: wgpu::Texture,
@@ -250,14 +278,16 @@ impl BootSplashPass {
     }
 
     /// Drop the uploaded logo so post-handoff splash frames record only the
-    /// black clear. Used on the boot→content transition and on suspend.
+    /// splash clear (`SPLASH_CLEAR_COLOR`). Used on the boot→content transition
+    /// and on suspend.
     pub fn clear(&mut self) {
         self.logo = None;
     }
 
-    /// Record one splash frame into `view`: clear to black, then draw the logo
-    /// quad when one is installed. Pure GPU encode — the surface acquire/present
-    /// stays in the renderer so this can be reused on any target if needed.
+    /// Record one splash frame into `view`: clear to `SPLASH_CLEAR_COLOR` (the
+    /// splash art's background color), then draw the logo quad when one is
+    /// installed. Pure GPU encode — the surface acquire/present stays in the
+    /// renderer so this can be reused on any target if needed.
     pub fn encode(
         &self,
         queue: &wgpu::Queue,
@@ -285,7 +315,7 @@ impl BootSplashPass {
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    load: wgpu::LoadOp::Clear(SPLASH_CLEAR_COLOR),
                     store: wgpu::StoreOp::Store,
                 },
             })],

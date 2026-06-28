@@ -291,8 +291,8 @@ fn filter_usable_section(
     section
         .filter(|s| s.irr_width > 0 && s.irr_height > 0)
         .filter(|s| {
-            let fits = s.irr_width <= max_texture_dimension_2d
-                && s.irr_height <= max_texture_dimension_2d;
+            let fits =
+                s.irr_width <= max_texture_dimension_2d && s.irr_height <= max_texture_dimension_2d;
             if !fits {
                 log::error!(
                     "[Renderer] Lightmap atlas {}x{} exceeds device maxTextureDimension2D {}; \

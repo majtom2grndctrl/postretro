@@ -756,7 +756,14 @@ fn pack_layers(charts: &[Chart], max_dim: u32) -> Result<PackOutput, LightmapBak
 
     // Pack leaves into layers. Each leaf tries the current layer's MaxRects free
     // list; a leaf that doesn't fit rolls whole to a new layer.
-    let mut placements = vec![ChartPlacement { x: 0, y: 0, layer: 0 }; charts.len()];
+    let mut placements = vec![
+        ChartPlacement {
+            x: 0,
+            y: 0,
+            layer: 0
+        };
+        charts.len()
+    ];
     let mut layer: u32 = 0;
     let mut packer = MaxRects::new(atlas_dim, atlas_dim);
 
@@ -2329,8 +2336,7 @@ mod tests {
         assert_eq!(pack.atlas_height, 64);
 
         // Every chart of a given leaf must land on exactly one layer.
-        let mut leaf_layers: std::collections::HashMap<u32, u32> =
-            std::collections::HashMap::new();
+        let mut leaf_layers: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
         for (chart, placement) in charts.iter().zip(pack.placements.iter()) {
             assert!(
                 placement.layer < pack.layer_count,

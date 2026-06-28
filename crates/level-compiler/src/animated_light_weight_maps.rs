@@ -1267,7 +1267,11 @@ mod tests {
             height_texels: 8,
             leaf_index: 0,
         };
-        let placement = ChartPlacement { x: 0, y: 0, layer: 0 };
+        let placement = ChartPlacement {
+            x: 0,
+            y: 0,
+            layer: 0,
+        };
         let atlas_size = 64u32;
 
         // Splits the chart's U range at uv=0.5 — what `recurse` does on a
@@ -1342,7 +1346,11 @@ mod tests {
             height_texels: 322,
             leaf_index: 0,
         };
-        let placement = ChartPlacement { x: 0, y: 0, layer: 0 };
+        let placement = ChartPlacement {
+            x: 0,
+            y: 0,
+            layer: 0,
+        };
         let atlas_size = 4096u32;
 
         // A.uv_max and B.uv_min are intended-equal but drift apart by ~2e-7;

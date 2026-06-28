@@ -548,7 +548,15 @@ mod tests {
             vec![
                 Vertex::new([x, 0.0, z], [0.0, 0.0], n, t, true, [0.0, 0.0], 0),
                 Vertex::new([x + 1.0, 0.0, z], [1.0, 0.0], n, t, true, [0.0, 0.0], 0),
-                Vertex::new([x + 1.0, 0.0, z + 1.0], [1.0, 1.0], n, t, true, [0.0, 0.0], 0),
+                Vertex::new(
+                    [x + 1.0, 0.0, z + 1.0],
+                    [1.0, 1.0],
+                    n,
+                    t,
+                    true,
+                    [0.0, 0.0],
+                    0,
+                ),
                 Vertex::new([x, 0.0, z + 1.0], [0.0, 1.0], n, t, true, [0.0, 0.0], 0),
             ]
         };
@@ -806,7 +814,15 @@ mod tests {
         let contributions: Vec<(u32, u32, [f32; 3], [f32; 3], [f32; 3])> = a_texels
             .iter()
             .chain(b_texels.iter())
-            .map(|t| (t.layer, t.idx, t.irradiance, t.weighted_dir, t.fallback_normal))
+            .map(|t| {
+                (
+                    t.layer,
+                    t.idx,
+                    t.irradiance,
+                    t.weighted_dir,
+                    t.fallback_normal,
+                )
+            })
             .collect();
         let expected = expected_atlas_from_texels(atlas_w, atlas_h, layer_count, &contributions);
 

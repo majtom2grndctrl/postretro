@@ -481,9 +481,8 @@ fn main() -> anyhow::Result<()> {
         // atlas area, so there is no density-coarsening retry — prepare once at
         // the fixed density.
         let density = lightmap_config.lightmap_density;
-        let prepared =
-            lightmap_bake::prepare_atlas(&mut geo_result, &static_baked_lights, density)
-                .map_err(|e| anyhow::anyhow!("Lightmap atlas prepare failed: {e}"))?;
+        let prepared = lightmap_bake::prepare_atlas(&mut geo_result, &static_baked_lights, density)
+            .map_err(|e| anyhow::anyhow!("Lightmap atlas prepare failed: {e}"))?;
         final_lightmap_density = density;
 
         // Mirror `bake_lightmap`'s placeholder branch: with no static lights or no

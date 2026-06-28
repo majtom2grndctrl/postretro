@@ -327,18 +327,21 @@ fn main() -> Result<()> {
 }
 
 fn window_attributes() -> WindowAttributes {
+    // The window is created VISIBLE (winit default). A "create hidden, reveal
+    // after first present" scheme was tried to suppress the Windows
+    // pre-first-present white flash but caused a boot HANG on Windows: winit's
+    // `request_redraw()` uses `RedrawWindow(.., RDW_INTERNALPAINT)`, and Windows
+    // does not deliver `WM_PAINT`/`RedrawRequested` to an invisible window — so
+    // the redraw-driven splash loop (default `ControlFlow::Wait`, blocking in
+    // `MsgWaitForMultipleObjectsEx`) never advanced past frame 0 and never
+    // revealed the window. A booting engine with a brief cosmetic flash is
+    // strictly better than a hang. A proper flash fix needs a platform approach
+    // that does not gate the first frame on an OS paint event delivered to a
+    // hidden window (e.g. a Win32 class background brush matching the splash
+    // color). See: context/lib/boot_sequence.md §1 (Splash state machine).
     Window::default_attributes()
         .with_title("Postretro")
         .with_inner_size(winit::dpi::LogicalSize::new(1280, 720))
-        // Create the window HIDDEN. On Windows the OS paints a newly-created
-        // window with the window class's default (white) background brush before
-        // the app's first wgpu frame presents — that pre-first-present flash is
-        // pure white, then the splash appears. Starting hidden means the window
-        // never appears until we explicitly show it after the first frame
-        // presents (see `App::reveal_window_after_first_present`), so the very
-        // first visible pixels are the splash-color frame — no white flash.
-        // See: context/lib/boot_sequence.md §1 (Splash state machine).
-        .with_visible(false)
 }
 
 /// Resolve the per-tick crouch intent bit from `crouch_mode` and the current
@@ -893,13 +896,12 @@ impl ApplicationHandler for App {
                 return;
             }
         };
-        // The window is created HIDDEN (`window_attributes` → `with_visible(false)`)
-        // and revealed only after the first splash frame presents
-        // (`reveal_window_after_first_present`, on the presented branch of
-        // `run_splash_frame_zero`). This suppresses the Windows pre-first-present
-        // white flash. This path also runs on resume (resume resets to Booting and
-        // recreates the window), so the reveal-after-first-present fires every time
-        // a window is created. See: context/lib/boot_sequence.md §1.
+        // The window is created VISIBLE (winit default). The redraw-driven
+        // splash loop relies on the OS delivering `RedrawRequested` after the
+        // `request_redraw()` below, which on Windows only happens for a visible
+        // window (a hidden window gets no `WM_PAINT`). This path also runs on
+        // resume (resume resets to Booting and recreates the window).
+        // See: context/lib/boot_sequence.md §1.
         self.boot_timings.record("window_created");
 
         let renderer = match Renderer::new(&window) {
@@ -913,9 +915,8 @@ impl ApplicationHandler for App {
         self.boot_timings.record("wgpu_init");
 
         // Splash decode + upload is deferred to the first Splash frame's
-        // post-paint window so the first presented frame reaches the (hidden)
-        // window as fast as possible; the window is then revealed once that frame
-        // is on screen. See `run_splash_frame` and
+        // post-paint window so the OS window opens and presents its first frame
+        // as fast as possible. See `run_splash_frame` and
         // `context/lib/boot_sequence.md` §1 (Splash state machine).
 
         let size = window.inner_size();
@@ -3357,26 +3358,6 @@ impl App {
     fn request_redraw(&self) {
         if let Some(ws) = self.window_state.as_ref() {
             ws.window.request_redraw();
-        }
-    }
-
-    /// Show the window after the first splash frame has SUCCESSFULLY presented.
-    ///
-    /// The window is created hidden (`window_attributes` → `with_visible(false)`)
-    /// to suppress the Windows white-flash: the OS paints a fresh window with its
-    /// class background brush before our first wgpu frame is on screen. We reveal
-    /// it only once the first frame (splash-color clear) has presented, so the
-    /// first visible pixels match the splash background — no white flash.
-    ///
-    /// Call site is the presented branch of `run_splash_frame_zero` (after the
-    /// `first_black_frame` mark), reached only when `paint_splash` returned
-    /// `Presented`; a transient `NeedsRedraw` returns earlier and never reveals.
-    /// `set_visible(true)` is idempotent, so the resume path — which recreates the
-    /// hidden window and replays the splash loop from frame 0 — re-reveals
-    /// correctly. `set_visible` is a safe winit call (no GPU, no `unsafe`).
-    fn reveal_window_after_first_present(&self) {
-        if let Some(ws) = self.window_state.as_ref() {
-            ws.window.set_visible(true);
         }
     }
 

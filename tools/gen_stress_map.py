@@ -68,6 +68,44 @@ spacing a map this large would bake millions of probes and gigabytes):
 
 Push the room count up by enlarging the grid and/or lowering --door-prob, and
 watch that the compile stays under the 4096 BSP-leaf cap (see below).
+
+Lightmap-array overflow preset
+------------------------------
+`--preset overflow` sets a known-good knob combination whose bake spills the
+lightmap atlas into >=2 `texture_2d_array` layers at BOUNDED memory, so the
+multi-layer atlas path can be exercised and crate shadows verified across
+layers. How it works:
+
+  prl-build charts EVERY world face into the lightmap atlas (chart size
+  ~= face_size_m / density texels/side), then packs charts per BVH leaf. The
+  per-layer atlas square is sized to fit the LARGEST single leaf; a leaf that
+  no longer fits the current layer rolls onto a NEW array layer. So overflow is
+  driven by TOTAL surface area, while the per-layer dimension (and thus the
+  bake's peak memory -- one full-res float layer is ~1.9 GB at 8192^2) is driven
+  by the largest single leaf.
+
+  The cheap, memory-safe way to overflow is therefore: MANY small crate brushes
+  + a MODEST grid at a MODERATE density. Lots of separate crates => lots of
+  small per-leaf charts => the largest leaf stays small (small per-layer dim,
+  low memory) while the combined chart area still spills past one layer. Do NOT
+  crank density fine -- that inflates one huge layer and OOMs.
+
+The preset sets: --grid 4 4 2, --crates 10, --lights static, --spot-frac 1.0,
+--light-every 1, --door-prob 0.15, --shaft-prob 0.5. Static SPOTLIGHTS
+(`_shadow_type static_light_map`) are what bake crate shadows into the lightmap,
+so spot-frac is maxed. Every preset value is still overridable on the CLI.
+
+  Recommended bake (writes the .prl to /tmp; do NOT commit it):
+
+    python3 tools/gen_stress_map.py --preset overflow \\
+        -o content/dev/maps/stress-warren-overflow.map
+    RUST_LOG=info ./target/release/prl-build --no-cache \\
+        --lightmap-density 0.08 --sh-probe-spacing 10.0 \\
+        content/dev/maps/stress-warren-overflow.map -o /tmp/stress-overflow.prl
+
+  Look for `[PRL] Lightmap: WxH atlas, N layer(s)` with N >= 2. If N == 1, lower
+  the density a notch (e.g. 0.06) or raise --crates; if the bake OOMs or reports
+  ChartTooLarge, RAISE the density (coarser) so the per-layer dim drops.
 """
 
 import argparse
@@ -546,15 +584,37 @@ def write_map(path, brushes, spawn, nx, ny, nz, lights):
 
 
 def main(argv):
+    # Presets set a known-good bundle of knobs. Each preset value is applied
+    # ONLY where the user did not pass that flag explicitly (we default the
+    # flags to None and resolve below), so a preset never overrides the CLI.
+    #
+    # overflow: bake spills the lightmap atlas into >=2 texture_2d_array layers
+    #           at bounded memory (many small crates + modest grid + moderate
+    #           density). Recommended bake density: 0.08 m/texel. See the module
+    #           docstring "Lightmap-array overflow preset" for the full rationale.
+    PRESETS = {
+        "overflow": dict(
+            grid=[4, 4, 2], crates=10, lights="static", spot_frac=1.0,
+            light_every=1, door_prob=0.15, shaft_prob=0.5,
+        ),
+    }
+
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--grid", nargs=3, type=int, default=[9, 8, 4],
+    ap.add_argument("--preset", choices=sorted(PRESETS),
+                    help="apply a named bundle of known-good knob values "
+                         "(overridable per-flag on the CLI). 'overflow' => a map "
+                         "whose bake overflows the lightmap atlas into >=2 array "
+                         "layers at bounded memory; bake it at "
+                         "--lightmap-density 0.08. Sets --grid 4 4 2 --crates 10 "
+                         "--lights static --spot-frac 1.0.")
+    ap.add_argument("--grid", nargs=3, type=int, default=None,
                     metavar=("NX", "NY", "NZ"),
                     help="cells along X, Y, and vertical layers (default 9 8 4, "
                          "which lands just under the 4096 BSP-leaf cap)")
     ap.add_argument("-o", "--out", default="content/dev/maps/stress-warren.map")
     ap.add_argument("--seed", type=int, default=1)
-    ap.add_argument("--door-prob", type=float, default=0.15,
+    ap.add_argument("--door-prob", type=float, default=None,
                     help="maze braid factor: rooms are first connected by a "
                          "spanning-tree maze (one door per tree edge), then each "
                          "*extra* adjacency gets a loop door with this "
@@ -563,14 +623,14 @@ def main(argv):
                          "doors alternate wall slots so they never open a "
                          "straight sightline through a third room; braid doors "
                          "may occasionally, so keep this low. (default 0.15)")
-    ap.add_argument("--shaft-prob", type=float, default=0.5,
+    ap.add_argument("--shaft-prob", type=float, default=None,
                     help="fraction of candidate cells that get a vertical shaft "
                          "connecting layers (at least one is forced per interior "
                          "slab so the complex stays traversable; the candidate "
                          "pattern shifts each layer so shafts never stack into a "
                          "vertical sightline). (default 0.5)")
     ap.add_argument("--lights", choices=["none", "dynamic", "static", "mixed"],
-                    default="none",
+                    default=None,
                     help="add one light per room. 'dynamic' = light_dynamic "
                          "(runtime, no bake; stresses the per-frame forward "
                          "light loop + the 96-slot spot / 6-slot cube shadow "
@@ -581,18 +641,39 @@ def main(argv):
     ap.add_argument("--static-frac", type=float, default=0.5,
                     help="in --lights mixed, fraction of lights that are baked "
                          "(static); the rest are dynamic. (default 0.5)")
-    ap.add_argument("--light-every", type=int, default=1, metavar="N",
+    ap.add_argument("--light-every", type=int, default=None, metavar="N",
                     help="place a light in every Nth room (default 1 = all)")
-    ap.add_argument("--crates", type=int, default=0, metavar="N",
+    ap.add_argument("--crates", type=int, default=None, metavar="N",
                     help="crate stacks per room (solid box-brushes on the floor; "
                          "cast spot-light shadows and add to the geometry walk, "
                          "but each spends BSP leaves so room count must drop). "
                          "(default 0)")
-    ap.add_argument("--spot-frac", type=float, default=0.2,
+    ap.add_argument("--spot-frac", type=float, default=None,
                     help="fraction of lights that are spotlights. Only spots "
                          "cast shadows from world geometry (crates), so raise "
                          "this to stress shadow-map rendering. (default 0.2)")
     args = ap.parse_args(argv)
+
+    # Resolve each knob: explicit CLI value wins; else the preset's value (if a
+    # preset was named and sets it); else the original committed default.
+    preset = PRESETS.get(args.preset, {})
+    _DEFAULTS = dict(grid=[9, 8, 4], door_prob=0.15, shaft_prob=0.5,
+                     lights="none", light_every=1, crates=0, spot_frac=0.2)
+
+    def resolve(name):
+        if getattr(args, name) is not None:
+            return getattr(args, name)
+        if name in preset:
+            return preset[name]
+        return _DEFAULTS[name]
+
+    args.grid = resolve("grid")
+    args.door_prob = resolve("door_prob")
+    args.shaft_prob = resolve("shaft_prob")
+    args.lights = resolve("lights")
+    args.light_every = resolve("light_every")
+    args.crates = resolve("crates")
+    args.spot_frac = resolve("spot_frac")
 
     nx, ny, nz = args.grid
     if min(nx, ny, nz) < 1:

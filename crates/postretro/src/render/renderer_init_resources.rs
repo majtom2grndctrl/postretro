@@ -623,10 +623,6 @@ mod tests {
             "exactly at the floor must be accepted",
         );
         assert!(
-            array_layers_sufficient(256),
-            "256 (the floor) must be accepted",
-        );
-        assert!(
             array_layers_sufficient(2048),
             "well above the floor must be accepted",
         );

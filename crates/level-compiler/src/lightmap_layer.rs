@@ -1,7 +1,6 @@
-// Per-light lightmap contribution layers: bake one static light's irradiance +
-// unnormalized weighted direction across the shared atlas, cache it, and
-// composite the layers back into a byte-identical pre-BC6H atlas.
-// See: context/plans/done/incremental-bake-per-element/index.md
+// Per-light lightmap contribution layers: cache, then composite back into a
+// byte-identical pre-BC6H atlas.
+// See: context/lib/build_pipeline.md (Lightmap id 22)
 
 use glam::Vec3;
 
@@ -20,7 +19,7 @@ use glam::DVec3;
 /// invalidates all cached layers and forces a re-bake. Each cached stage owns
 /// its own version constant and bumps independently — the layer codec evolves
 /// separately from the per-group SH and animated-weight-map stages.
-pub const LAYER_FORMAT_VERSION: u32 = 2;
+pub const LAYER_FORMAT_VERSION: u32 = 3;
 
 /// Bump when the composite/dilate/`encode_section` pipeline or
 /// `LightmapSection::to_bytes` serialization changes. Folded into the

@@ -30,7 +30,7 @@ const MIN_ATLAS_DIMENSION: u32 = 64;
 
 /// Maximum atlas dimension. Beyond this the baker returns an error so the caller can retry at a
 /// coarser density. 8192 matches the `max_texture_dimension_2d` floor the runtime requires
-/// (see `crates/postretro/src/renderer_init_resources.rs`'s adapter pre-check) and fits ~328 m at 4 cm/texel.
+/// (see `crates/postretro/src/render/renderer_init_resources.rs`'s adapter pre-check) and fits ~328 m at 4 cm/texel.
 const MAX_ATLAS_DIMENSION: u32 = 8192;
 
 /// Maximum atlas array layers. The atlas is a `texture_2d_array`; the multi-bin
@@ -74,6 +74,16 @@ pub enum LightmapBakeError {
         u_extent_m: f32,
         v_extent_m: f32,
         density_m_per_texel: f32,
+    },
+    #[error(
+        "lightmap leaf too large: BVH leaf {leaf_index}'s {chart_count} charts can't fit a single \
+         {max_dim}x{max_dim} atlas layer, and the leaf-cohesion invariant forbids splitting a leaf \
+         across layers. Raise `texel_density` or split the map."
+    )]
+    LeafTooLarge {
+        leaf_index: u32,
+        chart_count: usize,
+        max_dim: u32,
     },
 }
 
@@ -285,7 +295,7 @@ pub fn prepare_atlas(
         // skipped because the empty bake path returns a placeholder section that no atlas
         // sampling consumes.
         let charts = plan_charts(geom, texel_density);
-        let pack = match pack_layers(&charts, MAX_ATLAS_DIMENSION) {
+        let pack = match pack_layers(&charts, MAX_ATLAS_DIMENSION, texel_density) {
             Ok(p) => p,
             Err(_) => PackOutput {
                 layer_count: 1,
@@ -310,7 +320,7 @@ pub fn prepare_atlas(
 
     // `pack_layers` owns the `ChartTooLarge` check against its `max_dim`, so the
     // pre-pack loop that duplicated it is gone — one source of truth.
-    let pack = pack_layers(&charts, MAX_ATLAS_DIMENSION)?;
+    let pack = pack_layers(&charts, MAX_ATLAS_DIMENSION, texel_density)?;
     if pack.placements.is_empty() {
         return Ok(PreparedAtlas {
             charts,
@@ -715,7 +725,11 @@ fn round_atlas_dim(raw: u32, max_dim: u32) -> u32 {
 /// The shared `(atlas_width, atlas_height)` is sized to host the largest single
 /// leaf in one layer (grown by doubling, capped at `max_dim`), so no leaf is
 /// ever forced to split for want of room within a layer.
-fn pack_layers(charts: &[Chart], max_dim: u32) -> Result<PackOutput, LightmapBakeError> {
+fn pack_layers(
+    charts: &[Chart],
+    max_dim: u32,
+    density_m_per_texel: f32,
+) -> Result<PackOutput, LightmapBakeError> {
     if charts.is_empty() {
         return Ok(PackOutput {
             layer_count: 1,
@@ -736,10 +750,7 @@ fn pack_layers(charts: &[Chart], max_dim: u32) -> Result<PackOutput, LightmapBak
                 max: max_dim,
                 u_extent_m: chart.uv_extent[0],
                 v_extent_m: chart.uv_extent[1],
-                // `pack_layers` is density-agnostic; the caller knows the density
-                // it packed at. Report 0.0 here — the field is informational and
-                // the caller surfaces its own density in logs.
-                density_m_per_texel: 0.0,
+                density_m_per_texel,
             });
         }
     }
@@ -781,7 +792,17 @@ fn pack_layers(charts: &[Chart], max_dim: u32) -> Result<PackOutput, LightmapBak
             }
             packer = MaxRects::new(atlas_dim, atlas_dim);
             let fit = place_leaf(&mut packer, charts, leaf, layer, &mut placements);
-            debug_assert!(fit, "leaf must fit an empty layer at the chosen dimension");
+            if !fit {
+                // A single leaf too large to fit even an empty `max_dim²` layer
+                // can never be placed — and leaf cohesion forbids splitting it.
+                // Error rather than `debug_assert!` so release builds reject it
+                // instead of silently leaving its charts at the default `{0,0,N}`.
+                return Err(LightmapBakeError::LeafTooLarge {
+                    leaf_index: leaf.first().map(|&i| charts[i].leaf_index).unwrap_or(0),
+                    chart_count: leaf.len(),
+                    max_dim,
+                });
+            }
         }
     }
 
@@ -2281,8 +2302,8 @@ mod tests {
     fn pack_layers_is_deterministic() {
         let geo = unit_quad_geometry();
         let charts = plan_charts(&geo, 0.25);
-        let p1 = pack_layers(&charts, MAX_ATLAS_DIMENSION).unwrap();
-        let p2 = pack_layers(&charts, MAX_ATLAS_DIMENSION).unwrap();
+        let p1 = pack_layers(&charts, MAX_ATLAS_DIMENSION, 0.25).unwrap();
+        let p2 = pack_layers(&charts, MAX_ATLAS_DIMENSION, 0.25).unwrap();
         assert_eq!(p1.atlas_width, p2.atlas_width);
         assert_eq!(p1.atlas_height, p2.atlas_height);
         assert_eq!(p1.layer_count, p2.layer_count);
@@ -2329,7 +2350,7 @@ mod tests {
             synthetic_chart_leaf(64, 32, 1),
         ];
 
-        let pack = pack_layers(&charts, max_dim).expect("must pack into two layers");
+        let pack = pack_layers(&charts, max_dim, 0.25).expect("must pack into two layers");
 
         assert_eq!(pack.layer_count, 2, "two full leaves must span two layers");
         assert_eq!(pack.atlas_width, 64);
@@ -2360,6 +2381,135 @@ mod tests {
             leaf_layers[&0], leaf_layers[&1],
             "the two leaves must occupy distinct layers",
         );
+    }
+
+    /// Task 3b AC — per-vertex `lightmap_layer`. The sibling test above asserts
+    /// `ChartPlacement.layer`; this one proves `assign_lightmap_uvs` actually
+    /// writes that layer into `Vertex.lightmap_layer`. From a two-layer
+    /// `PackOutput`, run `assign_lightmap_uvs` over a minimal geometry whose
+    /// triangle faces map 1:1 to the charts, then assert each face's vertices
+    /// carry `placement.layer as u16` and that `lightmap_uv` normalizes against
+    /// the shared `(atlas_width, atlas_height)` (in `[0,1]`).
+    #[test]
+    fn assign_lightmap_uvs_writes_per_vertex_layer_across_two_layers() {
+        // Same two-layer setup as the sibling test: leaf 0 fills a 64² layer,
+        // leaf 1's two charts fill a second. Three charts → three faces.
+        let charts = vec![
+            synthetic_chart_leaf(64, 64, 0),
+            synthetic_chart_leaf(64, 32, 1),
+            synthetic_chart_leaf(64, 32, 1),
+        ];
+        let pack = pack_layers(&charts, 64, 0.25).expect("must pack into two layers");
+        assert_eq!(pack.layer_count, 2, "fixture must exercise two layers");
+
+        // Minimal geometry: one triangle per chart, each face owning three
+        // vertices (no sharing), so face index `i` maps to chart `i`.
+        let mut vertices = Vec::new();
+        let mut indices = Vec::new();
+        let mut faces = Vec::new();
+        let mut face_index_ranges = Vec::new();
+        for chart in &charts {
+            let base = vertices.len() as u32;
+            for p in [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]] {
+                vertices.push(Vertex::new(
+                    p,
+                    [0.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                    [1.0, 0.0, 0.0],
+                    true,
+                    [0.0, 0.0],
+                    0,
+                ));
+            }
+            let offset = indices.len() as u32;
+            indices.extend_from_slice(&[base, base + 1, base + 2]);
+            faces.push(FaceMeta {
+                leaf_index: chart.leaf_index,
+                texture_index: 0,
+            });
+            face_index_ranges.push(FaceIndexRange {
+                index_offset: offset,
+                index_count: 3,
+            });
+        }
+        let mut geom = GeometryResult {
+            geometry: GeometrySection {
+                vertices,
+                indices,
+                faces,
+            },
+            texture_names: TextureNamesSection { names: Vec::new() },
+            face_index_ranges,
+        };
+
+        assign_lightmap_uvs(&mut geom, &charts, &pack);
+
+        for (face_index, range) in geom.face_index_ranges.iter().enumerate() {
+            let expected_layer = pack.placements[face_index].layer as u16;
+            let start = range.index_offset as usize;
+            let end = start + range.index_count as usize;
+            for &idx in &geom.geometry.indices[start..end] {
+                let v = &geom.geometry.vertices[idx as usize];
+                assert_eq!(
+                    v.lightmap_layer, expected_layer,
+                    "face {face_index} vertex {idx}: lightmap_layer must equal placement.layer",
+                );
+                let uv = v.decode_lightmap_uv();
+                assert!(
+                    (0.0..=1.0).contains(&uv[0]) && (0.0..=1.0).contains(&uv[1]),
+                    "face {face_index} vertex {idx}: lightmap_uv out of [0,1]: {uv:?}",
+                );
+            }
+        }
+
+        // The two leaves must have produced distinct per-vertex layers, so the
+        // test actually exercises a non-zero `lightmap_layer` write.
+        let layer_face0 = {
+            let r = geom.face_index_ranges[0];
+            geom.geometry.vertices[geom.geometry.indices[r.index_offset as usize] as usize]
+                .lightmap_layer
+        };
+        let layer_face1 = {
+            let r = geom.face_index_ranges[1];
+            geom.geometry.vertices[geom.geometry.indices[r.index_offset as usize] as usize]
+                .lightmap_layer
+        };
+        assert_ne!(
+            layer_face0, layer_face1,
+            "the two leaves' faces must land on distinct lightmap layers",
+        );
+    }
+
+    /// Fix 1 robustness — a single BVH leaf whose charts can't fit even an empty
+    /// `max_dim²` layer must return `LeafTooLarge`, not silently corrupt
+    /// placements. Leaf cohesion forbids splitting the leaf across layers, so the
+    /// packer has no escape: several near-`max_dim` charts on one leaf overflow a
+    /// single layer regardless of how many layers it opens.
+    #[test]
+    fn pack_layers_single_oversized_leaf_errors() {
+        let max_dim = 64;
+        // One leaf, four 64×64 charts. Each fills a whole 64² layer, so they
+        // cannot coexist on one layer — and the leaf cannot be split.
+        let charts = vec![
+            synthetic_chart_leaf(64, 64, 7),
+            synthetic_chart_leaf(64, 64, 7),
+            synthetic_chart_leaf(64, 64, 7),
+            synthetic_chart_leaf(64, 64, 7),
+        ];
+        let err = pack_layers(&charts, max_dim, 0.25)
+            .expect_err("an oversized single leaf must error, not pack");
+        match err {
+            LightmapBakeError::LeafTooLarge {
+                leaf_index,
+                chart_count,
+                max_dim: reported_max,
+            } => {
+                assert_eq!(leaf_index, 7, "error must carry the BVH leaf index");
+                assert_eq!(chart_count, 4, "error must report the leaf's chart count");
+                assert_eq!(reported_max, max_dim, "error must report the max dimension");
+            }
+            other => panic!("expected LeafTooLarge, got {other:?}"),
+        }
     }
 
     /// Cache-determinism guard: the lightmap bake is consumed by the build-stage
@@ -2536,7 +2686,7 @@ mod tests {
             ),
         ];
         for (label, charts) in cases {
-            let pack = pack_layers(charts, MAX_ATLAS_DIMENSION)
+            let pack = pack_layers(charts, MAX_ATLAS_DIMENSION, 0.25)
                 .unwrap_or_else(|e| panic!("{label}: pack_layers failed: {e:?}"));
             let (w, h) = (pack.atlas_width, pack.atlas_height);
             assert_eq!(

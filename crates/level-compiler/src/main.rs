@@ -582,7 +582,7 @@ fn main() -> anyhow::Result<()> {
     let lightmap_config = lightmap_bake::LightmapConfig {
         lightmap_density: effective_lightmap_density,
         area_sample_count: args.soft_shadow_samples,
-        uncompressed_irradiance: false,
+        uncompressed_irradiance: args.uncompressed_irradiance,
     };
     let final_lightmap_density;
     let lightmap_bake_output = if let Some(ref cache) = stage_cache {
@@ -756,7 +756,7 @@ fn main() -> anyhow::Result<()> {
             &lightmap_bake::LightmapConfig {
                 lightmap_density: density,
                 area_sample_count: args.soft_shadow_samples,
-                uncompressed_irradiance: false,
+                uncompressed_irradiance: args.uncompressed_irradiance,
             },
         )
         .map_err(|e| anyhow::anyhow!("Lightmap bake failed: {e}"))?
@@ -1170,6 +1170,11 @@ struct Args {
     /// the warm/cold branches need no change — both flags route the stage cache
     /// to `None`. Passing both is fine (identical effect, no conflict).
     release: bool,
+    /// When true, store the baked lightmap irradiance atlas uncompressed as
+    /// `Rgba16Float` instead of the default BC6H. BC6H is the default (smaller
+    /// on disk and in VRAM); the uncompressed form is larger and exists for
+    /// debugging and quality comparison against the compressed path.
+    uncompressed_irradiance: bool,
 }
 
 fn parse_args() -> anyhow::Result<Args> {
@@ -1200,6 +1205,7 @@ fn help_text() -> String {
          --cache-max-size <SIZE>    LRU budget for the stage cache, pruned at build start; accepts e.g. 2GiB, 512MiB, or a byte count (default: {cache_max})\n    \
          --no-cache                 Disable the stage cache entirely; wins over --cache-dir (default: off)\n    \
          --release                  Produce a shippable map: exact lighting, cache bypassed (implies --no-cache). The interactive default is a fast warm build with approximate indirect lighting; ship only --release artifacts (default: off)\n    \
+         --uncompressed-irradiance  Store the lightmap irradiance atlas uncompressed as Rgba16Float instead of BC6H — larger; for debugging/quality comparison (default: off, BC6H)\n    \
          -h, --help                 Print this help and exit\n",
         probe = sh_bake::DEFAULT_PROBE_SPACING,
         density = lightmap_bake::DEFAULT_TEXEL_DENSITY_METERS,
@@ -1231,6 +1237,7 @@ where
     let mut cache_max_bytes = cache::DEFAULT_MAX_BYTES;
     let mut no_cache = false;
     let mut release = false;
+    let mut uncompressed_irradiance = false;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -1324,6 +1331,9 @@ where
             "--release" => {
                 release = true;
             }
+            "--uncompressed-irradiance" => {
+                uncompressed_irradiance = true;
+            }
             _ if input.is_none() => {
                 input = Some(PathBuf::from(arg));
             }
@@ -1357,6 +1367,7 @@ where
         cache_max_bytes,
         no_cache,
         release,
+        uncompressed_irradiance,
     })
 }
 
@@ -1961,6 +1972,26 @@ mod tests {
         let args = vec!["input.map".to_string(), "--verbose".to_string()];
         let parsed = parse_args_from(args.into_iter()).unwrap();
         assert!(parsed.verbose);
+    }
+
+    #[test]
+    fn parse_args_uncompressed_irradiance_flag() {
+        let args = vec!["input.map".to_string()];
+        let parsed = parse_args_from(args.into_iter()).unwrap();
+        assert!(
+            !parsed.uncompressed_irradiance,
+            "irradiance should default to compressed (BC6H)"
+        );
+
+        let args = vec![
+            "input.map".to_string(),
+            "--uncompressed-irradiance".to_string(),
+        ];
+        let parsed = parse_args_from(args.into_iter()).unwrap();
+        assert!(
+            parsed.uncompressed_irradiance,
+            "--uncompressed-irradiance should set the flag"
+        );
     }
 
     #[test]

@@ -151,7 +151,7 @@ fn values_equal(left: IrValue, right: IrValue) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scripting::ir::scopes::{StubScope, StubWrite};
+    use crate::scripting::ir::test_scope::{StubScope, StubWrite};
     use crate::scripting::ir::{BakedIr, CURRENT_IR_VERSION, IrNode, bind};
 
     const EPSILON: f32 = 1e-6;

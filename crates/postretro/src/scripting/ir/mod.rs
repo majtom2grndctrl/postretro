@@ -18,7 +18,8 @@ pub(crate) mod bind;
 pub(crate) mod eval;
 pub(crate) mod load;
 pub(crate) mod scope;
-pub(crate) mod scopes;
+#[cfg(test)]
+pub(crate) mod test_scope;
 
 #[cfg(test)]
 mod e2e_tests;
@@ -39,8 +40,6 @@ pub(crate) use eval::{eval_and_write, eval_value};
 pub(crate) use load::load_baked_ir;
 #[allow(unused_imports)]
 pub(crate) use scope::{BindingScope, ResolvedInput, ResolvedOutput};
-#[allow(unused_imports)]
-pub(crate) use scopes::{StoreCapability, StoreScope};
 
 /// Current IR wire-format version. Stamped into every [`BakedIr`] envelope.
 ///

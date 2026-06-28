@@ -279,9 +279,7 @@ mod tests {
         // fired through `fire_named_event_with_sequences`. This is exactly
         // the path `fogPulse` / `fogFade` step arrays travel at level load.
         use crate::scripting::ctx::ScriptCtx;
-        use crate::scripting::data_descriptors::{
-            LevelManifest, NamedReaction, ReactionDescriptor, SequenceStep,
-        };
+        use crate::scripting::data_descriptors::{NamedReaction, ReactionDescriptor, SequenceStep};
         use crate::scripting::data_registry::DataRegistry;
         use crate::scripting::reaction_dispatch::{
             fire_named_event_with_sequences, validate_sequence_primitives,
@@ -338,14 +336,7 @@ mod tests {
         assert_eq!(validated.len(), 1, "fog steps survived validation");
 
         let mut data = DataRegistry::new();
-        data.populate_from_manifest(
-            LevelManifest {
-                reactions: validated,
-                crossings: Vec::new(),
-                ui_trees: Vec::new(),
-            },
-            &[],
-        );
+        data.populate_level(validated, Vec::new(), &[]);
 
         let reaction_reg = ReactionPrimitiveRegistry::new();
         let system_reg =

@@ -1,7 +1,9 @@
 // Data-context descriptors: player-movement descriptor params.
 // See: context/lib/scripting.md
 
-use super::super::*;
+use serde::{Deserialize, Serialize};
+
+use crate::scripting::ir::IrNode;
 
 /// Authored player-movement component preset. The four core sub-objects
 /// (`capsule`, `ground`, `air`, `fall`) are required when `movement` is

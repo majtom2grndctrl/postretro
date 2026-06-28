@@ -141,7 +141,7 @@ mod tests {
         PlayerMovementDescriptor, SpeedParams,
     };
     use crate::scripting::ir::alloc_probe::AllocSnapshot;
-    use crate::scripting::ir::scopes::StubScope;
+    use crate::scripting::ir::test_scope::StubScope;
     use crate::scripting::ir::{BakedIr, CURRENT_IR_VERSION, IrNode, bind, eval_value};
     use glam::Vec3;
 

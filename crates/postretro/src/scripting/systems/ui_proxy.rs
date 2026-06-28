@@ -251,9 +251,7 @@ mod tests {
 
     #[test]
     fn publisher_write_is_visible_to_same_frame_crossing_detection() {
-        use crate::scripting::data_descriptors::{
-            CrossingCondition, CrossingDescriptor, LevelManifest,
-        };
+        use crate::scripting::data_descriptors::{CrossingCondition, CrossingDescriptor};
         use crate::scripting::primitives::store::read_store_slot;
         use crate::scripting::state_crossings::CrossingDetector;
 
@@ -262,17 +260,14 @@ mod tests {
         let mut publisher = PlayerHudStatePublisher::new(ctx.clone());
         publisher.tick();
 
-        ctx.data_registry.borrow_mut().populate_from_manifest(
-            LevelManifest {
-                reactions: Vec::new(),
-                ui_trees: Vec::new(),
-                crossings: vec![CrossingDescriptor {
-                    slot: "player.health".to_string(),
-                    condition: CrossingCondition::Below { threshold: 0.2 },
-                    max: 100.0,
-                    fire: vec!["lowHealth".to_string()],
-                }],
-            },
+        ctx.data_registry.borrow_mut().populate_level(
+            Vec::new(),
+            vec![CrossingDescriptor {
+                slot: "player.health".to_string(),
+                condition: CrossingCondition::Below { threshold: 0.2 },
+                max: 100.0,
+                fire: vec!["lowHealth".to_string()],
+            }],
             &[],
         );
         let mut detector = CrossingDetector::new();

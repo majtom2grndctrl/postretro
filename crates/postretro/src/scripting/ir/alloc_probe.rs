@@ -107,7 +107,7 @@ impl AllocSnapshot {
 mod tests {
     use super::*;
     use crate::scripting::ir::eval::eval_value;
-    use crate::scripting::ir::scopes::StubScope;
+    use crate::scripting::ir::test_scope::StubScope;
     use crate::scripting::ir::{BakedIr, CURRENT_IR_VERSION, IrNode, IrValue, bind};
 
     fn num(v: f32) -> Box<IrNode> {

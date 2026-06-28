@@ -1,7 +1,7 @@
-// Data-context descriptors: DescriptorError plus js_err/lua_err adapters.
+// Data-context descriptors: VM-free DescriptorError.
 // See: context/lib/scripting.md
 
-use super::*;
+use thiserror::Error;
 
 #[derive(Debug, Error, PartialEq)]
 pub(crate) enum DescriptorError {
@@ -21,16 +21,4 @@ pub(crate) enum DescriptorError {
     InvalidShape { reason: String },
     #[error("crossing entry must declare exactly one of 'below' or 'above' (got {count})")]
     CrossingCondition { count: usize },
-}
-
-pub(crate) fn js_err(e: rquickjs::Error) -> DescriptorError {
-    DescriptorError::InvalidShape {
-        reason: e.to_string(),
-    }
-}
-
-pub(crate) fn lua_err(e: mlua::Error) -> DescriptorError {
-    DescriptorError::InvalidShape {
-        reason: e.to_string(),
-    }
 }

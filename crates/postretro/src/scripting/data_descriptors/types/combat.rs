@@ -1,7 +1,11 @@
 // Data-context descriptors: weapon/health/ai descriptors.
 // See: context/lib/scripting.md
 
-use super::super::*;
+use std::collections::HashMap;
+
+use serde::{Deserialize, Serialize};
+
+use crate::scripting::data_descriptors::DescriptorError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

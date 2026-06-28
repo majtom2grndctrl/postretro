@@ -1,7 +1,7 @@
 // Data-context descriptors: reaction & crossing descriptor types.
 // See: context/lib/scripting.md
 
-use super::super::*;
+use crate::scripting::registry::EntityId;
 
 /// Variants of a single reaction's behavior body. The `name` lives on the
 /// wrapping [`NamedReaction`]; this enum captures only the descriptor shape.

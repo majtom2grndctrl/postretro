@@ -1,7 +1,15 @@
 // Data-context descriptors: light/mesh/entity-type descriptors.
 // See: context/lib/scripting.md
 
-use super::super::*;
+use std::collections::HashMap;
+
+use serde::{Deserialize, Serialize};
+
+use crate::scripting::components::billboard_emitter::BillboardEmitterComponent;
+use crate::scripting::components::mesh::{AnimationState, InterruptPolicy};
+use crate::scripting::data_descriptors::{
+    AiDescriptor, DescriptorError, HealthDescriptor, PlayerMovementDescriptor, WeaponDescriptor,
+};
 
 /// Authored light component preset attached to an [`EntityTypeDescriptor`].
 /// Mirrors the runtime [`crate::scripting::components::light::LightComponent`] shape but

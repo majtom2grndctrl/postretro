@@ -7,10 +7,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::data_descriptors::{
-    CrossingDescriptor, EntityTypeDescriptor, LevelManifest, NamedReaction,
-};
-use super::runtime::ModMapEntry;
+use super::data_descriptors::{CrossingDescriptor, EntityTypeDescriptor, NamedReaction};
+use super::foundation_pods::ModMapEntry;
 
 /// Engine-global reaction definition plus its optional level-tag scope.
 /// Empty `levels` means all levels; activation/composition happens separately.
@@ -71,24 +69,36 @@ impl DataRegistry {
         Self::default()
     }
 
-    /// Append a manifest's level-local definitions, then recompose the active
-    /// per-level reaction/crossing sets from matching globals plus locals.
+    /// Append level-local definitions, then recompose the active per-level
+    /// reaction/crossing sets from matching globals plus locals.
     /// Existing level-local definitions are preserved — call [`Self::clear`]
     /// first for a fresh population. Entity-type descriptors arrive separately
-    /// via `ModManifest.entities` (they outlive level unload).
-    pub(crate) fn populate_from_manifest(&mut self, manifest: LevelManifest, tags: &[String]) {
-        let LevelManifest {
-            reactions,
-            crossings,
-            // Level-scope UI trees are drained off the manifest and registered
-            // into the app-side `UiTreeRegistry` at the level-load drain point
-            // (main.rs), before this `populate_from_manifest` consumes the rest.
-            // They are not engine-global data-registry state, so nothing lands
-            // here.
-            ui_trees: _,
-        } = manifest;
+    /// via `ModManifest.entities` (they outlive level unload). UI trees are
+    /// drained by the runtime caller and never enter `DataRegistry`.
+    pub(crate) fn populate_level(
+        &mut self,
+        reactions: Vec<NamedReaction>,
+        crossings: Vec<CrossingDescriptor>,
+        tags: &[String],
+    ) {
+        self.set_level_reactions(reactions);
+        self.set_level_crossings(crossings);
+        self.recompose(tags);
+    }
+
+    /// Append level-local reaction definitions retained for recomposition.
+    pub(crate) fn set_level_reactions(&mut self, reactions: Vec<NamedReaction>) {
         self.level_reactions.extend(reactions);
+    }
+
+    /// Append level-local crossing definitions retained for recomposition.
+    pub(crate) fn set_level_crossings(&mut self, crossings: Vec<CrossingDescriptor>) {
         self.level_crossings.extend(crossings);
+    }
+
+    /// Rebuild active level-local sets from retained local definitions and
+    /// matching globals.
+    pub(crate) fn recompose(&mut self, tags: &[String]) {
         self.recompose_active_sets(tags);
     }
 
@@ -264,20 +274,16 @@ mod tests {
     use crate::scripting::sequence::SequencedPrimitiveRegistry;
     use crate::scripting::{reaction_dispatch, reactions::log_capture};
 
-    fn sample_manifest() -> LevelManifest {
-        LevelManifest {
-            reactions: vec![NamedReaction {
-                name: "wave1Complete".to_string(),
-                descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
-                    primitive: "moveGeometry".to_string(),
-                    tag: Some("reactorChambers".to_string()),
-                    on_complete: None,
-                    args: serde_json::Value::Object(Default::default()),
-                }),
-            }],
-            crossings: Vec::new(),
-            ui_trees: Vec::new(),
-        }
+    fn sample_level_reactions() -> Vec<NamedReaction> {
+        vec![NamedReaction {
+            name: "wave1Complete".to_string(),
+            descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                primitive: "moveGeometry".to_string(),
+                tag: Some("reactorChambers".to_string()),
+                on_complete: None,
+                args: serde_json::Value::Object(Default::default()),
+            }),
+        }]
     }
 
     fn grunt_descriptor() -> EntityTypeDescriptor {
@@ -393,7 +399,7 @@ mod tests {
     #[test]
     fn populate_appends_manifest_entries() {
         let mut r = DataRegistry::new();
-        r.populate_from_manifest(sample_manifest(), &[]);
+        r.populate_level(sample_level_reactions(), Vec::new(), &[]);
         assert_eq!(r.reactions.len(), 1);
         assert!(!r.is_empty());
     }
@@ -403,7 +409,7 @@ mod tests {
         let mut r = DataRegistry::new();
         r.replace_global_reactions(vec![sample_scoped_reaction("globalLoad", &[])]);
 
-        r.populate_from_manifest(sample_manifest(), &tags(&["deathmatch"]));
+        r.populate_level(sample_level_reactions(), Vec::new(), &tags(&["deathmatch"]));
 
         assert_eq!(
             reaction_names(&r),
@@ -420,7 +426,7 @@ mod tests {
             sample_scoped_reaction("caseMismatchLoad", &["Campaign"]),
         ]);
 
-        r.populate_from_manifest(LevelManifest::default(), &tags(&["campaign"]));
+        r.populate_level(Vec::new(), Vec::new(), &tags(&["campaign"]));
 
         assert_eq!(reaction_names(&r), vec!["campaignLoad".to_string()]);
     }
@@ -433,11 +439,11 @@ mod tests {
             sample_scoped_reaction("deathmatchLoad", &["deathmatch"]),
         ]);
 
-        r.populate_from_manifest(LevelManifest::default(), &tags(&["campaign"]));
+        r.populate_level(Vec::new(), Vec::new(), &tags(&["campaign"]));
         assert_eq!(reaction_names(&r), vec!["campaignLoad".to_string()]);
 
         r.clear();
-        r.populate_from_manifest(LevelManifest::default(), &tags(&["deathmatch"]));
+        r.populate_level(Vec::new(), Vec::new(), &tags(&["deathmatch"]));
         assert_eq!(reaction_names(&r), vec!["deathmatchLoad".to_string()]);
     }
 
@@ -446,7 +452,11 @@ mod tests {
         let mut r = DataRegistry::new();
         r.replace_global_reactions(vec![sample_scoped_reaction("globalLoad", &["campaign"])]);
 
-        r.populate_from_manifest(sample_manifest(), &tags(&["campaign", "intro"]));
+        r.populate_level(
+            sample_level_reactions(),
+            Vec::new(),
+            &tags(&["campaign", "intro"]),
+        );
 
         assert_eq!(
             reaction_names(&r),
@@ -474,7 +484,7 @@ mod tests {
             &seq_reg,
         );
         r.replace_global_reactions(validated);
-        r.populate_from_manifest(LevelManifest::default(), &tags(&["campaign"]));
+        r.populate_level(Vec::new(), Vec::new(), &tags(&["campaign"]));
 
         assert_eq!(r.global_reactions, vec![valid_primitive, valid_sequence]);
         assert_eq!(
@@ -489,20 +499,17 @@ mod tests {
         r.replace_global_reactions(vec![sample_scoped_reaction("levelLoad", &[])]);
 
         let records = log_capture::capture(|| {
-            r.populate_from_manifest(
-                LevelManifest {
-                    reactions: vec![NamedReaction {
-                        name: "levelLoad".to_string(),
-                        descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
-                            primitive: "activateGroup".to_string(),
-                            tag: Some("local".to_string()),
-                            on_complete: None,
-                            args: serde_json::Value::Object(Default::default()),
-                        }),
-                    }],
-                    crossings: Vec::new(),
-                    ui_trees: Vec::new(),
-                },
+            r.populate_level(
+                vec![NamedReaction {
+                    name: "levelLoad".to_string(),
+                    descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                        primitive: "activateGroup".to_string(),
+                        tag: Some("local".to_string()),
+                        on_complete: None,
+                        args: serde_json::Value::Object(Default::default()),
+                    }),
+                }],
+                Vec::new(),
                 &tags(&["campaign"]),
             );
         });
@@ -530,20 +537,17 @@ mod tests {
             Some("globalDone"),
         )]);
 
-        r.populate_from_manifest(
-            LevelManifest {
-                reactions: vec![NamedReaction {
-                    name: "levelLoad".to_string(),
-                    descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
-                        primitive: "activateGroup".to_string(),
-                        tag: Some("local".to_string()),
-                        on_complete: Some("localDone".to_string()),
-                        args: serde_json::Value::Object(Default::default()),
-                    }),
-                }],
-                crossings: Vec::new(),
-                ui_trees: Vec::new(),
-            },
+        r.populate_level(
+            vec![NamedReaction {
+                name: "levelLoad".to_string(),
+                descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                    primitive: "activateGroup".to_string(),
+                    tag: Some("local".to_string()),
+                    on_complete: Some("localDone".to_string()),
+                    args: serde_json::Value::Object(Default::default()),
+                }),
+            }],
+            Vec::new(),
             &tags(&["campaign"]),
         );
 
@@ -566,12 +570,9 @@ mod tests {
             sample_scoped_crossing("global.ammo", &[]),
         ]);
 
-        r.populate_from_manifest(
-            LevelManifest {
-                reactions: Vec::new(),
-                crossings: vec![sample_global_crossing("local.health").crossing],
-                ui_trees: Vec::new(),
-            },
+        r.populate_level(
+            Vec::new(),
+            vec![sample_global_crossing("local.health").crossing],
             &tags(&["campaign"]),
         );
 
@@ -591,7 +592,7 @@ mod tests {
         let active_tags = tags(&["campaign"]);
         r.replace_global_reactions(vec![sample_scoped_reaction("oldGlobal", &[])]);
         r.replace_global_crossings(vec![sample_scoped_crossing("old.health", &[])]);
-        r.populate_from_manifest(sample_manifest(), &active_tags);
+        r.populate_level(sample_level_reactions(), Vec::new(), &active_tags);
 
         r.replace_global_reactions(vec![
             sample_scoped_reaction("newCampaignGlobal", &["campaign"]),
@@ -616,7 +617,7 @@ mod tests {
         let active_tags = tags(&["campaign"]);
         r.replace_global_reactions(vec![sample_scoped_reaction("oldGlobal", &[])]);
         r.replace_global_crossings(vec![sample_scoped_crossing("old.health", &[])]);
-        r.populate_from_manifest(sample_manifest(), &active_tags);
+        r.populate_level(sample_level_reactions(), Vec::new(), &active_tags);
         let active_reactions_before = r.reactions.clone();
         let active_crossings_before = r.crossings.clone();
         let global_reactions_before = r.global_reactions.clone();
@@ -638,7 +639,7 @@ mod tests {
     #[test]
     fn clear_drops_reactions_but_keeps_entity_descriptors() {
         let mut r = DataRegistry::new();
-        r.populate_from_manifest(sample_manifest(), &[]);
+        r.populate_level(sample_level_reactions(), Vec::new(), &[]);
         r.upsert_entity_type(grunt_descriptor());
         r.clear();
         assert_eq!(r.reactions.len(), 0);
@@ -648,7 +649,7 @@ mod tests {
     #[test]
     fn clear_drops_reactions_but_keeps_map_catalog() {
         let mut r = DataRegistry::new();
-        r.populate_from_manifest(sample_manifest(), &[]);
+        r.populate_level(sample_level_reactions(), Vec::new(), &[]);
         r.replace_maps(vec![sample_map("e1m1")]);
 
         r.clear();
@@ -660,7 +661,7 @@ mod tests {
     #[test]
     fn clear_drops_active_sets_but_keeps_global_reactions_and_crossings() {
         let mut r = DataRegistry::new();
-        r.populate_from_manifest(sample_manifest(), &[]);
+        r.populate_level(sample_level_reactions(), Vec::new(), &[]);
         let global_reactions = vec![sample_global_reaction("levelLoad")];
         let global_crossings = vec![sample_global_crossing("player.health")];
         r.replace_global_reactions(global_reactions.clone());
@@ -681,7 +682,7 @@ mod tests {
         let global_crossings = vec![sample_global_crossing("player.health")];
         r.replace_global_reactions(global_reactions.clone());
         r.replace_global_crossings(global_crossings.clone());
-        r.populate_from_manifest(LevelManifest::default(), &tags(&["campaign"]));
+        r.populate_level(Vec::new(), Vec::new(), &tags(&["campaign"]));
 
         r.clear();
 
@@ -690,7 +691,7 @@ mod tests {
         assert_eq!(r.global_reactions, global_reactions);
         assert_eq!(r.global_crossings, global_crossings);
 
-        r.populate_from_manifest(LevelManifest::default(), &tags(&["campaign"]));
+        r.populate_level(Vec::new(), Vec::new(), &tags(&["campaign"]));
 
         assert_eq!(reaction_names(&r), vec!["levelLoad".to_string()]);
         assert_eq!(crossing_slots(&r), vec!["player.health".to_string()]);

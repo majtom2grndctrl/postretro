@@ -746,10 +746,11 @@ impl App {
                     render::ui::modal_stack::ScopeTier::Level,
                 );
             }
-            script_ctx
-                .data_registry
-                .borrow_mut()
-                .populate_from_manifest(manifest, &self.active_level_tags);
+            script_ctx.data_registry.borrow_mut().populate_level(
+                manifest.reactions,
+                manifest.crossings,
+                &self.active_level_tags,
+            );
             self.rebuild_active_reaction_subscribers();
         }
         self.level_timings.record("data_script");
@@ -1483,12 +1484,9 @@ mod tests {
     fn install_cpu_fixture(app: &mut App, fixture: CpuFixture) {
         app.level = Some(level_world(fixture.name, fixture.triangle_count));
         let ctx = script_ctx(app);
-        ctx.data_registry.borrow_mut().populate_from_manifest(
-            crate::scripting::data_descriptors::LevelManifest {
-                reactions: vec![named_reaction(fixture.reaction_name)],
-                crossings: Vec::new(),
-                ui_trees: Vec::new(),
-            },
+        ctx.data_registry.borrow_mut().populate_level(
+            vec![named_reaction(fixture.reaction_name)],
+            Vec::new(),
             &[],
         );
 

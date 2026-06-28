@@ -241,9 +241,117 @@ fn resolve_lightmap_density(cli: Option<f32>, kvp: Option<f32>) -> f32 {
         .unwrap_or(lightmap_bake::DEFAULT_TEXEL_DENSITY_METERS)
 }
 
+/// What the output-directory precheck decided to do for a parsed answer.
+///
+/// `Create` carries the directory to create; `Abort` ends the run before any
+/// bake; `Reprompt` means the answer was unrecognized and the caller should
+/// ask again. The `Proceed`/`Create`/`Abort` split is kept pure so the
+/// terminal-I/O wrapper (`precheck_output_dir`) stays a thin shell.
+#[derive(Debug, PartialEq, Eq)]
+enum DirAnswer {
+    Create,
+    Abort,
+    Reprompt,
+}
+
+/// Decide whether the output's parent directory must be created.
+///
+/// Pure: callers pass the result of `parent.exists()` so this needs no
+/// filesystem. Returns `Some(parent)` when the parent is a non-empty path that
+/// does not exist (so it must be created); `None` when the parent is empty /
+/// the current directory, or already exists — the common case, zero prompts.
+fn output_dir_to_create(output: &Path, parent_exists: bool) -> Option<PathBuf> {
+    match output.parent() {
+        // No parent or an empty parent (e.g. a bare filename) means the
+        // current directory, which always exists. Nothing to create.
+        Some(parent) if !parent.as_os_str().is_empty() && !parent_exists => {
+            Some(parent.to_path_buf())
+        }
+        _ => None,
+    }
+}
+
+/// Parse a user's terminal answer to the create-directory prompt.
+///
+/// Pure. `answer` is `None` on EOF (no answer available — non-interactive
+/// stdin, closed pipe), which aborts. A bare Enter (empty trimmed line) is the
+/// `[Y/n]` default → `Create`. Recognized yes/no map to `Create`/`Abort`;
+/// anything else is `Reprompt` so the caller loops rather than guessing.
+fn parse_dir_answer(answer: Option<&str>) -> DirAnswer {
+    match answer {
+        None => DirAnswer::Abort,
+        Some(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+            "" | "y" | "yes" => DirAnswer::Create,
+            "n" | "no" => DirAnswer::Abort,
+            _ => DirAnswer::Reprompt,
+        },
+    }
+}
+
+/// Fail-fast precheck for the output directory, run before any bake work.
+///
+/// If the resolved output `.prl` path's parent directory is missing, prompt on
+/// the terminal to create it. This is a CLI tool, so interactive prompting plus
+/// a non-zero exit on user-abort is appropriate (unlike subsystem library
+/// code). EOF on stdin (CI, `</dev/null`, closed pipe) returns `Ok(0)` from
+/// `read_line` and is treated as "no answer" → abort, so this never hangs.
+fn precheck_output_dir(output: &Path) -> anyhow::Result<()> {
+    let parent = match output_dir_to_create(output, output.parent().is_some_and(Path::exists)) {
+        Some(parent) => parent,
+        None => return Ok(()),
+    };
+
+    use std::io::Write as _;
+    let stdin = std::io::stdin();
+    let mut stderr = std::io::stderr();
+    let mut line = String::new();
+    loop {
+        write!(
+            stderr,
+            "Output directory '{}' does not exist. Create it? [Y/n] ",
+            parent.display()
+        )?;
+        stderr.flush()?;
+
+        line.clear();
+        let answer = if stdin.read_line(&mut line)? == 0 {
+            // EOF: no answer available. Don't loop on repeated EOF — abort.
+            None
+        } else {
+            Some(line.as_str())
+        };
+
+        match parse_dir_answer(answer) {
+            DirAnswer::Create => {
+                std::fs::create_dir_all(&parent).map_err(|e| {
+                    anyhow::anyhow!(
+                        "[Compiler] failed to create output directory '{}': {e}",
+                        parent.display()
+                    )
+                })?;
+                return Ok(());
+            }
+            DirAnswer::Abort => {
+                anyhow::bail!(
+                    "[Compiler] aborted: output directory '{}' does not exist. \
+                     Re-run with an existing folder in -o (or create '{}' first).",
+                    parent.display(),
+                    parent.display()
+                );
+            }
+            DirAnswer::Reprompt => continue,
+        }
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     let started = Instant::now();
     let args = parse_args()?;
+
+    // Fail fast: if the output directory is missing, prompt to create it now —
+    // before parsing the map or running any bake — so a missing folder never
+    // wastes a multi-minute bake that only fails at the final write.
+    precheck_output_dir(&args.output)?;
 
     let log_level = if args.verbose { "info" } else { "warn" };
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(log_level)).init();
@@ -2165,6 +2273,76 @@ mod tests {
             "source_path should reference the .luau file, got: {}",
             section.source_path
         );
+    }
+
+    #[test]
+    fn output_dir_existing_parent_proceeds() {
+        // Parent exists → nothing to create (the common case, zero prompts).
+        let out = PathBuf::from("/some/existing/out.prl");
+        assert_eq!(output_dir_to_create(&out, true), None);
+    }
+
+    #[test]
+    fn output_dir_bare_filename_proceeds() {
+        // No parent component → current directory, which always exists.
+        let out = PathBuf::from("out.prl");
+        assert_eq!(output_dir_to_create(&out, false), None);
+    }
+
+    #[test]
+    fn output_dir_missing_parent_returns_dir() {
+        // Missing parent → returns the directory that must be created.
+        let out = PathBuf::from("/some/missing/out.prl");
+        assert_eq!(
+            output_dir_to_create(&out, false),
+            Some(PathBuf::from("/some/missing"))
+        );
+    }
+
+    #[test]
+    fn dir_answer_yes_variants_create() {
+        for yes in ["y", "yes", "Y", "YES", "  yes  ", "Yes\n"] {
+            assert_eq!(
+                parse_dir_answer(Some(yes)),
+                DirAnswer::Create,
+                "answer {yes:?} should map to Create"
+            );
+        }
+    }
+
+    #[test]
+    fn dir_answer_bare_enter_is_default_create() {
+        // `[Y/n]` means Enter == Yes. A bare newline (empty trimmed) creates.
+        assert_eq!(parse_dir_answer(Some("\n")), DirAnswer::Create);
+        assert_eq!(parse_dir_answer(Some("")), DirAnswer::Create);
+    }
+
+    #[test]
+    fn dir_answer_no_variants_abort() {
+        for no in ["n", "no", "N", "NO", "  no  ", "No\n"] {
+            assert_eq!(
+                parse_dir_answer(Some(no)),
+                DirAnswer::Abort,
+                "answer {no:?} should map to Abort"
+            );
+        }
+    }
+
+    #[test]
+    fn dir_answer_eof_aborts() {
+        // None models EOF (read_line returned 0 bytes) → abort, never hang/loop.
+        assert_eq!(parse_dir_answer(None), DirAnswer::Abort);
+    }
+
+    #[test]
+    fn dir_answer_garbage_reprompts() {
+        for junk in ["maybe", "q", "1", "y e s"] {
+            assert_eq!(
+                parse_dir_answer(Some(junk)),
+                DirAnswer::Reprompt,
+                "answer {junk:?} should re-prompt rather than guess"
+            );
+        }
     }
 
     // The per-light lightmap-layer and per-group SH cache wiring is exercised by

@@ -44,17 +44,19 @@ The component-type marshalling (`LightComponent`, `LightAnimation`) moves with t
 
 ## scripting_systems path alias
 
-`main.rs:55–58`: `#[path = "scripting/systems/mod.rs"] mod scripting_systems;` — rooted off `scripting/` so `gen_script_types` reuses the tree without engine/GPU deps. The bridges are already a separate module tree from `scripting` proper.
+`main.rs:57–58` (lines 55–56 are the explanatory comment): `#[path = "scripting/systems/mod.rs"] mod scripting_systems;` — rooted off `scripting/` so `gen_script_types` reuses the tree without engine/GPU deps. The bridges are already a separate module tree from `scripting` proper.
 
 ## Handler → subsystem mapping (Phase 2)
 
 Primitives: `entity.rs` → entity, `light.rs` → lighting, `world.rs` → world/entity (worldQuery, worldGetGravity, worldSetGravity), `store.rs` → state store, `mod.rs` → `register_all` entry + shared types.
 
+**Correction (codebase-anchor review): `primitives/*` files are NOT runtime-agnostic.** They import `rquickjs` + `mlua` at module scope for handler-local marshalling newtypes with FFI impls: `entity.rs` (4 refs; `NullableString` `IntoJs`/`IntoLua`, lines 22–38), `light.rs` (25 refs), `world.rs` (18 refs; `WorldQueryFilter` `FromJs`/`FromLua`), `store.rs` (17 refs), `mod.rs` (9 refs). Only the handler *closure bodies* are VM-free. By contrast every `reactions/*` handler has **0** `rquickjs`/`mlua` refs and is genuinely agnostic. This drives the A1 split in `index.md` Task 6: `primitives/*` logic relocates but its marshalling newtypes + `register_*` wiring stay in `scripting-core`; `reactions/*` relocate whole.
+
 Reactions: `apply_damage.rs` → health; `set_animation_state.rs` → mesh; `set_emitter_rate.rs`/`set_spin_rate.rs` → emitter; `set_fog_*` (density, glow, edge_softness, falloff, params, animation) → fog volume; `system_commands.rs` → cross-engine command queue; `registry.rs` → dispatch root; `log_capture.rs` → test-only.
 
 ## Aggregation site
 
-`Session::build` (session/mod.rs:255): `ScriptCtx::new()` → `register_all(&mut script_registry, script_ctx.clone())` (primitives/mod.rs:554) → `ScriptRuntime::new(...)` → distributes ~20 ScriptCtx clones. Explicit aggregation, single site. `ScriptRuntime` lives in `scripting/runtime/`.
+`Session::build` (session/mod.rs:255): `ScriptCtx::new()` (line 313) → `register_all(&mut script_registry, script_ctx.clone())` (call at session/mod.rs:315; `register_all` defined at primitives/mod.rs:554) → `ScriptRuntime::new(...)` (session/mod.rs:316). The build site itself makes 8 `script_ctx.clone()` calls; `ScriptRuntime::new` (runtime/core.rs:40) stores 1 more (`ctx.clone()`, line 58). The bulk of clones are captured per-primitive inside the `register_*` closures (each does `let ctx = ctx.clone()`) — that is what "distributes" means; there is no single ~20-clone site. Explicit aggregation, single site. `ScriptRuntime` struct lives at runtime/types.rs:321; `ScriptRuntime::new` at runtime/core.rs:40 — both under `scripting/runtime/`.
 
 ## Workspace dep entries confirmed (root Cargo.toml)
 

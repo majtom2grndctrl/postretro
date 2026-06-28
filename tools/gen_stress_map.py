@@ -90,31 +90,44 @@ layers. How it works:
   low memory) while the combined chart area still spills past one layer. Do NOT
   crank density fine -- that inflates one huge layer and OOMs.
 
-The preset sets: --grid 4 4 2, --crates 10, --lights static, --spot-frac 0.3,
---light-every 1, --door-prob 0.15, --shaft-prob 0.5. The light mix is a
-POINT+SPOT BLEND (coverage + crate shadows): every room gets a light, ~70% of
-them point (`light`) and ~30% spot (`light_spot`). WHY the blend -- point lights
-are omnidirectional, so they fully light each room (navigable, no dim-SH-only
-surfaces) AND directly light crate faces on EVERY atlas layer, which is the
-clean confirmation that the multi-layer atlas renders direct light correctly.
-Spotlights are narrow cones that leave faces angled away from the cone dark, so
-a pure-spot map reads as broken; we keep ~30% spots only because static spots
-(`_shadow_type static_light_map`) are what bake crate SHADOWS into the lightmap,
-which we still want to verify. Crate count -- not light type -- drives the atlas
-overflow, so the blend does not affect the >=2-layer result. Every preset value
-is still overridable on the CLI.
+The preset sets: --grid 4 4 2, --crates 4, --lights static, --spot-frac 0.3,
+--lights-per-room 3, --light-every 1, --door-prob 0.4, --shaft-prob 1.0.
+
+Navigability. The map is meant to be WALKED to inspect lighting on the upper
+layers, so the preset is tuned to be traversable, not just dense:
+  * STAIRS. Every shaft gets a spiral of jumpable platforms threaded up through
+    the ceiling gap (see emit_shaft_stairs). A bare shaft is only a hole, and
+    with ~12 u of auto-step a 384 u storey cannot be climbed; the spiral both
+    makes the gap reachable on foot and visibly MARKS it so it is not missed.
+  * SCATTERED LIGHTS. Each room gets 3 lights jittered across the room (not one
+    central fixture), so coverage is even and you are never wandering a dim
+    SH-only space looking for the way up.
+  * MORE DOORS. --door-prob 0.4 braids the maze with loop doors so a shaft is
+    not buried at the end of a long dead-end branch.
+
+The light mix is a POINT+SPOT BLEND (coverage + crate shadows): ~70% point
+(`light`) and ~30% spot (`light_spot`). WHY the blend -- point lights are
+omnidirectional, so they fully light each room AND directly light crate faces on
+EVERY atlas layer, the clean confirmation that the multi-layer atlas renders
+direct light correctly. Spotlights are narrow cones that leave faces angled away
+from the cone dark, so a pure-spot map reads as broken; we keep ~30% spots only
+because static spots (`_shadow_type static_light_map`) are what bake crate
+SHADOWS into the lightmap, which we still want to verify. Crate count -- not
+light type -- drives the atlas overflow. Every preset value is overridable.
 
   Recommended bake (writes the .prl to /tmp; do NOT commit it):
 
     python3 tools/gen_stress_map.py --preset overflow \\
         -o content/dev/maps/stress-warren-overflow.map
     RUST_LOG=info ./target/release/prl-build --no-cache \\
-        --lightmap-density 0.08 --sh-probe-spacing 10.0 \\
+        --lightmap-density 0.06 --sh-probe-spacing 10.0 \\
         content/dev/maps/stress-warren-overflow.map -o /tmp/stress-overflow.prl
 
-  Look for `[PRL] Lightmap: WxH atlas, N layer(s)` with N >= 2. If N == 1, lower
-  the density a notch (e.g. 0.06) or raise --crates; if the bake OOMs or reports
-  ChartTooLarge, RAISE the density (coarser) so the per-layer dim drops.
+  Look for `[PRL] Lightmap: WxH atlas, N layer(s)` with N >= 2. With only 4
+  crates/room the chart area is lower than the old 10-crate preset, so the bake
+  density is dropped to 0.06 to keep the overflow; if N == 1, lower it another
+  notch (0.05) or raise --crates. If the bake OOMs or reports ChartTooLarge,
+  RAISE the density (coarser) so the per-layer dim drops.
 """
 
 import argparse
@@ -324,6 +337,83 @@ def emit_crate_stack(brushes, x0i, y0i, x1i, y1i, zf, zc, tex, rng):
         cz0 = zf + n * e
         brushes.append(box_brush(cx0, cy0, cz0, cx0 + e, cy0 + e, cz0 + e,
                                  tex, tex, tex))
+    return (px, py)                                 # base xy, for light avoidance
+
+
+# --- Vertical traversal: jump-stair spirals through shafts -----------------
+# A shaft is only a HOLE in the slab. With the player's ~12-unit auto-step
+# (step_height 0.3 m) against a 384-unit floor-to-floor rise, a bare hole cannot
+# be climbed -- you can fall DOWN one but never up. There is no ladder/lift
+# entity in the engine, so vertical traversal has to be geometric. We thread a
+# compact spiral of *jumpable* platforms up through each shaft: each step rises
+# STAIR_RISE < the player's jump apex, so it is reachable in one hop, and the
+# rising spiral is a visible structure that MARKS the otherwise easy-to-miss
+# ceiling gap. The shaft's centre column is kept clear so the air portal that
+# connects the two layers (and stops the flood-fill from sealing the upper
+# layer) stays open.
+STAIR_RISE = 48      # vertical gain per step (Quake u). Jump apex ~= 60 u
+                     # (jump_velocity 5.5 m/s vs g 9.81 m/s^2), so 48 u clears
+                     # with margin while still climbing 384 u in 8 hops.
+STAIR_R = 96         # spiral ring radius (platform centre from shaft centre)
+STAIR_HALF = 56      # platform half-extent -> 112 u square (player dia ~= 31 u)
+STAIR_THICK = 24     # platform slab thickness
+
+
+def emit_shaft_stairs(brushes, cx, cy, zf_low, climb, tex):
+    """Spiral of jumpable platforms climbing `climb` units from floor `zf_low`,
+    threaded up through a shaft hole centred at (cx, cy). Cycles the four sides
+    of the hole (+X, +Y, -X, -Y) so the player corkscrews up; a final landing
+    bridges the top step out to the solid upper-floor rim. Returns step count.
+    """
+    n = max(1, climb // STAIR_RISE)                 # 384 / 48 = 8 steps / storey
+    ring = [(STAIR_R, 0), (0, STAIR_R), (-STAIR_R, 0), (0, -STAIR_R)]
+    last_side = 0
+    for s in range(n):
+        last_side = s % 4
+        dx, dy = ring[last_side]
+        px, py = cx + dx, cy + dy
+        ztop = zf_low + (s + 1) * STAIR_RISE
+        brushes.append(box_brush(px - STAIR_HALF, py - STAIR_HALF, ztop - STAIR_THICK,
+                                 px + STAIR_HALF, py + STAIR_HALF, ztop, tex, tex, tex))
+    # Landing at the top, flush with the upper floor, bridging the last step out
+    # past the hole rim (half-width SHAFT//2 = 192) so the player can step off.
+    ztop = zf_low + climb
+    inner = STAIR_R - STAIR_HALF                     # last step's inner edge
+    reach = SHAFT // 2 + 28                          # just past the rim
+    dx, dy = ring[last_side]
+    if dx:                                           # +/-X side: extend along X
+        x_lo, x_hi = (cx + inner, cx + reach) if dx > 0 else (cx - reach, cx - inner)
+        brushes.append(box_brush(x_lo, cy - 80, ztop - STAIR_THICK,
+                                 x_hi, cy + 80, ztop, tex, tex, tex))
+    else:                                            # +/-Y side: extend along Y
+        y_lo, y_hi = (cy + inner, cy + reach) if dy > 0 else (cy - reach, cy - inner)
+        brushes.append(box_brush(cx - 80, y_lo, ztop - STAIR_THICK,
+                                 cx + 80, y_hi, ztop, tex, tex, tex))
+    return n
+
+
+# --- Scattered ceiling lights ----------------------------------------------
+LIGHT_MARGIN = 192          # keep scattered lights this far off the interior walls
+LIGHT_CRATE_CLEARANCE = 200 # keep a light at least this far (manhattan) from a crate
+
+
+def scatter_light_xy(lx0, lx1, ly0, ly1, crate_bases, rng):
+    """Pick a ceiling-light xy inside the inset rect, biased away from crate
+    stacks so a spotlight does not bake itself 'inside' a crate. Falls back to
+    the rect centre when it is too small to scatter."""
+    if lx1 <= lx0 or ly1 <= ly0:
+        return (lx0 + lx1) // 2, (ly0 + ly1) // 2
+    best = None
+    for _ in range(8):
+        px = rng.randint(lx0, lx1)
+        py = rng.randint(ly0, ly1)
+        clear = min((abs(px - bx) + abs(py - by) for bx, by in crate_bases),
+                    default=10 ** 9)
+        if best is None or clear > best[0]:
+            best = (clear, px, py)
+        if clear >= LIGHT_CRATE_CLEARANCE:
+            break
+    return best[1], best[2]
 
 
 def light_entity(mode, origin, color, falloff, intensity, spot, rng):
@@ -358,7 +448,7 @@ def light_entity(mode, origin, color, falloff, intensity, spot, rng):
 
 
 def generate(nx, ny, nz, seed, braid_prob, shaft_prob, lights_mode, light_every,
-             crates_per_room, spot_frac, static_frac):
+             crates_per_room, spot_frac, static_frac, lights_per_room, stairs):
     rng = random.Random(seed)
     spot_stride = max(1, round(1.0 / spot_frac)) if spot_frac > 0 else 0
     # center the grid near origin
@@ -496,6 +586,20 @@ def generate(nx, ny, nz, seed, braid_prob, shaft_prob, lights_mode, light_every,
                 emit_slab(brushes, X[i], Y[j], X[i + 1], Y[j + 1], Z[k], holed,
                           pick(FLOOR_TEX, i + j), pick(CEIL_TEX, i + j + k))
 
+    # Vertical traversal: thread a climbable jump-stair spiral up through every
+    # shaft so the upper layers are reachable on foot (and the rising spiral
+    # makes the easy-to-miss ceiling gap visible). Off by default? No -- a map
+    # with unreachable upper layers is broken; --no-stairs opts out only if the
+    # extra step brushes threaten a large grid's 4096 BSP-leaf budget.
+    nstairs = 0
+    if stairs:
+        for (k, i, j) in sorted(shafts):
+            scx = (X[i] + X[i + 1]) // 2
+            scy = (Y[j] + Y[j + 1]) // 2
+            zf_low = Z[k - 1] + SLAB_T // 2
+            stex = pick(WALL_TEX, k + i + j)
+            nstairs += emit_shaft_stairs(brushes, scx, scy, zf_low, PITCH_Z, stex)
+
     # Player spawn: interior of cell (min(1,nx-1), min(1,ny-1), 0).
     si, sj = min(1, nx - 1), min(1, ny - 1)
     spx = (X[si] + X[si + 1]) // 2
@@ -523,41 +627,53 @@ def generate(nx, ny, nz, seed, braid_prob, shaft_prob, lights_mode, light_every,
             cx = (X[i0] + X[i1 + 1]) // 2
             cy = (Y[j0] + Y[j1 + 1]) // 2
 
-            # crate stacks (one wood texture per room so abutting stacks match)
+            # crate stacks (one wood texture per room so abutting stacks match).
+            # Remember each stack's base xy so lights can be scattered clear of
+            # them (a spot directly over a crate bakes shadow onto its own floor).
             crate_tex = pick(CRATE_TEX, r)
+            crate_bases = []
             for _ in range(crates_per_room):
-                before = len(brushes)
-                emit_crate_stack(brushes, x0i, y0i, x1i, y1i, zf, zc, crate_tex, rng)
-                ncrates += (len(brushes) > before)
+                base = emit_crate_stack(brushes, x0i, y0i, x1i, y1i, zf, zc,
+                                        crate_tex, rng)
+                if base is not None:
+                    crate_bases.append(base)
+                    ncrates += 1
 
-            # light near the ceiling. Every Nth light is a spotlight aimed down --
-            # spots are what cast crate shadows (world geo into the spot depth pass).
+            # Lights near the ceiling, SCATTERED across the room rather than one
+            # central fixture, so coverage is even and crate faces are lit (and
+            # shadowed) from several directions. Every Nth light (by GLOBAL count,
+            # so spot_frac holds across the whole map) is a downward spotlight --
+            # spots are what bake crate shadows (world geo into the spot depth
+            # pass); the rest are omni point lights for navigable coverage that
+            # also directly lights every atlas layer.
             if lights_mode != "none" and r % max(1, light_every) == 0:
-                # hug the ceiling, above the tallest crate stack (which is capped
-                # in emit_crate_stack at zc-32) so a centroid crate never engulfs it
+                # hug the ceiling, above the tallest crate stack (capped in
+                # emit_crate_stack at zc-32) so a crate never engulfs a light.
                 cz = zc - 24
-                color = LIGHT_COLORS[r % len(LIGHT_COLORS)]
-                spot = (spot_stride > 0 and nlit % spot_stride == 0)
-                falloff = 1600 if spot else 1400
-                # Point lights are the navigation/coverage lights in the overflow
-                # blend (they omni-light every room and every crate face on all
-                # atlas layers), so keep them bright enough to read clearly; spots
-                # stay a touch brighter still since they also carry the cone.
-                intensity = 220 if spot else 200
-                # In 'mixed' mode each light is independently baked (static) or
-                # runtime (dynamic); the four combos (static/dynamic x spot/point)
-                # exercise the lightmap+SH bake AND the per-frame forward/shadow
-                # path in one scene. Static spots/points bake crate shadows into
-                # the lightmap; dynamic spots cast them at runtime.
-                if lights_mode == "mixed":
-                    this_mode = "static" if rng.random() < static_frac else "dynamic"
-                else:
-                    this_mode = lights_mode
-                lights.append(light_entity(this_mode, (cx, cy, cz), color,
-                                           falloff, intensity, spot, rng))
-                nlit += 1
+                lx0, lx1 = x0i + LIGHT_MARGIN, x1i - LIGHT_MARGIN
+                ly0, ly1 = y0i + LIGHT_MARGIN, y1i - LIGHT_MARGIN
+                for _ in range(max(1, lights_per_room)):
+                    px, py = scatter_light_xy(lx0, lx1, ly0, ly1, crate_bases, rng)
+                    color = LIGHT_COLORS[nlit % len(LIGHT_COLORS)]
+                    spot = (spot_stride > 0 and nlit % spot_stride == 0)
+                    falloff = 1600 if spot else 1400
+                    # Point lights are the navigation/coverage lights (omni-light
+                    # every room and every crate face on all atlas layers); spots
+                    # stay a touch brighter since they also carry the cone.
+                    intensity = 220 if spot else 200
+                    # In 'mixed' mode each light is independently baked (static)
+                    # or runtime (dynamic); the four combos (static/dynamic x
+                    # spot/point) exercise the lightmap+SH bake AND the per-frame
+                    # forward/shadow path in one scene.
+                    if lights_mode == "mixed":
+                        this_mode = "static" if rng.random() < static_frac else "dynamic"
+                    else:
+                        this_mode = lights_mode
+                    lights.append(light_entity(this_mode, (px, py, cz), color,
+                                               falloff, intensity, spot, rng))
+                    nlit += 1
 
-    return brushes, (spx, spy, spz), total_rooms, lights, ncrates
+    return brushes, (spx, spy, spz), total_rooms, lights, ncrates, nstairs
 
 
 def write_map(path, brushes, spawn, nx, ny, nz, lights):
@@ -611,8 +727,8 @@ def main(argv):
     #           overflow preset" for the full rationale.
     PRESETS = {
         "overflow": dict(
-            grid=[4, 4, 2], crates=10, lights="static", spot_frac=0.3,
-            light_every=1, door_prob=0.15, shaft_prob=0.5,
+            grid=[4, 4, 2], crates=4, lights="static", spot_frac=0.3,
+            light_every=1, door_prob=0.4, shaft_prob=1.0, lights_per_room=3,
         ),
     }
 
@@ -623,8 +739,10 @@ def main(argv):
                          "(overridable per-flag on the CLI). 'overflow' => a map "
                          "whose bake overflows the lightmap atlas into >=2 array "
                          "layers at bounded memory; bake it at "
-                         "--lightmap-density 0.08. Sets --grid 4 4 2 --crates 10 "
-                         "--lights static --spot-frac 1.0.")
+                         "--lightmap-density 0.06. Sets --grid 4 4 2 --crates 4 "
+                         "--lights static --spot-frac 0.3 --lights-per-room 3 "
+                         "--door-prob 0.4 (navigable: scattered lights + jump "
+                         "stairs through every shaft).")
     ap.add_argument("--grid", nargs=3, type=int, default=None,
                     metavar=("NX", "NY", "NZ"),
                     help="cells along X, Y, and vertical layers (default 9 8 4, "
@@ -669,13 +787,25 @@ def main(argv):
                     help="fraction of lights that are spotlights. Only spots "
                          "cast shadows from world geometry (crates), so raise "
                          "this to stress shadow-map rendering. (default 0.2)")
+    ap.add_argument("--lights-per-room", type=int, default=None, metavar="N",
+                    help="number of lights scattered across each lit room "
+                         "(default 1; the overflow preset uses 3). Lights are "
+                         "jittered clear of crate stacks for even coverage.")
+    ap.add_argument("--no-stairs", action="store_true",
+                    help="do NOT thread jump-stair spirals up through shafts. By "
+                         "default every shaft gets a compact spiral of jumpable "
+                         "platforms so upper layers are reachable on foot (a bare "
+                         "shaft hole cannot be climbed) and the rising spiral "
+                         "marks the ceiling gap. Disable only if the extra step "
+                         "brushes push a large grid over the 4096 BSP-leaf cap.")
     args = ap.parse_args(argv)
 
     # Resolve each knob: explicit CLI value wins; else the preset's value (if a
     # preset was named and sets it); else the original committed default.
     preset = PRESETS.get(args.preset, {})
     _DEFAULTS = dict(grid=[9, 8, 4], door_prob=0.15, shaft_prob=0.5,
-                     lights="none", light_every=1, crates=0, spot_frac=0.2)
+                     lights="none", light_every=1, crates=0, spot_frac=0.2,
+                     lights_per_room=1)
 
     def resolve(name):
         if getattr(args, name) is not None:
@@ -691,6 +821,8 @@ def main(argv):
     args.light_every = resolve("light_every")
     args.crates = resolve("crates")
     args.spot_frac = resolve("spot_frac")
+    args.lights_per_room = resolve("lights_per_room")
+    stairs = not args.no_stairs
 
     nx, ny, nz = args.grid
     if min(nx, ny, nz) < 1:
@@ -704,16 +836,16 @@ def main(argv):
               f"classic +/-16384 envelope (still f32-exact, but unusually large)",
               file=sys.stderr)
 
-    brushes, spawn, rooms, lights, ncrates = generate(
+    brushes, spawn, rooms, lights, ncrates, nstairs = generate(
         nx, ny, nz, args.seed, args.door_prob, args.shaft_prob,
         args.lights, args.light_every, args.crates, args.spot_frac,
-        args.static_frac)
+        args.static_frac, args.lights_per_room, stairs)
     write_map(args.out, brushes, spawn, nx, ny, nz, lights)
     nspot = sum(1 for L in lights if "spot" in L[1])
     ndyn = sum(1 for L in lights if "dynamic" in L[1])
     nstat = len(lights) - ndyn
     print(f"grid {nx}x{ny}x{nz} = {nx*ny*nz} cells -> {rooms} rooms, "
-          f"{len(brushes)} brushes ({ncrates} crates)")
+          f"{len(brushes)} brushes ({ncrates} crates, {nstairs} stair steps)")
     print(f"lights: {len(lights)} {args.lights} "
           f"({nstat} static, {ndyn} dynamic; {nspot} spot, {len(lights)-nspot} point)")
     print(f"extent: X/Y +/-{max(half_x, half_y)} u, Z {nz*PITCH_Z} u tall")

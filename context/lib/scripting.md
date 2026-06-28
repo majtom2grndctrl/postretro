@@ -372,7 +372,20 @@ Start the node set minimal: named-input leaves, arithmetic, `clamp`, `lerp`, `se
 
 ---
 
-## 12. Non-Goals
+## 12. Crate Architecture
+
+> Two-crate split established by `plans/ready/scripting-core-extraction/` — design intent until it ships. The boundary contracts below are durable; the working crate names are not.
+
+Scripting spans two crates so routine engine edits stop recompiling the VM bindings:
+
+- **Scripting data model — VM-free.** Entity registry, components, `ScriptCtx` and its backing state registries. Default build pulls no VM. Non-scripting subsystems (movement, netcode, render) depend on it and treat `EntityId` as an opaque handle.
+- **Scripting runtime — VM-coupled.** Primitive registry, the QuickJS and Luau subsystems, marshalling, IR substrate, typedef generator. Depends on the data-model crate with VM marshalling enabled.
+
+**FFI marshalling is an orphan-rule boundary.** A VM marshalling impl for a type must live in the crate that owns the type — an impl for a foreign type written in a third crate is an orphan violation. So the data-model crate carries the marshalling impls for its own types behind an **optional feature** that pulls the VMs; only the runtime crate enables it. Foreign types (e.g. glam vectors) are wrapped in local newtypes to satisfy the rule. Precedent: `crates/level-format`'s optional `serde` / `gltf-resolve` features. Feature unification compiles the data-model crate once with marshalling on in the full build, but the VM deps stay upstream — editing a handler or bridge never rebuilds them. **That is the compile firewall.**
+
+**Handler placement.** Script-callable handlers co-locate with the subsystem they expose (subsystem module trees within the engine binary, not new crates). Reaction handlers are VM-free and relocate whole. Primitive handlers carry marshalling that stays in the runtime crate — only the pure logic relocates, the runtime-side wiring calling the subsystem function with native Rust args, never VM types. Aggregation stays explicit (no `inventory` / `linkme`): the registrars are invoked from the single runtime construction site.
+
+## 13. Non-Goals
 
 - General-purpose scripting host (only explicitly registered Rust functions are callable)
 - Synchronous cross-VM communication (QuickJS and Luau are independent runtimes)

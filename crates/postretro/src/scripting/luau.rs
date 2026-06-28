@@ -1001,7 +1001,7 @@ mod tests {
         );
 
         let string_btn: mlua::Value = lua
-            .load(&format!(
+            .load(format!(
                 r#"return W.Button({{ id = "a", label = "A", onPress = "{on_press}" }})"#
             ))
             .eval()
@@ -1134,7 +1134,7 @@ mod tests {
 
         for (expr, expected_ts) in cases {
             let value: mlua::Value = lua
-                .load(&format!("return {expr}"))
+                .load(format!("return {expr}"))
                 .set_name("bind_state_case")
                 .eval()
                 .unwrap_or_else(|e| panic!("bindState call failed: {expr}\n{e}"));
@@ -1528,7 +1528,7 @@ mod tests {
 
         for (expr, expected_ts) in cases {
             let value: mlua::Value = lua
-                .load(&format!("return {expr}"))
+                .load(format!("return {expr}"))
                 .set_name("case")
                 .eval()
                 .unwrap_or_else(|e| panic!("luau factory call failed: {expr}\n{e}"));
@@ -1600,7 +1600,7 @@ mod tests {
         ];
         for (expr, field) in cases {
             let err = lua
-                .load(&format!("return {expr}"))
+                .load(format!("return {expr}"))
                 .eval::<mlua::Value>()
                 .expect_err(&format!("expected `{expr}` to error"));
             let msg = err.to_string();

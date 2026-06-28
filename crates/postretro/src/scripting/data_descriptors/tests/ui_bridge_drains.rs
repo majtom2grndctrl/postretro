@@ -401,10 +401,10 @@ fn luau_factory_local_bind_yields_bind_source_local() {
 // Fix B: malformed Luau theme token is skipped, good token survives
 // ======================================================================
 
-/// A `theme.colors` map with one malformed token (a string instead of
-/// [r,g,b,a]) and one valid token: the bad token must be skipped (with a
-/// logged warn) and the good token must survive in the drained result.
-/// This verifies per-token log-and-skip rather than per-token abort.
+// A `theme.colors` map with one malformed token (a string instead of
+// [r,g,b,a]) and one valid token: the bad token must be skipped (with a
+// logged warn) and the good token must survive in the drained result.
+// This verifies per-token log-and-skip rather than per-token abort.
 // ======================================================================
 // Fix A: JS theme sub-map that is present but not an object degrades to
 // empty (warn + continue), matching the Luau twin behavior.

@@ -468,6 +468,7 @@ mod tests {
 
     /// Drive `evaluate` for `n` frames at a fixed `dt`, holding the inputs
     /// constant. Returns the final output and leaves the state advanced.
+    #[allow(clippy::too_many_arguments)] // test harness threads the full evaluate context
     fn run_frames(
         params: &ViewFeelParams,
         horizontal_speed: f32,

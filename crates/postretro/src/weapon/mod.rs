@@ -843,6 +843,7 @@ mod tests {
     }
 
     /// Run `tick` with a populated hit-zone store and animation clock.
+    #[allow(clippy::too_many_arguments)] // test harness threads the full tick context
     fn fire_tick_with(
         registry: &mut EntityRegistry,
         active_wieldable: Option<EntityId>,

@@ -189,7 +189,8 @@ fn run_dev_mod_init_from_bundled_entry(ctx: &ScriptCtx) -> ModManifestResult {
     let entry = workspace_root().join("content/dev/start-script.ts");
     bundle_ts_entry_to_mod_root(&entry, &dir);
 
-    let manifest = {
+    // `runtime` and its short-lived mod-init context have both dropped here.
+    {
         let mut runtime = script_runtime(ctx);
         runtime
             .run_mod_init(&dir)
@@ -198,10 +199,7 @@ fn run_dev_mod_init_from_bundled_entry(ctx: &ScriptCtx) -> ModManifestResult {
             .mod_manifest()
             .expect("mod init returns a manifest")
             .clone()
-    };
-
-    // `runtime` and its short-lived mod-init context have both dropped here.
-    manifest
+    }
 }
 
 fn merge_theme(tokens: &ModThemeTokens) -> UiTheme {
@@ -271,7 +269,7 @@ impl RetainedLayerHarness {
     }
 }
 
-fn layer_texts<'a>(layers: &'a [UiDrawData]) -> Vec<&'a str> {
+fn layer_texts(layers: &[UiDrawData]) -> Vec<&str> {
     layers
         .iter()
         .flat_map(|data| data.texts.iter().map(|text| text.content.as_str()))

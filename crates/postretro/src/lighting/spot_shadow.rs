@@ -915,7 +915,7 @@ mod tests {
         #[test]
         fn shadow_slot_set_invariant_under_camera_orientation(
             pitch in -1.55f32..1.55,
-            yaw in -3.14f32..3.14,
+            yaw in -std::f32::consts::PI..std::f32::consts::PI,
         ) {
             // A spread of dynamic spots around the scene, all within pool
             // capacity so distance ranking never drops any of them.

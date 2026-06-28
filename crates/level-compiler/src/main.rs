@@ -114,13 +114,21 @@ fn resolve_texture_root(map_path: &Path) -> PathBuf {
     resolve_content_root(map_path).join("textures")
 }
 
-/// Resolve the `.prm` mip-cache root from a map input path.
+/// Resolve the compiled-material output root from a map input path.
 ///
-/// Lives next to the stage cache under `<workspace>/.build-caches/prm-cache/`.
-/// Falls back to the map's parent directory when no `Cargo.toml` ancestor
-/// is found — covers shipping or standalone layouts that omit the
-/// workspace manifest.
-fn resolve_prm_cache_root_via_cargo(map_path: &Path) -> PathBuf {
+/// `.prm` mip sidecars are runtime-*required* compiled output, not a disposable
+/// cache, so they live in `<workspace>/baked/materials/` — a top-level
+/// compiled-output tree, sibling to the disposable `.build-caches/` stage cache.
+/// The runtime reader (`derive_prm_root_dev_layout` in
+/// `crates/postretro/src/startup/worker.rs`) must resolve to this same directory
+/// in the dev layout; if they diverge, every texture silently degrades to a
+/// placeholder.
+///
+/// Falls back to `<map parent>/baked/materials/` when no `Cargo.toml` ancestor
+/// is found — covers shipping or standalone layouts that omit the workspace
+/// manifest. The runtime's analogous fallback uses `content_root`, so the two
+/// fallbacks need not coincide outside the dev layout (shipping is out of scope).
+fn resolve_prm_root_via_cargo(map_path: &Path) -> PathBuf {
     cache::find_workspace_root(map_path)
         .unwrap_or_else(|| {
             map_path
@@ -128,8 +136,8 @@ fn resolve_prm_cache_root_via_cargo(map_path: &Path) -> PathBuf {
                 .unwrap_or_else(|| Path::new("."))
                 .to_path_buf()
         })
-        .join(".build-caches")
-        .join("prm-cache")
+        .join("baked")
+        .join("materials")
 }
 
 fn prop_mesh_model_handles(entities: &[map_data::MapEntityRecord]) -> Vec<&str> {
@@ -160,7 +168,7 @@ fn prop_mesh_model_handles(entities: &[map_data::MapEntityRecord]) -> Vec<&str> 
 fn bake_model_textures_with<Resolve, ResolveError, Bake, BakeError>(
     entities: &[map_data::MapEntityRecord],
     content_root: &Path,
-    prm_cache_root: &Path,
+    prm_root: &Path,
     mut resolve_base_color_paths: Resolve,
     mut bake_diffuse: Bake,
 ) where
@@ -188,7 +196,7 @@ fn bake_model_textures_with<Resolve, ResolveError, Bake, BakeError>(
             if !seen_textures.insert(texture_path.clone()) {
                 continue;
             }
-            if let Err(error) = bake_diffuse(&texture_path, prm_cache_root) {
+            if let Err(error) = bake_diffuse(&texture_path, prm_root) {
                 log::warn!(
                     "[prl-build] failed to bake model texture {}: {error}",
                     texture_path.display()
@@ -201,12 +209,12 @@ fn bake_model_textures_with<Resolve, ResolveError, Bake, BakeError>(
 fn bake_model_textures(
     entities: &[map_data::MapEntityRecord],
     content_root: &Path,
-    prm_cache_root: &Path,
+    prm_root: &Path,
 ) {
     bake_model_textures_with(
         entities,
         content_root,
-        prm_cache_root,
+        prm_root,
         postretro_level_format::gltf_resolve::resolve_document_base_color_paths,
         texture_mips::bake_diffuse_texture,
     );
@@ -1067,14 +1075,14 @@ fn main() -> anyhow::Result<()> {
 
     progress.start_stage("Texture mip bake...");
     let stage_start = Instant::now();
-    let prm_cache_root = resolve_prm_cache_root_via_cargo(&args.input);
+    let prm_root = resolve_prm_root_via_cargo(&args.input);
     let name_to_key = texture_mips::bake_texture_mips(
         &geo_result.texture_names.names,
         &texture_root,
-        &prm_cache_root,
+        &prm_root,
     )?;
     let content_root = resolve_content_root(&args.input);
-    bake_model_textures(&map_data.map_entities, &content_root, &prm_cache_root);
+    bake_model_textures(&map_data.map_entities, &content_root, &prm_root);
     timings.push(("TextureMips", stage_start.elapsed()));
 
     progress.start_stage("Packing and writing...");
@@ -1764,7 +1772,7 @@ mod tests {
             map_entity("prop_mesh", &[("model", "models/second.gltf")]),
         ];
         let content_root = Path::new("content/base");
-        let cache_root = Path::new(".build-caches/prm-cache");
+        let cache_root = Path::new("baked/materials");
         let shared = PathBuf::from("content/base/models/shared.png");
         let first_only = PathBuf::from("content/base/models/first.png");
         let unreadable = PathBuf::from("content/base/models/unreadable.png");
@@ -1848,6 +1856,44 @@ mod tests {
         assert!(!no_prop_cache_root.exists());
 
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The compiler (writer) and runtime (reader) derive the `.prm` root by two
+    /// different walks — the compiler finds the workspace via a `Cargo.toml`
+    /// ancestor, the runtime goes two parents up from `content_root`. In the dev
+    /// layout both MUST land on `<workspace>/baked/materials`; if they diverge,
+    /// every world texture silently degrades to a placeholder. This guards that
+    /// invariant by reproducing the runtime's two-parent walk inline (its
+    /// function lives in the `postretro` crate and is not importable here).
+    #[test]
+    fn prm_root_writer_and_reader_agree_in_dev_layout() {
+        let workspace = unique_temp_dir("prm-root-agreement");
+        let content_root = workspace.join("content").join("base");
+        let maps_dir = content_root.join("maps");
+        std::fs::create_dir_all(&maps_dir).unwrap();
+        // The compiler resolver walks up to the nearest `Cargo.toml`.
+        std::fs::write(workspace.join("Cargo.toml"), "[workspace]\n").unwrap();
+
+        let map_path = maps_dir.join("level.map");
+        let expected = workspace.join("baked").join("materials");
+
+        // Writer side: prl-build.
+        let writer_root = resolve_prm_root_via_cargo(&map_path);
+        assert_eq!(writer_root, expected);
+
+        // Reader side: mirror of `derive_prm_root_dev_layout`
+        // (crates/postretro/src/startup/worker.rs) — two parents up from
+        // `content_root`, then `baked/materials`.
+        let reader_root = content_root
+            .parent()
+            .and_then(|c| c.parent())
+            .unwrap_or(content_root.as_path())
+            .join("baked")
+            .join("materials");
+        assert_eq!(reader_root, expected);
+        assert_eq!(writer_root, reader_root);
+
+        std::fs::remove_dir_all(&workspace).unwrap();
     }
 
     #[test]

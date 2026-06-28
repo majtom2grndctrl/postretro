@@ -3,6 +3,23 @@
 // See: context/lib/rendering_pipeline.md §4
 
 use super::*;
+
+/// Minimum `max_texture_array_layers` the engine requires. The lightmap
+/// irradiance + direction atlases are `texture_2d_array`; charts that overflow
+/// one atlas layer spill into additional layers. 256 is wgpu's default for this
+/// limit and the WebGPU spec floor, comfortably above the layer counts the bake
+/// produces. Requested in `required_limits` (the hard backstop) and pre-checked
+/// against the adapter so an under-spec adapter fails with a named diagnostic
+/// before `request_device`.
+const REQUIRED_MAX_TEXTURE_ARRAY_LAYERS: u32 = 256;
+
+/// Whether an adapter's granted `max_texture_array_layers` clears the engine's
+/// floor. Pure comparison, factored out so the abort path is unit-testable —
+/// no real adapter exposes a limit below 256 to exercise the full bail.
+fn array_layers_sufficient(limit: u32) -> bool {
+    limit >= REQUIRED_MAX_TEXTURE_ARRAY_LAYERS
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn request_renderer_device(
     adapter: &wgpu::Adapter,
@@ -125,6 +142,7 @@ pub(crate) fn request_renderer_device(
         max_storage_textures_per_shader_stage: REQUIRED_STORAGE_TEXTURES,
         max_storage_buffer_binding_size: REQUIRED_STORAGE_BUFFER_BINDING_SIZE,
         max_texture_dimension_2d: REQUIRED_MAX_TEXTURE_DIMENSION_2D,
+        max_texture_array_layers: REQUIRED_MAX_TEXTURE_ARRAY_LAYERS,
         max_buffer_size: REQUIRED_MAX_BUFFER_SIZE,
         ..wgpu::Limits::default()
     };
@@ -219,6 +237,22 @@ pub(crate) fn request_renderer_device(
                  provide this — an adapter granting less is below the supported floor",
             adapter_limits.max_texture_dimension_2d,
             REQUIRED_MAX_TEXTURE_DIMENSION_2D,
+        );
+    }
+    // The lightmap irradiance + direction atlases are `texture_2d_array`; a baked
+    // section can carry multiple layers when its charts overflow one atlas layer.
+    // Mirror the dimension pre-check: an adapter granting fewer array layers than
+    // we request cannot host a multi-layer atlas, so fail-fast with a named
+    // message rather than a deferred texture-creation crash. wgpu's default floor
+    // is 256, so any in-spec desktop adapter satisfies this.
+    if !array_layers_sufficient(adapter_limits.max_texture_array_layers) {
+        anyhow::bail!(
+            "[Renderer] GPU adapter grants max_texture_array_layers = {}; \
+                 PostRetro requires at least {} to host the multi-layer lightmap \
+                 atlas. All supported backends (Vulkan/Metal/DX12) provide this — \
+                 an adapter granting less is below the supported floor",
+            adapter_limits.max_texture_array_layers,
+            REQUIRED_MAX_TEXTURE_ARRAY_LAYERS,
         );
     }
 
@@ -569,4 +603,32 @@ pub(crate) fn build_placeholder_textures(
         gpu_textures.push(GpuTexture { bind_group });
     }
     (loaded_textures, gpu_textures)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Array-layer floor guard. No real adapter exposes `max_texture_array_layers`
+    /// below 256, so the full bail in `request_renderer_device` can't be exercised
+    /// against hardware — this pins the pure predicate it pivots on instead.
+    #[test]
+    fn array_layers_sufficient_floor() {
+        assert!(
+            !array_layers_sufficient(255),
+            "below the 256-layer floor must be rejected",
+        );
+        assert!(
+            array_layers_sufficient(REQUIRED_MAX_TEXTURE_ARRAY_LAYERS),
+            "exactly at the floor must be accepted",
+        );
+        assert!(
+            array_layers_sufficient(256),
+            "256 (the floor) must be accepted",
+        );
+        assert!(
+            array_layers_sufficient(2048),
+            "well above the floor must be accepted",
+        );
+    }
 }

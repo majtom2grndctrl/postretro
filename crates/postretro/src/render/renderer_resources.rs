@@ -312,6 +312,7 @@ impl Renderer {
         let lightmap_atlas_dimensions = crate::lighting::lightmap::usable_atlas_dimensions(
             geometry.lightmap,
             device.limits().max_texture_dimension_2d,
+            device.limits().max_texture_array_layers,
         );
 
         let animated_lightmap_result = animated_lightmap::AnimatedLightmapResources::new(

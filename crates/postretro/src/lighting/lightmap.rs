@@ -109,13 +109,19 @@ impl LightmapResources {
         });
 
         // Defensive runtime guard: the init adapter pre-check guarantees the
-        // device grants at least 8192² (see `render::mod.rs`), and the bake's
+        // device grants at least 8192² and at least 256 array layers (see
+        // `render::renderer_init_resources.rs`), and the bake's
         // `MAX_ATLAS_DIMENSION` matches that ceiling. A baked atlas larger than
-        // the granted limit can only come from future content or a corrupt
-        // section. Drop to the neutral placeholder with a logged error rather
-        // than panicking on texture creation. Mirrors `render::sh_volume`'s
-        // atlas-fits-device filter.
-        let usable = filter_usable_section(section, device.limits().max_texture_dimension_2d);
+        // the granted limit — or with more layers than the device allows — can
+        // only come from future content or a corrupt section. Drop to the
+        // neutral placeholder with a logged error rather than panicking on
+        // texture creation. Mirrors `render::sh_volume`'s atlas-fits-device filter.
+        let limits = device.limits();
+        let usable = filter_usable_section(
+            section,
+            limits.max_texture_dimension_2d,
+            limits.max_texture_array_layers,
+        );
         let present = usable.is_some();
 
         let (irradiance_tex, direction_tex) = match usable {
@@ -129,8 +135,18 @@ impl LightmapResources {
             ),
         };
 
-        let irr_view = irradiance_tex.create_view(&wgpu::TextureViewDescriptor::default());
-        let dir_view = direction_tex.create_view(&wgpu::TextureViewDescriptor::default());
+        // The irradiance + direction atlases are `texture_2d_array` (group-4
+        // bindings 0/1 declare `D2Array`), so their views must declare the same
+        // dimension explicitly — the default view dimension follows the texture's
+        // layer count, but pinning it keeps the view contract aligned with the BGL.
+        let irr_view = irradiance_tex.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        });
+        let dir_view = direction_tex.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        });
 
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Lightmap Bind Group"),
@@ -190,7 +206,9 @@ pub(crate) fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 6] {
             visibility: wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Texture {
                 sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                view_dimension: wgpu::TextureViewDimension::D2,
+                // `texture_2d_array`: charts that overflow one layer spill into
+                // additional layers; the forward shader samples by `lightmap_layer`.
+                view_dimension: wgpu::TextureViewDimension::D2Array,
                 multisampled: false,
             },
             count: None,
@@ -200,7 +218,8 @@ pub(crate) fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 6] {
             visibility: wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Texture {
                 sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                view_dimension: wgpu::TextureViewDimension::D2,
+                // `texture_2d_array`, sharing `layer_count` with the irradiance atlas.
+                view_dimension: wgpu::TextureViewDimension::D2Array,
                 multisampled: false,
             },
             count: None,
@@ -254,30 +273,49 @@ pub(crate) fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 6] {
 pub(crate) fn usable_atlas_dimensions(
     section: Option<&LightmapSection>,
     max_texture_dimension_2d: u32,
+    max_texture_array_layers: u32,
 ) -> Option<(u32, u32)> {
-    filter_usable_section(section, max_texture_dimension_2d).map(|s| (s.width, s.height))
+    filter_usable_section(section, max_texture_dimension_2d, max_texture_array_layers)
+        .map(|s| (s.irr_width, s.irr_height))
 }
 
-/// Filter out an absent (`None`), zero-dimension, or oversize `LightmapSection`,
-/// returning `None` so the caller falls through to the neutral placeholder. Pure
-/// dimension-vs-limit comparison — unit-testable without a real wgpu device.
+/// Filter out an absent (`None`), zero-dimension, oversize, or too-many-layers
+/// `LightmapSection`, returning `None` so the caller falls through to the neutral
+/// placeholder. Pure dimension-vs-limit comparison — unit-testable without a real
+/// wgpu device.
 fn filter_usable_section(
     section: Option<&LightmapSection>,
     max_texture_dimension_2d: u32,
+    max_texture_array_layers: u32,
 ) -> Option<&LightmapSection> {
-    section.filter(|s| s.width > 0 && s.height > 0).filter(|s| {
-        let fits = s.width <= max_texture_dimension_2d && s.height <= max_texture_dimension_2d;
-        if !fits {
-            log::error!(
-                "[Renderer] Lightmap atlas {}x{} exceeds device maxTextureDimension2D {}; \
-                     degrading to neutral placeholder for this level",
-                s.width,
-                s.height,
-                max_texture_dimension_2d,
-            );
-        }
-        fits
-    })
+    section
+        .filter(|s| s.irr_width > 0 && s.irr_height > 0)
+        .filter(|s| {
+            let fits = s.irr_width <= max_texture_dimension_2d
+                && s.irr_height <= max_texture_dimension_2d;
+            if !fits {
+                log::error!(
+                    "[Renderer] Lightmap atlas {}x{} exceeds device maxTextureDimension2D {}; \
+                         degrading to neutral placeholder for this level",
+                    s.irr_width,
+                    s.irr_height,
+                    max_texture_dimension_2d,
+                );
+            }
+            fits
+        })
+        .filter(|s| {
+            let fits = s.layer_count <= max_texture_array_layers;
+            if !fits {
+                log::error!(
+                    "[Renderer] Lightmap atlas has {} layer(s), exceeding device \
+                         maxTextureArrayLayers {}; degrading to neutral placeholder for this level",
+                    s.layer_count,
+                    max_texture_array_layers,
+                );
+            }
+            fits
+        })
 }
 
 /// Whether `Rgba16Float` (the irradiance + animated atlas format) advertises
@@ -313,14 +351,17 @@ fn upload_irradiance_texture(
         // gated to one of the two known tags).
         _ => wgpu::TextureFormat::Rgba16Float,
     };
+    // `texture_2d_array`: the on-disk `irradiance` blob is layer-major (layer 0's
+    // texels, then layer 1's, …), exactly the `LayerMajor` order
+    // `create_texture_with_data` expects, so a single upload covers all layers.
     device.create_texture_with_data(
         queue,
         &wgpu::TextureDescriptor {
             label: Some("Lightmap Irradiance"),
             size: wgpu::Extent3d {
-                width: sec.width,
-                height: sec.height,
-                depth_or_array_layers: 1,
+                width: sec.irr_width,
+                height: sec.irr_height,
+                depth_or_array_layers: sec.layer_count,
             },
             mip_level_count: 1,
             sample_count: 1,
@@ -340,8 +381,8 @@ fn upload_irradiance_texture(
 /// default storage and a `TEXTURE_COMPRESSION_BC`-granted adapter that fails
 /// to advertise filterable BC6H here would fail later at bind-group creation
 /// with an opaque error. `TEXTURE_COMPRESSION_BC` is already a required
-/// feature (see `render::mod.rs`'s adapter pre-check); this check confirms
-/// the format that feature unlocks supports the usages we need.
+/// feature (see `render::renderer_init_resources.rs`'s adapter pre-check); this
+/// check confirms the format that feature unlocks supports the usages we need.
 pub fn bc6h_irradiance_filterable(adapter: &wgpu::Adapter) -> bool {
     adapter
         .get_texture_format_features(wgpu::TextureFormat::Bc6hRgbUfloat)
@@ -354,14 +395,16 @@ fn upload_direction_texture(
     queue: &wgpu::Queue,
     sec: &LightmapSection,
 ) -> wgpu::Texture {
+    // `texture_2d_array`, sharing `layer_count` with the irradiance atlas. The
+    // `direction` blob is layer-major, so one `LayerMajor` upload covers all layers.
     device.create_texture_with_data(
         queue,
         &wgpu::TextureDescriptor {
             label: Some("Lightmap Direction"),
             size: wgpu::Extent3d {
-                width: sec.width,
-                height: sec.height,
-                depth_or_array_layers: 1,
+                width: sec.dir_width,
+                height: sec.dir_height,
+                depth_or_array_layers: sec.layer_count,
             },
             mip_level_count: 1,
             sample_count: 1,
@@ -434,12 +477,20 @@ mod tests {
     use postretro_level_format::lightmap::LightmapMode;
 
     fn fake_section(width: u32, height: u32) -> LightmapSection {
+        fake_section_layers(width, height, 1)
+    }
+
+    fn fake_section_layers(width: u32, height: u32, layer_count: u32) -> LightmapSection {
         LightmapSection {
-            width,
-            height,
-            texel_density: 0.04,
+            layer_count,
+            irr_width: width,
+            irr_height: height,
+            irr_texel_density: 0.04,
             irradiance: Vec::new(),
             irradiance_format: postretro_level_format::lightmap::IRRADIANCE_FORMAT_RGBA16F,
+            dir_width: width,
+            dir_height: height,
+            dir_texel_density: 0.04,
             direction: Vec::new(),
             mode: LightmapMode::Shadowed,
         }
@@ -453,13 +504,13 @@ mod tests {
     fn oversize_section_filtered_out() {
         let oversize = fake_section(16_384, 8192);
         assert!(
-            filter_usable_section(Some(&oversize), 8192).is_none(),
+            filter_usable_section(Some(&oversize), 8192, 256).is_none(),
             "atlas wider than the granted limit must drop to placeholder",
         );
 
         let tall = fake_section(8192, 16_384);
         assert!(
-            filter_usable_section(Some(&tall), 8192).is_none(),
+            filter_usable_section(Some(&tall), 8192, 256).is_none(),
             "atlas taller than the granted limit must drop to placeholder",
         );
     }
@@ -475,7 +526,7 @@ mod tests {
         let oversize = fake_section(16_384, 4096);
         // Capture log records on this thread, scoped to the filter call.
         let records = crate::scripting::reactions::log_capture::capture(|| {
-            let _ = filter_usable_section(Some(&oversize), 8192);
+            let _ = filter_usable_section(Some(&oversize), 8192, 256);
         });
         assert!(
             records
@@ -494,13 +545,13 @@ mod tests {
     fn at_or_under_limit_section_kept() {
         let at_limit = fake_section(8192, 8192);
         assert!(
-            filter_usable_section(Some(&at_limit), 8192).is_some(),
+            filter_usable_section(Some(&at_limit), 8192, 256).is_some(),
             "atlas exactly at the granted limit must be retained",
         );
 
         let under = fake_section(4096, 2048);
         assert!(
-            filter_usable_section(Some(&under), 8192).is_some(),
+            filter_usable_section(Some(&under), 8192, 256).is_some(),
             "atlas under the granted limit must be retained",
         );
     }
@@ -509,7 +560,7 @@ mod tests {
     fn zero_dimension_section_filtered_out() {
         let empty = fake_section(0, 0);
         assert!(
-            filter_usable_section(Some(&empty), 8192).is_none(),
+            filter_usable_section(Some(&empty), 8192, 256).is_none(),
             "zero-dimension section must drop to placeholder regardless of limit",
         );
     }
@@ -517,8 +568,31 @@ mod tests {
     #[test]
     fn missing_section_filtered_out() {
         assert!(
-            filter_usable_section(None, 8192).is_none(),
+            filter_usable_section(None, 8192, 256).is_none(),
             "absent section drops to placeholder",
+        );
+    }
+
+    /// Array-layer-fits-device guard: a section whose `layer_count` exceeds the
+    /// granted `max_texture_array_layers` is dropped to the neutral placeholder.
+    /// No real adapter exposes a limit below 256, so this guards corrupt or
+    /// future multi-layer sections against an under-spec/clamped limit. Pure
+    /// comparison — no real array texture allocated.
+    #[test]
+    fn too_many_layers_section_filtered_out() {
+        // 8 layers under a tiny 4-layer limit, with in-bounds dimensions so the
+        // layer guard (not the dimension guard) is what rejects it.
+        let many_layers = fake_section_layers(64, 64, 8);
+        assert!(
+            filter_usable_section(Some(&many_layers), 8192, 4).is_none(),
+            "atlas with more layers than the granted limit must drop to placeholder",
+        );
+
+        // Exactly at the layer limit is retained.
+        let at_limit = fake_section_layers(64, 64, 4);
+        assert!(
+            filter_usable_section(Some(&at_limit), 8192, 4).is_some(),
+            "atlas exactly at the granted layer limit must be retained",
         );
     }
 

@@ -74,7 +74,7 @@ impl SplashSource {
 }
 
 /// Boot phase derived from boot-relevant `App` state for the suspend/resume
-/// contract (boot_sequence §1, §9; rendering_pipeline §7.8). Pure classifier so
+/// contract (boot_sequence §1, §5; rendering_pipeline §7.8). Pure classifier so
 /// the resume re-entry behavior is auditable without a window or GPU:
 ///
 /// | Phase | Re-entry behavior on resume |
@@ -140,9 +140,55 @@ pub(crate) fn classify_boot_phase(
 /// suspend/resume cycle. Returns the owned value to install the first time the
 /// slot is `Some`, leaving `None` behind so a resume re-entry skips it. This is
 /// the `pending_session.take()` pattern named as a seam: a resume that re-enters
-/// the splash loop finds `None` and never re-installs. See: boot_sequence §9.
+/// the splash loop finds `None` and never re-installs. See: boot_sequence §1, §5.
 pub(crate) fn take_once<T>(slot: &mut Option<T>) -> Option<T> {
     slot.take()
+}
+
+/// Decision for the deferred-session install step, derived from whether a
+/// pending session was taken this frame and whether its `Session::build`
+/// succeeded. Pure classifier (paired with [`classify_session_install`]) so the
+/// build-failure boot-abort contract is auditable without a window, GPU, or a
+/// real `Session` — the caller performs the side effects keyed on the variant.
+///
+/// | Variant | Caller side effects |
+/// |---|---|
+/// | `NothingPending` | none — `pending_session` was already consumed (resume re-entry); boot continues |
+/// | `Installed` | none — the session is stored; boot continues this frame |
+/// | `AbortBoot` | store the build error in `exit_result`, request `event_loop.exit()`, early-return so no later step runs against a `None` session |
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SessionInstallStep {
+    /// No pending session this frame (already consumed by an earlier commit, e.g.
+    /// a suspend/resume re-entry). The install is a no-op; boot proceeds.
+    NothingPending,
+    /// `Session::build` succeeded and the session was installed. Boot proceeds.
+    Installed,
+    /// `Session::build` failed (a hard boot failure). The caller stores the error,
+    /// requests exit, and early-returns from the install frame.
+    AbortBoot,
+}
+
+/// Map the deferred-session install inputs to the step the caller must take.
+/// Pure — no window, no GPU, no `Session`. `had_pending` is whether
+/// `take_once(pending_session)` yielded a value this frame; `build_succeeded` is
+/// whether that value's `Session::build` returned `Ok`.
+///
+/// A failed build (`had_pending && !build_succeeded`) maps to `AbortBoot`: the
+/// caller stores the error in `exit_result`, exits the event loop, and runs no
+/// later step that frame. Because the pending owner is consumed by the same
+/// `take_once`, a resumed boot finds `NothingPending` and never retries.
+pub(crate) fn classify_session_install(
+    had_pending: bool,
+    build_succeeded: bool,
+) -> SessionInstallStep {
+    if !had_pending {
+        return SessionInstallStep::NothingPending;
+    }
+    if build_succeeded {
+        SessionInstallStep::Installed
+    } else {
+        SessionInstallStep::AbortBoot
+    }
 }
 
 /// The redraw path may drain stale script-reload requests only after the splash
@@ -251,22 +297,24 @@ mod tests {
     /// Boot-timing marks in the exact order the boot path records them, valid
     /// (logo-present) path. Each entry names its `record(...)` call site so the
     /// sequence stays tied to the source — a moved or renamed mark forces a diff
-    /// here. Net/audio/debug-UI/mod/level-worker marks are the ones the spec
-    /// requires `first_black_frame` to precede; `script_runtime_ctor` is the one
-    /// it must NOT (the runtime is built pre-window, before the black frame).
+    /// here. Net/audio/debug-UI/mod/level-worker marks AND `script_runtime_ctor`
+    /// are the marks the spec requires `first_black_frame` to precede: the script
+    /// runtime is now constructed inside `Session::build` (post-first-pixel), so
+    /// its mark fires after the logo frame, beside the other deferred-session
+    /// marks. See: context/lib/boot_sequence.md §1.
     fn boot_mark_order_valid_path() -> Vec<&'static str> {
         vec![
             "args_parsed",                 // session::build_session
             "event_loop_created",          // session::build_session (EventLoop::new)
-            "script_runtime_ctor", // session::build_session (SessionServices::build) — pre-window
-            "window_created",      // main::resumed
-            "wgpu_init",           // main::resumed (Renderer::new, boot phase)
-            "first_black_frame",   // splash_lifecycle::run_splash_frame_zero (after present)
-            "splash_decoded",      // splash_lifecycle::run_splash_frame_zero
-            "splash_uploaded",     // splash_lifecycle::run_splash_frame_zero
-            "first_splash_frame",  // splash_lifecycle::paint_splash_after_black (after present)
-            "audio_init_complete", // main::install_post_splash_services
-            "net_endpoint_complete", // session::PendingSessionInit::install
+            "window_created",              // main::resumed
+            "wgpu_init",                   // main::resumed (Renderer::new, boot phase)
+            "first_black_frame", // splash_lifecycle::run_splash_frame_zero (after present)
+            "splash_decoded",    // splash_lifecycle::run_splash_frame_zero
+            "splash_uploaded",   // splash_lifecycle::run_splash_frame_zero
+            "first_splash_frame", // splash_lifecycle::paint_splash_after_black (after present)
+            "audio_init_complete", // session::Session::build (post-first-pixel, before scripting)
+            "script_runtime_ctor", // session::Session::build (post-first-pixel, inside install)
+            "net_endpoint_complete", // session::Session::build (post-first-pixel, after scripting)
             "session_init_complete", // session::PendingSessionInit::install
             "renderer_full_init_complete", // splash_lifecycle::finish_renderer_full_init
             "boot_worker_dispatch", // splash_lifecycle::run_splash_frame_one (boot-map path)
@@ -282,9 +330,9 @@ mod tests {
 
     // Drift guard for the boot ordering contract. Replays the boot marks through
     // the real recorder in source order, then asserts the spec's relative-order
-    // claims: first_black_frame precedes net/audio/debug-UI/mod/level-worker
-    // marks, and does NOT precede script_runtime_ctor (script runtime is built
-    // pre-window). See: boot_sequence §1, early-boot-solo-splash AC #1.
+    // claims: first_black_frame precedes the deferred-session marks INCLUDING
+    // script_runtime_ctor, because the script runtime is now constructed inside
+    // `Session::build` (post-first-pixel). See: boot_sequence §1.
     #[test]
     fn boot_order_first_black_frame_precedes_session_audio_net_and_worker_marks() {
         let mut t = StartupTimings::new();
@@ -293,9 +341,11 @@ mod tests {
         }
         let black = index_of(&t.entries, "first_black_frame");
 
-        // first_black_frame precedes the deferred-service marks the spec pins.
+        // first_black_frame precedes the deferred-service marks the spec pins —
+        // and now also `script_runtime_ctor`, which moved behind first pixels.
         for after in [
             "audio_init_complete",
+            "script_runtime_ctor",
             "net_endpoint_complete",
             "session_init_complete",
             "renderer_full_init_complete",
@@ -307,11 +357,12 @@ mod tests {
             );
         }
 
-        // Coordinator resolution: the script runtime is constructed pre-window,
-        // so its mark precedes first_black_frame — first_black does NOT precede it.
+        // The script runtime is built inside `Session::build` on the logo frame,
+        // so its mark follows `first_splash_frame` (the logo present).
         assert!(
-            index_of(&t.entries, "script_runtime_ctor") < black,
-            "script_runtime_ctor is built pre-window, before the first black frame",
+            index_of(&t.entries, "first_splash_frame")
+                < index_of(&t.entries, "script_runtime_ctor"),
+            "script_runtime_ctor is built post-first-pixel, after the logo frame presents",
         );
     }
 
@@ -376,6 +427,55 @@ mod tests {
         assert!(decoded < uploaded, "upload follows decode");
         assert!(uploaded < logo, "logo frame follows upload");
         assert!(logo < session, "session install follows the logo frame");
+    }
+
+    /// The ordered steps `run_splash_frame_one` runs after the logo frame
+    /// presents, each named for its call site. Mirrors the source so a reorder
+    /// forces a diff here — the splash-frame-one twin of `boot_mark_order_valid_path`.
+    /// `finish_renderer_full_init` builds `Renderer::full`; `run_deferred_mod_init`
+    /// then installs the mod theme/fonts via `set_ui_theme`/`register_ui_font`,
+    /// which are full-ready renderer paths that panic if `full` is not yet built.
+    /// See: context/lib/boot_sequence.md §1, rendering_pipeline §7.8.
+    fn splash_frame_one_step_order() -> Vec<&'static str> {
+        vec![
+            "install_pending_session", // Session::build (CPU-side; failure early-returns)
+            "ensure_debug_ui",         // boot-ready only (device limit + window)
+            "set_input_focus",         // session-owned state
+            "finish_renderer_full_init", // builds Renderer::full (full-ready)
+            "run_deferred_mod_init",   // mod theme/font install → FULL-READY renderer paths
+            "swap_mod_splash_override_if_pending",
+        ]
+    }
+
+    fn step_index(steps: &[&'static str], name: &str) -> usize {
+        steps
+            .iter()
+            .position(|s| *s == name)
+            .unwrap_or_else(|| panic!("step `{name}` must be present"))
+    }
+
+    /// Regression guard for the boot panic at the renderer full-ready guard
+    /// (`renderer_splash.rs`: "renderer full-init must complete before full-ready
+    /// paths run"). `run_deferred_mod_init` drains the mod manifest's theme/font
+    /// payload through `set_ui_theme` / `register_ui_font`, both of which touch
+    /// `Renderer::full`. They MUST run only after `finish_renderer_full_init` has
+    /// built it. Session construction is CPU-side and stays ahead of full-init.
+    #[test]
+    fn splash_frame_one_full_init_precedes_full_ready_mod_init() {
+        let steps = splash_frame_one_step_order();
+
+        assert!(
+            step_index(&steps, "finish_renderer_full_init")
+                < step_index(&steps, "run_deferred_mod_init"),
+            "renderer full-init must precede the full-ready mod-theme/font install",
+        );
+        // Session install (and its failure early-return) stays ahead of full-init,
+        // preserving the whole-or-nothing, single-commit session-build contract.
+        assert!(
+            step_index(&steps, "install_pending_session")
+                < step_index(&steps, "finish_renderer_full_init"),
+            "session build (CPU-side, failure-early-return) precedes renderer full-init",
+        );
     }
 
     #[test]
@@ -485,6 +585,43 @@ mod tests {
     fn take_once_on_empty_slot_is_none() {
         let mut slot: Option<u32> = None;
         assert_eq!(take_once(&mut slot), None);
+    }
+
+    // --- Deferred-session install decision (build-failure boot-abort) ---
+
+    #[test]
+    fn classify_session_install_no_pending_is_nothing_pending() {
+        // `take_once` yielded nothing this frame (already consumed on an earlier
+        // commit / resume re-entry): the install is a no-op and boot proceeds.
+        // `build_succeeded` is irrelevant when nothing was pending.
+        assert_eq!(
+            classify_session_install(false, true),
+            SessionInstallStep::NothingPending,
+        );
+        assert_eq!(
+            classify_session_install(false, false),
+            SessionInstallStep::NothingPending,
+        );
+    }
+
+    #[test]
+    fn classify_session_install_pending_ok_build_installs() {
+        assert_eq!(
+            classify_session_install(true, true),
+            SessionInstallStep::Installed,
+        );
+    }
+
+    #[test]
+    fn classify_session_install_pending_failed_build_aborts_boot() {
+        // A `Session::build` `Err` maps to `AbortBoot`: the caller stores the
+        // error in `exit_result`, requests exit, and runs no later step that
+        // frame. The pure decision is tested here; the side effects live in
+        // `App::install_pending_session`. No window/GPU/`Session` needed.
+        assert_eq!(
+            classify_session_install(true, false),
+            SessionInstallStep::AbortBoot,
+        );
     }
 
     // --- Deferred-session guard before runtime exists ---

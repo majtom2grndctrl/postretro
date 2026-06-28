@@ -40,6 +40,11 @@ mod portal_vis;
 mod prl;
 mod render;
 mod scripting;
+// Live session-lifetime container: all session-lifetime state (scripting core,
+// audio, net endpoint, input/UI/modal group, and their bridges and registries),
+// held on `App` as `Option<Session>` and built after the first visible frame.
+// See: context/lib/boot_sequence.md §1
+mod session;
 mod shadow_cull;
 mod sim;
 mod startup;
@@ -82,23 +87,22 @@ use crate::camera::Camera;
 use crate::frame_timing::{FrameRateMeter, FrameTiming, InterpolableState};
 use crate::input::{Action, ButtonState, DiagnosticAction, InputFocus};
 use crate::render::Renderer;
-use crate::scripting::builtins::ClassnameDispatch;
-use crate::scripting::ctx::ScriptCtx;
 use crate::scripting::data_descriptors::ModThemeTokens;
-use crate::scripting::reaction_dispatch::{
-    ProgressTracker, fire_named_event, fire_named_event_with_sequences,
-};
-use crate::scripting::reactions::registry::ReactionPrimitiveRegistry;
-use crate::scripting::reactions::system_commands::{SystemReactionCommand, SystemReactionRegistry};
-use crate::scripting::runtime::{
-    Frontend, MenuCamera, ReloadSummary, ScriptRuntime, StagedManifestCommitOutcome,
-};
-use crate::scripting::sequence::SequencedPrimitiveRegistry;
+use crate::scripting::reaction_dispatch::{fire_named_event, fire_named_event_with_sequences};
+use crate::scripting::reactions::system_commands::SystemReactionCommand;
+use crate::scripting::runtime::{Frontend, MenuCamera, ReloadSummary, StagedManifestCommitOutcome};
 use crate::scripting::staged_manifest::{StagedManifestBuildResult, StagedManifestBuildStatus};
-use crate::scripting::state_crossings::CrossingDetector;
 use crate::scripting::state_persistence::{
-    STATE_FILE_PATH, StateStoreLifecycle, collect_persisted_state, save_persisted_state,
+    STATE_FILE_PATH, collect_persisted_state, save_persisted_state,
 };
+// Session-owned types referenced in `main.rs` only by `#[cfg(test)]` code, so
+// they are gated test-only to keep the bin build warning-free.
+#[cfg(test)]
+use crate::scripting::ctx::ScriptCtx;
+#[cfg(test)]
+use crate::scripting::reaction_dispatch::ProgressTracker;
+#[cfg(test)]
+use crate::scripting::runtime::ScriptRuntime;
 use crate::startup::{
     BootState, FRONTEND_CLEAR_COLOR, InFlightLevelLoad, LevelRequest, LevelSource, LoadOutcome,
     SplashSource, StartupTimings,
@@ -304,10 +308,12 @@ fn main() -> Result<()> {
     env_logger::init();
     log::info!("[Engine] Postretro starting");
 
-    // Build session-lifetime boot state (args, content root, script runtime,
-    // registries, options, input) and the event loop. Mod init and the first
-    // level-load worker are deferred to the splash frame loop — see
-    // `startup::session::build_session`. See: context/lib/boot_sequence.md §1.
+    // Build boot-lifetime `App` state (args, content root, camera, frame
+    // timing, the `pending_session` bundle) and the event loop. The entire
+    // `Session` (options I/O, audio, scripting core, input/UI/modal group,
+    // net endpoint) is constructed post-first-pixel by `Session::build` via
+    // `install_pending_session`. Mod init and the first level-load worker are
+    // deferred to the splash loop. See: context/lib/boot_sequence.md §1.
     let startup::BootSession {
         event_loop,
         mut app,
@@ -321,6 +327,18 @@ fn main() -> Result<()> {
 }
 
 fn window_attributes() -> WindowAttributes {
+    // The window is created VISIBLE (winit default). A "create hidden, reveal
+    // after first present" scheme was tried to suppress the Windows
+    // pre-first-present white flash but caused a boot HANG on Windows: winit's
+    // `request_redraw()` uses `RedrawWindow(.., RDW_INTERNALPAINT)`, and Windows
+    // does not deliver `WM_PAINT`/`RedrawRequested` to an invisible window — so
+    // the redraw-driven splash loop (default `ControlFlow::Wait`, blocking in
+    // `MsgWaitForMultipleObjectsEx`) never advanced past frame 0 and never
+    // revealed the window. A booting engine with a brief cosmetic flash is
+    // strictly better than a hang. A proper flash fix needs a platform approach
+    // that does not gate the first frame on an OS paint event delivered to a
+    // hidden window (e.g. a Win32 class background brush matching the splash
+    // color). See: context/lib/boot_sequence.md §1 (Splash state machine).
     Window::default_attributes()
         .with_title("Postretro")
         .with_inner_size(winit::dpi::LogicalSize::new(1280, 720))
@@ -356,11 +374,6 @@ fn resolve_crouch_intent(mode: options::CrouchMode, button: ButtonState, latch: 
 pub(crate) struct App {
     renderer: Option<Renderer>,
 
-    /// Audio subsystem. `None` until `resumed()` builds it after the renderer,
-    /// and stays `None` if kira init fails — the game then runs silent.
-    /// See: context/lib/audio.md
-    audio: Option<audio::Audio>,
-
     window_state: Option<WindowState>,
     level: Option<prl::LevelWorld>,
     /// Runtime navigation graph, built once when a level with a baked navmesh
@@ -380,8 +393,15 @@ pub(crate) struct App {
     exit_result: Result<()>,
 
     camera: Camera,
-    input_system: input::InputSystem,
-    gameplay_input_latch: input::GameplayInputLatch,
+
+    /// Live session-lifetime container: all post-first-pixel subsystems
+    /// (scripting core, audio, net endpoint, input/UI/modal group, and their
+    /// bridges and registries), built by `Session::build` and installed through
+    /// `PendingSessionInit::install`. `None` during boot (Booting/Splash before
+    /// the install redraw) — boot-phase code physically cannot name a session
+    /// field. Becomes `Some` for the rest of the run; a failed build exits boot.
+    /// See: context/lib/boot_sequence.md §1.
+    session: Option<session::Session>,
 
     /// Persistent crouch toggle latch for `CrouchMode::Toggle`. Flipped on each
     /// `Action::Crouch` press rising edge by the input layer; fed into
@@ -397,34 +417,6 @@ pub(crate) struct App {
     /// no path. Lives on `App` (the AI tick owner), threaded into
     /// `scripting_systems::ai::run_ai_tick`. See: scripting/systems/ai.rs.
     ai_warned: std::collections::HashSet<String>,
-
-    /// Per-human runtime preferences loaded at boot. Seeds input look
-    /// preferences during init; `crouch_mode` is read each input tick by
-    /// `resolve_crouch_intent`. Settings-menu UI (M13) remains future.
-    /// See: context/lib/player_options.md
-    player_options: options::PlayerOptions,
-
-    /// Resolved `settings.toml` path, or `None` when the platform exposes no
-    /// config directory (the engine then runs on in-memory defaults). Held for
-    /// the future M13 settings menu's save path; no reader yet.
-    /// See: context/lib/player_options.md
-    #[allow(dead_code)]
-    settings_path: Option<PathBuf>,
-
-    /// Coarse owner of keyboard/mouse focus. Drives pointer-lock acquire/release
-    /// via `set_input_focus`. See: context/lib/input.md
-    input_focus: InputFocus,
-
-    /// Input-stage UI-dispatch seam: decides whether an event is consumed by the
-    /// UI layer (capture) or forwarded to gameplay (passthrough), ahead of the
-    /// gameplay input forward. Goal A leaves the mode at its inert `Passthrough`
-    /// default (no live UI descriptor yet), so the seam does not change gameplay
-    /// forwarding; Task 4 sources the mode from the active splash descriptor.
-    /// Captured events cross to game logic no earlier than the next frame
-    /// (N→N+1). `InputFocus::Menu` is the intended structural home for capture;
-    /// Goal A makes no live focus change. See: context/lib/input.md
-    ui_dispatch: input::UiDispatch,
-    gamepad_system: Option<input::gamepad::GamepadSystem>,
 
     /// Last cursor position in device pixels, tracked from winit `CursorMoved`
     /// while the cursor is released (UI mode). Tracked *state*, never queued:
@@ -471,89 +463,10 @@ pub(crate) struct App {
     /// unreadable and the OS may throttle it.
     last_title_update: Instant,
 
-    script_runtime: ScriptRuntime,
-
-    /// Holds the entity registry shared by the light bridge and the script
-    /// runtime. Outlives the renderer so device resets preserve scripted
-    /// light state. See: context/lib/scripting.md
-    script_ctx: ScriptCtx,
-
-    /// Publishes live pawn HP and max HP into the player HUD slots each frame.
-    /// See: context/lib/scripting.md §5 for the store contract.
-    player_hud_state: scripting_systems::ui_proxy::PlayerHudStatePublisher,
-
-    /// App-side flash-decay state for the engine-owned `screen.flash` surface.
-    /// A drained `FlashScreen` system-reaction command starts a flash; this
-    /// writes the decaying RGBA into `screen.flash` each game-logic tick. Reset
-    /// on level load. See: context/lib/ui.md §3.
-    flash_decay: scripting_systems::flash_decay::FlashDecay,
-
-    /// App-side vignette-decay state for the engine-owned `screen.vignette`
-    /// surface (SE). A drained vignette system-reaction command (Task 3) starts a
-    /// rise/peak/decay envelope; this writes the enveloped RGBA into
-    /// `screen.vignette` each game-logic tick (beside `flash_decay.tick`). Reset
-    /// on level load. See: context/lib/ui.md §3.
-    vignette_decay: scripting_systems::vignette_decay::VignetteDecay,
-
-    /// App-side screen-shake state for the engine-owned `screen.shake` surface
-    /// (SE). A drained shake system-reaction command (Task 3) starts a decaying
-    /// oscillation; this writes the current `[dx, dy]` offset into `screen.shake`
-    /// each game-logic tick (beside `flash_decay.tick`). Reset on level load.
-    /// See: context/lib/ui.md §3.
-    shake_decay: scripting_systems::shake_decay::ShakeDecay,
-
-    /// App-side presentation-cell store for `ui.createLocalState()` (M13 G1b,
-    /// Task 5). Seeded from a tree's declared `localState` initials when its scope
-    /// first composes, written by the drained `CellWrite` reaction at the
-    /// game-logic stage, reconciled/cleared against the composed-scope-id set at
-    /// the compose step, and snapshotted onto `cell_values` for `{ local }` bind
-    /// resolution. Presentation-only — NEVER the authoritative store.
-    /// See: context/lib/ui.md §3/§6.
-    presentation_cells: scripting_systems::presentation_cells::PresentationCellStore,
-
-    /// Gameplay-UI modal stack + named-tree registry. Consumes Goal E's
-    /// `PushTree`/`PopTree` system commands (resolving names through its registry,
-    /// unknown name warns + no-op) and exposes an engine push/pop API for
-    /// pause/dialog. The HUD is republished as the stack's bottom layer each
-    /// frame; the top tree's capture mode drives the input seam + `InputFocus`.
-    /// Engine built-in trees register at boot. See: context/lib/ui.md §1.
-    modal_stack: render::ui::modal_stack::ModalStack,
-
     /// The currently committed mod theme override. Successful staged mod-init
     /// commits replace this complete snapshot before a fresh merge over engine
     /// defaults reaches the renderer.
     mod_theme_override: ModThemeTokens,
-
-    /// Currently committed mod frontend declaration. Successful staged mod-init
-    /// commits replace this complete snapshot; omission falls back to the
-    /// engine/default frontend behavior.
-    frontend: Option<Frontend>,
-
-    /// App-side UI focus engine (M13 Goal F, Task 3). Runs in the game-logic
-    /// phase: consumes the drained nav intents + tracked cursor, moves focus
-    /// through the top stack tree by policy, runs the dt-clocked hold-to-repeat
-    /// timer, and yields the focused node id that rides the next snapshot to drive
-    /// the focus ring. See: context/lib/ui.md §4.
-    ui_focus: input::UiFocusEngine,
-
-    /// The focus rect list the renderer exported for the top stack tree LAST
-    /// frame — the reverse twin of the app→renderer snapshot. The focus engine
-    /// consumes it the following game-logic phase (N→N+1 applied in reverse), so
-    /// the focus ring may trail a focus change by one frame. `None` until the
-    /// first gameplay frame exports one.
-    ui_focus_rects: Option<render::ui::tree::FocusRectList>,
-
-    /// Pointer-vs-focus interaction mode taken as an input by the focus engine
-    /// (hover moves focus only in `Pointer` mode). Driven each input phase from
-    /// `input_mode_tracker` (mouse motion → `Pointer`; nav input → `Focus`).
-    ui_input_mode: input::InputMode,
-
-    /// App-side input-mode tracker (M13 Goal F, Task 5). Observes the input
-    /// phase's mode signals (mouse motion vs. nav input), debounces them, writes
-    /// the engine-owned `input.mode` enum slot, and drives `ui_input_mode`. The
-    /// store write is app composition — the input subsystem's contract output
-    /// stays the action snapshot. Reset on level load. See: context/lib/input.md §7.
-    input_mode_tracker: scripting_systems::input_mode::InputModeTracker,
 
     /// The mode signal observed during THIS frame's input phase, resolved into
     /// `input_mode_tracker` at the head of the game-logic phase. Mouse motion
@@ -583,54 +496,6 @@ pub(crate) struct App {
     /// ring around it. `None` when nothing is focused.
     ui_focused_id: Option<String>,
 
-    /// Gates the one-time persistence overlay and clean-exit save.
-    state_store_lifecycle: StateStoreLifecycle,
-
-    /// Consulted by `fire_named_event_with_sequences` for `Sequence` steps.
-    /// No per-level state — entity lookups go through `ScriptCtx`, which the
-    /// level-unload path clears separately. See: context/lib/scripting.md §2
-    sequence_registry: SequencedPrimitiveRegistry,
-
-    /// Resolved by name when a `Primitive` reaction fires.
-    /// See: context/lib/scripting.md §2
-    reaction_registry: ReactionPrimitiveRegistry,
-
-    /// Resolved by name when a `Primitive` reaction with no `tag` fires — the
-    /// system-reaction arm. Handlers enqueue typed commands onto
-    /// `script_ctx.system_commands`, drained once per frame.
-    /// See: context/lib/scripting.md §10.4
-    system_registry: SystemReactionRegistry,
-
-    /// Per-tag kill-count subscriptions. Cleared on level unload; survives
-    /// hot-reload. See: context/lib/scripting.md §2
-    progress_tracker: ProgressTracker,
-
-    /// State-crossing watchers (M13 HUD dynamics). Built from the data
-    /// registry's `crossings` at level load; checked each frame after
-    /// the HUD publisher / other slot writes settle and before the UI snapshot
-    /// build.
-    /// Cleared on level unload with the rest of the per-level state.
-    /// See: context/lib/scripting.md §10.4
-    crossing_detector: CrossingDetector,
-
-    /// Maps `classname` strings to engine spawn handlers. Survives level
-    /// unload — built-in handlers carry no per-level state.
-    /// See: context/lib/scripting.md
-    classname_dispatch: ClassnameDispatch,
-
-    /// Runs between Game Logic and Render; uploads repacked GpuLight bytes
-    /// when any `LightComponent` is dirty. See: context/lib/scripting.md
-    light_bridge: scripting_systems::light_bridge::LightBridge,
-
-    /// Per-level fog-volume registry side-table; packs `FogVolume` GPU bytes
-    /// each frame from `FogVolumeComponent` mutations. See:
-    /// context/lib/rendering_pipeline.md §7.5
-    fog_volume_bridge: scripting_systems::fog_volume_bridge::FogVolumeBridge,
-
-    /// Walks every `BillboardEmitterComponent` after game logic and before
-    /// particle sim. See: context/lib/scripting.md
-    emitter_bridge: scripting_systems::emitter_bridge::EmitterBridge,
-
     /// Per-emitter live-particle tally, produced by `particle_sim::tick` and
     /// consumed by the next frame's `emitter_bridge.update` for cap headroom.
     /// Owned here (not re-allocated per frame) so the collapsed pass reuses one
@@ -640,32 +505,6 @@ pub(crate) struct App {
     /// World-space static-geometry collider built from PRL static geometry.
     /// See: context/lib/entity_model.md §7
     collision_world: collision::CollisionWorld,
-
-    /// Packs `SpriteInstance` bytes per collection in the Render stage;
-    /// never touches wgpu directly. See: context/lib/scripting.md
-    particle_render: scripting_systems::particle_render::ParticleRenderCollector,
-
-    /// Packs per-instance skinned-mesh world matrices in the Render stage
-    /// (cull applied via `mesh_pass::mesh_visible`); never touches wgpu.
-    /// See: context/lib/scripting.md
-    mesh_render: scripting_systems::mesh_render::MeshRenderCollector,
-
-    /// Game-side per-model animation clip tables (name → glTF index + per-index
-    /// duration), built at the level-load model sweep from each uploaded model's
-    /// renderer clip metadata. Owned beside `mesh_render`: the collector consults
-    /// it to compute per-instance sample times, and the level-load validation
-    /// resolves each mesh entity's `AnimationState.clip_index` against it. Cleared
-    /// on level unload. See: context/lib/scripting.md §10.3.
-    mesh_clip_tables: scripting_systems::mesh_anim::MeshClipTables,
-
-    /// Game-side skeletal hit-zone store: per model TYPE, the CPU skeleton,
-    /// clips, authored joint-zone table, and a derived broad-phase bound swept
-    /// from the clips. Re-loaded game-side (independent of the renderer's
-    /// moved-away copy) at the level-load model sweep and cleared on level
-    /// change, beside `mesh_clip_tables`. CPU-only — no wgpu. Nothing consumes it
-    /// yet besides tests; the Task 4 raycast facility threads it through.
-    /// See: context/lib/entity_model.md §7.
-    hit_zone_store: scripting_systems::hit_zones::HitZoneStore,
 
     /// Active wieldable instance equipped by the player. The companion
     /// descriptor name lets mod-init hot reload refresh authored weapon stats
@@ -737,10 +576,15 @@ pub(crate) struct App {
     /// slow-motion seam — no script surface yet (engine-side field only).
     anim_time_scale: f64,
 
-    /// Per-stage durations for log line A — engine boot
-    /// (args_parsed, script_runtime_ctor, event_loop_created, window_created,
-    /// wgpu_init, first_black_frame, splash_decoded, splash_uploaded,
-    /// first_splash_frame).
+    /// Per-stage durations for the boot log line, in record order: args_parsed,
+    /// event_loop_created, window_created, wgpu_init, first_black_frame,
+    /// splash_decoded, splash_uploaded, first_splash_frame, then the
+    /// post-first-pixel deferred-session marks (audio_init_complete,
+    /// script_runtime_ctor, net_endpoint_complete, session_init_complete),
+    /// renderer_full_init_complete, and (CLI-map boot) boot_worker_dispatch. The
+    /// script runtime is constructed inside `Session::build`, so its mark fires
+    /// after the logo frame — not in early engine boot.
+    /// See: context/lib/boot_sequence.md §1.
     boot_timings: StartupTimings,
 
     /// Per-stage durations for log line B — mod init (mod_init,
@@ -784,27 +628,13 @@ pub(crate) struct App {
     /// returns an empty payload.
     boot_load: bool,
 
-    /// Optional network endpoint (M15 Phase 1). `None` for single-player (net
-    /// inert); `Host`/`Client` once a `--host`/`--connect` role's transport is
-    /// constructed. Polled once per frame in `RedrawRequested` before the
-    /// catch-up tick loop; the host serializes + sends after the loop. The net
-    /// subsystem never touches the registry — `crate::netcode` owns that seam.
-    net_endpoint: Option<netcode::NetEndpoint>,
-
-    /// Deferred-startup owner: the raw inputs needed to finish session startup
-    /// (net-endpoint setup today) AFTER the first visible logo frame. `Some`
-    /// from boot construction until `install_pending_session` consumes it on the
-    /// first logo splash frame; `None` afterward. The `Option::take` is the
-    /// single-commit guard so a suspend/resume re-entering the splash loop never
-    /// runs deferred init twice. See: context/lib/boot_sequence.md §1, §9.
+    /// Deferred-startup owner: the raw inputs (`argv`) needed to construct the
+    /// entire `Session` AFTER the first visible logo frame. `Some` from boot
+    /// construction until `install_pending_session` consumes it on the first logo
+    /// splash frame; `None` afterward. The `Option::take` is the single-commit
+    /// guard so a suspend/resume re-entering the splash loop never runs deferred
+    /// init twice. See: context/lib/boot_sequence.md §1, §5.
     pending_session: Option<startup::PendingSessionInit>,
-
-    /// CPU-side egui state. `None` until `resumed()` initialises the renderer
-    /// (the constructor needs the device's `max_texture_dimension_2d` limit).
-    /// GPU half lives on `Renderer` as `debug_ui_gpu`; lazy-initialized on
-    /// first panel open.
-    #[cfg(feature = "dev-tools")]
-    debug_ui: Option<render::debug_ui::DebugUi>,
 
     /// The dev-tools "chase me" demo agent (spawned by `Alt+Shift+G`). `None`
     /// until first spawned; spawned at most once per level (cleared on level
@@ -1066,6 +896,12 @@ impl ApplicationHandler for App {
                 return;
             }
         };
+        // The window is created VISIBLE (winit default). The redraw-driven
+        // splash loop relies on the OS delivering `RedrawRequested` after the
+        // `request_redraw()` below, which on Windows only happens for a visible
+        // window (a hidden window gets no `WM_PAINT`). This path also runs on
+        // resume (resume resets to Booting and recreates the window).
+        // See: context/lib/boot_sequence.md §1.
         self.boot_timings.record("window_created");
 
         let renderer = match Renderer::new(&window) {
@@ -1079,8 +915,8 @@ impl ApplicationHandler for App {
         self.boot_timings.record("wgpu_init");
 
         // Splash decode + upload is deferred to the first Splash frame's
-        // post-paint window so the OS window opens as a black screen as
-        // fast as possible. See `run_splash_frame` and
+        // post-paint window so the OS window opens and presents its first frame
+        // as fast as possible. See `run_splash_frame` and
         // `context/lib/boot_sequence.md` §1 (Splash state machine).
 
         let size = window.inner_size();
@@ -1088,15 +924,30 @@ impl ApplicationHandler for App {
 
         self.renderer = Some(renderer);
         self.window_state = Some(WindowState { window });
-        self.apply_mod_ui_theme_to_renderer();
+        // NOTE: the committed mod theme is NOT applied here. `Renderer::new`
+        // returns a boot-ready renderer with `full: None`, and `set_ui_theme`
+        // (reached via `apply_mod_ui_theme_to_renderer`) is a full-ready path
+        // that touches `Renderer::full` — calling it now would panic on the
+        // full-ready guard (renderer_splash.rs). The full renderer is built
+        // later this boot in `run_splash_frame_one::finish_renderer_full_init`,
+        // and the committed theme (engine-default or mod override) is installed
+        // right after, inside `run_deferred_mod_init`. That path also re-runs on
+        // resume (the splash loop replays from frame 0), so the rebuilt full
+        // renderer re-receives the theme there — making an apply here redundant
+        // as well as unsafe. A no-mod-theme boot needs no apply at all: the
+        // full renderer is constructed with `UiTheme::engine_default()`.
 
-        // Audio init, dev debug-UI creation, and net-endpoint setup are deferred
-        // out of this pre-redraw path: they run on the first visible logo frame
-        // (or the fallback black frame) via `install_post_splash_services` /
-        // `install_pending_session` in `run_splash_frame_one`, so the OS window
-        // opens as fast as practical. See: context/lib/boot_sequence.md §1.
+        // Audio init, net-endpoint setup, and dev debug-UI creation are deferred
+        // out of this pre-redraw path: audio + net build inside `Session::build`
+        // (via `install_pending_session`) and the debug UI lazy-builds via
+        // `ensure_debug_ui`, all on the first visible logo frame (or the fallback
+        // black frame) in `run_splash_frame_one`, so the OS window opens as fast
+        // as practical. See: context/lib/boot_sequence.md §1.
 
-        self.set_input_focus(InputFocus::Gameplay);
+        // Input focus is now session-owned: the session is built later this boot
+        // (post-first-pixel) with `InputFocus::Gameplay`, and the cursor is
+        // captured by the first `reconcile_ui_focus` once gameplay runs. Boot /
+        // splash needs no pointer lock, so nothing to set here pre-install.
         self.frame_timing.last_frame = Instant::now();
         self.enter_splash_state();
 
@@ -1113,18 +964,19 @@ impl ApplicationHandler for App {
         // Audit which boot phase a suspend interrupts. The resume path resets to
         // `Booting` and re-drives the splash loop; the single-commit guards
         // (`pending_session.take`, renderer full-ready idempotence) keep session
-        // init and renderer completion from re-running. See: boot_sequence §9.
+        // init and renderer completion from re-running. See: boot_sequence §1, §5.
         log::info!(
             "[Engine] Suspended during boot phase {:?}",
             self.boot_phase()
         );
         self.window_state = None;
         self.renderer = None;
-        // Re-built on the next `resumed()` since it borrows the new window
-        // and reads the new renderer's device limits.
+        // Session-owned debug UI is reset here (it borrows the window and reads
+        // the renderer's device limits); `ensure_debug_ui` rebuilds it on the next
+        // resumed splash loop. The rest of the session survives suspend.
         #[cfg(feature = "dev-tools")]
-        {
-            self.debug_ui = None;
+        if let Some(session) = self.session.as_mut() {
+            session.debug_ui = None;
         }
         self.clear_surface_lifetime_level_state();
         // Drop any in-flight level-load worker handoff. On resume the splash
@@ -1151,10 +1003,21 @@ impl ApplicationHandler for App {
         #[cfg(feature = "dev-tools")]
         let egui_consumed: bool = {
             let mut consumed = false;
-            if let (Some(debug_ui), Some(ws)) = (self.debug_ui.as_mut(), self.window_state.as_ref())
+            // `input_focus` is session-owned; before the session installs it is
+            // effectively `Gameplay` (no UI consumer), so egui consumption is
+            // ignored. The debug UI itself only exists post-install.
+            let focus = self
+                .session
+                .as_ref()
+                .map(|session| session.input_focus)
+                .unwrap_or(InputFocus::Gameplay);
+            // `debug_ui` is session-owned; borrow the session for it and the
+            // window (a disjoint `self` field) together.
+            if let (Some(session), Some(ws)) = (self.session.as_mut(), self.window_state.as_ref())
+                && let Some(debug_ui) = session.debug_ui.as_mut()
             {
                 let response = debug_ui.on_window_event(&ws.window, &event);
-                if self.input_focus != InputFocus::Gameplay {
+                if focus != InputFocus::Gameplay {
                     consumed = response.consumed;
                 }
             }
@@ -1269,6 +1132,17 @@ impl ApplicationHandler for App {
                     // split needs the "is a capturing tree on the stack?" flag,
                     // sourced from the modal stack's top capture mode.
                     // See: context/lib/input.md
+                    // The UI seam and gameplay forward are session-owned; boot
+                    // phase (pre-install) ignores gameplay/UI key input. The
+                    // diagnostic resolver above already ran so dev chords still
+                    // work during boot. Mode-signal / menu-toggle votes are
+                    // collected here and applied after the session borrow ends.
+                    let Some(session) = self.session.as_mut() else {
+                        return;
+                    };
+                    let mut record_nav_signal = false;
+                    let mut set_menu_toggle = false;
+
                     // A directional key RELEASE stops the focus engine's
                     // hold-to-repeat (the press-edge queue carries no release, so
                     // the focus ring's repeat clock is cleared here). Cancel never
@@ -1282,7 +1156,7 @@ impl ApplicationHandler for App {
                                 | winit::keyboard::KeyCode::ArrowRight
                         )
                     {
-                        self.ui_focus.release_repeat();
+                        session.ui_focus.release_repeat();
                     }
                     // A confirm key (Enter) RELEASE stops the activation-repeat clock
                     // (M13 Text-Entry, Task 2): a held `repeatOnHold` button stops
@@ -1294,7 +1168,7 @@ impl ApplicationHandler for App {
                             winit::keyboard::KeyCode::Enter | winit::keyboard::KeyCode::NumpadEnter
                         )
                     {
-                        self.ui_focus.release_confirm_repeat();
+                        session.ui_focus.release_confirm_repeat();
                     }
                     // Text-entry routing (M13 Text-Entry, Task 3): while a text-entry
                     // tree is the top of the modal stack, hardware key-down events
@@ -1304,7 +1178,7 @@ impl ApplicationHandler for App {
                     // a non-control printable `KeyEvent.text` becomes a `Text` intent.
                     // Enter/Escape ride the queue as `nav.confirm`/`nav.cancel`, which
                     // the focus-resolution stage intercepts for commit/cancel.
-                    let text_entry_open = self.modal_stack.active_text_entry_target().is_some();
+                    let text_entry_open = session.modal_stack.active_text_entry_target().is_some();
                     // Text entry intentionally honors OS key-repeat (Text-Entry AC4:
                     // hardware-key repeat comes from the OS): a held Backspace/letter
                     // appends/deletes on each auto-repeat. All OTHER UI input stays
@@ -1313,9 +1187,7 @@ impl ApplicationHandler for App {
                     let nav_intent = if pressed && (!key_event.repeat || text_entry_open) {
                         if text_entry_open {
                             // A key inside text entry is always a `focus`-mode signal.
-                            self.record_mode_signal(
-                                scripting_systems::input_mode::ModeSignal::NavInput,
-                            );
+                            record_nav_signal = true;
                             match input::text_entry_key(
                                 &key_event.logical_key,
                                 key_event.text.as_deref(),
@@ -1342,37 +1214,44 @@ impl ApplicationHandler for App {
                             // capture mode, so it IS the "capturing tree present"
                             // predicate. See: context/lib/input.md §7
                             let capturing =
-                                self.ui_dispatch.mode() == input::UiCaptureMode::Capture;
+                                session.ui_dispatch.mode() == input::UiCaptureMode::Capture;
                             let intent = input::nav_intent_for_key(code, capturing);
                             if intent.is_some() {
                                 // A nav key (arrows/enter/escape/tab) is a `focus`-mode
                                 // signal — it switches the interaction mode off pointer.
-                                self.record_mode_signal(
-                                    scripting_systems::input_mode::ModeSignal::NavInput,
-                                );
+                                record_nav_signal = true;
                             }
                             // Escape-from-gameplay maps to `nav.menu` (opens the pause
                             // menu). The seam is `Passthrough` from gameplay and queues
                             // nothing, so route the toggle through the punch-through flag.
                             if intent == Some(input::NavIntent::Menu) {
-                                self.pending_menu_toggle = true;
+                                set_menu_toggle = true;
                             }
                             intent.map(input::UiIntentPayload::Nav)
                         }
                     } else {
                         None
                     };
-                    if self
+                    if session
                         .ui_dispatch
                         .dispatch_event(nav_intent)
                         .forwards_to_gameplay()
-                        && self.input_focus == InputFocus::Gameplay
+                        && session.input_focus == InputFocus::Gameplay
                     {
                         // Only Gameplay forwards keys to the action system. When
                         // the debug panel (or future menu) owns focus, WASD must
                         // not drive the camera even though egui leaves
                         // `consumed = false` for non-text widgets like sliders.
-                        self.input_system.handle_keyboard_event(code, pressed);
+                        session.input_system.handle_keyboard_event(code, pressed);
+                    }
+
+                    if record_nav_signal {
+                        self.record_mode_signal(
+                            scripting_systems::input_mode::ModeSignal::NavInput,
+                        );
+                    }
+                    if set_menu_toggle {
+                        self.pending_menu_toggle = true;
                     }
                 }
             }
@@ -1390,7 +1269,11 @@ impl ApplicationHandler for App {
                     (true, Some(pos)) => Some(input::UiIntentPayload::PointerClick { pos }),
                     _ => None,
                 };
-                if !self
+                // Boot phase ignores mouse input until the session installs.
+                let Some(session) = self.session.as_mut() else {
+                    return;
+                };
+                if !session
                     .ui_dispatch
                     .dispatch_event(click_intent)
                     .forwards_to_gameplay()
@@ -1400,8 +1283,9 @@ impl ApplicationHandler for App {
                 // Same focus gate as the keyboard path: mouse-button actions
                 // (fire, alt-fire) must not fire while DevTools/Menu owns
                 // input. See: context/lib/input.md §5
-                if self.input_focus == InputFocus::Gameplay {
-                    self.input_system
+                if session.input_focus == InputFocus::Gameplay {
+                    session
+                        .input_system
                         .handle_mouse_button(button, state.is_pressed());
                 }
             }
@@ -1432,13 +1316,18 @@ impl ApplicationHandler for App {
                     // chose; the stored focus is untouched on focus loss so
                     // this restores the pre-blur state.
                     self.reapply_focus();
-                } else if let Some(ws) = self.window_state.as_ref() {
+                } else {
                     // Release the cursor while unfocused but leave
                     // `input_focus` alone — the user's chosen focus mode
-                    // outlives transient OS focus loss.
-                    input::cursor::release_cursor(&ws.window);
-                    self.input_system.clear_all();
-                    self.gameplay_input_latch.clear();
+                    // outlives transient OS focus loss. Input clears are
+                    // session-owned; nothing to clear before install.
+                    if let Some(ws) = self.window_state.as_ref() {
+                        input::cursor::release_cursor(&ws.window);
+                    }
+                    if let Some(session) = self.session.as_mut() {
+                        session.input_system.clear_all();
+                        session.gameplay_input_latch.clear();
+                    }
                     self.diagnostic_inputs.clear_modifiers();
                 }
             }
@@ -1491,55 +1380,62 @@ impl ApplicationHandler for App {
                 // while a capturing tree owns input (`Capture` mode); under
                 // `Passthrough` they are dropped here, exactly as keyboard
                 // events forward through the seam. See: context/lib/input.md §7
-                if let Some(gp) = &mut self.gamepad_system {
-                    let gp_nav = gp.update(&mut self.input_system, &mut self.nav_stick_tracker);
-                    // Advance any active rumble's timeout in the input stage and
-                    // stop it once its duration elapses (the rumble started by a
-                    // drained `Rumble` command on a prior frame).
-                    gp.tick_rumble(frame_dt);
-                    // A confirm (South) RELEASE stops the focus engine's
-                    // activation-repeat clock (M13 Text-Entry, Task 2): a held
-                    // `repeatOnHold` button stops re-firing once South releases, the
-                    // gamepad twin of the keyboard Enter-release path above.
-                    if gp_nav.confirm_released {
-                        self.ui_focus.release_confirm_repeat();
-                    }
-                    // No directional input held (D-pad up + stick in the dead zone)
-                    // RELEASES the focus engine's directional hold-to-repeat clock,
-                    // mirroring the keyboard arrow-key-up path above. Without it a
-                    // press that armed the clock would free-run on dt until the next
-                    // stack/intent change (runaway focus-scroll on a `repeat` tree).
-                    if gp_nav.directional_released {
-                        self.ui_focus.release_repeat();
-                    }
-                    // Any gamepad nav intent (stick edge, D-pad, face/system
-                    // button) is a `focus`-mode signal — recorded regardless of
-                    // capture mode so a `nav.menu` opened from gameplay also flips
-                    // the interaction mode off pointer.
-                    if !gp_nav.nav_intents.is_empty() {
-                        self.record_mode_signal(
-                            scripting_systems::input_mode::ModeSignal::NavInput,
-                        );
-                    }
-                    // `nav.menu` (gamepad Start) toggles the pause menu. It must
-                    // work from gameplay, where the seam is `Passthrough` and queues
-                    // nothing — route it through the punch-through flag regardless of
-                    // capture mode. Other nav intents only enqueue while a capturing
-                    // tree owns input.
-                    let capture = self.ui_dispatch.mode() == input::UiCaptureMode::Capture;
-                    for intent in gp_nav.nav_intents {
-                        if intent == input::NavIntent::Menu {
-                            // `pending_menu_toggle` fully handles the toggle; the
-                            // focus engine treats a queued `Nav(Menu)` as a no-op, so
-                            // enqueuing it would be a dead intent. Skip the enqueue.
-                            self.pending_menu_toggle = true;
-                            continue;
+                // Reached only in Running (Frontend returned above), so the
+                // session is installed. Disjoint borrows of the session group and
+                // the non-session `nav_stick_tracker`; mode-signal and menu-toggle
+                // votes are collected and applied after the borrow ends.
+                let (gamepad_nav_seen, gamepad_menu_toggle) = {
+                    let App {
+                        session,
+                        nav_stick_tracker,
+                        ..
+                    } = self;
+                    let mut nav_seen = false;
+                    let mut menu_toggle = false;
+                    if let Some(session) = session.as_mut() {
+                        if let Some(gp) = session.gamepad_system.as_mut() {
+                            let gp_nav = gp.update(&mut session.input_system, nav_stick_tracker);
+                            // Advance any active rumble's timeout in the input stage
+                            // and stop it once its duration elapses (started by a
+                            // drained `Rumble` command on a prior frame).
+                            gp.tick_rumble(frame_dt);
+                            // A confirm (South) RELEASE stops the activation-repeat
+                            // clock — the gamepad twin of the keyboard Enter-release.
+                            if gp_nav.confirm_released {
+                                session.ui_focus.release_confirm_repeat();
+                            }
+                            // No directional input held releases the directional
+                            // hold-to-repeat clock, mirroring the arrow-key-up path.
+                            if gp_nav.directional_released {
+                                session.ui_focus.release_repeat();
+                            }
+                            // Any gamepad nav intent is a `focus`-mode signal.
+                            nav_seen = !gp_nav.nav_intents.is_empty();
+                            // `nav.menu` (gamepad Start) toggles the pause menu via
+                            // the punch-through flag (Passthrough queues nothing);
+                            // other nav intents enqueue only while capturing.
+                            let capture =
+                                session.ui_dispatch.mode() == input::UiCaptureMode::Capture;
+                            for intent in gp_nav.nav_intents {
+                                if intent == input::NavIntent::Menu {
+                                    menu_toggle = true;
+                                    continue;
+                                }
+                                if capture {
+                                    session
+                                        .ui_dispatch
+                                        .enqueue_intent(input::UiIntentPayload::Nav(intent));
+                                }
+                            }
                         }
-                        if capture {
-                            self.ui_dispatch
-                                .enqueue_intent(input::UiIntentPayload::Nav(intent));
-                        }
                     }
+                    (nav_seen, menu_toggle)
+                };
+                if gamepad_nav_seen {
+                    self.record_mode_signal(scripting_systems::input_mode::ModeSignal::NavInput);
+                }
+                if gamepad_menu_toggle {
+                    self.pending_menu_toggle = true;
                 }
 
                 // Resolve this frame's input-mode signal into the engine-owned
@@ -1550,9 +1446,12 @@ impl ApplicationHandler for App {
                 // mode is observation-only here; its cursor/ring EFFECT is gated on
                 // a capturing tree being on the stack (applied in `reconcile_ui_focus`).
                 // See: context/lib/input.md §7.
-                self.ui_input_mode = self
-                    .input_mode_tracker
-                    .update(self.pending_mode_signal.take(), frame_dt);
+                let mode_signal = self.pending_mode_signal.take();
+                if let Some(session) = self.session.as_mut() {
+                    let resolved_input_mode =
+                        session.input_mode_tracker.update(mode_signal, frame_dt);
+                    session.ui_input_mode = resolved_input_mode;
+                }
 
                 // Game-logic phase begins here. Read the UI captures made
                 // available by the *previous* frame, THEN promote this frame's
@@ -1566,10 +1465,13 @@ impl ApplicationHandler for App {
                 // ordering because both calls run here at game-logic time. The
                 // modal stack consumes the drained intents; the drain marks the
                 // seam where game logic reads them. See: context/lib/input.md
-                let ui_intents = self.ui_dispatch.take_ready();
-                self.ui_dispatch.advance_frame();
-                let ui_captured_gameplay_at_frame_start =
-                    self.ui_dispatch.mode() == input::UiCaptureMode::Capture;
+                let (ui_intents, ui_captured_gameplay_at_frame_start) = {
+                    let session = self.session.as_mut().expect("running session installed");
+                    let ui_intents = session.ui_dispatch.take_ready();
+                    session.ui_dispatch.advance_frame();
+                    let captured = session.ui_dispatch.mode() == input::UiCaptureMode::Capture;
+                    (ui_intents, captured)
+                };
 
                 // Text-entry resolution (M13 Text-Entry, Task 3): while a text-entry
                 // tree is the top of the modal stack, the drained intents drive the
@@ -1625,21 +1527,24 @@ impl ApplicationHandler for App {
                 // The active (top) tree key: the modal stack's top entry name, else
                 // the always-on HUD. `None` is never the gameplay case (the HUD is
                 // always present), but the engine handles it.
-                let active_key = self
-                    .modal_stack
-                    .active_name()
-                    .map(str::to_string)
-                    .unwrap_or_else(|| render::ui::tree_asset::HUD_NAME.to_string());
                 let cursor = self.cursor_pos;
-                let focus_result = self.ui_focus.tick(
-                    Some(active_key.as_str()),
-                    self.ui_focus_rects.as_ref(),
-                    &nav_intents,
-                    cursor,
-                    &click_positions,
-                    self.ui_input_mode,
-                    frame_dt,
-                );
+                let focus_result = {
+                    let session = self.session.as_mut().expect("running session installed");
+                    let active_key = session
+                        .modal_stack
+                        .active_name()
+                        .map(str::to_string)
+                        .unwrap_or_else(|| render::ui::tree_asset::HUD_NAME.to_string());
+                    session.ui_focus.tick(
+                        Some(active_key.as_str()),
+                        session.ui_focus_rects.as_ref(),
+                        &nav_intents,
+                        cursor,
+                        &click_positions,
+                        session.ui_input_mode,
+                        frame_dt,
+                    )
+                };
                 self.ui_focused_id = focus_result.focused.clone();
 
                 // Button activation: a `confirm` (gamepad
@@ -1670,48 +1575,67 @@ impl ApplicationHandler for App {
                 if self.pending_menu_toggle {
                     self.pending_menu_toggle = false;
                     self.toggle_pause_menu();
-                } else if focus_result.cancelled
-                    && !text_entry_consumed_nav
-                    && self.modal_stack.active_name() == Some(render::ui::demo::PAUSE_MENU_NAME)
-                {
-                    self.modal_stack.pop();
+                } else if focus_result.cancelled && !text_entry_consumed_nav {
+                    if let Some(session) = self.session.as_mut() {
+                        if session.modal_stack.active_name()
+                            == Some(render::ui::demo::PAUSE_MENU_NAME)
+                        {
+                            session.modal_stack.pop();
+                        }
+                    }
                 }
 
-                let ui_captures_gameplay = gameplay_capture_gate_for_frame(
-                    ui_captured_gameplay_at_frame_start,
-                    &self.modal_stack,
-                );
+                let ui_captures_gameplay = {
+                    let session = self.session.as_ref().expect("running session installed");
+                    gameplay_capture_gate_for_frame(
+                        ui_captured_gameplay_at_frame_start,
+                        &session.modal_stack,
+                    )
+                };
 
                 // drain_look_inputs() must precede snapshot(); both touch
                 // mouse_axes and look state belongs to the render-rate path.
                 // Capturing UI still drains raw input to prevent stale deltas from
                 // replaying later, but the consumed look is neutral so player aim
                 // cannot move while a modal owns input.
-                let drained_look = self.input_system.drain_look_inputs();
-                let look = if ui_captures_gameplay {
-                    input::LookInputs::default()
-                } else {
-                    drained_look
+                let gameplay_snapshot = {
+                    let session = self.session.as_mut().expect("running session installed");
+                    let drained_look = session.input_system.drain_look_inputs();
+                    let look = if ui_captures_gameplay {
+                        input::LookInputs::default()
+                    } else {
+                        drained_look
+                    };
+                    let frame_snapshot = session.input_system.snapshot();
+                    let gameplay_snapshot = gameplay_snapshot_for_capture_state(
+                        &mut session.gameplay_input_latch,
+                        &frame_snapshot,
+                        ticks,
+                        ui_captures_gameplay,
+                    );
+                    // Apply look rotation once at render rate, not once per tick —
+                    // so zero-tick frames still consume accumulated mouse motion.
+                    self.camera
+                        .rotate(look.yaw_delta(frame_dt), look.pitch_delta(frame_dt));
+                    gameplay_snapshot
                 };
-                let frame_snapshot = self.input_system.snapshot();
-                let gameplay_snapshot = gameplay_snapshot_for_capture_state(
-                    &mut self.gameplay_input_latch,
-                    &frame_snapshot,
-                    ticks,
-                    ui_captures_gameplay,
-                );
 
-                // Apply look rotation once at render rate, not once per tick —
-                // so zero-tick frames still consume accumulated mouse motion.
-                self.camera
-                    .rotate(look.yaw_delta(frame_dt), look.pitch_delta(frame_dt));
+                // The script tranche lives on `Session` (built post-first-pixel).
+                // Clone the `ScriptCtx` handle once for this Game-logic phase (cheap
+                // `Rc` bump) so the many `script_ctx.*` reads below borrow nothing of
+                // `self`; the non-`Clone` session subsystems are reached through
+                // disjoint scoped `self.session.as_mut()` borrows at each site.
+                let script_ctx = self
+                    .session
+                    .as_ref()
+                    .expect("running session installed")
+                    .script_ctx
+                    .clone();
 
                 // Bump the engine frame counter once per Game logic phase.
                 // Reserved for primitives that need a per-frame ordering stamp.
                 // See: context/lib/scripting.md
-                self.script_ctx
-                    .frame
-                    .set(self.script_ctx.frame.get().wrapping_add(1));
+                script_ctx.frame.set(script_ctx.frame.get().wrapping_add(1));
 
                 // Net poll (M15 Phase 1): non-blocking, once per frame, BEFORE
                 // the catch-up tick loop. The client applies received
@@ -1736,8 +1660,15 @@ impl ApplicationHandler for App {
                 let mut pending_death_events: Vec<String> = Vec::new();
 
                 if let Some(snapshot) = gameplay_snapshot.as_ref() {
+                    // `player_options` is session-owned; copy the crouch mode out
+                    // before the `&mut self.crouch_toggle_active` borrow.
+                    let crouch_mode = self
+                        .session
+                        .as_ref()
+                        .map(|session| session.player_options.crouch_mode)
+                        .unwrap_or_default();
                     let crouch_intent = resolve_crouch_intent(
-                        self.player_options.crouch_mode,
+                        crouch_mode,
                         snapshot.button(Action::Crouch),
                         &mut self.crouch_toggle_active,
                     );
@@ -1762,7 +1693,7 @@ impl ApplicationHandler for App {
                         //     engine is navigable without a player spawn (dev maps,
                         //     levels without a player descriptor).
                         let has_player_pawn = {
-                            let registry = self.script_ctx.registry.borrow();
+                            let registry = script_ctx.registry.borrow();
                             has_player_pawn(&registry)
                         };
 
@@ -1827,10 +1758,12 @@ impl ApplicationHandler for App {
                             // render-rate interpolation between consecutive presented poses
                             // IS the smoother; the offset decays once per tick here.
                             let presentation_offset = netcode::client_local_presentation_offset(
-                                self.net_endpoint.as_ref(),
+                                self.session
+                                    .as_ref()
+                                    .and_then(|session| session.net_endpoint.as_ref()),
                             );
                             if has_player_pawn {
-                                let registry_ref = self.script_ctx.registry.borrow();
+                                let registry_ref = script_ctx.registry.borrow();
                                 follow_camera_to_local_pawn(
                                     &mut self.camera,
                                     &registry_ref,
@@ -1843,7 +1776,11 @@ impl ApplicationHandler for App {
                             // the render stage reads the interpolated presented eye
                             // directly and must NOT re-add the offset (it is already in
                             // the pose), so there is no double-count.
-                            netcode::client_decay_local_correction(self.net_endpoint.as_mut());
+                            netcode::client_decay_local_correction(
+                                self.session
+                                    .as_mut()
+                                    .and_then(|session| session.net_endpoint.as_mut()),
+                            );
                             self.frame_timing
                                 .push_state(InterpolableState::new(self.camera.position));
                             continue;
@@ -1856,15 +1793,26 @@ impl ApplicationHandler for App {
                         let remote_movement_events = self.host_drive_remote_movement(tick_dt);
                         pending_movement_events.extend(remote_movement_events);
 
+                        // Borrow the two session-owned `simulate_tick` inputs
+                        // (hit-zone store, progress tracker) and the boot-owned
+                        // `camera` as disjoint field borrows; the post-movement
+                        // closure captures these locals (not `self`) so it does not
+                        // re-borrow `self.session`.
+                        let session = self.session.as_mut().expect("running session installed");
+                        let hit_zone_store = &session.hit_zone_store;
+                        let progress_tracker = &mut session.progress_tracker;
+                        let camera = &mut self.camera;
+                        #[cfg(feature = "dev-tools")]
+                        let debug_chase_agent = self.debug_chase_agent;
                         let tick_events = sim::simulate_tick(
-                            self.script_ctx.registry.clone(),
+                            script_ctx.registry.clone(),
                             &self.collision_world,
-                            &self.hit_zone_store,
+                            hit_zone_store,
                             self.nav_graph.as_ref(),
-                            self.script_ctx.gravity.get(),
+                            script_ctx.gravity.get(),
                             self.active_wieldable,
                             self.anim_time,
-                            &mut self.progress_tracker,
+                            progress_tracker,
                             &mut self.ai_warned,
                             &command,
                             |registry| {
@@ -1874,11 +1822,7 @@ impl ApplicationHandler for App {
                                     let registry_ref = registry.borrow();
                                     // Host / single-player: no client-side correction
                                     // offset (the host pawn is authoritative).
-                                    follow_camera_to_local_pawn(
-                                        &mut self.camera,
-                                        &registry_ref,
-                                        Vec3::ZERO,
-                                    );
+                                    follow_camera_to_local_pawn(camera, &registry_ref, Vec3::ZERO);
                                 }
 
                                 #[cfg(feature = "dev-tools")]
@@ -1886,12 +1830,12 @@ impl ApplicationHandler for App {
                                     let mut registry_ref = registry.borrow_mut();
                                     update_debug_chase_agent_destination(
                                         &mut registry_ref,
-                                        self.debug_chase_agent,
-                                        self.camera.position,
+                                        debug_chase_agent,
+                                        camera.position,
                                     );
                                 }
 
-                                build_post_movement_command(&self.camera)
+                                build_post_movement_command(camera)
                             },
                             tick_dt,
                         );
@@ -1923,27 +1867,29 @@ impl ApplicationHandler for App {
                 // Drain collected post-tick events after all ticks complete so
                 // reactions observe the final state of every entity.
                 for event_name in &pending_movement_events {
-                    let _ = fire_named_event(event_name, &self.script_ctx.data_registry.borrow());
+                    let _ = fire_named_event(event_name, &script_ctx.data_registry.borrow());
                 }
                 for event_name in &pending_ai_events {
-                    let _ = fire_named_event(event_name, &self.script_ctx.data_registry.borrow());
+                    let _ = fire_named_event(event_name, &script_ctx.data_registry.borrow());
                 }
                 for event_name in &pending_weapon_events {
-                    let _ = fire_named_event(event_name, &self.script_ctx.data_registry.borrow());
+                    let _ = fire_named_event(event_name, &script_ctx.data_registry.borrow());
                 }
                 // Death events drain through the sequence-aware dispatcher in
                 // their OWN loop: a `progress` reaction that names a sequence
                 // would no-op under plain `fire_named_event`. Chained-event names
                 // are discarded (`let _ =`), matching the drains above.
-                for event_name in &pending_death_events {
-                    let _ = fire_named_event_with_sequences(
-                        event_name,
-                        &self.script_ctx.data_registry.borrow(),
-                        &self.sequence_registry,
-                        &self.reaction_registry,
-                        &self.system_registry,
-                        &self.script_ctx,
-                    );
+                if let Some(session) = self.session.as_ref() {
+                    for event_name in &pending_death_events {
+                        let _ = fire_named_event_with_sequences(
+                            event_name,
+                            &script_ctx.data_registry.borrow(),
+                            &session.sequence_registry,
+                            &session.reaction_registry,
+                            &session.system_registry,
+                            &script_ctx,
+                        );
+                    }
                 }
 
                 // System-reaction command drain — runs AFTER every post-tick
@@ -1955,7 +1901,7 @@ impl ApplicationHandler for App {
                 // NOTE: a SECOND drain runs later this frame, after the state
                 // crossings fire (see the crossing-detection block below), so
                 // crossing-enqueued commands land this frame, not the next.
-                if !self.script_ctx.system_commands.is_empty() {
+                if !script_ctx.system_commands.is_empty() {
                     self.dispatch_system_commands();
                 }
 
@@ -1969,22 +1915,27 @@ impl ApplicationHandler for App {
                 // server writes them through the state-slot apply path, so a client
                 // must not overwrite the replicated values from its own (non-
                 // authoritative) pawn. Host and single-player keep publishing.
-                self.player_hud_state
-                    .tick_for_role(self.is_connected_client());
+                let is_connected_client = self.is_connected_client();
+                if let Some(session) = self.session.as_mut() {
+                    session.player_hud_state.tick_for_role(is_connected_client);
+                }
                 // Flash-decay state writes the engine-owned `screen.flash`
                 // surface at the same game-logic stage as the HUD publisher, so
                 // the UI snapshot below freezes this frame's flash color. Runs
                 // after the first command drain so a flash started this frame
                 // publishes immediately; the crossing drain below may start
                 // another, decayed starting next frame.
-                self.flash_decay.tick(frame_dt);
-                // Vignette- and shake-decay drivers (SE) write the engine-owned
-                // `screen.vignette` and `screen.shake` surfaces at the same
-                // game-logic stage as `flash_decay.tick`, so the UI snapshot below
-                // freezes this frame's vignette color and shake offset. Delta-driven
-                // from `frame_dt` (not wall-clock) like the flash decay.
-                self.vignette_decay.tick(frame_dt);
-                self.shake_decay.tick(frame_dt);
+                if let Some(session) = self.session.as_mut() {
+                    session.flash_decay.tick(frame_dt);
+                    // Vignette- and shake-decay drivers (SE) write the engine-owned
+                    // `screen.vignette` and `screen.shake` surfaces at the same
+                    // game-logic stage as `flash_decay.tick`, so the UI snapshot
+                    // below freezes this frame's vignette color and shake offset.
+                    // Delta-driven from `frame_dt` (not wall-clock) like the flash
+                    // decay.
+                    session.vignette_decay.tick(frame_dt);
+                    session.shake_decay.tick(frame_dt);
+                }
 
                 // State-crossing detection (M13 HUD dynamics). Runs AFTER the
                 // frame's slot writes (game logic + HUD publisher) settle, so
@@ -1994,20 +1945,22 @@ impl ApplicationHandler for App {
                 // through Task 2's shared named-reaction path; any system
                 // reactions thereby enqueued are drained immediately below so
                 // crossing-fired commands land in this frame, not the next.
-                let crossing_events = self
-                    .crossing_detector
-                    .detect(&self.script_ctx.slot_table.borrow());
-                for event_name in &crossing_events {
-                    let _ = fire_named_event_with_sequences(
-                        event_name,
-                        &self.script_ctx.data_registry.borrow(),
-                        &self.sequence_registry,
-                        &self.reaction_registry,
-                        &self.system_registry,
-                        &self.script_ctx,
-                    );
+                if let Some(session) = self.session.as_mut() {
+                    let crossing_events = session
+                        .crossing_detector
+                        .detect(&script_ctx.slot_table.borrow());
+                    for event_name in &crossing_events {
+                        let _ = fire_named_event_with_sequences(
+                            event_name,
+                            &script_ctx.data_registry.borrow(),
+                            &session.sequence_registry,
+                            &session.reaction_registry,
+                            &session.system_registry,
+                            &script_ctx,
+                        );
+                    }
                 }
-                if !self.script_ctx.system_commands.is_empty() {
+                if !script_ctx.system_commands.is_empty() {
                     self.dispatch_system_commands();
                 }
 
@@ -2027,12 +1980,18 @@ impl ApplicationHandler for App {
                 // aim ray's direction so it includes pitch, unlike yaw-only
                 // `forward()`, and `up` is world up per the `ListenerState`
                 // contract. Guarded for the silent (init-failed) case.
-                if let Some(audio) = &mut self.audio {
-                    let listener = audio::ListenerState {
-                        position: self.camera.position.to_array(),
-                        forward: self.camera.aim_ray().1.to_array(),
-                        up: [0.0, 1.0, 0.0],
-                    };
+                // Audio is session-owned; build the primitive listener from the
+                // disjoint `self.camera` field first, then borrow the subsystem.
+                let listener = audio::ListenerState {
+                    position: self.camera.position.to_array(),
+                    forward: self.camera.aim_ray().1.to_array(),
+                    up: [0.0, 1.0, 0.0],
+                };
+                if let Some(audio) = self
+                    .session
+                    .as_mut()
+                    .and_then(|session| session.audio.as_mut())
+                {
                     audio.update(listener, frame_dt);
                 }
 
@@ -2109,7 +2068,7 @@ impl ApplicationHandler for App {
                 // `view_feel`; another pawn's preset must not leak onto the
                 // selected camera.
                 let view_feel_inputs = {
-                    let registry = self.script_ctx.registry.borrow();
+                    let registry = script_ctx.registry.borrow();
                     followed_player_pawn(&registry).and_then(|id| {
                         registry
                             .get_component::<
@@ -2123,6 +2082,13 @@ impl ApplicationHandler for App {
                             })
                     })
                 };
+                // `player_options` is session-owned; copy the accessibility scale
+                // out before the `&mut self.view_feel_state` borrow below.
+                let view_feel_scale = self
+                    .session
+                    .as_ref()
+                    .map(|session| session.player_options.view_feel_scale)
+                    .unwrap_or(1.0);
                 let (vf_roll, vf_yaw_offset, vf_pitch_offset, vf_eye_offset) =
                     if let Some((params, velocity, is_grounded)) = view_feel_inputs {
                         let (horizontal_speed, lateral_velocity) =
@@ -2140,7 +2106,7 @@ impl ApplicationHandler for App {
                             frame_dt,
                             // Accessibility scale (D6): owned/clamped by the
                             // options module; passed verbatim, not re-clamped.
-                            self.player_options.view_feel_scale,
+                            view_feel_scale,
                         );
                         view_feel::map_output_to_camera(&output, camera_right)
                     } else {
@@ -2266,15 +2232,19 @@ impl ApplicationHandler for App {
                 };
 
                 if let Some(renderer) = self.renderer.as_mut() {
+                    // The render-stage bridges + collectors live on `Session`;
+                    // borrow it once here (disjoint from the `renderer` borrow of
+                    // `self.renderer` and from the other `self` fields read below).
+                    let session = self.session.as_mut().expect("running session installed");
                     // Emitter bridge — after script `tick` handler, before particle
                     // sim. Spawns new particles; the sim advances them the same
                     // frame so they don't appear stuck at origin.
                     {
-                        let mut registry = self.script_ctx.registry.borrow_mut();
+                        let mut registry = script_ctx.registry.borrow_mut();
                         // Cap headroom comes from the previous frame's sim tally
                         // (see particle_sim::tick) — the bridge no longer walks the
                         // ParticleState column itself.
-                        self.emitter_bridge.update(
+                        session.emitter_bridge.update(
                             &mut registry,
                             frame_dt,
                             self.script_time as f32,
@@ -2287,11 +2257,11 @@ impl ApplicationHandler for App {
                     // Refills `particle_live_counts` with this tick's per-emitter
                     // survivor count for the next frame's bridge headroom.
                     {
-                        let mut registry = self.script_ctx.registry.borrow_mut();
+                        let mut registry = script_ctx.registry.borrow_mut();
                         scripting_systems::particle_sim::tick(
                             &mut registry,
                             frame_dt,
-                            self.script_ctx.gravity.get(),
+                            script_ctx.gravity.get(),
                             &mut self.particle_live_counts,
                         );
                     }
@@ -2300,8 +2270,8 @@ impl ApplicationHandler for App {
                     // mutated `LightComponent` data before `render_frame_indirect`
                     // allocates slots, so scripted lights reflect their new state.
                     {
-                        let mut registry = self.script_ctx.registry.borrow_mut();
-                        if let Some(update) = self
+                        let mut registry = script_ctx.registry.borrow_mut();
+                        if let Some(update) = session
                             .light_bridge
                             .update(&mut registry, self.script_time as f32)
                         {
@@ -2336,23 +2306,26 @@ impl ApplicationHandler for App {
                         // before `update_volumes` packs the GPU buffer — `tick`
                         // writes sampled values into each `FogVolumeComponent`
                         // so the existing pack path picks them up unchanged.
-                        let mut registry = self.script_ctx.registry.borrow_mut();
-                        self.fog_volume_bridge.tick(&mut registry, self.script_time);
+                        let mut registry = script_ctx.registry.borrow_mut();
+                        session
+                            .fog_volume_bridge
+                            .tick(&mut registry, self.script_time);
                     }
                     let all_lights = {
-                        let registry = self.script_ctx.registry.borrow();
+                        let registry = script_ctx.registry.borrow();
                         if let Some((bytes, planes, live_mask)) =
-                            self.fog_volume_bridge.update_volumes(&registry)
+                            session.fog_volume_bridge.update_volumes(&registry)
                         {
                             renderer.upload_fog_volumes(bytes, planes, live_mask);
                         } else {
                             renderer.upload_fog_volumes(&[], &[], 0);
                         }
-                        renderer.set_fog_aabbs(self.fog_volume_bridge.active_aabbs());
-                        self.light_bridge
+                        renderer.set_fog_aabbs(session.fog_volume_bridge.active_aabbs());
+                        session
+                            .light_bridge
                             .collect_all_as_map_lights(&registry, self.script_time as f32)
                     };
-                    let point_bytes = self.fog_volume_bridge.update_points(&all_lights);
+                    let point_bytes = session.fog_volume_bridge.update_points(&all_lights);
                     renderer.upload_fog_points(point_bytes);
 
                     renderer.update_per_frame_uniforms(
@@ -2369,20 +2342,20 @@ impl ApplicationHandler for App {
                     // Particle render — packs `SpriteInstance` bytes per
                     // collection; the collector never touches wgpu directly.
                     {
-                        let registry = self.script_ctx.registry.borrow();
+                        let registry = script_ctx.registry.borrow();
                         // Cull non-visible emitters at render-collect, mirroring
                         // the mesh path below: thread the level world + this
                         // frame's visible-cell set so off-screen / adjacent-room
                         // smoke is never packed for drawing. `visible_cells` is
                         // still live here (reclaimed after the frame).
-                        self.particle_render.collect(
+                        session.particle_render.collect(
                             &registry,
                             self.level.as_ref(),
                             &visible_cells,
                         );
                     }
                     let particle_collections: Vec<(&str, &[u8])> =
-                        self.particle_render.iter_collections().collect();
+                        session.particle_render.iter_collections().collect();
 
                     // Mesh render — emits per-instance inputs (model handle +
                     // interpolated transform + phase seed) for skinned-mesh
@@ -2400,29 +2373,29 @@ impl ApplicationHandler for App {
                         // collector, so same-tick switches have all landed and
                         // the last target's stamp is concrete. See mesh.rs.
                         {
-                            let mut registry = self.script_ctx.registry.borrow_mut();
+                            let mut registry = script_ctx.registry.borrow_mut();
                             crate::scripting::components::mesh::resolve_pending_animation_stamps(
                                 &mut registry,
                                 self.anim_time,
                             );
                         }
-                        let registry = self.script_ctx.registry.borrow();
+                        let registry = script_ctx.registry.borrow();
                         // Same frame alpha the player camera reads from
                         // `frame_timing` — interpolate each mesh between its
                         // previous- and current-tick transforms.
-                        self.mesh_render.collect(
+                        session.mesh_render.collect(
                             &registry,
                             world,
                             &visible_cells,
                             frame_result.alpha,
                             self.anim_time,
-                            &self.mesh_clip_tables,
+                            &session.mesh_clip_tables,
                             // Camera eye position — the same value that seeds
                             // the portal flood-fill — drives the per-instance
                             // animation time-slicing distance bucket.
                             interp.position,
                         );
-                        renderer.set_mesh_draws(self.mesh_render.instances());
+                        renderer.set_mesh_draws(session.mesh_render.instances());
                     }
 
                     // Build the egui UI before `render_frame_indirect` so
@@ -2437,8 +2410,11 @@ impl ApplicationHandler for App {
                         f32,
                     )> = {
                         let mut out = None;
+                        // `debug_ui` is session-owned; reach it through the
+                        // already-held `session` borrow (the window is a disjoint
+                        // `self` field).
                         if let (Some(debug_ui), Some(ws)) =
-                            (self.debug_ui.as_mut(), self.window_state.as_ref())
+                            (session.debug_ui.as_mut(), self.window_state.as_ref())
                         {
                             if debug_ui.is_visible() {
                                 let window = &ws.window;
@@ -2481,7 +2457,7 @@ impl ApplicationHandler for App {
                         // mutated state, before `render_frame_indirect`
                         // draws the debug-line pass.
                         if let Some(world) = self.level.as_ref() {
-                            if let Some(debug_ui) = self.debug_ui.as_ref() {
+                            if let Some(debug_ui) = session.debug_ui.as_ref() {
                                 renderer.emit_sh_diagnostics(
                                     &debug_ui.sh_diagnostics_state,
                                     render_eye_position,
@@ -2509,7 +2485,7 @@ impl ApplicationHandler for App {
                         if let Some(agent) = self.debug_chase_agent {
                             use crate::scripting::components::agent::AgentComponent;
                             use crate::scripting::registry::Transform;
-                            let registry = self.script_ctx.registry.borrow();
+                            let registry = script_ctx.registry.borrow();
                             if let Ok(component) = registry.get_component::<AgentComponent>(agent) {
                                 let position = registry
                                     .get_component::<Transform>(agent)
@@ -2530,8 +2506,8 @@ impl ApplicationHandler for App {
                         // delegation — `netcode` collects the centers
                         // (registry read, no wgpu), the renderer owns the draw.
                         // No-op for single-player and the host.
-                        if let Some(endpoint) = self.net_endpoint.as_ref() {
-                            let registry = self.script_ctx.registry.borrow();
+                        if let Some(endpoint) = session.net_endpoint.as_ref() {
+                            let registry = script_ctx.registry.borrow();
                             let centers = netcode::remote_entity_positions(endpoint, &registry);
                             renderer.emit_remote_entity_markers(
                                 &centers,
@@ -2554,19 +2530,22 @@ impl ApplicationHandler for App {
                     // gameplay gets always-on HUD/base layers, while a top
                     // frontend menu suppresses those layers and presents only
                     // the menu over its optional backdrop.
-                    let frontend_menu_name = self
+                    let frontend_menu_name = session
                         .frontend
                         .as_ref()
                         .map(|frontend| frontend.menu_tree.as_str())
                         .unwrap_or(render::ui::demo::FRONTEND_MENU_NAME);
+                    // Reuse the `session` borrow taken at the top of this render
+                    // block (the `particle_collections` borrow keeps it alive); a
+                    // second `self.session.as_mut()` here would alias it.
                     let frontend_menu_is_top =
-                        self.modal_stack.active_name() == Some(frontend_menu_name);
+                        session.modal_stack.active_name() == Some(frontend_menu_name);
                     let ui_snapshot = Self::build_ui_read_snapshot(
-                        &self.modal_stack,
-                        &mut self.presentation_cells,
-                        &self.script_ctx.slot_table.borrow(),
+                        &session.modal_stack,
+                        &mut session.presentation_cells,
+                        &script_ctx.slot_table.borrow(),
                         self.script_time,
-                        self.ui_input_mode,
+                        session.ui_input_mode,
                         self.ui_focused_id.clone(),
                         frontend_menu_is_top,
                     );
@@ -2604,7 +2583,10 @@ impl ApplicationHandler for App {
                     // out). The focus engine consumes it next frame's game-logic
                     // phase — the reverse N→N+1 the focus ring's one-frame trail
                     // comes from. See: context/lib/ui.md §4.
-                    self.ui_focus_rects = Some(renderer.export_ui_focus_rects());
+                    let exported_rects = renderer.export_ui_focus_rects();
+                    if let Some(session) = self.session.as_mut() {
+                        session.ui_focus_rects = Some(exported_rects);
+                    }
                     if let Some(surface_texture) = surface_texture {
                         #[cfg(feature = "dev-tools")]
                         {
@@ -2713,22 +2695,30 @@ impl ApplicationHandler for App {
         _device_id: DeviceId,
         event: DeviceEvent,
     ) {
+        // Boot phase ignores device input until the session is installed.
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
         // UI-dispatch seam, ahead of the gameplay forward: a captured raw
         // delta is consumed by the UI layer and must not reach the look path.
         // Mirrors the `window_event` seam; the decision is the mode flag. A raw
         // delta carries no queueable intent (hover/look is not nav), so the
         // capture suppresses the forward but queues nothing.
-        if !self.ui_dispatch.dispatch_event(None).forwards_to_gameplay() {
+        if !session
+            .ui_dispatch
+            .dispatch_event(None)
+            .forwards_to_gameplay()
+        {
             return;
         }
         // Raw mouse deltas only rotate the camera while gameplay owns input.
         // When the debug panel (DevTools) or a menu is open, the cursor is
         // released and raw deltas must not leak into the look path.
-        if self.input_focus != InputFocus::Gameplay {
+        if session.input_focus != InputFocus::Gameplay {
             return;
         }
         if let DeviceEvent::MouseMotion { delta } = event {
-            self.input_system.handle_mouse_delta(delta.0, delta.1);
+            session.input_system.handle_mouse_delta(delta.0, delta.1);
         }
     }
 
@@ -2749,12 +2739,19 @@ impl ApplicationHandler for App {
         // and save-game sync for net sessions is a non-goal. Single-player (`None`) and
         // the host (`NetEndpoint::Host`) save unchanged — only `NetEndpoint::Client`
         // skips the clean-exit save.
-        if should_save_persisted_state(
-            self.state_store_lifecycle.can_save(),
-            self.is_connected_client(),
-        ) {
+        let can_save = self
+            .session
+            .as_ref()
+            .is_some_and(|session| session.state_store_lifecycle.can_save());
+        if should_save_persisted_state(can_save, self.is_connected_client()) {
             let state_path = Path::new(STATE_FILE_PATH);
-            let collected = collect_persisted_state(&self.script_ctx.slot_table.borrow());
+            let script_ctx = self
+                .session
+                .as_ref()
+                .expect("session installed at clean exit")
+                .script_ctx
+                .clone();
+            let collected = collect_persisted_state(&script_ctx.slot_table.borrow());
             for warning in collected.warnings {
                 log::warn!("[State] {warning}");
             }
@@ -2770,8 +2767,12 @@ impl ApplicationHandler for App {
         }
 
         // Release the level's sound registry at teardown too, mirroring the
-        // runtime level-unload path.
-        if let Some(audio) = &mut self.audio {
+        // runtime level-unload path. Audio is session-owned.
+        if let Some(audio) = self
+            .session
+            .as_mut()
+            .and_then(|session| session.audio.as_mut())
+        {
             audio.release_level_sounds();
         }
         self.renderer = None;
@@ -2784,15 +2785,44 @@ impl App {
     /// Finish deferred session startup on the first visible logo frame. Takes
     /// (and thereby consumes) `pending_session` so the install commits at most
     /// once — a suspend/resume that re-enters the splash loop finds it `None`
-    /// and skips re-init. Net setup runs here, behind the logo pixels.
-    /// See: context/lib/boot_sequence.md §1, §9.
-    pub(crate) fn install_pending_session(&mut self) {
-        if let Some(pending) = crate::startup::take_once(&mut self.pending_session) {
-            pending.install(self);
+    /// and skips re-init. Builds and installs the entire `Session` (options
+    /// I/O, audio, scripting core, input/UI/modal group, net endpoint) behind
+    /// the logo pixels, via `PendingSessionInit::install` → `Session::build`.
+    ///
+    /// Returns `true` on success (or when nothing was pending). On a `Session`
+    /// build failure it stores the error in `exit_result`, logs it, exits the
+    /// event loop, and returns `false`, so the caller early-returns from the
+    /// install frame before any later step runs against a `None` session —
+    /// mirroring `finish_renderer_full_init`'s failure handling. A failed build
+    /// also consumes `pending_session`, so a resumed boot does not retry.
+    /// See: context/lib/boot_sequence.md §1, §5; development_guide.md §6.2.
+    pub(crate) fn install_pending_session(&mut self, event_loop: &ActiveEventLoop) -> bool {
+        // The build-result → action decision is the pure `classify_session_install`
+        // classifier; this method only performs the side effects it names, so the
+        // boot-abort contract stays testable without a window/GPU/`Session`.
+        let build_result = crate::startup::take_once(&mut self.pending_session)
+            .map(|pending| pending.install(self));
+        let had_pending = build_result.is_some();
+        let build_succeeded = !matches!(build_result, Some(Err(_)));
+        match crate::startup::classify_session_install(had_pending, build_succeeded) {
+            crate::startup::SessionInstallStep::NothingPending
+            | crate::startup::SessionInstallStep::Installed => true,
+            crate::startup::SessionInstallStep::AbortBoot => {
+                // SAFETY of the unwraps: `AbortBoot` is only produced when
+                // `had_pending && !build_succeeded`, i.e. `Some(Err(_))`.
+                let err = match build_result {
+                    Some(Err(err)) => err,
+                    _ => unreachable!("AbortBoot implies a failed build result"),
+                };
+                log::error!("[Engine] session init failed: {err:#}");
+                self.exit_result = Err(err);
+                event_loop.exit();
+                false
+            }
         }
     }
 
-    /// Current boot phase for the suspend/resume contract (boot_sequence §1, §9).
+    /// Current boot phase for the suspend/resume contract (boot_sequence §1, §5).
     /// Derived purely from the splash schedule, whether the deferred session
     /// bundle is installed (`pending_session` consumed), and renderer full-ready.
     /// Used to log/audit which phase a suspend interrupts; the resume path itself
@@ -2806,55 +2836,52 @@ impl App {
         )
     }
 
-    /// Build the fault-tolerant audio subsystem and (in dev-tools builds) the
-    /// debug-UI state on the first visible logo frame — alongside net-endpoint
-    /// setup — so none of this work runs before first pixels. Records
-    /// `audio_init_complete` into `boot_timings`.
+    /// Lazily build the (dev-tools-only) session-owned debug-UI state once the
+    /// renderer/window are available, after the session is installed. The
+    /// constructor needs the boot-ready device's `max_texture_dimension_2d` limit
+    /// and the window — neither is available at `Session::build` time, so this
+    /// runs on the first visible logo frame right after `install_pending_session`
+    /// and again on resume (which drops the window-derived state).
     ///
-    /// Idempotent across suspend/resume: both are rebuilt only when absent.
-    /// `suspended()` drops them (and resets the boot state to `Booting`), so the
-    /// re-run of the splash loop on resume reconstructs them here; the steady
-    /// single-boot pass builds each exactly once.
+    /// The audio subsystem and net endpoint, which used to build alongside this,
+    /// now build inside `Session::build` (the sole session construction site), so
+    /// the only work left here is the genuinely renderer-dependent debug UI.
     ///
-    /// Audio failure logs and runs silent (`audio` stays `None`) — never a crash.
-    /// See: context/lib/audio.md §1, context/lib/boot_sequence.md §1.
-    pub(crate) fn install_post_splash_services(&mut self) {
-        if self.audio.is_none() {
-            match audio::Audio::new() {
-                Ok(audio) => {
-                    self.audio = Some(audio);
-                    log::info!("[Audio] Initialized");
-                }
-                Err(err) => {
-                    log::error!("[Audio] Init failed, running silent: {err}");
-                    self.audio = None;
-                }
-            }
+    /// Idempotent across suspend/resume: rebuilt only when absent. `suspended()`
+    /// drops `session.debug_ui` (and resets the boot state to `Booting`), so the
+    /// re-run of the splash loop on resume reconstructs it here.
+    /// See: context/lib/boot_sequence.md §1, §5.
+    #[cfg(feature = "dev-tools")]
+    pub(crate) fn ensure_debug_ui(&mut self) {
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        if session.debug_ui.is_some() {
+            return;
         }
-        self.boot_timings.record("audio_init_complete");
-
-        // Debug UI is CPU-side egui state needing only the window and the boot-
-        // ready device's texture-size limit (its GPU half lazy-inits full-ready
-        // on first panel open), so it builds here behind the logo frame.
-        #[cfg(feature = "dev-tools")]
-        if self.debug_ui.is_none() {
-            if let (Some(renderer), Some(ws)) = (self.renderer.as_ref(), self.window_state.as_ref())
-            {
-                let max_texture = renderer.max_texture_dimension_2d();
-                self.debug_ui = Some(render::debug_ui::DebugUi::new(&ws.window, max_texture));
-            }
+        if let (Some(renderer), Some(ws)) = (self.renderer.as_ref(), self.window_state.as_ref()) {
+            let max_texture = renderer.max_texture_dimension_2d();
+            session.debug_ui = Some(render::debug_ui::DebugUi::new(&ws.window, max_texture));
         }
     }
+
+    /// No-op in non-dev-tools builds: debug UI does not exist, audio and net are
+    /// built inside `Session::build`.
+    #[cfg(not(feature = "dev-tools"))]
+    pub(crate) fn ensure_debug_ui(&mut self) {}
 
     /// Drain the hot-reload watcher's changed-path channel and queue a staged
     /// mod-init build when an active dependency changed. Extracted from the
     /// redraw path so the splash logo frame can gate it behind deferred-session
     /// commit (`pending_session` consumed). See: context/lib/boot_sequence.md §1.
     fn drain_script_reload_requests(&mut self) {
-        match self.script_runtime.drain_reload_requests() {
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        match session.script_runtime.drain_reload_requests() {
             Ok(summary) => {
                 if reload_summary_requires_mod_init(summary) {
-                    match self
+                    match session
                         .script_runtime
                         .enqueue_staged_manifest_build(&self.content_root)
                     {
@@ -2886,10 +2913,15 @@ impl App {
         };
         let frontend_was_top = self.frontend_menu_is_top();
         let tree_count = ui_trees.len();
-        self.modal_stack
-            .replace_script_tree_tier(ui_trees, render::ui::modal_stack::ScopeTier::Mod);
+        if let Some(session) = self.session.as_mut() {
+            session
+                .modal_stack
+                .replace_script_tree_tier(ui_trees, render::ui::modal_stack::ScopeTier::Mod);
+        }
         self.commit_mod_ui_theme(theme);
-        self.frontend = frontend;
+        if let Some(session) = self.session.as_mut() {
+            session.frontend = frontend;
+        }
         if frontend_was_top || self.boot_state == BootState::Frontend {
             self.present_frontend_menu();
         }
@@ -2919,46 +2951,64 @@ impl App {
     }
 
     fn frontend_menu_tree_name(&self) -> &str {
-        self.frontend
+        self.session
             .as_ref()
+            .and_then(|session| session.frontend.as_ref())
             .map(|frontend| frontend.menu_tree.as_str())
             .unwrap_or(render::ui::demo::FRONTEND_MENU_NAME)
     }
 
     fn present_frontend_menu(&mut self) -> bool {
         let menu_tree = self.frontend_menu_tree_name().to_string();
-        let presented = self
-            .modal_stack
-            .replace_with_frontend_menu(&menu_tree, render::ui::demo::FRONTEND_MENU_NAME);
+        let presented = self.session.as_mut().and_then(|session| {
+            session
+                .modal_stack
+                .replace_with_frontend_menu(&menu_tree, render::ui::demo::FRONTEND_MENU_NAME)
+        });
         self.apply_frontend_menu_camera_pose_if_top();
         self.reconcile_ui_focus();
         presented.is_some()
     }
 
     fn populate_frontend(&mut self) {
-        if self.present_frontend_menu()
-            && let Some(source) = frontend_background_level_source(self.frontend.as_ref())
-        {
+        let presented = self.present_frontend_menu();
+        let source = self
+            .session
+            .as_ref()
+            .and_then(|session| frontend_background_level_source(session.frontend.as_ref()));
+        if presented && let Some(source) = source {
             self.enqueue_level_request(LevelRequest::Load(source));
         }
     }
 
     fn return_to_frontend(&mut self) {
         self.present_frontend_menu();
-        for request in frontend_return_requests(self.frontend.as_ref()) {
+        let requests = self
+            .session
+            .as_ref()
+            .map(|session| frontend_return_requests(session.frontend.as_ref()))
+            .unwrap_or_else(|| frontend_return_requests(None));
+        for request in requests {
             self.enqueue_level_request(request);
         }
     }
 
     fn frontend_menu_is_top(&self) -> bool {
-        self.modal_stack.active_name().is_some_and(|active| {
+        let Some(session) = self.session.as_ref() else {
+            return false;
+        };
+        session.modal_stack.active_name().is_some_and(|active| {
             active == self.frontend_menu_tree_name()
                 || active == render::ui::demo::FRONTEND_MENU_NAME
         })
     }
 
     fn apply_frontend_menu_camera_pose_if_top(&mut self) {
-        let Some(frontend) = self.frontend.clone() else {
+        let Some(frontend) = self
+            .session
+            .as_ref()
+            .and_then(|session| session.frontend.clone())
+        else {
             return;
         };
         if !self.frontend_menu_is_top() {
@@ -3077,37 +3127,62 @@ impl App {
     }
 
     fn run_frontend_ui_logic(&mut self, event_loop: &ActiveEventLoop, frame_dt: f32) -> bool {
-        if let Some(gp) = &mut self.gamepad_system {
-            let gp_nav = gp.update(&mut self.input_system, &mut self.nav_stick_tracker);
-            gp.tick_rumble(frame_dt);
-            if gp_nav.confirm_released {
-                self.ui_focus.release_confirm_repeat();
-            }
-            if gp_nav.directional_released {
-                self.ui_focus.release_repeat();
-            }
-            if !gp_nav.nav_intents.is_empty() {
-                self.record_mode_signal(scripting_systems::input_mode::ModeSignal::NavInput);
-            }
-            let capture = self.ui_dispatch.mode() == input::UiCaptureMode::Capture;
-            for intent in gp_nav.nav_intents {
-                if intent == input::NavIntent::Menu {
-                    self.pending_menu_toggle = false;
-                    continue;
-                }
-                if capture {
-                    self.ui_dispatch
-                        .enqueue_intent(input::UiIntentPayload::Nav(intent));
-                }
-            }
+        // Defensive guard: session is present for all normal frontend calls
+        // post-install, but a pre-install re-entry edge case could reach here
+        // before the session is built. Return a neutral `true` in that case.
+        if self.session.is_none() {
+            return true;
         }
 
-        self.ui_input_mode = self
-            .input_mode_tracker
-            .update(self.pending_mode_signal.take(), frame_dt);
+        // Gamepad poll: disjoint borrows of the session group and the
+        // non-session `nav_stick_tracker`. A nav intent votes `focus` mode;
+        // recorded after the borrow ends.
+        let nav_input_seen = {
+            let App {
+                session,
+                nav_stick_tracker,
+                ..
+            } = self;
+            let session = session.as_mut().expect("frontend session installed");
+            let mut nav_input_seen = false;
+            if let Some(gp) = session.gamepad_system.as_mut() {
+                let gp_nav = gp.update(&mut session.input_system, nav_stick_tracker);
+                gp.tick_rumble(frame_dt);
+                if gp_nav.confirm_released {
+                    session.ui_focus.release_confirm_repeat();
+                }
+                if gp_nav.directional_released {
+                    session.ui_focus.release_repeat();
+                }
+                nav_input_seen = !gp_nav.nav_intents.is_empty();
+                let capture = session.ui_dispatch.mode() == input::UiCaptureMode::Capture;
+                for intent in gp_nav.nav_intents {
+                    if intent == input::NavIntent::Menu {
+                        continue;
+                    }
+                    if capture {
+                        session
+                            .ui_dispatch
+                            .enqueue_intent(input::UiIntentPayload::Nav(intent));
+                    }
+                }
+            }
+            nav_input_seen
+        };
+        if nav_input_seen {
+            self.record_mode_signal(scripting_systems::input_mode::ModeSignal::NavInput);
+        }
 
-        let ui_intents = self.ui_dispatch.take_ready();
-        self.ui_dispatch.advance_frame();
+        let mode_signal = self.pending_mode_signal.take();
+
+        let ui_intents = {
+            let session = self.session.as_mut().expect("frontend session installed");
+            let ui_input_mode = session.input_mode_tracker.update(mode_signal, frame_dt);
+            session.ui_input_mode = ui_input_mode;
+            let ui_intents = session.ui_dispatch.take_ready();
+            session.ui_dispatch.advance_frame();
+            ui_intents
+        };
         let text_entry_consumed_nav = self.resolve_text_entry_intents(&ui_intents);
 
         let mut nav_intents: Vec<input::NavIntent> = Vec::new();
@@ -3128,26 +3203,33 @@ impl App {
         }
         self.apply_slider_nav_capture(&mut nav_intents);
 
-        let active_key = self
-            .modal_stack
-            .active_name()
-            .map(str::to_string)
-            .unwrap_or_else(|| self.frontend_menu_tree_name().to_string());
-        let focus_result = self.ui_focus.tick(
-            Some(active_key.as_str()),
-            self.ui_focus_rects.as_ref(),
-            &nav_intents,
-            self.cursor_pos,
-            &click_positions,
-            self.ui_input_mode,
-            frame_dt,
-        );
+        let frontend_menu_tree_name = self.frontend_menu_tree_name().to_string();
+        let cursor_pos = self.cursor_pos;
+        let focus_result = {
+            let session = self.session.as_mut().expect("frontend session installed");
+            let active_key = session
+                .modal_stack
+                .active_name()
+                .map(str::to_string)
+                .unwrap_or(frontend_menu_tree_name);
+            session.ui_focus.tick(
+                Some(active_key.as_str()),
+                session.ui_focus_rects.as_ref(),
+                &nav_intents,
+                cursor_pos,
+                &click_positions,
+                session.ui_input_mode,
+                frame_dt,
+            )
+        };
         self.ui_focused_id = focus_result.focused.clone();
         if focus_result.confirmed {
             self.fire_focused_button_activation(focus_result.focused.as_deref());
         }
         if focus_result.cancelled && !text_entry_consumed_nav {
-            self.modal_stack.pop();
+            if let Some(session) = self.session.as_mut() {
+                session.modal_stack.pop();
+            }
         }
         self.pending_menu_toggle = false;
 
@@ -3159,7 +3241,11 @@ impl App {
             return false;
         }
 
-        if !self.script_ctx.system_commands.is_empty() {
+        let has_system_commands = self
+            .session
+            .as_ref()
+            .is_some_and(|session| !session.script_ctx.system_commands.is_empty());
+        if has_system_commands {
             self.dispatch_system_commands();
         }
         self.reconcile_ui_focus();
@@ -3169,21 +3255,35 @@ impl App {
     }
 
     fn poll_staged_manifest_results(&mut self) {
-        for result in self.script_runtime.poll_staged_manifest_builds() {
-            let outcome = self.script_runtime.commit_staged_manifest_result(
-                &result,
-                &self.script_ctx,
-                &self.sequence_registry,
-            );
+        let staged = match self.session.as_mut() {
+            Some(session) => session.script_runtime.poll_staged_manifest_builds(),
+            None => return,
+        };
+        for result in staged {
+            // `commit_staged_manifest_result` and the active-set recompose touch
+            // the session-owned runtime/ctx/registry; the rebuild + UI commit are
+            // App methods. Scope the session borrow to the commit call so the App
+            // methods below can re-borrow `self`.
+            let outcome = {
+                let session = self.session.as_mut().expect("frontend session installed");
+                session.script_runtime.commit_staged_manifest_result(
+                    &result,
+                    &session.script_ctx,
+                    &session.sequence_registry,
+                )
+            };
             if matches!(
                 outcome,
                 scripting::runtime::StagedManifestCommitOutcome::Committed { .. }
             ) && self.has_installed_level()
             {
-                self.script_ctx
-                    .data_registry
-                    .borrow_mut()
-                    .recompose_active_sets(&self.active_level_tags);
+                if let Some(session) = self.session.as_ref() {
+                    session
+                        .script_ctx
+                        .data_registry
+                        .borrow_mut()
+                        .recompose_active_sets(&self.active_level_tags);
+                }
                 self.rebuild_active_reaction_subscribers();
             }
             self.commit_staged_ui_manifest(&result, &outcome);
@@ -3194,12 +3294,15 @@ impl App {
         self.apply_frontend_menu_camera_pose_if_top();
         self.reconcile_ui_focus();
         let frontend_menu_is_top = self.frontend_menu_is_top();
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
         let ui_snapshot = Self::build_ui_read_snapshot(
-            &self.modal_stack,
-            &mut self.presentation_cells,
-            &self.script_ctx.slot_table.borrow(),
+            &session.modal_stack,
+            &mut session.presentation_cells,
+            &session.script_ctx.slot_table.borrow(),
             self.script_time,
-            self.ui_input_mode,
+            session.ui_input_mode,
             self.ui_focused_id.clone(),
             frontend_menu_is_top,
         );
@@ -3240,7 +3343,10 @@ impl App {
                 return;
             }
         };
-        self.ui_focus_rects = Some(renderer.export_ui_focus_rects());
+        let exported_rects = renderer.export_ui_focus_rects();
+        if let Some(session) = self.session.as_mut() {
+            session.ui_focus_rects = Some(exported_rects);
+        }
         if let Some(surface_texture) = surface_texture {
             surface_texture.present();
         }
@@ -3295,7 +3401,11 @@ impl App {
         let Some(focused_id) = self.ui_focused_id.as_deref() else {
             return;
         };
-        let Some(rects) = self.ui_focus_rects.as_ref() else {
+        let Some(rects) = self
+            .session
+            .as_ref()
+            .and_then(|session| session.ui_focus_rects.as_ref())
+        else {
             return;
         };
         // Resolve the focused slider's interaction + its bound slot (clone out so
@@ -3314,10 +3424,16 @@ impl App {
             return;
         };
 
+        let script_ctx = self
+            .session
+            .as_ref()
+            .expect("frontend session installed")
+            .script_ctx
+            .clone();
         // The slider's current value: its bound slot reading, or `min` as a floor
         // when the slot is unset or non-numeric (a sane starting point).
         let current = {
-            let table = self.script_ctx.slot_table.borrow();
+            let table = script_ctx.slot_table.borrow();
             match table.get(&slot).and_then(|r| r.value.as_ref()) {
                 Some(crate::scripting::slot_table::SlotValue::Number(n)) => *n,
                 _ => min,
@@ -3327,7 +3443,7 @@ impl App {
         // Peel off captured nav intents (mutating `nav_intents`) and compute the
         // stepped value; emit one `setState` for the new clamped value.
         if let Some(next) = input::capture_slider_step(&interaction, current, nav_intents) {
-            self.script_ctx
+            script_ctx
                 .system_commands
                 .push(SystemReactionCommand::SetState {
                     slot,
@@ -3341,22 +3457,33 @@ impl App {
     /// named-reaction path, so gamepad confirm and pointer click produce the same
     /// observable effect.
     fn fire_focused_button_activation(&mut self, focused_id: Option<&str>) {
-        let on_press = focused_button_on_press(self.ui_focus_rects.as_ref(), focused_id);
+        let on_press = focused_button_on_press(
+            self.session
+                .as_ref()
+                .and_then(|session| session.ui_focus_rects.as_ref()),
+            focused_id,
+        );
         if let Some(on_press) = on_press {
-            match route_ui_button_action(&on_press, &mut self.modal_stack) {
+            let action = match self.session.as_mut() {
+                Some(session) => route_ui_button_action(&on_press, &mut session.modal_stack),
+                None => return,
+            };
+            match action {
                 UiButtonAction::CommitTextEntry => self.commit_text_entry(),
                 UiButtonAction::CloseDialog => {}
                 UiButtonAction::ExitToDesktop => self.pending_exit_to_desktop = true,
                 UiButtonAction::QuitToMenu => self.return_to_frontend(),
                 UiButtonAction::NamedReaction => {
-                    let _ = fire_named_event_with_sequences(
-                        &on_press,
-                        &self.script_ctx.data_registry.borrow(),
-                        &self.sequence_registry,
-                        &self.reaction_registry,
-                        &self.system_registry,
-                        &self.script_ctx,
-                    );
+                    if let Some(session) = self.session.as_ref() {
+                        let _ = fire_named_event_with_sequences(
+                            &on_press,
+                            &session.script_ctx.data_registry.borrow(),
+                            &session.sequence_registry,
+                            &session.reaction_registry,
+                            &session.system_registry,
+                            &session.script_ctx,
+                        );
+                    }
                 }
             }
         }
@@ -3380,11 +3507,12 @@ impl App {
     /// on the N+1 frame — the system's defining N→N+1 ordering. Commit and cancel act
     /// on the stack immediately at this game-logic phase; the seam reconciles next.
     fn resolve_text_entry_intents(&mut self, ui_intents: &[input::UiIntent]) -> bool {
-        let Some(target) = self
-            .modal_stack
-            .active_text_entry_target()
-            .map(str::to_string)
-        else {
+        let Some(target) = self.session.as_ref().and_then(|session| {
+            session
+                .modal_stack
+                .active_text_entry_target()
+                .map(str::to_string)
+        }) else {
             return false;
         };
 
@@ -3415,7 +3543,9 @@ impl App {
                     slot: target.clone(),
                 },
             };
-            self.script_ctx.system_commands.push(command);
+            if let Some(session) = self.session.as_ref() {
+                session.script_ctx.system_commands.push(command);
+            }
         }
 
         match resolution.disposition {
@@ -3437,7 +3567,11 @@ impl App {
         let Some(focused_id) = self.ui_focused_id.as_deref() else {
             return false;
         };
-        let Some(rects) = self.ui_focus_rects.as_ref() else {
+        let Some(rects) = self
+            .session
+            .as_ref()
+            .and_then(|session| session.ui_focus_rects.as_ref())
+        else {
             return false;
         };
         rects
@@ -3456,24 +3590,34 @@ impl App {
     /// The `on_commit` reaction reads the bound slot's value (the entered text); the
     /// reaction fires synchronously here so it observes the slot as last edited.
     fn commit_text_entry(&mut self) {
-        if let Some(on_commit) = self.modal_stack.active_on_commit().map(str::to_string) {
-            let _ = fire_named_event_with_sequences(
-                &on_commit,
-                &self.script_ctx.data_registry.borrow(),
-                &self.sequence_registry,
-                &self.reaction_registry,
-                &self.system_registry,
-                &self.script_ctx,
-            );
+        let on_commit = self
+            .session
+            .as_ref()
+            .and_then(|session| session.modal_stack.active_on_commit().map(str::to_string));
+        if let Some(on_commit) = on_commit {
+            if let Some(session) = self.session.as_ref() {
+                let _ = fire_named_event_with_sequences(
+                    &on_commit,
+                    &session.script_ctx.data_registry.borrow(),
+                    &session.sequence_registry,
+                    &session.reaction_registry,
+                    &session.system_registry,
+                    &session.script_ctx,
+                );
+            }
         }
-        self.modal_stack.pop();
+        if let Some(session) = self.session.as_mut() {
+            session.modal_stack.pop();
+        }
     }
 
     /// Cancel the open text-entry surface (M13 Text-Entry, Task 3): pop the tree
     /// WITHOUT firing `on_commit`. Edits already applied to the bound slot are
     /// discarded simply by the opener not acting on them — there is no rollback.
     fn cancel_text_entry(&mut self) {
-        self.modal_stack.pop();
+        if let Some(session) = self.session.as_mut() {
+            session.modal_stack.pop();
+        }
     }
 
     /// Drain the system-reaction command queue and route each typed command to
@@ -3500,10 +3644,27 @@ impl App {
     ///   backspace is a silent no-op; unknown/non-String slot logs). M13 Text
     ///   Entry, Task 1.
     fn dispatch_system_commands(&mut self) {
-        for command in self.script_ctx.system_commands.take() {
+        // `dispatch_system_commands` stays on `App` (it calls App-bound lifecycle
+        // methods). The script tranche, audio, and the decay/presentation systems
+        // are all session-owned; clone the `ScriptCtx` handle so the queue drain +
+        // the store-write arms borrow nothing of `self`, and route the audio and
+        // decay/presentation arms through scoped `self.session.as_mut()` borrows.
+        // See: context/lib/boot_sequence.md §1.
+        let Some(script_ctx) = self
+            .session
+            .as_ref()
+            .map(|session| session.script_ctx.clone())
+        else {
+            return;
+        };
+        for command in script_ctx.system_commands.take() {
             match command {
                 SystemReactionCommand::PlaySound { sound, bus } => {
-                    if let Some(audio) = &mut self.audio {
+                    if let Some(audio) = self
+                        .session
+                        .as_mut()
+                        .and_then(|session| session.audio.as_mut())
+                    {
                         // The reaction surface has no per-voice volume or looping
                         // yet (deferred); a one-shot on the named bus is the whole
                         // contract. Default to the SFX bus when none is named.
@@ -3523,13 +3684,19 @@ impl App {
                     weak,
                     duration_ms,
                 } => {
-                    if let Some(gp) = &mut self.gamepad_system {
+                    if let Some(gp) = self
+                        .session
+                        .as_mut()
+                        .and_then(|session| session.gamepad_system.as_mut())
+                    {
                         gp.rumble(strong, weak, duration_ms);
                     }
                     // No gamepad subsystem ⇒ nothing to vibrate.
                 }
                 SystemReactionCommand::FlashScreen { color, duration_ms } => {
-                    self.flash_decay.start(color, duration_ms);
+                    if let Some(session) = self.session.as_mut() {
+                        session.flash_decay.start(color, duration_ms);
+                    }
                 }
                 SystemReactionCommand::Vignette {
                     color,
@@ -3543,7 +3710,11 @@ impl App {
                     let tint = color.unwrap_or([0.0, 0.0, 0.0]);
                     let rise_ms = duration_ms * VIGNETTE_RISE_FRACTION;
                     let decay_ms = duration_ms - rise_ms;
-                    self.vignette_decay.start(tint, strength, rise_ms, decay_ms);
+                    if let Some(session) = self.session.as_mut() {
+                        session
+                            .vignette_decay
+                            .start(tint, strength, rise_ms, decay_ms);
+                    }
                 }
                 SystemReactionCommand::ScreenShake {
                     amplitude,
@@ -3552,7 +3723,9 @@ impl App {
                 } => {
                     // Pass the optional frequency straight through: the driver
                     // applies its 18 Hz default when it is `None`.
-                    self.shake_decay.start(amplitude, duration_ms, frequency);
+                    if let Some(session) = self.session.as_mut() {
+                        session.shake_decay.start(amplitude, duration_ms, frequency);
+                    }
                 }
                 SystemReactionCommand::PushTree { tree, on_commit } => {
                     // Resolve the registered tree by name onto the modal stack.
@@ -3561,15 +3734,21 @@ impl App {
                     // text-entry commit path, then pops the entry. The capture mode
                     // lives on the registered tree's envelope (read after the drain by
                     // `reconcile_ui_focus`), not on the command.
-                    self.modal_stack.push_named(&tree, on_commit);
+                    if let Some(session) = self.session.as_mut() {
+                        session.modal_stack.push_named(&tree, on_commit);
+                    }
                 }
                 SystemReactionCommand::LoadLevel { map } => {
-                    self.modal_stack.clear_pushed();
+                    if let Some(session) = self.session.as_mut() {
+                        session.modal_stack.clear_pushed();
+                    }
                     self.enqueue_level_request(LevelRequest::Load(LevelSource::Catalog(map)));
                 }
                 SystemReactionCommand::RestartLevel => {
                     if let Some(source) = self.active_level_source.clone() {
-                        self.modal_stack.clear_pushed();
+                        if let Some(session) = self.session.as_mut() {
+                            session.modal_stack.clear_pushed();
+                        }
                         self.enqueue_level_request(LevelRequest::Load(source));
                     }
                 }
@@ -3577,14 +3756,16 @@ impl App {
                     self.return_to_frontend();
                 }
                 SystemReactionCommand::PopTree => {
-                    self.modal_stack.pop();
+                    if let Some(session) = self.session.as_mut() {
+                        session.modal_stack.pop();
+                    }
                 }
                 SystemReactionCommand::SetState { slot, value } => {
                     // Readonly-gated JSON write at the game-logic stage: a readonly
                     // slot warns and no-ops; an unknown slot or type mismatch logs
                     // and is skipped — never a panic. NEVER the engine bypass.
                     if let Err(err) = crate::scripting::primitives::store::write_state_slot_json(
-                        &self.script_ctx,
+                        &script_ctx,
                         &slot,
                         &value,
                     ) {
@@ -3598,7 +3779,9 @@ impl App {
                     // with a warn — never a panic, never a store write.
                     match scripting_systems::presentation_cells::json_to_cell_value(&value) {
                         Some(cell_value) => {
-                            self.presentation_cells.write(scope, cell, cell_value);
+                            if let Some(session) = self.session.as_mut() {
+                                session.presentation_cells.write(scope, cell, cell_value);
+                            }
                         }
                         None => log::warn!(
                             "[Scripting] cellWrite to `{scope}.{cell}` carried an unusable value; skipped"
@@ -3610,23 +3793,20 @@ impl App {
                     // writable-slot gate as setState): readonly warns + no-ops;
                     // unknown/non-String slot logs — never a panic.
                     use crate::scripting::primitives::store::{TextEdit, apply_text_edit};
-                    if let Err(err) =
-                        apply_text_edit(&self.script_ctx, &slot, TextEdit::Append(&text))
-                    {
+                    if let Err(err) = apply_text_edit(&script_ctx, &slot, TextEdit::Append(&text)) {
                         log::warn!("[Scripting] appendText to `{slot}` failed: {err}");
                     }
                 }
                 SystemReactionCommand::BackspaceText { slot } => {
                     // Empty backspace is a silent no-op inside `apply_text_edit`.
                     use crate::scripting::primitives::store::{TextEdit, apply_text_edit};
-                    if let Err(err) = apply_text_edit(&self.script_ctx, &slot, TextEdit::Backspace)
-                    {
+                    if let Err(err) = apply_text_edit(&script_ctx, &slot, TextEdit::Backspace) {
                         log::warn!("[Scripting] backspaceText to `{slot}` failed: {err}");
                     }
                 }
                 SystemReactionCommand::ClearText { slot } => {
                     use crate::scripting::primitives::store::{TextEdit, apply_text_edit};
-                    if let Err(err) = apply_text_edit(&self.script_ctx, &slot, TextEdit::Clear) {
+                    if let Err(err) = apply_text_edit(&script_ctx, &slot, TextEdit::Clear) {
                         log::warn!("[Scripting] clearText to `{slot}` failed: {err}");
                     }
                 }
@@ -3643,6 +3823,18 @@ impl App {
     /// serializes post-loop instead.
     fn net_poll_and_apply(&mut self, frame_dt: f32) {
         let dt = std::time::Duration::from_secs_f32(frame_dt);
+        // `net_poll_and_apply` stays on `App` (it drives `net_endpoint`, now
+        // session-owned). Clone the `ScriptCtx` handle up front so the
+        // registry/data-registry/gravity reads borrow nothing of `self`; the
+        // `session` re-borrow for `net_endpoint` happens after these owned/disjoint
+        // captures. See: context/lib/boot_sequence.md §1.
+        let Some(script_ctx) = self
+            .session
+            .as_ref()
+            .map(|session| session.script_ctx.clone())
+        else {
+            return;
+        };
         // Capture the host's descriptor-spawn inputs before the `net_endpoint` borrow:
         // the accept arm materializes each accepted client's descriptor-backed remote
         // pawn (M15 Phase 3 Task 4), and these reads alias `self.script_ctx` /
@@ -3655,23 +3847,35 @@ impl App {
         // `PlayerMovementComponent` from the wire `entity_class` (Task 7). Both peers
         // load the same content, so the same descriptor table serves both roles — clone
         // it for either networked role before the `net_endpoint` borrow.
-        let net_descriptors: Vec<crate::scripting::data_descriptors::EntityTypeDescriptor> = if matches!(
-            self.net_endpoint,
+        let is_networked = matches!(
+            self.session
+                .as_ref()
+                .and_then(|session| session.net_endpoint.as_ref()),
             Some(netcode::NetEndpoint::Host { .. } | netcode::NetEndpoint::Client { .. })
-        ) {
-            self.script_ctx.data_registry.borrow().entities.clone()
-        } else {
-            Vec::new()
-        };
+        );
+        let net_descriptors: Vec<crate::scripting::data_descriptors::EntityTypeDescriptor> =
+            if is_networked {
+                script_ctx.data_registry.borrow().entities.clone()
+            } else {
+                Vec::new()
+            };
         let host_agent_params = self.nav_graph.as_ref().map(|g| g.agent_params());
         let host_spawn_points = std::mem::take(&mut self.host_spawn_points);
         // M15 Phase 3 Task 5: the client reconcile replay threads collision + gravity
         // through `client_receive_and_apply`. Capture the gravity scalar before the
         // endpoint borrow (a `Cell` copy); the collision world is read by-reference
-        // inside the client arm (a disjoint field from `net_endpoint`).
-        let gravity = self.script_ctx.gravity.get();
+        // inside the client arm (a disjoint `self` field from `self.session`).
+        let gravity = script_ctx.gravity.get();
         let collision_world = &self.collision_world;
-        match self.net_endpoint.as_mut() {
+        // `net_endpoint` and `mesh_clip_tables` are both session-owned but distinct
+        // fields; bind the session once and reach each as a disjoint field borrow,
+        // so the client arm's `mesh_clip_tables` read does not re-borrow the
+        // session while the `net_endpoint` match holds it.
+        let Some(session) = self.session.as_mut() else {
+            self.host_spawn_points = host_spawn_points;
+            return;
+        };
+        match session.net_endpoint.as_mut() {
             None => {}
             Some(netcode::NetEndpoint::Host {
                 server,
@@ -3704,7 +3908,7 @@ impl App {
                         // `Closed` only. Both paths mutate the registry, so take one
                         // game-logic-owned borrow when either has work.
                         if !poll.handshakes.is_empty() || !poll.lifecycle.is_empty() {
-                            let mut registry = self.script_ctx.registry.borrow_mut();
+                            let mut registry = script_ctx.registry.borrow_mut();
                             for outcome in &poll.handshakes {
                                 match outcome {
                                     HandshakeOutcome::Accepted { client_id } => {
@@ -3797,7 +4001,7 @@ impl App {
                 // Drive the 5 Hz time-sync send loop + echo ingest. The client's
                 // local sim tick is the engine frame counter; the estimator reads
                 // its own monotonic clock for send/receive microseconds.
-                let client_tick = self.script_ctx.frame.get() as u32;
+                let client_tick = script_ctx.frame.get() as u32;
                 netcode::client_drive_time_sync(client, time_sync, client_tick);
                 // Decode + apply every snapshot received this frame through the
                 // Phase 2 client state machine, arm prediction off any `local_player`
@@ -3805,8 +4009,8 @@ impl App {
                 // path, send the resulting acks + baseline-refresh requests, and advance
                 // the pending-repair 5 Hz cadence. The registry and slot table are
                 // disjoint RefCells; both borrows coexist for the duration of the apply.
-                let mut registry = self.script_ctx.registry.borrow_mut();
-                let mut slot_table = self.script_ctx.slot_table.borrow_mut();
+                let mut registry = script_ctx.registry.borrow_mut();
+                let mut slot_table = script_ctx.slot_table.borrow_mut();
                 let materialized_remote_enemy_presentation = netcode::client_receive_and_apply(
                     &mut registry,
                     &mut slot_table,
@@ -3822,7 +4026,9 @@ impl App {
                     dt,
                 );
                 if materialized_remote_enemy_presentation {
-                    resolve_mesh_entity_clips(&mut registry, &self.mesh_clip_tables);
+                    // `mesh_clip_tables` is a disjoint field of the same `session`
+                    // bound for the `net_endpoint` match above.
+                    resolve_mesh_entity_clips(&mut registry, &session.mesh_clip_tables);
                 }
                 // The interpolation-buffer sampling that writes presented remote poses
                 // runs in `net_sample_remote_interpolation`, AFTER the catch-up tick
@@ -3842,6 +4048,15 @@ impl App {
     /// sends each accepted client a per-client delta snapshot over the snapshot
     /// channel. No-op for single-player and the client.
     fn net_serialize_and_send(&mut self) {
+        // Session-owned `ScriptCtx` cloned before the `net_endpoint` borrow (this
+        // method stays on `App`). See: context/lib/boot_sequence.md §1.
+        let Some(script_ctx) = self
+            .session
+            .as_ref()
+            .map(|session| session.script_ctx.clone())
+        else {
+            return;
+        };
         let Some(netcode::NetEndpoint::Host {
             server,
             allocator,
@@ -3855,7 +4070,10 @@ impl App {
             map_enemies: _,
             demo_mover,
             state_slots,
-        }) = self.net_endpoint.as_mut()
+        }) = self
+            .session
+            .as_mut()
+            .and_then(|session| session.net_endpoint.as_mut())
         else {
             return;
         };
@@ -3865,7 +4083,7 @@ impl App {
         // its pose is in the replicable set when `host_replicate` ingests below. A
         // no-op on an ordinary host.
         {
-            let mut registry = self.script_ctx.registry.borrow_mut();
+            let mut registry = script_ctx.registry.borrow_mut();
             netcode::host_drive_demo_mover(&mut registry, demo_mover, allocator, replicable, *tick);
         }
 
@@ -3877,8 +4095,8 @@ impl App {
             // publisher have already settled the slot table by this post-tick point; the
             // descriptor-fed health projection reads live `HealthComponent`s, so it sees
             // this frame's settled HP regardless of the host HUD publisher's later tick.
-            let registry = self.script_ctx.registry.borrow();
-            let slot_table = self.script_ctx.slot_table.borrow();
+            let registry = script_ctx.registry.borrow();
+            let slot_table = script_ctx.slot_table.borrow();
             netcode::host_replicate(
                 &registry,
                 &slot_table,
@@ -3910,16 +4128,26 @@ impl App {
     /// clobber the presented pose, and before the render stage reads entities.
     /// No-op for single-player and the host (no client interpolation buffers).
     fn net_sample_remote_interpolation(&mut self, frame_dt: f32) {
+        let Some(script_ctx) = self
+            .session
+            .as_ref()
+            .map(|session| session.script_ctx.clone())
+        else {
+            return;
+        };
         let Some(netcode::NetEndpoint::Client {
             replication,
             time_sync,
             interpolation_delay,
             ..
-        }) = self.net_endpoint.as_mut()
+        }) = self
+            .session
+            .as_mut()
+            .and_then(|session| session.net_endpoint.as_mut())
         else {
             return;
         };
-        let mut registry = self.script_ctx.registry.borrow_mut();
+        let mut registry = script_ctx.registry.borrow_mut();
         netcode::client_sample_interpolation(
             &mut registry,
             replication,
@@ -3934,7 +4162,9 @@ impl App {
     /// `sim::simulate_tick`; the host and single-player keep the full sim path.
     fn is_connected_client(&self) -> bool {
         matches!(
-            self.net_endpoint.as_ref(),
+            self.session
+                .as_ref()
+                .and_then(|session| session.net_endpoint.as_ref()),
             Some(netcode::NetEndpoint::Client { .. })
         )
     }
@@ -3953,11 +4183,21 @@ impl App {
     /// Returns the aggregated remote movement events for the caller to fold into the
     /// frame's pending movement-event drain.
     fn host_drive_remote_movement(&mut self, tick_dt: f32) -> Vec<&'static str> {
+        let Some(script_ctx) = self
+            .session
+            .as_ref()
+            .map(|session| session.script_ctx.clone())
+        else {
+            return Vec::new();
+        };
         let Some(netcode::NetEndpoint::Host {
             command_queues,
             owners,
             ..
-        }) = self.net_endpoint.as_mut()
+        }) = self
+            .session
+            .as_mut()
+            .and_then(|session| session.net_endpoint.as_mut())
         else {
             return Vec::new();
         };
@@ -3965,11 +4205,11 @@ impl App {
         if pawn_inputs.is_empty() {
             return Vec::new();
         }
-        let mut registry = self.script_ctx.registry.borrow_mut();
+        let mut registry = script_ctx.registry.borrow_mut();
         sim::run_host_movement_tick(
             &mut registry,
             &self.collision_world,
-            self.script_ctx.gravity.get(),
+            script_ctx.gravity.get(),
             &pawn_inputs,
             tick_dt,
         )
@@ -3989,17 +4229,27 @@ impl App {
     /// replicate). The host pawn stays driven locally by `simulate_tick` — this only
     /// replicates its Transform + PlayerMovementState outbound.
     fn host_register_own_pawn_after_install(&mut self) {
+        let Some(script_ctx) = self
+            .session
+            .as_ref()
+            .map(|session| session.script_ctx.clone())
+        else {
+            return;
+        };
         let Some(netcode::NetEndpoint::Host {
             allocator,
             replicable,
             host_pawn,
             ..
-        }) = self.net_endpoint.as_mut()
+        }) = self
+            .session
+            .as_mut()
+            .and_then(|session| session.net_endpoint.as_mut())
         else {
             return;
         };
         let pawn = {
-            let registry = self.script_ctx.registry.borrow();
+            let registry = script_ctx.registry.borrow();
             registry.local_player_pawn()
         };
         let Some(pawn) = pawn else {
@@ -4022,16 +4272,26 @@ impl App {
     /// first. The enemies stay driven by the host's AI/steering systems — this only
     /// replicates their `Transform` (and descriptor class) outbound.
     fn host_register_map_enemies_after_install(&mut self) {
+        let Some(script_ctx) = self
+            .session
+            .as_ref()
+            .map(|session| session.script_ctx.clone())
+        else {
+            return;
+        };
         let Some(netcode::NetEndpoint::Host {
             allocator,
             replicable,
             map_enemies,
             ..
-        }) = self.net_endpoint.as_mut()
+        }) = self
+            .session
+            .as_mut()
+            .and_then(|session| session.net_endpoint.as_mut())
         else {
             return;
         };
-        let registry = self.script_ctx.registry.borrow();
+        let registry = script_ctx.registry.borrow();
         netcode::host_register_map_enemies(&registry, allocator, replicable, map_enemies);
     }
 
@@ -4043,14 +4303,24 @@ impl App {
     /// caller skips `simulate_tick`'s local gameplay movement when this path runs —
     /// AI / weapons / death stay host-authoritative and arrive via snapshots.
     fn client_predict_movement_tick(&mut self, command: &sim::SimCommand, tick_dt: f32) -> bool {
-        let Some(netcode::NetEndpoint::Client {
-            client, prediction, ..
-        }) = self.net_endpoint.as_mut()
+        let Some(script_ctx) = self
+            .session
+            .as_ref()
+            .map(|session| session.script_ctx.clone())
         else {
             return false;
         };
-        let gravity = self.script_ctx.gravity.get();
-        let mut registry = self.script_ctx.registry.borrow_mut();
+        let Some(netcode::NetEndpoint::Client {
+            client, prediction, ..
+        }) = self
+            .session
+            .as_mut()
+            .and_then(|session| session.net_endpoint.as_mut())
+        else {
+            return false;
+        };
+        let gravity = script_ctx.gravity.get();
+        let mut registry = script_ctx.registry.borrow_mut();
         netcode::client_predict_tick(
             &mut registry,
             client,
@@ -4075,16 +4345,21 @@ impl App {
     /// and clearing carry-over input state so keys/mouse held during the
     /// transition do not stick in the new mode.
     fn set_input_focus(&mut self, focus: InputFocus) {
-        self.input_focus = focus;
-        let Some(ws) = self.window_state.as_ref() else {
+        // Disjoint field borrows: the session group plus the non-session window
+        // and diagnostic state all mutate here. No-op if the session is not yet
+        // installed (focus transitions only happen post-install).
+        let Some(session) = self.session.as_mut() else {
             return;
         };
-        match focus {
-            InputFocus::Gameplay => {
-                input::cursor::capture_cursor(&ws.window);
-            }
-            InputFocus::DevTools | InputFocus::Menu => {
-                input::cursor::release_cursor(&ws.window);
+        session.input_focus = focus;
+        if let Some(ws) = self.window_state.as_ref() {
+            match focus {
+                InputFocus::Gameplay => {
+                    input::cursor::capture_cursor(&ws.window);
+                }
+                InputFocus::DevTools | InputFocus::Menu => {
+                    input::cursor::release_cursor(&ws.window);
+                }
             }
         }
         // Both directions clear: returning to Gameplay must not see keys that
@@ -4096,8 +4371,8 @@ impl App {
         // the panel). Closing the panel without releasing requires re-pressing
         // those modifiers. Accepted because the symmetric stale-state
         // protection is worth more than the one-keystroke regression.
-        self.input_system.clear_all();
-        self.gameplay_input_latch.clear();
+        session.input_system.clear_all();
+        session.gameplay_input_latch.clear();
         self.diagnostic_inputs.clear_modifiers();
     }
 
@@ -4122,7 +4397,9 @@ impl App {
     /// `pending_menu_toggle`. The capture-mode + cursor effect follows on the next
     /// `reconcile_ui_focus` (this game-logic phase).
     fn toggle_pause_menu(&mut self) {
-        apply_pause_menu_nav_policy(&mut self.modal_stack);
+        if let Some(session) = self.session.as_mut() {
+            apply_pause_menu_nav_policy(&mut session.modal_stack);
+        }
     }
 
     /// Reconcile the input-dispatch seam and coarse focus with the modal stack's
@@ -4147,16 +4424,24 @@ impl App {
     /// and set `DevTools`); this reconcile never overrides that — the modal stack
     /// is gameplay UI, and the debug overlay is a separate, dev-only consumer.
     fn reconcile_ui_focus(&mut self) {
-        let mode = self.modal_stack.top_capture_mode();
-        self.ui_dispatch.set_mode(mode);
+        // Read the session-owned inputs up front, then drop the borrow before
+        // `set_input_focus` (which re-borrows the session). No-op before install.
+        let (mode, current_focus) = {
+            let Some(session) = self.session.as_mut() else {
+                return;
+            };
+            let mode = session.modal_stack.top_capture_mode();
+            session.ui_dispatch.set_mode(mode);
+            (mode, session.input_focus)
+        };
 
         // The debug overlay owns focus while open — don't fight it.
-        if self.input_focus == InputFocus::DevTools {
+        if current_focus == InputFocus::DevTools {
             return;
         }
 
         let want_menu = matches!(mode, input::UiCaptureMode::Capture);
-        match (want_menu, self.input_focus) {
+        match (want_menu, current_focus) {
             // A capturing tree opened (or stayed open): enter Menu, release cursor.
             (true, InputFocus::Gameplay) => self.set_input_focus(InputFocus::Menu),
             // The capturing tree(s) closed: hand the cursor back to gameplay.
@@ -4169,10 +4454,15 @@ impl App {
         // is up. `set_input_focus(Menu)` released the cursor (visible) above; in
         // `focus` mode we additionally hide it so directional nav isn't cluttered
         // by a stray pointer. Mode is inert otherwise (no capturing tree).
-        if want_menu && self.input_focus == InputFocus::Menu {
-            if let Some(ws) = self.window_state.as_ref() {
-                ws.window
-                    .set_cursor_visible(self.ui_input_mode.cursor_visible());
+        let cursor_visible = self
+            .session
+            .as_ref()
+            .map(|session| (session.input_focus, session.ui_input_mode.cursor_visible()));
+        if let Some((InputFocus::Menu, visible)) = cursor_visible {
+            if want_menu {
+                if let Some(ws) = self.window_state.as_ref() {
+                    ws.window.set_cursor_visible(visible);
+                }
             }
         }
     }
@@ -4190,10 +4480,13 @@ impl App {
     /// focus. Called on window re-focus so the cursor mode matches the user's
     /// chosen focus after transient OS focus loss.
     fn reapply_focus(&mut self) {
+        let Some(focus) = self.session.as_ref().map(|session| session.input_focus) else {
+            return;
+        };
         let Some(ws) = self.window_state.as_ref() else {
             return;
         };
-        match self.input_focus {
+        match focus {
             InputFocus::Gameplay => input::cursor::capture_cursor(&ws.window),
             InputFocus::DevTools | InputFocus::Menu => input::cursor::release_cursor(&ws.window),
         }
@@ -4228,7 +4521,11 @@ impl App {
             // silent (init-failed) case; needs a level loaded for the sound
             // registry to hold the fixture, otherwise `play` warns gracefully.
             DiagnosticAction::PlayTestSfx => {
-                if let Some(audio) = &mut self.audio {
+                if let Some(audio) = self
+                    .session
+                    .as_mut()
+                    .and_then(|session| session.audio.as_mut())
+                {
                     audio.play(audio::SoundRequest {
                         bus: "sfx".to_string(),
                         sound: "sfx/test_tone".to_string(),
@@ -4243,7 +4540,11 @@ impl App {
             // call is needed here.
             #[cfg(feature = "dev-tools")]
             DiagnosticAction::ToggleDebugPanel => {
-                let now_visible = if let Some(debug_ui) = self.debug_ui.as_mut() {
+                let now_visible = if let Some(debug_ui) = self
+                    .session
+                    .as_mut()
+                    .and_then(|session| session.debug_ui.as_mut())
+                {
                     let v = !debug_ui.is_visible();
                     debug_ui.set_visible(v);
                     v
@@ -4303,7 +4604,13 @@ impl App {
         let params = nav_graph.agent_params();
         let spawn_pos = self.camera.position;
 
-        let mut registry = self.script_ctx.registry.borrow_mut();
+        let script_ctx = self
+            .session
+            .as_ref()
+            .expect("running session installed")
+            .script_ctx
+            .clone();
+        let mut registry = script_ctx.registry.borrow_mut();
         let entity = registry.spawn(Transform {
             position: spawn_pos,
             ..Transform::default()

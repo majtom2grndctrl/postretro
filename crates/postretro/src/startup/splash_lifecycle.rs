@@ -40,14 +40,18 @@ impl App {
         }
     }
 
-    /// First Splash frame: paint a black screen, then decode + upload the base
-    /// splash so a subsequent frame can show it. The splash texture is not yet
-    /// decoded, so the splash pass clears to black and draws nothing.
+    /// First Splash frame: paint the splash-color clear (no logo bound yet), then
+    /// decode + upload the base splash so a subsequent frame can show it. The
+    /// splash texture is not yet decoded, so the splash pass clears to
+    /// `SPLASH_CLEAR_COLOR` and draws nothing.
     ///
     /// `first_black_frame` is recorded — and the decode/upload runs — only after
-    /// the black frame actually presents. A transient surface failure requests
-    /// another redraw WITHOUT advancing the schedule, so the timing marks a real
-    /// presented frame.
+    /// this frame actually presents. The window is visible, so this presented
+    /// frame is the splash-color clear the user sees after a brief
+    /// pre-first-present white flash on Windows (a known cosmetic artifact — see
+    /// `window_attributes` for why a hidden-window suppression was reverted). A
+    /// transient surface failure requests another redraw WITHOUT advancing the
+    /// schedule, so the timing marks a real presented frame.
     fn run_splash_frame_zero(&mut self, event_loop: &ActiveEventLoop) -> bool {
         if self.paint_splash(event_loop) == PresentOutcome::NeedsRedraw {
             self.request_redraw();
@@ -55,7 +59,7 @@ impl App {
         }
         self.boot_timings.record("first_black_frame");
 
-        // Now that the OS window is showing a black frame, decode and upload the
+        // Now that the OS window is showing a splash-color frame, decode and upload the
         // splash synchronously. PNG decode is bounded CPU work (~ms); doing it
         // here keeps the boot path single-threaded and ordering causal.
         let source = SplashSource::Base;
@@ -94,27 +98,47 @@ impl App {
             self.request_redraw();
             return false;
         }
-        // First pixels are now on screen (black frame 0, logo frame 1). Finish
-        // deferred session startup before any mod-supplied or net-dependent work
-        // runs. Net-endpoint setup is `Option::take`-guarded single-commit;
-        // audio + dev debug-UI rebuild whenever absent (suspend drops them), so a
-        // suspend/resume re-entering this frame restores them without re-running
-        // net init. See: context/lib/boot_sequence.md §1, §9.
-        self.install_post_splash_services();
-        self.install_pending_session();
-        self.run_deferred_mod_init();
-        self.swap_mod_splash_override_if_pending();
-        log::info!("{}", self.mod_timings.summary());
+        // First pixels are now on screen (black frame 0, logo frame 1). Build +
+        // install the whole `Session` (options, audio, scripting core,
+        // input/UI/modal group, net endpoint) ahead of the renderer full-init
+        // check (and the mod-init / frontend / loading transitions that follow),
+        // so a build failure exits boot before any later step runs against a
+        // `None` session. Session install is `Option::take`-guarded single-commit;
+        // audio + net are built inside it once. Mirrors
+        // `finish_renderer_full_init`'s early return.
+        // See: context/lib/boot_sequence.md §1.
+        if !self.install_pending_session(event_loop) {
+            return false;
+        }
+        // Lazy-init the dev-tools debug UI now that the session exists and the
+        // renderer/window are ready. Rebuilds on resume (which drops it), so a
+        // suspend/resume re-entering this frame restores it without re-running the
+        // single-commit session install. See: context/lib/boot_sequence.md §1, §5.
+        self.ensure_debug_ui();
+        // The session is installed with `InputFocus::Gameplay`; capture the
+        // cursor now (the work `resumed` used to do pre-install, deferred here
+        // since focus is session-owned). A capturing frontend tree releases it
+        // again on the first `reconcile_ui_focus`.
+        self.set_input_focus(crate::input::InputFocus::Gameplay);
 
         // Full renderer initialization runs after the first visible logo frame
         // and completes BEFORE the splash clears and before any Frontend /
-        // Loading-completion / Running / UI / scene path executes (boot_sequence
-        // §1, rendering_pipeline §7.8). Idempotent: a suspend→resume that recreated
-        // the surface re-runs this without re-running deferred session init. A
-        // hard failure here is a renderer init failure — exit non-zero.
+        // Loading-completion / Running / UI / scene path executes — AND before
+        // `run_deferred_mod_init`, whose mod-theme / mod-font install drains
+        // (`set_ui_theme` / `register_ui_font`) are full-ready renderer paths
+        // that touch `Renderer::full` and panic if it is not yet built
+        // (renderer_splash.rs full-ready guard). Session build is CPU-side state
+        // and stays ahead of this; only the full-ready-dependent mod-init step
+        // had to move behind it (boot_sequence §1, rendering_pipeline §7.8).
+        // Idempotent: a suspend→resume that recreated the surface re-runs this
+        // without re-running deferred session init. A hard failure here is a
+        // renderer init failure — exit non-zero.
         if !self.finish_renderer_full_init(event_loop) {
             return false;
         }
+        self.run_deferred_mod_init();
+        self.swap_mod_splash_override_if_pending();
+        log::info!("{}", self.mod_timings.summary());
 
         let Some(map_path) = self.map_path.clone() else {
             if let Some(renderer) = self.renderer.as_mut() {
@@ -196,77 +220,109 @@ impl App {
         // Mod init runs before the worker spawns so declarations and entity
         // descriptors commit together, then persistence overlays defaults once
         // before any level work begins.
+        // The script runtime + context now live on `Session` (built earlier this
+        // frame by `install_pending_session`). Borrow the session for the manifest
+        // drain; theme/font install needs `&mut self`, so the manifest's theme/font
+        // payload is lifted into locals and applied after the session borrow ends.
         let script_root = self.content_root.join("scripts");
-        self.script_runtime
-            .compile_stale_scripts(&script_root, &self.content_root);
-        if let Err(err) = self.script_runtime.run_mod_init(&self.content_root) {
-            log::error!("[Scripting] mod_init failed: {err}");
-        } else {
-            let has_manifest = self.script_runtime.mod_manifest().is_some();
-            if let Some(manifest) = self.script_runtime.mod_manifest_mut() {
-                // Drain entity-type descriptors from the validated mod manifest
-                // into the engine-global `DataRegistry`. Runtime parses; caller
-                // owns lifecycle. See: context/lib/boot_sequence.md §3.
-                let mut data_registry = self.script_ctx.data_registry.borrow_mut();
-                for desc in std::mem::take(&mut manifest.entities) {
-                    data_registry.upsert_entity_type(desc);
-                }
-                data_registry.replace_maps(std::mem::take(&mut manifest.maps));
-                let global_reactions = validate_scoped_sequence_primitives(
-                    std::mem::take(&mut manifest.reactions),
-                    &self.sequence_registry,
-                );
-                data_registry.replace_global_reactions(global_reactions);
-                data_registry.replace_global_crossings(std::mem::take(&mut manifest.crossings));
-                drop(data_registry);
-
-                // Register mod-scope UI trees into the tiered registry at `Mod`
-                // tier, before the mod-init VM context drops.
-                self.modal_stack.register_script_trees(
-                    std::mem::take(&mut manifest.ui_trees),
-                    render::ui::modal_stack::ScopeTier::Mod,
-                );
-
-                self.frontend = manifest.frontend.take();
-                let mod_theme = std::mem::take(&mut manifest.theme);
-                let mod_fonts = std::mem::take(&mut manifest.fonts);
-                self.install_mod_ui_theme_and_fonts(mod_theme, mod_fonts);
-            }
-
-            if self
-                .state_store_lifecycle
-                .should_restore_after_mod_init(has_manifest)
-            {
-                let state_path = Path::new(STATE_FILE_PATH);
-                match load_persisted_state(state_path) {
-                    Ok(Some(persisted)) => {
-                        let warnings = overlay_persisted_state(
-                            &mut self.script_ctx.slot_table.borrow_mut(),
-                            &persisted,
-                        );
-                        for warning in warnings {
-                            log::warn!("[State] {warning}");
-                        }
-                        log::info!(
-                            "[State] restored persistent slots from {}",
-                            state_path.display()
-                        );
+        let content_root = self.content_root.clone();
+        let mut deferred_theme_fonts: Option<(
+            crate::scripting::data_descriptors::ModThemeTokens,
+            crate::scripting::data_descriptors::ModFontAssets,
+        )> = None;
+        {
+            let session = self
+                .session
+                .as_mut()
+                .expect("session installed before mod init");
+            session
+                .script_runtime
+                .compile_stale_scripts(&script_root, &content_root);
+            if let Err(err) = session.script_runtime.run_mod_init(&content_root) {
+                log::error!("[Scripting] mod_init failed: {err}");
+            } else {
+                let has_manifest = session.script_runtime.mod_manifest().is_some();
+                // `frontend` is session-owned now; the `manifest` borrow below
+                // aliases `session.script_runtime`, so lift the committed frontend
+                // into a local and assign `session.frontend` after that borrow ends
+                // (mirroring the theme/font deferral).
+                let mut committed_frontend: Option<Option<crate::scripting::runtime::Frontend>> =
+                    None;
+                if let Some(manifest) = session.script_runtime.mod_manifest_mut() {
+                    // Drain entity-type descriptors from the validated mod manifest
+                    // into the engine-global `DataRegistry`. Runtime parses; caller
+                    // owns lifecycle. See: context/lib/boot_sequence.md §3.
+                    let mut data_registry = session.script_ctx.data_registry.borrow_mut();
+                    for desc in std::mem::take(&mut manifest.entities) {
+                        data_registry.upsert_entity_type(desc);
                     }
-                    Ok(None) => {}
-                    Err(error) => log::warn!(
-                        "[State] failed to load persistent slots from {}: {error}; using declared defaults",
-                        state_path.display()
-                    ),
+                    data_registry.replace_maps(std::mem::take(&mut manifest.maps));
+                    let global_reactions = validate_scoped_sequence_primitives(
+                        std::mem::take(&mut manifest.reactions),
+                        &session.sequence_registry,
+                    );
+                    data_registry.replace_global_reactions(global_reactions);
+                    data_registry.replace_global_crossings(std::mem::take(&mut manifest.crossings));
+                    drop(data_registry);
+
+                    // Register mod-scope UI trees into the tiered registry at `Mod`
+                    // tier, before the mod-init VM context drops.
+                    session.modal_stack.register_script_trees(
+                        std::mem::take(&mut manifest.ui_trees),
+                        render::ui::modal_stack::ScopeTier::Mod,
+                    );
+
+                    committed_frontend = Some(manifest.frontend.take());
+                    let mod_theme = std::mem::take(&mut manifest.theme);
+                    let mod_fonts = std::mem::take(&mut manifest.fonts);
+                    deferred_theme_fonts = Some((mod_theme, mod_fonts));
                 }
-                self.state_store_lifecycle.mark_restore_completed();
+                // The `manifest` borrow has ended; commit the frontend onto the
+                // session.
+                if let Some(frontend) = committed_frontend {
+                    session.frontend = frontend;
+                }
+
+                if session
+                    .state_store_lifecycle
+                    .should_restore_after_mod_init(has_manifest)
+                {
+                    let state_path = Path::new(STATE_FILE_PATH);
+                    match load_persisted_state(state_path) {
+                        Ok(Some(persisted)) => {
+                            let warnings = overlay_persisted_state(
+                                &mut session.script_ctx.slot_table.borrow_mut(),
+                                &persisted,
+                            );
+                            for warning in warnings {
+                                log::warn!("[State] {warning}");
+                            }
+                            log::info!(
+                                "[State] restored persistent slots from {}",
+                                state_path.display()
+                            );
+                        }
+                        Ok(None) => {}
+                        Err(error) => log::warn!(
+                            "[State] failed to load persistent slots from {}: {error}; using declared defaults",
+                            state_path.display()
+                        ),
+                    }
+                    session.state_store_lifecycle.mark_restore_completed();
+                }
+            }
+            // Hot-reload watcher (debug-only); release builds no-op.
+            if let Err(err) = session
+                .script_runtime
+                .start_watcher(&script_root, &content_root)
+            {
+                log::error!("[Scripting] start_watcher failed: {err}");
             }
         }
-        // Hot-reload watcher (debug-only); release builds no-op.
-        if let Err(err) = self
-            .script_runtime
-            .start_watcher(&script_root, &self.content_root)
-        {
-            log::error!("[Scripting] start_watcher failed: {err}");
+        // Theme/font install borrows `&mut self` (renderer, etc.), so it runs after
+        // the session borrow above has ended.
+        if let Some((mod_theme, mod_fonts)) = deferred_theme_fonts {
+            self.install_mod_ui_theme_and_fonts(mod_theme, mod_fonts);
         }
         self.mod_timings.record("mod_init");
     }

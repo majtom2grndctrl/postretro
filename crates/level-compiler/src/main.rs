@@ -114,13 +114,21 @@ fn resolve_texture_root(map_path: &Path) -> PathBuf {
     resolve_content_root(map_path).join("textures")
 }
 
-/// Resolve the `.prm` mip-cache root from a map input path.
+/// Resolve the compiled-material output root from a map input path.
 ///
-/// Lives next to the stage cache under `<workspace>/.build-caches/prm-cache/`.
-/// Falls back to the map's parent directory when no `Cargo.toml` ancestor
-/// is found — covers shipping or standalone layouts that omit the
-/// workspace manifest.
-fn resolve_prm_cache_root_via_cargo(map_path: &Path) -> PathBuf {
+/// `.prm` mip sidecars are runtime-*required* compiled output, not a disposable
+/// cache, so they live in `<workspace>/baked/materials/` — a top-level
+/// compiled-output tree, sibling to the disposable `.build-caches/` stage cache.
+/// The runtime reader (`derive_prm_root_dev_layout` in
+/// `crates/postretro/src/startup/worker.rs`) must resolve to this same directory
+/// in the dev layout; if they diverge, every texture silently degrades to a
+/// placeholder.
+///
+/// Falls back to `<map parent>/baked/materials/` when no `Cargo.toml` ancestor
+/// is found — covers shipping or standalone layouts that omit the workspace
+/// manifest. The runtime's analogous fallback uses `content_root`, so the two
+/// fallbacks need not coincide outside the dev layout (shipping is out of scope).
+fn resolve_prm_root_via_cargo(map_path: &Path) -> PathBuf {
     cache::find_workspace_root(map_path)
         .unwrap_or_else(|| {
             map_path
@@ -128,8 +136,8 @@ fn resolve_prm_cache_root_via_cargo(map_path: &Path) -> PathBuf {
                 .unwrap_or_else(|| Path::new("."))
                 .to_path_buf()
         })
-        .join(".build-caches")
-        .join("prm-cache")
+        .join("baked")
+        .join("materials")
 }
 
 fn prop_mesh_model_handles(entities: &[map_data::MapEntityRecord]) -> Vec<&str> {
@@ -160,7 +168,7 @@ fn prop_mesh_model_handles(entities: &[map_data::MapEntityRecord]) -> Vec<&str> 
 fn bake_model_textures_with<Resolve, ResolveError, Bake, BakeError>(
     entities: &[map_data::MapEntityRecord],
     content_root: &Path,
-    prm_cache_root: &Path,
+    prm_root: &Path,
     mut resolve_base_color_paths: Resolve,
     mut bake_diffuse: Bake,
 ) where
@@ -188,7 +196,7 @@ fn bake_model_textures_with<Resolve, ResolveError, Bake, BakeError>(
             if !seen_textures.insert(texture_path.clone()) {
                 continue;
             }
-            if let Err(error) = bake_diffuse(&texture_path, prm_cache_root) {
+            if let Err(error) = bake_diffuse(&texture_path, prm_root) {
                 log::warn!(
                     "[prl-build] failed to bake model texture {}: {error}",
                     texture_path.display()
@@ -201,12 +209,12 @@ fn bake_model_textures_with<Resolve, ResolveError, Bake, BakeError>(
 fn bake_model_textures(
     entities: &[map_data::MapEntityRecord],
     content_root: &Path,
-    prm_cache_root: &Path,
+    prm_root: &Path,
 ) {
     bake_model_textures_with(
         entities,
         content_root,
-        prm_cache_root,
+        prm_root,
         postretro_level_format::gltf_resolve::resolve_document_base_color_paths,
         texture_mips::bake_diffuse_texture,
     );
@@ -241,9 +249,117 @@ fn resolve_lightmap_density(cli: Option<f32>, kvp: Option<f32>) -> f32 {
         .unwrap_or(lightmap_bake::DEFAULT_TEXEL_DENSITY_METERS)
 }
 
+/// What the output-directory precheck decided to do for a parsed answer.
+///
+/// `Create` carries the directory to create; `Abort` ends the run before any
+/// bake; `Reprompt` means the answer was unrecognized and the caller should
+/// ask again. The `Proceed`/`Create`/`Abort` split is kept pure so the
+/// terminal-I/O wrapper (`precheck_output_dir`) stays a thin shell.
+#[derive(Debug, PartialEq, Eq)]
+enum DirAnswer {
+    Create,
+    Abort,
+    Reprompt,
+}
+
+/// Decide whether the output's parent directory must be created.
+///
+/// Pure: callers pass the result of `parent.exists()` so this needs no
+/// filesystem. Returns `Some(parent)` when the parent is a non-empty path that
+/// does not exist (so it must be created); `None` when the parent is empty /
+/// the current directory, or already exists — the common case, zero prompts.
+fn output_dir_to_create(output: &Path, parent_exists: bool) -> Option<PathBuf> {
+    match output.parent() {
+        // No parent or an empty parent (e.g. a bare filename) means the
+        // current directory, which always exists. Nothing to create.
+        Some(parent) if !parent.as_os_str().is_empty() && !parent_exists => {
+            Some(parent.to_path_buf())
+        }
+        _ => None,
+    }
+}
+
+/// Parse a user's terminal answer to the create-directory prompt.
+///
+/// Pure. `answer` is `None` on EOF (no answer available — non-interactive
+/// stdin, closed pipe), which aborts. A bare Enter (empty trimmed line) is the
+/// `[Y/n]` default → `Create`. Recognized yes/no map to `Create`/`Abort`;
+/// anything else is `Reprompt` so the caller loops rather than guessing.
+fn parse_dir_answer(answer: Option<&str>) -> DirAnswer {
+    match answer {
+        None => DirAnswer::Abort,
+        Some(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+            "" | "y" | "yes" => DirAnswer::Create,
+            "n" | "no" => DirAnswer::Abort,
+            _ => DirAnswer::Reprompt,
+        },
+    }
+}
+
+/// Fail-fast precheck for the output directory, run before any bake work.
+///
+/// If the resolved output `.prl` path's parent directory is missing, prompt on
+/// the terminal to create it. This is a CLI tool, so interactive prompting plus
+/// a non-zero exit on user-abort is appropriate (unlike subsystem library
+/// code). EOF on stdin (CI, `</dev/null`, closed pipe) returns `Ok(0)` from
+/// `read_line` and is treated as "no answer" → abort, so this never hangs.
+fn precheck_output_dir(output: &Path) -> anyhow::Result<()> {
+    let parent = match output_dir_to_create(output, output.parent().is_some_and(Path::exists)) {
+        Some(parent) => parent,
+        None => return Ok(()),
+    };
+
+    use std::io::Write as _;
+    let stdin = std::io::stdin();
+    let mut stderr = std::io::stderr();
+    let mut line = String::new();
+    loop {
+        write!(
+            stderr,
+            "Output directory '{}' does not exist. Create it? [Y/n] ",
+            parent.display()
+        )?;
+        stderr.flush()?;
+
+        line.clear();
+        let answer = if stdin.read_line(&mut line)? == 0 {
+            // EOF: no answer available. Don't loop on repeated EOF — abort.
+            None
+        } else {
+            Some(line.as_str())
+        };
+
+        match parse_dir_answer(answer) {
+            DirAnswer::Create => {
+                std::fs::create_dir_all(&parent).map_err(|e| {
+                    anyhow::anyhow!(
+                        "[Compiler] failed to create output directory '{}': {e}",
+                        parent.display()
+                    )
+                })?;
+                return Ok(());
+            }
+            DirAnswer::Abort => {
+                anyhow::bail!(
+                    "[Compiler] aborted: output directory '{}' does not exist. \
+                     Re-run with an existing folder in -o (or create '{}' first).",
+                    parent.display(),
+                    parent.display()
+                );
+            }
+            DirAnswer::Reprompt => continue,
+        }
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     let started = Instant::now();
     let args = parse_args()?;
+
+    // Fail fast: if the output directory is missing, prompt to create it now —
+    // before parsing the map or running any bake — so a missing folder never
+    // wastes a multi-minute bake that only fails at the final write.
+    precheck_output_dir(&args.output)?;
 
     let log_level = if args.verbose { "info" } else { "warn" };
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(log_level)).init();
@@ -466,7 +582,7 @@ fn main() -> anyhow::Result<()> {
     let lightmap_config = lightmap_bake::LightmapConfig {
         lightmap_density: effective_lightmap_density,
         area_sample_count: args.soft_shadow_samples,
-        uncompressed_irradiance: false,
+        uncompressed_irradiance: args.uncompressed_irradiance,
     };
     let final_lightmap_density;
     let lightmap_bake_output = if let Some(ref cache) = stage_cache {
@@ -640,7 +756,7 @@ fn main() -> anyhow::Result<()> {
             &lightmap_bake::LightmapConfig {
                 lightmap_density: density,
                 area_sample_count: args.soft_shadow_samples,
-                uncompressed_irradiance: false,
+                uncompressed_irradiance: args.uncompressed_irradiance,
             },
         )
         .map_err(|e| anyhow::anyhow!("Lightmap bake failed: {e}"))?
@@ -959,14 +1075,14 @@ fn main() -> anyhow::Result<()> {
 
     progress.start_stage("Texture mip bake...");
     let stage_start = Instant::now();
-    let prm_cache_root = resolve_prm_cache_root_via_cargo(&args.input);
+    let prm_root = resolve_prm_root_via_cargo(&args.input);
     let name_to_key = texture_mips::bake_texture_mips(
         &geo_result.texture_names.names,
         &texture_root,
-        &prm_cache_root,
+        &prm_root,
     )?;
     let content_root = resolve_content_root(&args.input);
-    bake_model_textures(&map_data.map_entities, &content_root, &prm_cache_root);
+    bake_model_textures(&map_data.map_entities, &content_root, &prm_root);
     timings.push(("TextureMips", stage_start.elapsed()));
 
     progress.start_stage("Packing and writing...");
@@ -1054,6 +1170,11 @@ struct Args {
     /// the warm/cold branches need no change — both flags route the stage cache
     /// to `None`. Passing both is fine (identical effect, no conflict).
     release: bool,
+    /// When true, store the baked lightmap irradiance atlas uncompressed as
+    /// `Rgba16Float` instead of the default BC6H. BC6H is the default (smaller
+    /// on disk and in VRAM); the uncompressed form is larger and exists for
+    /// debugging and quality comparison against the compressed path.
+    uncompressed_irradiance: bool,
 }
 
 fn parse_args() -> anyhow::Result<Args> {
@@ -1084,6 +1205,7 @@ fn help_text() -> String {
          --cache-max-size <SIZE>    LRU budget for the stage cache, pruned at build start; accepts e.g. 2GiB, 512MiB, or a byte count (default: {cache_max})\n    \
          --no-cache                 Disable the stage cache entirely; wins over --cache-dir (default: off)\n    \
          --release                  Produce a shippable map: exact lighting, cache bypassed (implies --no-cache). The interactive default is a fast warm build with approximate indirect lighting; ship only --release artifacts (default: off)\n    \
+         --uncompressed-irradiance  Store the lightmap irradiance atlas uncompressed as Rgba16Float instead of BC6H — larger; for debugging/quality comparison (default: off, BC6H)\n    \
          -h, --help                 Print this help and exit\n",
         probe = sh_bake::DEFAULT_PROBE_SPACING,
         density = lightmap_bake::DEFAULT_TEXEL_DENSITY_METERS,
@@ -1115,6 +1237,7 @@ where
     let mut cache_max_bytes = cache::DEFAULT_MAX_BYTES;
     let mut no_cache = false;
     let mut release = false;
+    let mut uncompressed_irradiance = false;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -1208,6 +1331,9 @@ where
             "--release" => {
                 release = true;
             }
+            "--uncompressed-irradiance" => {
+                uncompressed_irradiance = true;
+            }
             _ if input.is_none() => {
                 input = Some(PathBuf::from(arg));
             }
@@ -1241,6 +1367,7 @@ where
         cache_max_bytes,
         no_cache,
         release,
+        uncompressed_irradiance,
     })
 }
 
@@ -1656,7 +1783,7 @@ mod tests {
             map_entity("prop_mesh", &[("model", "models/second.gltf")]),
         ];
         let content_root = Path::new("content/base");
-        let cache_root = Path::new(".build-caches/prm-cache");
+        let cache_root = Path::new("baked/materials");
         let shared = PathBuf::from("content/base/models/shared.png");
         let first_only = PathBuf::from("content/base/models/first.png");
         let unreadable = PathBuf::from("content/base/models/unreadable.png");
@@ -1742,6 +1869,44 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
+    /// The compiler (writer) and runtime (reader) derive the `.prm` root by two
+    /// different walks — the compiler finds the workspace via a `Cargo.toml`
+    /// ancestor, the runtime goes two parents up from `content_root`. In the dev
+    /// layout both MUST land on `<workspace>/baked/materials`; if they diverge,
+    /// every world texture silently degrades to a placeholder. This guards that
+    /// invariant by reproducing the runtime's two-parent walk inline (its
+    /// function lives in the `postretro` crate and is not importable here).
+    #[test]
+    fn prm_root_writer_and_reader_agree_in_dev_layout() {
+        let workspace = unique_temp_dir("prm-root-agreement");
+        let content_root = workspace.join("content").join("base");
+        let maps_dir = content_root.join("maps");
+        std::fs::create_dir_all(&maps_dir).unwrap();
+        // The compiler resolver walks up to the nearest `Cargo.toml`.
+        std::fs::write(workspace.join("Cargo.toml"), "[workspace]\n").unwrap();
+
+        let map_path = maps_dir.join("level.map");
+        let expected = workspace.join("baked").join("materials");
+
+        // Writer side: prl-build.
+        let writer_root = resolve_prm_root_via_cargo(&map_path);
+        assert_eq!(writer_root, expected);
+
+        // Reader side: mirror of `derive_prm_root_dev_layout`
+        // (crates/postretro/src/startup/worker.rs) — two parents up from
+        // `content_root`, then `baked/materials`.
+        let reader_root = content_root
+            .parent()
+            .and_then(|c| c.parent())
+            .unwrap_or(content_root.as_path())
+            .join("baked")
+            .join("materials");
+        assert_eq!(reader_root, expected);
+        assert_eq!(writer_root, reader_root);
+
+        std::fs::remove_dir_all(&workspace).unwrap();
+    }
+
     #[test]
     fn parse_args_basic() {
         let args = vec!["input.map".to_string()];
@@ -1807,6 +1972,26 @@ mod tests {
         let args = vec!["input.map".to_string(), "--verbose".to_string()];
         let parsed = parse_args_from(args.into_iter()).unwrap();
         assert!(parsed.verbose);
+    }
+
+    #[test]
+    fn parse_args_uncompressed_irradiance_flag() {
+        let args = vec!["input.map".to_string()];
+        let parsed = parse_args_from(args.into_iter()).unwrap();
+        assert!(
+            !parsed.uncompressed_irradiance,
+            "irradiance should default to compressed (BC6H)"
+        );
+
+        let args = vec![
+            "input.map".to_string(),
+            "--uncompressed-irradiance".to_string(),
+        ];
+        let parsed = parse_args_from(args.into_iter()).unwrap();
+        assert!(
+            parsed.uncompressed_irradiance,
+            "--uncompressed-irradiance should set the flag"
+        );
     }
 
     #[test]
@@ -2165,6 +2350,76 @@ mod tests {
             "source_path should reference the .luau file, got: {}",
             section.source_path
         );
+    }
+
+    #[test]
+    fn output_dir_existing_parent_proceeds() {
+        // Parent exists → nothing to create (the common case, zero prompts).
+        let out = PathBuf::from("/some/existing/out.prl");
+        assert_eq!(output_dir_to_create(&out, true), None);
+    }
+
+    #[test]
+    fn output_dir_bare_filename_proceeds() {
+        // No parent component → current directory, which always exists.
+        let out = PathBuf::from("out.prl");
+        assert_eq!(output_dir_to_create(&out, false), None);
+    }
+
+    #[test]
+    fn output_dir_missing_parent_returns_dir() {
+        // Missing parent → returns the directory that must be created.
+        let out = PathBuf::from("/some/missing/out.prl");
+        assert_eq!(
+            output_dir_to_create(&out, false),
+            Some(PathBuf::from("/some/missing"))
+        );
+    }
+
+    #[test]
+    fn dir_answer_yes_variants_create() {
+        for yes in ["y", "yes", "Y", "YES", "  yes  ", "Yes\n"] {
+            assert_eq!(
+                parse_dir_answer(Some(yes)),
+                DirAnswer::Create,
+                "answer {yes:?} should map to Create"
+            );
+        }
+    }
+
+    #[test]
+    fn dir_answer_bare_enter_is_default_create() {
+        // `[Y/n]` means Enter == Yes. A bare newline (empty trimmed) creates.
+        assert_eq!(parse_dir_answer(Some("\n")), DirAnswer::Create);
+        assert_eq!(parse_dir_answer(Some("")), DirAnswer::Create);
+    }
+
+    #[test]
+    fn dir_answer_no_variants_abort() {
+        for no in ["n", "no", "N", "NO", "  no  ", "No\n"] {
+            assert_eq!(
+                parse_dir_answer(Some(no)),
+                DirAnswer::Abort,
+                "answer {no:?} should map to Abort"
+            );
+        }
+    }
+
+    #[test]
+    fn dir_answer_eof_aborts() {
+        // None models EOF (read_line returned 0 bytes) → abort, never hang/loop.
+        assert_eq!(parse_dir_answer(None), DirAnswer::Abort);
+    }
+
+    #[test]
+    fn dir_answer_garbage_reprompts() {
+        for junk in ["maybe", "q", "1", "y e s"] {
+            assert_eq!(
+                parse_dir_answer(Some(junk)),
+                DirAnswer::Reprompt,
+                "answer {junk:?} should re-prompt rather than guess"
+            );
+        }
     }
 
     // The per-light lightmap-layer and per-group SH cache wiring is exercised by

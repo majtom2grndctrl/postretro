@@ -88,9 +88,9 @@ risks the 8192² cap and an automatic density-halving fallback.
 
 All world materials resolve from `content/dev/textures/50-free-textures` at
 **compile** time and are baked into per-texture `.prm` mip sidecars under
-`.build-caches/prm-cache/` (content-addressed by PNG hash). The `.prl` stores
+`baked/materials/` (content-addressed by PNG hash). The `.prl` stores
 only the blake3 *keys*, **not** the pixels. So a `.prl` run on a machine whose
-`.build-caches/prm-cache/` lacks those sidecars shows the missing-texture
+`baked/materials/` lacks those sidecars shows the missing-texture
 checkerboard — and shows it *partially* if some sidecars happen to be cached from
 other maps (e.g. `concrete_pavement_036` is shared with `campaign-test`). This is
 not a misspelled-name problem; every name above is verified to resolve.

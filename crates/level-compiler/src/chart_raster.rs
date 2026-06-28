@@ -29,9 +29,8 @@ pub struct ChartPlacement {
     pub x: u32,
     pub y: u32,
     /// Atlas array layer this chart landed on. The atlas is a `texture_2d_array`;
-    /// a chart that overflows one layer's `(x, y)` plane spills onto the next.
-    /// The single-bin `shelf_pack` only ever emits layer 0; the multi-bin packer
-    /// (Task 3b) assigns higher layers.
+    /// the multi-bin packer (`pack_layers`) keeps all of one BSP leaf's charts on
+    /// a single layer and spills a leaf onto the next layer when it doesn't fit.
     pub layer: u32,
 }
 

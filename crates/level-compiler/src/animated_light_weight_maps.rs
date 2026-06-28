@@ -172,11 +172,10 @@ fn bake_one_chunk(
     let placement = inputs.face_placements[face_index];
 
     // Animated weight maps are single-layer: their atlas covers only layer 0.
-    // A face that the packer spilled onto a higher layer (Task 3b, on overflow
+    // A face that the multi-bin packer spilled onto a higher layer (on overflow
     // maps) has no animated atlas slot, so skip it — a degenerate 1×1 zero-count
     // rect contributes nothing. NOT an assert: faces on layers >= 1 legitimately
-    // exist once 3b lands, and aborting the bake on them would be wrong. In this
-    // phase `shelf_pack` only emits layer 0, so nothing is skipped.
+    // exist, and aborting the bake on them would be wrong.
     if placement.layer != 0 {
         return ChunkBakeResult {
             rect: ChunkAtlasRect {
@@ -1266,6 +1265,7 @@ mod tests {
             normal: glam::Vec3::Y,
             width_texels: 8,
             height_texels: 8,
+            leaf_index: 0,
         };
         let placement = ChartPlacement { x: 0, y: 0, layer: 0 };
         let atlas_size = 64u32;
@@ -1340,6 +1340,7 @@ mod tests {
             normal: glam::Vec3::Y,
             width_texels: 3,
             height_texels: 322,
+            leaf_index: 0,
         };
         let placement = ChartPlacement { x: 0, y: 0, layer: 0 };
         let atlas_size = 4096u32;
@@ -1381,6 +1382,7 @@ mod tests {
             normal: glam::Vec3::Y,
             width_texels: 8,
             height_texels: 8,
+            leaf_index: 0,
         };
         let atlas_size = 64u32;
 

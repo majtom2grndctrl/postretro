@@ -241,48 +241,6 @@ fn resolve_lightmap_density(cli: Option<f32>, kvp: Option<f32>) -> f32 {
         .unwrap_or(lightmap_bake::DEFAULT_TEXEL_DENSITY_METERS)
 }
 
-/// Prepare the shared lightmap atlas for the warm per-light layer path, applying
-/// the same atlas-overflow density-halving retry the cold monolithic bake uses.
-///
-/// `prepare_atlas` plans charts, shelf-packs, and assigns lightmap UVs into the
-/// geometry exactly as the cold bake's internal `prepare_atlas` call does; on
-/// `AtlasOverflow` it doubles the texel density and re-prepares (up to
-/// `MAX_RETRIES`), mirroring the cold path's loop so both modes converge on the
-/// same density and chart layout. Returns the prepared atlas plus the density it
-/// was prepared at (the value all downstream stages must use as authoritative).
-fn prepare_lightmap_atlas_with_retry(
-    geometry: &mut geometry::GeometryResult,
-    static_lights: &light_namespaces::StaticBakedLights<'_>,
-    start_density: f32,
-) -> anyhow::Result<(lightmap_bake::PreparedAtlas, f32)> {
-    const MAX_RETRIES: u32 = 3;
-    let mut density = start_density;
-    let mut attempt = 0;
-    loop {
-        match lightmap_bake::prepare_atlas(geometry, static_lights, density) {
-            Ok(prepared) => return Ok((prepared, density)),
-            Err(lightmap_bake::LightmapBakeError::AtlasOverflow {
-                max,
-                needed_w,
-                needed_h,
-                ..
-            }) if attempt < MAX_RETRIES => {
-                let next = density * 2.0;
-                let retries_left = MAX_RETRIES - attempt - 1;
-                log::warn!(
-                    "Lightmap atlas overflow at {density} m/texel \
-                     (computed {needed_w}x{needed_h} px, limit {max}x{max} px); \
-                     retrying at {next} m/texel ({retries_left} retr{} remaining)",
-                    if retries_left == 1 { "y" } else { "ies" }
-                );
-                density = next;
-                attempt += 1;
-            }
-            Err(e) => return Err(anyhow::anyhow!("Lightmap atlas prepare failed: {e}")),
-        }
-    }
-}
-
 fn main() -> anyhow::Result<()> {
     let started = Instant::now();
     let args = parse_args()?;
@@ -519,11 +477,13 @@ fn main() -> anyhow::Result<()> {
         // hits, only edited lights re-bake — then composites/dilates/encodes. Either
         // way the composite equals the monolithic `bake_face_chart` output bit-for-bit,
         // so the only difference from the cold path is cache reuse, not different output.
-        let (prepared, density) = prepare_lightmap_atlas_with_retry(
-            &mut geo_result,
-            &static_baked_lights,
-            lightmap_config.lightmap_density,
-        )?;
+        // The multi-bin packer opens new array layers instead of failing on
+        // atlas area, so there is no density-coarsening retry — prepare once at
+        // the fixed density.
+        let density = lightmap_config.lightmap_density;
+        let prepared =
+            lightmap_bake::prepare_atlas(&mut geo_result, &static_baked_lights, density)
+                .map_err(|e| anyhow::anyhow!("Lightmap atlas prepare failed: {e}"))?;
         final_lightmap_density = density;
 
         // Mirror `bake_lightmap`'s placeholder branch: with no static lights or no
@@ -665,51 +625,26 @@ fn main() -> anyhow::Result<()> {
         }
     } else {
         // Cold / exact path (`--no-cache`): the monolithic whole-atlas bake, the
-        // shippable source of truth. No layer reads/writes.
-        const MAX_RETRIES: u32 = 3;
-        let mut density = lightmap_config.lightmap_density;
-        let mut attempt = 0;
-        loop {
-            let mut lm_ctx = lightmap_bake::LightmapBakeCtx {
-                bvh: &bvh,
-                primitives: &bvh_primitives,
-                geometry: &mut geo_result,
-                lights: &static_baked_lights,
-            };
-            match lightmap_bake::bake_lightmap(
-                &mut lm_ctx,
-                &lightmap_bake::LightmapConfig {
-                    lightmap_density: density,
-                    area_sample_count: args.soft_shadow_samples,
-                    uncompressed_irradiance: false,
-                },
-            ) {
-                Ok(result) => {
-                    final_lightmap_density = density;
-                    break result;
-                }
-                Err(lightmap_bake::LightmapBakeError::AtlasOverflow {
-                    max,
-                    needed_w,
-                    needed_h,
-                    ..
-                }) if attempt < MAX_RETRIES => {
-                    let next = density * 2.0;
-                    let retries_left = MAX_RETRIES - attempt - 1;
-                    log::warn!(
-                        "Lightmap atlas overflow at {density} m/texel \
-                         (computed {needed_w}x{needed_h} px, limit {max}x{max} px); \
-                         retrying at {next} m/texel ({retries_left} retr{} remaining)",
-                        if retries_left == 1 { "y" } else { "ies" }
-                    );
-                    density = next;
-                    attempt += 1;
-                }
-                Err(e) => {
-                    return Err(anyhow::anyhow!("Lightmap bake failed: {e}"));
-                }
-            }
-        }
+        // shippable source of truth. No layer reads/writes. The multi-bin packer
+        // opens new array layers instead of failing on atlas area, so there is no
+        // density-coarsening retry — bake once at the fixed density.
+        let density = lightmap_config.lightmap_density;
+        final_lightmap_density = density;
+        let mut lm_ctx = lightmap_bake::LightmapBakeCtx {
+            bvh: &bvh,
+            primitives: &bvh_primitives,
+            geometry: &mut geo_result,
+            lights: &static_baked_lights,
+        };
+        lightmap_bake::bake_lightmap(
+            &mut lm_ctx,
+            &lightmap_bake::LightmapConfig {
+                lightmap_density: density,
+                area_sample_count: args.soft_shadow_samples,
+                uncompressed_irradiance: false,
+            },
+        )
+        .map_err(|e| anyhow::anyhow!("Lightmap bake failed: {e}"))?
     };
     timings.push(("Lightmap Bake", stage_start.elapsed()));
     let lightmap_bake::LightmapBakeOutput {

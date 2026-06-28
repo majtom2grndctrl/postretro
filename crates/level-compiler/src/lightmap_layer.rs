@@ -211,8 +211,8 @@ pub fn bake_light_layer(
     let mut texels: Vec<LayerTexel> = Vec::new();
 
     // The atlas array layer count: the highest layer any chart landed on, plus
-    // one. `shelf_pack` is single-bin (all charts on layer 0), so this is 1 today;
-    // Task 3b's multi-bin packer spills onto higher layers.
+    // one. The multi-bin packer (`pack_layers`) spills leaves onto higher layers,
+    // so this is `1` only when every chart fits a single layer.
     let layer_count = atlas
         .placements
         .iter()

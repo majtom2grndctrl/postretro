@@ -33,6 +33,12 @@ const MIN_ATLAS_DIMENSION: u32 = 64;
 /// (see `crates/postretro/src/renderer_init_resources.rs`'s adapter pre-check) and fits ~328 m at 4 cm/texel.
 const MAX_ATLAS_DIMENSION: u32 = 8192;
 
+/// Maximum atlas array layers. The atlas is a `texture_2d_array`; the multi-bin
+/// packer opens a new layer whenever a BVH leaf's charts don't fit the current
+/// one. Beyond this the packer errors so the caller can coarsen density or split
+/// the map. 256 is the `max_texture_array_layers` floor the runtime requires.
+const MAX_ATLAS_LAYERS: u32 = 256;
+
 /// Shadow ray self-intersection offset. `pub(crate)` so the animated weight-map baker uses the
 /// same value — both bakers must agree or chunk boundaries show seams.
 pub(crate) const RAY_EPSILON: f32 = 1.0e-3;
@@ -51,15 +57,10 @@ const SAMPLING_LATTICE_OFFSET: u64 = 0x5048_4542_414b_4552; // "PHBAKER"
 #[derive(Debug, Error)]
 pub enum LightmapBakeError {
     #[error(
-        "lightmap atlas overflow: charts do not fit in {max}x{max} at {density_m_per_texel} m/texel \
-         (needed {needed_w}x{needed_h}); raise `texel_density` or split the map"
+        "lightmap atlas layer overflow: packing the charts needs {layer_count} array layers \
+         but the atlas supports at most {max}; raise `texel_density` or split the map"
     )]
-    AtlasOverflow {
-        max: u32,
-        needed_w: u32,
-        needed_h: u32,
-        density_m_per_texel: f32,
-    },
+    LayerOverflow { layer_count: u32, max: u32 },
     #[error(
         "lightmap chart too large: face {face_index} needs {width_texels}x{height_texels} texels at \
          {density_m_per_texel} m/texel (limit {max}); face extent {u_extent_m} x {v_extent_m} m. \
@@ -248,13 +249,13 @@ pub struct PreparedAtlas {
     pub placements: Vec<ChartPlacement>,
     pub atlas_width: u32,
     pub atlas_height: u32,
-    /// Number of atlas array layers the packer produced. `1` while `shelf_pack`
-    /// is the single-bin packer; the multi-bin packer (Task 3b) reports more.
+    /// Number of atlas array layers the multi-bin packer produced — `1` when
+    /// every chart fits a single layer, more when a leaf spills onto a new one.
     pub layer_count: u32,
 }
 
 /// Prepare atlas charts and assign lightmap UVs into geometry. Runs
-/// `split_shared_vertices`, `plan_charts`, `shelf_pack`, and
+/// `split_shared_vertices`, `plan_charts`, `pack_layers`, and
 /// `assign_lightmap_uvs`. Does NOT run the per-texel ray casting.
 ///
 /// Called once before either bake branch — the warm per-light composite path
@@ -284,16 +285,21 @@ pub fn prepare_atlas(
         // skipped because the empty bake path returns a placeholder section that no atlas
         // sampling consumes.
         let charts = plan_charts(geom, texel_density);
-        let (atlas_w, atlas_h, placements) = match shelf_pack(&charts, texel_density) {
+        let pack = match pack_layers(&charts, MAX_ATLAS_DIMENSION) {
             Ok(p) => p,
-            Err(_) => (1, 1, Vec::new()),
+            Err(_) => PackOutput {
+                layer_count: 1,
+                atlas_width: 1,
+                atlas_height: 1,
+                placements: Vec::new(),
+            },
         };
         return Ok(PreparedAtlas {
             charts,
-            placements,
-            atlas_width: atlas_w,
-            atlas_height: atlas_h,
-            layer_count: 1,
+            placements: pack.placements,
+            atlas_width: pack.atlas_width,
+            atlas_height: pack.atlas_height,
+            layer_count: pack.layer_count,
         });
     }
 
@@ -302,39 +308,27 @@ pub fn prepare_atlas(
 
     let charts = plan_charts(geom, texel_density);
 
-    for (face_index, chart) in charts.iter().enumerate() {
-        if chart.width_texels > MAX_ATLAS_DIMENSION || chart.height_texels > MAX_ATLAS_DIMENSION {
-            return Err(LightmapBakeError::ChartTooLarge {
-                face_index,
-                width_texels: chart.width_texels,
-                height_texels: chart.height_texels,
-                max: MAX_ATLAS_DIMENSION,
-                u_extent_m: chart.uv_extent[0],
-                v_extent_m: chart.uv_extent[1],
-                density_m_per_texel: texel_density,
-            });
-        }
-    }
-
-    let (atlas_w, atlas_h, placements) = shelf_pack(&charts, texel_density)?;
-    if placements.is_empty() {
+    // `pack_layers` owns the `ChartTooLarge` check against its `max_dim`, so the
+    // pre-pack loop that duplicated it is gone — one source of truth.
+    let pack = pack_layers(&charts, MAX_ATLAS_DIMENSION)?;
+    if pack.placements.is_empty() {
         return Ok(PreparedAtlas {
             charts,
-            placements,
-            atlas_width: atlas_w,
-            atlas_height: atlas_h,
-            layer_count: 1,
+            placements: pack.placements,
+            atlas_width: pack.atlas_width,
+            atlas_height: pack.atlas_height,
+            layer_count: pack.layer_count,
         });
     }
 
-    assign_lightmap_uvs(geom, &charts, &placements, atlas_w, atlas_h);
+    assign_lightmap_uvs(geom, &charts, &pack);
 
     Ok(PreparedAtlas {
         charts,
-        placements,
-        atlas_width: atlas_w,
-        atlas_height: atlas_h,
-        layer_count: 1,
+        placements: pack.placements,
+        atlas_width: pack.atlas_width,
+        atlas_height: pack.atlas_height,
+        layer_count: pack.layer_count,
     })
 }
 
@@ -543,6 +537,11 @@ pub struct Chart {
     /// Includes padding.
     pub width_texels: u32,
     pub height_texels: u32,
+    /// BSP leaf this chart's face belongs to. The multi-bin packer keeps all of
+    /// one leaf's charts on a single atlas array layer (a leaf is the runtime
+    /// draw/visibility unit, so its charts must share a layer to avoid a
+    /// per-face layer switch in the hot path).
+    pub leaf_index: u32,
 }
 
 fn plan_charts(geom: &GeometryResult, texel_density: f32) -> Vec<Chart> {
@@ -550,10 +549,15 @@ fn plan_charts(geom: &GeometryResult, texel_density: f32) -> Vec<Chart> {
     let section = &geom.geometry;
 
     let mut charts = Vec::with_capacity(section.faces.len());
-    for range in geom.face_index_ranges.iter() {
+    for (face_index, range) in geom.face_index_ranges.iter().enumerate() {
+        // Charts map 1:1 with faces, so the chart's leaf is its face's leaf.
+        let leaf_index = section.faces[face_index].leaf_index;
         let start = range.index_offset as usize;
+        // A degenerate face still belongs to its leaf, so its placeholder chart
+        // carries the real `leaf_index` — keeping the leaf's charts cohesive in
+        // the packer even when one face is degenerate.
         if range.index_count < 3 {
-            charts.push(empty_chart());
+            charts.push(empty_chart_for_leaf(leaf_index));
             continue;
         }
 
@@ -568,7 +572,7 @@ fn plan_charts(geom: &GeometryResult, texel_density: f32) -> Vec<Chart> {
         let edge2 = p2 - p0;
         let normal_raw = edge1.cross(edge2);
         if normal_raw.length_squared() < 1.0e-12 {
-            charts.push(empty_chart());
+            charts.push(empty_chart_for_leaf(leaf_index));
             continue;
         }
         // Prefer the stored vertex normal: the cross-product direction depends on winding and can
@@ -587,12 +591,12 @@ fn plan_charts(geom: &GeometryResult, texel_density: f32) -> Vec<Chart> {
 
         let u_axis = edge1.normalize_or_zero();
         if u_axis.length_squared() < 0.5 {
-            charts.push(empty_chart());
+            charts.push(empty_chart_for_leaf(leaf_index));
             continue;
         }
         let v_axis = normal.cross(u_axis).normalize_or_zero();
         if v_axis.length_squared() < 0.5 {
-            charts.push(empty_chart());
+            charts.push(empty_chart_for_leaf(leaf_index));
             continue;
         }
 
@@ -649,12 +653,15 @@ fn plan_charts(geom: &GeometryResult, texel_density: f32) -> Vec<Chart> {
             normal,
             width_texels,
             height_texels,
+            leaf_index,
         });
     }
     charts
 }
 
-fn empty_chart() -> Chart {
+/// Placeholder chart for a degenerate face. Carries the face's `leaf_index` so
+/// the packer keeps the leaf's charts cohesive even when one face degenerates.
+fn empty_chart_for_leaf(leaf_index: u32) -> Chart {
     Chart {
         origin: Vec3::ZERO,
         u_axis: Vec3::X,
@@ -664,131 +671,384 @@ fn empty_chart() -> Chart {
         normal: Vec3::Y,
         width_texels: 1,
         height_texels: 1,
+        leaf_index,
     }
 }
 
-/// Shelf-pack charts into an atlas. Returns `(atlas_width, atlas_height, placements)` in the
-/// same order as `charts`. Grows width on overflow; errors when at `MAX_ATLAS_DIMENSION` —
-/// silent clamping would produce out-of-bounds texel writes in the bake and dilation loops.
-fn shelf_pack(
-    charts: &[Chart],
-    texel_density: f32,
-) -> Result<(u32, u32, Vec<ChartPlacement>), LightmapBakeError> {
+/// Result of multi-bin atlas packing. All layers share one `(atlas_width,
+/// atlas_height)` — a `texture_2d_array` has a single per-layer dimension across
+/// every layer — and each placement carries the layer its chart landed on.
+/// `placements` is parallel to the input `charts`.
+#[derive(Debug)]
+pub struct PackOutput {
+    pub layer_count: u32,
+    pub atlas_width: u32,
+    pub atlas_height: u32,
+    pub placements: Vec<ChartPlacement>,
+}
+
+/// Round a raw texel extent up to the packer's dimension contract: power-of-two,
+/// a multiple of 4 (BC6H block alignment — a pow2 ≥ 4 is 4-aligned for free),
+/// and within `[MIN_ATLAS_DIMENSION, max_dim]`.
+fn round_atlas_dim(raw: u32, max_dim: u32) -> u32 {
+    raw.max(MIN_ATLAS_DIMENSION)
+        .next_power_of_two()
+        .min(max_dim)
+}
+
+/// Pack charts into a multi-layer atlas with leaf-aware MaxRects binning.
+///
+/// `max_dim` bounds each layer's width and height (production passes
+/// [`MAX_ATLAS_DIMENSION`]; tests pass a small value). Every chart's largest
+/// side must be `≤ max_dim` or [`LightmapBakeError::ChartTooLarge`] is returned
+/// (this is the single source of truth for that check). The number of layers is
+/// capped at [`MAX_ATLAS_LAYERS`]; exceeding it yields
+/// [`LightmapBakeError::LayerOverflow`].
+///
+/// Leaf cohesion is a hard invariant: all charts of one BVH leaf land on a
+/// single layer (a leaf is the runtime draw/visibility unit, so straddling a
+/// layer boundary would force a per-face layer switch in the hot path). A leaf
+/// is packed as a unit into the current layer's free rectangles; if it doesn't
+/// all fit, the WHOLE leaf rolls to a fresh layer — partial placements from the
+/// failed attempt are discarded.
+///
+/// The shared `(atlas_width, atlas_height)` is sized to host the largest single
+/// leaf in one layer (grown by doubling, capped at `max_dim`), so no leaf is
+/// ever forced to split for want of room within a layer.
+fn pack_layers(charts: &[Chart], max_dim: u32) -> Result<PackOutput, LightmapBakeError> {
     if charts.is_empty() {
-        return Ok((MIN_ATLAS_DIMENSION, MIN_ATLAS_DIMENSION, Vec::new()));
+        return Ok(PackOutput {
+            layer_count: 1,
+            atlas_width: MIN_ATLAS_DIMENSION,
+            atlas_height: MIN_ATLAS_DIMENSION,
+            placements: Vec::new(),
+        });
     }
 
-    let mut order: Vec<usize> = (0..charts.len()).collect();
-    order.sort_by(|&a, &b| charts[b].height_texels.cmp(&charts[a].height_texels));
-
-    let total_area: u64 = charts
-        .iter()
-        .map(|c| (c.width_texels as u64) * (c.height_texels as u64))
-        .sum();
-    let target_side = (total_area as f64).sqrt().ceil() as u32;
-    let mut atlas_w = target_side.max(MIN_ATLAS_DIMENSION).next_power_of_two();
-    atlas_w = atlas_w.min(MAX_ATLAS_DIMENSION);
-
-    // Widen if any individual chart is wider than the current estimate. Caller already validated
-    // charts against MAX_ATLAS_DIMENSION so this cannot exceed the cap.
-    for c in charts {
-        if c.width_texels > atlas_w {
-            atlas_w = c.width_texels.next_power_of_two().min(MAX_ATLAS_DIMENSION);
+    // ChartTooLarge is now owned here: a single chart wider/taller than a layer
+    // can never be placed, regardless of how many layers we open.
+    for (face_index, chart) in charts.iter().enumerate() {
+        if chart.width_texels > max_dim || chart.height_texels > max_dim {
+            return Err(LightmapBakeError::ChartTooLarge {
+                face_index,
+                width_texels: chart.width_texels,
+                height_texels: chart.height_texels,
+                max: max_dim,
+                u_extent_m: chart.uv_extent[0],
+                v_extent_m: chart.uv_extent[1],
+                // `pack_layers` is density-agnostic; the caller knows the density
+                // it packed at. Report 0.0 here — the field is informational and
+                // the caller surfaces its own density in logs.
+                density_m_per_texel: 0.0,
+            });
         }
     }
 
+    // Group chart indices by leaf, preserving first-seen order so packing is
+    // deterministic (no HashMap iteration leaking into placement). Each group is
+    // a contiguous unit the packer places together.
+    let leaves = group_charts_by_leaf(charts);
+
+    // Size the shared per-layer dimension to fit the largest leaf in a single
+    // layer. Start from a square that covers each leaf's total area and largest
+    // chart side, then grow (doubling) until every leaf packs alone.
+    let atlas_dim = choose_layer_dim(charts, &leaves, max_dim);
+
+    // Pack leaves into layers. Each leaf tries the current layer's MaxRects free
+    // list; a leaf that doesn't fit rolls whole to a new layer.
+    let mut placements = vec![ChartPlacement { x: 0, y: 0, layer: 0 }; charts.len()];
+    let mut layer: u32 = 0;
+    let mut packer = MaxRects::new(atlas_dim, atlas_dim);
+
+    for leaf in &leaves {
+        if !place_leaf(&mut packer, charts, leaf, layer, &mut placements) {
+            // The leaf didn't fit in the current layer — open a fresh one and
+            // place the whole leaf there. Sizing guarantees a leaf fits an empty
+            // layer, so this single retry always succeeds.
+            layer += 1;
+            if layer >= MAX_ATLAS_LAYERS {
+                return Err(LightmapBakeError::LayerOverflow {
+                    layer_count: layer + 1,
+                    max: MAX_ATLAS_LAYERS,
+                });
+            }
+            packer = MaxRects::new(atlas_dim, atlas_dim);
+            let fit = place_leaf(&mut packer, charts, leaf, layer, &mut placements);
+            debug_assert!(fit, "leaf must fit an empty layer at the chosen dimension");
+        }
+    }
+
+    Ok(PackOutput {
+        layer_count: layer + 1,
+        atlas_width: atlas_dim,
+        atlas_height: atlas_dim,
+        placements,
+    })
+}
+
+/// Group chart indices by `leaf_index`, preserving first-seen leaf order. Charts
+/// arrive leaf-ordered from `extract_geometry`, so this is usually contiguous,
+/// but the grouping does not rely on that.
+fn group_charts_by_leaf(charts: &[Chart]) -> Vec<Vec<usize>> {
+    let mut order: Vec<u32> = Vec::new();
+    let mut groups: std::collections::HashMap<u32, Vec<usize>> = std::collections::HashMap::new();
+    for (i, c) in charts.iter().enumerate() {
+        groups.entry(c.leaf_index).or_insert_with(|| {
+            order.push(c.leaf_index);
+            Vec::new()
+        });
+        groups.get_mut(&c.leaf_index).unwrap().push(i);
+    }
+    order
+        .into_iter()
+        .map(|leaf| groups.remove(&leaf).unwrap())
+        .collect()
+}
+
+/// Choose the shared per-layer square dimension. It must host the largest single
+/// leaf in one layer, so we grow (doubling, 4-aligned pow2, capped at `max_dim`)
+/// until each leaf packs alone via MaxRects.
+fn choose_layer_dim(charts: &[Chart], leaves: &[Vec<usize>], max_dim: u32) -> u32 {
+    // Lower bound from the densest leaf: its total area and its widest/tallest
+    // chart both have to fit one layer.
+    let mut min_side = MIN_ATLAS_DIMENSION;
+    for leaf in leaves {
+        let area: u64 = leaf
+            .iter()
+            .map(|&i| charts[i].width_texels as u64 * charts[i].height_texels as u64)
+            .sum();
+        let side_from_area = (area as f64).sqrt().ceil() as u32;
+        let max_chart_side = leaf
+            .iter()
+            .map(|&i| charts[i].width_texels.max(charts[i].height_texels))
+            .max()
+            .unwrap_or(0);
+        min_side = min_side.max(side_from_area).max(max_chart_side);
+    }
+
+    let mut dim = round_atlas_dim(min_side, max_dim);
     loop {
-        match try_shelf_pack(charts, &order, atlas_w) {
-            Ok((atlas_h_raw, placements)) => {
-                let atlas_h = atlas_h_raw.max(MIN_ATLAS_DIMENSION).next_power_of_two();
-                if atlas_h > MAX_ATLAS_DIMENSION {
-                    if atlas_w >= MAX_ATLAS_DIMENSION {
-                        return Err(LightmapBakeError::AtlasOverflow {
-                            max: MAX_ATLAS_DIMENSION,
-                            needed_w: atlas_w,
-                            needed_h: atlas_h,
-                            density_m_per_texel: texel_density,
-                        });
-                    }
-                    atlas_w = (atlas_w * 2).min(MAX_ATLAS_DIMENSION);
-                    continue;
+        // A leaf fits this dimension if MaxRects places all its charts in one
+        // empty layer. The area lower bound is optimistic (ignores fragmentation),
+        // so confirm with a real pack and grow if any leaf overflows.
+        let all_fit = leaves.iter().all(|leaf| {
+            let mut packer = MaxRects::new(dim, dim);
+            leaf.iter().all(|&i| {
+                packer
+                    .insert(charts[i].width_texels, charts[i].height_texels)
+                    .is_some()
+            })
+        });
+        if all_fit || dim >= max_dim {
+            return dim;
+        }
+        dim = round_atlas_dim(dim + 1, max_dim);
+    }
+}
+
+/// Try to place all of `leaf`'s charts into `packer` (the current layer). On
+/// success, writes each placement at `layer` and returns `true`. On the first
+/// chart that doesn't fit, returns `false` WITHOUT mutating `placements` for the
+/// charts it did place — the caller rolls the whole leaf to a fresh layer, so
+/// any partial work in `packer` is discarded with the packer itself.
+fn place_leaf(
+    packer: &mut MaxRects,
+    charts: &[Chart],
+    leaf: &[usize],
+    layer: u32,
+    placements: &mut [ChartPlacement],
+) -> bool {
+    // Largest-first within the leaf packs big charts before the free list
+    // fragments — the standard MaxRects ordering for density.
+    let mut order: Vec<usize> = leaf.to_vec();
+    order.sort_by(|&a, &b| {
+        let area_a = charts[a].width_texels as u64 * charts[a].height_texels as u64;
+        let area_b = charts[b].width_texels as u64 * charts[b].height_texels as u64;
+        area_b
+            .cmp(&area_a)
+            // Tie-break on chart index so the order is fully deterministic.
+            .then(a.cmp(&b))
+    });
+
+    let mut staged: Vec<(usize, u32, u32)> = Vec::with_capacity(order.len());
+    for &i in &order {
+        match packer.insert(charts[i].width_texels, charts[i].height_texels) {
+            Some((x, y)) => staged.push((i, x, y)),
+            None => return false,
+        }
+    }
+    for (i, x, y) in staged {
+        placements[i] = ChartPlacement { x, y, layer };
+    }
+    true
+}
+
+/// MaxRects free-rectangle bin packer for one atlas layer. Maintains a list of
+/// maximal free rectangles; each insert picks the best-short-side-fit free rect,
+/// splits it, and prunes any free rects now contained in another. This is the
+/// genuine MaxRects algorithm (Jylänki 2010), not a shelf fallback, so it reaches
+/// the 85–95% density target on mixed chart sets.
+struct MaxRects {
+    free: Vec<Rect>,
+}
+
+#[derive(Clone, Copy)]
+struct Rect {
+    x: u32,
+    y: u32,
+    w: u32,
+    h: u32,
+}
+
+impl MaxRects {
+    fn new(width: u32, height: u32) -> Self {
+        MaxRects {
+            free: vec![Rect {
+                x: 0,
+                y: 0,
+                w: width,
+                h: height,
+            }],
+        }
+    }
+
+    /// Place a `w × h` rectangle, returning its top-left `(x, y)` on success.
+    /// Best-Short-Side-Fit: among free rects that can host it, pick the one
+    /// leaving the smallest leftover short side (ties broken by long side, then
+    /// position) for a deterministic, dense placement.
+    fn insert(&mut self, w: u32, h: u32) -> Option<(u32, u32)> {
+        let mut best: Option<(usize, u32, u32)> = None; // (free idx, short leftover, long leftover)
+        for (idx, r) in self.free.iter().enumerate() {
+            if r.w >= w && r.h >= h {
+                let leftover_x = r.w - w;
+                let leftover_y = r.h - h;
+                let short = leftover_x.min(leftover_y);
+                let long = leftover_x.max(leftover_y);
+                let better = match best {
+                    None => true,
+                    Some((_, bs, bl)) => short < bs || (short == bs && long < bl),
+                };
+                if better {
+                    best = Some((idx, short, long));
                 }
-                return Ok((atlas_w, atlas_h, placements));
             }
-            Err(()) => {
-                if atlas_w >= MAX_ATLAS_DIMENSION {
-                    return Err(LightmapBakeError::AtlasOverflow {
-                        max: MAX_ATLAS_DIMENSION,
-                        needed_w: atlas_w,
-                        needed_h: MAX_ATLAS_DIMENSION,
-                        density_m_per_texel: texel_density,
-                    });
+        }
+
+        let (idx, _, _) = best?;
+        let placed = Rect {
+            x: self.free[idx].x,
+            y: self.free[idx].y,
+            w,
+            h,
+        };
+
+        // Split every free rect that overlaps the placed rect into the maximal
+        // sub-rects that don't, then prune any free rect contained in another.
+        let mut i = 0;
+        while i < self.free.len() {
+            if let Some(splits) = split_free(&self.free[i], &placed) {
+                self.free.swap_remove(i);
+                self.free.extend(splits);
+            } else {
+                i += 1;
+            }
+        }
+        self.prune();
+
+        Some((placed.x, placed.y))
+    }
+
+    /// Drop any free rect fully contained in another — the maximality invariant
+    /// MaxRects relies on (without it the free list grows unbounded with
+    /// redundant rects).
+    fn prune(&mut self) {
+        let mut i = 0;
+        while i < self.free.len() {
+            let mut removed = false;
+            let mut j = 0;
+            while j < self.free.len() {
+                if i != j && contains(&self.free[j], &self.free[i]) {
+                    self.free.swap_remove(i);
+                    removed = true;
+                    break;
                 }
-                atlas_w = (atlas_w * 2).min(MAX_ATLAS_DIMENSION);
+                j += 1;
+            }
+            if !removed {
+                i += 1;
             }
         }
     }
 }
 
-/// One shelf-packing attempt at a fixed width. `Err(())` if a chart is wider than `atlas_w`.
-fn try_shelf_pack(
-    charts: &[Chart],
-    order: &[usize],
-    atlas_w: u32,
-) -> Result<(u32, Vec<ChartPlacement>), ()> {
-    // `shelf_pack` is single-bin: every chart lands on layer 0. Task 3b's
-    // multi-bin packer is what assigns higher layers.
-    let mut placements = vec![
-        ChartPlacement {
-            x: 0,
-            y: 0,
-            layer: 0
-        };
-        charts.len()
-    ];
-    let mut shelf_y: u32 = 0;
-    let mut shelf_x: u32 = 0;
-    let mut shelf_h: u32 = 0;
-
-    for &idx in order {
-        let c = &charts[idx];
-        let w = c.width_texels;
-        let h = c.height_texels;
-        if w > atlas_w {
-            return Err(());
-        }
-        if shelf_x + w > atlas_w {
-            shelf_y += shelf_h;
-            shelf_x = 0;
-            shelf_h = 0;
-        }
-        placements[idx] = ChartPlacement {
-            x: shelf_x,
-            y: shelf_y,
-            layer: 0,
-        };
-        shelf_x += w;
-        if h > shelf_h {
-            shelf_h = h;
-        }
-    }
-
-    Ok((shelf_y + shelf_h, placements))
+/// True if `outer` fully contains `inner`.
+fn contains(outer: &Rect, inner: &Rect) -> bool {
+    inner.x >= outer.x
+        && inner.y >= outer.y
+        && inner.x + inner.w <= outer.x + outer.w
+        && inner.y + inner.h <= outer.y + outer.h
 }
 
-fn assign_lightmap_uvs(
-    geom: &mut GeometryResult,
-    charts: &[Chart],
-    placements: &[ChartPlacement],
-    atlas_w: u32,
-    atlas_h: u32,
-) {
-    let atlas_w_f = atlas_w as f32;
-    let atlas_h_f = atlas_h as f32;
+/// If `placed` overlaps `free`, return the maximal sub-rects of `free` that lie
+/// outside `placed` (up to four: left, right, top, bottom slabs). Returns `None`
+/// when they don't overlap — `free` is left untouched.
+fn split_free(free: &Rect, placed: &Rect) -> Option<Vec<Rect>> {
+    let no_overlap = placed.x >= free.x + free.w
+        || placed.x + placed.w <= free.x
+        || placed.y >= free.y + free.h
+        || placed.y + placed.h <= free.y;
+    if no_overlap {
+        return None;
+    }
+
+    let mut out = Vec::with_capacity(4);
+    // Left slab.
+    if placed.x > free.x {
+        out.push(Rect {
+            x: free.x,
+            y: free.y,
+            w: placed.x - free.x,
+            h: free.h,
+        });
+    }
+    // Right slab.
+    if placed.x + placed.w < free.x + free.w {
+        out.push(Rect {
+            x: placed.x + placed.w,
+            y: free.y,
+            w: (free.x + free.w) - (placed.x + placed.w),
+            h: free.h,
+        });
+    }
+    // Bottom slab.
+    if placed.y > free.y {
+        out.push(Rect {
+            x: free.x,
+            y: free.y,
+            w: free.w,
+            h: placed.y - free.y,
+        });
+    }
+    // Top slab.
+    if placed.y + placed.h < free.y + free.h {
+        out.push(Rect {
+            x: free.x,
+            y: placed.y + placed.h,
+            w: free.w,
+            h: (free.y + free.h) - (placed.y + placed.h),
+        });
+    }
+    Some(out)
+}
+
+fn assign_lightmap_uvs(geom: &mut GeometryResult, charts: &[Chart], pack: &PackOutput) {
+    // All layers share one dimension; UVs normalize against that per-layer size.
+    let atlas_w_f = pack.atlas_width as f32;
+    let atlas_h_f = pack.atlas_height as f32;
     let ranges = geom.face_index_ranges.clone();
 
     for (face_index, chart) in charts.iter().enumerate() {
-        let placement = placements[face_index];
+        let placement = pack.placements[face_index];
         let range = ranges[face_index];
         let start = range.index_offset as usize;
         let end = start + range.index_count as usize;
@@ -822,6 +1082,9 @@ fn assign_lightmap_uvs(
                     (atlas_u * 65535.0 + 0.5) as u16,
                     (atlas_v * 65535.0 + 0.5) as u16,
                 ];
+                // Select the atlas array slice. `layer` is capped at
+                // `MAX_ATLAS_LAYERS` (256), well within the on-disk `u16`.
+                vert.lightmap_layer = placement.layer as u16;
             }
             tri += 3;
         }
@@ -2008,21 +2271,27 @@ mod tests {
     }
 
     #[test]
-    fn shelf_pack_is_deterministic() {
+    fn pack_layers_is_deterministic() {
         let geo = unit_quad_geometry();
         let charts = plan_charts(&geo, 0.25);
-        let (w1, h1, p1) = shelf_pack(&charts, 0.25).unwrap();
-        let (w2, h2, p2) = shelf_pack(&charts, 0.25).unwrap();
-        assert_eq!(w1, w2);
-        assert_eq!(h1, h2);
-        assert_eq!(p1.len(), p2.len());
-        for (a, b) in p1.iter().zip(p2.iter()) {
+        let p1 = pack_layers(&charts, MAX_ATLAS_DIMENSION).unwrap();
+        let p2 = pack_layers(&charts, MAX_ATLAS_DIMENSION).unwrap();
+        assert_eq!(p1.atlas_width, p2.atlas_width);
+        assert_eq!(p1.atlas_height, p2.atlas_height);
+        assert_eq!(p1.layer_count, p2.layer_count);
+        assert_eq!(p1.placements.len(), p2.placements.len());
+        for (a, b) in p1.placements.iter().zip(p2.placements.iter()) {
             assert_eq!(a.x, b.x);
             assert_eq!(a.y, b.y);
+            assert_eq!(a.layer, b.layer);
         }
     }
 
     fn synthetic_chart(w: u32, h: u32) -> Chart {
+        synthetic_chart_leaf(w, h, 0)
+    }
+
+    fn synthetic_chart_leaf(w: u32, h: u32, leaf_index: u32) -> Chart {
         Chart {
             origin: Vec3::ZERO,
             u_axis: Vec3::X,
@@ -2032,39 +2301,59 @@ mod tests {
             normal: Vec3::Y,
             width_texels: w,
             height_texels: h,
+            leaf_index,
         }
     }
 
-    /// Cap raise (Task 1): a chart set whose total area requires more than
-    /// 4096² but ≤ 8192² must pack at the new cap without coarsening. Both
-    /// axes stay power-of-two and ≤ the cap.
+    /// Leaf-aware multi-bin packing (Task 3b): when two BVH leaves' charts can't
+    /// all share one layer, the packer opens a second layer and keeps each leaf
+    /// whole on its own layer. Forces two layers by sizing each leaf to fill an
+    /// entire small `max_dim` atlas, so the second leaf cannot share the first
+    /// leaf's layer.
     #[test]
-    fn shelf_pack_uses_new_8192_cap_for_overflowing_set() {
-        // Many 256-wide, 4097-tall charts → atlas_h must exceed 4096 to host
-        // a single column; the old 4096 cap would have errored. With the new
-        // 8192 cap, the packer succeeds.
-        let charts: Vec<Chart> = (0..4).map(|_| synthetic_chart(256, 4097)).collect();
-        let (w, h, _) = shelf_pack(&charts, 0.04).expect("must pack under 8192 cap");
-        assert!(w <= 8192, "width must be within cap, got {w}");
-        assert!(h <= 8192, "height must be within cap, got {h}");
-        assert!(h > 4096, "height must have grown past the old 4096 cap");
-        assert!(w.is_power_of_two(), "width must be power-of-two, got {w}");
-        assert!(h.is_power_of_two(), "height must be power-of-two, got {h}");
-    }
+    fn pack_layers_opens_second_layer_keeping_each_leaf_cohesive() {
+        let max_dim = 64;
+        // Leaf 0: one 64×64 chart that fills the whole 64² layer. Leaf 1: two
+        // 64×32 charts that together fill a second 64² layer. Neither leaf can
+        // share a layer with the other.
+        let charts = vec![
+            synthetic_chart_leaf(64, 64, 0),
+            synthetic_chart_leaf(64, 32, 1),
+            synthetic_chart_leaf(64, 32, 1),
+        ];
 
-    /// Cap raise (Task 1): a chart set that exceeds 8192² still returns
-    /// `AtlasOverflow` so `main.rs`'s coarsen-retry loop kicks in.
-    #[test]
-    fn shelf_pack_overflows_past_8192_cap() {
-        // A single column of charts whose stacked height exceeds 8192.
-        let charts: Vec<Chart> = (0..3).map(|_| synthetic_chart(8192, 4096)).collect();
-        match shelf_pack(&charts, 0.04) {
-            Err(LightmapBakeError::AtlasOverflow { max, .. }) => {
-                assert_eq!(max, 8192, "AtlasOverflow must report the new cap");
+        let pack = pack_layers(&charts, max_dim).expect("must pack into two layers");
+
+        assert_eq!(pack.layer_count, 2, "two full leaves must span two layers");
+        assert_eq!(pack.atlas_width, 64);
+        assert_eq!(pack.atlas_height, 64);
+
+        // Every chart of a given leaf must land on exactly one layer.
+        let mut leaf_layers: std::collections::HashMap<u32, u32> =
+            std::collections::HashMap::new();
+        for (chart, placement) in charts.iter().zip(pack.placements.iter()) {
+            assert!(
+                placement.layer < pack.layer_count,
+                "layer {} out of range (count {})",
+                placement.layer,
+                pack.layer_count,
+            );
+            match leaf_layers.get(&chart.leaf_index) {
+                Some(&existing) => assert_eq!(
+                    existing, placement.layer,
+                    "leaf {} straddled layers {existing} and {}",
+                    chart.leaf_index, placement.layer,
+                ),
+                None => {
+                    leaf_layers.insert(chart.leaf_index, placement.layer);
+                }
             }
-            Ok((w, h, _)) => panic!("expected AtlasOverflow at the new cap, got {w}x{h}"),
-            Err(other) => panic!("expected AtlasOverflow, got {other:?}"),
         }
+        // The two leaves landed on different layers.
+        assert_ne!(
+            leaf_layers[&0], leaf_layers[&1],
+            "the two leaves must occupy distinct layers",
+        );
     }
 
     /// Cache-determinism guard: the lightmap bake is consumed by the build-stage
@@ -2206,13 +2495,12 @@ mod tests {
     /// requirement — satisfied for free when dimensions are power-of-two ≥ 4,
     /// but pinned here as a contract because the bake's BC6H sizing math
     /// (`ceil(w/4)·ceil(h/4)·16`) silently misreports if either axis is < 4),
-    /// and (c) ≤ `MAX_ATLAS_DIMENSION`. The single-set tests above (`shelf_pack_uses_new_8192_cap_for_overflowing_set`
-    /// and `shelf_pack_overflows_past_8192_cap`) pin the cap-raise contract;
-    /// this table-driven test extends the coverage across a representative
-    /// breadth so a regression that only triggers on, e.g., narrow-tall sets
-    /// is still caught.
+    /// and (c) ≤ `MAX_ATLAS_DIMENSION`. All charts here share one leaf, so the
+    /// packer resolves them into a single layer; this table-driven test extends
+    /// dimension coverage across a representative breadth so a regression that
+    /// only triggers on, e.g., narrow-tall sets is still caught.
     #[test]
-    fn shelf_pack_dims_are_pow2_4aligned_under_cap_across_chart_sets() {
+    fn pack_layers_dims_are_pow2_4aligned_under_cap_across_chart_sets() {
         // Table of chart sets, each producing an atlas that the packer should
         // resolve under the 8192 cap. Mixed shapes: square small, square
         // large, narrow-tall, wide-short, and a single-chart degenerate.
@@ -2242,8 +2530,14 @@ mod tests {
             ),
         ];
         for (label, charts) in cases {
-            let (w, h, _) = shelf_pack(charts, 0.04)
-                .unwrap_or_else(|e| panic!("{label}: shelf_pack failed: {e:?}"));
+            let pack = pack_layers(charts, MAX_ATLAS_DIMENSION)
+                .unwrap_or_else(|e| panic!("{label}: pack_layers failed: {e:?}"));
+            let (w, h) = (pack.atlas_width, pack.atlas_height);
+            assert_eq!(
+                pack.layer_count, 1,
+                "{label}: single-leaf charts must pack into one layer, got {}",
+                pack.layer_count,
+            );
             assert!(
                 w.is_power_of_two(),
                 "{label}: atlas width must be power-of-two, got {w}",
@@ -2553,10 +2847,13 @@ mod tests {
                 uncompressed_irradiance: false,
             },
         );
+        // A 400 m face is 10000 texels at 0.04 m/texel — wider than a single
+        // `MAX_ATLAS_DIMENSION` (8192) layer, so the packer reports `ChartTooLarge`
+        // rather than placing it. (Atlas-area overflow no longer errors: the
+        // multi-bin packer opens more layers instead.)
         match result {
-            Err(LightmapBakeError::ChartTooLarge { .. })
-            | Err(LightmapBakeError::AtlasOverflow { .. }) => {}
-            other => panic!("expected overflow error, got {other:?}"),
+            Err(LightmapBakeError::ChartTooLarge { .. }) => {}
+            other => panic!("expected ChartTooLarge error, got {other:?}"),
         }
     }
 

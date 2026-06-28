@@ -407,6 +407,7 @@ mod tests {
             normal: Vec3::Y,
             width_texels: 32,
             height_texels: 32,
+            leaf_index: 0,
         }
     }
 
@@ -421,6 +422,7 @@ mod tests {
             normal: Vec3::new(0.5, -1.0, 0.5).normalize(),
             width_texels: 32,
             height_texels: 32,
+            leaf_index: 0,
         }
     }
 
@@ -739,6 +741,7 @@ mod tests {
             normal: Vec3::Y,
             width_texels: 8,
             height_texels: 8,
+            leaf_index: 0,
         };
         // Eight lights spread across the face → forces subdivision below cap.
         let uv_centers = [

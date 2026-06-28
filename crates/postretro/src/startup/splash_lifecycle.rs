@@ -40,14 +40,18 @@ impl App {
         }
     }
 
-    /// First Splash frame: paint a black screen, then decode + upload the base
-    /// splash so a subsequent frame can show it. The splash texture is not yet
-    /// decoded, so the splash pass clears to black and draws nothing.
+    /// First Splash frame: paint the splash-color clear (no logo bound yet), then
+    /// decode + upload the base splash so a subsequent frame can show it. The
+    /// splash texture is not yet decoded, so the splash pass clears to
+    /// `SPLASH_CLEAR_COLOR` and draws nothing.
     ///
-    /// `first_black_frame` is recorded — and the decode/upload runs — only after
-    /// the black frame actually presents. A transient surface failure requests
-    /// another redraw WITHOUT advancing the schedule, so the timing marks a real
-    /// presented frame.
+    /// `first_black_frame` is recorded — and the window is revealed, and the
+    /// decode/upload runs — only after this frame actually presents. The window
+    /// was created hidden, so this presented frame is the first thing the user
+    /// sees (splash-color, never a white flash). A transient surface failure
+    /// requests another redraw WITHOUT advancing the schedule or revealing the
+    /// window, so the timing marks a real presented frame and a retry never
+    /// flashes a blank window.
     fn run_splash_frame_zero(&mut self, event_loop: &ActiveEventLoop) -> bool {
         if self.paint_splash(event_loop) == PresentOutcome::NeedsRedraw {
             self.request_redraw();
@@ -55,7 +59,16 @@ impl App {
         }
         self.boot_timings.record("first_black_frame");
 
-        // Now that the OS window is showing a black frame, decode and upload the
+        // The first frame has presented to the configured surface (a splash-color
+        // clear), so the window now has real pixels. Reveal the window now — it
+        // was created hidden to suppress the Windows pre-first-present white flash.
+        // Fires only on this presented branch (a `NeedsRedraw` returned above), so
+        // a present-retry never shows a white/blank window. Runs on every window
+        // creation: a suspend→resume resets to Booting and replays frame 0, and
+        // `set_visible(true)` is idempotent. See: context/lib/boot_sequence.md §1.
+        self.reveal_window_after_first_present();
+
+        // Now that the OS window is showing a splash-color frame, decode and upload the
         // splash synchronously. PNG decode is bounded CPU work (~ms); doing it
         // here keeps the boot path single-threaded and ordering causal.
         let source = SplashSource::Base;

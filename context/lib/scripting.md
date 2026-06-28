@@ -374,14 +374,14 @@ Start the node set minimal: named-input leaves, arithmetic, `clamp`, `lerp`, `se
 
 ## 12. Crate Architecture
 
-> Two-crate split established by `plans/ready/scripting-core-extraction/` — design intent until it ships. The boundary contracts below are durable; the working crate names are not.
+> The VM-free engine-data floor is being scoped in `plans/drafts/engine-data-floor/` — it is layered and wider than the entity registry. (An earlier single-crate sketch was superseded when components proved coupled to gameplay subsystems and the IR substrate; see that plan.) The boundary contracts below are durable; crate count and names are being finalized there.
 
-Scripting spans two crates so routine engine edits stop recompiling the VM bindings:
+The engine data splits into a VM-free floor beneath the VM-coupled runtime, so routine engine edits stop recompiling the VM bindings:
 
-- **Scripting data model — VM-free.** Entity registry, components, `ScriptCtx` and its backing state registries. Default build pulls no VM. Non-scripting subsystems (movement, netcode, render) depend on it and treat `EntityId` as an opaque handle.
-- **Scripting runtime — VM-coupled.** Primitive registry, the QuickJS and Luau subsystems, marshalling, IR substrate, typedef generator. Depends on the data-model crate with VM marshalling enabled.
+- **VM-free engine-data floor.** The entity registry and `ComponentValue`, the components, `ScriptCtx` and its backing registries, the IR evaluation substrate core, and the leaf data the gameplay subsystems share (descriptors, value types, the movement/IR cluster). Default build pulls no VM. Gameplay subsystems (movement, nav, weapon, ai) and non-scripting subsystems (netcode, render, audio) depend *up* on the floor and treat `EntityId` as an opaque handle.
+- **VM-coupled runtime.** Primitive registry, the QuickJS and Luau subsystems, the marshalling converters and the script-store scope adapter, the typedef generator. Depends on the floor with VM marshalling enabled.
 
-**FFI marshalling is an orphan-rule boundary.** A VM marshalling impl for a type must live in the crate that owns the type — an impl for a foreign type written in a third crate is an orphan violation. So the data-model crate carries the marshalling impls for its own types behind an **optional feature** that pulls the VMs; only the runtime crate enables it. Foreign types (e.g. glam vectors) are wrapped in local newtypes to satisfy the rule. Precedent: `crates/level-format`'s optional `serde` / `gltf-resolve` features. Feature unification compiles the data-model crate once with marshalling on in the full build, but the VM deps stay upstream — editing a handler or bridge never rebuilds them. **That is the compile firewall.**
+**FFI marshalling is an orphan-rule boundary.** A VM marshalling impl for a type must live in the crate that owns the type — an impl for a foreign type written in a third crate is an orphan violation. So each floor crate carries the marshalling impls for its own types behind an **optional `script-ffi` feature** that pulls the VMs; only the runtime crate enables it. Foreign types (e.g. glam vectors) wrap in local newtypes to satisfy the rule. Precedent: `crates/level-format`'s optional `serde` / `gltf-resolve` features. Default builds have no VM deps — editing a handler or bridge never rebuilds them. **That is the compile firewall.**
 
 **Handler placement.** Script-callable handlers co-locate with the subsystem they expose (subsystem module trees within the engine binary, not new crates). Reaction handlers are VM-free and relocate whole. Primitive handlers carry marshalling that stays in the runtime crate — only the pure logic relocates, the runtime-side wiring calling the subsystem function with native Rust args, never VM types. Aggregation stays explicit (no `inventory` / `linkme`): the registrars are invoked from the single runtime construction site.
 

@@ -157,12 +157,22 @@ pub struct CompositedAtlas {
     pub layer_count: u32,
 }
 
+/// Total texel count for a `layer_count`-layer atlas of `atlas_w × atlas_h`.
+///
+/// Promotes each dimension to `usize` *before* multiplying: at the cap
+/// (`MAX_ATLAS_DIMENSION² × MAX_ATLAS_LAYERS` ≈ 1.7e10) the product overflows
+/// `u32`, and a `u32` multiply would wrap to a too-small value — under-sizing
+/// the atlas buffers so later layer-major writes land out of bounds.
+fn composited_atlas_texel_count(atlas_w: u32, atlas_h: u32, layer_count: u32) -> usize {
+    atlas_w as usize * atlas_h as usize * layer_count as usize
+}
+
 impl CompositedAtlas {
     /// Allocate a zero-initialized atlas sized for
     /// `layer_count × atlas_w × atlas_h` texels. Matches the monolithic bake's
     /// initial state: irradiance `0.0`, direction `Vec3::Y`, coverage `false`.
     pub fn zeroed(atlas_w: u32, atlas_h: u32, layer_count: u32) -> Self {
-        let texels = (atlas_w * atlas_h * layer_count) as usize;
+        let texels = composited_atlas_texel_count(atlas_w, atlas_h, layer_count);
         Self {
             irradiance: vec![0f32; texels * 4],
             direction: vec![Vec3::Y; texels],
@@ -2510,6 +2520,22 @@ mod tests {
             }
             other => panic!("expected LeafTooLarge, got {other:?}"),
         }
+    }
+
+    // Regression: `CompositedAtlas::zeroed` computed `atlas_w * atlas_h *
+    // layer_count` in u32 before casting, so a many-layer 8192² atlas wrapped
+    // past u32::MAX and under-allocated the buffers — a release-build buffer
+    // overrun at bake time. The texel count must be computed in usize.
+    #[test]
+    fn composited_atlas_texel_count_does_not_overflow_u32() {
+        // 8192² × 100 layers = 6_710_886_400, which overflows u32 (max
+        // 4_294_967_295) but is exact in usize. No allocation — pure arithmetic.
+        let n = composited_atlas_texel_count(8192, 8192, 100);
+        assert_eq!(n, 8192usize * 8192 * 100);
+        assert!(
+            n > u32::MAX as usize,
+            "the guarded product must exceed u32::MAX to exercise the wrap path"
+        );
     }
 
     /// Cache-determinism guard: the lightmap bake is consumed by the build-stage

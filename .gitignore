@@ -21,10 +21,8 @@ target
 *.prl
 # DISPOSABLE DOWNLOAD-BRANCH EXCEPTION (claude/stress-warren-overflow-download):
 # this throwaway branch carries the pre-baked navigable overflow build so it can
-# be downloaded without a local bake. Delete the branch to drop these from history.
-# Exception: committed stress-warren-overflow builds, for direct download
-# (verify the multi-layer atlas without a local bake; -disc-bc6h / -disc-rgba16f
-# are the same map differing only in irradiance format, for the layer-bug A/B).
+# be downloaded and tested without a local bake. Delete the branch to drop these
+# from history.
 !content/base/maps/stress-warren-overflow*.prl
 # Autosave maps (local, not version controlled)
 **/maps/autosave/
@@ -41,10 +39,8 @@ baked/*
 !baked/materials/
 baked/materials/*
 !baked/materials/*.prm
-.build-caches/*
-!.build-caches/prm-cache/
-.build-caches/prm-cache/*
-!.build-caches/prm-cache/*.prm
+#   .build-caches/ = DISPOSABLE stage cache (prl-cache/). Safe to delete anytime.
+.build-caches/
 
 # Distribution artifacts
 dist/

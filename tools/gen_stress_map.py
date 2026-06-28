@@ -90,10 +90,19 @@ layers. How it works:
   low memory) while the combined chart area still spills past one layer. Do NOT
   crank density fine -- that inflates one huge layer and OOMs.
 
-The preset sets: --grid 4 4 2, --crates 10, --lights static, --spot-frac 1.0,
---light-every 1, --door-prob 0.15, --shaft-prob 0.5. Static SPOTLIGHTS
-(`_shadow_type static_light_map`) are what bake crate shadows into the lightmap,
-so spot-frac is maxed. Every preset value is still overridable on the CLI.
+The preset sets: --grid 4 4 2, --crates 10, --lights static, --spot-frac 0.3,
+--light-every 1, --door-prob 0.15, --shaft-prob 0.5. The light mix is a
+POINT+SPOT BLEND (coverage + crate shadows): every room gets a light, ~70% of
+them point (`light`) and ~30% spot (`light_spot`). WHY the blend -- point lights
+are omnidirectional, so they fully light each room (navigable, no dim-SH-only
+surfaces) AND directly light crate faces on EVERY atlas layer, which is the
+clean confirmation that the multi-layer atlas renders direct light correctly.
+Spotlights are narrow cones that leave faces angled away from the cone dark, so
+a pure-spot map reads as broken; we keep ~30% spots only because static spots
+(`_shadow_type static_light_map`) are what bake crate SHADOWS into the lightmap,
+which we still want to verify. Crate count -- not light type -- drives the atlas
+overflow, so the blend does not affect the >=2-layer result. Every preset value
+is still overridable on the CLI.
 
   Recommended bake (writes the .prl to /tmp; do NOT commit it):
 
@@ -530,7 +539,11 @@ def generate(nx, ny, nz, seed, braid_prob, shaft_prob, lights_mode, light_every,
                 color = LIGHT_COLORS[r % len(LIGHT_COLORS)]
                 spot = (spot_stride > 0 and nlit % spot_stride == 0)
                 falloff = 1600 if spot else 1400
-                intensity = 220 if spot else 150
+                # Point lights are the navigation/coverage lights in the overflow
+                # blend (they omni-light every room and every crate face on all
+                # atlas layers), so keep them bright enough to read clearly; spots
+                # stay a touch brighter still since they also carry the cone.
+                intensity = 220 if spot else 200
                 # In 'mixed' mode each light is independently baked (static) or
                 # runtime (dynamic); the four combos (static/dynamic x spot/point)
                 # exercise the lightmap+SH bake AND the per-frame forward/shadow
@@ -590,11 +603,15 @@ def main(argv):
     #
     # overflow: bake spills the lightmap atlas into >=2 texture_2d_array layers
     #           at bounded memory (many small crates + modest grid + moderate
-    #           density). Recommended bake density: 0.08 m/texel. See the module
-    #           docstring "Lightmap-array overflow preset" for the full rationale.
+    #           density). Lights are a point+spot BLEND (spot_frac=0.3): mostly
+    #           bright point lights for room coverage + direct light on all atlas
+    #           layers (navigable), plus ~30% spots to bake crate shadows. Crate
+    #           count -- not light type -- drives the overflow. Recommended bake
+    #           density: 0.08 m/texel. See the module docstring "Lightmap-array
+    #           overflow preset" for the full rationale.
     PRESETS = {
         "overflow": dict(
-            grid=[4, 4, 2], crates=10, lights="static", spot_frac=1.0,
+            grid=[4, 4, 2], crates=10, lights="static", spot_frac=0.3,
             light_every=1, door_prob=0.15, shaft_prob=0.5,
         ),
     }

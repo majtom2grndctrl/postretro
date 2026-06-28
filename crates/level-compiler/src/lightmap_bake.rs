@@ -1557,6 +1557,7 @@ mod tests {
             [1.0, 0.0, 0.0],
             true,
             [0.0, 0.0],
+            0,
         );
         let v1 = Vertex::new(
             [1.0, 0.0, 0.0],
@@ -1565,6 +1566,7 @@ mod tests {
             [1.0, 0.0, 0.0],
             true,
             [0.0, 0.0],
+            0,
         );
         let v2 = Vertex::new(
             [1.0, 0.0, 1.0],
@@ -1573,6 +1575,7 @@ mod tests {
             [1.0, 0.0, 0.0],
             true,
             [0.0, 0.0],
+            0,
         );
         let v3 = Vertex::new(
             [0.0, 0.0, 1.0],
@@ -1581,6 +1584,7 @@ mod tests {
             [1.0, 0.0, 0.0],
             true,
             [0.0, 0.0],
+            0,
         );
         GeometryResult {
             geometry: GeometrySection {
@@ -2253,6 +2257,7 @@ mod tests {
                 [1.0, 0.0, 0.0],
                 true,
                 [0.0, 0.0],
+                0,
             ),
             Vertex::new(
                 [2.0, 0.0, 0.0],
@@ -2261,6 +2266,7 @@ mod tests {
                 [1.0, 0.0, 0.0],
                 true,
                 [0.0, 0.0],
+                0,
             ),
             Vertex::new(
                 [2.0, 0.0, 2.0],
@@ -2269,6 +2275,7 @@ mod tests {
                 [1.0, 0.0, 0.0],
                 true,
                 [0.0, 0.0],
+                0,
             ),
             Vertex::new(
                 [0.0, 0.0, 2.0],
@@ -2277,6 +2284,7 @@ mod tests {
                 [1.0, 0.0, 0.0],
                 true,
                 [0.0, 0.0],
+                0,
             ),
         ];
         let ceiling = vec![
@@ -2287,6 +2295,7 @@ mod tests {
                 [1.0, 0.0, 0.0],
                 true,
                 [0.0, 0.0],
+                0,
             ),
             Vertex::new(
                 [4.0, 1.0, -2.0],
@@ -2295,6 +2304,7 @@ mod tests {
                 [1.0, 0.0, 0.0],
                 true,
                 [0.0, 0.0],
+                0,
             ),
             Vertex::new(
                 [4.0, 1.0, 4.0],
@@ -2303,6 +2313,7 @@ mod tests {
                 [1.0, 0.0, 0.0],
                 true,
                 [0.0, 0.0],
+                0,
             ),
             Vertex::new(
                 [-2.0, 1.0, 4.0],
@@ -2311,6 +2322,7 @@ mod tests {
                 [1.0, 0.0, 0.0],
                 true,
                 [0.0, 0.0],
+                0,
             ),
         ];
         let mut vertices = floor;
@@ -2414,6 +2426,7 @@ mod tests {
             [1.0, 0.0, 0.0],
             true,
             [0.0, 0.0],
+            0,
         );
         let v1 = Vertex::new(
             [size, 0.0, 0.0],
@@ -2422,6 +2435,7 @@ mod tests {
             [1.0, 0.0, 0.0],
             true,
             [0.0, 0.0],
+            0,
         );
         let v2 = Vertex::new(
             [size, 0.0, size],
@@ -2430,6 +2444,7 @@ mod tests {
             [1.0, 0.0, 0.0],
             true,
             [0.0, 0.0],
+            0,
         );
         let v3 = Vertex::new(
             [0.0, 0.0, size],
@@ -2438,6 +2453,7 @@ mod tests {
             [1.0, 0.0, 0.0],
             true,
             [0.0, 0.0],
+            0,
         );
         let mut geo = GeometryResult {
             geometry: GeometrySection {
@@ -2487,6 +2503,7 @@ mod tests {
             [1.0, 0.0, 0.0],
             true,
             [0.0, 0.0],
+            0,
         );
         let a1 = Vertex::new(
             [1.0, 0.0, 0.0],
@@ -2495,6 +2512,7 @@ mod tests {
             [1.0, 0.0, 0.0],
             true,
             [0.0, 0.0],
+            0,
         );
         let a2 = Vertex::new(
             [1.0, 0.0, 1.0],
@@ -2503,6 +2521,7 @@ mod tests {
             [1.0, 0.0, 0.0],
             true,
             [0.0, 0.0],
+            0,
         );
         let b1 = Vertex::new(
             [0.0, 0.0, 1.0],
@@ -2511,6 +2530,7 @@ mod tests {
             [1.0, 0.0, 0.0],
             true,
             [0.0, 0.0],
+            0,
         );
         let b2 = Vertex::new(
             [-1.0, 0.0, 1.0],
@@ -2519,6 +2539,7 @@ mod tests {
             [1.0, 0.0, 0.0],
             true,
             [0.0, 0.0],
+            0,
         );
         let mut geo = GeometryResult {
             geometry: GeometrySection {
@@ -3063,6 +3084,7 @@ mod tests {
                 [1.0, 0.0, 0.0],
                 true,
                 [0.0, 0.0],
+                0,
             ));
         }
         for (pos, uv) in occluder {
@@ -3073,6 +3095,7 @@ mod tests {
                 [1.0, 0.0, 0.0],
                 true,
                 [0.0, 0.0],
+                0,
             ));
         }
         let indices = vec![0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7];

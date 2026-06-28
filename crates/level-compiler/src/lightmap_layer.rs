@@ -510,10 +510,10 @@ mod tests {
             let n = [0.0, 1.0, 0.0];
             let t = [1.0, 0.0, 0.0];
             vec![
-                Vertex::new([x, 0.0, z], [0.0, 0.0], n, t, true, [0.0, 0.0]),
-                Vertex::new([x + 1.0, 0.0, z], [1.0, 0.0], n, t, true, [0.0, 0.0]),
-                Vertex::new([x + 1.0, 0.0, z + 1.0], [1.0, 1.0], n, t, true, [0.0, 0.0]),
-                Vertex::new([x, 0.0, z + 1.0], [0.0, 1.0], n, t, true, [0.0, 0.0]),
+                Vertex::new([x, 0.0, z], [0.0, 0.0], n, t, true, [0.0, 0.0], 0),
+                Vertex::new([x + 1.0, 0.0, z], [1.0, 0.0], n, t, true, [0.0, 0.0], 0),
+                Vertex::new([x + 1.0, 0.0, z + 1.0], [1.0, 1.0], n, t, true, [0.0, 0.0], 0),
+                Vertex::new([x, 0.0, z + 1.0], [0.0, 1.0], n, t, true, [0.0, 0.0], 0),
             ]
         };
         let mut vertices = mk(0.0, 0.0);

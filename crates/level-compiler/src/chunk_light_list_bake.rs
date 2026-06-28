@@ -683,6 +683,7 @@ mod tests {
                 [1.0, 0.0, 0.0],
                 true,
                 [0.0, 0.0],
+                0,
             )
         };
         GeometryResult {
@@ -720,6 +721,7 @@ mod tests {
                     [1.0, 0.0, 0.0],
                     true,
                     [0.0, 0.0],
+                    0,
                 ));
             }
             let start = indices.len() as u32;

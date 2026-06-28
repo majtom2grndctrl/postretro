@@ -503,7 +503,7 @@ mod tests {
         let n = [0.0, normal_y, 0.0];
         let t = [1.0, 0.0, 0.0];
         vec![
-            Vertex::new([vertex_base, y, 0.0], [0.0, 0.0], n, t, true, [0.0, 0.0]),
+            Vertex::new([vertex_base, y, 0.0], [0.0, 0.0], n, t, true, [0.0, 0.0], 0),
             Vertex::new(
                 [vertex_base + 1.0, y, 0.0],
                 [1.0, 0.0],
@@ -511,6 +511,7 @@ mod tests {
                 t,
                 true,
                 [0.0, 0.0],
+                0,
             ),
             Vertex::new(
                 [vertex_base + 1.0, y, 1.0],
@@ -519,8 +520,9 @@ mod tests {
                 t,
                 true,
                 [0.0, 0.0],
+                0,
             ),
-            Vertex::new([vertex_base, y, 1.0], [0.0, 1.0], n, t, true, [0.0, 0.0]),
+            Vertex::new([vertex_base, y, 1.0], [0.0, 1.0], n, t, true, [0.0, 0.0], 0),
         ]
     }
 
@@ -554,6 +556,7 @@ mod tests {
                 [1.0, 0.0, 0.0],
                 true,
                 [0.0, 0.0],
+                0,
             ),
             Vertex::new(
                 [2.0, 0.5, -1.0],
@@ -562,6 +565,7 @@ mod tests {
                 [1.0, 0.0, 0.0],
                 true,
                 [0.0, 0.0],
+                0,
             ),
             Vertex::new(
                 [2.0, 0.5, 2.0],
@@ -570,6 +574,7 @@ mod tests {
                 [1.0, 0.0, 0.0],
                 true,
                 [0.0, 0.0],
+                0,
             ),
             Vertex::new(
                 [-1.0, 0.5, 2.0],
@@ -578,6 +583,7 @@ mod tests {
                 [1.0, 0.0, 0.0],
                 true,
                 [0.0, 0.0],
+                0,
             ),
         ];
         vertices.extend(ceiling);
@@ -624,6 +630,7 @@ mod tests {
                 [1.0, 0.0, 0.0],
                 true,
                 [0.0, 0.0],
+                0,
             ),
             Vertex::new(
                 [0.5, 0.5, -1.0],
@@ -632,6 +639,7 @@ mod tests {
                 [1.0, 0.0, 0.0],
                 true,
                 [0.0, 0.0],
+                0,
             ),
             Vertex::new(
                 [0.5, 0.5, 2.0],
@@ -640,6 +648,7 @@ mod tests {
                 [1.0, 0.0, 0.0],
                 true,
                 [0.0, 0.0],
+                0,
             ),
             Vertex::new(
                 [-1.0, 0.5, 2.0],
@@ -648,6 +657,7 @@ mod tests {
                 [1.0, 0.0, 0.0],
                 true,
                 [0.0, 0.0],
+                0,
             ),
         ];
         vertices.extend(blocker);

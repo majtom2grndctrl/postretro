@@ -1034,6 +1034,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
             normal_oct: v.normal_oct,
             tangent_packed: v.tangent_packed,
             lightmap_uv: v.lightmap_uv,
+            lightmap_layer: v.lightmap_layer as u32,
         })
         .collect();
 

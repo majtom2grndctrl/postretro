@@ -596,6 +596,8 @@ mod tests {
             normal_oct: [0, 0],
             tangent_packed: [0, 0],
             lightmap_uv: [0, 0],
+            lightmap_layer: 0,
+            _padding: 0,
         };
         // Wall geometry (referenced by triangles) plus four bounds-only
         // "phantom" vertices that push the world AABB out so far-empty
@@ -909,6 +911,8 @@ mod tests {
             normal_oct: [0, 0],
             tangent_packed: [0, 0],
             lightmap_uv: [0, 0],
+            lightmap_layer: 0,
+            _padding: 0,
         };
         // Floor quad at y=0 spanning x,z in [-6, 6]. Two triangles.
         let vertices = vec![

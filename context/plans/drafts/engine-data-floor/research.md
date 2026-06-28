@@ -24,31 +24,31 @@ The `scripting-core-extraction` spec assumed `scripting/components/` was pure VM
 
 | # | Edge | Type | Fix |
 |---|---|---|---|
-| 1 | `player_movement` ↔ `movement::MovementScope` | behavior (mutual) | Co-locate the cluster in the substrate crate (no inversion). |
-| 2 | `DataRegistry` → `data_descriptors` → `render::ui::{descriptor,layout,style_ranges}` (`data_descriptors/mod.rs:31-39`) | module-coupling (DataRegistry drops `ui_trees` at `data_registry.rs:88`; doesn't store them) | Split `data_descriptors`: POD descriptor **types** → substrate; VM converters + UI-manifest types stay in runtime crate. |
+| 1 | `player_movement` ↔ `movement::MovementScope` | behavior (mutual) | Co-locate the cluster in `postretro-foundation` crate (no inversion). |
+| 2 | `DataRegistry` → `data_descriptors` → `render::ui::{descriptor,layout,style_ranges}` (`data_descriptors/mod.rs:31-39`) | module-coupling (DataRegistry drops `ui_trees` at `data_registry.rs:88`; doesn't store them) | Split `data_descriptors`: POD descriptor **types** → `postretro-foundation`; VM converters + UI-manifest types stay in runtime crate. |
 | 3 | `DataRegistry` → `data_descriptors` → `mlua`/`rquickjs` (`data_descriptors/mod.rs` top, for `js/`+`lua/` converters) | behavior (converters) | Same split as #2 — types are POD; converters stay up. |
-| 4 | `DataRegistry` → `runtime::ModMapEntry` → VMs (`data_registry.rs:13`; `runtime/types.rs:19-20` imports luau/quickjs) | POD dragged through a VM-coupled module | Sink `ModMapEntry` POD into the substrate. `MenuCamera`/`Frontend` are NOT stored by `DataRegistry` and stay in `postretro`. |
-| 5 | `data_descriptors/validate.rs:135` → `movement::MovementScope` (binds dash IR at declaration) | behavior (validation) | Resolved by the movement cluster living in the substrate. **`validate.rs` is a mixed file** — split it: pure numeric/crossing/IR validators descend; `mlua::Table`-coupled validators (e.g. `validate_dense_lua_array`, `validate.rs:22-30`) stay runtime-side. |
-| 6 | `components/health.rs:14` → `weapon::DamagePayload` (param of `apply_damage`, `health.rs:121`; not a stored field) | POD + behavior-only edge | Sink `DamagePayload` (`{amount:f32}`) POD into the substrate; `apply_damage` stays with the health component. |
-| 7 | `components/agent.rs:20` → `nav::NavAgentParams` (ctor `from_nav_params`, `:126`; component stores unpacked scalars) | POD + behavior-only edge | Sink `NavAgentParams` (4 `f32`) POD into the substrate. |
-| 8 | `SequenceStep.id: EntityId` (`data_descriptors/types/reactions.rs:21`); `NamedReaction`/`ReactionDescriptor::Sequence` transitively; `DataRegistry` stores `Vec<NamedReaction>` | by-value UP edge (substrate→data-model) — an 8th cycle the 7 in-place fixes don't break | **Placement, not an in-place move:** the reaction/crossing descriptor types reference `EntityId`, so they live in the **data-model** crate with the registry, not the substrate. `EntityId` stays the data-model's opaque handle. |
+| 4 | `DataRegistry` → `runtime::ModMapEntry` → VMs (`data_registry.rs:13`; `runtime/types.rs:19-20` imports luau/quickjs) | POD dragged through a VM-coupled module | Sink `ModMapEntry` POD into `postretro-foundation`. `MenuCamera`/`Frontend` are NOT stored by `DataRegistry` and stay in `postretro`. |
+| 5 | `data_descriptors/validate.rs:135` → `movement::MovementScope` (binds dash IR at declaration) | behavior (validation) | Resolved by the movement cluster living in `postretro-foundation`. **`validate.rs` is a mixed file** — split it: pure numeric/crossing/IR validators descend; `mlua::Table`-coupled validators (e.g. `validate_dense_lua_array`, `validate.rs:22-30`) stay runtime-side. |
+| 6 | `components/health.rs:14` → `weapon::DamagePayload` (param of `apply_damage`, `health.rs:121`; not a stored field) | POD + behavior-only edge | Sink `DamagePayload` (`{amount:f32}`) POD into `postretro-foundation`; `apply_damage` stays with the health component. |
+| 7 | `components/agent.rs:20` → `nav::NavAgentParams` (ctor `from_nav_params`, `:126`; component stores unpacked scalars) | POD + behavior-only edge | Sink `NavAgentParams` (4 `f32`) POD into `postretro-foundation`. |
+| 8 | `SequenceStep.id: EntityId` (`data_descriptors/types/reactions.rs:21`); `NamedReaction`/`ReactionDescriptor::Sequence` transitively; `DataRegistry` stores `Vec<NamedReaction>` | by-value UP edge (`postretro-foundation`→`postretro-entities`) — an 8th cycle the 7 in-place fixes don't break | **Placement, not an in-place move:** the reaction/crossing descriptor types reference `EntityId`, so they live in `postretro-entities` with the registry, not `postretro-foundation`. `EntityId` stays the entities crate's opaque handle. |
 
-`Vec3Lit`/`EulerDegrees` (`conv.rs:24-31,99-128`) are POD but live in VM-coupled `conv.rs` (imports mlua/rquickjs at `conv.rs:5-6`); stored by value in `light`/`billboard_emitter`. **Relocate the types** to the substrate; their FFI impls feature-gate (see orphan-rule contract).
+`Vec3Lit`/`EulerDegrees` (`conv.rs:24-31,99-128`) are POD but live in VM-coupled `conv.rs` (imports mlua/rquickjs at `conv.rs:5-6`); stored by value in `light`/`billboard_emitter`. **Relocate the types** to `postretro-foundation`; their FFI impls feature-gate (see orphan-rule contract).
 
 ## Layering verdict and membership
 
-Two crates. Dependency flows one way: data-model → substrate → (leaf deps).
+Two crates. Dependency flows one way: `postretro-entities` → `postretro-foundation` → (leaf deps).
 
-### Lower: substrate crate (working name `postretro-sim-substrate`)
+### Lower: `postretro-foundation`
 Pure data + the IR evaluator; no registry, no VM, no hardware subsystem.
 - IR core: `ir/{mod,bind,eval,scope,load}.rs` (`IrNode`/`IrValue`/`BakedIr`/`CURRENT_IR_VERSION`/`BindingScope`/`bind`/`eval`). Excludes `ir/scopes.rs`.
 - Movement cluster: `MovementScope` (`movement/scope.rs`) + `PlayerMovementComponent`/`MovementState`/`DashPrograms` (`components/player_movement.rs`).
-- **`EntityId`-free** POD descriptor **types** (the structs in `data_descriptors/types/*.rs`): movement params + `NumberOrIr`/`BoolOrIr`/`DashParams`, `WeaponDescriptor`/`FireMode`/`ResolutionMode`, `MeshDescriptor`/`AnimationState`/`InterruptPolicy`, `HealthDescriptor`/`HitboxDescriptor`, `AiDescriptor`/`AiStateNames`, `LightDescriptor`, `EntityTypeDescriptor`, POD manifest types `ModThemeTokens`/`ModFontAssets`. **NOT** the reaction/crossing descriptors (`NamedReaction`/`CrossingCondition`/`CrossingDescriptor`/`PrimitiveDescriptor`/`ProgressDescriptor`/`SequenceStep`) — they reference `EntityId`, so they go to the data-model crate (cycle #8). Plus the *pure* validators only (`DescriptorError`; numeric/crossing/IR validators carved from `validate.rs`, leaving the `mlua`-coupled ones runtime-side).
+- **`EntityId`-free** POD descriptor **types** (the structs in `data_descriptors/types/*.rs`): movement params + `NumberOrIr`/`BoolOrIr`/`DashParams`, `WeaponDescriptor`/`FireMode`/`ResolutionMode`, `MeshDescriptor`/`AnimationState`/`InterruptPolicy`, `HealthDescriptor`/`HitboxDescriptor`, `AiDescriptor`/`AiStateNames`, `LightDescriptor`, `EntityTypeDescriptor`, POD manifest types `ModThemeTokens`/`ModFontAssets`. **NOT** the reaction/crossing descriptors (`NamedReaction`/`CrossingCondition`/`CrossingDescriptor`/`PrimitiveDescriptor`/`ProgressDescriptor`/`SequenceStep`) — they reference `EntityId`, so they go to `postretro-entities` (cycle #8). Plus the *pure* validators only (`DescriptorError`; numeric/crossing/IR validators carved from `validate.rs`, leaving the `mlua`-coupled ones runtime-side).
 - POD value types: `Vec3Lit`/`EulerDegrees` (relocated out of `conv.rs`). `Vec3Lit` is stored by value in `light`/`billboard_emitter`; `EulerDegrees` is FFI-boundary-only (not stored in any component).
 - Sunk subsystem PODs: `DamagePayload`, `NavAgentParams`, `ModMapEntry`. (`MenuCamera`/`Frontend` are not consumed by the floor and stay in `postretro`.)
 
-### Upper: data-model crate (working name `postretro-entity-core`)
-VM-free; depends on the substrate.
+### Upper: `postretro-entities`
+VM-free; depends on `postretro-foundation`.
 - `registry.rs` (`EntityId`, `ComponentKind`, `ComponentValue`, `EntityRegistry`, `RegistryError`, `Transform`, `FogVolumeComponent`).
 - Remaining `components/*` data structs (light, billboard_emitter, mesh, health, agent, brain, particle, sprite_visual, weapon, fog_volume) and their behavior fns that take `&EntityRegistry` (`apply_damage`, `attach_agent`, mesh/brain fns).
 - The **reaction/crossing descriptor types** (`SequenceStep`/`NamedReaction`/`ReactionDescriptor`/`PrimitiveDescriptor`/`ProgressDescriptor`/`CrossingCondition`/`CrossingDescriptor`) — they embed `EntityId` (cycle #8), so they sit with the registry.
@@ -59,11 +59,11 @@ VM-free; depends on the substrate.
 
 ## Orphan-rule contract, per crate
 
-Each floor crate owns the FFI marshalling impls (`FromJs`/`IntoJs`/`FromLua`/`IntoLua`) for the types it defines, behind an optional `script-ffi` feature that pulls `rquickjs`/`mlua`. Only the runtime crate enables the feature. Substrate: FFI for `Vec3Lit`/`EulerDegrees` + the `EntityId`-free descriptor types. Data-model: FFI for `EntityId`/`Transform`/`ComponentKind`/`ComponentValue` + component types + reaction/crossing descriptors. The data-model depends on the substrate with `default-features = false` and forwards its own `script-ffi` to `postretro-sim-substrate/script-ffi` (never enabling it unconditionally), so a default `cargo tree` of the data-model stays VM-free. Default builds of both crates have no VM deps — that is the firewall. Precedent: `crates/level-format`'s optional `serde`/`gltf-resolve` features.
+Each floor crate owns the FFI marshalling impls (`FromJs`/`IntoJs`/`FromLua`/`IntoLua`) for the types it defines, behind an optional `script-ffi` feature that pulls `rquickjs`/`mlua`. Only the runtime crate enables the feature. `postretro-foundation`: FFI for `Vec3Lit`/`EulerDegrees` + the `EntityId`-free descriptor types. `postretro-entities`: FFI for `EntityId`/`Transform`/`ComponentKind`/`ComponentValue` + component types + reaction/crossing descriptors. `postretro-entities` depends on `postretro-foundation` with `default-features = false` and forwards its own `script-ffi` to `postretro-foundation/script-ffi` (never enabling it unconditionally), so a default `cargo tree` of `postretro-entities` stays VM-free. Default builds of both crates have no VM deps — that is the firewall. Precedent: `crates/level-format`'s optional `serde`/`gltf-resolve` features.
 
 ## Inversion call-site map (consumers flip to the floor — all cycle-free)
 
-- **movement** (`mod/dispatch/intents/substrate/carry.rs`): become floor-consumers; `scope.rs` moves into the substrate. No remaining movement file is pulled back into the floor. Imports of `MovementScope`/`PlayerMovementComponent`/movement descriptors re-point to the floor crates.
+- **movement** (`mod/dispatch/intents/substrate/carry.rs`): become floor-consumers; `scope.rs` moves into `postretro-foundation`. No remaining movement file is pulled back into the floor. Imports of `MovementScope`/`PlayerMovementComponent`/movement descriptors re-point to the floor crates.
 - **nav** (`mod.rs`/`path.rs`): pure consumer once `NavAgentParams` sinks. nav imports no components.
 - **weapon** (`damage/impact/mod.rs`): pure consumer once `DamagePayload` sinks; consumes `WeaponDescriptor`/`FireMode`/`ResolutionMode` from the floor.
 - **ai** (`scripting/systems/ai.rs`): pure consumer; imports `AiDescriptor`/registry/components/`DamagePayload` from the floor.
@@ -71,4 +71,4 @@ Each floor crate owns the FFI marshalling impls (`FromJs`/`IntoJs`/`FromLua`/`In
 
 ## Naming
 
-Working names `postretro-sim-substrate` (lower) / `postretro-entity-core` (upper); final decided at implementation. The lower crate is wider than "movement" or "IR" alone (it's the leaf-data + evaluation substrate); the upper is the entity/scripting data model. Rename either if it reads truer.
+Names decided: `postretro-foundation` (lower) / `postretro-entities` (upper). "Foundation" (not "core") names the base layer in the Apple-Foundation / Unreal-`Core` sense without competing with "the engine is the core"; "entities" names the closed entity/component model without implying an extensible ECS (a non-goal). The lower crate is wider than "movement" or "IR" alone (it's the leaf-data + evaluation substrate); the upper is the entity/scripting data model.

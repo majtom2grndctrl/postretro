@@ -30,7 +30,7 @@ const MIN_ATLAS_DIMENSION: u32 = 64;
 
 /// Maximum atlas dimension. Beyond this the baker returns an error so the caller can retry at a
 /// coarser density. 8192 matches the `max_texture_dimension_2d` floor the runtime requires
-/// (see `crates/postretro/src/render/mod.rs`'s adapter pre-check) and fits ~328 m at 4 cm/texel.
+/// (see `crates/postretro/src/renderer_init_resources.rs`'s adapter pre-check) and fits ~328 m at 4 cm/texel.
 const MAX_ATLAS_DIMENSION: u32 = 8192;
 
 /// Shadow ray self-intersection offset. `pub(crate)` so the animated weight-map baker uses the
@@ -113,6 +113,9 @@ pub struct LightmapBakeOutput {
     pub placements: Vec<ChartPlacement>,
     pub atlas_width: u32,
     pub atlas_height: u32,
+    /// Number of atlas array layers. `1` until the multi-bin packer (Task 3b)
+    /// spills charts onto higher layers.
+    pub layer_count: u32,
 }
 
 /// The pre-encode (pre-BC6H) lightmap atlas: the full per-texel `(irradiance,
@@ -128,41 +131,58 @@ pub struct LightmapBakeOutput {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompositedAtlas {
     /// RGBA f32, 4 floats per texel (alpha is always 1.0 on covered texels).
+    /// Layer-major: layer 0's texels, then layer 1's, and so on.
     pub irradiance: Vec<f32>,
-    /// One dominant-direction unit vector per texel.
+    /// One dominant-direction unit vector per texel. Layer-major.
     pub direction: Vec<Vec3>,
     /// Per-texel coverage flag (logical OR across contributing charts/layers).
+    /// Layer-major.
     pub coverage: Vec<bool>,
     pub atlas_width: u32,
     pub atlas_height: u32,
+    /// Number of atlas array layers. The three buffers above are sized
+    /// `layer_count × atlas_width × atlas_height`; a texel at layer `l`, `(x, y)`
+    /// lives at `l × (atlas_width × atlas_height) + y × atlas_width + x`.
+    pub layer_count: u32,
 }
 
 impl CompositedAtlas {
-    /// Allocate a zero-initialized atlas sized for `atlas_w * atlas_h` texels.
-    /// Matches the monolithic bake's initial state: irradiance `0.0`, direction
-    /// `Vec3::Y`, coverage `false`.
-    pub fn zeroed(atlas_w: u32, atlas_h: u32) -> Self {
-        let texels = (atlas_w * atlas_h) as usize;
+    /// Allocate a zero-initialized atlas sized for
+    /// `layer_count × atlas_w × atlas_h` texels. Matches the monolithic bake's
+    /// initial state: irradiance `0.0`, direction `Vec3::Y`, coverage `false`.
+    pub fn zeroed(atlas_w: u32, atlas_h: u32, layer_count: u32) -> Self {
+        let texels = (atlas_w * atlas_h * layer_count) as usize;
         Self {
             irradiance: vec![0f32; texels * 4],
             direction: vec![Vec3::Y; texels],
             coverage: vec![false; texels],
             atlas_width: atlas_w,
             atlas_height: atlas_h,
+            layer_count,
         }
     }
 
     /// Run edge dilation in place — the same neighbourhood fill the monolithic
     /// bake applies after the per-chart pass. Composite and monolithic paths must
     /// both call this so the seam compares post-dilation buffers.
+    ///
+    /// Dilation runs per layer over each layer's own slice: a layer boundary is a
+    /// hard edge in the array texture, so a neighbour fill that read across it
+    /// would drag a different chart's irradiance into the gutter and corrupt
+    /// bilinear samples near layer-adjacent charts.
     pub fn dilate(&mut self) {
-        dilate_edges(
-            &mut self.irradiance,
-            &mut self.direction,
-            &mut self.coverage,
-            self.atlas_width,
-            self.atlas_height,
-        );
+        let plane = (self.atlas_width * self.atlas_height) as usize;
+        for layer in 0..self.layer_count as usize {
+            let texel_start = layer * plane;
+            let texel_end = texel_start + plane;
+            dilate_edges(
+                &mut self.irradiance[texel_start * 4..texel_end * 4],
+                &mut self.direction[texel_start..texel_end],
+                &mut self.coverage[texel_start..texel_end],
+                self.atlas_width,
+                self.atlas_height,
+            );
+        }
     }
 
     /// Encode this atlas into a [`LightmapSection`] via the shared BC6H (or
@@ -175,27 +195,43 @@ impl CompositedAtlas {
         uncompressed_irradiance: bool,
     ) -> LightmapSection {
         let (irr_bytes, irradiance_format) = if uncompressed_irradiance {
+            // RGBA16F is already flat layer-major (`w·h·8` per layer concatenated),
+            // so the whole buffer encodes in one pass.
             (
                 encode_irradiance_rgba16f(&self.irradiance),
                 IRRADIANCE_FORMAT_RGBA16F,
             )
         } else {
-            (
-                bc6h::encode_bc6h_rgb_from_f32_rgba(
-                    &self.irradiance,
+            // The BC6H encoder is single-image — it asserts its input length is
+            // exactly `w·h·4` floats — so it must run once per layer over that
+            // layer's slice; the per-layer block blobs concatenate into the
+            // layer-major irradiance blob.
+            let plane = (self.atlas_width * self.atlas_height) as usize;
+            let mut blob = Vec::new();
+            for layer in 0..self.layer_count as usize {
+                let start = layer * plane * 4;
+                let end = start + plane * 4;
+                blob.extend_from_slice(&bc6h::encode_bc6h_rgb_from_f32_rgba(
+                    &self.irradiance[start..end],
                     self.atlas_width,
                     self.atlas_height,
-                ),
-                IRRADIANCE_FORMAT_BC6H,
-            )
+                ));
+            }
+            (blob, IRRADIANCE_FORMAT_BC6H)
         };
+        // Direction is Rgba8Unorm and already flat layer-major, so it encodes
+        // whole-buffer like the RGBA16F irradiance path.
         let dir_bytes = encode_direction_rgba8(&self.direction, &self.coverage);
         LightmapSection {
-            width: self.atlas_width,
-            height: self.atlas_height,
-            texel_density,
+            layer_count: self.layer_count,
+            irr_width: self.atlas_width,
+            irr_height: self.atlas_height,
+            irr_texel_density: texel_density,
             irradiance: irr_bytes,
             irradiance_format,
+            dir_width: self.atlas_width,
+            dir_height: self.atlas_height,
+            dir_texel_density: texel_density,
             direction: dir_bytes,
             mode: LightmapMode::Shadowed,
         }
@@ -212,6 +248,9 @@ pub struct PreparedAtlas {
     pub placements: Vec<ChartPlacement>,
     pub atlas_width: u32,
     pub atlas_height: u32,
+    /// Number of atlas array layers the packer produced. `1` while `shelf_pack`
+    /// is the single-bin packer; the multi-bin packer (Task 3b) reports more.
+    pub layer_count: u32,
 }
 
 /// Prepare atlas charts and assign lightmap UVs into geometry. Runs
@@ -235,6 +274,7 @@ pub fn prepare_atlas(
             placements: Vec::new(),
             atlas_width: 1,
             atlas_height: 1,
+            layer_count: 1,
         });
     }
 
@@ -253,6 +293,7 @@ pub fn prepare_atlas(
             placements,
             atlas_width: atlas_w,
             atlas_height: atlas_h,
+            layer_count: 1,
         });
     }
 
@@ -282,6 +323,7 @@ pub fn prepare_atlas(
             placements,
             atlas_width: atlas_w,
             atlas_height: atlas_h,
+            layer_count: 1,
         });
     }
 
@@ -292,6 +334,7 @@ pub fn prepare_atlas(
         placements,
         atlas_width: atlas_w,
         atlas_height: atlas_h,
+        layer_count: 1,
     })
 }
 
@@ -312,6 +355,7 @@ pub fn bake_lightmap(
             placements: Vec::new(),
             atlas_width: 1,
             atlas_height: 1,
+            layer_count: 1,
         });
     }
 
@@ -328,6 +372,7 @@ pub fn bake_lightmap(
             placements: prepared.placements,
             atlas_width: prepared.atlas_width,
             atlas_height: prepared.atlas_height,
+            layer_count: prepared.layer_count,
         });
     }
 
@@ -353,6 +398,7 @@ pub fn bake_lightmap(
     let placements = prepared.placements;
     let atlas_w = prepared.atlas_width;
     let atlas_h = prepared.atlas_height;
+    let layer_count = prepared.layer_count;
 
     let atlas = bake_monolithic_atlas(
         inputs.bvh,
@@ -363,6 +409,7 @@ pub fn bake_lightmap(
         &placements,
         atlas_w,
         atlas_h,
+        layer_count,
         area_sample_count,
     );
 
@@ -381,6 +428,7 @@ pub fn bake_lightmap(
         placements,
         atlas_width: atlas_w,
         atlas_height: atlas_h,
+        layer_count,
     })
 }
 
@@ -403,9 +451,10 @@ pub(crate) fn bake_monolithic_atlas(
     placements: &[ChartPlacement],
     atlas_w: u32,
     atlas_h: u32,
+    layer_count: u32,
     area_sample_count: u32,
 ) -> CompositedAtlas {
-    let mut atlas = CompositedAtlas::zeroed(atlas_w, atlas_h);
+    let mut atlas = CompositedAtlas::zeroed(atlas_w, atlas_h, layer_count);
 
     for (face_idx, placement) in placements.iter().enumerate() {
         bake_face_chart(
@@ -417,6 +466,7 @@ pub(crate) fn bake_monolithic_atlas(
             &charts[face_idx],
             placement,
             atlas_w,
+            atlas_h,
             area_sample_count,
             &mut atlas.irradiance,
             &mut atlas.direction,
@@ -469,10 +519,11 @@ fn split_shared_vertices(geom: &mut GeometryResult) {
 
 pub fn log_stats(section: &LightmapSection, static_light_count: usize) {
     log::info!(
-        "Lightmap: {}x{} atlas, {} m/texel, {} static lights baked, irr={} B, dir={} B",
-        section.width,
-        section.height,
-        section.texel_density,
+        "Lightmap: {}x{}x{} atlas, {} m/texel, {} static lights baked, irr={} B, dir={} B",
+        section.irr_width,
+        section.irr_height,
+        section.layer_count,
+        section.irr_texel_density,
         static_light_count,
         section.irradiance.len(),
         section.direction.len(),
@@ -685,7 +736,16 @@ fn try_shelf_pack(
     order: &[usize],
     atlas_w: u32,
 ) -> Result<(u32, Vec<ChartPlacement>), ()> {
-    let mut placements = vec![ChartPlacement { x: 0, y: 0 }; charts.len()];
+    // `shelf_pack` is single-bin: every chart lands on layer 0. Task 3b's
+    // multi-bin packer is what assigns higher layers.
+    let mut placements = vec![
+        ChartPlacement {
+            x: 0,
+            y: 0,
+            layer: 0
+        };
+        charts.len()
+    ];
     let mut shelf_y: u32 = 0;
     let mut shelf_x: u32 = 0;
     let mut shelf_h: u32 = 0;
@@ -705,6 +765,7 @@ fn try_shelf_pack(
         placements[idx] = ChartPlacement {
             x: shelf_x,
             y: shelf_y,
+            layer: 0,
         };
         shelf_x += w;
         if h > shelf_h {
@@ -777,6 +838,7 @@ fn bake_face_chart(
     chart: &Chart,
     placement: &ChartPlacement,
     atlas_w: u32,
+    atlas_h: u32,
     area_sample_count: u32,
     irradiance: &mut [f32],
     direction: &mut [Vec3],
@@ -788,11 +850,15 @@ fn bake_face_chart(
     let padding = CHART_PADDING_TEXELS as i32;
     let (interior_w, interior_h) = crate::chart_raster::chart_interior_dims(chart);
 
+    // Offset into this chart's atlas layer. The buffers are layer-major, so a
+    // chart on layer `l` writes into the slice starting at `l × (w × h)`.
+    let layer_offset = placement.layer as usize * (atlas_w * atlas_h) as usize;
+
     for ty in 0..interior_h {
         for tx in 0..interior_w {
             let atlas_x = placement.x as i32 + padding + tx;
             let atlas_y = placement.y as i32 + padding + ty;
-            let idx = (atlas_y as u32 * atlas_w + atlas_x as u32) as usize;
+            let idx = layer_offset + (atlas_y as u32 * atlas_w + atlas_x as u32) as usize;
 
             // Shared helper keeps static and animated-weight bakers aligned at chunk boundaries.
             let world_p = chart_texel_world_position(chart, tx, ty, interior_w, interior_h);
@@ -1657,8 +1723,8 @@ mod tests {
         )
         .unwrap()
         .section;
-        assert_eq!(section.width, 1);
-        assert_eq!(section.height, 1);
+        assert_eq!(section.irr_width, 1);
+        assert_eq!(section.irr_height, 1);
     }
 
     #[test]
@@ -1683,8 +1749,8 @@ mod tests {
         )
         .unwrap()
         .section;
-        assert_eq!(section.width, 1);
-        assert_eq!(section.height, 1);
+        assert_eq!(section.irr_width, 1);
+        assert_eq!(section.irr_height, 1);
     }
 
     #[test]
@@ -1712,11 +1778,11 @@ mod tests {
         )
         .unwrap()
         .section;
-        assert!(section.width >= MIN_ATLAS_DIMENSION);
-        assert!(section.height >= MIN_ATLAS_DIMENSION);
+        assert!(section.irr_width >= MIN_ATLAS_DIMENSION);
+        assert!(section.irr_height >= MIN_ATLAS_DIMENSION);
         assert_eq!(
             section.irradiance.len(),
-            (section.width * section.height * 8) as usize
+            (section.irr_width * section.irr_height * 8) as usize
         );
         let mut has_nonzero = false;
         for chunk in section.irradiance.chunks_exact(2).step_by(4) {
@@ -1811,8 +1877,8 @@ mod tests {
         )
         .unwrap()
         .section;
-        assert_eq!(section.width, 1);
-        assert_eq!(section.height, 1);
+        assert_eq!(section.irr_width, 1);
+        assert_eq!(section.irr_height, 1);
     }
 
     #[test]
@@ -1843,7 +1909,7 @@ mod tests {
         .unwrap()
         .section;
         assert!(
-            section_static.width >= MIN_ATLAS_DIMENSION,
+            section_static.irr_width >= MIN_ATLAS_DIMENSION,
             "non-animated static light must bake into a real atlas",
         );
 
@@ -1868,7 +1934,7 @@ mod tests {
         )
         .unwrap()
         .section;
-        assert_eq!(section_dyn.width, 1, "is_dynamic light must not bake");
+        assert_eq!(section_dyn.irr_width, 1, "is_dynamic light must not bake");
 
         let mut anim_light = point_light_above();
         anim_light.animation = Some(LightAnimation {
@@ -1899,7 +1965,7 @@ mod tests {
         .unwrap()
         .section;
         assert_eq!(
-            section_anim.width, 1,
+            section_anim.irr_width, 1,
             "animated light must not contribute to the static atlas",
         );
 
@@ -1925,7 +1991,7 @@ mod tests {
         .unwrap()
         .section;
         assert_eq!(
-            section_bo.width, 1,
+            section_bo.irr_width, 1,
             "bake_only animated light must not contribute to the static atlas",
         );
     }
@@ -2091,8 +2157,8 @@ mod tests {
         // config, `uncompressed_irradiance = false`). The two sections must
         // agree on dimensions and irradiance format before we can do block-
         // wise decode comparison.
-        assert_eq!(a.width, b.width, "width drifted between runs");
-        assert_eq!(a.height, b.height, "height drifted between runs");
+        assert_eq!(a.irr_width, b.irr_width, "width drifted between runs");
+        assert_eq!(a.irr_height, b.irr_height, "height drifted between runs");
         assert_eq!(
             a.irradiance_format,
             postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H,
@@ -2401,7 +2467,7 @@ mod tests {
         .section;
 
         let mut zero_count = 0;
-        for t in 0..(section.width * section.height) as usize {
+        for t in 0..(section.irr_width * section.irr_height) as usize {
             let r_bits =
                 u16::from_le_bytes([section.irradiance[t * 8], section.irradiance[t * 8 + 1]]);
             if r_bits == 0 {
@@ -3141,7 +3207,7 @@ mod tests {
 
     /// Decode the floor's irradiance texels (R channel) from the encoded section.
     fn floor_irradiance_r(section: &LightmapSection) -> Vec<f32> {
-        let texel_count = (section.width * section.height) as usize;
+        let texel_count = (section.irr_width * section.irr_height) as usize;
         let mut out = Vec::with_capacity(texel_count);
         for t in 0..texel_count {
             let bits =

@@ -28,6 +28,11 @@ pub const CHART_PADDING_TEXELS: u32 = 2;
 pub struct ChartPlacement {
     pub x: u32,
     pub y: u32,
+    /// Atlas array layer this chart landed on. The atlas is a `texture_2d_array`;
+    /// a chart that overflows one layer's `(x, y)` plane spills onto the next.
+    /// The single-bin `shelf_pack` only ever emits layer 0; the multi-bin packer
+    /// (Task 3b) assigns higher layers.
+    pub layer: u32,
 }
 
 /// Interior (non-padded) dimensions of a chart in atlas texels. Clamped to at

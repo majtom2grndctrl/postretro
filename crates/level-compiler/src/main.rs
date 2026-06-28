@@ -537,6 +537,7 @@ fn main() -> anyhow::Result<()> {
                 placements: prepared.placements,
                 atlas_width: prepared.atlas_width,
                 atlas_height: prepared.atlas_height,
+                layer_count: prepared.layer_count,
             }
         } else {
             let shared = lightmap_layer::SharedAtlas {
@@ -659,6 +660,7 @@ fn main() -> anyhow::Result<()> {
                 placements: prepared.placements,
                 atlas_width: prepared.atlas_width,
                 atlas_height: prepared.atlas_height,
+                layer_count: prepared.layer_count,
             }
         }
     } else {
@@ -716,6 +718,9 @@ fn main() -> anyhow::Result<()> {
         placements: face_placements,
         atlas_width,
         atlas_height,
+        // Animated weight maps are single-layer; the array layer count is carried
+        // on the section / per-chart placements, not needed here.
+        layer_count: _,
     } = lightmap_bake_output;
     if args.verbose {
         lightmap_bake::log_stats(&lightmap_section, static_light_count);

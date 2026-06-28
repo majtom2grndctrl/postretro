@@ -170,6 +170,30 @@ fn bake_one_chunk(
     let face_index = chunk.face_index as usize;
     let chart = &inputs.face_charts[face_index];
     let placement = inputs.face_placements[face_index];
+
+    // Animated weight maps are single-layer: their atlas covers only layer 0.
+    // A face that the packer spilled onto a higher layer (Task 3b, on overflow
+    // maps) has no animated atlas slot, so skip it — a degenerate 1×1 zero-count
+    // rect contributes nothing. NOT an assert: faces on layers >= 1 legitimately
+    // exist once 3b lands, and aborting the bake on them would be wrong. In this
+    // phase `shelf_pack` only emits layer 0, so nothing is skipped.
+    if placement.layer != 0 {
+        return ChunkBakeResult {
+            rect: ChunkAtlasRect {
+                atlas_x: placement.x,
+                atlas_y: placement.y,
+                width: 1,
+                height: 1,
+                texel_offset: 0,
+            },
+            offset_counts: vec![TexelLightEntry {
+                offset: 0,
+                count: 0,
+            }],
+            texel_lights: Vec::new(),
+        };
+    }
+
     let (interior_w, interior_h) = chart_interior_dims(chart);
 
     let (atlas_x, atlas_y, width, height) = chunk_atlas_rect(
@@ -1243,7 +1267,7 @@ mod tests {
             width_texels: 8,
             height_texels: 8,
         };
-        let placement = ChartPlacement { x: 0, y: 0 };
+        let placement = ChartPlacement { x: 0, y: 0, layer: 0 };
         let atlas_size = 64u32;
 
         // Splits the chart's U range at uv=0.5 — what `recurse` does on a
@@ -1317,7 +1341,7 @@ mod tests {
             width_texels: 3,
             height_texels: 322,
         };
-        let placement = ChartPlacement { x: 0, y: 0 };
+        let placement = ChartPlacement { x: 0, y: 0, layer: 0 };
         let atlas_size = 4096u32;
 
         // A.uv_max and B.uv_min are intended-equal but drift apart by ~2e-7;
@@ -1364,6 +1388,7 @@ mod tests {
         let placement = ChartPlacement {
             x: atlas_size - 1,
             y: atlas_size - 1,
+            layer: 0,
         };
         let (ax, ay, w, h) = chunk_atlas_rect(
             &chart,
@@ -1391,6 +1416,7 @@ mod tests {
         let placement_past = ChartPlacement {
             x: atlas_size + 100,
             y: atlas_size + 100,
+            layer: 0,
         };
         let (ax2, ay2, w2, h2) = chunk_atlas_rect(
             &chart,

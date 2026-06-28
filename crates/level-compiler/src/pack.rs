@@ -718,10 +718,11 @@ pub fn pack_and_write_portals(
         );
     }
     log::info!(
-        "  Lightmap: {} bytes ({}x{})",
+        "  Lightmap: {} bytes ({}x{}x{})",
         lightmap_bytes.len(),
-        lightmap.width,
-        lightmap.height,
+        lightmap.irr_width,
+        lightmap.irr_height,
+        lightmap.layer_count,
     );
     log::info!(
         "  ChunkLightList: {} bytes (has_grid={}, {} chunks, {} indices)",

@@ -2,17 +2,17 @@
 // See: context/lib/scripting.md §7
 
 use super::*;
-use crate::scripting::error::ScriptError;
-use crate::scripting::primitives::register_shared_types;
-use crate::scripting::primitives_registry::ContextScope;
-use crate::scripting::registry::EntityId;
 use crate::scripting::typedef::common::{rust_to_luau, rust_to_ts};
 use crate::scripting::typedef::luau::{
     emit_luau_game_state_refs, luau_public_sdk_lib_block, state_ref_luau,
 };
+use crate::scripting::typedef::register_shared_types;
 use crate::scripting::typedef::ts::{
     emit_ts_game_state_refs, state_ref_ts, ts_public_root_sdk_lib_block, ts_ui_sdk_module_block,
 };
+use postretro_entities::registry::EntityId;
+use postretro_entities::scripting::error::ScriptError;
+use postretro_scripting_core::primitives_registry::ContextScope;
 
 mod committed;
 mod snapshots;

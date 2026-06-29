@@ -6,8 +6,8 @@ use super::*;
 /// `CARGO_MANIFEST_DIR` so the test works from any CWD.
 #[test]
 fn committed_sdk_types_match_current_registry() {
-    use crate::scripting::ctx::ScriptCtx;
-    use crate::scripting::primitives::register_all;
+    use crate::scripting::typedef::register_all;
+    use postretro_entities::ctx::ScriptCtx;
 
     let mut r = PrimitiveRegistry::new();
     register_all(&mut r, ScriptCtx::new());
@@ -46,8 +46,8 @@ fn committed_sdk_types_match_current_registry() {
 /// fails loudly rather than silently passing.
 #[test]
 fn committed_sdk_types_contain_ai_descriptor() {
-    use crate::scripting::ctx::ScriptCtx;
-    use crate::scripting::primitives::register_all;
+    use crate::scripting::typedef::register_all;
+    use postretro_entities::ctx::ScriptCtx;
 
     let mut r = PrimitiveRegistry::new();
     register_all(&mut r, ScriptCtx::new());
@@ -99,8 +99,8 @@ fn committed_sdk_types_contain_ai_descriptor() {
 /// `StateValue<string>` handle map must NOT be emitted.
 #[test]
 fn define_store_emits_returned_declaration_and_state_refs() {
-    use crate::scripting::ctx::ScriptCtx;
-    use crate::scripting::primitives::register_all;
+    use crate::scripting::typedef::register_all;
+    use postretro_entities::ctx::ScriptCtx;
 
     let mut r = PrimitiveRegistry::new();
     register_all(&mut r, ScriptCtx::new());
@@ -153,8 +153,8 @@ fn define_store_emits_returned_declaration_and_state_refs() {
 
 #[test]
 fn mod_manifest_catalog_helpers_are_covered_by_typedefs() {
-    use crate::scripting::ctx::ScriptCtx;
-    use crate::scripting::primitives::register_all;
+    use crate::scripting::typedef::register_all;
+    use postretro_entities::ctx::ScriptCtx;
 
     let mut r = PrimitiveRegistry::new();
     register_all(&mut r, ScriptCtx::new());
@@ -208,9 +208,9 @@ fn mod_manifest_catalog_helpers_are_covered_by_typedefs() {
 /// capability in the type only.
 #[test]
 fn game_state_refs_emit_catalog_paths_and_capabilities() {
-    use crate::scripting::ctx::ScriptCtx;
-    use crate::scripting::engine_state_catalog::engine_state_catalog;
-    use crate::scripting::primitives::register_all;
+    use crate::scripting::typedef::register_all;
+    use postretro_entities::ctx::ScriptCtx;
+    use postretro_entities::engine_state_catalog::engine_state_catalog;
 
     let mut r = PrimitiveRegistry::new();
     register_all(&mut r, ScriptCtx::new());

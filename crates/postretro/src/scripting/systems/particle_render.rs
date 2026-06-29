@@ -4,10 +4,10 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::prl::LevelWorld;
-use crate::scripting::components::particle::ParticleState;
-use crate::scripting::components::sprite_visual::SpriteVisual;
-use crate::scripting::registry::{ComponentKind, ComponentValue, EntityRegistry, Transform};
 use crate::visibility::VisibleCells;
+use postretro_entities::components::particle::ParticleState;
+use postretro_entities::components::sprite_visual::SpriteVisual;
+use postretro_entities::registry::{ComponentKind, ComponentValue, EntityRegistry, Transform};
 
 /// Per-collection scratch buffers and warning state for the particle render
 /// path. Owned by the game layer (not the renderer) so the wgpu boundary stays
@@ -232,10 +232,10 @@ mod tests {
     use super::*;
     use crate::fx::smoke::SPRITE_INSTANCE_SIZE;
     use crate::prl::{CellData, LevelWorld};
-    use crate::scripting::components::particle::ParticleState;
-    use crate::scripting::components::sprite_visual::SpriteVisual;
-    use crate::scripting::registry::{EntityId, EntityRegistry, Transform};
     use glam::Vec3;
+    use postretro_entities::components::particle::ParticleState;
+    use postretro_entities::components::sprite_visual::SpriteVisual;
+    use postretro_entities::registry::{EntityId, EntityRegistry, Transform};
     use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 
     // The collector culls each billboard by the runtime cell of *its own* world

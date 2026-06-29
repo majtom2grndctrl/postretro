@@ -5,10 +5,10 @@ use std::collections::HashMap;
 
 use glam::Vec3;
 
-use crate::scripting::components::billboard_emitter::BillboardEmitterComponent;
-use crate::scripting::components::particle::ParticleState;
-use crate::scripting::components::sprite_visual::SpriteVisual;
-use crate::scripting::registry::{
+use postretro_entities::components::billboard_emitter::BillboardEmitterComponent;
+use postretro_entities::components::particle::ParticleState;
+use postretro_entities::components::sprite_visual::SpriteVisual;
+use postretro_entities::registry::{
     ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform,
 };
 
@@ -148,7 +148,7 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
-    use crate::scripting::components::billboard_emitter::BillboardEmitterComponent;
+    use postretro_entities::components::billboard_emitter::BillboardEmitterComponent;
 
     /// Test-only Earth-default gravity. Production callers read from
     /// `ScriptCtx::gravity` (seeded from worldspawn `initialGravity` at level

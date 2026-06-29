@@ -16,18 +16,18 @@ use super::*;
 use crate::agent_steering;
 use crate::collision::CollisionWorld;
 use crate::nav::NavGraph;
-use crate::scripting::components::agent::AgentComponent;
-use crate::scripting::components::brain::{AiStateMap, AiTuning, BrainComponent, LogicalState};
-use crate::scripting::components::health::HealthComponent;
-use crate::scripting::components::mesh::{
+use postretro_entities::components::agent::AgentComponent;
+use postretro_entities::components::brain::{AiStateMap, AiTuning, BrainComponent, LogicalState};
+use postretro_entities::components::health::HealthComponent;
+use postretro_entities::components::mesh::{
     AnimationState, InterruptPolicy, MeshAnimation, MeshComponent,
 };
-use crate::scripting::components::player_movement::PlayerMovementComponent;
-use crate::scripting::data_descriptors::{
+use postretro_entities::components::player_movement::PlayerMovementComponent;
+use postretro_entities::registry::{EntityId, EntityRegistry, Transform};
+use postretro_scripting_core::data_descriptors::{
     AirParams, CapsuleParams, FallParams, ForgivenessParams, GroundParams,
     PlayerMovementDescriptor, SpeedParams,
 };
-use crate::scripting::registry::{EntityId, EntityRegistry, Transform};
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -1516,7 +1516,7 @@ fn repeated_in_attack_swing_restarts_the_attack_clip() {
 
     // Resolve the animation stamps (the per-frame resolve pass) so the attack
     // clip's entry stamp is filled — steady state, clip playing.
-    crate::scripting::components::mesh::resolve_pending_animation_stamps(&mut reg, 5.0);
+    postretro_entities::components::mesh::resolve_pending_animation_stamps(&mut reg, 5.0);
     assert_eq!(
         enemy_anim_entered_at(&reg, enemy),
         Some(5.0),

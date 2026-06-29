@@ -9,7 +9,7 @@ use crate::model::anim::Loop;
 use crate::model::sample_params::{
     CaptureInstruction, ClipSample, FadeSource, MeshFade, MeshSampleParams,
 };
-use crate::scripting::components::mesh::{
+use postretro_entities::components::mesh::{
     AnimationState, FadeSourceKind, InterruptedOutgoing, MeshAnimation,
 };
 
@@ -419,7 +419,7 @@ pub(crate) fn state_elapsed(
 mod tests {
     use super::*;
     use crate::render::mesh_pass::ClipMetadata;
-    use crate::scripting::components::mesh::{
+    use postretro_entities::components::mesh::{
         AnimationState, DEFAULT_CROSSFADE_MS, InterruptPolicy,
     };
 

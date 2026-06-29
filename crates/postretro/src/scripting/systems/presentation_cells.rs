@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::render::ui::descriptor::{AnchoredTree, CellInit, LocalState, Widget};
 use crate::render::ui::tree::CellValues;
-use crate::scripting::slot_table::SlotValue;
+use postretro_entities::slot_table::SlotValue;
 
 /// The app-side presentation-cell store. Keyed by `(scopeId, cellName)`; values
 /// are the same `SlotValue` shapes a `{ local }` bind resolves. Presentation-only

@@ -15,8 +15,8 @@
 //
 // See: context/lib/entity_model.md §3 (Destruction)
 
-use crate::scripting::components::health::HealthComponent;
-use crate::scripting::registry::{ComponentKind, ComponentValue, EntityId, EntityRegistry};
+use postretro_entities::components::health::HealthComponent;
+use postretro_entities::registry::{ComponentKind, ComponentValue, EntityId, EntityRegistry};
 
 /// Event name fired once when the player pawn's HP reaches zero. Latched by
 /// `HealthComponent::death_handled` so a persisting zero-HP pawn never re-fires.
@@ -150,13 +150,13 @@ pub(crate) fn sweep_deaths(registry: &mut EntityRegistry) -> DeathReport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scripting::components::brain::attach_brain;
-    use crate::scripting::components::player_movement::PlayerMovementComponent;
-    use crate::scripting::data_descriptors::{
+    use postretro_entities::components::brain::attach_brain;
+    use postretro_entities::components::player_movement::PlayerMovementComponent;
+    use postretro_entities::registry::Transform;
+    use postretro_scripting_core::data_descriptors::{
         AiDescriptor, AiStateNames, AirParams, CapsuleParams, FallParams, GroundParams,
         HealthDescriptor, PlayerMovementDescriptor, SpeedParams,
     };
-    use crate::scripting::registry::Transform;
 
     /// A minimal valid AI descriptor so a brain can be attached to mark an
     /// entity as brain-bearing for the sweep's branch. The tuning values are not

@@ -7,9 +7,9 @@
 // See: context/lib/input.md §5, §7 · context/lib/scripting.md §5
 
 use crate::input::InputMode;
-use crate::scripting::ctx::ScriptCtx;
 use crate::scripting::primitives::store::write_store_slot;
-use crate::scripting::slot_table::SlotValue;
+use postretro_entities::ctx::ScriptCtx;
+use postretro_entities::slot_table::SlotValue;
 
 /// Dotted name of the engine-owned input-mode slot.
 const MODE_SLOT: &str = "input.mode";

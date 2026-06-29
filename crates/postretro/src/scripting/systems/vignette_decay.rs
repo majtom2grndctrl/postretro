@@ -3,9 +3,9 @@
 // each frame; at rest the slot is `[0,0,0,0]` so the consumer collapses to identity.
 // See: context/lib/ui.md §3 · context/lib/scripting.md §10.4
 
-use crate::scripting::ctx::ScriptCtx;
 use crate::scripting::primitives::store::write_store_slot;
-use crate::scripting::slot_table::SlotValue;
+use postretro_entities::ctx::ScriptCtx;
+use postretro_entities::slot_table::SlotValue;
 
 /// Dotted name of the engine-owned vignette surface slot.
 const VIGNETTE_SLOT: &str = "screen.vignette";

@@ -10,8 +10,8 @@ pub(crate) mod light;
 pub(crate) mod store;
 pub(crate) mod world;
 
-use crate::scripting::ctx::ScriptCtx;
-use crate::scripting::primitives_registry::PrimitiveRegistry;
+use postretro_entities::ctx::ScriptCtx;
+use postretro_scripting_core::primitives_registry::PrimitiveRegistry;
 
 /// Register the shared types referenced by day-one primitive signatures. These
 /// feed the typedef generator (see: context/lib/scripting.md §7).
@@ -563,8 +563,8 @@ pub(crate) fn register_all(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scripting::ctx::ScriptCtx;
-    use crate::scripting::registry::Transform;
+    use postretro_entities::ctx::ScriptCtx;
+    use postretro_entities::registry::Transform;
 
     fn registry_with_day_one() -> (PrimitiveRegistry, ScriptCtx) {
         let ctx = ScriptCtx::new();
@@ -622,8 +622,10 @@ mod tests {
         // definition. Field-presence assertions below construct a value of
         // that struct so any rename or removal in `runtime.rs` is a compile
         // error here.
-        use crate::scripting::primitives_registry::TypeShape;
-        use crate::scripting::runtime::ModManifestResult;
+        use postretro_entities::slot_table::StoreDeclarationSet;
+        use postretro_scripting_core::data_descriptors::{ModFontAssets, ModThemeTokens};
+        use postretro_scripting_core::primitives_registry::TypeShape;
+        use postretro_scripting_core::runtime::ModManifestResult;
 
         // Compile-time anchor for manifest fields. `stores` is authored as
         // `ModManifest.stores` and lands in `store_declarations` after
@@ -633,13 +635,13 @@ mod tests {
             name: String::new(),
             entities: Vec::new(),
             ui_trees: Vec::new(),
-            theme: crate::scripting::data_descriptors::ModThemeTokens::default(),
+            theme: ModThemeTokens::default(),
             frontend: None,
-            fonts: crate::scripting::data_descriptors::ModFontAssets::default(),
+            fonts: ModFontAssets::default(),
             maps: Vec::new(),
             reactions: Vec::new(),
             crossings: Vec::new(),
-            store_declarations: crate::scripting::slot_table::StoreDeclarationSet::default(),
+            store_declarations: StoreDeclarationSet::default(),
         };
         let expected_fields: &[&str] = &[
             "name",

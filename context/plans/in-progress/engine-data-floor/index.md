@@ -101,7 +101,7 @@ Structural surgery (Phases 2–4) is serialized deliberately; the flip fan-out i
 
 **What stays in `postretro` (the future runtime crate).** `ir/scopes.rs` (`StoreScope`), `conv.rs` FFI/json bridges, `data_descriptors/{js,lua}/` converters + the `render::ui` glob, `RegisteredUiTree`/`LevelManifest`, `runtime/*`, `luau.rs`/`quickjs.rs`/`primitives/*`/`primitives_registry.rs`/`reaction_dispatch.rs`/typedef generator.
 
-**Relationship to `scripting-core-extraction`.** That spec's Task 2 (extract `entity-core`) is replaced by this plan. Its Task 3 (extract `scripting-core`) is reshaped to pull the VM-coupled remainder above and enable `script-ffi` on both floor crates. Its Tasks 4–6 (ScriptingCore sub-struct, test relocation, handler relocation) ride unchanged on top. After this lands, rebase that spec onto the floor before re-orchestrating it.
+**Relationship to `scripting-core-extraction`.** This plan replaced that spec's original single-`entity-core` extraction; `scripting-core-extraction` has been rebased to stack on this floor (it now treats these two crates as a precondition, extracts only the VM-coupled `scripting-core` on top, and keeps the `ScriptingCore` sub-struct, test relocation, and handler relocation). It runs after this floor ships.
 
 ## Decisions
 

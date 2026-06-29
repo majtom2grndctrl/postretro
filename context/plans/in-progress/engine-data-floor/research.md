@@ -1,6 +1,6 @@
 # Research — engine-data floor extraction
 
-Source-grounded findings (file:line confirmed against `crates/postretro/src/`). Feeds `index.md`; not the spec contract. Supersedes the floor assumptions in `context/plans/ready/scripting-core-extraction/research.md` (which assumed `components/` was a clean VM-free leaf — false).
+Source-grounded findings (file:line confirmed against `crates/postretro/src/`). Feeds `index.md`; not the spec contract. Supersedes the floor assumptions in `context/plans/drafts/scripting-core-extraction/research.md` (which assumed `components/` was a clean VM-free leaf — false).
 
 ## Why this plan exists
 

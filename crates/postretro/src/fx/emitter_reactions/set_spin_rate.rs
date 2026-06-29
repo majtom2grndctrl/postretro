@@ -2,10 +2,10 @@
 // entity matching the reaction's tag.
 // See: context/lib/scripting.md §10.1 (Emitter and Particles)
 
-use crate::scripting::components::billboard_emitter::{
+use postretro_entities::components::billboard_emitter::{
     BillboardEmitterComponent, SpinAnimation, SpinAnimationLit,
 };
-use crate::scripting::registry::{EntityId, EntityRegistry};
+use postretro_entities::{EntityId, EntityRegistry};
 
 use postretro_scripting_core::reaction_registry::ReactionError;
 
@@ -112,7 +112,7 @@ pub(crate) fn dispatch(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scripting::registry::Transform;
+    use postretro_entities::Transform;
 
     fn sample_emitter() -> BillboardEmitterComponent {
         BillboardEmitterComponent {

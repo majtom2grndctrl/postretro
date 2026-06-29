@@ -1,12 +1,11 @@
 // State-store primitive registration and compatibility exports.
 // See: context/lib/scripting.md §5 "Durable State Store"
 
-use crate::scripting::ctx::ScriptCtx;
-use crate::scripting::error::ScriptError;
-use crate::scripting::primitives_registry::{ContextScope, PrimitiveRegistry};
+use postretro_entities::{ScriptCtx, ScriptError};
 use postretro_scripting_core::primitive_adapters::{
     Any, ScriptSlotValue, StoreDefinition, StoreSchemaJson,
 };
+use postretro_scripting_core::primitives_registry::{ContextScope, PrimitiveRegistry};
 #[allow(unused_imports)]
 pub(crate) use postretro_scripting_core::store_bridge::{
     TextEdit, apply_store_slot_batch, apply_text_edit, read_store_slot, store_declaration,
@@ -70,17 +69,17 @@ pub(crate) fn register_store_primitives(registry: &mut PrimitiveRegistry, ctx: S
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scripting::luau::{LuauConfig, LuauSubsystem, Which};
-    use crate::scripting::primitives::store::{
-        drain_store_declarations_js, drain_store_declarations_lua,
-    };
-    use crate::scripting::primitives_registry::PrimitiveRegistry;
-    use crate::scripting::quickjs::{QuickJsConfig, QuickJsSubsystem, run_script};
-    use crate::scripting::slot_table::{
+    use mlua::Table as LuaTable;
+    use postretro_entities::slot_table::{
         NamespaceInsertError, ReplicationScope, SlotOwnership, SlotTable, SlotType, SlotValue,
         StoreDeclarationSet,
     };
-    use mlua::Table as LuaTable;
+    use postretro_scripting_core::luau::{LuauConfig, LuauSubsystem, Which};
+    use postretro_scripting_core::primitives_registry::PrimitiveRegistry;
+    use postretro_scripting_core::quickjs::{QuickJsConfig, QuickJsSubsystem, run_script};
+    use postretro_scripting_core::store_bridge::{
+        drain_store_declarations_js, drain_store_declarations_lua,
+    };
     use rquickjs::{Object as JsObject, Value as JsValue};
     use serde_json::Value;
     use std::collections::BTreeMap;
@@ -306,7 +305,7 @@ mod tests {
 
     #[test]
     fn namespace_error_type_remains_matchable() {
-        let mut table = crate::scripting::slot_table::SlotTable::new();
+        let mut table = SlotTable::new();
         let err = table.insert_namespace("player", Vec::new()).unwrap_err();
         assert!(matches!(
             err,

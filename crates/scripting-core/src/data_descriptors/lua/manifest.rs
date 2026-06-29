@@ -18,7 +18,7 @@ impl LevelManifest {
 
         let reactions = if table.contains_key("reactions").map_err(lua_err)? {
             let arr: Table = table.get("reactions").map_err(lua_err)?;
-            let len = arr.raw_len();
+            let len = validate_dense_lua_array(&arr, "`reactions` field")?;
             let mut out = Vec::with_capacity(len);
             for i in 1..=(len as i64) {
                 let item: LuaValue = arr.get(i).map_err(lua_err)?;
@@ -70,7 +70,7 @@ pub fn drain_ui_trees_lua(
             return Ok(Vec::new());
         }
     };
-    let len = arr.raw_len();
+    let len = dense_lua_prefix_len(&arr, "uiTrees", scope)?;
     let mut out = Vec::with_capacity(len);
     for i in 1..=(len as i64) {
         let item: LuaValue = arr.get(i).map_err(lua_err)?;
@@ -81,6 +81,7 @@ pub fn drain_ui_trees_lua(
             }
         }
     }
+    log_lua_array_extras(&arr, len, "uiTrees", scope)?;
     Ok(out)
 }
 
@@ -220,13 +221,7 @@ pub fn drain_maps_lua(table: &Table, scope: &str) -> Result<Vec<ModMapEntry>, De
         }
     };
 
-    let len = match validate_dense_lua_array(&arr, "`maps` field") {
-        Ok(len) => len,
-        Err(e) => {
-            log::warn!("[Scripting] {scope}: `maps` is malformed and was ignored: {e}");
-            return Ok(Vec::new());
-        }
-    };
+    let len = dense_lua_prefix_len(&arr, "maps", scope)?;
     let mut out = Vec::with_capacity(len);
     let mut seen_ids = BTreeSet::new();
     for i in 1..=(len as i64) {
@@ -238,6 +233,7 @@ pub fn drain_maps_lua(table: &Table, scope: &str) -> Result<Vec<ModMapEntry>, De
             }
         }
     }
+    log_lua_array_extras(&arr, len, "maps", scope)?;
     Ok(out)
 }
 
@@ -311,4 +307,53 @@ pub fn mod_map_entry_from_lua(value: LuaValue) -> Result<ModMapEntry, Descriptor
         name: get_required_string_lua(&table, "name")?,
         tags: string_array_from_lua(&table, "tags")?,
     })
+}
+
+fn dense_lua_prefix_len(
+    arr: &Table,
+    field: &'static str,
+    scope: &str,
+) -> Result<usize, DescriptorError> {
+    let mut indices = BTreeSet::new();
+    for pair in arr.clone().pairs::<LuaValue, LuaValue>() {
+        let (key, _) = pair.map_err(lua_err)?;
+        if let LuaValue::Integer(index) = key {
+            if index >= 1 {
+                indices.insert(index);
+            }
+        }
+    }
+
+    let mut len = 0usize;
+    while indices.contains(&((len + 1) as i64)) {
+        len += 1;
+    }
+
+    if len == 0 && !indices.is_empty() {
+        log::warn!(
+            "[Scripting] {scope}: `{field}` has no dense prefix; non-prefix entries were skipped"
+        );
+    }
+
+    Ok(len)
+}
+
+fn log_lua_array_extras(
+    arr: &Table,
+    prefix_len: usize,
+    field: &'static str,
+    scope: &str,
+) -> Result<(), DescriptorError> {
+    for pair in arr.clone().pairs::<LuaValue, LuaValue>() {
+        let (key, _) = pair.map_err(lua_err)?;
+        let in_prefix =
+            matches!(&key, LuaValue::Integer(index) if *index >= 1 && *index <= prefix_len as i64);
+        if !in_prefix {
+            log::warn!(
+                "[Scripting] {scope}: `{field}` entry with {} key was skipped because `{field}` must be a dense array",
+                key.type_name()
+            );
+        }
+    }
+    Ok(())
 }

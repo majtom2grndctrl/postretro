@@ -758,7 +758,7 @@ declare module "postretro" {
     };
   };
 
-  /** Sequence step that installs (or clears, when `args` is `null`) a dual-channel animation (density and/or saturation) on a single fog volume. Emitted by the `FogVolumeHandle` capability methods (`pulse`, `fade`, `flicker`, `pulseSaturation`, `fadeSaturation`). */
+  /** Sequence step that installs (or clears, when `args` is `null`) a fog animation carrying any combination of density, saturation, minBrightness, and lightRange curves on a single fog volume. Current `FogVolumeHandle` helper methods emit density and saturation steps. */
   export type SetFogAnimationStep = {
     id: EntityId;
     primitive: "setFogAnimation";

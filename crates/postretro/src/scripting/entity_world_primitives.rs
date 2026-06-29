@@ -1,12 +1,14 @@
 // Entity/world scripting primitive handlers and registration.
 // See: context/lib/scripting.md
 
-use crate::scripting::ctx::ScriptCtx;
-use crate::scripting::error::ScriptError;
-use crate::scripting::primitives::entity::NullableString;
-use crate::scripting::primitives::world::{JsonValue, WorldQueryFilterInput};
-use crate::scripting::primitives_registry::{ContextScope, PrimitiveRegistry};
-use crate::scripting::registry::{ComponentKind, ComponentValue, EntityId, Transform};
+use crate::lighting::script_primitives as light;
+use postretro_entities::{
+    ComponentKind, ComponentValue, EntityId, ScriptCtx, ScriptError, Transform,
+};
+use postretro_scripting_core::primitive_adapters::{
+    JsonValue, NullableString, WorldQueryFilterInput,
+};
+use postretro_scripting_core::primitives_registry::{ContextScope, PrimitiveRegistry};
 
 pub(crate) fn register_entity_primitives(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
     registry
@@ -229,7 +231,6 @@ pub(crate) fn register_world_primitives(registry: &mut PrimitiveRegistry, ctx: S
 
 // Lives in world.rs because it dispatches across all component domains; per-domain helpers stay in their sibling primitive modules.
 fn register_world_query(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
-    use crate::scripting::primitives::light;
     registry
         .register("worldQuery", {
             let ctx = ctx.clone();
@@ -292,7 +293,7 @@ fn register_world_gravity(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scripting::primitives_registry::PrimitiveRegistry;
+    use postretro_scripting_core::primitives_registry::PrimitiveRegistry;
 
     fn registry_with_gravity() -> (PrimitiveRegistry, ScriptCtx) {
         let ctx = ScriptCtx::new();

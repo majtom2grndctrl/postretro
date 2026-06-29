@@ -354,6 +354,77 @@ fn level_manifest_luau_skips_malformed_ui_tree() {
     assert_eq!(manifest.ui_trees[0].name, "good");
 }
 
+#[test]
+fn level_manifest_luau_keeps_ui_tree_dense_prefix_and_skips_non_prefix_entries() {
+    // Regression: raw_len iteration silently omitted keyed/sparse Luau uiTrees.
+    let cases = [
+        (
+            r#"return {
+                reactions = {},
+                uiTrees = {
+                    { name = "good", tree = { anchor = "top", offset = { 0, 0 }, root = { kind = "spacer", flexGrow = 1 } } },
+                    extra = { name = "extra", tree = { anchor = "top", offset = { 0, 0 }, root = { kind = "spacer", flexGrow = 1 } } },
+                },
+            }"#,
+            "extra",
+        ),
+        (
+            r#"return {
+                reactions = {},
+                uiTrees = {
+                    { name = "good", tree = { anchor = "top", offset = { 0, 0 }, root = { kind = "spacer", flexGrow = 1 } } },
+                    [3] = { name = "sparse", tree = { anchor = "top", offset = { 0, 0 }, root = { kind = "spacer", flexGrow = 1 } } },
+                },
+            }"#,
+            "sparse",
+        ),
+        (
+            r#"return {
+                reactions = {},
+                uiTrees = {
+                    { name = "good", tree = { anchor = "top", offset = { 0, 0 }, root = { kind = "spacer", flexGrow = 1 } } },
+                    [0] = { name = "zero", tree = { anchor = "top", offset = { 0, 0 }, root = { kind = "spacer", flexGrow = 1 } } },
+                },
+            }"#,
+            "zero",
+        ),
+        (
+            r#"return {
+                reactions = {},
+                uiTrees = {
+                    { name = "good", tree = { anchor = "top", offset = { 0, 0 }, root = { kind = "spacer", flexGrow = 1 } } },
+                    [1.5] = { name = "float", tree = { anchor = "top", offset = { 0, 0 }, root = { kind = "spacer", flexGrow = 1 } } },
+                },
+            }"#,
+            "float",
+        ),
+    ];
+
+    for (source, label) in cases {
+        let manifest = eval_lua(source, |v| {
+            LevelManifest::from_lua_value(v).expect("malformed uiTrees extras must degrade")
+        });
+        assert_eq!(manifest.ui_trees.len(), 1, "{label} case");
+        assert_eq!(manifest.ui_trees[0].name, "good", "{label} case");
+    }
+}
+
+#[test]
+fn level_manifest_luau_skips_map_shaped_ui_trees_without_dense_prefix() {
+    let manifest = eval_lua(
+        r#"return {
+            reactions = {},
+            uiTrees = {
+                named = { name = "named", tree = { anchor = "top", offset = { 0, 0 }, root = { kind = "spacer", flexGrow = 1 } } },
+                [2] = { name = "sparse", tree = { anchor = "top", offset = { 0, 0 }, root = { kind = "spacer", flexGrow = 1 } } },
+            },
+        }"#,
+        |v| LevelManifest::from_lua_value(v).expect("malformed uiTrees field should degrade"),
+    );
+
+    assert!(manifest.ui_trees.is_empty());
+}
+
 // ======================================================================
 // Fix A: Luau `buildBind` accepts `{ local }` presentation-cell binds
 // ======================================================================

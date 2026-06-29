@@ -10,7 +10,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::scripting::registry::{EntityId, EntityRegistry, FogVolumeComponent};
+use postretro_entities::{EntityId, EntityRegistry, FogVolumeComponent};
 
 use postretro_scripting_core::reaction_registry::ReactionError;
 
@@ -256,7 +256,7 @@ pub(crate) fn dispatch(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scripting::registry::Transform;
+    use postretro_entities::Transform;
 
     fn sample_fog() -> FogVolumeComponent {
         FogVolumeComponent {
@@ -624,13 +624,12 @@ mod tests {
     ///
     /// Mirrors the two input shapes used by
     /// `set_light_animation_quickjs_and_luau_produce_identical_output` in
-    /// `crates/postretro/src/scripting/primitives/light.rs`: a JS object
+    /// `crates/postretro/src/lighting/script_primitives.rs`: a JS object
     /// literal with camelCase keys, and a Luau table with the same keys.
     #[test]
     fn set_fog_params_quickjs_and_luau_produce_identical_output() {
-        use crate::scripting::reactions::registry::{
-            ReactionPrimitiveRegistry, register_fog_reaction_primitives,
-        };
+        use crate::fx::fog_reactions::register_fog_reaction_primitives;
+        use postretro_scripting_core::reaction_registry::ReactionPrimitiveRegistry;
 
         // 1) Capture the JSON produced by QuickJS evaluating a JS object
         //    literal mirroring the shape an author would call setFogParams
@@ -650,7 +649,7 @@ mod tests {
                     "#,
                 )
                 .unwrap();
-            crate::scripting::conv::js_to_json(&qjs, val).unwrap()
+            postretro_scripting_core::conv::js_to_json(&qjs, val).unwrap()
         });
 
         // 2) Capture the JSON produced by Luau evaluating an equivalent table.
@@ -668,7 +667,7 @@ mod tests {
             )
             .eval()
             .unwrap();
-        let from_luau = crate::scripting::conv::lua_to_json(lua_val).unwrap();
+        let from_luau = postretro_scripting_core::conv::lua_to_json(lua_val).unwrap();
 
         // 3) Dispatch each through the reaction registry against a freshly
         //    spawned fog volume; assert the resulting components match.

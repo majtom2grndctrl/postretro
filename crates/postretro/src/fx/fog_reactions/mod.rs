@@ -174,12 +174,13 @@ mod tests {
         // contains the names) and (b) mutate the targeted fog component when
         // fired through `fire_named_event_with_sequences`. This is exactly
         // the path `fogPulse` / `fogFade` step arrays travel at level load.
-        use crate::scripting::data_descriptors::{NamedReaction, ReactionDescriptor, SequenceStep};
-        use crate::scripting::data_registry::DataRegistry;
-        use crate::scripting::reaction_dispatch::{
+        use postretro_entities::{
+            DataRegistry, FogVolumeComponent, NamedReaction, ReactionDescriptor, SequenceStep,
+            Transform,
+        };
+        use postretro_scripting_core::reaction_dispatch::{
             fire_named_event_with_sequences, validate_sequence_primitives,
         };
-        use crate::scripting::registry::{FogVolumeComponent, Transform};
 
         let script_ctx = ScriptCtx::new();
         let id = {
@@ -234,8 +235,7 @@ mod tests {
         data.populate_level(validated, Vec::new(), &[]);
 
         let reaction_reg = ReactionPrimitiveRegistry::new();
-        let system_reg =
-            crate::scripting::reactions::system_commands::SystemReactionRegistry::new();
+        let system_reg = postretro_scripting_core::reaction_registry::SystemReactionRegistry::new();
         fire_named_event_with_sequences(
             "levelLoad",
             &data,
@@ -263,7 +263,7 @@ mod tests {
 
     #[test]
     fn fog_primitive_dispatch_round_trip() {
-        use crate::scripting::registry::{EntityRegistry, FogVolumeComponent, Transform};
+        use postretro_entities::{EntityRegistry, FogVolumeComponent, Transform};
 
         let mut reg = EntityRegistry::new();
         let id = reg.spawn(Transform::default());

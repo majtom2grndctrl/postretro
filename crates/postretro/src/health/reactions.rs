@@ -6,8 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::scripting::components::health::{HealthComponent, apply_damage};
-use crate::scripting::registry::{EntityId, EntityRegistry};
+use postretro_entities::components::health::{HealthComponent, apply_damage};
+use postretro_entities::{EntityId, EntityRegistry};
 use postretro_foundation::DamagePayload;
 
 use postretro_scripting_core::reaction_registry::{ReactionError, ReactionPrimitiveRegistry};
@@ -76,8 +76,8 @@ pub(crate) fn dispatch(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scripting::data_descriptors::HealthDescriptor;
-    use crate::scripting::registry::Transform;
+    use postretro_entities::Transform;
+    use postretro_foundation::HealthDescriptor;
 
     #[test]
     fn registers_health_primitive_under_expected_name() {

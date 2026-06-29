@@ -56,35 +56,82 @@ fn drain_maps_js_defaults_absent_and_null_tags_to_empty() {
 }
 
 #[test]
-fn drain_maps_lua_ignores_keyed_and_sparse_catalog_tables() {
-    // Regression: keyed/sparse Luau catalog tables used to drain as empty
-    // without being recognized as malformed.
+fn drain_maps_lua_keeps_dense_prefix_and_skips_non_prefix_entries() {
+    // Regression: keyed/sparse Luau catalog tables were either silently omitted
+    // or caused the whole catalog to be dropped.
     let cases = [
-        r#"return {
-            maps = {
-                named = { id = "e1m1", path = "maps/e1m1.prl", name = "Entryway", tags = { "campaign" } },
-            },
-        }"#,
-        r#"return {
-            maps = {
-                [2] = { id = "e1m1", path = "maps/e1m1.prl", name = "Entryway", tags = { "campaign" } },
-            },
-        }"#,
-        r#"return {
-            maps = {
-                { id = "e1m1", path = "maps/e1m1.prl", name = "Entryway", tags = { "campaign" } },
-                extra = { id = "dm1", path = "maps/dm1.prl", name = "Arena", tags = { "deathmatch" } },
-            },
-        }"#,
+        (
+            r#"return {
+                maps = {
+                    { id = "e1m1", path = "maps/e1m1.prl", name = "Entryway", tags = { "campaign" } },
+                    extra = { id = "dm1", path = "maps/dm1.prl", name = "Arena", tags = { "deathmatch" } },
+                },
+            }"#,
+            "extra",
+        ),
+        (
+            r#"return {
+                maps = {
+                    { id = "e1m1", path = "maps/e1m1.prl", name = "Entryway", tags = { "campaign" } },
+                    [3] = { id = "dm1", path = "maps/dm1.prl", name = "Arena", tags = { "deathmatch" } },
+                },
+            }"#,
+            "sparse",
+        ),
+        (
+            r#"return {
+                maps = {
+                    { id = "e1m1", path = "maps/e1m1.prl", name = "Entryway", tags = { "campaign" } },
+                    [0] = { id = "zero", path = "maps/zero.prl", name = "Zero", tags = {} },
+                },
+            }"#,
+            "zero",
+        ),
+        (
+            r#"return {
+                maps = {
+                    { id = "e1m1", path = "maps/e1m1.prl", name = "Entryway", tags = { "campaign" } },
+                    [1.5] = { id = "float", path = "maps/float.prl", name = "Float", tags = {} },
+                },
+            }"#,
+            "float",
+        ),
     ];
 
-    for source in cases {
+    for (source, label) in cases {
         let maps = eval_lua(source, |v| {
             let table = lua_table(v, "manifest").expect("manifest must be a table");
             drain_maps_lua(&table, "test").expect("malformed maps field should degrade")
         });
-        assert!(maps.is_empty(), "malformed maps field must be ignored");
+        assert_eq!(
+            maps,
+            vec![ModMapEntry {
+                id: "e1m1".to_string(),
+                path: "maps/e1m1.prl".to_string(),
+                name: "Entryway".to_string(),
+                tags: vec!["campaign".to_string()],
+            }],
+            "{label} case should keep the dense prefix"
+        );
     }
+}
+
+#[test]
+fn drain_maps_lua_skips_map_shaped_catalog_without_dense_prefix() {
+    let maps = eval_lua(
+        r#"return {
+            maps = {
+                named = { id = "e1m1", path = "maps/e1m1.prl", name = "Entryway", tags = { "campaign" } },
+                [2] = { id = "dm1", path = "maps/dm1.prl", name = "Arena", tags = { "deathmatch" } },
+            },
+        }"#,
+        |v| {
+            let table = lua_table(v, "manifest").expect("manifest must be a table");
+            drain_maps_lua(&table, "test").expect("malformed maps field should degrade")
+        },
+    );
+
+    assert!(maps.is_empty(), "no dense prefix means no catalog entries");
 }
 
 #[test]

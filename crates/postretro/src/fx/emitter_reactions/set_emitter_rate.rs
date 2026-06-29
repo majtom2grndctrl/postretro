@@ -4,8 +4,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::scripting::components::billboard_emitter::BillboardEmitterComponent;
-use crate::scripting::registry::{EntityId, EntityRegistry};
+use postretro_entities::components::billboard_emitter::BillboardEmitterComponent;
+use postretro_entities::{EntityId, EntityRegistry};
 
 use postretro_scripting_core::reaction_registry::ReactionError;
 
@@ -65,7 +65,7 @@ pub(crate) fn dispatch(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scripting::registry::Transform;
+    use postretro_entities::Transform;
 
     fn sample_emitter() -> BillboardEmitterComponent {
         BillboardEmitterComponent {

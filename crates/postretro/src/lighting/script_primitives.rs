@@ -1,13 +1,13 @@
 // Light-domain scripting primitives: `setLightAnimation` (definition context).
 // See: context/lib/scripting.md
 
-use crate::scripting::components::light::{LightAnimation, LightComponent};
-use crate::scripting::conv::Vec3Lit;
-use crate::scripting::ctx::ScriptCtx;
-use crate::scripting::error::ScriptError;
-use crate::scripting::primitives_registry::{ContextScope, PrimitiveRegistry};
-use crate::scripting::registry::{Component, ComponentKind, EntityId};
-use crate::scripting::sequence::{SequenceError, SequencedPrimitiveRegistry};
+use postretro_entities::components::light::{LightAnimation, LightComponent};
+use postretro_entities::{
+    Component, ComponentKind, EntityId, EntityRegistry, ScriptCtx, ScriptError,
+};
+use postretro_foundation::Vec3Lit;
+use postretro_scripting_core::primitives_registry::{ContextScope, PrimitiveRegistry};
+use postretro_scripting_core::sequence::{SequenceError, SequencedPrimitiveRegistry};
 
 /// A single entity-handle snapshot produced by `world.query`. Carries the
 /// `EntityId` plus a read-only copy of the live component data at query time.
@@ -147,7 +147,7 @@ fn apply_light_animation(
 
 /// Takes an already-borrowed registry to avoid a second `borrow_mut` on the same `RefCell` guard.
 pub(crate) fn apply_light_animation_inner(
-    registry: &mut crate::scripting::registry::EntityRegistry,
+    registry: &mut EntityRegistry,
     id: EntityId,
     animation: Option<LightAnimation>,
 ) -> Result<(), ScriptError> {
@@ -351,9 +351,8 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scripting::components::light::{FalloffKind, LightKind};
-    use crate::scripting::ctx::ScriptCtx;
-    use crate::scripting::registry::Transform;
+    use postretro_entities::Transform;
+    use postretro_entities::components::light::{FalloffKind, LightKind};
 
     fn test_ctx_with_light(is_dynamic: bool, tag: Option<&str>) -> (ScriptCtx, EntityId) {
         let ctx = ScriptCtx::new();
@@ -401,7 +400,7 @@ mod tests {
     fn registry_for(ctx: ScriptCtx) -> PrimitiveRegistry {
         let mut r = PrimitiveRegistry::new();
         register_light_entity_primitives(&mut r, ctx.clone());
-        crate::scripting::primitives::world::register_world_primitives(&mut r, ctx);
+        crate::scripting::entity_world_primitives::register_world_primitives(&mut r, ctx);
         r
     }
 

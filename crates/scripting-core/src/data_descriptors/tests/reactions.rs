@@ -339,6 +339,76 @@ fn lua_sequence_reaction_deserializes() {
 }
 
 #[test]
+fn lua_reactions_reject_non_dense_tables() {
+    // Regression: raw_len iteration silently accepted malformed reaction arrays.
+    let cases = [
+        (
+            "return { reactions = { named = { name = \"x\", primitive = \"ping\" } } }",
+            "map",
+        ),
+        (
+            "return { reactions = { { name = \"x\", primitive = \"ping\" }, extra = { name = \"y\", primitive = \"pong\" } } }",
+            "extra",
+        ),
+        (
+            "return { reactions = { [2] = { name = \"x\", primitive = \"ping\" } } }",
+            "hole",
+        ),
+        (
+            "return { reactions = { [0] = { name = \"x\", primitive = \"ping\" } } }",
+            "zero",
+        ),
+        (
+            "return { reactions = { [1.5] = { name = \"x\", primitive = \"ping\" } } }",
+            "float",
+        ),
+    ];
+
+    for (source, label) in cases {
+        let err = eval_lua(source, |v| LevelManifest::from_lua_value(v).unwrap_err());
+        assert!(
+            err.to_string().contains("dense array"),
+            "{label} produced unexpected error: {err}"
+        );
+    }
+}
+
+#[test]
+fn lua_sequence_rejects_non_dense_tables() {
+    // Regression: raw_len iteration silently accepted malformed sequence steps.
+    let cases = [
+        (
+            "return { reactions = { { name = \"x\", sequence = { named = { id = 1, primitive = \"ping\" } } } } }",
+            "map",
+        ),
+        (
+            "return { reactions = { { name = \"x\", sequence = { { id = 1, primitive = \"ping\" }, extra = { id = 2, primitive = \"pong\" } } } } }",
+            "extra",
+        ),
+        (
+            "return { reactions = { { name = \"x\", sequence = { [2] = { id = 1, primitive = \"ping\" } } } } }",
+            "hole",
+        ),
+        (
+            "return { reactions = { { name = \"x\", sequence = { [0] = { id = 1, primitive = \"ping\" } } } } }",
+            "zero",
+        ),
+        (
+            "return { reactions = { { name = \"x\", sequence = { [1.5] = { id = 1, primitive = \"ping\" } } } } }",
+            "float",
+        ),
+    ];
+
+    for (source, label) in cases {
+        let err = eval_lua(source, |v| LevelManifest::from_lua_value(v).unwrap_err());
+        assert!(
+            matches!(err, DescriptorError::InvalidSequenceShape { .. }),
+            "{label} produced unexpected error: {err}"
+        );
+    }
+}
+
+#[test]
 fn lua_empty_arrays_yield_empty_manifest() {
     let src = "return { reactions = {} }";
     let m = eval_lua(src, |v| LevelManifest::from_lua_value(v).unwrap());

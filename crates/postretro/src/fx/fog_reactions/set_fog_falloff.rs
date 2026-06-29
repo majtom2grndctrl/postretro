@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::scripting::registry::{EntityId, EntityRegistry, FogVolumeComponent};
+use postretro_entities::{EntityId, EntityRegistry, FogVolumeComponent};
 
 use postretro_scripting_core::reaction_registry::ReactionError;
 
@@ -70,7 +70,7 @@ pub(crate) fn dispatch(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scripting::registry::Transform;
+    use postretro_entities::Transform;
 
     fn sample_fog() -> FogVolumeComponent {
         FogVolumeComponent {

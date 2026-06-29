@@ -149,7 +149,11 @@ pub fn primitive_descriptor_from_lua(
 }
 
 pub fn sequence_steps_from_lua(arr: &Table) -> Result<Vec<SequenceStep>, DescriptorError> {
-    let len = arr.raw_len();
+    let len = validate_dense_lua_array(arr, "`sequence` field").map_err(|e| {
+        DescriptorError::InvalidSequenceShape {
+            reason: e.to_string(),
+        }
+    })?;
     let mut out = Vec::with_capacity(len);
     for i in 1..=(len as i64) {
         let item: LuaValue = arr.get(i).map_err(lua_err)?;

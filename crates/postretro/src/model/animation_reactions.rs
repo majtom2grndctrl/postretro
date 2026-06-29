@@ -5,8 +5,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::scripting::components::mesh::{SwitchResult, switch_animation_state};
-use crate::scripting::registry::{EntityId, EntityRegistry};
+use postretro_entities::components::mesh::{SwitchResult, switch_animation_state};
+use postretro_entities::{EntityId, EntityRegistry};
 
 use postretro_scripting_core::reaction_registry::{ReactionError, ReactionPrimitiveRegistry};
 
@@ -75,11 +75,11 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
-    use crate::scripting::components::mesh::{
+    use postretro_entities::Transform;
+    use postretro_entities::components::mesh::{
         AnimationState, DEFAULT_CROSSFADE_MS, InterruptPolicy, MeshAnimation, MeshComponent,
         resolve_pending_animation_stamps,
     };
-    use crate::scripting::registry::Transform;
 
     #[test]
     fn registers_mesh_primitive_under_expected_name() {

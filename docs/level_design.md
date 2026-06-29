@@ -47,7 +47,7 @@ Radiates light in all directions from a single point.
 | `style` | integer | `0` | Preset flicker/pulse animation — see the style table below |
 | `_phase` | float | `0.0` | Shifts the animation cycle (0.0–1.0). Set different values on nearby lights sharing the same style so they don't all pulse together. |
 | `brightness_curve` | curve | — | Custom brightness animation — see Custom Animation Curves below |
-| `color_curve` | curve | — | Custom color animation (only on `_bake_only 1` or `_dynamic 1` lights) |
+| `color_curve` | curve | — | Custom color animation (only on `_bake_only 1` or `_animated 1` lights) |
 | `direction_curve` | curve | — | Custom spotlight aim animation (spotlights only) |
 | `period_ms` | float | — | Cycle length in milliseconds. Required when using any `*_curve` key. |
 | `_curve_phase` | float | `0.0` | Phase offset for curve-animated lights (0.0–1.0). Works the same as `_phase` but for the curve path. |
@@ -80,7 +80,7 @@ A single directional light that hits everything from the same angle, like sunlig
 | `angles` | angles | `"-90 0 0"` | Direction as `"pitch yaw roll"` in degrees |
 | `_angular_diameter` | float | `0.5` | Angular size of the sun disc in degrees, driving bake-time soft shadows (wider = softer penumbra). Leave blank for the soft default; set `0` for a hard shadow. `_light_size` does not apply to directional lights. Bake-only. |
 
-All shared `light` keys (`light`, `_color`, `_falloff_range`, `delay`, `style`, `_phase`, `brightness_curve`, `color_curve`, `direction_curve`, `period_ms`, `_curve_phase`, `_start_inactive`, `_dynamic`, `_bake_only`) apply. (`_falloff_range` and `_light_size` aside, `light_sun` ignores distance falloff and emitter radius.)
+All shared `light` keys (`light`, `_color`, `_falloff_range`, `delay`, `style`, `_phase`, `brightness_curve`, `color_curve`, `direction_curve`, `period_ms`, `_curve_phase`, `_start_inactive`, `_dynamic`, `_bake_only`, `_animated`) apply. (`_falloff_range` and `_light_size` aside, `light_sun` ignores distance falloff and emitter radius.)
 
 ---
 
@@ -117,7 +117,7 @@ brightness_curve "0:0.1 500:1.0 1000:0.1"
 period_ms "1000"
 ```
 
-**Example — color shift (bake_only or dynamic lights only):**
+**Example — color shift (bake_only or animated static lights only):**
 ```
 color_curve "0:255 0 0  500:255 255 255  1000:255 0 0"
 period_ms "1000"

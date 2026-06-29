@@ -508,7 +508,7 @@ declare module "postretro" {
     startActive: boolean | null;
     /** Per-sample brightness curve. */
     brightness: ReadonlyArray<number> | null;
-    /** Per-sample color curve. Only valid on dynamic lights. */
+    /** Per-sample color curve. Accepted on dynamic and authored static lights; baked indirect stays at the authored color. */
     color: ReadonlyArray<Vec3> | null;
     /** Per-sample direction curve. Non-unit samples are silently normalized. */
     direction: ReadonlyArray<Vec3> | null;
@@ -636,7 +636,7 @@ declare module "postretro" {
 
   /** Typed light handle returned by `world.query({ component: "light" })`. Composes the brightness scalar capability with vec3 channels declared directly (TypeScript collapses duplicate method names, so secondary vec3 channels are not pulled in via `AnimatableVec3` extension). */
   export interface LightEntityHandle extends LightEntity, AnimatableScalar<"brightness"> {
-    /** Cycle through RGB colors over `periodMs`. Dynamic lights only. */
+    /** Cycle through RGB colors over `periodMs`. Works on dynamic and authored static lights. */
     colorShift(opts: { values: Vec3[]; periodMs: number }): SequenceStep[];
     /** Sweep the `direction` channel through unit vectors over `periodMs`. */
     sweep(opts: { values: Vec3[]; periodMs: number }): SequenceStep[];

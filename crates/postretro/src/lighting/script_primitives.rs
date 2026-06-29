@@ -257,7 +257,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field(
             "color",
             "Option<Vec<Vec3>>",
-            "Per-sample color curve. Only valid on dynamic lights.",
+            "Per-sample color curve. Accepted on dynamic and authored static lights; baked indirect stays at the authored color.",
         )
         .field(
             "direction",

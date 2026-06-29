@@ -1095,19 +1095,19 @@ pub(crate) fn probe_is_valid_pub(tree: &BspTree, exterior: &HashSet<usize>, pos:
     probe_is_valid(tree, exterior, pos)
 }
 
-/// Color animation is only valid on `bake_only` or `is_dynamic` lights — a color-animated
-/// baked light would produce direct/indirect mismatch since the SH indirect was baked at a fixed color.
+/// Color animation is only valid on `bake_only` or `is_animated` lights. Static
+/// non-animated lights keep baked indirect lighting at a fixed authored color.
 pub fn validate_light_animations(lights: &[MapLight]) -> Result<(), String> {
     for light in lights {
         let Some(anim) = light.animation.as_ref() else {
             continue;
         };
-        if anim.color.is_some() && !light.bake_only && !light.is_dynamic {
+        if anim.color.is_some() && !light.bake_only && !light.is_animated {
             return Err(format!(
                 "light at origin [{:.3}, {:.3}, {:.3}] has `color` animation \
-                 but is neither `bake_only` nor `is_dynamic`; animated color on \
+                 but is neither `bake_only` nor `is_animated`; animated color on \
                  a baked light would mismatch the SH indirect bake. Either mark \
-                 the light `_dynamic 1`, set `_bake_only 1`, or remove the \
+                 the light `_animated 1`, set `_bake_only 1`, or remove the \
                  color curve.",
                 light.origin.x, light.origin.y, light.origin.z,
             ));

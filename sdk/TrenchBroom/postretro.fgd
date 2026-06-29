@@ -68,13 +68,11 @@
     // period_ms is required when any *_curve key is set; the compiler resamples the
     // authored keyframes into uniform samples covering [0, period_ms] at 32 Hz.
     // If both 'style' and 'brightness_curve' are present, the curve wins and 'style'
-    // is ignored (a warning names the light). color_curve is only valid on
-    // _bake_only lights in v1 (animated color on a statically-baked light would
-    // drift from the SH indirect bake). `_dynamic` was retired in Task 1b of
-    // `sdf-static-occluder-shadows`; the animated-baked compose path
-    // (Task 2c, `_animated`) will extend the color_curve admit condition.
+    // is ignored (a warning names the light). color_curve is valid on
+    // _bake_only and _animated lights. Baked indirect lighting stays at the
+    // authored color.
     brightness_curve(string) : "Brightness Keyframe Curve ([t_ms, v] entries)" : ""
-    color_curve(string) : "Color Keyframe Curve ([t_ms, r, g, b] entries; requires _bake_only)" : ""
+    color_curve(string) : "Color Keyframe Curve ([t_ms, r, g, b] entries; requires _bake_only or _animated)" : ""
     direction_curve(string) : "Direction Keyframe Curve ([t_ms, x, y, z] entries; spot/sun only)" : ""
     period_ms(integer) : "Keyframe Curve Period (milliseconds; required when any *_curve is set)" : 0
     // _curve_phase is a separate [0.0, 1.0) offset for keyframe curves. It does NOT

@@ -1,6 +1,6 @@
 // `setEmitterRate` reaction primitive: zero or modulate emission rate on
 // every entity matching the reaction's tag.
-// See: context/lib/scripting.md §11 (Emitter and Particles — Reaction primitives)
+// See: context/lib/scripting.md §10.1 (Emitter and Particles)
 
 use serde::{Deserialize, Serialize};
 

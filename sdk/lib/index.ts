@@ -8,7 +8,7 @@
 // See: context/lib/scripting.md §7
 //
 // When adding public root exports here, also update TS_SDK_LIB_BLOCK and
-// LUAU_SDK_LIB_BLOCK in crates/postretro/src/scripting/typedef.rs.
+// LUAU_SDK_LIB_BLOCK in crates/scripting-core/src/typedef/.
 
 export type { EntityForComponent, World } from "./world";
 export { world } from "./world";

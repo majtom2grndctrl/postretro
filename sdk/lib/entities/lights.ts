@@ -24,7 +24,7 @@ import type { SequenceStep } from "../data_script";
 export interface LightEntityHandle
   extends GeneratedLightEntity,
     AnimatableScalar<"brightness"> {
-  /** Cycle through RGB colors over `periodMs`. Dynamic lights only. */
+  /** Cycle through RGB colors over `periodMs`. Works on dynamic and authored static lights. */
   colorShift(opts: { values: Vec3[]; periodMs: number }): SequenceStep[];
   /** Sweep the `direction` channel through unit vectors over `periodMs`. */
   sweep(opts: { values: Vec3[]; periodMs: number }): SequenceStep[];

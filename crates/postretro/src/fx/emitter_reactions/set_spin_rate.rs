@@ -1,6 +1,6 @@
 // `setSpinRate` reaction primitive: set or tween the spin rate on every
 // entity matching the reaction's tag.
-// See: context/lib/scripting.md §11 (Emitter and Particles — Reaction primitives)
+// See: context/lib/scripting.md §10.1 (Emitter and Particles)
 
 use crate::scripting::components::billboard_emitter::{
     BillboardEmitterComponent, SpinAnimation, SpinAnimationLit,

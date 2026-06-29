@@ -84,12 +84,9 @@ pub struct LightComponent {
     pub cone_angle_outer: Option<f32>,
     pub cone_direction: Option<[f32; 3]>,
     /// Whether the source `MapLight.is_dynamic` flag was set. Script handles
-    /// read this as `isDynamic` to gate `color` animation: color animation on
-    /// a baked light would produce a direct/indirect mismatch (SH indirect was
-    /// baked at compile-time color). The Rust primitive enforces this at
-    /// `setLightAnimation`; `sdk/lib/entities/lights.ts` / `entities/lights.luau`
-    /// `wrapLightEntity` pre-checks the handle snapshot and throws a descriptive
-    /// error before the primitive call.
+    /// expose this as `isDynamic`, but it is not a color-animation eligibility
+    /// flag. Static authored lights may accept color animation; slot-bearing
+    /// static lights route through the animated-compose path.
     #[serde(default)]
     pub is_dynamic: bool,
     /// Slot into the animated-compose descriptor buffer (group 1 binding 4

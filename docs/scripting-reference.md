@@ -315,7 +315,7 @@ Returned when `component` is `"light"`. All fields are a snapshot at query time.
 |-------|------|-------------|
 | `id` | `EntityId` | Stable entity id. Pass to `setLightAnimation` and other primitives. |
 | `transform.position` | `{ x, y, z }` | Light origin in world space at query time. |
-| `isDynamic` | `boolean` | Whether the light is runtime-dynamic. Sourced from the `_dynamic` key in the `.map` file. Dynamic lights participate in the per-fragment GPU light loop and the shadow-slot scheduler; use this to gate color animations (color animation is only valid on dynamic lights). |
+| `isDynamic` | `boolean` | Whether the light is runtime-dynamic. Dynamic lights participate in the per-fragment GPU light loop and the shadow-slot scheduler. This is not a color-animation eligibility flag. |
 | `tags` | `string[]` | The entity's tags at query time. Empty array if untagged. |
 | `component` | `LightComponent` | Full component snapshot at query time. See [LightComponent](#lightcomponent) below. |
 
@@ -414,7 +414,7 @@ A `LightAnimation` describes one looping (or finite) animation cycle. All fields
 |-------|------|---------|-------------|
 | `periodMs` | `number` | required | Total duration of one cycle, in milliseconds. |
 | `brightness` | `number[]` | `null` | Brightness multiplier samples. The GPU interpolates via Catmull-Rom over the period. `0` = off, `1` = full intensity. Values above `1` are valid. |
-| `color` | `Vec3[]` | `null` | RGB color samples (`{ x, y, z }`). **Dynamic lights only.** `setAnimation` throws at the call site if `color` is non-null on a baked light. |
+| `color` | `Vec3[]` | `null` | RGB color samples (`{ x, y, z }`). Accepted on dynamic and authored static lights; baked indirect lighting stays at the authored color. |
 | `direction` | `Vec3[]` | `null` | Unit-vector direction samples for spot lights. Non-unit samples are silently normalized. Zero-length samples are rejected with `InvalidArgument`. |
 | `phase` | `number` | `null` | Offset into the cycle where this light starts, in `[0, 1)`. Use to stagger lights in a sequence. Values outside `[0, 1)` are normalized automatically. |
 | `playCount` | `number` | `null` | Number of complete cycles to play, then stop. `null` loops forever. |
@@ -489,7 +489,7 @@ light:setAnimation(pulse(0.4, 1.0, 2000))
 colorShift(colors: [number, number, number][], periodMs: number): LightAnimation
 ```
 
-Cycles uniformly through the given RGB colors over `periodMs`. Dynamic lights only.
+Cycles uniformly through the given RGB colors over `periodMs`. Works on dynamic and authored static lights.
 
 ```typescript
 light.setAnimation(colorShift([[1, 0, 0], [0, 0, 1]], 3000));
@@ -781,7 +781,7 @@ export function setupLevel(): LevelManifest {
 
 | Situation | Result |
 |-----------|--------|
-| Color animation (`color` field) on a non-dynamic light | Throws at the `setAnimation` call site with a message naming the light's entity id. |
+| Empty `color` or `brightness` animation channel | Rejected by `setLightAnimation` with `InvalidArgument`; use `null` to omit a channel. |
 | Zero-length vector in `direction` samples | Rejected by `setLightAnimation` with `InvalidArgument`. |
 | Non-unit direction vectors | Silently normalized by the engine. |
 | Fog reaction primitive targets a tag with no matching entities | Debug-log no-op. |
@@ -1467,7 +1467,7 @@ Announce({ priority: "assertive" }, "Connection lost"); // interrupts
 
 The repo has no `tsc` CI; per-kind narrowing is proven two ways, both committed:
 
-- **Typedef snapshot tests** (`crates/postretro/src/scripting/typedef.rs`) assert
+- **Typedef snapshot tests** (`crates/postretro/src/scripting/typedef/tests/`) assert
   the emitted `.d.ts` / `.d.luau` narrows per kind — `content` is a `Text`-only
   prop (so a `Button({ content })` is a type error), `Bar` requires no name, the
   interactive widgets carry the `label` xor `labelledBy` union, `Image` narrows

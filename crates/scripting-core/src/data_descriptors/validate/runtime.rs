@@ -1,5 +1,5 @@
-// Runtime-side descriptor validators and parsers. These touch mlua and
-// render::ui types, so they remain in `postretro`.
+// Runtime-side descriptor validators and parsers for scripting-core. These
+// translate VM values into scripting-core UI descriptor types.
 // See: context/lib/scripting.md §12 (Crate Architecture)
 
 use std::collections::BTreeSet;

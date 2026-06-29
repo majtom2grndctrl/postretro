@@ -1406,11 +1406,11 @@ fn parse_size(raw: &str) -> anyhow::Result<u64> {
 /// Locate the `scripts-build` sidecar for compiling worldspawn `.ts` scripts.
 ///
 // TODO(scripting-tools-dedup): duplicates `TsCompilerPath::detect` in
-// `crates/postretro/src/scripting/watcher.rs`. That module is
-// `#[cfg(debug_assertions)]`-gated and lives inside the engine crate, which
-// pulls in wgpu — the level-compiler can't import it. The matching mtime
-// check lives in `js_is_fresh` below; the matching subprocess invocation
-// lives in `run_ts_compiler` in the watcher module. Consolidate into a
+// `crates/scripting-core/src/watcher.rs`, reached by the engine through a
+// debug-only compatibility re-export. The level-compiler still cannot import
+// the engine-side wrapper. The matching mtime check lives in `js_is_fresh`
+// below; the matching subprocess invocation lives in `run_ts_compiler` in the
+// watcher module. Consolidate into a
 // shared `postretro-scripts-tools` crate when the level-compiler gains more
 // scripting integration. See:
 // context/plans/drafts/scripting-tools-dedup/index.md
@@ -1672,7 +1672,7 @@ fn compile_worldspawn_data_script(
 /// mtime is unreliable after `git checkout` and on network filesystems — this
 /// is best-effort, not a correctness gate.
 // TODO(scripting-tools-dedup): mirrors `compile_start_script_if_stale`'s
-// freshness check in `crates/postretro/src/scripting/runtime.rs`. See the
+// freshness check in `crates/scripting-core/src/runtime/compile.rs`. See the
 // TODO above `find_scripts_build` for the consolidation plan.
 fn js_is_fresh(ts_path: &std::path::Path, js_path: &std::path::Path) -> Option<bool> {
     if !js_path.is_file() {

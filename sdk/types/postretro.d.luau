@@ -507,7 +507,7 @@ export type LightAnimation = {
   startActive: boolean?,
   --- Per-sample brightness curve.
   brightness: {number}?,
-  --- Per-sample color curve. Only valid on dynamic lights.
+  --- Per-sample color curve. Accepted on dynamic and authored static lights; baked indirect stays at the authored color.
   color: {Vec3}?,
   --- Per-sample direction curve. Non-unit samples are silently normalized.
   direction: {Vec3}?,

@@ -216,6 +216,10 @@ impl PrimitiveRegistry {
         self.entries.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
     /// Iterate registered shared types in registration order. Consumed by the
     /// typedef generator; order is load-bearing for snapshot stability.
     pub fn iter_types(&self) -> impl Iterator<Item = &RegisteredType> {

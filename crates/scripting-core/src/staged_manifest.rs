@@ -169,6 +169,12 @@ impl StagedManifestBuildLane {
     }
 }
 
+impl Default for StagedManifestBuildLane {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Drop for StagedManifestBuildLane {
     fn drop(&mut self) {
         let _ = self.request_tx.send(LaneRequest::Shutdown);

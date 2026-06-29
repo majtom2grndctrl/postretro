@@ -18,9 +18,9 @@ After the floor lands, the VM-coupled remainder still living in `postretro` is w
 - `ir/scopes.rs` (`StoreScope` — pulls `ScriptCtx`/`slot_table`/`primitives::store`).
 - `conv.rs` json-orchestration bridges (`json_to_js`/`js_to_json`/`json_to_lua`/`lua_to_json`); the FFI impls themselves descend to the floor.
 - `data_descriptors/{js,lua}/` converters + `mod.rs` VM/`render::ui` glob.
-- `RegisteredUiTree`/`LevelManifest` (UI-embedding manifest types).
-- `validate.rs` `mlua`/`render::ui` validators (`validate_dense_lua_array`, `parse_*`); the pure numeric/IR validators and `build_crossing` descend to the floor.
-- `data_descriptors/error.rs` `js_err`/`lua_err` (VM adapters); `DescriptorError` descends.
+- `RegisteredUiTree`/`LevelManifest` (UI-embedding manifest types; in `data_descriptors/runtime_manifest.rs`).
+- `data_descriptors/validate/runtime.rs` `mlua`/`render::ui` validators (`validate_dense_lua_array`, `parse_*`); the pure numeric/IR validators (`validate/foundation.rs`) and `build_crossing` descended to the floor and do not move.
+- `data_descriptors/vm_adapters.rs` `js_err`/`lua_err` (VM adapters); `DescriptorError` descended to `postretro-foundation`, and `data_descriptors/error.rs` is now a thin barrel re-exporting it (so `error.rs` does not move).
 - `runtime/*`.
 - `luau.rs`, `quickjs.rs`, `primitives_registry.rs`, `reaction_dispatch.rs`, the typedef generator.
 - `primitives/*` handlers — the A1 relocation target (see below).

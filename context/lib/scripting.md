@@ -374,7 +374,7 @@ Start the node set minimal: named-input leaves, arithmetic, `clamp`, `lerp`, `se
 
 ## 12. Crate Architecture
 
-> Implemented by `plans/in-progress/engine-data-floor/`. The boundary contracts below are durable.
+> Implemented by `plans/done/engine-data-floor/`. The boundary contracts below are durable.
 
 The engine data sits in a **VM-free two-layer floor** beneath the VM-coupled runtime, so routine engine edits stop recompiling the VM bindings. Dependency flows one way, top to bottom:
 

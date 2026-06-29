@@ -115,3 +115,110 @@ mod extraction_path_tests {
         })
     }
 }
+
+#[cfg(test)]
+mod scripting_boundary_tests {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    const REMOVED_OR_COLLAPSED_BARRELS: &[&str] = &[
+        "data_registry",
+        "foundation_pods",
+        "game_state_refs",
+        "ir",
+        "ir_scopes",
+        "luau_require",
+        "luau_virtual_modules",
+        "refresh_plan",
+        "luau",
+        "quickjs",
+        "watcher",
+        "value_types",
+        "registry",
+        "components",
+        "ctx",
+        "slot_table",
+        "provenance",
+        "error",
+        "engine_state_catalog",
+        "conv",
+        "reaction_dispatch",
+        "runtime",
+        "sequence",
+        "staged_manifest",
+        "state_crossings",
+        "luau_prelude",
+        "primitives_registry",
+        "data_descriptors",
+        "typedef",
+    ];
+
+    #[test]
+    fn scripting_boundary_rejects_removed_barrel_imports() {
+        let src_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut violations = Vec::new();
+
+        collect_boundary_violations(&src_dir, &src_dir, &mut violations);
+
+        assert!(
+            violations.is_empty(),
+            "removed/collapsed scripting barrels were referenced through crate::scripting::<name>: {violations:#?}. Import floor/core APIs from postretro_foundation, postretro_entities, or postretro_scripting_core directly."
+        );
+    }
+
+    fn collect_boundary_violations(src_dir: &Path, path: &Path, violations: &mut Vec<String>) {
+        let Ok(entries) = fs::read_dir(path) else {
+            return;
+        };
+
+        for entry in entries.filter_map(Result::ok) {
+            let path = entry.path();
+            if path.is_dir() {
+                collect_boundary_violations(src_dir, &path, violations);
+            } else if is_rust_source(&path) && !is_allowlisted(src_dir, &path) {
+                scan_rust_source(src_dir, &path, violations);
+            }
+        }
+    }
+
+    fn scan_rust_source(src_dir: &Path, path: &Path, violations: &mut Vec<String>) {
+        let Ok(source) = fs::read_to_string(path) else {
+            return;
+        };
+
+        for (line_index, line) in source.lines().enumerate() {
+            for barrel in REMOVED_OR_COLLAPSED_BARRELS {
+                let pattern = format!("crate::scripting::{barrel}");
+                if line.contains(&pattern) {
+                    violations.push(format!(
+                        "{}:{} contains {pattern}",
+                        display_relative_path(src_dir, path).display(),
+                        line_index + 1
+                    ));
+                }
+            }
+        }
+    }
+
+    fn is_rust_source(path: &Path) -> bool {
+        path.extension().is_some_and(|extension| extension == "rs")
+    }
+
+    fn is_allowlisted(src_dir: &Path, path: &Path) -> bool {
+        let Ok(relative) = path.strip_prefix(src_dir) else {
+            return false;
+        };
+
+        // This literal scan does not catch `scripting` alias or `super::`
+        // relative forms. After barrel deletion those forms are compile errors,
+        // so this is a precedent nudge/reintroduction lock, not a full parser.
+        relative == Path::new("scripting/mod.rs")
+            || relative.starts_with(Path::new("scripting/typedef"))
+    }
+
+    fn display_relative_path(src_dir: &Path, path: &Path) -> PathBuf {
+        path.strip_prefix(src_dir)
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| path.to_path_buf())
+    }
+}

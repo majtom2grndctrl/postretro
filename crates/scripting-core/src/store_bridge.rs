@@ -1,4 +1,4 @@
-// VM-side store declaration drains and validated store writes used by runtime substrate.
+// Durable-state store contract helpers and VM manifest drains.
 // See: context/lib/scripting.md §5
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -11,9 +11,12 @@ use serde_json::Value;
 use crate::conv::{js_to_json, lua_to_json};
 use crate::ctx::ScriptCtx;
 use crate::error::ScriptError;
+use crate::primitive_adapters::{
+    ScriptSlotValue, StoreDeclarationManifest, StoreDefinition, StoreStateRefs,
+};
 use crate::slot_table::{
-    NumericRange, ReplicationScope, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue,
-    StoreDeclaration, StoreDeclarationSet,
+    NumericRange, ReplicationScope, SlotOwnership, SlotRecord, SlotSchema, SlotTable, SlotType,
+    SlotValue, StoreDeclaration, StoreDeclarationSet,
 };
 
 #[derive(Debug, Deserialize)]
@@ -42,6 +45,138 @@ pub fn write_store_slot(ctx: &ScriptCtx, name: &str, value: SlotValue) -> Result
         .ok_or_else(|| unknown_slot("storeWrite", name))?;
     slot.value = Some(validate_slot_value(name, &slot.schema, value)?);
     Ok(())
+}
+
+pub fn read_store_slot(ctx: &ScriptCtx, name: &str) -> Result<SlotValue, ScriptError> {
+    let table = ctx.slot_table.borrow();
+    let slot = table
+        .get(name)
+        .ok_or_else(|| unknown_slot("storeRead", name))?;
+    slot.value
+        .clone()
+        .ok_or_else(|| ScriptError::InvalidArgument {
+            reason: format!("storeRead: state slot `{name}` has no current value"),
+        })
+}
+
+pub fn write_script_store_slot(
+    ctx: &ScriptCtx,
+    name: &str,
+    value: ScriptSlotValue,
+) -> Result<(), ScriptError> {
+    let mut table = ctx.slot_table.borrow_mut();
+    let slot = table
+        .get_mut(name)
+        .ok_or_else(|| unknown_slot("storeWrite", name))?;
+    if slot.schema.readonly {
+        log::warn!("[Scripting] storeWrite: rejected write to readonly slot `{name}`");
+        return Ok(());
+    }
+
+    let value = script_value_for_slot(name, &slot.schema.slot_type, value)?;
+    slot.value = Some(validate_slot_value(name, &slot.schema, value)?);
+    Ok(())
+}
+
+pub fn apply_store_slot_batch(
+    table: &mut SlotTable,
+    writes: &[(String, SlotValue)],
+) -> Result<(), ScriptError> {
+    let mut validated = Vec::with_capacity(writes.len());
+    for (name, value) in writes {
+        let slot = table
+            .get(name)
+            .ok_or_else(|| unknown_slot("stateApply", name))?;
+        let checked = validate_slot_value(name, &slot.schema, value.clone())?;
+        validated.push((name, checked));
+    }
+
+    for (name, value) in validated {
+        if let Some(slot) = table.get_mut(name) {
+            slot.value = Some(value);
+        }
+    }
+    Ok(())
+}
+
+pub fn write_state_slot_json(
+    ctx: &ScriptCtx,
+    name: &str,
+    value: &Value,
+) -> Result<(), ScriptError> {
+    let mut table = ctx.slot_table.borrow_mut();
+    let slot = table
+        .get_mut(name)
+        .ok_or_else(|| unknown_slot("setState", name))?;
+    if slot.schema.readonly {
+        log::warn!("[Scripting] setState: rejected write to readonly slot `{name}`");
+        return Ok(());
+    }
+    let coerced = json_value_for_slot(name, &slot.schema.slot_type, value)?;
+    slot.value = Some(validate_slot_value(name, &slot.schema, coerced)?);
+    Ok(())
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum TextEdit<'a> {
+    Append(&'a str),
+    Backspace,
+    Clear,
+}
+
+pub fn apply_text_edit(ctx: &ScriptCtx, name: &str, edit: TextEdit<'_>) -> Result<(), ScriptError> {
+    let current = {
+        let table = ctx.slot_table.borrow();
+        let slot = table
+            .get(name)
+            .ok_or_else(|| unknown_slot("text-edit", name))?;
+        if slot.schema.readonly {
+            log::warn!("[Scripting] text-edit: rejected write to readonly slot `{name}`");
+            return Ok(());
+        }
+        match &slot.value {
+            Some(SlotValue::String(value)) => value.clone(),
+            None => String::new(),
+            Some(other) => {
+                return Err(wrong_write_type(
+                    name,
+                    &SlotType::String,
+                    slot_value_kind(other),
+                ));
+            }
+        }
+    };
+
+    let next = match edit {
+        TextEdit::Append(text) => {
+            let mut next = current;
+            next.push_str(text);
+            next
+        }
+        TextEdit::Backspace => {
+            if current.is_empty() {
+                return Ok(());
+            }
+            let mut next = current;
+            next.pop();
+            next
+        }
+        TextEdit::Clear => String::new(),
+    };
+
+    write_state_slot_json(ctx, name, &Value::String(next))
+}
+
+pub fn define_store(namespace: &str, schema: Value) -> Result<StoreDefinition, ScriptError> {
+    let declaration = store_declaration(namespace, schema.clone())?;
+    let state = state_refs_for(&declaration);
+    Ok(StoreDefinition {
+        declaration: StoreDeclarationManifest {
+            namespace: namespace.to_string(),
+            schema,
+        },
+        state,
+    })
 }
 
 pub fn store_declaration_from_manifest_value(
@@ -201,6 +336,21 @@ pub fn store_declaration(namespace: &str, schema: Value) -> Result<StoreDeclarat
     })
 }
 
+fn state_refs_for(declaration: &StoreDeclaration) -> StoreStateRefs {
+    StoreStateRefs(
+        declaration
+            .records
+            .iter()
+            .map(|(slot_name, _)| {
+                (
+                    slot_name.clone(),
+                    format!("{}.{}", declaration.namespace, slot_name),
+                )
+            })
+            .collect(),
+    )
+}
+
 fn validate_slot_schema(
     slot_name: &str,
     input: SlotSchemaInput,
@@ -327,7 +477,77 @@ fn replication_scope_for(
     }
 }
 
-fn validate_slot_value(
+fn json_value_for_slot(
+    name: &str,
+    slot_type: &SlotType,
+    value: &Value,
+) -> Result<SlotValue, ScriptError> {
+    match slot_type {
+        SlotType::Number => value
+            .as_f64()
+            .map(|n| n as f32)
+            .map(SlotValue::Number)
+            .ok_or_else(|| wrong_write_type(name, slot_type, json_value_kind(value))),
+        SlotType::Boolean => value
+            .as_bool()
+            .map(SlotValue::Boolean)
+            .ok_or_else(|| wrong_write_type(name, slot_type, json_value_kind(value))),
+        SlotType::String => value
+            .as_str()
+            .map(|s| SlotValue::String(s.to_string()))
+            .ok_or_else(|| wrong_write_type(name, slot_type, json_value_kind(value))),
+        SlotType::Enum { .. } => value
+            .as_str()
+            .map(|s| SlotValue::Enum(s.to_string()))
+            .ok_or_else(|| wrong_write_type(name, slot_type, json_value_kind(value))),
+        SlotType::Array => {
+            let array = value
+                .as_array()
+                .ok_or_else(|| wrong_write_type(name, slot_type, json_value_kind(value)))?;
+            let values = array
+                .iter()
+                .enumerate()
+                .map(|(index, element)| {
+                    let number = element.as_f64().ok_or_else(|| {
+                        wrong_write_type(name, slot_type, json_value_kind(element))
+                    })?;
+                    finite_array_f32(name, index, number)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(SlotValue::Array(values))
+        }
+    }
+}
+
+fn script_value_for_slot(
+    name: &str,
+    slot_type: &SlotType,
+    value: ScriptSlotValue,
+) -> Result<SlotValue, ScriptError> {
+    match (slot_type, value) {
+        (SlotType::Number, ScriptSlotValue::Number(value)) => {
+            Ok(SlotValue::Number(finite_f32(name, value)?))
+        }
+        (SlotType::Boolean, ScriptSlotValue::Boolean(value)) => Ok(SlotValue::Boolean(value)),
+        (SlotType::String, ScriptSlotValue::String(value)) => Ok(SlotValue::String(value)),
+        (SlotType::Enum { .. }, ScriptSlotValue::String(value)) => Ok(SlotValue::Enum(value)),
+        (SlotType::Array, ScriptSlotValue::Array(values)) => Ok(SlotValue::Array(
+            values
+                .into_iter()
+                .enumerate()
+                .map(|(index, value)| finite_array_f32(name, index, value))
+                .collect::<Result<Vec<_>, _>>()?,
+        )),
+        (_, ScriptSlotValue::Unsupported(actual)) => Err(wrong_write_type(name, slot_type, actual)),
+        (_, actual) => Err(wrong_write_type(
+            name,
+            slot_type,
+            script_value_kind(&actual),
+        )),
+    }
+}
+
+pub fn validate_slot_value(
     name: &str,
     schema: &SlotSchema,
     value: SlotValue,
@@ -420,6 +640,21 @@ fn number_range(value: &Value, slot_name: &str, default: f32) -> Result<NumericR
     Ok(NumericRange { min, max })
 }
 
+fn finite_f32(name: &str, value: f64) -> Result<f32, ScriptError> {
+    let narrowed = value as f32;
+    if value.is_finite() && narrowed.is_finite() {
+        Ok(narrowed)
+    } else {
+        Err(non_finite_write(name, "number"))
+    }
+}
+
+fn finite_array_f32(name: &str, index: usize, value: f64) -> Result<f32, ScriptError> {
+    finite_f32(name, value).map_err(|_| ScriptError::InvalidArgument {
+        reason: format!("storeWrite: slot `{name}` array element [{index}] must be finite"),
+    })
+}
+
 fn unknown_slot(primitive: &str, name: &str) -> ScriptError {
     ScriptError::InvalidArgument {
         reason: format!("{primitive}: unknown state slot `{name}`"),
@@ -463,6 +698,27 @@ fn slot_type_name(slot_type: &SlotType) -> &'static str {
         SlotType::String => "string",
         SlotType::Enum { .. } => "enum string",
         SlotType::Array => "number array",
+    }
+}
+
+fn json_value_kind(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
+}
+
+fn script_value_kind(value: &ScriptSlotValue) -> &'static str {
+    match value {
+        ScriptSlotValue::Number(_) => "number",
+        ScriptSlotValue::Boolean(_) => "boolean",
+        ScriptSlotValue::String(_) => "string",
+        ScriptSlotValue::Array(_) => "array",
+        ScriptSlotValue::Unsupported(kind) => kind,
     }
 }
 

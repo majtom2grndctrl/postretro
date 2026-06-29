@@ -83,60 +83,16 @@ pub(crate) struct Session {
     /// build. See: context/lib/ui.md §1.
     pub(crate) modal_stack: render::ui::modal_stack::ModalStack,
 
-    // --- Scripting core. The script runtime, the context handle every primitive
-    // closure captures, the Rust-side registries, and every system that holds a
-    // cloned `ScriptCtx` or a registry reference. The whole tranche is one
-    // indivisible group: `ScriptCtx` is `Clone` (`Rc`-backed) and all clones are
-    // distributed at the single `Session::build` site.
-    // See: context/lib/scripting.md. ---
-    /// The script VM runtime. Constructed once here (post-first-pixel); never
-    /// recreated. See: context/lib/scripting.md.
-    pub(crate) script_runtime: ScriptRuntime,
-
-    /// Holds the entity registry shared by the light bridge and the script
-    /// runtime. Outlives the renderer so device resets preserve scripted light
-    /// state. See: context/lib/scripting.md.
-    pub(crate) script_ctx: ScriptCtx,
-
-    /// Publishes live pawn HP and max HP into the player HUD slots each frame.
-    /// See: context/lib/scripting.md §5 for the store contract.
-    pub(crate) player_hud_state: scripting_systems::ui_proxy::PlayerHudStatePublisher,
-
-    /// App-side flash-decay state for the engine-owned `screen.flash` surface.
-    /// See: context/lib/ui.md §3.
-    pub(crate) flash_decay: scripting_systems::flash_decay::FlashDecay,
-
-    /// App-side vignette-decay state for the engine-owned `screen.vignette`
-    /// surface. See: context/lib/ui.md §3.
-    pub(crate) vignette_decay: scripting_systems::vignette_decay::VignetteDecay,
-
-    /// App-side screen-shake state for the engine-owned `screen.shake` surface.
-    /// See: context/lib/ui.md §3.
-    pub(crate) shake_decay: scripting_systems::shake_decay::ShakeDecay,
+    /// Script runtime, script context, registries, and every session-lifetime
+    /// system that captures a `ScriptCtx` clone.
+    pub(crate) scripting: ScriptingCore,
 
     /// Presentation-cell store for `ui.createLocalState()`. Presentation-only —
     /// NEVER the authoritative store. See: context/lib/ui.md §3/§6.
     pub(crate) presentation_cells: scripting_systems::presentation_cells::PresentationCellStore,
 
-    /// App-side input-mode tracker: observes mode signals, debounces them, writes
-    /// the engine-owned `input.mode` slot, drives `ui_input_mode`.
-    /// See: context/lib/input.md §7.
-    pub(crate) input_mode_tracker: scripting_systems::input_mode::InputModeTracker,
-
     /// Gates the one-time persistence overlay and clean-exit save.
     pub(crate) state_store_lifecycle: StateStoreLifecycle,
-
-    /// Consulted by `fire_named_event_with_sequences` for `Sequence` steps.
-    /// See: context/lib/scripting.md §2.
-    pub(crate) sequence_registry: SequencedPrimitiveRegistry,
-
-    /// Resolved by name when a `Primitive` reaction fires.
-    /// See: context/lib/scripting.md §2.
-    pub(crate) reaction_registry: ReactionPrimitiveRegistry,
-
-    /// Resolved by name when a `Primitive` reaction with no `tag` fires — the
-    /// system-reaction arm. See: context/lib/scripting.md §10.4.
-    pub(crate) system_registry: SystemReactionRegistry,
 
     /// Per-tag kill-count subscriptions. See: context/lib/scripting.md §2.
     pub(crate) progress_tracker: ProgressTracker,
@@ -222,6 +178,53 @@ pub(crate) struct Session {
     /// `Renderer` as `debug_ui_gpu`. See: context/lib/boot_sequence.md §1, §5.
     #[cfg(feature = "dev-tools")]
     pub(crate) debug_ui: Option<render::debug_ui::DebugUi>,
+}
+
+/// Scripting tranche grouped under [`Session`]. The whole group is built at
+/// `Session::build`: `ScriptCtx` is `Clone` (`Rc`-backed), and all clones are
+/// distributed from that single construction site.
+pub(crate) struct ScriptingCore {
+    /// The script VM runtime. Constructed once here (post-first-pixel); never
+    /// recreated. See: context/lib/scripting.md.
+    pub(crate) script_runtime: ScriptRuntime,
+
+    /// Holds the entity registry shared by the light bridge and the script
+    /// runtime. Outlives the renderer so device resets preserve scripted light
+    /// state. See: context/lib/scripting.md.
+    pub(crate) script_ctx: ScriptCtx,
+
+    /// Consulted by `fire_named_event_with_sequences` for `Sequence` steps.
+    /// See: context/lib/scripting.md §2.
+    pub(crate) sequence_registry: SequencedPrimitiveRegistry,
+
+    /// Resolved by name when a `Primitive` reaction fires.
+    /// See: context/lib/scripting.md §2.
+    pub(crate) reaction_registry: ReactionPrimitiveRegistry,
+
+    /// Resolved by name when a `Primitive` reaction with no `tag` fires — the
+    /// system-reaction arm. See: context/lib/scripting.md §10.4.
+    pub(crate) system_registry: SystemReactionRegistry,
+
+    /// Publishes live pawn HP and max HP into the player HUD slots each frame.
+    /// See: context/lib/scripting.md §5 for the store contract.
+    pub(crate) player_hud_state: scripting_systems::ui_proxy::PlayerHudStatePublisher,
+
+    /// App-side flash-decay state for the engine-owned `screen.flash` surface.
+    /// See: context/lib/ui.md §3.
+    pub(crate) flash_decay: scripting_systems::flash_decay::FlashDecay,
+
+    /// App-side vignette-decay state for the engine-owned `screen.vignette`
+    /// surface. See: context/lib/ui.md §3.
+    pub(crate) vignette_decay: scripting_systems::vignette_decay::VignetteDecay,
+
+    /// App-side screen-shake state for the engine-owned `screen.shake` surface.
+    /// See: context/lib/ui.md §3.
+    pub(crate) shake_decay: scripting_systems::shake_decay::ShakeDecay,
+
+    /// App-side input-mode tracker: observes mode signals, debounces them, writes
+    /// the engine-owned `input.mode` slot, drives `ui_input_mode`.
+    /// See: context/lib/input.md §7.
+    pub(crate) input_mode_tracker: scripting_systems::input_mode::InputModeTracker,
 }
 
 impl Session {
@@ -360,6 +363,18 @@ impl Session {
         let shake_decay = scripting_systems::shake_decay::ShakeDecay::new(script_ctx.clone());
         let input_mode_tracker =
             scripting_systems::input_mode::InputModeTracker::new(script_ctx.clone());
+        let scripting = ScriptingCore {
+            script_runtime,
+            script_ctx,
+            sequence_registry,
+            reaction_registry,
+            system_registry,
+            player_hud_state,
+            flash_decay,
+            vignette_decay,
+            shake_decay,
+            input_mode_tracker,
+        };
 
         let mut input_system = input::InputSystem::new(input::default_bindings());
         input_system.set_mouse_sensitivity(player_options.mouse_sensitivity);
@@ -446,18 +461,9 @@ impl Session {
             ui_focus_rects: None,
             ui_input_mode: input::InputMode::default(),
             modal_stack,
-            script_runtime,
-            script_ctx,
-            player_hud_state,
-            flash_decay,
-            vignette_decay,
-            shake_decay,
+            scripting,
             presentation_cells: scripting_systems::presentation_cells::PresentationCellStore::new(),
-            input_mode_tracker,
             state_store_lifecycle: StateStoreLifecycle::default(),
-            sequence_registry,
-            reaction_registry,
-            system_registry,
             progress_tracker: ProgressTracker::new(),
             crossing_detector: CrossingDetector::new(),
             classname_dispatch,

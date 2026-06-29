@@ -1447,8 +1447,10 @@ impl ApplicationHandler for App {
                 // See: context/lib/input.md §7.
                 let mode_signal = self.pending_mode_signal.take();
                 if let Some(session) = self.session.as_mut() {
-                    let resolved_input_mode =
-                        session.input_mode_tracker.update(mode_signal, frame_dt);
+                    let resolved_input_mode = session
+                        .scripting
+                        .input_mode_tracker
+                        .update(mode_signal, frame_dt);
                     session.ui_input_mode = resolved_input_mode;
                 }
 
@@ -1628,6 +1630,7 @@ impl ApplicationHandler for App {
                     .session
                     .as_ref()
                     .expect("running session installed")
+                    .scripting
                     .script_ctx
                     .clone();
 
@@ -1883,9 +1886,9 @@ impl ApplicationHandler for App {
                         let _ = fire_named_event_with_sequences(
                             event_name,
                             &script_ctx.data_registry.borrow(),
-                            &session.sequence_registry,
-                            &session.reaction_registry,
-                            &session.system_registry,
+                            &session.scripting.sequence_registry,
+                            &session.scripting.reaction_registry,
+                            &session.scripting.system_registry,
                             &script_ctx,
                         );
                     }
@@ -1916,7 +1919,10 @@ impl ApplicationHandler for App {
                 // authoritative) pawn. Host and single-player keep publishing.
                 let is_connected_client = self.is_connected_client();
                 if let Some(session) = self.session.as_mut() {
-                    session.player_hud_state.tick_for_role(is_connected_client);
+                    session
+                        .scripting
+                        .player_hud_state
+                        .tick_for_role(is_connected_client);
                 }
                 // Flash-decay state writes the engine-owned `screen.flash`
                 // surface at the same game-logic stage as the HUD publisher, so
@@ -1925,15 +1931,15 @@ impl ApplicationHandler for App {
                 // publishes immediately; the crossing drain below may start
                 // another, decayed starting next frame.
                 if let Some(session) = self.session.as_mut() {
-                    session.flash_decay.tick(frame_dt);
+                    session.scripting.flash_decay.tick(frame_dt);
                     // Vignette- and shake-decay drivers (SE) write the engine-owned
                     // `screen.vignette` and `screen.shake` surfaces at the same
                     // game-logic stage as `flash_decay.tick`, so the UI snapshot
                     // below freezes this frame's vignette color and shake offset.
                     // Delta-driven from `frame_dt` (not wall-clock) like the flash
                     // decay.
-                    session.vignette_decay.tick(frame_dt);
-                    session.shake_decay.tick(frame_dt);
+                    session.scripting.vignette_decay.tick(frame_dt);
+                    session.scripting.shake_decay.tick(frame_dt);
                 }
 
                 // State-crossing detection (M13 HUD dynamics). Runs AFTER the
@@ -1952,9 +1958,9 @@ impl ApplicationHandler for App {
                         let _ = fire_named_event_with_sequences(
                             event_name,
                             &script_ctx.data_registry.borrow(),
-                            &session.sequence_registry,
-                            &session.reaction_registry,
-                            &session.system_registry,
+                            &session.scripting.sequence_registry,
+                            &session.scripting.reaction_registry,
+                            &session.scripting.system_registry,
                             &script_ctx,
                         );
                     }
@@ -2746,6 +2752,7 @@ impl ApplicationHandler for App {
                 .session
                 .as_ref()
                 .expect("session installed at clean exit")
+                .scripting
                 .script_ctx
                 .clone();
             let collected = collect_persisted_state(&script_ctx.slot_table.borrow());
@@ -2875,10 +2882,11 @@ impl App {
         let Some(session) = self.session.as_mut() else {
             return;
         };
-        match session.script_runtime.drain_reload_requests() {
+        match session.scripting.script_runtime.drain_reload_requests() {
             Ok(summary) => {
                 if reload_summary_requires_mod_init(summary) {
                     match session
+                        .scripting
                         .script_runtime
                         .enqueue_staged_manifest_build(&self.content_root)
                     {
@@ -3174,7 +3182,10 @@ impl App {
 
         let ui_intents = {
             let session = self.session.as_mut().expect("frontend session installed");
-            let ui_input_mode = session.input_mode_tracker.update(mode_signal, frame_dt);
+            let ui_input_mode = session
+                .scripting
+                .input_mode_tracker
+                .update(mode_signal, frame_dt);
             session.ui_input_mode = ui_input_mode;
             let ui_intents = session.ui_dispatch.take_ready();
             session.ui_dispatch.advance_frame();
@@ -3241,7 +3252,7 @@ impl App {
         let has_system_commands = self
             .session
             .as_ref()
-            .is_some_and(|session| !session.script_ctx.system_commands.is_empty());
+            .is_some_and(|session| !session.scripting.script_ctx.system_commands.is_empty());
         if has_system_commands {
             self.dispatch_system_commands();
         }
@@ -3253,7 +3264,10 @@ impl App {
 
     fn poll_staged_manifest_results(&mut self) {
         let staged = match self.session.as_mut() {
-            Some(session) => session.script_runtime.poll_staged_manifest_builds(),
+            Some(session) => session
+                .scripting
+                .script_runtime
+                .poll_staged_manifest_builds(),
             None => return,
         };
         for result in staged {
@@ -3263,11 +3277,14 @@ impl App {
             // methods below can re-borrow `self`.
             let outcome = {
                 let session = self.session.as_mut().expect("frontend session installed");
-                session.script_runtime.commit_staged_manifest_result(
-                    &result,
-                    &session.script_ctx,
-                    &session.sequence_registry,
-                )
+                session
+                    .scripting
+                    .script_runtime
+                    .commit_staged_manifest_result(
+                        &result,
+                        &session.scripting.script_ctx,
+                        &session.scripting.sequence_registry,
+                    )
             };
             if matches!(
                 outcome,
@@ -3276,6 +3293,7 @@ impl App {
             {
                 if let Some(session) = self.session.as_ref() {
                     session
+                        .scripting
                         .script_ctx
                         .data_registry
                         .borrow_mut()
@@ -3297,7 +3315,7 @@ impl App {
         let ui_snapshot = Self::build_ui_read_snapshot(
             &session.modal_stack,
             &mut session.presentation_cells,
-            &session.script_ctx.slot_table.borrow(),
+            &session.scripting.script_ctx.slot_table.borrow(),
             self.script_time,
             session.ui_input_mode,
             self.ui_focused_id.clone(),
@@ -3367,8 +3385,7 @@ impl App {
     ///
     /// Takes the table directly rather than `&self`: the call site holds a mutable
     /// borrow of `self.renderer`, and a `&self` receiver here would conflict with
-    /// it. Borrowing only `self.script_ctx.slot_table` keeps the two field borrows
-    /// disjoint.
+    /// it. Borrowing only the script slot table keeps the two field borrows disjoint.
     ///
     /// `pub(crate)` so the netcode state-slot apply tests can drive the REAL UI read
     /// path (the replicated value must surface here), not a hand-mirrored copy.
@@ -3425,6 +3442,7 @@ impl App {
             .session
             .as_ref()
             .expect("frontend session installed")
+            .scripting
             .script_ctx
             .clone();
         // The slider's current value: its bound slot reading, or `min` as a floor
@@ -3474,11 +3492,11 @@ impl App {
                     if let Some(session) = self.session.as_ref() {
                         let _ = fire_named_event_with_sequences(
                             &on_press,
-                            &session.script_ctx.data_registry.borrow(),
-                            &session.sequence_registry,
-                            &session.reaction_registry,
-                            &session.system_registry,
-                            &session.script_ctx,
+                            &session.scripting.script_ctx.data_registry.borrow(),
+                            &session.scripting.sequence_registry,
+                            &session.scripting.reaction_registry,
+                            &session.scripting.system_registry,
+                            &session.scripting.script_ctx,
                         );
                     }
                 }
@@ -3541,7 +3559,7 @@ impl App {
                 },
             };
             if let Some(session) = self.session.as_ref() {
-                session.script_ctx.system_commands.push(command);
+                session.scripting.script_ctx.system_commands.push(command);
             }
         }
 
@@ -3595,11 +3613,11 @@ impl App {
             if let Some(session) = self.session.as_ref() {
                 let _ = fire_named_event_with_sequences(
                     &on_commit,
-                    &session.script_ctx.data_registry.borrow(),
-                    &session.sequence_registry,
-                    &session.reaction_registry,
-                    &session.system_registry,
-                    &session.script_ctx,
+                    &session.scripting.script_ctx.data_registry.borrow(),
+                    &session.scripting.sequence_registry,
+                    &session.scripting.reaction_registry,
+                    &session.scripting.system_registry,
+                    &session.scripting.script_ctx,
                 );
             }
         }
@@ -3650,7 +3668,7 @@ impl App {
         let Some(script_ctx) = self
             .session
             .as_ref()
-            .map(|session| session.script_ctx.clone())
+            .map(|session| session.scripting.script_ctx.clone())
         else {
             return;
         };
@@ -3692,7 +3710,7 @@ impl App {
                 }
                 SystemReactionCommand::FlashScreen { color, duration_ms } => {
                     if let Some(session) = self.session.as_mut() {
-                        session.flash_decay.start(color, duration_ms);
+                        session.scripting.flash_decay.start(color, duration_ms);
                     }
                 }
                 SystemReactionCommand::Vignette {
@@ -3709,6 +3727,7 @@ impl App {
                     let decay_ms = duration_ms - rise_ms;
                     if let Some(session) = self.session.as_mut() {
                         session
+                            .scripting
                             .vignette_decay
                             .start(tint, strength, rise_ms, decay_ms);
                     }
@@ -3721,7 +3740,10 @@ impl App {
                     // Pass the optional frequency straight through: the driver
                     // applies its 18 Hz default when it is `None`.
                     if let Some(session) = self.session.as_mut() {
-                        session.shake_decay.start(amplitude, duration_ms, frequency);
+                        session
+                            .scripting
+                            .shake_decay
+                            .start(amplitude, duration_ms, frequency);
                     }
                 }
                 SystemReactionCommand::PushTree { tree, on_commit } => {
@@ -3828,13 +3850,13 @@ impl App {
         let Some(script_ctx) = self
             .session
             .as_ref()
-            .map(|session| session.script_ctx.clone())
+            .map(|session| session.scripting.script_ctx.clone())
         else {
             return;
         };
         // Capture the host's descriptor-spawn inputs before the `net_endpoint` borrow:
         // the accept arm materializes each accepted client's descriptor-backed remote
-        // pawn (M15 Phase 3 Task 4), and these reads alias `self.script_ctx` /
+        // pawn (M15 Phase 3 Task 4), and these reads alias the session script context /
         // `self.nav_graph` / `self.host_spawn_points`, which the endpoint borrow would
         // otherwise lock out. Cheap on the non-accept path (descriptors clone is the
         // only cost, paid once per frame on the host).
@@ -4049,7 +4071,7 @@ impl App {
         let Some(script_ctx) = self
             .session
             .as_ref()
-            .map(|session| session.script_ctx.clone())
+            .map(|session| session.scripting.script_ctx.clone())
         else {
             return;
         };
@@ -4127,7 +4149,7 @@ impl App {
         let Some(script_ctx) = self
             .session
             .as_ref()
-            .map(|session| session.script_ctx.clone())
+            .map(|session| session.scripting.script_ctx.clone())
         else {
             return;
         };
@@ -4182,7 +4204,7 @@ impl App {
         let Some(script_ctx) = self
             .session
             .as_ref()
-            .map(|session| session.script_ctx.clone())
+            .map(|session| session.scripting.script_ctx.clone())
         else {
             return Vec::new();
         };
@@ -4228,7 +4250,7 @@ impl App {
         let Some(script_ctx) = self
             .session
             .as_ref()
-            .map(|session| session.script_ctx.clone())
+            .map(|session| session.scripting.script_ctx.clone())
         else {
             return;
         };
@@ -4271,7 +4293,7 @@ impl App {
         let Some(script_ctx) = self
             .session
             .as_ref()
-            .map(|session| session.script_ctx.clone())
+            .map(|session| session.scripting.script_ctx.clone())
         else {
             return;
         };
@@ -4302,7 +4324,7 @@ impl App {
         let Some(script_ctx) = self
             .session
             .as_ref()
-            .map(|session| session.script_ctx.clone())
+            .map(|session| session.scripting.script_ctx.clone())
         else {
             return false;
         };
@@ -4604,6 +4626,7 @@ impl App {
             .session
             .as_ref()
             .expect("running session installed")
+            .scripting
             .script_ctx
             .clone();
         let mut registry = script_ctx.registry.borrow_mut();

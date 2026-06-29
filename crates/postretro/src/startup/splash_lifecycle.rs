@@ -236,30 +236,31 @@ impl App {
                 .as_mut()
                 .expect("session installed before mod init");
             session
+                .scripting
                 .script_runtime
                 .compile_stale_scripts(&script_root, &content_root);
-            if let Err(err) = session.script_runtime.run_mod_init(&content_root) {
+            if let Err(err) = session.scripting.script_runtime.run_mod_init(&content_root) {
                 log::error!("[Scripting] mod_init failed: {err}");
             } else {
-                let has_manifest = session.script_runtime.mod_manifest().is_some();
+                let has_manifest = session.scripting.script_runtime.mod_manifest().is_some();
                 // `frontend` is session-owned now; the `manifest` borrow below
-                // aliases `session.script_runtime`, so lift the committed frontend
+                // aliases `session.scripting.script_runtime`, so lift the committed frontend
                 // into a local and assign `session.frontend` after that borrow ends
                 // (mirroring the theme/font deferral).
                 let mut committed_frontend: Option<Option<crate::scripting::runtime::Frontend>> =
                     None;
-                if let Some(manifest) = session.script_runtime.mod_manifest_mut() {
+                if let Some(manifest) = session.scripting.script_runtime.mod_manifest_mut() {
                     // Drain entity-type descriptors from the validated mod manifest
                     // into the engine-global `DataRegistry`. Runtime parses; caller
                     // owns lifecycle. See: context/lib/boot_sequence.md §3.
-                    let mut data_registry = session.script_ctx.data_registry.borrow_mut();
+                    let mut data_registry = session.scripting.script_ctx.data_registry.borrow_mut();
                     for desc in std::mem::take(&mut manifest.entities) {
                         data_registry.upsert_entity_type(desc);
                     }
                     data_registry.replace_maps(std::mem::take(&mut manifest.maps));
                     let global_reactions = validate_scoped_sequence_primitives(
                         std::mem::take(&mut manifest.reactions),
-                        &session.sequence_registry,
+                        &session.scripting.sequence_registry,
                     );
                     data_registry.replace_global_reactions(global_reactions);
                     data_registry.replace_global_crossings(std::mem::take(&mut manifest.crossings));
@@ -291,7 +292,7 @@ impl App {
                     match load_persisted_state(state_path) {
                         Ok(Some(persisted)) => {
                             let warnings = overlay_persisted_state(
-                                &mut session.script_ctx.slot_table.borrow_mut(),
+                                &mut session.scripting.script_ctx.slot_table.borrow_mut(),
                                 &persisted,
                             );
                             for warning in warnings {
@@ -313,6 +314,7 @@ impl App {
             }
             // Hot-reload watcher (debug-only); release builds no-op.
             if let Err(err) = session
+                .scripting
                 .script_runtime
                 .start_watcher(&script_root, &content_root)
             {

@@ -133,8 +133,14 @@ impl App {
             session.emitter_bridge.clear();
             session.progress_tracker.clear();
             session.crossing_detector.clear();
-            session.script_ctx.data_registry.borrow_mut().clear();
             session
+                .scripting
+                .script_ctx
+                .data_registry
+                .borrow_mut()
+                .clear();
+            session
+                .scripting
                 .script_ctx
                 .registry
                 .borrow_mut()
@@ -291,13 +297,13 @@ impl App {
         };
         session.progress_tracker.clear();
         session.progress_tracker.initialize(
-            &session.script_ctx.data_registry.borrow(),
-            &session.script_ctx.registry.borrow(),
+            &session.scripting.script_ctx.data_registry.borrow(),
+            &session.scripting.script_ctx.registry.borrow(),
         );
         session.crossing_detector.clear();
         session.crossing_detector.initialize(
-            &session.script_ctx.data_registry.borrow(),
-            &session.script_ctx.slot_table.borrow(),
+            &session.scripting.script_ctx.data_registry.borrow(),
+            &session.scripting.script_ctx.slot_table.borrow(),
         );
     }
 
@@ -306,7 +312,7 @@ impl App {
             LevelSource::Catalog(id) => {
                 let entry = {
                     let session = self.session.as_ref()?;
-                    let data_registry = session.script_ctx.data_registry.borrow();
+                    let data_registry = session.scripting.script_ctx.data_registry.borrow();
                     data_registry
                         .maps
                         .iter()
@@ -499,6 +505,7 @@ impl App {
             .session
             .as_ref()
             .expect("session installed before level install")
+            .scripting
             .script_ctx
             .clone();
         // Reset world gravity to the freshly-loaded level's authored value
@@ -511,14 +518,14 @@ impl App {
             .expect("session installed before level install");
         // Clear any in-flight `screen.flash` decay so a flash never bleeds
         // across a level load.
-        session.flash_decay.reset();
+        session.scripting.flash_decay.reset();
         // Clear any in-flight vignette/shake (SE) so neither bleeds across a
         // level load — the slots reset to their identity rest values.
-        session.vignette_decay.reset();
-        session.shake_decay.reset();
+        session.scripting.vignette_decay.reset();
+        session.scripting.shake_decay.reset();
         // Reset the input-mode tracker so a mid-transition mode never bleeds
         // across levels.
-        session.input_mode_tracker.reset();
+        session.scripting.input_mode_tracker.reset();
         self.active_wieldable = None;
         self.active_wieldable_descriptor = None;
 
@@ -729,14 +736,17 @@ impl App {
                 .expect("session installed before level install");
             let mut manifest = if let Some(data_script) = &world.data_script {
                 session
+                    .scripting
                     .script_runtime
                     .run_data_script(data_script, &self.content_root)
             } else {
                 crate::scripting::data_descriptors::LevelManifest::default()
             };
             if world.data_script.is_some() {
-                manifest.reactions =
-                    validate_sequence_primitives(manifest.reactions, &session.sequence_registry);
+                manifest.reactions = validate_sequence_primitives(
+                    manifest.reactions,
+                    &session.scripting.sequence_registry,
+                );
                 // Register level-scope UI trees before the data-script VM context
                 // drops and before the manifest is consumed by the data registry.
                 // Level install runs in Loading/Running, where the session is
@@ -1001,7 +1011,7 @@ impl App {
             session.hit_zone_store.clear();
 
             let models = {
-                let registry = session.script_ctx.registry.borrow();
+                let registry = session.scripting.script_ctx.registry.borrow();
                 let mut models = crate::distinct_mesh_models(&registry);
                 // E10 AC #3: union the suppressed remote-enemy models. A
                 // connected client filtered these placements out before
@@ -1044,14 +1054,14 @@ impl App {
             // Resolve every animated mesh entity's state map against its model's
             // clip table.
             crate::resolve_mesh_entity_clips(
-                &mut session.script_ctx.registry.borrow_mut(),
+                &mut session.scripting.script_ctx.registry.borrow_mut(),
                 &session.mesh_clip_tables,
             );
 
             // Warn once per archetype per declared `health.zoneMultipliers` tag
             // that names no zone on its mesh model.
             crate::warn_unknown_zone_multipliers(
-                &session.script_ctx.data_registry.borrow().entities,
+                &session.scripting.script_ctx.data_registry.borrow().entities,
                 &session.hit_zone_store,
             );
         }
@@ -1061,9 +1071,9 @@ impl App {
             fire_named_event_with_sequences(
                 "levelLoad",
                 &script_ctx.data_registry.borrow(),
-                &session.sequence_registry,
-                &session.reaction_registry,
-                &session.system_registry,
+                &session.scripting.sequence_registry,
+                &session.scripting.reaction_registry,
+                &session.scripting.system_registry,
                 &script_ctx,
             );
         }
@@ -1122,10 +1132,10 @@ mod tests {
             // Tests exercise level load/unload in the Running state, which touches
             // the session-owned modal stack and the whole script tranche; construct
             // a minimal `Session` inline. The registries (`classname_dispatch`,
-            // `sequence_registry`, `reaction_registry`, `system_registry`) are
-            // intentionally minimal/empty — these lifecycle tests exercise level
-            // load/unload plumbing, not reaction/classname dispatch; the real
-            // `Session::build` populates them.
+            // `scripting.sequence_registry`, `scripting.reaction_registry`,
+            // `scripting.system_registry`) are intentionally minimal/empty — these
+            // lifecycle tests exercise level load/unload plumbing, not
+            // reaction/classname dispatch; the real `Session::build` populates them.
             session: Some(crate::session::Session {
                 input_system: input::InputSystem::new(input::default_bindings()),
                 gameplay_input_latch: input::GameplayInputLatch::new(),
@@ -1136,26 +1146,33 @@ mod tests {
                 ui_focus_rects: None,
                 ui_input_mode: input::InputMode::default(),
                 modal_stack: render::ui::modal_stack::ModalStack::new(),
-                script_runtime,
-                script_ctx: script_ctx.clone(),
-                player_hud_state: scripting_systems::ui_proxy::PlayerHudStatePublisher::new(
-                    script_ctx.clone(),
-                ),
-                flash_decay: scripting_systems::flash_decay::FlashDecay::new(script_ctx.clone()),
-                vignette_decay: scripting_systems::vignette_decay::VignetteDecay::new(
-                    script_ctx.clone(),
-                ),
-                shake_decay: scripting_systems::shake_decay::ShakeDecay::new(script_ctx.clone()),
+                scripting: crate::session::ScriptingCore {
+                    script_runtime,
+                    script_ctx: script_ctx.clone(),
+                    sequence_registry: scripting::sequence::SequencedPrimitiveRegistry::new(),
+                    reaction_registry:
+                        scripting::reactions::registry::ReactionPrimitiveRegistry::new(),
+                    system_registry:
+                        scripting::reactions::system_commands::SystemReactionRegistry::new(),
+                    player_hud_state: scripting_systems::ui_proxy::PlayerHudStatePublisher::new(
+                        script_ctx.clone(),
+                    ),
+                    flash_decay: scripting_systems::flash_decay::FlashDecay::new(
+                        script_ctx.clone(),
+                    ),
+                    vignette_decay: scripting_systems::vignette_decay::VignetteDecay::new(
+                        script_ctx.clone(),
+                    ),
+                    shake_decay: scripting_systems::shake_decay::ShakeDecay::new(
+                        script_ctx.clone(),
+                    ),
+                    input_mode_tracker: scripting_systems::input_mode::InputModeTracker::new(
+                        script_ctx.clone(),
+                    ),
+                },
                 presentation_cells:
                     scripting_systems::presentation_cells::PresentationCellStore::new(),
-                input_mode_tracker: scripting_systems::input_mode::InputModeTracker::new(
-                    script_ctx.clone(),
-                ),
                 state_store_lifecycle: Default::default(),
-                sequence_registry: scripting::sequence::SequencedPrimitiveRegistry::new(),
-                reaction_registry: scripting::reactions::registry::ReactionPrimitiveRegistry::new(),
-                system_registry: scripting::reactions::system_commands::SystemReactionRegistry::new(
-                ),
                 progress_tracker: reaction_dispatch::ProgressTracker::new(),
                 crossing_detector: scripting::state_crossings::CrossingDetector::new(),
                 classname_dispatch: scripting::builtins::ClassnameDispatch::new(),
@@ -1230,6 +1247,7 @@ mod tests {
         app.session
             .as_ref()
             .expect("test app session installed")
+            .scripting
             .script_ctx
             .clone()
     }
@@ -2043,7 +2061,7 @@ mod tests {
         let mut app = test_app();
         app.boot_state = BootState::Frontend;
         crate::scripting::reactions::system_commands::register_system_reaction_primitives(
-            &mut app.session.as_mut().unwrap().system_registry,
+            &mut app.session.as_mut().unwrap().scripting.system_registry,
         );
         app.session
             .as_mut()

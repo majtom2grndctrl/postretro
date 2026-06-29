@@ -14,19 +14,15 @@
 
 use mlua::LuaSerdeExt as _;
 
-use crate::scripting::ctx::ScriptCtx;
-use crate::scripting::ir::IrNode;
-use crate::scripting::luau::{LuauConfig, LuauSubsystem, Which};
-use crate::scripting::primitives::register_all;
-use crate::scripting::primitives_registry::PrimitiveRegistry;
-use crate::scripting::quickjs::{QuickJsConfig, QuickJsSubsystem, run_script};
+use crate::ir::IrNode;
+use crate::luau::{LuauConfig, LuauSubsystem, Which};
+use crate::primitives_registry::PrimitiveRegistry;
+use crate::quickjs::{QuickJsConfig, QuickJsSubsystem, run_script};
 
 /// Author `expr_src` in QuickJS as a bare expression evaluating to an IR node,
 /// return it as a JSON string, and canonicalize through `IrNode`.
 fn quickjs_canonical(expr_src: &str) -> String {
-    let ctx = ScriptCtx::new();
-    let mut registry = PrimitiveRegistry::new();
-    register_all(&mut registry, ctx);
+    let registry = PrimitiveRegistry::new();
     let subsys = QuickJsSubsystem::new(&registry, &QuickJsConfig::default()).unwrap();
 
     let json = subsys.definition_ctx().with(|ctx| {
@@ -42,9 +38,7 @@ fn quickjs_canonical(expr_src: &str) -> String {
 /// return the table, and canonicalize through `IrNode` via the mlua serde
 /// bridge.
 fn luau_canonical(expr_src: &str) -> String {
-    let ctx = ScriptCtx::new();
-    let mut registry = PrimitiveRegistry::new();
-    register_all(&mut registry, ctx);
+    let registry = PrimitiveRegistry::new();
     let subsys = LuauSubsystem::new(&registry, &LuauConfig::default()).unwrap();
 
     let value: mlua::Value = subsys

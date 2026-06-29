@@ -20,15 +20,11 @@
 
 use mlua::LuaSerdeExt as _;
 
-use crate::scripting::ctx::ScriptCtx;
-use crate::scripting::ir::test_scope::StubScope;
-use crate::scripting::ir::{
-    BakedIr, CURRENT_IR_VERSION, IrNode, IrValue, bind, eval_value, load_baked_ir,
-};
-use crate::scripting::luau::{LuauConfig, LuauSubsystem, Which};
-use crate::scripting::primitives::register_all;
-use crate::scripting::primitives_registry::PrimitiveRegistry;
-use crate::scripting::quickjs::{QuickJsConfig, QuickJsSubsystem, run_script};
+use crate::ir::test_scope::StubScope;
+use crate::ir::{BakedIr, CURRENT_IR_VERSION, IrNode, IrValue, bind, eval_value, load_baked_ir};
+use crate::luau::{LuauConfig, LuauSubsystem, Which};
+use crate::primitives_registry::PrimitiveRegistry;
+use crate::quickjs::{QuickJsConfig, QuickJsSubsystem, run_script};
 
 const EPSILON: f32 = 1e-6;
 
@@ -37,9 +33,7 @@ const EPSILON: f32 = 1e-6;
 /// crossing `parity_tests.rs` uses, kept to the node (not the canonical string)
 /// so the e2e path can wrap it in an envelope.
 fn author_in_quickjs(expr_src: &str) -> IrNode {
-    let ctx = ScriptCtx::new();
-    let mut registry = PrimitiveRegistry::new();
-    register_all(&mut registry, ctx);
+    let registry = PrimitiveRegistry::new();
     let subsys = QuickJsSubsystem::new(&registry, &QuickJsConfig::default()).unwrap();
 
     let json = subsys.definition_ctx().with(|ctx| {
@@ -53,9 +47,7 @@ fn author_in_quickjs(expr_src: &str) -> IrNode {
 /// Author `expr_src` in Luau as a bare expression evaluating to an IR node,
 /// return the table, and deserialize into [`IrNode`] via the mlua serde bridge.
 fn author_in_luau(expr_src: &str) -> IrNode {
-    let ctx = ScriptCtx::new();
-    let mut registry = PrimitiveRegistry::new();
-    register_all(&mut registry, ctx);
+    let registry = PrimitiveRegistry::new();
     let subsys = LuauSubsystem::new(&registry, &LuauConfig::default()).unwrap();
 
     let value: mlua::Value = subsys
@@ -212,8 +204,8 @@ fn unsupported_version_envelope_is_rejected_and_consumer_falls_back() {
 
 #[test]
 fn authored_program_with_output_writes_evaluated_value_to_stub() {
-    use crate::scripting::ir::eval_and_write;
-    use crate::scripting::ir::test_scope::StubWrite;
+    use crate::ir::eval_and_write;
+    use crate::ir::test_scope::StubWrite;
 
     // `add(speed, 1)` over `speed = 4.0` → 5.0, written to the granted output.
     let root = author_in_quickjs("runtime.add(runtime.read(\"speed\"), runtime.constant(1))");

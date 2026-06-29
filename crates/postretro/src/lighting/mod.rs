@@ -8,6 +8,7 @@ pub(crate) mod cone_frustum;
 pub mod cube_shadow;
 pub mod influence;
 pub mod lightmap;
+pub(crate) mod script_primitives;
 pub mod spec_buffer;
 pub mod spot_shadow;
 

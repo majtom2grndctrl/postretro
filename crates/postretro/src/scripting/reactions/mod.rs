@@ -1,18 +1,18 @@
-// Tag-targeted reaction primitives invoked by `Primitive` reactions at
-// dispatch time. Distinct from the per-step `SequencedPrimitiveRegistry`.
-// See: context/lib/scripting.md §4 (Primitive Registration)
+// Compatibility barrel for reaction primitive paths.
+//
+// Handler implementations live in their subsystem modules; these re-exports
+// keep `crate::scripting::reactions::*` paths working while call sites migrate.
+#![allow(unused_imports)]
 
-pub(crate) mod apply_damage;
+pub(crate) use crate::fx::emitter_reactions::{set_emitter_rate, set_spin_rate};
+pub(crate) use crate::fx::fog_reactions::{
+    set_fog_animation, set_fog_density, set_fog_edge_softness, set_fog_falloff, set_fog_glow,
+    set_fog_params,
+};
+pub(crate) use crate::health::reactions as apply_damage;
+pub(crate) use crate::model::animation_reactions as set_animation_state;
+
 pub(crate) mod registry;
-pub(crate) mod set_animation_state;
-pub(crate) mod set_emitter_rate;
-pub(crate) mod set_fog_animation;
-pub(crate) mod set_fog_density;
-pub(crate) mod set_fog_edge_softness;
-pub(crate) mod set_fog_falloff;
-pub(crate) mod set_fog_glow;
-pub(crate) mod set_fog_params;
-pub(crate) mod set_spin_rate;
 pub(crate) mod system_commands;
 
 #[cfg(test)]

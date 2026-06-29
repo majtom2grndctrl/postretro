@@ -10,7 +10,17 @@ use crate::scripting::components::health::{HealthComponent, apply_damage};
 use crate::scripting::registry::{EntityId, EntityRegistry};
 use postretro_foundation::DamagePayload;
 
-use super::ReactionError;
+use postretro_scripting_core::reaction_registry::{ReactionError, ReactionPrimitiveRegistry};
+
+pub(crate) fn register_health_reaction_primitives(registry: &mut ReactionPrimitiveRegistry) {
+    registry.register("applyDamage", |reg, targets, args| {
+        let parsed: ApplyDamageArgs =
+            serde_json::from_value(args.clone()).map_err(|e| ReactionError::InvalidArgument {
+                reason: format!("applyDamage: failed to deserialize args: {e}"),
+            })?;
+        dispatch(reg, targets, &parsed)
+    });
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct ApplyDamageArgs {
@@ -68,6 +78,14 @@ mod tests {
     use super::*;
     use crate::scripting::data_descriptors::HealthDescriptor;
     use crate::scripting::registry::Transform;
+
+    #[test]
+    fn registers_health_primitive_under_expected_name() {
+        let mut r = ReactionPrimitiveRegistry::new();
+        register_health_reaction_primitives(&mut r);
+        assert!(r.contains("applyDamage"));
+        assert!(!r.contains("setAnimationState"));
+    }
 
     fn spawn_health(reg: &mut EntityRegistry, max: f32) -> EntityId {
         let id = reg.spawn(Transform::default());

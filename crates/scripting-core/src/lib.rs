@@ -68,6 +68,7 @@ pub mod luau_prelude;
 pub mod luau_require;
 pub mod luau_virtual_modules;
 pub mod primitives_registry;
+pub mod primitive_adapters;
 pub mod quickjs;
 pub mod reaction_dispatch;
 pub mod reaction_registry;

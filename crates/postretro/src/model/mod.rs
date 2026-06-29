@@ -6,6 +6,7 @@
 // groups from these plain Pod types. Keep it that way.
 
 pub(crate) mod anim;
+pub(crate) mod animation_reactions;
 pub(crate) mod gltf_loader;
 pub(crate) mod mesh;
 pub(crate) mod sample_params;

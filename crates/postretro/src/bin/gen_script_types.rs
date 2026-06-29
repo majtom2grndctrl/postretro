@@ -9,6 +9,16 @@ use std::process::ExitCode;
 use postretro_scripting_core::primitives_registry::PrimitiveRegistry;
 use postretro_scripting_core::typedef::write_type_definitions;
 
+#[allow(dead_code, unused_imports)]
+#[path = "../lighting/script_primitives.rs"]
+mod lighting_script_primitives;
+
+mod lighting {
+    pub(crate) mod script_primitives {
+        pub(crate) use crate::lighting_script_primitives::*;
+    }
+}
+
 #[path = "../scripting"]
 mod scripting {
     #![allow(dead_code, unused_imports)]
@@ -28,6 +38,7 @@ mod scripting {
     pub(crate) mod error {
         pub(crate) use postretro_scripting_core::error::*;
     }
+    pub(crate) mod entity_world_primitives;
     pub(crate) mod luau {
         pub(crate) use postretro_scripting_core::luau::*;
     }
@@ -50,6 +61,7 @@ mod scripting {
     pub(crate) mod slot_table {
         pub(crate) use postretro_scripting_core::slot_table::*;
     }
+    pub(crate) mod state_store;
     pub(crate) mod value_types {
         pub(crate) use postretro_scripting_core::value_types::*;
     }

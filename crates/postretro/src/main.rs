@@ -20,6 +20,7 @@ mod compute_cull;
 mod frame_timing;
 mod fx;
 mod geometry;
+mod health;
 mod input;
 mod lighting;
 mod material;

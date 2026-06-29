@@ -8,7 +8,17 @@ use serde::{Deserialize, Serialize};
 use crate::scripting::components::mesh::{SwitchResult, switch_animation_state};
 use crate::scripting::registry::{EntityId, EntityRegistry};
 
-use super::ReactionError;
+use postretro_scripting_core::reaction_registry::{ReactionError, ReactionPrimitiveRegistry};
+
+pub(crate) fn register_mesh_reaction_primitives(registry: &mut ReactionPrimitiveRegistry) {
+    registry.register("setAnimationState", |reg, targets, args| {
+        let parsed: SetAnimationStateArgs =
+            serde_json::from_value(args.clone()).map_err(|e| ReactionError::InvalidArgument {
+                reason: format!("setAnimationState: failed to deserialize args: {e}"),
+            })?;
+        dispatch(reg, targets, &parsed)
+    });
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct SetAnimationStateArgs {
@@ -70,6 +80,14 @@ mod tests {
         resolve_pending_animation_stamps,
     };
     use crate::scripting::registry::Transform;
+
+    #[test]
+    fn registers_mesh_primitive_under_expected_name() {
+        let mut r = ReactionPrimitiveRegistry::new();
+        register_mesh_reaction_primitives(&mut r);
+        assert!(r.contains("setAnimationState"));
+        assert!(!r.contains("setEmitterRate"));
+    }
 
     fn usable_state(clip: &str, looping: bool, clip_index: usize) -> AnimationState {
         AnimationState {

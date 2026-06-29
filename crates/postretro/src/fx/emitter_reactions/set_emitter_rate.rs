@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::scripting::components::billboard_emitter::BillboardEmitterComponent;
 use crate::scripting::registry::{EntityId, EntityRegistry};
 
-use super::ReactionError;
+use postretro_scripting_core::reaction_registry::ReactionError;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct SetEmitterRateArgs {

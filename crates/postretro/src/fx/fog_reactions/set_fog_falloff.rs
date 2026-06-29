@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::scripting::registry::{EntityId, EntityRegistry, FogVolumeComponent};
 
-use super::ReactionError;
+use postretro_scripting_core::reaction_registry::ReactionError;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

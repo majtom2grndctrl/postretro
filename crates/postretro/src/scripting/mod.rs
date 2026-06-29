@@ -22,6 +22,7 @@ pub(crate) mod data_descriptors {
 }
 pub(crate) mod data_registry;
 pub(crate) mod engine_state_catalog;
+pub(crate) mod entity_world_primitives;
 pub(crate) mod error;
 pub(crate) mod foundation_pods;
 pub(crate) mod game_state_refs {
@@ -82,6 +83,7 @@ pub(crate) mod staged_manifest {
 }
 pub(crate) mod state_crossings;
 pub(crate) mod state_persistence;
+pub(crate) mod state_store;
 pub(crate) mod typedef {
     #![allow(unused_imports)]
     pub(crate) use postretro_scripting_core::typedef::*;

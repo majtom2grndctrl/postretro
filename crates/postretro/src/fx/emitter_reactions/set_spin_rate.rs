@@ -7,7 +7,7 @@ use crate::scripting::components::billboard_emitter::{
 };
 use crate::scripting::registry::{EntityId, EntityRegistry};
 
-use super::ReactionError;
+use postretro_scripting_core::reaction_registry::ReactionError;
 
 /// Two-shape arg union: either an immediate spin-rate write, or a tween.
 #[derive(Debug, Clone, PartialEq)]

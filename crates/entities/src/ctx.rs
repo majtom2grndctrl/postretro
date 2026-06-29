@@ -74,6 +74,12 @@ impl ScriptCtx {
     }
 }
 
+impl Default for ScriptCtx {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

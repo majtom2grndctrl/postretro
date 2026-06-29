@@ -960,6 +960,12 @@ impl EntityRegistry {
     }
 }
 
+impl Default for EntityRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -2276,9 +2276,9 @@ mod tests {
 
     #[test]
     fn ai_descriptor_spawn_uses_capsule_center_transform_without_moving_authored_hitbox() {
-        use postretro_foundation::NavAgentParams;
         use crate::scripting::components::health::HealthComponent;
         use crate::scripting::data_descriptors::{HealthDescriptor, HitboxDescriptor};
+        use postretro_foundation::NavAgentParams;
 
         let params = NavAgentParams {
             radius: 0.4,

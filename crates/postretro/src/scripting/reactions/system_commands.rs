@@ -5,74 +5,12 @@
 // consume their commands without threading engine services into scripting.
 // See: context/lib/scripting.md §10.4
 
-use std::collections::HashMap;
-
 use super::ReactionError;
-pub(crate) use postretro_entities::reactions::system_commands::{
-    SystemCommandQueue, SystemReactionCommand,
+#[cfg(test)]
+pub(crate) use postretro_scripting_core::reaction_registry::SystemCommandQueue;
+pub(crate) use postretro_scripting_core::reaction_registry::{
+    SystemReactionCommand, SystemReactionRegistry,
 };
-
-/// A system-reaction handler: parses `args` and enqueues zero or more typed
-/// commands. Unlike [`super::registry::ReactionPrimitiveFn`], it touches no
-/// `EntityRegistry` — system reactions target no entities.
-pub(crate) type SystemReactionFn =
-    Box<dyn Fn(&serde_json::Value, &SystemCommandQueue) -> Result<(), ReactionError>>;
-
-/// Name → handler table for the system-reaction arm. Registered at startup
-/// alongside the entity-targeted `ReactionPrimitiveRegistry`; both share the
-/// one named-event vocabulary, so a `Primitive` reaction with no `tag`
-/// resolves here while one with a `tag` resolves against the entity registry.
-#[derive(Default)]
-pub(crate) struct SystemReactionRegistry {
-    handlers: HashMap<String, SystemReactionFn>,
-}
-
-impl SystemReactionRegistry {
-    pub(crate) fn new() -> Self {
-        Self::default()
-    }
-
-    pub(crate) fn register<F>(&mut self, name: impl Into<String>, handler: F)
-    where
-        F: Fn(&serde_json::Value, &SystemCommandQueue) -> Result<(), ReactionError> + 'static,
-    {
-        let name = name.into();
-        if self.handlers.contains_key(&name) {
-            debug_assert!(false, "duplicate system reaction registration: {name}");
-            log::warn!(
-                "[Scripting] SystemReactionRegistry: overwriting existing handler for '{name}'"
-            );
-        }
-        self.handlers.insert(name, Box::new(handler));
-    }
-
-    pub(crate) fn contains(&self, name: &str) -> bool {
-        self.handlers.contains_key(name)
-    }
-
-    /// Resolve `name` and run its handler, enqueueing onto `queue`. Returns
-    /// `Ok(false)` when no handler is registered — callers log this defensively,
-    /// mirroring [`super::registry::ReactionPrimitiveRegistry::dispatch`].
-    pub(crate) fn dispatch(
-        &self,
-        name: &str,
-        args: &serde_json::Value,
-        queue: &SystemCommandQueue,
-    ) -> Result<bool, ReactionError> {
-        let Some(handler) = self.handlers.get(name) else {
-            return Ok(false);
-        };
-        handler(args, queue).map(|_| true)
-    }
-}
-
-impl std::fmt::Debug for SystemReactionRegistry {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SystemReactionRegistry")
-            .field("handlers", &self.handlers.keys().collect::<Vec<_>>())
-            .finish()
-    }
-}
 
 /// Maximum `screenShake` amplitude in logical-reference px. Matches
 /// `SHAKE_REFERENCE_WIDTH` in `render/screen_effects.rs` (1280 px): at this

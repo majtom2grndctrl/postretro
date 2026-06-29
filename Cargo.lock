@@ -3585,6 +3585,7 @@ dependencies = [
  "postretro-level-format",
  "postretro-net",
  "postretro-script-compiler",
+ "postretro-scripting-core",
  "proptest",
  "rquickjs",
  "serde",
@@ -3688,6 +3689,25 @@ dependencies = [
  "swc_ecma_transforms_base",
  "swc_ecma_transforms_typescript",
  "swc_ecma_visit",
+]
+
+[[package]]
+name = "postretro-scripting-core"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "log",
+ "mlua",
+ "notify",
+ "notify-debouncer-full",
+ "postretro-entities",
+ "postretro-foundation",
+ "postretro-level-format",
+ "postretro-script-compiler",
+ "rquickjs",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

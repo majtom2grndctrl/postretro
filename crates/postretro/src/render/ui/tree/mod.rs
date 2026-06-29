@@ -43,6 +43,7 @@ pub(crate) use draw::{
 // crate (focus-engine tests), so the non-test build sees the re-export as unused.
 #[cfg_attr(not(test), allow(unused_imports))]
 pub(crate) use draw::FocusNeighbors;
+#[allow(unused_imports)]
 pub(crate) use style::resolve_color;
 pub(crate) use ui_tree::UiTree;
 

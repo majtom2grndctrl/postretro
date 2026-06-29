@@ -1,0 +1,25 @@
+[package]
+name = "postretro-scripting-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "VM-coupled scripting runtime substrate for Postretro"
+license.workspace = true
+
+[dependencies]
+glam.workspace = true
+log.workspace = true
+mlua.workspace = true
+notify.workspace = true
+notify-debouncer-full.workspace = true
+rquickjs.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+postretro-foundation = { workspace = true }
+postretro-entities = { workspace = true, features = ["script-ffi"] }
+postretro-level-format = { workspace = true }
+
+[build-dependencies]
+postretro-script-compiler = { path = "../script-compiler" }

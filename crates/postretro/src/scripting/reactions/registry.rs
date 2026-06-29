@@ -1,77 +1,11 @@
-// Runtime dispatch table for tag-targeted reaction primitives.
+// Registrar functions for tag-targeted reaction primitives.
 // See: context/lib/scripting.md §10 (Reaction Primitives)
 
-use std::collections::HashMap;
-
 use crate::scripting::ctx::ScriptCtx;
-use crate::scripting::registry::{EntityId, EntityRegistry};
 use crate::scripting::sequence::{SequenceError, SequencedPrimitiveRegistry};
 
 use super::ReactionError;
-
-pub(crate) type ReactionPrimitiveFn =
-    Box<dyn Fn(&mut EntityRegistry, &[EntityId], &serde_json::Value) -> Result<(), ReactionError>>;
-
-#[derive(Default)]
-pub(crate) struct ReactionPrimitiveRegistry {
-    handlers: HashMap<String, ReactionPrimitiveFn>,
-}
-
-impl ReactionPrimitiveRegistry {
-    pub(crate) fn new() -> Self {
-        Self::default()
-    }
-
-    pub(crate) fn register<F>(&mut self, name: impl Into<String>, handler: F)
-    where
-        F: Fn(&mut EntityRegistry, &[EntityId], &serde_json::Value) -> Result<(), ReactionError>
-            + 'static,
-    {
-        let name = name.into();
-        if self.handlers.contains_key(&name) {
-            debug_assert!(false, "duplicate reaction primitive registration: {name}");
-            log::warn!(
-                "[Scripting] ReactionPrimitiveRegistry: overwriting existing handler for '{name}'"
-            );
-        }
-        self.handlers.insert(name, Box::new(handler));
-    }
-
-    pub(crate) fn contains(&self, name: &str) -> bool {
-        self.handlers.contains_key(name)
-    }
-
-    pub(crate) fn get(&self, name: &str) -> Option<&ReactionPrimitiveFn> {
-        self.handlers.get(name)
-    }
-
-    /// Resolve `name` and run its handler against `targets` and `args`.
-    ///
-    /// Returns `Ok(false)` when no handler is registered under `name` —
-    /// callers log this defensively. Per-target failures inside the handler
-    /// are logged as warnings by the handler itself; this method only
-    /// surfaces invariant violations such as `InvalidArgument`.
-    pub(crate) fn dispatch(
-        &self,
-        name: &str,
-        registry: &mut EntityRegistry,
-        targets: &[EntityId],
-        args: &serde_json::Value,
-    ) -> Result<bool, ReactionError> {
-        let Some(handler) = self.handlers.get(name) else {
-            return Ok(false);
-        };
-        handler(registry, targets, args).map(|_| true)
-    }
-}
-
-impl std::fmt::Debug for ReactionPrimitiveRegistry {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ReactionPrimitiveRegistry")
-            .field("handlers", &self.handlers.keys().collect::<Vec<_>>())
-            .finish()
-    }
-}
+pub(crate) use postretro_scripting_core::reaction_registry::ReactionPrimitiveRegistry;
 
 pub(crate) fn register_emitter_reaction_primitives(registry: &mut ReactionPrimitiveRegistry) {
     registry.register("setEmitterRate", |reg, targets, args| {

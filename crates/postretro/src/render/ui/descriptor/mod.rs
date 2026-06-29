@@ -1,32 +1,8 @@
-// Serde descriptor model for the UI widget tree: the barrel that wires together
-// the shared value types, focus-traversal types, widget vocabulary, and the
-// `AnchoredTree` placement envelope, and re-exports them so the whole descriptor
-// API surface stays addressable from `render::ui::descriptor::*`.
-// See: context/lib/ui.md
+// UI descriptor data is owned by scripting-core so script manifests and renderer
+// trees share one concrete type.
+// See: context/lib/scripting.md §12
 
-mod accessibility;
-mod envelope;
-mod focus;
-mod values;
-mod widgets;
-
-pub use accessibility::Role;
-// Consumed by later G2 tasks (role projection); re-exported now so the descriptor
-// API surface is complete, but has no consumer yet (the role-projection sink is
-// deferred). Allow unconditionally so the test-target build stays clippy-clean.
-#[allow(unused_imports)]
-pub use accessibility::implicit_role;
-pub use envelope::{AnchoredTree, CaptureMode};
-pub use focus::{FocusKind, FocusNeighbors, FocusPolicy, RepeatPolicy};
-pub use values::{
-    Align, BindSource, Border, CellInit, ColorValue, Easing, LocalState, Predicate, PredicateValue,
-    SpacingValue,
-};
-pub use widgets::{
-    AnnounceWidget, BarMax, BarMaxStateRef, BarWidget, ButtonWidget, ContainerWidget, GridWidget,
-    ImageWidget, PanelBind, PanelTween, PanelWidget, Priority, SliderBind, SliderWidget,
-    SpacerWidget, TextBind, TextTween, TextWidget, Widget,
-};
+pub use postretro_scripting_core::ui::descriptor::*;
 
 #[cfg(test)]
 mod tests {

@@ -3,6 +3,7 @@ members = [
     "crates/postretro",
     "crates/foundation",
     "crates/entities",
+    "crates/scripting-core",
     "crates/level-format",
     "crates/level-compiler",
     "crates/script-compiler",
@@ -143,6 +144,7 @@ proptest = "1"
 postretro-level-format = { path = "crates/level-format" }
 postretro-foundation = { path = "crates/foundation" }
 postretro-entities = { path = "crates/entities" }
+postretro-scripting-core = { path = "crates/scripting-core" }
 postretro-net = { path = "crates/net" }
 
 [profile.release]

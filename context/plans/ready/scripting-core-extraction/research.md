@@ -18,9 +18,9 @@ After the floor lands, the VM-coupled remainder still living in `postretro` is w
 - `ir/scopes.rs` (`StoreScope` — pulls `ScriptCtx`/`slot_table`/`primitives::store`).
 - `conv.rs` json-orchestration bridges (`json_to_js`/`js_to_json`/`json_to_lua`/`lua_to_json`); the FFI impls themselves descend to the floor.
 - `data_descriptors/{js,lua}/` converters + `mod.rs` VM/`render::ui` glob.
-- `RegisteredUiTree`/`LevelManifest` (UI-embedding manifest types).
-- `validate.rs` `mlua`/`render::ui` validators (`validate_dense_lua_array`, `parse_*`); the pure numeric/IR validators and `build_crossing` descend to the floor.
-- `data_descriptors/error.rs` `js_err`/`lua_err` (VM adapters); `DescriptorError` descends.
+- `RegisteredUiTree`/`LevelManifest` (UI-embedding manifest types; in `data_descriptors/runtime_manifest.rs`).
+- `data_descriptors/validate/runtime.rs` `mlua`/`render::ui` validators (`validate_dense_lua_array`, `parse_*`); the pure numeric/IR validators (`validate/foundation.rs`) and `build_crossing` descended to the floor and do not move.
+- `data_descriptors/vm_adapters.rs` `js_err`/`lua_err` (VM adapters); `DescriptorError` descended to `postretro-foundation`, and `data_descriptors/error.rs` is now a thin barrel re-exporting it (so `error.rs` does not move).
 - `runtime/*`.
 - `luau.rs`, `quickjs.rs`, `primitives_registry.rs`, `reaction_dispatch.rs`, the typedef generator.
 - `primitives/*` handlers — the A1 relocation target (see below).
@@ -31,7 +31,7 @@ After the floor lands, the VM-coupled remainder still living in `postretro` is w
 
 Primitives: `entity.rs` → entity, `light.rs` → lighting, `world.rs` → world/entity (worldQuery, worldGetGravity, worldSetGravity), `store.rs` → state store, `mod.rs` → `register_all` entry + shared types.
 
-**`primitives/*` files are NOT runtime-agnostic (codebase-anchor verified).** They import `rquickjs` + `mlua` at module scope for handler-local marshalling newtypes with FFI impls: `entity.rs` (4 refs; `NullableString` `IntoJs`/`IntoLua`), `light.rs` (25 refs, all inside `#[cfg(test)]` — production code is VM-free), `world.rs` (18 refs; `WorldQueryFilterInput` `FromJs`/`FromLua` — note: `WorldQueryFilter` is the *SDK typedef* name, a different symbol), `store.rs` (17 refs), `mod.rs` (9 refs). The newtypes appear in closure *signatures*, not bodies — bodies delegate to VM-free free functions (`apply_light_animation`, `read_store_slot`, `parse_query_filter` + collectors), so the A1 split is clean. By contrast every `reactions/*` handler has **0** `rquickjs`/`mlua` refs in **non-test** code (`set_fog_params.rs` has VM refs only inside its `#[cfg(test)]` cross-runtime parity test). This drives the A1 split in `index.md` Task 5: `primitives/*` logic relocates but its marshalling newtypes + `register_*` wiring stay in `scripting-core`; `reactions/*` production code relocates whole, with VM-touching `#[cfg(test)]` modules going to `scripting-core/tests/`.
+**`primitives/*` files are NOT runtime-agnostic (codebase-anchor verified).** They import `rquickjs` + `mlua` at module scope for handler-local marshalling newtypes with FFI impls: `entity.rs` (4 refs; `NullableString` `IntoJs`/`IntoLua`), `light.rs` (25 refs, all inside `#[cfg(test)]` — production code is VM-free), `world.rs` (18 refs; `WorldQueryFilterInput` `FromJs`/`FromLua` — note: `WorldQueryFilter` is the *SDK typedef* name, a different symbol), `store.rs` (17 refs), `mod.rs` (9 refs). The newtypes appear in closure *signatures*, not bodies — bodies delegate to VM-free free functions (`apply_light_animation`, `read_store_slot`, `parse_query_filter` + collectors), so the A1 split is clean. By contrast every `reactions/*` handler has **0** `rquickjs`/`mlua` refs in **non-test** code (`set_fog_params.rs` has VM refs only inside its `#[cfg(test)]` cross-runtime parity test). This drives the A1 split in `index.md` Task 5: for `primitives/*`, the pure logic **and** the `register_*` wiring both relocate to the `postretro` subsystem, while only the marshalling newtypes + their FFI impls stay in `scripting-core` (the wiring is in `postretro` and references them as a legal down-edge — `scripting-core` sits below `postretro` and may not name a subsystem fn, so the wiring that calls one cannot live below); `reactions/*` production code relocates whole, with VM-touching `#[cfg(test)]` modules going to `scripting-core/tests/`.
 
 Reactions: `apply_damage.rs` → health; `set_animation_state.rs` → mesh; `set_emitter_rate.rs`/`set_spin_rate.rs` → emitter; `set_fog_*` (density, glow, edge_softness, falloff, params, animation) → fog volume; `system_commands.rs` → cross-engine command queue; `registry.rs` → dispatch root; `log_capture.rs` → test-only.
 
@@ -44,7 +44,7 @@ Codebase-anchor confirmed in `session/mod.rs` + `reactions/registry.rs`: there i
 - `ReactionPrimitiveRegistry` (via `register_emitter_reaction_primitives` + `register_fog_reaction_primitives`, **no** `ScriptCtx`; handlers are `dispatch(reg, targets, &parsed)`).
 - `SystemReactionRegistry` (via `register_system_reaction_primitives`, **no** `ScriptCtx`; enqueues onto `SystemCommandQueue`).
 
-All four registrars stay in `scripting-core`. Fog and light each register in two registries — every site for a family relocates together. `SystemCommandQueue` lives in `postretro-entities` (the floor); the system-command **drain** runs through `reaction_dispatch.rs` (`ScriptCtx::system_commands`), which stays in `scripting-core`.
+All four registrar **functions** relocate to `postretro`, co-located with the handler logic they wire; `scripting-core` retains only the registry **types** + machinery they populate (see the A1 split above and `index.md` Task 5). Fog and light each register in two registries — every site for a family relocates together. `SystemCommandQueue` lives in `postretro-entities` (the floor); the system-command **drain** runs through `reaction_dispatch.rs` (`ScriptCtx::system_commands`), which stays in `scripting-core`.
 
 ## Aggregation site
 

@@ -1,7 +1,7 @@
 # Engine-Data Floor Extraction
 
-> **Status:** in-progress — reviewed (3 structural rounds → converged; implementability pass applied). Capture in `context/lib/scripting.md` §12.
-> **Related:** `context/lib/scripting.md` §12 · `context/lib/build_pipeline.md` · `context/lib/development_guide.md` · `context/plans/drafts/compile-time-reduction/` · `context/plans/drafts/scripting-core-extraction/` (rebases onto this floor: its Task 2 is superseded, Task 3 reshaped) · sibling `research.md`
+> **Status:** shipped (2026-06). Captured in `context/lib/scripting.md` §12; all acceptance criteria met. This doc is now a frozen historical record.
+> **Related:** `context/lib/scripting.md` §12 · `context/lib/build_pipeline.md` · `context/lib/development_guide.md` · `context/plans/drafts/compile-time-reduction/` · `context/plans/ready/scripting-core-extraction/` (rebases onto this floor: its Task 2 is superseded, Task 3 reshaped) · sibling `research.md`
 
 ## Goal
 

@@ -39,15 +39,9 @@ mod scripting {
         pub(crate) use postretro_scripting_core::error::*;
     }
     pub(crate) mod entity_world_primitives;
-    pub(crate) mod luau {
-        pub(crate) use postretro_scripting_core::luau::*;
-    }
     pub(crate) mod primitives;
     pub(crate) mod primitives_registry {
         pub(crate) use postretro_scripting_core::primitives_registry::*;
-    }
-    pub(crate) mod quickjs {
-        pub(crate) use postretro_scripting_core::quickjs::*;
     }
     pub(crate) mod registry {
         pub(crate) use postretro_entities::registry::*;
@@ -62,9 +56,6 @@ mod scripting {
         pub(crate) use postretro_scripting_core::slot_table::*;
     }
     pub(crate) mod state_store;
-    pub(crate) mod value_types {
-        pub(crate) use postretro_scripting_core::value_types::*;
-    }
 }
 
 use scripting::ctx::ScriptCtx;

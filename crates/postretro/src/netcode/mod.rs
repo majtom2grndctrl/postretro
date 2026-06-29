@@ -75,6 +75,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use glam::{Quat, Vec3};
 
+use postretro_entities::{
+    ComponentKind, ComponentValue, EntityId, EntityRegistry, EntityTypeDescriptor, SlotTable,
+    Transform,
+};
+use postretro_foundation::{NavAgentParams, PlayerMovementComponent};
 use postretro_net::replication::ServerReplication;
 use postretro_net::timesync::{
     self, ClockEstimator, MonotonicClock, TimeSyncRequest, TimeSyncSender,
@@ -86,10 +91,6 @@ use postretro_net::wire::{
 };
 
 use crate::collision::CollisionWorld;
-use crate::scripting::components::player_movement::PlayerMovementComponent;
-use crate::scripting::registry::{
-    ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform,
-};
 use crate::sim::SimCommand;
 
 /// Default listen port for `--host` when no port is supplied.
@@ -638,13 +639,13 @@ pub(crate) fn decode_snapshot(bytes: &[u8]) -> Result<SnapshotMessage, SnapshotD
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn client_receive_and_apply(
     registry: &mut EntityRegistry,
-    slot_table: &mut crate::scripting::slot_table::SlotTable,
+    slot_table: &mut SlotTable,
     client: &mut NetClient,
     replication: &mut ClientReplication,
     state_slots: &mut state_slots::ClientStateApply,
     prediction: &mut ClientPrediction,
-    descriptors: &[crate::scripting::data_descriptors::EntityTypeDescriptor],
-    agent_params: Option<crate::nav::NavAgentParams>,
+    descriptors: &[EntityTypeDescriptor],
+    agent_params: Option<NavAgentParams>,
     collision: &CollisionWorld,
     gravity: f32,
     tick_dt: f32,
@@ -1000,7 +1001,7 @@ pub(crate) fn host_drive_demo_mover(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn host_replicate(
     registry: &EntityRegistry,
-    slot_table: &crate::scripting::slot_table::SlotTable,
+    slot_table: &SlotTable,
     server: &mut NetServer,
     allocator: &mut NetworkIdAllocator,
     replication: &mut ServerReplication,
@@ -1108,8 +1109,8 @@ pub(crate) fn host_handle_accept_descriptor(
     owners: &mut MovementOwners,
     client_id: u64,
     spawn_points: &[crate::scripting::map_entity::MapEntity],
-    descriptors: &[crate::scripting::data_descriptors::EntityTypeDescriptor],
-    agent_params: Option<crate::nav::NavAgentParams>,
+    descriptors: &[EntityTypeDescriptor],
+    agent_params: Option<NavAgentParams>,
 ) {
     // Deterministic, auditable slot -> placement assignment recorded BEFORE the spawn.
     let Some(idx) = slot_pawns.assign_placement(client_id, spawn_points.len()) else {
@@ -1699,11 +1700,11 @@ mod tests {
     // --- Issue 3b: the listen host's OWN pawn replicates outbound ---------------
 
     use crate::scripting::builtins::spawn_from_player_starts;
-    use crate::scripting::data_descriptors::{
-        AirParams, CapsuleParams, EntityTypeDescriptor, FallParams, GroundParams,
-        PlayerMovementDescriptor, SpeedParams,
-    };
     use crate::scripting::map_entity::MapEntity;
+    use postretro_entities::EntityTypeDescriptor;
+    use postretro_foundation::{
+        AirParams, CapsuleParams, FallParams, GroundParams, PlayerMovementDescriptor, SpeedParams,
+    };
     use postretro_net::replication::{ServerReplication, typed_records};
     use postretro_net::wire::EntityRecord;
 

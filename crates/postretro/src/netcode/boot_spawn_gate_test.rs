@@ -22,7 +22,7 @@ use super::role_suppresses_boot_player_spawn;
 use crate::netcode::NetRole;
 use crate::scripting::builtins::MapEntity;
 use crate::scripting::builtins::data_archetype::spawn_from_player_starts;
-use crate::scripting::registry::{ComponentKind, EntityRegistry};
+use postretro_entities::{ComponentKind, EntityRegistry};
 
 /// A near-perfect link (a small fixed delay, no jitter or loss) so the boot → arm
 /// sequence converges deterministically without the latency profile obscuring the

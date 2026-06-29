@@ -3,8 +3,8 @@
 
 use postretro_net::wire::ComponentPayload;
 
-use crate::scripting::provenance::{DescriptorProvenance, DescriptorSpawnPath};
-use crate::scripting::registry::{ComponentKind, EntityId, EntityRegistry};
+use postretro_entities::provenance::{DescriptorProvenance, DescriptorSpawnPath};
+use postretro_entities::{ComponentKind, EntityId, EntityRegistry};
 
 /// Shared predicate: is `id` a map-placed descriptor AI enemy that the host owns as an
 /// authoritative networked entity (E10 — networked enemy authority)?

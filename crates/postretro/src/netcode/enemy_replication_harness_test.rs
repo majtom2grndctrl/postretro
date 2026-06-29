@@ -80,15 +80,15 @@ use crate::netcode::{HostCommandQueues, MovementOwners, NetworkIdAllocator};
 use crate::scripting::builtins::data_archetype::{
     descriptor_materializes_ai_enemy, filter_out_client_ai_enemies,
 };
-use crate::scripting::components::agent::AgentComponent;
-use crate::scripting::components::brain::{AiStateMap, AiTuning, BrainComponent, LogicalState};
-use crate::scripting::components::mesh::{AnimationState, InterruptPolicy, MeshComponent};
-use crate::scripting::data_descriptors::{EntityTypeDescriptor, MeshDescriptor};
-use crate::scripting::provenance::{
+use postretro_entities::components::agent::AgentComponent;
+use postretro_entities::components::brain::{AiStateMap, AiTuning, BrainComponent, LogicalState};
+use postretro_entities::components::mesh::{AnimationState, InterruptPolicy, MeshComponent};
+use postretro_entities::provenance::{
     DescriptorComponentKind, DescriptorProvenance, DescriptorSpawnPath,
 };
-use crate::scripting::registry::{
-    ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform,
+use postretro_entities::{
+    ComponentKind, ComponentValue, EntityId, EntityRegistry, EntityTypeDescriptor, MeshDescriptor,
+    Transform,
 };
 
 // --- Fixture constants ------------------------------------------------------
@@ -153,8 +153,8 @@ fn agent() -> AgentComponent {
     AgentComponent::new(0.4, 1.6, 0.3, 3.5)
 }
 
-fn agent_params() -> crate::nav::NavAgentParams {
-    crate::nav::NavAgentParams {
+fn agent_params() -> postretro_foundation::NavAgentParams {
+    postretro_foundation::NavAgentParams {
         radius: 0.4,
         height: 1.6,
         step_height: 0.3,
@@ -253,8 +253,8 @@ fn enemy_descriptor(class: &str) -> EntityTypeDescriptor {
 
 /// A valid `AiDescriptor` — the suppression filter keys only on its PRESENCE, but a
 /// real one mirrors what the parser produces.
-fn ai_descriptor() -> crate::scripting::data_descriptors::AiDescriptor {
-    use crate::scripting::data_descriptors::{AiDescriptor, AiStateNames};
+fn ai_descriptor() -> postretro_foundation::AiDescriptor {
+    use postretro_foundation::{AiDescriptor, AiStateNames};
     AiDescriptor {
         detection_range: 18.0,
         attack_range: 2.0,

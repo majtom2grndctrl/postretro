@@ -22,8 +22,8 @@ use postretro_net::wire::{InputCommand, NetworkId};
 use crate::collision::CollisionWorld;
 use crate::movement::{self, MovementEvents, MovementInput};
 use crate::netcode::wire_convert::input_command_to_sim;
-use crate::scripting::components::player_movement::{MovementState, PlayerMovementComponent};
-use crate::scripting::registry::{EntityId, Transform};
+use postretro_entities::{EntityId, Transform};
+use postretro_foundation::{MovementState, PlayerMovementComponent};
 
 /// Upper bound on retained predicted-tick history. At 60 Hz this is one second of
 /// unacked commands — well beyond any plausible host RTT for the loopback co-op
@@ -455,7 +455,7 @@ mod tests {
 
     use postretro_net::wire::{InputCommand, WireFireButtonState, WireMovementInput};
 
-    use crate::scripting::data_descriptors::{
+    use postretro_foundation::{
         AirParams, BoolOrIr, CapsuleParams, DashParams, FallParams, ForgivenessParams,
         GroundParams, NumberOrIr, PlayerMovementDescriptor, SpeedParams,
     };

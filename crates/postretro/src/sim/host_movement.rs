@@ -18,8 +18,8 @@ use glam::Vec3;
 
 use crate::collision::CollisionWorld;
 use crate::movement::{MovementInput, tick as movement_tick};
-use crate::scripting::components::player_movement::PlayerMovementComponent;
-use crate::scripting::registry::{EntityId, EntityRegistry, Transform};
+use postretro_entities::{EntityId, EntityRegistry, Transform};
+use postretro_foundation::PlayerMovementComponent;
 
 /// Advance the named movement pawns one fixed tick. Snapshots each pawn's component
 /// and position ONCE at the start of the tick, runs `movement::tick` for each, writes
@@ -98,7 +98,7 @@ mod tests {
     use parry3d::math::{Isometry, Point};
     use parry3d::shape::TriMesh;
 
-    use crate::scripting::data_descriptors::{
+    use postretro_foundation::{
         AirParams, CapsuleParams, FallParams, GroundParams, PlayerMovementDescriptor, SpeedParams,
     };
 

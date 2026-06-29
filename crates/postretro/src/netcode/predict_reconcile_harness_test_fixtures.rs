@@ -38,19 +38,17 @@ use crate::collision::CollisionWorld;
 use crate::movement::MovementInput;
 use crate::netcode::{NetworkIdAllocator, host_handle_client_message};
 use crate::scripting::builtins::net_descriptor::materialize_net_local_movement_component;
-use crate::scripting::components::health::HealthComponent;
-use crate::scripting::components::player_movement::PlayerMovementComponent;
-use crate::scripting::data_descriptors::{
-    AirParams, BoolOrIr, CapsuleParams, DashParams, EntityTypeDescriptor, FallParams,
-    ForgivenessParams, GroundParams, HealthDescriptor, NumberOrIr, PlayerMovementDescriptor,
-    SpeedParams,
-};
-use crate::scripting::provenance::{
-    DescriptorComponentKind, DescriptorProvenance, DescriptorSpawnPath,
-};
-use crate::scripting::registry::{EntityId, EntityRegistry, Transform};
 use crate::sim::SimCommand;
 use crate::weapon::FireButtonState;
+use postretro_entities::components::health::HealthComponent;
+use postretro_entities::provenance::{
+    DescriptorComponentKind, DescriptorProvenance, DescriptorSpawnPath,
+};
+use postretro_entities::{EntityId, EntityRegistry, EntityTypeDescriptor, Transform};
+use postretro_foundation::{
+    AirParams, BoolOrIr, CapsuleParams, DashParams, FallParams, ForgivenessParams, GroundParams,
+    HealthDescriptor, NumberOrIr, PlayerMovementComponent, PlayerMovementDescriptor, SpeedParams,
+};
 
 pub(crate) const DT: f32 = 1.0 / 60.0;
 pub(crate) const GRAVITY: f32 = -20.0;

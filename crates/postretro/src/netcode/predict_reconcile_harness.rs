@@ -27,9 +27,9 @@ use super::prediction::{ORDINARY_CORRECTION_MAX_M, TELEPORT_CORRECTION_MIN_M};
 use super::reconcile::reconcile_local_pawn;
 use crate::movement::MovementInput;
 use crate::netcode::host_handle_client_message;
-use crate::scripting::components::player_movement::PlayerMovementComponent;
-use crate::scripting::registry::Transform;
 use crate::sim::SimCommand;
+use postretro_entities::Transform;
+use postretro_foundation::PlayerMovementComponent;
 
 /// The mandated automated harness profile (Task 6 §B), applied in BOTH directions:
 /// 45 ms base + up to 60 ms jitter (a 45..105 ms one-way range, ≈150 ms mean RTT),

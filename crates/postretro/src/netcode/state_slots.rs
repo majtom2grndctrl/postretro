@@ -13,9 +13,8 @@ use postretro_net::state_slots::{
     StateSchema, StateSlotDescriptor, StateSlotId,
 };
 
-use crate::scripting::registry::EntityRegistry;
-use crate::scripting::slot_table::{
-    NumericRange, ReplicationScope, SlotTable, SlotType, SlotValue,
+use postretro_entities::{
+    EntityRegistry, NumericRange, ReplicationScope, SlotTable, SlotType, SlotValue,
 };
 
 /// Version prefix folded into the schema fingerprint. Bump when the canonical byte
@@ -264,8 +263,8 @@ use postretro_net::state_replication::ServerStateReplication;
 use postretro_net::state_slots::{RawStateSlotRecord, WireSlotValue};
 
 use crate::netcode::command_queue::MovementOwners;
-use crate::scripting::components::health::HealthComponent;
-use crate::scripting::registry::EntityId;
+use postretro_entities::EntityId;
+use postretro_entities::components::health::HealthComponent;
 
 /// Host-side replicated-state production: owns the deterministic replicated-slot
 /// schema (built once, lazily, from the live `SlotTable` after mod stores commit)
@@ -736,7 +735,7 @@ fn wire_value_to_slot(value: &WireSlotValue) -> Option<SlotValue> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scripting::slot_table::{SlotOwnership, SlotRecord, SlotSchema};
+    use postretro_entities::{SlotOwnership, SlotRecord, SlotSchema};
 
     fn replicated_number(name: &str, scope: ReplicationScope) -> (String, SlotRecord) {
         let (_ns, slot) = name.split_once('.').unwrap();
@@ -912,8 +911,8 @@ mod tests {
     // Task 3: engine production + client apply glue
     // -----------------------------------------------------------------------
 
-    use crate::scripting::data_descriptors::HealthDescriptor;
-    use crate::scripting::registry::Transform;
+    use postretro_entities::Transform;
+    use postretro_foundation::HealthDescriptor;
 
     const CLIENT_A: u64 = 1;
     const CLIENT_B: u64 = 2;

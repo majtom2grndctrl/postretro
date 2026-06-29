@@ -2,8 +2,8 @@
 // materialization seam for both local and remote entities.
 // See: context/lib/networking.md
 
-use crate::scripting::data_descriptors::EntityTypeDescriptor;
-use crate::scripting::registry::EntityRegistry;
+use postretro_entities::{EntityRegistry, EntityTypeDescriptor};
+use postretro_foundation::NavAgentParams;
 
 use super::client::{ArmedLocalPawn, RemoteEnemyMaterialize};
 
@@ -53,7 +53,7 @@ pub(super) fn materialize_armed_remote_enemy(
     remote: &RemoteEnemyMaterialize,
     descriptors: &[EntityTypeDescriptor],
     registry: &mut EntityRegistry,
-    agent_params: Option<crate::nav::NavAgentParams>,
+    agent_params: Option<NavAgentParams>,
 ) -> bool {
     crate::scripting::builtins::net_descriptor::materialize_net_remote_enemy_presentation(
         &remote.entity_class,
@@ -67,11 +67,10 @@ pub(super) fn materialize_armed_remote_enemy(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::nav::NavAgentParams;
-    use crate::scripting::components::mesh::{AnimationState, InterruptPolicy, MeshComponent};
-    use crate::scripting::data_descriptors::MeshDescriptor;
-    use crate::scripting::registry::{ComponentKind, EntityId, Transform};
     use glam::{Quat, Vec3};
+    use postretro_entities::components::mesh::{AnimationState, InterruptPolicy, MeshComponent};
+    use postretro_entities::{ComponentKind, EntityId, MeshDescriptor, Transform};
+    use postretro_foundation::NavAgentParams;
     use std::collections::HashMap;
 
     /// A minimal descriptor carrying only a two-state animated mesh, mirroring the

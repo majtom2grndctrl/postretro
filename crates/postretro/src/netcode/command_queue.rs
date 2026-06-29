@@ -37,8 +37,8 @@ use postretro_net::wire::InputCommand;
 
 use crate::netcode::prediction::client_tick_le;
 use crate::netcode::wire_convert::{input_command_to_sim, sanitize_input_command};
-use crate::scripting::registry::EntityId;
 use crate::sim::SimCommand;
+use postretro_entities::EntityId;
 
 /// Host-side movement-authority owner map: `EntityId -> owning client id`. The
 /// engine-side metadata snapshot production stamps onto each owned pawn's

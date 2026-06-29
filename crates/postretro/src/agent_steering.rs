@@ -16,10 +16,8 @@ use glam::Vec3;
 use crate::agent::{AgentCapsule, collide_and_slide};
 use crate::collision::CollisionWorld;
 use crate::nav::{NavGraph, distance_xz};
-use crate::scripting::components::agent::AgentComponent;
-use crate::scripting::registry::{
-    ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform,
-};
+use postretro_entities::components::agent::AgentComponent;
+use postretro_entities::{ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform};
 
 // Re-export the one-shot path query as part of the steering module's surface, so
 // a caller that wants a path without owning an agent imports it from here rather

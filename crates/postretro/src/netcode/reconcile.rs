@@ -21,8 +21,8 @@ use crate::netcode::prediction::replay;
 use crate::netcode::prediction::{
     ArmedPawn, ClientPrediction, CorrectionClass, classify_correction,
 };
-use crate::scripting::components::player_movement::PlayerMovementComponent;
-use crate::scripting::registry::{EntityId, EntityRegistry, Transform};
+use postretro_entities::{EntityId, EntityRegistry, Transform};
+use postretro_foundation::PlayerMovementComponent;
 
 /// Reconcile the local predicted pawn against the authoritative record carried in a
 /// snapshot. Returns the [`CorrectionClass`] of the applied correction, or `None`
@@ -191,7 +191,7 @@ mod tests {
     use crate::netcode::prediction::{
         DASH_CORRECTION_MAX_M, ORDINARY_CORRECTION_MAX_M, TELEPORT_CORRECTION_MIN_M,
     };
-    use crate::scripting::data_descriptors::{
+    use postretro_foundation::{
         AirParams, BoolOrIr, CapsuleParams, DashParams, FallParams, ForgivenessParams,
         GroundParams, NumberOrIr, PlayerMovementDescriptor, SpeedParams,
     };

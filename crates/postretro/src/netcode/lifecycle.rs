@@ -24,14 +24,13 @@
 
 use std::collections::HashMap;
 
+use postretro_entities::{EntityId, EntityRegistry, EntityTypeDescriptor, Transform};
+use postretro_foundation::NavAgentParams;
 use postretro_net::replication::ServerReplication;
 use postretro_net::wire::NetworkId;
 
-use crate::nav::NavAgentParams;
 use crate::scripting::builtins::net_descriptor::spawn_net_slot_pawn;
-use crate::scripting::data_descriptors::EntityTypeDescriptor;
 use crate::scripting::map_entity::MapEntity;
-use crate::scripting::registry::{EntityId, EntityRegistry, Transform};
 
 use super::{NetworkIdAllocator, ReplicableSet};
 
@@ -520,13 +519,12 @@ mod tests {
 
     // --- Descriptor-backed net-slot spawn (M15 Phase 3 Task 4) ----------------
 
-    use crate::scripting::components::player_movement::PlayerMovementComponent;
-    use crate::scripting::data_descriptors::{
-        AirParams, CapsuleParams, EntityTypeDescriptor, FallParams, GroundParams,
+    use postretro_entities::provenance::{DescriptorProvenance, DescriptorSpawnPath};
+    use postretro_entities::{ComponentKind, EntityTypeDescriptor};
+    use postretro_foundation::{
+        AirParams, CapsuleParams, FallParams, GroundParams, PlayerMovementComponent,
         PlayerMovementDescriptor, SpeedParams,
     };
-    use crate::scripting::provenance::{DescriptorProvenance, DescriptorSpawnPath};
-    use crate::scripting::registry::ComponentKind;
 
     /// A minimal `"player"` descriptor carrying a movement component — the default
     /// `entity_class` `spawn_net_slot_pawn` looks up.

@@ -30,7 +30,7 @@ use glam::{Quat, Vec3};
 
 use postretro_net::wire::NetworkId;
 
-use crate::scripting::registry::Transform;
+use postretro_entities::Transform;
 
 /// Lower bound of the interpolation delay: 50 ms expressed in microseconds.
 ///

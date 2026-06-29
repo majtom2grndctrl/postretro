@@ -12,7 +12,6 @@ use parry3d::shape::TriMesh;
 use super::{SimCommand, simulate_tick};
 use crate::collision::CollisionWorld;
 use crate::movement::MovementInput;
-use crate::scripting::reaction_dispatch::ProgressTracker;
 use crate::scripting_systems::hit_zones::HitZoneStore;
 use crate::weapon::FireButtonState;
 use postretro_entities::components::weapon::WeaponComponent;
@@ -22,6 +21,7 @@ use postretro_foundation::{
     PlayerMovementComponent, PlayerMovementDescriptor, ResolutionMode, SpeedParams,
     WeaponDescriptor,
 };
+use postretro_scripting_core::reaction_dispatch::ProgressTracker;
 
 const TICK_COUNT: usize = 600;
 const DT: f32 = 1.0 / 60.0;

@@ -90,24 +90,21 @@ use crate::camera::Camera;
 use crate::frame_timing::{FrameRateMeter, FrameTiming, InterpolableState};
 use crate::input::{Action, ButtonState, DiagnosticAction, InputFocus};
 use crate::render::Renderer;
-use crate::scripting::reaction_dispatch::{fire_named_event, fire_named_event_with_sequences};
-use crate::scripting::runtime::{Frontend, MenuCamera, ReloadSummary, StagedManifestCommitOutcome};
-use crate::scripting::staged_manifest::{StagedManifestBuildResult, StagedManifestBuildStatus};
 use crate::scripting::state_persistence::{
     STATE_FILE_PATH, collect_persisted_state, save_persisted_state,
 };
 // Session-owned types referenced in `main.rs` only by `#[cfg(test)]` code, so
 // they are gated test-only to keep the bin build warning-free.
-#[cfg(test)]
-use crate::scripting::reaction_dispatch::ProgressTracker;
-#[cfg(test)]
-use crate::scripting::runtime::ScriptRuntime;
 use crate::startup::{
     BootState, FRONTEND_CLEAR_COLOR, InFlightLevelLoad, LevelRequest, LevelSource, LoadOutcome,
     SplashSource, StartupTimings,
 };
 #[cfg(test)]
 use postretro_entities::ScriptCtx;
+#[cfg(test)]
+use postretro_scripting_core::reaction_dispatch::ProgressTracker;
+#[cfg(test)]
+use postretro_scripting_core::runtime::ScriptRuntime;
 // Positional-map-path recovery lives with boot construction; re-exported at the
 // crate root so `crate::resolve_map_path` keeps resolving for the netcode CLI
 // tests. Test-only: the boot path calls it through `startup::session`.
@@ -118,6 +115,16 @@ use crate::visibility::{
 };
 use postretro_entities::SystemReactionCommand;
 use postretro_foundation::ModThemeTokens;
+use postretro_scripting_core::data_descriptors::RegisteredUiTree;
+use postretro_scripting_core::reaction_dispatch::{
+    fire_named_event, fire_named_event_with_sequences,
+};
+use postretro_scripting_core::runtime::{
+    Frontend, MenuCamera, ReloadSummary, StagedManifestCommitOutcome,
+};
+use postretro_scripting_core::staged_manifest::{
+    StagedManifestBuildResult, StagedManifestBuildStatus,
+};
 
 /// Fraction of a vignette reaction's single `durationMs` spent ramping in. The
 /// author supplies one duration (mirroring `flashScreen`); the drain splits it
@@ -128,11 +135,7 @@ const VIGNETTE_RISE_FRACTION: f32 = 0.2;
 fn staged_ui_commit_payload(
     result: &StagedManifestBuildResult,
     outcome: &StagedManifestCommitOutcome,
-) -> Option<(
-    Vec<crate::scripting::data_descriptors::RegisteredUiTree>,
-    ModThemeTokens,
-    Option<Frontend>,
-)> {
+) -> Option<(Vec<RegisteredUiTree>, ModThemeTokens, Option<Frontend>)> {
     if !matches!(outcome, StagedManifestCommitOutcome::Committed { .. }) {
         return None;
     }
@@ -3287,10 +3290,8 @@ impl App {
                         &session.scripting.sequence_registry,
                     )
             };
-            if matches!(
-                outcome,
-                scripting::runtime::StagedManifestCommitOutcome::Committed { .. }
-            ) && self.has_installed_level()
+            if matches!(outcome, StagedManifestCommitOutcome::Committed { .. })
+                && self.has_installed_level()
             {
                 if let Some(session) = self.session.as_ref() {
                     session
@@ -4689,12 +4690,12 @@ mod tests {
     use crate::input::{InputSystem, default_bindings};
     use crate::options::CrouchMode;
     use crate::scripting::primitives::register_all;
-    use crate::scripting::primitives_registry::PrimitiveRegistry;
-    use crate::scripting::runtime::ScriptRuntimeConfig;
     use postretro_foundation::{
         AirParams, CapsuleParams, FallParams, ForgivenessParams, GroundParams,
         PlayerMovementDescriptor, SpeedParams,
     };
+    use postretro_scripting_core::primitives_registry::PrimitiveRegistry;
+    use postretro_scripting_core::runtime::ScriptRuntimeConfig;
 
     // M15 Phase 3.5 Task 5: a connected client skips the clean-exit `state.json` save;
     // single-player and the host still save. `is_connected_client` is `true` only for
@@ -5460,7 +5461,7 @@ mod tests {
         use crate::render::ui::layout::Anchor;
         use crate::render::ui::modal_stack::{ModalStack, ScopeTier};
         use crate::render::ui::tree::CellValues;
-        use crate::scripting::data_descriptors::RegisteredUiTree;
+        use postretro_scripting_core::data_descriptors::RegisteredUiTree;
 
         if !install_scripts_build_next_to_current_exe() {
             eprintln!("skipping: could not install scripts-build next to test binary");
@@ -5943,13 +5944,13 @@ mod tests {
         assert!(!reload_summary_requires_mod_init(ReloadSummary::default()));
     }
 
-    fn staged_tree(name: &str) -> crate::scripting::data_descriptors::RegisteredUiTree {
+    fn staged_tree(name: &str) -> RegisteredUiTree {
         use crate::render::ui::descriptor::{
             Align, AnchoredTree, CaptureMode, ContainerWidget, SpacingValue, Widget,
         };
         use crate::render::ui::layout::Anchor;
 
-        crate::scripting::data_descriptors::RegisteredUiTree {
+        RegisteredUiTree {
             name: name.to_string(),
             tree: AnchoredTree {
                 anchor: Anchor::TopLeft,
@@ -5986,7 +5987,7 @@ mod tests {
             generation,
             mod_root: PathBuf::from("content/dev"),
             status: StagedManifestBuildStatus::Built(Box::new(
-                crate::scripting::staged_manifest::StagedManifest {
+                postretro_scripting_core::staged_manifest::StagedManifest {
                     name: "UiCommit".to_string(),
                     entities: Vec::new(),
                     maps: Vec::new(),
@@ -6000,7 +6001,7 @@ mod tests {
                     frontend: Some(Frontend {
                         menu_tree: "mainMenu".to_string(),
                         background_level: Some("backdrop".to_string()),
-                        camera: crate::scripting::runtime::MenuCamera {
+                        camera: MenuCamera {
                             position: [1.0, 2.0, 3.0],
                             yaw: 0.25,
                             pitch: -0.5,

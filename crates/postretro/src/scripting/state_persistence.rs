@@ -9,7 +9,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::slot_table::{SlotOwnership, SlotRecord, SlotTable, SlotType, SlotValue};
+use postretro_entities::slot_table::{SlotOwnership, SlotRecord, SlotTable, SlotType, SlotValue};
 
 /// Current on-disk state format. Increment only with a defined migration path.
 pub(crate) const CURRENT_STATE_VERSION: u32 = 1;
@@ -272,7 +272,7 @@ fn restored_value(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scripting::slot_table::{NumericRange, SlotSchema};
+    use postretro_entities::slot_table::{NumericRange, ReplicationScope, SlotSchema};
     use tempfile::tempdir;
 
     #[test]
@@ -303,7 +303,7 @@ mod tests {
             persist,
             readonly: false,
             ownership: SlotOwnership::Mod,
-            network: crate::scripting::slot_table::ReplicationScope::None,
+            network: ReplicationScope::None,
         })
     }
 
@@ -540,7 +540,7 @@ mod tests {
                     persist: true,
                     readonly: true,
                     ownership: SlotOwnership::Mod,
-                    network: crate::scripting::slot_table::ReplicationScope::None,
+                    network: ReplicationScope::None,
                 }),
             )
             .unwrap();

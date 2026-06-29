@@ -14,7 +14,7 @@ use super::UiReadSnapshot;
 use super::UiTreeEntry;
 use super::descriptor::{AnchoredTree, CaptureMode};
 use crate::input::UiCaptureMode;
-use crate::scripting::data_descriptors::RegisteredUiTree;
+use postretro_scripting_core::data_descriptors::RegisteredUiTree;
 
 /// Scope tier a registered tree belongs to. Precedence is
 /// **engine < mod < level**: a mod tree registered under a name already held by

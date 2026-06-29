@@ -74,7 +74,7 @@ impl From<MapEntityRecord> for MapEntity {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scripting::conv::EulerDegrees;
+    use postretro_scripting_core::conv::EulerDegrees;
     use std::collections::HashMap;
 
     /// Pins the invariant that `MapEntity::rotation_quat` (radians, YXZ via

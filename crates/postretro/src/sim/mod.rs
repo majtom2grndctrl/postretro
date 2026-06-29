@@ -12,12 +12,12 @@ use crate::agent_steering;
 use crate::collision::CollisionWorld;
 use crate::movement::MovementInput;
 use crate::nav::NavGraph;
-use crate::scripting::reaction_dispatch::ProgressTracker;
 use crate::scripting_systems;
 use crate::scripting_systems::hit_zones::HitZoneStore;
 use crate::weapon::{self, FireButtonState, WeaponFireCommand};
 use postretro_entities::components::health::apply_damage;
 use postretro_entities::{ComponentKind, EntityId, EntityRegistry};
+use postretro_scripting_core::reaction_dispatch::ProgressTracker;
 
 #[derive(Debug, Clone)]
 pub(crate) struct SimCommand {

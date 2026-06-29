@@ -142,7 +142,7 @@ pub(super) fn emit_ts_type(ty: &RegisteredType, out: &mut String) {
     }
 }
 
-pub(super) fn state_ref_ts(
+pub fn state_ref_ts(
     capability: EngineStateCapability,
     value_type: EngineStateValueType<'_>,
 ) -> String {
@@ -178,7 +178,7 @@ fn emit_ts_game_state_node(
     }
 }
 
-pub(super) fn emit_ts_game_state_refs(out: &mut String) {
+pub fn emit_ts_game_state_refs(out: &mut String) {
     let catalog = engine_state_catalog().expect("built-in engine-state catalog must be valid");
     out.push_str(
         "  /** Generated engine-owned state reference tree returned by `getGameState()`. */\n",
@@ -217,7 +217,7 @@ const TS_SDK_LIB_BLOCK: &str = include_str!("templates/sdk_lib.d.ts");
 
 const TS_ROOT_UI_MANIFEST_TYPES: &str = include_str!("templates/root_ui_manifest.d.ts");
 
-pub(super) fn ts_public_root_sdk_lib_block() -> String {
+pub fn ts_public_root_sdk_lib_block() -> String {
     // Task 1 of the UI SDK split makes `sdk/types/postretro.d.ts` the authority
     // for the public root `postretro` module. `sdk/lib/prelude.ts` may still
     // export UI names solely to install QuickJS globals while the compiler strips
@@ -240,6 +240,6 @@ pub(super) fn ts_public_root_sdk_lib_block() -> String {
 
 const TS_UI_SDK_MODULE_BLOCK: &str = include_str!("templates/ui_sdk_module.d.ts");
 
-pub(super) fn ts_ui_sdk_module_block() -> &'static str {
+pub fn ts_ui_sdk_module_block() -> &'static str {
     TS_UI_SDK_MODULE_BLOCK
 }

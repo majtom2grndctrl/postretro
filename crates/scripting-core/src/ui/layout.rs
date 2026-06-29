@@ -24,9 +24,7 @@ pub enum Anchor {
 }
 
 impl Anchor {
-    /// Mirror of `layout::Anchor::ALL`. Keep in lockstep with layout.rs,
-    /// including the `#[cfg(test)]` gate (test-only drift-guard support).
-    #[cfg(test)]
+    /// Mirror of `layout::Anchor::ALL`. Used by downstream drift guards.
     pub const ALL: &[Anchor] = &[
         Anchor::TopLeft,
         Anchor::Top,
@@ -39,9 +37,7 @@ impl Anchor {
         Anchor::BottomRight,
     ];
 
-    /// Mirror of `layout::Anchor::wire`. Exhaustive `match` (no `_` arm) — keep
-    /// in lockstep with layout.rs, including the `#[cfg(test)]` gate.
-    #[cfg(test)]
+    /// Mirror of `layout::Anchor::wire`. Exhaustive `match` (no `_` arm).
     pub fn wire(self) -> &'static str {
         match self {
             Anchor::TopLeft => "topLeft",

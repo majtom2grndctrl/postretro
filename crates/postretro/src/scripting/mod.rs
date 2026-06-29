@@ -84,10 +84,7 @@ pub(crate) mod staged_manifest {
 pub(crate) mod state_crossings;
 pub(crate) mod state_persistence;
 pub(crate) mod state_store;
-pub(crate) mod typedef {
-    #![allow(unused_imports)]
-    pub(crate) use postretro_scripting_core::typedef::*;
-}
+pub(crate) mod typedef;
 pub(crate) mod value_types;
 
 // Dev-mode hot reload. Compiled in debug builds only; the module itself has a

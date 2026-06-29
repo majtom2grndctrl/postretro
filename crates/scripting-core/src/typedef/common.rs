@@ -46,7 +46,7 @@ fn warned_once(key: &str) -> bool {
 ///
 /// Unknown types fall through as their short name and produce a one-time
 /// `log::warn!` so new types added in later plans surface loudly.
-pub(super) fn rust_to_ts(ty_name: &str) -> String {
+pub fn rust_to_ts(ty_name: &str) -> String {
     let short = short_name(ty_name);
 
     // `Result<T, ScriptError>` collapses to `T`: the error is a thrown
@@ -194,7 +194,7 @@ pub(super) fn luau_field_parts<'a>(name: &'a str, ty_name: &str) -> (&'a str, St
 }
 
 /// Map a Rust type name to its Luau spelling. Mirrors `rust_to_ts`.
-pub(super) fn rust_to_luau(ty_name: &str) -> String {
+pub fn rust_to_luau(ty_name: &str) -> String {
     let short = short_name(ty_name);
 
     if let Some(inner) = strip_generic(&short, "Result") {

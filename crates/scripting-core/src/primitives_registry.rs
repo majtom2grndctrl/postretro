@@ -169,14 +169,14 @@ impl PrimitiveRegistry {
     /// resolve the trait at the call site:
     ///
     /// ```compile_fail
-    /// # use postretro::scripting::primitives_registry::{PrimitiveRegistry, ContextScope};
+    /// # use postretro_scripting_core::primitives_registry::{PrimitiveRegistry, ContextScope};
     /// let mut r = PrimitiveRegistry::new();
     /// // Returns bare `u32` instead of `Result<u32, ScriptError>` — rejected.
     /// r.register("bad", |x: u32| -> u32 { x }).scope(ContextScope::Both).finish();
     /// ```
     ///
     /// ```compile_fail
-    /// # use postretro::scripting::primitives_registry::{PrimitiveRegistry, ContextScope};
+    /// # use postretro_scripting_core::primitives_registry::{PrimitiveRegistry, ContextScope};
     /// let mut r = PrimitiveRegistry::new();
     /// // Wrong error type — `Result<_, String>` is rejected; only `ScriptError`.
     /// r.register("bad", |x: u32| -> Result<u32, String> { Ok(x) })

@@ -140,7 +140,7 @@ pub(super) fn emit_luau_type(ty: &RegisteredType, out: &mut String) {
     }
 }
 
-pub(super) fn state_ref_luau(
+pub fn state_ref_luau(
     capability: EngineStateCapability,
     value_type: EngineStateValueType<'_>,
 ) -> String {
@@ -176,7 +176,7 @@ fn emit_luau_game_state_node(
     }
 }
 
-pub(super) fn emit_luau_game_state_refs(out: &mut String) {
+pub fn emit_luau_game_state_refs(out: &mut String) {
     let catalog = engine_state_catalog().expect("built-in engine-state catalog must be valid");
     out.push_str("--- Generated engine-owned state reference tree returned by `getGameState()`.\n");
     out.push_str("export type GameStateRefs = ");
@@ -213,7 +213,7 @@ const LUAU_SDK_LIB_BLOCK: &str = include_str!("templates/sdk_lib.luau");
 
 const LUAU_VIRTUAL_MODULE_TYPES: &str = include_str!("templates/virtual_module.luau");
 
-pub(super) fn luau_public_sdk_lib_block() -> String {
+pub fn luau_public_sdk_lib_block() -> String {
     // Runtime still evaluates the UI SDK chunks so `require("postretro/ui")`
     // can be populated from the internal export inventory. The root Luau
     // author-visible surface no longer promotes UI entries into `_G`, so the
@@ -248,6 +248,7 @@ pub(super) fn luau_public_sdk_lib_block() -> String {
     remove_doc_and_decl_line(&mut block, "declare function createLocalState");
     remove_doc_and_decl_line(&mut block, "declare function Switch");
     remove_decl_line(&mut block, "declare ui:");
+    block.push('\n');
     block.push_str(LUAU_VIRTUAL_MODULE_TYPES);
     block
 }

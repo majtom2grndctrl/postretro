@@ -1,6 +1,6 @@
 # Scripting-Core Extraction + Primitive-Handler Relocation
 
-> **Status:** ready — review-draft-spec and review-implementability converged
+> **Status:** in-progress — implementation complete; final review follow-up pending
 > **Related:** `context/plans/done/engine-data-floor/` (precondition — the floor this builds on, now shipped) · `context/lib/scripting.md` §12 · `context/lib/build_pipeline.md` · `context/lib/development_guide.md` · `context/plans/drafts/compile-time-reduction/` · sibling `research.md`
 
 ## Goal

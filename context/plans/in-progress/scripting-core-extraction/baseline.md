@@ -91,3 +91,51 @@ VM sys crate rows in the report:
 Use this baseline for scripting-core extraction before/after claims:
 warm no-op check `0.54s`, light primitive touch rebuild `2.65s`, and
 timings-build active `postretro` binary compile `38.3s`.
+
+---
+
+## Post-Extraction Observation
+
+Captured: 2026-06-29 03:43 PDT.
+
+Context:
+- The earlier review-fix pass ran `cargo clean` to recover local disk space, so
+  the first post-extraction check was a cold cache warm-up and is not used for
+  the comparison.
+- The relocated handler touched for the firewall gate was
+  `crates/postretro/src/lighting/script_primitives.rs`.
+
+Commands:
+
+```bash
+/usr/bin/time -p cargo check -p postretro
+touch crates/postretro/src/lighting/script_primitives.rs
+/usr/bin/time -p cargo check -p postretro
+/usr/bin/time -p cargo build -p postretro --timings
+```
+
+Results:
+
+| Step | Cargo result | `/usr/bin/time` |
+|------|--------------|-----------------|
+| Warm `cargo check -p postretro` | `Finished ... in 0.44s` | `real 0.52`, `user 0.32`, `sys 0.19` |
+| Relocated lighting primitive touch rebuild | `Checking postretro v0.1.0 ...`; `Finished ... in 1.69s` | `real 1.78`, `user 1.38`, `sys 0.49` |
+| `cargo build -p postretro --timings` | `Compiling postretro v0.1.0 ...`; `Finished ... in 25.45s` | `real 25.58`, `user 165.67`, `sys 12.67` |
+
+Timing report:
+
+```text
+target/cargo-timings/cargo-timing-20260629T104323743Z-892a9f914c1db502.html
+```
+
+Firewall observation:
+- Touching the relocated lighting primitive rebuilt only `postretro`.
+- `postretro-scripting-core` did not rebuild.
+- The VM sys crates (`rquickjs-sys`, `mlua-sys`, `luau0-src`) did not rebuild.
+- `glyphon`, `wgpu`, `kira`, and `winit` did not rebuild in the touched-handler
+  check.
+
+Before/after:
+- Warm no-op check: `0.54s` before, `0.52s` after.
+- Light primitive edit-loop check: `2.65s` before, `1.78s` after.
+- Timings build: `39.18s` before, `25.58s` after.

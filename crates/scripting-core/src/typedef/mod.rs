@@ -16,9 +16,9 @@ use self::ts::{
 };
 use crate::primitives_registry::{ParamInfo, PrimitiveRegistry};
 
-mod common;
-mod luau;
-mod ts;
+pub mod common;
+pub mod luau;
+pub mod ts;
 
 pub fn generate_typescript(registry: &PrimitiveRegistry) -> String {
     let mut out = String::new();

@@ -1,20 +1,98 @@
 // Standalone generator for `postretro.d.ts` / `postretro.d.luau`.
 // See: context/lib/scripting.md
 //
-// `postretro` has no library target, so sibling modules in `src/scripting/`
-// aren't reachable through `crate::...` from a `src/bin/` entry. The `#[path]`
-// include below re-uses the engine's `scripting` module tree in this bin's
-// own crate root. Only `scripting` is pulled in — no GPU/renderer modules.
+// `postretro` has no library target, so runtime-only typedef and primitive
+// modules are included directly. Extracted floor types resolve through their
+// real crates, which keeps the SDK drift test exercising the crate boundary.
 
 #![deny(unsafe_code)]
 #![allow(dead_code)]
-// This generator re-uses engine module trees via `#[path]` only to name-resolve
-// the scripting types; many re-exports (e.g. `nav::find_path`) have no caller in
-// this bin even though they have a live caller in the engine binary.
+// This generator includes runtime primitive/typedef glue only to emit the SDK;
+// many runtime-only helpers have no caller in this bin even though they have a
+// live caller in the engine binary.
 #![allow(unused_imports)]
 
-#[path = "../scripting/mod.rs"]
-mod scripting;
+#[path = "../scripting"]
+mod scripting {
+    pub(crate) mod components {
+        pub(crate) use postretro_entities::components::*;
+    }
+    pub(crate) mod ctx {
+        pub(crate) use postretro_entities::ctx::*;
+    }
+    pub(crate) mod data_descriptors {
+        pub(crate) use postretro_entities::data_descriptors::*;
+        pub(crate) use postretro_foundation::data_descriptors::*;
+
+        #[derive(Debug, Default)]
+        pub(crate) struct Frontend;
+    }
+    pub(crate) mod data_registry {
+        pub(crate) use postretro_entities::data_registry::*;
+    }
+    pub(crate) mod engine_state_catalog {
+        pub(crate) use postretro_entities::engine_state_catalog::*;
+    }
+    pub(crate) mod error {
+        pub(crate) use postretro_entities::scripting::error::*;
+    }
+    pub(crate) mod foundation_pods {
+        pub(crate) use postretro_foundation::foundation_pods::*;
+    }
+    pub(crate) mod registry {
+        pub(crate) use postretro_entities::registry::*;
+    }
+    pub(crate) mod slot_table {
+        pub(crate) use postretro_entities::slot_table::*;
+    }
+    pub(crate) mod value_types {
+        pub(crate) use postretro_foundation::value_types::*;
+    }
+
+    pub(crate) mod conv;
+    #[cfg(test)]
+    pub(crate) mod game_state_refs;
+    #[cfg(test)]
+    pub(crate) mod luau;
+    #[cfg(test)]
+    pub(crate) mod luau_prelude;
+    #[cfg(test)]
+    pub(crate) mod luau_require;
+    #[cfg(test)]
+    pub(crate) mod luau_virtual_modules;
+    pub(crate) mod primitives;
+    pub(crate) mod primitives_registry;
+    #[cfg(test)]
+    pub(crate) mod quickjs;
+    pub(crate) mod sequence;
+    #[cfg(test)]
+    pub(crate) mod state_crossings;
+    pub(crate) mod typedef;
+
+    pub(crate) mod runtime {
+        use postretro_entities::{EntityTypeDescriptor, ScopedCrossing, ScopedReaction};
+        use postretro_foundation::{ModFontAssets, ModMapEntry, ModThemeTokens};
+
+        use super::slot_table::StoreDeclarationSet;
+
+        #[derive(Debug, Default)]
+        pub(crate) struct RegisteredUiTree;
+
+        #[derive(Debug, Default)]
+        pub(crate) struct ModManifestResult {
+            pub(crate) name: String,
+            pub(crate) entities: Vec<EntityTypeDescriptor>,
+            pub(crate) ui_trees: Vec<RegisteredUiTree>,
+            pub(crate) theme: ModThemeTokens,
+            pub(crate) frontend: Option<super::data_descriptors::Frontend>,
+            pub(crate) fonts: ModFontAssets,
+            pub(crate) maps: Vec<ModMapEntry>,
+            pub(crate) reactions: Vec<ScopedReaction>,
+            pub(crate) crossings: Vec<ScopedCrossing>,
+            pub(crate) store_declarations: StoreDeclarationSet,
+        }
+    }
+}
 
 // `scripting::data_descriptors`'s UI widget-tree bridge (M13 G1a Task 5) reads
 // VM values into `crate::render::ui::{descriptor, layout::Anchor, style_ranges}`

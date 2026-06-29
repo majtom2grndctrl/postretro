@@ -1,5 +1,5 @@
 // Entity-side descriptor validators. These construct entity-resident
-// descriptor types and therefore stay above the future foundation layer.
+// descriptor types and therefore stay above the foundation layer.
 // See: context/lib/scripting.md §12 (Crate Architecture)
 
 use super::super::{CrossingCondition, CrossingDescriptor, DescriptorError};

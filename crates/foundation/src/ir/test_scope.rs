@@ -91,6 +91,12 @@ impl StubScope {
     }
 }
 
+impl Default for StubScope {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BindingScope for StubScope {
     type InputHandle = usize;
     type OutputHandle = usize;

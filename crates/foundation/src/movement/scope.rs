@@ -49,9 +49,9 @@ pub struct MovementScope {
     values: [IrValue; 6],
 }
 
-// `gen_script_types` (bin/gen_script_types.rs) compiles this file standalone via a
-// `#[path]` shim where `movement/mod.rs` is absent, so `refresh` is dead code in that
-// compilation unit. The allow suppresses that warning without touching other builds.
+// Some typedef and descriptor-validation builds bind the movement vocabulary
+// without ticking a live component, so `refresh` can be dead code there. The
+// allow suppresses that warning without touching runtime builds.
 #[cfg_attr(not(test), allow(dead_code))]
 impl MovementScope {
     /// A scope with no live values, for declaration-time validation. Bind only

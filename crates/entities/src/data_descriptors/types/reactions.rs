@@ -1,12 +1,12 @@
 // Data-context descriptors: reaction & crossing descriptor types.
 // See: context/lib/scripting.md
 
-use crate::scripting::registry::EntityId;
+use crate::registry::EntityId;
 
 /// Variants of a single reaction's behavior body. The `name` lives on the
 /// wrapping [`NamedReaction`]; this enum captures only the descriptor shape.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum ReactionDescriptor {
+pub enum ReactionDescriptor {
     Progress(ProgressDescriptor),
     Primitive(PrimitiveDescriptor),
     /// Ordered list of (entity, sequenced-primitive, args) steps. Steps fire
@@ -17,19 +17,19 @@ pub(crate) enum ReactionDescriptor {
 
 /// One step in a `sequence` reaction.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct SequenceStep {
-    pub(crate) id: EntityId,
-    pub(crate) primitive: String,
-    pub(crate) args: serde_json::Value,
+pub struct SequenceStep {
+    pub id: EntityId,
+    pub primitive: String,
+    pub args: serde_json::Value,
 }
 
 /// Threshold reaction: counts kills against a tag and fires an event when the
 /// kill ratio reaches `at`.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct ProgressDescriptor {
-    pub(crate) tag: String,
-    pub(crate) at: f32,
-    pub(crate) fire: String,
+pub struct ProgressDescriptor {
+    pub tag: String,
+    pub at: f32,
+    pub fire: String,
 }
 
 /// Primitive-action reaction. One descriptor shape, two execution arms (M13
@@ -44,19 +44,19 @@ pub(crate) struct ProgressDescriptor {
 /// empty JSON object when the descriptor omits the field, so primitives that
 /// take no args parse cleanly.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct PrimitiveDescriptor {
-    pub(crate) primitive: String,
+pub struct PrimitiveDescriptor {
+    pub primitive: String,
     /// Entity tag to target. `None` ⇒ system-targeted (no entities).
-    pub(crate) tag: Option<String>,
-    pub(crate) on_complete: Option<String>,
-    pub(crate) args: serde_json::Value,
+    pub tag: Option<String>,
+    pub on_complete: Option<String>,
+    pub args: serde_json::Value,
 }
 
 /// A reaction descriptor paired with the event name it is registered under.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct NamedReaction {
-    pub(crate) name: String,
-    pub(crate) descriptor: ReactionDescriptor,
+pub struct NamedReaction {
+    pub name: String,
+    pub descriptor: ReactionDescriptor,
 }
 
 /// The condition half of a state-crossing watcher (M13 HUD dynamics). A
@@ -66,7 +66,7 @@ pub(crate) struct NamedReaction {
 /// against the slot's `current / max`, so a registration with no `max`
 /// (default `1.0`) degrades to a raw-value comparison.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) enum CrossingCondition {
+pub enum CrossingCondition {
     /// Fires on a downward crossing: `prev >= threshold && cur < threshold`.
     Below { threshold: f32 },
     /// Fires on an upward crossing: `prev <= threshold && cur > threshold`.
@@ -83,9 +83,9 @@ pub(crate) enum CrossingCondition {
 /// `max` is the registration's denominator: thresholds are fractions of it.
 /// It defaults to `1.0` (raw-value comparison) when the registration omits it.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct CrossingDescriptor {
-    pub(crate) slot: String,
-    pub(crate) condition: CrossingCondition,
-    pub(crate) max: f32,
-    pub(crate) fire: Vec<String>,
+pub struct CrossingDescriptor {
+    pub slot: String,
+    pub condition: CrossingCondition,
+    pub max: f32,
+    pub fire: Vec<String>,
 }

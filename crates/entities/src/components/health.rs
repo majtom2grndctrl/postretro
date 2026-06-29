@@ -9,44 +9,44 @@ use std::collections::HashMap;
 use glam::Vec3;
 use serde::{Deserialize, Serialize};
 
-use crate::scripting::data_descriptors::HealthDescriptor;
-use crate::scripting::registry::{ComponentKind, EntityId, EntityRegistry};
-use crate::weapon::DamagePayload;
+use crate::data_descriptors::HealthDescriptor;
+use crate::registry::{ComponentKind, EntityId, EntityRegistry};
+use postretro_foundation::DamagePayload;
 
 /// One world-aligned AABB hitbox, fixed per archetype. Health-bearing entities
 /// are hitscan-targetable when they carry this hitbox or use a zone-bearing
 /// skinned model. `offset` shifts the box center from the entity's
 /// `Transform.position`; entity rotation is ignored.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub(crate) struct Hitbox {
-    pub(crate) half_extents: Vec3,
-    pub(crate) offset: Vec3,
+pub struct Hitbox {
+    pub half_extents: Vec3,
+    pub offset: Vec3,
 }
 
 // Not `Copy`: `zone_multipliers` carries a heap-backed `HashMap`, so
 // `HealthComponent` clones rather than copies. (`max`/`current`/`hitbox` stay
 // scalar; the map is the sole heap field.)
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub(crate) struct HealthComponent {
-    pub(crate) max: f32,
-    pub(crate) current: f32,
-    pub(crate) hitbox: Option<Hitbox>,
+pub struct HealthComponent {
+    pub max: f32,
+    pub current: f32,
+    pub hitbox: Option<Hitbox>,
     /// One-shot latch: set when a persisting zero-HP player's death is reported
     /// so the `playerDied` event fires exactly once. The death sweep
     /// (`systems/health.rs`) is this field's only writer; nothing here mutates it.
     #[serde(default)]
-    pub(crate) death_handled: bool,
+    pub death_handled: bool,
     /// Per-skeletal-zone damage multipliers, tag → factor, materialized from the
     /// descriptor. The damage site scales the payload by `zone_multipliers[tag]`
     /// for the struck zone (absent zone OR absent entry ⇒ `1.0`). Reseeded on
     /// hot reload so multiplier edits land on live entities without respawn.
     #[serde(default)]
-    pub(crate) zone_multipliers: HashMap<String, f32>,
+    pub zone_multipliers: HashMap<String, f32>,
 }
 
 impl HealthComponent {
     /// Materialize from a descriptor at spawn. `current` initializes to `max`.
-    pub(crate) fn from_descriptor(desc: &HealthDescriptor) -> Self {
+    pub fn from_descriptor(desc: &HealthDescriptor) -> Self {
         Self {
             max: desc.max,
             current: desc.max,
@@ -64,7 +64,7 @@ impl HealthComponent {
     /// reduction cannot leave HP above the cap. `death_handled` is live state
     /// and is preserved. The reseeded multiplier map carries the edit onto live
     /// entities without a respawn.
-    pub(crate) fn refresh_from_descriptor(&mut self, desc: &HealthDescriptor) {
+    pub fn refresh_from_descriptor(&mut self, desc: &HealthDescriptor) {
         self.max = desc.max;
         self.current = self.current.min(desc.max);
         self.hitbox = desc.hitbox.as_ref().map(|h| Hitbox {
@@ -89,7 +89,7 @@ impl HealthComponent {
 /// Shared by the `player.health` slot-range producers: the level-install path
 /// (attaching `[0, max]` at materialization) and the hot-reload range-follow
 /// hook both resolve the pawn the same way.
-pub(crate) fn pawn_with_health(registry: &EntityRegistry) -> Option<(EntityId, HealthComponent)> {
+pub fn pawn_with_health(registry: &EntityRegistry) -> Option<(EntityId, HealthComponent)> {
     if let Some(pawn) = registry.local_player_pawn() {
         if matches!(
             registry.has_component_kind(pawn, ComponentKind::PlayerMovement),
@@ -118,7 +118,7 @@ pub(crate) fn pawn_with_health(registry: &EntityRegistry) -> Option<(EntityId, H
 ///
 /// Damage arrives only as a [`DamagePayload`] (never a bare scalar); spatial
 /// info rides beside the payload, never inside it.
-pub(crate) fn apply_damage(registry: &mut EntityRegistry, id: EntityId, payload: &DamagePayload) {
+pub fn apply_damage(registry: &mut EntityRegistry, id: EntityId, payload: &DamagePayload) {
     let Ok(health) = registry.get_component::<HealthComponent>(id) else {
         return;
     };
@@ -132,8 +132,8 @@ pub(crate) fn apply_damage(registry: &mut EntityRegistry, id: EntityId, payload:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scripting::data_descriptors::HitboxDescriptor;
-    use crate::scripting::registry::Transform;
+    use crate::data_descriptors::HitboxDescriptor;
+    use crate::registry::Transform;
 
     fn descriptor(max: f32) -> HealthDescriptor {
         HealthDescriptor {
@@ -279,8 +279,8 @@ mod tests {
 
     #[test]
     fn pawn_with_health_does_not_fallback_when_marked_movement_pawn_lacks_health() {
-        use crate::scripting::components::player_movement::PlayerMovementComponent;
-        use crate::scripting::data_descriptors::{
+        use crate::components::player_movement::PlayerMovementComponent;
+        use crate::data_descriptors::{
             AirParams, CapsuleParams, FallParams, GroundParams, PlayerMovementDescriptor,
             SpeedParams,
         };

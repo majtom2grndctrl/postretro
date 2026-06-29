@@ -9,12 +9,12 @@ use serde::{Deserialize, Serialize};
 /// CPU-side only at this stage — the GPU `SpriteInstance` layout has no color
 /// channel yet (documented as a non-goal in the plan).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub(crate) struct SpriteVisual {
-    pub(crate) sprite: String,
-    pub(crate) size: f32,
-    pub(crate) opacity: f32,
-    pub(crate) rotation: f32,
-    pub(crate) tint: [f32; 3],
+pub struct SpriteVisual {
+    pub sprite: String,
+    pub size: f32,
+    pub opacity: f32,
+    pub rotation: f32,
+    pub tint: [f32; 3],
 }
 
 #[cfg(test)]

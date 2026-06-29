@@ -5,52 +5,52 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::scripting::conv::Vec3Lit;
 use crate::scripting::error::ScriptError;
+use postretro_foundation::Vec3Lit;
 
 /// Shared lifetime curve (size / opacity over lifetime). `Arc<[f32]>` so the
 /// per-spawn path and the per-tick sim snapshot hand particles a cheap
 /// reference-counted handle instead of deep-cloning the sample `Vec`. Curves are
 /// immutable once authored; reactions that change a curve install a fresh `Arc`
 /// rather than mutating in place, so sharing across many live particles is safe.
-pub(crate) type LifetimeCurve = Arc<[f32]>;
+pub type LifetimeCurve = Arc<[f32]>;
 
 /// Per-emitter spin tween. When attached, the emitter bridge advances elapsed
 /// time and writes interpolated samples from `rate_curve` into
 /// [`BillboardEmitterComponent::spin_rate`] over `duration` seconds.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub(crate) struct SpinAnimation {
-    pub(crate) duration: f32,
-    pub(crate) rate_curve: Vec<f32>,
+pub struct SpinAnimation {
+    pub duration: f32,
+    pub rate_curve: Vec<f32>,
 }
 
 /// Emitter configuration carried by the parent ECS entity. The bridge reads
 /// this each tick to spawn particle entities; reactions mutate fields on it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) struct BillboardEmitterComponent {
-    pub(crate) rate: f32,
-    pub(crate) burst: Option<u32>,
-    pub(crate) spread: f32,
-    pub(crate) lifetime: f32,
-    pub(crate) velocity: [f32; 3],
-    pub(crate) buoyancy: f32,
-    pub(crate) drag: f32,
-    pub(crate) size_over_lifetime: LifetimeCurve,
-    pub(crate) opacity_over_lifetime: LifetimeCurve,
-    pub(crate) color: [f32; 3],
-    pub(crate) sprite: String,
-    pub(crate) spin_rate: f32,
-    pub(crate) spin_animation: Option<SpinAnimation>,
+pub struct BillboardEmitterComponent {
+    pub rate: f32,
+    pub burst: Option<u32>,
+    pub spread: f32,
+    pub lifetime: f32,
+    pub velocity: [f32; 3],
+    pub buoyancy: f32,
+    pub drag: f32,
+    pub size_over_lifetime: LifetimeCurve,
+    pub opacity_over_lifetime: LifetimeCurve,
+    pub color: [f32; 3],
+    pub sprite: String,
+    pub spin_rate: f32,
+    pub spin_animation: Option<SpinAnimation>,
 }
 
 /// Script-side wire shape for [`SpinAnimation`]. `rate_curve` is a plain
 /// `Vec<f32>`; only `duration` needs validation distinct from the storage
 /// struct.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub(crate) struct SpinAnimationLit {
-    pub(crate) duration: f32,
-    pub(crate) rate_curve: Vec<f32>,
+pub struct SpinAnimationLit {
+    pub duration: f32,
+    pub rate_curve: Vec<f32>,
 }
 
 /// Script-side wire shape: `velocity` and `color` cross as `Vec3Lit`
@@ -58,30 +58,30 @@ pub(crate) struct SpinAnimationLit {
 /// into `[f32; 3]` for storage.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) struct BillboardEmitterComponentLit {
-    pub(crate) rate: f32,
+pub struct BillboardEmitterComponentLit {
+    pub rate: f32,
     #[serde(default)]
-    pub(crate) burst: Option<u32>,
-    pub(crate) spread: f32,
-    pub(crate) lifetime: f32,
-    pub(crate) velocity: Vec3Lit,
-    pub(crate) buoyancy: f32,
-    pub(crate) drag: f32,
-    pub(crate) size_over_lifetime: Vec<f32>,
-    pub(crate) opacity_over_lifetime: Vec<f32>,
-    pub(crate) color: Vec3Lit,
-    pub(crate) sprite: String,
-    pub(crate) spin_rate: f32,
+    pub burst: Option<u32>,
+    pub spread: f32,
+    pub lifetime: f32,
+    pub velocity: Vec3Lit,
+    pub buoyancy: f32,
+    pub drag: f32,
+    pub size_over_lifetime: Vec<f32>,
+    pub opacity_over_lifetime: Vec<f32>,
+    pub color: Vec3Lit,
+    pub sprite: String,
+    pub spin_rate: f32,
     #[serde(default)]
-    pub(crate) spin_animation: Option<SpinAnimationLit>,
+    pub spin_animation: Option<SpinAnimationLit>,
 }
 
 impl SpinAnimationLit {
     /// Validate-and-convert path used by reaction-side dispatchers that read
     /// JSON descriptors. Returns a plain `String` reason rather than the
     /// scripting-layer `ScriptError` because the reaction surface is its own
-    /// error type ([`crate::scripting::reactions::ReactionError`]).
-    pub(crate) fn validate_into_public(self) -> Result<SpinAnimation, String> {
+    /// error type ([`crate::reactions::ReactionError`]).
+    pub fn validate_into_public(self) -> Result<SpinAnimation, String> {
         self.validate_into().map_err(|e| match e {
             ScriptError::InvalidArgument { reason } => reason,
             other => other.to_string(),
@@ -120,7 +120,7 @@ impl BillboardEmitterComponentLit {
     ///   - `size_over_lifetime` / `opacity_over_lifetime` nonempty
     ///   - `sprite` nonempty
     ///   - `spin_animation` (when `Some`): `duration > 0`, `rate_curve` nonempty
-    pub(crate) fn validate_into(self) -> Result<BillboardEmitterComponent, ScriptError> {
+    pub fn validate_into(self) -> Result<BillboardEmitterComponent, ScriptError> {
         if !self.lifetime.is_finite() || self.lifetime <= 0.0 {
             return Err(ScriptError::InvalidArgument {
                 reason: format!("lifetime must be > 0 (got {})", self.lifetime),

@@ -3,17 +3,17 @@
 
 use std::collections::HashMap;
 
-use crate::scripting::components::billboard_emitter::BillboardEmitterComponent;
-use crate::scripting::components::mesh::{AnimationState, InterruptPolicy};
-use crate::scripting::data_descriptors::{
+use crate::components::billboard_emitter::BillboardEmitterComponent;
+use crate::components::mesh::{AnimationState, InterruptPolicy};
+use crate::data_descriptors::{
     AiDescriptor, DescriptorError, HealthDescriptor, PlayerMovementDescriptor, WeaponDescriptor,
 };
-pub(crate) use postretro_foundation::data_descriptors::LightDescriptor;
+pub use postretro_foundation::data_descriptors::LightDescriptor;
 
 /// Authored mesh component preset attached to an [`EntityTypeDescriptor`].
 /// Carries the model handle a skinned-model entity renders plus an optional
 /// declared animation-state surface. The data-archetype spawn path materializes
-/// this into a [`crate::scripting::components::mesh::MeshComponent`]: a descriptor with no
+/// this into a [`crate::components::mesh::MeshComponent`]: a descriptor with no
 /// `animations` block yields a stateless component, otherwise the declared state
 /// map is copied in via `MeshAnimation::new` with current = `default_state` and
 /// a pending entry stamp.
@@ -26,26 +26,26 @@ pub(crate) use postretro_foundation::data_descriptors::LightDescriptor;
 /// model's clip metadata is resolved at level load by `resolve_mesh_entity_clips`;
 /// `AnimationState::clip_index` stays `None` at parse.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct MeshDescriptor {
-    pub(crate) model: String,
+pub struct MeshDescriptor {
+    pub model: String,
     /// Declared state map: state name → clip + loop + crossfade + interrupt.
     /// Empty when the descriptor declared no `animations` block (stateless).
-    pub(crate) animations: HashMap<String, AnimationState>,
+    pub animations: HashMap<String, AnimationState>,
     /// The default/spawn state name. `Some` exactly when `animations` is
     /// non-empty; parse validation rejects animations-without-default and a
     /// default that does not name a declared state.
-    pub(crate) default_state: Option<String>,
+    pub default_state: Option<String>,
 }
 
 /// One parsed-but-unvalidated animation-state entry, as gathered from the wire
 /// by either FFI path. `interrupt` is the raw string when present (`None` =
 /// absent ⇒ defaults to `"smooth"`); validation maps it to [`InterruptPolicy`].
-pub(crate) struct RawAnimationState {
-    pub(crate) name: String,
-    pub(crate) clip: String,
-    pub(crate) looping: bool,
-    pub(crate) crossfade_ms: f32,
-    pub(crate) interrupt: Option<String>,
+pub struct RawAnimationState {
+    pub name: String,
+    pub clip: String,
+    pub looping: bool,
+    pub crossfade_ms: f32,
+    pub interrupt: Option<String>,
 }
 
 impl MeshDescriptor {
@@ -56,7 +56,7 @@ impl MeshDescriptor {
     /// `defaultState` that names a declared state. An empty-but-present
     /// `animations` block is rejected; a wholly absent one yields a stateless
     /// descriptor (`animations` empty, `default_state` None).
-    pub(crate) fn build(
+    pub fn build(
         model: String,
         states: Vec<RawAnimationState>,
         default_state: Option<String>,
@@ -173,14 +173,14 @@ impl MeshDescriptor {
 /// component presets. The level-load spawn path materializes these into a
 /// fresh ECS entity per matching placement.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct EntityTypeDescriptor {
-    pub(crate) canonical_name: Option<String>,
-    pub(crate) default_weapon: Option<String>,
-    pub(crate) light: Option<LightDescriptor>,
-    pub(crate) emitter: Option<BillboardEmitterComponent>,
-    pub(crate) movement: Option<PlayerMovementDescriptor>,
-    pub(crate) weapon: Option<WeaponDescriptor>,
-    pub(crate) mesh: Option<MeshDescriptor>,
-    pub(crate) health: Option<HealthDescriptor>,
-    pub(crate) ai: Option<AiDescriptor>,
+pub struct EntityTypeDescriptor {
+    pub canonical_name: Option<String>,
+    pub default_weapon: Option<String>,
+    pub light: Option<LightDescriptor>,
+    pub emitter: Option<BillboardEmitterComponent>,
+    pub movement: Option<PlayerMovementDescriptor>,
+    pub weapon: Option<WeaponDescriptor>,
+    pub mesh: Option<MeshDescriptor>,
+    pub health: Option<HealthDescriptor>,
+    pub ai: Option<AiDescriptor>,
 }

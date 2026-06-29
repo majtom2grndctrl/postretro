@@ -17,7 +17,6 @@ use std::collections::{BTreeSet, HashSet};
 use glam::Vec3;
 
 use super::MapEntity;
-use crate::nav::NavAgentParams;
 use crate::scripting::components::agent::attach_agent;
 use crate::scripting::components::billboard_emitter::BillboardEmitterComponent;
 use crate::scripting::components::brain::{attach_brain, validate_brain_animation_states};
@@ -34,6 +33,7 @@ use crate::scripting::provenance::{
     parse_bool,
 };
 use crate::scripting::registry::{ComponentKind, EntityId, EntityRegistry, Transform};
+use postretro_foundation::NavAgentParams;
 
 /// Capsule fallback for a descriptor-spawned agent when the map has no navmesh
 /// (`agent_params == None`). The agent still materializes — it simply cannot
@@ -2276,7 +2276,7 @@ mod tests {
 
     #[test]
     fn ai_descriptor_spawn_uses_capsule_center_transform_without_moving_authored_hitbox() {
-        use crate::nav::NavAgentParams;
+        use postretro_foundation::NavAgentParams;
         use crate::scripting::components::health::HealthComponent;
         use crate::scripting::data_descriptors::{HealthDescriptor, HitboxDescriptor};
 

@@ -14,8 +14,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::scripting::data_descriptors::AiDescriptor;
-use crate::scripting::registry::{EntityId, EntityRegistry, RegistryError};
+use crate::data_descriptors::AiDescriptor;
+use crate::registry::{EntityId, EntityRegistry, RegistryError};
 
 use super::mesh::MeshComponent;
 
@@ -25,7 +25,7 @@ use super::mesh::MeshComponent;
 /// add states. See entity_model.md §2 and `scripting/systems/ai.rs` (the FSM tick).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum LogicalState {
+pub enum LogicalState {
     /// At rest: no target acquired. The spawn state.
     Idle,
     /// A target is in detection range; the brain chases via the steering API.
@@ -41,7 +41,7 @@ pub(crate) enum LogicalState {
 impl LogicalState {
     /// All four logical states, in evaluation order. Used by the spawn-time
     /// state-map validation to walk every mapping once.
-    pub(crate) const ALL: [LogicalState; 4] = [
+    pub const ALL: [LogicalState; 4] = [
         LogicalState::Idle,
         LogicalState::Alert,
         LogicalState::Attack,
@@ -50,7 +50,7 @@ impl LogicalState {
 
     /// Stable lowercase label, matching the closed `states` wire keys
     /// (`idle`/`alert`/`attack`/`death`). Used in warn diagnostics.
-    pub(crate) fn label(self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             LogicalState::Idle => "idle",
             LogicalState::Alert => "alert",
@@ -67,16 +67,16 @@ impl LogicalState {
 /// block cannot see the mesh block at its own parse — cross-component), not at
 /// descriptor parse.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct AiStateMap {
-    pub(crate) idle: String,
-    pub(crate) alert: String,
-    pub(crate) attack: String,
-    pub(crate) death: String,
+pub struct AiStateMap {
+    pub idle: String,
+    pub alert: String,
+    pub attack: String,
+    pub death: String,
 }
 
 impl AiStateMap {
     /// The animation-state name mapped for a logical state.
-    pub(crate) fn animation_for(&self, state: LogicalState) -> &str {
+    pub fn animation_for(&self, state: LogicalState) -> &str {
         match state {
             LogicalState::Idle => &self.idle,
             LogicalState::Alert => &self.alert,
@@ -91,21 +91,21 @@ impl AiStateMap {
 /// the logical-state → animation-state name map. Descriptor-owned tuning
 /// (entity_model.md §4): maps never override these, the FSM reads them each tick.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub(crate) struct AiTuning {
-    pub(crate) detection_range: f32,
-    pub(crate) attack_range: f32,
-    pub(crate) leash_range: f32,
-    pub(crate) attack_damage: f32,
-    pub(crate) attack_cooldown_ms: f32,
-    pub(crate) move_speed: f32,
-    pub(crate) death_despawn_ms: f32,
-    pub(crate) states: AiStateMap,
+pub struct AiTuning {
+    pub detection_range: f32,
+    pub attack_range: f32,
+    pub leash_range: f32,
+    pub attack_damage: f32,
+    pub attack_cooldown_ms: f32,
+    pub move_speed: f32,
+    pub death_despawn_ms: f32,
+    pub states: AiStateMap,
 }
 
 impl AiTuning {
     /// Materialize resolved tuning from the parsed descriptor. A 1:1 copy: the
     /// descriptor already validated every numeric field at parse time.
-    pub(crate) fn from_descriptor(desc: &AiDescriptor) -> Self {
+    pub fn from_descriptor(desc: &AiDescriptor) -> Self {
         Self {
             detection_range: desc.detection_range,
             attack_range: desc.attack_range,
@@ -128,16 +128,16 @@ impl AiTuning {
 /// spawn in the [`LogicalState::Idle`] state with timers at rest; the FSM tick
 /// (`scripting/systems/ai.rs`) drives the rest.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub(crate) struct BrainComponent {
+pub struct BrainComponent {
     /// Current logical FSM state. Starts [`LogicalState::Idle`].
-    pub(crate) state: LogicalState,
+    pub state: LogicalState,
     /// Milliseconds remaining before the brain may attack again. Counts down each
     /// tick; `0.0` means an attack is available. Seeded to `0.0` (ready) at spawn.
-    pub(crate) attack_cooldown_remaining_ms: f32,
+    pub attack_cooldown_remaining_ms: f32,
     /// Think-stride counter: incremented each tick by the FSM and compared
     /// against a distance-derived stride to time-slice target acquisition for
     /// distant enemies. Seeded to `0` at spawn.
-    pub(crate) think_stride_counter: u32,
+    pub think_stride_counter: u32,
     /// Death-despawn countdown in milliseconds. `None` until the brain enters
     /// [`LogicalState::Death`], at which point the FSM tick seeds it from
     /// `tuning.death_despawn_ms` (clamped to `>= 0`) and decrements it by the
@@ -146,15 +146,15 @@ pub(crate) struct BrainComponent {
     /// `death_despawn_ms` whether or not the death animation clip ever resolved.
     /// Seeded `None` at spawn and never set outside the Death state.
     #[serde(default)]
-    pub(crate) death_despawn_remaining_ms: Option<f32>,
+    pub death_despawn_remaining_ms: Option<f32>,
     /// Resolved descriptor tuning the FSM reads each tick.
-    pub(crate) tuning: AiTuning,
+    pub tuning: AiTuning,
 }
 
 impl BrainComponent {
     /// Materialize a fresh brain from the descriptor at spawn: idle, cooldown
     /// ready, stride counter zeroed.
-    pub(crate) fn from_descriptor(desc: &AiDescriptor) -> Self {
+    pub fn from_descriptor(desc: &AiDescriptor) -> Self {
         Self {
             state: LogicalState::Idle,
             attack_cooldown_remaining_ms: 0.0,
@@ -169,7 +169,7 @@ impl BrainComponent {
 /// parsed descriptor. Used by the data-archetype attach site. Returns the
 /// registry's standard stale/unknown-entity errors, matching the other
 /// component mutators.
-pub(crate) fn attach_brain(
+pub fn attach_brain(
     registry: &mut EntityRegistry,
     entity: EntityId,
     desc: &AiDescriptor,
@@ -197,7 +197,7 @@ pub(crate) fn attach_brain(
 /// RESOLUTION (`clip_index`) lands later at level load; an unresolved-but-
 /// declared name is caught at tick time by `switch_animation_state`
 /// (`UnknownState`), which the FSM also handles by keeping the prior animation.
-pub(crate) fn validate_brain_animation_states(
+pub fn validate_brain_animation_states(
     registry: &EntityRegistry,
     entity: EntityId,
 ) -> Vec<LogicalState> {
@@ -234,11 +234,9 @@ pub(crate) fn validate_brain_animation_states(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scripting::components::mesh::{
-        AnimationState, InterruptPolicy, MeshAnimation, MeshComponent,
-    };
-    use crate::scripting::data_descriptors::AiStateNames;
-    use crate::scripting::registry::Transform;
+    use crate::components::mesh::{AnimationState, InterruptPolicy, MeshAnimation, MeshComponent};
+    use crate::data_descriptors::AiStateNames;
+    use crate::registry::Transform;
     use std::collections::HashMap;
 
     fn sample_descriptor() -> AiDescriptor {
@@ -309,7 +307,7 @@ mod tests {
 
     #[test]
     fn brain_serde_round_trips_within_component_value() {
-        use crate::scripting::registry::ComponentValue;
+        use crate::registry::ComponentValue;
         let value = ComponentValue::Brain(BrainComponent::from_descriptor(&sample_descriptor()));
         let json = serde_json::to_value(&value).unwrap();
         assert_eq!(json["kind"], "brain");
@@ -348,7 +346,7 @@ mod tests {
         // The brain maps `attack`→"attack" but the mesh does NOT declare an
         // "attack" state. Spawn-time validation reports `attack` unmapped, and a
         // switch to that name does not change the entity's animation state.
-        use crate::scripting::components::mesh::{SwitchResult, switch_animation_state};
+        use crate::components::mesh::{SwitchResult, switch_animation_state};
 
         let mut reg = EntityRegistry::new();
         let id = reg.spawn(Transform::default());

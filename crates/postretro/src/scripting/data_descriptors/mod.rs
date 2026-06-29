@@ -49,10 +49,8 @@ mod vm_adapters;
 // (shared imports + sibling re-exports below) through `use super::super::*`.
 mod types {
     pub(crate) mod combat;
-    pub(crate) mod entity;
     pub(crate) mod manifest;
     pub(crate) mod movement;
-    pub(crate) mod reactions;
 }
 
 mod js {
@@ -83,11 +81,15 @@ pub(crate) use runtime_manifest::*;
 pub(crate) use validate::*;
 pub(crate) use vm_adapters::*;
 
+pub(crate) use postretro_entities::data_descriptors::{
+    CrossingCondition, CrossingDescriptor, EntityTypeDescriptor, MeshDescriptor, NamedReaction,
+    PrimitiveDescriptor, ProgressDescriptor, RawAnimationState, ReactionDescriptor, SequenceStep,
+    build_crossing,
+};
+pub(crate) use postretro_foundation::data_descriptors::LightDescriptor;
 pub(crate) use types::combat::*;
-pub(crate) use types::entity::*;
 pub(crate) use types::manifest::*;
 pub(crate) use types::movement::*;
-pub(crate) use types::reactions::*;
 
 pub(crate) use js::entity::*;
 pub(crate) use js::manifest::*;

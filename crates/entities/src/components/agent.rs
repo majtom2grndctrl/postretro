@@ -17,8 +17,8 @@
 use glam::Vec3;
 use serde::{Deserialize, Serialize};
 
-use crate::nav::NavAgentParams;
-use crate::scripting::registry::{EntityId, EntityRegistry, RegistryError};
+use crate::registry::{EntityId, EntityRegistry, RegistryError};
+use postretro_foundation::NavAgentParams;
 
 /// Live state for one movable navigation agent.
 ///
@@ -32,38 +32,38 @@ use crate::scripting::registry::{EntityId, EntityRegistry, RegistryError};
 /// endpoint, excluding the end-cap sphere): `height / 2.0 - radius`, mirroring
 /// the player movement capsule construction (`movement::integrate_collision`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub(crate) struct AgentComponent {
+pub struct AgentComponent {
     /// Capsule radius, in world units. Seeded from `NavAgentParams::radius`.
-    pub(crate) radius: f32,
+    pub radius: f32,
     /// Total capsule height (end-cap to end-cap), in world units. Seeded from
     /// `NavAgentParams::height`. Convert to a parry half-height with
     /// `height / 2.0 - radius` before building a `parry3d::shape::Capsule`.
-    pub(crate) height: f32,
+    pub height: f32,
     /// Maximum vertical step the agent can climb in one tick, in world units.
     /// Seeded from `NavAgentParams::step_height` (NOT the radius as a
     /// stand-in). The collide-and-slide harness's step-up / ground-stick logic
     /// reads this; it is a stored field so downstream steering uses the baked
     /// step the navmesh was eroded for.
-    pub(crate) step_height: f32,
+    pub step_height: f32,
     /// Top horizontal speed the steering system drives the agent at, in
     /// world-units/sec. Passed to `attach_agent` at attach time.
-    pub(crate) move_speed: f32,
+    pub move_speed: f32,
     /// Live velocity (world space) the collide-and-slide harness integrates and
     /// resolves each tick.
-    pub(crate) velocity: Vec3,
+    pub velocity: Vec3,
     /// Grounded flag resolved by the harness's ground-stick down-cast. `true`
     /// when the agent's capsule rests on a walkable floor.
-    pub(crate) is_grounded: bool,
+    pub is_grounded: bool,
     /// Current path: ordered world-space waypoints from the agent toward its
     /// destination, produced by the pathfinding query. Empty when the agent has
     /// no active path.
-    pub(crate) path: Vec<Vec3>,
+    pub path: Vec<Vec3>,
     /// Cursor into `path`: the index of the waypoint the agent is currently
     /// steering toward. Advanced on arrival-radius by the steering system.
-    pub(crate) waypoint_cursor: usize,
+    pub waypoint_cursor: usize,
     /// Where the agent is trying to go. `None` when idle (no destination set);
     /// the steering system plans a path to it when `Some`.
-    pub(crate) destination: Option<Vec3>,
+    pub destination: Option<Vec3>,
     /// The destination the current `path` was planned for. The steering tick
     /// replans when the live `destination` drifts beyond a threshold from THIS
     /// position (cumulative drift-from-the-plan, not the per-call delta), so a
@@ -71,13 +71,13 @@ pub(crate) struct AgentComponent {
     /// up; a stale path to the same goal is otherwise refreshed only after the
     /// staleness window. `None` when no plan has been attempted for the live
     /// destination yet (forces the first plan).
-    pub(crate) planned_destination: Option<Vec3>,
+    pub planned_destination: Option<Vec3>,
     /// Ticks remaining before the agent may re-spend a replan-budget slot. The
     /// staleness gate: after a successful or FAILED plan, this is set to the
     /// staleness window so a single agent (and especially a permanently-blocked
     /// one) cannot re-qualify for a replan every tick. Decremented each tick.
     /// See the steering tick.
-    pub(crate) replan_cooldown_ticks: u32,
+    pub replan_cooldown_ticks: u32,
     /// `true` once the agent has reached the end of its current path (within the
     /// arrival radius of the final waypoint). Cleared on a successful replan or
     /// when the destination is cleared. If the destination moves after arrival,
@@ -86,12 +86,12 @@ pub(crate) struct AgentComponent {
     /// same tick rather than waiting behind no-op refreshers. It can be deferred
     /// only in a true overload — MORE than the replan budget of agents genuinely
     /// drifting the same tick — never crowded out by a staleness refresh.
-    pub(crate) arrived: bool,
+    pub arrived: bool,
     /// `true` when the agent has a destination but pathfinding found no route
     /// to it (an empty path that survived a replan attempt). The agent holds
     /// position rather than walking into geometry. Cleared on a new
     /// destination or a successful plan.
-    pub(crate) blocked: bool,
+    pub blocked: bool,
 }
 
 impl AgentComponent {
@@ -101,7 +101,7 @@ impl AgentComponent {
     /// site reads the baked params and passes them down (see [`attach_agent`]).
     /// Velocity starts at rest, ungrounded (the harness re-acquires the floor on
     /// the first tick), with no path and no destination.
-    pub(crate) fn new(radius: f32, height: f32, step_height: f32, move_speed: f32) -> Self {
+    pub fn new(radius: f32, height: f32, step_height: f32, move_speed: f32) -> Self {
         Self {
             radius,
             height,
@@ -123,7 +123,7 @@ impl AgentComponent {
     /// (`radius`, `height`) and `step_height` from `params`; the navmesh records
     /// the canonical agent the floor was eroded for, so an agent built from it
     /// fits the walkable surface.
-    pub(crate) fn from_nav_params(params: &NavAgentParams, move_speed: f32) -> Self {
+    pub fn from_nav_params(params: &NavAgentParams, move_speed: f32) -> Self {
         Self::new(params.radius, params.height, params.step_height, move_speed)
     }
 
@@ -131,7 +131,7 @@ impl AgentComponent {
     /// one cylinder endpoint, EXCLUDING the hemispherical end cap. Mirrors the
     /// player movement capsule (`height / 2.0 - radius`). The collide-and-slide
     /// harness builds its `parry3d::shape::Capsule` from this.
-    pub(crate) fn half_height(&self) -> f32 {
+    pub fn half_height(&self) -> f32 {
         // A well-baked agent has `radius < height / 2`, so the cylinder section is
         // non-negative. A bad bake (`radius >= height / 2`) would invert the parry
         // capsule endpoints and silently mis-shape collide-and-slide; clamp at 0 so
@@ -157,7 +157,7 @@ impl AgentComponent {
 /// entity (the registry's standard validation), matching the other registry
 /// mutators. The entity keeps whatever other components it already carries —
 /// `attach_agent` only inserts the agent column.
-pub(crate) fn attach_agent(
+pub fn attach_agent(
     registry: &mut EntityRegistry,
     entity: EntityId,
     params: &NavAgentParams,
@@ -169,7 +169,7 @@ pub(crate) fn attach_agent(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scripting::registry::Transform;
+    use crate::registry::Transform;
 
     fn sample_params() -> NavAgentParams {
         NavAgentParams {

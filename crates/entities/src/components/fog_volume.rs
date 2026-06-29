@@ -15,31 +15,31 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct FogAnimation {
-    pub(crate) period_ms: f32,
+pub struct FogAnimation {
+    pub period_ms: f32,
     /// `None` = no phase offset (treated as 0.0 at sampling time). When
     /// `Some`, normalized to `[0.0, 1.0)` via `rem_euclid` in `validate`
     /// before storage.
     #[serde(default)]
-    pub(crate) phase: Option<f32>,
+    pub phase: Option<f32>,
     /// `None` = loop forever. `Some(n)` plays `n` full periods, after which the
     /// fog bridge writes the final keyframe(s) back as static values and clears
     /// `animation`. Requires at least one curve (`density`, `saturation`,
     /// `min_brightness`, or `light_range`).
     #[serde(default)]
-    pub(crate) play_count: Option<u32>,
+    pub play_count: Option<u32>,
     /// `None` = "no animation on this channel; hold the static density".
     #[serde(default)]
-    pub(crate) density: Option<Vec<f32>>,
+    pub density: Option<Vec<f32>>,
     /// `None` = "no animation on this channel; hold the static saturation".
     /// Values may exceed 1.0 (boosted saturation); negative values are clamped
     /// to 0.0 with a warning.
     #[serde(default)]
-    pub(crate) saturation: Option<Vec<f32>>,
+    pub saturation: Option<Vec<f32>>,
     #[serde(default)]
-    pub(crate) min_brightness: Option<Vec<f32>>,
+    pub min_brightness: Option<Vec<f32>>,
     #[serde(default)]
-    pub(crate) light_range: Option<Vec<f32>>,
+    pub light_range: Option<Vec<f32>>,
 }
 
 #[cfg(test)]

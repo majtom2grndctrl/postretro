@@ -3,8 +3,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::scripting::components::billboard_emitter::LifetimeCurve;
-use crate::scripting::registry::EntityId;
+use crate::components::billboard_emitter::LifetimeCurve;
+use crate::registry::EntityId;
 
 /// Per-particle simulation state. The particle simulation reads / writes this
 /// each tick. `buoyancy` / `drag` are copied from the parent emitter at spawn;
@@ -20,15 +20,15 @@ use crate::scripting::registry::EntityId;
 /// back-reference is stale, and the orphaned particle is culled or drawn by its
 /// own cell exactly like any other particle.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub(crate) struct ParticleState {
-    pub(crate) velocity: [f32; 3],
-    pub(crate) age: f32,
-    pub(crate) lifetime: f32,
-    pub(crate) buoyancy: f32,
-    pub(crate) drag: f32,
-    pub(crate) size_curve: LifetimeCurve,
-    pub(crate) opacity_curve: LifetimeCurve,
-    pub(crate) emitter: Option<EntityId>,
+pub struct ParticleState {
+    pub velocity: [f32; 3],
+    pub age: f32,
+    pub lifetime: f32,
+    pub buoyancy: f32,
+    pub drag: f32,
+    pub size_curve: LifetimeCurve,
+    pub opacity_curve: LifetimeCurve,
+    pub emitter: Option<EntityId>,
 }
 
 #[cfg(test)]

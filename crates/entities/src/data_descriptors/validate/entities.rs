@@ -6,7 +6,7 @@ use super::super::{CrossingCondition, CrossingDescriptor, DescriptorError};
 
 /// Build a [`CrossingDescriptor`] from the raw fields gathered by either FFI
 /// path. Shared so JS and Luau enforce identical rules.
-pub(crate) fn build_crossing(
+pub fn build_crossing(
     slot: String,
     below: Option<f32>,
     above: Option<f32>,

@@ -1,0 +1,741 @@
+// Engine-global state-store declarations, values, and reconciliation.
+// See: context/lib/scripting.md §5 "Durable State Store"
+
+use std::collections::{BTreeMap, HashMap, HashSet};
+
+use crate::engine_state_catalog::engine_state_catalog;
+
+/// Runtime value stored in a state slot.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SlotValue {
+    Number(f32),
+    Boolean(bool),
+    String(String),
+    Enum(String),
+    Array(Vec<f32>),
+}
+
+/// Declared value type and any type-specific schema metadata.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SlotType {
+    Number,
+    Boolean,
+    String,
+    Enum { values: Vec<String> },
+    Array,
+}
+
+/// Inclusive bounds for a numeric slot.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NumericRange {
+    pub min: f32,
+    pub max: f32,
+}
+
+/// Identifies which side declared and owns a slot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SlotOwnership {
+    Engine,
+    Mod,
+}
+
+/// How (and to whom) a slot's authoritative value replicates from server to
+/// accepted clients (M15 Phase 3.5). `None` is the default: the slot is local-only
+/// and receives no `StateSlotId` — it never affects the replicated-slot schema or
+/// its fingerprint. The two replicated scopes feed the schema builder.
+///
+/// The internal enum names are pinned (`SharedGlobal` / `OwnerPrivatePlayer`) — the
+/// schema fingerprint and the net descriptor lowering depend on them, and the
+/// mod-facing `network: "shared"` authoring surface (Task 5) maps onto them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ReplicationScope {
+    /// Local-only. Not replicated; no `StateSlotId`; excluded from the fingerprint.
+    #[default]
+    None,
+    /// Server sends this slot to every accepted client.
+    SharedGlobal,
+    /// Server sends this slot only to the owning accepted client.
+    OwnerPrivatePlayer,
+}
+
+/// Immutable declaration metadata for a state slot.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SlotSchema {
+    pub slot_type: SlotType,
+    pub default: Option<SlotValue>,
+    pub range: Option<NumericRange>,
+    pub persist: bool,
+    pub readonly: bool,
+    pub ownership: SlotOwnership,
+    /// Replication scope (M15 Phase 3.5). Defaults to `None` (local-only). Only
+    /// `SharedGlobal`/`OwnerPrivatePlayer` slots enter the replicated-slot schema.
+    pub network: ReplicationScope,
+}
+
+/// A declared slot and its current runtime value.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SlotRecord {
+    pub schema: SlotSchema,
+    pub value: Option<SlotValue>,
+}
+
+impl SlotRecord {
+    pub fn new(schema: SlotSchema) -> Self {
+        let value = schema.default.clone();
+        Self { schema, value }
+    }
+}
+
+/// One validated namespace declaration, owned independently of a script VM.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StoreDeclaration {
+    pub namespace: String,
+    pub records: Vec<(String, SlotRecord)>,
+}
+
+/// Declarations collected during one mod-init or staged-build attempt.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct StoreDeclarationSet {
+    declarations: BTreeMap<String, StoreDeclaration>,
+}
+
+impl StoreDeclarationSet {
+    pub fn add(&mut self, declaration: StoreDeclaration) -> Result<(), NamespaceInsertError> {
+        validate_namespace_records(&declaration.namespace, &declaration.records)?;
+
+        if let Some(existing) = self
+            .declarations
+            .keys()
+            .find(|existing| namespaces_overlap(&declaration.namespace, existing))
+        {
+            return Err(NamespaceInsertError::NamespaceCollision {
+                namespace: declaration.namespace,
+                existing: existing.clone(),
+            });
+        }
+
+        self.declarations
+            .insert(declaration.namespace.clone(), declaration);
+        Ok(())
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &StoreDeclaration> {
+        self.declarations.values()
+    }
+
+    pub fn len(&self) -> usize {
+        self.declarations.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.declarations.is_empty()
+    }
+}
+
+/// A prevalidated live-table update. Applying it cannot encounter collisions.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct StoreReconcilePlan {
+    new_declarations: Vec<StoreDeclaration>,
+}
+
+impl StoreReconcilePlan {
+    pub fn added_namespace_count(&self) -> usize {
+        self.new_declarations.len()
+    }
+}
+
+/// Engine-global state slots keyed by stable dotted names.
+///
+/// This table intentionally has no clear or teardown API. It lives on
+/// `ScriptCtx` for the process lifetime.
+#[derive(Debug)]
+pub struct SlotTable {
+    slots: HashMap<String, SlotRecord>,
+    namespaces: HashSet<String>,
+}
+
+impl Default for SlotTable {
+    fn default() -> Self {
+        let mut table = Self {
+            slots: HashMap::new(),
+            namespaces: HashSet::new(),
+        };
+        let catalog = engine_state_catalog().expect("built-in engine-state catalog must be valid");
+        for (namespace, records) in catalog.store_declarations() {
+            table
+                .insert_namespace(&namespace, records)
+                .expect("built-in engine-state store schema must be valid");
+        }
+        table
+    }
+}
+
+impl SlotTable {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Atomically inserts every slot in a namespace.
+    ///
+    /// Namespace equality and dotted-prefix overlap both count as collisions:
+    /// registering `player.stats` cannot partially extend the engine-owned
+    /// `player` namespace, and registering `player` cannot absorb an existing
+    /// `player.stats` namespace.
+    pub fn insert_namespace(
+        &mut self,
+        namespace: &str,
+        records: Vec<(String, SlotRecord)>,
+    ) -> Result<(), NamespaceInsertError> {
+        validate_namespace_records(namespace, &records)?;
+
+        if let Some(existing) = self
+            .namespaces
+            .iter()
+            .find(|existing| namespaces_overlap(namespace, existing))
+        {
+            return Err(NamespaceInsertError::NamespaceCollision {
+                namespace: namespace.to_string(),
+                existing: existing.clone(),
+            });
+        }
+
+        let full_names = records
+            .iter()
+            .map(|(slot_name, _)| format!("{namespace}.{slot_name}"))
+            .collect::<Vec<_>>();
+        for full_name in &full_names {
+            if self.slots.contains_key(full_name) {
+                return Err(NamespaceInsertError::SlotCollision {
+                    name: full_name.clone(),
+                });
+            }
+        }
+
+        self.namespaces.insert(namespace.to_string());
+        for ((_, record), full_name) in records.into_iter().zip(full_names) {
+            self.slots.insert(full_name, record);
+        }
+        Ok(())
+    }
+
+    /// Validate a complete declaration attempt without mutating live values.
+    ///
+    /// Identical schemas are compatible and become no-ops. New namespaces are
+    /// added by the returned plan. Changed schemas and namespace overlap are
+    /// rejected before any live mutation.
+    pub fn plan_reconcile(
+        &self,
+        declarations: &StoreDeclarationSet,
+    ) -> Result<StoreReconcilePlan, NamespaceInsertError> {
+        let mut new_declarations = Vec::new();
+
+        for declaration in declarations.iter() {
+            validate_namespace_records(&declaration.namespace, &declaration.records)?;
+
+            if self.namespaces.contains(&declaration.namespace) {
+                if !self.namespace_schema_matches(declaration) {
+                    return Err(NamespaceInsertError::IncompatibleSchema {
+                        namespace: declaration.namespace.clone(),
+                    });
+                }
+                continue;
+            }
+
+            if let Some(existing) = self
+                .namespaces
+                .iter()
+                .find(|existing| namespaces_overlap(&declaration.namespace, existing))
+            {
+                return Err(NamespaceInsertError::NamespaceCollision {
+                    namespace: declaration.namespace.clone(),
+                    existing: existing.clone(),
+                });
+            }
+
+            for (slot_name, _) in &declaration.records {
+                let full_name = format!("{}.{}", declaration.namespace, slot_name);
+                if self.slots.contains_key(&full_name) {
+                    return Err(NamespaceInsertError::SlotCollision { name: full_name });
+                }
+            }
+            new_declarations.push(declaration.clone());
+        }
+
+        Ok(StoreReconcilePlan { new_declarations })
+    }
+
+    pub fn apply_reconcile_plan(&mut self, plan: StoreReconcilePlan) {
+        for declaration in plan.new_declarations {
+            self.namespaces.insert(declaration.namespace.clone());
+            for (slot_name, record) in declaration.records {
+                self.slots
+                    .insert(format!("{}.{}", declaration.namespace, slot_name), record);
+            }
+        }
+    }
+
+    /// Inserts a new stable name without replacing an existing declaration.
+    pub fn insert(&mut self, name: String, record: SlotRecord) -> Result<(), SlotInsertError> {
+        if self.slots.contains_key(&name) {
+            return Err(SlotInsertError { name });
+        }
+        self.slots.insert(name, record);
+        Ok(())
+    }
+
+    /// Attach (or replace) the inclusive numeric range on an engine-owned
+    /// number slot, re-clamping any current value into the new bounds.
+    ///
+    /// Engine-only by contract: the slot must be `SlotOwnership::Engine` and
+    /// `SlotType::Number`. This exists because some engine ranges are mod data
+    /// (e.g. `player.health`'s `[0, max]`, where `max` is an authored health
+    /// descriptor) and so cannot be declared at `SlotTable` construction — they
+    /// attach when the producing component materializes, and re-attach on hot
+    /// reload. Subsequent `write_store_slot` calls enforce the range via the
+    /// existing validation/clamp path; this mutation only installs it (and
+    /// re-clamps the value already present, if any).
+    pub fn set_engine_numeric_range(
+        &mut self,
+        name: &str,
+        range: NumericRange,
+    ) -> Result<(), SlotRangeError> {
+        let record = self
+            .slots
+            .get_mut(name)
+            .ok_or_else(|| SlotRangeError::UnknownSlot {
+                name: name.to_string(),
+            })?;
+        if record.schema.ownership != SlotOwnership::Engine {
+            return Err(SlotRangeError::NotEngineOwned {
+                name: name.to_string(),
+            });
+        }
+        if record.schema.slot_type != SlotType::Number {
+            return Err(SlotRangeError::NotNumeric {
+                name: name.to_string(),
+            });
+        }
+        record.schema.range = Some(range);
+        // Re-clamp an already-published value so the table never holds a value
+        // outside the freshly-installed bounds (e.g. an authored `max`
+        // reduction on hot reload that drops below the live HP read last frame).
+        if let Some(SlotValue::Number(value)) = record.value {
+            record.value = Some(SlotValue::Number(value.clamp(range.min, range.max)));
+        }
+        Ok(())
+    }
+
+    pub fn get(&self, name: &str) -> Option<&SlotRecord> {
+        self.slots.get(name)
+    }
+
+    pub fn get_mut(&mut self, name: &str) -> Option<&mut SlotRecord> {
+        self.slots.get_mut(name)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &SlotRecord)> {
+        self.slots
+            .iter()
+            .map(|(name, record)| (name.as_str(), record))
+    }
+
+    pub fn len(&self) -> usize {
+        self.slots.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.slots.is_empty()
+    }
+
+    fn namespace_schema_matches(&self, declaration: &StoreDeclaration) -> bool {
+        let prefix = format!("{}.", declaration.namespace);
+        let existing = self
+            .slots
+            .iter()
+            .filter_map(|(name, record)| {
+                name.strip_prefix(&prefix)
+                    .map(|slot_name| (slot_name, &record.schema))
+            })
+            .collect::<HashMap<_, _>>();
+
+        existing.len() == declaration.records.len()
+            && declaration.records.iter().all(|(slot_name, record)| {
+                existing.get(slot_name.as_str()) == Some(&&record.schema)
+            })
+    }
+}
+
+fn validate_namespace_records(
+    namespace: &str,
+    records: &[(String, SlotRecord)],
+) -> Result<(), NamespaceInsertError> {
+    if namespace.is_empty() {
+        return Err(NamespaceInsertError::InvalidNamespace);
+    }
+
+    let mut pending = HashSet::with_capacity(records.len());
+    for (slot_name, _) in records {
+        if slot_name.is_empty() {
+            return Err(NamespaceInsertError::InvalidSlotName);
+        }
+        let full_name = format!("{namespace}.{slot_name}");
+        if !pending.insert(full_name.clone()) {
+            return Err(NamespaceInsertError::SlotCollision { name: full_name });
+        }
+    }
+    Ok(())
+}
+
+fn namespaces_overlap(left: &str, right: &str) -> bool {
+    left == right
+        || left
+            .strip_prefix(right)
+            .is_some_and(|suffix| suffix.starts_with('.'))
+        || right
+            .strip_prefix(left)
+            .is_some_and(|suffix| suffix.starts_with('.'))
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("state slot `{name}` is already defined")]
+pub struct SlotInsertError {
+    pub name: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum SlotRangeError {
+    #[error("state slot `{name}` is not declared")]
+    UnknownSlot { name: String },
+    #[error("state slot `{name}` is not engine-owned; range mutation is engine-only")]
+    NotEngineOwned { name: String },
+    #[error("state slot `{name}` is not a number slot; only numeric slots carry a range")]
+    NotNumeric { name: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum NamespaceInsertError {
+    #[error("state-store namespace must not be empty")]
+    InvalidNamespace,
+    #[error("state-store slot name must not be empty")]
+    InvalidSlotName,
+    #[error("state-store namespace `{namespace}` collides with registered namespace `{existing}`")]
+    NamespaceCollision { namespace: String, existing: String },
+    #[error("state slot `{name}` is already defined")]
+    SlotCollision { name: String },
+    #[error("state-store namespace `{namespace}` changes an already committed schema")]
+    IncompatibleSchema { namespace: String },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn number_slot(value: f32) -> SlotRecord {
+        SlotRecord::new(SlotSchema {
+            slot_type: SlotType::Number,
+            default: Some(SlotValue::Number(value)),
+            range: None,
+            persist: false,
+            readonly: false,
+            ownership: SlotOwnership::Mod,
+            network: ReplicationScope::None,
+        })
+    }
+
+    #[test]
+    fn new_registers_engine_player_namespace() {
+        let table = SlotTable::new();
+        for name in ["player.health", "player.maxHealth"] {
+            let slot = table.get(name).expect("engine slot should exist");
+            assert_eq!(slot.schema.slot_type, SlotType::Number);
+            assert_eq!(slot.schema.ownership, SlotOwnership::Engine);
+            assert!(slot.schema.readonly);
+            assert_eq!(slot.schema.default, None);
+            assert_eq!(slot.value, None);
+        }
+        assert_eq!(
+            table.get("player.health").unwrap().schema.range,
+            None,
+            "current health range is attached dynamically when the pawn materializes",
+        );
+        assert_eq!(
+            table.get("player.maxHealth").unwrap().schema.range,
+            Some(NumericRange {
+                min: 1.0,
+                max: f32::INFINITY,
+            }),
+            "max health carries static finite-number validation",
+        );
+        assert!(
+            table.get("player.ammo").is_none(),
+            "fake ammo is not an engine-owned HUD state slot"
+        );
+    }
+
+    #[test]
+    fn new_registers_engine_screen_flash_slot() {
+        // `screen.flash` is the engine-owned, engine-decayed flash surface: a
+        // readonly (to scripts) Array slot defaulting to transparent so the
+        // bound full-screen panel renders nothing until a flash fires.
+        let table = SlotTable::new();
+        let slot = table
+            .get("screen.flash")
+            .expect("engine screen.flash slot exists");
+        assert_eq!(slot.schema.slot_type, SlotType::Array);
+        assert_eq!(slot.schema.ownership, SlotOwnership::Engine);
+        assert!(slot.schema.readonly);
+        assert!(!slot.schema.persist);
+        assert_eq!(slot.value, Some(SlotValue::Array(vec![0.0, 0.0, 0.0, 0.0])));
+    }
+
+    #[test]
+    fn new_registers_engine_screen_vignette_slot() {
+        // `screen.vignette` is the engine-owned vignette surface (SE): a readonly
+        // (to scripts) RGBA Array slot (`a` = strength) defaulting to all-zero so
+        // the later GPU consumer collapses to identity until a vignette fires.
+        let table = SlotTable::new();
+        let slot = table
+            .get("screen.vignette")
+            .expect("engine screen.vignette slot exists");
+        assert_eq!(slot.schema.slot_type, SlotType::Array);
+        assert_eq!(slot.schema.ownership, SlotOwnership::Engine);
+        assert!(slot.schema.readonly);
+        assert!(!slot.schema.persist);
+        assert_eq!(slot.value, Some(SlotValue::Array(vec![0.0, 0.0, 0.0, 0.0])));
+    }
+
+    #[test]
+    fn new_registers_engine_screen_shake_slot() {
+        // `screen.shake` is the engine-owned screen-shake offset surface (SE): a
+        // readonly (to scripts) `[dx, dy]` Array slot defaulting to exact zero so
+        // there is no displacement at rest.
+        let table = SlotTable::new();
+        let slot = table
+            .get("screen.shake")
+            .expect("engine screen.shake slot exists");
+        assert_eq!(slot.schema.slot_type, SlotType::Array);
+        assert_eq!(slot.schema.ownership, SlotOwnership::Engine);
+        assert!(slot.schema.readonly);
+        assert!(!slot.schema.persist);
+        assert_eq!(slot.value, Some(SlotValue::Array(vec![0.0, 0.0])));
+    }
+
+    #[test]
+    fn new_registers_engine_input_mode_slot() {
+        // `input.mode` is the engine-owned pointer-vs-focus interaction mode: a
+        // readonly (to scripts) Enum slot constrained to `"pointer"`/`"focus"`,
+        // defaulting to `"focus"`. App-side input-phase composition writes it.
+        let table = SlotTable::new();
+        let slot = table
+            .get("input.mode")
+            .expect("engine input.mode slot exists");
+        assert_eq!(
+            slot.schema.slot_type,
+            SlotType::Enum {
+                values: vec!["pointer".to_string(), "focus".to_string()],
+            }
+        );
+        assert_eq!(slot.schema.ownership, SlotOwnership::Engine);
+        assert!(slot.schema.readonly);
+        assert!(!slot.schema.persist);
+        assert_eq!(slot.value, Some(SlotValue::Enum("focus".to_string())));
+    }
+
+    #[test]
+    fn new_registers_engine_ui_text_entry_slot_writable() {
+        // `ui.textEntry` is the engine-owned WRITABLE String surface the
+        // text-edit reactions mutate. Unlike the readonly engine proxies, it is
+        // a valid setState / text-edit write target. Defaults to empty.
+        let table = SlotTable::new();
+        let slot = table
+            .get("ui.textEntry")
+            .expect("engine ui.textEntry slot exists");
+        assert_eq!(slot.schema.slot_type, SlotType::String);
+        assert_eq!(slot.schema.ownership, SlotOwnership::Engine);
+        assert!(!slot.schema.readonly, "ui.textEntry must be writable");
+        assert!(!slot.schema.persist);
+        assert_eq!(slot.value, Some(SlotValue::String(String::new())));
+    }
+
+    #[test]
+    fn namespace_insert_is_atomic_on_slot_collision() {
+        let mut table = SlotTable::new();
+        table
+            .insert("audio.music".to_string(), number_slot(0.5))
+            .unwrap();
+
+        let before = table.len();
+        let err = table
+            .insert_namespace(
+                "audio",
+                vec![
+                    ("master".to_string(), number_slot(1.0)),
+                    ("music".to_string(), number_slot(1.0)),
+                ],
+            )
+            .unwrap_err();
+
+        assert_eq!(
+            err,
+            NamespaceInsertError::SlotCollision {
+                name: "audio.music".to_string()
+            }
+        );
+        assert_eq!(table.len(), before);
+        assert!(table.get("audio.master").is_none());
+    }
+
+    #[test]
+    fn namespace_insert_rejects_dotted_prefix_collisions() {
+        let mut table = SlotTable::new();
+        for namespace in ["player", "player.stats"] {
+            let err = table
+                .insert_namespace(namespace, vec![("shield".to_string(), number_slot(100.0))])
+                .unwrap_err();
+            assert!(matches!(
+                err,
+                NamespaceInsertError::NamespaceCollision { .. }
+            ));
+        }
+        assert!(table.get("player.shield").is_none());
+        assert!(table.get("player.stats.shield").is_none());
+    }
+
+    #[test]
+    fn reconcile_identical_schema_preserves_current_value() {
+        let mut table = SlotTable::new();
+        let declaration = StoreDeclaration {
+            namespace: "audio".to_string(),
+            records: vec![("master".to_string(), number_slot(1.0))],
+        };
+        let mut first = StoreDeclarationSet::default();
+        first.add(declaration.clone()).unwrap();
+        let plan = table.plan_reconcile(&first).unwrap();
+        table.apply_reconcile_plan(plan);
+        table.get_mut("audio.master").unwrap().value = Some(SlotValue::Number(0.25));
+
+        let mut repeated = StoreDeclarationSet::default();
+        repeated.add(declaration).unwrap();
+        let plan = table.plan_reconcile(&repeated).unwrap();
+        assert_eq!(plan.added_namespace_count(), 0);
+        table.apply_reconcile_plan(plan);
+
+        assert_eq!(
+            table
+                .get("audio.master")
+                .and_then(|slot| slot.value.as_ref()),
+            Some(&SlotValue::Number(0.25))
+        );
+    }
+
+    #[test]
+    fn set_engine_numeric_range_installs_range_and_reclamps_current_value() {
+        // The `player.health` model: an engine-owned readonly number slot gains
+        // its `[0, max]` range only when the producer materializes. Installing
+        // the range must re-clamp a value already present (here, above the new
+        // max) so the table never holds an out-of-range value.
+        let mut table = SlotTable::new();
+        table.get_mut("player.health").unwrap().value = Some(SlotValue::Number(150.0));
+
+        table
+            .set_engine_numeric_range(
+                "player.health",
+                NumericRange {
+                    min: 0.0,
+                    max: 100.0,
+                },
+            )
+            .unwrap();
+
+        let slot = table.get("player.health").unwrap();
+        assert_eq!(
+            slot.schema.range,
+            Some(NumericRange {
+                min: 0.0,
+                max: 100.0
+            })
+        );
+        assert_eq!(
+            slot.value,
+            Some(SlotValue::Number(100.0)),
+            "current value re-clamps into the freshly-installed range"
+        );
+    }
+
+    #[test]
+    fn set_engine_numeric_range_rejects_non_engine_and_non_numeric_slots() {
+        let mut table = SlotTable::new();
+        // Mod-owned slot: range mutation is engine-only.
+        table
+            .insert("audio.master".to_string(), number_slot(0.5))
+            .unwrap();
+        assert!(matches!(
+            table
+                .set_engine_numeric_range("audio.master", NumericRange { min: 0.0, max: 1.0 })
+                .unwrap_err(),
+            SlotRangeError::NotEngineOwned { .. }
+        ));
+        // Unknown slot.
+        assert!(matches!(
+            table
+                .set_engine_numeric_range("player.missing", NumericRange { min: 0.0, max: 1.0 })
+                .unwrap_err(),
+            SlotRangeError::UnknownSlot { .. }
+        ));
+        // Engine-owned but non-numeric slot: range mutation requires a number type.
+        table
+            .insert(
+                "engine.flag".to_string(),
+                SlotRecord::new(SlotSchema {
+                    slot_type: SlotType::Boolean,
+                    default: Some(SlotValue::Boolean(false)),
+                    range: None,
+                    persist: false,
+                    readonly: true,
+                    ownership: SlotOwnership::Engine,
+                    network: ReplicationScope::None,
+                }),
+            )
+            .unwrap();
+        assert!(matches!(
+            table
+                .set_engine_numeric_range("engine.flag", NumericRange { min: 0.0, max: 1.0 })
+                .unwrap_err(),
+            SlotRangeError::NotNumeric { .. }
+        ));
+    }
+
+    #[test]
+    fn reconcile_rejects_changed_schema_without_partial_commit() {
+        let mut table = SlotTable::new();
+        table
+            .insert_namespace("audio", vec![("master".to_string(), number_slot(1.0))])
+            .unwrap();
+
+        let mut declarations = StoreDeclarationSet::default();
+        declarations
+            .add(StoreDeclaration {
+                namespace: "video".to_string(),
+                records: vec![("gamma".to_string(), number_slot(1.0))],
+            })
+            .unwrap();
+        declarations
+            .add(StoreDeclaration {
+                namespace: "audio".to_string(),
+                records: vec![
+                    ("master".to_string(), number_slot(1.0)),
+                    ("music".to_string(), number_slot(0.5)),
+                ],
+            })
+            .unwrap();
+
+        let err = table.plan_reconcile(&declarations).unwrap_err();
+        assert_eq!(
+            err,
+            NamespaceInsertError::IncompatibleSchema {
+                namespace: "audio".to_string()
+            }
+        );
+        assert!(table.get("video.gamma").is_none());
+    }
+}

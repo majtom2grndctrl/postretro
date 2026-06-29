@@ -7,11 +7,11 @@ use std::collections::HashMap;
 use glam::Vec3;
 use serde::{Deserialize, Serialize};
 
-use crate::scripting::registry::{EntityId, EntityRegistry, RegistryError};
+use crate::registry::{EntityId, EntityRegistry, RegistryError};
 
 /// Default crossfade duration (milliseconds) for a state entry that does not
 /// declare `crossfadeMs`. Cosmetic; a device-tuned default, not a contract.
-pub(crate) const DEFAULT_CROSSFADE_MS: f32 = 150.0;
+pub const DEFAULT_CROSSFADE_MS: f32 = 150.0;
 
 /// How a fade *into* a state takes over when another fade is already in flight.
 /// Per-state entry; absent in the descriptor defaults to [`InterruptPolicy::Smooth`].
@@ -25,7 +25,7 @@ pub(crate) const DEFAULT_CROSSFADE_MS: f32 = 150.0;
 /// evaluates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum InterruptPolicy {
+pub enum InterruptPolicy {
     /// Capture the in-flight blended pose once as a static snapshot and blend
     /// the new fade from it — no discontinuity.
     #[default]
@@ -41,20 +41,20 @@ pub(crate) enum InterruptPolicy {
 /// keyword; `crossfade_ms` is `"crossfadeMs"` on the wire. `interrupt` defaults
 /// to [`InterruptPolicy::Smooth`] when absent.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub(crate) struct AnimationState {
-    pub(crate) clip: String,
+pub struct AnimationState {
+    pub clip: String,
     #[serde(rename = "loop")]
-    pub(crate) looping: bool,
+    pub looping: bool,
     #[serde(rename = "crossfadeMs")]
-    pub(crate) crossfade_ms: f32,
+    pub crossfade_ms: f32,
     #[serde(default)]
-    pub(crate) interrupt: InterruptPolicy,
+    pub interrupt: InterruptPolicy,
     /// Clip index this state resolves to, filled at level load by
     /// `resolve_mesh_entity_clips` against the model's clip metadata. `None` =
     /// unresolved / unusable: switching *to* this state is a warn + no-op, and
     /// switching *out of* it is a hard cut (no outgoing pose to preserve).
     #[serde(skip, default)]
-    pub(crate) clip_index: Option<usize>,
+    pub clip_index: Option<usize>,
 }
 
 /// The source the active fade blends *from*. Set by [`switch_animation_state`]
@@ -64,7 +64,7 @@ pub(crate) struct AnimationState {
 /// collapses out before it can record a source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum FadeSourceKind {
+pub enum FadeSourceKind {
     /// The outgoing (previous) state's clip keeps playing on its own timeline.
     #[default]
     Clip,
@@ -76,7 +76,7 @@ pub(crate) enum FadeSourceKind {
 /// stamps a pending entry-time, and the resolve pass fills it from the frame's
 /// post-advance clock value. A pending stamp reads as elapsed `0` / not
 /// complete.
-pub(crate) type AnimStamp = Option<f64>;
+pub type AnimStamp = Option<f64>;
 
 /// The outgoing source of a fade that a `"smooth"` interrupt took over, stashed
 /// across the switch so the capture can reconstruct the in-flight blended pose.
@@ -90,7 +90,7 @@ pub(crate) type AnimStamp = Option<f64>;
 /// Runtime-only: set at switch time and cleared once the new fade resolves. Never
 /// persisted (mirrors how `entered_at`/`fade_source` carry no durable meaning).
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum InterruptedOutgoing {
+pub enum InterruptedOutgoing {
     /// The interrupted fade blended out of a clip: its state name and the entry
     /// stamp that clip advanced on. Sampled at the interrupt instant on its own
     /// timeline to reproduce the leg.
@@ -109,31 +109,31 @@ pub(crate) enum InterruptedOutgoing {
 /// [`MeshComponent::animation`] as `None` and stay stateless (today's behavior:
 /// first clip, looped, phase offset).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub(crate) struct MeshAnimation {
+pub struct MeshAnimation {
     /// Declared state map: state name → clip + loop + crossfade + interrupt.
     /// Copied in at spawn; never mutated at runtime except for `clip_index`
     /// resolution at level load.
-    pub(crate) states: HashMap<String, AnimationState>,
+    pub states: HashMap<String, AnimationState>,
     /// The state entered at spawn. Always names a declared state (parse-time
     /// validation of the descriptor's `animations` block). `"defaultState"` on
     /// the wire (boundary inventory).
     #[serde(rename = "defaultState")]
-    pub(crate) default_state: String,
+    pub default_state: String,
     /// The currently-active state name. Seeded to `default_state` at spawn.
-    pub(crate) current_state: String,
+    pub current_state: String,
     /// Clock timestamp the current state was entered at. `None` until the
     /// resolve pass fills it (pending).
-    pub(crate) entered_at: AnimStamp,
+    pub entered_at: AnimStamp,
     /// The state being faded *out of*, if a fade is active. Its outgoing clip
     /// keeps playing on its own timeline during the fade.
-    pub(crate) previous_state: Option<String>,
+    pub previous_state: Option<String>,
     /// Clock timestamp the previous state was entered at — its own stamp, so the
     /// outgoing clip advances on its own timeline. `None` if no fade is active
     /// or the stamp is still pending.
-    pub(crate) previous_entered_at: AnimStamp,
+    pub previous_entered_at: AnimStamp,
     /// What the active fade blends from (interrupted-state clip vs snapshot).
     /// Set by [`switch_animation_state`] per the entered state's interrupt policy.
-    pub(crate) fade_source: FadeSourceKind,
+    pub fade_source: FadeSourceKind,
     /// The outgoing source of the fade a `"smooth"` interrupt took over, stashed
     /// so the capture can reconstruct the in-flight blended pose at the interrupt
     /// instant. `Some` only between a smooth interrupt and the new fade's
@@ -141,7 +141,7 @@ pub(crate) struct MeshAnimation {
     /// when the fade completes. Runtime-only — `#[serde(skip)]` like
     /// `clip_index`, since it carries no durable meaning across a reload.
     #[serde(skip, default)]
-    pub(crate) interrupted_outgoing: Option<InterruptedOutgoing>,
+    pub interrupted_outgoing: Option<InterruptedOutgoing>,
 }
 
 impl MeshAnimation {
@@ -149,7 +149,7 @@ impl MeshAnimation {
     /// entity: current = default, entry stamp pending, no active fade. Called by
     /// the data-archetype spawn path (`data_archetype.rs`) when materializing a
     /// descriptor entity with an `animations` block.
-    pub(crate) fn new(states: HashMap<String, AnimationState>, default_state: String) -> Self {
+    pub fn new(states: HashMap<String, AnimationState>, default_state: String) -> Self {
         Self {
             current_state: default_state.clone(),
             default_state,
@@ -237,18 +237,18 @@ impl MeshAnimation {
 /// transforms, including remote enemies that intentionally carry no local
 /// `AgentComponent`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub(crate) struct MeshComponent {
-    pub(crate) model: String,
+pub struct MeshComponent {
+    pub model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) animation: Option<MeshAnimation>,
+    pub animation: Option<MeshAnimation>,
     #[serde(default, skip_serializing_if = "vec3_is_zero")]
-    pub(crate) origin_offset: Vec3,
+    pub origin_offset: Vec3,
 }
 
 impl MeshComponent {
     /// Convenience for the stateless `prop_mesh` path: a model handle with no
     /// animation block.
-    pub(crate) fn stateless(model: String) -> Self {
+    pub fn stateless(model: String) -> Self {
         Self {
             model,
             animation: None,
@@ -256,7 +256,7 @@ impl MeshComponent {
         }
     }
 
-    pub(crate) fn animated(model: String, animation: MeshAnimation) -> Self {
+    pub fn animated(model: String, animation: MeshAnimation) -> Self {
         Self {
             model,
             animation: Some(animation),
@@ -264,7 +264,7 @@ impl MeshComponent {
         }
     }
 
-    pub(crate) fn with_origin_offset(mut self, origin_offset: Vec3) -> Self {
+    pub fn with_origin_offset(mut self, origin_offset: Vec3) -> Self {
         self.origin_offset = origin_offset;
         self
     }
@@ -274,7 +274,7 @@ fn vec3_is_zero(value: &Vec3) -> bool {
     *value == Vec3::ZERO
 }
 
-pub(crate) fn capsule_center_to_feet_origin_offset(radius: f32, height: f32) -> Vec3 {
+pub fn capsule_center_to_feet_origin_offset(radius: f32, height: f32) -> Vec3 {
     let half_height = (height / 2.0 - radius).max(0.0);
     Vec3::new(0.0, -(half_height + radius), 0.0)
 }
@@ -283,7 +283,7 @@ pub(crate) fn capsule_center_to_feet_origin_offset(radius: f32, height: f32) -> 
 /// logs the failure variants; this mirrors the `setEmitterRate`
 /// validated-setter precedent (validate here, let the caller surface warnings).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum SwitchResult {
+pub enum SwitchResult {
     /// Intent recorded: target state, pending entry stamp, and previous state.
     Switched,
     /// The entity already sits in the target state; no change recorded.
@@ -317,7 +317,7 @@ pub(crate) enum SwitchResult {
 /// source records `Clip` (no in-flight pose to capture). A hard cut (no fade)
 /// also applies when switching *out of* an unresolved/unusable current state:
 /// there is no outgoing pose to preserve.
-pub(crate) fn switch_animation_state(
+pub fn switch_animation_state(
     registry: &mut EntityRegistry,
     id: EntityId,
     target: &str,
@@ -436,7 +436,7 @@ pub(crate) fn switch_animation_state(
 /// can distinguish a real restart from the no-op reasons (mostly for tests; the
 /// AI tick ignores the variant).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum RestartResult {
+pub enum RestartResult {
     /// The clip was re-stamped from frame 0 (entry stamp set pending, any fade
     /// bookkeeping cleared).
     Restarted,
@@ -466,7 +466,7 @@ pub(crate) enum RestartResult {
 /// unusable, or the entity is not currently in `target` — restarting a clip the
 /// entity is not playing is meaningless; the caller enters the state via
 /// `switch_animation_state` first.
-pub(crate) fn restart_animation_clip(
+pub fn restart_animation_clip(
     registry: &mut EntityRegistry,
     id: EntityId,
     target: &str,
@@ -526,15 +526,15 @@ pub(crate) fn restart_animation_clip(
 /// concrete origin; the fade source-kind decision is made earlier (at switch
 /// time, in [`switch_animation_state`]) and the per-frame capture inputs are
 /// computed downstream by the render-frame collector.
-pub(crate) fn resolve_pending_animation_stamps(registry: &mut EntityRegistry, now: f64) {
-    use crate::scripting::registry::ComponentKind;
+pub fn resolve_pending_animation_stamps(registry: &mut EntityRegistry, now: f64) {
+    use crate::registry::ComponentKind;
 
     // Collect ids first so we don't hold an immutable borrow across the mutable
     // writes. Mesh instance counts are small relative to a frame's work.
     let pending: Vec<EntityId> = registry
         .iter_with_kind(ComponentKind::Mesh)
         .filter_map(|(id, value)| match value {
-            crate::scripting::registry::ComponentValue::Mesh(mesh) => mesh
+            crate::registry::ComponentValue::Mesh(mesh) => mesh
                 .animation
                 .as_ref()
                 .filter(|a| a.resolve_pass_has_work(now))
@@ -570,7 +570,7 @@ pub(crate) fn resolve_pending_animation_stamps(registry: &mut EntityRegistry, no
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scripting::registry::{ComponentValue, Transform};
+    use crate::registry::{ComponentValue, Transform};
 
     fn usable_state(clip: &str, looping: bool, clip_index: usize) -> AnimationState {
         AnimationState {

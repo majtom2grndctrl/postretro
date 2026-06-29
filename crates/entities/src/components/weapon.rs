@@ -6,31 +6,31 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::scripting::data_descriptors::{FireMode, ResolutionMode, WeaponDescriptor};
+use crate::data_descriptors::{FireMode, ResolutionMode, WeaponDescriptor};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct EffectiveStats {
-    pub(crate) damage: f32,
-    pub(crate) range: f32,
-    pub(crate) cooldown_ms: f32,
-    pub(crate) fire_mode: FireMode,
-    pub(crate) resolution: ResolutionMode,
+pub struct EffectiveStats {
+    pub damage: f32,
+    pub range: f32,
+    pub cooldown_ms: f32,
+    pub fire_mode: FireMode,
+    pub resolution: ResolutionMode,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub(crate) struct WeaponComponent {
-    pub(crate) damage: f32,
-    pub(crate) range: f32,
-    pub(crate) cooldown_ms: f32,
-    pub(crate) fire_mode: FireMode,
-    pub(crate) resolution: ResolutionMode,
-    pub(crate) cooldown_remaining_ms: f32,
+pub struct WeaponComponent {
+    pub damage: f32,
+    pub range: f32,
+    pub cooldown_ms: f32,
+    pub fire_mode: FireMode,
+    pub resolution: ResolutionMode,
+    pub cooldown_remaining_ms: f32,
     #[serde(default)]
-    pub(crate) shoot_press_consumed: bool,
+    pub shoot_press_consumed: bool,
 }
 
 impl WeaponComponent {
-    pub(crate) fn from_descriptor(desc: &WeaponDescriptor) -> Self {
+    pub fn from_descriptor(desc: &WeaponDescriptor) -> Self {
         Self {
             damage: desc.damage,
             range: desc.range,
@@ -42,7 +42,7 @@ impl WeaponComponent {
         }
     }
 
-    pub(crate) fn effective(&self) -> EffectiveStats {
+    pub fn effective(&self) -> EffectiveStats {
         EffectiveStats {
             damage: self.damage,
             range: self.range,
@@ -52,7 +52,7 @@ impl WeaponComponent {
         }
     }
 
-    pub(crate) fn refresh_from_descriptor(&mut self, desc: &WeaponDescriptor) {
+    pub fn refresh_from_descriptor(&mut self, desc: &WeaponDescriptor) {
         self.damage = desc.damage;
         self.range = desc.range;
         self.cooldown_ms = desc.cooldown_ms;

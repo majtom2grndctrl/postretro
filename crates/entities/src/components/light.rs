@@ -8,12 +8,12 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::scripting::conv::Vec3Lit;
+use postretro_foundation::Vec3Lit;
 
 /// Shape discriminant. Parallels `crate::prl::LightType` at the FFI boundary so
 /// the scripting module stays independent of the runtime-level data types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum LightKind {
+pub enum LightKind {
     Point,
     Spot,
     Directional,
@@ -21,7 +21,7 @@ pub(crate) enum LightKind {
 
 /// Distance-attenuation discriminant. Parallels `crate::prl::FalloffModel`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum FalloffKind {
+pub enum FalloffKind {
     Linear,
     InverseDistance,
     InverseSquared,
@@ -41,26 +41,26 @@ pub(crate) enum FalloffKind {
 ///   completion is CPU-side.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct LightAnimation {
-    pub(crate) period_ms: f32,
+pub struct LightAnimation {
+    pub period_ms: f32,
     /// `None` = 0.0. Stored in `[0.0, 1.0)`; the bridge `fract`s any larger
     /// value before writing the GPU descriptor.
     #[serde(default)]
-    pub(crate) phase: Option<f32>,
+    pub phase: Option<f32>,
     /// `None` = loop forever.
     #[serde(default)]
-    pub(crate) play_count: Option<u32>,
+    pub play_count: Option<u32>,
     /// `None` = "no animation on this channel; hold the static value". The
     /// bridge signals absence with `Some(false)` at the GPU descriptor's
     /// `active` slot.
     #[serde(default)]
-    pub(crate) start_active: Option<bool>,
+    pub start_active: Option<bool>,
     #[serde(default)]
-    pub(crate) brightness: Option<Vec<f32>>,
+    pub brightness: Option<Vec<f32>>,
     #[serde(default)]
-    pub(crate) color: Option<Vec<Vec3Lit>>,
+    pub color: Option<Vec<Vec3Lit>>,
     #[serde(default)]
-    pub(crate) direction: Option<Vec<Vec3Lit>>,
+    pub direction: Option<Vec<Vec3Lit>>,
 }
 
 /// Script-visible state of a map light. Fields that do not vary at runtime
@@ -73,16 +73,16 @@ pub(crate) struct LightAnimation {
 /// precision; the baker retains double precision upstream.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct LightComponent {
-    pub(crate) origin: [f32; 3],
-    pub(crate) light_type: LightKind,
-    pub(crate) intensity: f32,
-    pub(crate) color: [f32; 3],
-    pub(crate) falloff_model: FalloffKind,
-    pub(crate) falloff_range: f32,
-    pub(crate) cone_angle_inner: Option<f32>,
-    pub(crate) cone_angle_outer: Option<f32>,
-    pub(crate) cone_direction: Option<[f32; 3]>,
+pub struct LightComponent {
+    pub origin: [f32; 3],
+    pub light_type: LightKind,
+    pub intensity: f32,
+    pub color: [f32; 3],
+    pub falloff_model: FalloffKind,
+    pub falloff_range: f32,
+    pub cone_angle_inner: Option<f32>,
+    pub cone_angle_outer: Option<f32>,
+    pub cone_direction: Option<[f32; 3]>,
     /// Whether the source `MapLight.is_dynamic` flag was set. Script handles
     /// read this as `isDynamic` to gate `color` animation: color animation on
     /// a baked light would produce a direct/indirect mismatch (SH indirect was
@@ -91,7 +91,7 @@ pub(crate) struct LightComponent {
     /// `wrapLightEntity` pre-checks the handle snapshot and throws a descriptive
     /// error before the primitive call.
     #[serde(default)]
-    pub(crate) is_dynamic: bool,
+    pub is_dynamic: bool,
     /// Slot into the animated-compose descriptor buffer (group 1 binding 4
     /// of the animated-lightmap compose pass) when the compiler reserved one
     /// for this map light, else `None`. Resolved once at level load from
@@ -100,9 +100,9 @@ pub(crate) struct LightComponent {
     /// compose-side path instead of the legacy `is_dynamic`-gated forward
     /// path. Task 2c of `sdf-static-occluder-shadows`.
     #[serde(default)]
-    pub(crate) animated_slot: Option<u32>,
+    pub animated_slot: Option<u32>,
     #[serde(default)]
-    pub(crate) animation: Option<LightAnimation>,
+    pub animation: Option<LightAnimation>,
 }
 
 #[cfg(test)]

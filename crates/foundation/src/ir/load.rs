@@ -48,7 +48,7 @@ use super::{BakedIr, CURRENT_IR_VERSION};
 ///
 /// This is the only seam that inspects the version; `bind` assumes the tree it
 /// receives has already passed through here.
-pub(crate) fn load_baked_ir(json: &str) -> Option<BakedIr> {
+pub fn load_baked_ir(json: &str) -> Option<BakedIr> {
     let envelope: BakedIr = match serde_json::from_str(json) {
         Ok(envelope) => envelope,
         Err(error) => {
@@ -72,7 +72,7 @@ pub(crate) fn load_baked_ir(json: &str) -> Option<BakedIr> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scripting::ir::{IrNode, IrValue};
+    use crate::ir::{IrNode, IrValue};
 
     fn sample_envelope() -> BakedIr {
         BakedIr {

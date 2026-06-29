@@ -9,15 +9,16 @@ mod intents;
 mod scope;
 mod substrate;
 
-// Re-exported so scripting subsystem modules (`data_descriptors`, `player_movement`)
-// can import `crate::movement::MovementScope` without pulling in the full movement subsystem.
-pub(crate) use scope::MovementScope;
+// Re-export the foundation-owned movement scope for old in-crate paths during
+// the extraction.
+#[allow(unused_imports)]
+pub(crate) use postretro_foundation::MovementScope;
 
 use crate::collision::CollisionWorld;
 use crate::movement::carry::CarryRule;
 use crate::movement::dispatch::dispatch_state_intent;
 use crate::movement::substrate::{advance_forgiveness, derive_jump_edges, integrate_collision};
-use crate::scripting::components::player_movement::{MovementState, PlayerMovementComponent};
+use postretro_foundation::{MovementState, PlayerMovementComponent};
 
 #[cfg(test)]
 use crate::movement::intents::{DASH_MAX_MS, dash_intent};

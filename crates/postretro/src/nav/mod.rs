@@ -10,7 +10,7 @@ pub use path::find_path;
 use glam::Vec3;
 use postretro_level_format::navmesh::{NavMeshSection, NavPortal, NavRegion};
 
-pub use crate::scripting::foundation_pods::NavAgentParams;
+pub use postretro_foundation::NavAgentParams;
 
 /// XZ-plane (ground) distance between two world positions, ignoring Y. Shared by
 /// the pathfinding query (edge cost, heuristic) and downstream steering/AI so the

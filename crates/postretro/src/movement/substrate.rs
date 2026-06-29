@@ -7,7 +7,7 @@ use parry3d::shape::Capsule;
 
 use crate::collision::{CollisionWorld, SKIN_DISTANCE, cast_capsule, cast_ray};
 use crate::movement::SubstrateResult;
-use crate::scripting::components::player_movement::PlayerMovementComponent;
+use postretro_foundation::PlayerMovementComponent;
 
 /// Separation nudge along the contact normal applied when parry reports a
 /// TOI=0 hit during the slide loop. `SKIN_DISTANCE` (the sweep's

@@ -20,7 +20,7 @@ use super::{BakedIr, IrNode, IrType, IrValue};
 /// is a serde error upstream of bind; bind's faults are type-table and
 /// name-resolution violations on an already-deserialized tree.
 #[derive(Debug, Error, PartialEq)]
-pub(crate) enum BindError {
+pub enum BindError {
     /// An `input` leaf named a source the scope did not resolve — either truly
     /// unknown, or backed by a non-projectable slot (`String`/`Enum`/`Array`).
     /// The scope collapses both into a `None`; bind cannot tell them apart.
@@ -76,7 +76,7 @@ pub(crate) enum BindError {
 /// `DashPrograms` case). The derive adds an `H: Clone` bound, satisfied by every
 /// real scope's handle (`usize` for `MovementScope`).
 #[derive(Debug, Clone)]
-pub(crate) enum BoundNode<H> {
+pub enum BoundNode<H> {
     Const(IrValue),
     Input(H),
 
@@ -121,10 +121,10 @@ pub(crate) enum BoundNode<H> {
 /// Generic over the scope so it carries the scope's concrete handle types. The
 /// eval pass (`eval.rs`) walks `root`, reads inputs via the scope, and — when
 /// `output` is `Some` — writes the result back through the same scope.
-pub(crate) struct BoundProgram<S: BindingScope> {
-    pub(crate) root: BoundNode<S::InputHandle>,
-    pub(crate) root_type: IrType,
-    pub(crate) output: Option<S::OutputHandle>,
+pub struct BoundProgram<S: BindingScope> {
+    pub root: BoundNode<S::InputHandle>,
+    pub root_type: IrType,
+    pub output: Option<S::OutputHandle>,
 }
 
 // Manual `Clone` bounded on the handle types only, mirroring the manual `Debug`
@@ -171,10 +171,7 @@ where
 /// projection fault. Bind never panics. The version check on `baked.version`
 /// is performed at load by `load::load_baked_ir`, not here — bind receives only
 /// already-validated `BakedIr` values.
-pub(crate) fn bind<S: BindingScope>(
-    baked: &BakedIr,
-    scope: &S,
-) -> Result<BoundProgram<S>, BindError> {
+pub fn bind<S: BindingScope>(baked: &BakedIr, scope: &S) -> Result<BoundProgram<S>, BindError> {
     let (root, root_type) = bind_node(&baked.root, scope)?;
 
     let output = match &baked.output {
@@ -386,7 +383,7 @@ fn type_name(ty: IrType) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scripting::ir::scope::{ResolvedInput, ResolvedOutput};
+    use crate::ir::scope::{ResolvedInput, ResolvedOutput};
     use std::collections::HashMap;
 
     /// Minimal stub scope for bind tests. Inputs and outputs are a fixed set of

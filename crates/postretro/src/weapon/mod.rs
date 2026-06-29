@@ -6,7 +6,6 @@ use parry3d::math::{Point, Vector};
 
 use crate::collision::{CollisionWorld, cast_ray};
 use crate::scripting::components::weapon::WeaponComponent;
-use crate::scripting::data_descriptors::{FireMode, ResolutionMode};
 use crate::scripting::registry::{EntityId, EntityRegistry};
 use crate::scripting_systems::hit_zones::{EntityRayHit, HitZoneStore, nearest_entity_hit};
 #[cfg(test)]
@@ -14,6 +13,7 @@ use crate::{
     camera::Camera,
     input::{Action, ActionSnapshot, ButtonState},
 };
+use postretro_foundation::{FireMode, ResolutionMode};
 
 mod damage;
 mod impact;

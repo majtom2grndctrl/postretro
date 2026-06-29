@@ -28,7 +28,7 @@ use super::scope::BindingScope;
 /// `scope`. Pure and read-only — it never writes back, even when the program
 /// carries an output. Allocation-free: the recursive walk touches only the
 /// already-allocated bound tree and stack-resident `IrValue`s.
-pub(crate) fn eval_value<S: BindingScope>(program: &BoundProgram<S>, scope: &S) -> IrValue {
+pub fn eval_value<S: BindingScope>(program: &BoundProgram<S>, scope: &S) -> IrValue {
     eval_node(&program.root, scope)
 }
 
@@ -38,7 +38,7 @@ pub(crate) fn eval_value<S: BindingScope>(program: &BoundProgram<S>, scope: &S) 
 /// The value-computing core ([`eval_value`]) runs against `&*scope` and is
 /// allocation-free; the write step needs `&mut scope` and runs only when an
 /// output is present.
-pub(crate) fn eval_and_write<S: BindingScope>(program: &BoundProgram<S>, scope: &mut S) -> IrValue {
+pub fn eval_and_write<S: BindingScope>(program: &BoundProgram<S>, scope: &mut S) -> IrValue {
     let value = eval_value(program, scope);
     if let Some(handle) = &program.output {
         scope.write(handle, value);
@@ -151,8 +151,8 @@ fn values_equal(left: IrValue, right: IrValue) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scripting::ir::test_scope::{StubScope, StubWrite};
-    use crate::scripting::ir::{BakedIr, CURRENT_IR_VERSION, IrNode, bind};
+    use crate::ir::test_scope::{StubScope, StubWrite};
+    use crate::ir::{BakedIr, CURRENT_IR_VERSION, IrNode, bind};
 
     const EPSILON: f32 = 1e-6;
 

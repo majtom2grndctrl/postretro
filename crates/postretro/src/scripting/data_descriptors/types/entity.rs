@@ -3,56 +3,12 @@
 
 use std::collections::HashMap;
 
-use serde::{Deserialize, Serialize};
-
 use crate::scripting::components::billboard_emitter::BillboardEmitterComponent;
 use crate::scripting::components::mesh::{AnimationState, InterruptPolicy};
 use crate::scripting::data_descriptors::{
     AiDescriptor, DescriptorError, HealthDescriptor, PlayerMovementDescriptor, WeaponDescriptor,
 };
-
-/// Authored light component preset attached to an [`EntityTypeDescriptor`].
-/// Mirrors the runtime [`crate::scripting::components::light::LightComponent`] shape but
-/// only carries the script-authored fields (no animation, no cone, no
-/// shadows). Spawn-time defaults fill the rest. `range` is mapped onto
-/// [`crate::scripting::components::light::LightComponent::falloff_range`] when the
-/// data-archetype spawn path materializes the component.
-///
-/// `is_dynamic` may be set by the author but the data-archetype spawn path
-/// forces `true` regardless (baked indirect lighting is not supported for
-/// descriptor-spawned lights).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) struct LightDescriptor {
-    pub(crate) color: [f32; 3],
-    pub(crate) intensity: f32,
-    pub(crate) range: f32,
-    pub(crate) is_dynamic: bool,
-}
-
-impl LightDescriptor {
-    /// Validate bounds that serde cannot enforce: `intensity` and `range`
-    /// must be non-negative finite values.
-    pub(crate) fn validate(self) -> Result<Self, DescriptorError> {
-        if !self.intensity.is_finite() || self.intensity < 0.0 {
-            return Err(DescriptorError::InvalidShape {
-                reason: format!(
-                    "`components.light.intensity` must be >= 0.0, got {}",
-                    self.intensity
-                ),
-            });
-        }
-        if !self.range.is_finite() || self.range < 0.0 {
-            return Err(DescriptorError::InvalidShape {
-                reason: format!(
-                    "`components.light.range` must be >= 0.0, got {}",
-                    self.range
-                ),
-            });
-        }
-        Ok(self)
-    }
-}
+pub(crate) use postretro_foundation::data_descriptors::LightDescriptor;
 
 /// Authored mesh component preset attached to an [`EntityTypeDescriptor`].
 /// Carries the model handle a skinned-model entity renders plus an optional

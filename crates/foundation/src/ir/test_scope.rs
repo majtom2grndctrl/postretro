@@ -1,12 +1,13 @@
-// Runtime-side copy of the VM-free IR test scope used by VM parity tests.
-// The foundation crate owns the production IR substrate; this fixture remains
-// here because dependency `cfg(test)` items are not visible to dependent crates.
+// Test-only `BindingScope` implementation for the VM-free IR core.
+// See: context/lib/scripting.md §12 (Crate Architecture)
 
 use super::scope::{BindingScope, ResolvedInput, ResolvedOutput};
 use super::{IrType, IrValue};
 
+/// The value kind a [`StubScope`] output accepts. Distinct from `IrType` only to
+/// keep the stub's surface self-describing at call sites.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum StubWrite {
+pub enum StubWrite {
     Number,
     Bool,
 }
@@ -23,13 +24,16 @@ struct StubOutput {
     written: Option<IrValue>,
 }
 
-pub(crate) struct StubScope {
+/// A fixed-set test scope with **indexed** handles (`usize`), deliberately
+/// unlike store-backed owned-name handles so a single bound program can be
+/// shown portable across differently-shaped namespaces.
+pub struct StubScope {
     inputs: Vec<StubInput>,
     outputs: Vec<StubOutput>,
 }
 
 impl StubScope {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             inputs: vec![
                 StubInput {
@@ -57,7 +61,7 @@ impl StubScope {
         }
     }
 
-    pub(crate) fn with_writes(outputs: &[(&'static str, StubWrite)]) -> Self {
+    pub fn with_writes(outputs: &[(&'static str, StubWrite)]) -> Self {
         let mut scope = Self::new();
         scope.outputs = outputs
             .iter()
@@ -73,13 +77,13 @@ impl StubScope {
         scope
     }
 
-    pub(crate) fn set_input(&mut self, name: &str, value: IrValue) {
+    pub fn set_input(&mut self, name: &str, value: IrValue) {
         if let Some(input) = self.inputs.iter_mut().find(|input| input.name == name) {
             input.value = Some(value);
         }
     }
 
-    pub(crate) fn written(&self, name: &str) -> Option<IrValue> {
+    pub fn written(&self, name: &str) -> Option<IrValue> {
         self.outputs
             .iter()
             .find(|output| output.name == name)

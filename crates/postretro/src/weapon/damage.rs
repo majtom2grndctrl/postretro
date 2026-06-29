@@ -4,4 +4,4 @@
 //
 // See: context/lib/entity_model.md §2 · context/research/weapon-model.md §7
 
-pub(crate) use crate::scripting::foundation_pods::DamagePayload;
+pub(crate) use postretro_foundation::DamagePayload;

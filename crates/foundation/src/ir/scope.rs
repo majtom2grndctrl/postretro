@@ -16,16 +16,16 @@ use super::{IrType, IrValue};
 /// `SlotValue::Boolean ↔ IrValue::Bool`. `String`/`Enum`/`Array` slots have no
 /// IR projection — the scope must return `None` from `resolve_input` for them,
 /// so bind never sees a non-projectable type here.
-pub(crate) struct ResolvedInput<H> {
-    pub(crate) handle: H,
-    pub(crate) ir_type: IrType,
+pub struct ResolvedInput<H> {
+    pub handle: H,
+    pub ir_type: IrType,
 }
 
 /// A resolved output: the eval-time write handle the scope writes through, plus
 /// the projected IR type the root's result type must match.
-pub(crate) struct ResolvedOutput<H> {
-    pub(crate) handle: H,
-    pub(crate) ir_type: IrType,
+pub struct ResolvedOutput<H> {
+    pub handle: H,
+    pub ir_type: IrType,
 }
 
 /// The namespace an IR program binds and evaluates against.
@@ -58,7 +58,7 @@ pub(crate) struct ResolvedOutput<H> {
 ///   resolved; `write` accepts a value of the resolved output's projected
 ///   type. Bind guarantees the value type matches the handle's projection, so
 ///   eval implementations may assume the projection holds.
-pub(crate) trait BindingScope {
+pub trait BindingScope {
     type InputHandle;
     type OutputHandle;
 

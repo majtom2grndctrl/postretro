@@ -1,0 +1,19 @@
+[package]
+name = "postretro-foundation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "VM-free foundation data and evaluation substrate for Postretro"
+license.workspace = true
+
+[features]
+script-ffi = ["dep:rquickjs", "dep:mlua"]
+
+[dependencies]
+glam.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+log.workspace = true
+rquickjs = { workspace = true, optional = true }
+mlua = { workspace = true, optional = true }

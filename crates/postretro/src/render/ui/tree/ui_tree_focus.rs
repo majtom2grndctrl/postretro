@@ -9,7 +9,7 @@ use taffy::prelude::NodeId;
 use super::super::descriptor::{AnchoredTree, Widget};
 use super::super::layout::REFERENCE_HEIGHT;
 use super::super::layout::REFERENCE_WIDTH;
-use crate::scripting::slot_table::SlotValue;
+use postretro_entities::SlotValue;
 
 use super::CellValues;
 use super::draw::{

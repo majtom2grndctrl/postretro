@@ -35,19 +35,19 @@ use super::layout::Anchor;
 use super::modal_stack::{ModalStack, ScopeTier};
 use super::theme::{ThemeDescriptor, UiTheme};
 use super::tree::{CellValues, ImageSizes, UiDrawData, UiTree};
-use crate::scripting::ctx::ScriptCtx;
-use crate::scripting::data_descriptors::{ModThemeTokens, RegisteredUiTree};
+use crate::scripting::data_descriptors::RegisteredUiTree;
 use crate::scripting::primitives::register_all;
 use crate::scripting::primitives::store::write_store_slot;
 use crate::scripting::primitives_registry::PrimitiveRegistry;
 use crate::scripting::runtime::{
     ModManifestResult, ScriptRuntime, ScriptRuntimeConfig, StagedManifestCommitOutcome,
 };
-use crate::scripting::slot_table::SlotValue;
 use crate::scripting::staged_manifest::{
     StagedManifestBuildConfig, StagedManifestBuildResult, StagedManifestBuildStatus,
     build_staged_manifest,
 };
+use postretro_entities::{ScriptCtx, SlotValue};
+use postretro_foundation::ModThemeTokens;
 
 fn fs() -> glyphon::FontSystem {
     super::text::build_font_system()

@@ -3110,7 +3110,7 @@ mod tests {
     // then eases toward C. Regression: a "smooth" interrupt that captured the
     // outgoing leg (or dropped the in-flight blend's OUT leg) snapped instead.
 
-    use crate::scripting::components::mesh::{
+    use postretro_entities::components::mesh::{
         AnimationState as GameState, FadeSourceKind, InterruptPolicy, MeshAnimation,
     };
     use std::collections::HashMap as GameMap;
@@ -3165,7 +3165,7 @@ mod tests {
         // `switch_animation_state` records for a smooth interrupt, then resolve C's
         // stamp to the interrupt instant t2 = 1.1.
         anim.interrupted_outgoing = Some(
-            crate::scripting::components::mesh::InterruptedOutgoing::Clip {
+            postretro_entities::components::mesh::InterruptedOutgoing::Clip {
                 state: "A".into(),
                 entered_at: 0.0,
             },
@@ -3257,7 +3257,7 @@ mod tests {
         anim.entered_at = Some(t2a);
         anim.fade_source = FadeSourceKind::Snapshot;
         anim.interrupted_outgoing = Some(
-            crate::scripting::components::mesh::InterruptedOutgoing::Clip {
+            postretro_entities::components::mesh::InterruptedOutgoing::Clip {
                 state: "A".into(),
                 entered_at: 0.0,
             },
@@ -3286,7 +3286,7 @@ mod tests {
         anim.fade_source = FadeSourceKind::Snapshot;
         // The interrupted fade (S1→C) had a SNAPSHOT outgoing: stash references S1.
         anim.interrupted_outgoing = Some(
-            crate::scripting::components::mesh::InterruptedOutgoing::Snapshot {
+            postretro_entities::components::mesh::InterruptedOutgoing::Snapshot {
                 tag: t2a.to_bits(),
             },
         );
@@ -3342,7 +3342,7 @@ mod tests {
         anim.entered_at = Some(t2);
         anim.fade_source = FadeSourceKind::Snapshot;
         anim.interrupted_outgoing = Some(
-            crate::scripting::components::mesh::InterruptedOutgoing::Clip {
+            postretro_entities::components::mesh::InterruptedOutgoing::Clip {
                 state: "A".into(),
                 entered_at: 0.0,
             },

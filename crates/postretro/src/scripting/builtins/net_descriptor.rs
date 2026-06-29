@@ -3,7 +3,6 @@
 
 use super::MapEntity;
 use super::data_archetype::{DEFAULT_AGENT_PARAMS, find_descriptor, spawn_descriptor_instance};
-use crate::nav::NavAgentParams;
 use crate::scripting::components::mesh::{
     MeshAnimation, MeshComponent, capsule_center_to_feet_origin_offset,
 };
@@ -11,6 +10,7 @@ use crate::scripting::components::player_movement::PlayerMovementComponent;
 use crate::scripting::data_descriptors::EntityTypeDescriptor;
 use crate::scripting::provenance::DescriptorSpawnPath;
 use crate::scripting::registry::{ComponentKind, EntityId, EntityRegistry};
+use postretro_foundation::NavAgentParams;
 
 /// Spawn ONE descriptor-backed networked-slot player pawn from a `player_spawn`
 /// placement (M15 Phase 3 Task 4). This is the host-authoritative remote-pawn

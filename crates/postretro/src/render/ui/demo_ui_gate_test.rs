@@ -7,7 +7,7 @@ use super::demo::build_demo_descriptor;
 use super::text::{UI_MONO_FONT_FAMILY, measure_run};
 use super::theme::UiTheme;
 use super::tree::{ImageSizes, UiDrawData, UiTree};
-use crate::scripting::slot_table::SlotValue;
+use postretro_entities::SlotValue;
 
 const FALLBACK_MARKER: &str = "FALLBACK HUD HP --";
 const FALLBACK_HEALTH: &str = "FALLBACK HUD HP 42";

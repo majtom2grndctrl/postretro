@@ -36,7 +36,7 @@ fn no_images() -> super::tree::ImageSizes {
     super::tree::ImageSizes::new()
 }
 
-fn no_slots() -> HashMap<String, crate::scripting::slot_table::SlotValue> {
+fn no_slots() -> HashMap<String, postretro_entities::SlotValue> {
     HashMap::new()
 }
 

@@ -148,9 +148,7 @@ fn read_number(slot_table: &SlotTable, name: &str) -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scripting::data_descriptors::{
-        CrossingCondition, CrossingDescriptor, LevelManifest,
-    };
+    use crate::scripting::data_descriptors::{CrossingCondition, CrossingDescriptor};
     use crate::scripting::slot_table::{
         NumericRange, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue,
     };
@@ -220,14 +218,7 @@ mod tests {
 
     fn registry_with(crossings: Vec<CrossingDescriptor>) -> DataRegistry {
         let mut reg = DataRegistry::new();
-        reg.populate_from_manifest(
-            LevelManifest {
-                reactions: Vec::new(),
-                crossings,
-                ui_trees: Vec::new(),
-            },
-            &[],
-        );
+        reg.populate_level(Vec::new(), crossings, &[]);
         reg
     }
 

@@ -23,12 +23,12 @@ use postretro_net::wire::{
 };
 
 use super::state_slots::{ClientStateApply, HostStateReplication};
-use crate::scripting::components::health::HealthComponent;
-use crate::scripting::data_descriptors::HealthDescriptor;
-use crate::scripting::registry::{EntityRegistry, Transform};
-use crate::scripting::slot_table::{
-    ReplicationScope, SlotOwnership, SlotRecord, SlotSchema, SlotTable, SlotType, SlotValue,
+use postretro_entities::components::health::HealthComponent;
+use postretro_entities::{
+    EntityRegistry, ReplicationScope, SlotOwnership, SlotRecord, SlotSchema, SlotTable, SlotType,
+    SlotValue, Transform,
 };
+use postretro_foundation::HealthDescriptor;
 
 use super::command_queue::MovementOwners;
 

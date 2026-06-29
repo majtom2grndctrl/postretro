@@ -76,6 +76,8 @@ env_logger.workspace = true
 
 # Workspace members
 postretro-level-format = { workspace = true, features = ["gltf-resolve"] }
+postretro-foundation = { workspace = true }
+postretro-entities = { workspace = true, features = ["script-ffi"] }
 postretro-net = { workspace = true }
 
 # Debug UI (egui) — only compiled in when the `dev-tools` feature is enabled.

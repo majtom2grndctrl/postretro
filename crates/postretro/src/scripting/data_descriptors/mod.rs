@@ -5,39 +5,34 @@
 // Split into submodules by responsibility: `types/` holds the descriptor
 // structs/enums and their inherent impls; `js/` and `lua/` hold the per-runtime
 // converters; `validate.rs` holds the shared validators/parsers; `error.rs`
-// holds `DescriptorError` and the `js_err`/`lua_err` adapters. Submodules see
-// each other (and the shared external imports below) through `use super::*`,
-// resolved against the glob re-exports at the bottom of this file.
+// holds VM-free `DescriptorError`; `vm_adapters.rs` holds the `js_err`/`lua_err`
+// adapters. Converter submodules still use this module's runtime namespace;
+// descriptor type files import their VM-free dependencies explicitly.
 
 // Shared external imports, re-exported so submodules pick them up via
 // `use super::*`. Keeping them here (rather than per file) avoids a tailored
 // import list in every submodule and keeps the wiring in one place.
 pub(crate) use mlua::{Table, Value as LuaValue};
 pub(crate) use rquickjs::{Array, Ctx, Object, Value as JsValue};
-pub(crate) use serde::{Deserialize, Serialize};
-pub(crate) use thiserror::Error;
-
 pub(crate) use std::collections::{BTreeSet, HashMap};
-pub(crate) use std::path::{Component, Path};
 
-pub(crate) use super::components::billboard_emitter::{
-    BillboardEmitterComponent, BillboardEmitterComponentLit,
-};
+pub(crate) use super::components::billboard_emitter::BillboardEmitterComponentLit;
+#[allow(unused_imports)]
 pub(crate) use super::components::mesh::{AnimationState, InterruptPolicy};
 pub(crate) use super::data_registry::{ScopedCrossing, ScopedReaction};
 pub(crate) use super::registry::EntityId;
 pub(crate) use super::runtime::{Frontend, MenuCamera, ModMapEntry};
-pub(crate) use crate::movement::MovementScope;
 pub(crate) use crate::render::ui::descriptor::{
-    Align, AnchoredTree, AnnounceWidget, BarMax, BarMaxStateRef, BarWidget, BindSource, Border,
-    ButtonWidget, CaptureMode, CellInit, ColorValue, ContainerWidget, Easing, FocusKind,
-    FocusNeighbors, FocusPolicy, GridWidget, ImageWidget, LocalState, PanelBind, PanelTween,
-    PanelWidget, Predicate, PredicateValue, Priority, RepeatPolicy, Role, SliderBind, SliderWidget,
-    SpacerWidget, SpacingValue, TextBind, TextTween, TextWidget, Widget,
+    AnchoredTree, AnnounceWidget, BarMax, BarMaxStateRef, BarWidget, BindSource, Border,
+    ButtonWidget, CaptureMode, CellInit, ColorValue, ContainerWidget, FocusNeighbors, FocusPolicy,
+    GridWidget, ImageWidget, LocalState, PanelBind, PanelTween, PanelWidget, Predicate,
+    PredicateValue, Priority, RepeatPolicy, Role, SliderBind, SliderWidget, SpacerWidget,
+    SpacingValue, TextBind, TextTween, TextWidget, Widget,
 };
+#[allow(unused_imports)]
 pub(crate) use crate::render::ui::layout::Anchor;
 pub(crate) use crate::render::ui::style_ranges::{Flash, Pulse, StyleEntry, StyleRanges};
-pub(crate) use crate::scripting::ir::{BakedIr, CURRENT_IR_VERSION, IrNode, IrType, bind};
+pub(crate) use crate::scripting::ir::IrType;
 
 // Sibling scripting modules referenced by the converters. Re-exported so the
 // nested converter files reach them via `use super::super::*`.
@@ -45,17 +40,17 @@ pub(crate) use super::components::mesh::DEFAULT_CROSSFADE_MS;
 pub(crate) use super::conv;
 
 mod error;
+mod runtime_manifest;
 mod validate;
+mod vm_adapters;
 
 // The `types`/`js`/`lua` directories group the descriptor types and the two
 // per-runtime converter sets. Files inside them reach this module's namespace
 // (shared imports + sibling re-exports below) through `use super::super::*`.
 mod types {
     pub(crate) mod combat;
-    pub(crate) mod entity;
     pub(crate) mod manifest;
     pub(crate) mod movement;
-    pub(crate) mod reactions;
 }
 
 mod js {
@@ -82,13 +77,19 @@ mod lua {
 // `data_descriptors::Item` keep resolving and submodules can reach each other
 // (top-level files via `use super::*`, nested files via `use super::super::*`).
 pub(crate) use error::*;
+pub(crate) use runtime_manifest::*;
 pub(crate) use validate::*;
+pub(crate) use vm_adapters::*;
 
+pub(crate) use postretro_entities::data_descriptors::{
+    CrossingCondition, CrossingDescriptor, EntityTypeDescriptor, MeshDescriptor, NamedReaction,
+    PrimitiveDescriptor, ProgressDescriptor, RawAnimationState, ReactionDescriptor, SequenceStep,
+    build_crossing,
+};
+pub(crate) use postretro_foundation::data_descriptors::LightDescriptor;
 pub(crate) use types::combat::*;
-pub(crate) use types::entity::*;
 pub(crate) use types::manifest::*;
 pub(crate) use types::movement::*;
-pub(crate) use types::reactions::*;
 
 pub(crate) use js::entity::*;
 pub(crate) use js::manifest::*;

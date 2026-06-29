@@ -17,8 +17,11 @@ pub(crate) mod data_descriptors;
 pub(crate) mod data_registry;
 pub(crate) mod engine_state_catalog;
 pub(crate) mod error;
+pub(crate) mod foundation_pods;
 pub(crate) mod game_state_refs;
 pub(crate) mod ir;
+#[path = "ir/scopes.rs"]
+pub(crate) mod ir_scopes;
 pub(crate) mod luau;
 pub(crate) mod luau_prelude;
 pub(crate) mod luau_require;
@@ -39,6 +42,7 @@ pub(crate) mod staged_manifest;
 pub(crate) mod state_crossings;
 pub(crate) mod state_persistence;
 pub(crate) mod typedef;
+pub(crate) mod value_types;
 
 // Dev-mode hot reload. Compiled in debug builds only; the module itself has a
 // `#![cfg(debug_assertions)]` gate, but we also gate the `mod` declaration so

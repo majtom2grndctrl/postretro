@@ -687,8 +687,8 @@ impl App {
         // a second pass after the data script runs.
         let texture_root = self.content_root.join("textures");
         {
-            use crate::scripting::components::billboard_emitter::BillboardEmitterComponent;
-            use crate::scripting::registry::{ComponentKind, ComponentValue};
+            use postretro_entities::components::billboard_emitter::BillboardEmitterComponent;
+            use postretro_entities::{ComponentKind, ComponentValue};
             let registry = script_ctx.registry.borrow();
             let particle_render = &mut self
                 .session
@@ -746,10 +746,11 @@ impl App {
                     render::ui::modal_stack::ScopeTier::Level,
                 );
             }
-            script_ctx
-                .data_registry
-                .borrow_mut()
-                .populate_from_manifest(manifest, &self.active_level_tags);
+            script_ctx.data_registry.borrow_mut().populate_level(
+                manifest.reactions,
+                manifest.crossings,
+                &self.active_level_tags,
+            );
             self.rebuild_active_reaction_subscribers();
         }
         self.level_timings.record("data_script");
@@ -775,7 +776,7 @@ impl App {
             // borrows disjoint. `None` when the map has no navmesh (the agent then
             // falls back to an engine-default capsule and cannot path). The
             // descriptor-spawned agent's capsule is seeded from this.
-            let agent_params: Option<crate::nav::NavAgentParams> =
+            let agent_params: Option<postretro_foundation::NavAgentParams> =
                 self.nav_graph.as_ref().map(|g| g.agent_params());
             // E10 Task 5: a CONNECTED CLIENT must NOT spawn local authoritative
             // copies of map-placed AI enemies (descriptors carrying an `ai`
@@ -875,9 +876,9 @@ impl App {
             // that the pawn (and its health component) has materialized. `max`
             // is mod data, so it cannot be declared at `SlotTable` construction.
             if let Some((_, health)) =
-                crate::scripting::components::health::pawn_with_health(&registry)
+                postretro_entities::components::health::pawn_with_health(&registry)
             {
-                use crate::scripting::slot_table::NumericRange;
+                use postretro_entities::NumericRange;
                 if let Err(err) = script_ctx.slot_table.borrow_mut().set_engine_numeric_range(
                     "player.health",
                     NumericRange {
@@ -932,8 +933,8 @@ impl App {
         // during the install-time sweep above. Re-register any new collections
         // so the renderer pass has them ready before the first frame draws.
         if let Some(renderer) = self.renderer.as_mut() {
-            use crate::scripting::components::billboard_emitter::BillboardEmitterComponent;
-            use crate::scripting::registry::{ComponentKind, ComponentValue};
+            use postretro_entities::components::billboard_emitter::BillboardEmitterComponent;
+            use postretro_entities::{ComponentKind, ComponentValue};
             let texture_root = self.content_root.join("textures");
             let registry = script_ctx.registry.borrow();
             let particle_render = &mut self
@@ -1082,22 +1083,19 @@ mod tests {
 
     use crate::frame_timing::{FrameRateMeter, FrameTiming};
     use crate::input::InputFocus;
-    use crate::scripting::ctx::ScriptCtx;
-    use crate::scripting::data_descriptors::{
+    use crate::scripting::primitives::register_all;
+    use crate::scripting::primitives_registry::PrimitiveRegistry;
+    use crate::scripting::runtime::{Frontend, MenuCamera, ScriptRuntime, ScriptRuntimeConfig};
+    use crate::scripting::{self, reaction_dispatch};
+    use crate::{collision, input, options, render, scripting_systems, view_feel};
+    use postretro_entities::{
         CrossingCondition, CrossingDescriptor, EntityTypeDescriptor, NamedReaction,
         PrimitiveDescriptor, ProgressDescriptor, ReactionDescriptor,
     };
-    use crate::scripting::primitives::register_all;
-    use crate::scripting::primitives_registry::PrimitiveRegistry;
-    use crate::scripting::registry::Transform;
-    use crate::scripting::runtime::{
-        Frontend, MenuCamera, ModMapEntry, ScriptRuntime, ScriptRuntimeConfig,
+    use postretro_entities::{
+        ScriptCtx, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue, Transform,
     };
-    use crate::scripting::slot_table::{
-        SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue,
-    };
-    use crate::scripting::{self, reaction_dispatch};
-    use crate::{collision, input, options, render, scripting_systems, view_feel};
+    use postretro_foundation::ModMapEntry;
 
     const FIXTURE_MAP_A: &str = "fixture_map_a_reactor_room";
     const FIXTURE_MAP_B: &str = "fixture_map_b_combat_lab";
@@ -1295,15 +1293,15 @@ mod tests {
         name: &str,
         tag: &str,
         fire: &str,
-    ) -> scripting::data_registry::ScopedReaction {
-        scripting::data_registry::ScopedReaction {
+    ) -> postretro_entities::ScopedReaction {
+        postretro_entities::ScopedReaction {
             reaction: progress_reaction(name, tag, 1.0, fire),
             levels: Vec::new(),
         }
     }
 
-    fn scoped_global_crossing(slot: &str, fire: &str) -> scripting::data_registry::ScopedCrossing {
-        scripting::data_registry::ScopedCrossing {
+    fn scoped_global_crossing(slot: &str, fire: &str) -> postretro_entities::ScopedCrossing {
+        postretro_entities::ScopedCrossing {
             crossing: CrossingDescriptor {
                 slot: slot.to_string(),
                 condition: CrossingCondition::Below { threshold: 0.5 },
@@ -1322,7 +1320,7 @@ mod tests {
             persist: false,
             readonly: false,
             ownership: SlotOwnership::Mod,
-            network: crate::scripting::slot_table::ReplicationScope::None,
+            network: postretro_entities::ReplicationScope::None,
         });
         record.value = Some(SlotValue::Number(value));
         record
@@ -1483,12 +1481,9 @@ mod tests {
     fn install_cpu_fixture(app: &mut App, fixture: CpuFixture) {
         app.level = Some(level_world(fixture.name, fixture.triangle_count));
         let ctx = script_ctx(app);
-        ctx.data_registry.borrow_mut().populate_from_manifest(
-            crate::scripting::data_descriptors::LevelManifest {
-                reactions: vec![named_reaction(fixture.reaction_name)],
-                crossings: Vec::new(),
-                ui_trees: Vec::new(),
-            },
+        ctx.data_registry.borrow_mut().populate_level(
+            vec![named_reaction(fixture.reaction_name)],
+            Vec::new(),
             &[],
         );
 
@@ -1530,7 +1525,7 @@ mod tests {
                         persist: true,
                         readonly: false,
                         ownership: SlotOwnership::Mod,
-                        network: crate::scripting::slot_table::ReplicationScope::None,
+                        network: postretro_entities::ReplicationScope::None,
                     }),
                 )],
             )
@@ -2238,7 +2233,7 @@ mod tests {
             .push_named("deathScreen", None);
 
         script_ctx(&app).system_commands.push(
-            scripting::reactions::system_commands::SystemReactionCommand::LoadLevel {
+            postretro_entities::SystemReactionCommand::LoadLevel {
                 map: "e1m1".to_string(),
             },
         );
@@ -2264,7 +2259,7 @@ mod tests {
 
         script_ctx(&app)
             .system_commands
-            .push(scripting::reactions::system_commands::SystemReactionCommand::RestartLevel);
+            .push(postretro_entities::SystemReactionCommand::RestartLevel);
         app.dispatch_system_commands();
 
         assert_eq!(
@@ -2302,7 +2297,7 @@ mod tests {
 
         script_ctx(&app)
             .system_commands
-            .push(scripting::reactions::system_commands::SystemReactionCommand::ReturnToFrontend);
+            .push(postretro_entities::SystemReactionCommand::ReturnToFrontend);
         app.dispatch_system_commands();
 
         assert_eq!(

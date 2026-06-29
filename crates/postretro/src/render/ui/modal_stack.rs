@@ -498,7 +498,7 @@ impl ModalStack {
     #[cfg(test)]
     pub(crate) fn build_snapshot(
         &self,
-        slot_values: std::collections::HashMap<String, crate::scripting::slot_table::SlotValue>,
+        slot_values: std::collections::HashMap<String, postretro_entities::SlotValue>,
         time_seconds: f64,
     ) -> UiReadSnapshot {
         UiReadSnapshot::with_trees(

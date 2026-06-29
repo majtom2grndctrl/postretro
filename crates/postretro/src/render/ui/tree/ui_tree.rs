@@ -11,7 +11,7 @@ use taffy::prelude::{AvailableSpace, Display, NodeId, Size, TaffyTree};
 use super::super::descriptor::AnchoredTree;
 use super::super::layout::{Anchor, REFERENCE_HEIGHT, REFERENCE_WIDTH};
 use super::super::theme::UiTheme;
-use crate::scripting::slot_table::SlotValue;
+use postretro_entities::SlotValue;
 
 use super::bindings::{
     BindingDiff, drive_bar_binding, drive_bar_max, drive_panel_binding, drive_text_binding,

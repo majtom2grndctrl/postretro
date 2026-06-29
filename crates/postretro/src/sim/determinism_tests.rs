@@ -13,18 +13,18 @@ use proptest::prelude::*;
 use super::{SimCommand, TickEvents, simulate_tick};
 use crate::collision::CollisionWorld;
 use crate::movement::MovementInput;
-use crate::scripting::components::brain::{AiStateMap, AiTuning, BrainComponent, LogicalState};
-use crate::scripting::components::health::{HealthComponent, Hitbox};
-use crate::scripting::components::player_movement::PlayerMovementComponent;
-use crate::scripting::components::weapon::WeaponComponent;
-use crate::scripting::data_descriptors::{
-    AirParams, CapsuleParams, FallParams, FireMode, ForgivenessParams, GroundParams,
-    PlayerMovementDescriptor, ResolutionMode, SpeedParams, WeaponDescriptor,
-};
 use crate::scripting::reaction_dispatch::ProgressTracker;
-use crate::scripting::registry::{EntityId, EntityRegistry, Transform};
 use crate::scripting_systems::hit_zones::HitZoneStore;
 use crate::weapon::FireButtonState;
+use postretro_entities::components::brain::{AiStateMap, AiTuning, BrainComponent, LogicalState};
+use postretro_entities::components::health::{HealthComponent, Hitbox};
+use postretro_entities::components::weapon::WeaponComponent;
+use postretro_entities::{EntityId, EntityRegistry, Transform};
+use postretro_foundation::{
+    AirParams, CapsuleParams, FallParams, FireMode, ForgivenessParams, GroundParams,
+    PlayerMovementComponent, PlayerMovementDescriptor, ResolutionMode, SpeedParams,
+    WeaponDescriptor,
+};
 
 const TICK_COUNT: usize = 600;
 const DT: f32 = 1.0 / 60.0;

@@ -1,19 +1,15 @@
-// Concrete `BindingScope` implementations: the store-backed adapter the engine
-// and scripts bind real behavior IR against, plus an indexed test stub that
-// proves the namespace seam is pluggable (not store-shaped).
+// Concrete runtime `BindingScope` implementations: the store-backed adapter
+// the engine and scripts bind real behavior IR against.
 // See: context/lib/scripting.md §11 (IR substrate — pluggable scope abstraction)
 
-// Two scopes live here. `StoreScope` bridges the IR evaluator to the live
-// `SlotTable` through a captured `ScriptCtx`; it projects `Number`/`Boolean`
-// slots into the IR value model and gates writes by a capability `mode`
-// mirroring the engine-bypass vs script-gated split in `primitives::store`.
-// `StubScope` (test-only) carries a fixed input/output set keyed by *index*
-// handles, distinct from the store scope's owned-name handles — a bound program
-// is therefore portable across differently-shaped namespaces.
+// `StoreScope` bridges the IR evaluator to the live `SlotTable` through a
+// captured `ScriptCtx`; it projects `Number`/`Boolean` slots into the IR value
+// model and gates writes by a capability `mode` mirroring the engine-bypass vs
+// script-gated split in `primitives::store`.
 
-use super::scope::{BindingScope, ResolvedInput, ResolvedOutput};
-use super::{IrType, IrValue};
 use crate::scripting::ctx::ScriptCtx;
+use crate::scripting::ir::scope::{BindingScope, ResolvedInput, ResolvedOutput};
+use crate::scripting::ir::{IrType, IrValue};
 use crate::scripting::primitives::store::write_store_slot;
 use crate::scripting::slot_table::{SlotType, SlotValue};
 
@@ -153,159 +149,11 @@ impl BindingScope for StoreScope {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Test-stub scope: an indexed namespace proving the seam is pluggable.
-// ---------------------------------------------------------------------------
-
-/// The value kind a [`StubScope`] output accepts. Distinct from `IrType` only to
-/// keep the stub's surface self-describing at call sites.
-#[cfg(test)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum StubWrite {
-    Number,
-    Bool,
-}
-
-#[cfg(test)]
-struct StubInput {
-    name: &'static str,
-    ir_type: IrType,
-    value: Option<IrValue>,
-}
-
-#[cfg(test)]
-struct StubOutput {
-    name: &'static str,
-    ir_type: IrType,
-    written: Option<IrValue>,
-}
-
-/// A fixed-set test scope with **indexed** handles (`usize`), deliberately
-/// unlike [`StoreScope`]'s owned-name handles so a single bound program can be
-/// shown portable across differently-shaped namespaces. Seeds a movement-like
-/// input set and a configurable output set; supports read and write.
-///
-/// Reusable by the end-to-end composition tests via [`StubScope::new`] and
-/// [`StubScope::with_writes`].
-#[cfg(test)]
-pub(crate) struct StubScope {
-    inputs: Vec<StubInput>,
-    outputs: Vec<StubOutput>,
-}
-
-#[cfg(test)]
-impl StubScope {
-    /// A stub seeded with a fixed movement-like input set and no outputs.
-    ///
-    /// Inputs: `speed` (number = 4.0), `grounded` (bool = true),
-    /// `unset_number` (number, no current value → reads as 0.0),
-    /// `unset_flag` (bool, no current value → reads as false).
-    pub(crate) fn new() -> Self {
-        Self {
-            inputs: vec![
-                StubInput {
-                    name: "speed",
-                    ir_type: IrType::Number,
-                    value: Some(IrValue::Number(4.0)),
-                },
-                StubInput {
-                    name: "grounded",
-                    ir_type: IrType::Bool,
-                    value: Some(IrValue::Bool(true)),
-                },
-                StubInput {
-                    name: "unset_number",
-                    ir_type: IrType::Number,
-                    value: None,
-                },
-                StubInput {
-                    name: "unset_flag",
-                    ir_type: IrType::Bool,
-                    value: None,
-                },
-            ],
-            outputs: Vec::new(),
-        }
-    }
-
-    /// As [`StubScope::new`], plus the named outputs of the given kinds (all
-    /// writable). The stub grants write handles only for these; any other output
-    /// name fails to bind.
-    pub(crate) fn with_writes(outputs: &[(&'static str, StubWrite)]) -> Self {
-        let mut scope = Self::new();
-        scope.outputs = outputs
-            .iter()
-            .map(|&(name, kind)| StubOutput {
-                name,
-                ir_type: match kind {
-                    StubWrite::Number => IrType::Number,
-                    StubWrite::Bool => IrType::Bool,
-                },
-                written: None,
-            })
-            .collect();
-        scope
-    }
-
-    /// Override an input's current value (e.g. to drive cross-scope tests).
-    pub(crate) fn set_input(&mut self, name: &str, value: IrValue) {
-        if let Some(input) = self.inputs.iter_mut().find(|input| input.name == name) {
-            input.value = Some(value);
-        }
-    }
-
-    /// The most recent value written to the named output, if any.
-    pub(crate) fn written(&self, name: &str) -> Option<IrValue> {
-        self.outputs
-            .iter()
-            .find(|output| output.name == name)
-            .and_then(|output| output.written)
-    }
-}
-
-#[cfg(test)]
-impl BindingScope for StubScope {
-    type InputHandle = usize;
-    type OutputHandle = usize;
-
-    fn resolve_input(&self, name: &str) -> Option<ResolvedInput<usize>> {
-        self.inputs
-            .iter()
-            .position(|input| input.name == name)
-            .map(|handle| ResolvedInput {
-                handle,
-                ir_type: self.inputs[handle].ir_type,
-            })
-    }
-
-    fn resolve_output(&self, name: &str) -> Option<ResolvedOutput<usize>> {
-        self.outputs
-            .iter()
-            .position(|output| output.name == name)
-            .map(|handle| ResolvedOutput {
-                handle,
-                ir_type: self.outputs[handle].ir_type,
-            })
-    }
-
-    fn read(&self, handle: &usize) -> IrValue {
-        let input = &self.inputs[*handle];
-        // Missing value → type-zero, per the scope's totality contract.
-        input.value.unwrap_or(match input.ir_type {
-            IrType::Number => IrValue::Number(0.0),
-            IrType::Bool => IrValue::Bool(false),
-        })
-    }
-
-    fn write(&mut self, handle: &usize, value: IrValue) {
-        self.outputs[*handle].written = Some(value);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::scripting::ir::eval::{eval_and_write, eval_value};
+    use crate::scripting::ir::test_scope::{StubScope, StubWrite};
     use crate::scripting::ir::{BakedIr, BindError, CURRENT_IR_VERSION, IrNode, bind};
     use crate::scripting::slot_table::{
         NumericRange, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue,

@@ -27,7 +27,7 @@ pub(crate) use crate::render::ui::descriptor::{
 pub(crate) use crate::render::ui::layout::{Anchor, REFERENCE_HEIGHT, REFERENCE_WIDTH};
 pub(crate) use crate::render::ui::style_ranges::{StyleEntry, StyleRanges};
 pub(crate) use crate::render::ui::theme::{ThemeDescriptor, UiTheme};
-pub(crate) use crate::scripting::slot_table::SlotValue;
+pub(crate) use postretro_entities::SlotValue;
 pub(crate) use taffy::prelude::NodeId;
 
 pub(crate) use std::collections::HashMap;

@@ -9,7 +9,7 @@ use glam::Vec3;
 
 use postretro_net::wire::{WireMovementState, WirePlayerMovementState};
 
-use crate::scripting::components::player_movement::{MovementState, PlayerMovementComponent};
+use postretro_foundation::{MovementState, PlayerMovementComponent};
 
 /// Extract the mutable tick subset of a `PlayerMovementComponent` into its wire
 /// mirror. Only the fields that change tick-to-tick cross the wire; descriptor
@@ -101,7 +101,7 @@ fn wire_to_movement_state_enum(state: WireMovementState) -> MovementState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scripting::data_descriptors::{
+    use postretro_foundation::{
         AirParams, BoolOrIr, CapsuleParams, CrouchParams, DashParams, FallParams,
         ForgivenessParams, GroundParams, NumberOrIr, PlayerMovementDescriptor, SpeedParams,
         ViewFeelParams,

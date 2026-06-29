@@ -10,6 +10,8 @@ pub use path::find_path;
 use glam::Vec3;
 use postretro_level_format::navmesh::{NavMeshSection, NavPortal, NavRegion};
 
+pub use postretro_foundation::NavAgentParams;
+
 /// XZ-plane (ground) distance between two world positions, ignoring Y. Shared by
 /// the pathfinding query (edge cost, heuristic) and downstream steering/AI so the
 /// engine has one definition of "ground distance".
@@ -29,15 +31,6 @@ pub struct NavGrid {
     pub cell_size: f32,
     pub dim_x: u32,
     pub dim_z: u32,
-}
-
-/// The four canonical-agent parameters the navmesh was baked for.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct NavAgentParams {
-    pub radius: f32,
-    pub height: f32,
-    pub step_height: f32,
-    pub max_slope_deg: f32,
 }
 
 /// World-space axis-aligned footprint of a region on the XZ plane plus its

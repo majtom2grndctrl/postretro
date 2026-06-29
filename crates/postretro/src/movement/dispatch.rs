@@ -8,7 +8,7 @@ use crate::movement::carry::{CarryRule, apply_boost, apply_horizontal};
 use crate::movement::intents::{crouching_intent, dash_intent, normal_intent};
 use crate::movement::substrate::{JumpEdges, ResizeAnchor, resize_capsule};
 use crate::movement::{MovementEvents, MovementInput, Transition};
-use crate::scripting::components::player_movement::{MovementState, PlayerMovementComponent};
+use postretro_foundation::{MovementState, PlayerMovementComponent};
 
 /// Resize the live capsule from the crouched size back to the configured
 /// STANDING reference (`standing_half_height` / `standing_eye_height`), keeping

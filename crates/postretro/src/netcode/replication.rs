@@ -7,9 +7,9 @@ use std::collections::HashSet;
 use postretro_net::replication::EntitySnapshot;
 use postretro_net::wire::{ComponentPayload, WireMeshAnimationState};
 
-use crate::scripting::components::mesh::MeshComponent;
-use crate::scripting::components::player_movement::PlayerMovementComponent;
-use crate::scripting::registry::{ComponentKind, EntityId, EntityRegistry, Transform};
+use postretro_entities::components::mesh::MeshComponent;
+use postretro_entities::{ComponentKind, EntityId, EntityRegistry, Transform};
+use postretro_foundation::PlayerMovementComponent;
 
 use super::descriptor_class::{descriptor_entity_class, is_networked_ai_map_enemy};
 use super::movement_state::movement_state_to_wire;
@@ -246,17 +246,19 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
-    use crate::scripting::components::agent::AgentComponent;
-    use crate::scripting::components::brain::{AiStateMap, AiTuning, BrainComponent, LogicalState};
-    use crate::scripting::components::health::HealthComponent;
-    use crate::scripting::components::mesh::{
+    use glam::Vec3;
+    use postretro_entities::components::agent::AgentComponent;
+    use postretro_entities::components::brain::{
+        AiStateMap, AiTuning, BrainComponent, LogicalState,
+    };
+    use postretro_entities::components::health::HealthComponent;
+    use postretro_entities::components::mesh::{
         AnimationState, InterruptPolicy, MeshAnimation, MeshComponent,
     };
-    use crate::scripting::provenance::{
+    use postretro_entities::provenance::{
         DescriptorComponentKind, DescriptorProvenance, DescriptorSpawnPath,
     };
-    use crate::scripting::registry::{ComponentValue, Transform};
-    use glam::Vec3;
+    use postretro_entities::{ComponentValue, Transform};
 
     // A minimal valid AI brain — the predicate only needs the component PRESENT, but a
     // real `BrainComponent` keeps the fixture honest about what an `ai` descriptor block

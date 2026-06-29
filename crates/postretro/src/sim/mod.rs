@@ -12,12 +12,12 @@ use crate::agent_steering;
 use crate::collision::CollisionWorld;
 use crate::movement::MovementInput;
 use crate::nav::NavGraph;
-use crate::scripting::components::health::apply_damage;
 use crate::scripting::reaction_dispatch::ProgressTracker;
-use crate::scripting::registry::{ComponentKind, EntityId, EntityRegistry};
 use crate::scripting_systems;
 use crate::scripting_systems::hit_zones::HitZoneStore;
 use crate::weapon::{self, FireButtonState, WeaponFireCommand};
+use postretro_entities::components::health::apply_damage;
+use postretro_entities::{ComponentKind, EntityId, EntityRegistry};
 
 #[derive(Debug, Clone)]
 pub(crate) struct SimCommand {
@@ -224,7 +224,7 @@ fn run_weapon_fire_tick(
                 .as_deref()
                 .and_then(|tag| {
                     registry
-                        .get_component::<crate::scripting::components::health::HealthComponent>(
+                        .get_component::<postretro_entities::components::health::HealthComponent>(
                             target,
                         )
                         .ok()

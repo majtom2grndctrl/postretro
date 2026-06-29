@@ -4,11 +4,10 @@
 use std::sync::LazyLock;
 
 use glam::Vec3;
-
-use crate::scripting::components::billboard_emitter::LifetimeCurve;
-use crate::scripting::components::particle::ParticleState;
-use crate::scripting::components::sprite_visual::SpriteVisual;
-use crate::scripting::registry::{EntityRegistry, Transform};
+use postretro_entities::components::billboard_emitter::LifetimeCurve;
+use postretro_entities::components::particle::ParticleState;
+use postretro_entities::components::sprite_visual::SpriteVisual;
+use postretro_entities::registry::{EntityRegistry, Transform};
 
 const IMPACT_SPRITE_COLLECTION: &str = "impact";
 
@@ -112,8 +111,8 @@ fn spawn_particle(registry: &mut EntityRegistry, position: Vec3, velocity: Vec3,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scripting::registry::{ComponentKind, ComponentValue};
     use crate::scripting_systems::particle_sim;
+    use postretro_entities::registry::{ComponentKind, ComponentValue};
 
     const EPSILON: f32 = 1.0e-5;
 

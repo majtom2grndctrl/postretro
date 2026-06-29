@@ -6,15 +6,15 @@ use glam::{Vec2, Vec3};
 use crate::collision::CollisionWorld;
 use crate::movement::carry::CarryRule;
 use crate::movement::dispatch::{stand_up_resize, stand_up_transition};
-use crate::movement::scope::MovementScope;
 use crate::movement::substrate::{
     JumpEdges, ResizeAnchor, air_jump_ready, pm_accelerate, resize_capsule,
     standup_clearance_probe, wish_dir_from_input,
 };
 use crate::movement::{MovementEvents, MovementInput, Transition};
-use crate::scripting::components::player_movement::{MovementState, PlayerMovementComponent};
-use crate::scripting::data_descriptors::{BoolOrIr, NumberOrIr};
-use crate::scripting::ir::{BoundProgram, IrValue, eval_value};
+use postretro_foundation::{
+    BoolOrIr, BoundProgram, IrValue, MovementScope, MovementState, NumberOrIr,
+    PlayerMovementComponent, eval_value,
+};
 
 /// Exponential-style ground deceleration (`v *= max(0, 1 - k*dt)`) — not the Q3
 /// stop/slide-threshold friction model. Value matches Quake's default

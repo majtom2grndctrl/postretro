@@ -1076,11 +1076,8 @@ fn main() -> anyhow::Result<()> {
     progress.start_stage("Texture mip bake...");
     let stage_start = Instant::now();
     let prm_root = resolve_prm_root_via_cargo(&args.input);
-    let name_to_key = texture_mips::bake_texture_mips(
-        &geo_result.texture_names.names,
-        &texture_root,
-        &prm_root,
-    )?;
+    let name_to_key =
+        texture_mips::bake_texture_mips(&geo_result.texture_names.names, &texture_root, &prm_root)?;
     let content_root = resolve_content_root(&args.input);
     bake_model_textures(&map_data.map_entities, &content_root, &prm_root);
     timings.push(("TextureMips", stage_start.elapsed()));

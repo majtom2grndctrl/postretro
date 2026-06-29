@@ -20,7 +20,7 @@ use super::values::{
 /// tuple variant cannot map onto. Container kinds (`vstack`/`hstack`/`grid`)
 /// carry positional `children`; leaf kinds (`text`/`panel`/`image`/`spacer`/
 /// `button`/`slider`/`bar`/`announce`) carry no
-/// `children` field. Compare `scripting::data_descriptors::ReactionDescriptor`,
+/// `children` field. Compare `postretro_entities::ReactionDescriptor`,
 /// which discriminates by manual key-presence instead — this enum deliberately
 /// uses serde's tag mechanism.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

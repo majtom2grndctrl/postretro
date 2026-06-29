@@ -27,15 +27,13 @@ use glam::{Quat, Vec3};
 
 use crate::agent_steering;
 use crate::nav::distance_xz;
-use crate::scripting::components::brain::{AiTuning, BrainComponent, LogicalState};
-use crate::scripting::components::health::{HealthComponent, apply_damage, pawn_with_health};
-use crate::scripting::components::mesh::{
+use postretro_entities::components::brain::{AiTuning, BrainComponent, LogicalState};
+use postretro_entities::components::health::{HealthComponent, apply_damage, pawn_with_health};
+use postretro_entities::components::mesh::{
     SwitchResult, restart_animation_clip, switch_animation_state,
 };
-use crate::scripting::registry::{
-    ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform,
-};
-use crate::weapon::DamagePayload;
+use postretro_entities::{ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform};
+use postretro_foundation::DamagePayload;
 
 /// Event name fired once per enemy attack that lands this tick. Mirrors the
 /// weapon-fire event precedent (`"activate"`/`"impact"`): the tick returns the

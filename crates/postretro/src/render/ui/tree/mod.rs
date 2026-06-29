@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use crate::scripting::slot_table::SlotValue;
+use postretro_entities::SlotValue;
 
 /// Per-frame bound-value diff + tween drivers (content vs. appearance change).
 mod bindings;

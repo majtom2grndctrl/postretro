@@ -307,7 +307,7 @@ pub(crate) struct UiReadSnapshot {
     /// Cloned out of the live `SlotTable` once per frame (see the type doc).
     /// Only slots that currently hold a value appear; value-less slots are
     /// skipped. Empty on the splash path.
-    pub slot_values: std::collections::HashMap<String, crate::scripting::slot_table::SlotValue>,
+    pub slot_values: std::collections::HashMap<String, postretro_entities::SlotValue>,
     /// Resolved presentation-cell values for this frame, keyed by
     /// `(scopeId, cellName)`. Published from the app-side cell
     /// store the same way `slot_values` flows from the slot table — so a `{ local }`
@@ -339,7 +339,7 @@ impl UiReadSnapshot {
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn with_trees(
         trees: Vec<UiTreeEntry>,
-        slot_values: std::collections::HashMap<String, crate::scripting::slot_table::SlotValue>,
+        slot_values: std::collections::HashMap<String, postretro_entities::SlotValue>,
         cell_values: tree::CellValues,
         time_seconds: f64,
         focused_id: Option<String>,
@@ -785,7 +785,7 @@ impl UiPass {
         tree: &descriptor::AnchoredTree,
         viewport: [u32; 2],
         image_sizes: &tree::ImageSizes,
-        slot_values: &std::collections::HashMap<String, crate::scripting::slot_table::SlotValue>,
+        slot_values: &std::collections::HashMap<String, postretro_entities::SlotValue>,
         cell_values: &tree::CellValues,
         theme: &theme::UiTheme,
         theme_generation: u64,
@@ -846,7 +846,7 @@ impl UiPass {
     pub fn export_top_focus_rects(
         &self,
         viewport: [u32; 2],
-        slot_values: &std::collections::HashMap<String, crate::scripting::slot_table::SlotValue>,
+        slot_values: &std::collections::HashMap<String, postretro_entities::SlotValue>,
         cell_values: &tree::CellValues,
     ) -> tree::FocusRectList {
         match self.gameplay_trees.last() {

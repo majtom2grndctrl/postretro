@@ -45,7 +45,7 @@ fn icon_sizes() -> ImageSizes {
 
 /// The gate-fixture trees carry no state bindings, so they resolve against an
 /// empty slot map (the splash-style unbound path).
-fn no_slots() -> std::collections::HashMap<String, crate::scripting::slot_table::SlotValue> {
+fn no_slots() -> std::collections::HashMap<String, postretro_entities::SlotValue> {
     std::collections::HashMap::new()
 }
 

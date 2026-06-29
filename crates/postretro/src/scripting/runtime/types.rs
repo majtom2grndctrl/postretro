@@ -16,21 +16,12 @@ use crate::scripting::data_descriptors::{
     EntityTypeDescriptor, ModFontAssets, ModThemeTokens, RegisteredUiTree,
 };
 use crate::scripting::data_registry::{ScopedCrossing, ScopedReaction};
+pub(crate) use crate::scripting::foundation_pods::ModMapEntry;
 use crate::scripting::luau::{LuauConfig, LuauSubsystem, Which as LuauWhich};
 use crate::scripting::quickjs::{QuickJsConfig, QuickJsSubsystem};
 use crate::scripting::slot_table::StoreDeclarationSet;
 #[cfg(debug_assertions)]
 use crate::scripting::staged_manifest::StagedManifestBuildLane;
-
-/// Validated mod manifest export/return value. Construct via
-/// [`ScriptRuntime::run_mod_init`].
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ModMapEntry {
-    pub(crate) id: String,
-    pub(crate) path: String,
-    pub(crate) name: String,
-    pub(crate) tags: Vec<String>,
-}
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct MenuCamera {

@@ -37,10 +37,10 @@ use postretro_net::wire::{
     ComponentPayload, EntityRecord, NetworkId, SnapshotMessage, WirePlayerMovementState,
 };
 
-use crate::scripting::components::mesh::{FadeSourceKind, MeshComponent, switch_animation_state};
-use crate::scripting::registry::{
-    ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform,
+use postretro_entities::components::mesh::{
+    FadeSourceKind, MeshComponent, SwitchResult, switch_animation_state,
 };
+use postretro_entities::{ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform};
 
 use super::interpolation::{PoseSource, RemoteInterpolationBuffer, TransformSample};
 use super::{payload_is_finite, wire_to_transform};
@@ -996,9 +996,7 @@ impl ClientReplication {
 /// The first `Transform` payload in a component list, converted to an engine
 /// `Transform`, or `None` if the list carries no (finite) Transform. A finite check
 /// runs here so a non-finite spawn pose does not seed an entity.
-fn first_transform(
-    components: &[ComponentPayload],
-) -> Option<crate::scripting::registry::Transform> {
+fn first_transform(components: &[ComponentPayload]) -> Option<Transform> {
     components.iter().find_map(|payload| match payload {
         ComponentPayload::Transform(wire) if payload_is_finite(payload) => {
             Some(wire_to_transform(wire))
@@ -1022,8 +1020,7 @@ pub(crate) fn apply_mesh_animation_state(
 ) -> bool {
     if matches!(
         switch_animation_state(registry, id, state),
-        crate::scripting::components::mesh::SwitchResult::Switched
-            | crate::scripting::components::mesh::SwitchResult::AlreadyInState
+        SwitchResult::Switched | SwitchResult::AlreadyInState
     ) {
         return true;
     }
@@ -1072,9 +1069,9 @@ pub(crate) fn encode_client_messages(outcome: &ApplyOutcome) -> Vec<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scripting::registry::Transform;
     use glam::Quat;
     use glam::Vec3;
+    use postretro_entities::Transform;
     use postretro_net::wire::{
         WireMeshAnimationState, WireMovementState, WirePlayerMovementState, WireTransform,
     };
@@ -1117,7 +1114,7 @@ mod tests {
     }
 
     fn unresolved_mesh() -> MeshComponent {
-        use crate::scripting::components::mesh::{
+        use postretro_entities::components::mesh::{
             AnimationState, DEFAULT_CROSSFADE_MS, InterruptPolicy, MeshAnimation,
         };
         use std::collections::HashMap;

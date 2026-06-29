@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use super::super::descriptor::{Easing, PanelBind, SliderBind, TextBind};
 use super::super::theme::UiTheme;
-use crate::scripting::slot_table::SlotValue;
+use postretro_entities::SlotValue;
 
 use super::CellValues;
 use super::draw::{

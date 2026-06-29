@@ -10,7 +10,7 @@ use super::super::descriptor::{BarMax, BindSource, Border, PanelBind, SliderBind
 use super::super::layout::{Anchor, REFERENCE_HEIGHT, REFERENCE_WIDTH};
 use super::super::text::UiText;
 use super::super::{UiDrawList, UiInstance};
-use crate::scripting::slot_table::SlotValue;
+use postretro_entities::SlotValue;
 
 use super::CellValues;
 use super::predicate::lookup_bound;

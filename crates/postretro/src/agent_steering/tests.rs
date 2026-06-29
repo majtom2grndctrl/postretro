@@ -10,10 +10,10 @@ use super::*;
 
 use parry3d::math::{Isometry, Point};
 use parry3d::shape::TriMesh;
+use postretro_entities::Transform;
 use postretro_level_format::navmesh::{NAVMESH_VERSION, NavMeshSection, NavPortal, NavRegion};
 
 use crate::nav::NavAgentParams;
-use crate::scripting::registry::Transform;
 
 const EPS: f32 = 1e-3;
 const DT: f32 = 1.0 / 60.0;

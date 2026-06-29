@@ -374,7 +374,7 @@ Start the node set minimal: named-input leaves, arithmetic, `clamp`, `lerp`, `se
 
 ## 12. Crate Architecture
 
-> Specced in `plans/ready/engine-data-floor/` (design intent until it ships; the crates do not exist yet). The boundary contracts below are durable.
+> Implemented by `plans/in-progress/engine-data-floor/`. The boundary contracts below are durable.
 
 The engine data sits in a **VM-free two-layer floor** beneath the VM-coupled runtime, so routine engine edits stop recompiling the VM bindings. Dependency flows one way, top to bottom:
 
@@ -386,7 +386,7 @@ Gameplay subsystems (movement, nav, weapon, ai) and non-scripting consumers (net
 
 **Descriptor partition rule.** A descriptor type belongs in `postretro-foundation` only if *every type it references* is foundation-resident; if it references any entities-resident type — `EntityId`, a component, or a component's state enum — it belongs in `postretro-entities` with the registry. ("`EntityId`-free" is necessary but not sufficient: an aggregate like the entity-type descriptor is `EntityId`-free yet embeds components, so it lives up.)
 
-**FFI marshalling is an orphan-rule boundary.** A VM marshalling impl for a type must live in the crate that owns the type — an impl for a foreign type written in a third crate is an orphan violation. So each floor crate carries the marshalling impls for its own types behind an **optional `script-ffi` feature** that pulls the VMs, off by default. No crate enables it unconditionally: the runtime enables `postretro-entities`'s feature, which *forwards* to `postretro-foundation`'s. Foreign types (e.g. glam vectors) wrap in local newtypes to satisfy the rule. Precedent: `crates/level-format`'s optional `serde` / `gltf-resolve` features. Default builds have no VM deps — editing a handler or bridge never rebuilds them. **That is the compile firewall.** (The layering mirrors Unreal's `Core` → `CoreUObject` and Bevy's `bevy_reflect` → `bevy_ecs`.)
+**FFI marshalling is an orphan-rule boundary.** A VM marshalling impl for a floor-owned type lives in that floor crate when Rust's orphan rule requires ownership. Floor crates keep those impls behind optional `script-ffi` features, off by default; the runtime enables the upper floor feature, which forwards as needed. Foreign types wrap in local newtypes. Runtime-side descriptor converter functions may remain in `postretro` while reaction/crossing descriptors depend on runtime converter helpers. Move them with those converter modules during `scripting-core` extraction. Default builds have no VM deps — editing a handler or bridge never rebuilds them. **That is the compile firewall.**
 
 **Handler placement.** Script-callable handlers co-locate with the subsystem they expose (subsystem module trees within the engine binary, not new crates). Reaction handlers are VM-free and relocate whole. Primitive handlers carry marshalling that stays in the runtime crate — only the pure logic relocates, the runtime-side wiring calling the subsystem function with native Rust args, never VM types. Aggregation stays explicit (no `inventory` / `linkme`): the registrars are invoked from the single runtime construction site.
 

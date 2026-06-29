@@ -257,7 +257,7 @@ mod tests {
     fn fallback_pause_menu_exports_no_focusable_controls() {
         use crate::render::ui::theme::UiTheme;
         use crate::render::ui::tree::{ImageSizes, UiTree};
-        use crate::scripting::slot_table::SlotValue;
+        use postretro_entities::SlotValue;
         use std::collections::HashMap;
 
         let tree = build_pause_menu_descriptor();

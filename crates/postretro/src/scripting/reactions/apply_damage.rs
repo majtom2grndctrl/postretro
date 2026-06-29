@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::scripting::components::health::{HealthComponent, apply_damage};
 use crate::scripting::registry::{EntityId, EntityRegistry};
-use crate::weapon::DamagePayload;
+use postretro_foundation::DamagePayload;
 
 use super::ReactionError;
 

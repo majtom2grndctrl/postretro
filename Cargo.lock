@@ -3580,6 +3580,8 @@ dependencies = [
  "notify-debouncer-full",
  "parry3d",
  "pollster",
+ "postretro-entities",
+ "postretro-foundation",
  "postretro-level-format",
  "postretro-net",
  "postretro-script-compiler",
@@ -3594,6 +3596,33 @@ dependencies = [
  "toml",
  "wgpu",
  "winit",
+]
+
+[[package]]
+name = "postretro-entities"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "log",
+ "mlua",
+ "postretro-foundation",
+ "rquickjs",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "postretro-foundation"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "log",
+ "mlua",
+ "rquickjs",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

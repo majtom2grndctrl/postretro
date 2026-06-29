@@ -21,7 +21,7 @@
 use mlua::LuaSerdeExt as _;
 
 use crate::scripting::ctx::ScriptCtx;
-use crate::scripting::ir::scopes::StubScope;
+use crate::scripting::ir::test_scope::StubScope;
 use crate::scripting::ir::{
     BakedIr, CURRENT_IR_VERSION, IrNode, IrValue, bind, eval_value, load_baked_ir,
 };
@@ -213,7 +213,7 @@ fn unsupported_version_envelope_is_rejected_and_consumer_falls_back() {
 #[test]
 fn authored_program_with_output_writes_evaluated_value_to_stub() {
     use crate::scripting::ir::eval_and_write;
-    use crate::scripting::ir::scopes::StubWrite;
+    use crate::scripting::ir::test_scope::StubWrite;
 
     // `add(speed, 1)` over `speed = 4.0` → 5.0, written to the granted output.
     let root = author_in_quickjs("runtime.add(runtime.read(\"speed\"), runtime.constant(1))");

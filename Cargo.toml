@@ -1,6 +1,8 @@
 [workspace]
 members = [
     "crates/postretro",
+    "crates/foundation",
+    "crates/entities",
     "crates/level-format",
     "crates/level-compiler",
     "crates/script-compiler",
@@ -139,6 +141,8 @@ proptest = "1"
 
 # Workspace members
 postretro-level-format = { path = "crates/level-format" }
+postretro-foundation = { path = "crates/foundation" }
+postretro-entities = { path = "crates/entities" }
 postretro-net = { path = "crates/net" }
 
 [profile.release]

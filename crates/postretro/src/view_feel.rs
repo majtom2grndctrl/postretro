@@ -7,7 +7,7 @@ use std::f32::consts::TAU;
 
 use glam::Vec3;
 
-use crate::scripting::data_descriptors::{BobParams, SwayParams, TiltParams, ViewFeelParams};
+use postretro_foundation::{BobParams, SwayParams, TiltParams, ViewFeelParams};
 
 /// Speed band (m/s) above `speed_threshold` over which bob eases in from 0 to
 /// full amplitude. Exposed so the bob acceptance test references this band

@@ -9,15 +9,15 @@ mod intents;
 mod scope;
 mod substrate;
 
-// Re-exported so scripting subsystem modules (`data_descriptors`, `player_movement`)
-// can import `crate::movement::MovementScope` without pulling in the full movement subsystem.
-pub(crate) use scope::MovementScope;
+// Compatibility re-export for legacy in-crate movement scope paths.
+#[allow(unused_imports)]
+pub(crate) use postretro_foundation::MovementScope;
 
 use crate::collision::CollisionWorld;
 use crate::movement::carry::CarryRule;
 use crate::movement::dispatch::dispatch_state_intent;
 use crate::movement::substrate::{advance_forgiveness, derive_jump_edges, integrate_collision};
-use crate::scripting::components::player_movement::{MovementState, PlayerMovementComponent};
+use postretro_foundation::{MovementState, PlayerMovementComponent};
 
 #[cfg(test)]
 use crate::movement::intents::{DASH_MAX_MS, dash_intent};
@@ -209,14 +209,14 @@ pub(crate) fn tick(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scripting::data_descriptors::{
+    use parry3d::math::{Isometry, Point};
+    use parry3d::shape::{Capsule, TriMesh};
+    use postretro_foundation::{
         AirParams, BobParams, BoolOrIr, CapsuleParams, CrouchParams, DashParams, FallParams,
         ForgivenessParams, GroundParams, NumberOrIr, PlayerMovementDescriptor, SpeedParams,
         SwayParams, TiltParams, ViewFeelParams,
     };
-    use crate::scripting::ir::{IrNode, IrValue};
-    use parry3d::math::{Isometry, Point};
-    use parry3d::shape::{Capsule, TriMesh};
+    use postretro_foundation::{IrNode, IrValue};
 
     const POS_EPS: f32 = 1.0e-4;
     const VEL_EPS: f32 = 1.0e-3;
@@ -3318,7 +3318,7 @@ mod tests {
         // six fields authored as expressions. Arm the alloc probe around the full
         // `dash_intent` call — the snapshot refresh is itself alloc-free, so the
         // wider window is a strictly stronger assertion.
-        use crate::scripting::ir::alloc_probe::AllocSnapshot;
+        use crate::alloc_probe::AllocSnapshot;
 
         let world = flat_floor_and_wall_world();
         // Author every expression-capable field as an expression so all six bound

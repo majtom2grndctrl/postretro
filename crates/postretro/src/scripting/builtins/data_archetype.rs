@@ -17,23 +17,23 @@ use std::collections::{BTreeSet, HashSet};
 use glam::Vec3;
 
 use super::MapEntity;
-use crate::scripting::components::agent::attach_agent;
-use crate::scripting::components::billboard_emitter::BillboardEmitterComponent;
-use crate::scripting::components::brain::{attach_brain, validate_brain_animation_states};
-use crate::scripting::components::health::HealthComponent;
-use crate::scripting::components::light::{FalloffKind, LightComponent, LightKind};
-use crate::scripting::components::mesh::{
+use postretro_entities::components::agent::attach_agent;
+use postretro_entities::components::billboard_emitter::BillboardEmitterComponent;
+use postretro_entities::components::brain::{attach_brain, validate_brain_animation_states};
+use postretro_entities::components::health::HealthComponent;
+use postretro_entities::components::light::{FalloffKind, LightComponent, LightKind};
+use postretro_entities::components::mesh::{
     MeshAnimation, MeshComponent, capsule_center_to_feet_origin_offset,
 };
-use crate::scripting::components::player_movement::PlayerMovementComponent;
-use crate::scripting::components::weapon::WeaponComponent;
-use crate::scripting::data_descriptors::{EntityTypeDescriptor, LightDescriptor};
-use crate::scripting::provenance::{
+use postretro_entities::components::player_movement::PlayerMovementComponent;
+use postretro_entities::components::weapon::WeaponComponent;
+use postretro_entities::provenance::{
     DescriptorComponentKind, DescriptorMapOverride, DescriptorProvenance, DescriptorSpawnPath,
     parse_bool,
 };
-use crate::scripting::registry::{ComponentKind, EntityId, EntityRegistry, Transform};
+use postretro_entities::registry::{ComponentKind, EntityId, EntityRegistry, Transform};
 use postretro_foundation::NavAgentParams;
+use postretro_scripting_core::data_descriptors::{EntityTypeDescriptor, LightDescriptor};
 
 /// Capsule fallback for a descriptor-spawned agent when the map has no navmesh
 /// (`agent_params == None`). The agent still materializes — it simply cannot
@@ -774,7 +774,7 @@ pub(crate) fn spawn_from_player_starts(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scripting::data_descriptors::{
+    use postretro_scripting_core::data_descriptors::{
         AirParams, CapsuleParams, FallParams, FireMode, GroundParams, PlayerMovementDescriptor,
         ResolutionMode, SpeedParams, WeaponDescriptor,
     };
@@ -820,7 +820,7 @@ mod tests {
         assert_eq!(handled.len(), 1, "mesh-only descriptor is map-placeable");
 
         let (id, _) = reg
-            .iter_with_kind(crate::scripting::registry::ComponentKind::Mesh)
+            .iter_with_kind(postretro_entities::registry::ComponentKind::Mesh)
             .next()
             .expect("mesh component spawned");
         let mesh = reg.get_component::<MeshComponent>(id).unwrap();
@@ -842,7 +842,7 @@ mod tests {
         apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg, None);
 
         let (id, _) = reg
-            .iter_with_kind(crate::scripting::registry::ComponentKind::Mesh)
+            .iter_with_kind(postretro_entities::registry::ComponentKind::Mesh)
             .next()
             .expect("animated mesh spawned");
         let mesh = reg.get_component::<MeshComponent>(id).unwrap();
@@ -864,7 +864,7 @@ mod tests {
         // the mesh component's `model` field via `ComponentKind::Mesh` iteration.
         // Guard the same contract from the registry side for a descriptor-spawned
         // animated mesh.
-        use crate::scripting::registry::{ComponentKind, ComponentValue};
+        use postretro_entities::registry::{ComponentKind, ComponentValue};
 
         let mut reg = EntityRegistry::new();
         let descriptors = vec![mesh_descriptor("mob", true)];
@@ -883,8 +883,8 @@ mod tests {
 
     #[test]
     fn descriptor_spawn_attaches_health_component_with_current_equal_to_max() {
-        use crate::scripting::components::health::HealthComponent;
-        use crate::scripting::data_descriptors::{HealthDescriptor, HitboxDescriptor};
+        use postretro_entities::components::health::HealthComponent;
+        use postretro_scripting_core::data_descriptors::{HealthDescriptor, HitboxDescriptor};
 
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
@@ -916,7 +916,7 @@ mod tests {
         assert_eq!(handled.len(), 1, "health-only descriptor is map-placeable");
 
         let (id, _) = reg
-            .iter_with_kind(crate::scripting::registry::ComponentKind::Health)
+            .iter_with_kind(postretro_entities::registry::ComponentKind::Health)
             .next()
             .expect("health component spawned");
         let health = reg.get_component::<HealthComponent>(id).unwrap();
@@ -943,7 +943,7 @@ mod tests {
         assert_eq!(handled.len(), 1);
 
         let (id, _) = reg
-            .iter_with_kind(crate::scripting::registry::ComponentKind::Light)
+            .iter_with_kind(postretro_entities::registry::ComponentKind::Light)
             .next()
             .expect("light spawned");
         let light = reg.get_component::<LightComponent>(id).unwrap();
@@ -983,7 +983,7 @@ mod tests {
         apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg, None);
 
         let (id, _) = reg
-            .iter_with_kind(crate::scripting::registry::ComponentKind::DescriptorProvenance)
+            .iter_with_kind(postretro_entities::registry::ComponentKind::DescriptorProvenance)
             .next()
             .expect("provenance should be recorded");
         let provenance = reg.get_component::<DescriptorProvenance>(id).unwrap();
@@ -1024,7 +1024,7 @@ mod tests {
         );
         assert_eq!(handled.len(), 0);
         assert!(
-            reg.iter_with_kind(crate::scripting::registry::ComponentKind::Weapon)
+            reg.iter_with_kind(postretro_entities::registry::ComponentKind::Weapon)
                 .next()
                 .is_none(),
             "weapon-only descriptors are equip targets, not direct map placements",
@@ -1048,14 +1048,14 @@ mod tests {
         assert_eq!(handled.len(), 1);
 
         assert!(
-            reg.iter_with_kind(crate::scripting::registry::ComponentKind::Weapon)
+            reg.iter_with_kind(postretro_entities::registry::ComponentKind::Weapon)
                 .next()
                 .is_none(),
             "direct map placement must not attach weapon components even when another component makes the descriptor placeable",
         );
 
         let (id, _) = reg
-            .iter_with_kind(crate::scripting::registry::ComponentKind::Light)
+            .iter_with_kind(postretro_entities::registry::ComponentKind::Light)
             .next()
             .expect("placeable sibling component still spawns");
         assert!(reg.get_component::<LightComponent>(id).unwrap().is_dynamic);
@@ -1071,7 +1071,7 @@ mod tests {
         let placements = vec![placement("torch", &[])];
         apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg, None);
         let (id, _) = reg
-            .iter_with_kind(crate::scripting::registry::ComponentKind::Light)
+            .iter_with_kind(postretro_entities::registry::ComponentKind::Light)
             .next()
             .unwrap();
         assert!(reg.get_component::<LightComponent>(id).unwrap().is_dynamic);
@@ -1099,7 +1099,7 @@ mod tests {
         )];
         apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg, None);
         let (id, _) = reg
-            .iter_with_kind(crate::scripting::registry::ComponentKind::Light)
+            .iter_with_kind(postretro_entities::registry::ComponentKind::Light)
             .next()
             .unwrap();
         let light = reg.get_component::<LightComponent>(id).unwrap();
@@ -1114,7 +1114,7 @@ mod tests {
         let placements = vec![placement("torch", &[("initial_color", "1.0 0.5 0.25")])];
         apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg, None);
         let (id, _) = reg
-            .iter_with_kind(crate::scripting::registry::ComponentKind::Light)
+            .iter_with_kind(postretro_entities::registry::ComponentKind::Light)
             .next()
             .unwrap();
         let light = reg.get_component::<LightComponent>(id).unwrap();
@@ -1189,7 +1189,7 @@ mod tests {
         let placements = vec![placement("torch", &[("initial_intensity", "-5.0")])];
         apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg, None);
         let (id, _) = reg
-            .iter_with_kind(crate::scripting::registry::ComponentKind::Light)
+            .iter_with_kind(postretro_entities::registry::ComponentKind::Light)
             .next()
             .unwrap();
         let light = reg.get_component::<LightComponent>(id).unwrap();
@@ -1204,7 +1204,7 @@ mod tests {
         let placements = vec![placement("torch", &[("initial_range", "-2.0")])];
         apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg, None);
         let (id, _) = reg
-            .iter_with_kind(crate::scripting::registry::ComponentKind::Light)
+            .iter_with_kind(postretro_entities::registry::ComponentKind::Light)
             .next()
             .unwrap();
         let light = reg.get_component::<LightComponent>(id).unwrap();
@@ -1218,7 +1218,7 @@ mod tests {
         let placements = vec![placement("torch", &[("initial_intensity", "not-a-number")])];
         apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg, None);
         let (id, _) = reg
-            .iter_with_kind(crate::scripting::registry::ComponentKind::Light)
+            .iter_with_kind(postretro_entities::registry::ComponentKind::Light)
             .next()
             .unwrap();
         let light = reg.get_component::<LightComponent>(id).unwrap();
@@ -1254,7 +1254,7 @@ mod tests {
             "all colliding placements must be skipped by the conflict guard"
         );
         assert!(
-            reg.iter_with_kind(crate::scripting::registry::ComponentKind::Light)
+            reg.iter_with_kind(postretro_entities::registry::ComponentKind::Light)
                 .next()
                 .is_none(),
             "no descriptor-spawned light should land for a colliding classname"
@@ -1304,7 +1304,7 @@ mod tests {
         )];
         apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg, None);
         let (id, _) = reg
-            .iter_with_kind(crate::scripting::registry::ComponentKind::BillboardEmitter)
+            .iter_with_kind(postretro_entities::registry::ComponentKind::BillboardEmitter)
             .next()
             .expect("emitter should spawn");
         let component = reg.get_component::<BillboardEmitterComponent>(id).unwrap();
@@ -1345,7 +1345,7 @@ mod tests {
         let placements = vec![placement("campfire", &[("velocity", "9.0 9.0 9.0")])];
         apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg, None);
         let (id, _) = reg
-            .iter_with_kind(crate::scripting::registry::ComponentKind::BillboardEmitter)
+            .iter_with_kind(postretro_entities::registry::ComponentKind::BillboardEmitter)
             .next()
             .expect("emitter should spawn");
         let component = reg.get_component::<BillboardEmitterComponent>(id).unwrap();
@@ -1386,7 +1386,7 @@ mod tests {
         let placements = vec![placement("campfire", &[("initial_rate", "20.5")])];
         apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg, None);
         let (id, _) = reg
-            .iter_with_kind(crate::scripting::registry::ComponentKind::BillboardEmitter)
+            .iter_with_kind(postretro_entities::registry::ComponentKind::BillboardEmitter)
             .next()
             .expect("emitter should spawn");
         let component = reg.get_component::<BillboardEmitterComponent>(id).unwrap();
@@ -1424,7 +1424,7 @@ mod tests {
         let placements = vec![placement("burstfire", &[("initial_burst", "24")])];
         apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg, None);
         let (id, _) = reg
-            .iter_with_kind(crate::scripting::registry::ComponentKind::BillboardEmitter)
+            .iter_with_kind(postretro_entities::registry::ComponentKind::BillboardEmitter)
             .next()
             .expect("emitter should spawn");
         let component = reg.get_component::<BillboardEmitterComponent>(id).unwrap();
@@ -1467,7 +1467,7 @@ mod tests {
         )];
         apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg, None);
         let (id, _) = reg
-            .iter_with_kind(crate::scripting::registry::ComponentKind::BillboardEmitter)
+            .iter_with_kind(postretro_entities::registry::ComponentKind::BillboardEmitter)
             .next()
             .expect("emitter should still spawn");
         let component = reg.get_component::<BillboardEmitterComponent>(id).unwrap();
@@ -1488,7 +1488,7 @@ mod tests {
         use crate::scripting::builtins::{
             ClassnameDispatch, apply_classname_dispatch, register_builtins,
         };
-        use crate::scripting::registry::ComponentKind;
+        use postretro_entities::registry::ComponentKind;
 
         // Built-in dispatch already covers `billboard_emitter`.
         let mut dispatch = ClassnameDispatch::new();
@@ -1588,7 +1588,7 @@ mod tests {
         );
         assert_eq!(handled.len(), 0);
         assert!(
-            reg.iter_with_kind(crate::scripting::registry::ComponentKind::Light)
+            reg.iter_with_kind(postretro_entities::registry::ComponentKind::Light)
                 .next()
                 .is_none(),
             "descriptor with no canonical_name must not spawn from direct placement",
@@ -1612,7 +1612,7 @@ mod tests {
         assert_eq!(handled.len(), 1);
         assert!(handled.contains("foo"));
         assert!(
-            reg.iter_with_kind(crate::scripting::registry::ComponentKind::Light)
+            reg.iter_with_kind(postretro_entities::registry::ComponentKind::Light)
                 .next()
                 .is_some(),
         );
@@ -1644,7 +1644,7 @@ mod tests {
         let result = spawn_from_player_starts(&points, &descriptors, &mut reg, None);
 
         let player_id = reg
-            .iter_with_kind(crate::scripting::registry::ComponentKind::Transform)
+            .iter_with_kind(postretro_entities::registry::ComponentKind::Transform)
             .map(|(id, _)| id)
             .find(|id| Some(*id) != result.active_wieldable)
             .expect("player entity should spawn");
@@ -1787,13 +1787,13 @@ mod tests {
     }
 
     fn live_count(reg: &EntityRegistry) -> usize {
-        reg.iter_with_kind(crate::scripting::registry::ComponentKind::Transform)
+        reg.iter_with_kind(postretro_entities::registry::ComponentKind::Transform)
             .count()
     }
 
     #[test]
     fn single_spawn_point_spawns_one_entity_at_position_and_facing() {
-        use crate::scripting::conv::EulerDegrees;
+        use postretro_scripting_core::conv::EulerDegrees;
 
         let mut reg = EntityRegistry::new();
         let descriptors = vec![stub_descriptor("player")];
@@ -1814,7 +1814,7 @@ mod tests {
 
         assert_eq!(live_count(&reg), 1);
         let (id, _) = reg
-            .iter_with_kind(crate::scripting::registry::ComponentKind::Transform)
+            .iter_with_kind(postretro_entities::registry::ComponentKind::Transform)
             .next()
             .unwrap();
         let t = reg.get_component::<Transform>(id).unwrap();
@@ -1978,7 +1978,7 @@ mod tests {
             "player spawned without a weapon entity"
         );
         assert!(
-            reg.iter_with_kind(crate::scripting::registry::ComponentKind::Weapon)
+            reg.iter_with_kind(postretro_entities::registry::ComponentKind::Weapon)
                 .next()
                 .is_none(),
             "non-weapon defaultWeapon target must not produce an active no-op entity",
@@ -2037,7 +2037,7 @@ mod tests {
         spawn_from_player_starts(&points, &descriptors, &mut reg, None);
 
         let (id, _) = reg
-            .iter_with_kind(crate::scripting::registry::ComponentKind::Transform)
+            .iter_with_kind(postretro_entities::registry::ComponentKind::Transform)
             .next()
             .unwrap();
         let tags = reg.get_tags(id).unwrap();
@@ -2056,7 +2056,7 @@ mod tests {
         spawn_from_player_starts(&points, &descriptors, &mut reg, None);
 
         let (id, _) = reg
-            .iter_with_kind(crate::scripting::registry::ComponentKind::Transform)
+            .iter_with_kind(postretro_entities::registry::ComponentKind::Transform)
             .next()
             .unwrap();
         // Custom KVP available via the same bag data-archetype-spawned entities use.
@@ -2079,7 +2079,7 @@ mod tests {
         spawn_from_player_starts(&points, &descriptors, &mut reg, None);
 
         let (id, _) = reg
-            .iter_with_kind(crate::scripting::registry::ComponentKind::Light)
+            .iter_with_kind(postretro_entities::registry::ComponentKind::Light)
             .next()
             .expect("descriptor light should attach to spawn-point entity");
         let light = reg.get_component::<LightComponent>(id).unwrap();
@@ -2276,9 +2276,9 @@ mod tests {
 
     #[test]
     fn ai_descriptor_spawn_uses_capsule_center_transform_without_moving_authored_hitbox() {
-        use crate::scripting::components::health::HealthComponent;
-        use crate::scripting::data_descriptors::{HealthDescriptor, HitboxDescriptor};
+        use postretro_entities::components::health::HealthComponent;
         use postretro_foundation::NavAgentParams;
+        use postretro_scripting_core::data_descriptors::{HealthDescriptor, HitboxDescriptor};
 
         let params = NavAgentParams {
             radius: 0.4,

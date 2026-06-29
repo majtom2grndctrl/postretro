@@ -4,7 +4,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::scripting::registry::EntityRegistry;
+use postretro_entities::registry::EntityRegistry;
 
 pub(crate) mod billboard_emitter;
 pub(crate) mod data_archetype;
@@ -45,7 +45,7 @@ pub(crate) use crate::scripting::map_entity::MapEntity;
 pub(crate) type ClassnameHandler = fn(
     entity: &MapEntity,
     registry: &mut EntityRegistry,
-) -> Option<crate::scripting::registry::EntityId>;
+) -> Option<postretro_entities::registry::EntityId>;
 
 /// Engine-wide dispatch table of built-in classname handlers. Built once at
 /// engine init via [`register_builtins`]; survives level unload — built-in
@@ -154,8 +154,8 @@ pub(crate) fn apply_classname_dispatch(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scripting::registry::ComponentKind;
     use glam::Vec3;
+    use postretro_entities::registry::ComponentKind;
 
     #[test]
     fn register_builtins_registers_billboard_emitter() {
@@ -183,7 +183,7 @@ mod tests {
 
     #[test]
     fn apply_classname_dispatch_routes_known_classnames() {
-        use crate::scripting::components::billboard_emitter::BillboardEmitterComponent;
+        use postretro_entities::components::billboard_emitter::BillboardEmitterComponent;
 
         let mut dispatch = ClassnameDispatch::new();
         register_builtins(&mut dispatch);

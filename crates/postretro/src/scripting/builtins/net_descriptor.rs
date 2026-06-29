@@ -3,14 +3,14 @@
 
 use super::MapEntity;
 use super::data_archetype::{DEFAULT_AGENT_PARAMS, find_descriptor, spawn_descriptor_instance};
-use crate::scripting::components::mesh::{
+use postretro_entities::components::mesh::{
     MeshAnimation, MeshComponent, capsule_center_to_feet_origin_offset,
 };
-use crate::scripting::components::player_movement::PlayerMovementComponent;
-use crate::scripting::data_descriptors::EntityTypeDescriptor;
-use crate::scripting::provenance::DescriptorSpawnPath;
-use crate::scripting::registry::{ComponentKind, EntityId, EntityRegistry};
+use postretro_entities::components::player_movement::PlayerMovementComponent;
+use postretro_entities::provenance::DescriptorSpawnPath;
+use postretro_entities::registry::{ComponentKind, EntityId, EntityRegistry};
 use postretro_foundation::NavAgentParams;
+use postretro_scripting_core::data_descriptors::EntityTypeDescriptor;
 
 /// Spawn ONE descriptor-backed networked-slot player pawn from a `player_spawn`
 /// placement (M15 Phase 3 Task 4). This is the host-authoritative remote-pawn
@@ -259,14 +259,14 @@ pub(crate) fn materialize_net_remote_enemy_presentation(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scripting::components::mesh::{AnimationState, InterruptPolicy};
-    use crate::scripting::data_descriptors::{
+    use glam::{Quat, Vec3};
+    use postretro_entities::components::mesh::{AnimationState, InterruptPolicy};
+    use postretro_entities::provenance::DescriptorProvenance;
+    use postretro_entities::registry::Transform;
+    use postretro_scripting_core::data_descriptors::{
         AirParams, CapsuleParams, FallParams, GroundParams, MeshDescriptor,
         PlayerMovementDescriptor, SpeedParams,
     };
-    use crate::scripting::provenance::DescriptorProvenance;
-    use crate::scripting::registry::Transform;
-    use glam::{Quat, Vec3};
     use std::collections::HashMap;
 
     /// Minimal in-memory descriptor carrying only a mesh block. `animated` selects
@@ -380,7 +380,7 @@ mod tests {
     #[test]
     fn remote_enemy_presentation_offsets_ai_mesh_from_capsule_center_to_feet() {
         let mut descriptor = enemy_mesh_descriptor("decraniated_mob", true);
-        descriptor.ai = Some(crate::scripting::data_descriptors::AiDescriptor {
+        descriptor.ai = Some(postretro_scripting_core::data_descriptors::AiDescriptor {
             detection_range: 18.0,
             attack_range: 2.0,
             leash_range: 26.0,
@@ -388,7 +388,7 @@ mod tests {
             attack_cooldown_ms: 1000.0,
             move_speed: 3.5,
             death_despawn_ms: 1500.0,
-            states: crate::scripting::data_descriptors::AiStateNames {
+            states: postretro_scripting_core::data_descriptors::AiStateNames {
                 idle: "idle".into(),
                 alert: "idle".into(),
                 attack: "attack".into(),

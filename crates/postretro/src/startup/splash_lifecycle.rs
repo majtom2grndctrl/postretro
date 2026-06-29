@@ -227,8 +227,8 @@ impl App {
         let script_root = self.content_root.join("scripts");
         let content_root = self.content_root.clone();
         let mut deferred_theme_fonts: Option<(
-            crate::scripting::data_descriptors::ModThemeTokens,
-            crate::scripting::data_descriptors::ModFontAssets,
+            postretro_foundation::ModThemeTokens,
+            postretro_foundation::ModFontAssets,
         )> = None;
         {
             let session = self

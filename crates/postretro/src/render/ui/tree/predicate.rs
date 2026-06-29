@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use super::super::descriptor::{BindSource, PredicateValue};
-use crate::scripting::slot_table::SlotValue;
+use postretro_entities::SlotValue;
 
 use super::CellValues;
 

@@ -145,7 +145,8 @@ pub struct FallParams {
 }
 
 /// A dash numeric field: either a bare literal or an engine-evaluated IR
-/// expression over the movement-local input namespace ([`MovementScope`]).
+/// expression over the movement-local input namespace
+/// ([`crate::movement::MovementScope`]).
 ///
 /// `#[serde(untagged)]` mirrors the substrate's untagged-`IrValue` precedent: a
 /// bare JSON number deserializes to [`NumberOrIr::Literal`], an op-tagged object
@@ -230,7 +231,7 @@ impl PartialEq<bool> for BoolOrIr {
 /// evaluation moment is engine-pinned per field (see `movement.md` §2). The
 /// hand-written parsers validate an expression at declaration: a literal keeps
 /// its existing range check; an expression is bound against
-/// [`MovementScope::for_validation`] and its root type checked.
+/// [`crate::movement::MovementScope::for_validation`] and its root type checked.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DashParams {
     /// Impulse magnitude applied on dash, world-units/sec (entry-moment). A

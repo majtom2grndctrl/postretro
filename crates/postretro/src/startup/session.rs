@@ -16,9 +16,9 @@ use winit::event_loop::EventLoop;
 use crate::camera::Camera;
 use crate::frame_timing::{FrameRateMeter, FrameTiming, InterpolableState};
 use crate::input;
-use crate::scripting::data_descriptors::ModThemeTokens;
 use crate::startup::StartupTimings;
 use crate::{App, collision, view_feel};
+use postretro_foundation::ModThemeTokens;
 
 /// Dev-default boot map when no content root or map argument is supplied. Used by
 /// `content_root_from_map` to derive the default `content/dev` root.

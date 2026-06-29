@@ -3,17 +3,17 @@
 
 use glam::Vec3;
 use parry3d::math::{Point, Vector};
+use postretro_entities::components::weapon::WeaponComponent;
+use postretro_entities::registry::{EntityId, EntityRegistry};
+use postretro_foundation::{FireMode, ResolutionMode};
 
 use crate::collision::{CollisionWorld, cast_ray};
-use crate::scripting::components::weapon::WeaponComponent;
-use crate::scripting::registry::{EntityId, EntityRegistry};
 use crate::scripting_systems::hit_zones::{EntityRayHit, HitZoneStore, nearest_entity_hit};
 #[cfg(test)]
 use crate::{
     camera::Camera,
     input::{Action, ActionSnapshot, ButtonState},
 };
-use postretro_foundation::{FireMode, ResolutionMode};
 
 mod damage;
 mod impact;
@@ -279,11 +279,11 @@ fn impact_from_entity(entity: EntityRayHit, damage: f32) -> WeaponImpact {
 mod tests {
     use super::*;
     use crate::input::{Binding, InputSystem, PhysicalInput};
-    use crate::scripting::components::health::{HealthComponent, Hitbox};
-    use crate::scripting::data_descriptors::WeaponDescriptor;
-    use crate::scripting::registry::{ComponentKind, Transform};
     use parry3d::math::Isometry;
     use parry3d::shape::TriMesh;
+    use postretro_entities::components::health::{HealthComponent, Hitbox};
+    use postretro_entities::registry::{ComponentKind, Transform};
+    use postretro_foundation::WeaponDescriptor;
     use winit::event::MouseButton;
 
     const EPSILON: f32 = 1.0e-5;
@@ -806,8 +806,8 @@ mod tests {
 
     use crate::lighting::cone_frustum::Aabb;
     use crate::model::skeleton::{Joint, RestLocal, Skeleton};
-    use crate::scripting::components::mesh::MeshComponent;
     use crate::scripting_systems::hit_zones::ModelHitZones;
+    use postretro_entities::components::mesh::MeshComponent;
     use std::sync::Arc;
 
     /// Build a store holding one model with a single TAGGED LEAF joint at the

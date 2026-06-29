@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use bytemuck::{Pod, Zeroable};
 
-use crate::scripting::slot_table::SlotValue;
+use postretro_entities::SlotValue;
 
 /// Logical-reference resolution the screen-shake amplitude is authored against
 /// (`screen.shake` `[dx, dy]` are in logical-reference px). The shader applies a
@@ -389,7 +389,7 @@ fn create_bind_group(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scripting::slot_table::SlotValue;
+    use postretro_entities::SlotValue;
     use std::collections::HashMap;
 
     fn slots(pairs: &[(&str, SlotValue)]) -> HashMap<String, SlotValue> {

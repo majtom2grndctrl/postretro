@@ -52,6 +52,9 @@ mod ui_texture;
 mod view_feel;
 mod visibility;
 
+#[cfg(test)]
+mod alloc_probe;
+
 // Rooted here (not under `scripting/`) so `gen_script_types.rs` can reuse the
 // `scripting` tree via `#[path]` without pulling in wgpu/engine-dependent code.
 #[path = "scripting/systems/mod.rs"]
@@ -59,13 +62,12 @@ mod scripting_systems;
 
 // Test-only counting global allocator. `#[global_allocator]` must annotate a
 // crate-root static, so the static lives here; the allocator type and its
-// counters live in `scripting::ir::alloc_probe`. Gated on `#[cfg(test)]` so it
-// never touches the production binary — the IR eval pass's zero-allocation
-// guarantee is asserted by a test that arms the counters around `eval_value`.
+// counters live in `alloc_probe`. Gated on `#[cfg(test)]` so it never touches
+// the production binary — the IR eval pass's zero-allocation guarantee is
+// asserted by a test that arms the counters around `eval_value`.
 #[cfg(test)]
 #[global_allocator]
-static COUNTING_ALLOCATOR: scripting::ir::alloc_probe::CountingAllocator =
-    scripting::ir::alloc_probe::CountingAllocator;
+static COUNTING_ALLOCATOR: alloc_probe::CountingAllocator = alloc_probe::CountingAllocator;
 
 use std::collections::VecDeque;
 use std::fmt::Write as _;
@@ -87,9 +89,7 @@ use crate::camera::Camera;
 use crate::frame_timing::{FrameRateMeter, FrameTiming, InterpolableState};
 use crate::input::{Action, ButtonState, DiagnosticAction, InputFocus};
 use crate::render::Renderer;
-use crate::scripting::data_descriptors::ModThemeTokens;
 use crate::scripting::reaction_dispatch::{fire_named_event, fire_named_event_with_sequences};
-use crate::scripting::reactions::system_commands::SystemReactionCommand;
 use crate::scripting::runtime::{Frontend, MenuCamera, ReloadSummary, StagedManifestCommitOutcome};
 use crate::scripting::staged_manifest::{StagedManifestBuildResult, StagedManifestBuildStatus};
 use crate::scripting::state_persistence::{
@@ -98,8 +98,6 @@ use crate::scripting::state_persistence::{
 // Session-owned types referenced in `main.rs` only by `#[cfg(test)]` code, so
 // they are gated test-only to keep the bin build warning-free.
 #[cfg(test)]
-use crate::scripting::ctx::ScriptCtx;
-#[cfg(test)]
 use crate::scripting::reaction_dispatch::ProgressTracker;
 #[cfg(test)]
 use crate::scripting::runtime::ScriptRuntime;
@@ -107,6 +105,8 @@ use crate::startup::{
     BootState, FRONTEND_CLEAR_COLOR, InFlightLevelLoad, LevelRequest, LevelSource, LoadOutcome,
     SplashSource, StartupTimings,
 };
+#[cfg(test)]
+use postretro_entities::ScriptCtx;
 // Positional-map-path recovery lives with boot construction; re-exported at the
 // crate root so `crate::resolve_map_path` keeps resolving for the netcode CLI
 // tests. Test-only: the boot path calls it through `startup::session`.
@@ -115,6 +115,8 @@ pub(crate) use crate::startup::session::resolve_map_path;
 use crate::visibility::{
     CameraCullVisibility, VisibilityPath, VisibilityResult, VisibilityStats, VisibleCells,
 };
+use postretro_entities::SystemReactionCommand;
+use postretro_foundation::ModThemeTokens;
 
 /// Fraction of a vignette reaction's single `durationMs` spent ramping in. The
 /// author supplies one duration (mirroring `flashScreen`); the drain splits it
@@ -171,8 +173,8 @@ fn apply_menu_camera_pose(
 /// `load_skinned_model` caches under this string but opens the glTF from
 /// `content_root.join(handle)`, so the caller passes both the handle and the
 /// content root (open path and cache key are deliberately decoupled).
-fn distinct_mesh_models(registry: &crate::scripting::registry::EntityRegistry) -> Vec<String> {
-    use crate::scripting::registry::{ComponentKind, ComponentValue};
+fn distinct_mesh_models(registry: &postretro_entities::EntityRegistry) -> Vec<String> {
+    use postretro_entities::{ComponentKind, ComponentValue};
 
     let mut seen = std::collections::HashSet::new();
     let mut ordered = Vec::new();
@@ -200,14 +202,14 @@ fn distinct_mesh_models(registry: &crate::scripting::registry::EntityRegistry) -
 /// Runs at level load with a mutable registry, after the model sweep built the
 /// clip tables — so every state's index is concrete before the first frame.
 fn resolve_mesh_entity_clips(
-    registry: &mut crate::scripting::registry::EntityRegistry,
+    registry: &mut postretro_entities::EntityRegistry,
     tables: &scripting_systems::mesh_anim::MeshClipTables,
 ) {
-    use crate::scripting::registry::{ComponentKind, ComponentValue};
+    use postretro_entities::{ComponentKind, ComponentValue};
 
     // Collect ids first so the mutable per-entity writes do not alias the
     // immutable iteration borrow. Mesh entity counts are small.
-    let animated: Vec<crate::scripting::registry::EntityId> = registry
+    let animated: Vec<postretro_entities::EntityId> = registry
         .iter_with_kind(ComponentKind::Mesh)
         .filter_map(|(id, value)| match value {
             ComponentValue::Mesh(mesh) if mesh.animation.is_some() => Some(id),
@@ -217,7 +219,7 @@ fn resolve_mesh_entity_clips(
 
     for id in animated {
         let Ok(mut component) = registry
-            .get_component::<crate::scripting::components::mesh::MeshComponent>(id)
+            .get_component::<postretro_entities::components::mesh::MeshComponent>(id)
             .cloned()
         else {
             continue;
@@ -266,7 +268,7 @@ fn resolve_mesh_entity_clips(
 /// hit-zone entry (load failed, or an AABB-only model) treats every declared tag
 /// as unknown — the model carries no zones to satisfy them.
 fn warn_unknown_zone_multipliers(
-    descriptors: &[crate::scripting::data_descriptors::EntityTypeDescriptor],
+    descriptors: &[postretro_entities::EntityTypeDescriptor],
     store: &scripting_systems::hit_zones::HitZoneStore,
 ) {
     for desc in descriptors {
@@ -500,7 +502,7 @@ pub(crate) struct App {
     /// consumed by the next frame's `emitter_bridge.update` for cap headroom.
     /// Owned here (not re-allocated per frame) so the collapsed pass reuses one
     /// buffer's capacity across frames. See: context/lib/scripting.md §10.1 (Emitter and Particles).
-    particle_live_counts: std::collections::HashMap<scripting::registry::EntityId, usize>,
+    particle_live_counts: std::collections::HashMap<postretro_entities::EntityId, usize>,
 
     /// World-space static-geometry collider built from PRL static geometry.
     /// See: context/lib/entity_model.md §7
@@ -509,7 +511,7 @@ pub(crate) struct App {
     /// Active wieldable instance equipped by the player. The companion
     /// descriptor name lets mod-init hot reload refresh authored weapon stats
     /// while preserving per-instance cooldown.
-    active_wieldable: Option<crate::scripting::registry::EntityId>,
+    active_wieldable: Option<postretro_entities::EntityId>,
     active_wieldable_descriptor: Option<String>,
 
     /// Boot state machine: drives the splash → first-level-frame transition.
@@ -641,7 +643,7 @@ pub(crate) struct App {
     /// unload). Each tick the agent re-targets the player pawn's `Transform`
     /// (or the camera when no pawn exists) so it pathfinds toward the player.
     #[cfg(feature = "dev-tools")]
-    debug_chase_agent: Option<crate::scripting::registry::EntityId>,
+    debug_chase_agent: Option<postretro_entities::EntityId>,
 }
 
 struct WindowState {
@@ -785,8 +787,8 @@ fn build_post_movement_command(camera: &Camera) -> sim::PostMovementCommand {
     }
 }
 
-fn has_player_pawn(registry: &scripting::registry::EntityRegistry) -> bool {
-    use crate::scripting::registry::ComponentKind;
+fn has_player_pawn(registry: &postretro_entities::EntityRegistry) -> bool {
+    use postretro_entities::ComponentKind;
 
     registry
         .iter_with_kind(ComponentKind::PlayerMovement)
@@ -798,9 +800,9 @@ fn has_player_pawn(registry: &scripting::registry::EntityRegistry) -> bool {
 /// `PlayerMovement` entity. See also `local_movement_pawn` (sim/mod.rs)
 /// and `player_position` (scripting/systems/ai.rs).
 fn followed_player_pawn(
-    registry: &scripting::registry::EntityRegistry,
-) -> Option<scripting::registry::EntityId> {
-    use crate::scripting::registry::ComponentKind;
+    registry: &postretro_entities::EntityRegistry,
+) -> Option<postretro_entities::EntityId> {
+    use postretro_entities::ComponentKind;
 
     if let Some(id) = registry.local_player_pawn() {
         if matches!(
@@ -826,17 +828,14 @@ fn followed_player_pawn(
 /// the real offset is read from `ClientPrediction` at render rate by the render seam.
 fn follow_camera_to_local_pawn(
     camera: &mut Camera,
-    registry: &scripting::registry::EntityRegistry,
+    registry: &postretro_entities::EntityRegistry,
     presentation_offset: Vec3,
 ) {
-    use crate::scripting::registry::Transform;
+    use postretro_entities::Transform;
 
     if let Some(id) = followed_player_pawn(registry) {
         if let (Ok(component), Ok(transform)) = (
-            registry
-                .get_component::<scripting::components::player_movement::PlayerMovementComponent>(
-                    id,
-                ),
+            registry.get_component::<postretro_foundation::PlayerMovementComponent>(id),
             registry.get_component::<Transform>(id),
         ) {
             camera.position = transform.position
@@ -848,11 +847,11 @@ fn follow_camera_to_local_pawn(
 
 #[cfg(feature = "dev-tools")]
 fn update_debug_chase_agent_destination(
-    registry: &mut scripting::registry::EntityRegistry,
-    debug_chase_agent: Option<scripting::registry::EntityId>,
+    registry: &mut postretro_entities::EntityRegistry,
+    debug_chase_agent: Option<postretro_entities::EntityId>,
     fallback_target: Vec3,
 ) {
-    use crate::scripting::registry::Transform;
+    use postretro_entities::Transform;
 
     let Some(agent) = debug_chase_agent else {
         return;
@@ -2071,9 +2070,7 @@ impl ApplicationHandler for App {
                     let registry = script_ctx.registry.borrow();
                     followed_player_pawn(&registry).and_then(|id| {
                         registry
-                            .get_component::<
-                                scripting::components::player_movement::PlayerMovementComponent,
-                            >(id)
+                            .get_component::<postretro_foundation::PlayerMovementComponent>(id)
                             .ok()
                             .and_then(|component| {
                                 component.view_feel.as_ref().map(|params| {
@@ -2374,7 +2371,7 @@ impl ApplicationHandler for App {
                         // the last target's stamp is concrete. See mesh.rs.
                         {
                             let mut registry = script_ctx.registry.borrow_mut();
-                            crate::scripting::components::mesh::resolve_pending_animation_stamps(
+                            postretro_entities::components::mesh::resolve_pending_animation_stamps(
                                 &mut registry,
                                 self.anim_time,
                             );
@@ -2483,8 +2480,8 @@ impl ApplicationHandler for App {
                         // the renderer (no wgpu outside the renderer module).
                         // Same toggle as the navmesh overlay.
                         if let Some(agent) = self.debug_chase_agent {
-                            use crate::scripting::components::agent::AgentComponent;
-                            use crate::scripting::registry::Transform;
+                            use postretro_entities::Transform;
+                            use postretro_entities::components::agent::AgentComponent;
                             let registry = script_ctx.registry.borrow();
                             if let Ok(component) = registry.get_component::<AgentComponent>(agent) {
                                 let position = registry
@@ -3021,7 +3018,7 @@ impl App {
     fn build_ui_read_snapshot(
         modal_stack: &render::ui::modal_stack::ModalStack,
         presentation_cells: &mut scripting_systems::presentation_cells::PresentationCellStore,
-        slot_table: &scripting::slot_table::SlotTable,
+        slot_table: &postretro_entities::SlotTable,
         script_time: f64,
         ui_input_mode: input::InputMode,
         ui_focused_id: Option<String>,
@@ -3067,7 +3064,7 @@ impl App {
     fn install_mod_ui_theme_and_fonts(
         &mut self,
         theme: ModThemeTokens,
-        fonts: crate::scripting::data_descriptors::ModFontAssets,
+        fonts: postretro_foundation::ModFontAssets,
     ) {
         self.commit_mod_ui_theme(theme);
 
@@ -3376,8 +3373,8 @@ impl App {
     /// `pub(crate)` so the netcode state-slot apply tests can drive the REAL UI read
     /// path (the replicated value must surface here), not a hand-mirrored copy.
     pub(crate) fn build_ui_slot_snapshot(
-        slot_table: &scripting::slot_table::SlotTable,
-    ) -> std::collections::HashMap<String, scripting::slot_table::SlotValue> {
+        slot_table: &postretro_entities::SlotTable,
+    ) -> std::collections::HashMap<String, postretro_entities::SlotValue> {
         slot_table
             .iter()
             .filter_map(|(name, record)| {
@@ -3435,7 +3432,7 @@ impl App {
         let current = {
             let table = script_ctx.slot_table.borrow();
             match table.get(&slot).and_then(|r| r.value.as_ref()) {
-                Some(crate::scripting::slot_table::SlotValue::Number(n)) => *n,
+                Some(postretro_entities::SlotValue::Number(n)) => *n,
                 _ => min,
             }
         };
@@ -3853,12 +3850,11 @@ impl App {
                 .and_then(|session| session.net_endpoint.as_ref()),
             Some(netcode::NetEndpoint::Host { .. } | netcode::NetEndpoint::Client { .. })
         );
-        let net_descriptors: Vec<crate::scripting::data_descriptors::EntityTypeDescriptor> =
-            if is_networked {
-                script_ctx.data_registry.borrow().entities.clone()
-            } else {
-                Vec::new()
-            };
+        let net_descriptors: Vec<postretro_entities::EntityTypeDescriptor> = if is_networked {
+            script_ctx.data_registry.borrow().entities.clone()
+        } else {
+            Vec::new()
+        };
         let host_agent_params = self.nav_graph.as_ref().map(|g| g.agent_params());
         let host_spawn_points = std::mem::take(&mut self.host_spawn_points);
         // M15 Phase 3 Task 5: the client reconcile replay threads collision + gravity
@@ -4585,8 +4581,8 @@ impl App {
     /// is then driven by `run_agent_tick`.
     #[cfg(feature = "dev-tools")]
     fn spawn_debug_chase_agent(&mut self) {
-        use crate::scripting::components::agent::attach_agent;
-        use crate::scripting::registry::Transform;
+        use postretro_entities::Transform;
+        use postretro_entities::components::agent::attach_agent;
 
         let Some(nav_graph) = self.nav_graph.as_ref() else {
             log::warn!("[dev-tools] chase agent: map has no navmesh; cannot spawn");
@@ -4668,13 +4664,13 @@ mod tests {
     use crate::frame_timing::TICK_DURATION;
     use crate::input::{InputSystem, default_bindings};
     use crate::options::CrouchMode;
-    use crate::scripting::data_descriptors::{
-        AirParams, CapsuleParams, FallParams, ForgivenessParams, GroundParams,
-        PlayerMovementDescriptor, SpeedParams,
-    };
     use crate::scripting::primitives::register_all;
     use crate::scripting::primitives_registry::PrimitiveRegistry;
     use crate::scripting::runtime::ScriptRuntimeConfig;
+    use postretro_foundation::{
+        AirParams, CapsuleParams, FallParams, ForgivenessParams, GroundParams,
+        PlayerMovementDescriptor, SpeedParams,
+    };
 
     // M15 Phase 3.5 Task 5: a connected client skips the clean-exit `state.json` save;
     // single-player and the host still save. `is_connected_client` is `true` only for
@@ -4957,8 +4953,8 @@ mod tests {
         use std::rc::Rc;
 
         use crate::collision::CollisionWorld;
-        use crate::scripting::components::player_movement::PlayerMovementComponent;
-        use crate::scripting::registry::{EntityRegistry, Transform};
+        use postretro_entities::{EntityRegistry, Transform};
+        use postretro_foundation::PlayerMovementComponent;
 
         let registry = Rc::new(RefCell::new(EntityRegistry::new()));
         let descriptor = minimal_player_descriptor();
@@ -5044,8 +5040,8 @@ mod tests {
 
     #[test]
     fn camera_follow_does_not_fallback_when_marked_movement_pawn_lacks_transform() {
-        use crate::scripting::components::player_movement::PlayerMovementComponent;
-        use crate::scripting::registry::{EntityRegistry, Transform};
+        use postretro_entities::{EntityRegistry, Transform};
+        use postretro_foundation::PlayerMovementComponent;
 
         let mut registry = EntityRegistry::new();
         let descriptor = minimal_player_descriptor();
@@ -5098,8 +5094,8 @@ mod tests {
 
     #[test]
     fn camera_follow_no_marker_fallback_does_not_skip_transformless_first_pawn() {
-        use crate::scripting::components::player_movement::PlayerMovementComponent;
-        use crate::scripting::registry::{EntityRegistry, Transform};
+        use postretro_entities::{EntityRegistry, Transform};
+        use postretro_foundation::PlayerMovementComponent;
 
         let mut registry = EntityRegistry::new();
         let descriptor = minimal_player_descriptor();
@@ -5241,8 +5237,8 @@ mod tests {
         use std::rc::Rc;
 
         use crate::collision::CollisionWorld;
-        use crate::scripting::components::player_movement::PlayerMovementComponent;
-        use crate::scripting::registry::{EntityRegistry, Transform};
+        use postretro_entities::{EntityRegistry, Transform};
+        use postretro_foundation::PlayerMovementComponent;
 
         let registry = Rc::new(RefCell::new(EntityRegistry::new()));
         let descriptor = minimal_player_descriptor();
@@ -6314,9 +6310,9 @@ mod tests {
     // dedup/collection as pure logic here. Empty handles (absent/empty `model`)
     // have nothing to upload and are skipped.
 
-    fn spawn_mesh_entity(registry: &mut crate::scripting::registry::EntityRegistry, model: &str) {
-        use crate::scripting::components::mesh::MeshComponent;
-        use crate::scripting::registry::Transform;
+    fn spawn_mesh_entity(registry: &mut postretro_entities::EntityRegistry, model: &str) {
+        use postretro_entities::Transform;
+        use postretro_entities::components::mesh::MeshComponent;
 
         let id = registry.spawn(Transform::default());
         registry
@@ -6326,7 +6322,7 @@ mod tests {
 
     #[test]
     fn distinct_mesh_models_dedups_repeated_handles() {
-        use crate::scripting::registry::EntityRegistry;
+        use postretro_entities::EntityRegistry;
 
         let mut registry = EntityRegistry::new();
         spawn_mesh_entity(&mut registry, "models/a/scene.gltf");
@@ -6342,7 +6338,7 @@ mod tests {
 
     #[test]
     fn distinct_mesh_models_skips_empty_handles() {
-        use crate::scripting::registry::EntityRegistry;
+        use postretro_entities::EntityRegistry;
 
         // A `prop_mesh` with an absent/empty `model` spawns with an empty handle
         // (logged at spawn); there is nothing to upload, so the sweep skips it.
@@ -6356,7 +6352,7 @@ mod tests {
 
     #[test]
     fn distinct_mesh_models_empty_when_no_mesh_entities() {
-        use crate::scripting::registry::EntityRegistry;
+        use postretro_entities::EntityRegistry;
 
         let registry = EntityRegistry::new();
         assert!(distinct_mesh_models(&registry).is_empty());
@@ -6371,10 +6367,10 @@ mod tests {
     // resolves the indices — proving the resolve sees descriptor-spawned meshes.
     #[test]
     fn resolve_after_archetype_dispatch_fills_descriptor_mesh_clip_index() {
-        use crate::scripting::components::mesh::{
+        use postretro_entities::components::mesh::{
             AnimationState, DEFAULT_CROSSFADE_MS, InterruptPolicy, MeshAnimation, MeshComponent,
         };
-        use crate::scripting::registry::{EntityRegistry, Transform};
+        use postretro_entities::{EntityRegistry, Transform};
         use std::collections::HashMap;
 
         // A descriptor-declared animated mesh as it exists right after
@@ -6444,11 +6440,11 @@ mod tests {
 
     #[test]
     fn resolve_after_remote_enemy_materialization_uses_declared_default_clip_not_first_clip() {
-        use crate::scripting::components::mesh::{
+        use postretro_entities::components::mesh::{
             AnimationState, DEFAULT_CROSSFADE_MS, InterruptPolicy, MeshComponent,
         };
-        use crate::scripting::data_descriptors::{EntityTypeDescriptor, MeshDescriptor};
-        use crate::scripting::registry::{EntityRegistry, Transform};
+        use postretro_entities::{EntityRegistry, Transform};
+        use postretro_entities::{EntityTypeDescriptor, MeshDescriptor};
         use std::collections::HashMap;
 
         let unresolved = |clip: &str, looping| AnimationState {
@@ -6535,14 +6531,14 @@ mod tests {
 
     #[test]
     fn ui_slot_snapshot_clones_present_values_and_skips_valueless_slots() {
-        use crate::scripting::slot_table::SlotValue;
+        use postretro_entities::SlotValue;
 
         // The default table carries engine `player.*` slots with `None` values
         // plus two value-bearing engine surfaces: `screen.flash` (resting
         // transparent) and `input.mode` (defaults to `focus`). Setting one of the
         // value-less slots asserts the boundary contract: the snapshot clones
         // value-bearing slots and omits value-less ones.
-        let mut table = crate::scripting::slot_table::SlotTable::new();
+        let mut table = postretro_entities::SlotTable::new();
         table
             .get_mut("player.health")
             .expect("default table declares player.health")
@@ -6676,7 +6672,7 @@ mod tests {
 
     #[test]
     fn cell_write_dispatch_writes_presentation_cell_and_leaves_slot_table_untouched() {
-        use crate::scripting::slot_table::SlotTable;
+        use postretro_entities::SlotTable;
         use scripting_systems::presentation_cells::{PresentationCellStore, json_to_cell_value};
 
         let scope = "counter".to_string();
@@ -6696,7 +6692,7 @@ mod tests {
         let snapshot = presentation_cells.snapshot();
         assert_eq!(
             snapshot.get(&(scope.clone(), cell.clone())),
-            Some(&crate::scripting::slot_table::SlotValue::Number(42.0)),
+            Some(&postretro_entities::SlotValue::Number(42.0)),
             "CellWrite must land in the presentation cell store",
         );
 

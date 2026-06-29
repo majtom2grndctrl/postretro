@@ -12,7 +12,7 @@ use super::super::layout::{REFERENCE_HEIGHT, REFERENCE_WIDTH};
 use super::super::style_ranges::evaluate;
 use super::super::text::UiText;
 use super::super::theme::UiTheme;
-use crate::scripting::slot_table::SlotValue;
+use postretro_entities::SlotValue;
 
 use super::CellValues;
 use super::bindings::DrawWalkCtx;

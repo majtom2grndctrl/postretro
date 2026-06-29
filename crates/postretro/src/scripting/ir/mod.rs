@@ -1,8 +1,8 @@
+// Compatibility barrel for foundation-owned scripting IR.
+// See: context/lib/scripting.md
+
 pub(crate) use postretro_foundation::ir::*;
 
-#[cfg(test)]
-#[allow(unsafe_code)]
-pub(crate) mod alloc_probe;
 #[cfg(test)]
 mod e2e_tests;
 #[cfg(test)]

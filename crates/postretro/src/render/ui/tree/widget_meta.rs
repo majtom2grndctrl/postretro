@@ -132,7 +132,7 @@ pub(crate) fn container_local_scope(widget: &Widget) -> Option<&str> {
 pub(crate) fn widget_a11y_state(
     widget: &Widget,
     scope: Option<&str>,
-    slot_values: &HashMap<String, crate::scripting::slot_table::SlotValue>,
+    slot_values: &HashMap<String, postretro_entities::SlotValue>,
     cell_values: &super::CellValues,
 ) -> (Option<f32>, Option<f32>, bool) {
     let resolve = |p: &Predicate| {

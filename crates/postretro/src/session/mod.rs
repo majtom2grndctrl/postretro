@@ -12,13 +12,13 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
+use postretro_entities::ScriptCtx;
 
 use crate::input;
 use crate::render;
 use crate::scripting::builtins::{
     ClassnameDispatch, register_builtins as register_builtin_classnames,
 };
-use crate::scripting::ctx::ScriptCtx;
 use crate::scripting::primitives::light::register_sequenced_light_primitives;
 use crate::scripting::primitives::register_all;
 use crate::scripting::primitives_registry::PrimitiveRegistry;

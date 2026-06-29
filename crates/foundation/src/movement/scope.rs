@@ -38,7 +38,7 @@ const INPUTS: [(&str, IrType); 6] = [
 /// snapshot array, mirroring the trigger-vocabulary nouns in movement.md §2. Dash
 /// descriptor value fields bind their expressions against this.
 ///
-/// Indexed handles (`usize` into [`MovementScope::values`]) keep binding engine
+/// Indexed handles (`usize` into the scope's snapshot array) keep binding engine
 /// internal — the script-facing slot table is never consulted, so the
 /// script-opacity invariant (entity_model.md §7b) holds by construction.
 #[derive(Debug)]

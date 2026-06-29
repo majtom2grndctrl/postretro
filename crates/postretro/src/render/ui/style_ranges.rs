@@ -426,12 +426,11 @@ mod tests {
     // styleRanges evaluator and the real `CrossingDetector` against one slot.
     #[test]
     fn styleranges_display_value_and_crossing_authoritative_slot_diverge_mid_tween() {
-        use crate::scripting::data_descriptors::{CrossingCondition, CrossingDescriptor};
-        use crate::scripting::data_registry::DataRegistry;
-        use crate::scripting::slot_table::{
-            SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue,
-        };
         use crate::scripting::state_crossings::CrossingDetector;
+        use postretro_entities::{
+            CrossingCondition, CrossingDescriptor, DataRegistry, ReplicationScope, SlotOwnership,
+            SlotRecord, SlotSchema, SlotTable, SlotType, SlotValue,
+        };
 
         // Health styleRanges: red ≤ 0.2 of max, default green above.
         let ranges = StyleRanges {
@@ -449,7 +448,7 @@ mod tests {
 
         // The authoritative `player.health` slot: a mod-style Number slot under
         // a fresh namespace seeded at full health.
-        let mut slot_table = crate::scripting::slot_table::SlotTable::new();
+        let mut slot_table = SlotTable::new();
         slot_table
             .insert(
                 "hud.health".to_string(),
@@ -461,7 +460,7 @@ mod tests {
                         persist: false,
                         readonly: false,
                         ownership: SlotOwnership::Mod,
-                        network: crate::scripting::slot_table::ReplicationScope::None,
+                        network: ReplicationScope::None,
                     },
                     value: Some(SlotValue::Number(100.0)),
                 },

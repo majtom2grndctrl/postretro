@@ -1,7 +1,7 @@
-// Test-only counting global allocator and the zero-allocation assertion test
-// for the eval pass.
+// Counting global allocator support for zero-allocation IR assertions.
 // See: context/lib/development_guide.md §3.5 (No `unsafe` — the one approved
 //      exception is the System delegation below) and §1.4 (performance).
+#![allow(unsafe_code)]
 
 // The IR eval pass must perform ZERO heap allocation per tick (scripting.md
 // §11). To prove it, this module installs a global allocator that delegates
@@ -12,10 +12,9 @@
 // process-global atomic) keeps the assertion stable under `cargo test`'s
 // parallel pool — concurrent test threads cannot inflate the measured window.
 //
-// This file is compiled only under `#[cfg(test)]` (it is declared from the IR
-// module behind a `cfg(test)` gate). The `#[global_allocator]` static itself
-// lives in the crate test root (`main.rs`, behind `#[cfg(test)]`) because the
-// attribute must sit on a crate-root static; it points at [`CountingAllocator`].
+// The `#[global_allocator]` static itself lives in the crate test root because
+// the attribute must sit on a crate-root static; it points at
+// [`CountingAllocator`].
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -41,7 +40,7 @@ fn bump_thread_alloc_count() {
 /// A global allocator that forwards every request verbatim to the system
 /// allocator and only adds per-thread bookkeeping. Installing it lets a test
 /// count allocations across a precise window.
-pub(crate) struct CountingAllocator;
+pub struct CountingAllocator;
 
 // SAFETY: every method forwards the *identical* `ptr`/`layout` to the
 // corresponding `std::alloc::System` method — the System allocator already
@@ -83,7 +82,7 @@ unsafe impl GlobalAlloc for CountingAllocator {
 /// A snapshot of the allocation counters, used to measure a delta across a
 /// precise window.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct AllocSnapshot {
+pub struct AllocSnapshot {
     allocs: usize,
 }
 
@@ -91,14 +90,14 @@ impl AllocSnapshot {
     /// Capture the current thread's allocation count. Call this AFTER bind,
     /// immediately before the work whose allocations must be zero, and read it
     /// back via [`AllocSnapshot::allocs_since`] on the *same* thread.
-    pub(crate) fn arm() -> Self {
+    pub fn arm() -> Self {
         Self {
             allocs: THREAD_ALLOC_COUNT.with(Cell::get),
         }
     }
 
     /// Number of `alloc`-family calls on this thread since [`AllocSnapshot::arm`].
-    pub(crate) fn allocs_since(self) -> usize {
+    pub fn allocs_since(self) -> usize {
         THREAD_ALLOC_COUNT.with(Cell::get).wrapping_sub(self.allocs)
     }
 }
@@ -106,19 +105,51 @@ impl AllocSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scripting::ir::eval::eval_value;
-    use crate::scripting::ir::test_scope::StubScope;
-    use crate::scripting::ir::{BakedIr, CURRENT_IR_VERSION, IrNode, IrValue, bind};
+    use postretro_foundation::{
+        BakedIr, BindingScope, CURRENT_IR_VERSION, IrNode, IrType, IrValue, ResolvedInput,
+        ResolvedOutput, bind, eval_value,
+    };
+
+    struct StubScope;
+
+    impl BindingScope for StubScope {
+        type InputHandle = usize;
+        type OutputHandle = usize;
+
+        fn resolve_input(&self, name: &str) -> Option<ResolvedInput<usize>> {
+            match name {
+                "speed" => Some(ResolvedInput {
+                    handle: 0,
+                    ir_type: IrType::Number,
+                }),
+                "grounded" => Some(ResolvedInput {
+                    handle: 1,
+                    ir_type: IrType::Bool,
+                }),
+                _ => None,
+            }
+        }
+
+        fn resolve_output(&self, _name: &str) -> Option<ResolvedOutput<usize>> {
+            None
+        }
+
+        fn read(&self, handle: &usize) -> IrValue {
+            match *handle {
+                0 => IrValue::Number(4.0),
+                1 => IrValue::Bool(true),
+                _ => unreachable!("unknown stub input handle"),
+            }
+        }
+
+        fn write(&mut self, _handle: &usize, _value: IrValue) {
+            unreachable!("alloc probe stub exposes no outputs")
+        }
+    }
 
     fn num(v: f32) -> Box<IrNode> {
         Box::new(IrNode::Const {
             value: IrValue::Number(v),
-        })
-    }
-
-    fn boolean(v: bool) -> Box<IrNode> {
-        Box::new(IrNode::Const {
-            value: IrValue::Bool(v),
         })
     }
 
@@ -193,7 +224,7 @@ mod tests {
             b: num(0.0),
         };
 
-        let scope = StubScope::new();
+        let scope = StubScope;
         let program = bind(
             &BakedIr {
                 version: CURRENT_IR_VERSION,

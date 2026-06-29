@@ -64,11 +64,11 @@ impl WeaponDescriptor {
     }
 }
 
-/// Authored health component preset attached to an [`EntityTypeDescriptor`].
+/// Authored health component preset attached to an entity type descriptor.
 /// `max` is the entity's hit-point ceiling; the optional `hitbox` makes the
 /// entity hitscan-targetable (one world-aligned AABB, fixed per archetype).
-/// Wire keys are camelCase. The data-archetype spawn path materializes this
-/// into a [`crate::scripting::components::health::HealthComponent`] with `current == max`.
+/// Wire keys are camelCase. Runtime data-archetype spawn materializes this into
+/// a health component with `current == max`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HealthDescriptor {
@@ -157,11 +157,10 @@ pub struct AiStateNames {
     pub death: String,
 }
 
-/// Authored AI brain component preset attached to an [`EntityTypeDescriptor`].
+/// Authored AI brain component preset attached to an entity type descriptor.
 /// Descriptor-owned tuning (entity_model.md §4): maps never override these. The
-/// data-archetype spawn path materializes this into a
-/// [`crate::scripting::components::brain::BrainComponent`] (logical state + timers +
-/// resolved [`crate::scripting::components::brain::AiTuning`]).
+/// runtime data-archetype spawn path materializes this into an AI brain
+/// component with logical state, timers, and resolved tuning.
 ///
 /// Wire keys are camelCase (boundary inventory): `detectionRange`,
 /// `attackRange`, `leashRange`, `attackDamage`, `attackCooldownMs`, `moveSpeed`,

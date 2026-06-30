@@ -94,3 +94,80 @@ This is the canonical Task 1 baseline for `E19--baseline-and-cargo-config`. Meas
 ## Status
 
 All measurement commands in the case matrix exited with status `0`.
+
+## Task 2 Dev Cargo Config
+
+Captured on 2026-06-30 by Worker 2, against the Task 1 baseline numbers above. These runs used isolated target dirs under `/tmp/postretro-compile-times/`. The Task 1 `baseline.md` remains the canonical artifact; these are appended findings, not a replacement baseline.
+
+### Committed Config
+
+- Added `.cargo/config.toml` as a comment-only repository config. It has no active `[build]`, `[target.*]`, `linker`, `rustflags`, or wrapper settings, so default Cargo behavior remains Cargo's platform default on macOS, Linux, Windows, and CI.
+- Faster linkers are documented only as commented-out local examples:
+  - macOS: optional `ld64.lld` examples for Apple targets, with LLVM install notes.
+  - Linux: optional `mold` example for `x86_64-unknown-linux-gnu`, with package-manager install notes.
+  - Windows MSVC: optional `rust-lld.exe` example.
+- Incremental compilation remains on through Cargo's normal dev-profile default; the committed config does not override it.
+
+### `dev-fast` Decision
+
+Decision: adopt `dev-fast` as an opt-in profile.
+
+The committed profile is runtime-neutral by construction:
+
+- `[profile.dev-fast]` inherits `dev`.
+- It changes only `debug = "line-tables-only"`.
+- `[profile.dev-fast.package."*"] opt-level = 2` keeps dependencies at the existing dev-profile floor from `[profile.dev.package."*"]`.
+- It does not change linker, rustflags, codegen units, LTO, panic behavior, or dependency opt level.
+
+Measured comparisons:
+
+| Case | Command | Target dir | Wall time | Compared to Task 1 |
+| --- | --- | --- | ---: | --- |
+| Task 1 build baseline | `cargo build --timings -p postretro --bins --target-dir /tmp/postretro-compile-times/build-postretro-bins` | `/tmp/postretro-compile-times/build-postretro-bins` | 452.29s | Baseline |
+| Same-session default build sanity run | `cargo build -p postretro --bins --target-dir /tmp/postretro-compile-times/task2-reduced-debug-build` | `/tmp/postretro-compile-times/task2-reduced-debug-build` | 309.41s | 142.88s faster than Task 1, but treated as cache-warmed context, not a new baseline |
+| Reduced debug-info build | `CARGO_PROFILE_DEV_DEBUG=line-tables-only cargo build -p postretro --bins --target-dir /tmp/postretro-compile-times/task2-reduced-debug-build-line-tables` | `/tmp/postretro-compile-times/task2-reduced-debug-build-line-tables` | 261.94s | 190.35s faster than Task 1 build baseline |
+
+The reduced-debug measurement used Cargo's profile env override before the manifest profile was added. It is equivalent to the committed `dev-fast` debug setting for this comparison. Compared to the same-session default build, reduced debug info saved 47.47s (about 15%). Compared to the Task 1 build baseline, it saved 190.35s (about 42%). Because the change is opt-in and only reduces debug-info detail, the win is meaningful enough to adopt `dev-fast`.
+
+### Dependency `opt-level` Comparison
+
+Lowering dependency `opt-level` was measured only to document the trade-off; it is rejected/deferred for Task 2 because it changes runtime code generation for dependencies.
+
+| Case | Command | Target dir | Wall time | Compared to Task 1 |
+| --- | --- | --- | ---: | --- |
+| Task 1 clean check baseline | `cargo check --timings -p postretro --target-dir /tmp/postretro-compile-times/clean-check-postretro` | `/tmp/postretro-compile-times/clean-check-postretro` | 261.67s | Baseline |
+| Dependencies at `opt-level = 1` | `cargo check -p postretro --config 'profile.dev.package."*".opt-level=1' --target-dir /tmp/postretro-compile-times/task2-deps-opt-level-1-check` | `/tmp/postretro-compile-times/task2-deps-opt-level-1-check` | 121.85s | 139.82s faster than Task 1 clean check baseline |
+
+Despite the compile-time win, dependency `opt-level = 1` is runtime-affecting and therefore out of scope for the conservative `dev-fast` profile. It should not be adopted without a separate runtime/build-iteration decision.
+
+### Script-Compiler Build-Dependency Path
+
+Observed with:
+
+`cargo build -v -p postretro --bins --target-dir /tmp/postretro-compile-times/task2-observe-script-compiler`
+
+Result: status `0`; wall time `576.54s`. This verbose run is not used as a timing comparison because `-v` emits every rustc invocation and ran slower than the quiet build cases. It is used for flag evidence.
+
+Observed rustc flags:
+
+- `swc_common v21.0.1`: `-C opt-level=2`
+- `swc_ecma_ast v23.0.0`: `-C opt-level=2`
+- `swc_ecma_parser v39.0.0`: `-C opt-level=2`
+- `swc_bundler v48.0.0`: `-C opt-level=2`
+- Local `postretro-script-compiler` build-dependency library: no explicit `-C opt-level` flag in the rustc invocation, which means rustc's default opt level for that local unit.
+
+Interpretation: the SWC-heavy third-party crates on the `postretro-script-compiler` build-dependency path are actually compiled at `opt-level = 2` today, observed from real rustc flags. That comes from the existing dependency package override, not from a build override. No `[profile.dev.build-override]` exists. Task 2 does not add one: adding a build override would change build-script/proc-macro/build-dependency behavior and needs its own measurement. The committed `.cargo/config.toml` does not affect this path by default. The opt-in `dev-fast` profile keeps dependency `opt-level = 2`; it may reduce debug info where Cargo emits debug info, but it does not lower the SWC dependency opt level.
+
+### Day-To-Day Defaults
+
+- During ordinary iteration, prefer `cargo check -p postretro` plus targeted tests for the touched crate/module.
+- Use `cargo build --profile dev-fast -p postretro --bins` when a local full build is needed and line-table debug info is enough.
+- Preserve `cargo check --workspace` as the broader gate before handing off or integrating.
+- Keep full workspace tests and ignored/cold-bake level-compiler tests out of routine Task 2 verification.
+
+### Per-OS Behavior
+
+- macOS default: unchanged. No active linker or rustflag override.
+- Linux default: unchanged. No active linker or rustflag override.
+- Windows default: unchanged. No active linker or rustflag override.
+- Opt-in deltas: only a developer who manually uncomments a target linker example in `.cargo/config.toml` changes local linker behavior. The committed file ships those examples disabled.

@@ -16,7 +16,7 @@ Extract the wgpu-free UI subtree into a CPU-only crate so the largest inbound co
   - `tree_asset.rs`, `keyboard_asset.rs`, `demo.rs` (menu name constants + `build_frontend_menu_descriptor`),
   - the CPU text helpers (`build_font_system`, `measure_run`, `font_family_is_registered`, `read_font_file`),
   - the CPU output/wire types currently co-located in `ui/mod.rs`: `UiInstance`, `UiDrawList`, `UiDrawData`, `UiUniform`, `UiText`, `FocusRect`, `FocusRectList`, `FocusGroup`, `FocusNeighbors`, `NodeInteraction`, `UiReadSnapshot` (carrying `descriptor::CaptureMode` per `s1`),
-  - `UiTexture` (from `ui_texture.rs`).
+  - `UiTexture` (from `ui_texture.rs`) — lands here. The renderer already depends on `postretro-ui` for splash; a separate 12-line crate buys nothing.
 - Hoist `UiInstance`/`UiDrawList`/`UiUniform`/`UiText` **out** of `ui/mod.rs` (today co-located with the GPU pass) into the CPU crate.
 - Depend on `postretro-scripting-core` (descriptor model), `taffy`, `glyphon` (`FontSystem` for CPU measurement only), `cosmic-text`, `glam`. Depend on `postretro-entities` only if tree bindings reference entity handles (confirm at implementation). **No `crate::input`, no wgpu.**
 - Update consumers — `main.rs`, `startup/lifecycle.rs`, `session/mod.rs`, `input/ui_focus.rs`, `scripting/systems/presentation_cells.rs`, `scripting/typedef/tests/surface.rs` — to import from `postretro-ui`.

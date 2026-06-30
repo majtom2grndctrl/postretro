@@ -1,6 +1,6 @@
 # Render-Stack Decomposition (Epic)
 
-> **Status:** draft (roadmap Epic 19). Specs `s0`–`s8`, grouped into three milestones. Source-grounded findings in `research.md`.
+> **Status:** draft (roadmap Epic 19). Specs `s0`–`s9`, grouped into three milestones. Source-grounded findings in `research.md`.
 > **Related:** `context/lib/scripting.md §12` (the data-floor precedent this mirrors) · `context/lib/rendering_pipeline.md` · `context/lib/development_guide.md` · `context/lib/index.md §2` (architectural invariants) · supersedes `context/plans/drafts/compile-time-reduction/`.
 
 ## Goal
@@ -15,7 +15,7 @@ Scope to the **correct end-state crate graph**, not a locally-safe first slice. 
 
 ### In scope
 - A baseline + dev Cargo-config harness (folds `compile-time-reduction` Tasks 1–2).
-- Eight new workspace crates forming the render stack (see **Target crate graph**): `postretro-geometry`, `postretro-material`, `postretro-level-loader`, `postretro-visibility`, `postretro-lighting`, `postretro-ui`, `postretro-render-cpu`, `postretro-renderer`.
+- Eight new workspace crates forming the render stack (see **Target crate graph**): `postretro-render-data`, `postretro-level-loader`, `postretro-visibility`, `postretro-lighting`, `postretro-model`, `postretro-ui`, `postretro-render-cpu`, `postretro-renderer`.
 - Restoring the **"Renderer owns GPU"** invariant *within one crate*: the GPU renderer crate absorbs the stray GPU modules (`compute_cull`, `candidate_cull`, `shadow_cull`, `lighting` GPU pools).
 - An **opaque present-handle** contract that hides `wgpu::SurfaceTexture` from engine-facing APIs.
 - Breaking the inbound `scripting → render` CPU edges by sinking shared CPU types below both.
@@ -41,23 +41,24 @@ One-way edges, top depends on bottom. New crates marked `*`. Existing data floor
                  lighting::{spot_shadow,cube_shadow,lightmap,chunk_list}
             │        │        │         │          │         │
             ▼        ▼        ▼         ▼          ▼         ▼
-        ui*   render-cpu*  visibility*  lighting*   model     (wgpu, winit,
+        ui*   render-cpu*  visibility*  lighting*   model*    (wgpu, winit,
          │        │            │       (cpu-math)  (cpu)       glyphon, …)
          │        │            ▼
          │        │       level-loader*  (prl)
          │        ▼            │
          │   level-loader*◄────┤
          ▼        ▼            ▼
-   scripting-core   geometry* + material*  ◄──── level-format
-   entities / foundation
+   scripting-core    render-data*  ◄──── level-format
+   entities / foundation   (geometry + material)
 ```
 
 - **`postretro-ui*`** (cpu-only) — `render::ui` CPU subtree + `UiTexture`. Depends on `scripting-core` (descriptor model), `entities` (only if tree bindings reference entity handles — confirm), `taffy`, `glyphon` (`FontSystem` only). No `input`, no wgpu.
 - **`postretro-render-cpu*`** (cpu-only) — the harvest: CPU islands from `render/` (`frame_uniforms`, `mesh_instances`, `material_plan` CPU half, `fog_mask`, the CPU halves of `loaded_texture`/`sdf_*`/`sh_volume`/`sh_compose`/`animated_lightmap`/`screen_effects`/`splash`), the `fx::{smoke,fog_volume}` data, and the mesh/SH CPU types scripting imports. Carries WGSL binding constants with their packers.
 - **`postretro-visibility*`** (cpu-only) — `visibility.rs` + `portal_vis.rs`.
-- **`postretro-lighting*`** (cpu-only) — `lighting::{mod,influence,spec_buffer,cone_frustum}` (light packing, cone geometry). `script_primitives` placement per §12 (open question).
+- **`postretro-lighting*`** (cpu-only) — `lighting::{mod,influence,spec_buffer,cone_frustum}` (light packing, cone geometry). The `script_primitives` wiring descends here behind an optional `script-ffi` feature (off by default) per §12; the marshalling substrate stays in `scripting-core`; the registrar is invoked from `Session::build`.
+- **`postretro-model*`** (cpu-only) — `model/` (CPU glTF loader: `ModelHandle`, `SkinnedMesh`, skeleton/anim/`sample_params`, `gltf_loader`). Depends on `postretro-render-data` if it references those types.
 - **`postretro-level-loader*`** (cpu-only) — `prl.rs` + `prl_loader.rs`.
-- **`postretro-geometry*` + `postretro-material*`** (cpu-only) — leaf data types under the loader.
+- **`postretro-render-data*`** (cpu-only) — `geometry.rs` + `material.rs` leaf data types under the loader, in one crate.
 - **`postretro-renderer*`** (gpu) — everything wgpu: `Renderer`/`FullRenderer`, all `renderer_*.rs`, all passes, + absorbed GPU modules. Public surface ≈ `{Renderer, opaque present handle, dev-tools setter API}` — `FullRenderer` stays private.
 
 ## Global acceptance criteria (every spec inherits)
@@ -77,9 +78,9 @@ One-way edges, top depends on bottom. New crates marked `*`. Existing data floor
 Three milestones, each a shippable checkpoint with a developer-facing testable outcome — the **safety** boundary: the build stays green and behavior-preserving at every milestone, so the epic can pause after any one without a half-migrated tree. Within a milestone, independent specs fan out in parallel worktrees — the **speed**. Milestones are seam-first, not a strict chain: Milestone 2's lighting/UI tracks may start once their deps land, overlapping Milestone 1's tail.
 
 ### Milestone 1 — CPU runtime floor
-**Specs:** `s0`, `s1`, `s2`, `s3`, `s4`.
-**Order:** `s0`+`s1` parallel; then `s2`; then `s3` (needs `s2`); then `s4` (needs `s3`+`s2`). `s1` also unblocks `s6`.
-**Testable outcome:** `postretro-geometry`, `postretro-material`, `postretro-level-loader`, `postretro-visibility` are workspace crates; editing any and running its tests recompiles no `wgpu`/`naga`/`winit`/VM crate; the `s0` baseline shows the warm-edit win on a `prl.rs`/`portal_vis.rs` touch; `cargo build --workspace` + `cargo test --workspace` green.
+**Specs:** `s0`, `s1`, `s2`, `s3`, `s4`, `s9`.
+**Order:** `s0`+`s1` parallel; then `s2`; then `s3` (needs `s2`); then `s4` (needs `s3`+`s2`). `s9` (model) is an independent low-risk CPU prerequisite — fans out in parallel (needs only `s2` if it references render-data types). `s1` also unblocks `s6`.
+**Testable outcome:** `postretro-render-data`, `postretro-level-loader`, `postretro-visibility`, `postretro-model` are workspace crates; editing any and running its tests recompiles no `wgpu`/`naga`/`winit`/VM crate; the `s0` baseline shows the warm-edit win on a `prl.rs`/`portal_vis.rs` touch; `cargo build --workspace` + `cargo test --workspace` green.
 
 ### Milestone 2 — Sever scripting / UI / CPU-math from the renderer
 **Specs:** `s5` (lighting-cpu), `s6` (ui), `s7` (render-cpu).
@@ -96,9 +97,10 @@ Three milestones, each a shippable checkpoint with a developer-facing testable o
 |---|---|---|---|---|---|
 | `s0` | Baseline + dev Cargo config | 1 | tooling | low | Tasks 1–2 |
 | `s1` | Leaf hygiene & boundary prep | 1 | refactor | low | — |
-| `s2` | `postretro-geometry` + `postretro-material` | 1 | cpu | low | (Task 4 type-homes) |
+| `s2` | `postretro-render-data` (geometry + material) | 1 | cpu | low | (Task 4 type-homes) |
 | `s3` | `postretro-level-loader` | 1 | cpu | medium | Tasks 4–5 |
 | `s4` | `postretro-visibility` | 1 | cpu | medium | Task 3 |
+| `s9` | `postretro-model` (CPU glTF loader) | 1 | cpu | low | — |
 | `s5` | `postretro-lighting` (cpu-math) | 2 | cpu | medium | — |
 | `s6` | `postretro-ui` | 2 | cpu | medium | Task 6 (superseded) |
 | `s7` | `postretro-render-cpu` | 2 | cpu | medium | (audit Tasks 6–7) |
@@ -111,25 +113,31 @@ The full verification gate (Global ACs) runs after every spec; the milestone tes
 - **Opaque present handle.** The renderer returns an opaque handle (or takes a present closure); the binary calls `renderer.present(handle)`, never `surface_texture.present()`. The handle encapsulates surface acquire (Success/Suboptimal/Outdated/Lost/Timeout/Validation), the surface `TextureView`, encoder completion, and `present()`. Unifies the gameplay and splash present paths. No consumer names `wgpu`. (Detail: `s8`.)
 - **`UiCaptureMode` inversion.** `postretro-ui` uses `scripting-core`'s `descriptor::CaptureMode` directly; the `From<CaptureMode> → input::UiCaptureMode` conversion moves to the binary. `UiReadSnapshot` carries `descriptor::CaptureMode`. (Detail: `s1`/`s6`.)
 - **WGSL byte-layout.** Binding-index/stride constants travel **with** their CPU packers into `postretro-render-cpu`; the `group3_shader_bindings`/`uniform_tests`/`shader_tests` guards must pass unchanged. Pin constants, not offsets (per `context_style_guide.md` — state the constraint, not the layout).
-- **`script-ffi` / handler placement.** New cpu crates keep any VM marshalling behind an optional `script-ffi` feature per `scripting.md §12`; script-primitive *wiring* co-locates with its subsystem and is invoked from `Session::build`.
+- **`script-ffi` / handler placement.** Script-primitive *wiring* descends into its subsystem crate behind an optional `script-ffi` feature (off by default, `script-ffi = ["dep:rquickjs","dep:mlua", ...]` per `scripting.md §12`); the marshalling substrate stays in `scripting-core`; the registrar is invoked from `Session::build`. `postretro-lighting` is the first instance (`s5`) and the precedent the Epic 16 combat crate mirrors.
 
 ## Relationship to existing plans
 
-- **Supersedes `compile-time-reduction`.** Its baseline methodology (T1), dev Cargo config (T2), visibility crate (T3), PRL split + loader crate (T4–5), and CPU UI-model crate (T6) are folded into `s0`/`s2`/`s3`/`s4`/`s6`. On promotion, `compile-time-reduction` is retired (moved to `done/` as superseded or deleted) so the work is single-owned.
+- **Supersedes `compile-time-reduction`.** Its baseline methodology (T1), dev Cargo config (T2), visibility crate (T3), PRL split + loader crate (T4–5), and CPU UI-model crate (T6) are folded into `s0`/`s2`/`s3`/`s4`/`s6`. **At Epic 19 promotion, `context/plans/drafts/compile-time-reduction/` is deleted** (not moved to `done/`: `done/` is for shipped plans and it never shipped). Provenance survives in this epic's `research.md` and the "folds from" column. Not deleted now — only at promotion.
 - **Mirrors `scripting.md §12`.** Same one-way-floor discipline, `script-ffi` orphan-rule features, and `cargo tree` firewall AC, applied to the render stack.
 
 ## Deferred (documented non-goals, revisitable)
 
-- **`s9` — `FullRenderer` encapsulation refactor** (pass-level GPU sub-crates). Convert `pub(super)` field reach-in to owned `device/queue` + explicit BGL-handle constructors. Large; only justified if pass-level crates become a goal. Not required for the single renderer crate.
-- **`s10` — `postretro-render-diagnostics`** (dev-tools CPU behind a `LineSink` trait). Cross-cutting reader of `FullRenderer`/`nav`/`prl`/`geometry`/`visibility`; bundling it earlier would dominate risk.
+- **`s10` — `FullRenderer` encapsulation refactor** (pass-level GPU sub-crates). Convert `pub(super)` field reach-in to owned `device/queue` + explicit BGL-handle constructors. Large; only justified if pass-level crates become a goal. Not required for the single renderer crate.
+- **`s11` — `postretro-render-diagnostics`** (dev-tools CPU behind a `LineSink` trait). Cross-cutting reader of `FullRenderer`/`nav`/`prl`/`render-data`/`visibility`; bundling it earlier would dominate risk.
 
-## Open questions (decisions to lock before promotion)
+## Decisions
 
-1. **`lighting/script_primitives.rs` placement** — stays binary-side per §12 handler rule, or moves into `postretro-lighting` behind `script-ffi`? (1223 lines; calls scripting-core marshalling + lighting fns.)
-2. **`postretro-geometry` + `postretro-material`** — one crate or two? (Tiny; combine as `postretro-render-data`?)
-3. **`model/` as a crate** — extract `postretro-model` (CPU loader, already correctly layered) now, or leave in the binary as a renderer dep? Affects whether `s8` depends on a `model` crate or a binary module.
-4. **`ui_texture` home** — confirm `UiTexture` lands in `postretro-ui` (renderer depends on ui for splash) vs. a lower shared crate.
-5. **`postretro-render-cpu` membership ruling** — per-function: `frame_uniforms`/`mesh_instances`/`fog_mask`/`material_plan`-CPU are clean; the `sh_volume`/`sdf_*`/`animated_lightmap` CPU halves are entangled with binding constants + per-frame `FullRenderer` state. Which truly leave?
-6. **Visibility boundary shape** — depend on `LevelWorld` directly, or introduce the old draft's borrowed portal-world view? (Affects `s4` coupling and whether `Frustum` widening suffices.)
-7. **Stray-GPU-module staging** — do `compute_cull`/`candidate_cull`/`shadow_cull` + lighting GPU pools move into `render/` first (in-binary), or directly into `postretro-renderer` at cut time? (Churn vs. one-step transplant.)
-8. **`compile-time-reduction` retirement mechanics** — supersede-in-place (move to `done/`) vs. delete on promotion.
+These were the open questions; all are now settled. Each states the decision and the one principle that settled it.
+
+1. **`lighting/script_primitives.rs` placement** — the scripting *wiring* descends into `postretro-lighting` behind an optional `script-ffi` feature; the marshalling substrate stays in `scripting-core`; the registrar is still invoked from `Session::build`. Principle: `scripting.md §12` handler-placement spirit (wiring co-locates with its subsystem). This is the precedent the Epic 16 combat crate mirrors. (`s5`.)
+2. **geometry + material crate count** — one crate, `postretro-render-data`, holding both `geometry.rs` and `material.rs`. Principle: lean — two dependency-free leaf modules gain no recompile isolation from splitting. (`s2`.)
+3. **`model/` as a crate** — extract a new `postretro-model` CPU crate. Principle: clean one-way boundaries + the firewall goal — the renderer crate can't depend up into the binary, and a CPU glTF loader must not live in the GPU crate or model edits rebuild the renderer compile unit. (`s9`.)
+4. **`ui_texture` home** — `UiTexture` lives in `postretro-ui` (renderer already depends on it for splash). Principle: lean — no 12-line crate. (`s6`.)
+5. **`postretro-render-cpu` per-function membership** — settled by reading current source (ruling in `s7` Task 1): every candidate helper descends except the GPU-recording halves of `mesh_pass.rs` and `loaded_texture.rs`, which split; WGSL binding constants travel with their packers. The source pass corrected one investigator mis-classification — `mesh_visible` is a pure `LevelWorld`+`VisibleCells` predicate, so it descends, adding a `postretro-visibility` dependency to `s7`. Principle: the descent rule applied to real code. (`s7`.)
+6. **Visibility boundary shape** — depend on `LevelWorld` directly; the borrowed portal-world view is a deferred optimization, added only on a measured rebuild problem. Principle: lean — the crate boundary already cuts the recompile coupling, so the view would be speculative abstraction. (`s4`.)
+7. **Stray-GPU-module staging** — move `compute_cull`/`candidate_cull`/`shadow_cull` + the lighting GPU pools directly into `postretro-renderer` at cut time (one transplant, no in-binary staging). Principle: efficiency + behavior-preserving + gated — the `s8` verification gate provides the safety staging would. (`s8`.)
+8. **`compile-time-reduction` retirement mechanics** — delete `context/plans/drafts/compile-time-reduction/` at Epic 19 promotion (not now). Principle: documentation lifecycle — `done/` is for shipped plans and it never shipped; provenance lives in this epic's `research.md` + the "folds from" columns. (See **Relationship to existing plans**.)
+
+## Open questions
+
+None remaining — all eight settled (see **Decisions**). Residual implementation-time confirmations (not design questions) live in the specs: whether `postretro-ui` needs an `entities` dep, and whether `postretro-lighting`'s `cone_frustum` references `render-data` geometry types.

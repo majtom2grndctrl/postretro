@@ -10,7 +10,7 @@ Extract runtime portal traversal and frustum visibility into a CPU-only crate so
 
 ### In scope
 - `postretro-visibility`: move `visibility.rs` + `portal_vis.rs` — `VisibleCells`, `CameraCullVisibility`, `VisibilityStats`, `VisibilityPath`, `VisibilityResult`, `determine_visible_cells`, `Frustum`, `FrustumPlane`, `portal_traverse`, `narrow_frustum`, `clip_polygon_to_frustum`, and the internal clipping helpers + their tests.
-- Depend on `postretro-level-loader` (`LevelWorld`, cell data) and `postretro-geometry`, `glam`.
+- Depend on `postretro-level-loader` (`LevelWorld`, cell data) and `postretro-render-data`, `glam`.
 - Update the ~8 importers.
 
 ### Out of scope
@@ -26,7 +26,11 @@ Extract runtime portal traversal and frustum visibility into a CPU-only crate so
 ## Tasks
 
 ### Task 1: Extract postretro-visibility
-Create the crate, move both files (relying on the `s1` `Frustum`/`FrustumPlane` widening), wire deps, update importers. **Decision (open question 6):** depend on `LevelWorld` directly, or introduce the old draft's borrowed portal-world view exposing only leaves/portals/adjacency. Default: depend on `LevelWorld` unless the borrowed view measurably reduces rebuild coupling.
+Create the crate, move both files (relying on the `s1` `Frustum`/`FrustumPlane` widening), wire deps, update importers. Depend on `LevelWorld` directly.
+
+**Decision (was open question 6): depend on `LevelWorld` directly.** Principle: lean — the crate boundary already cuts the recompile coupling, so a borrowed portal-world view would be speculative abstraction.
+
+**Deferred optimization:** the old draft's borrowed portal-world view (exposing only leaves/portals/adjacency) — add only on a measured rebuild problem.
 
 ## Sequencing
 **Phase 1:** Task 1. Needs `s3` (`level-loader`) + `s2` (`geometry`). Milestone 1.

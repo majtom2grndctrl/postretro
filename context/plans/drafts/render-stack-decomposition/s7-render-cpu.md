@@ -21,7 +21,7 @@ Move the CPU islands embedded in GPU files (byte-packing, frame planning, valida
   - their no-GPU unit tests, including the WGSL byte-layout guards (`group3_shader_bindings`, `uniform_tests`) that pin the packers.
 - **WGSL binding-index/stride constants travel with their packers** (no shader-layout drift).
 - Re-point `scripting/systems/{mesh_render,mesh_anim,light_bridge,emitter_bridge,particle_render,fog_volume_bridge}.rs` to `postretro-render-cpu`.
-- Depend on `postretro-level-loader`, `postretro-geometry`, `postretro-entities`, `postretro-scripting-core`, `postretro-lighting`, `glam`, `bytemuck`.
+- Depend on `postretro-level-loader`, `postretro-visibility` (for `VisibleCells`, used by `mesh_visible`), `postretro-render-data`, `postretro-entities`, `postretro-scripting-core`, `postretro-lighting`, `glam`, `bytemuck`.
 
 ### Out of scope
 - Anything that reads `FullRenderer` fields or owns wgpu resources — stays in `postretro-renderer`.
@@ -37,7 +37,14 @@ Move the CPU islands embedded in GPU files (byte-packing, frame planning, valida
 ## Tasks
 
 ### Task 1: Per-function membership ruling (split-before-move)
-**Open question 5.** Classify each candidate helper: clean leavers (`frame_uniforms`, `mesh_instances`, `fog_mask`, `material_plan` CPU, `fx` data) vs. entangled (`sh_volume`/`sdf_*`/`animated_lightmap` CPU halves that read `FullRenderer` state or share per-frame buffers). Carve `mesh_visible`/`ClipMetadata` out of `mesh_pass.rs` and the SH packing types out of `sh_volume.rs` first (these files are oversized — `mesh_pass.rs` 3529, `sh_volume.rs` 2443 — split along the seam, don't transplant whole).
+Apply the descent rule against current source: a helper leaves if it is wgpu-free **and** does not read `FullRenderer` state; WGSL binding constants travel with their packers. The ruling below was produced by reading current source; carve the two SPLIT files along their seam first (these are oversized — `mesh_pass.rs` 3529, `sh_volume.rs` 2443 — split, don't transplant whole).
+
+**Membership ruling (source-confirmed).** Everything in the candidate surface descends except the GPU-recording halves of two files, which split:
+
+- **DESCEND** (wgpu-free, no `FullRenderer` read): `frame_uniforms.rs` (`FrameUniforms`, `build_uniform_data`, `UNIFORM_SIZE`, `SDF_SHADOW_FLAG_ATLAS_PRESENT`, the three isolation enums); `mesh_instances.rs` whole (`plan_mesh_frame`, `MeshInstanceInput`, `PlannedInstance`, `ModelDrawGroup`, `MeshFramePlan`, `JointCounts`, `instance_casts_into_cone`, `MAX_PALETTE_ENTRIES`, `MAX_INSTANCES`); `material_plan.rs` CPU set (`plan_submesh_materials`, `SubmeshMaterialPlan`, `build_material_uniform`, `parse_blake3_key`, `resolve_model_open_path_and_handle`); `fog_mask.rs` whole; `screen_effects.rs` (`pack_effect_uniform`, `EffectUniform`); `splash.rs` (`load_splash`); the CPU packers in `sh_volume.rs` (`build_grid_info_bytes`, `build_animation_buffers`, the f16 codec, the SH/delta types `light_bridge` imports), `sh_compose.rs` (`build_delta_buffers`, `DeltaComposeBuffers`, `f16_bits_to_f32`), `sdf_atlas.rs` (`build_meta_bytes`, `scatter_bricks_to_atlas`), `sdf_shadow.rs` (`pack_params_bytes`, `SdfShadowTuning`), `animated_lightmap.rs` (`validate_cross_section`, `AnimatedLmDebugConfig`); and `fx::{smoke,fog_volume}` data.
+- **SPLIT `mesh_pass.rs`:** carve the pure-CPU `mesh_visible` (`:1918`) + `mesh_visible_in_cell` (`:1932`) — a `LevelWorld`+`VisibleCells` cell-membership predicate, the surface `scripting/systems/mesh_render.rs` imports — and `ClipMetadata` into the CPU crate; leave the GPU draw-recording renderer-side. (`mesh_visible` is pure, not GPU — it carries the `postretro-visibility` dep noted above.)
+- **SPLIT `loaded_texture.rs`:** carve the CPU `.prm` parse / mip / slot-plan (`level_byte_size`, `slot_levels`, `header_mip_count`, `texture_slot_plan`); leave `upload_texture_data` (`Device`/`Queue`) renderer-side.
+- **Travelling WGSL constants** (move with their packers, never alone): `UNIFORM_SIZE`, `MATERIAL_UNIFORM_SIZE`, `SH_GRID_INFO_SIZE`, `SHADOW_PASS_PARAMS_SIZE`, `SDF_ATLAS_META_SIZE`, `DYNAMIC_DIRECT_PARAMS_SIZE`.
 
 ### Task 2: Extract postretro-render-cpu
 Create the crate, move the ruled-in helpers + their constants + tests, re-point scripting systems, wire deps.

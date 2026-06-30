@@ -10,7 +10,7 @@ Extract runtime PRL loading and runtime level data into a CPU-only crate so edit
 
 ### In scope
 - `postretro-level-loader`: move `prl.rs` + `prl_loader.rs` — `LevelWorld`, `load_prl`, `MapLight`, `LightType`, `FalloffModel`, `ShadowType`, `LightmapMode`, `CellDrawIndex`, `PortalData`, `FaceMeta`, the cell-locator types (`CellLocatorChild`, `CellLocatorNodeData`), `PrlLoadError`, `LevelWorld::{locate_cell,spawn_position,cell_count,cell_portal_*,cell_is_solid,cell_face_count,cell_bounds}`, and the existing PRL loader tests.
-- Depend on `postretro-level-format`, `postretro-geometry`, `postretro-material`, `glam`, `thiserror`, `serde`.
+- Depend on `postretro-level-format`, `postretro-render-data`, `glam`, `thiserror`, `serde`.
 - Update the ~21 importers to the crate path.
 
 ### Out of scope

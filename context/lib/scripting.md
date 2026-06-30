@@ -79,7 +79,7 @@ Once registered, the runtime installs each primitive into every context it creat
 
 `postretro-scripting-core` owns primitive registry machinery, VM runtimes, type generation, marshalling/newtype substrate, and canonical durable-store contract helpers. `crates/postretro/src/scripting/primitives/mod.rs` owns shared registration ordering and the engine primitive entry point. Light primitive logic and wiring live in `crates/postretro/src/lighting/script_primitives.rs`; `crates/postretro/src/scripting/primitives/light.rs` is a compatibility barrel. State-store primitive registration and wiring live in `crates/postretro/src/scripting/state_store.rs`; durable-store contract helpers live in scripting-core, with a compatibility barrel at `crates/postretro/src/scripting/primitives/store.rs`. World/entity primitive logic lives in `crates/postretro/src/scripting/entity_world_primitives.rs`, with compatibility barrels at `crates/postretro/src/scripting/primitives/{world,entity}.rs`.
 
-**Import rule.** New engine code imports core-owned scripting APIs directly from `postretro_scripting_core`, and floor-owned types directly from `postretro_foundation` / `postretro_entities`. Do not add new imports through `crate::scripting::*` compatibility barrels for those APIs. Existing compatibility paths and test paths may keep the barrels until migrated.
+**Import rule.** Floor/core APIs import directly from `postretro_foundation`, `postretro_entities`, or `postretro_scripting_core`. Do not route those APIs through `crate::scripting::*`. Use `crate::scripting` only for retained `scripting/typedef` fixture and down-edge paths, plus postretro-owned real modules and compatibility paths.
 
 ---
 

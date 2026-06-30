@@ -64,7 +64,6 @@ mod extraction_path_tests {
     ];
 
     const INTENTIONAL_COMPATIBILITY_OR_FIXTURE_PATHS: &[&str] = &[
-        "luau_prelude.rs",
         "primitives/entity.rs",
         "primitives/light.rs",
         "primitives/mod.rs",
@@ -73,7 +72,6 @@ mod extraction_path_tests {
         "reactions/mod.rs",
         "reactions/registry.rs",
         "reactions/system_commands.rs",
-        "state_crossings.rs",
         "typedef/mod.rs",
         "typedef/tests",
     ];
@@ -162,7 +160,7 @@ mod scripting_boundary_tests {
 
         assert!(
             violations.is_empty(),
-            "removed/collapsed scripting barrels were referenced through crate::scripting::<name>: {violations:#?}. Import floor/core APIs from postretro_foundation, postretro_entities, or postretro_scripting_core directly."
+            "removed/collapsed scripting barrels were referenced through crate::scripting::<name> or crate::scripting::{{<name>...}}: {violations:#?}. Import floor/core APIs from postretro_foundation, postretro_entities, or postretro_scripting_core directly."
         );
     }
 
@@ -198,6 +196,80 @@ mod scripting_boundary_tests {
                 }
             }
         }
+
+        let grouped_pattern = "crate::scripting::{";
+        for (match_index, _) in source.match_indices(grouped_pattern) {
+            let group_start = match_index + grouped_pattern.len();
+            let Some(group_end) = grouped_use_tree_end(&source[group_start..]) else {
+                continue;
+            };
+            let group = &source[group_start..group_start + group_end];
+
+            for barrel in REMOVED_OR_COLLAPSED_BARRELS {
+                if grouped_use_tree_contains_barrel(group, barrel) {
+                    violations.push(format!(
+                        "{}:{} contains crate::scripting::{{...{barrel}...}}",
+                        display_relative_path(src_dir, path).display(),
+                        line_number_at(&source, match_index)
+                    ));
+                }
+            }
+        }
+    }
+
+    fn grouped_use_tree_end(source_after_open_brace: &str) -> Option<usize> {
+        let mut depth = 0usize;
+
+        for (index, byte) in source_after_open_brace.bytes().enumerate() {
+            match byte {
+                b'{' => depth += 1,
+                b'}' if depth == 0 => return Some(index),
+                b'}' => depth -= 1,
+                _ => {}
+            }
+        }
+
+        None
+    }
+
+    fn grouped_use_tree_contains_barrel(group: &str, barrel: &str) -> bool {
+        let mut depth = 0usize;
+        let mut item_start = 0usize;
+
+        for (index, byte) in group.bytes().enumerate() {
+            match byte {
+                b'{' => depth += 1,
+                b'}' => depth = depth.saturating_sub(1),
+                b',' if depth == 0 => {
+                    if grouped_use_item_starts_with_barrel(&group[item_start..index], barrel) {
+                        return true;
+                    }
+                    item_start = index + 1;
+                }
+                _ => {}
+            }
+        }
+
+        grouped_use_item_starts_with_barrel(&group[item_start..], barrel)
+    }
+
+    fn grouped_use_item_starts_with_barrel(item: &str, barrel: &str) -> bool {
+        let trimmed = item.trim_start();
+        let Some(rest) = trimmed.strip_prefix(barrel) else {
+            return false;
+        };
+
+        rest.is_empty()
+            || rest.starts_with("::")
+            || rest.chars().next().is_some_and(char::is_whitespace)
+    }
+
+    fn line_number_at(source: &str, byte_index: usize) -> usize {
+        source[..byte_index]
+            .bytes()
+            .filter(|byte| *byte == b'\n')
+            .count()
+            + 1
     }
 
     fn is_rust_source(path: &Path) -> bool {
@@ -209,9 +281,11 @@ mod scripting_boundary_tests {
             return false;
         };
 
-        // This literal scan does not catch `scripting` alias or `super::`
-        // relative forms. After barrel deletion those forms are compile errors,
-        // so this is a precedent nudge/reintroduction lock, not a full parser.
+        // This source scan catches direct `crate::scripting::<name>` paths and
+        // top-level grouped `crate::scripting::{<name>...}` imports. It still
+        // does not parse aliases to `scripting` or `super::` relative forms.
+        // After barrel deletion those forms are compile errors, so this is a
+        // reintroduction lock rather than a full parser.
         relative == Path::new("scripting/mod.rs")
             || relative.starts_with(Path::new("scripting/typedef"))
     }

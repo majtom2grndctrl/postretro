@@ -5,9 +5,11 @@
 
 use std::fs;
 
+use postretro_scripting_core::primitives_registry::PrimitiveRegistry;
 pub(crate) use postretro_scripting_core::typedef::*;
 
-use crate::scripting::primitives_registry::PrimitiveRegistry;
+#[cfg(test)]
+pub(crate) use crate::scripting::primitives::{register_all, register_shared_types};
 
 pub(crate) mod common {
     pub(crate) use postretro_scripting_core::typedef::common::*;

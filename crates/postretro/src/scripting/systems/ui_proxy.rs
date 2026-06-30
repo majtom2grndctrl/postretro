@@ -2,11 +2,11 @@
 // engine-owned `player.health` and `player.maxHealth` slots each frame.
 // See: context/lib/scripting.md §5 "Durable State Store"
 
-use crate::scripting::components::health::pawn_with_health;
-use crate::scripting::ctx::ScriptCtx;
 use crate::scripting::primitives::store::write_store_slot;
-use crate::scripting::registry::{EntityId, EntityRegistry};
-use crate::scripting::slot_table::SlotValue;
+use postretro_entities::components::health::pawn_with_health;
+use postretro_entities::ctx::ScriptCtx;
+use postretro_entities::registry::{EntityId, EntityRegistry};
+use postretro_entities::slot_table::SlotValue;
 
 /// Read the current and maximum HP of the player pawn resolved by the local
 /// player marker, with legacy fallback to the first entity carrying
@@ -98,13 +98,13 @@ impl PlayerHudStatePublisher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scripting::components::health::HealthComponent;
-    use crate::scripting::components::player_movement::PlayerMovementComponent;
-    use crate::scripting::data_descriptors::{
+    use postretro_entities::components::health::HealthComponent;
+    use postretro_entities::components::player_movement::PlayerMovementComponent;
+    use postretro_entities::registry::{EntityId, Transform};
+    use postretro_scripting_core::data_descriptors::{
         AirParams, CapsuleParams, FallParams, GroundParams, HealthDescriptor,
         PlayerMovementDescriptor, SpeedParams,
     };
-    use crate::scripting::registry::{EntityId, Transform};
 
     /// A minimal movement descriptor so a spawned entity qualifies as the pawn
     /// (carries `PlayerMovement`). Only the fields `from_descriptor` reads need
@@ -251,9 +251,9 @@ mod tests {
 
     #[test]
     fn publisher_write_is_visible_to_same_frame_crossing_detection() {
-        use crate::scripting::data_descriptors::{CrossingCondition, CrossingDescriptor};
         use crate::scripting::primitives::store::read_store_slot;
-        use crate::scripting::state_crossings::CrossingDetector;
+        use postretro_scripting_core::data_descriptors::{CrossingCondition, CrossingDescriptor};
+        use postretro_scripting_core::state_crossings::CrossingDetector;
 
         let ctx = ScriptCtx::new();
         let pawn = spawn_pawn_with_health(&ctx, 100.0);

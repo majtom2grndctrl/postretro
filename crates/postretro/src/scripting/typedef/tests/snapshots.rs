@@ -36,8 +36,8 @@ fn sdk_lib_block_is_present_in_full_outputs() {
     // / `pulse` / `colorShift` / `sweep` / `fogPulse` / `fogFade` are no
     // longer bare globals — they live on `LightEntityHandle` /
     // `FogVolumeHandle` capability interfaces.
-    use crate::scripting::ctx::ScriptCtx;
-    use crate::scripting::primitives::register_all;
+    use crate::scripting::typedef::register_all;
+    use postretro_entities::ctx::ScriptCtx;
 
     let mut r = PrimitiveRegistry::new();
     register_all(&mut r, ScriptCtx::new());
@@ -67,8 +67,8 @@ fn underscore_prefixed_names_are_omitted_from_both_outputs() {
 
 #[test]
 fn day_one_primitives_all_appear_in_both_outputs() {
-    use crate::scripting::ctx::ScriptCtx;
-    use crate::scripting::primitives::register_all;
+    use crate::scripting::typedef::register_all;
+    use postretro_entities::ctx::ScriptCtx;
 
     let mut r = PrimitiveRegistry::new();
     register_all(&mut r, ScriptCtx::new());

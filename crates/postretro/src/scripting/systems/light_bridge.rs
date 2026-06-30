@@ -11,11 +11,11 @@ use crate::render::sh_volume::{
 };
 
 #[cfg(test)]
-use crate::scripting::components::light::LightAnimation;
-use crate::scripting::components::light::{FalloffKind, LightComponent, LightKind};
+use postretro_entities::components::light::LightAnimation;
+use postretro_entities::components::light::{FalloffKind, LightComponent, LightKind};
+use postretro_entities::registry::{ComponentKind, EntityId, EntityRegistry};
 #[cfg(test)]
-use crate::scripting::conv::Vec3Lit;
-use crate::scripting::registry::{ComponentKind, EntityId, EntityRegistry};
+use postretro_scripting_core::conv::Vec3Lit;
 
 /// Snapshot of a map light's component state as last observed by the bridge.
 /// Dirty detection compares the live registry component against this value.
@@ -160,7 +160,7 @@ impl LightBridge {
             .enumerate()
             .filter_map(|(map_idx, &id)| {
                 let component = registry
-                    .get_component::<crate::scripting::components::light::LightComponent>(id)
+                    .get_component::<postretro_entities::components::light::LightComponent>(id)
                     .ok()?;
                 let brightness = eval_effective_brightness(component, current_time);
                 let map_light = component_to_map_light(

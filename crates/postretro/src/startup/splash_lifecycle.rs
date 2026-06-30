@@ -9,11 +9,11 @@ use winit::event_loop::ActiveEventLoop;
 use crate::App;
 use crate::render;
 use crate::render::splash_pass::PresentOutcome;
-use crate::scripting::reaction_dispatch::validate_scoped_sequence_primitives;
 use crate::scripting::state_persistence::{
     STATE_FILE_PATH, load_persisted_state, overlay_persisted_state,
 };
 use crate::startup::{BootState, LevelRequest, LevelSource, SplashSource, StartupTimings};
+use postretro_scripting_core::reaction_dispatch::validate_scoped_sequence_primitives;
 
 impl App {
     /// Drive one Splash-state frame. Returns `false` when the splash frame was
@@ -247,8 +247,9 @@ impl App {
                 // aliases `session.scripting.script_runtime`, so lift the committed frontend
                 // into a local and assign `session.frontend` after that borrow ends
                 // (mirroring the theme/font deferral).
-                let mut committed_frontend: Option<Option<crate::scripting::runtime::Frontend>> =
-                    None;
+                let mut committed_frontend: Option<
+                    Option<postretro_scripting_core::runtime::Frontend>,
+                > = None;
                 if let Some(manifest) = session.scripting.script_runtime.mod_manifest_mut() {
                     // Drain entity-type descriptors from the validated mod manifest
                     // into the engine-global `DataRegistry`. Runtime parses; caller

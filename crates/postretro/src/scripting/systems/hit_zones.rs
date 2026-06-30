@@ -22,9 +22,9 @@ use crate::model::anim::{BlendSource, Loop, sample_blended_world, sample_clip_lo
 use crate::model::gltf_loader::{self, JointZone};
 use crate::model::sample_params::{ClipSample, FadeSource, MeshSampleParams, instance_phase};
 use crate::model::skeleton::{AnimationClip, Skeleton};
-use crate::scripting::components::health::HealthComponent;
-use crate::scripting::components::mesh::{MeshAnimation, MeshComponent};
-use crate::scripting::registry::{
+use postretro_entities::components::health::HealthComponent;
+use postretro_entities::components::mesh::{MeshAnimation, MeshComponent};
+use postretro_entities::registry::{
     ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform,
 };
 
@@ -1064,9 +1064,9 @@ mod tests {
 
     // --- Entity-raycast facility --------------------------------------------
 
-    use crate::scripting::components::health::{HealthComponent, Hitbox};
-    use crate::scripting::components::mesh::MeshComponent;
-    use crate::scripting::registry::{EntityRegistry, Transform};
+    use postretro_entities::components::health::{HealthComponent, Hitbox};
+    use postretro_entities::components::mesh::MeshComponent;
+    use postretro_entities::registry::{EntityRegistry, Transform};
 
     const FACILITY_EPS: f32 = 1.0e-4;
 
@@ -1207,7 +1207,9 @@ mod tests {
     /// Exercises the `pose_from_params` single-clip path (no fade).
     #[test]
     fn animated_entity_poses_via_state_clip_local_time() {
-        use crate::scripting::components::mesh::{AnimationState, InterruptPolicy, MeshAnimation};
+        use postretro_entities::components::mesh::{
+            AnimationState, InterruptPolicy, MeshAnimation,
+        };
 
         let mut reg = EntityRegistry::new();
         let store = store_with("mob", swinging_limb_model());
@@ -1278,7 +1280,9 @@ mod tests {
     /// seed with a meaningful non-zero phase.
     #[test]
     fn looping_entity_poses_capsules_at_phased_time() {
-        use crate::scripting::components::mesh::{AnimationState, InterruptPolicy, MeshAnimation};
+        use postretro_entities::components::mesh::{
+            AnimationState, InterruptPolicy, MeshAnimation,
+        };
 
         let mut reg = EntityRegistry::new();
         let store = store_with("mob", swinging_limb_model());

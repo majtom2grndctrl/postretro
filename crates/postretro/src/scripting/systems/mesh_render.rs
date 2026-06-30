@@ -10,8 +10,8 @@ use crate::model::sample_params::MeshSampleParams;
 use crate::prl::LevelWorld;
 use crate::render::mesh_instances::MeshInstanceInput;
 use crate::render::mesh_pass::mesh_visible;
-use crate::scripting::registry::{ComponentKind, ComponentValue, EntityRegistry, Transform};
 use crate::visibility::VisibleCells;
+use postretro_entities::registry::{ComponentKind, ComponentValue, EntityRegistry, Transform};
 
 /// Animation time-slicing distance thresholds + per-bucket resample strides.
 /// DISTANT skinned instances re-sample their pose every Nth frame and re-upload a
@@ -288,7 +288,7 @@ impl MeshRenderCollector {
 /// in: a switch always moves the entered stamp (the resolve pass restamps on
 /// entry), so the stamp bits alone capture a (re)entry.
 fn state_fingerprint(
-    animation: Option<&crate::scripting::components::mesh::MeshAnimation>,
+    animation: Option<&postretro_entities::components::mesh::MeshAnimation>,
 ) -> Option<u64> {
     animation.map(|anim| anim.entered_at.map(|t| t.to_bits()).unwrap_or(0))
 }
@@ -305,7 +305,7 @@ fn state_fingerprint(
 /// (no usable clip) the entity falls back to the stateless default so it still
 /// renders (its bind pose / first clip) rather than vanishing.
 fn resolve_sample(
-    animation: Option<&crate::scripting::components::mesh::MeshAnimation>,
+    animation: Option<&postretro_entities::components::mesh::MeshAnimation>,
     handle: &ModelHandle,
     tables: &MeshClipTables,
     anim_time: f64,
@@ -341,7 +341,7 @@ fn resolve_sample(
 /// derived from its clip duration (looping de-sync). A state with no resolved
 /// clip yields phase 0.
 fn current_state_phase(
-    anim: &crate::scripting::components::mesh::MeshAnimation,
+    anim: &postretro_entities::components::mesh::MeshAnimation,
     table: &super::mesh_anim::ModelClipTable,
     seed: u32,
 ) -> f32 {
@@ -366,9 +366,9 @@ mod tests {
     use crate::lighting::influence::LightInfluence;
     use crate::prl::{CellData, CellLocatorChild, CellLocatorNodeData, LevelWorld};
     use crate::prl::{FalloffModel, LightType, MapLight, ShadowType};
-    use crate::scripting::components::mesh::MeshComponent;
-    use crate::scripting::registry::EntityRegistry;
     use glam::Vec3;
+    use postretro_entities::components::mesh::MeshComponent;
+    use postretro_entities::registry::EntityRegistry;
     use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 
     fn spawn_mesh(registry: &mut EntityRegistry, model: &str, position: Vec3) {
@@ -558,7 +558,7 @@ mod tests {
         // capsule CENTER but are authored feet-at-origin. The render-facing mesh
         // offset, not local Agent state, drops the rendered origin by the
         // capsule's center-to-sole distance so host and client presentation match.
-        use crate::scripting::components::mesh::capsule_center_to_feet_origin_offset;
+        use postretro_entities::components::mesh::capsule_center_to_feet_origin_offset;
 
         let mut registry = EntityRegistry::new();
         let mut collector = MeshRenderCollector::new();
@@ -807,8 +807,8 @@ mod tests {
     use crate::model::anim::Loop;
     use crate::model::sample_params::FadeSource;
     use crate::render::mesh_pass::ClipMetadata;
-    use crate::scripting::components::mesh::{AnimationState, InterruptPolicy, MeshAnimation};
-    use crate::scripting::components::mesh::{
+    use postretro_entities::components::mesh::{AnimationState, InterruptPolicy, MeshAnimation};
+    use postretro_entities::components::mesh::{
         resolve_pending_animation_stamps, switch_animation_state,
     };
     use std::collections::HashMap;
@@ -843,7 +843,10 @@ mod tests {
         t
     }
 
-    fn spawn_animated(reg: &mut EntityRegistry, pos: Vec3) -> crate::scripting::registry::EntityId {
+    fn spawn_animated(
+        reg: &mut EntityRegistry,
+        pos: Vec3,
+    ) -> postretro_entities::registry::EntityId {
         // Both states carry a nonzero crossfade so a switch starts a fade — needed
         // to exercise the smooth-interrupt capture path.
         let mut states = HashMap::new();

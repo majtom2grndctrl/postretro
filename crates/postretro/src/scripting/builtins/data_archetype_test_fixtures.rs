@@ -9,8 +9,10 @@ use std::collections::HashMap;
 
 use glam::Vec3;
 
-use crate::scripting::data_descriptors::{AiDescriptor, AiStateNames, EntityTypeDescriptor};
 use crate::scripting::map_entity::MapEntity;
+use postretro_scripting_core::data_descriptors::{
+    AiDescriptor, AiStateNames, EntityTypeDescriptor,
+};
 
 /// A `MapEntity` placement with the given classname and raw KVP bag. Origin is a
 /// fixed non-zero point so spawned `Transform`s are distinguishable from defaults.
@@ -33,7 +35,7 @@ pub(crate) fn placement(classname: &str, kvps: &[(&str, &str)]) -> MapEntity {
 /// mesh (`idle` default + `attack`), mirroring the validated descriptor shape
 /// the mesh parser produces.
 pub(crate) fn mesh_descriptor(classname: &str, animated: bool) -> EntityTypeDescriptor {
-    use crate::scripting::components::mesh::{AnimationState, InterruptPolicy};
+    use postretro_entities::components::mesh::{AnimationState, InterruptPolicy};
 
     let (animations, default_state) = if animated {
         let mut states = HashMap::new();
@@ -69,7 +71,7 @@ pub(crate) fn mesh_descriptor(classname: &str, animated: bool) -> EntityTypeDesc
         emitter: None,
         movement: None,
         weapon: None,
-        mesh: Some(crate::scripting::data_descriptors::MeshDescriptor {
+        mesh: Some(postretro_scripting_core::data_descriptors::MeshDescriptor {
             model: "decraniated".to_string(),
             animations,
             default_state,

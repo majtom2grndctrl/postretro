@@ -7,8 +7,8 @@ use glam::{Quat, Vec3};
 
 use crate::fx::fog_volume::{FogPointLight, FogVolume, MAX_FOG_POINT_LIGHTS};
 use crate::prl::{LightType, MapLight};
-use crate::scripting::components::fog_volume::FogAnimation;
-use crate::scripting::registry::{
+use postretro_entities::components::fog_volume::FogAnimation;
+use postretro_entities::registry::{
     ComponentKind, EntityId, EntityRegistry, FogVolumeComponent, Transform,
 };
 use postretro_level_format::fog_volumes::FogVolumeRecord;
@@ -193,7 +193,7 @@ impl FogVolumeBridge {
         let mut updates: Vec<(EntityId, FogVolumeComponent)> = Vec::new();
         let mut clear_slots: Vec<EntityId> = Vec::new();
         for (id, value) in registry.iter_with_kind(ComponentKind::FogVolume) {
-            let crate::scripting::registry::ComponentValue::FogVolume(component) = value else {
+            let postretro_entities::registry::ComponentValue::FogVolume(component) = value else {
                 continue;
             };
             let Some(animation) = component.animation.as_ref() else {

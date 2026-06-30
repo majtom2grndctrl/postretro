@@ -18,7 +18,6 @@ use parry3d::shape::TriMesh;
 use super::{SimCommand, simulate_tick};
 use crate::collision::CollisionWorld;
 use crate::movement::MovementInput;
-use crate::scripting::reaction_dispatch::ProgressTracker;
 use crate::scripting_systems::hit_zones::HitZoneStore;
 use crate::weapon::FireButtonState;
 use postretro_entities::{EntityId, EntityRegistry, Transform};
@@ -26,6 +25,7 @@ use postretro_foundation::{
     AirParams, BoolOrIr, CapsuleParams, DashParams, FallParams, ForgivenessParams, GroundParams,
     NumberOrIr, PlayerMovementComponent, PlayerMovementDescriptor, SpeedParams,
 };
+use postretro_scripting_core::reaction_dispatch::ProgressTracker;
 
 const DT: f32 = 1.0 / 60.0;
 const GRAVITY: f32 = -20.0;

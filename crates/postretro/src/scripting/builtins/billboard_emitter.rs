@@ -13,8 +13,8 @@
 use glam::Vec3;
 
 use super::MapEntity;
-use crate::scripting::components::billboard_emitter::BillboardEmitterComponent;
-use crate::scripting::registry::{EntityId, EntityRegistry, Transform};
+use postretro_entities::components::billboard_emitter::BillboardEmitterComponent;
+use postretro_entities::registry::{EntityId, EntityRegistry, Transform};
 
 /// FGD `classname` this handler binds to.
 pub(crate) const CLASSNAME: &str = "billboard_emitter";

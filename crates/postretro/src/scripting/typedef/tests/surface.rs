@@ -7,8 +7,8 @@ use super::*;
 /// string. The wire form (`onPress: string`) is unchanged.
 #[test]
 fn reaction_handle_authoring_types_widen_in_both_outputs() {
-    use crate::scripting::ctx::ScriptCtx;
-    use crate::scripting::primitives::register_all;
+    use crate::scripting::typedef::register_all;
+    use postretro_entities::ctx::ScriptCtx;
 
     let mut r = PrimitiveRegistry::new();
     register_all(&mut r, ScriptCtx::new());
@@ -55,8 +55,8 @@ fn reaction_handle_authoring_types_widen_in_both_outputs() {
 
 #[test]
 fn root_type_outputs_do_not_expose_ui_authoring_helpers() {
-    use crate::scripting::ctx::ScriptCtx;
-    use crate::scripting::primitives::register_all;
+    use crate::scripting::typedef::register_all;
+    use postretro_entities::ctx::ScriptCtx;
 
     let mut r = PrimitiveRegistry::new();
     register_all(&mut r, ScriptCtx::new());
@@ -154,11 +154,11 @@ fn root_type_outputs_do_not_expose_ui_authoring_helpers() {
 
 #[test]
 fn luau_virtual_module_types_and_require_overloads_are_generated() {
-    use crate::scripting::ctx::ScriptCtx;
-    use crate::scripting::luau_prelude::{
+    use crate::scripting::typedef::register_all;
+    use postretro_entities::ctx::ScriptCtx;
+    use postretro_scripting_core::luau_prelude::{
         POSTRETRO_ROOT_MODULE_EXPORTS, POSTRETRO_UI_MODULE_EXPORTS,
     };
-    use crate::scripting::primitives::register_all;
 
     let mut r = PrimitiveRegistry::new();
     register_all(&mut r, ScriptCtx::new());
@@ -208,8 +208,8 @@ fn luau_virtual_module_types_and_require_overloads_are_generated() {
 
 #[test]
 fn typescript_ui_module_declaration_is_generated() {
-    use crate::scripting::ctx::ScriptCtx;
-    use crate::scripting::primitives::register_all;
+    use crate::scripting::typedef::register_all;
+    use postretro_entities::ctx::ScriptCtx;
 
     let mut r = PrimitiveRegistry::new();
     register_all(&mut r, ScriptCtx::new());
@@ -253,8 +253,8 @@ fn typescript_ui_module_declaration_is_generated() {
 /// author surface is `RuntimeValue`; the wire `op` tags are unchanged.
 #[test]
 fn runtime_opcode_vocabulary_appears_in_both_type_outputs() {
-    use crate::scripting::ctx::ScriptCtx;
-    use crate::scripting::primitives::register_all;
+    use crate::scripting::typedef::register_all;
+    use postretro_entities::ctx::ScriptCtx;
 
     let mut r = PrimitiveRegistry::new();
     register_all(&mut r, ScriptCtx::new());
@@ -308,8 +308,8 @@ fn runtime_opcode_vocabulary_appears_in_both_type_outputs() {
 #[test]
 fn widget_anchor_typedef_matches_layout_anchor_variants() {
     use crate::render::ui::layout::Anchor;
-    use crate::scripting::ctx::ScriptCtx;
-    use crate::scripting::primitives::register_all;
+    use crate::scripting::typedef::register_all;
+    use postretro_entities::ctx::ScriptCtx;
 
     let mut r = PrimitiveRegistry::new();
     register_all(&mut r, ScriptCtx::new());
@@ -367,8 +367,8 @@ fn widget_anchor_typedef_matches_layout_anchor_variants() {
 /// carry the name XOR.
 #[test]
 fn luau_widget_props_narrow_per_kind() {
-    use crate::scripting::ctx::ScriptCtx;
-    use crate::scripting::primitives::register_all;
+    use crate::scripting::typedef::register_all;
+    use postretro_entities::ctx::ScriptCtx;
 
     let mut r = PrimitiveRegistry::new();
     register_all(&mut r, ScriptCtx::new());
@@ -421,8 +421,8 @@ fn luau_widget_props_narrow_per_kind() {
 /// presentation-local cells keep their existing `LocalStateHandle.is(value)`.
 #[test]
 fn luau_predicate_helpers_are_typed_to_the_value_type() {
-    use crate::scripting::ctx::ScriptCtx;
-    use crate::scripting::primitives::register_all;
+    use crate::scripting::typedef::register_all;
+    use postretro_entities::ctx::ScriptCtx;
 
     let mut r = PrimitiveRegistry::new();
     register_all(&mut r, ScriptCtx::new());

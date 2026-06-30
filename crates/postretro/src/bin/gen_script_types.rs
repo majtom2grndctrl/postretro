@@ -6,6 +6,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use postretro_entities::ctx::ScriptCtx;
 use postretro_scripting_core::primitives_registry::PrimitiveRegistry;
 use postretro_scripting_core::typedef::write_type_definitions;
 
@@ -23,51 +24,11 @@ mod lighting {
 mod scripting {
     #![allow(dead_code, unused_imports)]
 
-    pub(crate) mod components {
-        pub(crate) use postretro_entities::components::*;
-    }
-    pub(crate) mod conv {
-        pub(crate) use postretro_scripting_core::conv::*;
-    }
-    pub(crate) mod ctx {
-        pub(crate) use postretro_scripting_core::ctx::*;
-    }
-    pub(crate) mod data_descriptors {
-        pub(crate) use postretro_scripting_core::data_descriptors::*;
-    }
-    pub(crate) mod error {
-        pub(crate) use postretro_scripting_core::error::*;
-    }
     pub(crate) mod entity_world_primitives;
-    pub(crate) mod luau {
-        pub(crate) use postretro_scripting_core::luau::*;
-    }
     pub(crate) mod primitives;
-    pub(crate) mod primitives_registry {
-        pub(crate) use postretro_scripting_core::primitives_registry::*;
-    }
-    pub(crate) mod quickjs {
-        pub(crate) use postretro_scripting_core::quickjs::*;
-    }
-    pub(crate) mod registry {
-        pub(crate) use postretro_entities::registry::*;
-    }
-    pub(crate) mod runtime {
-        pub(crate) use postretro_scripting_core::runtime::*;
-    }
-    pub(crate) mod sequence {
-        pub(crate) use postretro_scripting_core::sequence::*;
-    }
-    pub(crate) mod slot_table {
-        pub(crate) use postretro_scripting_core::slot_table::*;
-    }
     pub(crate) mod state_store;
-    pub(crate) mod value_types {
-        pub(crate) use postretro_scripting_core::value_types::*;
-    }
 }
 
-use scripting::ctx::ScriptCtx;
 use scripting::primitives::register_all;
 
 fn parse_out_dir<I: IntoIterator<Item = String>>(args: I) -> PathBuf {

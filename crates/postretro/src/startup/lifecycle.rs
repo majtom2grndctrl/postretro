@@ -14,14 +14,15 @@ use crate::scripting::builtins::{
     PLAYER_START_CLASSNAME, apply_classname_dispatch, apply_data_archetype_dispatch,
     filter_out_client_ai_enemies, spawn_from_player_starts, suppressed_ai_enemy_mesh_models,
 };
-use crate::scripting::reaction_dispatch::{
-    fire_named_event_with_sequences, validate_sequence_primitives,
-};
 use crate::startup::{
     BootState, InFlightLevelLoad, LevelLoadEntry, LevelRequest, LevelSource, LoadOutcome,
     StartupTimings, spawn_level_worker,
 };
 use crate::{App, fx, prl, weapon};
+use postretro_scripting_core::data_descriptors::LevelManifest;
+use postretro_scripting_core::reaction_dispatch::{
+    fire_named_event_with_sequences, validate_sequence_primitives,
+};
 
 pub(crate) const FRONTEND_CLEAR_COLOR: render::ClearColor = render::ClearColor {
     r: 0.015,
@@ -740,7 +741,7 @@ impl App {
                     .script_runtime
                     .run_data_script(data_script, &self.content_root)
             } else {
-                crate::scripting::data_descriptors::LevelManifest::default()
+                LevelManifest::default()
             };
             if world.data_script.is_some() {
                 manifest.reactions = validate_sequence_primitives(
@@ -1093,10 +1094,8 @@ mod tests {
 
     use crate::frame_timing::{FrameRateMeter, FrameTiming};
     use crate::input::InputFocus;
+    use crate::scripting;
     use crate::scripting::primitives::register_all;
-    use crate::scripting::primitives_registry::PrimitiveRegistry;
-    use crate::scripting::runtime::{Frontend, MenuCamera, ScriptRuntime, ScriptRuntimeConfig};
-    use crate::scripting::{self, reaction_dispatch};
     use crate::{collision, input, options, render, scripting_systems, view_feel};
     use postretro_entities::{
         CrossingCondition, CrossingDescriptor, EntityTypeDescriptor, NamedReaction,
@@ -1106,6 +1105,17 @@ mod tests {
         ScriptCtx, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue, Transform,
     };
     use postretro_foundation::ModMapEntry;
+    use postretro_scripting_core::data_descriptors::RegisteredUiTree;
+    use postretro_scripting_core::primitives_registry::PrimitiveRegistry;
+    use postretro_scripting_core::reaction_dispatch::ProgressTracker;
+    use postretro_scripting_core::runtime::{
+        Frontend, MenuCamera, ScriptRuntime, ScriptRuntimeConfig, StagedManifestCommitOutcome,
+    };
+    use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
+    use postretro_scripting_core::staged_manifest::{
+        StagedManifest, StagedManifestBuildResult, StagedManifestBuildStatus,
+    };
+    use postretro_scripting_core::state_crossings::CrossingDetector;
 
     const FIXTURE_MAP_A: &str = "fixture_map_a_reactor_room";
     const FIXTURE_MAP_B: &str = "fixture_map_b_combat_lab";
@@ -1149,7 +1159,7 @@ mod tests {
                 scripting: crate::session::ScriptingCore {
                     script_runtime,
                     script_ctx: script_ctx.clone(),
-                    sequence_registry: scripting::sequence::SequencedPrimitiveRegistry::new(),
+                    sequence_registry: SequencedPrimitiveRegistry::new(),
                     reaction_registry:
                         scripting::reactions::registry::ReactionPrimitiveRegistry::new(),
                     system_registry:
@@ -1173,8 +1183,8 @@ mod tests {
                 presentation_cells:
                     scripting_systems::presentation_cells::PresentationCellStore::new(),
                 state_store_lifecycle: Default::default(),
-                progress_tracker: reaction_dispatch::ProgressTracker::new(),
-                crossing_detector: scripting::state_crossings::CrossingDetector::new(),
+                progress_tracker: ProgressTracker::new(),
+                crossing_detector: CrossingDetector::new(),
                 classname_dispatch: scripting::builtins::ClassnameDispatch::new(),
                 light_bridge: scripting_systems::light_bridge::LightBridge::new(),
                 fog_volume_bridge: scripting_systems::fog_volume_bridge::FogVolumeBridge::new(),
@@ -1941,10 +1951,6 @@ mod tests {
 
     #[test]
     fn staged_frontend_commit_replaces_active_frontend_modal() {
-        use crate::scripting::data_descriptors::RegisteredUiTree;
-        use crate::scripting::runtime::StagedManifestCommitOutcome;
-        use crate::scripting::staged_manifest::{StagedManifest, StagedManifestBuildResult};
-
         let mut app = test_app();
         app.boot_state = BootState::Frontend;
         app.session
@@ -1987,32 +1993,30 @@ mod tests {
         let staged = StagedManifestBuildResult {
             generation: 4,
             mod_root: PathBuf::from("content/dev"),
-            status: crate::scripting::staged_manifest::StagedManifestBuildStatus::Built(Box::new(
-                StagedManifest {
-                    name: "Replacement".to_string(),
-                    entities: Vec::new(),
-                    maps: Vec::new(),
-                    reactions: Vec::new(),
-                    crossings: Vec::new(),
-                    ui_trees: vec![RegisteredUiTree {
-                        name: "newMenu".to_string(),
-                        tree: render::ui::demo::build_frontend_menu_descriptor(),
-                        always_on: false,
-                    }],
-                    theme: Default::default(),
-                    frontend: Some(Frontend {
-                        menu_tree: "newMenu".to_string(),
-                        background_level: None,
-                        camera: MenuCamera {
-                            position: [1.0, 2.0, 3.0],
-                            yaw: 0.25,
-                            pitch: -0.5,
-                        },
-                    }),
-                    store_declarations: Default::default(),
-                    dependency_paths: Vec::new(),
-                },
-            )),
+            status: StagedManifestBuildStatus::Built(Box::new(StagedManifest {
+                name: "Replacement".to_string(),
+                entities: Vec::new(),
+                maps: Vec::new(),
+                reactions: Vec::new(),
+                crossings: Vec::new(),
+                ui_trees: vec![RegisteredUiTree {
+                    name: "newMenu".to_string(),
+                    tree: render::ui::demo::build_frontend_menu_descriptor(),
+                    always_on: false,
+                }],
+                theme: Default::default(),
+                frontend: Some(Frontend {
+                    menu_tree: "newMenu".to_string(),
+                    background_level: None,
+                    camera: MenuCamera {
+                        position: [1.0, 2.0, 3.0],
+                        yaw: 0.25,
+                        pitch: -0.5,
+                    },
+                }),
+                store_declarations: Default::default(),
+                dependency_paths: Vec::new(),
+            })),
             diagnostics: Vec::new(),
         };
         let committed = StagedManifestCommitOutcome::Committed {
@@ -2032,7 +2036,7 @@ mod tests {
         let omitted = StagedManifestBuildResult {
             generation: 5,
             mod_root: PathBuf::from("content/dev"),
-            status: crate::scripting::staged_manifest::StagedManifestBuildStatus::NoStartScript,
+            status: StagedManifestBuildStatus::NoStartScript,
             diagnostics: Vec::new(),
         };
         let omitted_committed = StagedManifestCommitOutcome::Committed {

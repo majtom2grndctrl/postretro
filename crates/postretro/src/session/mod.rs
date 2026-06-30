@@ -21,8 +21,6 @@ use crate::scripting::builtins::{
 };
 use crate::scripting::primitives::light::register_sequenced_light_primitives;
 use crate::scripting::primitives::register_all;
-use crate::scripting::primitives_registry::PrimitiveRegistry;
-use crate::scripting::reaction_dispatch::ProgressTracker;
 use crate::scripting::reactions::registry::{
     ReactionPrimitiveRegistry, register_emitter_reaction_primitives,
     register_fog_reaction_primitives, register_sequenced_fog_primitives,
@@ -30,14 +28,16 @@ use crate::scripting::reactions::registry::{
 use crate::scripting::reactions::system_commands::{
     SystemReactionRegistry, register_system_reaction_primitives,
 };
-use crate::scripting::runtime::Frontend;
-use crate::scripting::runtime::{ScriptRuntime, ScriptRuntimeConfig};
-use crate::scripting::sequence::SequencedPrimitiveRegistry;
-use crate::scripting::state_crossings::CrossingDetector;
 use crate::scripting::state_persistence::StateStoreLifecycle;
 use crate::scripting_systems;
 use crate::startup::StartupTimings;
 use crate::{audio, netcode, options};
+use postretro_scripting_core::primitives_registry::PrimitiveRegistry;
+use postretro_scripting_core::reaction_dispatch::ProgressTracker;
+use postretro_scripting_core::runtime::Frontend;
+use postretro_scripting_core::runtime::{ScriptRuntime, ScriptRuntimeConfig};
+use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
+use postretro_scripting_core::state_crossings::CrossingDetector;
 
 /// Live session-lifetime container, held on `App` as `Option<Session>` and built
 /// once after first pixels by [`Session::build`]. Owns EVERY session-lifetime
@@ -324,7 +324,7 @@ impl Session {
         .context("failed to construct script runtime")?;
         // See `ScriptRuntime::new` for why this runs here rather than in the
         // constructor. See: context/lib/scripting.md §7.
-        crate::scripting::typedef::emit_sdk_types_in_debug(&script_registry);
+        postretro_scripting_core::typedef::emit_sdk_types_in_debug(&script_registry);
         // The runtime is now constructed behind first pixels; record the mark
         // where it actually fires so the boot order line proves first pixels
         // precede `script_runtime_ctor`. See: context/lib/boot_sequence.md §1.

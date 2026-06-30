@@ -66,4 +66,4 @@ The first `review-draft-spec` pass surfaced three boundary issues whose natural 
 Mechanical corrections folded the same pass: dep list `glam`+`bytemuck` (serde unused); frozen-layout set pinned to the `#[repr(C)]` types; transitional re-export dropped (all importers re-pointed in-spec); warm-edit-loop and acyclicity ACs added.
 
 ## Sequencing
-**Phase 1:** Task 1. Milestone 1. Built after `E19--leaf-hygiene-and-boundary-prep` lands, then re-grounded against the post-leaf-hygiene tree. Blocks `E19--level-loader`, `E19--visibility`, `E19--render-cpu`, and `E19--renderer-gpu`.
+**Phase 1:** Task 1. Milestone 1. Built after `E19--leaf-hygiene-and-boundary-prep` lands, then re-grounded against the post-leaf-hygiene tree. Blocks `E19--level-loader`, `E19--visibility`, `E19--render-cpu`, `E19--model` (needs render-data for the `Aabb`/`cone_frustum` types its mesh bounds carry), and `E19--renderer-gpu`.

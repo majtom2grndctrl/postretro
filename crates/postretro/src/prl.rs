@@ -20,8 +20,8 @@ use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 use thiserror::Error;
 
-use crate::geometry::{BvhTree, WorldVertex};
-use crate::material::Material;
+use postretro_render_data::geometry::{BvhTree, WorldVertex};
+use postretro_render_data::material::Material;
 
 #[path = "prl_loader.rs"]
 mod prl_loader;
@@ -479,7 +479,6 @@ impl LevelWorld {
 mod tests {
     use super::prl_loader::{expected_affinity_dims, validate_cell_draw_index, validate_delta_sh};
     use super::*;
-    use crate::geometry::BvhLeaf;
     use postretro_level_format::SectionId;
     use postretro_level_format::alpha_lights::{
         ALPHA_LIGHT_LEAF_UNASSIGNED, AlphaFalloffModel, AlphaLightType, AlphaLightsSection,
@@ -500,6 +499,7 @@ mod tests {
     use postretro_level_format::geometry::NO_TEXTURE;
     use postretro_level_format::geometry::{FaceMeta as FormatFaceMeta, GeometrySection, Vertex};
     use postretro_level_format::portals::{PortalRecord, PortalsSection};
+    use postretro_render_data::geometry::BvhLeaf;
 
     use postretro_level_format::delta_sh_volumes::{
         AFFINITY_FACTOR, DEFAULT_DELTA_PROBE_F16_STRIDE, DeltaShVolumesSection, PROBES_PER_CELL,

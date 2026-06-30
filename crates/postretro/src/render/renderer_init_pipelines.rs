@@ -62,7 +62,8 @@ pub(crate) fn build_renderer_pipelines(
             module: &shader,
             entry_point: Some("vs_main"),
             buffers: &[wgpu::VertexBufferLayout {
-                array_stride: crate::geometry::WorldVertex::STRIDE as wgpu::BufferAddress,
+                array_stride: postretro_render_data::geometry::WorldVertex::STRIDE
+                    as wgpu::BufferAddress,
                 step_mode: wgpu::VertexStepMode::Vertex,
                 attributes: &[
                     // position: vec3<f32> at offset 0
@@ -174,7 +175,8 @@ pub(crate) fn build_renderer_pipelines(
                 module: &wireframe_shader,
                 entry_point: Some("vs_main"),
                 buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: crate::geometry::WorldVertex::STRIDE as wgpu::BufferAddress,
+                    array_stride: postretro_render_data::geometry::WorldVertex::STRIDE
+                        as wgpu::BufferAddress,
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &[
                         wgpu::VertexAttribute {
@@ -239,7 +241,8 @@ pub(crate) fn build_renderer_pipelines(
                 module: &wireframe_shader,
                 entry_point: Some("vs_main"),
                 buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: crate::geometry::WorldVertex::STRIDE as wgpu::BufferAddress,
+                    array_stride: postretro_render_data::geometry::WorldVertex::STRIDE
+                        as wgpu::BufferAddress,
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &[
                         wgpu::VertexAttribute {
@@ -315,7 +318,8 @@ pub(crate) fn build_renderer_pipelines(
             module: &depth_prepass_shader,
             entry_point: Some("vs_main"),
             buffers: &[wgpu::VertexBufferLayout {
-                array_stride: crate::geometry::WorldVertex::STRIDE as wgpu::BufferAddress,
+                array_stride: postretro_render_data::geometry::WorldVertex::STRIDE
+                    as wgpu::BufferAddress,
                 step_mode: wgpu::VertexStepMode::Vertex,
                 attributes: &[
                     // Shares the forward vertex buffer — only position used; rest declared to match.
@@ -406,7 +410,8 @@ pub(crate) fn build_renderer_pipelines(
             module: &shadow_shader,
             entry_point: Some("vs_main"),
             buffers: &[wgpu::VertexBufferLayout {
-                array_stride: crate::geometry::WorldVertex::STRIDE as wgpu::BufferAddress,
+                array_stride: postretro_render_data::geometry::WorldVertex::STRIDE
+                    as wgpu::BufferAddress,
                 step_mode: wgpu::VertexStepMode::Vertex,
                 attributes: &[wgpu::VertexAttribute {
                     offset: 0,
@@ -472,8 +477,8 @@ pub(crate) fn build_world_vertex_buffers(
             )
         } else {
             (
-                vec![0u8; crate::geometry::WorldVertex::STRIDE], // one dummy vertex
-                vec![0u8; 4],                                    // one dummy index
+                vec![0u8; postretro_render_data::geometry::WorldVertex::STRIDE], // one dummy vertex
+                vec![0u8; 4],                                                    // one dummy index
                 0u32,
             )
         };

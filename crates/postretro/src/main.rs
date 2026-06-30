@@ -19,11 +19,9 @@ mod collision;
 mod compute_cull;
 mod frame_timing;
 mod fx;
-mod geometry;
 mod health;
 mod input;
 mod lighting;
-mod material;
 mod model;
 mod movement;
 // The runtime nav graph is built in every build whenever a level carries a

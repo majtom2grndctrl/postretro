@@ -3584,6 +3584,7 @@ dependencies = [
  "postretro-foundation",
  "postretro-level-format",
  "postretro-net",
+ "postretro-render-data",
  "postretro-script-compiler",
  "postretro-scripting-core",
  "proptest",
@@ -3671,6 +3672,14 @@ dependencies = [
  "log",
  "renet",
  "renet_netcode",
+]
+
+[[package]]
+name = "postretro-render-data"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "glam",
 ]
 
 [[package]]

@@ -532,12 +532,27 @@ impl App {
 
         // Derive material properties from texture names so the renderer can
         // populate per-material uniforms (shininess) without re-parsing.
-        let texture_materials: Vec<crate::material::Material> = {
+        let texture_materials: Vec<postretro_render_data::material::Material> = {
             let mut warned = std::collections::HashSet::new();
             world
                 .texture_names
                 .iter()
-                .map(|n| crate::material::derive_material(n, &mut warned))
+                .map(|n| {
+                    let warned_count = warned.len();
+                    let mat = postretro_render_data::material::derive_material(n, &mut warned);
+                    let prefix = postretro_render_data::material::parse_prefix(n);
+                    if mat == postretro_render_data::material::Material::Default
+                        && !prefix.is_empty()
+                        && warned.len() > warned_count
+                    {
+                        log::warn!(
+                            "[Material] Unknown prefix '{}' in texture '{}' — using default material",
+                            prefix,
+                            n,
+                        );
+                    }
+                    mat
+                })
                 .collect()
         };
 
@@ -1420,8 +1435,8 @@ mod tests {
         }
     }
 
-    fn vertex(position: [f32; 3]) -> crate::geometry::WorldVertex {
-        crate::geometry::WorldVertex {
+    fn vertex(position: [f32; 3]) -> postretro_render_data::geometry::WorldVertex {
+        postretro_render_data::geometry::WorldVertex {
             position,
             base_uv: [0.0, 0.0],
             normal_oct: [0, 0],
@@ -1469,7 +1484,7 @@ mod tests {
             has_portals: false,
             texture_names: Vec::new(),
             texture_cache_keys: Default::default(),
-            bvh: crate::geometry::BvhTree {
+            bvh: postretro_render_data::geometry::BvhTree {
                 nodes: Vec::new(),
                 leaves: Vec::new(),
                 root_node_index: 0,

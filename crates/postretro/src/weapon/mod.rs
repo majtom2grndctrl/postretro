@@ -804,10 +804,10 @@ mod tests {
 
     // --- Skeletal hit-zone delegation (Task 4) ------------------------------
 
-    use crate::lighting::cone_frustum::Aabb;
     use crate::model::skeleton::{Joint, RestLocal, Skeleton};
     use crate::scripting_systems::hit_zones::ModelHitZones;
     use postretro_entities::components::mesh::MeshComponent;
+    use postretro_render_data::cone_frustum::Aabb;
     use std::sync::Arc;
 
     /// Build a store holding one model with a single TAGGED LEAF joint at the

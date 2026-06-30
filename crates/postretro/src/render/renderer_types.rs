@@ -288,7 +288,7 @@ impl Default for SpatialDiagnostics {
 pub const POST_RETRO_ANISO_CLAMP: u16 = 16;
 
 pub struct LevelGeometry<'a> {
-    pub vertices: &'a [crate::geometry::WorldVertex],
+    pub vertices: &'a [postretro_render_data::geometry::WorldVertex],
     pub indices: &'a [u32],
     pub bvh: &'a BvhTree,
     pub lights: &'a [MapLight],
@@ -331,7 +331,7 @@ pub struct LevelGeometry<'a> {
     /// non-portal visibility, out-of-range gathered cell ids, or no candidate
     /// cull pipeline.
     pub cell_draw_index: Option<&'a crate::prl::CellDrawIndex>,
-    pub texture_materials: &'a [crate::material::Material],
+    pub texture_materials: &'a [postretro_render_data::material::Material],
 }
 
 /// Boot-phase renderer: the minimal GPU state needed to present the boot splash
@@ -556,7 +556,7 @@ pub(super) struct FullRenderer {
 
     /// GPU textures indexed by texture index.
     pub(super) gpu_textures: Vec<GpuTexture>,
-    pub(super) bvh_leaves: Vec<crate::geometry::BvhLeaf>,
+    pub(super) bvh_leaves: Vec<postretro_render_data::geometry::BvhLeaf>,
     /// Per-cell BVH-leaf draw index (PRL section 37), cloned from the installed
     /// `LevelGeometry`. `None` only when no level is installed, the installed
     /// map has an empty BVH, or resources were released. Non-empty BVHs require

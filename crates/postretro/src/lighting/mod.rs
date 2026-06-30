@@ -4,7 +4,6 @@
 // See: context/lib/rendering_pipeline.md §4
 
 pub mod chunk_list;
-pub mod cone_frustum;
 pub mod cube_shadow;
 pub mod influence;
 pub mod lightmap;

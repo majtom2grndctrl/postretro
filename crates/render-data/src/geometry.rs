@@ -1,6 +1,6 @@
 // Format-agnostic vertex and BVH runtime types shared by the PRL loader and renderer.
 // See: context/lib/rendering_pipeline.md §5, §6
-// See: context/plans/in-progress/bvh-foundation/2-runtime-bvh.md
+// PRL loader preserves the baked geometry and BVH ordering emitted by prl-build.
 
 /// World-geometry vertex: position + base UV + octahedral normal + octahedral
 /// tangent + lightmap UV. Matches the `Geometry` on-disk layout. Normal and
@@ -31,8 +31,9 @@ impl WorldVertex {
     pub const STRIDE: usize = 36;
 }
 
-/// One flat BVH node, matching the WGSL `BvhNode` struct byte-for-byte.
-/// See `context/plans/in-progress/bvh-foundation/1-compile-bvh.md` for the layout.
+/// Runtime field schema for one flat BVH node consumed by GPU serializers.
+/// Field order and scalar widths are the contract; byte packing lives in
+/// compute/cull serialization code and stride tests.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BvhNode {
     pub aabb_min: [f32; 3],
@@ -50,7 +51,9 @@ pub struct BvhNode {
 /// Flag bit 0 on `BvhNode.flags`: set iff the node is a leaf.
 pub const BVH_NODE_FLAG_LEAF: u32 = 1;
 
-/// One flat BVH leaf, matching the WGSL `BvhLeaf` struct byte-for-byte.
+/// Runtime field schema for one flat BVH leaf consumed by GPU serializers.
+/// Field order and scalar widths are the contract; byte packing lives in
+/// compute/cull serialization code and stride tests.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BvhLeaf {
     pub aabb_min: [f32; 3],
@@ -91,8 +94,9 @@ pub struct BucketRange {
 impl BvhTree {
     /// Scan the sorted leaf array once and produce one `BucketRange` per
     /// distinct `material_bucket_id`. Leaves are assumed to be sorted by
-    /// `material_bucket_id` (sub-plan 1 guarantees this). Buckets are
-    /// emitted in the order they appear, which matches the sort order.
+    /// `material_bucket_id`: prl-build emits that order, and the PRL loader
+    /// preserves it. Buckets are emitted in the order they appear, which
+    /// matches the sort order.
     pub fn derive_bucket_ranges(&self) -> Vec<BucketRange> {
         let mut ranges: Vec<BucketRange> = Vec::new();
         for (i, leaf) in self.leaves.iter().enumerate() {

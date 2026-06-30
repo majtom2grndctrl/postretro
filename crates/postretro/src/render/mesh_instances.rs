@@ -11,8 +11,8 @@
 
 use glam::{Mat4, Vec4};
 
-use crate::lighting::cone_frustum::{Aabb, aabb_intersects_frustum};
 use crate::model::ModelHandle;
+use postretro_render_data::cone_frustum::{Aabb, aabb_intersects_frustum};
 // The per-instance sample-parameter types (`ClipSample`, `MeshSampleParams`,
 // `FadeSource`, `MeshFade`, `SnapshotTag`, `CaptureInstruction`) and the
 // `instance_phase` per-instance phase helper are render-free plain data/logic
@@ -500,9 +500,9 @@ mod tests {
     /// the transform-then-test path culls correctly.
     #[test]
     fn caster_cull_keeps_in_cone_drops_out_of_cone() {
-        use crate::lighting::cone_frustum::cone_frustum_planes;
         use crate::lighting::spot_shadow::light_space_matrix;
         use crate::prl::{FalloffModel, LightType, MapLight, ShadowType};
+        use postretro_render_data::cone_frustum::cone_frustum_planes;
 
         // Spotlight at the origin aimed down -Z, 20 m range — same cone the
         // cone_frustum tests use.
@@ -572,9 +572,9 @@ mod tests {
     /// on the cone axis, must classify as casting.
     #[test]
     fn caster_cull_encloses_rotated_bound() {
-        use crate::lighting::cone_frustum::cone_frustum_planes;
         use crate::lighting::spot_shadow::light_space_matrix;
         use crate::prl::{FalloffModel, LightType, MapLight, ShadowType};
+        use postretro_render_data::cone_frustum::cone_frustum_planes;
 
         let light = MapLight {
             origin: [0.0, 0.0, 0.0],

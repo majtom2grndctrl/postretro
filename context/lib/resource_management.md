@@ -1,7 +1,7 @@
 # Resource Management
 
 > **Read this when:** loading textures, working with materials, adding billboard sprites, or changing how the engine consumes visual assets.
-> **Key invariant:** authored visual assets are PNGs. World-material textures are baked into per-texture `.prm` mip sidecars at compile time; UI textures load PNGs directly at runtime. PRL stores texture names plus a `blake3` cache key per name — never pixel data. The resource subsystem owns all textures and GPU resources; the renderer borrows handles.
+> **Key invariant:** authored visual assets are PNGs. World-material textures are baked into per-texture `.prm` mip sidecars at compile time; UI textures load PNGs directly at runtime. PRL stores texture names plus a `blake3` cache key per name — never pixel data. Renderer owns GPU textures, samplers, bind groups, and buffers; other subsystems use opaque handles and never call wgpu.
 > **Related:** [Architecture Index](./index.md) · [Build Pipeline](./build_pipeline.md) · [Rendering Pipeline](./rendering_pipeline.md) · [Entity Model](./entity_model.md)
 
 ---
@@ -60,7 +60,7 @@ Indirect lighting is carried by an SH L2 irradiance volume (3D probe grid), not 
 
 Texture name prefix determines material type. The engine derives a material enum from the first token of the texture name (delimited by `_`).
 
-Texture names may be **collection-qualified** (`collection/stem`, or root-inclusive `textures/collection/stem`) because TrenchBroom identifies materials by their path relative to the textures root. The collection path is not part of the material identity: `parse_prefix` (`crates/postretro/src/material.rs`) first strips any leading path (taking the substring after the last `/`), then splits the bare name on its first `_`. So `50-free-textures/concrete_pavement_036` derives `concrete`, exactly as the bare `concrete_pavement_036` would. Bare names keep their existing behavior.
+Texture names may be **collection-qualified** (`collection/stem`, or root-inclusive `textures/collection/stem`) because TrenchBroom identifies materials by their path relative to the textures root. The collection path is not part of the material identity: material prefix derivation lives in `postretro-render-data` (`crates/render-data/src/material.rs`). It first strips any leading path (taking the substring after the last `/`), then splits the bare name on its first `_`. So `50-free-textures/concrete_pavement_036` derives `concrete`, exactly as the bare `concrete_pavement_036` would. Bare names keep their existing behavior.
 
 The engine provides the mechanism: prefix lookup, material enum, and per-material behavior hooks (footstep sounds, impact effects, decals). Which prefixes exist and what they map to is a game content concern — the prefix table grows as content requires it. The engine does not aim for a complete material table; it aims to make adding new materials trivial.
 
@@ -210,7 +210,9 @@ The renderer maintains a single anisotropic sampler pool: `mip_count_aniso_sampl
 
 ### 7.4 Renderer Contract
 
-Renderer receives opaque resource handles at level load. It uses these handles to bind textures and buffers during draw calls. Renderer never interprets raw texture data or manages GPU memory directly. If a handle is invalid (stale reference after level unload), the engine must prevent use — this is a logic error, not a recoverable condition.
+CPU asset and decoded pixel data may live outside renderer. GPU resources do not. Renderer creates and owns textures, samplers, bind groups, and buffers, then returns opaque handles for other subsystems to store. Other subsystems never call wgpu or inspect GPU resources.
+
+Renderer uses handles to bind textures and buffers during draw calls. If a handle is invalid (stale reference after level unload), the engine must prevent use — this is a logic error, not a recoverable condition.
 
 ---
 

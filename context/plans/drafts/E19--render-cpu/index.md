@@ -28,7 +28,7 @@ Move the CPU islands embedded in GPU files (byte-packing, frame planning, valida
 - The GPU passes themselves (`mesh_pass` GPU half, `sh_volume` GPU compose, `fog_pass`, `smoke` GPU, `sdf_*` passes).
 
 ## Acceptance criteria
-Inherits the epic global acceptance criteria — see `E19--render-stack-decomposition/index.md` (these migrate to `context/lib/` at first promotion).
+Inherits the epic global acceptance criteria — see `E19--render-stack-decomposition/index.md`. Durable decisions are captured into `context/lib/` per spec as each spec is approved — not in one batch at first promotion.
 - [ ] Crate is a workspace member; `cargo build --workspace` + `cargo test --workspace` pass; all moved packing/planning/validation tests pass from their relocated home.
 - [ ] `cargo tree -p postretro-render-cpu` shows no `wgpu`/`winit`/`glyphon`/`kira`.
 - [ ] **No `scripting → render` edge remains:** `rg "use crate::render" crates/postretro/src/scripting` returns nothing (the scripting systems import `postretro-render-cpu` instead); a future `postretro-scripting-core`/scripting layer never depends on `postretro-renderer`.

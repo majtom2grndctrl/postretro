@@ -22,7 +22,7 @@ Remove dead code and break three in-place couplings (frustum visibility surface,
 - Changing capture/passthrough dispatch behavior.
 
 ## Acceptance criteria
-Inherits the epic global acceptance criteria — see `E19--render-stack-decomposition/index.md` (these migrate to `context/lib/` at first promotion).
+Inherits the epic global acceptance criteria — see `E19--render-stack-decomposition/index.md`. Durable decisions are captured into `context/lib/` per spec as each spec is approved — not in one batch at first promotion.
 - [ ] The five dead descriptor files (`widgets,values,focus,accessibility,envelope`) are gone; `cargo build --workspace` + `cargo test --workspace` green (proves they were unreferenced).
 - [ ] `Frustum`, `FrustumPlane`, and `extract_frustum_planes` are `pub` and the build is green. Completeness is a **review gate, not an emptiness check**: `rg "visibility::" crates/postretro/src --glob '!visibility.rs' --glob '!portal_vis.rs'` returns ~40 hits — confirm by inspection that each resolves to an already-`pub` item (`VisibleCells`/`determine_visible_cells`/etc.), so no other `pub(crate)` item is reached binary-side. No other visibility change — `portal_vis.rs`-only items stay `pub(crate)`.
 - [ ] `cone_frustum.rs` no longer imports `compute_cull` (`rg "compute_cull" crates/postretro/src/lighting/cone_frustum.rs` is empty); `extract_frustum_planes_for_gpu` lives in a CPU home shared with `cone_frustum`, and both the CPU cone path and `compute_cull` call it there; the build is green (behavior-preserving — the cone-frustum and BVH-cull tests still pass).

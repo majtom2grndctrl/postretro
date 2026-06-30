@@ -21,7 +21,7 @@ Extract the wgpu-free lighting math (light packing, specular/influence packing) 
 - The marshalling substrate `script_primitives.rs` calls — stays in `scripting-core` (the VM-agnostic typedef/marshalling floor). Only the lighting *wiring* descends here (Task 2).
 
 ## Acceptance criteria
-Inherits the epic global acceptance criteria — see `E19--render-stack-decomposition/index.md` (these migrate to `context/lib/` at first promotion).
+Inherits the epic global acceptance criteria — see `E19--render-stack-decomposition/index.md`. Durable decisions are captured into `context/lib/` per spec as each spec is approved — not in one batch at first promotion.
 - [ ] Crate is a workspace member; `cargo build --workspace` + `cargo test --workspace` pass; light-packing tests pass from their relocated home.
 - [ ] `cargo tree -p postretro-lighting` (default features) shows no wgpu/winit/glyphon/kira and no `mlua`/`rquickjs` — the `script_primitives` wiring is gated behind the off-by-default `script-ffi` feature, so it pulls the VM crates only when that feature is enabled.
 - [ ] The GPU shadow/cull packer consumers compile against the crate; `GPU_LIGHT_SIZE`/`SPEC_LIGHT_SIZE`/slot byte-offset constants unchanged (no shader-layout drift). (`weapon`/`model`/`cone_frustum` consumers depend on `postretro-render-data` now, not this crate.)

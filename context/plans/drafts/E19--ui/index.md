@@ -26,7 +26,7 @@ Extract the wgpu-free UI subtree into a CPU-only crate so the largest inbound co
 - The GPU upload of `UiTexture` (renderer-side, unchanged pattern).
 
 ## Acceptance criteria
-Inherits the epic global acceptance criteria — see `E19--render-stack-decomposition/index.md` (these migrate to `context/lib/` at first promotion).
+Inherits the epic global acceptance criteria — see `E19--render-stack-decomposition/index.md`. Durable decisions are captured into `context/lib/` per spec as each spec is approved — not in one batch at first promotion.
 - [ ] Crate is a workspace member; `cargo build --workspace` + `cargo test --workspace` pass; UI tree/focus/layout/theming/golden tests pass from their relocated home.
 - [ ] `cargo tree -p postretro-ui` shows no `wgpu`/`winit`/`kira`; `glyphon` appears only for `FontSystem`; no `mlua`/`rquickjs` beyond what `scripting-core` pulls.
 - [ ] `UiPass` + `UiTextRenderer` remain in the renderer crate and compile against `postretro-ui`.

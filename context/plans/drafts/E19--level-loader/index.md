@@ -19,7 +19,7 @@ Extract runtime PRL loading and runtime level data into a CPU-only crate so edit
 - The renderer-side `level_world_to_geometry` adapter (it produces the borrowed `LevelGeometry<'a>` handoff and stays renderer-adjacent unless `E19--render-cpu` claims it).
 
 ## Acceptance criteria
-Inherits the epic global acceptance criteria — see `E19--render-stack-decomposition/index.md` (these migrate to `context/lib/` at first promotion).
+Inherits the epic global acceptance criteria — see `E19--render-stack-decomposition/index.md`. Durable decisions are captured into `context/lib/` per spec as each spec is approved — not in one batch at first promotion.
 - [ ] Crate is a workspace member; `cargo build --workspace` + `cargo test --workspace` pass; the PRL loader tests pass from their relocated home.
 - [ ] `cargo tree -p postretro-level-loader` shows no wgpu/winit/glyphon/kira/mlua/rquickjs.
 - [ ] Editing the loader crate and running its tests does not recompile `wgpu`/`naga`/`mlua`/`rquickjs`.

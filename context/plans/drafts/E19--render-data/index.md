@@ -22,7 +22,7 @@ Extract the small, dependency-free CPU type modules into one workspace crate so 
 - Behavior or layout change to `WorldVertex` / `Material` / `Aabb` (byte layouts are shared with shaders/PRL — keep stable).
 
 ## Acceptance criteria
-Inherits the epic global acceptance criteria — see `E19--render-stack-decomposition/index.md` (these migrate to `context/lib/` at first promotion).
+Inherits the epic global acceptance criteria — see `E19--render-stack-decomposition/index.md`. Durable decisions are captured into `context/lib/` per spec as each spec is approved — not in one batch at first promotion.
 - [ ] Crate is a workspace member; `cargo build --workspace` + `cargo test --workspace` pass.
 - [ ] `cargo tree -p postretro-render-data` shows no wgpu/winit/glyphon/kira/mlua/rquickjs.
 - [ ] All importers compile against the crate paths; `Material` derivation, any `BvhTree` tests, and the `cone_frustum` tests pass from their relocated homes.

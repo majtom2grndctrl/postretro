@@ -21,7 +21,7 @@ Extract all wgpu-touching render code into `postretro-renderer`, **absorbing** t
 - `render-diagnostics` extraction (the deferred render-diagnostics spec).
 
 ## Acceptance criteria
-Inherits the epic global acceptance criteria — see `E19--render-stack-decomposition/index.md` (these migrate to `context/lib/` at first promotion).
+Inherits the epic global acceptance criteria — see `E19--render-stack-decomposition/index.md`. Durable decisions are captured into `context/lib/` per spec as each spec is approved — not in one batch at first promotion.
 - [ ] `postretro-renderer` is a workspace member; `cargo build --workspace` + `cargo test --workspace` pass; renderer/GPU and shader-parity tests pass from their relocated home.
 - [ ] **Invariant restored:** `rg wgpu` over every crate except `postretro-renderer` (and the binary's thin present driver) is empty — the cull and lighting-GPU modules now live inside the renderer crate.
 - [ ] **No wgpu in the public API:** no consumer of `postretro-renderer` imports `wgpu`; `wgpu::SurfaceTexture`/`TextureView` do not appear in any engine-facing signature. The present handle is opaque.

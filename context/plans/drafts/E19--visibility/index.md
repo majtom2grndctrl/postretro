@@ -18,7 +18,7 @@ Extract runtime portal traversal and frustum visibility into a CPU-only crate so
 - Frame-level render policy that reads `FullRenderer` state (stays renderer-side).
 
 ## Acceptance criteria
-Inherits the epic global acceptance criteria — see `E19--render-stack-decomposition/index.md` (these migrate to `context/lib/` at first promotion).
+Inherits the epic global acceptance criteria — see `E19--render-stack-decomposition/index.md`. Durable decisions are captured into `context/lib/` per spec as each spec is approved — not in one batch at first promotion.
 - [ ] Crate is a workspace member; `cargo build --workspace` + `cargo test --workspace` pass; visibility/portal tests pass from their relocated home, including lightweight portal fixtures (no full GPU `Renderer` needed).
 - [ ] `cargo tree -p postretro-visibility` shows no wgpu/winit/glyphon/kira/mlua/rquickjs. The normal-build graph carries no `postretro-render-data` edge — it is a dev-dependency (`cargo tree -p postretro-visibility --edges normal` omits render-data; it appears only under `--edges dev`).
 - [ ] Editing the visibility crate does not recompile renderer GPU modules.

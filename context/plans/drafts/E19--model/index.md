@@ -18,7 +18,7 @@ Extract the wgpu-free model subtree (CPU glTF loader, skinned-mesh / skeleton / 
 - The CPU mesh-frame planner (`mesh_instances`) and `mesh_visible`/`ClipMetadata` — those land in `postretro-render-cpu` (`E19--render-cpu`).
 
 ## Acceptance criteria
-Inherits the epic global acceptance criteria — see `E19--render-stack-decomposition/index.md` (these migrate to `context/lib/` at first promotion).
+Inherits the epic global acceptance criteria — see `E19--render-stack-decomposition/index.md`. Durable decisions are captured into `context/lib/` per spec as each spec is approved — not in one batch at first promotion.
 - [ ] Crate is a workspace member; `cargo build --workspace` + `cargo test --workspace` pass; loader/skeleton/animation tests pass from their relocated home.
 - [ ] `cargo tree -p postretro-model` shows no `wgpu`/`winit`/`glyphon`/`kira`.
 - [ ] `postretro-renderer` depends on `postretro-model`; no `wgpu` appears in the model crate.

@@ -1,0 +1,29 @@
+# Postretro keeps repository Cargo defaults conservative: no linker, rustflag,
+# wrapper, or target override is active by default. This file is intentionally
+# comment-only so macOS, Linux, Windows, and CI keep Cargo's platform defaults.
+#
+# Use the opt-in profile when local full builds need less debug-info overhead:
+#
+#   cargo build --profile dev-fast -p postretro --bins
+#
+# Faster linkers are optional local setup. Uncomment only on machines where the
+# linker is installed and supported; do not require these in CI or shared docs.
+#
+# macOS with LLVM lld installed, for example via `brew install llvm`:
+#
+# [target.x86_64-apple-darwin]
+# rustflags = ["-C", "link-arg=-fuse-ld=/usr/local/opt/llvm/bin/ld64.lld"]
+#
+# [target.aarch64-apple-darwin]
+# rustflags = ["-C", "link-arg=-fuse-ld=/opt/homebrew/opt/llvm/bin/ld64.lld"]
+#
+# Linux with mold installed, for example via the system package manager:
+#
+# [target.x86_64-unknown-linux-gnu]
+# linker = "clang"
+# rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+#
+# Windows MSVC with the Rust-provided LLD-compatible linker:
+#
+# [target.x86_64-pc-windows-msvc]
+# linker = "rust-lld.exe"

@@ -19,7 +19,162 @@ pub(crate) mod state_store;
 pub(crate) mod typedef;
 
 #[cfg(test)]
+mod rust_source_scan {
+    pub(super) fn mask_comments_and_string_literals(source: &str) -> String {
+        let mut masked = String::with_capacity(source.len());
+        let mut chars = source.char_indices().peekable();
+        let mut block_comment_depth = 0usize;
+        let mut in_line_comment = false;
+        let mut in_string = false;
+        let mut string_escape = false;
+        let mut raw_string_hashes: Option<usize> = None;
+
+        while let Some((index, ch)) = chars.next() {
+            let next = chars.peek().map(|(_, next)| *next);
+
+            if in_line_comment {
+                if ch == '\n' {
+                    in_line_comment = false;
+                    masked.push('\n');
+                } else {
+                    push_masked_char(&mut masked, ch);
+                }
+                continue;
+            }
+
+            if block_comment_depth > 0 {
+                if ch == '/' && next == Some('*') {
+                    block_comment_depth += 1;
+                    push_masked_char(&mut masked, ch);
+                    if let Some((_, next_ch)) = chars.next() {
+                        push_masked_char(&mut masked, next_ch);
+                    }
+                } else if ch == '*' && next == Some('/') {
+                    block_comment_depth -= 1;
+                    push_masked_char(&mut masked, ch);
+                    if let Some((_, next_ch)) = chars.next() {
+                        push_masked_char(&mut masked, next_ch);
+                    }
+                } else if ch == '\n' {
+                    masked.push('\n');
+                } else {
+                    push_masked_char(&mut masked, ch);
+                }
+                continue;
+            }
+
+            if let Some(hash_count) = raw_string_hashes {
+                if raw_string_closes(source, index, hash_count) {
+                    raw_string_hashes = None;
+                    push_masked_char(&mut masked, ch);
+                    for _ in 0..hash_count {
+                        if let Some((_, next_ch)) = chars.next() {
+                            push_masked_char(&mut masked, next_ch);
+                        }
+                    }
+                } else if ch == '\n' {
+                    masked.push('\n');
+                } else {
+                    push_masked_char(&mut masked, ch);
+                }
+                continue;
+            }
+
+            if in_string {
+                if ch == '\n' {
+                    masked.push('\n');
+                } else {
+                    push_masked_char(&mut masked, ch);
+                }
+                if string_escape {
+                    string_escape = false;
+                } else if ch == '\\' {
+                    string_escape = true;
+                } else if ch == '"' {
+                    in_string = false;
+                }
+                continue;
+            }
+
+            if ch == '/' && next == Some('/') {
+                in_line_comment = true;
+                push_masked_char(&mut masked, ch);
+                if let Some((_, next_ch)) = chars.next() {
+                    push_masked_char(&mut masked, next_ch);
+                }
+            } else if ch == '/' && next == Some('*') {
+                block_comment_depth = 1;
+                push_masked_char(&mut masked, ch);
+                if let Some((_, next_ch)) = chars.next() {
+                    push_masked_char(&mut masked, next_ch);
+                }
+            } else if let Some(hash_count) = raw_string_start(source, index) {
+                raw_string_hashes = Some(hash_count);
+                push_masked_char(&mut masked, ch);
+                for _ in 0..hash_count {
+                    if let Some((_, next_ch)) = chars.next() {
+                        push_masked_char(&mut masked, next_ch);
+                    }
+                }
+                if let Some((_, next_ch)) = chars.next() {
+                    push_masked_char(&mut masked, next_ch);
+                }
+            } else if ch == '"' {
+                in_string = true;
+                string_escape = false;
+                push_masked_char(&mut masked, ch);
+            } else {
+                masked.push(ch);
+            }
+        }
+
+        masked
+    }
+
+    fn push_masked_char(masked: &mut String, ch: char) {
+        for _ in 0..ch.len_utf8() {
+            masked.push(' ');
+        }
+    }
+
+    fn raw_string_start(source: &str, index: usize) -> Option<usize> {
+        let rest = source.get(index..)?;
+        let mut chars = rest.chars();
+        if chars.next()? != 'r' {
+            return None;
+        }
+
+        let mut hash_count = 0usize;
+        for ch in chars {
+            match ch {
+                '#' => hash_count += 1,
+                '"' => return Some(hash_count),
+                _ => return None,
+            }
+        }
+
+        None
+    }
+
+    fn raw_string_closes(source: &str, index: usize, hash_count: usize) -> bool {
+        let Some(rest) = source.get(index..) else {
+            return false;
+        };
+        if !rest.starts_with('"') {
+            return false;
+        }
+
+        rest[1..].starts_with(&"#".repeat(hash_count))
+    }
+
+    pub(super) fn is_identifier_continue(ch: char) -> bool {
+        ch == '_' || ch.is_ascii_alphanumeric()
+    }
+}
+
+#[cfg(test)]
 mod extraction_path_tests {
+    use super::rust_source_scan::{is_identifier_continue, mask_comments_and_string_literals};
     use std::fs;
     use std::path::{Path, PathBuf};
 
@@ -178,6 +333,41 @@ mod extraction_path_tests {
         ));
     }
 
+    #[test]
+    fn barrel_declaration_scan_matches_visibility_attributes_and_inline_modules() {
+        assert!(contains_module_declaration(
+            "pub(super) mod registry;",
+            "registry"
+        ));
+        assert!(contains_module_declaration(
+            "#[cfg(test)] pub(crate) mod registry;",
+            "registry"
+        ));
+        assert!(contains_module_declaration(
+            "pub(in crate::scripting) mod registry;",
+            "registry"
+        ));
+        assert!(contains_module_declaration(
+            "pub(crate) mod conv { }",
+            "conv"
+        ));
+    }
+
+    #[test]
+    fn barrel_declaration_scan_ignores_comments_and_strings() {
+        let source = r###"
+            // mod registry;
+            /* pub(crate) mod ctx; */
+            let _literal = "mod conv;";
+            let _raw = r#"pub(super) mod watcher;"#;
+        "###;
+
+        assert!(!contains_module_declaration(source, "registry"));
+        assert!(!contains_module_declaration(source, "ctx"));
+        assert!(!contains_module_declaration(source, "conv"));
+        assert!(!contains_module_declaration(source, "watcher"));
+    }
+
     fn implementation_path_exists(path: &Path) -> bool {
         if path.is_file() {
             return true;
@@ -197,33 +387,80 @@ mod extraction_path_tests {
     }
 
     fn contains_module_declaration(source: &str, module: &str) -> bool {
-        source.lines().any(|line| {
-            let declaration = line
-                .trim_start()
-                .strip_prefix("pub(crate) ")
-                .or_else(|| line.trim_start().strip_prefix("pub "))
-                .unwrap_or_else(|| line.trim_start());
-            let Some(rest) = declaration.strip_prefix("mod ") else {
-                return false;
-            };
-            let Some(rest) = rest.strip_prefix(module) else {
-                return false;
-            };
-
-            !rest.chars().next().is_some_and(is_identifier_continue)
-                && (rest.starts_with(';')
-                    || rest.starts_with('{')
-                    || rest.trim_start().starts_with(';'))
-        })
+        mask_comments_and_string_literals(source)
+            .lines()
+            .any(|line| line_contains_module_declaration(line, module))
     }
 
-    fn is_identifier_continue(ch: char) -> bool {
-        ch == '_' || ch.is_ascii_alphanumeric()
+    fn line_contains_module_declaration(line: &str, module: &str) -> bool {
+        let Some(mut rest) = strip_outer_attributes(line.trim_start()) else {
+            return false;
+        };
+
+        rest = rest.trim_start();
+        if let Some(after_visibility) = strip_visibility(rest) {
+            rest = after_visibility.trim_start();
+        }
+
+        let Some(rest) = rest.strip_prefix("mod ") else {
+            return false;
+        };
+
+        let Some(rest) = rest.strip_prefix(module) else {
+            return false;
+        };
+
+        let rest = rest.trim_start();
+
+        !rest.chars().next().is_some_and(is_identifier_continue)
+            && (rest.starts_with(';') || rest.starts_with('{'))
+    }
+
+    fn strip_outer_attributes(mut rest: &str) -> Option<&str> {
+        loop {
+            rest = rest.trim_start();
+            if !rest.starts_with("#[") {
+                return Some(rest);
+            }
+
+            let attribute_end = bracketed_attribute_end(rest)?;
+            rest = &rest[attribute_end..];
+        }
+    }
+
+    fn bracketed_attribute_end(attribute: &str) -> Option<usize> {
+        let mut depth = 0usize;
+
+        for (index, ch) in attribute.char_indices() {
+            match ch {
+                '[' => depth += 1,
+                ']' => {
+                    depth = depth.checked_sub(1)?;
+                    if depth == 0 {
+                        return Some(index + ch.len_utf8());
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        None
+    }
+
+    fn strip_visibility(rest: &str) -> Option<&str> {
+        if let Some(rest) = rest.strip_prefix("pub ") {
+            return Some(rest);
+        }
+
+        let rest = rest.strip_prefix("pub(")?;
+        let closing_paren = rest.find(')')?;
+        Some(&rest[closing_paren + 1..])
     }
 }
 
 #[cfg(test)]
 mod scripting_boundary_tests {
+    use super::rust_source_scan::{is_identifier_continue, mask_comments_and_string_literals};
     use std::fs;
     use std::path::{Path, PathBuf};
 
@@ -305,6 +542,26 @@ mod scripting_boundary_tests {
         assert!(!grouped_use_tree_contains_barrel(group, "registry_extra"));
     }
 
+    #[test]
+    fn scripting_boundary_scan_matches_nested_crate_grouped_barrels() {
+        let nested_group = crate_grouped_use_tree("use crate::{scripting::{registry::EntityId}};")
+            .expect("nested crate grouped use");
+        assert!(crate_grouped_use_tree_contains_scripting_barrel(
+            nested_group,
+            "registry"
+        ));
+
+        let path_group = crate_grouped_use_tree("use crate::{scripting::registry::EntityId};")
+            .expect("crate grouped scripting path use");
+        assert!(crate_grouped_use_tree_contains_scripting_barrel(
+            path_group, "registry"
+        ));
+        assert!(!crate_grouped_use_tree_contains_scripting_barrel(
+            path_group,
+            "registry_extra"
+        ));
+    }
+
     fn collect_boundary_violations(src_dir: &Path, path: &Path, violations: &mut Vec<String>) {
         let Ok(entries) = fs::read_dir(path) else {
             return;
@@ -342,167 +599,30 @@ mod scripting_boundary_tests {
             };
             let use_item = &scan_source[use_index..use_index + use_end];
 
-            let Some(group) = grouped_use_tree(use_item) else {
-                continue;
-            };
-
-            for barrel in REMOVED_OR_COLLAPSED_BARRELS {
-                if grouped_use_tree_contains_barrel(group, barrel) {
-                    violations.push(format!(
-                        "{}:{} imports crate::scripting::{{...{barrel}...}}",
-                        display_relative_path(src_dir, path).display(),
-                        line_number_at(&source, use_index)
-                    ));
-                }
-            }
-        }
-    }
-
-    fn mask_comments_and_string_literals(source: &str) -> String {
-        let mut masked = String::with_capacity(source.len());
-        let mut chars = source.char_indices().peekable();
-        let mut block_comment_depth = 0usize;
-        let mut in_line_comment = false;
-        let mut in_string = false;
-        let mut string_escape = false;
-        let mut raw_string_hashes: Option<usize> = None;
-
-        while let Some((index, ch)) = chars.next() {
-            let next = chars.peek().map(|(_, next)| *next);
-
-            if in_line_comment {
-                if ch == '\n' {
-                    in_line_comment = false;
-                    masked.push('\n');
-                } else {
-                    push_masked_char(&mut masked, ch);
-                }
-                continue;
-            }
-
-            if block_comment_depth > 0 {
-                if ch == '/' && next == Some('*') {
-                    block_comment_depth += 1;
-                    push_masked_char(&mut masked, ch);
-                    if let Some((_, next_ch)) = chars.next() {
-                        push_masked_char(&mut masked, next_ch);
-                    }
-                } else if ch == '*' && next == Some('/') {
-                    block_comment_depth -= 1;
-                    push_masked_char(&mut masked, ch);
-                    if let Some((_, next_ch)) = chars.next() {
-                        push_masked_char(&mut masked, next_ch);
-                    }
-                } else if ch == '\n' {
-                    masked.push('\n');
-                } else {
-                    push_masked_char(&mut masked, ch);
-                }
-                continue;
-            }
-
-            if let Some(hash_count) = raw_string_hashes {
-                if raw_string_closes(source, index, hash_count) {
-                    raw_string_hashes = None;
-                    push_masked_char(&mut masked, ch);
-                    for _ in 0..hash_count {
-                        if let Some((_, next_ch)) = chars.next() {
-                            push_masked_char(&mut masked, next_ch);
-                        }
-                    }
-                } else if ch == '\n' {
-                    masked.push('\n');
-                } else {
-                    push_masked_char(&mut masked, ch);
-                }
-                continue;
-            }
-
-            if in_string {
-                if ch == '\n' {
-                    masked.push('\n');
-                } else {
-                    push_masked_char(&mut masked, ch);
-                }
-                if string_escape {
-                    string_escape = false;
-                } else if ch == '\\' {
-                    string_escape = true;
-                } else if ch == '"' {
-                    in_string = false;
-                }
-                continue;
-            }
-
-            if ch == '/' && next == Some('/') {
-                in_line_comment = true;
-                push_masked_char(&mut masked, ch);
-                if let Some((_, next_ch)) = chars.next() {
-                    push_masked_char(&mut masked, next_ch);
-                }
-            } else if ch == '/' && next == Some('*') {
-                block_comment_depth = 1;
-                push_masked_char(&mut masked, ch);
-                if let Some((_, next_ch)) = chars.next() {
-                    push_masked_char(&mut masked, next_ch);
-                }
-            } else if let Some(hash_count) = raw_string_start(source, index) {
-                raw_string_hashes = Some(hash_count);
-                push_masked_char(&mut masked, ch);
-                for _ in 0..hash_count {
-                    if let Some((_, next_ch)) = chars.next() {
-                        push_masked_char(&mut masked, next_ch);
+            if let Some(group) = grouped_use_tree(use_item) {
+                for barrel in REMOVED_OR_COLLAPSED_BARRELS {
+                    if grouped_use_tree_contains_barrel(group, barrel) {
+                        violations.push(format!(
+                            "{}:{} imports crate::scripting::{{...{barrel}...}}",
+                            display_relative_path(src_dir, path).display(),
+                            line_number_at(&source, use_index)
+                        ));
                     }
                 }
-                if let Some((_, next_ch)) = chars.next() {
-                    push_masked_char(&mut masked, next_ch);
+            }
+
+            if let Some(group) = crate_grouped_use_tree(use_item) {
+                for barrel in REMOVED_OR_COLLAPSED_BARRELS {
+                    if crate_grouped_use_tree_contains_scripting_barrel(group, barrel) {
+                        violations.push(format!(
+                            "{}:{} imports crate::{{...scripting::{barrel}...}}",
+                            display_relative_path(src_dir, path).display(),
+                            line_number_at(&source, use_index)
+                        ));
+                    }
                 }
-            } else if ch == '"' {
-                in_string = true;
-                string_escape = false;
-                push_masked_char(&mut masked, ch);
-            } else {
-                masked.push(ch);
             }
         }
-
-        masked
-    }
-
-    fn push_masked_char(masked: &mut String, ch: char) {
-        for _ in 0..ch.len_utf8() {
-            masked.push(' ');
-        }
-    }
-
-    fn raw_string_start(source: &str, index: usize) -> Option<usize> {
-        let rest = source.get(index..)?;
-        let mut chars = rest.chars();
-        if chars.next()? != 'r' {
-            return None;
-        }
-
-        let mut hash_count = 0usize;
-        for ch in chars {
-            match ch {
-                '#' => hash_count += 1,
-                '"' => return Some(hash_count),
-                _ => return None,
-            }
-        }
-
-        None
-    }
-
-    fn raw_string_closes(source: &str, index: usize, hash_count: usize) -> bool {
-        let Some(rest) = source.get(index..) else {
-            return false;
-        };
-        if !rest.starts_with('"') {
-            return false;
-        }
-
-        rest[1..].starts_with(&"#".repeat(hash_count))
     }
 
     fn use_keyword_indices(source: &str) -> impl Iterator<Item = usize> + '_ {
@@ -542,6 +662,15 @@ mod scripting_boundary_tests {
     fn grouped_use_tree(use_item: &str) -> Option<&str> {
         let path = use_path_after_keyword(use_item)?;
         let rest = path.strip_prefix("crate::scripting::")?;
+        let rest = rest.trim_start();
+        let rest = rest.strip_prefix('{')?;
+        let group_end = grouped_use_tree_end(rest)?;
+        Some(&rest[..group_end])
+    }
+
+    fn crate_grouped_use_tree(use_item: &str) -> Option<&str> {
+        let path = use_path_after_keyword(use_item)?;
+        let rest = path.strip_prefix("crate::")?;
         let rest = rest.trim_start();
         let rest = rest.strip_prefix('{')?;
         let group_end = grouped_use_tree_end(rest)?;
@@ -597,6 +726,53 @@ mod scripting_boundary_tests {
         grouped_use_item_starts_with_barrel(&group[item_start..], barrel)
     }
 
+    fn crate_grouped_use_tree_contains_scripting_barrel(group: &str, barrel: &str) -> bool {
+        let mut depth = 0usize;
+        let mut item_start = 0usize;
+
+        for (index, byte) in group.bytes().enumerate() {
+            match byte {
+                b'{' => depth += 1,
+                b'}' => depth = depth.saturating_sub(1),
+                b',' if depth == 0 => {
+                    if crate_grouped_use_item_contains_scripting_barrel(
+                        &group[item_start..index],
+                        barrel,
+                    ) {
+                        return true;
+                    }
+                    item_start = index + 1;
+                }
+                _ => {}
+            }
+        }
+
+        crate_grouped_use_item_contains_scripting_barrel(&group[item_start..], barrel)
+    }
+
+    fn crate_grouped_use_item_contains_scripting_barrel(item: &str, barrel: &str) -> bool {
+        let trimmed = item.trim_start();
+        let Some(rest) = trimmed.strip_prefix("scripting") else {
+            return false;
+        };
+        if rest.chars().next().is_some_and(is_identifier_continue) {
+            return false;
+        }
+
+        let Some(rest) = rest.trim_start().strip_prefix("::") else {
+            return false;
+        };
+        let rest = rest.trim_start();
+        if let Some(rest) = rest.strip_prefix('{') {
+            let Some(group_end) = grouped_use_tree_end(rest) else {
+                return false;
+            };
+            return grouped_use_tree_contains_barrel(&rest[..group_end], barrel);
+        }
+
+        grouped_use_item_starts_with_barrel(rest, barrel)
+    }
+
     fn grouped_use_item_starts_with_barrel(item: &str, barrel: &str) -> bool {
         let trimmed = item.trim_start();
         let Some(rest) = trimmed.strip_prefix(barrel) else {
@@ -628,10 +804,10 @@ mod scripting_boundary_tests {
         };
 
         // This source scan catches direct `crate::scripting::<name>` paths and
-        // top-level grouped `crate::scripting::{<name>...}` use trees. It still
-        // does not parse aliases to `scripting` or `super::` relative forms.
-        // After barrel deletion those forms are compile errors, so this is a
-        // reintroduction lock rather than a full parser.
+        // ordinary grouped crate use trees. It still does not parse aliases to
+        // `scripting` or `super::` relative forms. After barrel deletion those
+        // forms are compile errors, so this is a reintroduction lock rather
+        // than a full parser.
         relative == Path::new("scripting/mod.rs")
             || relative.starts_with(Path::new("scripting/typedef"))
     }
@@ -640,9 +816,5 @@ mod scripting_boundary_tests {
         path.strip_prefix(src_dir)
             .map(PathBuf::from)
             .unwrap_or_else(|_| path.to_path_buf())
-    }
-
-    fn is_identifier_continue(ch: char) -> bool {
-        ch == '_' || ch.is_ascii_alphanumeric()
     }
 }

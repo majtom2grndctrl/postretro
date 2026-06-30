@@ -6,10 +6,10 @@ use wgpu::util::DeviceExt;
 
 use crate::compute_cull::{
     CULL_SHADER_SOURCE, CULL_UNIFORMS_SIZE, CullUniforms, DRAW_INDIRECT_SIZE, SetTextureFn,
-    VISIBLE_CELLS_WORDS, draw_indirect_buckets, extract_frustum_planes_for_gpu,
-    serialize_cull_uniforms,
+    VISIBLE_CELLS_WORDS, draw_indirect_buckets, serialize_cull_uniforms,
 };
 use crate::geometry::BucketRange;
+use crate::lighting::cone_frustum::extract_frustum_planes_for_gpu;
 use crate::lighting::spot_shadow::SHADOW_POOL_SIZE;
 
 /// Persistent, renderer-owned per-slot cone cull for the spot-shadow pool —

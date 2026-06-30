@@ -13,7 +13,6 @@
 use super::UiReadSnapshot;
 use super::UiTreeEntry;
 use super::descriptor::{AnchoredTree, CaptureMode};
-use crate::input::UiCaptureMode;
 use postretro_scripting_core::data_descriptors::RegisteredUiTree;
 
 /// Scope tier a registered tree belongs to. Precedence is
@@ -196,7 +195,7 @@ impl UiTreeRegistry {
             .map(|(_, name, t)| UiTreeEntry {
                 name: name.clone(),
                 descriptor: t.descriptor.clone(),
-                capture_mode: t.descriptor.capture_mode.into(),
+                capture_mode: t.descriptor.capture_mode,
                 on_commit: None,
             })
             .collect()
@@ -432,11 +431,11 @@ impl ModalStack {
     /// The TOP tree's capture mode (the one the App acts on). `Passthrough` when
     /// the stack is empty or the top tree declares passthrough (the HUD case), so
     /// gameplay keeps input and the cursor stays captured.
-    pub(crate) fn top_capture_mode(&self) -> UiCaptureMode {
+    pub(crate) fn top_capture_mode(&self) -> CaptureMode {
         self.stack
             .last()
-            .map(|t| t.descriptor.capture_mode.into())
-            .unwrap_or(UiCaptureMode::Passthrough)
+            .map(|t| t.descriptor.capture_mode)
+            .unwrap_or(CaptureMode::Passthrough)
     }
 
     /// Number of trees on the stack.
@@ -486,7 +485,7 @@ impl ModalStack {
             .map(|t| UiTreeEntry {
                 name: t.name.clone(),
                 descriptor: t.descriptor.clone(),
-                capture_mode: t.descriptor.capture_mode.into(),
+                capture_mode: t.descriptor.capture_mode,
                 on_commit: t.on_commit.clone(),
             })
             .collect()
@@ -595,7 +594,7 @@ mod tests {
         assert_eq!(stack.active_name(), Some("mainMenu"));
         assert_eq!(
             stack.top_capture_mode(),
-            UiCaptureMode::Capture,
+            CaptureMode::Capture,
             "frontend menus must suppress gameplay even if the registered tree was passthrough",
         );
         assert_eq!(
@@ -631,7 +630,7 @@ mod tests {
             stack.active_name(),
             Some(crate::render::ui::demo::FRONTEND_MENU_NAME),
         );
-        assert_eq!(stack.top_capture_mode(), UiCaptureMode::Capture);
+        assert_eq!(stack.top_capture_mode(), CaptureMode::Capture);
     }
 
     #[test]
@@ -715,24 +714,24 @@ mod tests {
         register_pushable(&mut stack, "pause", capturing());
 
         // Empty stack => passthrough (gameplay keeps input).
-        assert_eq!(stack.top_capture_mode(), UiCaptureMode::Passthrough);
+        assert_eq!(stack.top_capture_mode(), CaptureMode::Passthrough);
 
         // HUD (passthrough) on the stack => still passthrough; a HUD never
         // captures.
         stack.push_named("hud", None);
         assert_eq!(
             stack.top_capture_mode(),
-            UiCaptureMode::Passthrough,
+            CaptureMode::Passthrough,
             "a passthrough HUD never captures",
         );
 
         // A capturing modal on top => capture (cursor releases, player input is gated).
         stack.push_named("pause", None);
-        assert_eq!(stack.top_capture_mode(), UiCaptureMode::Capture);
+        assert_eq!(stack.top_capture_mode(), CaptureMode::Capture);
 
         // Popping the modal restores the HUD's passthrough.
         stack.pop();
-        assert_eq!(stack.top_capture_mode(), UiCaptureMode::Passthrough);
+        assert_eq!(stack.top_capture_mode(), CaptureMode::Passthrough);
     }
 
     #[test]
@@ -749,8 +748,8 @@ mod tests {
         assert_eq!(snapshot.trees[0].name, "hud");
         assert_eq!(snapshot.trees[1].name, "pause");
         // The top entry carries the capturing mode; the bottom passes through.
-        assert_eq!(snapshot.trees[0].capture_mode, UiCaptureMode::Passthrough);
-        assert_eq!(snapshot.trees[1].capture_mode, UiCaptureMode::Capture);
+        assert_eq!(snapshot.trees[0].capture_mode, CaptureMode::Passthrough);
+        assert_eq!(snapshot.trees[1].capture_mode, CaptureMode::Capture);
     }
 
     #[test]
@@ -824,7 +823,7 @@ mod tests {
         let mut stack = ModalStack::new();
         stack.push("engineDialog", capturing());
         assert_eq!(stack.active_name(), Some("engineDialog"));
-        assert_eq!(stack.top_capture_mode(), UiCaptureMode::Capture);
+        assert_eq!(stack.top_capture_mode(), CaptureMode::Capture);
     }
 
     // ----- Tiered registry (engine < mod < level) + always-on compose -----
@@ -982,7 +981,7 @@ mod tests {
         assert!(stack.is_empty());
         assert_eq!(
             stack.top_capture_mode(),
-            UiCaptureMode::Passthrough,
+            CaptureMode::Passthrough,
             "an always-on layer declaring Capture must not capture — the pushed \
              stack is empty",
         );

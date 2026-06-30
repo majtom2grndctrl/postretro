@@ -1890,7 +1890,7 @@ mod tests {
         );
         assert_eq!(
             app.session.as_mut().unwrap().modal_stack.top_capture_mode(),
-            input::UiCaptureMode::Capture,
+            render::ui::descriptor::CaptureMode::Capture,
             "frontend menu must suppress gameplay through the capture-mode path",
         );
         assert_eq!(
@@ -1938,7 +1938,7 @@ mod tests {
         );
         assert_eq!(
             app.session.as_mut().unwrap().modal_stack.top_capture_mode(),
-            input::UiCaptureMode::Capture
+            render::ui::descriptor::CaptureMode::Capture
         );
         assert_eq!(
             app.level_requests.pop_front(),
@@ -2054,7 +2054,7 @@ mod tests {
         );
         assert_eq!(
             app.session.as_mut().unwrap().modal_stack.top_capture_mode(),
-            input::UiCaptureMode::Capture
+            render::ui::descriptor::CaptureMode::Capture
         );
     }
 

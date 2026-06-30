@@ -20,7 +20,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use glam::Mat4;
 
-use crate::compute_cull::{CullUniforms, extract_frustum_planes_for_gpu, serialize_cull_uniforms};
+use crate::compute_cull::{CullUniforms, serialize_cull_uniforms};
+use crate::lighting::cone_frustum::extract_frustum_planes_for_gpu;
 use crate::prl::CellDrawIndex;
 
 pub(crate) const CANDIDATE_CULL_SHADER_SOURCE: &str = include_str!("shaders/candidate_cull.wgsl");

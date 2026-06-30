@@ -750,7 +750,7 @@ fn gameplay_capture_gate_for_frame(
     modal_stack: &render::ui::modal_stack::ModalStack,
 ) -> bool {
     ui_captured_gameplay_at_frame_start
-        || modal_stack.top_capture_mode() == input::UiCaptureMode::Capture
+        || modal_stack.top_capture_mode() == render::ui::descriptor::CaptureMode::Capture
 }
 
 fn build_sim_command(
@@ -3049,7 +3049,8 @@ impl App {
         presentation_cells.reconcile(&composed_trees);
         let cell_values = presentation_cells.snapshot();
 
-        let ring_id = if modal_stack.top_capture_mode() == input::UiCaptureMode::Capture
+        let ring_id = if modal_stack.top_capture_mode()
+            == render::ui::descriptor::CaptureMode::Capture
             && !ui_input_mode.ring_visible()
         {
             None
@@ -4451,7 +4452,7 @@ impl App {
                 return;
             };
             let mode = session.modal_stack.top_capture_mode();
-            session.ui_dispatch.set_mode(mode);
+            session.ui_dispatch.set_mode(mode.into());
             (mode, session.input_focus)
         };
 
@@ -4460,7 +4461,7 @@ impl App {
             return;
         }
 
-        let want_menu = matches!(mode, input::UiCaptureMode::Capture);
+        let want_menu = matches!(mode, render::ui::descriptor::CaptureMode::Capture);
         match (want_menu, current_focus) {
             // A capturing tree opened (or stayed open): enter Menu, release cursor.
             (true, InputFocus::Gameplay) => self.set_input_focus(InputFocus::Menu),
@@ -4899,7 +4900,7 @@ mod tests {
         );
         stack.push_named(render::ui::demo::PAUSE_MENU_NAME, None);
         let ui_captured_gameplay_at_frame_start =
-            stack.top_capture_mode() == input::UiCaptureMode::Capture;
+            stack.top_capture_mode() == render::ui::descriptor::CaptureMode::Capture;
 
         let routed = route_ui_button_action(render::ui::actions::CLOSE_DIALOG_ACTION, &mut stack);
         assert_eq!(routed, UiButtonAction::CloseDialog);
@@ -4909,7 +4910,7 @@ mod tests {
         );
         assert_ne!(
             stack.top_capture_mode(),
-            input::UiCaptureMode::Capture,
+            render::ui::descriptor::CaptureMode::Capture,
             "the post-pop stack alone would no longer gate gameplay",
         );
 
@@ -5583,7 +5584,10 @@ mod tests {
 
         stack.push_named(render::ui::demo::PAUSE_MENU_NAME, None);
         assert_eq!(stack.active_name(), Some(render::ui::demo::PAUSE_MENU_NAME));
-        assert_eq!(stack.top_capture_mode(), input::UiCaptureMode::Capture);
+        assert_eq!(
+            stack.top_capture_mode(),
+            render::ui::descriptor::CaptureMode::Capture
+        );
         assert_eq!(
             stack.entries()[0].descriptor.initial_focus.as_deref(),
             Some("pauseResume"),

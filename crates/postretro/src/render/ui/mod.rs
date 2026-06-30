@@ -261,22 +261,10 @@ pub(crate) struct UiTreeEntry {
     pub descriptor: descriptor::AnchoredTree,
     /// Resolved capture behavior (from the descriptor's `capture_mode` envelope).
     /// Only the TOP entry's mode is acted on by the app's input seam.
-    pub capture_mode: crate::input::UiCaptureMode,
+    pub capture_mode: descriptor::CaptureMode,
     /// Optional named reaction fired by the App when this tree commits (carried
     /// from `PushTree { on_commit }`).
     pub on_commit: Option<String>,
-}
-
-/// Resolve a descriptor-side `CaptureMode` (wire/envelope form) into the input
-/// subsystem's `UiCaptureMode` (the seam form the modal stack drives). The two
-/// enums are kept separate so the descriptor module carries no input dependency.
-impl From<descriptor::CaptureMode> for crate::input::UiCaptureMode {
-    fn from(mode: descriptor::CaptureMode) -> Self {
-        match mode {
-            descriptor::CaptureMode::Capture => crate::input::UiCaptureMode::Capture,
-            descriptor::CaptureMode::Passthrough => crate::input::UiCaptureMode::Passthrough,
-        }
-    }
 }
 
 /// Once-per-frame published read-only snapshot the UI pass reads when it records.

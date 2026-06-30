@@ -43,4 +43,4 @@ Move the CPU islands embedded in GPU files (byte-packing, frame planning, valida
 Create the crate, move the ruled-in helpers + their constants + tests, re-point scripting systems, wire deps.
 
 ## Sequencing
-**Phase 1:** Task 1 (ruling + carve), then Task 2 (extract). Needs `s2`, `s3`, `s5`. Epic Phase 4; blocks `s8`.
+**Phase 1:** Task 1 (ruling + carve), then Task 2 (extract). Needs `s2`, `s3`, `s5`. Milestone 2; blocks `s8`.

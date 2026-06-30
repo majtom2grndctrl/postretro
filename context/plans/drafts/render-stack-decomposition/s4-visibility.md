@@ -29,4 +29,4 @@ Extract runtime portal traversal and frustum visibility into a CPU-only crate so
 Create the crate, move both files (relying on the `s1` `Frustum`/`FrustumPlane` widening), wire deps, update importers. **Decision (open question 6):** depend on `LevelWorld` directly, or introduce the old draft's borrowed portal-world view exposing only leaves/portals/adjacency. Default: depend on `LevelWorld` unless the borrowed view measurably reduces rebuild coupling.
 
 ## Sequencing
-**Phase 1:** Task 1. Needs `s3` (`level-loader`) + `s2` (`geometry`). Epic Phase 3.
+**Phase 1:** Task 1. Needs `s3` (`level-loader`) + `s2` (`geometry`). Milestone 1.

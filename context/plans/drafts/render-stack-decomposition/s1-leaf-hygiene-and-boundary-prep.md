@@ -35,4 +35,4 @@ Remove the four orphaned files; confirm the build proves them dead.
 Change `UiReadSnapshot` to carry `descriptor::CaptureMode`; relocate the `From` conversion to the binary; update the `main.rs` read site to convert there before feeding input dispatch.
 
 ## Sequencing
-**Phase 1:** Tasks 1–3 are independent; fan out. Runs in epic Phase 1 alongside `s0`.
+**Phase 1:** Tasks 1–3 are independent; fan out. Milestone 1, alongside `s0`.

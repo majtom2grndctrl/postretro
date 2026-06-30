@@ -1,6 +1,6 @@
 # s0 — Baseline & Dev Cargo Config
 
-> Epic: `render-stack-decomposition`. Folds `compile-time-reduction` Tasks 1–2. Gates all timing claims in later sub-specs.
+> Epic: `render-stack-decomposition`. Folds `compile-time-reduction` Tasks 1–2. Gates all timing claims in later specs.
 
 ## Goal
 
@@ -34,4 +34,4 @@ Run the case matrix in isolated target dirs; capture metadata + `--timings`. Do 
 Add a conservative `.cargo/config.toml` or per-user equivalent: keep incremental on; compare dependency `opt-level` and reduced debug-info; add a named `dev-fast` profile if runtime feel holds. Faster linkers behind target-specific opt-in. Confirm profile override precedence so the SWC-heavy `script-compiler` build path is understood. Document day-to-day defaults (`cargo check -p postretro` + targeted tests while iterating; preserve a `cargo check --workspace` gate).
 
 ## Sequencing
-**Phase 1:** Task 1, then Task 2 (config measured against the Task 1 baseline). Independent of all other sub-specs; runs first so they can quote it.
+**Phase 1:** Task 1, then Task 2 (config measured against the Task 1 baseline). Milestone 1; independent of all other specs and runs first so they can quote it.

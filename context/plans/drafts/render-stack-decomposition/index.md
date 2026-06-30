@@ -1,6 +1,6 @@
 # Render-Stack Decomposition (Epic)
 
-> **Status:** draft (epic). Sub-specs in this folder (`s0`–`s8`). Source-grounded findings in `research.md`.
+> **Status:** draft (roadmap Epic 19). Specs `s0`–`s8`, grouped into three milestones. Source-grounded findings in `research.md`.
 > **Related:** `context/lib/scripting.md §12` (the data-floor precedent this mirrors) · `context/lib/rendering_pipeline.md` · `context/lib/development_guide.md` · `context/lib/index.md §2` (architectural invariants) · supersedes `context/plans/drafts/compile-time-reduction/`.
 
 ## Goal
@@ -9,7 +9,7 @@ Decompose the `postretro` binary's rendering runtime and the heavy CPU/GPU modul
 
 ## Scoping philosophy — build more right faster
 
-Scope to the **correct end-state crate graph**, not a locally-safe first slice. Keep only ordering the compiler/dependency graph forces; everything else fans out in parallel (worktree-isolated). Because incremental human checkpoints are removed, **replace them with verification**: every sub-spec proves correctness by construction (`cargo tree` isolation, acyclicity-by-compile, typedef-drift byte-identity, WGSL byte-layout tests, behavior-preservation), not by reviewer trust. A split that does not measurably improve its targeted edit loop pauses the structural phases for re-evaluation.
+Scope to the **correct end-state crate graph**, not a locally-safe first slice. Keep only ordering the compiler/dependency graph forces; everything else fans out in parallel (worktree-isolated). Because incremental human checkpoints are removed, **replace them with verification**: every spec proves correctness by construction (`cargo tree` isolation, acyclicity-by-compile, typedef-drift byte-identity, WGSL byte-layout tests, behavior-preservation), not by reviewer trust. A split that does not measurably improve its targeted edit loop pauses the structural phases for re-evaluation.
 
 ## Scope
 
@@ -60,41 +60,51 @@ One-way edges, top depends on bottom. New crates marked `*`. Existing data floor
 - **`postretro-geometry*` + `postretro-material*`** (cpu-only) — leaf data types under the loader.
 - **`postretro-renderer*`** (gpu) — everything wgpu: `Renderer`/`FullRenderer`, all `renderer_*.rs`, all passes, + absorbed GPU modules. Public surface ≈ `{Renderer, opaque present handle, dev-tools setter API}` — `FullRenderer` stays private.
 
-## Global acceptance criteria (every sub-spec inherits)
+## Global acceptance criteria (every spec inherits)
 
-- [ ] `cargo build --workspace` and `cargo test --workspace` pass after each sub-spec.
+- [ ] `cargo build --workspace` and `cargo test --workspace` pass after each spec.
 - [ ] Dependency graph is acyclic and one-way (proven by `cargo build --workspace`); no lower crate depends on `postretro-renderer` or the binary.
 - [ ] Each new **cpu-only** crate's `cargo tree` (default features) shows **no** `wgpu`, `winit`, `glyphon` (except `postretro-ui`, which uses `glyphon` `FontSystem` for CPU text measurement), `kira`, `mlua`, or `rquickjs`. (Manual/CI gate.)
 - [ ] Editing a cpu-only crate and running *its* tests does not recompile `wgpu`/`naga`/`winit`/`kira`, nor (except `postretro-ui`/`scripting-core` consumers) `mlua`/`rquickjs`.
 - [ ] Behavior-preserving: no PRL wire, runtime, scripting-semantics, or SDK-typedef change. The typedef drift test (`scripting/typedef/tests/committed.rs`) stays byte-identical.
 - [ ] WGSL byte-layout contracts hold: `group3_shader_bindings`, `uniform_tests`, `shader_tests` pass — any moved packer carries its binding-index/stride constants.
 - [ ] No net-new `unsafe` (pre-existing `unsafe` travels with moved code).
-- [ ] No `wgpu` call lands outside `postretro-renderer` (and the binary's thin present driver). After the terminal sub-spec, `rg wgpu` over every non-renderer crate is empty.
+- [ ] No `wgpu` call lands outside `postretro-renderer` (and the binary's thin present driver). After the terminal spec, `rg wgpu` over every non-renderer crate is empty.
 - [ ] Each extraction PR quotes before/after warm-edit timings vs. the `s0` baseline for its targeted loop. A split that fails to improve its loop meaningfully pauses later structural phases.
 
-## Sub-spec roster
+## Milestones
 
-| ID | Crate / unit | Layer | Risk | Folds from old draft |
-|---|---|---|---|---|
-| `s0` | Baseline + dev Cargo config | tooling | low | Tasks 1–2 |
-| `s1` | Leaf hygiene & boundary prep | refactor | low | — |
-| `s2` | `postretro-geometry` + `postretro-material` | cpu | low | (Task 4 type-homes) |
-| `s3` | `postretro-level-loader` | cpu | medium | Tasks 4–5 |
-| `s4` | `postretro-visibility` | cpu | medium | Task 3 |
-| `s5` | `postretro-lighting` (cpu-math) | cpu | medium | — |
-| `s6` | `postretro-ui` | cpu | medium | Task 6 (superseded) |
-| `s7` | `postretro-render-cpu` | cpu | medium | (audit Tasks 6–7) |
-| `s8` | `postretro-renderer` | gpu | high | the deferred renderer split |
+Three milestones, each a shippable checkpoint with a developer-facing testable outcome — the **safety** boundary: the build stays green and behavior-preserving at every milestone, so the epic can pause after any one without a half-migrated tree. Within a milestone, independent specs fan out in parallel worktrees — the **speed**. Milestones are seam-first, not a strict chain: Milestone 2's lighting/UI tracks may start once their deps land, overlapping Milestone 1's tail.
 
-## Cross-sub-spec sequencing
+### Milestone 1 — CPU runtime floor
+**Specs:** `s0`, `s1`, `s2`, `s3`, `s4`.
+**Order:** `s0`+`s1` parallel; then `s2`; then `s3` (needs `s2`); then `s4` (needs `s3`+`s2`). `s1` also unblocks `s6`.
+**Testable outcome:** `postretro-geometry`, `postretro-material`, `postretro-level-loader`, `postretro-visibility` are workspace crates; editing any and running its tests recompiles no `wgpu`/`naga`/`winit`/VM crate; the `s0` baseline shows the warm-edit win on a `prl.rs`/`portal_vis.rs` touch; `cargo build --workspace` + `cargo test --workspace` green.
 
-Dependency-forced ordering only; within a phase, sub-specs fan out in parallel worktrees.
+### Milestone 2 — Sever scripting / UI / CPU-math from the renderer
+**Specs:** `s5` (lighting-cpu), `s6` (ui), `s7` (render-cpu).
+**Order:** `s5` and `s6` independent (parallel; `s6` needs `s1`); `s7` after `s2`/`s3`/`s5`. May overlap Milestone 1's tail.
+**Testable outcome:** `rg "use crate::render" crates/postretro/src/scripting` is empty — the `scripting → render` edge is gone; `postretro-ui`/`-lighting`/`-render-cpu` are crates whose tests recompile no `wgpu`/`naga`; the WGSL byte-layout guards and the typedef drift test stay green.
 
-**Phase 1 (parallel):** `s0` (baseline — gates all timing claims), `s1` (hygiene/prep — unblocks `s4` and `s6`).
-**Phase 2 (parallel):** `s2` (geometry+material), `s5` (lighting-cpu), `s6` (ui — needs `s1`).
-**Phase 3 (sequential within track):** `s3` (level-loader — needs `s2`), then `s4` (visibility — needs `s3`+`s2`).
-**Phase 4:** `s7` (render-cpu — needs `s2`, `s3`, `s5`; breaks `scripting→render` edges).
-**Phase 5 (terminal):** `s8` (renderer — needs `s2`–`s7` + `model`); absorbs GPU modules; lands the present handle. Single verification gate runs here and after every prior sub-spec.
+### Milestone 3 — Renderer crate (invariant restored)
+**Spec:** `s8`. **Lands solo** as the integration surface (the Epic 17-A wave rule — do not bundle it into a multi-spec wave).
+**Testable outcome:** `rg wgpu` is empty across every crate except `postretro-renderer` (and the binary's thin present driver); no consumer of the renderer crate imports `wgpu`; `wgpu::SurfaceTexture` is absent from every engine-facing signature; behavior-preserving; the full verification gate (cargo-tree isolation, acyclicity, typedef drift, WGSL) is green.
+
+## Spec roster
+
+| ID | Crate / unit | Milestone | Layer | Risk | Folds from old draft |
+|---|---|---|---|---|---|
+| `s0` | Baseline + dev Cargo config | 1 | tooling | low | Tasks 1–2 |
+| `s1` | Leaf hygiene & boundary prep | 1 | refactor | low | — |
+| `s2` | `postretro-geometry` + `postretro-material` | 1 | cpu | low | (Task 4 type-homes) |
+| `s3` | `postretro-level-loader` | 1 | cpu | medium | Tasks 4–5 |
+| `s4` | `postretro-visibility` | 1 | cpu | medium | Task 3 |
+| `s5` | `postretro-lighting` (cpu-math) | 2 | cpu | medium | — |
+| `s6` | `postretro-ui` | 2 | cpu | medium | Task 6 (superseded) |
+| `s7` | `postretro-render-cpu` | 2 | cpu | medium | (audit Tasks 6–7) |
+| `s8` | `postretro-renderer` | 3 | gpu | high | the deferred renderer split |
+
+The full verification gate (Global ACs) runs after every spec; the milestone testable outcomes above are the checkpoints where it must hold cleanly before the next milestone opens.
 
 ## Cross-boundary contracts
 

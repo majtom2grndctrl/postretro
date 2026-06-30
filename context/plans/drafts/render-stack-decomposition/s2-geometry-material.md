@@ -33,4 +33,4 @@ New crate, move `geometry.rs`, widen any `pub(crate)` symbols crossing the bound
 Same for `material.rs`.
 
 ## Sequencing
-**Phase 1:** Tasks 1–2 independent; fan out. Epic Phase 2. Blocks `s3`/`s4`/`s7`/`s8`.
+**Phase 1:** Tasks 1–2 independent; fan out. Milestone 1. Blocks `s3`/`s4`/`s7`/`s8`.

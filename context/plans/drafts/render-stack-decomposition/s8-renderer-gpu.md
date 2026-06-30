@@ -40,4 +40,4 @@ Create the crate; move all wgpu render code + the GPU UI pass; wire deps on the 
 Introduce the handle type; rework `render_frame_indirect` and the splash path to return/consume it; move surface acquire/error handling behind it; update the binary present loop to `renderer.present(handle)`.
 
 ## Sequencing
-**Phase 1:** Task 1, then Task 2, then Task 3. Needs `s2`–`s7` (+ `model`). Epic Phase 5 (terminal). The full verification gate (invariant `rg`, `cargo tree` isolation across all crates, acyclicity, typedef drift, WGSL) runs here.
+**Phase 1:** Task 1, then Task 2, then Task 3. Needs `s2`–`s7` (+ `model`). Milestone 3 (terminal). The full verification gate (invariant `rg`, `cargo tree` isolation across all crates, acyclicity, typedef drift, WGSL) runs here.

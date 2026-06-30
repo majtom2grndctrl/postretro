@@ -44,4 +44,4 @@ Create the crate, move the CPU subtree + `UiTexture`, wire deps, update all cons
 glyphon's CPU `FontSystem` is co-located with its GPU atlas in `UiTextRenderer`, and the retained gameplay-tree measure closure needs it. Decide ownership: `postretro-ui` owns the `FontSystem` and the renderer's `UiTextRenderer` borrows it, or a thin renderer-side shim. The CPU `measure_run`/`build_font_system` path must stay in `postretro-ui`.
 
 ## Sequencing
-**Phase 1:** Task 1, then Task 2, then Task 3. Needs `s1` (UiCaptureMode inversion). Independent of `s2`–`s5`. Epic Phase 2.
+**Phase 1:** Task 1, then Task 2, then Task 3. Needs `s1` (UiCaptureMode inversion). Independent of `s2`–`s5`. Milestone 2.

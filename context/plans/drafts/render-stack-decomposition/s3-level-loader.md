@@ -30,4 +30,4 @@ Extract runtime PRL loading and runtime level data into a CPU-only crate so edit
 Create the crate, move `prl.rs`/`prl_loader.rs`, wire deps on `geometry`/`material`/`level-format`, widen boundary-crossing `pub(crate)` to `pub`, update importers. `prl.rs` is ~4279 lines but already split with `prl_loader.rs` — if a further split is needed to keep the move clean, do it as a behavior-preserving step first (split-before-extend).
 
 ## Sequencing
-**Phase 1:** Task 1. Needs `s2` (`geometry`+`material`). Epic Phase 3; blocks `s4` and `s7`.
+**Phase 1:** Task 1. Needs `s2` (`geometry`+`material`). Milestone 1; blocks `s4` and `s7`.

@@ -284,6 +284,26 @@ Turn multiplayer foundations, enemies, combat, and optional movers into authored
 
 ---
 
+## Epic 19: Render-Stack Decomposition
+
+Break the rendering runtime and the heavy CPU/GPU modules around it out of the `postretro` binary into a correct, one-way crate graph, so routine engine edits stop recompiling the wgpu stack and the renderer becomes a real boundary. **North star:** `wgpu` lives only in a `postretro-renderer` crate — no other crate, and not the binary, touches it — and editing the level/visibility/lighting/UI CPU stack recompiles neither wgpu nor the scripting VMs. This is the render-side analog of the engine-data floor (`scripting.md` §12), and the reference decomposition pattern the Epic 16 combat crate mirrors.
+
+Unlike the gameplay epics, the testable outcomes here are **developer-facing** — measured warm-edit deltas, `cargo tree` isolation, and the "Renderer owns GPU" invariant holding by construction — not new player-visible capability. This is an infrastructure track, deliberately roadmapped (the engine-data floor and scripting-core extraction shipped as loose drafts through trial and error; this one is sequenced up front so the safety/speed tradeoff is explicit and reviewable). Each milestone is a shippable checkpoint: the build stays green and behavior-preserving at every boundary, so the epic can pause after any milestone without a half-migrated tree.
+
+**Build shape.** End-state-first: the full target crate graph is designed up front (in the spec set), then extracted in dependency order. Within a milestone, independent crate extractions fan out in parallel (worktree-isolated); between milestones a verification gate fires. The lower CPU floor (visibility, PRL loader) folds in and supersedes the earlier `compile-time-reduction` draft. The terminal renderer crate absorbs the GPU modules that today live *outside* `render/` (cull pipelines, lighting shadow/lightmap pools) so the invariant holds within one crate, and hides `wgpu::SurfaceTexture` behind an opaque present handle.
+
+**Prerequisite:** none hard — a parallel infrastructure track. Recommended **before** extracting the Epic 16 combat crate, since it sets the crate-boundary conventions that work mirrors. Builds on the shipped engine-data floor (`scripting.md` §12).
+
+Spec set drafted in `context/plans/drafts/render-stack-decomposition/` (epic index + `research.md` + specs `s0`–`s8`). Milestones ship in this sequence (seam-first, not a strict chain):
+
+- [ ] **Milestone 1 — CPU runtime floor.** `postretro-geometry` / `-material` / `-level-loader` / `-visibility` become crates; a compile-time baseline + dev Cargo config land first. Specs `s0`–`s4`. **Outcome:** editing the level/visibility/geometry CPU stack recompiles no wgpu/VM; the baseline quantifies the warm-edit win.
+- [ ] **Milestone 2 — Sever scripting / UI / CPU-math from the renderer.** `postretro-lighting` (cpu-math), `postretro-ui`, `postretro-render-cpu` become crates; the `scripting → render` dependency edge is cut. Specs `s5`–`s7`. **Outcome:** `scripting` no longer imports `render`; UI / lighting-math / render-CPU recompile off the wgpu path.
+- [ ] **Milestone 3 — Renderer crate.** `postretro-renderer` absorbs all wgpu (including the stray cull + lighting-GPU modules) and hides `SurfaceTexture` behind an opaque present handle. Spec `s8`, landed solo as the integration surface. **Outcome:** wgpu lives in exactly one crate; no consumer touches it.
+
+**Testable outcome:** `wgpu` appears in exactly one crate (`postretro-renderer`); `cargo tree` proves every other new crate is wgpu/VM-free on default features; editing a CPU-floor crate and running its tests does not recompile the GPU/VM stack; the engine builds, all tests pass, and a fixture map renders identically — the decomposition is behavior-preserving end to end.
+
+---
+
 ## Future / Speculative
 
 Features below are intended but not yet sequenced. Rough priority ordering within each group.

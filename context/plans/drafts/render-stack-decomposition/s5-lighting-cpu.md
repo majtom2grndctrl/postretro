@@ -33,4 +33,4 @@ Create the crate, move the four wgpu-free files + their constants, widen boundar
 **Open question 1.** Per `scripting.md §12` handler placement, script-primitive *wiring* co-locates with its subsystem and is invoked from `Session::build` — default: `lighting/script_primitives.rs` stays binary-side, calling into `postretro-lighting`. Alternative: move it into `postretro-lighting` behind a `script-ffi` feature. Pick one; if it stays binary-side, this task is just confirming it compiles against the new crate.
 
 ## Sequencing
-**Phase 1:** Task 1, then Task 2 (placement confirmation). Largely independent; needs `s2` only if `cone_frustum` references geometry types. Epic Phase 2.
+**Phase 1:** Task 1, then Task 2 (placement confirmation). Largely independent; needs `s2` only if `cone_frustum` references geometry types. Milestone 2.

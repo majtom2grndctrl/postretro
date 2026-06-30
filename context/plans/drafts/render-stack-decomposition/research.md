@@ -1,6 +1,6 @@
 # Research — render-stack decomposition
 
-Source-grounded findings (confirmed against `crates/postretro/src` on the `claude/merge-scripting-boundary-hardening-p4s369` branch). Feeds `index.md` and the sub-specs; not the spec contract. Produced by a discovery team: 9 cluster-mapping agents + 1 boundary census + synthesis, then 3 targeted grounding passes.
+Source-grounded findings (confirmed against `crates/postretro/src` on the `claude/merge-scripting-boundary-hardening-p4s369` branch). Feeds `index.md` and the specs; not the spec contract. Produced by a discovery team: 9 cluster-mapping agents + 1 boundary census + synthesis, then 3 targeted grounding passes.
 
 ## Why this plan exists
 

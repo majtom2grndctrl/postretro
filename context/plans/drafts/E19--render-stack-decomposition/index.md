@@ -10,7 +10,7 @@ Decompose the `postretro` binary's rendering runtime and the heavy CPU/GPU modul
 
 ## Scoping philosophy — build more right faster
 
-Scope to the **correct end-state crate graph**, not a locally-safe first slice. Keep only ordering the compiler/dependency graph forces; everything else fans out in parallel (worktree-isolated). Because incremental human checkpoints are removed, **replace them with verification**: every spec proves correctness by construction (`cargo tree` isolation, acyclicity-by-compile, typedef-drift byte-identity, WGSL byte-layout tests, behavior-preservation), not by reviewer trust. A split that does not measurably improve its targeted edit loop pauses the structural phases for re-evaluation.
+Scope to the **correct end-state crate graph**, not a locally-safe first slice. Build the specs **sequentially in dependency order** — one spec per `/orchestrate` run, lowest crate first. Each extraction re-points shared call sites and edits the workspace, so concurrent extractions conflict; and each landed spec moves files and re-points imports, so the next spec must be **re-grounded against the live tree** right before it's built (see **Execution model**). Because incremental human checkpoints are removed, **replace them with verification**: every spec proves correctness by construction (`cargo tree` isolation, acyclicity-by-compile, typedef-drift byte-identity, WGSL byte-layout tests, behavior-preservation), not by reviewer trust. A split that does not measurably improve its targeted edit loop pauses the structural phases for re-evaluation.
 
 ## Scope
 
@@ -76,21 +76,34 @@ One-way edges, top depends on bottom. New crates marked `*`. Existing data floor
 
 ## Milestones
 
-Three milestones, each a shippable checkpoint with a developer-facing testable outcome — the **safety** boundary: the build stays green and behavior-preserving at every milestone, so the epic can pause after any one without a half-migrated tree. Within a milestone, independent specs fan out in parallel worktrees — the **speed**. Milestones are seam-first, not a strict chain: Milestone 2's lighting/UI tracks may start once their deps land, overlapping Milestone 1's tail.
+Three milestones, each a shippable checkpoint with a developer-facing testable outcome — the **safety** boundary: the build stays green and behavior-preserving at every milestone, so the epic can pause after any one without a half-migrated tree. Within a milestone, specs are built **one at a time in dependency order**, each re-grounded against the live tree just before it's built (see **Execution model**). Milestones are seam-first, not a strict chain: Milestone 2's lighting/UI tracks may start once their deps land, overlapping Milestone 1's tail.
 
 ### Milestone 1 — CPU runtime floor
 **Specs:** `E19--baseline-and-cargo-config`, `E19--leaf-hygiene-and-boundary-prep`, `E19--render-data`, `E19--level-loader`, `E19--visibility`, `E19--model`.
-**Order:** `E19--baseline-and-cargo-config` + `E19--leaf-hygiene-and-boundary-prep` parallel; then `E19--render-data`; then `E19--level-loader` (needs `E19--render-data`); then `E19--visibility` (needs `E19--level-loader` + `E19--render-data`). `E19--model` is an independent low-risk CPU prerequisite — fans out in parallel (needs only `E19--render-data` if it references render-data types). `E19--leaf-hygiene-and-boundary-prep` also unblocks `E19--ui`.
+**Order:** `E19--baseline-and-cargo-config` + `E19--leaf-hygiene-and-boundary-prep` (may pair only if file-disjoint, e.g. baseline + leaf-hygiene); then `E19--render-data`; then `E19--level-loader` (needs `E19--render-data`); then `E19--visibility` (needs `E19--level-loader` + `E19--render-data`). `E19--model` is an independent low-risk CPU prerequisite, slotted in where the order allows (needs only `E19--render-data` if it references render-data types). `E19--leaf-hygiene-and-boundary-prep` also unblocks `E19--ui`.
 **Testable outcome:** `postretro-render-data`, `postretro-level-loader`, `postretro-visibility`, `postretro-model` are workspace crates; editing any and running its tests recompiles no `wgpu`/`naga`/`winit`/VM crate; the `E19--baseline-and-cargo-config` baseline shows the warm-edit win on a `prl.rs`/`portal_vis.rs` touch; `cargo build --workspace` + `cargo test --workspace` green.
 
 ### Milestone 2 — Sever scripting / UI / CPU-math from the renderer
 **Specs:** `E19--lighting-cpu`, `E19--ui`, `E19--render-cpu`.
-**Order:** `E19--lighting-cpu` and `E19--ui` independent (parallel; `E19--ui` needs `E19--leaf-hygiene-and-boundary-prep`); `E19--render-cpu` after `E19--render-data` / `E19--level-loader` / `E19--lighting-cpu`. May overlap Milestone 1's tail.
+**Order:** `E19--lighting-cpu` and `E19--ui` are independent (`E19--ui` needs `E19--leaf-hygiene-and-boundary-prep`) — build either order, or pair only if file-disjoint; `E19--render-cpu` after `E19--render-data` / `E19--level-loader` / `E19--lighting-cpu`. May overlap Milestone 1's tail.
 **Testable outcome:** `rg "use crate::render" crates/postretro/src/scripting` is empty — the `scripting → render` edge is gone; `postretro-ui`/`-lighting`/`-render-cpu` are crates whose tests recompile no `wgpu`/`naga`; the WGSL byte-layout guards and the typedef drift test stay green.
 
 ### Milestone 3 — Renderer crate (invariant restored)
-**Spec:** `E19--renderer-gpu`. **Lands solo** as the integration surface (the Epic 17-A wave rule — do not bundle it into a multi-spec wave).
+**Spec:** `E19--renderer-gpu`. **Built last, solo** as the integration surface — never paired with another spec.
 **Testable outcome:** `rg wgpu` is empty across every crate except `postretro-renderer` (and the binary's thin present driver); no consumer of the renderer crate imports `wgpu`; `wgpu::SurfaceTexture` is absent from every engine-facing signature; behavior-preserving; the full verification gate (cargo-tree isolation, acyclicity, typedef drift, WGSL) is green.
+
+## Execution model
+
+Build the specs **sequentially in dependency order** — one spec per `/orchestrate` run, not waves. The cadence per spec:
+
+1. **Re-ground.** Run `review-draft-spec`'s codebase-anchor (source-grounding) lens against the *then-current* tree. Discovery (`research.md`) was a point-in-time snapshot; every landed extraction moves files and re-points imports, so a spec's named identifiers and call-sites drift stale until re-grounded.
+2. **Update the spec** from the anchor findings.
+3. **Orchestrate** that one spec.
+4. **Verification gate** — the full Global ACs (cargo-tree isolation, acyclicity, typedef drift, WGSL) must hold before the next spec opens.
+
+Then the next spec, lowest crate first. **Don't deep-ground the later specs now** — they change as the lower crates land; ground each just before it's built (detail-on-open).
+
+**Parallelism is the exception.** It applies to the discovery/review phase (where it genuinely did) and to genuinely file-disjoint specs (e.g. baseline + leaf-hygiene). The renderer spec (`E19--renderer-gpu`) is built last and solo. Default is one spec at a time.
 
 ## Spec roster
 

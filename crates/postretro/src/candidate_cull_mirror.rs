@@ -24,8 +24,8 @@ use glam::Mat4;
 use std::collections::HashSet;
 
 use crate::candidate_cull::{GatherStatus, gather_candidate_leaves};
-use crate::compute_cull::extract_frustum_planes_for_gpu;
 use crate::geometry::{BucketRange, BvhLeaf, BvhTree};
+use crate::lighting::cone_frustum::extract_frustum_planes_for_gpu;
 use crate::prl::CellDrawIndex;
 use crate::visibility::VisibleCells;
 

@@ -59,7 +59,7 @@ fn count_submitted_tree_walk(
     visible: &VisibleCells,
     view_proj: &Mat4,
 ) -> u32 {
-    let planes = crate::compute_cull::extract_frustum_planes_for_gpu(view_proj);
+    let planes = crate::lighting::cone_frustum::extract_frustum_planes_for_gpu(view_proj);
     leaves
         .iter()
         .filter(|leaf| {
@@ -87,7 +87,7 @@ fn count_submitted_candidates(
     candidate_leaves: &[u32],
     view_proj: &Mat4,
 ) -> u32 {
-    let planes = crate::compute_cull::extract_frustum_planes_for_gpu(view_proj);
+    let planes = crate::lighting::cone_frustum::extract_frustum_planes_for_gpu(view_proj);
     candidate_leaves
         .iter()
         .filter_map(|&leaf| leaves.get(leaf as usize))

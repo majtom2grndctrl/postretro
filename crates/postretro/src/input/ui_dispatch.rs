@@ -42,6 +42,7 @@
 //! they share this contract.
 
 use super::ui_nav::NavIntent;
+use postretro_scripting_core::ui::descriptor::CaptureMode;
 
 /// Whether the active UI layer captures input events or lets them pass through to
 /// gameplay. The active gameplay UI descriptor sets the mode via `set_mode`. The
@@ -59,6 +60,18 @@ pub enum UiCaptureMode {
     /// forwarding behaves exactly as before this seam existed.
     #[default]
     Passthrough,
+}
+
+/// Resolve a descriptor-side `CaptureMode` (wire/envelope form) into the input
+/// subsystem's `UiCaptureMode` (the seam form the modal stack drives). The two
+/// enums are kept separate so the descriptor module carries no input dependency.
+impl From<CaptureMode> for UiCaptureMode {
+    fn from(mode: CaptureMode) -> Self {
+        match mode {
+            CaptureMode::Capture => UiCaptureMode::Capture,
+            CaptureMode::Passthrough => UiCaptureMode::Passthrough,
+        }
+    }
 }
 
 /// The outcome of dispatching one event through the seam.

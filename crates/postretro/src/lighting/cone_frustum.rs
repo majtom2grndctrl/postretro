@@ -3,12 +3,10 @@
 // utilities: transformed enclosure, from_points, empty/expand, Pod/Zeroable —
 // shared by both the cone-cull and entity bind-pose cull paths.
 //
-// See: context/lib/rendering_pipeline.md §7.1 · context/plans/in-progress/shadow-cone-cull/
+// See: context/lib/rendering_pipeline.md §7.1
 
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3, Vec4};
-
-use crate::compute_cull::extract_frustum_planes_for_gpu;
 
 /// Axis-aligned bounding box. World-space at the cone-cull sites; LOCAL (model)
 /// space when carried as a per-model bound on a skinned mesh (see
@@ -21,7 +19,7 @@ use crate::compute_cull::extract_frustum_planes_for_gpu;
 /// feature makes `Vec3` Pod). `#[repr(C)]` pins the `min`-then-`max` layout.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Default, Pod, Zeroable)]
-pub(crate) struct Aabb {
+pub struct Aabb {
     pub min: Vec3,
     pub max: Vec3,
 }
@@ -86,16 +84,62 @@ impl Aabb {
 /// view-projection matrix (the one `light_space_matrix()` returns, with its
 /// `fov_y`/`far`/`near` clamps baked in).
 ///
-/// Delegates to `compute_cull::extract_frustum_planes_for_gpu` so the CPU
-/// cone-frustum path and the GPU BVH-cull path share one plane-extraction
-/// implementation. Convention (per that function, mirrored by the WGSL
+/// Delegates to [`extract_frustum_planes_for_gpu`] so the CPU cone-frustum path
+/// and the GPU BVH-cull path share one plane-extraction implementation.
+/// Convention (per that function, mirrored by the WGSL
 /// `is_aabb_outside_frustum`): 6 planes from the combined matrix rows —
-/// L,R,B,T,N,F = `r3+r0, r3-r0, r3+r1, r3-r1, r3+r2, r3-r2` — normalized,
+/// L,R,B,T,N,F = `r3+r0, r3-r0, r3+r1, r3-r1, r2, r3-r2` — normalized,
 /// emitted as `[nx,ny,nz,d]`; a point `p` is *outside* a plane when
 /// `dot(normal, p) + d < 0`.
-pub(crate) fn cone_frustum_planes(light_space_matrix: &Mat4) -> [Vec4; 6] {
+pub fn cone_frustum_planes(light_space_matrix: &Mat4) -> [Vec4; 6] {
     let raw = extract_frustum_planes_for_gpu(light_space_matrix);
     raw.map(|p| Vec4::new(p[0], p[1], p[2], p[3]))
+}
+
+/// Extract the 6 frustum planes from a combined view-projection matrix in the
+/// layout the cull WGSL (`bvh_cull.wgsl::is_aabb_outside_frustum`) consumes.
+///
+/// Convention: 6 planes from the combined matrix rows — L,R,B,T,N,F =
+/// `r3+r0, r3-r0, r3+r1, r3-r1, r2, r3-r2` — normalized, emitted as
+/// `[nx,ny,nz,d]`. Camera and shadow projections use WebGPU `[0, 1]` depth,
+/// so the near plane is `r2` (`z_clip >= 0`) while far remains `r3-r2`
+/// (`z_clip <= w_clip`). Inside-sign matches the WGSL: a point `p` is
+/// *outside* a plane when `dot(normal, p) + d < 0`.
+pub fn extract_frustum_planes_for_gpu(view_proj: &Mat4) -> [[f32; 4]; 6] {
+    let row = |n: usize| -> glam::Vec4 {
+        glam::Vec4::new(
+            view_proj.col(0)[n],
+            view_proj.col(1)[n],
+            view_proj.col(2)[n],
+            view_proj.col(3)[n],
+        )
+    };
+
+    let r0 = row(0);
+    let r1 = row(1);
+    let r2 = row(2);
+    let r3 = row(3);
+
+    let raw_planes = [
+        r3 + r0, // Left
+        r3 - r0, // Right
+        r3 + r1, // Bottom
+        r3 - r1, // Top
+        r2,      // Near, WebGPU z_clip >= 0
+        r3 - r2, // Far
+    ];
+
+    let mut gpu_planes = [[0.0f32; 4]; 6];
+    for (i, raw) in raw_planes.iter().enumerate() {
+        let normal = glam::Vec3::new(raw.x, raw.y, raw.z);
+        let length = normal.length();
+        if length > 0.0 {
+            let inv_len = 1.0 / length;
+            let n = normal * inv_len;
+            gpu_planes[i] = [n.x, n.y, n.z, raw.w * inv_len];
+        }
+    }
+    gpu_planes
 }
 
 /// Test an AABB against a 6-plane frustum, returning `true` when the box is
@@ -110,7 +154,7 @@ pub(crate) fn cone_frustum_planes(light_space_matrix: &Mat4) -> [Vec4; 6] {
 /// Shared by rank-time culling (Task 2, cone AABB vs. camera frustum) and the
 /// AC#2 unit test (cone planes vs. world AABB) — one CPU predicate, mirroring
 /// the GPU convention so both provably agree.
-pub(crate) fn aabb_intersects_frustum(aabb: &Aabb, planes: &[Vec4; 6]) -> bool {
+pub fn aabb_intersects_frustum(aabb: &Aabb, planes: &[Vec4; 6]) -> bool {
     for plane in planes {
         let normal = plane.truncate();
         let d = plane.w;
@@ -158,7 +202,7 @@ pub(crate) fn aabb_intersects_frustum(aabb: &Aabb, planes: &[Vec4; 6]) -> bool {
 /// called it in the forward path was removed (it could wrongly drop a shadow
 /// whose cone reached a camera-visible receiver — see `SpotShadowPool::rank_lights`).
 #[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn cone_enclosing_aabb(light_space_matrix: &Mat4) -> Aabb {
+pub fn cone_enclosing_aabb(light_space_matrix: &Mat4) -> Aabb {
     let inv = light_space_matrix.inverse();
 
     // 8 corners of the NDC cube: x,y in [-1, 1], z in [0, 1].
@@ -220,6 +264,40 @@ mod tests {
             cell_index: 0,
             shadow_type: crate::prl::ShadowType::StaticLightMap,
         }
+    }
+
+    fn matrix_row(m: &Mat4, n: usize) -> Vec4 {
+        Vec4::new(m.col(0)[n], m.col(1)[n], m.col(2)[n], m.col(3)[n])
+    }
+
+    fn normalized_plane(row: Vec4) -> [f32; 4] {
+        let normal = row.truncate();
+        let inv_len = 1.0 / normal.length();
+        let n = normal * inv_len;
+        [n.x, n.y, n.z, row.w * inv_len]
+    }
+
+    fn assert_plane_approx(actual: [f32; 4], expected: [f32; 4]) {
+        let eps = 1e-5_f32;
+        for i in 0..4 {
+            assert!(
+                (actual[i] - expected[i]).abs() < eps,
+                "plane component {i}: expected {}, got {}",
+                expected[i],
+                actual[i]
+            );
+        }
+    }
+
+    #[test]
+    fn extract_frustum_planes_for_gpu_uses_webgpu_zero_to_one_near_plane() {
+        let m = Mat4::perspective_rh(std::f32::consts::FRAC_PI_2, 1.0, 0.1, 10.0);
+        let planes = extract_frustum_planes_for_gpu(&m);
+
+        let r2 = matrix_row(&m, 2);
+        let r3 = matrix_row(&m, 3);
+        assert_plane_approx(planes[4], normalized_plane(r2));
+        assert_plane_approx(planes[5], normalized_plane(r3 - r2));
     }
 
     /// AC#2: a world AABB inside the cone is classified inside; one fully

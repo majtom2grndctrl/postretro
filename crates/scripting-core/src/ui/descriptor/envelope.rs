@@ -15,9 +15,9 @@ use super::{Role, Widget};
 /// wire form byte-identical (`skip_serializing_if` below). The app-side modal
 /// stack reads the TOP tree's mode to drive the input-dispatch seam and focus.
 ///
-/// This is the descriptor/wire twin of `input::UiCaptureMode`; the modal stack
-/// converts one to the other via `into()`. Kept separate so the descriptor module
-/// carries no input-subsystem dependency.
+/// Kept separate from the input subsystem's capture mode so the descriptor module
+/// carries no input dependency. App-side input dispatch resolves this descriptor
+/// value into the input seam's runtime mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum CaptureMode {

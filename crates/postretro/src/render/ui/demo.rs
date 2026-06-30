@@ -220,7 +220,6 @@ mod tests {
     /// the registry name matches what the App pushes.
     #[test]
     fn nav_menu_toggle_pushes_then_pops_the_pause_menu() {
-        use crate::input::UiCaptureMode;
         use crate::render::ui::modal_stack::ModalStack;
 
         let mut stack = ModalStack::new();
@@ -232,7 +231,7 @@ mod tests {
         );
 
         // No capturing tree up: gameplay keeps input.
-        assert_eq!(stack.top_capture_mode(), UiCaptureMode::Passthrough);
+        assert_eq!(stack.top_capture_mode(), CaptureMode::Passthrough);
         assert_ne!(stack.active_name(), Some(super::PAUSE_MENU_NAME));
 
         // First `nav.menu`: push the pause menu (it captures → menu focus).
@@ -240,14 +239,14 @@ mod tests {
         assert_eq!(stack.active_name(), Some(super::PAUSE_MENU_NAME));
         assert_eq!(
             stack.top_capture_mode(),
-            UiCaptureMode::Capture,
+            CaptureMode::Capture,
             "the pushed pause menu captures input",
         );
 
         // Second `nav.menu`: the menu is the top tree, so it pops back to gameplay.
         stack.pop();
         assert_ne!(stack.active_name(), Some(super::PAUSE_MENU_NAME));
-        assert_eq!(stack.top_capture_mode(), UiCaptureMode::Passthrough);
+        assert_eq!(stack.top_capture_mode(), CaptureMode::Passthrough);
     }
 
     /// The fallback pause menu has no controls; Escape / gamepad B / Start close

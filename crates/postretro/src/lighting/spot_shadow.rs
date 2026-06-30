@@ -892,7 +892,7 @@ mod tests {
         let cone_aabb =
             crate::lighting::cone_frustum::cone_enclosing_aabb(&light_space_matrix(&lights[0]));
         let planes: [glam::Vec4; 6] =
-            crate::compute_cull::extract_frustum_planes_for_gpu(&pitched_down)
+            crate::lighting::cone_frustum::extract_frustum_planes_for_gpu(&pitched_down)
                 .map(|p| glam::Vec4::new(p[0], p[1], p[2], p[3]));
         assert!(
             !crate::lighting::cone_frustum::aabb_intersects_frustum(&cone_aabb, &planes),

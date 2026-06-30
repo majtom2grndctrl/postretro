@@ -114,7 +114,7 @@ pub struct VisibilityResult {
 
 /// A plane in Hessian normal form: dot(normal, point) + dist >= 0 for points on the inside.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct FrustumPlane {
+pub struct FrustumPlane {
     pub normal: Vec3,
     pub dist: f32,
 }
@@ -125,7 +125,7 @@ pub(crate) struct FrustumPlane {
 /// left/right/bottom/top/near/far order. After portal traversal narrows the
 /// frustum, it may contain more planes (one per portal edge plus near/far).
 #[derive(Debug, Clone)]
-pub(crate) struct Frustum {
+pub struct Frustum {
     pub planes: Vec<FrustumPlane>,
 }
 
@@ -168,7 +168,7 @@ impl Frustum {
 /// Uses the Griess-Hartmann method for a right-handed projection:
 /// each plane is a combination of rows from the 4x4 matrix. The resulting
 /// planes point inward (a point satisfying all six is inside the frustum).
-pub(crate) fn extract_frustum_planes(view_proj: Mat4) -> Frustum {
+pub fn extract_frustum_planes(view_proj: Mat4) -> Frustum {
     // glam stores matrices column-major. To get row N, we read element N from each column.
     let row = |n: usize| -> Vec4 {
         Vec4::new(

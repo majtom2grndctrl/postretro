@@ -65,14 +65,12 @@ use wgpu::util::DeviceExt;
 use winit::window::Window;
 
 use crate::compute_cull::ComputeCullPipeline;
-use crate::geometry::BvhTree;
 use crate::lighting::chunk_list::ChunkGrid;
 use crate::lighting::influence::{self, LightInfluence};
 use crate::lighting::lightmap::LightmapResources;
 use crate::lighting::spec_buffer::{SPEC_LIGHT_SIZE, pack_spec_lights};
 use crate::lighting::spot_shadow::SpotShadowPool;
 use crate::lighting::{GPU_LIGHT_SIZE, pack_lights, pack_lights_with_slots_into};
-use crate::material::Material;
 use crate::prl::MapLight;
 use crate::render::loaded_texture::{
     LoadedTexture, load_model_diffuse_texture, load_textures, placeholder_loaded_texture,
@@ -81,6 +79,8 @@ use crate::visibility::{CameraCullVisibility, VisibilityPath, VisibleCells};
 use postretro_level_format::alpha_lights::ALPHA_LIGHT_LEAF_UNASSIGNED;
 use postretro_level_format::fog_cell_masks::union_active_mask;
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
+use postretro_render_data::geometry::BvhTree;
+use postretro_render_data::material::Material;
 
 use fog_pass::FogPass;
 use frame_timing::FrameTiming;

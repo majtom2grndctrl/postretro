@@ -24,7 +24,7 @@ fn mip_lod_max_clamp_derivation() {
 #[test]
 fn cast_world_vertices_roundtrips() {
     let input = vec![
-        crate::geometry::WorldVertex {
+        postretro_render_data::geometry::WorldVertex {
             position: [1.0, 2.0, 3.0],
             base_uv: [0.5, 0.75],
             normal_oct: [32768, 32768],
@@ -32,7 +32,7 @@ fn cast_world_vertices_roundtrips() {
             lightmap_uv: [100, 200],
             lightmap_layer: 0,
         },
-        crate::geometry::WorldVertex {
+        postretro_render_data::geometry::WorldVertex {
             position: [4.0, 5.0, 6.0],
             base_uv: [0.25, 0.125],
             normal_oct: [0, 32768],

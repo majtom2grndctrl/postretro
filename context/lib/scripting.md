@@ -217,7 +217,9 @@ Both preludes are baked at compile time. SDK library changes require an engine r
 
 CLI: `scripts-build --in <entry.ts> --out <output.js>`
 
-Debug builds auto-compile at startup: any `.ts` with a same-stem `.js` sibling is recompiled before the engine loads it. `prl-build` also compiles the map's entry script (worldspawn `script` KVP) at map compile time so distribution maps ship with compiled scripts.
+The canonical development launch path is `cargo run -p xtask -- run [postretro args...]`. It builds the `scripts-build` sidecar first, then launches the engine. Raw `cargo run -p postretro -- ...` is a lower-level engine run and assumes the sidecar is already present and fresh.
+
+Debug builds auto-compile at startup when `scripts-build` is available: any `.ts` with a same-stem `.js` sibling is recompiled before the engine loads it. Runtime sidecar detection is pure — the running engine does not invoke Cargo to build `scripts-build`. If the sidecar is missing, TS startup compilation and TS hot reload log clear diagnostics and degrade/fail through the same paths as other missing compiler cases; `.luau` hot reload still works. `prl-build` also compiles the map's entry script (worldspawn `script` KVP) at map compile time so distribution maps ship with compiled scripts.
 
 Does not type-check. Use `tsc --noEmit` separately.
 

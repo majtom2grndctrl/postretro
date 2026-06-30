@@ -19,11 +19,9 @@ mod collision;
 mod compute_cull;
 mod frame_timing;
 mod fx;
-mod geometry;
 mod health;
 mod input;
 mod lighting;
-mod material;
 mod model;
 mod movement;
 // The runtime nav graph is built in every build whenever a level carries a
@@ -5447,7 +5445,13 @@ mod tests {
             return path;
         }
         let status = std::process::Command::new(env!("CARGO"))
-            .args(["build", "-p", "postretro-script-compiler"])
+            .args([
+                "build",
+                "-p",
+                "postretro-script-compiler",
+                "--bin",
+                "scripts-build",
+            ])
             .status()
             .expect("cargo build scripts-build");
         assert!(status.success(), "failed to build scripts-build");

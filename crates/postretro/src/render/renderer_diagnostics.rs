@@ -24,14 +24,17 @@ fn stable_bvh_cell_color(cell_id: u32) -> [u8; 4] {
 }
 
 #[cfg(any(feature = "dev-tools", test))]
-fn bvh_overlay_color(leaf: &crate::geometry::BvhLeaf, color_mode: BvhOverlayColorMode) -> [u8; 4] {
+fn bvh_overlay_color(
+    leaf: &postretro_render_data::geometry::BvhLeaf,
+    color_mode: BvhOverlayColorMode,
+) -> [u8; 4] {
     match color_mode {
         BvhOverlayColorMode::CellId => stable_bvh_cell_color(leaf.cell_id),
     }
 }
 
 #[cfg(any(feature = "dev-tools", test))]
-fn bvh_leaf_aabb(leaf: &crate::geometry::BvhLeaf) -> (Vec3, Vec3) {
+fn bvh_leaf_aabb(leaf: &postretro_render_data::geometry::BvhLeaf) -> (Vec3, Vec3) {
     (
         Vec3::from_array(leaf.aabb_min),
         Vec3::from_array(leaf.aabb_max),
@@ -115,7 +118,7 @@ fn portal_edges(portal: &crate::prl::PortalData) -> Vec<(Vec3, Vec3)> {
 
 #[cfg(any(feature = "dev-tools", test))]
 pub(crate) fn select_bvh_overlay_leaf_indices(
-    leaves: &[crate::geometry::BvhLeaf],
+    leaves: &[postretro_render_data::geometry::BvhLeaf],
     budget: BvhOverlayBudget,
     visible_cells: Option<&[bool]>,
 ) -> Vec<usize> {
@@ -145,7 +148,7 @@ pub(crate) fn select_bvh_overlay_leaf_indices(
 
 #[cfg(feature = "dev-tools")]
 pub(super) fn emit_bvh_overlay(
-    leaves: &[crate::geometry::BvhLeaf],
+    leaves: &[postretro_render_data::geometry::BvhLeaf],
     state: BvhOverlayState,
     visible_cells: Option<&[bool]>,
     lines: &mut super::debug_lines::DebugLineRenderer,
@@ -553,8 +556,8 @@ impl Renderer {
 mod tests {
     use super::*;
 
-    fn leaf(cell_id: u32) -> crate::geometry::BvhLeaf {
-        crate::geometry::BvhLeaf {
+    fn leaf(cell_id: u32) -> postretro_render_data::geometry::BvhLeaf {
+        postretro_render_data::geometry::BvhLeaf {
             aabb_min: [0.0, 0.0, 0.0],
             material_bucket_id: 0,
             aabb_max: [1.0, 1.0, 1.0],
@@ -655,7 +658,7 @@ mod tests {
 
     #[test]
     fn bvh_leaf_aabb_converts_prl_arrays_to_renderer_vectors() {
-        let leaf = crate::geometry::BvhLeaf {
+        let leaf = postretro_render_data::geometry::BvhLeaf {
             aabb_min: [-1.0, 2.0, 3.5],
             material_bucket_id: 0,
             aabb_max: [4.0, 5.25, 6.0],

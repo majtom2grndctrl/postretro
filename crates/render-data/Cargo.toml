@@ -1,0 +1,11 @@
+[package]
+name = "postretro-render-data"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "CPU render data and geometry math shared by Postretro crates"
+license.workspace = true
+
+[dependencies]
+glam.workspace = true
+bytemuck.workspace = true

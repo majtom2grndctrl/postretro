@@ -108,7 +108,7 @@ impl Renderer {
             )
         } else {
             (
-                vec![0u8; crate::geometry::WorldVertex::STRIDE],
+                vec![0u8; postretro_render_data::geometry::WorldVertex::STRIDE],
                 vec![0u8; 4],
                 0u32,
             )
@@ -305,7 +305,7 @@ impl Renderer {
 
         let lightmap_bgl = crate::lighting::lightmap::bind_group_layout(device);
         let animated_lm_debug = animated_lightmap::AnimatedLmDebugConfig::from_env();
-        let bvh_leaves: Vec<crate::geometry::BvhLeaf> = geometry.bvh.leaves.clone();
+        let bvh_leaves: Vec<postretro_render_data::geometry::BvhLeaf> = geometry.bvh.leaves.clone();
         // Match the animated atlas to the static lightmap atlas the same way the
         // constructor does — one resolver, one device limit, guaranteed-equal
         // dimensions (see `usable_atlas_dimensions`).

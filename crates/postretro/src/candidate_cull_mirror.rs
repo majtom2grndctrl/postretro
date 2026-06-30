@@ -24,10 +24,10 @@ use glam::Mat4;
 use std::collections::HashSet;
 
 use crate::candidate_cull::{GatherStatus, gather_candidate_leaves};
-use crate::geometry::{BucketRange, BvhLeaf, BvhTree};
-use crate::lighting::cone_frustum::extract_frustum_planes_for_gpu;
 use crate::prl::CellDrawIndex;
 use crate::visibility::VisibleCells;
+use postretro_render_data::cone_frustum::extract_frustum_planes_for_gpu;
+use postretro_render_data::geometry::{BucketRange, BvhLeaf, BvhTree};
 
 use postretro_level_format::cell_draw_index::{CellDrawIndexSection, Span};
 

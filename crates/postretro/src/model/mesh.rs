@@ -3,7 +3,7 @@
 
 use bytemuck::{Pod, Zeroable};
 
-use crate::lighting::cone_frustum::Aabb;
+use postretro_render_data::cone_frustum::Aabb;
 
 /// Maximum joints addressable by a single skeleton / bone palette run. The
 /// `joints` indices on [`SkinnedVertex`] are `u8`, so 256 is the hard ceiling
@@ -14,7 +14,7 @@ pub const MAX_JOINTS: usize = 256;
 /// wgpu vertex layout from these field widths later (the renderer owns GPU; this
 /// module never touches wgpu).
 ///
-/// Encoding mirrors `crate::geometry::WorldVertex`: octahedral normal/tangent in
+/// Encoding mirrors `postretro_render_data::geometry::WorldVertex`: octahedral normal/tangent in
 /// `u16 x 2`, UV quantized to `u16 x 2`. The skinning attributes (`joints`,
 /// `weights`) are appended; weights are `u8` normalized 0..255 → 0..1 in the
 /// vertex shader.

@@ -128,7 +128,7 @@ import {
 import { buildMainMenu } from "./ui/main-menu";
 
 // Launch into this mod's frontend (no map arg):
-//   cargo run -p postretro -- --mod content/mods/my-campaign
+//   cargo run -p xtask -- run --mod content/mods/my-campaign
 export default defineMod({
   name: "My Campaign",
   entities,

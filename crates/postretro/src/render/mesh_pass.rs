@@ -813,7 +813,7 @@ pub struct MeshPass {
     /// `UploadedModel`, which stays GPU-only) so the GPU-free frame planner can
     /// stamp each `PlannedInstance` with its model's bound for the CPU per-light
     /// caster cull — the renderer's GPU draw never reads it.
-    model_bounds: HashMap<ModelHandle, crate::lighting::cone_frustum::Aabb>,
+    model_bounds: HashMap<ModelHandle, postretro_render_data::cone_frustum::Aabb>,
 
     /// Per-model animation clips, keyed by handle, in glTF (authored) index
     /// order — the FULL clip set parsed from the document, not just the first.
@@ -1897,7 +1897,7 @@ impl JointCounts for MeshPass {
             .map(|m| m.skeleton.joints.len() as u32)
     }
 
-    fn model_bounds(&self, model: &ModelHandle) -> crate::lighting::cone_frustum::Aabb {
+    fn model_bounds(&self, model: &ModelHandle) -> postretro_render_data::cone_frustum::Aabb {
         self.model_bounds.get(model).copied().unwrap_or_default()
     }
 }

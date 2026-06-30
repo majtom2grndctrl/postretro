@@ -60,7 +60,7 @@ impl Renderer {
             let material = texture_materials
                 .get(idx)
                 .copied()
-                .unwrap_or(crate::material::Material::Default);
+                .unwrap_or(postretro_render_data::material::Material::Default);
             let bind_group = build_material_bind_group(
                 device,
                 &full.texture_bind_group_layout,
@@ -85,7 +85,7 @@ impl Renderer {
                 &full.texture_bind_group_layout,
                 &placeholder,
                 aniso_sampler,
-                crate::material::Material::Default,
+                postretro_render_data::material::Material::Default,
                 "Placeholder Material",
             );
             full.loaded_textures = vec![placeholder];

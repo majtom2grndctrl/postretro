@@ -10,6 +10,7 @@ Extract the wgpu-free model subtree (CPU glTF loader, skinned-mesh / skeleton / 
 
 ### In scope
 - `postretro-model`: move `crates/postretro/src/model/` — the CPU glTF loader and its data types: `ModelHandle`, `SkinnedMesh`, the skeleton / animation / `sample_params` types, and `gltf_loader`. Confirmed wgpu-free by contract.
+- Expose mesh local-space bounds as an intentional public contract. Renderer upload consumes the bound for CPU-side mesh planning/culling across the crate boundary.
 - Depend on `postretro-render-data` if it references those types (confirm at implementation), `glam`, and the glTF deps the loader already uses.
 - Update consumers to import from `postretro-model`.
 
@@ -22,12 +23,13 @@ Inherits the epic global acceptance criteria — see `E19--render-stack-decompos
 - [ ] Crate is a workspace member; `cargo build --workspace` + `cargo test --workspace` pass; loader/skeleton/animation tests pass from their relocated home.
 - [ ] `cargo tree -p postretro-model` shows no `wgpu`/`winit`/`glyphon`/`kira`.
 - [ ] `postretro-renderer` depends on `postretro-model`; no `wgpu` appears in the model crate.
+- [ ] Renderer upload can read each `SkinnedMesh` local-space bound through an explicit public API or field; no same-crate visibility or accidental broad public data is required.
 - [ ] Editing `postretro-model` does not recompile `wgpu`/`naga`.
 
 ## Tasks
 
 ### Task 1: Extract postretro-model
-Create the crate, move `model/`, widen boundary symbols, wire deps (`postretro-render-data` if referenced), update consumers.
+Create the crate, move `model/`, widen boundary symbols, wire deps (`postretro-render-data` if referenced), update consumers. Make mesh bounds part of the public model API used by renderer upload.
 
 ## Decision
 

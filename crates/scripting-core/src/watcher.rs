@@ -80,6 +80,8 @@ pub enum TsCompilerPath {
 impl TsCompilerPath {
     /// Run the detection cascade. Returns `None` if nothing was found; the
     /// watcher still starts but `.ts` files fail to reload with a clear message.
+    /// This probe is intentionally side-effect-free: development launchers own
+    /// building `scripts-build` before the engine starts.
     ///
     /// **Order:**
     ///
@@ -97,37 +99,7 @@ impl TsCompilerPath {
             .ok()
             .and_then(|p| p.parent().map(Path::to_path_buf));
         let path_var = std::env::var_os("PATH");
-        let path = Self::detect_with(exe_dir.as_deref(), path_var.as_deref());
-
-        let needs_build = match &path {
-            None => true,
-            Some(p) => p.is_stale(),
-        };
-
-        if needs_build {
-            info!("[Scripting] `scripts-build` is missing or stale. Compiling via cargo...");
-            let mut cmd = std::process::Command::new("cargo");
-            cmd.arg("build").arg("-p").arg("postretro-script-compiler");
-            match cmd.status() {
-                Ok(status) if status.success() => {
-                    info!("[Scripting] `scripts-build` compiled successfully.");
-                    return Self::detect_with(exe_dir.as_deref(), path_var.as_deref());
-                }
-                Ok(status) => {
-                    error!(
-                        "[Scripting] Failed to compile `scripts-build`: exit code {}",
-                        status
-                    );
-                }
-                Err(err) => {
-                    error!(
-                        "[Scripting] Failed to spawn cargo build for `scripts-build`: {}",
-                        err
-                    );
-                }
-            }
-        }
-        path
+        Self::detect_with(exe_dir.as_deref(), path_var.as_deref())
     }
 
     /// Test-visible core of [`detect`]. Separate from process-global env so
@@ -183,17 +155,18 @@ impl TsCompilerPath {
     /// binary — hot reload then breaks silently while the game boots fine.
     ///
     /// The compiler source dir is found via `CARGO_MANIFEST_DIR` (baked at
-    /// engine compile time = `crates/postretro`); its sibling holds the
-    /// compiler. That baked path only exists on the dev checkout that compiled
-    /// the engine — exactly where the footgun lives. Anything missing or
-    /// unreadable (e.g. a shipped distribution) skips silently: this is a
-    /// best-effort heuristic, never a startup gate.
+    /// scripting-core compile time); its sibling holds the compiler. That baked
+    /// path only exists on the dev checkout that compiled the engine — exactly
+    /// where the footgun lives. Anything missing or unreadable (e.g. a shipped
+    /// distribution) skips silently: this is a best-effort heuristic, never a
+    /// startup gate.
     pub fn warn_if_stale(&self) {
         if self.is_stale() {
             warn!(
                 "[Scripting] `scripts-build` looks stale (older than its source). \
-                 `cargo run -p postretro` does not rebuild the sidecar — hot reload \
-                 may silently fail. Rebuild it: `cargo build -p postretro-script-compiler`."
+                 raw `cargo run -p postretro` does not rebuild the sidecar — hot reload \
+                 may silently fail. Use `cargo run -p xtask -- run ...` or rebuild it: \
+                 `cargo build -p postretro-script-compiler --bin scripts-build`."
             );
         }
     }
@@ -305,9 +278,9 @@ impl ScriptWatcher {
             info!("[Scripting] TS compiler = {}", c.describe());
         } else {
             error!(
-                "[Scripting] `scripts-build` not found — install it on PATH or \
-                 ship it next to the engine binary. `.ts` hot reload disabled; \
-                 `.luau` files still work."
+                "[Scripting] `scripts-build` not found — run via \
+                 `cargo run -p xtask -- run ...`, install it on PATH, or ship it next \
+                 to the engine binary. `.ts` hot reload disabled; `.luau` files still work."
             );
         }
 
@@ -638,8 +611,8 @@ mod tests {
     fn scripts_build_binary() -> Option<PathBuf> {
         // `CARGO_MANIFEST_DIR` is always set under `cargo test`. Walk up until
         // we find a `target/` directory — the workspace root sits two parents
-        // above this crate (`crates/postretro/..`), but be tolerant of layout
-        // changes by searching upward.
+        // above this crate, but be tolerant of layout changes by searching
+        // upward.
         let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let name = if cfg!(windows) {
             "scripts-build.exe"
@@ -666,7 +639,13 @@ mod tests {
             return p;
         }
         let status = std::process::Command::new(env!("CARGO"))
-            .args(["build", "-p", "postretro-script-compiler"])
+            .args([
+                "build",
+                "-p",
+                "postretro-script-compiler",
+                "--bin",
+                "scripts-build",
+            ])
             .status()
             .expect("cargo build scripts-build");
         assert!(status.success(), "failed to build scripts-build");

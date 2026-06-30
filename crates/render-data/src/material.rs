@@ -103,20 +103,17 @@ fn lookup_material(prefix: &str) -> Option<Material> {
 /// Derive a material from a texture name. Returns `Material::Default` for
 /// unrecognized prefixes.
 ///
-/// When `warned_prefixes` is provided, logs one warning per unique unknown
-/// prefix and tracks which prefixes have been warned about.
+/// Tracks each unique unknown prefix in `warned_prefixes` and returns
+/// `Material::Default`. Runtime callers own any warning emission so this leaf
+/// crate stays logging-free.
 pub fn derive_material(texture_name: &str, warned_prefixes: &mut HashSet<String>) -> Material {
     let prefix = parse_prefix(texture_name);
 
     match lookup_material(prefix) {
         Some(mat) => mat,
         None => {
-            if !prefix.is_empty() && warned_prefixes.insert(prefix.to_lowercase()) {
-                log::warn!(
-                    "[Material] Unknown prefix '{}' in texture '{}' — using default material",
-                    prefix,
-                    texture_name,
-                );
+            if !prefix.is_empty() {
+                warned_prefixes.insert(prefix.to_lowercase());
             }
             Material::Default
         }
@@ -274,10 +271,10 @@ mod tests {
         assert_eq!(derive_material("", &mut warned), Material::Default);
     }
 
-    // -- Warning deduplication --
+    // -- Unknown prefix tracking --
 
     #[test]
-    fn derive_material_warns_once_per_unknown_prefix() {
+    fn derive_material_tracks_unknown_prefix_once() {
         let mut warned = HashSet::new();
 
         // First call with unknown prefix "brick" should add to warned set.
@@ -291,7 +288,7 @@ mod tests {
     }
 
     #[test]
-    fn derive_material_warns_for_each_distinct_unknown_prefix() {
+    fn derive_material_tracks_each_distinct_unknown_prefix() {
         let mut warned = HashSet::new();
         derive_material("brick_wall_01", &mut warned);
         derive_material("tile_floor_01", &mut warned);
@@ -308,8 +305,8 @@ mod tests {
     }
 
     #[test]
-    fn derive_material_leading_underscore_does_not_warn() {
-        // Tool textures have empty prefix — no warning for empty prefix.
+    fn derive_material_leading_underscore_does_not_track_empty_prefix() {
+        // Tool textures have empty prefix, which is not tracked.
         let mut warned = HashSet::new();
         derive_material("_trigger", &mut warned);
         assert!(warned.is_empty());

@@ -140,11 +140,12 @@ The lifecycle is supported by Claude Code skills:
 This is a Cargo workspace with multiple crates.
 
 ```bash
-cargo run -p postretro                                          # engine (debug)
-cargo run -p postretro -- content/dev/maps/campaign-test.prl   # load a PRL map
+cargo run -p xtask -- run                                      # development engine launch
+cargo run -p xtask -- run content/dev/maps/campaign-test.prl   # dev launch with a PRL map
+cargo run -p postretro                                          # lower-level engine run; assumes scripts-build is already built
 cargo run -p postretro-level-compiler -- input.map -o out.prl  # compile a level
 cargo run --release -p postretro                               # optimized build
-RUST_LOG=info cargo run -p postretro                           # with logging
+RUST_LOG=info cargo run -p xtask -- run                         # dev launch with logging
 ```
 
 ## Compiling Levels

@@ -15,8 +15,10 @@ pub(crate) fn build_default_view_projection(aspect: f32) -> Mat4 {
     projection * view
 }
 
-pub(crate) fn cast_world_vertices_to_bytes(data: &[crate::geometry::WorldVertex]) -> Vec<u8> {
-    let byte_len = data.len() * crate::geometry::WorldVertex::STRIDE;
+pub(crate) fn cast_world_vertices_to_bytes(
+    data: &[postretro_render_data::geometry::WorldVertex],
+) -> Vec<u8> {
+    let byte_len = data.len() * postretro_render_data::geometry::WorldVertex::STRIDE;
     let mut bytes = Vec::with_capacity(byte_len);
     for vertex in data {
         for &c in &vertex.position {
@@ -93,7 +95,7 @@ pub fn level_world_to_geometry<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geometry::WorldVertex;
+    use postretro_render_data::geometry::WorldVertex;
 
     #[test]
     fn lightmap_layer_serialized_at_byte_offset_32() {

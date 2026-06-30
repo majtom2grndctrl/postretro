@@ -116,7 +116,7 @@ pub(crate) fn build_full_renderer(
         &mip_count_aniso_samplers,
     );
 
-    let bvh_leaves: Vec<crate::geometry::BvhLeaf> =
+    let bvh_leaves: Vec<postretro_render_data::geometry::BvhLeaf> =
         geometry.map(|g| g.bvh.leaves.clone()).unwrap_or_default();
     let cell_draw_index: Option<crate::prl::CellDrawIndex> =
         geometry.and_then(|g| g.cell_draw_index.cloned());

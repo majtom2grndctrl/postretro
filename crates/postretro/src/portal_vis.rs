@@ -763,7 +763,7 @@ mod tests {
             texture_names: vec![],
             texture_cache_keys:
                 postretro_level_format::texture_cache_keys::TextureCacheKeysSection { keys: vec![] },
-            bvh: crate::geometry::BvhTree {
+            bvh: postretro_render_data::geometry::BvhTree {
                 nodes: vec![],
                 leaves: vec![],
                 root_node_index: 0,

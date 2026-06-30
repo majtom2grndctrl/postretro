@@ -8,9 +8,9 @@ use crate::compute_cull::{
     CULL_SHADER_SOURCE, CULL_UNIFORMS_SIZE, CullUniforms, DRAW_INDIRECT_SIZE, SetTextureFn,
     VISIBLE_CELLS_WORDS, draw_indirect_buckets, serialize_cull_uniforms,
 };
-use crate::geometry::BucketRange;
-use crate::lighting::cone_frustum::extract_frustum_planes_for_gpu;
 use crate::lighting::spot_shadow::SHADOW_POOL_SIZE;
+use postretro_render_data::cone_frustum::extract_frustum_planes_for_gpu;
+use postretro_render_data::geometry::BucketRange;
 
 /// Persistent, renderer-owned per-slot cone cull for the spot-shadow pool —
 /// sibling to the camera `ComputeCullPipeline`. Built at init/level-load and
@@ -315,11 +315,11 @@ fn storage_or_uniform_entry(
 
 #[cfg(test)]
 mod tests {
-    use crate::geometry::{BVH_NODE_FLAG_LEAF, BvhLeaf, BvhNode, BvhTree};
-    use crate::lighting::cone_frustum::{Aabb, aabb_intersects_frustum, cone_frustum_planes};
     use crate::lighting::spot_shadow::light_space_matrix;
     use crate::prl::{FalloffModel, LightType, MapLight};
     use glam::Vec3;
+    use postretro_render_data::cone_frustum::{Aabb, aabb_intersects_frustum, cone_frustum_planes};
+    use postretro_render_data::geometry::{BVH_NODE_FLAG_LEAF, BvhLeaf, BvhNode, BvhTree};
 
     fn leaf_at(min: [f32; 3], max: [f32; 3], index_count: u32) -> BvhLeaf {
         BvhLeaf {

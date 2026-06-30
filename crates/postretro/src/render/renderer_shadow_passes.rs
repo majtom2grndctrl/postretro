@@ -6,7 +6,7 @@ use super::*;
 fn wireframe_draws_leaf(
     mode: WorldWireframeMode,
     visible: &VisibleCells,
-    leaf: &crate::geometry::BvhLeaf,
+    leaf: &postretro_render_data::geometry::BvhLeaf,
 ) -> bool {
     match mode {
         WorldWireframeMode::Off => false,
@@ -23,7 +23,10 @@ fn wireframe_draws_leaf(
 /// `planes` come from `extract_frustum_planes_for_gpu` — the exact CPU source
 /// the GPU uniform is serialized from — so the CPU diagnostics submitted count
 /// matches what the GPU writes.
-fn leaf_passes_frustum(leaf: &crate::geometry::BvhLeaf, planes: &[[f32; 4]; 6]) -> bool {
+fn leaf_passes_frustum(
+    leaf: &postretro_render_data::geometry::BvhLeaf,
+    planes: &[[f32; 4]; 6],
+) -> bool {
     for plane in planes {
         let n = Vec3::new(plane[0], plane[1], plane[2]);
         let d = plane[3];
@@ -55,11 +58,11 @@ fn leaf_passes_frustum(leaf: &crate::geometry::BvhLeaf, planes: &[[f32; 4]; 6]) 
 /// cell is visible and whose AABB passes the frustum, over the whole leaf
 /// array. Mirrors `bvh_cull.wgsl::cull_main`'s submit branch. Diagnostic only.
 fn count_submitted_tree_walk(
-    leaves: &[crate::geometry::BvhLeaf],
+    leaves: &[postretro_render_data::geometry::BvhLeaf],
     visible: &VisibleCells,
     view_proj: &Mat4,
 ) -> u32 {
-    let planes = crate::lighting::cone_frustum::extract_frustum_planes_for_gpu(view_proj);
+    let planes = postretro_render_data::cone_frustum::extract_frustum_planes_for_gpu(view_proj);
     leaves
         .iter()
         .filter(|leaf| {
@@ -83,11 +86,11 @@ fn count_submitted_tree_walk(
 /// visible-cell constraint, so this only mirrors the shader's frustum submit
 /// branch. Diagnostic only.
 fn count_submitted_candidates(
-    leaves: &[crate::geometry::BvhLeaf],
+    leaves: &[postretro_render_data::geometry::BvhLeaf],
     candidate_leaves: &[u32],
     view_proj: &Mat4,
 ) -> u32 {
-    let planes = crate::lighting::cone_frustum::extract_frustum_planes_for_gpu(view_proj);
+    let planes = postretro_render_data::cone_frustum::extract_frustum_planes_for_gpu(view_proj);
     candidate_leaves
         .iter()
         .filter_map(|&leaf| leaves.get(leaf as usize))
@@ -267,7 +270,7 @@ impl Renderer {
                         full.spot_shadow_pool.slot_cone_matrices[slot as usize]
                     {
                         let cone_planes =
-                            crate::lighting::cone_frustum::cone_frustum_planes(&cone_matrix);
+                            postretro_render_data::cone_frustum::cone_frustum_planes(&cone_matrix);
                         full.spot_entity_occluders_submitted +=
                             full.mesh_pass.record_skinned_depth(
                                 &mut pass,
@@ -328,7 +331,7 @@ impl Renderer {
                     // Face frustum planes from the same matrix uploaded to the cube
                     // VS uniform buffer — one source of truth for cull + projection.
                     let face_planes =
-                        crate::lighting::cone_frustum::cone_frustum_planes(&face_matrix);
+                        postretro_render_data::cone_frustum::cone_frustum_planes(&face_matrix);
                     full.cube_entity_occluders_submitted += full.mesh_pass.record_skinned_depth(
                         &mut pass,
                         plan,
@@ -778,8 +781,8 @@ impl Renderer {
 mod tests {
     use super::*;
 
-    fn leaf(cell_id: u32) -> crate::geometry::BvhLeaf {
-        crate::geometry::BvhLeaf {
+    fn leaf(cell_id: u32) -> postretro_render_data::geometry::BvhLeaf {
+        postretro_render_data::geometry::BvhLeaf {
             aabb_min: [0.0; 3],
             material_bucket_id: 0,
             aabb_max: [1.0; 3],

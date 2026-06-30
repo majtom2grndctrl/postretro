@@ -725,9 +725,9 @@ mod tests {
 
     // -- PRL cell-based visibility tests --
 
-    use crate::geometry::{BvhTree, WorldVertex};
-    use crate::material::Material;
     use crate::prl::{FaceMeta as PrlFaceMeta, LevelWorld};
+    use postretro_render_data::geometry::{BvhTree, WorldVertex};
+    use postretro_render_data::material::Material;
 
     fn zero_vertex() -> WorldVertex {
         WorldVertex {

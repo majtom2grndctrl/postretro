@@ -4,8 +4,8 @@
 use glam::Mat4;
 use wgpu::util::DeviceExt;
 
-use crate::geometry::{BVH_NODE_FLAG_LEAF, BucketRange, BvhLeaf, BvhNode, BvhTree};
-use crate::lighting::cone_frustum::extract_frustum_planes_for_gpu;
+use postretro_render_data::cone_frustum::extract_frustum_planes_for_gpu;
+use postretro_render_data::geometry::{BVH_NODE_FLAG_LEAF, BucketRange, BvhLeaf, BvhNode, BvhTree};
 
 /// The `+ 'a` bound is required because type aliases default the trait
 /// object lifetime to `'static`, unlike an inline `&dyn Fn(...)` which
@@ -758,7 +758,7 @@ fn serialize_u32_slice(slice: &[u32]) -> Vec<u8> {
     buf
 }
 
-fn serialize_bvh_nodes(nodes: &[crate::geometry::BvhNode]) -> Vec<u8> {
+fn serialize_bvh_nodes(nodes: &[postretro_render_data::geometry::BvhNode]) -> Vec<u8> {
     let mut buf = Vec::with_capacity(nodes.len() * 40);
     for node in nodes {
         for &c in &node.aabb_min {
@@ -776,7 +776,7 @@ fn serialize_bvh_nodes(nodes: &[crate::geometry::BvhNode]) -> Vec<u8> {
     buf
 }
 
-fn serialize_bvh_leaves(leaves: &[crate::geometry::BvhLeaf]) -> Vec<u8> {
+fn serialize_bvh_leaves(leaves: &[postretro_render_data::geometry::BvhLeaf]) -> Vec<u8> {
     let mut buf = Vec::with_capacity(leaves.len() * 48);
     for leaf in leaves {
         for &c in &leaf.aabb_min {
@@ -798,7 +798,7 @@ fn serialize_bvh_leaves(leaves: &[crate::geometry::BvhLeaf]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geometry::{BvhLeaf, BvhNode, BvhTree};
+    use postretro_render_data::geometry::{BvhLeaf, BvhNode, BvhTree};
 
     fn leaf_node(leaf_index: u32, skip_index: u32) -> BvhNode {
         BvhNode {

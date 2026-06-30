@@ -34,13 +34,33 @@ use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 use postretro_level_format::texture_names::TextureNamesSection;
 use postretro_level_format::{self as prl_format, SectionId};
 
-use crate::geometry::{BvhLeaf, BvhNode, BvhTree, WorldVertex};
-use crate::material;
+use postretro_render_data::geometry::{BvhLeaf, BvhNode, BvhTree, WorldVertex};
+use postretro_render_data::material;
 
 use super::{
     CellData, CellDrawIndex, CellLocatorChild, CellLocatorNodeData, FaceMeta, FalloffModel,
     LevelWorld, LightType, LightmapMode, MapLight, PortalData, PrlLoadError, ShadowType,
 };
+
+fn derive_material_with_warning(
+    texture_name: &str,
+    warned_prefixes: &mut HashSet<String>,
+) -> material::Material {
+    let warned_count = warned_prefixes.len();
+    let mat = material::derive_material(texture_name, warned_prefixes);
+    let prefix = material::parse_prefix(texture_name);
+    if mat == material::Material::Default
+        && !prefix.is_empty()
+        && warned_prefixes.len() > warned_count
+    {
+        log::warn!(
+            "[Material] Unknown prefix '{}' in texture '{}' — using default material",
+            prefix,
+            texture_name,
+        );
+    }
+    mat
+}
 
 pub(crate) fn convert_alpha_lights(section: AlphaLightsSection) -> Vec<MapLight> {
     section
@@ -1051,7 +1071,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
                     .unwrap_or_default();
                 (Some(f.texture_index), name)
             };
-            let mat = material::derive_material(&tex_name, &mut warned_prefixes);
+            let mat = derive_material_with_warning(&tex_name, &mut warned_prefixes);
             FaceMeta {
                 leaf_index: f.leaf_index,
                 texture_index: tex_idx,

@@ -16,7 +16,6 @@ use parry3d::math::{Isometry, Point, Vector};
 use parry3d::query::RayCast;
 use parry3d::shape::{Ball, Capsule};
 
-use crate::lighting::cone_frustum::Aabb;
 use crate::model::ModelHandle;
 use crate::model::anim::{BlendSource, Loop, sample_blended_world, sample_clip_looped_world};
 use crate::model::gltf_loader::{self, JointZone};
@@ -27,6 +26,7 @@ use postretro_entities::components::mesh::{MeshAnimation, MeshComponent};
 use postretro_entities::registry::{
     ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform,
 };
+use postretro_render_data::cone_frustum::Aabb;
 
 /// Engine default capsule radius (meters) for a zone-bearing joint whose
 /// authored `hitZoneRadius` is absent (`JointZone::radius == None`). The loader

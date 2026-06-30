@@ -63,9 +63,10 @@ impl ScriptRuntime {
 #[cfg(debug_assertions)]
 pub(super) fn compile_start_script(ts_path: &Path, js_path: &Path) -> Result<(), String> {
     let compiler = crate::watcher::TsCompilerPath::detect().ok_or_else(|| {
-        "scripts-build not found — install it on PATH or ship it next to the engine binary"
+        "scripts-build not found — run via `cargo run -p xtask -- run ...`, install it on PATH, or ship it next to the engine binary"
             .to_string()
     })?;
+    compiler.warn_if_stale();
     crate::watcher::run_ts_compiler(&compiler, ts_path, js_path)
 }
 
@@ -88,11 +89,13 @@ pub(super) fn scan_and_compile_stale_ts(script_root: &Path, mod_root: &Path) {
             log::warn!(
                 "[Scripting] startup TS scan: `scripts-build` not found — \
                  stale `.ts` files will not be recompiled. \
-                 Install `scripts-build` on PATH or next to the engine binary.",
+                 Run via `cargo run -p xtask -- run ...`, install `scripts-build` \
+                 on PATH, or place it next to the engine binary.",
             );
             return;
         }
     };
+    compiler.warn_if_stale();
 
     let mut compiled = 0u32;
     let mut failed = 0u32;

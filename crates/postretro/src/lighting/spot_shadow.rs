@@ -538,6 +538,9 @@ fn build_bind_group(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use postretro_render_data::cone_frustum::{
+        Aabb, aabb_intersects_frustum, cone_enclosing_aabb, cone_frustum_planes,
+    };
     use proptest::prelude::*;
 
     /// Scan a WGSL source for the `LightSpaceMatrices` array length, i.e. the
@@ -649,6 +652,27 @@ mod tests {
             cone_angle_outer: 0.6,
             cone_direction: [0.0, 0.0, -1.0],
             is_dynamic,
+            casts_entity_shadows: false,
+            animated_slot: None,
+            tags: vec![],
+            cell_index: 0,
+            shadow_type: crate::prl::ShadowType::StaticLightMap,
+        }
+    }
+
+    /// Spotlight at the origin aimed down -Z, used by light-space matrix tests.
+    fn spot_down_neg_z() -> MapLight {
+        MapLight {
+            origin: [0.0, 0.0, 0.0],
+            light_type: LightType::Spot,
+            intensity: 1.0,
+            color: [1.0, 1.0, 1.0],
+            falloff_model: crate::prl::FalloffModel::Linear,
+            falloff_range: 20.0,
+            cone_angle_inner: 0.3,
+            cone_angle_outer: 0.4,
+            cone_direction: [0.0, 0.0, -1.0],
+            is_dynamic: true,
             casts_entity_shadows: false,
             animated_slot: None,
             tags: vec![],
@@ -871,6 +895,126 @@ mod tests {
         assert_eq!(assignment[0], 0);
     }
 
+    /// AC#2: a world AABB inside the cone is classified inside; one fully
+    /// outside the cone (behind the light, opposite the aim) is classified
+    /// outside. Same predicate the GPU per-slot cull mirrors.
+    #[test]
+    fn cone_frustum_classifies_inside_and_outside_aabbs() {
+        let light = spot_down_neg_z();
+        let m = light_space_matrix(&light);
+        let planes = cone_frustum_planes(&m);
+
+        let inside = Aabb {
+            min: Vec3::new(-0.5, -0.5, -10.5),
+            max: Vec3::new(0.5, 0.5, -9.5),
+        };
+        assert!(
+            aabb_intersects_frustum(&inside, &planes),
+            "on-axis box inside the cone must classify as inside"
+        );
+
+        let behind = Aabb {
+            min: Vec3::new(-0.5, -0.5, 9.5),
+            max: Vec3::new(0.5, 0.5, 10.5),
+        };
+        assert!(
+            !aabb_intersects_frustum(&behind, &planes),
+            "box behind the light must classify as outside the cone"
+        );
+
+        let off_axis = Aabb {
+            min: Vec3::new(49.5, -0.5, -10.5),
+            max: Vec3::new(50.5, 0.5, -9.5),
+        };
+        assert!(
+            !aabb_intersects_frustum(&off_axis, &planes),
+            "box outside the cone's angular spread must classify as outside"
+        );
+    }
+
+    /// The enclosing AABB derived from the light-space matrix must contain the
+    /// cone: it spans the aim direction and stays bounded near the apex.
+    #[test]
+    fn cone_enclosing_aabb_spans_aim_direction() {
+        let light = spot_down_neg_z();
+        let m = light_space_matrix(&light);
+        let aabb = cone_enclosing_aabb(&m);
+
+        assert!(
+            aabb.min.z < -19.0,
+            "enclosing AABB should reach the far plane (~-20), got min.z = {}",
+            aabb.min.z
+        );
+        assert!(
+            aabb.max.z > -0.5,
+            "enclosing AABB should include the apex near the origin, got max.z = {}",
+            aabb.max.z
+        );
+        assert!(
+            aabb.min.x.is_finite() && aabb.max.x.is_finite(),
+            "enclosing AABB lateral extent must be finite"
+        );
+    }
+
+    /// A point inside the enclosing AABB and on the cone axis must also pass the
+    /// plane predicate — the two representations agree on the obvious interior.
+    #[test]
+    fn enclosing_aabb_interior_point_passes_planes() {
+        let light = spot_down_neg_z();
+        let m = light_space_matrix(&light);
+        let planes = cone_frustum_planes(&m);
+
+        let center = Aabb {
+            min: Vec3::new(-0.1, -0.1, -10.1),
+            max: Vec3::new(0.1, 0.1, -9.9),
+        };
+        assert!(aabb_intersects_frustum(&center, &planes));
+    }
+
+    /// An AABB straddling the cone apex must be classified as intersecting.
+    #[test]
+    fn cone_frustum_apex_straddling_aabb_classifies_as_intersecting() {
+        let light = spot_down_neg_z();
+        let m = light_space_matrix(&light);
+        let planes = cone_frustum_planes(&m);
+
+        let apex_box = Aabb {
+            min: Vec3::new(-0.2, -0.2, -2.0),
+            max: Vec3::new(0.2, 0.2, 0.0),
+        };
+        assert!(
+            aabb_intersects_frustum(&apex_box, &planes),
+            "AABB straddling the cone apex must be classified as intersecting"
+        );
+    }
+
+    /// An AABB that grazes the cone's right side plane from just inside must be
+    /// classified as intersecting; one clearly past the side boundary must not.
+    #[test]
+    fn cone_frustum_grazing_side_plane_aabb_classified_correctly() {
+        let light = spot_down_neg_z();
+        let m = light_space_matrix(&light);
+        let planes = cone_frustum_planes(&m);
+
+        let just_inside = Aabb {
+            min: Vec3::new(3.0, -0.5, -10.5),
+            max: Vec3::new(4.0, 0.5, -9.5),
+        };
+        assert!(
+            aabb_intersects_frustum(&just_inside, &planes),
+            "AABB with positive vertex inside the cone side plane must intersect"
+        );
+
+        let clearly_outside = Aabb {
+            min: Vec3::new(9.5, -0.5, -10.5),
+            max: Vec3::new(10.5, 0.5, -9.5),
+        };
+        assert!(
+            !aabb_intersects_frustum(&clearly_outside, &planes),
+            "AABB well outside the cone side plane must not intersect"
+        );
+    }
+
     /// Regression: dynamic spot lost its shadow slot when its cone AABB left the
     /// pitched camera frustum (shadow vanished on pitch-down).
     ///
@@ -889,13 +1033,12 @@ mod tests {
         let pitched_down = camera_view_proj(camera_eye, -std::f32::consts::FRAC_PI_2 + 0.2, 0.0);
         // Sanity: the cone AABB really is outside this frustum (otherwise the
         // test wouldn't exercise the bug).
-        let cone_aabb =
-            crate::lighting::cone_frustum::cone_enclosing_aabb(&light_space_matrix(&lights[0]));
+        let cone_aabb = cone_enclosing_aabb(&light_space_matrix(&lights[0]));
         let planes: [glam::Vec4; 6] =
-            crate::lighting::cone_frustum::extract_frustum_planes_for_gpu(&pitched_down)
+            postretro_render_data::cone_frustum::extract_frustum_planes_for_gpu(&pitched_down)
                 .map(|p| glam::Vec4::new(p[0], p[1], p[2], p[3]));
         assert!(
-            !crate::lighting::cone_frustum::aabb_intersects_frustum(&cone_aabb, &planes),
+            !aabb_intersects_frustum(&cone_aabb, &planes),
             "test precondition: cone AABB must sit outside the pitched camera frustum"
         );
 

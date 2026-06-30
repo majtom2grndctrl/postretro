@@ -44,22 +44,24 @@ One-way edges, top depends on bottom. New crates marked `*`. Existing data floor
             ▼        ▼        ▼         ▼          ▼         ▼
         ui*   render-cpu*  visibility*  lighting*   model*    (wgpu, winit,
          │        │            │       (cpu-math)  (cpu)       glyphon, …)
-         │        │            ▼
-         │        │       level-loader*  (prl)
-         │        ▼            │
-         │   level-loader*◄────┤
-         ▼        ▼            ▼
-   scripting-core    render-data*  ◄──── level-format
-   entities / foundation   (geometry + material)
+         │        │            ▼                       │
+         │        │       level-loader*  (prl)         │
+         │        ▼            │                        │
+         │   level-loader*◄────┤                        │
+         ▼        ▼            ▼                         ▼
+   scripting-core    render-data*  ◄──── level-format ◄─┘
+   entities / foundation   (geometry + material + cone_frustum/frustum math)
 ```
+
+`model`/`weapon` depend *down* on `render-data` for `cone_frustum`/`Aabb`, not on `lighting`. The shared frustum-plane row-math lives in `render-data` too, so the renderer's GPU cull path and the CPU cone path both call into it — no `lighting → renderer` reach-across.
 
 - **`postretro-ui*`** (cpu-only, `E19--ui`) — `render::ui` CPU subtree + `UiTexture`. Depends on `scripting-core` (descriptor model), `entities` (only if tree bindings reference entity handles — confirm), `taffy`, `glyphon` (`FontSystem` only). No `input`, no wgpu.
 - **`postretro-render-cpu*`** (cpu-only, `E19--render-cpu`) — the harvest: CPU islands from `render/` (`frame_uniforms`, `mesh_instances`, `material_plan` CPU half, `fog_mask`, the CPU halves of `loaded_texture`/`sdf_*`/`sh_volume`/`sh_compose`/`animated_lightmap`/`screen_effects`/`splash`), the `fx::{smoke,fog_volume}` data, and the mesh/SH CPU types scripting imports. Carries WGSL binding constants with their packers.
 - **`postretro-visibility*`** (cpu-only, `E19--visibility`) — `visibility.rs` + `portal_vis.rs`.
-- **`postretro-lighting*`** (cpu-only, `E19--lighting-cpu`) — `lighting::{mod,influence,spec_buffer,cone_frustum}` (light packing, cone geometry). The `script_primitives` wiring descends here behind an optional `script-ffi` feature (off by default) per §12; the marshalling substrate stays in `scripting-core`; the registrar is invoked from `Session::build`.
-- **`postretro-model*`** (cpu-only, `E19--model`) — `model/` (CPU glTF loader: `ModelHandle`, `SkinnedMesh`, skeleton/anim/`sample_params`, `gltf_loader`). Depends on `postretro-render-data` if it references those types.
+- **`postretro-lighting*`** (cpu-only, `E19--lighting-cpu`) — `lighting::{mod,influence,spec_buffer}` (light packing). `cone_frustum` does **not** live here — it homes in `postretro-render-data` (it delegated to `compute_cull`, a GPU module, so lighting would have caught a `lighting → renderer` cycle). The `script_primitives` wiring descends here behind an optional `script-ffi` feature (off by default) per §12; the marshalling substrate stays in `scripting-core`; the registrar is invoked from `Session::build`.
+- **`postretro-model*`** (cpu-only, `E19--model`) — `model/` (CPU glTF loader: `ModelHandle`, `SkinnedMesh`, skeleton/anim/`sample_params`, `gltf_loader`). Depends on `postretro-render-data` (for the `Aabb`/`cone_frustum` types its mesh bounds carry), not on `postretro-lighting`.
 - **`postretro-level-loader*`** (cpu-only, `E19--level-loader`) — `prl.rs` + `prl_loader.rs`.
-- **`postretro-render-data*`** (cpu-only, `E19--render-data`) — `geometry.rs` + `material.rs` leaf data types under the loader, in one crate.
+- **`postretro-render-data*`** (cpu-only, `E19--render-data`) — `geometry.rs` + `material.rs` + `cone_frustum.rs` (geometry/AABB math) leaf data types under the loader, in one crate. Also carries the shared frustum-plane row-math (relocated out of `compute_cull.rs`): the universal lower leaf the CPU cone path and the GPU cull pipelines both call *down* into. Still wgpu-free.
 - **`postretro-renderer*`** (gpu, `E19--renderer-gpu`) — everything wgpu: `Renderer`/`FullRenderer`, all `renderer_*.rs`, all passes, + absorbed GPU modules. Public surface ≈ `{Renderer, opaque present handle, dev-tools setter API}` — `FullRenderer` stays private.
 
 ## Global acceptance criteria (every spec inherits)
@@ -80,7 +82,7 @@ Three milestones, each a shippable checkpoint with a developer-facing testable o
 
 ### Milestone 1 — CPU runtime floor
 **Specs:** `E19--baseline-and-cargo-config`, `E19--leaf-hygiene-and-boundary-prep`, `E19--render-data`, `E19--level-loader`, `E19--visibility`, `E19--model`.
-**Order:** `E19--baseline-and-cargo-config` + `E19--leaf-hygiene-and-boundary-prep` (may pair only if file-disjoint, e.g. baseline + leaf-hygiene); then `E19--render-data`; then `E19--level-loader` (needs `E19--render-data`); then `E19--visibility` (needs `E19--level-loader` + `E19--render-data`). `E19--model` is an independent low-risk CPU prerequisite, slotted in where the order allows (needs only `E19--render-data` if it references render-data types). `E19--leaf-hygiene-and-boundary-prep` also unblocks `E19--ui`.
+**Order:** `E19--baseline-and-cargo-config` + `E19--leaf-hygiene-and-boundary-prep` (may pair only if file-disjoint, e.g. baseline + leaf-hygiene); then `E19--render-data`; then `E19--level-loader` (needs `E19--render-data`); then `E19--visibility` (needs `E19--level-loader`; `E19--render-data` is a dev-dependency only — test-side). `E19--model` is an independent low-risk CPU prerequisite, slotted in where the order allows (needs `E19--render-data` for the `Aabb`/`cone_frustum` types its mesh bounds carry). `E19--leaf-hygiene-and-boundary-prep` also unblocks `E19--render-data` (it severs the `cone_frustum → compute_cull` import and widens the cone symbols) and `E19--ui`.
 **Testable outcome:** `postretro-render-data`, `postretro-level-loader`, `postretro-visibility`, `postretro-model` are workspace crates; editing any and running its tests recompiles no `wgpu`/`naga`/`winit`/VM crate; the `E19--baseline-and-cargo-config` baseline shows the warm-edit win on a `prl.rs`/`portal_vis.rs` touch; `cargo build --workspace` + `cargo test --workspace` green.
 
 ### Milestone 2 — Sever scripting / UI / CPU-math from the renderer
@@ -151,7 +153,8 @@ These were the open questions; all are now settled. Each states the decision and
 6. **Visibility boundary shape** — depend on `LevelWorld` directly; the borrowed portal-world view is a deferred optimization, added only on a measured rebuild problem. Principle: lean — the crate boundary already cuts the recompile coupling, so the view would be speculative abstraction. (`E19--visibility`.)
 7. **Stray-GPU-module staging** — move `compute_cull`/`candidate_cull`/`shadow_cull` + the lighting GPU pools directly into `postretro-renderer` at cut time (one transplant, no in-binary staging). Principle: efficiency + behavior-preserving + gated — the `E19--renderer-gpu` verification gate provides the safety staging would. (`E19--renderer-gpu`.)
 8. **`compile-time-reduction` retirement mechanics** — delete `context/plans/drafts/compile-time-reduction/` at Epic 19 promotion (not now). Principle: documentation lifecycle — `done/` is for shipped plans and it never shipped; provenance lives in this epic's `research.md` + the "folds from" columns. (See **Relationship to existing plans**.)
+9. **`cone_frustum` + shared frustum-plane math placement** — live in `postretro-render-data`, not `postretro-lighting`. Principle: clean one-way boundaries — `cone_frustum` delegated to `compute_cull` (a GPU/renderer module), so homing it in lighting created a `lighting → renderer` cycle; it is geometry math with the widest fan-out (model/weapon/cull/renderer), so render-data is the correct leaf. (Found by the architecture review; `E19--render-data`/`E19--lighting-cpu`/`E19--leaf-hygiene`.)
 
 ## Open questions
 
-None remaining — all eight settled (see **Decisions**). Residual implementation-time confirmations (not design questions) live in the specs: whether `postretro-ui` needs an `entities` dep, and whether `postretro-lighting`'s `cone_frustum` references `render-data` geometry types.
+None remaining — all nine settled (see **Decisions**). Residual implementation-time confirmations (not design questions) live in the specs: whether `postretro-ui` needs an `entities` dep, and whether any remaining `postretro-lighting` packer references `render-data` geometry types. (`cone_frustum`'s home was a real design question — now decided: `render-data`, Decision 9.)

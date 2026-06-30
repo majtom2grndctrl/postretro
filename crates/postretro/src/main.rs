@@ -5445,7 +5445,13 @@ mod tests {
             return path;
         }
         let status = std::process::Command::new(env!("CARGO"))
-            .args(["build", "-p", "postretro-script-compiler"])
+            .args([
+                "build",
+                "-p",
+                "postretro-script-compiler",
+                "--bin",
+                "scripts-build",
+            ])
             .status()
             .expect("cargo build scripts-build");
         assert!(status.success(), "failed to build scripts-build");

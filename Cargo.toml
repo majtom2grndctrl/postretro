@@ -9,6 +9,7 @@ members = [
     "crates/level-compiler",
     "crates/script-compiler",
     "crates/net",
+    "crates/xtask",
 ]
 resolver = "2"
 

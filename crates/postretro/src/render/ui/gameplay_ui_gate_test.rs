@@ -202,7 +202,7 @@ fn gameplay_path_builds_non_empty_draw_list_from_descriptor_tree() {
 fn entry(descriptor: AnchoredTree) -> super::UiTreeEntry {
     super::UiTreeEntry {
         name: "fixture".to_string(),
-        capture_mode: crate::input::UiCaptureMode::Passthrough,
+        capture_mode: CaptureMode::Passthrough,
         descriptor,
         on_commit: None,
     }

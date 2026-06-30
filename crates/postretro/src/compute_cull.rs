@@ -5,6 +5,7 @@ use glam::Mat4;
 use wgpu::util::DeviceExt;
 
 use crate::geometry::{BVH_NODE_FLAG_LEAF, BucketRange, BvhLeaf, BvhNode, BvhTree};
+use crate::lighting::cone_frustum::extract_frustum_planes_for_gpu;
 
 /// The `+ 'a` bound is required because type aliases default the trait
 /// object lifetime to `'static`, unlike an inline `&dyn Fn(...)` which
@@ -792,55 +793,6 @@ fn serialize_bvh_leaves(leaves: &[crate::geometry::BvhLeaf]) -> Vec<u8> {
         buf.extend_from_slice(&leaf.chunk_range_count.to_le_bytes());
     }
     buf
-}
-
-/// Extract the 6 frustum planes from a combined view-projection matrix in the
-/// layout the cull WGSL (`bvh_cull.wgsl::is_aabb_outside_frustum`) consumes.
-///
-/// Convention (mirrored verbatim by the CPU cone-frustum code in
-/// `lighting::cone_frustum`, so both tests agree): 6 planes from the combined
-/// matrix rows — L,R,B,T,N,F = `r3+r0, r3-r0, r3+r1, r3-r1, r3+r2, r3-r2` —
-/// normalized, emitted as `[nx,ny,nz,d]`. Inside-sign matches the WGSL: a point
-/// `p` is *outside* a plane when `dot(normal, p) + d < 0`.
-///
-/// `pub(crate)` so the lighting module can build a spotlight's cone frustum from
-/// `light_space_matrix()` through this same single implementation rather than
-/// duplicating the row math.
-pub(crate) fn extract_frustum_planes_for_gpu(view_proj: &Mat4) -> [[f32; 4]; 6] {
-    let row = |n: usize| -> glam::Vec4 {
-        glam::Vec4::new(
-            view_proj.col(0)[n],
-            view_proj.col(1)[n],
-            view_proj.col(2)[n],
-            view_proj.col(3)[n],
-        )
-    };
-
-    let r0 = row(0);
-    let r1 = row(1);
-    let r2 = row(2);
-    let r3 = row(3);
-
-    let raw_planes = [
-        r3 + r0, // Left
-        r3 - r0, // Right
-        r3 + r1, // Bottom
-        r3 - r1, // Top
-        r3 + r2, // Near
-        r3 - r2, // Far
-    ];
-
-    let mut gpu_planes = [[0.0f32; 4]; 6];
-    for (i, raw) in raw_planes.iter().enumerate() {
-        let normal = glam::Vec3::new(raw.x, raw.y, raw.z);
-        let length = normal.length();
-        if length > 0.0 {
-            let inv_len = 1.0 / length;
-            let n = normal * inv_len;
-            gpu_planes[i] = [n.x, n.y, n.z, raw.w * inv_len];
-        }
-    }
-    gpu_planes
 }
 
 #[cfg(test)]

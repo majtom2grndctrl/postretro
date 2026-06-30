@@ -1,6 +1,6 @@
-# s4 — postretro-visibility
+# postretro-visibility
 
-> Epic: `render-stack-decomposition`. Folds `compile-time-reduction` Task 3.
+> Epic: `E19--render-stack-decomposition`. Folds `compile-time-reduction` Task 3.
 
 ## Goal
 
@@ -14,10 +14,11 @@ Extract runtime portal traversal and frustum visibility into a CPU-only crate so
 - Update the ~8 importers.
 
 ### Out of scope
-- The GPU cull pipelines (`compute_cull`/`candidate_cull`/`shadow_cull`) — those are GPU and move into `postretro-renderer` (`s8`).
+- The GPU cull pipelines (`compute_cull`/`candidate_cull`/`shadow_cull`) — those are GPU and move into `postretro-renderer` (`E19--renderer-gpu`).
 - Frame-level render policy that reads `FullRenderer` state (stays renderer-side).
 
 ## Acceptance criteria
+Inherits the epic global acceptance criteria — see `E19--render-stack-decomposition/index.md` (these migrate to `context/lib/` at first promotion).
 - [ ] Crate is a workspace member; `cargo build --workspace` + `cargo test --workspace` pass; visibility/portal tests pass from their relocated home, including lightweight portal fixtures (no full GPU `Renderer` needed).
 - [ ] `cargo tree -p postretro-visibility` shows no wgpu/winit/glyphon/kira/mlua/rquickjs.
 - [ ] Editing the visibility crate does not recompile renderer GPU modules.
@@ -26,11 +27,11 @@ Extract runtime portal traversal and frustum visibility into a CPU-only crate so
 ## Tasks
 
 ### Task 1: Extract postretro-visibility
-Create the crate, move both files (relying on the `s1` `Frustum`/`FrustumPlane` widening), wire deps, update importers. Depend on `LevelWorld` directly.
+Create the crate, move both files (relying on the `E19--leaf-hygiene-and-boundary-prep` `Frustum`/`FrustumPlane` widening), wire deps, update importers. Depend on `LevelWorld` directly.
 
 **Decision (was open question 6): depend on `LevelWorld` directly.** Principle: lean — the crate boundary already cuts the recompile coupling, so a borrowed portal-world view would be speculative abstraction.
 
 **Deferred optimization:** the old draft's borrowed portal-world view (exposing only leaves/portals/adjacency) — add only on a measured rebuild problem.
 
 ## Sequencing
-**Phase 1:** Task 1. Needs `s3` (`level-loader`) + `s2` (`geometry`). Milestone 1.
+**Phase 1:** Task 1. Needs `postretro-level-loader` (`E19--level-loader`) and `postretro-render-data` (`E19--render-data`, the `geometry` types). Milestone 1.

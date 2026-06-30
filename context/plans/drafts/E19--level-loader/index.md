@@ -1,6 +1,6 @@
-# s3 — postretro-level-loader
+# postretro-level-loader
 
-> Epic: `render-stack-decomposition`. Folds `compile-time-reduction` Tasks 4–5 (the internal PRL split already exists as `prl.rs` + `prl_loader.rs`).
+> Epic: `E19--render-stack-decomposition`. Folds `compile-time-reduction` Tasks 4–5 (the internal PRL split already exists as `prl.rs` + `prl_loader.rs`).
 
 ## Goal
 
@@ -16,9 +16,10 @@ Extract runtime PRL loading and runtime level data into a CPU-only crate so edit
 ### Out of scope
 - GPU upload of level data (stays in `postretro-renderer`: `LevelGeometry` adaptation + buffer upload).
 - PRL wire-format or section-layout changes.
-- The renderer-side `level_world_to_geometry` adapter (it produces the borrowed `LevelGeometry<'a>` handoff and stays renderer-adjacent unless `s7` claims it).
+- The renderer-side `level_world_to_geometry` adapter (it produces the borrowed `LevelGeometry<'a>` handoff and stays renderer-adjacent unless `E19--render-cpu` claims it).
 
 ## Acceptance criteria
+Inherits the epic global acceptance criteria — see `E19--render-stack-decomposition/index.md` (these migrate to `context/lib/` at first promotion).
 - [ ] Crate is a workspace member; `cargo build --workspace` + `cargo test --workspace` pass; the PRL loader tests pass from their relocated home.
 - [ ] `cargo tree -p postretro-level-loader` shows no wgpu/winit/glyphon/kira/mlua/rquickjs.
 - [ ] Editing the loader crate and running its tests does not recompile `wgpu`/`naga`/`mlua`/`rquickjs`.
@@ -30,4 +31,4 @@ Extract runtime PRL loading and runtime level data into a CPU-only crate so edit
 Create the crate, move `prl.rs`/`prl_loader.rs`, wire deps on `geometry`/`material`/`level-format`, widen boundary-crossing `pub(crate)` to `pub`, update importers. `prl.rs` is ~4279 lines but already split with `prl_loader.rs` — if a further split is needed to keep the move clean, do it as a behavior-preserving step first (split-before-extend).
 
 ## Sequencing
-**Phase 1:** Task 1. Needs `s2` (`geometry`+`material`). Milestone 1; blocks `s4` and `s7`.
+**Phase 1:** Task 1. Needs `postretro-render-data` (`E19--render-data`, the `geometry`+`material` types). Milestone 1; blocks `E19--visibility` and `E19--render-cpu`.

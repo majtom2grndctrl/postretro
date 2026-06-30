@@ -1,6 +1,6 @@
-# s0 — Baseline & Dev Cargo Config
+# Baseline & Dev Cargo Config
 
-> Epic: `render-stack-decomposition`. Folds `compile-time-reduction` Tasks 1–2. Gates all timing claims in later specs.
+> Epic: `E19--render-stack-decomposition`. Folds `compile-time-reduction` Tasks 1–2. Gates all timing claims in later specs.
 
 ## Goal
 
@@ -19,6 +19,7 @@ Establish repeatable compile-time measurement and a conservative dev Cargo confi
 - Any source-structure change.
 
 ## Acceptance criteria
+Inherits the epic global acceptance criteria — see `E19--render-stack-decomposition/index.md` (these migrate to `context/lib/` at first promotion).
 - [ ] Baseline report records, for each case: command, `cargo -V`, `rustc -vV`, host OS, target triple, CPU/RAM, `RUSTFLAGS`, `RUSTC_WRAPPER`, relevant `CARGO_*`, `cargo metadata --locked`, wall time, and `cargo build --timings` critical-path + high-self-time crates.
 - [ ] Case matrix covered: clean `cargo check -p postretro`; warm no-op `cargo check -p postretro`; `cargo check --workspace`; `cargo build -p postretro --bins`; `cargo test -p postretro --no-run`; and targeted touch-rebuilds of `prl.rs`, `portal_vis.rs`, `render/mesh_pass.rs`, `render/sh_volume.rs`, and one scripting descriptor under `scripting/data_descriptors/types/`.
 - [ ] `--timings` output explicitly notes where `rquickjs-sys`, `mlua-sys`/`luau0-src`, `wgpu`/`naga`, `glyphon`/`cosmic-text`, `kira`, and final link sit on the critical path.

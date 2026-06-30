@@ -1,6 +1,6 @@
-# s2 — postretro-render-data
+# postretro-render-data
 
-> Epic: `render-stack-decomposition`. The CPU leaf data crate under the level loader — geometry + material types in one crate.
+> Epic: `E19--render-stack-decomposition`. The CPU leaf data crate under the level loader — geometry + material types in one crate.
 
 ## Goal
 
@@ -21,6 +21,7 @@ Extract the two small, dependency-free CPU type modules into one workspace crate
 - Behavior or layout change to `WorldVertex` / `Material` (byte layouts are shared with shaders/PRL — keep stable).
 
 ## Acceptance criteria
+Inherits the epic global acceptance criteria — see `E19--render-stack-decomposition/index.md` (these migrate to `context/lib/` at first promotion).
 - [ ] Crate is a workspace member; `cargo build --workspace` + `cargo test --workspace` pass.
 - [ ] `cargo tree -p postretro-render-data` shows no wgpu/winit/glyphon/kira/mlua/rquickjs.
 - [ ] All importers compile against the crate paths; `Material` derivation and any `BvhTree` tests pass from their relocated homes.
@@ -36,4 +37,4 @@ New crate. Move `geometry.rs` and `material.rs` into it as two modules. Widen an
 **One crate, not two** (was: geometry vs. material as separate crates). Principle: lean — two dependency-free leaf modules gain no recompile isolation from splitting; one crate is fewer workspace members and one dependency edge for every consumer.
 
 ## Sequencing
-**Phase 1:** Task 1. Milestone 1. Blocks `s3`/`s4`/`s7`/`s8`.
+**Phase 1:** Task 1. Milestone 1. Blocks `E19--level-loader`, `E19--visibility`, `E19--render-cpu`, and `E19--renderer-gpu`.

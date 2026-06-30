@@ -1,6 +1,6 @@
-# s7 — postretro-render-cpu
+# postretro-render-cpu
 
-> Epic: `render-stack-decomposition`. The CPU harvest — the largest direct compile-time win — and the cut that severs the `scripting → render` dependency.
+> Epic: `E19--render-stack-decomposition`. The CPU harvest — the largest direct compile-time win — and the cut that severs the `scripting → render` dependency.
 
 ## Goal
 
@@ -28,6 +28,7 @@ Move the CPU islands embedded in GPU files (byte-packing, frame planning, valida
 - The GPU passes themselves (`mesh_pass` GPU half, `sh_volume` GPU compose, `fog_pass`, `smoke` GPU, `sdf_*` passes).
 
 ## Acceptance criteria
+Inherits the epic global acceptance criteria — see `E19--render-stack-decomposition/index.md` (these migrate to `context/lib/` at first promotion).
 - [ ] Crate is a workspace member; `cargo build --workspace` + `cargo test --workspace` pass; all moved packing/planning/validation tests pass from their relocated home.
 - [ ] `cargo tree -p postretro-render-cpu` shows no `wgpu`/`winit`/`glyphon`/`kira`.
 - [ ] **No `scripting → render` edge remains:** `rg "use crate::render" crates/postretro/src/scripting` returns nothing (the scripting systems import `postretro-render-cpu` instead); a future `postretro-scripting-core`/scripting layer never depends on `postretro-renderer`.
@@ -50,4 +51,4 @@ Apply the descent rule against current source: a helper leaves if it is wgpu-fre
 Create the crate, move the ruled-in helpers + their constants + tests, re-point scripting systems, wire deps.
 
 ## Sequencing
-**Phase 1:** Task 1 (ruling + carve), then Task 2 (extract). Needs `s2`, `s3`, `s5`. Milestone 2; blocks `s8`.
+**Phase 1:** Task 1 (ruling + carve), then Task 2 (extract). Needs `postretro-render-data` (`E19--render-data`), `postretro-level-loader` (`E19--level-loader`), and `postretro-lighting` (`E19--lighting-cpu`). Milestone 2; blocks `E19--renderer-gpu`.

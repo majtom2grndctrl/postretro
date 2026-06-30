@@ -24,13 +24,21 @@ mod extraction_path_tests {
     use std::path::{Path, PathBuf};
 
     const MOVED_PATH_SENTINELS: &[&str] = &[
+        "components",
         "conv.rs",
+        "ctx.rs",
+        "data_registry.rs",
         "data_descriptors",
+        "engine_state_catalog.rs",
+        "error.rs",
+        "foundation_pods.rs",
         "game_state_refs.rs",
+        "ir",
         "ir/e2e_tests.rs",
         "ir/parity_tests.rs",
         "ir/scopes.rs",
         "ir/test_scope.rs",
+        "ir_scopes.rs",
         "luau.rs",
         "luau_prelude.rs",
         "luau_require.rs",
@@ -42,6 +50,7 @@ mod extraction_path_tests {
         "primitives/store.rs",
         "primitives/world.rs",
         "primitives_registry.rs",
+        "provenance.rs",
         "quickjs.rs",
         "reaction_dispatch.rs",
         "reaction_registry.rs",
@@ -49,8 +58,10 @@ mod extraction_path_tests {
         "reactions/registry.rs",
         "reactions/system_commands.rs",
         "refresh_plan.rs",
+        "registry.rs",
         "runtime",
         "sequence.rs",
+        "slot_table.rs",
         "staged_manifest.rs",
         "state_crossings.rs",
         "store_bridge.rs",
@@ -60,6 +71,7 @@ mod extraction_path_tests {
         "typedef/tests",
         "typedef/ts.rs",
         "ui",
+        "value_types.rs",
         "watcher.rs",
     ];
 
@@ -74,6 +86,37 @@ mod extraction_path_tests {
         "reactions/system_commands.rs",
         "typedef/mod.rs",
         "typedef/tests",
+    ];
+
+    const MOVED_MODULE_SENTINELS: &[&str] = &[
+        "components",
+        "conv",
+        "ctx",
+        "data_registry",
+        "data_descriptors",
+        "engine_state_catalog",
+        "error",
+        "foundation_pods",
+        "game_state_refs",
+        "ir",
+        "ir_scopes",
+        "luau",
+        "luau_prelude",
+        "luau_require",
+        "luau_virtual_modules",
+        "primitives_registry",
+        "provenance",
+        "quickjs",
+        "reaction_dispatch",
+        "refresh_plan",
+        "registry",
+        "runtime",
+        "sequence",
+        "slot_table",
+        "staged_manifest",
+        "state_crossings",
+        "value_types",
+        "watcher",
     ];
 
     #[test]
@@ -95,6 +138,46 @@ mod extraction_path_tests {
         );
     }
 
+    #[test]
+    fn scripting_core_extraction_barrel_declarations_do_not_reappear() {
+        let src_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let declaration_roots = [
+            Path::new("scripting/mod.rs"),
+            Path::new("bin/gen_script_types.rs"),
+        ];
+        let mut unexpected = Vec::new();
+
+        for relative_path in declaration_roots {
+            let path = src_dir.join(relative_path);
+            let Ok(source) = fs::read_to_string(path) else {
+                continue;
+            };
+
+            for module in MOVED_MODULE_SENTINELS {
+                if contains_module_declaration(&source, module) {
+                    unexpected.push(format!("{} declares mod {module}", relative_path.display()));
+                }
+            }
+        }
+
+        assert!(
+            unexpected.is_empty(),
+            "removed/collapsed scripting barrels were declared again: {unexpected:?}. Keep floor/core APIs in postretro_foundation, postretro_entities, or postretro_scripting_core; only real postretro modules and retained compatibility fixtures may be declared here."
+        );
+    }
+
+    #[test]
+    fn barrel_declaration_scan_matches_module_names_not_prefixes() {
+        assert!(contains_module_declaration(
+            "pub(crate) mod registry;",
+            "registry"
+        ));
+        assert!(!contains_module_declaration(
+            "pub(crate) mod registry_extra;",
+            "registry"
+        ));
+    }
+
     fn implementation_path_exists(path: &Path) -> bool {
         if path.is_file() {
             return true;
@@ -111,6 +194,31 @@ mod extraction_path_tests {
             let path = entry.path();
             path.is_file() || (path.is_dir() && contains_file(&path))
         })
+    }
+
+    fn contains_module_declaration(source: &str, module: &str) -> bool {
+        source.lines().any(|line| {
+            let declaration = line
+                .trim_start()
+                .strip_prefix("pub(crate) ")
+                .or_else(|| line.trim_start().strip_prefix("pub "))
+                .unwrap_or_else(|| line.trim_start());
+            let Some(rest) = declaration.strip_prefix("mod ") else {
+                return false;
+            };
+            let Some(rest) = rest.strip_prefix(module) else {
+                return false;
+            };
+
+            !rest.chars().next().is_some_and(is_identifier_continue)
+                && (rest.starts_with(';')
+                    || rest.starts_with('{')
+                    || rest.trim_start().starts_with(';'))
+        })
+    }
+
+    fn is_identifier_continue(ch: char) -> bool {
+        ch == '_' || ch.is_ascii_alphanumeric()
     }
 }
 
@@ -160,8 +268,41 @@ mod scripting_boundary_tests {
 
         assert!(
             violations.is_empty(),
-            "removed/collapsed scripting barrels were referenced through crate::scripting::<name> or crate::scripting::{{<name>...}}: {violations:#?}. Import floor/core APIs from postretro_foundation, postretro_entities, or postretro_scripting_core directly."
+            "removed/collapsed scripting barrels were imported through crate::scripting::<name> or crate::scripting::{{<name>...}} use trees: {violations:#?}. Import floor/core APIs from postretro_foundation, postretro_entities, or postretro_scripting_core directly."
         );
+    }
+
+    #[test]
+    fn scripting_boundary_scan_ignores_comments_strings_and_prefixes() {
+        let source = r###"
+            // use crate::scripting::registry::EntityId;
+            let _literal = "crate::scripting::ctx::ScriptCtx";
+            let _raw = r#"crate::scripting::components::Transform"#;
+            use crate::scripting::registry_extra::EntityId;
+        "###;
+        let scan_source = mask_comments_and_string_literals(source);
+
+        let direct_hits = scan_source
+            .match_indices("crate::scripting::")
+            .filter_map(|(index, _)| direct_path_barrel(&scan_source[index..]))
+            .collect::<Vec<_>>();
+
+        assert!(direct_hits.is_empty());
+    }
+
+    #[test]
+    fn scripting_boundary_scan_matches_direct_and_grouped_barrels() {
+        assert_eq!(
+            direct_path_barrel("crate::scripting::registry::EntityId"),
+            Some("registry")
+        );
+
+        let use_item = "use crate::scripting::{registry::EntityId, ctx::{ScriptCtx, Other}};";
+        let group = grouped_use_tree(use_item).expect("grouped scripting use");
+
+        assert!(grouped_use_tree_contains_barrel(group, "registry"));
+        assert!(grouped_use_tree_contains_barrel(group, "ctx"));
+        assert!(!grouped_use_tree_contains_barrel(group, "registry_extra"));
     }
 
     fn collect_boundary_violations(src_dir: &Path, path: &Path, violations: &mut Vec<String>) {
@@ -183,38 +324,241 @@ mod scripting_boundary_tests {
         let Ok(source) = fs::read_to_string(path) else {
             return;
         };
+        let scan_source = mask_comments_and_string_literals(&source);
 
-        for (line_index, line) in source.lines().enumerate() {
-            for barrel in REMOVED_OR_COLLAPSED_BARRELS {
-                let pattern = format!("crate::scripting::{barrel}");
-                if line.contains(&pattern) {
-                    violations.push(format!(
-                        "{}:{} contains {pattern}",
-                        display_relative_path(src_dir, path).display(),
-                        line_index + 1
-                    ));
-                }
+        for (path_index, _) in scan_source.match_indices("crate::scripting::") {
+            if let Some(barrel) = direct_path_barrel(&scan_source[path_index..]) {
+                violations.push(format!(
+                    "{}:{} references crate::scripting::{barrel}",
+                    display_relative_path(src_dir, path).display(),
+                    line_number_at(&source, path_index)
+                ));
             }
         }
 
-        let grouped_pattern = "crate::scripting::{";
-        for (match_index, _) in source.match_indices(grouped_pattern) {
-            let group_start = match_index + grouped_pattern.len();
-            let Some(group_end) = grouped_use_tree_end(&source[group_start..]) else {
+        for use_index in use_keyword_indices(&scan_source) {
+            let Some(use_end) = use_item_end(&scan_source[use_index..]) else {
                 continue;
             };
-            let group = &source[group_start..group_start + group_end];
+            let use_item = &scan_source[use_index..use_index + use_end];
+
+            let Some(group) = grouped_use_tree(use_item) else {
+                continue;
+            };
 
             for barrel in REMOVED_OR_COLLAPSED_BARRELS {
                 if grouped_use_tree_contains_barrel(group, barrel) {
                     violations.push(format!(
-                        "{}:{} contains crate::scripting::{{...{barrel}...}}",
+                        "{}:{} imports crate::scripting::{{...{barrel}...}}",
                         display_relative_path(src_dir, path).display(),
-                        line_number_at(&source, match_index)
+                        line_number_at(&source, use_index)
                     ));
                 }
             }
         }
+    }
+
+    fn mask_comments_and_string_literals(source: &str) -> String {
+        let mut masked = String::with_capacity(source.len());
+        let mut chars = source.char_indices().peekable();
+        let mut block_comment_depth = 0usize;
+        let mut in_line_comment = false;
+        let mut in_string = false;
+        let mut string_escape = false;
+        let mut raw_string_hashes: Option<usize> = None;
+
+        while let Some((index, ch)) = chars.next() {
+            let next = chars.peek().map(|(_, next)| *next);
+
+            if in_line_comment {
+                if ch == '\n' {
+                    in_line_comment = false;
+                    masked.push('\n');
+                } else {
+                    push_masked_char(&mut masked, ch);
+                }
+                continue;
+            }
+
+            if block_comment_depth > 0 {
+                if ch == '/' && next == Some('*') {
+                    block_comment_depth += 1;
+                    push_masked_char(&mut masked, ch);
+                    if let Some((_, next_ch)) = chars.next() {
+                        push_masked_char(&mut masked, next_ch);
+                    }
+                } else if ch == '*' && next == Some('/') {
+                    block_comment_depth -= 1;
+                    push_masked_char(&mut masked, ch);
+                    if let Some((_, next_ch)) = chars.next() {
+                        push_masked_char(&mut masked, next_ch);
+                    }
+                } else if ch == '\n' {
+                    masked.push('\n');
+                } else {
+                    push_masked_char(&mut masked, ch);
+                }
+                continue;
+            }
+
+            if let Some(hash_count) = raw_string_hashes {
+                if raw_string_closes(source, index, hash_count) {
+                    raw_string_hashes = None;
+                    push_masked_char(&mut masked, ch);
+                    for _ in 0..hash_count {
+                        if let Some((_, next_ch)) = chars.next() {
+                            push_masked_char(&mut masked, next_ch);
+                        }
+                    }
+                } else if ch == '\n' {
+                    masked.push('\n');
+                } else {
+                    push_masked_char(&mut masked, ch);
+                }
+                continue;
+            }
+
+            if in_string {
+                if ch == '\n' {
+                    masked.push('\n');
+                } else {
+                    push_masked_char(&mut masked, ch);
+                }
+                if string_escape {
+                    string_escape = false;
+                } else if ch == '\\' {
+                    string_escape = true;
+                } else if ch == '"' {
+                    in_string = false;
+                }
+                continue;
+            }
+
+            if ch == '/' && next == Some('/') {
+                in_line_comment = true;
+                push_masked_char(&mut masked, ch);
+                if let Some((_, next_ch)) = chars.next() {
+                    push_masked_char(&mut masked, next_ch);
+                }
+            } else if ch == '/' && next == Some('*') {
+                block_comment_depth = 1;
+                push_masked_char(&mut masked, ch);
+                if let Some((_, next_ch)) = chars.next() {
+                    push_masked_char(&mut masked, next_ch);
+                }
+            } else if let Some(hash_count) = raw_string_start(source, index) {
+                raw_string_hashes = Some(hash_count);
+                push_masked_char(&mut masked, ch);
+                for _ in 0..hash_count {
+                    if let Some((_, next_ch)) = chars.next() {
+                        push_masked_char(&mut masked, next_ch);
+                    }
+                }
+                if let Some((_, next_ch)) = chars.next() {
+                    push_masked_char(&mut masked, next_ch);
+                }
+            } else if ch == '"' {
+                in_string = true;
+                string_escape = false;
+                push_masked_char(&mut masked, ch);
+            } else {
+                masked.push(ch);
+            }
+        }
+
+        masked
+    }
+
+    fn push_masked_char(masked: &mut String, ch: char) {
+        for _ in 0..ch.len_utf8() {
+            masked.push(' ');
+        }
+    }
+
+    fn raw_string_start(source: &str, index: usize) -> Option<usize> {
+        let rest = source.get(index..)?;
+        let mut chars = rest.chars();
+        if chars.next()? != 'r' {
+            return None;
+        }
+
+        let mut hash_count = 0usize;
+        for ch in chars {
+            match ch {
+                '#' => hash_count += 1,
+                '"' => return Some(hash_count),
+                _ => return None,
+            }
+        }
+
+        None
+    }
+
+    fn raw_string_closes(source: &str, index: usize, hash_count: usize) -> bool {
+        let Some(rest) = source.get(index..) else {
+            return false;
+        };
+        if !rest.starts_with('"') {
+            return false;
+        }
+
+        rest[1..].starts_with(&"#".repeat(hash_count))
+    }
+
+    fn use_keyword_indices(source: &str) -> impl Iterator<Item = usize> + '_ {
+        source.match_indices("use").filter_map(|(index, _)| {
+            let before = source[..index].chars().next_back();
+            let after = source[index + "use".len()..].chars().next();
+            (!before.is_some_and(is_identifier_continue)
+                && !after.is_some_and(is_identifier_continue))
+            .then_some(index)
+        })
+    }
+
+    fn use_item_end(source_from_use: &str) -> Option<usize> {
+        let mut depth = 0usize;
+
+        for (index, byte) in source_from_use.bytes().enumerate() {
+            match byte {
+                b'{' => depth += 1,
+                b'}' => depth = depth.saturating_sub(1),
+                b';' if depth == 0 => return Some(index + 1),
+                _ => {}
+            }
+        }
+
+        None
+    }
+
+    fn direct_path_barrel(path: &str) -> Option<&'static str> {
+        let rest = path.strip_prefix("crate::scripting::")?;
+        let (segment, _) = split_first_path_segment(rest);
+        REMOVED_OR_COLLAPSED_BARRELS
+            .iter()
+            .copied()
+            .find(|barrel| *barrel == segment)
+    }
+
+    fn grouped_use_tree(use_item: &str) -> Option<&str> {
+        let path = use_path_after_keyword(use_item)?;
+        let rest = path.strip_prefix("crate::scripting::")?;
+        let rest = rest.trim_start();
+        let rest = rest.strip_prefix('{')?;
+        let group_end = grouped_use_tree_end(rest)?;
+        Some(&rest[..group_end])
+    }
+
+    fn use_path_after_keyword(use_item: &str) -> Option<&str> {
+        Some(use_item.strip_prefix("use")?.trim_start())
+    }
+
+    fn split_first_path_segment(path: &str) -> (&str, &str) {
+        let end = path
+            .char_indices()
+            .find_map(|(index, ch)| (!is_identifier_continue(ch)).then_some(index))
+            .unwrap_or(path.len());
+
+        (&path[..end], &path[end..])
     }
 
     fn grouped_use_tree_end(source_after_open_brace: &str) -> Option<usize> {
@@ -259,9 +603,11 @@ mod scripting_boundary_tests {
             return false;
         };
 
-        rest.is_empty()
-            || rest.starts_with("::")
-            || rest.chars().next().is_some_and(char::is_whitespace)
+        !rest.chars().next().is_some_and(is_identifier_continue)
+            && (rest.is_empty()
+                || rest.starts_with("::")
+                || rest.chars().next().is_some_and(char::is_whitespace)
+                || rest.starts_with(','))
     }
 
     fn line_number_at(source: &str, byte_index: usize) -> usize {
@@ -282,7 +628,7 @@ mod scripting_boundary_tests {
         };
 
         // This source scan catches direct `crate::scripting::<name>` paths and
-        // top-level grouped `crate::scripting::{<name>...}` imports. It still
+        // top-level grouped `crate::scripting::{<name>...}` use trees. It still
         // does not parse aliases to `scripting` or `super::` relative forms.
         // After barrel deletion those forms are compile errors, so this is a
         // reintroduction lock rather than a full parser.
@@ -294,5 +640,9 @@ mod scripting_boundary_tests {
         path.strip_prefix(src_dir)
             .map(PathBuf::from)
             .unwrap_or_else(|_| path.to_path_buf())
+    }
+
+    fn is_identifier_continue(ch: char) -> bool {
+        ch == '_' || ch.is_ascii_alphanumeric()
     }
 }

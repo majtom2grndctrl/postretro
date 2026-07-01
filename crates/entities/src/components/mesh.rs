@@ -224,7 +224,7 @@ impl MeshAnimation {
 
 /// Marks an entity as rendering a skinned model. `model` is the model handle
 /// the `prop_mesh` classname handler reads from a map entity's `model` key — the
-/// content-canonical path passed to `crate::model::gltf_loader::load_model`. It
+/// content-canonical path passed to `postretro_model::gltf_loader::load_model`. It
 /// doubles as the renderer cache key: the level-load model sweep uploads each
 /// distinct handle once, and the per-frame draw planner groups instances by it.
 ///

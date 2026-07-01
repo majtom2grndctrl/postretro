@@ -1057,7 +1057,7 @@ impl App {
                 let meta = renderer.skinned_model_clip_metadata(model);
                 session
                     .mesh_clip_tables
-                    .insert(crate::model::ModelHandle::from(model.clone()), &meta);
+                    .insert(postretro_model::ModelHandle::from(model.clone()), &meta);
                 // Build this model's game-side hit-zone entry by re-loading the
                 // glTF independently.
                 session

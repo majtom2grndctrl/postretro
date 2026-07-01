@@ -11,15 +11,15 @@
 
 use glam::{Mat4, Vec4};
 
-use crate::model::ModelHandle;
+use postretro_model::ModelHandle;
 use postretro_render_data::cone_frustum::{Aabb, aabb_intersects_frustum};
 // The per-instance sample-parameter types (`ClipSample`, `MeshSampleParams`,
 // `FadeSource`, `MeshFade`, `SnapshotTag`, `CaptureInstruction`) and the
 // `instance_phase` per-instance phase helper are render-free plain data/logic
-// and now live in `crate::model::sample_params`, imported directly by both the
+// and now live in `postretro_model::sample_params`, imported directly by both the
 // renderer (`mesh_pass`, `mesh_render`) and the game side (`mesh_anim`, the
 // hit-zone facility) — no renderer dependency crosses into game code.
-use crate::model::sample_params::{CaptureInstruction, MeshSampleParams};
+use postretro_model::sample_params::{CaptureInstruction, MeshSampleParams};
 
 /// Fixed per-frame bone-palette budget, in `BonePaletteEntry` slots (one slot =
 /// one joint of one instance). Sized from a representative wave: ~64 concurrent

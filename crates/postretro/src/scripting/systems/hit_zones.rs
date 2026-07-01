@@ -16,16 +16,16 @@ use parry3d::math::{Isometry, Point, Vector};
 use parry3d::query::RayCast;
 use parry3d::shape::{Ball, Capsule};
 
-use crate::model::ModelHandle;
-use crate::model::anim::{BlendSource, Loop, sample_blended_world, sample_clip_looped_world};
-use crate::model::gltf_loader::{self, JointZone};
-use crate::model::sample_params::{ClipSample, FadeSource, MeshSampleParams, instance_phase};
-use crate::model::skeleton::{AnimationClip, Skeleton};
 use postretro_entities::components::health::HealthComponent;
 use postretro_entities::components::mesh::{MeshAnimation, MeshComponent};
 use postretro_entities::registry::{
     ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform,
 };
+use postretro_model::ModelHandle;
+use postretro_model::anim::{BlendSource, Loop, sample_blended_world, sample_clip_looped_world};
+use postretro_model::gltf_loader::{self, JointZone};
+use postretro_model::sample_params::{ClipSample, FadeSource, MeshSampleParams, instance_phase};
+use postretro_model::skeleton::{AnimationClip, Skeleton};
 use postretro_render_data::cone_frustum::Aabb;
 
 /// Engine default capsule radius (meters) for a zone-bearing joint whose
@@ -810,7 +810,7 @@ mod tests {
     // through `super::*` (the module's own imports).
     use super::*;
 
-    use crate::model::skeleton::{Interp, Joint, JointTracks, RestLocal, Track};
+    use postretro_model::skeleton::{Interp, Joint, JointTracks, RestLocal, Track};
 
     fn joint(parent: Option<usize>, rest: RestLocal) -> Joint {
         Joint {
@@ -879,11 +879,12 @@ mod tests {
         };
         // Child joint (index 1) sweeps 0 → 10 on +X across the clip; root holds.
         let child_tracks = JointTracks {
-            translation: Track {
-                times: vec![0.0, 1.0],
-                values: vec![Vec3::ZERO, Vec3::new(10.0, 0.0, 0.0)],
-                mode: Interp::Linear,
-            },
+            translation: Track::new(
+                vec![0.0, 1.0],
+                vec![Vec3::ZERO, Vec3::new(10.0, 0.0, 0.0)],
+                Interp::Linear,
+            )
+            .expect("valid swept-limb translation track"),
             ..Default::default()
         };
         let clip = AnimationClip {
@@ -934,11 +935,12 @@ mod tests {
         // Three keys: start (0,0,0), peak (0,8,0), end (0,0,0). Endpoints share
         // y=0; the arc bulges to y=8 only mid-clip.
         let tracks = JointTracks {
-            translation: Track {
-                times: vec![0.0, 0.5, 1.0],
-                values: vec![Vec3::ZERO, Vec3::new(0.0, 8.0, 0.0), Vec3::ZERO],
-                mode: Interp::Linear,
-            },
+            translation: Track::new(
+                vec![0.0, 0.5, 1.0],
+                vec![Vec3::ZERO, Vec3::new(0.0, 8.0, 0.0), Vec3::ZERO],
+                Interp::Linear,
+            )
+            .expect("valid mid-swing translation track"),
             ..Default::default()
         };
         let clip = AnimationClip {
@@ -1090,11 +1092,12 @@ mod tests {
         // WITHOUT wrapping (Loop::Wrap maps t==duration back to 0; t=1 < 2 is a
         // genuine interior sample).
         let child_tracks = JointTracks {
-            translation: Track {
-                times: vec![0.0, 2.0],
-                values: vec![Vec3::ZERO, Vec3::new(10.0, 0.0, 0.0)],
-                mode: Interp::Linear,
-            },
+            translation: Track::new(
+                vec![0.0, 2.0],
+                vec![Vec3::ZERO, Vec3::new(10.0, 0.0, 0.0)],
+                Interp::Linear,
+            )
+            .expect("valid swinging-limb translation track"),
             ..Default::default()
         };
         let clip = AnimationClip {

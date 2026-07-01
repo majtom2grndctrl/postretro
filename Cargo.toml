@@ -5,6 +5,7 @@ members = [
     "crates/entities",
     "crates/scripting-core",
     "crates/level-format",
+    "crates/model",
     "crates/render-data",
     "crates/level-loader",
     "crates/visibility",
@@ -36,7 +37,7 @@ pollster = "0.4"
 glyphon = "0.11"
 
 # Math. `bytemuck` lets glam's `Vec3`/`Mat4` derive `Pod`/`Zeroable`, so the
-# CPU-side per-model `Aabb` (carried on the Pod skinned mesh) is itself Pod
+# CPU-side per-model `Aabb` is the plain bound type carried by skinned meshes
 # without a parallel array-of-`f32` mirror.
 glam = { version = "0.32", features = ["serde", "bytemuck"] }
 
@@ -92,7 +93,7 @@ rayon = "1"
 
 # Image loading
 image = { version = "0.25", default-features = false, features = ["png"] }
-# glTF parsing (CPU-side skinned-model loader in `postretro::model`). Default
+# glTF parsing (CPU-side skinned-model loader in `postretro-model`). Default
 # features: `import` (resolves the external `scene.bin` + URIs and decodes any
 # images), `utils` (typed accessor readers for positions/UVs/joints/weights),
 # `names` (clip names). The non-default `extras` feature surfaces top-level
@@ -146,6 +147,7 @@ proptest = "1"
 
 # Workspace members
 postretro-level-format = { path = "crates/level-format" }
+postretro-model = { path = "crates/model" }
 postretro-render-data = { path = "crates/render-data" }
 postretro-level-loader = { path = "crates/level-loader" }
 postretro-visibility = { path = "crates/visibility" }

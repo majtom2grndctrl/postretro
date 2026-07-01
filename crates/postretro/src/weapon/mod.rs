@@ -804,9 +804,9 @@ mod tests {
 
     // --- Skeletal hit-zone delegation (Task 4) ------------------------------
 
-    use crate::model::skeleton::{Joint, RestLocal, Skeleton};
     use crate::scripting_systems::hit_zones::ModelHitZones;
     use postretro_entities::components::mesh::MeshComponent;
+    use postretro_model::skeleton::{Joint, RestLocal, Skeleton};
     use postretro_render_data::cone_frustum::Aabb;
     use std::sync::Arc;
 
@@ -828,7 +828,7 @@ mod tests {
         let model = ModelHitZones {
             skeleton: Arc::new(skeleton),
             clips: Arc::new(vec![]),
-            joint_zones: vec![Some(crate::model::gltf_loader::JointZone {
+            joint_zones: vec![Some(postretro_model::gltf_loader::JointZone {
                 tag: "head".to_string(),
                 radius: Some(radius),
             })],
@@ -838,7 +838,7 @@ mod tests {
             }),
         };
         let mut store = HitZoneStore::new();
-        store.insert_for_test(crate::model::ModelHandle::from(handle), model);
+        store.insert_for_test(postretro_model::ModelHandle::from(handle), model);
         store
     }
 

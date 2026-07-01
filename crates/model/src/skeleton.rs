@@ -33,8 +33,8 @@ impl Default for RestLocal {
 /// transforms a vertex from model space into this joint's local bind space —
 /// the standard glTF inverse-bind matrix.
 ///
-/// Populated by `crate::model::gltf_loader`. The animation sampler in
-/// `crate::model::anim` walks these parent links to compose world-space joint matrices.
+/// Populated by `crate::gltf_loader`. The animation sampler in
+/// `crate::anim` walks these parent links to compose world-space joint matrices.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Joint {
     /// Parent joint index, or `None` for the root. An index keeps the hierarchy
@@ -83,27 +83,82 @@ pub enum Interp {
 /// and always the same length. Empty = the channel is not animated for this
 /// joint (the sampler falls back to the joint's bind-pose component).
 ///
-/// `mode` records how `crate::model::anim::sample_clip` blends between keys:
+/// `mode` records how `crate::anim::sample_clip` blends between keys:
 /// `Linear` interpolates (lerp for translation/scale, normalized slerp for
 /// rotation); `Step` holds the lower bracketing key. The loader maps the glTF
 /// sampler's interpolation here; CUBICSPLINE channels are degraded to `Linear`
 /// with their value elements (tangents discarded) at load time.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Track<T> {
-    pub times: Vec<f32>,
-    pub values: Vec<T>,
+    pub(crate) times: Vec<f32>,
+    pub(crate) values: Vec<T>,
     /// How to interpolate between keyframes. [`Interp::Linear`] is the meaningful
-    /// default: field-elided construction and `Track::default()` both interpolate
-    /// rather than step, which is the common case for authored animation clips.
-    pub mode: Interp,
+    /// default: crate-local field construction and `Track::default()` both
+    /// interpolate rather than step, which is the common case for authored
+    /// animation clips.
+    pub(crate) mode: Interp,
+}
+
+/// Why a [`Track`] could not be built.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrackBuildError {
+    /// `times` and `values` were not parallel arrays.
+    LengthMismatch,
+    /// A key time was NaN or infinite.
+    NonFiniteTime,
+    /// Key times were not strictly ascending.
+    NonAscendingTime,
 }
 
 impl<T> Track<T> {
+    /// Build a keyframe track after validating the public invariants the sampler
+    /// relies on: parallel arrays, finite times, and strictly ascending keys.
+    pub fn new(times: Vec<f32>, values: Vec<T>, mode: Interp) -> Result<Self, TrackBuildError> {
+        validate_track_times(&times, values.len())?;
+        Ok(Self {
+            times,
+            values,
+            mode,
+        })
+    }
+
+    /// Key times in seconds. Parallel to [`Track::values`].
+    pub fn times(&self) -> &[f32] {
+        &self.times
+    }
+
+    /// Keyframe values. Parallel to [`Track::times`].
+    pub fn values(&self) -> &[T] {
+        &self.values
+    }
+
+    /// The interpolation mode used between keyframes.
+    pub fn mode(&self) -> Interp {
+        self.mode
+    }
+
     /// True when the track carries no keyframes.
     #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.times.is_empty()
     }
+}
+
+fn validate_track_times(times: &[f32], value_count: usize) -> Result<(), TrackBuildError> {
+    if times.len() != value_count {
+        return Err(TrackBuildError::LengthMismatch);
+    }
+    for &time in times {
+        if !time.is_finite() {
+            return Err(TrackBuildError::NonFiniteTime);
+        }
+    }
+    for pair in times.windows(2) {
+        if pair[0] >= pair[1] {
+            return Err(TrackBuildError::NonAscendingTime);
+        }
+    }
+    Ok(())
 }
 
 /// Per-joint animation tracks, indexed in lockstep with [`Skeleton::joints`]
@@ -124,17 +179,56 @@ pub struct JointTracks {
 ///
 /// Keyframe storage is per-joint TRS tracks in [`AnimationClip::joints`], one
 /// entry per skeleton joint and in the same order as [`Skeleton::joints`].
-/// `model::anim::sample_clip` samples a joint's tracks at a time `t` to recover its local TRS, composes the
-/// hierarchy (parent-before-child), and applies each joint's inverse-bind matrix.
+/// `crate::anim::sample_clip` samples a joint's tracks at a time `t` to recover
+/// its local TRS, composes the hierarchy (parent-before-child), and applies each
+/// joint's inverse-bind matrix.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct AnimationClip {
     /// Clip name as authored (e.g. the glTF animation name "mixamo.com").
     pub name: String,
-    /// Total clip length in seconds — the latest input time across all channels,
-    /// including channels that are subsequently skipped (e.g. malformed CUBICSPLINE
-    /// channels). A skipped channel still advances the duration before being rejected.
+    /// Total clip length in seconds — the latest valid input time across all
+    /// channels, including channels that are subsequently skipped for malformed
+    /// output values or unsupported interpolation details.
     pub duration: f32,
     /// Per-joint TRS tracks, parallel to [`Skeleton::joints`]. Joints with no
     /// channel in the clip carry empty tracks (held at bind pose by the sampler).
     pub joints: Vec<JointTracks>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn track_constructor_rejects_non_parallel_arrays() {
+        assert_eq!(
+            Track::new(vec![0.0, 1.0], vec![Vec3::ZERO], Interp::Linear).unwrap_err(),
+            TrackBuildError::LengthMismatch
+        );
+    }
+
+    #[test]
+    fn track_constructor_rejects_non_finite_times() {
+        assert_eq!(
+            Track::new(
+                vec![0.0, f32::NAN],
+                vec![Vec3::ZERO, Vec3::ONE],
+                Interp::Linear,
+            )
+            .unwrap_err(),
+            TrackBuildError::NonFiniteTime
+        );
+    }
+
+    #[test]
+    fn track_constructor_rejects_duplicate_or_descending_times() {
+        assert_eq!(
+            Track::new(vec![0.0, 0.0], vec![Vec3::ZERO, Vec3::ONE], Interp::Linear,).unwrap_err(),
+            TrackBuildError::NonAscendingTime
+        );
+        assert_eq!(
+            Track::new(vec![1.0, 0.0], vec![Vec3::ZERO, Vec3::ONE], Interp::Linear,).unwrap_err(),
+            TrackBuildError::NonAscendingTime
+        );
+    }
 }

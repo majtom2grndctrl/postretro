@@ -61,23 +61,28 @@ impl SkinnedVertex {
 }
 
 /// A skinned mesh: one interleaved vertex stream plus a 32-bit index buffer.
-/// Materials and the skeleton are carried alongside in [`crate::model`], not
+/// Materials and the skeleton are carried alongside in [`crate`], not
 /// embedded here.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SkinnedMesh {
     pub vertices: Vec<SkinnedVertex>,
     pub indices: Vec<u32>,
     /// Tight LOCAL-space (bind-pose) AABB over every vertex position, computed at
-    /// glTF load. Carried CPU-side so the per-light caster cull (a later task)
-    /// can transform it by an instance's world transform and test it against a
-    /// light's cone/face frustum. It is a bind-pose bound; animation can push a
+    /// glTF load. Carried CPU-side so the per-light caster cull can transform it
+    /// by an instance's world transform and test it against a light's cone/face
+    /// frustum. It is a bind-pose bound; animation can push a
     /// vertex slightly past it, which the cull treats conservatively (a missed
     /// caster only loses a sliver of its own shadow at the silhouette). The
     /// renderer-side uploaded model needs no copy — the cull reads this CPU side.
-    pub(crate) bounds: Aabb,
+    bounds: Aabb,
 }
 
 impl SkinnedMesh {
+    /// Tight local-space (bind-pose) AABB over every vertex position.
+    pub fn bounds(&self) -> Aabb {
+        self.bounds
+    }
+
     /// Recompute [`SkinnedMesh::bounds`] as the tight local-space AABB over every
     /// vertex position. A mesh with no vertices yields a zero box (see
     /// [`Aabb::from_points`]). Called by the glTF loader after merging primitives;

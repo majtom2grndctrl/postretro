@@ -695,7 +695,7 @@ pub(super) struct FullRenderer {
     /// `sample_clip` clears then refills it per instance, so steady-state frames
     /// allocate nothing. Lives on the renderer (not in the GPU pass) — it is
     /// CPU-side pose data the pass merely uploads.
-    pub(super) bone_palette_scratch: Vec<crate::model::BonePaletteEntry>,
+    pub(super) bone_palette_scratch: Vec<postretro_model::BonePaletteEntry>,
 
     /// Wall-clock of the last palette/instance-overflow warning (render clock),
     /// for rate-limiting (mirrors `EmitterBridge`'s `last_warn_time`). Overflow

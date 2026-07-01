@@ -22,7 +22,6 @@ mod fx;
 mod health;
 mod input;
 mod lighting;
-mod model;
 mod movement;
 // The runtime nav graph is built in every build whenever a level carries a
 // baked navmesh; pathfinding consumes its query surface.
@@ -224,7 +223,7 @@ fn resolve_mesh_entity_clips(
             continue;
         };
         let model_name = component.model.clone();
-        let handle = crate::model::ModelHandle::from(model_name.clone());
+        let handle = postretro_model::ModelHandle::from(model_name.clone());
         let Some(anim) = component.animation.as_mut() else {
             continue;
         };
@@ -277,11 +276,11 @@ fn warn_unknown_zone_multipliers(
         if health.zone_multipliers.is_empty() {
             continue;
         }
-        let handle = crate::model::ModelHandle::from(mesh.model.clone());
+        let handle = postretro_model::ModelHandle::from(mesh.model.clone());
         let declared = health.zone_multipliers.keys().map(String::as_str);
         // A model with no hit-zone entry carries no zones: every declared tag is
         // unknown. Pass an empty zone table so the cross-check reports them all.
-        let empty_zones: Vec<Option<crate::model::gltf_loader::JointZone>> = Vec::new();
+        let empty_zones: Vec<Option<postretro_model::gltf_loader::JointZone>> = Vec::new();
         let joint_zones = store
             .get(&handle)
             .map(|m| m.joint_zones.as_slice())
@@ -6449,7 +6448,7 @@ mod tests {
             },
         ];
         tables.insert(
-            crate::model::ModelHandle::from("models/descriptor_mob/scene.gltf"),
+            postretro_model::ModelHandle::from("models/descriptor_mob/scene.gltf"),
             &meta,
         );
 
@@ -6526,7 +6525,7 @@ mod tests {
             },
         ];
         tables.insert(
-            crate::model::ModelHandle::from("models/remote_enemy/scene.gltf"),
+            postretro_model::ModelHandle::from("models/remote_enemy/scene.gltf"),
             &meta,
         );
 
@@ -6552,7 +6551,7 @@ mod tests {
         // `prop_mesh` entity simply renders nothing.
         let bad = std::path::Path::new("definitely/not/a/real/model.gltf");
         assert!(
-            crate::model::gltf_loader::load_model(bad).is_err(),
+            postretro_model::gltf_loader::load_model(bad).is_err(),
             "loading a missing glTF must return Err, never panic",
         );
     }

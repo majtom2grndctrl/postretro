@@ -462,12 +462,13 @@ fn locate_span(times: &[f32], t: f32) -> Option<(usize, usize, f32)> {
 /// Sample a `Vec3` track (translation/scale). `Linear` lerps component-wise
 /// between the bracketing keys; `Step` holds the lower key (`i0`) with no blend.
 fn sample_vec3_track(track: &Track<Vec3>, t: f32) -> Option<Vec3> {
-    let (i0, i1, frac) = locate_span(&track.times, t)?;
-    let a = track.values[i0];
-    match track.mode {
+    let values = track.values();
+    let (i0, i1, frac) = locate_span(track.times(), t)?;
+    let a = values[i0];
+    match track.mode() {
         Interp::Step => Some(a),
         Interp::Linear => {
-            let b = track.values[i1];
+            let b = values[i1];
             Some(a.lerp(b, frac))
         }
     }
@@ -478,12 +479,13 @@ fn sample_vec3_track(track: &Track<Vec3>, t: f32) -> Option<Vec3> {
 /// glam's `slerp` handles the dot-sign flip internally, so the interpolation
 /// never takes the long way around. `Step` holds the lower key (`i0`).
 fn sample_quat_track(track: &Track<Quat>, t: f32) -> Option<Quat> {
-    let (i0, i1, frac) = locate_span(&track.times, t)?;
-    let a = track.values[i0].normalize();
-    if i0 == i1 || track.mode == Interp::Step {
+    let values = track.values();
+    let (i0, i1, frac) = locate_span(track.times(), t)?;
+    let a = values[i0].normalize();
+    if i0 == i1 || track.mode() == Interp::Step {
         return Some(a);
     }
-    let b = track.values[i1].normalize();
+    let b = values[i1].normalize();
     // glam's `slerp` already picks the shortest arc (it negates `b` when the dot
     // is negative), so we get the correct hemisphere without a manual flip.
     Some(a.slerp(b, frac).normalize())
@@ -492,7 +494,7 @@ fn sample_quat_track(track: &Track<Quat>, t: f32) -> Option<Quat> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::skeleton::Joint;
+    use crate::skeleton::Joint;
 
     const EPS: f32 = 1.0e-5;
 
@@ -716,7 +718,7 @@ mod tests {
     /// CPU pose-sampling figure `findings.md` projects to wave scale; it needs no
     /// renderer, so it runs here. Gated on the asset existing (mirrors the loader's
     /// real-model test) and `#[ignore]`d so it only runs on demand:
-    ///   cargo test -p postretro --release sample_clip_cpu_cost -- --ignored --nocapture
+    ///   cargo test -p postretro-model --release sample_clip_cpu_cost -- --ignored --nocapture
     /// (Run `--release` for a representative steady-state figure; debug is far
     /// slower and not the number to report.)
     #[test]
@@ -731,7 +733,7 @@ mod tests {
             eprintln!("skipping: model asset not present at {}", path.display());
             return;
         }
-        let model = crate::model::gltf_loader::load_model(&path).expect("model loads");
+        let model = crate::gltf_loader::load_model(&path).expect("model loads");
         let clip = model.clips.first().expect("model has one clip");
         let skeleton = &model.skeleton;
 

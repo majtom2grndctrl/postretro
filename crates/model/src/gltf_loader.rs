@@ -76,8 +76,9 @@ pub struct LoadedModel {
     pub joint_zones: Vec<Option<JointZone>>,
 }
 
-/// Errors surfaced while loading a glTF model. Every malformed/unsupported input
-/// returns one of these — the loader never panics; the caller handles absence.
+/// Errors surfaced while loading required glTF model structure. Optional authored
+/// data, such as malformed animation channels or metadata extras, may warn and
+/// degrade instead; the loader never panics.
 #[derive(Debug, Error)]
 pub enum ModelLoadError {
     /// The glTF document or a referenced external buffer could not be read or parsed.
@@ -239,7 +240,8 @@ fn read_joint_zone(extras: &gltf::json::Extras) -> Option<JointZone> {
 /// skeleton (joints stored parent-before-child with inverse-bind matrices), and
 /// its animation clips. Material textures resolve to their baked `.prm` cache key
 /// by content-hashing the source PNG at runtime. Returns an error (never panics)
-/// on malformed or unsupported input.
+/// on malformed or unsupported required model input. Malformed optional authored
+/// animation channels warn and are skipped, so the joint holds its rest pose.
 pub fn load_model(path: &Path) -> Result<LoadedModel, ModelLoadError> {
     let path_str = path.display().to_string();
     // Open the document and resolve only geometry/skin/animation buffers — no
@@ -593,8 +595,8 @@ fn load_mesh(
         });
     }
 
-    // Tight local-space bound over the merged vertex positions, for the per-light
-    // caster cull (a later task transforms it by the instance transform).
+    // Tight local-space bound over the merged vertex positions. The current
+    // per-light caster cull transforms this bound by the instance transform.
     out.compute_bounds();
 
     Ok((out, submeshes))
@@ -649,14 +651,17 @@ fn normalize_weights(weights: [u8; 4]) -> [u8; 4] {
 /// same as an absent channel).
 ///
 /// - LINEAR / STEP map directly to [`Interp::Linear`] / [`Interp::Step`]; the raw
-///   outputs are the per-keyframe values (one element per input time).
+///   outputs are the per-keyframe values (one element per input time). If that
+///   one-to-one shape does not hold, the channel is malformed, so we warn and
+///   skip it to preserve the parallel-length invariant `Track` requires.
 /// - CUBICSPLINE stores three elements per keyframe — `[in-tangent, value,
 ///   out-tangent]` — so the value of keyframe `k` is `raw[3k + 1]`. We extract
 ///   those, discard the tangents, store the track as `Linear` (degrading cubic to
-///   linear; tangent storage and hermite blending are not implemented), and warn. If the triple shape does not hold
-///   (`raw.len() != 3 * key_count`) the channel is malformed for cubic, so we warn
-///   and skip it — this also guards the parallel-length invariant `Track`
-///   requires (otherwise 3N values would be paired with N times).
+///   linear; tangent storage and hermite blending are not implemented), and warn.
+///   If the triple shape does not hold (`raw.len() != 3 * key_count`) the channel
+///   is malformed for cubic, so we warn and skip it — this also guards the
+///   parallel-length invariant `Track` requires (otherwise 3N values would be
+///   paired with N times).
 fn resolve_keyframes<T: Copy>(
     raw: Vec<T>,
     key_count: usize,
@@ -666,8 +671,28 @@ fn resolve_keyframes<T: Copy>(
 ) -> Option<(Vec<T>, Interp)> {
     use gltf::animation::Interpolation;
     match interpolation {
-        Interpolation::Linear => Some((raw, Interp::Linear)),
-        Interpolation::Step => Some((raw, Interp::Step)),
+        Interpolation::Linear => {
+            if raw.len() != key_count {
+                log::warn!(
+                    "clip '{clip_name}' {channel_kind} channel: LINEAR output count {} \
+                     does not match its {key_count} keyframes; skipping channel (joint holds rest pose)",
+                    raw.len()
+                );
+                return None;
+            }
+            Some((raw, Interp::Linear))
+        }
+        Interpolation::Step => {
+            if raw.len() != key_count {
+                log::warn!(
+                    "clip '{clip_name}' {channel_kind} channel: STEP output count {} \
+                     does not match its {key_count} keyframes; skipping channel (joint holds rest pose)",
+                    raw.len()
+                );
+                return None;
+            }
+            Some((raw, Interp::Step))
+        }
         Interpolation::CubicSpline => {
             if raw.len() != key_count * 3 {
                 log::warn!(
@@ -684,6 +709,90 @@ fn resolve_keyframes<T: Copy>(
             // Each triple is [in-tangent, value, out-tangent]; keep the value.
             let values: Vec<T> = (0..key_count).map(|k| raw[3 * k + 1]).collect();
             Some((values, Interp::Linear))
+        }
+    }
+}
+
+fn validate_key_times(times: &[f32], clip_name: &str) -> bool {
+    for (i, &time) in times.iter().enumerate() {
+        if !time.is_finite() {
+            log::warn!(
+                "clip '{clip_name}' animation channel: input time at key {i} is not finite; \
+                 skipping channel (joint holds rest pose)"
+            );
+            return false;
+        }
+    }
+    for (i, pair) in times.windows(2).enumerate() {
+        if pair[0] >= pair[1] {
+            log::warn!(
+                "clip '{clip_name}' animation channel: input times are not strictly \
+                 ascending at keys {i} and {}; skipping channel (joint holds rest pose)",
+                i + 1
+            );
+            return false;
+        }
+    }
+    true
+}
+
+fn vec3_is_finite(v: Vec3) -> bool {
+    v.x.is_finite() && v.y.is_finite() && v.z.is_finite()
+}
+
+fn validate_vec3_keyframes(values: &[Vec3], clip_name: &str, channel_kind: &str) -> bool {
+    for (i, &value) in values.iter().enumerate() {
+        if !vec3_is_finite(value) {
+            log::warn!(
+                "clip '{clip_name}' {channel_kind} channel: output value at key {i} \
+                 is not finite; skipping channel (joint holds rest pose)"
+            );
+            return false;
+        }
+    }
+    true
+}
+
+fn quat_length_squared(q: Quat) -> f32 {
+    q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w
+}
+
+fn validate_rotation_keyframes(values: &[Quat], clip_name: &str) -> bool {
+    for (i, &value) in values.iter().enumerate() {
+        let len_sq = quat_length_squared(value);
+        if !len_sq.is_finite() {
+            log::warn!(
+                "clip '{clip_name}' rotation channel: output quaternion at key {i} \
+                 is not finite; skipping channel (joint holds rest pose)"
+            );
+            return false;
+        }
+        if len_sq <= 0.0 {
+            log::warn!(
+                "clip '{clip_name}' rotation channel: output quaternion at key {i} \
+                 has zero length; skipping channel (joint holds rest pose)"
+            );
+            return false;
+        }
+    }
+    true
+}
+
+fn build_track<T>(
+    times: Vec<f32>,
+    values: Vec<T>,
+    mode: Interp,
+    clip_name: &str,
+    channel_kind: &str,
+) -> Option<Track<T>> {
+    match Track::new(times, values, mode) {
+        Ok(track) => Some(track),
+        Err(error) => {
+            log::warn!(
+                "clip '{clip_name}' {channel_kind} channel: invalid keyframe track \
+                 ({error:?}); skipping channel (joint holds rest pose)"
+            );
+            None
         }
     }
 }
@@ -714,7 +823,8 @@ fn load_clip(
         // The sampler's interpolation algorithm drives how the runtime blends
         // keyframes: LINEAR/STEP map straight to [`Interp`], while CUBICSPLINE is
         // degraded to LINEAR by extracting each key's value element (tangents
-        // discarded) — true cubic evaluation is out of scope (tangent storage and hermite blending are not implemented).
+        // discarded). True cubic evaluation is out of scope: tangent storage and
+        // hermite blending are not implemented.
         let interpolation = channel.sampler().interpolation();
 
         let reader = channel.reader(buffer_data);
@@ -722,6 +832,9 @@ fn load_clip(
             continue;
         };
         let times: Vec<f32> = inputs.collect();
+        if !validate_key_times(&times, &name) {
+            continue;
+        }
         if let Some(&last) = times.last() {
             duration = duration.max(last);
         }
@@ -733,12 +846,11 @@ fn load_clip(
                 let raw: Vec<Vec3> = it.map(Vec3::from).collect();
                 if let Some((values, mode)) =
                     resolve_keyframes(raw, times.len(), interpolation, &name, "translation")
+                        .filter(|(values, _)| validate_vec3_keyframes(values, &name, "translation"))
                 {
-                    joints[topo_idx].translation = Track {
-                        times,
-                        values,
-                        mode,
-                    };
+                    if let Some(track) = build_track(times, values, mode, &name, "translation") {
+                        joints[topo_idx].translation = track;
+                    }
                 }
             }
             gltf::animation::util::ReadOutputs::Rotations(it) => {
@@ -748,24 +860,22 @@ fn load_clip(
                     .collect();
                 if let Some((values, mode)) =
                     resolve_keyframes(raw, times.len(), interpolation, &name, "rotation")
+                        .filter(|(values, _)| validate_rotation_keyframes(values, &name))
                 {
-                    joints[topo_idx].rotation = Track {
-                        times,
-                        values,
-                        mode,
-                    };
+                    if let Some(track) = build_track(times, values, mode, &name, "rotation") {
+                        joints[topo_idx].rotation = track;
+                    }
                 }
             }
             gltf::animation::util::ReadOutputs::Scales(it) => {
                 let raw: Vec<Vec3> = it.map(Vec3::from).collect();
                 if let Some((values, mode)) =
                     resolve_keyframes(raw, times.len(), interpolation, &name, "scale")
+                        .filter(|(values, _)| validate_vec3_keyframes(values, &name, "scale"))
                 {
-                    joints[topo_idx].scale = Track {
-                        times,
-                        values,
-                        mode,
-                    };
+                    if let Some(track) = build_track(times, values, mode, &name, "scale") {
+                        joints[topo_idx].scale = track;
+                    }
                 }
             }
             gltf::animation::util::ReadOutputs::MorphTargetWeights(_) => {
@@ -878,6 +988,31 @@ mod tests {
     }
 
     #[test]
+    fn resolve_keyframes_linear_and_step_wrong_shape_skips_channel() {
+        // Regression: malformed LINEAR/STEP output counts could create tracks
+        // where values were shorter/longer than times, then panic during sampling.
+        let short_linear = vec![Vec3::ZERO; 2];
+        let result = resolve_keyframes(
+            short_linear,
+            3,
+            Interpolation::Linear,
+            "clip",
+            "translation",
+        );
+        assert!(
+            result.is_none(),
+            "malformed linear (outputs != keys) skips the channel"
+        );
+
+        let long_step = vec![Vec3::ZERO; 4];
+        let result = resolve_keyframes(long_step, 3, Interpolation::Step, "clip", "scale");
+        assert!(
+            result.is_none(),
+            "malformed step (outputs != keys) skips the channel"
+        );
+    }
+
+    #[test]
     fn resolve_keyframes_cubicspline_extracts_value_element_as_linear() {
         // Two keyframes, each a [in-tangent, value, out-tangent] triple. The
         // extracted track must be the VALUE element of each triple (index 3k+1),
@@ -916,6 +1051,60 @@ mod tests {
         );
     }
 
+    #[test]
+    fn validate_key_times_rejects_nan_and_duplicate_keys() {
+        // Regression: NaN input times reached locate_span and could underflow
+        // during sampling. Loader validation must skip the channel instead.
+        assert!(
+            !validate_key_times(&[f32::NAN, 1.0], "clip"),
+            "NaN input time skips the channel"
+        );
+        assert!(
+            !validate_key_times(&[0.0, 0.0], "clip"),
+            "duplicate input times skip the channel"
+        );
+        assert!(
+            !validate_key_times(&[1.0, 0.5], "clip"),
+            "descending input times skip the channel"
+        );
+        assert!(
+            validate_key_times(&[0.0, 0.5, 1.0], "clip"),
+            "finite strictly ascending times are accepted"
+        );
+    }
+
+    #[test]
+    fn validate_vec3_keyframes_rejects_non_finite_outputs() {
+        assert!(
+            !validate_vec3_keyframes(&[Vec3::new(0.0, f32::INFINITY, 0.0)], "clip", "translation",),
+            "non-finite translation skips the channel"
+        );
+        assert!(
+            !validate_vec3_keyframes(&[Vec3::new(1.0, 2.0, f32::NAN)], "clip", "scale"),
+            "non-finite scale skips the channel"
+        );
+        assert!(
+            validate_vec3_keyframes(&[Vec3::ZERO, Vec3::ONE], "clip", "translation"),
+            "finite vec3 outputs are accepted"
+        );
+    }
+
+    #[test]
+    fn validate_rotation_keyframes_rejects_non_finite_and_zero_quats() {
+        assert!(
+            !validate_rotation_keyframes(&[Quat::from_xyzw(0.0, 0.0, 0.0, 0.0)], "clip"),
+            "zero quaternion skips the channel"
+        );
+        assert!(
+            !validate_rotation_keyframes(&[Quat::from_xyzw(0.0, f32::NAN, 0.0, 1.0)], "clip"),
+            "non-finite quaternion skips the channel"
+        );
+        assert!(
+            validate_rotation_keyframes(&[Quat::IDENTITY], "clip"),
+            "finite non-zero quaternion outputs are accepted"
+        );
+    }
+
     // --- Error handling (automated AC: malformed input returns Err, no panic) ---
 
     #[test]
@@ -941,7 +1130,7 @@ mod tests {
     // --- Real-model load (gated on the asset existing; no GPU) ---
 
     fn model_path() -> PathBuf {
-        // CARGO_MANIFEST_DIR is crates/postretro; the asset is two levels up.
+        // CARGO_MANIFEST_DIR is crates/model; ../../content resolves via repo root.
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../content/dev/models/decraniated_low_poly_retro_pixel/scene.gltf")
     }
@@ -1180,7 +1369,7 @@ mod tests {
         // the box must be well-formed (min <= max on every axis).
         let model = load_model(&multi_primitive_fixture_path())
             .expect("synthetic multi-primitive fixture loads");
-        let b = model.mesh.bounds;
+        let b = model.mesh.bounds();
         assert!(
             b.min.x <= b.max.x && b.min.y <= b.max.y && b.min.z <= b.max.z,
             "bounds must be well-formed (min <= max), got {b:?}"
@@ -1422,7 +1611,7 @@ mod tests {
     //                those values (in=-1/-2, out=9/8) so the value-vs-tangent
     //                extraction is observable.
 
-    use crate::model::anim::sample_clip;
+    use crate::anim::sample_clip;
     use glam::Mat4;
 
     const SAMPLE_EPS: f32 = 1.0e-4;
@@ -1539,22 +1728,22 @@ mod tests {
         // would compose into the child's world translation and obscure the check.
         let child_translation = &model.clips[1].joints[1].translation;
         assert_eq!(
-            child_translation.mode,
+            child_translation.mode(),
             Interp::Linear,
             "CUBICSPLINE channel is stored as LINEAR (cubic degraded at load)",
         );
         assert_eq!(
-            child_translation.values.len(),
+            child_translation.values().len(),
             2,
             "two keyframes → two extracted values (tangents discarded)",
         );
         assert_vec3_close(
-            child_translation.values[0],
+            child_translation.values()[0],
             Vec3::new(5.0, 5.0, 5.0),
             "extracted keyframe-0 value, not a tangent",
         );
         assert_vec3_close(
-            child_translation.values[1],
+            child_translation.values()[1],
             Vec3::new(7.0, 7.0, 7.0),
             "extracted keyframe-1 value, not a tangent",
         );

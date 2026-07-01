@@ -5,12 +5,12 @@
 use std::collections::HashMap;
 
 use super::mesh_anim::{self, MeshClipTables};
-use crate::model::ModelHandle;
-use crate::model::sample_params::MeshSampleParams;
 use crate::render::mesh_instances::MeshInstanceInput;
 use crate::render::mesh_pass::mesh_visible;
 use postretro_entities::registry::{ComponentKind, ComponentValue, EntityRegistry, Transform};
 use postretro_level_loader::LevelWorld;
+use postretro_model::ModelHandle;
+use postretro_model::sample_params::MeshSampleParams;
 use postretro_visibility::VisibleCells;
 
 /// Animation time-slicing distance thresholds + per-bucket resample strides.
@@ -312,7 +312,7 @@ fn resolve_sample(
     seed: u32,
 ) -> (
     MeshSampleParams,
-    Option<crate::model::sample_params::CaptureInstruction>,
+    Option<postretro_model::sample_params::CaptureInstruction>,
 ) {
     let table = tables.get(handle);
 
@@ -333,7 +333,7 @@ fn resolve_sample(
     // Stateless / unresolved / un-uploaded: today's behavior. The primary clip is
     // index 0; phase folds in against its duration (0 if the model is uncached).
     let duration = table.and_then(|t| t.duration(0)).unwrap_or(0.0);
-    let phase = crate::model::sample_params::instance_phase(seed, duration);
+    let phase = postretro_model::sample_params::instance_phase(seed, duration);
     (MeshSampleParams::stateless(anim_time as f32 + phase), None)
 }
 
@@ -351,7 +351,7 @@ fn current_state_phase(
         .and_then(|s| s.clip_index)
         .and_then(|i| table.duration(i))
         .unwrap_or(0.0);
-    crate::model::sample_params::instance_phase(seed, duration)
+    postretro_model::sample_params::instance_phase(seed, duration)
 }
 
 impl Default for MeshRenderCollector {
@@ -803,14 +803,14 @@ mod tests {
 
     // --- Animated-state sample-param resolution through `collect` ---------------
 
-    use crate::model::ModelHandle;
-    use crate::model::anim::Loop;
-    use crate::model::sample_params::FadeSource;
     use crate::render::mesh_pass::ClipMetadata;
     use postretro_entities::components::mesh::{AnimationState, InterruptPolicy, MeshAnimation};
     use postretro_entities::components::mesh::{
         resolve_pending_animation_stamps, switch_animation_state,
     };
+    use postretro_model::ModelHandle;
+    use postretro_model::anim::Loop;
+    use postretro_model::sample_params::FadeSource;
     use std::collections::HashMap;
 
     fn clip_meta(pairs: &[(&str, f32)]) -> Vec<ClipMetadata> {

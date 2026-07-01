@@ -5,7 +5,7 @@ pub(crate) use postretro_scripting_core::reaction_registry::ReactionPrimitiveReg
 
 pub(crate) fn register_emitter_reaction_primitives(registry: &mut ReactionPrimitiveRegistry) {
     crate::fx::emitter_reactions::register_emitter_reaction_primitives(registry);
-    crate::model::animation_reactions::register_mesh_reaction_primitives(registry);
+    crate::scripting::reactions::animation::register_mesh_reaction_primitives(registry);
     crate::health::reactions::register_health_reaction_primitives(registry);
 }
 

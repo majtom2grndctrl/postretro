@@ -120,10 +120,10 @@ Run two processes locally over `lo`:
 
 ```sh
 # Terminal 1 — listen host on the campaign-test map.
-RUST_LOG=info cargo run -p xtask -- run --host content/dev/maps/campaign-test.prl
+RUST_LOG=info cargo run -p xtask -- run content/dev/maps/campaign-test.prl --host
 
 # Terminal 2 — client connecting back to the host's default port over loopback.
-RUST_LOG=info cargo run -p xtask -- run --connect 127.0.0.1:<port> content/dev/maps/campaign-test.prl
+RUST_LOG=info cargo run -p xtask -- run content/dev/maps/campaign-test.prl --connect 127.0.0.1:<port>
 ```
 
 Then shape the loopback link to the Phase 2/3 profile (45..105 ms one-way, ~5% loss) before driving the client, so the manual session matches the automated harness's `LinkConfig { delay: 45, jitter: 60, loss_probability: 0.05, .. }`:

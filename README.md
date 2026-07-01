@@ -139,9 +139,14 @@ The lifecycle is supported by Claude Code skills:
 
 This is a Cargo workspace with multiple crates.
 
+Canonical xtask syntax is `cargo run -p xtask -- run [cargo-run flags...] -- [postretro args...]`.
+Simple engine args remain supported as `cargo run -p xtask -- run [postretro args...]`.
+
 ```bash
 cargo run -p xtask -- run                                      # development engine launch
 cargo run -p xtask -- run content/dev/maps/campaign-test.prl   # dev launch with a PRL map
+cargo run -p xtask -- run --features dev-tools -- content/dev/maps/campaign-test.prl  # dev-tools launch
+cargo run -p xtask -- run --release -- content/dev/maps/campaign-test.prl  # optimized xtask launch
 cargo run -p postretro                                          # lower-level engine run; assumes scripts-build is already built
 cargo run -p postretro-level-compiler -- input.map -o out.prl  # compile a level
 cargo run --release -p postretro                               # optimized build

@@ -14,11 +14,17 @@ Read `context/lib/index.md` before doing anything else. It routes to the right c
 
 ## Build and run
 
+xtask syntax: `cargo run -p xtask -- run [cargo-run flags...] -- [postretro args...]`.
+Simple engine args still work as `cargo run -p xtask -- run [postretro args...]`.
+
 ```bash
-cargo run -p postretro                        # engine (debug)
-cargo run -p postretro -- content/dev/maps/campaign-test.prl  # engine with a PRL map
+cargo run -p xtask -- run                     # canonical development engine launch
+cargo run -p xtask -- run content/dev/maps/campaign-test.prl  # dev launch with a PRL map
+cargo run -p xtask -- run --features dev-tools -- content/dev/maps/campaign-test.prl  # dev-tools launch
+cargo run -p xtask -- run --release -- content/dev/maps/campaign-test.prl  # optimized xtask launch
+cargo run -p postretro                        # lower-level engine run; assumes scripts-build is already built
 cargo run -p postretro-level-compiler -- input.map -o content/base/maps/output.prl  # compile a level (binary: prl-build)
 cargo run --release -p postretro              # optimized engine build
-RUST_LOG=info cargo run -p postretro          # with logging
-POSTRETRO_GPU_TIMING=1 cargo run -p postretro # log per-pass GPU time (requires TIMESTAMP_QUERY adapter support)
+RUST_LOG=info cargo run -p xtask -- run       # dev launch with logging
+POSTRETRO_GPU_TIMING=1 cargo run -p xtask -- run # log per-pass GPU time (requires TIMESTAMP_QUERY adapter support)
 ```

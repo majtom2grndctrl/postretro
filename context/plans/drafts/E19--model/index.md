@@ -9,9 +9,9 @@ Extract the wgpu-free model subtree (CPU glTF loader, skinned-mesh / skeleton / 
 ## Scope
 
 ### In scope
-- `postretro-model`: move `crates/postretro/src/model/` — the CPU glTF loader and its data types: `ModelHandle`, `SkinnedMesh`, the skeleton / animation / `sample_params` types, and `gltf_loader`. Confirmed wgpu-free by contract.
-- Expose mesh local-space bounds as an intentional public contract. Renderer upload consumes the bound for CPU-side mesh planning/culling across the crate boundary.
-- Depend on `postretro-render-data` if it references those types (confirm at implementation), `glam`, and the glTF deps the loader already uses.
+- `postretro-model`: move the `crates/postretro/src/model/` subtree (`mod.rs`, `mesh.rs`, `anim.rs`, `skeleton.rs`, `sample_params.rs`, `gltf_loader.rs`; `animation_reactions.rs` pending the **Open decision** below) — the CPU glTF loader and its data types. Public boundary types the move must widen include (non-exhaustive): `ModelHandle`, `BonePaletteEntry`, `SkinnedMesh`, `SkinnedVertex`, `MAX_JOINTS`, the `skeleton` / `anim` / `sample_params` types, and `gltf_loader`'s `LoadedModel`, `Submesh`, `JointZone`, `ModelLoadError`. Confirmed wgpu-free in code (only doc-comment mentions of `wgpu`).
+- Expose mesh local-space bounds as an intentional public contract via a `pub fn bounds(&self) -> Aabb` accessor on `SkinnedMesh` (the field is currently `pub(crate) bounds: Aabb`). Renderer upload consumes the bound for CPU-side mesh planning/culling across the crate boundary.
+- Depend on `postretro-render-data` (required — `mesh.rs` uses `cone_frustum::Aabb` for `SkinnedMesh` bounds), `postretro-level-format` (features `["gltf-resolve"]` — `gltf_loader.rs` uses `gltf_resolve::resolve_material_base_color_path` and `octahedral`), `glam`, `gltf`, `serde`, `serde_json`, `blake3`, `thiserror`, and `bytemuck`. If `animation_reactions.rs` is kept in the move (see **Open decision** below), also add `postretro-entities` and `postretro-scripting-core` behind an optional `script-ffi` feature (per epic §12 / Decision 1) so the default `cargo tree` stays VM-free.
 - Update consumers to import from `postretro-model`.
 
 ### Out of scope
@@ -21,19 +21,26 @@ Extract the wgpu-free model subtree (CPU glTF loader, skinned-mesh / skeleton / 
 ## Acceptance criteria
 Inherits the epic global acceptance criteria — see `E19--render-stack-decomposition/index.md`. Durable decisions are captured into `context/lib/` per spec as each spec is approved — not in one batch at first promotion.
 - [ ] Crate is a workspace member; `cargo build --workspace` + `cargo test --workspace` pass; loader/skeleton/animation tests pass from their relocated home.
-- [ ] `cargo tree -p postretro-model` shows no `wgpu`/`winit`/`glyphon`/`kira`.
-- [ ] `postretro-renderer` depends on `postretro-model`; no `wgpu` appears in the model crate.
-- [ ] Renderer upload can read each `SkinnedMesh` local-space bound through an explicit public API or field; no same-crate visibility or accidental broad public data is required.
+- [ ] `cargo tree -p postretro-model` (default features) shows no `wgpu`/`winit`/`glyphon`/`kira`/`mlua`/`rquickjs`.
+- [ ] The `postretro` binary (current renderer home) depends on `postretro-model`; no `wgpu` import or dependency appears in the model crate. (The `postretro-renderer` → `postretro-model` edge lands with the renderer crate in `E19--renderer-gpu`.)
+- [ ] Renderer upload can read each `SkinnedMesh` local-space bound through the `pub fn bounds(&self) -> Aabb` accessor; no same-crate visibility or accidental broad public data is required.
 - [ ] Editing `postretro-model` does not recompile `wgpu`/`naga`.
 
 ## Tasks
 
 ### Task 1: Extract postretro-model
-Create the crate, move `model/`, widen boundary symbols, wire deps (`postretro-render-data` if referenced), update consumers. Make mesh bounds part of the public model API used by renderer upload.
+Create the crate and move the `model/` subtree. Widen visibility: the six submodules are `pub(crate) mod` and `ModelHandle` (plus its `String` field and `as_str`) and the entire `sample_params` public-type set are `pub(crate)` — all must become `pub`. Wire deps (see In-scope list). Rewrite intra-doc paths that break on move (`crate::model` in `mesh.rs`/`skeleton.rs`, `crate::render` in `sample_params.rs`) to the new crate root. Update consumers — ~19 files, ~75 sites across `render/`, `scripting/`, `weapon/`, `startup/lifecycle.rs`, and `main.rs` — rewriting `crate::model::` to `postretro_model::`. Expose `SkinnedMesh` bounds via the `pub fn bounds(&self) -> Aabb` accessor.
 
 ## Decision
 
 **Extract a `postretro-model` crate** (was: leave in the binary as a renderer dep). Principle: clean one-way boundaries + the firewall goal — the renderer crate cannot depend up into the binary, and a CPU glTF loader must not live inside the GPU crate or model edits rebuild the whole renderer compile unit. A separate CPU crate keeps the boundary one-way and off the wgpu path.
+
+## Open decision (blocks promotion)
+
+**`animation_reactions.rs` home.** The subtree's `animation_reactions.rs` is a scripting reaction primitive (`register_mesh_reaction_primitives` → `setAnimationState`): it imports `postretro_scripting_core::reaction_registry` and `postretro_entities::components::mesh::{SwitchResult, switch_animation_state}`, is registered from `scripting/reactions/registry.rs` (re-exported by `scripting/reactions/mod.rs`), and its tests call `crate::scripting::reactions::log_capture`. It is the only subtree file that pulls `entities`/`scripting-core` — and both pull `mlua`/`rquickjs` non-optionally, so moving it into `postretro-model` unconditionally makes `cargo tree -p postretro-model` show the VM crates, violating the inherited cpu-only AC.
+
+- **(A, recommended) Exclude it.** Leave `animation_reactions.rs` under `scripting/reactions` (its owner). `postretro-model` stays a pure CPU-data leaf with no `entities`/`scripting-core` dep. Repoint `mod.rs`'s `pub(crate) mod animation_reactions;` and the two consumer sites.
+- **(B) Keep it behind `script-ffi`.** Move it with the subtree; add `postretro-entities` + `postretro-scripting-core` behind an optional `script-ffi` feature (off by default, per epic §12 / Decision 1), invoke the registrar from `Session::build`, and relocate the `crate::scripting::reactions::log_capture` test helper so the default `cargo tree` stays VM-free.
 
 ## Sequencing
 **Phase 1:** Task 1. Low-risk CPU prerequisite, independent. Milestone 1.

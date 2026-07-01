@@ -32,12 +32,12 @@
 //
 // 1. Host the combat-demo map (listen server, default port):
 //
-//        RUST_LOG=info cargo run -p postretro -- --host content/dev/maps/combat-demo.prl
+//        RUST_LOG=info cargo run -p xtask -- run content/dev/maps/combat-demo.prl --host
 //
 // 2. Connect a client back to the host's port over loopback, same map:
 //
-//        RUST_LOG=info cargo run -p postretro -- \
-//            --connect 127.0.0.1:<port> content/dev/maps/combat-demo.prl
+//        RUST_LOG=info cargo run -p xtask -- run \
+//            content/dev/maps/combat-demo.prl --connect 127.0.0.1:<port>
 //
 // 3. Shape the loopback link to the Phase 2/3 profile (≈150 ms RTT, ~5% loss, jitter)
 //    BEFORE driving the client, matching the automated harness's

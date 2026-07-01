@@ -237,7 +237,6 @@ fn compose_palette(
 ///
 /// Reuse: pass the same `out` every frame. A thread-local scratch holds the
 /// world-pose sweep, so a steady-state call performs no heap allocation.
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn sample_clip(
     clip: &AnimationClip,
     skeleton: &Skeleton,
@@ -313,7 +312,6 @@ pub fn sample_blended(
 /// Reuse: pass the same `out` every frame. `out` is cleared then filled to
 /// `skeleton.joints.len()`, so a steady-state call performs no heap allocation —
 /// the same contract as the palette samplers.
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn sample_clip_looped_world(
     clip: &AnimationClip,
     skeleton: &Skeleton,
@@ -344,7 +342,6 @@ pub fn sample_clip_looped_world(
 /// Reuse `out` across frames: a thread-local TRS scratch is reused and `out` is
 /// cleared then refilled, so steady-state world-pose blending allocates nothing —
 /// the same contract as [`sample_blended`].
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn sample_blended_world(
     a: &BlendSource,
     b: &BlendSource,

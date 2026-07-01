@@ -11,9 +11,9 @@ use crate::anim::Loop;
 /// stable, well-distributed offset. A zero-length clip yields phase 0.
 ///
 /// Shared CPU logic with no GPU dependency: both the renderer's collector
-/// (`scripting/systems/mesh_render`) and the hit-zone facility
-/// (`scripting/systems/hit_zones`) call it with the SAME seed + clip duration so
-/// a hit capsule samples the same clip-local time the renderer draws.
+/// (postretro: `scripting/systems/mesh_render`) and the hit-zone facility
+/// (postretro: `scripting/systems/hit_zones`) call it with the SAME seed + clip
+/// duration so a hit capsule samples the same clip-local time the renderer draws.
 pub fn instance_phase(seed: u32, clip_duration: f32) -> f32 {
     if clip_duration <= 0.0 {
         return 0.0;

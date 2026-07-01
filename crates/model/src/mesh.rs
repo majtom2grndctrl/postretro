@@ -41,8 +41,9 @@ impl SkinnedVertex {
     /// Used when a mesh primitive carries no skinning attributes (a static mesh
     /// hung under the skinned path) — joint 0 then resolves to the instance's
     /// world transform.
-    // Kept for the loader-broadening task that admits non-skinned primitives.
-    #[allow(dead_code)]
+    // Test-only constructor for rigid vertices: the loader emits this encoding
+    // ([0,0,0,0] / [255,0,0,0]) inline for non-skinned primitives and never
+    // calls this.
     pub fn rigid(
         position: [f32; 3],
         base_uv: [u16; 2],
@@ -61,8 +62,8 @@ impl SkinnedVertex {
 }
 
 /// A skinned mesh: one interleaved vertex stream plus a 32-bit index buffer.
-/// Materials and the skeleton are carried alongside in [`crate`], not
-/// embedded here.
+/// Materials and the skeleton are carried alongside on
+/// [`crate::gltf_loader::LoadedModel`], not embedded here.
 ///
 /// `vertices` and `indices` stay public because the renderer uploads them
 /// directly across the crate boundary. Call [`SkinnedMesh::compute_bounds`]
@@ -82,9 +83,10 @@ pub struct SkinnedMesh {
 }
 
 impl SkinnedMesh {
-    /// Tight local-space (bind-pose) AABB over every vertex position. The value
-    /// is cached; callers that mutate public `vertices` must call
-    /// [`SkinnedMesh::compute_bounds`] before using it.
+    /// Cached local-space (bind-pose) AABB over every vertex position, valid only
+    /// once [`SkinnedMesh::compute_bounds`] has run (the glTF loader does this).
+    /// The value is eager and manually invalidated, not lazy: callers that mutate
+    /// public `vertices` must recompute before using it.
     pub fn bounds(&self) -> Aabb {
         self.bounds
     }

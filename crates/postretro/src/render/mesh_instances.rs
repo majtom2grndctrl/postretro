@@ -36,12 +36,12 @@ pub(crate) const MAX_PALETTE_ENTRIES: usize = 4096;
 /// (`mesh_pass.rs`) imports this const and sizes that SSBO to exactly this value,
 /// so the planner MUST drop instances past it or the GPU
 /// layer's `write_buffer` runs off the end of the buffer and wgpu validation
-/// panics. This is a SEPARATE cap from the palette budget: a zero-joint (rigid /
-/// static-prop) model consumes no palette slots, so the palette cap never fires
-/// for it — without this instance cap, a flood of rigid props would grow the
-/// instance count unbounded. Equal to `MAX_PALETTE_ENTRIES` because each instance
-/// consumes at least one palette slot in the skinned case, so one cap value
-/// covers both buffers.
+/// panics. This is a SEPARATE cap from the palette budget, and its real job is
+/// bounding unbounded instance growth: without it, a flood of instances would grow
+/// the instance count without limit. Every model now consumes at least one palette
+/// slot (rigid / static-prop models carry one identity joint, so `run == 1`), so —
+/// with `MAX_INSTANCES == MAX_PALETTE_ENTRIES` — the palette cap fires no later than
+/// the instance cap even for a pure-rigid flood. One cap value covers both buffers.
 pub(crate) const MAX_INSTANCES: usize = MAX_PALETTE_ENTRIES;
 
 /// One skinned-mesh instance to consider for this frame: which model it draws,
@@ -143,8 +143,8 @@ pub(crate) struct MeshFramePlan {
     pub(crate) instance_count: u32,
     /// Instances dropped because EITHER their palette run would exceed
     /// `MAX_PALETTE_ENTRIES` OR the instance count would reach `MAX_INSTANCES`
-    /// (the per-frame instance SSBO size — the only cap that fires for zero-joint
-    /// rigid props). The caller rate-limits a warning when this is non-zero.
+    /// (the per-frame instance SSBO size). The caller rate-limits a warning when
+    /// this is non-zero.
     pub(crate) dropped: u32,
 }
 
@@ -434,6 +434,9 @@ mod tests {
             "every instance past the cap is counted as dropped",
         );
         // Zero-joint runs consume no palette slots, so every survivor shares base 0.
+        // Synthetic guard for the hypothetical 0-joint model (Skeleton::new still
+        // permits an empty joint vec); not the real static-prop path, which now
+        // carries one identity joint.
         let total: usize = plan.groups.iter().map(|g| g.instances.len()).sum();
         assert_eq!(total, MAX_INSTANCES, "surviving instances match the count");
     }

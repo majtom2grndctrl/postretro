@@ -25,7 +25,8 @@ Inherits the epic global acceptance criteria — see `E19--render-stack-decompos
 - [ ] `cargo tree -p postretro-model` (default features) shows no `wgpu`/`winit`/`glyphon`/`kira`/`mlua`/`rquickjs`.
 - [ ] The `postretro` binary (current renderer home) depends on `postretro-model`; no `wgpu` import or dependency appears in the model crate. (The `postretro-renderer` → `postretro-model` edge lands with the renderer crate in `E19--renderer-gpu`.)
 - [ ] Renderer upload can read each `SkinnedMesh` local-space bound through the `pub fn bounds(&self) -> Aabb` accessor; no same-crate visibility or accidental broad public data is required.
-- [ ] Editing `postretro-model` does not recompile `wgpu`/`naga`.
+- [ ] Editing `postretro-model` and running its in-crate tests (`cargo test -p postretro-model`) recompiles no `wgpu`/`naga`/`winit`. Note: the renderer still lives in the `postretro` binary in Milestone 1, so a full `cargo check -p postretro` after a model edit still rebuilds it — the firewall for renderer-facing loops closes at `E19--renderer-gpu`; at this task's scope the win is the isolated in-crate test loop.
+- [ ] Warm-edit win (manual PR-time measurement, global AC #8): targeted loop is a `model/gltf_loader.rs` (or `anim.rs`) touch. Quote before/after vs. the `E19--baseline-and-cargo-config` baseline (in `context/plans/done/`). The baseline case matrix has no model-touch case, so capture the pre-extraction "before" in the same PR (`touch crates/postretro/src/model/gltf_loader.rs` then `cargo check -p postretro`) before the move, and compare against the post-extraction `cargo test -p postretro-model` loop.
 
 ## Tasks
 

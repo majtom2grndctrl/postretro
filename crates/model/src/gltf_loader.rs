@@ -97,8 +97,9 @@ pub enum ModelLoadError {
     /// The document has no mesh to load (this path loads exactly one mesh).
     #[error("glTF has no mesh: {0}")]
     NoMesh(String),
-    /// A primitive is missing a required vertex attribute (e.g. POSITION).
-    #[error("glTF primitive missing required attribute '{attribute}': {path}")]
+    /// A required glTF attribute or accessor is absent (e.g. a primitive's
+    /// POSITION, or a skin's inverseBindMatrices).
+    #[error("glTF missing required attribute '{attribute}': {path}")]
     MissingAttribute { path: String, attribute: String },
     /// A primitive uses an unsupported topology (only triangle lists load).
     #[error("glTF primitive uses unsupported topology {mode:?} (only triangles): {path}")]
@@ -491,12 +492,18 @@ pub fn load_model(path: &Path) -> Result<LoadedModel, ModelLoadError> {
     // Use the selected skinned node's skin. A static/no-skin model still
     // receives one identity joint so rigid vertices bound to joint 0 have a
     // matching palette entry; any authored static node hit zone maps to that
-    // identity joint.
+    // identity joint. A skin whose `joints()` array is empty is treated the
+    // same as no skin: `Skeleton::new(vec![])` would otherwise succeed with a
+    // zero-joint palette, and a rigid vertex's default joint 0 would index out
+    // of it. (A genuinely skinned mesh under an empty skin still fails safely:
+    // its `JOINTS_0` values find no entry in the empty remap and hit
+    // `InvalidJointIndex`.)
     //
     // `skin_joint_to_topo` reindexes mesh `JOINTS_0` (skin-joint indices) into
     // topo order; `node_to_topo` reindexes animation channel targets (node
     // indices) into the same topo order.
-    let (skeleton, joint_zones, skin_joint_to_topo, node_to_topo) = match skin.as_ref() {
+    let skin = skin.as_ref().filter(|skin| skin.joints().next().is_some());
+    let (skeleton, joint_zones, skin_joint_to_topo, node_to_topo) = match skin {
         Some(skin) => build_skeleton(skin, &buffers, &path_str)?,
         None => (
             identity_skeleton(),
@@ -1159,6 +1166,52 @@ fn build_track<T>(
     }
 }
 
+/// Human label for an animation channel's target property, for warn messages.
+fn animation_channel_kind(property: gltf::animation::Property) -> &'static str {
+    use gltf::animation::Property;
+    match property {
+        Property::Translation => "translation",
+        Property::Rotation => "rotation",
+        Property::Scale => "scale",
+        Property::MorphTargetWeights => "morph weights",
+    }
+}
+
+/// True when the sampler OUTPUT accessor's `(component type, dimension)` is one
+/// the target property (and gltf's `read_outputs`) can decode. glTF permits
+/// normalized integer component types for rotation and morph-weight outputs
+/// (the same widening the mesh path already allows for `WEIGHTS_0`); translation
+/// and scale are `F32 VEC3` only. An accessor outside this set would panic inside
+/// gltf's `read_outputs` (an `unreachable!` for an unsupported component type —
+/// in release too — or an internal size `debug_assert!`), so the caller
+/// validates first and degrades-and-skips the channel.
+fn animation_output_shape_ok(
+    accessor: &gltf::Accessor,
+    property: gltf::animation::Property,
+) -> bool {
+    use gltf::animation::Property;
+    let shape = (accessor.data_type(), accessor.dimensions());
+    match property {
+        Property::Translation | Property::Scale => shape == (DataType::F32, Dimensions::Vec3),
+        Property::Rotation => matches!(
+            shape,
+            (DataType::F32, Dimensions::Vec4)
+                | (DataType::U8, Dimensions::Vec4)
+                | (DataType::U16, Dimensions::Vec4)
+                | (DataType::I8, Dimensions::Vec4)
+                | (DataType::I16, Dimensions::Vec4)
+        ),
+        Property::MorphTargetWeights => matches!(
+            shape,
+            (DataType::F32, Dimensions::Scalar)
+                | (DataType::U8, Dimensions::Scalar)
+                | (DataType::U16, Dimensions::Scalar)
+                | (DataType::I8, Dimensions::Scalar)
+                | (DataType::I16, Dimensions::Scalar)
+        ),
+    }
+}
+
 /// Load one animation clip into per-joint TRS tracks (in topo joint order).
 /// Channels targeting non-joint nodes (or joints outside the skin) are skipped.
 fn load_clip(
@@ -1187,7 +1240,38 @@ fn load_clip(
         // degraded to LINEAR by extracting each key's value element (tangents
         // discarded). True cubic evaluation is out of scope: tangent storage and
         // hermite blending are not implemented.
-        let interpolation = channel.sampler().interpolation();
+        let property = channel.target().property();
+        let kind = animation_channel_kind(property);
+        let sampler = channel.sampler();
+        let interpolation = sampler.interpolation();
+
+        // Validate the sampler accessors' shapes BEFORE reading. Unlike the
+        // mesh/skeleton accessors, `read_inputs`/`read_outputs` are otherwise
+        // read unchecked, and gltf panics on shapes it cannot decode (an
+        // `unreachable!` for an unsupported output component type — in release
+        // too — or an internal size `debug_assert!`), violating the never-panics
+        // contract. On mismatch we degrade-and-skip the channel — the same
+        // policy malformed channels follow below (the joint holds its rest pose).
+        let input_accessor = sampler.input();
+        if (input_accessor.data_type(), input_accessor.dimensions())
+            != (DataType::F32, Dimensions::Scalar)
+        {
+            log::warn!(
+                "clip '{name}' {kind} channel: input accessor shape {} is not F32 Scalar; \
+                 skipping channel (joint holds rest pose)",
+                format_accessor_shape((input_accessor.data_type(), input_accessor.dimensions())),
+            );
+            continue;
+        }
+        let output_accessor = sampler.output();
+        if !animation_output_shape_ok(&output_accessor, property) {
+            log::warn!(
+                "clip '{name}' {kind} channel: output accessor shape {} is unsupported for this \
+                 property; skipping channel (joint holds rest pose)",
+                format_accessor_shape((output_accessor.data_type(), output_accessor.dimensions())),
+            );
+            continue;
+        }
 
         let reader = channel.reader(buffer_data);
         let Some(inputs) = reader.read_inputs() else {
@@ -1366,16 +1450,14 @@ mod tests {
 
     #[test]
     fn validate_skinning_attribute_pair_rejects_half_authored_skinning() {
-        assert_eq!(
-            validate_skinning_attribute_presence(false, false, "model.gltf")
+        assert!(
+            !validate_skinning_attribute_presence(false, false, "model.gltf")
                 .expect("absence of both attributes is rigid"),
-            false,
             "absence of both JOINTS_0 and WEIGHTS_0 is the rigid path",
         );
-        assert_eq!(
+        assert!(
             validate_skinning_attribute_presence(true, true, "model.gltf")
                 .expect("both attributes present is skinned"),
-            true,
             "presence of both JOINTS_0 and WEIGHTS_0 is the skinned path",
         );
 

@@ -64,7 +64,7 @@ const COLOR_PORTAL_EDGE: [u8; 4] = [255, 214, 92, 255];
 #[cfg(any(feature = "dev-tools", test))]
 fn cell_overlay_kind(
     cell_index: usize,
-    cell: &crate::prl::CellData,
+    cell: &postretro_level_loader::CellData,
     visible_cells: &crate::visibility::VisibleCells,
 ) -> Option<CellOverlayKind> {
     if cell.is_solid {
@@ -90,7 +90,7 @@ fn cell_overlay_kind(
 #[cfg(any(feature = "dev-tools", test))]
 fn cell_overlay_color(
     cell_index: usize,
-    cell: &crate::prl::CellData,
+    cell: &postretro_level_loader::CellData,
     visible_cells: &crate::visibility::VisibleCells,
 ) -> Option<[u8; 4]> {
     match cell_overlay_kind(cell_index, cell, visible_cells)? {
@@ -102,7 +102,7 @@ fn cell_overlay_color(
 }
 
 #[cfg(any(feature = "dev-tools", test))]
-fn portal_edges(portal: &crate::prl::PortalData) -> Vec<(Vec3, Vec3)> {
+fn portal_edges(portal: &postretro_level_loader::PortalData) -> Vec<(Vec3, Vec3)> {
     if portal.polygon.len() < 2 {
         return Vec::new();
     }
@@ -174,7 +174,7 @@ pub(super) fn emit_bvh_overlay(
 
 #[cfg(feature = "dev-tools")]
 pub(super) fn emit_cell_overlay(
-    world: &crate::prl::LevelWorld,
+    world: &postretro_level_loader::LevelWorld,
     visible_cells: &crate::visibility::VisibleCells,
     state: CellOverlayState,
     lines: &mut super::debug_lines::DebugLineRenderer,
@@ -200,7 +200,7 @@ pub(super) fn emit_cell_overlay(
 
 #[cfg(feature = "dev-tools")]
 pub(super) fn emit_portal_overlay(
-    world: &crate::prl::LevelWorld,
+    world: &postretro_level_loader::LevelWorld,
     state: PortalOverlayState,
     lines: &mut super::debug_lines::DebugLineRenderer,
 ) {
@@ -262,7 +262,7 @@ impl Renderer {
     /// visibility into the static-lightmap term; this accessor is retained
     /// only for legacy-PRL compatibility.
     #[allow(dead_code)]
-    pub fn lightmap_mode(&self) -> crate::prl::LightmapMode {
+    pub fn lightmap_mode(&self) -> postretro_level_loader::LightmapMode {
         self.full().lightmap_mode
     }
 
@@ -290,7 +290,7 @@ impl Renderer {
         &mut self,
         state: &sh_diagnostics::ShDiagnosticsState,
         camera_pos: Vec3,
-        world: &crate::prl::LevelWorld,
+        world: &postretro_level_loader::LevelWorld,
         visible_cell_mask: &[bool],
     ) {
         // Drive the live atlas readback only while the irradiance overlay is
@@ -531,7 +531,7 @@ impl Renderer {
     #[cfg(feature = "dev-tools")]
     pub fn emit_cell_overlay_diagnostics(
         &mut self,
-        world: &crate::prl::LevelWorld,
+        world: &postretro_level_loader::LevelWorld,
         visible_cells: &crate::visibility::VisibleCells,
     ) {
         let full = self.full_mut();
@@ -546,7 +546,7 @@ impl Renderer {
     /// Emit decoded PRL portal polygon edges into the per-frame debug-line
     /// buffer. Consumes only `LevelWorld` CPU data.
     #[cfg(feature = "dev-tools")]
-    pub fn emit_portal_overlay_diagnostics(&mut self, world: &crate::prl::LevelWorld) {
+    pub fn emit_portal_overlay_diagnostics(&mut self, world: &postretro_level_loader::LevelWorld) {
         let full = self.full_mut();
         emit_portal_overlay(world, full.portal_overlay, &mut full.debug_lines);
     }
@@ -569,8 +569,8 @@ mod tests {
         }
     }
 
-    fn cell(is_solid: bool, face_count: u32) -> crate::prl::CellData {
-        crate::prl::CellData {
+    fn cell(is_solid: bool, face_count: u32) -> postretro_level_loader::CellData {
+        postretro_level_loader::CellData {
             bounds_min: Vec3::ZERO,
             bounds_max: Vec3::ONE,
             face_start: 0,
@@ -714,7 +714,7 @@ mod tests {
 
     #[test]
     fn portal_edges_close_polygon_loop() {
-        let portal = crate::prl::PortalData {
+        let portal = postretro_level_loader::PortalData {
             polygon: vec![Vec3::ZERO, Vec3::X, Vec3::Y],
             front_cell: 0,
             back_cell: 1,

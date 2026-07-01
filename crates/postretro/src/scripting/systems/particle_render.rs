@@ -3,11 +3,11 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::prl::LevelWorld;
 use crate::visibility::VisibleCells;
 use postretro_entities::components::particle::ParticleState;
 use postretro_entities::components::sprite_visual::SpriteVisual;
 use postretro_entities::registry::{ComponentKind, ComponentValue, EntityRegistry, Transform};
+use postretro_level_loader::LevelWorld;
 
 /// Per-collection scratch buffers and warning state for the particle render
 /// path. Owned by the game layer (not the renderer) so the wgpu boundary stays
@@ -231,12 +231,12 @@ fn pack_particle_instance(
 mod tests {
     use super::*;
     use crate::fx::smoke::SPRITE_INSTANCE_SIZE;
-    use crate::prl::{CellData, LevelWorld};
     use glam::Vec3;
     use postretro_entities::components::particle::ParticleState;
     use postretro_entities::components::sprite_visual::SpriteVisual;
     use postretro_entities::registry::{EntityId, EntityRegistry, Transform};
     use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
+    use postretro_level_loader::{CellData, LevelWorld};
 
     // The collector culls each billboard by the runtime cell of *its own* world
     // position against the frame's visible set. The membership half mirrors the
@@ -264,7 +264,7 @@ mod tests {
                 is_drawable: false,
             }],
             cell_portal_refs: vec![],
-            cell_locator_root: crate::prl::CellLocatorChild::Cell(0),
+            cell_locator_root: postretro_level_loader::CellLocatorChild::Cell(0),
             cell_locator_nodes: vec![],
             portals: vec![],
             has_portals: false,
@@ -279,7 +279,7 @@ mod tests {
             light_influences: vec![],
             sh_volume: None,
             lightmap: None,
-            lightmap_mode: crate::prl::LightmapMode::Shadowed,
+            lightmap_mode: postretro_level_loader::LightmapMode::Shadowed,
             sdf_atlas: None,
             chunk_light_list: None,
             animated_light_chunks: None,
@@ -328,12 +328,12 @@ mod tests {
                 is_drawable: false,
             },
         ];
-        world.cell_locator_root = crate::prl::CellLocatorChild::Node(0);
-        world.cell_locator_nodes = vec![crate::prl::CellLocatorNodeData {
+        world.cell_locator_root = postretro_level_loader::CellLocatorChild::Node(0);
+        world.cell_locator_nodes = vec![postretro_level_loader::CellLocatorNodeData {
             plane_normal: Vec3::new(1.0, 0.0, 0.0),
             plane_distance: 0.0,
-            front: crate::prl::CellLocatorChild::Cell(0),
-            back: crate::prl::CellLocatorChild::Cell(1),
+            front: postretro_level_loader::CellLocatorChild::Cell(0),
+            back: postretro_level_loader::CellLocatorChild::Cell(1),
         }];
         world
     }

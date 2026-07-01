@@ -501,7 +501,7 @@ mod tests {
     #[test]
     fn caster_cull_keeps_in_cone_drops_out_of_cone() {
         use crate::lighting::spot_shadow::light_space_matrix;
-        use crate::prl::{FalloffModel, LightType, MapLight, ShadowType};
+        use postretro_level_loader::{FalloffModel, LightType, MapLight, ShadowType};
         use postretro_render_data::cone_frustum::cone_frustum_planes;
 
         // Spotlight at the origin aimed down -Z, 20 m range — same cone the
@@ -573,7 +573,7 @@ mod tests {
     #[test]
     fn caster_cull_encloses_rotated_bound() {
         use crate::lighting::spot_shadow::light_space_matrix;
-        use crate::prl::{FalloffModel, LightType, MapLight, ShadowType};
+        use postretro_level_loader::{FalloffModel, LightType, MapLight, ShadowType};
         use postretro_render_data::cone_frustum::cone_frustum_planes;
 
         let light = MapLight {

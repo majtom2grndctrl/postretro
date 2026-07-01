@@ -3,7 +3,7 @@
 // in `forward.wgsl`), and the SDF visibility K-selection helper (`sdf_shadow.wgsl`).
 // See: context/lib/rendering_pipeline.md
 
-use crate::prl::{LightType, MapLight, ShadowType};
+use postretro_level_loader::{LightType, MapLight, ShadowType};
 
 /// Byte size of one `SpecLight` record. WGSL layout is four packed vec4<f32>
 /// slots so struct alignment is 16 and array stride is 64.
@@ -106,7 +106,7 @@ pub fn pack_spec_lights(lights: &[MapLight]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::prl::{FalloffModel, LightType};
+    use postretro_level_loader::{FalloffModel, LightType};
 
     fn sample() -> MapLight {
         MapLight {
@@ -124,7 +124,7 @@ mod tests {
             animated_slot: None,
             tags: vec![],
             cell_index: 0,
-            shadow_type: crate::prl::ShadowType::StaticLightMap,
+            shadow_type: postretro_level_loader::ShadowType::StaticLightMap,
         }
     }
 

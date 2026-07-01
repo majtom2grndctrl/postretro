@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 
 use postretro_foundation::Vec3Lit;
 
-/// Shape discriminant. Parallels `crate::prl::LightType` at the FFI boundary so
-/// the scripting module stays independent of the runtime-level data types.
+/// Shape discriminant. Parallels `postretro_level_loader::LightType` at the FFI
+/// boundary so the scripting module stays independent of the runtime-level data types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LightKind {
     Point,
@@ -19,7 +19,7 @@ pub enum LightKind {
     Directional,
 }
 
-/// Distance-attenuation discriminant. Parallels `crate::prl::FalloffModel`.
+/// Distance-attenuation discriminant. Parallels `postretro_level_loader::FalloffModel`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FalloffKind {
     Linear,
@@ -95,7 +95,7 @@ pub struct LightComponent {
     /// `MapLight.animated_slot`; never mutated by scripts. The light bridge
     /// keys on this to route `setLightAnimation` writes through the
     /// compose-side path instead of the legacy `is_dynamic`-gated forward
-    /// path. Task 2c of `sdf-static-occluder-shadows`.
+    /// path.
     #[serde(default)]
     pub animated_slot: Option<u32>,
     #[serde(default)]

@@ -7,11 +7,11 @@ use std::collections::HashMap;
 use super::mesh_anim::{self, MeshClipTables};
 use crate::model::ModelHandle;
 use crate::model::sample_params::MeshSampleParams;
-use crate::prl::LevelWorld;
 use crate::render::mesh_instances::MeshInstanceInput;
 use crate::render::mesh_pass::mesh_visible;
 use crate::visibility::VisibleCells;
 use postretro_entities::registry::{ComponentKind, ComponentValue, EntityRegistry, Transform};
+use postretro_level_loader::LevelWorld;
 
 /// Animation time-slicing distance thresholds + per-bucket resample strides.
 /// DISTANT skinned instances re-sample their pose every Nth frame and re-upload a
@@ -363,13 +363,13 @@ impl Default for MeshRenderCollector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lighting::influence::LightInfluence;
-    use crate::prl::{CellData, CellLocatorChild, CellLocatorNodeData, LevelWorld};
-    use crate::prl::{FalloffModel, LightType, MapLight, ShadowType};
     use glam::Vec3;
     use postretro_entities::components::mesh::MeshComponent;
     use postretro_entities::registry::EntityRegistry;
     use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
+    use postretro_level_loader::{CellData, CellLocatorChild, CellLocatorNodeData, LevelWorld};
+    use postretro_level_loader::{FalloffModel, LightType, MapLight, ShadowType};
+    use postretro_render_data::influence::LightInfluence;
 
     fn spawn_mesh(registry: &mut EntityRegistry, model: &str, position: Vec3) {
         let id = registry.spawn(Transform {
@@ -404,7 +404,7 @@ mod tests {
                 is_drawable: false,
             }],
             cell_portal_refs: vec![],
-            cell_locator_root: crate::prl::CellLocatorChild::Cell(0),
+            cell_locator_root: postretro_level_loader::CellLocatorChild::Cell(0),
             cell_locator_nodes: vec![],
             portals: vec![],
             has_portals: false,
@@ -419,7 +419,7 @@ mod tests {
             light_influences: vec![],
             sh_volume: None,
             lightmap: None,
-            lightmap_mode: crate::prl::LightmapMode::Shadowed,
+            lightmap_mode: postretro_level_loader::LightmapMode::Shadowed,
             sdf_atlas: None,
             chunk_light_list: None,
             animated_light_chunks: None,

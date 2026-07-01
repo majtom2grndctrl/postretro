@@ -4,11 +4,11 @@
 use std::collections::HashMap;
 
 use crate::lighting::{GPU_LIGHT_SIZE, pack_light};
-use crate::prl::{FalloffModel, LightType, MapLight, ShadowType};
 use crate::render::sh_volume::{
     ANIMATION_DESCRIPTOR_SIZE, SCRIPTED_BRIGHTNESS_SLOT, SCRIPTED_COLOR_SLOT_F32,
     SCRIPTED_FLOATS_PER_LIGHT,
 };
+use postretro_level_loader::{FalloffModel, LightType, MapLight, ShadowType};
 
 #[cfg(test)]
 use postretro_entities::components::light::LightAnimation;
@@ -63,7 +63,7 @@ pub(crate) struct LightBridgeUpdate {
     /// lights. Each entry is `(animated_slot, 48-byte ANIMATION_DESCRIPTOR
     /// bytes)` — the renderer overwrites the compose descriptor buffer at the
     /// slot. Populated only when the bridge is dirty AND the affected light
-    /// has a cached `animated_slot`. Empty otherwise. Task 2c.
+    /// has a cached `animated_slot`. Empty otherwise.
     pub(crate) compose_descriptor_writes: Vec<(u32, [u8; ANIMATION_DESCRIPTOR_SIZE])>,
 }
 
@@ -99,7 +99,7 @@ struct MapLightShape {
     cell_index: u32,
     /// Cached `MapLight.animated_slot` so the bridge can route
     /// `setLightAnimation` writes to the animated-compose descriptor buffer
-    /// without re-querying the source. Task 2c.
+    /// without re-querying the source.
     animated_slot: Option<u32>,
 }
 
@@ -443,13 +443,12 @@ impl LightBridge {
             let desc = pack_animation_descriptor(component, brightness_offset, color_offset);
             descriptor_bytes.extend_from_slice(&desc);
 
-            // Task 2c: for `_animated` (and other slot-bearing) lights,
-            // also queue a write into the animated-compose descriptor buffer
-            // at the cached section slot. The compose pass reads the same
-            // 48-byte stride from its own descriptor buffer (group 1
-            // binding 4) — the offsets we just baked point into the shared
-            // `anim_samples` scripted region, which both the forward and
-            // compose paths sample.
+            // For `_animated` (and other slot-bearing) lights, also queue a
+            // write into the animated-compose descriptor buffer at the cached
+            // section slot. The compose pass reads the same 48-byte stride
+            // from its own descriptor buffer (group 1 binding 4) — the offsets
+            // we just baked point into the shared `anim_samples` scripted
+            // region, which both the forward and compose paths sample.
             if let Some(slot) = self.shape[map_idx].animated_slot {
                 compose_descriptor_writes.push((slot, desc));
             }
@@ -725,7 +724,7 @@ fn check_play_count_completion(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::prl::{FalloffModel, LightType};
+    use postretro_level_loader::{FalloffModel, LightType};
 
     fn sample_point_light() -> MapLight {
         MapLight {
@@ -743,7 +742,7 @@ mod tests {
             animated_slot: None,
             tags: vec![],
             cell_index: 0,
-            shadow_type: crate::prl::ShadowType::StaticLightMap,
+            shadow_type: postretro_level_loader::ShadowType::StaticLightMap,
         }
     }
 
@@ -763,7 +762,7 @@ mod tests {
             animated_slot: None,
             tags: vec![],
             cell_index: 0,
-            shadow_type: crate::prl::ShadowType::StaticLightMap,
+            shadow_type: postretro_level_loader::ShadowType::StaticLightMap,
         }
     }
 
@@ -1219,12 +1218,12 @@ mod tests {
         );
     }
 
-    /// Task 2c: `setLightAnimation` on a static `_animated` light (one with a
-    /// cached `animated_slot`) feeds a compose-side descriptor write. The
-    /// bridge produces `compose_descriptor_writes` keyed on the cached slot,
-    /// not on map-light index; the descriptor bytes carry the live brightness
-    /// count. Asserted: brightness-only animation reaches the compose
-    /// descriptor without going through the `is_dynamic` forward path.
+    /// `setLightAnimation` on a static `_animated` light (one with a cached
+    /// `animated_slot`) feeds a compose-side descriptor write. The bridge
+    /// produces `compose_descriptor_writes` keyed on the cached slot, not on
+    /// map-light index; the descriptor bytes carry the live brightness count.
+    /// Asserted: brightness-only animation reaches the compose descriptor
+    /// without going through the `is_dynamic` forward path.
     #[test]
     fn animated_light_routes_set_animation_through_compose_buffer() {
         let mut light = sample_point_light();
@@ -1286,9 +1285,9 @@ mod tests {
         assert_eq!(active, 1);
     }
 
-    /// Task 2c: a light without a baked slot (legacy / non-`_animated`)
-    /// produces no compose-side descriptor writes — the bridge falls back to
-    /// the legacy forward path entirely.
+    /// A light without a baked slot (legacy / non-`_animated`) produces no
+    /// compose-side descriptor writes — the bridge falls back to the legacy
+    /// forward path entirely.
     #[test]
     fn non_animated_light_produces_no_compose_descriptor_writes() {
         let light = sample_point_light(); // animated_slot = None

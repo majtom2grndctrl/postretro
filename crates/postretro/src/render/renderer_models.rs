@@ -295,7 +295,7 @@ impl Renderer {
     /// and `install_level_geometry`. Reads `texture.width()`/`height()` off
     /// the wgpu textures owned by `self.loaded_textures` so the dimensions
     /// always match the actual upload.
-    pub fn normalize_world_uvs(&self, world: &mut crate::prl::LevelWorld) {
+    pub fn normalize_world_uvs(&self, world: &mut postretro_level_loader::LevelWorld) {
         let mut normalized = vec![false; world.vertices.len()];
         for leaf in &world.bvh.leaves {
             let tex_idx = leaf.material_bucket_id as usize;

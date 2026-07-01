@@ -24,8 +24,8 @@ use glam::Mat4;
 use std::collections::HashSet;
 
 use crate::candidate_cull::{GatherStatus, gather_candidate_leaves};
-use crate::prl::CellDrawIndex;
 use crate::visibility::VisibleCells;
+use postretro_level_loader::CellDrawIndex;
 use postretro_render_data::cone_frustum::extract_frustum_planes_for_gpu;
 use postretro_render_data::geometry::{BucketRange, BvhLeaf, BvhTree};
 
@@ -154,7 +154,10 @@ impl SyntheticWorld {
     /// from the explicit runtime cell records, the same predicate the gather
     /// and the tree walk apply.
     #[cfg(test)]
-    pub(crate) fn from_level_world(world: &crate::prl::LevelWorld, index: CellDrawIndex) -> Self {
+    pub(crate) fn from_level_world(
+        world: &postretro_level_loader::LevelWorld,
+        index: CellDrawIndex,
+    ) -> Self {
         let cell_drawable: Vec<bool> = world.cells.iter().map(|cell| cell.is_drawable).collect();
         SyntheticWorld {
             leaves: world.bvh.leaves.clone(),

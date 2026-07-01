@@ -1,17 +1,7 @@
-// Per-light influence volumes: runtime struct and GPU packing.
+// Per-light influence GPU packing.
 // See: context/lib/rendering_pipeline.md §4
 
-use glam::Vec3;
-
-/// Runtime influence volume for one light. Deserialized from the
-/// `LightInfluence` PRL section (ID 21).
-#[derive(Debug, Clone)]
-pub struct LightInfluence {
-    /// World-space sphere center. Unused for directional lights.
-    pub center: Vec3,
-    /// Sphere radius in meters. `f32::MAX` = always active (directional).
-    pub radius: f32,
-}
+use postretro_render_data::influence::LightInfluence;
 
 /// Pack influence records into a contiguous `[f32; 4]` array suitable for
 /// GPU upload as `array<vec4<f32>>`.
@@ -29,6 +19,7 @@ pub fn pack_influence(records: &[LightInfluence]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use glam::Vec3;
 
     #[test]
     fn pack_influence_produces_correct_bytes() {

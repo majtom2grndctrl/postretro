@@ -69,7 +69,7 @@ pub(crate) fn bytemuck_cast_slice_u32(data: &[u32]) -> Vec<u8> {
 
 /// See: context/lib/boot_sequence.md §3 (Level Install Order)
 pub fn level_world_to_geometry<'a>(
-    world: &'a crate::prl::LevelWorld,
+    world: &'a postretro_level_loader::LevelWorld,
     texture_materials: &'a [Material],
 ) -> LevelGeometry<'a> {
     LevelGeometry {

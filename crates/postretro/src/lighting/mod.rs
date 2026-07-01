@@ -11,7 +11,7 @@ pub(crate) mod script_primitives;
 pub mod spec_buffer;
 pub mod spot_shadow;
 
-use crate::prl::{FalloffModel, LightType, MapLight};
+use postretro_level_loader::{FalloffModel, LightType, MapLight};
 
 /// On-disk size of a single `GpuLight` record in the storage buffer.
 ///
@@ -322,7 +322,7 @@ mod tests {
             animated_slot: None,
             tags: vec![],
             cell_index: 0,
-            shadow_type: crate::prl::ShadowType::StaticLightMap,
+            shadow_type: postretro_level_loader::ShadowType::StaticLightMap,
         }
     }
 
@@ -342,7 +342,7 @@ mod tests {
             animated_slot: None,
             tags: vec![],
             cell_index: 0,
-            shadow_type: crate::prl::ShadowType::StaticLightMap,
+            shadow_type: postretro_level_loader::ShadowType::StaticLightMap,
         }
     }
 
@@ -362,7 +362,7 @@ mod tests {
             animated_slot: None,
             tags: vec![],
             cell_index: 0,
-            shadow_type: crate::prl::ShadowType::StaticLightMap,
+            shadow_type: postretro_level_loader::ShadowType::StaticLightMap,
         }
     }
 

@@ -3583,6 +3583,7 @@ dependencies = [
  "postretro-entities",
  "postretro-foundation",
  "postretro-level-format",
+ "postretro-level-loader",
  "postretro-net",
  "postretro-render-data",
  "postretro-script-compiler",
@@ -3661,6 +3662,17 @@ dependencies = [
  "gltf",
  "percent-encoding",
  "serde",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "postretro-level-loader"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "log",
+ "postretro-level-format",
+ "postretro-render-data",
  "thiserror 2.0.18",
 ]
 

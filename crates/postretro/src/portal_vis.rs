@@ -5,8 +5,8 @@ use std::fmt::Write as _;
 
 use glam::Vec3;
 
-use crate::prl::LevelWorld;
 use crate::visibility::{Frustum, FrustumPlane};
+use postretro_level_loader::LevelWorld;
 
 // Half-space boundary epsilon for Sutherland-Hodgman. Over-inclusion at the
 // boundary is safe: the next narrowing iteration will discard any slop, so the
@@ -653,9 +653,9 @@ pub fn narrow_frustum(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::prl::{CellData, LevelWorld, PortalData};
     use crate::visibility::{FrustumPlane, is_aabb_outside_frustum};
     use glam::Mat4;
+    use postretro_level_loader::{CellData, LevelWorld, PortalData};
 
     fn extract_test_frustum(view_proj: Mat4) -> Frustum {
         use glam::Vec4;
@@ -756,7 +756,7 @@ mod tests {
             face_meta: vec![],
             cells,
             cell_portal_refs,
-            cell_locator_root: crate::prl::CellLocatorChild::Cell(0),
+            cell_locator_root: postretro_level_loader::CellLocatorChild::Cell(0),
             cell_locator_nodes: vec![],
             portals,
             has_portals: true,
@@ -772,7 +772,7 @@ mod tests {
             light_influences: vec![],
             sh_volume: None,
             lightmap: None,
-            lightmap_mode: crate::prl::LightmapMode::Shadowed,
+            lightmap_mode: postretro_level_loader::LightmapMode::Shadowed,
             sdf_atlas: None,
             chunk_light_list: None,
             animated_light_chunks: None,

@@ -21,12 +21,8 @@ use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 use thiserror::Error;
 
 use postretro_render_data::geometry::{BvhTree, WorldVertex};
+use postretro_render_data::influence::LightInfluence;
 use postretro_render_data::material::Material;
-
-#[path = "prl_loader.rs"]
-mod prl_loader;
-
-pub use prl_loader::load_prl;
 
 #[derive(Debug, Error)]
 pub enum PrlLoadError {
@@ -185,7 +181,7 @@ pub enum FalloffModel {
 /// techniques are disjoint, so the forward pass routes each light's direct
 /// shadow to exactly one of lightmap (`StaticLightMap`) / runtime SDF trace
 /// (`Sdf`) — no double-count. Legacy PRLs without the wire field decode
-/// `StaticLightMap`. See `context/plans/in-progress/sdf-per-light-shadows/`.
+/// `StaticLightMap`. See `context/lib/build_pipeline.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ShadowType {
     #[default]
@@ -209,8 +205,8 @@ pub struct MapLight {
     /// Internal/seam-only flag for the geometry-moving light class
     /// (position/aim animation). v1 has no authoring surface — every
     /// authored light parses `false`. Intensity-only animation lives on
-    /// the animated-baked path (Task 2c), not here. Legacy PRLs retain
-    /// their stored value on parse.
+    /// the animated-baked descriptor path, not here. Legacy PRLs retain their
+    /// stored value on parse.
     pub is_dynamic: bool,
     /// Whether this light casts shadows from dynamic ENTITIES (enemies / moving
     /// meshes). Mirrors FGD `_cast_entity_shadows`. Only ever `true` on
@@ -227,7 +223,7 @@ pub struct MapLight {
     /// runtime `LightComponent` so `setLightAnimation` can write the
     /// descriptor through the compose-side buffer without a per-call lookup.
     /// `None` for non-animated lights and for legacy PRLs that lack the slot
-    /// table. Task 2c of `sdf-static-occluder-shadows`.
+    /// table.
     pub animated_slot: Option<u32>,
     /// From LightTags section (ID 26). Space-delimited on wire; split here.
     /// `world.query({ tag: "t" })` matches when any tag equals `"t"`.
@@ -247,20 +243,21 @@ pub struct MapLight {
 
 /// Whether the lightmap section's baked irradiance already includes the
 /// static-light visibility (shadow) term, or carries unshadowed irradiance
-/// for runtime SDF visibility to multiply in (Task 2a).
+/// for runtime SDF visibility to multiply in.
 ///
-/// Task 2a will add an on-disk marker to the lightmap section. Until that
-/// lands, every legacy PRL parses as `Shadowed` — matching `main`-equivalent
-/// behavior so the forward pass (Task 5) knows not to multiply the SDF
-/// visibility factor into an already-shadowed term and double-shadow.
+/// Current bakes load as `Shadowed`: a missing lightmap-mode marker decodes
+/// that way, and shadowed bakes omit the marker for wire compatibility.
+/// `Unshadowed` remains for legacy wire compatibility, not as current bake
+/// output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LightmapMode {
-    /// Static-light visibility folded into the bake (today's `main`). Forward
-    /// must NOT multiply by SDF visibility.
+    /// Static-light visibility folded into the bake. Forward must NOT multiply
+    /// by SDF visibility.
     #[default]
     Shadowed,
     /// Visibility term removed from the bake. Forward MUST multiply by SDF
-    /// visibility to recover shadowed lighting. Set by Task 2a's bake flag.
+    /// visibility to recover shadowed lighting. Retained for legacy wire
+    /// compatibility.
     #[allow(dead_code)]
     Unshadowed,
 }
@@ -293,20 +290,19 @@ pub struct LevelWorld {
     /// Empty when section 18 is absent (maps predating lighting foundation).
     pub lights: Vec<MapLight>,
     /// Index `i` corresponds to `lights[i]`. Empty → all lights treated as infinite-bound.
-    pub light_influences: Vec<crate::lighting::influence::LightInfluence>,
+    pub light_influences: Vec<LightInfluence>,
     /// Required octahedral irradiance atlas. Empty geometry uses a present
     /// section with zero grid dimensions; missing section means stale PRL.
     pub sh_volume: Option<OctahedralShVolumeSection>,
     /// `None` → 1×1 white placeholder; bumped-Lambert degrades to flat white.
     pub lightmap: Option<LightmapSection>,
-    /// Whether the lightmap bake includes static-light visibility (Shadowed,
-    /// today's `main`) or is unshadowed irradiance awaiting runtime SDF
-    /// multiplication (Task 2a). Legacy PRLs without the on-disk marker
-    /// parse as `Shadowed` — Task 5's forward shader uses this to decide
-    /// whether to multiply the SDF visibility factor into the static term.
+    /// Whether the lightmap bake includes static-light visibility (`Shadowed`)
+    /// or carries unshadowed irradiance that requires runtime SDF visibility
+    /// multiplication (`Unshadowed`). Legacy PRLs without the on-disk marker
+    /// parse as `Shadowed`.
     pub lightmap_mode: LightmapMode,
     /// `None` → no static-occluder SDF atlas (legacy PRL or empty-geometry
-    /// bake). The runtime SDF shadow pass (Task 4) is skipped entirely.
+    /// bake). Runtime SDF shadowing is skipped.
     pub sdf_atlas: Option<SdfAtlasSection>,
     /// `None` → full spec-buffer scan fallback. See `ChunkGrid::fallback`.
     pub chunk_light_list: Option<ChunkLightListSection>,
@@ -341,8 +337,8 @@ pub struct LevelWorld {
     /// `None` only when the map has no canonical fog volumes.
     pub fog_cell_masks: Option<Vec<u32>>,
     /// Baked navigation graph (PRL section 36). `None` for maps without a
-    /// navmesh bake; the runtime nav query surface (`crate::nav::NavGraph`) is
-    /// only built when this is present. A malformed section warns and decodes to
+    /// navmesh bake; the engine builds its runtime nav query surface only
+    /// when this is present. A malformed section warns and decodes to
     /// `None` rather than failing the load. Read only by the dev-tools nav graph
     /// build today, so allowed dead in shipping builds until pathfinding lands.
     #[allow(dead_code)]
@@ -477,8 +473,9 @@ impl LevelWorld {
 
 #[cfg(test)]
 mod tests {
-    use super::prl_loader::{expected_affinity_dims, validate_cell_draw_index, validate_delta_sh};
     use super::*;
+    use crate::load_prl;
+    use crate::prl_loader::{expected_affinity_dims, validate_cell_draw_index, validate_delta_sh};
     use postretro_level_format::SectionId;
     use postretro_level_format::alpha_lights::{
         ALPHA_LIGHT_LEAF_UNASSIGNED, AlphaFalloffModel, AlphaLightType, AlphaLightsSection,
@@ -3057,14 +3054,15 @@ mod tests {
     }
 
     #[test]
-    fn load_prl_light_influence_count_mismatch_is_error() {
+    fn load_prl_light_influence_short_section_loads_available_records() {
         use postretro_level_format::light_influence::{InfluenceRecord, LightInfluenceSection};
 
         let geom = sample_geometry();
         let bvh = sample_bvh_section();
         let alpha_lights = sample_alpha_lights(); // 3 lights
 
-        // Only 2 influence records — mismatch.
+        // Only 2 influence records — the missing tail light degrades to
+        // uncullable downstream instead of rejecting the map.
         let influence = LightInfluenceSection {
             records: vec![
                 InfluenceRecord {
@@ -3100,14 +3098,89 @@ mod tests {
                 data: influence.to_bytes(),
             },
             default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
         ];
 
-        let tmp = write_prl_fixture(sections, "postretro_test_influence_mismatch.prl");
+        let tmp = write_prl_fixture(sections, "postretro_test_influence_short.prl");
+        let world = load_prl(tmp.to_str().unwrap()).expect("short LightInfluence should load");
+        assert_eq!(world.lights.len(), 3, "lights should still parse");
+        assert_eq!(
+            world.light_influences.len(),
+            2,
+            "only available records are loaded; missing tail entries stay absent"
+        );
+        assert!(
+            (world.light_influences[0].center - glam::Vec3::new(1.0, 2.0, 3.0)).length() <= 1.0e-5
+        );
+        assert!((world.light_influences[0].radius - 50.0).abs() <= 1.0e-5);
+        assert!(
+            (world.light_influences[1].center - glam::Vec3::new(-4.0, 5.5, 6.0)).length() <= 1.0e-5
+        );
+        assert!((world.light_influences[1].radius - 25.0).abs() <= 1.0e-5);
+
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_light_influence_extra_records_are_error() {
+        use postretro_level_format::light_influence::{InfluenceRecord, LightInfluenceSection};
+
+        let geom = sample_geometry();
+        let bvh = sample_bvh_section();
+        let alpha_lights = sample_alpha_lights(); // 3 lights
+
+        // Four influence records for three lights cannot be paired safely.
+        let influence = LightInfluenceSection {
+            records: vec![
+                InfluenceRecord {
+                    center: [1.0, 2.0, 3.0],
+                    radius: 50.0,
+                },
+                InfluenceRecord {
+                    center: [-4.0, 5.5, 6.0],
+                    radius: 25.0,
+                },
+                InfluenceRecord {
+                    center: [0.0, 0.0, 0.0],
+                    radius: 10.0,
+                },
+                InfluenceRecord {
+                    center: [8.0, 9.0, 10.0],
+                    radius: 5.0,
+                },
+            ],
+        };
+
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: geom.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: bvh.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::AlphaLights as u32,
+                version: 1,
+                data: alpha_lights.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::LightInfluence as u32,
+                version: 1,
+                data: influence.to_bytes(),
+            },
+            default_texture_cache_keys_blob(),
+        ];
+
+        let tmp = write_prl_fixture(sections, "postretro_test_influence_extra.prl");
         let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("does not match"),
-            "expected count mismatch error, got: {msg}"
+            msg.contains("exceeds AlphaLights count"),
+            "expected extra-record count error, got: {msg}"
         );
 
         std::fs::remove_file(&tmp).ok();
@@ -3275,8 +3348,8 @@ mod tests {
 
         let geom = sample_geometry();
         let bvh = sample_bvh_section();
-        // Two cells but only one mask: Task 5 makes this fatal and validates
-        // against Cells.cell_count, not removed runtime BSP sections.
+        // Two cells but only one mask: validate against Cells.cell_count,
+        // not removed runtime BSP sections.
         let masks = FogCellMasksSection {
             masks: vec![0x0000_0001],
         };
@@ -3361,8 +3434,8 @@ mod tests {
 
         let geom = sample_geometry();
         let bvh = sample_bvh_section();
-        // Two cells but three masks: Task 5 makes this fatal and validates
-        // against Cells.cell_count, not removed runtime BSP sections.
+        // Two cells but three masks: validate against Cells.cell_count,
+        // not removed runtime BSP sections.
         let masks = FogCellMasksSection {
             masks: vec![0x0000_0001, 0x0000_0001, 0x0000_0001],
         };
@@ -3508,8 +3581,7 @@ mod tests {
             world.sdf_atlas.is_none(),
             "absent SDF atlas section should yield None (legacy / no-bake degrade path)"
         );
-        // Lightmap mode defaults to Shadowed until Task 2a adds the marker,
-        // so legacy PRLs degrade to `main`-equivalent forward behavior.
+        // Legacy PRLs without a lightmap-mode marker decode as `Shadowed`.
         assert_eq!(world.lightmap_mode, LightmapMode::Shadowed);
 
         std::fs::remove_file(&tmp).ok();

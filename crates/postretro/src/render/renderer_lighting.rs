@@ -41,25 +41,59 @@ pub(crate) fn collect_delta_volume_meta(
     Vec::new()
 }
 
+fn uncullable_light_influence() -> LightInfluence {
+    LightInfluence {
+        center: Vec3::ZERO,
+        radius: f32::MAX,
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct FilteredDynamicLights {
+    pub lights: Vec<MapLight>,
+    pub influences: Vec<LightInfluence>,
+    /// Original index into the full level-light list for each filtered light.
+    pub source_indices: Vec<usize>,
+}
+
+/// Shadow candidate reachability uses the runtime influence volume, not the
+/// authored light origin/range. Missing influence entries are uncullable,
+/// matching the loader/forward-light degradation contract.
+pub(crate) fn shadow_candidate_reaches_visible_cell(
+    light: &MapLight,
+    influence: Option<&LightInfluence>,
+    reachable_cell_aabbs: &[(Vec3, Vec3)],
+) -> bool {
+    if light.cell_index == ALPHA_LIGHT_LEAF_UNASSIGNED {
+        return false;
+    }
+    let influence = influence
+        .cloned()
+        .unwrap_or_else(uncullable_light_influence);
+    crate::lighting::light_reaches_visible_cell(
+        influence.center,
+        influence.radius,
+        reachable_cell_aabbs,
+    )
+}
+
 // Static lights are baked — including them would double-apply their contribution.
-// Short influence list → zero-radius placeholder.
+// Missing influence data means no spatial culling for that light.
 pub(crate) fn filter_dynamic_lights(
     lights: &[MapLight],
     influences: &[LightInfluence],
-) -> (Vec<MapLight>, Vec<LightInfluence>) {
-    lights
-        .iter()
-        // enumerate before filter so i preserves the original index into influences
-        .enumerate()
-        .filter(|(_, l)| l.is_dynamic)
-        .map(|(i, l)| {
-            let inf = influences.get(i).cloned().unwrap_or(LightInfluence {
-                center: Vec3::ZERO,
-                radius: 0.0,
-            });
-            (l.clone(), inf)
-        })
-        .unzip()
+) -> FilteredDynamicLights {
+    let mut filtered = FilteredDynamicLights::default();
+    for (i, l) in lights.iter().enumerate().filter(|(_, l)| l.is_dynamic) {
+        let inf = influences
+            .get(i)
+            .cloned()
+            .unwrap_or_else(uncullable_light_influence);
+        filtered.lights.push(l.clone());
+        filtered.influences.push(inf);
+        filtered.source_indices.push(i);
+    }
+    filtered
 }
 
 /// Pull the spot-shadow pool's candidate set from the **full** level light
@@ -79,80 +113,59 @@ pub(crate) fn filter_dynamic_lights(
 pub(crate) fn filter_entity_shadow_candidates(
     lights: &[MapLight],
     influences: &[LightInfluence],
-) -> (Vec<MapLight>, Vec<LightInfluence>) {
-    lights
-        .iter()
-        .enumerate()
-        .filter(|(_, l)| l.is_dynamic)
-        .map(|(i, l)| {
-            let inf = influences.get(i).cloned().unwrap_or(LightInfluence {
-                center: Vec3::ZERO,
-                radius: 0.0,
-            });
-            (l.clone(), inf)
-        })
-        .unzip()
+) -> FilteredDynamicLights {
+    let mut filtered = FilteredDynamicLights::default();
+    for (i, l) in lights.iter().enumerate().filter(|(_, l)| l.is_dynamic) {
+        let inf = influences
+            .get(i)
+            .cloned()
+            .unwrap_or_else(uncullable_light_influence);
+        filtered.lights.push(l.clone());
+        filtered.influences.push(inf);
+        filtered.source_indices.push(i);
+    }
+    filtered
 }
 
-/// Identity-match a shadow candidate against the `level_lights` slice
-/// (origin + light_type) and return that level-light's per-frame
-/// effective brightness. Returns `None` when the candidate isn't in
-/// `level_lights`. Both sets are `is_dynamic`-filtered snapshots of the same
-/// `world.lights` source, so today every candidate is present and this returns
-/// `Some`; the `None` arm is the defensive path for once light-movement
-/// re-keying lands.
+/// Match a shadow candidate's source level-light index against the
+/// `level_lights` slice and return that level-light's per-frame effective
+/// brightness. Returns `None` when the candidate is no longer represented in
+/// `level_lights`.
 pub(crate) fn level_brightness_for_candidate(
-    level_lights: &[MapLight],
-    candidate: &MapLight,
+    level_light_source_indices: &[usize],
+    candidate_source_index: usize,
     effective_brightness: &[f32],
 ) -> Option<f32> {
-    // Re-keys by float-exact `origin` equality. Both `level_lights` and
-    // `shadow_candidate_lights` are immutable load-time snapshots filtered from
-    // the same `world.lights` source, so origins match exactly today. The match
-    // breaks only once runtime light-movement lands and mutates one side's
-    // origins live (the candidate snapshot would keep a stale origin and
-    // silently lose the forward shadow slot). That feature doesn't exist —
-    // `is_dynamic` is a dormant seam with no authoring surface and
-    // `self.level_lights` is never mutated post-load — so keying on a stable id
-    // now would be scaffolding for an unlanded feature. When movement lands, key
-    // both sites on the `world.lights` source index (the natural shared id;
-    // currently discarded by `filter_dynamic_lights` /
-    // `filter_entity_shadow_candidates`) instead of origin equality.
-    level_lights
+    level_light_source_indices
         .iter()
         .enumerate()
-        .find(|(_, l)| l.origin == candidate.origin && l.light_type == candidate.light_type)
+        .find(|(_, source_index)| **source_index == candidate_source_index)
         .and_then(|(i, _)| effective_brightness.get(i).copied())
 }
 
 /// Translate a slot assignment from candidate-index space into
 /// `level_lights`-index space. Returns a Vec the size of `level_lights`,
 /// each entry either a slot or `NO_SHADOW_SLOT`. Used to pack the GPU
-/// lights buffer (`pack_lights_with_slots_into`), which is keyed on
-/// `level_lights`. Candidates not in `level_lights` have no forward-side
-/// slot today — that bridge is post-1b work.
+/// lights buffer (`pack_lights_with_slots_into`), which is keyed on the
+/// filtered `level_lights` order.
 pub(crate) fn slot_assignment_for_level_lights(
-    level_lights: &[MapLight],
-    candidates: &[MapLight],
+    level_light_source_indices: &[usize],
+    candidate_source_indices: &[usize],
     candidate_slot_assignment: &[u32],
 ) -> Vec<u32> {
     use crate::lighting::spot_shadow::NO_SHADOW_SLOT;
-    let mut out = vec![NO_SHADOW_SLOT; level_lights.len()];
+    let mut out = vec![NO_SHADOW_SLOT; level_light_source_indices.len()];
     for (cand_idx, &slot) in candidate_slot_assignment.iter().enumerate() {
         if slot == NO_SHADOW_SLOT {
             continue;
         }
-        let cand = &candidates[cand_idx];
-        // Re-keys by float-exact `origin` equality — same constraint as
-        // `level_brightness_for_candidate`: exact today because both collections
-        // are immutable load-time snapshots of the same `world.lights` source.
-        // A moving spot (unlanded; see that fn) would carry a stale candidate
-        // origin and silently drop its slot. Key both sites on the
-        // `world.lights` source index when light-movement lands.
-        if let Some((level_idx, _)) = level_lights
+        let Some(&candidate_source_index) = candidate_source_indices.get(cand_idx) else {
+            continue;
+        };
+        if let Some((level_idx, _)) = level_light_source_indices
             .iter()
             .enumerate()
-            .find(|(_, l)| l.origin == cand.origin && l.light_type == cand.light_type)
+            .find(|(_, source_index)| **source_index == candidate_source_index)
         {
             out[level_idx] = slot;
         }
@@ -173,8 +186,8 @@ impl Renderer {
     /// Overwrite the entire 48-byte animation descriptor at `slot` in the
     /// animated-compose descriptor buffer. Used by the scripting bridge to
     /// route a `setLightAnimation` curve through the animated-baked compose
-    /// path (Task 2c of `sdf-static-occluder-shadows`). Out-of-range slots
-    /// log once then no-op (mirrors the dormant `set_active` behavior).
+    /// path. Out-of-range slots log once then no-op (mirrors the dormant
+    /// `set_active` behavior).
     /// Flushed to GPU on the next `update_per_frame_uniforms` call.
     pub fn write_animated_compose_descriptor(
         &mut self,
@@ -295,7 +308,7 @@ impl Renderer {
             let Some(light) = full.level_lights.get(light_idx) else {
                 continue;
             };
-            if !matches!(light.light_type, crate::prl::LightType::Spot) {
+            if !matches!(light.light_type, postretro_level_loader::LightType::Spot) {
                 continue;
             }
             let multiplier = full

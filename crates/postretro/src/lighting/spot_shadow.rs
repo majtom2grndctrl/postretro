@@ -2,8 +2,8 @@
 //
 // See: context/lib/rendering_pipeline.md §4 (Dynamic direct, spot shadow maps)
 
-use crate::prl::{LightType, MapLight};
 use glam::{Mat4, Vec3};
+use postretro_level_loader::{LightType, MapLight};
 
 /// Near-clip distance used when building a spot light's projection matrix.
 /// Matches the camera near-clip policy — close enough that self-shadowing
@@ -646,7 +646,7 @@ mod tests {
             light_type: LightType::Spot,
             intensity: 1.0,
             color: [1.0, 1.0, 1.0],
-            falloff_model: crate::prl::FalloffModel::Linear,
+            falloff_model: postretro_level_loader::FalloffModel::Linear,
             falloff_range,
             cone_angle_inner: 0.3,
             cone_angle_outer: 0.6,
@@ -656,7 +656,7 @@ mod tests {
             animated_slot: None,
             tags: vec![],
             cell_index: 0,
-            shadow_type: crate::prl::ShadowType::StaticLightMap,
+            shadow_type: postretro_level_loader::ShadowType::StaticLightMap,
         }
     }
 
@@ -667,7 +667,7 @@ mod tests {
             light_type: LightType::Spot,
             intensity: 1.0,
             color: [1.0, 1.0, 1.0],
-            falloff_model: crate::prl::FalloffModel::Linear,
+            falloff_model: postretro_level_loader::FalloffModel::Linear,
             falloff_range: 20.0,
             cone_angle_inner: 0.3,
             cone_angle_outer: 0.4,
@@ -677,7 +677,7 @@ mod tests {
             animated_slot: None,
             tags: vec![],
             cell_index: 0,
-            shadow_type: crate::prl::ShadowType::StaticLightMap,
+            shadow_type: postretro_level_loader::ShadowType::StaticLightMap,
         }
     }
 

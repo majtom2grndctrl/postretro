@@ -64,7 +64,7 @@ impl Renderer {
             delta_sh_volumes: None,
             direct_sh_volume: None,
             sdf_atlas: None,
-            lightmap_mode: crate::prl::LightmapMode::default(),
+            lightmap_mode: postretro_level_loader::LightmapMode::default(),
             cell_draw_index: None,
             texture_materials: &empty_materials,
         };
@@ -142,10 +142,16 @@ impl Renderer {
         full.wireframe_index_count = wireframe_index_count;
 
         // --- Lights + lighting bind group ---
-        let (level_lights, dynamic_influences) =
+        let filtered_level_lights =
             filter_dynamic_lights(geometry.lights, geometry.light_influences);
-        let (shadow_candidate_lights, _) =
+        let level_lights = filtered_level_lights.lights;
+        let dynamic_influences = filtered_level_lights.influences;
+        let level_light_source_indices = filtered_level_lights.source_indices;
+        let filtered_shadow_candidates =
             filter_entity_shadow_candidates(geometry.lights, geometry.light_influences);
+        let shadow_candidate_lights = filtered_shadow_candidates.lights;
+        let shadow_candidate_influences = filtered_shadow_candidates.influences;
+        let shadow_candidate_source_indices = filtered_shadow_candidates.source_indices;
         full.light_count = level_lights.len() as u32;
 
         let lights_data = if !level_lights.is_empty() {
@@ -160,7 +166,10 @@ impl Renderer {
         });
         full.lights_buffer = lights_buffer;
         full.level_lights = level_lights;
+        full.level_light_source_indices = level_light_source_indices;
         full.shadow_candidate_lights = shadow_candidate_lights;
+        full.shadow_candidate_source_indices = shadow_candidate_source_indices;
+        full.shadow_candidate_influences = shadow_candidate_influences;
 
         let influence_data = if !dynamic_influences.is_empty() {
             influence::pack_influence(&dynamic_influences)

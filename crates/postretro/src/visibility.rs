@@ -4,7 +4,7 @@
 use glam::{Mat4, Vec3, Vec4};
 
 use crate::portal_vis;
-use crate::prl::{CellData, LevelWorld};
+use postretro_level_loader::{CellData, LevelWorld};
 
 /// Result of per-frame visibility determination for the GPU-driven indirect
 /// draw path. Portal DFS still determines the visible cell set; the BVH
@@ -725,7 +725,7 @@ mod tests {
 
     // -- PRL cell-based visibility tests --
 
-    use crate::prl::{FaceMeta as PrlFaceMeta, LevelWorld};
+    use postretro_level_loader::{FaceMeta as PrlFaceMeta, LevelWorld};
     use postretro_render_data::geometry::{BvhTree, WorldVertex};
     use postretro_render_data::material::Material;
 
@@ -804,7 +804,7 @@ mod tests {
                 ),
             ],
             cell_portal_refs: vec![],
-            cell_locator_root: crate::prl::CellLocatorChild::Cell(0),
+            cell_locator_root: postretro_level_loader::CellLocatorChild::Cell(0),
             cell_locator_nodes: vec![],
             portals: vec![],
             has_portals: false,
@@ -816,7 +816,7 @@ mod tests {
             light_influences: vec![],
             sh_volume: None,
             lightmap: None,
-            lightmap_mode: crate::prl::LightmapMode::Shadowed,
+            lightmap_mode: postretro_level_loader::LightmapMode::Shadowed,
             sdf_atlas: None,
             chunk_light_list: None,
             animated_light_chunks: None,
@@ -864,7 +864,7 @@ mod tests {
             face_meta: vec![],
             cells: vec![],
             cell_portal_refs: vec![],
-            cell_locator_root: crate::prl::CellLocatorChild::Cell(0),
+            cell_locator_root: postretro_level_loader::CellLocatorChild::Cell(0),
             cell_locator_nodes: vec![],
             portals: vec![],
             has_portals: false,
@@ -876,7 +876,7 @@ mod tests {
             light_influences: vec![],
             sh_volume: None,
             lightmap: None,
-            lightmap_mode: crate::prl::LightmapMode::Shadowed,
+            lightmap_mode: postretro_level_loader::LightmapMode::Shadowed,
             sdf_atlas: None,
             chunk_light_list: None,
             animated_light_chunks: None,

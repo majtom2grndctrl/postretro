@@ -62,9 +62,9 @@ impl ScriptCtx {
             slot_table: Rc::new(RefCell::new(SlotTable::new())),
             frame: Rc::new(Cell::new(0)),
             // Seeded to NaN so any code path that constructs `ScriptCtx`
-            // without going through `prl::load_prl` (which seeds from
-            // `LevelWorld.initial_gravity` via the `!level_load_fired` cold
-            // path before the first frame) surfaces immediately — NaN
+            // without going through the level-install startup lifecycle
+            // surfaces immediately. That lifecycle seeds from
+            // `LevelWorld.initial_gravity` before the first frame. NaN
             // propagates through `particle_sim::tick` and is visually
             // obvious. The `worldSetGravity` primitive rejects non-finite
             // writes, so scripts cannot reintroduce this sentinel.

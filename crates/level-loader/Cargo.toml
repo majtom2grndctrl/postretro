@@ -1,0 +1,17 @@
+[package]
+name = "postretro-level-loader"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "CPU-only runtime PRL loader and level data for Postretro"
+license.workspace = true
+
+[dependencies]
+glam.workspace = true
+log.workspace = true
+postretro-level-format.workspace = true
+postretro-render-data.workspace = true
+thiserror.workspace = true
+
+[features]
+dev-tools = []

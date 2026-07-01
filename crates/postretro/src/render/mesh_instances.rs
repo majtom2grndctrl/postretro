@@ -175,10 +175,12 @@ pub(crate) trait JointCounts {
 /// - the running instance count would reach [`MAX_INSTANCES`] (the per-frame
 ///   instance SSBO is sized to that bound — a write past it panics wgpu).
 ///
-/// The instance cap is the only one that fires for zero-joint (rigid / static
-/// `prop_mesh`) models, since they consume no palette slots. An instance whose
-/// model is absent from `joints` (never uploaded) is silently skipped and not
-/// counted as a budget drop.
+/// Static / rigid `prop_mesh` models are not zero-joint: the loader gives them
+/// a single identity joint, so `run == 1` and each instance still consumes one
+/// palette slot — the palette cap can fire for them too, just at a much higher
+/// instance count than skinned models. An instance whose model is absent from
+/// `joints` (never uploaded) is silently skipped and not counted as a budget
+/// drop.
 ///
 /// The mesh collector emits visible-only instances. If a synthetic or future
 /// caller passes mixed visibility flags, the forward-visible set is budgeted
@@ -210,10 +212,11 @@ pub(crate) fn plan_mesh_frame(
         };
         let run = joint_count as usize;
 
-        // Drop the instance if it would overflow EITHER budget. The instance cap
-        // is what catches rigid / zero-joint props: their `run == 0` never trips
-        // the palette cap, so without this check the instance count — and the
-        // GPU layer's per-instance SSBO writes — would run unbounded past the
+        // Drop the instance if it would overflow EITHER budget. Both caps apply
+        // to every model, including rigid / static props (loader gives them a
+        // 1-joint identity skeleton, so `run == 1`). The instance cap is still
+        // load-bearing on its own: without it, the instance count — and the GPU
+        // layer's per-instance SSBO writes — would run unbounded past the
         // buffer the renderer sized to `MAX_INSTANCES` and panic wgpu.
         if instance_count >= MAX_INSTANCES || palette_cursor + run > MAX_PALETTE_ENTRIES {
             dropped += 1;

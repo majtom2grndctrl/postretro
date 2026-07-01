@@ -5,13 +5,16 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use glam::{Mat4, Quat, Vec3};
+use gltf::accessor::{DataType, Dimensions};
 use postretro_level_format::gltf_resolve::resolve_material_base_color_path;
 use postretro_level_format::octahedral;
 use serde::Deserialize;
 use thiserror::Error;
 
 use super::mesh::{SkinnedMesh, SkinnedVertex};
-use super::skeleton::{AnimationClip, Interp, Joint, JointTracks, RestLocal, Skeleton, Track};
+use super::skeleton::{
+    AnimationClip, Interp, Joint, JointTracks, RestLocal, Skeleton, SkeletonBuildError, Track,
+};
 
 /// One drawable run of the merged mesh: the triangles of a single primitive,
 /// paired with the material that draws them.
@@ -34,14 +37,15 @@ pub struct Submesh {
 
 /// A skeletal hit zone authored on a joint node's per-node `extras`. Read at
 /// load time and carried parallel to [`Skeleton::joints`] (see
-/// [`LoadedModel::joint_zones`]). The radius is stored **as-is** — the 0.12 m
-/// default is applied by the downstream hit-zone consumer, not here.
+/// [`LoadedModel::joint_zones`]). A radius is carried only when authored as a
+/// positive finite meter value; absent or invalid radii degrade to `None`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct JointZone {
     /// Author-supplied zone tag (e.g. "head", "torso").
     pub tag: String,
-    /// Optional zone radius in meters, exactly as authored. `None` when the
-    /// joint node omits `hitZoneRadius`; the consumer applies its own default.
+    /// Optional positive finite zone radius in meters. `None` when the joint
+    /// node omits `hitZoneRadius` or authors an invalid radius; the consumer
+    /// applies its own default.
     pub radius: Option<f32>,
 }
 
@@ -55,7 +59,8 @@ pub struct LoadedModel {
     pub mesh: SkinnedMesh,
     /// The joint hierarchy the mesh binds against, stored parent-before-child
     /// (topological) so the sampler composes world matrices in one forward
-    /// sweep. Empty for a static model loaded through this path.
+    /// sweep. Static/no-skin models use one identity joint so rigid vertices
+    /// bound to joint 0 always have a palette entry.
     pub skeleton: Skeleton,
     /// Animation clips parsed from the glTF document, in authored order. All clips
     /// load; addressed by name or index.
@@ -72,7 +77,8 @@ pub struct LoadedModel {
     /// Per-joint skeletal hit zones, parallel to [`Skeleton::joints`] (entry `i`
     /// describes joint `i`). `None` when the joint node carries no zone `extras`
     /// or the value is malformed — a garbled zone degrades to no zone, never a
-    /// load error. Empty for a static model loaded through the no-skin path.
+    /// load error. Static/no-skin models carry one identity-joint entry, using
+    /// the first authored static node zone when present.
     pub joint_zones: Vec<Option<JointZone>>,
 }
 
@@ -97,6 +103,43 @@ pub enum ModelLoadError {
     /// A primitive uses an unsupported topology (only triangle lists load).
     #[error("glTF primitive uses unsupported topology {mode:?} (only triangles): {path}")]
     UnsupportedTopology { path: String, mode: String },
+    /// A present accessor has a component type or dimensionality the loader cannot read.
+    #[error("glTF accessor '{attribute}' has shape {actual}, expected {expected}: {path}")]
+    InvalidAccessorShape {
+        path: String,
+        attribute: String,
+        expected: String,
+        actual: String,
+    },
+    /// A present primitive vertex stream does not match the POSITION vertex count.
+    #[error(
+        "glTF primitive attribute '{attribute}' has {actual} elements, expected {expected}: {path}"
+    )]
+    AttributeCountMismatch {
+        path: String,
+        attribute: String,
+        expected: usize,
+        actual: usize,
+    },
+    /// A primitive index points outside the primitive-local vertex range.
+    #[error("glTF primitive index {index} is out of range for {vertex_count} vertices: {path}")]
+    IndexOutOfRange {
+        path: String,
+        index: u32,
+        vertex_count: usize,
+    },
+    /// A JOINTS_0 value does not map to a topologically-ordered skeleton joint.
+    #[error("glTF primitive JOINTS_0 value {joint} has no matching skin joint: {path}")]
+    InvalidJointIndex { path: String, joint: u16 },
+    /// A primitive authored only one half of the skinning attribute pair.
+    #[error(
+        "glTF primitive has {present} without {missing}; JOINTS_0 and WEIGHTS_0 must be authored together: {path}"
+    )]
+    SkinningAttributePairMismatch {
+        path: String,
+        present: String,
+        missing: String,
+    },
     /// The skin references more joints than the `u8` joint index can address.
     #[error("glTF skin has {count} joints, exceeding the {max}-joint ceiling: {path}")]
     TooManyJoints {
@@ -104,6 +147,18 @@ pub enum ModelLoadError {
         count: usize,
         max: usize,
     },
+    /// The skin's inverse bind matrix accessor is present but not parallel to its joints.
+    #[error(
+        "glTF skin inverseBindMatrices has {actual} matrices, expected {expected} joints: {path}"
+    )]
+    InverseBindCountMismatch {
+        path: String,
+        expected: usize,
+        actual: usize,
+    },
+    /// The skin's joint hierarchy cannot satisfy the sampler's parent-before-child contract.
+    #[error("glTF skin has invalid skeleton hierarchy: {reason}: {path}")]
+    InvalidSkeleton { path: String, reason: String },
 }
 
 /// Quantize a normalized UV component-pair (clamped to `[0, 1]`) to `u16 x 2`.
@@ -126,6 +181,123 @@ fn pack_tangent(tangent: [f32; 4]) -> [u16; 2] {
     let v_15bit = (oct[1] as u32 * 32767 / 65535) as u16;
     let sign_bit: u16 = if tangent[3] >= 0.0 { 0x8000 } else { 0 };
     [oct[0], v_15bit | sign_bit]
+}
+
+fn validate_attribute_count(
+    path_str: &str,
+    attribute: &str,
+    expected: usize,
+    actual: usize,
+) -> Result<(), ModelLoadError> {
+    if actual == expected {
+        return Ok(());
+    }
+    Err(ModelLoadError::AttributeCountMismatch {
+        path: path_str.to_string(),
+        attribute: attribute.to_string(),
+        expected,
+        actual,
+    })
+}
+
+fn validate_accessor_shape(
+    accessor: &gltf::Accessor,
+    path_str: &str,
+    attribute: &str,
+    expected: &[(DataType, Dimensions)],
+) -> Result<(), ModelLoadError> {
+    let actual = (accessor.data_type(), accessor.dimensions());
+    if expected.contains(&actual) {
+        return Ok(());
+    }
+    Err(ModelLoadError::InvalidAccessorShape {
+        path: path_str.to_string(),
+        attribute: attribute.to_string(),
+        expected: format_accessor_shapes(expected),
+        actual: format_accessor_shape(actual),
+    })
+}
+
+fn format_accessor_shapes(shapes: &[(DataType, Dimensions)]) -> String {
+    shapes
+        .iter()
+        .map(|&shape| format_accessor_shape(shape))
+        .collect::<Vec<_>>()
+        .join(" or ")
+}
+
+fn format_accessor_shape(shape: (DataType, Dimensions)) -> String {
+    format!("{:?} {:?}", shape.0, shape.1)
+}
+
+fn validate_primitive_index(
+    path_str: &str,
+    index: u32,
+    vertex_count: usize,
+) -> Result<(), ModelLoadError> {
+    if (index as usize) < vertex_count {
+        return Ok(());
+    }
+    Err(ModelLoadError::IndexOutOfRange {
+        path: path_str.to_string(),
+        index,
+        vertex_count,
+    })
+}
+
+fn validate_skinning_attribute_pair(
+    primitive: &gltf::Primitive,
+    path_str: &str,
+) -> Result<bool, ModelLoadError> {
+    let has_joints = primitive.get(&gltf::mesh::Semantic::Joints(0)).is_some();
+    let has_weights = primitive.get(&gltf::mesh::Semantic::Weights(0)).is_some();
+    validate_skinning_attribute_presence(has_joints, has_weights, path_str)
+}
+
+fn validate_skinning_attribute_presence(
+    has_joints: bool,
+    has_weights: bool,
+    path_str: &str,
+) -> Result<bool, ModelLoadError> {
+    match (has_joints, has_weights) {
+        (true, true) => Ok(true),
+        (false, false) => Ok(false),
+        (true, false) => Err(ModelLoadError::SkinningAttributePairMismatch {
+            path: path_str.to_string(),
+            present: "JOINTS_0".to_string(),
+            missing: "WEIGHTS_0".to_string(),
+        }),
+        (false, true) => Err(ModelLoadError::SkinningAttributePairMismatch {
+            path: path_str.to_string(),
+            present: "WEIGHTS_0".to_string(),
+            missing: "JOINTS_0".to_string(),
+        }),
+    }
+}
+
+struct SelectedModel<'a> {
+    mesh: gltf::Mesh<'a>,
+    skin: Option<gltf::Skin<'a>>,
+}
+
+fn select_model<'a>(
+    document: &'a gltf::Document,
+    path_str: &str,
+) -> Result<SelectedModel<'a>, ModelLoadError> {
+    for node in document.nodes() {
+        if let (Some(mesh), Some(skin)) = (node.mesh(), node.skin()) {
+            return Ok(SelectedModel {
+                mesh,
+                skin: Some(skin),
+            });
+        }
+    }
+
+    let mesh = document
+        .meshes()
+        .next()
+        .ok_or_else(|| ModelLoadError::NoMesh(path_str.to_string()))?;
+    Ok(SelectedModel { mesh, skin: None })
 }
 
 /// The all-zero cache key, hex-encoded (64 chars). The shared `.prm` convention
@@ -211,9 +383,9 @@ fn read_model_tags(extras: &gltf::json::Extras) -> Vec<String> {
 struct JointZoneExtras {
     #[serde(rename = "hitZone")]
     hit_zone: Option<String>,
-    /// Radius in meters, stored as-is (no default applied here).
+    /// Radius in meters. Invalid optional values degrade to no authored radius.
     #[serde(rename = "hitZoneRadius")]
-    hit_zone_radius: Option<f32>,
+    hit_zone_radius: Option<serde_json::Value>,
 }
 
 /// Read a single joint node's hit zone off its per-node `extras`
@@ -222,16 +394,58 @@ struct JointZoneExtras {
 /// Absent `extras`, a deserialize failure (wrong shape), or a missing `hitZone`
 /// tag all yield `None` — a zone is author metadata, not load-critical data, so
 /// a garbled value degrades to no zone for that joint rather than failing the
-/// load. The radius is carried as authored; the downstream consumer applies the
-/// default when it is `None`.
+/// load. The radius is carried only when positive and finite; otherwise the
+/// zone keeps its tag and degrades to no authored radius.
 fn read_joint_zone(extras: &gltf::json::Extras) -> Option<JointZone> {
     let raw = extras.as_ref()?;
     let parsed = serde_json::from_str::<JointZoneExtras>(raw.get()).ok()?;
     let tag = parsed.hit_zone?;
     Some(JointZone {
         tag,
-        radius: parsed.hit_zone_radius,
+        radius: valid_hit_zone_radius(parsed.hit_zone_radius.as_ref()),
     })
+}
+
+fn valid_hit_zone_radius(value: Option<&serde_json::Value>) -> Option<f32> {
+    let radius = value?.as_f64()? as f32;
+    (radius.is_finite() && radius > 0.0).then_some(radius)
+}
+
+fn identity_skeleton() -> Skeleton {
+    Skeleton {
+        joints: vec![Joint {
+            parent: None,
+            inverse_bind: Mat4::IDENTITY.to_cols_array_2d(),
+            rest_local: RestLocal::default(),
+        }],
+    }
+}
+
+fn static_identity_joint_zones(
+    document: &gltf::Document,
+    mesh_index: usize,
+) -> Vec<Option<JointZone>> {
+    vec![identity_joint_zone(
+        document
+            .nodes()
+            .filter(|node| {
+                node.mesh()
+                    .map(|mesh| mesh.index() == mesh_index)
+                    .unwrap_or(false)
+            })
+            .map(|node| read_joint_zone(node.extras())),
+    )]
+}
+
+fn identity_joint_zone(zones: impl IntoIterator<Item = Option<JointZone>>) -> Option<JointZone> {
+    zones.into_iter().flatten().next()
+}
+
+fn skeleton_build_error(path_str: &str, error: SkeletonBuildError) -> ModelLoadError {
+    ModelLoadError::InvalidSkeleton {
+        path: path_str.to_string(),
+        reason: error.to_string(),
+    }
 }
 
 /// Load a skinned model from a glTF file at `path`.
@@ -268,32 +482,31 @@ pub fn load_model(path: &Path) -> Result<LoadedModel, ModelLoadError> {
     // `import_buffers`); each helper builds its own closure locally so the
     // closure and the borrowed glTF entity share one lifetime.
 
+    // Load exactly one mesh: prefer the first node that binds both mesh and skin
+    // so geometry and skeleton are selected as a pair. A document with no
+    // skinned mesh node falls back to the first mesh as a static model.
+    let SelectedModel { mesh, skin } = select_model(&document, &path_str)?;
+
     // --- Skeleton ---------------------------------------------------------
-    // Take the first skin if present; a static model (no skin) loads through the
-    // rigid single-bone degenerate path (skeleton stays empty, joints → 0).
+    // Use the selected skinned node's skin. A static/no-skin model still
+    // receives one identity joint so rigid vertices bound to joint 0 have a
+    // matching palette entry; any authored static node hit zone maps to that
+    // identity joint.
     //
     // `skin_joint_to_topo` reindexes mesh `JOINTS_0` (skin-joint indices) into
     // topo order; `node_to_topo` reindexes animation channel targets (node
     // indices) into the same topo order.
-    let skin = document.skins().next();
     let (skeleton, joint_zones, skin_joint_to_topo, node_to_topo) = match skin.as_ref() {
         Some(skin) => build_skeleton(skin, &buffers, &path_str)?,
         None => (
-            Skeleton::default(),
-            Vec::new(),
+            identity_skeleton(),
+            static_identity_joint_zones(&document, mesh.index()),
             HashMap::new(),
             HashMap::new(),
         ),
     };
 
     // --- Mesh -------------------------------------------------------------
-    // Load exactly one mesh: the skinned mesh node's mesh, or the first mesh in
-    // the document. Multi-mesh selection is the broadening task.
-    let mesh = document
-        .meshes()
-        .next()
-        .ok_or_else(|| ModelLoadError::NoMesh(path_str.clone()))?;
-
     let (skinned_mesh, submeshes) =
         load_mesh(&mesh, &buffers, &skin_joint_to_topo, parent_dir, &path_str)?;
 
@@ -391,9 +604,29 @@ fn build_skeleton(
 
     // Inverse-bind matrices, one per skin joint (column-major, glam order). The
     // glTF default (absent accessor) is identity per joint.
-    let reader = skin.reader(buffer_data);
-    let inverse_binds: Vec<[[f32; 4]; 4]> = match reader.read_inverse_bind_matrices() {
-        Some(iter) => iter.collect(),
+    let inverse_binds: Vec<[[f32; 4]; 4]> = match skin.inverse_bind_matrices() {
+        Some(accessor) => {
+            validate_accessor_shape(
+                &accessor,
+                path_str,
+                "inverseBindMatrices",
+                &[(DataType::F32, Dimensions::Mat4)],
+            )?;
+            if accessor.count() != joint_nodes.len() {
+                return Err(ModelLoadError::InverseBindCountMismatch {
+                    path: path_str.to_string(),
+                    expected: joint_nodes.len(),
+                    actual: accessor.count(),
+                });
+            }
+            skin.reader(buffer_data)
+                .read_inverse_bind_matrices()
+                .ok_or_else(|| ModelLoadError::MissingAttribute {
+                    path: path_str.to_string(),
+                    attribute: "inverseBindMatrices".to_string(),
+                })?
+                .collect()
+        }
         None => vec![Mat4::IDENTITY.to_cols_array_2d(); joint_nodes.len()],
     };
 
@@ -426,16 +659,10 @@ fn build_skeleton(
             break;
         }
         if !progressed {
-            // A cycle (malformed skin) would stall progress; emit the rest in
-            // their original order rather than loop forever. Worst case the
-            // sampler composes a slightly-wrong pose; it never panics.
-            for (skin_idx, emitted_flag) in emitted.iter_mut().enumerate() {
-                if !*emitted_flag {
-                    *emitted_flag = true;
-                    topo_order.push(skin_idx);
-                }
-            }
-            break;
+            return Err(ModelLoadError::InvalidSkeleton {
+                path: path_str.to_string(),
+                reason: "joint hierarchy contains a cycle or unresolved joint parent".to_string(),
+            });
         }
     }
 
@@ -481,12 +708,9 @@ fn build_skeleton(
         .map(|&skin_idx| rest_zones.get(skin_idx).cloned().flatten())
         .collect();
 
-    Ok((
-        Skeleton { joints },
-        joint_zones,
-        skin_joint_to_topo,
-        node_to_topo,
-    ))
+    let skeleton = Skeleton::new(joints).map_err(|error| skeleton_build_error(path_str, error))?;
+
+    Ok((skeleton, joint_zones, skin_joint_to_topo, node_to_topo))
 }
 
 /// Load every primitive of `mesh` into one merged interleaved stream, remapping
@@ -514,7 +738,21 @@ fn load_mesh(
         }
 
         let reader = primitive.reader(buffer_data);
+        let has_skinning_attributes = validate_skinning_attribute_pair(&primitive, path_str)?;
 
+        let position_accessor =
+            primitive
+                .get(&gltf::mesh::Semantic::Positions)
+                .ok_or_else(|| ModelLoadError::MissingAttribute {
+                    path: path_str.to_string(),
+                    attribute: "POSITION".to_string(),
+                })?;
+        validate_accessor_shape(
+            &position_accessor,
+            path_str,
+            "POSITION",
+            &[(DataType::F32, Dimensions::Vec3)],
+        )?;
         let positions: Vec<[f32; 3]> = reader
             .read_positions()
             .ok_or_else(|| ModelLoadError::MissingAttribute {
@@ -526,36 +764,140 @@ fn load_mesh(
 
         // Optional attributes default to neutral values when a primitive omits
         // them (a rigid mesh without skinning, or an untextured primitive).
-        let uvs: Vec<[u16; 2]> = match reader.read_tex_coords(0) {
-            Some(tc) => tc.into_f32().map(quantize_uv).collect(),
+        let uvs: Vec<[u16; 2]> = match primitive.get(&gltf::mesh::Semantic::TexCoords(0)) {
+            Some(accessor) => {
+                validate_accessor_shape(
+                    &accessor,
+                    path_str,
+                    "TEXCOORD_0",
+                    &[
+                        (DataType::U8, Dimensions::Vec2),
+                        (DataType::U16, Dimensions::Vec2),
+                        (DataType::F32, Dimensions::Vec2),
+                    ],
+                )?;
+                let values: Vec<[u16; 2]> = reader
+                    .read_tex_coords(0)
+                    .ok_or_else(|| ModelLoadError::MissingAttribute {
+                        path: path_str.to_string(),
+                        attribute: "TEXCOORD_0".to_string(),
+                    })?
+                    .into_f32()
+                    .map(quantize_uv)
+                    .collect();
+                validate_attribute_count(path_str, "TEXCOORD_0", vertex_count, values.len())?;
+                values
+            }
             None => vec![[0, 0]; vertex_count],
         };
-        let normals: Vec<[u16; 2]> = match reader.read_normals() {
-            Some(n) => n
-                .map(|nn| octahedral::encode(nn[0], nn[1], nn[2]))
-                .collect(),
+        let normals: Vec<[u16; 2]> = match primitive.get(&gltf::mesh::Semantic::Normals) {
+            Some(accessor) => {
+                validate_accessor_shape(
+                    &accessor,
+                    path_str,
+                    "NORMAL",
+                    &[(DataType::F32, Dimensions::Vec3)],
+                )?;
+                let values: Vec<[u16; 2]> = reader
+                    .read_normals()
+                    .ok_or_else(|| ModelLoadError::MissingAttribute {
+                        path: path_str.to_string(),
+                        attribute: "NORMAL".to_string(),
+                    })?
+                    .map(|nn| octahedral::encode(nn[0], nn[1], nn[2]))
+                    .collect();
+                validate_attribute_count(path_str, "NORMAL", vertex_count, values.len())?;
+                values
+            }
             // Default to +Z (octahedral center) when normals are absent.
             None => vec![octahedral::encode(0.0, 0.0, 1.0); vertex_count],
         };
-        let tangents: Vec<[u16; 2]> = match reader.read_tangents() {
-            Some(t) => t.map(pack_tangent).collect(),
+        let tangents: Vec<[u16; 2]> = match primitive.get(&gltf::mesh::Semantic::Tangents) {
+            Some(accessor) => {
+                validate_accessor_shape(
+                    &accessor,
+                    path_str,
+                    "TANGENT",
+                    &[(DataType::F32, Dimensions::Vec4)],
+                )?;
+                let values: Vec<[u16; 2]> = reader
+                    .read_tangents()
+                    .ok_or_else(|| ModelLoadError::MissingAttribute {
+                        path: path_str.to_string(),
+                        attribute: "TANGENT".to_string(),
+                    })?
+                    .map(pack_tangent)
+                    .collect();
+                validate_attribute_count(path_str, "TANGENT", vertex_count, values.len())?;
+                values
+            }
             // Default tangent: +X with positive bitangent sign.
             None => vec![pack_tangent([1.0, 0.0, 0.0, 1.0]); vertex_count],
         };
         // Joints reference skin-joint indices; remap to topo order. `into_u16`
         // normalizes the (u8|u16) storage; values exceed u8 only for skeletons
         // above the MAX_JOINTS ceiling, already rejected in build_skeleton.
-        let joints: Vec<[u8; 4]> = match reader.read_joints(0) {
-            Some(j) => j
+        let joints: Vec<[u8; 4]> = if has_skinning_attributes {
+            let accessor = primitive
+                .get(&gltf::mesh::Semantic::Joints(0))
+                .ok_or_else(|| ModelLoadError::MissingAttribute {
+                    path: path_str.to_string(),
+                    attribute: "JOINTS_0".to_string(),
+                })?;
+            validate_accessor_shape(
+                &accessor,
+                path_str,
+                "JOINTS_0",
+                &[
+                    (DataType::U8, Dimensions::Vec4),
+                    (DataType::U16, Dimensions::Vec4),
+                ],
+            )?;
+            let raw: Vec<[u16; 4]> = reader
+                .read_joints(0)
+                .ok_or_else(|| ModelLoadError::MissingAttribute {
+                    path: path_str.to_string(),
+                    attribute: "JOINTS_0".to_string(),
+                })?
                 .into_u16()
-                .map(|quad| remap_joint_quad(quad, skin_joint_to_topo))
-                .collect(),
-            None => vec![[0, 0, 0, 0]; vertex_count],
+                .collect();
+            validate_attribute_count(path_str, "JOINTS_0", vertex_count, raw.len())?;
+            raw.into_iter()
+                .map(|quad| remap_joint_quad(quad, skin_joint_to_topo, path_str))
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            vec![[0, 0, 0, 0]; vertex_count]
         };
-        let weights: Vec<[u8; 4]> = match reader.read_weights(0) {
-            Some(w) => w.into_u8().map(normalize_weights).collect(),
-            // Rigid degenerate case: full weight on joint 0.
-            None => vec![[255, 0, 0, 0]; vertex_count],
+        let weights: Vec<[u8; 4]> = if has_skinning_attributes {
+            let accessor = primitive
+                .get(&gltf::mesh::Semantic::Weights(0))
+                .ok_or_else(|| ModelLoadError::MissingAttribute {
+                    path: path_str.to_string(),
+                    attribute: "WEIGHTS_0".to_string(),
+                })?;
+            validate_accessor_shape(
+                &accessor,
+                path_str,
+                "WEIGHTS_0",
+                &[
+                    (DataType::U8, Dimensions::Vec4),
+                    (DataType::U16, Dimensions::Vec4),
+                    (DataType::F32, Dimensions::Vec4),
+                ],
+            )?;
+            let values: Vec<[u8; 4]> = reader
+                .read_weights(0)
+                .ok_or_else(|| ModelLoadError::MissingAttribute {
+                    path: path_str.to_string(),
+                    attribute: "WEIGHTS_0".to_string(),
+                })?
+                .into_u8()
+                .map(normalize_weights)
+                .collect();
+            validate_attribute_count(path_str, "WEIGHTS_0", vertex_count, values.len())?;
+            values
+        } else {
+            vec![[255, 0, 0, 0]; vertex_count]
         };
 
         let base_vertex = out.vertices.len() as u32;
@@ -575,9 +917,22 @@ fn load_mesh(
         // primitive's run in the merged index buffer — exactly the range
         // `draw_indexed` consumes for this submesh.
         let start = out.indices.len() as u32;
+        if let Some(accessor) = primitive.indices() {
+            validate_accessor_shape(
+                &accessor,
+                path_str,
+                "indices",
+                &[
+                    (DataType::U8, Dimensions::Scalar),
+                    (DataType::U16, Dimensions::Scalar),
+                    (DataType::U32, Dimensions::Scalar),
+                ],
+            )?;
+        }
         match reader.read_indices() {
             Some(idx) => {
                 for i in idx.into_u32() {
+                    validate_primitive_index(path_str, i, vertex_count)?;
                     out.indices.push(base_vertex + i);
                 }
             }
@@ -603,18 +958,25 @@ fn load_mesh(
 }
 
 /// Remap one `[u16; 4]` joint quad (skin-joint indices) to topo-order `[u8; 4]`.
-/// An index with no remap entry (shouldn't happen for a consistent skin) falls
-/// back to joint 0.
-fn remap_joint_quad(quad: [u16; 4], skin_joint_to_topo: &HashMap<usize, usize>) -> [u8; 4] {
+/// Every authored joint index must resolve through the skin's topo remap; an
+/// unmapped index is malformed required mesh data, not a silent joint-0 bind.
+fn remap_joint_quad(
+    quad: [u16; 4],
+    skin_joint_to_topo: &HashMap<usize, usize>,
+    path_str: &str,
+) -> Result<[u8; 4], ModelLoadError> {
     let mut out = [0u8; 4];
     for (i, &j) in quad.iter().enumerate() {
         out[i] = skin_joint_to_topo
             .get(&(j as usize))
             .copied()
-            .unwrap_or(0)
+            .ok_or_else(|| ModelLoadError::InvalidJointIndex {
+                path: path_str.to_string(),
+                joint: j,
+            })?
             .min(u8::MAX as usize) as u8;
     }
-    out
+    Ok(out)
 }
 
 /// Normalize four `u8` weights so they sum to 255 (a fully-weighted vertex). The
@@ -958,13 +1320,122 @@ mod tests {
     }
 
     #[test]
-    fn remap_joint_quad_reindexes_and_defaults_unknown_to_zero() {
+    fn validate_attribute_count_accepts_only_position_sized_streams() {
+        assert!(
+            validate_attribute_count("model.gltf", "NORMAL", 3, 3).is_ok(),
+            "matching optional stream length is accepted"
+        );
+
+        let err = validate_attribute_count("model.gltf", "TEXCOORD_0", 3, 2)
+            .expect_err("short present stream is malformed");
+        assert!(
+            matches!(
+                &err,
+                ModelLoadError::AttributeCountMismatch {
+                    path,
+                    attribute,
+                    expected: 3,
+                    actual: 2,
+                } if path == "model.gltf" && attribute == "TEXCOORD_0"
+            ),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_primitive_index_rejects_values_outside_vertex_range() {
+        assert!(
+            validate_primitive_index("model.gltf", 2, 3).is_ok(),
+            "last in-range local index is accepted"
+        );
+
+        let err = validate_primitive_index("model.gltf", 3, 3)
+            .expect_err("index equal to vertex_count is out of range");
+        assert!(
+            matches!(
+                &err,
+                ModelLoadError::IndexOutOfRange {
+                    path,
+                    index: 3,
+                    vertex_count: 3,
+                } if path == "model.gltf"
+            ),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_skinning_attribute_pair_rejects_half_authored_skinning() {
+        assert_eq!(
+            validate_skinning_attribute_presence(false, false, "model.gltf")
+                .expect("absence of both attributes is rigid"),
+            false,
+            "absence of both JOINTS_0 and WEIGHTS_0 is the rigid path",
+        );
+        assert_eq!(
+            validate_skinning_attribute_presence(true, true, "model.gltf")
+                .expect("both attributes present is skinned"),
+            true,
+            "presence of both JOINTS_0 and WEIGHTS_0 is the skinned path",
+        );
+
+        let err = validate_skinning_attribute_presence(true, false, "model.gltf")
+            .expect_err("JOINTS_0 without WEIGHTS_0 is malformed");
+        assert!(
+            matches!(
+                &err,
+                ModelLoadError::SkinningAttributePairMismatch {
+                    path,
+                    present,
+                    missing,
+                } if path == "model.gltf" && present == "JOINTS_0" && missing == "WEIGHTS_0"
+            ),
+            "got {err:?}",
+        );
+        let err = validate_skinning_attribute_presence(false, true, "model.gltf")
+            .expect_err("WEIGHTS_0 without JOINTS_0 is malformed");
+        assert!(
+            matches!(
+                &err,
+                ModelLoadError::SkinningAttributePairMismatch {
+                    path,
+                    present,
+                    missing,
+                } if path == "model.gltf" && present == "WEIGHTS_0" && missing == "JOINTS_0"
+            ),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn remap_joint_quad_reindexes_all_mapped_joints() {
         let mut map = HashMap::new();
         map.insert(5usize, 2usize); // skin-joint 5 → topo 2
         map.insert(9usize, 0usize); // skin-joint 9 → topo 0
-        // Index 7 has no mapping → defaults to joint 0.
-        let out = remap_joint_quad([5, 9, 7, 5], &map);
-        assert_eq!(out, [2, 0, 0, 2]);
+        let out = remap_joint_quad([5, 9, 5, 5], &map, "model.gltf")
+            .expect("all authored joint indices have topo remaps");
+        assert_eq!(out, [2, 0, 2, 2]);
+    }
+
+    #[test]
+    fn remap_joint_quad_rejects_unmapped_joint_indices() {
+        // Regression: invalid JOINTS_0 values used to silently remap to joint 0,
+        // corrupting skinning instead of reporting malformed required mesh data.
+        let mut map = HashMap::new();
+        map.insert(5usize, 2usize);
+
+        let err = remap_joint_quad([5, 7, 5, 5], &map, "model.gltf")
+            .expect_err("unmapped skin-joint index is malformed");
+        assert!(
+            matches!(
+                &err,
+                ModelLoadError::InvalidJointIndex {
+                    path,
+                    joint: 7,
+                } if path == "model.gltf"
+            ),
+            "got {err:?}"
+        );
     }
 
     // --- Interpolation mode mapping + CUBICSPLINE value extraction ----------
@@ -1127,6 +1598,158 @@ mod tests {
         );
     }
 
+    fn fixture_json(path: &Path) -> serde_json::Value {
+        let json = std::fs::read_to_string(path).expect("fixture JSON reads");
+        serde_json::from_str(&json).expect("fixture JSON parses")
+    }
+
+    fn write_temp_fixture(name: &str, json: &serde_json::Value) -> PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time after Unix epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "postretro_{name}_{}_{}.gltf",
+            std::process::id(),
+            unique
+        ));
+        std::fs::write(
+            &path,
+            serde_json::to_string(json).expect("mutated fixture serializes"),
+        )
+        .expect("mutated fixture writes");
+        path
+    }
+
+    #[test]
+    fn malformed_position_accessor_shape_returns_err_not_panic() {
+        // Regression: glTF typed readers can debug-panic on mismatched accessor
+        // shape. Loader validates the POSITION accessor before read_positions().
+        let mut json = fixture_json(&multi_primitive_fixture_path());
+        json["accessors"][0]["componentType"] = serde_json::json!(5123);
+        let path = write_temp_fixture("bad_position_shape", &json);
+
+        let result = std::panic::catch_unwind(|| load_model(&path));
+        let _ = std::fs::remove_file(&path);
+        let load_result = result.expect("malformed POSITION shape must not panic");
+        assert!(
+            matches!(
+                &load_result,
+                Err(ModelLoadError::InvalidAccessorShape {
+                    attribute,
+                    actual,
+                    expected,
+                    ..
+                }) if attribute == "POSITION"
+                    && actual == "U16 Vec3"
+                    && expected == "F32 Vec3"
+            ),
+            "malformed POSITION shape should be typed loader error, got {load_result:?}",
+        );
+    }
+
+    #[test]
+    fn malformed_joints_accessor_shape_returns_err_not_panic() {
+        // Regression: JOINTS_0 with an unsupported component type reached
+        // read_joints(), whose shape match panics on impossible variants.
+        let mut json = fixture_json(&multi_clip_fixture_path());
+        json["accessors"][1]["componentType"] = serde_json::json!(5126);
+        let path = write_temp_fixture("bad_joints_shape", &json);
+
+        let result = std::panic::catch_unwind(|| load_model(&path));
+        let _ = std::fs::remove_file(&path);
+        let load_result = result.expect("malformed JOINTS_0 shape must not panic");
+        assert!(
+            matches!(
+                &load_result,
+                Err(ModelLoadError::InvalidAccessorShape {
+                    attribute,
+                    actual,
+                    expected,
+                    ..
+                }) if attribute == "JOINTS_0"
+                    && actual == "F32 Vec4"
+                    && expected == "U8 Vec4 or U16 Vec4"
+            ),
+            "malformed JOINTS_0 shape should be typed loader error, got {load_result:?}",
+        );
+    }
+
+    #[test]
+    fn selected_skin_comes_from_selected_mesh_node() {
+        // Regression: loader paired document.meshes().next() with
+        // document.skins().next(), which could bind the first skin to an
+        // unrelated first mesh. Prefer the node that carries both mesh and skin.
+        let mut json = fixture_json(&multi_clip_fixture_path());
+        json["meshes"]
+            .as_array_mut()
+            .expect("fixture has meshes")
+            .insert(
+                0,
+                serde_json::json!({
+                    "primitives": [
+                        {
+                            "attributes": { "POSITION": 0 },
+                            "indices": 3,
+                            "mode": 4
+                        }
+                    ]
+                }),
+            );
+        json["nodes"][0]["mesh"] = serde_json::json!(1);
+        let path = write_temp_fixture("skinned_node_second_mesh", &json);
+
+        let selection = std::panic::catch_unwind(|| {
+            let document = gltf::Gltf::open(&path)
+                .expect("mutated fixture opens")
+                .document;
+            let selected = select_model(&document, &path.display().to_string())
+                .expect("mutated fixture has a mesh");
+            (
+                selected.mesh.index(),
+                selected.skin.as_ref().map(|skin| skin.index()),
+            )
+        });
+        let _ = std::fs::remove_file(&path);
+        let (mesh_index, skin_index) =
+            selection.expect("selecting the mutated fixture's model must not panic");
+
+        assert_eq!(
+            mesh_index, 1,
+            "selected mesh comes from the skinned node, not first mesh"
+        );
+        assert_eq!(
+            skin_index,
+            Some(0),
+            "selected skin comes from the same node as the mesh"
+        );
+    }
+
+    #[test]
+    fn partial_inverse_bind_matrices_are_rejected() {
+        // Regression: present-but-short inverseBindMatrices silently used
+        // identity for missing joints, corrupting the skeleton.
+        let mut json = fixture_json(&multi_clip_fixture_path());
+        json["accessors"][4]["count"] = serde_json::json!(1);
+        let path = write_temp_fixture("partial_inverse_binds", &json);
+
+        let result = std::panic::catch_unwind(|| load_model(&path));
+        let _ = std::fs::remove_file(&path);
+        let load_result = result.expect("loading the mutated fixture must not panic");
+
+        assert!(
+            matches!(
+                &load_result,
+                Err(ModelLoadError::InverseBindCountMismatch {
+                    expected: 2,
+                    actual: 1,
+                    ..
+                })
+            ),
+            "partial inverseBindMatrices should be rejected, got {load_result:?}",
+        );
+    }
+
     // --- Real-model load (gated on the asset existing; no GPU) ---
 
     fn model_path() -> PathBuf {
@@ -1182,7 +1805,7 @@ mod tests {
         let jcount = model.skeleton.joints.len() as u8;
         for v in &model.mesh.vertices {
             for &j in &v.joints {
-                assert!(j < jcount || jcount == 0, "vertex joint {j} < {jcount}");
+                assert!(j < jcount, "vertex joint {j} < {jcount}");
             }
             // Weights sum to ~255 (a fully-weighted skinned vertex).
             let sum: u32 = v.weights.iter().map(|&w| w as u32).sum();
@@ -1480,7 +2103,7 @@ mod tests {
     #[test]
     fn read_joint_zone_reads_tag_and_radius() {
         // A well-formed per-node `extras` with both fields yields a zone whose
-        // tag and radius are carried as authored (no default substituted).
+        // tag and positive finite radius are carried (no default substituted).
         let extras = extras_from_raw(r#"{ "hitZone": "head", "hitZoneRadius": 0.2 }"#);
         let zone = read_joint_zone(&extras).expect("present hitZone yields a zone");
         assert_eq!(zone.tag, "head");
@@ -1499,15 +2122,31 @@ mod tests {
     }
 
     #[test]
+    fn read_joint_zone_invalid_radius_degrades_to_none() {
+        for raw in [
+            r#"{ "hitZone": "head", "hitZoneRadius": -1.0 }"#,
+            r#"{ "hitZone": "head", "hitZoneRadius": 0.0 }"#,
+            r#"{ "hitZone": "head", "hitZoneRadius": "big" }"#,
+        ] {
+            let extras = extras_from_raw(raw);
+            let zone = read_joint_zone(&extras).expect("valid hitZone tag is preserved");
+            assert_eq!(zone.tag, "head");
+            assert_eq!(
+                zone.radius, None,
+                "invalid optional radius in {raw} degrades to no authored radius",
+            );
+        }
+    }
+
+    #[test]
     fn read_joint_zone_untagged_or_malformed_yields_none() {
         // Every absent/untagged/malformed shape degrades to no zone (never a
         // load error). Mirrors the malformed-tags helper test: a missing
-        // `hitZone`, a wrong-typed field, an unrelated object, and non-object
-        // JSON all collapse to `None`.
+        // `hitZone`, a wrong-typed tag, an unrelated object, and non-object JSON
+        // all collapse to `None`.
         for raw in [
             r#"{ "someOtherTool": "metadata" }"#, // no hitZone tag
             r#"{ "hitZone": 42 }"#,               // hitZone wrong type
-            r#"{ "hitZone": "head", "hitZoneRadius": "big" }"#, // radius wrong type
             r#"[1, 2, 3]"#,                       // not an object
             r#""a bare string""#,                 // scalar
         ] {
@@ -1524,6 +2163,52 @@ mod tests {
         // The `None` arm (a joint node with no `extras` block at all) → no zone.
         let extras: gltf::json::Extras = None;
         assert!(read_joint_zone(&extras).is_none());
+    }
+
+    #[test]
+    fn identity_joint_zone_preserves_first_static_zone() {
+        let zones = vec![
+            None,
+            Some(JointZone {
+                tag: "crate".to_string(),
+                radius: Some(0.75),
+            }),
+            Some(JointZone {
+                tag: "unused".to_string(),
+                radius: None,
+            }),
+        ];
+        assert_eq!(
+            identity_joint_zone(zones),
+            Some(JointZone {
+                tag: "crate".to_string(),
+                radius: Some(0.75),
+            }),
+            "a static/no-skin model maps the first authored node zone to identity joint 0",
+        );
+    }
+
+    #[test]
+    fn skeleton_build_error_maps_to_model_load_error() {
+        let err = skeleton_build_error(
+            "model.gltf",
+            SkeletonBuildError::ParentNotBeforeChild {
+                joint: 0,
+                parent: 1,
+            },
+        );
+        assert!(
+            matches!(
+                &err,
+                ModelLoadError::InvalidSkeleton {
+                    path,
+                    reason,
+                } if path == "model.gltf"
+                    && reason.contains("joint 0")
+                    && reason.contains("parent 1")
+            ),
+            "got {err:?}",
+        );
     }
 
     fn joint_zones_fixture_path() -> PathBuf {
@@ -1591,6 +2276,37 @@ mod tests {
         assert!(
             leaf_zones.contains(&&None),
             "the untagged leaf joint (extras without hitZone) has no zone, got {leaf_zones:?}",
+        );
+    }
+
+    #[test]
+    fn static_fixture_loads_with_identity_skeleton_for_rigid_joint_zero() {
+        let model = load_model(&multi_primitive_fixture_path())
+            .expect("synthetic static multi-primitive fixture loads");
+        assert_eq!(
+            model.skeleton.joints.len(),
+            1,
+            "static/no-skin models still expose one identity palette joint",
+        );
+        let joint = model.skeleton.joints[0];
+        assert_eq!(joint.parent, None);
+        assert_eq!(joint.inverse_bind, Mat4::IDENTITY.to_cols_array_2d());
+        assert_eq!(joint.rest_local, RestLocal::default());
+        assert_eq!(
+            model.joint_zones,
+            vec![Some(JointZone {
+                tag: "crate".to_string(),
+                radius: Some(0.75),
+            })],
+            "static node hitZone extras map to the identity joint",
+        );
+        assert!(
+            model
+                .mesh
+                .vertices
+                .iter()
+                .all(|v| v.joints == [0, 0, 0, 0] && v.weights == [255, 0, 0, 0]),
+            "rigid vertices bind to identity joint 0",
         );
     }
 

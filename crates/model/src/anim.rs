@@ -168,10 +168,12 @@ fn compose_world_pose(
     for (i, joint) in skeleton.joints.iter().enumerate() {
         let local = local_of(i, joint);
 
-        // Forward sweep: parent-before-child topo order guarantees the
-        // parent's world matrix is already in `world` when we reach a child.
+        // Forward sweep: parent-before-child topo order guarantees the parent's
+        // world matrix is already in `world` when we reach a child. Public field
+        // construction can violate that; degrade an invalid parent link to a
+        // root instead of panicking.
         let world_pose = match joint.parent {
-            Some(p) => world[p] * local,
+            Some(p) => world.get(p).copied().unwrap_or(Mat4::IDENTITY) * local,
             None => local,
         };
         world.push(world_pose);
@@ -711,6 +713,33 @@ mod tests {
             .w_axis
             .truncate();
         assert_vec3_eq(p_wrapped, p_early, "t = duration + eps wraps to t = eps");
+    }
+
+    #[test]
+    fn invalid_parent_link_degrades_to_root_instead_of_panicking() {
+        let skeleton = Skeleton {
+            joints: vec![joint(Some(1), Mat4::IDENTITY, RestLocal::default())],
+        };
+        let tracks = JointTracks {
+            translation: Track {
+                times: vec![0.0],
+                values: vec![Vec3::new(3.0, 0.0, 0.0)],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let clip = translation_clip("invalid-parent", 0.0, vec![tracks]);
+
+        let mut out = Vec::new();
+        sample_clip(&clip, &skeleton, 0.0, &mut out);
+
+        assert_eq!(out.len(), 1);
+        let translation = Mat4::from_cols_array_2d(&out[0].matrix).w_axis.truncate();
+        assert_vec3_eq(
+            translation,
+            Vec3::new(3.0, 0.0, 0.0),
+            "invalid parent composes as a root",
+        );
     }
 
     /// Tripwire 2 (CPU-only, no GPU): measure per-frame `sample_clip` cost on the

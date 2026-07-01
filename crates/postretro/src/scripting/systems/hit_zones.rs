@@ -30,7 +30,7 @@ use postretro_model::gltf_loader::{self, JointZone};
 use postretro_model::sample_params::{
     CaptureInstruction, ClipSample, FadeSource, MeshSampleParams, instance_phase,
 };
-use postretro_model::skeleton::{AnimationClip, Skeleton};
+use postretro_model::skeleton::{AnimationClip, RestLocal, Skeleton};
 use postretro_render_data::cone_frustum::Aabb;
 
 /// Engine default capsule radius (meters) for a zone-bearing joint whose
@@ -61,9 +61,10 @@ pub(crate) struct ModelHitZones {
     /// Model-local broad-phase AABB seeded from rest pose, then expanded from
     /// every clip's key poses and conservative hierarchy reach.
     /// `None` for an AABB-only model (no zone tags), OR for a zone-bearing model
-    /// whose bound came out non-finite (a directly-constructed NaN/Inf pose that
-    /// bypassed loader validation) — an untrustworthy broad phase. Either way a
-    /// `None` here routes the entity to the authored hitbox in the consumer.
+    /// whose bound is untrustworthy — non-finite (a directly-constructed NaN/Inf
+    /// pose that bypassed loader validation) or degenerate (every zone indexes
+    /// past the skeleton, so no capsule folds in). Either way a `None` here routes
+    /// the entity to the authored hitbox in the consumer.
     pub(crate) derived_bound: Option<Aabb>,
 }
 
@@ -209,8 +210,8 @@ fn zone_radius(zone: &JointZone) -> f32 {
 /// or `None` when no trustworthy bound exists.
 ///
 /// Starts with rest-pose zone capsules, then samples every clip at its actual
-/// channel key times plus endpoints. A short authored excursion between former
-/// uniform sample points is therefore included. The bound then gets ONE
+/// channel key times plus endpoints. A short authored excursion between widely
+/// spaced keys is therefore included. The bound then gets ONE
 /// conservative hierarchy reach envelope, unioned over all clips: translations
 /// and scales are bounded from key values, while rotations can swing descendants
 /// between key poses. The union-max envelope dominates not just each clip but
@@ -224,7 +225,8 @@ fn zone_radius(zone: &JointZone) -> f32 {
 /// constructed NaN/Inf rest translation or keyframe value that bypassed loader
 /// validation): the precise broad phase is then untrustworthy, so the consumer
 /// degrades to the authored AABB rather than a poisoned box that would reject
-/// every ray. A finite but empty bound (no joints) collapses to a zero box.
+/// every ray. A degenerate zone set that folds in no capsule (every zone indexes
+/// past the skeleton, or an empty skeleton) likewise returns `None`.
 fn derive_bound(
     skeleton: &Skeleton,
     clips: &[AnimationClip],
@@ -252,10 +254,13 @@ fn derive_bound(
     // as the conservative backstop to the key-time sampling above.
     expand_bound_for_reach(&mut bound, skeleton, clips, joint_zones);
 
-    // An empty skeleton leaves the box inverted; collapse it to a well-formed
-    // zero box, matching `Aabb::from_points`' empty contract.
+    // An empty box here means NO zone capsule was ever folded in: `has_zones`
+    // gated us in, so every `Some` zone indexes past the skeleton (or the
+    // skeleton is empty) — a degenerate zone set. Degrade to `None` (coarse
+    // fallback), matching the non-finite case, rather than a zero box that would
+    // authoritatively reject nearly every ray.
     if bound.min.x > bound.max.x {
-        return Some(Aabb::default());
+        return None;
     }
     // Defensive: the capsule guards above already bail on a non-finite pose and
     // the reach envelope is finite by construction — but never hand back a
@@ -484,8 +489,9 @@ fn max_abs_component(value: Vec3) -> f32 {
 /// since `direction` is unit length) used to pick the nearest of several
 /// contenders; `point`/`normal` are world-space; `target` is the struck entity;
 /// `zone` is the authored zone tag of the struck bone capsule (`None` for an
-/// AABB-only entity, or a zone-bearing entity struck via a future non-tagged
-/// path that never arises today).
+/// AABB-only entity, or a zone-bearing entity that degraded to its authored AABB
+/// or derived reach bound because its precise pose was unavailable or its zone
+/// set was untrustworthy).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct EntityRayHit {
     /// Ray parameter (distance) of the entry impact, in `[0, range]`.
@@ -513,10 +519,13 @@ pub(crate) struct EntityRayHit {
 ///   model's derived bound (model-local, transformed to a world-axis-aligned
 ///   enclosure by the entity's position+yaw); narrow phase poses the skeleton at
 ///   the entity's current animation time and ray-tests one capsule per tagged
-///   joint. A no-tag model keeps AABB behavior. When the precise pose is
-///   UNAVAILABLE (a chained smooth-interrupt snapshot needing renderer-only
-///   data), a zone-bearing entity degrades to its authored AABB so it stays
-///   hittable; an available-pose capsule miss stays a miss (no AABB fallback).
+///   joint. A no-tag model keeps AABB behavior. When the capsule result is NOT
+///   authoritative — the pose is UNAVAILABLE (a chained smooth-interrupt snapshot
+///   needing renderer-only data) or the zone set is a degenerate static-identity
+///   ball whose miss is untrustworthy — a zone-bearing entity degrades to the
+///   coarse fallback (authored AABB if present, else the derived reach bound) so a
+///   drawn enemy stays hittable; a trustworthy available-pose capsule miss stays a
+///   miss (no fallback).
 ///
 /// Zero-HP entities (pending-despawn this tick) are skipped so a corpse cannot
 /// absorb a shot for one frame. `anim_time` is the game-layer animation clock;
@@ -531,6 +540,19 @@ pub(crate) fn nearest_entity_hit(
     direction: Vec3,
     range: f32,
 ) -> Option<EntityRayHit> {
+    // The facility assumes a unit-length ray direction (so `toi` is a distance).
+    // A zero-length or non-finite direction poisons every slab/capsule test with
+    // inf/NaN times, silently rejecting or accepting every entity — refuse it
+    // early and report no hit. `debug_assert` catches a caller that forgot to
+    // normalize; release stays safe.
+    if !direction.is_finite() || direction.length_squared() < 1.0e-12 {
+        debug_assert!(
+            false,
+            "nearest_entity_hit requires a finite, non-zero direction"
+        );
+        return None;
+    }
+
     let mut nearest: Option<EntityRayHit> = None;
 
     for (id, value) in registry.iter_with_kind(ComponentKind::Health) {
@@ -583,18 +605,29 @@ pub(crate) fn nearest_entity_hit(
                     direction,
                     range,
                 ) {
-                    // Pose available: the capsule result is AUTHORITATIVE. A
-                    // `Resolved(None)` is a genuine miss (broad-phase reject or no
-                    // capsule on the ray) — a zone-bearing posed model uses its
-                    // capsules, never its coarse AABB — so do NOT fall back.
+                    // Pose available AND trustworthy: the capsule result is
+                    // AUTHORITATIVE. A `Resolved(None)` is a genuine miss
+                    // (broad-phase reject or no capsule on the ray) — a real posed
+                    // model uses its capsules, never its coarse AABB — so do NOT
+                    // fall back.
                     ZoneResolve::Resolved(hit) => hit,
-                    // Pose UNAVAILABLE (a chained smooth interrupt whose snapshot
-                    // capture needs renderer-only stored data): degrade to the
-                    // authored AABB so a drawn enemy stays hittable at coarse
-                    // precision. No hitbox → not targetable this query.
-                    ZoneResolve::Unavailable => hitbox.as_ref().and_then(|hitbox| {
-                        aabb_hit(origin, direction, transform, hitbox, range, id)
-                    }),
+                    // Pose NON-AUTHORITATIVE — either unreconstructable (a chained
+                    // smooth interrupt whose snapshot needs renderer-only data) or
+                    // a degenerate static-identity zone set whose origin-ball miss
+                    // is untrustworthy. Never report a no-hit the coarse phase
+                    // would have caught: degrade to the authored AABB when present,
+                    // else the model's derived reach bound, so a drawn zone-bearing
+                    // enemy is never unshootable.
+                    ZoneResolve::Unavailable => coarse_fallback_hit(
+                        origin,
+                        direction,
+                        transform,
+                        zoned.origin_offset,
+                        hitbox.as_ref(),
+                        zoned.zones.derived_bound.as_ref(),
+                        range,
+                        id,
+                    ),
                 }
             }
             // No zone-bearing model: the authored AABB is both broad and narrow
@@ -665,26 +698,69 @@ fn aabb_hit(
     })
 }
 
-/// The outcome of a zone-bearing entity's capsule query, distinguishing "pose
-/// UNAVAILABLE" from "pose available, ray missed". The caller degrades an
-/// unavailable pose to the authored AABB (so a drawn enemy stays hittable), but
-/// treats an available-pose result as authoritative — a zone-bearing posed model
-/// uses its capsules, never its coarse AABB, so an available-pose miss stands.
+/// Coarse last-resort fallback for a zone-bearing entity whose precise capsule
+/// result is NOT authoritative — the pose was unreconstructable, or the zone set
+/// is a degenerate static-identity ball. The invariant: never report a no-hit the
+/// coarse phase would have caught, so a drawn zone-bearing enemy is never
+/// unshootable. Ray-test the authored AABB when present; else the model's derived
+/// reach bound (a conservative superset of every posed capsule) treated as a
+/// capsule-less AABB in the same position+yaw placement the capsule path uses.
+/// Both targets are coarse supersets, so this favors "drawn ⇒ shootable" without
+/// inventing hits outside the model's reachable envelope. Either way `zone` is
+/// `None` (no bone tag on a coarse hit).
+#[allow(clippy::too_many_arguments)] // a flat parameter list keeps the facility weapon/camera-free.
+fn coarse_fallback_hit(
+    origin: Vec3,
+    direction: Vec3,
+    transform: &Transform,
+    origin_offset: Vec3,
+    hitbox: Option<&Hitbox>,
+    derived_bound: Option<&Aabb>,
+    range: f32,
+    id: EntityId,
+) -> Option<EntityRayHit> {
+    if let Some(hitbox) = hitbox {
+        return aabb_hit(origin, direction, transform, hitbox, range, id);
+    }
+    // No authored AABB (a valid zone-only enemy): fall back to the derived reach
+    // bound, placed model→world exactly as the capsule broad phase places it.
+    let bound = derived_bound?.transformed(&position_yaw_matrix(transform, origin_offset));
+    ray_aabb_slab(origin, direction, bound.min, bound.max, range).map(|(toi, normal)| {
+        EntityRayHit {
+            toi,
+            point: origin + direction * toi,
+            normal,
+            target: id,
+            zone: None,
+        }
+    })
+}
+
+/// The outcome of a zone-bearing entity's capsule query, distinguishing a
+/// NON-AUTHORITATIVE result (caller degrades to the coarse fallback) from a
+/// trustworthy one (caller trusts it, hit or miss). A real posed model uses its
+/// capsules, never its coarse AABB, so its miss stands; a non-authoritative result
+/// must never report a no-hit the coarse phase would have caught.
 enum ZoneResolve {
-    /// The precise capsule pose could not be produced game-side (a chained smooth
-    /// interrupt whose snapshot capture needs renderer-only stored data).
+    /// The capsule result is NOT authoritative: either the precise pose could not
+    /// be produced game-side (a chained smooth interrupt whose snapshot capture
+    /// needs renderer-only stored data), OR the zone set is a degenerate
+    /// static-identity ball whose miss is untrustworthy. The caller degrades to
+    /// the coarse fallback (authored AABB, else the derived reach bound).
     Unavailable,
-    /// The pose was available and tested: `Some` is the nearest capsule hit,
-    /// `None` a genuine miss (broad-phase reject, or no capsule on the ray).
+    /// The pose was available and trustworthy: `Some` is the nearest capsule hit,
+    /// `None` an authoritative miss (broad-phase reject, or no capsule on the ray).
     Resolved(Option<EntityRayHit>),
 }
 
 /// Ray-test one zone-bearing entity: broad phase against the model's derived
 /// bound (transformed to a world-axis-aligned enclosure), then per tagged joint
-/// a posed-capsule narrow test. Returns [`ZoneResolve`]: `Resolved` (with the
-/// nearest hit or a genuine miss) when the pose is available, or `Unavailable`
-/// when the precise pose could not be produced game-side (the caller then
-/// degrades to the authored AABB).
+/// a posed-capsule narrow test. Returns [`ZoneResolve`]: `Resolved` (nearest hit
+/// or authoritative miss) when the pose is trustworthy, or `Unavailable` when the
+/// caller must degrade to the coarse fallback. `Unavailable` fires when the
+/// precise pose cannot be produced game-side, AND when the zone set is a
+/// degenerate static-identity ball whose miss is untrustworthy (a hit on that
+/// ball still resolves as a normal capsule hit, tag and all).
 #[allow(clippy::too_many_arguments)] // a flat parameter list keeps the facility weapon/camera-free.
 fn nearest_zone_hit(
     zones: &ModelHitZones,
@@ -702,18 +778,35 @@ fn nearest_zone_hit(
     // deliberately NOT the renderer's interpolated transform.
     let model_to_world = position_yaw_matrix(transform, origin_offset);
 
+    // A degenerate static-identity zone set (single rest-only joint at the model
+    // origin, no clips) collapses to a ~radius ball at the origin — not a
+    // trustworthy narrow phase. Its MISSES degrade to the coarse fallback so a
+    // shot the authored AABB would have caught is never dropped; a HIT on the ball
+    // still resolves as a normal capsule hit below.
+    let static_identity = is_static_identity_zone(zones);
+
     // Broad phase: the derived bound is model-local; transform it to a tight
-    // world-axis-aligned enclosure and ray-test that AABB. A reject here means
-    // no capsule can be hit (the bound encloses every posed capsule by
-    // construction) — a genuine miss, NOT a pose failure, so it does not degrade
-    // to the AABB (which lies inside this bound). Rejecting before resolving
-    // (cloning) the animation means a rejected entity pays no deep clone.
+    // world-axis-aligned enclosure and ray-test that AABB. For a real skeleton a
+    // reject means no capsule can be hit (the bound encloses every posed capsule
+    // by construction) — a genuine miss, NOT a pose failure, so it does not
+    // degrade to the AABB (which lies inside this bound). Rejecting before
+    // resolving (cloning) the animation means a rejected entity pays no deep clone.
     let Some(bound) = zones.derived_bound.as_ref() else {
-        return ZoneResolve::Resolved(None);
+        // Unreachable: `zone_bearing_entry` only routes models WITH a derived
+        // bound here. If it ever fires, degrade in the safe direction (coarse
+        // fallback), never an authoritative miss.
+        debug_assert!(false, "nearest_zone_hit reached with no derived bound");
+        return ZoneResolve::Unavailable;
     };
     let bound = bound.transformed(&model_to_world);
     if ray_aabb_slab(origin, direction, bound.min, bound.max, range).is_none() {
-        return ZoneResolve::Resolved(None);
+        // A degenerate ball's broad-phase reject is untrustworthy — degrade so the
+        // coarse AABB (a superset) can still catch the shot.
+        return if static_identity {
+            ZoneResolve::Unavailable
+        } else {
+            ZoneResolve::Resolved(None)
+        };
     }
 
     // Broad phase survived: NOW resolve (clone) the entity's animation. A mesh
@@ -724,7 +817,7 @@ fn nearest_zone_hit(
     // the SAME per-instance phase the renderer draws with (seed = the raw
     // `EntityId`), then test one capsule per tagged joint. A `None` pose is
     // UNAVAILABLE (a chained snapshot fade needing renderer-only data) — signal it
-    // so the caller degrades to the authored AABB rather than reporting a miss.
+    // so the caller degrades to the coarse fallback rather than reporting a miss.
     let Some(world_joints) = pose_world_joints(zones, animation.as_ref(), anim_time, id.to_raw())
     else {
         return ZoneResolve::Unavailable;
@@ -765,7 +858,26 @@ fn nearest_zone_hit(
         }
     }
 
+    // A degenerate origin-ball MISS is not authoritative — degrade to the coarse
+    // fallback rather than reporting a no-hit the authored AABB would have caught.
+    // A hit stands (it carries the bone tag).
+    if static_identity && nearest.is_none() {
+        return ZoneResolve::Unavailable;
+    }
+
     ZoneResolve::Resolved(nearest)
+}
+
+/// True for a degenerate static-identity zone set: a single rest-only joint at
+/// the model origin with no animation clips. Such a model has no real rig — its
+/// zones collapse to one ~radius ball at the mesh origin, so a capsule miss is not
+/// a trustworthy verdict and the caller degrades to the coarse fallback. A model
+/// with clips, or with more than one joint, or whose single joint is placed away
+/// from the origin, is a real (if static) skeleton and stays authoritative.
+fn is_static_identity_zone(zones: &ModelHitZones) -> bool {
+    zones.clips.is_empty()
+        && zones.skeleton.joints.len() == 1
+        && zones.skeleton.joints[0].rest_local == RestLocal::default()
 }
 
 /// The model-local posed-origin of `joint_index`'s FIRST CHILD (lowest joint
@@ -816,7 +928,7 @@ fn yaw_of(rotation: Quat) -> f32 {
 /// Fail-available contract: `None` means the game side cannot reconstruct the
 /// exact pose the renderer draws — specifically a chained smooth-interrupt
 /// snapshot fade whose capture references renderer-only stored data (mirrors the
-/// same case on [`pose_from_params`]). The caller degrades to the authored AABB
+/// same case on [`pose_from_params`]). The caller degrades to the coarse fallback
 /// rather than posing a wrong fallback-clip capsule; it never means "the ray
 /// missed". A model with no clips, or an unresolved state, still poses (rest or
 /// first clip) and returns `Some`.
@@ -1209,15 +1321,16 @@ mod tests {
         );
     }
 
-    /// Regression: a short authored keyframe excursion between the former fixed
-    /// uniform samples must still be inside the derived broad-phase bound.
+    /// Regression: a short authored keyframe excursion between widely spaced key
+    /// times must still be inside the derived broad-phase bound.
     #[test]
     fn derived_bound_includes_short_keyframe_excursion() {
         let skeleton = Skeleton {
             joints: vec![joint(None, RestLocal::default())],
         };
         // The peak lives near the start of a long clip, then returns to origin
-        // before the old 1/7 uniform sample. Key-time expansion must catch it.
+        // between the next widely spaced key times. Key-time expansion must
+        // catch it where a coarse uniform sampling could step right over it.
         let tracks = JointTracks {
             translation: Track::new(
                 vec![0.0, 0.01, 0.02, 1.0],
@@ -1984,6 +2097,195 @@ mod tests {
         .expect("chained snapshot interrupt degrades to the authored AABB and stays hittable");
         assert_eq!(hit.target, id);
         assert_eq!(hit.zone, None, "the AABB degrade carries no zone tag");
+    }
+
+    /// A degenerate static-identity zone model: one rest-only joint at the model
+    /// origin, no clips, one tagged zone (default radius). `is_static_identity_zone`
+    /// flags it, so a capsule MISS degrades to the coarse fallback.
+    fn static_identity_zone_model() -> ModelHitZones {
+        let skeleton = Skeleton {
+            joints: vec![joint(None, RestLocal::default())],
+        };
+        let joint_zones = vec![zone("core", None)];
+        let derived_bound = derive_bound(&skeleton, &[], &joint_zones);
+        ModelHitZones {
+            skeleton: Arc::new(skeleton),
+            clips: Arc::new(vec![]),
+            joint_zones,
+            derived_bound,
+        }
+    }
+
+    /// A zone-only enemy (NO authored hitbox) whose precise pose is UNAVAILABLE
+    /// this query must still be shootable: absent an AABB, the facility degrades to
+    /// the model's derived reach bound so a drawn zone-bearing enemy is never
+    /// unhittable for the whole crossfade window. Reuses the chained-snapshot
+    /// (Unavailable) setup, but with `hitbox: None`.
+    #[test]
+    fn zone_only_no_hitbox_unavailable_falls_back_to_derived_bound() {
+        use postretro_entities::components::mesh::{
+            AnimationState, FadeSourceKind, InterruptPolicy, InterruptedOutgoing, MeshAnimation,
+        };
+
+        fn state(clip: &str, crossfade_ms: f32, clip_index: usize) -> AnimationState {
+            AnimationState {
+                clip: clip.into(),
+                looping: true,
+                crossfade_ms,
+                interrupt: InterruptPolicy::Smooth,
+                clip_index: Some(clip_index),
+            }
+        }
+
+        let mut reg = EntityRegistry::new();
+        let store = store_with("smooth", smooth_interrupt_model());
+
+        let mut states = HashMap::new();
+        states.insert("A".to_string(), state("idle", 0.0, 0));
+        states.insert("B".to_string(), state("walk", 200.0, 1));
+        states.insert("C".to_string(), state("run", 100.0, 2));
+        let mut anim = MeshAnimation::new(states, "A".into());
+
+        // Same chained smooth interrupt as above → the game side cannot reconstruct
+        // the capture → pose Unavailable.
+        let t2 = 1.1_f64;
+        anim.current_state = "C".into();
+        anim.previous_state = Some("B".into());
+        anim.previous_entered_at = Some(1.0);
+        anim.entered_at = Some(t2);
+        anim.fade_source = FadeSourceKind::Snapshot;
+        anim.interrupted_outgoing = Some(InterruptedOutgoing::Snapshot {
+            tag: 1.0_f64.to_bits(),
+        });
+
+        // NO authored hitbox: the only coarse fallback target is the derived bound.
+        let id = reg.spawn(Transform::default());
+        reg.set_component(
+            id,
+            HealthComponent {
+                max: 100.0,
+                current: 100.0,
+                hitbox: None,
+                death_handled: false,
+                zone_multipliers: std::collections::HashMap::new(),
+            },
+        )
+        .unwrap();
+        reg.set_component(
+            id,
+            MeshComponent {
+                model: "smooth".into(),
+                animation: Some(anim),
+                origin_offset: Vec3::ZERO,
+            },
+        )
+        .unwrap();
+
+        let hit = nearest_entity_hit(
+            &reg,
+            &store,
+            t2,
+            Vec3::new(0.0, 0.0, 10.0),
+            Vec3::new(0.0, 0.0, -1.0),
+            100.0,
+        )
+        .expect("a zone-only enemy with an unavailable pose degrades to its derived bound");
+        assert_eq!(hit.target, id);
+        assert_eq!(
+            hit.zone, None,
+            "the reach-bound degrade carries no zone tag"
+        );
+    }
+
+    /// A static prop with a hitZone but no real rig (single identity joint, no
+    /// clips) collapses its zones to a ~0.12 m ball at the origin. A shot that
+    /// MISSES that ball must not be an authoritative miss: it degrades to the
+    /// authored AABB (a superset) and still connects, carrying no zone tag.
+    #[test]
+    fn static_identity_prop_falls_back_to_authored_aabb_when_ball_missed() {
+        let mut reg = EntityRegistry::new();
+        let store = store_with("prop", static_identity_zone_model());
+
+        // Entity at the origin with a 1 m authored hitbox; the origin ball is only
+        // ~0.12 m. A -Z ray at x=0.5 misses the ball but strikes the AABB.
+        let id = reg.spawn(Transform::default());
+        reg.set_component(
+            id,
+            HealthComponent {
+                max: 100.0,
+                current: 100.0,
+                hitbox: Some(Hitbox {
+                    half_extents: Vec3::splat(1.0),
+                    offset: Vec3::ZERO,
+                }),
+                death_handled: false,
+                zone_multipliers: std::collections::HashMap::new(),
+            },
+        )
+        .unwrap();
+        reg.set_component(id, MeshComponent::stateless("prop".into()))
+            .unwrap();
+
+        let hit = nearest_entity_hit(
+            &reg,
+            &store,
+            0.0,
+            Vec3::new(0.5, 0.0, 10.0),
+            Vec3::new(0.0, 0.0, -1.0),
+            100.0,
+        )
+        .expect("a static-identity origin-ball miss degrades to the authored AABB");
+        assert_eq!(hit.target, id);
+        assert_eq!(hit.zone, None, "the AABB degrade carries no zone tag");
+        assert!(
+            approx(hit.toi, 9.0),
+            "near AABB face at z=1 → toi 9, got {}",
+            hit.toi
+        );
+    }
+
+    /// The static-identity degrade is bounded to MISSES: a shot that actually
+    /// strikes the origin ball still resolves as a normal capsule hit with its
+    /// authored zone tag — the fallback never over-degrades a real hit.
+    #[test]
+    fn static_identity_prop_ball_hit_still_reports_zone() {
+        let mut reg = EntityRegistry::new();
+        let store = store_with("prop", static_identity_zone_model());
+
+        let id = reg.spawn(Transform::default());
+        reg.set_component(
+            id,
+            HealthComponent {
+                max: 100.0,
+                current: 100.0,
+                hitbox: Some(Hitbox {
+                    half_extents: Vec3::splat(1.0),
+                    offset: Vec3::ZERO,
+                }),
+                death_handled: false,
+                zone_multipliers: std::collections::HashMap::new(),
+            },
+        )
+        .unwrap();
+        reg.set_component(id, MeshComponent::stateless("prop".into()))
+            .unwrap();
+
+        // A -Z ray dead through the origin strikes the ~0.12 m ball.
+        let hit = nearest_entity_hit(
+            &reg,
+            &store,
+            0.0,
+            Vec3::new(0.0, 0.0, 10.0),
+            Vec3::new(0.0, 0.0, -1.0),
+            100.0,
+        )
+        .expect("a ray through the origin strikes the zone ball");
+        assert_eq!(hit.target, id);
+        assert_eq!(
+            hit.zone.as_deref(),
+            Some("core"),
+            "a real ball hit keeps its bone tag, not the coarse degrade"
+        );
     }
 
     /// AC (pose-available authority): when the capsule pose is AVAILABLE and the

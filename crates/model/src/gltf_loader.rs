@@ -16,6 +16,8 @@ use super::skeleton::{
     AnimationClip, Interp, Joint, JointTracks, RestLocal, Skeleton, SkeletonBuildError, Track,
 };
 
+const MIN_PACKED_DIRECTION_LENGTH_SQUARED: f32 = 1.0e-12;
+
 /// One drawable run of the merged mesh: the triangles of a single primitive,
 /// paired with the material that draws them.
 ///
@@ -128,6 +130,28 @@ pub enum ModelLoadError {
         path: String,
         index: u32,
         vertex_count: usize,
+    },
+    /// A present float stream carries NaN or infinity.
+    #[error("glTF accessor '{attribute}' has non-finite value at element {index}: {path}")]
+    NonFiniteAccessorValue {
+        path: String,
+        attribute: String,
+        index: usize,
+    },
+    /// A present direction stream carries a zero or near-zero vector that cannot
+    /// be normalized for octahedral packing.
+    #[error("glTF accessor '{attribute}' has degenerate direction at element {index}: {path}")]
+    DegenerateDirectionVector {
+        path: String,
+        attribute: String,
+        index: usize,
+    },
+    /// A triangle-list primitive does not contain whole triangles.
+    #[error("glTF primitive '{attribute}' count {count} is not divisible by 3: {path}")]
+    IncompleteTriangleList {
+        path: String,
+        attribute: String,
+        count: usize,
     },
     /// A JOINTS_0 value does not map to a topologically-ordered skeleton joint.
     #[error("glTF primitive JOINTS_0 value {joint} has no matching skin joint: {path}")]
@@ -246,6 +270,129 @@ fn validate_primitive_index(
     })
 }
 
+fn validate_finite_vec3_stream(
+    path_str: &str,
+    attribute: &str,
+    values: &[[f32; 3]],
+) -> Result<(), ModelLoadError> {
+    for (i, value) in values.iter().enumerate() {
+        if !value.iter().all(|component| component.is_finite()) {
+            return Err(ModelLoadError::NonFiniteAccessorValue {
+                path: path_str.to_string(),
+                attribute: attribute.to_string(),
+                index: i,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_finite_vec2_stream(
+    path_str: &str,
+    attribute: &str,
+    values: &[[f32; 2]],
+) -> Result<(), ModelLoadError> {
+    for (i, value) in values.iter().enumerate() {
+        if !value.iter().all(|component| component.is_finite()) {
+            return Err(ModelLoadError::NonFiniteAccessorValue {
+                path: path_str.to_string(),
+                attribute: attribute.to_string(),
+                index: i,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_finite_vec4_stream(
+    path_str: &str,
+    attribute: &str,
+    values: &[[f32; 4]],
+) -> Result<(), ModelLoadError> {
+    for (i, value) in values.iter().enumerate() {
+        if !value.iter().all(|component| component.is_finite()) {
+            return Err(ModelLoadError::NonFiniteAccessorValue {
+                path: path_str.to_string(),
+                attribute: attribute.to_string(),
+                index: i,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_packable_vec3_directions(
+    path_str: &str,
+    attribute: &str,
+    values: &[[f32; 3]],
+) -> Result<(), ModelLoadError> {
+    for (i, value) in values.iter().enumerate() {
+        let length_squared = value[0] * value[0] + value[1] * value[1] + value[2] * value[2];
+        if length_squared <= MIN_PACKED_DIRECTION_LENGTH_SQUARED {
+            return Err(ModelLoadError::DegenerateDirectionVector {
+                path: path_str.to_string(),
+                attribute: attribute.to_string(),
+                index: i,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_packable_vec4_xyz_directions(
+    path_str: &str,
+    attribute: &str,
+    values: &[[f32; 4]],
+) -> Result<(), ModelLoadError> {
+    for (i, value) in values.iter().enumerate() {
+        let length_squared = value[0] * value[0] + value[1] * value[1] + value[2] * value[2];
+        if length_squared <= MIN_PACKED_DIRECTION_LENGTH_SQUARED {
+            return Err(ModelLoadError::DegenerateDirectionVector {
+                path: path_str.to_string(),
+                attribute: attribute.to_string(),
+                index: i,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_finite_mat4_stream(
+    path_str: &str,
+    attribute: &str,
+    values: &[[[f32; 4]; 4]],
+) -> Result<(), ModelLoadError> {
+    for (i, value) in values.iter().enumerate() {
+        if !value
+            .iter()
+            .flatten()
+            .all(|component| component.is_finite())
+        {
+            return Err(ModelLoadError::NonFiniteAccessorValue {
+                path: path_str.to_string(),
+                attribute: attribute.to_string(),
+                index: i,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_triangle_count(
+    path_str: &str,
+    attribute: &str,
+    count: usize,
+) -> Result<(), ModelLoadError> {
+    if count % 3 == 0 {
+        return Ok(());
+    }
+    Err(ModelLoadError::IncompleteTriangleList {
+        path: path_str.to_string(),
+        attribute: attribute.to_string(),
+        count,
+    })
+}
+
 fn validate_skinning_attribute_pair(
     primitive: &gltf::Primitive,
     path_str: &str,
@@ -287,6 +434,9 @@ fn select_model<'a>(
 ) -> Result<SelectedModel<'a>, ModelLoadError> {
     for node in document.nodes() {
         if let (Some(mesh), Some(skin)) = (node.mesh(), node.skin()) {
+            if skin.joints().next().is_none() {
+                continue;
+            }
             return Ok(SelectedModel {
                 mesh,
                 skin: Some(skin),
@@ -483,27 +633,22 @@ pub fn load_model(path: &Path) -> Result<LoadedModel, ModelLoadError> {
     // `import_buffers`); each helper builds its own closure locally so the
     // closure and the borrowed glTF entity share one lifetime.
 
-    // Load exactly one mesh: prefer the first node that binds both mesh and skin
-    // so geometry and skeleton are selected as a pair. A document with no
-    // skinned mesh node falls back to the first mesh as a static model.
+    // Load exactly one mesh: prefer the first node that binds both mesh and a
+    // non-empty skin so geometry and skeleton are selected as a pair. A
+    // document with no usable skinned mesh node falls back to the first mesh as
+    // a static model.
     let SelectedModel { mesh, skin } = select_model(&document, &path_str)?;
 
     // --- Skeleton ---------------------------------------------------------
     // Use the selected skinned node's skin. A static/no-skin model still
     // receives one identity joint so rigid vertices bound to joint 0 have a
     // matching palette entry; any authored static node hit zone maps to that
-    // identity joint. A skin whose `joints()` array is empty is treated the
-    // same as no skin: `Skeleton::new(vec![])` would otherwise succeed with a
-    // zero-joint palette, and a rigid vertex's default joint 0 would index out
-    // of it. (A genuinely skinned mesh under an empty skin still fails safely:
-    // its `JOINTS_0` values find no entry in the empty remap and hit
-    // `InvalidJointIndex`.)
+    // identity joint.
     //
     // `skin_joint_to_topo` reindexes mesh `JOINTS_0` (skin-joint indices) into
     // topo order; `node_to_topo` reindexes animation channel targets (node
     // indices) into the same topo order.
-    let skin = skin.as_ref().filter(|skin| skin.joints().next().is_some());
-    let (skeleton, joint_zones, skin_joint_to_topo, node_to_topo) = match skin {
+    let (skeleton, joint_zones, skin_joint_to_topo, node_to_topo) = match skin.as_ref() {
         Some(skin) => build_skeleton(skin, &buffers, &path_str)?,
         None => (
             identity_skeleton(),
@@ -520,7 +665,15 @@ pub fn load_model(path: &Path) -> Result<LoadedModel, ModelLoadError> {
     // --- Animation clips --------------------------------------------------
     let clips = document
         .animations()
-        .map(|anim| load_clip(&anim, &buffers, &node_to_topo, skeleton.joints.len()))
+        .map(|anim| {
+            load_clip(
+                &anim,
+                &buffers,
+                &node_to_topo,
+                skeleton.joints.len(),
+                &path_str,
+            )
+        })
         .collect();
 
     // --- Entity tags (top-level extras) -----------------------------------
@@ -636,6 +789,7 @@ fn build_skeleton(
         }
         None => vec![Mat4::IDENTITY.to_cols_array_2d(); joint_nodes.len()],
     };
+    validate_finite_mat4_stream(path_str, "inverseBindMatrices", &inverse_binds)?;
 
     // Topological order: a child must follow its parent. Iteratively emit any
     // not-yet-emitted joint whose parent is already emitted (or is a root). The
@@ -767,6 +921,7 @@ fn load_mesh(
                 attribute: "POSITION".to_string(),
             })?
             .collect();
+        validate_finite_vec3_stream(path_str, "POSITION", &positions)?;
         let vertex_count = positions.len();
 
         // Optional attributes default to neutral values when a primitive omits
@@ -783,17 +938,17 @@ fn load_mesh(
                         (DataType::F32, Dimensions::Vec2),
                     ],
                 )?;
-                let values: Vec<[u16; 2]> = reader
+                let values: Vec<[f32; 2]> = reader
                     .read_tex_coords(0)
                     .ok_or_else(|| ModelLoadError::MissingAttribute {
                         path: path_str.to_string(),
                         attribute: "TEXCOORD_0".to_string(),
                     })?
                     .into_f32()
-                    .map(quantize_uv)
                     .collect();
                 validate_attribute_count(path_str, "TEXCOORD_0", vertex_count, values.len())?;
-                values
+                validate_finite_vec2_stream(path_str, "TEXCOORD_0", &values)?;
+                values.into_iter().map(quantize_uv).collect()
             }
             None => vec![[0, 0]; vertex_count],
         };
@@ -805,16 +960,20 @@ fn load_mesh(
                     "NORMAL",
                     &[(DataType::F32, Dimensions::Vec3)],
                 )?;
-                let values: Vec<[u16; 2]> = reader
+                let values: Vec<[f32; 3]> = reader
                     .read_normals()
                     .ok_or_else(|| ModelLoadError::MissingAttribute {
                         path: path_str.to_string(),
                         attribute: "NORMAL".to_string(),
                     })?
-                    .map(|nn| octahedral::encode(nn[0], nn[1], nn[2]))
                     .collect();
                 validate_attribute_count(path_str, "NORMAL", vertex_count, values.len())?;
+                validate_finite_vec3_stream(path_str, "NORMAL", &values)?;
+                validate_packable_vec3_directions(path_str, "NORMAL", &values)?;
                 values
+                    .into_iter()
+                    .map(|nn| octahedral::encode(nn[0], nn[1], nn[2]))
+                    .collect()
             }
             // Default to +Z (octahedral center) when normals are absent.
             None => vec![octahedral::encode(0.0, 0.0, 1.0); vertex_count],
@@ -827,16 +986,17 @@ fn load_mesh(
                     "TANGENT",
                     &[(DataType::F32, Dimensions::Vec4)],
                 )?;
-                let values: Vec<[u16; 2]> = reader
+                let values: Vec<[f32; 4]> = reader
                     .read_tangents()
                     .ok_or_else(|| ModelLoadError::MissingAttribute {
                         path: path_str.to_string(),
                         attribute: "TANGENT".to_string(),
                     })?
-                    .map(pack_tangent)
                     .collect();
                 validate_attribute_count(path_str, "TANGENT", vertex_count, values.len())?;
-                values
+                validate_finite_vec4_stream(path_str, "TANGENT", &values)?;
+                validate_packable_vec4_xyz_directions(path_str, "TANGENT", &values)?;
+                values.into_iter().map(pack_tangent).collect()
             }
             // Default tangent: +X with positive bitangent sign.
             None => vec![pack_tangent([1.0, 0.0, 0.0, 1.0]); vertex_count],
@@ -892,15 +1052,19 @@ fn load_mesh(
                     (DataType::F32, Dimensions::Vec4),
                 ],
             )?;
-            let values: Vec<[u8; 4]> = reader
-                .read_weights(0)
-                .ok_or_else(|| ModelLoadError::MissingAttribute {
-                    path: path_str.to_string(),
-                    attribute: "WEIGHTS_0".to_string(),
-                })?
-                .into_u8()
-                .map(normalize_weights)
-                .collect();
+            let values =
+                reader
+                    .read_weights(0)
+                    .ok_or_else(|| ModelLoadError::MissingAttribute {
+                        path: path_str.to_string(),
+                        attribute: "WEIGHTS_0".to_string(),
+                    })?;
+            if accessor.data_type() == DataType::F32 {
+                let raw: Vec<[f32; 4]> = values.clone().into_f32().collect();
+                validate_attribute_count(path_str, "WEIGHTS_0", vertex_count, raw.len())?;
+                validate_finite_vec4_stream(path_str, "WEIGHTS_0", &raw)?;
+            }
+            let values: Vec<[u8; 4]> = values.into_u8().map(normalize_weights).collect();
             validate_attribute_count(path_str, "WEIGHTS_0", vertex_count, values.len())?;
             values
         } else {
@@ -935,18 +1099,33 @@ fn load_mesh(
                     (DataType::U32, Dimensions::Scalar),
                 ],
             )?;
+            validate_triangle_count(path_str, "indices", accessor.count())?;
+        } else {
+            validate_triangle_count(path_str, "POSITION", vertex_count)?;
         }
-        match reader.read_indices() {
-            Some(idx) => {
-                for i in idx.into_u32() {
-                    validate_primitive_index(path_str, i, vertex_count)?;
-                    out.indices.push(base_vertex + i);
+        if let Some(accessor) = primitive.indices() {
+            match reader.read_indices() {
+                Some(idx) => {
+                    for i in idx.into_u32() {
+                        validate_primitive_index(path_str, i, vertex_count)?;
+                        out.indices.push(base_vertex + i);
+                    }
+                }
+                None => {
+                    return Err(ModelLoadError::MissingAttribute {
+                        path: path_str.to_string(),
+                        attribute: "indices".to_string(),
+                    });
                 }
             }
-            None => {
-                for i in 0..vertex_count as u32 {
-                    out.indices.push(base_vertex + i);
-                }
+            debug_assert_eq!(
+                out.indices.len() - start as usize,
+                accessor.count(),
+                "read_indices yielded a different count than the accessor advertised"
+            );
+        } else {
+            for i in 0..vertex_count as u32 {
+                out.indices.push(base_vertex + i);
             }
         }
         let end = out.indices.len() as u32;
@@ -1219,6 +1398,7 @@ fn load_clip(
     buffers: &[gltf::buffer::Data],
     node_to_topo: &HashMap<usize, usize>,
     joint_count: usize,
+    path_str: &str,
 ) -> AnimationClip {
     let buffer_data = |buffer: gltf::Buffer| buffers.get(buffer.index()).map(|d| &d.0[..]);
     let name = anim.name().unwrap_or("").to_string();
@@ -1275,16 +1455,26 @@ fn load_clip(
 
         let reader = channel.reader(buffer_data);
         let Some(inputs) = reader.read_inputs() else {
+            log::warn!(
+                "{path_str}: animation {} ('{name}') channel {} {kind}: input accessor could \
+                 not be read; skipping channel (joint holds rest pose)",
+                anim.index(),
+                channel.index(),
+            );
             continue;
         };
         let times: Vec<f32> = inputs.collect();
         if !validate_key_times(&times, &name) {
             continue;
         }
-        if let Some(&last) = times.last() {
-            duration = duration.max(last);
-        }
+        let channel_duration = times.last().copied().unwrap_or(0.0);
         let Some(outputs) = reader.read_outputs() else {
+            log::warn!(
+                "{path_str}: animation {} ('{name}') channel {} {kind}: output accessor could \
+                 not be read; skipping channel (joint holds rest pose)",
+                anim.index(),
+                channel.index(),
+            );
             continue;
         };
         match outputs {
@@ -1296,6 +1486,7 @@ fn load_clip(
                 {
                     if let Some(track) = build_track(times, values, mode, &name, "translation") {
                         joints[topo_idx].translation = track;
+                        duration = duration.max(channel_duration);
                     }
                 }
             }
@@ -1310,6 +1501,7 @@ fn load_clip(
                 {
                     if let Some(track) = build_track(times, values, mode, &name, "rotation") {
                         joints[topo_idx].rotation = track;
+                        duration = duration.max(channel_duration);
                     }
                 }
             }
@@ -1321,6 +1513,7 @@ fn load_clip(
                 {
                     if let Some(track) = build_track(times, values, mode, &name, "scale") {
                         joints[topo_idx].scale = track;
+                        duration = duration.max(channel_duration);
                     }
                 }
             }
@@ -1445,6 +1638,106 @@ mod tests {
                 } if path == "model.gltf"
             ),
             "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn required_float_stream_validation_rejects_nan_and_infinity() {
+        let err = validate_finite_vec3_stream(
+            "model.gltf",
+            "POSITION",
+            &[[0.0, 1.0, 2.0], [f32::NAN, 0.0, 0.0]],
+        )
+        .expect_err("NaN POSITION is malformed required geometry");
+        assert!(
+            matches!(
+                &err,
+                ModelLoadError::NonFiniteAccessorValue {
+                    path,
+                    attribute,
+                    index: 1,
+                } if path == "model.gltf" && attribute == "POSITION"
+            ),
+            "got {err:?}",
+        );
+
+        let err = validate_finite_mat4_stream(
+            "model.gltf",
+            "inverseBindMatrices",
+            &[[[f32::INFINITY, 0.0, 0.0, 0.0]; 4]],
+        )
+        .expect_err("infinite inverse bind matrix is malformed required skin data");
+        assert!(
+            matches!(
+                &err,
+                ModelLoadError::NonFiniteAccessorValue {
+                    path,
+                    attribute,
+                    index: 0,
+                } if path == "model.gltf" && attribute == "inverseBindMatrices"
+            ),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn packable_direction_validation_rejects_zero_and_near_zero_vectors() {
+        let err = validate_packable_vec3_directions(
+            "model.gltf",
+            "NORMAL",
+            &[[0.0, 0.0, 1.0], [0.0, 0.0, 0.0]],
+        )
+        .expect_err("zero NORMAL cannot be octahedrally packed");
+        assert!(
+            matches!(
+                &err,
+                ModelLoadError::DegenerateDirectionVector {
+                    path,
+                    attribute,
+                    index: 1,
+                } if path == "model.gltf" && attribute == "NORMAL"
+            ),
+            "got {err:?}",
+        );
+
+        let err = validate_packable_vec4_xyz_directions(
+            "model.gltf",
+            "TANGENT",
+            &[[1.0, 0.0, 0.0, 1.0], [1.0e-7, 0.0, 0.0, -1.0]],
+        )
+        .expect_err("near-zero TANGENT direction cannot be octahedrally packed");
+        assert!(
+            matches!(
+                &err,
+                ModelLoadError::DegenerateDirectionVector {
+                    path,
+                    attribute,
+                    index: 1,
+                } if path == "model.gltf" && attribute == "TANGENT"
+            ),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn validate_triangle_count_requires_complete_triangle_lists() {
+        assert!(
+            validate_triangle_count("model.gltf", "indices", 6).is_ok(),
+            "two complete triangles are accepted"
+        );
+
+        let err = validate_triangle_count("model.gltf", "indices", 5)
+            .expect_err("partial triangle lists are malformed");
+        assert!(
+            matches!(
+                &err,
+                ModelLoadError::IncompleteTriangleList {
+                    path,
+                    attribute,
+                    count: 5,
+                } if path == "model.gltf" && attribute == "indices"
+            ),
+            "got {err:?}",
         );
     }
 
@@ -1757,6 +2050,328 @@ mod tests {
         );
     }
 
+    fn add_first_primitive_optional_stream(
+        json: &mut serde_json::Value,
+        semantic: &str,
+        accessor_type: &str,
+        byte_length: usize,
+        byte_length_total: usize,
+        data_uri: &str,
+    ) {
+        let buffer_view_index = json["bufferViews"]
+            .as_array()
+            .expect("bufferViews is an array")
+            .len();
+        json["bufferViews"]
+            .as_array_mut()
+            .expect("bufferViews is an array")
+            .push(serde_json::json!({
+                "buffer": 0,
+                "byteOffset": 88,
+                "byteLength": byte_length,
+            }));
+        let accessor_index = json["accessors"]
+            .as_array()
+            .expect("accessors is an array")
+            .len();
+        json["accessors"]
+            .as_array_mut()
+            .expect("accessors is an array")
+            .push(serde_json::json!({
+                "bufferView": buffer_view_index,
+                "componentType": 5126,
+                "count": 3,
+                "type": accessor_type,
+            }));
+        json["meshes"][0]["primitives"][0]["attributes"][semantic] =
+            serde_json::json!(accessor_index);
+        json["buffers"][0]["byteLength"] = serde_json::json!(byte_length_total);
+        json["buffers"][0]["uri"] = serde_json::json!(data_uri);
+    }
+
+    #[test]
+    fn non_finite_present_optional_vertex_streams_return_err() {
+        // Regression: present optional float streams with NaN/Inf were packed or
+        // quantized into renderer-visible vertex data. Missing streams still use
+        // defaults; malformed present streams are rejected.
+        for (name, semantic, accessor_type, byte_length, byte_length_total, data_uri) in [
+            (
+                "nan_texcoord",
+                "TEXCOORD_0",
+                "VEC2",
+                24,
+                112,
+                "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAIA/AACAPwAAAAAAAIA/AAAAAAAAgD8AAIA/AAABAAIAAAAAAAEAAgAAAAAAwH8AAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+            ),
+            (
+                "nan_normal",
+                "NORMAL",
+                "VEC3",
+                36,
+                124,
+                "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAIA/AACAPwAAAAAAAIA/AAAAAAAAgD8AAIA/AAABAAIAAAAAAAEAAgAAAAAAwH8AAAAAAACAPwAAAAAAAAAAAACAPwAAAAAAAAAAAACAPw==",
+            ),
+            (
+                "nan_tangent",
+                "TANGENT",
+                "VEC4",
+                48,
+                136,
+                "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAIA/AACAPwAAAAAAAIA/AAAAAAAAgD8AAIA/AAABAAIAAAAAAAEAAgAAAAAAwH8AAAAAAAAAAAAAgD8AAIA/AAAAAAAAAAAAAIA/AACAPwAAAAAAAAAAAACAPw==",
+            ),
+        ] {
+            let mut json = fixture_json(&multi_primitive_fixture_path());
+            add_first_primitive_optional_stream(
+                &mut json,
+                semantic,
+                accessor_type,
+                byte_length,
+                byte_length_total,
+                data_uri,
+            );
+            let path = write_temp_fixture(name, &json);
+
+            let result = std::panic::catch_unwind(|| load_model(&path));
+            let _ = std::fs::remove_file(&path);
+            let load_result = result.expect("non-finite optional stream must not panic");
+
+            assert!(
+                matches!(
+                    &load_result,
+                    Err(ModelLoadError::NonFiniteAccessorValue {
+                        attribute,
+                        index: 0,
+                        ..
+                    }) if attribute == semantic
+                ),
+                "non-finite {semantic} should be rejected, got {load_result:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn zero_normal_and_tangent_streams_return_err_before_packing() {
+        // Regression: finite zero direction vectors reached octahedral packing,
+        // producing NaN intermediates in renderer-visible packed vertex data.
+        for (name, semantic, accessor_type, byte_length, byte_length_total, data_uri) in [
+            (
+                "zero_normal",
+                "NORMAL",
+                "VEC3",
+                36,
+                124,
+                "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAIA/AACAPwAAAAAAAIA/AAAAAAAAgD8AAIA/AAABAAIAAAAAAAEAAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+            ),
+            (
+                "zero_tangent",
+                "TANGENT",
+                "VEC4",
+                48,
+                136,
+                "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAIA/AACAPwAAAAAAAIA/AAAAAAAAgD8AAIA/AAABAAIAAAAAAAEAAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+            ),
+        ] {
+            let mut json = fixture_json(&multi_primitive_fixture_path());
+            add_first_primitive_optional_stream(
+                &mut json,
+                semantic,
+                accessor_type,
+                byte_length,
+                byte_length_total,
+                data_uri,
+            );
+            let path = write_temp_fixture(name, &json);
+
+            let result = std::panic::catch_unwind(|| load_model(&path));
+            let _ = std::fs::remove_file(&path);
+            let load_result = result.expect("degenerate direction stream must not panic");
+
+            assert!(
+                matches!(
+                    &load_result,
+                    Err(ModelLoadError::DegenerateDirectionVector {
+                        attribute,
+                        index: 0,
+                        ..
+                    }) if attribute == semantic
+                ),
+                "degenerate {semantic} should be rejected, got {load_result:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn non_finite_f32_weights_return_err() {
+        // Regression: NaN F32 WEIGHTS_0 values were quantized before validation,
+        // producing renderer-visible skinning data from malformed input.
+        let mut json = fixture_json(&multi_clip_fixture_path());
+        json["buffers"][0]["uri"] = serde_json::json!(
+            "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAAAAAADAfwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAAAAAAABAAIAAAAAAIA/AAAAAAAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAAAAAAIA/AACAPwAAAAAAAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAAAAAACAPwAAAAAAAIA/AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAA8wQ1P/MENT8AAAAAAACAPwAAAEAAAAAAAAAAAAAAAAAAACBBAAAAAAAAAAAAAKBBAAAAAAAAAAAAAAAAAACAPwAAgL8AAIC/AACAvwAAoEAAAKBAAACgQAAAEEEAABBBAAAQQQAAAMAAAADAAAAAwAAA4EAAAOBAAADgQAAAAEEAAABBAAAAQQ=="
+        );
+        let path = write_temp_fixture("nan_weights", &json);
+
+        let result = std::panic::catch_unwind(|| load_model(&path));
+        let _ = std::fs::remove_file(&path);
+        let load_result = result.expect("non-finite WEIGHTS_0 must not panic");
+
+        assert!(
+            matches!(
+                &load_result,
+                Err(ModelLoadError::NonFiniteAccessorValue {
+                    attribute,
+                    index: 0,
+                    ..
+                }) if attribute == "WEIGHTS_0"
+            ),
+            "non-finite WEIGHTS_0 should be rejected, got {load_result:?}",
+        );
+    }
+
+    #[test]
+    fn non_finite_position_returns_err_not_poisoned_bounds() {
+        // Regression: NaN/Inf POSITION values reached SkinnedMesh::compute_bounds,
+        // poisoning local bounds instead of failing as malformed required data.
+        let mut json = fixture_json(&multi_primitive_fixture_path());
+        json["buffers"][0]["uri"] = serde_json::json!(
+            "data:application/octet-stream;base64,AADAfwAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAIA/AACAPwAAAAAAAIA/AAAAAAAAgD8AAIA/AAABAAIAAAAAAAEAAgAAAA=="
+        );
+        let path = write_temp_fixture("nan_position", &json);
+
+        let result = std::panic::catch_unwind(|| load_model(&path));
+        let _ = std::fs::remove_file(&path);
+        let load_result = result.expect("non-finite POSITION must not panic");
+
+        assert!(
+            matches!(
+                &load_result,
+                Err(ModelLoadError::NonFiniteAccessorValue {
+                    attribute,
+                    index: 0,
+                    ..
+                }) if attribute == "POSITION"
+            ),
+            "non-finite POSITION should be rejected, got {load_result:?}",
+        );
+    }
+
+    #[test]
+    fn non_finite_inverse_bind_matrix_returns_err() {
+        // Regression: Inf/NaN inverse bind matrices were stored in the skeleton,
+        // contaminating downstream bone palettes.
+        let mut json = fixture_json(&multi_clip_fixture_path());
+        json["buffers"][0]["uri"] = serde_json::json!(
+            "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAAAAAAABAAIAAAAAAIB/AAAAAAAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAAAAAAIA/AACAPwAAAAAAAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAAAAAACAPwAAAAAAAIA/AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAA8wQ1P/MENT8AAAAAAACAPwAAAEAAAAAAAAAAAAAAAAAAACBBAAAAAAAAAAAAAKBBAAAAAAAAAAAAAAAAAACAPwAAgL8AAIC/AACAvwAAoEAAAKBAAACgQAAAEEEAABBBAAAQQQAAAMAAAADAAAAAwAAA4EAAAOBAAADgQAAAAEEAAABBAAAAQQ=="
+        );
+        let path = write_temp_fixture("inf_inverse_bind", &json);
+
+        let result = std::panic::catch_unwind(|| load_model(&path));
+        let _ = std::fs::remove_file(&path);
+        let load_result = result.expect("non-finite inverseBindMatrices must not panic");
+
+        assert!(
+            matches!(
+                &load_result,
+                Err(ModelLoadError::NonFiniteAccessorValue {
+                    attribute,
+                    index: 0,
+                    ..
+                }) if attribute == "inverseBindMatrices"
+            ),
+            "non-finite inverseBindMatrices should be rejected, got {load_result:?}",
+        );
+    }
+
+    #[test]
+    fn indexed_triangle_list_with_partial_triangle_returns_err() {
+        // Regression: triangle-list primitives accepted dangling index tails,
+        // leaving the renderer with a non-triangle draw range.
+        let mut json = fixture_json(&multi_primitive_fixture_path());
+        json["accessors"][2]["count"] = serde_json::json!(2);
+        let path = write_temp_fixture("partial_indexed_triangles", &json);
+
+        let result = std::panic::catch_unwind(|| load_model(&path));
+        let _ = std::fs::remove_file(&path);
+        let load_result = result.expect("partial triangle list must not panic");
+
+        assert!(
+            matches!(
+                &load_result,
+                Err(ModelLoadError::IncompleteTriangleList {
+                    attribute,
+                    count: 2,
+                    ..
+                }) if attribute == "indices"
+            ),
+            "partial indexed triangle list should be rejected, got {load_result:?}",
+        );
+    }
+
+    #[test]
+    fn present_malformed_indices_return_err_without_generated_topology() {
+        // Regression: present malformed indices silently loaded as generated
+        // geometry instead of rejecting the authored indexed primitive.
+        let mut json = fixture_json(&multi_primitive_fixture_path());
+        json["bufferViews"]
+            .as_array_mut()
+            .expect("bufferViews is an array")
+            .push(serde_json::json!({
+                "buffer": 0,
+                "byteOffset": 88,
+                "byteLength": 6,
+            }));
+        json["accessors"][2]["bufferView"] = serde_json::json!(4);
+        json["buffers"][0]["byteLength"] = serde_json::json!(94);
+        json["buffers"][0]["uri"] = serde_json::json!(
+            "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAIA/AACAPwAAAAAAAIA/AAAAAAAAgD8AAIA/AAABAAIAAAAAAAEAAgAAAAAAAQAJAA=="
+        );
+        let path = write_temp_fixture("malformed_indices", &json);
+
+        let result = std::panic::catch_unwind(|| load_model(&path));
+        let _ = std::fs::remove_file(&path);
+        let load_result = result.expect("malformed indices must not panic");
+
+        assert!(
+            matches!(
+                &load_result,
+                Err(ModelLoadError::IndexOutOfRange {
+                    index: 9,
+                    vertex_count: 3,
+                    ..
+                })
+            ),
+            "present malformed indices should be rejected, got {load_result:?}",
+        );
+    }
+
+    #[test]
+    fn generated_triangle_list_with_partial_triangle_returns_err() {
+        // Regression: non-indexed triangle-list primitives generated dangling
+        // index tails when POSITION count was not a multiple of three.
+        let mut json = fixture_json(&multi_primitive_fixture_path());
+        json["meshes"][0]["primitives"][0]
+            .as_object_mut()
+            .expect("primitive is an object")
+            .remove("indices");
+        json["accessors"][0]["count"] = serde_json::json!(2);
+        let path = write_temp_fixture("partial_generated_triangles", &json);
+
+        let result = std::panic::catch_unwind(|| load_model(&path));
+        let _ = std::fs::remove_file(&path);
+        let load_result = result.expect("partial generated triangle list must not panic");
+
+        assert!(
+            matches!(
+                &load_result,
+                Err(ModelLoadError::IncompleteTriangleList {
+                    attribute,
+                    count: 2,
+                    ..
+                }) if attribute == "POSITION"
+            ),
+            "partial generated triangle list should be rejected, got {load_result:?}",
+        );
+    }
+
     #[test]
     fn selected_skin_comes_from_selected_mesh_node() {
         // Regression: loader paired document.meshes().next() with
@@ -1804,6 +2419,44 @@ mod tests {
             skin_index,
             Some(0),
             "selected skin comes from the same node as the mesh"
+        );
+    }
+
+    #[test]
+    fn empty_skin_does_not_shadow_later_valid_skinned_node() {
+        // Regression: a mesh node bound to an empty skin won model selection,
+        // causing a later valid skinned mesh node to load as static/no-skin.
+        let mut json = fixture_json(&multi_clip_fixture_path());
+        json["skins"]
+            .as_array_mut()
+            .expect("fixture has skins")
+            .insert(0, serde_json::json!({ "joints": [] }));
+        json["nodes"][0]["skin"] = serde_json::json!(0);
+        json["nodes"]
+            .as_array_mut()
+            .expect("fixture has nodes")
+            .push(serde_json::json!({
+                "name": "later_valid_mesh_node",
+                "mesh": 0,
+                "skin": 1
+            }));
+        let path = write_temp_fixture("empty_skin_before_valid_skin", &json);
+
+        let selection = std::panic::catch_unwind(|| {
+            let document = gltf::Gltf::open(&path)
+                .expect("mutated fixture opens")
+                .document;
+            let selected = select_model(&document, &path.display().to_string())
+                .expect("mutated fixture has a mesh");
+            selected.skin.as_ref().map(|skin| skin.index())
+        });
+        let _ = std::fs::remove_file(&path);
+        let skin_index = selection.expect("selecting the mutated fixture must not panic");
+
+        assert_eq!(
+            skin_index,
+            Some(1),
+            "selection skips empty skin 0 and uses the later non-empty skin",
         );
     }
 
@@ -2472,6 +3125,84 @@ mod tests {
             (model.clips[1].duration - 2.0).abs() < SAMPLE_EPS,
             "'walk' duration is its own latest keyframe (2.0), got {}",
             model.clips[1].duration,
+        );
+    }
+
+    #[test]
+    fn malformed_animation_channel_does_not_extend_clip_duration() {
+        // Regression: malformed channels skipped during track installation still
+        // extended the clip duration from their input times.
+        let mut json = fixture_json(&multi_clip_fixture_path());
+        json["buffers"][0]["byteLength"] = serde_json::json!(432);
+        json["buffers"][0]["uri"] = serde_json::json!(
+            "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAAAAAAABAAIAAAAAAIA/AAAAAAAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAAAAAAIA/AACAPwAAAAAAAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAAAAAACAPwAAAAAAAIA/AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAA8wQ1P/MENT8AAAAAAACAPwAAAEAAAAAAAAAAAAAAAAAAACBBAAAAAAAAAAAAAKBBAAAAAAAAAAAAAAAAAACAPwAAgL8AAIC/AACAvwAAoEAAAKBAAACgQAAAEEEAABBBAAAQQQAAAMAAAADAAAAAwAAA4EAAAOBAAADgQAAAAEEAAABBAAAAQQAAAAAAABBBAACAPwAAAEAAAEBAAACAQAAAoEAAAMBA"
+        );
+        json["bufferViews"]
+            .as_array_mut()
+            .expect("bufferViews is an array")
+            .push(serde_json::json!({
+                "buffer": 0,
+                "byteOffset": 400,
+                "byteLength": 8,
+            }));
+        json["bufferViews"]
+            .as_array_mut()
+            .expect("bufferViews is an array")
+            .push(serde_json::json!({
+                "buffer": 0,
+                "byteOffset": 408,
+                "byteLength": 24,
+            }));
+        json["accessors"]
+            .as_array_mut()
+            .expect("accessors is an array")
+            .push(serde_json::json!({
+                "bufferView": 11,
+                "componentType": 5126,
+                "count": 2,
+                "type": "SCALAR",
+                "min": [0.0],
+                "max": [9.0],
+            }));
+        json["accessors"]
+            .as_array_mut()
+            .expect("accessors is an array")
+            .push(serde_json::json!({
+                "bufferView": 12,
+                "componentType": 5126,
+                "count": 2,
+                "type": "VEC3",
+            }));
+        json["animations"][0]["samplers"]
+            .as_array_mut()
+            .expect("samplers is an array")
+            .push(serde_json::json!({
+                "input": 11,
+                "output": 12,
+                "interpolation": "CUBICSPLINE",
+            }));
+        json["animations"][0]["channels"]
+            .as_array_mut()
+            .expect("channels is an array")
+            .push(serde_json::json!({
+                "sampler": 1,
+                "target": {
+                    "node": 1,
+                    "path": "translation",
+                },
+            }));
+        let path = write_temp_fixture("malformed_animation_duration", &json);
+
+        let result = std::panic::catch_unwind(|| load_model(&path));
+        let _ = std::fs::remove_file(&path);
+        let model = result
+            .expect("malformed animation channel must not panic")
+            .expect("malformed animation channel degrades rather than failing load");
+
+        assert!(
+            (model.clips[0].duration - 1.0).abs() < SAMPLE_EPS,
+            "skipped channel with a 9.0s key must not extend 'idle' duration, got {}",
+            model.clips[0].duration,
         );
     }
 

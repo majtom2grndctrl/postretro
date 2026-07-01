@@ -13,6 +13,7 @@ Extract the wgpu-free model subtree (CPU glTF loader, skinned-mesh / skeleton / 
 - Expose mesh local-space bounds as an intentional public contract via a `pub fn bounds(&self) -> Aabb` accessor on `SkinnedMesh` (the field is currently `pub(crate) bounds: Aabb`). Renderer upload consumes the bound for CPU-side mesh planning/culling across the crate boundary.
 - Depend on `postretro-render-data` (required — `mesh.rs` uses `cone_frustum::Aabb` for `SkinnedMesh` bounds), `postretro-level-format` (features `["gltf-resolve"]` — `gltf_loader.rs` uses `gltf_resolve::resolve_material_base_color_path` and `octahedral`), `glam`, `gltf`, `serde`, `serde_json`, `blake3`, `thiserror`, `bytemuck`, and `log`. No `postretro-entities`/`postretro-scripting-core` dep — the only file that pulled them (`animation_reactions.rs`) relocates out (see Decision), keeping the crate a VM-free CPU leaf.
 - Update consumers to import from `postretro-model`.
+- Review hardening: keep the extraction safe for existing CPU consumers. Loader validation may reject malformed model data that would poison bounds or palettes. Game-side hit zones must stay pose-compatible with visible renderer semantics; when exact parity is unavailable, they degrade to authored AABB when present, else the model's derived reach bound.
 
 ### Out of scope
 - Any GPU upload of model data (mesh-instance GPU packing, vertex/joint buffer upload) — stays in `postretro-renderer` (`E19--renderer-gpu`).

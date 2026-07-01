@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 
+use super::hit_zones::HitZoneStore;
 use super::mesh_anim::{self, MeshClipTables};
 use crate::render::mesh_instances::MeshInstanceInput;
 use crate::render::mesh_pass::mesh_visible;
@@ -85,16 +86,14 @@ pub(crate) struct MeshRenderCollector {
     /// Per-frame instance list: surviving `MeshInstanceInput` values — each
     /// carrying a model handle, interpolated world transform, phase seed,
     /// resolved sample params (`MeshSampleParams`), an optional capture
-    /// instruction, and a resample flag. Cleared + refilled each `collect` so
+    /// instruction, and a resample flag. Cleared + refilled each collection so
     /// capacity carries across frames.
     instances: Vec<MeshInstanceInput>,
-    /// Monotonic frame index, bumped once per [`collect`]. Drives the per-bucket
+    /// Monotonic frame index, bumped once per collection. Drives the per-bucket
     /// resample stride phase (`(frame_index + seed) % stride`). Owned here so the
     /// time-slicing decision stays entirely game-side and testable without
     /// threading a counter through the render loop. `wrapping`-incremented; the
     /// modulo phase is unaffected by the eventual wrap.
-    ///
-    /// [`collect`]: MeshRenderCollector::collect
     frame_index: u64,
     /// Per-entity last-seen state fingerprint (the entered-state stamp bits),
     /// keyed by entity seed. A change between frames means the entity (re)entered
@@ -167,6 +166,7 @@ impl MeshRenderCollector {
     ///
     /// [`instances`]: MeshRenderCollector::instances
     /// [`resample_count`]: MeshRenderCollector::resample_count
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn collect(
         &mut self,
@@ -177,6 +177,58 @@ impl MeshRenderCollector {
         anim_time: f64,
         tables: &MeshClipTables,
         camera_pos: glam::Vec3,
+    ) {
+        self.collect_inner(
+            registry,
+            world,
+            visible,
+            alpha,
+            anim_time,
+            tables,
+            camera_pos,
+            |_| false,
+        );
+    }
+
+    /// Production collect path. Models with precise skeletal hit zones force a
+    /// palette resample every visible frame so hitscan capsules and the drawn
+    /// pose share current-clock semantics instead of diverging on skipped
+    /// time-slice frames.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn collect_with_hit_zones(
+        &mut self,
+        registry: &EntityRegistry,
+        world: &LevelWorld,
+        visible: &VisibleCells,
+        alpha: f32,
+        anim_time: f64,
+        tables: &MeshClipTables,
+        camera_pos: glam::Vec3,
+        hit_zones: &HitZoneStore,
+    ) {
+        self.collect_inner(
+            registry,
+            world,
+            visible,
+            alpha,
+            anim_time,
+            tables,
+            camera_pos,
+            |handle| hit_zones.has_precise_zones(handle),
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn collect_inner(
+        &mut self,
+        registry: &EntityRegistry,
+        world: &LevelWorld,
+        visible: &VisibleCells,
+        alpha: f32,
+        anim_time: f64,
+        tables: &MeshClipTables,
+        camera_pos: glam::Vec3,
+        force_resample_model: impl Fn(&ModelHandle) -> bool,
     ) {
         self.instances.clear();
         // Rebuild the last-state map into the scratch so entries absent this
@@ -230,7 +282,10 @@ impl MeshRenderCollector {
                 }
                 None => false,
             };
-            let force = state_changed || sample.fade.is_some() || capture.is_some();
+            let force = state_changed
+                || sample.fade.is_some()
+                || capture.is_some()
+                || force_resample_model(&handle);
             let distance = current_model_position.distance(camera_pos);
             let resample = should_resample(distance, frame_index, seed, force);
             if resample {
@@ -267,13 +322,11 @@ impl MeshRenderCollector {
     /// Count of instances that resampled their pose this frame. The
     /// game-side acceptance metric: near instances tally every frame, far ones at
     /// the bucket stride, and a state-changing / crossfading distant instance is
-    /// counted on the frame it transitions. Reset at the top of each [`collect`].
+    /// counted on the frame it transitions. Reset at the top of each collection.
     ///
     /// The metric's only in-engine consumer today is the time-slicing acceptance
     /// test; `allow(dead_code)` off the test build until a diagnostics overlay
     /// surfaces it (the `state_elapsed` precedent).
-    ///
-    /// [`collect`]: MeshRenderCollector::collect
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn resample_count(&self) -> u32 {
         self.resample_count
@@ -810,8 +863,12 @@ mod tests {
     };
     use postretro_model::ModelHandle;
     use postretro_model::anim::Loop;
+    use postretro_model::gltf_loader::JointZone;
     use postretro_model::sample_params::FadeSource;
+    use postretro_model::skeleton::{Joint, RestLocal, Skeleton};
+    use postretro_render_data::cone_frustum::Aabb;
     use std::collections::HashMap;
+    use std::sync::Arc;
 
     fn clip_meta(pairs: &[(&str, f32)]) -> Vec<ClipMetadata> {
         pairs
@@ -1014,6 +1071,29 @@ mod tests {
         Vec3::new(RESAMPLE_FAR_DISTANCE + 10.0, 0.0, 0.0)
     }
 
+    fn hit_zone_store_for_model(model: &str) -> HitZoneStore {
+        let mut store = HitZoneStore::new();
+        store.insert_for_test(
+            ModelHandle::from(model),
+            crate::scripting_systems::hit_zones::ModelHitZones {
+                skeleton: Arc::new(Skeleton {
+                    joints: vec![Joint {
+                        parent: None,
+                        inverse_bind: glam::Mat4::IDENTITY.to_cols_array_2d(),
+                        rest_local: RestLocal::default(),
+                    }],
+                }),
+                clips: Arc::new(Vec::new()),
+                joint_zones: vec![Some(JointZone {
+                    tag: "core".to_string(),
+                    radius: Some(0.25),
+                })],
+                derived_bound: Some(Aabb::default()),
+            },
+        );
+        store
+    }
+
     #[test]
     fn resample_stride_buckets_by_distance() {
         // The pure bucketing function: near → stride 1, mid → 2, far → 4.
@@ -1102,6 +1182,40 @@ mod tests {
             resampled < frames as u32,
             "far instance resamples strictly less often than every frame",
         );
+    }
+
+    #[test]
+    fn precise_hit_zone_model_forces_resample_despite_far_stride() {
+        // Hit zones sample current-clock capsules. A visible model with precise
+        // zones must therefore not draw a stale cached palette on skipped
+        // time-slice frames.
+        let mut reg = EntityRegistry::new();
+        let world = single_cell_world();
+        let mut collector = MeshRenderCollector::new();
+        let hit_zones = hit_zone_store_for_model("decraniated");
+        spawn_mesh(&mut reg, "decraniated", Vec3::ZERO);
+
+        for _ in 0..(RESAMPLE_STRIDE_FAR * 2) {
+            collector.collect_with_hit_zones(
+                &reg,
+                &world,
+                &VisibleCells::DrawAll,
+                1.0,
+                0.0,
+                &MeshClipTables::new(),
+                far_camera(),
+                &hit_zones,
+            );
+            assert_eq!(
+                collector.resample_count(),
+                1,
+                "precise hit-zone models resample every visible frame",
+            );
+            assert!(
+                collector.instances()[0].resample,
+                "resample flag is forced for hit-zone-capable model",
+            );
+        }
     }
 
     #[test]

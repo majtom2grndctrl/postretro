@@ -1573,6 +1573,7 @@ impl MeshPass {
         scratch: &mut Vec<BonePaletteEntry>,
     ) {
         if plan.groups.is_empty() {
+            self.palette_cache.end_frame();
             return;
         }
 
@@ -3500,6 +3501,29 @@ mod tests {
         assert!(
             cache.must_sample(2, false),
             "the untouched entry is evicted → its next appearance forces a resample",
+        );
+    }
+
+    #[test]
+    fn palette_cache_empty_frame_evicts_all_entries() {
+        // Regression: an empty mesh plan still ends the palette-cache frame, so
+        // all previously cached culled-out poses are evicted before they re-enter.
+        let mut cache = PaletteCache::default();
+        cache.store(1, &palette_run(1.0, 2));
+        cache.store(2, &palette_run(2.0, 2));
+        cache.end_frame();
+        assert!(!cache.must_sample(1, false), "entry 1 survived setup");
+        assert!(!cache.must_sample(2, false), "entry 2 survived setup");
+
+        cache.end_frame();
+
+        assert!(
+            cache.must_sample(1, false),
+            "empty frame evicts entry 1 so re-entry forces resample",
+        );
+        assert!(
+            cache.must_sample(2, false),
+            "empty frame evicts entry 2 so re-entry forces resample",
         );
     }
 

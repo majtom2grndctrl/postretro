@@ -168,10 +168,12 @@ fn compose_world_pose(
     for (i, joint) in skeleton.joints.iter().enumerate() {
         let local = local_of(i, joint);
 
-        // Forward sweep: parent-before-child topo order guarantees the
-        // parent's world matrix is already in `world` when we reach a child.
+        // Forward sweep: parent-before-child topo order guarantees the parent's
+        // world matrix is already in `world` when we reach a child. Public field
+        // construction can violate that; degrade an invalid parent link to a
+        // root instead of panicking.
         let world_pose = match joint.parent {
-            Some(p) => world[p] * local,
+            Some(p) => world.get(p).copied().unwrap_or(Mat4::IDENTITY) * local,
             None => local,
         };
         world.push(world_pose);
@@ -235,7 +237,6 @@ fn compose_palette(
 ///
 /// Reuse: pass the same `out` every frame. A thread-local scratch holds the
 /// world-pose sweep, so a steady-state call performs no heap allocation.
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn sample_clip(
     clip: &AnimationClip,
     skeleton: &Skeleton,
@@ -311,7 +312,6 @@ pub fn sample_blended(
 /// Reuse: pass the same `out` every frame. `out` is cleared then filled to
 /// `skeleton.joints.len()`, so a steady-state call performs no heap allocation —
 /// the same contract as the palette samplers.
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn sample_clip_looped_world(
     clip: &AnimationClip,
     skeleton: &Skeleton,
@@ -342,7 +342,6 @@ pub fn sample_clip_looped_world(
 /// Reuse `out` across frames: a thread-local TRS scratch is reused and `out` is
 /// cleared then refilled, so steady-state world-pose blending allocates nothing —
 /// the same contract as [`sample_blended`].
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn sample_blended_world(
     a: &BlendSource,
     b: &BlendSource,
@@ -711,6 +710,33 @@ mod tests {
             .w_axis
             .truncate();
         assert_vec3_eq(p_wrapped, p_early, "t = duration + eps wraps to t = eps");
+    }
+
+    #[test]
+    fn invalid_parent_link_degrades_to_root_instead_of_panicking() {
+        let skeleton = Skeleton {
+            joints: vec![joint(Some(1), Mat4::IDENTITY, RestLocal::default())],
+        };
+        let tracks = JointTracks {
+            translation: Track {
+                times: vec![0.0],
+                values: vec![Vec3::new(3.0, 0.0, 0.0)],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let clip = translation_clip("invalid-parent", 0.0, vec![tracks]);
+
+        let mut out = Vec::new();
+        sample_clip(&clip, &skeleton, 0.0, &mut out);
+
+        assert_eq!(out.len(), 1);
+        let translation = Mat4::from_cols_array_2d(&out[0].matrix).w_axis.truncate();
+        assert_vec3_eq(
+            translation,
+            Vec3::new(3.0, 0.0, 0.0),
+            "invalid parent composes as a root",
+        );
     }
 
     /// Tripwire 2 (CPU-only, no GPU): measure per-frame `sample_clip` cost on the

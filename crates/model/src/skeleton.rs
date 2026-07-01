@@ -2,6 +2,7 @@
 // See: context/lib/rendering_pipeline.md §9
 
 use glam::{Quat, Vec3};
+use thiserror::Error;
 
 /// A joint's rest-pose local transform: the glTF node's default TRS, captured at
 /// load time. The animation sampler holds this for any channel a clip omits —
@@ -50,11 +51,41 @@ pub struct Joint {
 }
 
 /// A skeleton: the ordered joint hierarchy a skinned mesh binds against.
-/// Joints are stored parent-before-child so animation sampling is a single
-/// forward sweep. Populated by `gltf_loader::load_model`.
+/// Loader-produced skeletons store joints parent-before-child so animation
+/// sampling is a single forward sweep. Direct public field construction is still
+/// possible for tests and callers; prefer [`Skeleton::new`] when accepting
+/// external joint arrays.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Skeleton {
     pub joints: Vec<Joint>,
+}
+
+/// Why a [`Skeleton`] could not be built from a public joint array.
+#[derive(Debug, Clone, Copy, Error, PartialEq, Eq)]
+pub enum SkeletonBuildError {
+    /// A joint's parent index does not refer to an earlier joint.
+    #[error("joint {joint} references parent {parent}, which does not precede it")]
+    ParentNotBeforeChild { joint: usize, parent: usize },
+}
+
+impl Skeleton {
+    /// Build a skeleton after validating the parent-before-child contract the
+    /// fast sampler path is designed around.
+    pub fn new(joints: Vec<Joint>) -> Result<Self, SkeletonBuildError> {
+        validate_parent_before_child(&joints)?;
+        Ok(Self { joints })
+    }
+}
+
+fn validate_parent_before_child(joints: &[Joint]) -> Result<(), SkeletonBuildError> {
+    for (joint, data) in joints.iter().enumerate() {
+        if let Some(parent) = data.parent {
+            if parent >= joint {
+                return Err(SkeletonBuildError::ParentNotBeforeChild { joint, parent });
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Keyframe interpolation mode for a [`Track`], mapped from the glTF sampler's
@@ -177,11 +208,10 @@ pub struct JointTracks {
 
 /// A single named animation clip.
 ///
-/// Keyframe storage is per-joint TRS tracks in [`AnimationClip::joints`], one
-/// entry per skeleton joint and in the same order as [`Skeleton::joints`].
-/// `crate::anim::sample_clip` samples a joint's tracks at a time `t` to recover
-/// its local TRS, composes the hierarchy (parent-before-child), and applies each
-/// joint's inverse-bind matrix.
+/// Loader-produced clips store one [`AnimationClip::joints`] entry per skeleton
+/// joint in the same order as [`Skeleton::joints`]. The sampler also accepts
+/// shorter or mismatched public clips: a missing joint-track entry holds that
+/// joint's rest pose.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct AnimationClip {
     /// Clip name as authored (e.g. the glTF animation name "mixamo.com").
@@ -190,8 +220,8 @@ pub struct AnimationClip {
     /// channels, including channels that are subsequently skipped for malformed
     /// output values or unsupported interpolation details.
     pub duration: f32,
-    /// Per-joint TRS tracks, parallel to [`Skeleton::joints`]. Joints with no
-    /// channel in the clip carry empty tracks (held at bind pose by the sampler).
+    /// Per-joint TRS tracks. Loader output is parallel to [`Skeleton::joints`].
+    /// Public clips may be shorter; missing entries hold rest pose.
     pub joints: Vec<JointTracks>,
 }
 
@@ -229,6 +259,29 @@ mod tests {
         assert_eq!(
             Track::new(vec![1.0, 0.0], vec![Vec3::ZERO, Vec3::ONE], Interp::Linear,).unwrap_err(),
             TrackBuildError::NonAscendingTime
+        );
+    }
+
+    #[test]
+    fn skeleton_constructor_rejects_non_topological_parent_links() {
+        let child_first = vec![
+            Joint {
+                parent: Some(1),
+                inverse_bind: glam::Mat4::IDENTITY.to_cols_array_2d(),
+                rest_local: RestLocal::default(),
+            },
+            Joint {
+                parent: None,
+                inverse_bind: glam::Mat4::IDENTITY.to_cols_array_2d(),
+                rest_local: RestLocal::default(),
+            },
+        ];
+        assert_eq!(
+            Skeleton::new(child_first).unwrap_err(),
+            SkeletonBuildError::ParentNotBeforeChild {
+                joint: 0,
+                parent: 1,
+            },
         );
     }
 }

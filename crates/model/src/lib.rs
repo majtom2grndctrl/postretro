@@ -27,7 +27,6 @@ pub struct ModelHandle(pub String);
 
 impl ModelHandle {
     /// The underlying handle string (the raw `MeshComponent.model` path).
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn as_str(&self) -> &str {
         &self.0
     }

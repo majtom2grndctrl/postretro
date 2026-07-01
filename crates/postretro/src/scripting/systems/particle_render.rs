@@ -3,11 +3,11 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::visibility::VisibleCells;
 use postretro_entities::components::particle::ParticleState;
 use postretro_entities::components::sprite_visual::SpriteVisual;
 use postretro_entities::registry::{ComponentKind, ComponentValue, EntityRegistry, Transform};
 use postretro_level_loader::LevelWorld;
+use postretro_visibility::VisibleCells;
 
 /// Per-collection scratch buffers and warning state for the particle render
 /// path. Owned by the game layer (not the renderer) so the wgpu boundary stays

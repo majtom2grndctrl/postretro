@@ -3588,6 +3588,7 @@ dependencies = [
  "postretro-render-data",
  "postretro-script-compiler",
  "postretro-scripting-core",
+ "postretro-visibility",
  "proptest",
  "rquickjs",
  "serde",
@@ -3729,6 +3730,17 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "postretro-visibility"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "log",
+ "postretro-level-format",
+ "postretro-level-loader",
+ "postretro-render-data",
 ]
 
 [[package]]

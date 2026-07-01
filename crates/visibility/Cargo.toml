@@ -1,0 +1,16 @@
+[package]
+name = "postretro-visibility"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "CPU-side runtime portal traversal and frustum visibility for Postretro"
+license.workspace = true
+
+[dependencies]
+glam.workspace = true
+log.workspace = true
+postretro-level-loader = { path = "../level-loader", default-features = false }
+
+[dev-dependencies]
+postretro-render-data.workspace = true
+postretro-level-format.workspace = true

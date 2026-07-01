@@ -7,6 +7,7 @@ members = [
     "crates/level-format",
     "crates/render-data",
     "crates/level-loader",
+    "crates/visibility",
     "crates/level-compiler",
     "crates/script-compiler",
     "crates/net",
@@ -147,6 +148,7 @@ proptest = "1"
 postretro-level-format = { path = "crates/level-format" }
 postretro-render-data = { path = "crates/render-data" }
 postretro-level-loader = { path = "crates/level-loader" }
+postretro-visibility = { path = "crates/visibility" }
 postretro-foundation = { path = "crates/foundation" }
 postretro-entities = { path = "crates/entities" }
 postretro-scripting-core = { path = "crates/scripting-core" }

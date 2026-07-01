@@ -9,9 +9,9 @@ use crate::model::ModelHandle;
 use crate::model::sample_params::MeshSampleParams;
 use crate::render::mesh_instances::MeshInstanceInput;
 use crate::render::mesh_pass::mesh_visible;
-use crate::visibility::VisibleCells;
 use postretro_entities::registry::{ComponentKind, ComponentValue, EntityRegistry, Transform};
 use postretro_level_loader::LevelWorld;
+use postretro_visibility::VisibleCells;
 
 /// Animation time-slicing distance thresholds + per-bucket resample strides.
 /// DISTANT skinned instances re-sample their pose every Nth frame and re-upload a

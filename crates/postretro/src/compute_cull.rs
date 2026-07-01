@@ -291,15 +291,15 @@ impl ComputeCullPipeline {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
-        visible: &crate::visibility::VisibleCells,
+        visible: &postretro_visibility::VisibleCells,
         view_proj: &Mat4,
         timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'_>>,
     ) {
         match visible {
-            crate::visibility::VisibleCells::Culled(cells) => {
+            postretro_visibility::VisibleCells::Culled(cells) => {
                 self.write_bitmask_from_cells(cells);
             }
-            crate::visibility::VisibleCells::DrawAll => {
+            postretro_visibility::VisibleCells::DrawAll => {
                 self.write_bitmask_draw_all();
             }
         }
@@ -432,7 +432,7 @@ impl ComputeCullPipeline {
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
     pub fn estimate_diagnostics(
         &self,
-        visible: &crate::visibility::VisibleCells,
+        visible: &postretro_visibility::VisibleCells,
         view_proj: &Mat4,
     ) -> BvhCullDiagnostics {
         let planes = extract_frustum_planes_for_gpu(view_proj);
@@ -449,11 +449,11 @@ impl ComputeCullPipeline {
 }
 
 fn build_visible_cell_bitmask(
-    visible: &crate::visibility::VisibleCells,
+    visible: &postretro_visibility::VisibleCells,
 ) -> [u32; VISIBLE_CELLS_WORDS] {
     let mut bitmask = [0u32; VISIBLE_CELLS_WORDS];
     match visible {
-        crate::visibility::VisibleCells::Culled(cells) => {
+        postretro_visibility::VisibleCells::Culled(cells) => {
             for &cell in cells {
                 if cell >= MAX_VISIBLE_CELLS {
                     continue;
@@ -463,7 +463,7 @@ fn build_visible_cell_bitmask(
                 bitmask[word] |= bit;
             }
         }
-        crate::visibility::VisibleCells::DrawAll => bitmask.fill(u32::MAX),
+        postretro_visibility::VisibleCells::DrawAll => bitmask.fill(u32::MAX),
     }
     bitmask
 }
@@ -645,7 +645,7 @@ fn estimate_bvh_cull_with_planes(
     nodes: &[BvhNode],
     leaves: &[BvhLeaf],
     bucket_ranges: &[BucketRange],
-    visible: &crate::visibility::VisibleCells,
+    visible: &postretro_visibility::VisibleCells,
     planes: &[[f32; 4]; 6],
     submitted_bucket_scratch: &mut Vec<bool>,
 ) -> BvhCullDiagnostics {
@@ -933,7 +933,7 @@ mod tests {
             &tree.nodes,
             &tree.leaves,
             &tree.derive_bucket_ranges(),
-            &crate::visibility::VisibleCells::Culled(vec![7, 8]),
+            &postretro_visibility::VisibleCells::Culled(vec![7, 8]),
             &planes,
             &mut bucket_scratch,
         );
@@ -970,7 +970,7 @@ mod tests {
             &tree.nodes,
             &tree.leaves,
             &tree.derive_bucket_ranges(),
-            &crate::visibility::VisibleCells::Culled(vec![7]),
+            &postretro_visibility::VisibleCells::Culled(vec![7]),
             &planes,
             &mut bucket_scratch,
         );
@@ -1177,7 +1177,7 @@ mod tests {
             &tree.nodes,
             &tree.leaves,
             &tree.derive_bucket_ranges(),
-            &crate::visibility::VisibleCells::Culled(vec![7]),
+            &postretro_visibility::VisibleCells::Culled(vec![7]),
             &planes,
             &mut bucket_scratch,
         );

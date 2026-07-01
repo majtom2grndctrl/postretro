@@ -126,7 +126,7 @@ mod tests {
             let position = Vec3::from_array(probe.origin);
 
             let mut scratch = Vec::new();
-            let (vis, _frustum) = crate::visibility::determine_visible_cells(
+            let (vis, _frustum) = postretro_visibility::determine_visible_cells(
                 position,
                 view_proj,
                 &world,
@@ -139,7 +139,7 @@ mod tests {
             assert!(
                 matches!(
                     vis.stats.path,
-                    crate::visibility::VisibilityPath::PrlPortal { .. }
+                    postretro_visibility::VisibilityPath::PrlPortal { .. }
                 ),
                 "{}: expected portal path, got {:?}",
                 probe.map,

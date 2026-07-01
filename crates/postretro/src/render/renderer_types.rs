@@ -238,12 +238,12 @@ pub enum SpatialCellSetDiagnostics {
 
 impl SpatialCellSetDiagnostics {
     #[cfg(any(feature = "dev-tools", test))]
-    pub fn from_visible_cells(cells: &crate::visibility::VisibleCells) -> Self {
+    pub fn from_visible_cells(cells: &postretro_visibility::VisibleCells) -> Self {
         match cells {
-            crate::visibility::VisibleCells::Culled(cells) => Self::Cells {
+            postretro_visibility::VisibleCells::Culled(cells) => Self::Cells {
                 count: cells.len() as u32,
             },
-            crate::visibility::VisibleCells::DrawAll => Self::DrawAll,
+            postretro_visibility::VisibleCells::DrawAll => Self::DrawAll,
         }
     }
 
@@ -817,14 +817,14 @@ mod tests {
 
     #[test]
     fn spatial_cell_set_diagnostics_counts_culled_cells() {
-        let cells = crate::visibility::VisibleCells::Culled(vec![1, 2, 3]);
+        let cells = postretro_visibility::VisibleCells::Culled(vec![1, 2, 3]);
         assert_eq!(
             SpatialCellSetDiagnostics::from_visible_cells(&cells),
             SpatialCellSetDiagnostics::Cells { count: 3 }
         );
         assert_eq!(
             SpatialCellSetDiagnostics::from_visible_cells(
-                &crate::visibility::VisibleCells::DrawAll
+                &postretro_visibility::VisibleCells::DrawAll
             ),
             SpatialCellSetDiagnostics::DrawAll
         );

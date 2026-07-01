@@ -612,7 +612,7 @@ pub fn narrow_frustum(
     let mut planes = Vec::with_capacity(n + 2);
 
     // Portal plane as near clip.
-    planes.push(crate::visibility::FrustumPlane {
+    planes.push(FrustumPlane {
         normal: oriented_normal,
         dist: portal_dist,
     });
@@ -636,7 +636,7 @@ pub fn narrow_frustum(
         }
         let dist = -edge_normal.dot(edge_a);
 
-        planes.push(crate::visibility::FrustumPlane {
+        planes.push(FrustumPlane {
             normal: edge_normal,
             dist,
         });
@@ -653,7 +653,7 @@ pub fn narrow_frustum(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::visibility::{FrustumPlane, is_aabb_outside_frustum};
+    use crate::visibility::{FrustumPlane, extract_frustum_planes, is_aabb_outside_frustum};
     use glam::Mat4;
     use postretro_level_loader::{CellData, LevelWorld, PortalData};
 
@@ -750,50 +750,27 @@ mod tests {
         portals: Vec<PortalData>,
     ) -> LevelWorld {
         let cell_portal_refs = set_portal_refs(&mut cells, refs_by_cell);
-        LevelWorld {
-            vertices: vec![],
-            indices: vec![],
-            face_meta: vec![],
+        LevelWorld::new_visibility_only(
             cells,
             cell_portal_refs,
-            cell_locator_root: postretro_level_loader::CellLocatorChild::Cell(0),
-            cell_locator_nodes: vec![],
+            postretro_level_loader::CellLocatorChild::Cell(0),
+            vec![],
             portals,
-            has_portals: true,
-            texture_names: vec![],
-            texture_cache_keys:
-                postretro_level_format::texture_cache_keys::TextureCacheKeysSection { keys: vec![] },
-            bvh: postretro_render_data::geometry::BvhTree {
-                nodes: vec![],
-                leaves: vec![],
-                root_node_index: 0,
-            },
-            lights: vec![],
-            light_influences: vec![],
-            sh_volume: None,
-            lightmap: None,
-            lightmap_mode: postretro_level_loader::LightmapMode::Shadowed,
-            sdf_atlas: None,
-            chunk_light_list: None,
-            animated_light_chunks: None,
-            animated_light_weight_maps: None,
-            delta_sh_volumes: None,
-            direct_sh_volume: None,
-            data_script: None,
-            map_entities: Vec::new(),
-            fog_volumes: Vec::new(),
-            fog_pixel_scale: 4,
-            initial_gravity: -9.81,
-            fog_cell_masks: None,
-            navmesh: None,
-            cell_draw_index: None,
-        }
+            true,
+        )
+        .expect("valid portal visibility test world")
     }
 
     fn empty_test_world() -> LevelWorld {
-        let mut world = test_world(Vec::new(), &[], Vec::new());
-        world.has_portals = false;
-        world
+        LevelWorld::new_visibility_only(
+            Vec::new(),
+            Vec::new(),
+            postretro_level_loader::CellLocatorChild::Cell(0),
+            vec![],
+            Vec::new(),
+            false,
+        )
+        .expect("valid empty visibility-only test world")
     }
 
     /// Build a three-cell chain: A (cell 0) -- portal 0 -- B (cell 1) -- portal 1 -- C (cell 2)
@@ -1049,7 +1026,7 @@ mod tests {
             Vec3::new(10.0, 5.0, 5.0),
             Vec3::new(10.0, -5.0, 5.0),
         ];
-        let clip_plane = crate::visibility::FrustumPlane {
+        let clip_plane = FrustumPlane {
             normal: Vec3::new(0.0, 1.0, 0.0),
             dist: 0.0,
         };
@@ -1786,8 +1763,9 @@ mod tests {
     /// exercise the real production path end-to-end.
     #[test]
     fn portal_traverse_reaches_neighbor_when_camera_is_close_to_portal_wall() {
-        use crate::camera;
-        use crate::visibility::extract_frustum_planes;
+        const HFOV: f32 = 100.0_f32.to_radians();
+        const NEAR: f32 = 0.1;
+        const FAR: f32 = 4096.0;
 
         let portal = PortalData {
             polygon: vec![
@@ -1825,9 +1803,9 @@ mod tests {
         let look_dir = Vec3::NEG_X;
 
         let aspect = 16.0 / 9.0;
-        let vfov = 2.0 * ((camera::HFOV / 2.0).tan() / aspect).atan();
+        let vfov = 2.0 * ((HFOV / 2.0).tan() / aspect).atan();
         let view = Mat4::look_at_rh(camera_pos, camera_pos + look_dir, Vec3::Y);
-        let proj = Mat4::perspective_rh(vfov, aspect, camera::NEAR, camera::FAR);
+        let proj = Mat4::perspective_rh(vfov, aspect, NEAR, FAR);
         let frustum = extract_frustum_planes(proj * view);
 
         // Precondition: at least one portal vertex must lie outside at
@@ -1890,8 +1868,9 @@ mod tests {
     /// "0.03 units in front of it".
     #[test]
     fn portal_traverse_reaches_neighbor_when_camera_is_on_portal_plane() {
-        use crate::camera;
-        use crate::visibility::extract_frustum_planes;
+        const HFOV: f32 = 100.0_f32.to_radians();
+        const NEAR: f32 = 0.1;
+        const FAR: f32 = 4096.0;
 
         // Portal on the +Z face of cell A, shared with cell B. Vertices
         // are all at z = -13.00 (the plane the camera will sit on).
@@ -1932,9 +1911,9 @@ mod tests {
         let look_dir = Vec3::Z;
 
         let aspect = 16.0 / 9.0;
-        let vfov = 2.0 * ((camera::HFOV / 2.0).tan() / aspect).atan();
+        let vfov = 2.0 * ((HFOV / 2.0).tan() / aspect).atan();
         let view = Mat4::look_at_rh(camera_pos, camera_pos + look_dir, Vec3::Y);
-        let proj = Mat4::perspective_rh(vfov, aspect, camera::NEAR, camera::FAR);
+        let proj = Mat4::perspective_rh(vfov, aspect, NEAR, FAR);
         let frustum = extract_frustum_planes(proj * view);
 
         let visible = portal_traverse(camera_pos, 0, &frustum, &world, false);

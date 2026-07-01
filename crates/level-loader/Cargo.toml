@@ -9,9 +9,11 @@ license.workspace = true
 [dependencies]
 glam.workspace = true
 log.workspace = true
-postretro-level-format.workspace = true
-postretro-render-data.workspace = true
+postretro-level-format = { workspace = true, optional = true }
+postretro-render-data = { workspace = true, optional = true }
 thiserror.workspace = true
 
 [features]
+default = ["load-prl"]
 dev-tools = []
+load-prl = ["dep:postretro-level-format", "dep:postretro-render-data"]

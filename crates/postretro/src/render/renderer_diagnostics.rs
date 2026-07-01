@@ -65,7 +65,7 @@ const COLOR_PORTAL_EDGE: [u8; 4] = [255, 214, 92, 255];
 fn cell_overlay_kind(
     cell_index: usize,
     cell: &postretro_level_loader::CellData,
-    visible_cells: &crate::visibility::VisibleCells,
+    visible_cells: &postretro_visibility::VisibleCells,
 ) -> Option<CellOverlayKind> {
     if cell.is_solid {
         return None;
@@ -76,14 +76,16 @@ fn cell_overlay_kind(
     }
 
     match visible_cells {
-        crate::visibility::VisibleCells::Culled(cells) => {
+        postretro_visibility::VisibleCells::Culled(cells) => {
             if cells.contains(&(cell_index as u32)) {
                 Some(CellOverlayKind::DrawableVisible)
             } else {
                 Some(CellOverlayKind::DrawableHidden)
             }
         }
-        crate::visibility::VisibleCells::DrawAll => Some(CellOverlayKind::DrawableDrawAllFallback),
+        postretro_visibility::VisibleCells::DrawAll => {
+            Some(CellOverlayKind::DrawableDrawAllFallback)
+        }
     }
 }
 
@@ -91,7 +93,7 @@ fn cell_overlay_kind(
 fn cell_overlay_color(
     cell_index: usize,
     cell: &postretro_level_loader::CellData,
-    visible_cells: &crate::visibility::VisibleCells,
+    visible_cells: &postretro_visibility::VisibleCells,
 ) -> Option<[u8; 4]> {
     match cell_overlay_kind(cell_index, cell, visible_cells)? {
         CellOverlayKind::DrawableVisible => Some(COLOR_CELL_VISIBLE),
@@ -175,7 +177,7 @@ pub(super) fn emit_bvh_overlay(
 #[cfg(feature = "dev-tools")]
 pub(super) fn emit_cell_overlay(
     world: &postretro_level_loader::LevelWorld,
-    visible_cells: &crate::visibility::VisibleCells,
+    visible_cells: &postretro_visibility::VisibleCells,
     state: CellOverlayState,
     lines: &mut super::debug_lines::DebugLineRenderer,
 ) {
@@ -532,7 +534,7 @@ impl Renderer {
     pub fn emit_cell_overlay_diagnostics(
         &mut self,
         world: &postretro_level_loader::LevelWorld,
-        visible_cells: &crate::visibility::VisibleCells,
+        visible_cells: &postretro_visibility::VisibleCells,
     ) {
         let full = self.full_mut();
         emit_cell_overlay(
@@ -677,7 +679,7 @@ mod tests {
 
     #[test]
     fn cell_overlay_color_uses_drawable_visible_cells() {
-        let visible = crate::visibility::VisibleCells::Culled(vec![2]);
+        let visible = postretro_visibility::VisibleCells::Culled(vec![2]);
         let drawable = cell(false, 1);
 
         assert_eq!(
@@ -695,7 +697,7 @@ mod tests {
         let drawable = cell(false, 1);
 
         assert_eq!(
-            cell_overlay_color(0, &drawable, &crate::visibility::VisibleCells::DrawAll),
+            cell_overlay_color(0, &drawable, &postretro_visibility::VisibleCells::DrawAll),
             Some(COLOR_CELL_DRAW_ALL_FALLBACK),
         );
         assert_ne!(COLOR_CELL_DRAW_ALL_FALLBACK, COLOR_CELL_VISIBLE);
@@ -703,7 +705,7 @@ mod tests {
 
     #[test]
     fn cell_overlay_skips_solid_and_marks_empty_non_solid_cells_neutral() {
-        let visible = crate::visibility::VisibleCells::Culled(vec![0]);
+        let visible = postretro_visibility::VisibleCells::Culled(vec![0]);
 
         assert_eq!(cell_overlay_color(0, &cell(true, 1), &visible), None);
         assert_eq!(

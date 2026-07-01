@@ -35,7 +35,6 @@ mod netcode;
 mod options;
 mod weapon;
 
-mod portal_vis;
 mod render;
 mod scripting;
 // Live session-lifetime container: all session-lifetime state (scripting core,
@@ -48,7 +47,6 @@ mod sim;
 mod startup;
 mod ui_texture;
 mod view_feel;
-mod visibility;
 
 #[cfg(test)]
 mod alloc_probe;
@@ -107,9 +105,6 @@ use postretro_scripting_core::runtime::ScriptRuntime;
 // tests. Test-only: the boot path calls it through `startup::session`.
 #[cfg(test)]
 pub(crate) use crate::startup::session::resolve_map_path;
-use crate::visibility::{
-    CameraCullVisibility, VisibilityPath, VisibilityResult, VisibilityStats, VisibleCells,
-};
 use postretro_entities::SystemReactionCommand;
 use postretro_foundation::ModThemeTokens;
 use postretro_scripting_core::data_descriptors::RegisteredUiTree;
@@ -121,6 +116,9 @@ use postretro_scripting_core::runtime::{
 };
 use postretro_scripting_core::staged_manifest::{
     StagedManifestBuildResult, StagedManifestBuildStatus,
+};
+use postretro_visibility::{
+    CameraCullVisibility, VisibilityPath, VisibilityResult, VisibilityStats, VisibleCells,
 };
 
 /// Fraction of a vignette reaction's single `durationMs` spent ramping in. The
@@ -2140,7 +2138,7 @@ impl ApplicationHandler for App {
 
                 // Portal DFS → cell IDs → visible-cell bitmask → indirect draw buffer.
                 let (vis_result, _frustum) = match self.level.as_ref() {
-                    Some(world) => visibility::determine_visible_cells(
+                    Some(world) => postretro_visibility::determine_visible_cells(
                         render_eye_position,
                         view_proj,
                         world,
@@ -2158,7 +2156,7 @@ impl ApplicationHandler for App {
                                 path: VisibilityPath::EmptyWorldFallback,
                             },
                         },
-                        visibility::extract_frustum_planes(view_proj),
+                        postretro_visibility::extract_frustum_planes(view_proj),
                     ),
                 };
                 let VisibilityResult {

@@ -18,8 +18,8 @@ use postretro_level_format::animated_light_chunks::AnimatedLightChunksSection;
 use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection;
 
 use crate::compute_cull::{MAX_VISIBLE_CELLS, VISIBLE_CELLS_WORDS};
-use crate::visibility::VisibleCells;
 use postretro_render_data::geometry::BvhLeaf;
+use postretro_visibility::VisibleCells;
 
 use super::sh_volume::AnimatedLightBuffers;
 

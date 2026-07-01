@@ -1,29 +1,52 @@
-// PRL level loading: reads .prl files, populates LevelWorld (cells, BVH, lights,
-// portals, fog volumes, scripted entities, and worldspawn metadata).
+// Shared runtime LevelWorld data model for slim visibility-only worlds and
+// full PRL loads. File decoding lives in prl_loader.rs behind `load-prl`.
 // See: context/lib/build_pipeline.md §PRL Compilation
 
+use std::error::Error as StdError;
+use std::fmt;
+
 use glam::Vec3;
+#[cfg(feature = "load-prl")]
 use postretro_level_format as prl_format;
+#[cfg(feature = "load-prl")]
 use postretro_level_format::animated_light_chunks::AnimatedLightChunksSection;
+#[cfg(feature = "load-prl")]
 use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection;
+#[cfg(feature = "load-prl")]
 use postretro_level_format::cell_draw_index::CellDrawIndexSection;
+#[cfg(feature = "load-prl")]
 use postretro_level_format::chunk_light_list::ChunkLightListSection;
+#[cfg(feature = "load-prl")]
 use postretro_level_format::data_script::DataScriptSection;
+#[cfg(feature = "load-prl")]
 use postretro_level_format::delta_sh_volumes::DeltaShVolumesSection;
+#[cfg(feature = "load-prl")]
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
+#[cfg(feature = "load-prl")]
 use postretro_level_format::fog_volumes::FogVolumeRecord;
+#[cfg(feature = "load-prl")]
 use postretro_level_format::lightmap::LightmapSection;
+#[cfg(feature = "load-prl")]
 use postretro_level_format::map_entity::MapEntityRecord;
+#[cfg(feature = "load-prl")]
 use postretro_level_format::navmesh::NavMeshSection;
+#[cfg(feature = "load-prl")]
 use postretro_level_format::sdf_atlas::SdfAtlasSection;
+#[cfg(feature = "load-prl")]
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
+#[cfg(feature = "load-prl")]
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
+#[cfg(feature = "load-prl")]
 use thiserror::Error;
 
+#[cfg(feature = "load-prl")]
 use postretro_render_data::geometry::{BvhTree, WorldVertex};
+#[cfg(feature = "load-prl")]
 use postretro_render_data::influence::LightInfluence;
+#[cfg(feature = "load-prl")]
 use postretro_render_data::material::Material;
 
+#[cfg(feature = "load-prl")]
 #[derive(Debug, Error)]
 pub enum PrlLoadError {
     #[error("PRL file not found: {0}")]
@@ -87,6 +110,7 @@ pub enum PrlLoadError {
 
 /// Face → index-range mapping lives on BVH leaves; `FaceMeta` carries only
 /// the per-face attributes CPU code still needs (lighting baker, editor diagnostics).
+#[cfg(feature = "load-prl")]
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FaceMeta {
@@ -157,6 +181,27 @@ pub struct PortalData {
     pub front_cell: usize,
     pub back_cell: usize,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LevelWorldValidationError {
+    message: String,
+}
+
+impl LevelWorldValidationError {
+    fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl fmt::Display for LevelWorldValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl StdError for LevelWorldValidationError {}
 
 /// Mirrors `postretro-level-compiler::map_data::LightType` at the wire boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -249,6 +294,7 @@ pub struct MapLight {
 /// that way, and shadowed bakes omit the marker for wire compatibility.
 /// `Unshadowed` remains for legacy wire compatibility, not as current bake
 /// output.
+#[cfg(feature = "load-prl")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LightmapMode {
     /// Static-light visibility folded into the bake. Forward must NOT multiply
@@ -266,12 +312,16 @@ pub enum LightmapMode {
 /// BVH-leaf spans in CSR layout. Held as the format type after the loader has
 /// cross-validated it against the BVH leaf array and loaded Cells section. A
 /// stable runtime name so the candidate-cull GPU path consumes one type.
+#[cfg(feature = "load-prl")]
 pub type CellDrawIndex = CellDrawIndexSection;
 
 #[derive(Debug)]
 pub struct LevelWorld {
+    #[cfg(feature = "load-prl")]
     pub vertices: Vec<WorldVertex>,
+    #[cfg(feature = "load-prl")]
     pub indices: Vec<u32>,
+    #[cfg(feature = "load-prl")]
     pub face_meta: Vec<FaceMeta>,
     /// Preferred spatial contract: runtime cells preserving compiler cell ids.
     pub cells: Vec<CellData>,
@@ -281,38 +331,51 @@ pub struct LevelWorld {
     pub cell_locator_nodes: Vec<CellLocatorNodeData>,
     pub portals: Vec<PortalData>,
     pub has_portals: bool,
+    #[cfg(feature = "load-prl")]
     pub texture_names: Vec<String>,
     /// Per-texture blake3 cache keys (PRL section 32), parallel to `texture_names`.
     /// Required — loader rejects files where the section is absent.
+    #[cfg(feature = "load-prl")]
     pub texture_cache_keys: TextureCacheKeysSection,
     /// Always present — loader rejects files without a BVH section.
+    #[cfg(feature = "load-prl")]
     pub bvh: BvhTree,
     /// Empty when section 18 is absent (maps predating lighting foundation).
+    #[cfg(feature = "load-prl")]
     pub lights: Vec<MapLight>,
     /// Index `i` corresponds to `lights[i]`. Empty → all lights treated as infinite-bound.
+    #[cfg(feature = "load-prl")]
     pub light_influences: Vec<LightInfluence>,
     /// Required octahedral irradiance atlas. Empty geometry uses a present
     /// section with zero grid dimensions; missing section means stale PRL.
+    #[cfg(feature = "load-prl")]
     pub sh_volume: Option<OctahedralShVolumeSection>,
     /// `None` → 1×1 white placeholder; bumped-Lambert degrades to flat white.
+    #[cfg(feature = "load-prl")]
     pub lightmap: Option<LightmapSection>,
     /// Whether the lightmap bake includes static-light visibility (`Shadowed`)
     /// or carries unshadowed irradiance that requires runtime SDF visibility
     /// multiplication (`Unshadowed`). Legacy PRLs without the on-disk marker
     /// parse as `Shadowed`.
+    #[cfg(feature = "load-prl")]
     pub lightmap_mode: LightmapMode,
     /// `None` → no static-occluder SDF atlas (legacy PRL or empty-geometry
     /// bake). Runtime SDF shadowing is skipped.
+    #[cfg(feature = "load-prl")]
     pub sdf_atlas: Option<SdfAtlasSection>,
     /// `None` → full spec-buffer scan fallback. See `ChunkGrid::fallback`.
+    #[cfg(feature = "load-prl")]
     pub chunk_light_list: Option<ChunkLightListSection>,
     /// Emitted by `prl-build` for animated-light maps; cross-checked against weight-map chunk count.
+    #[cfg(feature = "load-prl")]
     pub animated_light_chunks: Option<AnimatedLightChunksSection>,
     /// `None` when no animated lights — renderer binds a 1×1 zero atlas.
+    #[cfg(feature = "load-prl")]
     pub animated_light_weight_maps: Option<AnimatedLightWeightMapsSection>,
     /// Sparse, affinity-cell-indexed (CSR) per-animated-light SH deltas at peak
     /// brightness. `None` when no animated lights — compose pass falls back to
     /// base→total copy.
+    #[cfg(feature = "load-prl")]
     pub delta_sh_volumes: Option<DeltaShVolumesSection>,
     /// Dense baked DIRECT static-light octahedral atlas for dynamic objects
     /// (mesh entities + billboards). `None` for legacy v7 maps / maps with no
@@ -320,36 +383,137 @@ pub struct LevelWorld {
     /// binds a 4×4 BC6H zero dummy). Tile geometry is byte-identical to
     /// `sh_volume`; the runtime reuses that section's grid uniform + depth
     /// moments.
+    #[cfg(feature = "load-prl")]
     pub direct_sh_volume: Option<DirectShVolumeSection>,
     /// `None` when level has no `data_script` worldspawn KVP.
     /// See: context/lib/scripting.md §2 (Data context lifecycle)
+    #[cfg(feature = "load-prl")]
     pub data_script: Option<DataScriptSection>,
     /// Held as wire type — loader doesn't depend on scripting tree.
     /// Dispatch entry point converts to `scripting::map_entity::MapEntity`.
+    #[cfg(feature = "load-prl")]
     pub map_entities: Vec<MapEntityRecord>,
     /// Empty when section absent or no `fog_volume` brushes authored.
+    #[cfg(feature = "load-prl")]
     pub fog_volumes: Vec<FogVolumeRecord>,
     /// Downscale factor (1=full-res, 8=coarsest). Defaults to 4 when absent.
+    #[cfg(feature = "load-prl")]
     pub fog_pixel_scale: u32,
     /// Seeds `App::current_gravity` so `world.getGravity()` sees the authored value before scripts run.
+    #[cfg(feature = "load-prl")]
     pub initial_gravity: f32,
     /// `masks[C]` has bit `i` set when fog volume `i` overlaps cell `C`.
     /// `None` only when the map has no canonical fog volumes.
+    #[cfg(feature = "load-prl")]
     pub fog_cell_masks: Option<Vec<u32>>,
     /// Baked navigation graph (PRL section 36). `None` for maps without a
     /// navmesh bake; the engine builds its runtime nav query surface only
     /// when this is present. A malformed section warns and decodes to
     /// `None` rather than failing the load. Read only by the dev-tools nav graph
     /// build today, so allowed dead in shipping builds until pathfinding lands.
+    #[cfg(feature = "load-prl")]
     #[allow(dead_code)]
     pub navmesh: Option<NavMeshSection>,
     /// Per-cell BVH-leaf draw index (PRL section 37), cross-validated against
     /// the BVH leaf array and loaded Cells section. `None` only for empty-BVH
     /// maps, where the section must be omitted.
+    #[cfg(feature = "load-prl")]
     pub cell_draw_index: Option<CellDrawIndex>,
 }
 
 impl LevelWorld {
+    pub fn new_visibility_only(
+        cells: Vec<CellData>,
+        cell_portal_refs: Vec<u32>,
+        cell_locator_root: CellLocatorChild,
+        cell_locator_nodes: Vec<CellLocatorNodeData>,
+        portals: Vec<PortalData>,
+        has_portals: bool,
+    ) -> Result<Self, LevelWorldValidationError> {
+        validate_visibility_only_world(
+            &cells,
+            &cell_portal_refs,
+            cell_locator_root,
+            &cell_locator_nodes,
+            &portals,
+            has_portals,
+        )?;
+
+        #[cfg(feature = "load-prl")]
+        let face_meta_count: usize = cells.iter().map(|cell| cell.face_count as usize).sum();
+
+        Ok(Self {
+            #[cfg(feature = "load-prl")]
+            vertices: vec![],
+            #[cfg(feature = "load-prl")]
+            indices: vec![],
+            #[cfg(feature = "load-prl")]
+            face_meta: (0..face_meta_count)
+                .map(|_| FaceMeta {
+                    leaf_index: 0,
+                    texture_index: None,
+                    texture_dimensions: (64, 64),
+                    texture_name: String::new(),
+                    material: Material::Default,
+                })
+                .collect(),
+            cells,
+            cell_portal_refs,
+            cell_locator_root,
+            cell_locator_nodes,
+            portals,
+            has_portals,
+            #[cfg(feature = "load-prl")]
+            texture_names: vec![],
+            #[cfg(feature = "load-prl")]
+            texture_cache_keys: TextureCacheKeysSection { keys: vec![] },
+            #[cfg(feature = "load-prl")]
+            bvh: BvhTree {
+                nodes: vec![],
+                leaves: vec![],
+                root_node_index: 0,
+            },
+            #[cfg(feature = "load-prl")]
+            lights: vec![],
+            #[cfg(feature = "load-prl")]
+            light_influences: vec![],
+            #[cfg(feature = "load-prl")]
+            sh_volume: None,
+            #[cfg(feature = "load-prl")]
+            lightmap: None,
+            #[cfg(feature = "load-prl")]
+            lightmap_mode: LightmapMode::Shadowed,
+            #[cfg(feature = "load-prl")]
+            sdf_atlas: None,
+            #[cfg(feature = "load-prl")]
+            chunk_light_list: None,
+            #[cfg(feature = "load-prl")]
+            animated_light_chunks: None,
+            #[cfg(feature = "load-prl")]
+            animated_light_weight_maps: None,
+            #[cfg(feature = "load-prl")]
+            delta_sh_volumes: None,
+            #[cfg(feature = "load-prl")]
+            direct_sh_volume: None,
+            #[cfg(feature = "load-prl")]
+            data_script: None,
+            #[cfg(feature = "load-prl")]
+            map_entities: Vec::new(),
+            #[cfg(feature = "load-prl")]
+            fog_volumes: Vec::new(),
+            #[cfg(feature = "load-prl")]
+            fog_pixel_scale: 4,
+            #[cfg(feature = "load-prl")]
+            initial_gravity: -9.81,
+            #[cfg(feature = "load-prl")]
+            fog_cell_masks: None,
+            #[cfg(feature = "load-prl")]
+            navmesh: None,
+            #[cfg(feature = "load-prl")]
+            cell_draw_index: None,
+        })
+    }
+
     /// Locate the runtime cell containing `position`.
     ///
     /// On-plane positions choose the front child, matching the temporary
@@ -407,6 +571,18 @@ impl LevelWorld {
 
     pub fn cell_count(&self) -> usize {
         self.cells.len()
+    }
+
+    pub fn total_face_count(&self) -> u32 {
+        #[cfg(feature = "load-prl")]
+        {
+            self.face_meta.len() as u32
+        }
+
+        #[cfg(not(feature = "load-prl"))]
+        {
+            self.cells.iter().map(|cell| cell.face_count).sum()
+        }
     }
 
     pub fn cell_portal_count(&self, cell_idx: usize) -> usize {
@@ -471,7 +647,281 @@ impl LevelWorld {
     }
 }
 
+fn validate_visibility_only_world(
+    cells: &[CellData],
+    cell_portal_refs: &[u32],
+    cell_locator_root: CellLocatorChild,
+    cell_locator_nodes: &[CellLocatorNodeData],
+    portals: &[PortalData],
+    has_portals: bool,
+) -> Result<(), LevelWorldValidationError> {
+    validate_visibility_locator(cell_locator_root, cell_locator_nodes, cells.len())?;
+    validate_visibility_cell_portal_refs(cells, cell_portal_refs, portals.len(), has_portals)?;
+
+    if has_portals && portals.is_empty() {
+        return Err(LevelWorldValidationError::new(
+            "has_portals is true but portals is empty",
+        ));
+    }
+    if !has_portals && !portals.is_empty() {
+        return Err(LevelWorldValidationError::new(
+            "has_portals is false but portals is not empty",
+        ));
+    }
+
+    if has_portals {
+        validate_visibility_portal_adjacency(cells, cell_portal_refs, portals)?;
+    }
+
+    Ok(())
+}
+
+fn validate_visibility_locator(
+    root: CellLocatorChild,
+    nodes: &[CellLocatorNodeData],
+    cell_count: usize,
+) -> Result<(), LevelWorldValidationError> {
+    let mut active = vec![false; nodes.len()];
+    validate_visibility_locator_child(root, nodes, cell_count, &mut active)
+}
+
+fn validate_visibility_locator_child(
+    child: CellLocatorChild,
+    nodes: &[CellLocatorNodeData],
+    cell_count: usize,
+    active: &mut [bool],
+) -> Result<(), LevelWorldValidationError> {
+    match child {
+        CellLocatorChild::Cell(cell_idx) => {
+            if cell_count == 0 {
+                if cell_idx == 0 {
+                    return Ok(());
+                }
+                return Err(LevelWorldValidationError::new(format!(
+                    "locator references cell {cell_idx}, but the world has no cells"
+                )));
+            }
+            if cell_idx >= cell_count {
+                return Err(LevelWorldValidationError::new(format!(
+                    "locator references cell {cell_idx}, but the world has {cell_count} cells"
+                )));
+            }
+            Ok(())
+        }
+        CellLocatorChild::Node(node_idx) => {
+            let node = nodes.get(node_idx).ok_or_else(|| {
+                LevelWorldValidationError::new(format!(
+                    "locator references node {node_idx}, but the world has {} locator nodes",
+                    nodes.len()
+                ))
+            })?;
+            if active[node_idx] {
+                return Err(LevelWorldValidationError::new(format!(
+                    "locator contains a cycle through node {node_idx}"
+                )));
+            }
+            active[node_idx] = true;
+            validate_visibility_locator_child(node.front, nodes, cell_count, active)?;
+            validate_visibility_locator_child(node.back, nodes, cell_count, active)?;
+            active[node_idx] = false;
+            Ok(())
+        }
+    }
+}
+
+fn validate_visibility_cell_portal_refs(
+    cells: &[CellData],
+    cell_portal_refs: &[u32],
+    portal_count: usize,
+    has_portals: bool,
+) -> Result<(), LevelWorldValidationError> {
+    for (cell_idx, cell) in cells.iter().enumerate() {
+        let start = cell.portal_ref_start as usize;
+        let count = cell.portal_ref_count as usize;
+        let end = start.checked_add(count).ok_or_else(|| {
+            LevelWorldValidationError::new(format!(
+                "cell {cell_idx} portal_ref_start {start} + portal_ref_count {count} overflows usize"
+            ))
+        })?;
+        let refs = cell_portal_refs.get(start..end).ok_or_else(|| {
+            LevelWorldValidationError::new(format!(
+                "cell {cell_idx} portal ref range [{start}..{end}) exceeds portal_refs length {}",
+                cell_portal_refs.len()
+            ))
+        })?;
+        for window in refs.windows(2) {
+            if window[1] <= window[0] {
+                return Err(LevelWorldValidationError::new(format!(
+                    "cell {cell_idx} portal_refs must be sorted ascending and duplicate-free, got {} then {}",
+                    window[0], window[1]
+                )));
+            }
+        }
+        if has_portals {
+            for &portal_ref in refs {
+                if portal_ref as usize >= portal_count {
+                    return Err(LevelWorldValidationError::new(format!(
+                        "cell {cell_idx} portal_ref {portal_ref} out of range for {portal_count} portals"
+                    )));
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_visibility_portal_adjacency(
+    cells: &[CellData],
+    cell_portal_refs: &[u32],
+    portals: &[PortalData],
+) -> Result<(), LevelWorldValidationError> {
+    let mut front_seen = vec![0u8; portals.len()];
+    let mut back_seen = vec![0u8; portals.len()];
+
+    for (portal_idx, portal) in portals.iter().enumerate() {
+        if portal.front_cell == portal.back_cell {
+            return Err(LevelWorldValidationError::new(format!(
+                "portal {portal_idx} has identical endpoints {}",
+                portal.front_cell
+            )));
+        }
+        for (label, cell_idx) in [("front", portal.front_cell), ("back", portal.back_cell)] {
+            let cell = cells.get(cell_idx).ok_or_else(|| {
+                LevelWorldValidationError::new(format!(
+                    "portal {portal_idx} {label} endpoint cell {cell_idx} out of range for {} cells",
+                    cells.len()
+                ))
+            })?;
+            if cell.is_solid {
+                return Err(LevelWorldValidationError::new(format!(
+                    "portal {portal_idx} {label} endpoint cell {cell_idx} is solid"
+                )));
+            }
+        }
+    }
+
+    for (cell_idx, cell) in cells.iter().enumerate() {
+        let start = cell.portal_ref_start as usize;
+        let end = start + cell.portal_ref_count as usize;
+        for &portal_ref in &cell_portal_refs[start..end] {
+            let portal_idx = portal_ref as usize;
+            let portal = &portals[portal_idx];
+            if portal.front_cell == cell_idx {
+                front_seen[portal_idx] += 1;
+            } else if portal.back_cell == cell_idx {
+                back_seen[portal_idx] += 1;
+            } else {
+                return Err(LevelWorldValidationError::new(format!(
+                    "cell {cell_idx} adjacency lists portal {portal_idx}, but the portal endpoints are {} and {}",
+                    portal.front_cell, portal.back_cell
+                )));
+            }
+        }
+    }
+
+    for portal_idx in 0..portals.len() {
+        if front_seen[portal_idx] != 1 || back_seen[portal_idx] != 1 {
+            let portal = &portals[portal_idx];
+            return Err(LevelWorldValidationError::new(format!(
+                "portal {portal_idx} must appear exactly once in endpoint cells {} and {}; saw front {} and back {}",
+                portal.front_cell, portal.back_cell, front_seen[portal_idx], back_seen[portal_idx]
+            )));
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
+mod visibility_only_validation_tests {
+    use super::*;
+
+    fn cell(portal_ref_start: u32, portal_ref_count: u32) -> CellData {
+        CellData {
+            bounds_min: Vec3::ZERO,
+            bounds_max: Vec3::ONE,
+            face_start: 0,
+            face_count: 0,
+            portal_ref_start,
+            portal_ref_count,
+            is_solid: false,
+            is_exterior: false,
+            is_drawable: false,
+        }
+    }
+
+    #[test]
+    fn new_visibility_only_rejects_missing_portal_for_portal_ref() {
+        let err = LevelWorld::new_visibility_only(
+            vec![cell(0, 1)],
+            vec![99],
+            CellLocatorChild::Cell(0),
+            vec![],
+            vec![],
+            true,
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string().contains("portal_ref 99 out of range"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn new_visibility_only_rejects_missing_locator_node() {
+        let err = LevelWorld::new_visibility_only(
+            vec![cell(0, 0)],
+            vec![],
+            CellLocatorChild::Node(0),
+            vec![],
+            vec![],
+            false,
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string().contains("references node 0"),
+            "unexpected error: {err}"
+        );
+    }
+}
+
+#[cfg(all(test, not(feature = "load-prl")))]
+mod slim_tests {
+    use super::*;
+
+    fn cell(face_start: u32, face_count: u32) -> CellData {
+        CellData {
+            bounds_min: Vec3::ZERO,
+            bounds_max: Vec3::ONE,
+            face_start,
+            face_count,
+            portal_ref_start: 0,
+            portal_ref_count: 0,
+            is_solid: false,
+            is_exterior: false,
+            is_drawable: face_count > 0,
+        }
+    }
+
+    #[test]
+    fn total_face_count_sums_cell_face_counts_without_full_prl_loader() {
+        let world = LevelWorld {
+            cells: vec![cell(0, 2), cell(2, 0), cell(2, 3)],
+            cell_portal_refs: vec![],
+            cell_locator_root: CellLocatorChild::Cell(0),
+            cell_locator_nodes: vec![],
+            portals: vec![],
+            has_portals: false,
+        };
+
+        assert_eq!(world.total_face_count(), 5);
+    }
+}
+
+#[cfg(all(test, feature = "load-prl"))]
 mod tests {
     use super::*;
     use crate::load_prl;

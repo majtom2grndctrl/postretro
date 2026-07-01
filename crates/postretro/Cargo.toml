@@ -78,6 +78,7 @@ env_logger.workspace = true
 postretro-level-format = { workspace = true, features = ["gltf-resolve"] }
 postretro-level-loader = { workspace = true }
 postretro-render-data = { workspace = true }
+postretro-visibility = { workspace = true }
 postretro-foundation = { workspace = true }
 postretro-entities = { workspace = true, features = ["script-ffi"] }
 postretro-scripting-core = { workspace = true }

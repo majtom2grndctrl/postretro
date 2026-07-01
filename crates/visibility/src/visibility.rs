@@ -297,7 +297,7 @@ fn determine_visible_cell_set(
     world: &LevelWorld,
     capture_portal_walk: bool,
 ) -> CellVisResult {
-    let total_faces = world.face_meta.len() as u32;
+    let total_faces = world.total_face_count();
     let frustum = extract_frustum_planes(view_proj);
 
     if world.cells.is_empty() {
@@ -725,38 +725,7 @@ mod tests {
 
     // -- PRL cell-based visibility tests --
 
-    use postretro_level_loader::{FaceMeta as PrlFaceMeta, LevelWorld};
-    use postretro_render_data::geometry::{BvhTree, WorldVertex};
-    use postretro_render_data::material::Material;
-
-    fn zero_vertex() -> WorldVertex {
-        WorldVertex {
-            position: [0.0; 3],
-            base_uv: [0.0; 2],
-            normal_oct: [32768, 32768],
-            tangent_packed: [65535, 0x8000],
-            lightmap_uv: [0, 0],
-            lightmap_layer: 0,
-        }
-    }
-
-    fn prl_face_meta() -> PrlFaceMeta {
-        PrlFaceMeta {
-            leaf_index: 0,
-            texture_index: None,
-            texture_dimensions: (64, 64),
-            texture_name: String::new(),
-            material: Material::Default,
-        }
-    }
-
-    fn empty_bvh() -> BvhTree {
-        BvhTree {
-            nodes: vec![],
-            leaves: vec![],
-            root_node_index: 0,
-        }
-    }
+    use postretro_level_loader::LevelWorld;
 
     fn prl_cell(
         bounds_min: Vec3,
@@ -781,11 +750,8 @@ mod tests {
 
     /// Two-cell PRL world. The locator returns cell 0 for these tests.
     fn two_cell_prl_world() -> LevelWorld {
-        LevelWorld {
-            vertices: vec![zero_vertex(); 6],
-            indices: vec![0, 1, 2, 3, 4, 5],
-            face_meta: vec![prl_face_meta(), prl_face_meta()],
-            cells: vec![
+        LevelWorld::new_visibility_only(
+            vec![
                 prl_cell(
                     Vec3::new(0.0, -100.0, -100.0),
                     Vec3::new(100.0, 100.0, 100.0),
@@ -803,35 +769,13 @@ mod tests {
                     false,
                 ),
             ],
-            cell_portal_refs: vec![],
-            cell_locator_root: postretro_level_loader::CellLocatorChild::Cell(0),
-            cell_locator_nodes: vec![],
-            portals: vec![],
-            has_portals: false,
-            texture_names: vec![],
-            texture_cache_keys:
-                postretro_level_format::texture_cache_keys::TextureCacheKeysSection { keys: vec![] },
-            bvh: empty_bvh(),
-            lights: vec![],
-            light_influences: vec![],
-            sh_volume: None,
-            lightmap: None,
-            lightmap_mode: postretro_level_loader::LightmapMode::Shadowed,
-            sdf_atlas: None,
-            chunk_light_list: None,
-            animated_light_chunks: None,
-            animated_light_weight_maps: None,
-            delta_sh_volumes: None,
-            direct_sh_volume: None,
-            data_script: None,
-            map_entities: Vec::new(),
-            fog_volumes: Vec::new(),
-            fog_pixel_scale: 4,
-            initial_gravity: -9.81,
-            fog_cell_masks: None,
-            navmesh: None,
-            cell_draw_index: None,
-        }
+            vec![],
+            postretro_level_loader::CellLocatorChild::Cell(0),
+            vec![],
+            vec![],
+            false,
+        )
+        .expect("valid visibility-only test world")
     }
 
     #[test]
@@ -858,40 +802,15 @@ mod tests {
 
     #[test]
     fn visible_cells_empty_world_draws_all() {
-        let world = LevelWorld {
-            vertices: vec![],
-            indices: vec![],
-            face_meta: vec![],
-            cells: vec![],
-            cell_portal_refs: vec![],
-            cell_locator_root: postretro_level_loader::CellLocatorChild::Cell(0),
-            cell_locator_nodes: vec![],
-            portals: vec![],
-            has_portals: false,
-            texture_names: vec![],
-            texture_cache_keys:
-                postretro_level_format::texture_cache_keys::TextureCacheKeysSection { keys: vec![] },
-            bvh: empty_bvh(),
-            lights: vec![],
-            light_influences: vec![],
-            sh_volume: None,
-            lightmap: None,
-            lightmap_mode: postretro_level_loader::LightmapMode::Shadowed,
-            sdf_atlas: None,
-            chunk_light_list: None,
-            animated_light_chunks: None,
-            animated_light_weight_maps: None,
-            delta_sh_volumes: None,
-            direct_sh_volume: None,
-            data_script: None,
-            map_entities: Vec::new(),
-            fog_volumes: Vec::new(),
-            fog_pixel_scale: 4,
-            initial_gravity: -9.81,
-            fog_cell_masks: None,
-            navmesh: None,
-            cell_draw_index: None,
-        };
+        let world = LevelWorld::new_visibility_only(
+            vec![],
+            vec![],
+            postretro_level_loader::CellLocatorChild::Cell(0),
+            vec![],
+            vec![],
+            false,
+        )
+        .expect("valid empty visibility-only test world");
         let vp = wide_view_proj(Vec3::ZERO);
         let mut scratch = Vec::new();
         let (result, _frustum) =

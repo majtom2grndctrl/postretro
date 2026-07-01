@@ -69,7 +69,7 @@ pub fn entity_occluder_eligible(light: &MapLight) -> bool {
 /// is the AABBs of the **fog/light-reachable cells** — the *wider*
 /// portal-reachable set (the same one behind `light_reachable_cell_mask`), which
 /// deliberately INCLUDES empty `face_count == 0` cells (see
-/// `visibility.rs`). It is NOT the narrower `VisibleCells` drawable set; using
+/// `postretro-visibility`). It is NOT the narrower `VisibleCells` drawable set; using
 /// the wider set is intentional, because we are bounding light *influence* (an
 /// empty reachable cell still bounds it) — narrowing it to the drawable set
 /// would re-drop lights in empty reachable cells and reintroduce a variant of

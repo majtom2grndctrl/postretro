@@ -4,7 +4,7 @@
 
 ## Goal
 
-Extract the wgpu-free lighting math (light packing, specular/influence packing) into a CPU-only crate shared by the renderer and gameplay subsystems, so editing it does not recompile the GPU stack.
+Extract the wgpu-free lighting math (light packing, specular/influence packing) into a CPU-only crate, so editing the lighting math does not recompile the GPU stack, and so the script-light primitive wiring co-locates with it (Task 2). The packers themselves have only renderer consumers; the crate's payoff is the warm-edit firewall, not cross-subsystem sharing.
 
 ## Scope
 
@@ -21,7 +21,7 @@ Extract the wgpu-free lighting math (light packing, specular/influence packing) 
 - The marshalling substrate `script_primitives.rs` calls — stays in `scripting-core` (the VM-agnostic typedef/marshalling floor). Only the lighting *wiring* descends here (Task 2).
 
 ## Acceptance criteria
-Inherits the epic global acceptance criteria — see `E19--render-stack-decomposition/index.md`. Durable decisions are captured into `context/lib/` per spec as each spec is approved — not in one batch at first promotion.
+Inherits the epic global acceptance criteria — see `E19--render-stack-decomposition/index.md`. Durable decisions are captured into `context/lib/` per spec as each spec is approved — not in one batch at first promotion. **On approval, `scripting.md §12` must be updated**: record that once a subsystem is its own crate, its script-primitive wiring co-locates there behind `script-ffi` (the crate-descent this spec establishes) — otherwise §12's "handlers … not new crates" text contradicts the shipped tree.
 - [ ] Crate is a workspace member; `cargo build --workspace` + `cargo test --workspace` pass; light-packing tests pass from their relocated home.
 - [ ] `cargo tree -p postretro-lighting` (default features) shows no wgpu/winit/glyphon/kira and no `mlua`/`rquickjs` — the `script_primitives` wiring is gated behind the off-by-default `script-ffi` feature, so it pulls the VM crates only when that feature is enabled.
 - [ ] The GPU shadow/cull packer consumers compile against the crate; `GPU_LIGHT_SIZE`/`SPEC_LIGHT_SIZE`/slot byte-offset constants unchanged (no shader-layout drift). (`weapon`/`model`/`cone_frustum` consumers depend on `postretro-render-data` now, not this crate.)

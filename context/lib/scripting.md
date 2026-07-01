@@ -217,7 +217,7 @@ Both preludes are baked at compile time. SDK library changes require an engine r
 
 CLI: `scripts-build --in <entry.ts> --out <output.js>`
 
-The canonical development launch path is `cargo run -p xtask -- run [postretro args...]`. It builds the `scripts-build` sidecar first, then launches the engine. Raw `cargo run -p postretro -- ...` is a lower-level engine run and assumes the sidecar is already present and fresh.
+The canonical development launch path is `cargo run -p xtask -- run [postretro args...]`. To pass Cargo-level flags to the inner engine run, use `cargo run -p xtask -- run [cargo-run flags...] -- [postretro args...]`; for example, `cargo run -p xtask -- run --features dev-tools -- content/dev/maps/campaign-test.prl`. Cargo flags before `--` go to the engine `cargo run`; profile and target flags are also mirrored to the `scripts-build` sidecar build. xtask builds the sidecar first, then launches the engine. Raw `cargo run -p postretro -- ...` is a lower-level engine run and assumes the sidecar is already present and fresh.
 
 Debug builds auto-compile at startup when `scripts-build` is available: any `.ts` with a same-stem `.js` sibling is recompiled before the engine loads it. Runtime sidecar detection is pure — the running engine does not invoke Cargo to build `scripts-build`. If the sidecar is missing, TS startup compilation and TS hot reload log clear diagnostics and degrade/fail through the same paths as other missing compiler cases; `.luau` hot reload still works. `prl-build` also compiles the map's entry script (worldspawn `script` KVP) at map compile time so distribution maps ship with compiled scripts.
 

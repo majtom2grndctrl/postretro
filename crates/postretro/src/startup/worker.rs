@@ -9,7 +9,7 @@ use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use crate::prl::{self, LevelWorld};
+use postretro_level_loader::LevelWorld;
 
 /// Delivered to the main thread after the worker completes. All fields are plain
 /// `Send` — no GPU handles.
@@ -53,12 +53,12 @@ fn run_worker(map_path: &Path, content_root: &Path) -> LoadOutcome {
     let prm_cache_root = derive_prm_root_dev_layout(content_root);
 
     let path_str = map_path.to_string_lossy().into_owned();
-    let level = match prl::load_prl(&path_str) {
+    let level = match postretro_level_loader::load_prl(&path_str) {
         Ok(world) => {
             log::info!("[Loader] PRL loaded successfully from {path_str}");
             Some(world)
         }
-        Err(prl::PrlLoadError::FileNotFound(p)) => {
+        Err(postretro_level_loader::PrlLoadError::FileNotFound(p)) => {
             log::warn!("[Loader] PRL file not found: {p} — starting without map");
             let now = Instant::now();
             timings.push(("prl_parse", now.duration_since(cursor)));

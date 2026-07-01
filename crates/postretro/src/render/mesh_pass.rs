@@ -55,11 +55,11 @@ use crate::model::mesh::SkinnedMesh;
 use crate::model::sample_params::{ClipSample, FadeSource, MeshSampleParams, SnapshotTag};
 use crate::model::skeleton::{AnimationClip, Skeleton};
 use crate::model::{BonePaletteEntry, ModelHandle};
-use crate::prl::LevelWorld;
 use crate::render::mesh_instances::{
     JointCounts, MAX_INSTANCES, MAX_PALETTE_ENTRIES, MeshFramePlan, instance_casts_into_cone,
 };
 use crate::visibility::VisibleCells;
+use postretro_level_loader::LevelWorld;
 
 /// Byte size of one `BonePaletteEntry` (mat4x4<f32> = 64 B).
 const BONE_PALETTE_ENTRY_SIZE: usize = std::mem::size_of::<BonePaletteEntry>();

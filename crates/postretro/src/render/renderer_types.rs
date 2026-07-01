@@ -259,7 +259,7 @@ impl SpatialCellSetDiagnostics {
 #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
 pub enum LocatorDiagnostics {
     NoLevel,
-    Trace(crate::prl::CellLocatorTrace),
+    Trace(postretro_level_loader::CellLocatorTrace),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -323,14 +323,14 @@ pub struct LevelGeometry<'a> {
     /// visibility. `Shadowed` atlases contain the visibility term; `Unshadowed`
     /// atlases leave it for runtime SDF shadowing so the forward pass does not
     /// double-count static-light occlusion. Legacy PRLs default to `Shadowed`.
-    pub lightmap_mode: crate::prl::LightmapMode,
+    pub lightmap_mode: postretro_level_loader::LightmapMode,
     /// Per-cell BVH-leaf draw index (PRL section 37), cross-validated at load.
     /// `None` only for no installed level or an empty-BVH map. Non-empty BVHs
     /// require this index at load; missing or invalid data is a load error.
     /// Whole-BVH tree-walk fallback is a per-frame runtime path for `DrawAll`,
     /// non-portal visibility, out-of-range gathered cell ids, or no candidate
     /// cull pipeline.
-    pub cell_draw_index: Option<&'a crate::prl::CellDrawIndex>,
+    pub cell_draw_index: Option<&'a postretro_level_loader::CellDrawIndex>,
     pub texture_materials: &'a [postretro_render_data::material::Material],
 }
 
@@ -468,7 +468,7 @@ pub(super) struct FullRenderer {
     /// is retained only for legacy-PRL compatibility. Defaults to `Shadowed`
     /// so legacy PRLs decode without error.
     #[allow(dead_code)]
-    pub(super) lightmap_mode: crate::prl::LightmapMode,
+    pub(super) lightmap_mode: postretro_level_loader::LightmapMode,
 
     /// CPU mirror of animated-light delta volume placements, one entry per
     /// animated light. Empty when the map has no delta SH volumes. Sourced
@@ -514,13 +514,22 @@ pub(super) struct FullRenderer {
     pub(super) lights_pack_scratch: Vec<u8>,
     #[allow(dead_code)]
     pub(super) level_lights: Vec<MapLight>,
-    /// Candidate set for the spot-shadow pool — sourced from the FULL level
+    /// Original full level-light index for each `level_lights` entry.
+    pub(super) level_light_source_indices: Vec<usize>,
+    /// Candidate set for the spot/cube shadow pools — sourced from the FULL level
     /// light set filtered by `is_dynamic`. Dynamic-tier lights
     /// (`light_dynamic`/`light_dynamic_spot`) are pool-eligible so dynamic
     /// spotlights shadow static world occluders (pillars). The per-light
     /// `casts_entity_shadows` toggle (FGD `_cast_entity_shadows`) gates only
     /// whether moving-ENTITY occluders draw into the slot, not slot allocation.
     pub(super) shadow_candidate_lights: Vec<MapLight>,
+    /// Original full level-light index for each `shadow_candidate_lights` entry.
+    pub(super) shadow_candidate_source_indices: Vec<usize>,
+    /// Candidate-indexed influence volumes paired with `shadow_candidate_lights`.
+    /// Missing/short PRL influence data is represented by an uncullable sentinel
+    /// so shadow eligibility follows the same degradation contract as forward
+    /// direct-light culling.
+    pub(super) shadow_candidate_influences: Vec<LightInfluence>,
     /// Lights near zero are excluded from shadow slot ranking. Empty = no suppression.
     pub(super) light_effective_brightness: Vec<f32>,
     /// Cached from `update_per_frame_uniforms` so the shadow pass can re-rank lights.
@@ -564,7 +573,7 @@ pub(super) struct FullRenderer {
     /// tree-walk fallback is a per-frame runtime path for `DrawAll`,
     /// non-portal visibility, out-of-range gathered cell ids, or no candidate
     /// cull pipeline.
-    pub(super) cell_draw_index: Option<crate::prl::CellDrawIndex>,
+    pub(super) cell_draw_index: Option<postretro_level_loader::CellDrawIndex>,
     /// `None` for maps with no BVH.
     pub(super) compute_cull: Option<ComputeCullPipeline>,
     /// Candidate-cull GPU path: gathers only visible cells' BVH

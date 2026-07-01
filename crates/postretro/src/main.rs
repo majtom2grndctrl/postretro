@@ -36,7 +36,6 @@ mod options;
 mod weapon;
 
 mod portal_vis;
-mod prl;
 mod render;
 mod scripting;
 // Live session-lifetime container: all session-lifetime state (scripting core,
@@ -379,7 +378,7 @@ pub(crate) struct App {
     renderer: Option<Renderer>,
 
     window_state: Option<WindowState>,
-    level: Option<prl::LevelWorld>,
+    level: Option<postretro_level_loader::LevelWorld>,
     /// Runtime navigation graph, built once when a level with a baked navmesh
     /// loads. `None` when the map has no navmesh bake. Pathfinding reads this in
     /// every build; the `Alt+Shift+N` debug overlay (dev-tools-only) also
@@ -2284,8 +2283,8 @@ impl ApplicationHandler for App {
                                 renderer.upload_bridge_lights(&update.lights_bytes);
                                 renderer.upload_bridge_descriptors(&update.descriptor_bytes);
                                 renderer.upload_bridge_samples(&update.samples_bytes);
-                                // Task 2c: also fan out `_animated` descriptor
-                                // updates to the animated-compose buffer.
+                                // Fan out `_animated` descriptor updates to
+                                // the animated-compose buffer.
                                 for (slot, bytes) in &update.compose_descriptor_writes {
                                     renderer.write_animated_compose_descriptor(*slot, bytes);
                                 }

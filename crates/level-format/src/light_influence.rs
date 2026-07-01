@@ -4,7 +4,9 @@
 
 use crate::FormatError;
 
-/// Current section version. Bump when the record layout changes.
+/// Current section version. v1 readers require exact section length, reject
+/// trailing section bytes, and permit larger declared record strides by reading
+/// the first 16 bytes of each record.
 pub const LIGHT_INFLUENCE_VERSION: u32 = 1;
 
 /// Byte size of one packed `InfluenceRecord` on disk.
@@ -31,7 +33,7 @@ pub struct InfluenceRecord {
 /// On-disk layout (little-endian throughout):
 ///   u32  version        (= 1)
 ///   u32  record_count
-///   u32  record_stride  (= 16)
+///   u32  record_stride  (>= 16; writers emit 16)
 ///   u32  reserved       (= 0)
 ///   [record_count × record_stride bytes] packed InfluenceRecord array
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -99,6 +101,15 @@ impl LightInfluenceSection {
                 std::io::ErrorKind::UnexpectedEof,
                 format!(
                     "light influence section truncated: need {expected_len} bytes, got {}",
+                    data.len()
+                ),
+            )));
+        }
+        if data.len() != expected_len {
+            return Err(FormatError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "light influence section has trailing bytes: expected {expected_len} bytes, got {}",
                     data.len()
                 ),
             )));
@@ -201,6 +212,22 @@ mod tests {
     }
 
     #[test]
+    fn rejects_trailing_record_bytes() {
+        let section = LightInfluenceSection {
+            records: vec![InfluenceRecord {
+                center: [1.0, 2.0, 3.0],
+                radius: 10.0,
+            }],
+        };
+        let mut bytes = section.to_bytes();
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+
+        let err = LightInfluenceSection::from_bytes(&bytes).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("trailing bytes"), "unexpected: {msg}");
+    }
+
+    #[test]
     fn rejects_too_small_stride() {
         let mut buf = vec![0u8; HEADER_SIZE];
         buf[0] = 1; // version
@@ -213,8 +240,9 @@ mod tests {
 
     #[test]
     fn forward_compatible_larger_stride() {
-        // Simulate a future version that writes 32-byte records. The reader
-        // should consume the first 16 bytes and skip the rest.
+        // v1 accepts a larger declared stride when the section length exactly
+        // matches the header, consuming the first 16 bytes and skipping the
+        // per-record extension bytes.
         let section = LightInfluenceSection {
             records: vec![InfluenceRecord {
                 center: [1.0, 2.0, 3.0],

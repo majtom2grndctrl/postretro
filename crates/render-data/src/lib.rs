@@ -3,4 +3,5 @@
 
 pub mod cone_frustum;
 pub mod geometry;
+pub mod influence;
 pub mod material;

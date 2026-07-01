@@ -316,8 +316,8 @@ fn storage_or_uniform_entry(
 #[cfg(test)]
 mod tests {
     use crate::lighting::spot_shadow::light_space_matrix;
-    use crate::prl::{FalloffModel, LightType, MapLight};
     use glam::Vec3;
+    use postretro_level_loader::{FalloffModel, LightType, MapLight};
     use postretro_render_data::cone_frustum::{Aabb, aabb_intersects_frustum, cone_frustum_planes};
     use postretro_render_data::geometry::{BVH_NODE_FLAG_LEAF, BvhLeaf, BvhNode, BvhTree};
 
@@ -362,7 +362,7 @@ mod tests {
             animated_slot: None,
             tags: vec![],
             cell_index: 0,
-            shadow_type: crate::prl::ShadowType::StaticLightMap,
+            shadow_type: postretro_level_loader::ShadowType::StaticLightMap,
         }
     }
 

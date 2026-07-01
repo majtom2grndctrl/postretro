@@ -115,7 +115,7 @@ mod tests {
 
         for probe in PROBES {
             let prl_path = compile_probe_map(probe.map);
-            let world = crate::prl::load_prl(&prl_path)
+            let world = postretro_level_loader::load_prl(&prl_path)
                 .unwrap_or_else(|e| panic!("{}: load_prl failed: {e:?}", probe.map));
 
             let Some(index) = world.cell_draw_index.clone() else {

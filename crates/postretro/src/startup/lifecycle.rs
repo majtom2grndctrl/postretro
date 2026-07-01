@@ -18,7 +18,7 @@ use crate::startup::{
     BootState, InFlightLevelLoad, LevelLoadEntry, LevelRequest, LevelSource, LoadOutcome,
     StartupTimings, spawn_level_worker,
 };
-use crate::{App, fx, prl, weapon};
+use crate::{App, fx, weapon};
 use postretro_scripting_core::data_descriptors::LevelManifest;
 use postretro_scripting_core::reaction_dispatch::{
     fire_named_event_with_sequences, validate_sequence_primitives,
@@ -493,7 +493,11 @@ impl App {
     ///
     /// Called after a level worker delivers a payload; assumes `self.renderer`
     /// is `Some` and `world` is populated.
-    fn install_level_payload(&mut self, mut world: prl::LevelWorld, prm_cache_root: PathBuf) {
+    fn install_level_payload(
+        &mut self,
+        mut world: postretro_level_loader::LevelWorld,
+        prm_cache_root: PathBuf,
+    ) {
         self.retain_active_level_tags_for_install();
         // The whole script tranche lives on `Session` (built post-first-pixel).
         // Level install only runs in Loading/Running, where the session is
@@ -1388,13 +1392,13 @@ mod tests {
         app.level_load = None;
     }
 
-    fn map_light(tag: &str, origin: [f64; 3]) -> prl::MapLight {
-        prl::MapLight {
+    fn map_light(tag: &str, origin: [f64; 3]) -> postretro_level_loader::MapLight {
+        postretro_level_loader::MapLight {
             origin,
-            light_type: prl::LightType::Point,
+            light_type: postretro_level_loader::LightType::Point,
             intensity: 1.0,
             color: [1.0, 0.8, 0.6],
-            falloff_model: prl::FalloffModel::InverseSquared,
+            falloff_model: postretro_level_loader::FalloffModel::InverseSquared,
             falloff_range: 16.0,
             cone_angle_inner: 0.0,
             cone_angle_outer: 0.0,
@@ -1404,7 +1408,7 @@ mod tests {
             animated_slot: None,
             tags: vec![tag.to_string()],
             cell_index: 0,
-            shadow_type: prl::ShadowType::StaticLightMap,
+            shadow_type: postretro_level_loader::ShadowType::StaticLightMap,
         }
     }
 
@@ -1446,7 +1450,7 @@ mod tests {
         }
     }
 
-    fn level_world(_name: &str, triangle_count: usize) -> prl::LevelWorld {
+    fn level_world(_name: &str, triangle_count: usize) -> postretro_level_loader::LevelWorld {
         let mut vertices = vec![
             vertex([0.0, 0.0, 0.0]),
             vertex([1.0, 0.0, 0.0]),
@@ -1462,11 +1466,11 @@ mod tests {
             indices.extend([3, 4, 5]);
         }
 
-        prl::LevelWorld {
+        postretro_level_loader::LevelWorld {
             vertices,
             indices,
             face_meta: Vec::new(),
-            cells: vec![prl::CellData {
+            cells: vec![postretro_level_loader::CellData {
                 bounds_min: Vec3::ZERO,
                 bounds_max: Vec3::ONE,
                 face_start: 0,
@@ -1478,7 +1482,7 @@ mod tests {
                 is_drawable: false,
             }],
             cell_portal_refs: vec![],
-            cell_locator_root: prl::CellLocatorChild::Cell(0),
+            cell_locator_root: postretro_level_loader::CellLocatorChild::Cell(0),
             cell_locator_nodes: vec![],
             portals: Vec::new(),
             has_portals: false,

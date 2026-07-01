@@ -23,7 +23,7 @@ use parry3d::math::{Isometry, Point, Vector};
 use parry3d::query::{Ray, RayCast, RayIntersection, ShapeCastHit, ShapeCastOptions, cast_shapes};
 use parry3d::shape::{Capsule, TriMesh};
 
-use crate::prl::LevelWorld;
+use postretro_level_loader::LevelWorld;
 
 /// World-space static-geometry collider. Owns a single `parry3d::TriMesh`
 /// built from the level's baked vertices and indices, plus a world-space

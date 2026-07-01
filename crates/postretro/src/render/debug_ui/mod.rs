@@ -529,14 +529,14 @@ fn cell_set_diagnostic_label(value: SpatialCellSetDiagnostics, empty_note: &str)
     }
 }
 
-fn locator_child_label(child: crate::prl::CellLocatorChild) -> String {
+fn locator_child_label(child: postretro_level_loader::CellLocatorChild) -> String {
     match child {
-        crate::prl::CellLocatorChild::Node(index) => format!("node {index}"),
-        crate::prl::CellLocatorChild::Cell(index) => format!("cell {index}"),
+        postretro_level_loader::CellLocatorChild::Node(index) => format!("node {index}"),
+        postretro_level_loader::CellLocatorChild::Cell(index) => format!("cell {index}"),
     }
 }
 
-fn locator_path_label(trace: &crate::prl::CellLocatorTrace) -> String {
+fn locator_path_label(trace: &postretro_level_loader::CellLocatorTrace) -> String {
     if trace.steps.is_empty() {
         return format!("root {}", locator_child_label(trace.root));
     }
@@ -545,8 +545,8 @@ fn locator_path_label(trace: &crate::prl::CellLocatorTrace) -> String {
     parts.push(format!("root {}", locator_child_label(trace.root)));
     for step in &trace.steps {
         let side = match step.selected_side {
-            crate::prl::CellLocatorSide::Front => "front",
-            crate::prl::CellLocatorSide::Back => "back",
+            postretro_level_loader::CellLocatorSide::Front => "front",
+            postretro_level_loader::CellLocatorSide::Back => "back",
         };
         parts.push(format!(
             "node {} {side} ({:.3}) -> {}",

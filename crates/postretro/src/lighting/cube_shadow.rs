@@ -10,8 +10,8 @@
 // See: context/lib/rendering_pipeline.md §7.1 (shadow passes), §4 (lighting)
 
 use crate::lighting::spot_shadow::{SHADOW_DEPTH_FORMAT, assign_ranked_slots};
-use crate::prl::{LightType, MapLight};
 use glam::{Mat4, Vec3};
+use postretro_level_loader::{LightType, MapLight};
 
 /// Near-clip distance for a cube face's perspective projection. Matches the spot
 /// path's `SHADOW_NEAR_CLIP` — close enough that depth bias controls acne, far
@@ -312,7 +312,7 @@ pub fn cube_face_needs_clear(face_occupied: bool) -> bool {
 mod tests {
     use super::*;
     use crate::lighting::spot_shadow::NO_SHADOW_SLOT;
-    use crate::prl::{FalloffModel, ShadowType};
+    use postretro_level_loader::{FalloffModel, ShadowType};
 
     fn point_light(origin: [f64; 3], falloff_range: f32, is_dynamic: bool) -> MapLight {
         MapLight {

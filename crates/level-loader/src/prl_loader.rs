@@ -35,6 +35,7 @@ use postretro_level_format::texture_names::TextureNamesSection;
 use postretro_level_format::{self as prl_format, SectionId};
 
 use postretro_render_data::geometry::{BvhLeaf, BvhNode, BvhTree, WorldVertex};
+use postretro_render_data::influence::LightInfluence;
 use postretro_render_data::material;
 
 use super::{
@@ -1217,39 +1218,51 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         log::info!("[PRL] LightTags: {tagged} tagged lights");
     }
 
-    // Optional — absent → all lights treated as infinite-bound.
-    let light_influences: Vec<crate::lighting::influence::LightInfluence> =
-        match prl_format::read_section_data(&mut cursor, &meta, SectionId::LightInfluence as u32)? {
-            Some(data) => {
-                let section = LightInfluenceSection::from_bytes(&data)?;
-                if section.records.len() != lights.len() {
-                    return Err(PrlLoadError::FormatError(prl_format::FormatError::Io(
-                        std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            format!(
-                                "LightInfluence record count ({}) does not match AlphaLights count ({})",
-                                section.records.len(),
-                                lights.len()
-                            ),
+    // Optional — absent/short → missing lights are treated as infinite-bound by
+    // downstream consumers. Extra records remain malformed: they cannot map to a
+    // light and would hide writer bugs if silently ignored.
+    let light_influences: Vec<LightInfluence> = match prl_format::read_section_data(
+        &mut cursor,
+        &meta,
+        SectionId::LightInfluence as u32,
+    )? {
+        Some(data) => {
+            let section = LightInfluenceSection::from_bytes(&data)?;
+            if section.records.len() > lights.len() {
+                return Err(PrlLoadError::FormatError(prl_format::FormatError::Io(
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "LightInfluence record count ({}) exceeds AlphaLights count ({})",
+                            section.records.len(),
+                            lights.len()
                         ),
-                    )));
-                }
-                let converted: Vec<_> = section
-                    .records
-                    .into_iter()
-                    .map(|r| crate::lighting::influence::LightInfluence {
-                        center: glam::Vec3::from(r.center),
-                        radius: r.radius,
-                    })
-                    .collect();
-                log::info!("[PRL] LightInfluence: {} records loaded", converted.len());
-                converted
+                    ),
+                )));
             }
-            None => {
-                log::warn!("[Loader] LightInfluence section missing, no spatial culling this map");
-                Vec::new()
+            if section.records.len() < lights.len() {
+                log::warn!(
+                    "[PRL] LightInfluence: {} records for {} lights; missing tail entries are uncullable",
+                    section.records.len(),
+                    lights.len()
+                );
             }
-        };
+            let converted: Vec<_> = section
+                .records
+                .into_iter()
+                .map(|r| LightInfluence {
+                    center: glam::Vec3::from(r.center),
+                    radius: r.radius,
+                })
+                .collect();
+            log::info!("[PRL] LightInfluence: {} records loaded", converted.len());
+            converted
+        }
+        None => {
+            log::warn!("[Loader] LightInfluence section missing, no spatial culling this map");
+            Vec::new()
+        }
+    };
 
     let sh_volume: Option<OctahedralShVolumeSection> = match prl_format::read_section_data(
         &mut cursor,
@@ -1276,8 +1289,8 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         None => return Err(PrlLoadError::NoOctahedralShVolume),
     };
 
-    // Task 2c: populate `MapLight.animated_slot` from the SH-volume slot
-    // table. Resolution happens once here (load time), not per
+    // Populate `MapLight.animated_slot` from the SH-volume slot table.
+    // Resolution happens once here (load time), not per
     // `setLightAnimation` call. Legacy PRLs lack the table — every slot stays
     // `None` and the bridge takes the legacy `is_dynamic`-gated path.
     if let Some(sh) = sh_volume.as_ref()
@@ -1689,9 +1702,8 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         light_influences,
         sh_volume,
         lightmap,
-        // Task 2a will read this from the lightmap section's mode marker.
-        // Until then every PRL parses as Shadowed — `main`-equivalent so
-        // Task 5's forward pass skips the SDF visibility multiply.
+        // Current bakes load as Shadowed. Unshadowed remains for legacy PRL
+        // wire compatibility; new lightmaps should carry baked visibility.
         lightmap_mode: LightmapMode::default(),
         sdf_atlas,
         chunk_light_list,

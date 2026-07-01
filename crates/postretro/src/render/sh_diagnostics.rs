@@ -10,7 +10,7 @@ use glam::Vec3;
 use super::debug_lines::DebugLineRenderer;
 use super::sh_compose::f16_bits_to_f32;
 use super::sh_volume::{DeltaVolumeMeta, ShVolumeResources};
-use crate::prl::LevelWorld;
+use postretro_level_loader::LevelWorld;
 
 /// Coloring mode for per-probe markers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

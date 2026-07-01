@@ -11,18 +11,17 @@ impl Renderer {
     /// `reachable_cell_aabbs` are the AABBs of the fog/light-reachable cells —
     /// the WIDER portal-reachable set (same source as `light_reachable_cell_mask`)
     /// that deliberately includes empty `face_count == 0` cells, NOT the narrower
-    /// drawable `VisibleCells` set. A light is shadow-eligible when its influence
-    /// sphere reaches one of these reachable cells — NOT when the light's OWN cell
-    /// is in the camera PVS (the prior over-strict gate; see
-    /// `crate::lighting::light_reaches_visible_cell`). Empty = DrawAll sentinel
-    /// (fallback visibility paths): every cell-assigned light stays eligible.
+    /// drawable `VisibleCells` set. A light is shadow-eligible when its runtime
+    /// `LightInfluence` sphere reaches one of these reachable cells — NOT when
+    /// the light's OWN cell is in the camera PVS, and NOT from origin+range
+    /// reconstruction. Empty = DrawAll sentinel (fallback visibility paths):
+    /// every cell-assigned light stays eligible.
     ///
     /// The **candidate set** is `self.shadow_candidate_lights`
     /// (full level lights filtered by `is_dynamic`), which is the same set as
     /// `self.level_lights` (also `is_dynamic`-filtered) modulo ordering.
-    /// `effective_brightness` is keyed on `level_lights` indices though, so
-    /// we re-key the per-candidate eligibility into the candidate index
-    /// space below.
+    /// `effective_brightness` is keyed on `level_lights` indices, so candidate
+    /// brightness is translated through the original full level-light index.
     pub fn update_dynamic_light_slots(
         &mut self,
         camera_position: Vec3,
@@ -37,52 +36,51 @@ impl Renderer {
             return;
         }
 
-        // Shadow-slot eligibility: a light is eligible when its INFLUENCE volume
-        // reaches a fog/light-reachable cell (`reachable_cell_aabbs` = AABBs of the
-        // WIDER portal-reachable set, including empty `face_count == 0` cells) —
-        // NOT when the light's own cell is in the camera PVS. The light is a shadow
-        // caster (onto receivers the camera sees); like a world occluder
-        // (`shadow_cull.rs`) it need not sit in the camera PVS itself. The prior
-        // own-cell-PVS gate dropped a light whose cell left the shrinking PVS on
-        // pitch-down even though it still lit and shadowed geometry in view, so
-        // entity shadows vanished.
+        // Shadow-slot eligibility: a light is eligible when its runtime influence
+        // volume reaches a fog/light-reachable cell (`reachable_cell_aabbs` =
+        // AABBs of the WIDER portal-reachable set, including empty
+        // `face_count == 0` cells) — NOT when the light's own cell is in the
+        // camera PVS. The light is a shadow caster (onto receivers the camera
+        // sees); like a world occluder (`shadow_cull.rs`) it need not sit in the
+        // camera PVS itself. The prior own-cell-PVS gate dropped a light whose
+        // cell left the shrinking PVS on pitch-down even though it still lit and
+        // shadowed geometry in view, so entity shadows vanished.
         //
         // Empty `reachable_cell_aabbs` = DrawAll sentinel (fallback visibility
         // paths) → all cell-assigned lights eligible. ALPHA_LIGHT_LEAF_UNASSIGNED
         // = degenerate (couldn't assign to a non-solid cell) → always cull.
         const BRIGHTNESS_SUPPRESSION_THRESHOLD: f32 = 0.01;
         let mut visible_lights = vec![false; self.full().shadow_candidate_lights.len()];
-        for (i, light) in self.full().shadow_candidate_lights.iter().enumerate() {
-            let reaches_view = if light.cell_index == ALPHA_LIGHT_LEAF_UNASSIGNED {
-                false
-            } else {
-                let origin = Vec3::new(
-                    light.origin[0] as f32,
-                    light.origin[1] as f32,
-                    light.origin[2] as f32,
-                );
-                crate::lighting::light_reaches_visible_cell(
-                    origin,
-                    light.falloff_range,
+        {
+            let full = self.full();
+            for (i, light) in full.shadow_candidate_lights.iter().enumerate() {
+                let reaches_view = shadow_candidate_reaches_visible_cell(
+                    light,
+                    full.shadow_candidate_influences.get(i),
                     reachable_cell_aabbs,
-                )
-            };
-            if !reaches_view {
-                continue;
+                );
+                if !reaches_view {
+                    continue;
+                }
+                // Brightness suppression is indexed by `level_lights` (the
+                // forward / scripted-bridge index space). For candidates not in
+                // `level_lights` we have no per-frame brightness — treat as 1.0.
+                let b = full
+                    .shadow_candidate_source_indices
+                    .get(i)
+                    .and_then(|&source_index| {
+                        level_brightness_for_candidate(
+                            &full.level_light_source_indices,
+                            source_index,
+                            effective_brightness,
+                        )
+                    })
+                    .unwrap_or(1.0);
+                if b < BRIGHTNESS_SUPPRESSION_THRESHOLD {
+                    continue;
+                }
+                visible_lights[i] = true;
             }
-            // Brightness suppression is indexed by `level_lights` (the
-            // forward / scripted-bridge index space). For candidates not in
-            // `level_lights` we have no per-frame brightness — treat as 1.0.
-            let b = level_brightness_for_candidate(
-                &self.full().level_lights,
-                &self.full().shadow_candidate_lights[i],
-                effective_brightness,
-            )
-            .unwrap_or(1.0);
-            if b < BRIGHTNESS_SUPPRESSION_THRESHOLD {
-                continue;
-            }
-            visible_lights[i] = true;
         }
 
         let slot_assignment = SpotShadowPool::rank_lights(
@@ -107,21 +105,19 @@ impl Renderer {
 
         // The GPU lights buffer is keyed on `level_lights`. Translate slot
         // assignments from candidate-index space into `level_lights`-index
-        // space by identity-matching (origin + light_type). Both sets are
-        // `is_dynamic`-filtered snapshots of `world.lights`, so every candidate
-        // is in `level_lights` and receives its slot normally. The cube
-        // assignment is re-keyed the same way (empty → all-sentinel).
+        // space via each light's original full level-light index. This keeps
+        // duplicate dynamic lights with identical origin/type independent.
         let level_slots = slot_assignment_for_level_lights(
-            &self.full().level_lights,
-            &self.full().shadow_candidate_lights,
+            &self.full().level_light_source_indices,
+            &self.full().shadow_candidate_source_indices,
             &slot_assignment,
         );
         let level_cube_slots = if cube_slot_assignment.is_empty() {
             vec![crate::lighting::spot_shadow::NO_SHADOW_SLOT; self.full().level_lights.len()]
         } else {
             slot_assignment_for_level_lights(
-                &self.full().level_lights,
-                &self.full().shadow_candidate_lights,
+                &self.full().level_light_source_indices,
+                &self.full().shadow_candidate_source_indices,
                 &cube_slot_assignment,
             )
         };
@@ -240,8 +236,9 @@ impl Renderer {
     ///   own-cell gate; the fix decouples eligibility from it (see `reach` below).
     /// - Per light `Lk`: `pos`, `range`, `dyn`, `cell`, `cell_ok` (legacy: its own
     ///   cell is in the portal-reachable set — NO LONGER the eligibility criterion,
-    ///   kept for diagnosis), `reach` (THE criterion: its influence sphere reaches
-    ///   a fog/light-reachable cell), `bright` (live animated brightness), `elig`
+    ///   kept for diagnosis), `reach` (THE criterion: its runtime
+    ///   `LightInfluence` sphere reaches a fog/light-reachable cell), `bright`
+    ///   (live animated brightness), `elig`
     ///   (passed
     ///   the reach+brightness gate feeding `rank_lights`/`rank_point_lights`), and
     ///   `slot` (assigned SPOT shadow slot or `NONE:<reason>`) plus `cube`
@@ -261,7 +258,7 @@ impl Renderer {
         camera_cell: Option<u32>,
     ) {
         use crate::lighting::spot_shadow::NO_SHADOW_SLOT;
-        use crate::prl::LightType;
+        use postretro_level_loader::LightType;
 
         const BRIGHTNESS_SUPPRESSION_THRESHOLD: f32 = 0.01;
         let f = self.full().debug_frame;
@@ -312,29 +309,26 @@ impl Renderer {
                 let cell = light.cell_index as usize;
                 cell < light_reachable_cell_mask.len() && light_reachable_cell_mask[cell]
             };
-            // THE eligibility criterion: influence sphere reaches a fog/light-
-            // reachable cell. Mirrors `update_dynamic_light_slots` exactly (pure
-            // read).
-            let reach = if light.cell_index == ALPHA_LIGHT_LEAF_UNASSIGNED {
-                false
-            } else {
-                let origin = Vec3::new(
-                    light.origin[0] as f32,
-                    light.origin[1] as f32,
-                    light.origin[2] as f32,
-                );
-                crate::lighting::light_reaches_visible_cell(
-                    origin,
-                    light.falloff_range,
-                    reachable_cell_aabbs,
-                )
-            };
-            let bright = level_brightness_for_candidate(
-                &self.full().level_lights,
+            // THE eligibility criterion: runtime influence sphere reaches a
+            // fog/light-reachable cell. Mirrors `update_dynamic_light_slots`
+            // exactly (pure read).
+            let reach = shadow_candidate_reaches_visible_cell(
                 light,
-                effective_brightness,
-            )
-            .unwrap_or(1.0);
+                self.full().shadow_candidate_influences.get(i),
+                reachable_cell_aabbs,
+            );
+            let bright = self
+                .full()
+                .shadow_candidate_source_indices
+                .get(i)
+                .and_then(|&source_index| {
+                    level_brightness_for_candidate(
+                        &self.full().level_light_source_indices,
+                        source_index,
+                        effective_brightness,
+                    )
+                })
+                .unwrap_or(1.0);
             let is_spot = light.light_type == LightType::Spot;
             let is_point = light.light_type == LightType::Point;
             let elig = reach && bright >= BRIGHTNESS_SUPPRESSION_THRESHOLD;

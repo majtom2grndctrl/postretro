@@ -46,9 +46,14 @@ pub(crate) fn build_full_renderer(
         build_default_view_projection(surface_config.width as f32 / surface_config.height as f32);
     let full_lights = geometry.map(|g| g.lights).unwrap_or(&[]);
     let full_influences = geometry.map(|g| g.light_influences).unwrap_or(&[]);
-    let (level_lights, dynamic_influences) = filter_dynamic_lights(full_lights, full_influences);
-    let (shadow_candidate_lights, _) =
-        filter_entity_shadow_candidates(full_lights, full_influences);
+    let filtered_level_lights = filter_dynamic_lights(full_lights, full_influences);
+    let level_lights = filtered_level_lights.lights;
+    let dynamic_influences = filtered_level_lights.influences;
+    let level_light_source_indices = filtered_level_lights.source_indices;
+    let filtered_shadow_candidates = filter_entity_shadow_candidates(full_lights, full_influences);
+    let shadow_candidate_lights = filtered_shadow_candidates.lights;
+    let shadow_candidate_influences = filtered_shadow_candidates.influences;
+    let shadow_candidate_source_indices = filtered_shadow_candidates.source_indices;
     let light_count = level_lights.len() as u32;
     let ambient_floor = DEFAULT_AMBIENT_FLOOR;
     let sh_fast_env = std::env::var("POSTRETRO_SH_FAST").ok();
@@ -65,7 +70,7 @@ pub(crate) fn build_full_renderer(
     } = build_uniform_bind_groups(device, &uniform_data);
 
     for (idx, light) in level_lights.iter().enumerate() {
-        if light.is_dynamic && light.light_type == crate::prl::LightType::Directional {
+        if light.is_dynamic && light.light_type == postretro_level_loader::LightType::Directional {
             log::warn!(
                 "[Renderer] Dynamic directional light (light_sun) at index {} found — not supported. \
                      Will render unshadowed (diffuse + specular only).",
@@ -118,7 +123,7 @@ pub(crate) fn build_full_renderer(
 
     let bvh_leaves: Vec<postretro_render_data::geometry::BvhLeaf> =
         geometry.map(|g| g.bvh.leaves.clone()).unwrap_or_default();
-    let cell_draw_index: Option<crate::prl::CellDrawIndex> =
+    let cell_draw_index: Option<postretro_level_loader::CellDrawIndex> =
         geometry.and_then(|g| g.cell_draw_index.cloned());
     let compute_cull = geometry
         .filter(|g| !g.bvh.leaves.is_empty())
@@ -167,7 +172,7 @@ pub(crate) fn build_full_renderer(
         SdfAtlasResources::new(device, queue, geometry.and_then(|g| g.sdf_atlas));
     let lightmap_mode = geometry
         .map(|g| g.lightmap_mode)
-        .unwrap_or(crate::prl::LightmapMode::Shadowed);
+        .unwrap_or(postretro_level_loader::LightmapMode::Shadowed);
 
     let compose_sh_volume = geometry
         .and_then(|g| g.sh_volume)
@@ -470,7 +475,10 @@ pub(crate) fn build_full_renderer(
         last_lights_upload: Vec::new(),
         lights_pack_scratch: Vec::new(),
         level_lights,
+        level_light_source_indices,
         shadow_candidate_lights,
+        shadow_candidate_source_indices,
+        shadow_candidate_influences,
         light_effective_brightness: Vec::new(),
         last_camera_position: Vec3::ZERO,
         last_view_proj: Mat4::IDENTITY,

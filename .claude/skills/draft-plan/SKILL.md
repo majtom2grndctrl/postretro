@@ -109,6 +109,8 @@ Unresolved items, risks, alternatives considered, if applicable (only use sectio
 
 **Plumbing rule.** Every "edit X to do Y" instruction must say how X gets access to what it needs. New side-tables need owners. New struct fields need writer call-sites. Function signature changes need their callers enumerated. Don't punt access plumbing to the implementer — the implementer has less context than the spec author.
 
+**Task-paragraph contract.** Each task paragraph is an execution contract: `/orchestrate` hands a task agent only its own paragraph, the plan's Goal, and the AC list — never the Scope section. Don't point at Scope ("the list in Scope"); inline load-bearing enumerations in the task paragraph, or pin them in an AC. The AC list is the only shared channel across tasks.
+
 **Split-before-extend rule.** When the plan adds functionality to a source file already past ~800 lines, split it first — a behavior-preserving task that breaks the file along seams you already see. Sequence the split right before the task that extends that file; don't drag an off-critical-path file forward. Splitting and extending in one task buries a refactor inside a feature diff — keep them separate.
 
 ### 4. Acceptance criteria

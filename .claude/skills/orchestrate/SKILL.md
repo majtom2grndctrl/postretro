@@ -29,7 +29,7 @@ Read these context library files first:
 Then read `context/plans/ready/$ARGUMENTS/index.md`. If missing, list available plans and ask which to run.
 
 Understand:
-- Shared context section (every agent needs this)
+- Goal section (every agent needs this)
 - Each task's description and acceptance criteria
 - Sequencing: phases, concurrency, and dependencies
 
@@ -52,7 +52,7 @@ For each phase in the sequencing section:
 > **Cargo under concurrency.** Run concurrent agents in isolated worktrees — separate `target/` dirs, cap 3 (see `development_guide.md`). Separate target dirs have no shared build lock, so each agent runs `cargo check` and focused tests freely. Agents sharing one `target/` must not: they serialize on cargo's build lock and churn the incremental cache. Defer their compile/test to one post-phase pass, as `/fix-review-findings` does.
 
 **For each agent, provide:**
-1. The plan's **Shared Context** section
+1. The plan's **Goal** section (one orienting paragraph)
 2. The agent's **specific task** — description, acceptance criteria
 3. Instruction to read relevant `context/lib/` files for architectural guidance
 4. Instruction to follow `context/lib/development_guide.md` conventions

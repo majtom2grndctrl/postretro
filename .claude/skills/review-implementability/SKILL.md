@@ -15,7 +15,9 @@ One Opus agent, one lens: execution. Not a general spec review — run it only a
 
 ## Premise
 
-`/orchestrate` gives each task agent ONLY: its own task paragraph, the plan's AC list, the `context/lib/` router, and source access. No Scope section, no other tasks' text, no full plan document. This review simulates that contract.
+`/orchestrate` gives each task agent ONLY: its own task paragraph, the plan's Goal, the plan's AC list, the `context/lib/` router, and source access. No Scope section, no other tasks' text, no full plan document. This review simulates that contract.
+
+The contract is defined normatively in `/orchestrate`. If the two disagree, `/orchestrate` wins — update this skill to match.
 
 ## Process
 
@@ -29,7 +31,7 @@ Inline the full spec content in the prompt — paths drift. Also pass: the locke
 
 The agent answers two questions, exhaustively:
 
-**Q1 — per task:** would a fresh agent with only this paragraph + the AC list + lib docs + source access build the RIGHT thing?
+**Q1 — per task:** would a fresh agent with only this paragraph + the plan Goal + the AC list + lib docs + source access build the RIGHT thing?
 - Does the paragraph name every file/seam to touch, or are there unstated call sites to discover?
 - Are earlier phases' outputs identified well enough to find in the tree (the agent can't read their task text)?
 - Is any load-bearing detail stated only in Scope, where a task-only reader misses it?

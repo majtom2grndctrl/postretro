@@ -1,7 +1,7 @@
 // Shared headless GPU harness for the UI pass's offscreen golden tests.
 //
-// The UI golden tests (`multi_batch_test`, `splash_golden_test`,
-// `multi_layer_text_golden_test`) all need the same three things: a `pollster`
+// The UI golden tests (`multi_batch_test`, `multi_layer_text_golden_test`) all
+// need the same three things: a `pollster`
 // headless `wgpu::Device`/`Queue` that self-skips when no adapter is present, an
 // offscreen-texture readback that copies to a mappable buffer (256-byte row
 // alignment), maps, and de-pads to a tight RGBA8 grid, and a `Readback` accessor

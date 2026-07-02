@@ -3589,13 +3589,13 @@ dependencies = [
  "postretro-render-data",
  "postretro-script-compiler",
  "postretro-scripting-core",
+ "postretro-ui",
  "postretro-visibility",
  "proptest",
  "rquickjs",
  "serde",
  "serde_json",
  "splines",
- "taffy",
  "tempfile",
  "thiserror 2.0.18",
  "toml",
@@ -3762,6 +3762,20 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "postretro-ui"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "cosmic-text",
+ "log",
+ "postretro-entities",
+ "postretro-scripting-core",
+ "serde",
+ "serde_json",
+ "taffy",
 ]
 
 [[package]]

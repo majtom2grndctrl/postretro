@@ -50,7 +50,7 @@ use postretro_scripting_core::staged_manifest::{
 };
 
 fn fs() -> glyphon::FontSystem {
-    super::text::build_font_system()
+    postretro_ui::text::build_font_system()
 }
 
 fn no_images() -> ImageSizes {
@@ -828,7 +828,7 @@ fn runtime_registered_font_is_usable_by_a_text_widget_font_token() {
     // token names the registered family resolves to that family in the built draw
     // data. A fresh `FontSystem::new()` carries NO faces, so this exercises the
     // runtime load — not the compile-time `build_font_system` embed.
-    let bytes = super::text::read_font_file(&workspace_font("JetBrainsMono-Regular.ttf"))
+    let bytes = postretro_ui::text::read_font_file(&workspace_font("JetBrainsMono-Regular.ttf"))
         .expect("the runtime font asset reads from the workspace-anchored path");
 
     let mut font_system = glyphon::FontSystem::new();
@@ -836,7 +836,7 @@ fn runtime_registered_font_is_usable_by_a_text_widget_font_token() {
     // The runtime register-and-check seam reports the family is queryable (this is
     // exactly what `UiTextRenderer::register_font` returns to its caller).
     assert!(
-        super::text::font_family_is_registered(&font_system, "JetBrains Mono"),
+        postretro_ui::text::font_family_is_registered(&font_system, "JetBrains Mono"),
         "the runtime-loaded face registers its family",
     );
 

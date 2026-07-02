@@ -31,6 +31,7 @@ const TARGET_H: u32 = 32;
 fn render_two_batches_offscreen(ctx: &GpuCtx) -> Readback {
     let format = wgpu::TextureFormat::Rgba8UnormSrgb;
     let mut pass = UiPass::new(&ctx.device, &ctx.queue, format);
+    let mut font_system = postretro_ui::text::build_font_system();
 
     let target = ctx.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("multi_batch offscreen target"),
@@ -88,6 +89,7 @@ fn render_two_batches_offscreen(ctx: &GpuCtx) -> Readback {
             label: Some("multi_batch encoder"),
         });
     pass.encode(
+        &mut font_system,
         &ctx.device,
         &ctx.queue,
         &mut encoder,

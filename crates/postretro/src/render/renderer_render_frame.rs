@@ -8,6 +8,7 @@ impl Renderer {
     #[allow(clippy::too_many_arguments)]
     pub fn render_frame_indirect(
         &mut self,
+        font_system: &mut postretro_ui::text::FontSystem,
         cam_vis: CameraCullVisibility<'_>,
         light_reachable_cell_mask: &[bool],
         reachable_cell_aabbs: &[(Vec3, Vec3)],
@@ -539,6 +540,7 @@ impl Renderer {
             // (disjoint field borrow from `&mut self.ui`). The cloned `stack`
             // above already released the snapshot, so this borrow is clean.
             let mut draw = full.ui.layout_gameplay_tree(
+                font_system,
                 layer,
                 tree,
                 ui_viewport,
@@ -589,6 +591,7 @@ impl Renderer {
             ui::UiComposition::from_layer_draws(&layer_draws, &white_bg, &full.ui_images);
         if !composition.is_empty() {
             full.ui.encode(
+                font_system,
                 device,
                 queue,
                 &mut encoder,

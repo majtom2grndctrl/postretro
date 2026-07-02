@@ -44,7 +44,6 @@ mod session;
 mod shadow_cull;
 mod sim;
 mod startup;
-mod ui_texture;
 mod view_feel;
 
 #[cfg(test)]
@@ -659,10 +658,10 @@ enum UiButtonAction {
 
 fn classify_ui_button_action(on_press: &str) -> UiButtonAction {
     match on_press {
-        render::ui::actions::COMMIT_TEXT_ENTRY_ACTION => UiButtonAction::CommitTextEntry,
-        render::ui::actions::CLOSE_DIALOG_ACTION => UiButtonAction::CloseDialog,
-        render::ui::actions::EXIT_TO_DESKTOP_ACTION => UiButtonAction::ExitToDesktop,
-        render::ui::actions::QUIT_TO_MENU_ACTION => UiButtonAction::QuitToMenu,
+        postretro_ui::actions::COMMIT_TEXT_ENTRY_ACTION => UiButtonAction::CommitTextEntry,
+        postretro_ui::actions::CLOSE_DIALOG_ACTION => UiButtonAction::CloseDialog,
+        postretro_ui::actions::EXIT_TO_DESKTOP_ACTION => UiButtonAction::ExitToDesktop,
+        postretro_ui::actions::QUIT_TO_MENU_ACTION => UiButtonAction::QuitToMenu,
         _ => UiButtonAction::NamedReaction,
     }
 }
@@ -682,10 +681,10 @@ fn frontend_return_requests(frontend: Option<&Frontend>) -> Vec<LevelRequest> {
 }
 
 fn focused_button_on_press(
-    rects: Option<&render::ui::tree::FocusRectList>,
+    rects: Option<&postretro_ui::tree::FocusRectList>,
     focused_id: Option<&str>,
 ) -> Option<String> {
-    use render::ui::tree::NodeInteraction;
+    use postretro_ui::tree::NodeInteraction;
 
     let focused_id = focused_id?;
     rects?
@@ -706,7 +705,7 @@ fn focused_button_on_press(
 
 fn route_ui_button_action(
     on_press: &str,
-    modal_stack: &mut render::ui::modal_stack::ModalStack,
+    modal_stack: &mut postretro_ui::modal_stack::ModalStack,
 ) -> UiButtonAction {
     match classify_ui_button_action(on_press) {
         UiButtonAction::CloseDialog => {
@@ -717,10 +716,10 @@ fn route_ui_button_action(
     }
 }
 
-fn apply_pause_menu_nav_policy(modal_stack: &mut render::ui::modal_stack::ModalStack) {
+fn apply_pause_menu_nav_policy(modal_stack: &mut postretro_ui::modal_stack::ModalStack) {
     match modal_stack.active_name() {
-        Some(render::ui::demo::PAUSE_MENU_NAME) => modal_stack.pop(),
-        None => modal_stack.push_named(render::ui::demo::PAUSE_MENU_NAME, None),
+        Some(postretro_ui::demo::PAUSE_MENU_NAME) => modal_stack.pop(),
+        None => modal_stack.push_named(postretro_ui::demo::PAUSE_MENU_NAME, None),
         Some(_) => {}
     }
 }
@@ -741,10 +740,10 @@ fn gameplay_snapshot_for_capture_state(
 
 fn gameplay_capture_gate_for_frame(
     ui_captured_gameplay_at_frame_start: bool,
-    modal_stack: &render::ui::modal_stack::ModalStack,
+    modal_stack: &postretro_ui::modal_stack::ModalStack,
 ) -> bool {
     ui_captured_gameplay_at_frame_start
-        || modal_stack.top_capture_mode() == render::ui::descriptor::CaptureMode::Capture
+        || modal_stack.top_capture_mode() == postretro_ui::descriptor::CaptureMode::Capture
 }
 
 fn build_sim_command(
@@ -1551,7 +1550,7 @@ impl ApplicationHandler for App {
                         .modal_stack
                         .active_name()
                         .map(str::to_string)
-                        .unwrap_or_else(|| render::ui::tree_asset::HUD_NAME.to_string());
+                        .unwrap_or_else(|| postretro_ui::tree_asset::HUD_NAME.to_string());
                     session.ui_focus.tick(
                         Some(active_key.as_str()),
                         session.ui_focus_rects.as_ref(),
@@ -1595,7 +1594,7 @@ impl ApplicationHandler for App {
                 } else if focus_result.cancelled && !text_entry_consumed_nav {
                     if let Some(session) = self.session.as_mut() {
                         if session.modal_stack.active_name()
-                            == Some(render::ui::demo::PAUSE_MENU_NAME)
+                            == Some(postretro_ui::demo::PAUSE_MENU_NAME)
                         {
                             session.modal_stack.pop();
                         }
@@ -2543,7 +2542,7 @@ impl ApplicationHandler for App {
                         .frontend
                         .as_ref()
                         .map(|frontend| frontend.menu_tree.as_str())
-                        .unwrap_or(render::ui::demo::FRONTEND_MENU_NAME);
+                        .unwrap_or(postretro_ui::demo::FRONTEND_MENU_NAME);
                     // Reuse the `session` borrow taken at the top of this render
                     // block (the `particle_collections` borrow keeps it alive); a
                     // second `self.session.as_mut()` here would alias it.
@@ -2561,6 +2560,7 @@ impl ApplicationHandler for App {
                     renderer.set_ui_snapshot(ui_snapshot);
 
                     let surface_texture = match renderer.render_frame_indirect(
+                        &mut session.font_system,
                         CameraCullVisibility {
                             cells: &visible_cells,
                             path: stats.path,
@@ -2927,7 +2927,7 @@ impl App {
         if let Some(session) = self.session.as_mut() {
             session
                 .modal_stack
-                .replace_script_tree_tier(ui_trees, render::ui::modal_stack::ScopeTier::Mod);
+                .replace_script_tree_tier(ui_trees, postretro_ui::modal_stack::ScopeTier::Mod);
         }
         self.commit_mod_ui_theme(theme);
         if let Some(session) = self.session.as_mut() {
@@ -2952,12 +2952,12 @@ impl App {
         let Some(renderer) = self.renderer.as_mut() else {
             return;
         };
-        let descriptor = render::ui::theme::ThemeDescriptor {
+        let descriptor = postretro_ui::theme::ThemeDescriptor {
             colors: self.mod_theme_override.colors.clone(),
             fonts: self.mod_theme_override.fonts.clone(),
             spacing: self.mod_theme_override.spacing.clone(),
         };
-        let merged = render::ui::theme::UiTheme::engine_default().with_override(&descriptor);
+        let merged = postretro_ui::theme::UiTheme::engine_default().with_override(&descriptor);
         renderer.set_ui_theme(merged);
     }
 
@@ -2966,7 +2966,7 @@ impl App {
             .as_ref()
             .and_then(|session| session.frontend.as_ref())
             .map(|frontend| frontend.menu_tree.as_str())
-            .unwrap_or(render::ui::demo::FRONTEND_MENU_NAME)
+            .unwrap_or(postretro_ui::demo::FRONTEND_MENU_NAME)
     }
 
     fn present_frontend_menu(&mut self) -> bool {
@@ -2974,7 +2974,7 @@ impl App {
         let presented = self.session.as_mut().and_then(|session| {
             session
                 .modal_stack
-                .replace_with_frontend_menu(&menu_tree, render::ui::demo::FRONTEND_MENU_NAME)
+                .replace_with_frontend_menu(&menu_tree, postretro_ui::demo::FRONTEND_MENU_NAME)
         });
         self.apply_frontend_menu_camera_pose_if_top();
         self.reconcile_ui_focus();
@@ -3010,7 +3010,7 @@ impl App {
         };
         session.modal_stack.active_name().is_some_and(|active| {
             active == self.frontend_menu_tree_name()
-                || active == render::ui::demo::FRONTEND_MENU_NAME
+                || active == postretro_ui::demo::FRONTEND_MENU_NAME
         })
     }
 
@@ -3030,29 +3030,29 @@ impl App {
     }
 
     fn build_ui_read_snapshot(
-        modal_stack: &render::ui::modal_stack::ModalStack,
+        modal_stack: &postretro_ui::modal_stack::ModalStack,
         presentation_cells: &mut scripting_systems::presentation_cells::PresentationCellStore,
         slot_table: &postretro_entities::SlotTable,
         script_time: f64,
         ui_input_mode: input::InputMode,
         ui_focused_id: Option<String>,
         frontend_menu_is_top: bool,
-    ) -> render::ui::UiReadSnapshot {
+    ) -> postretro_ui::UiReadSnapshot {
         let slot_values = Self::build_ui_slot_snapshot(slot_table);
-        let mut trees: Vec<render::ui::UiTreeEntry> = if frontend_menu_is_top {
+        let mut trees: Vec<postretro_ui::UiTreeEntry> = if frontend_menu_is_top {
             Vec::new()
         } else {
             modal_stack.always_on_layers()
         };
         trees.extend(modal_stack.entries());
 
-        let composed_trees: Vec<&render::ui::descriptor::AnchoredTree> =
+        let composed_trees: Vec<&postretro_ui::descriptor::AnchoredTree> =
             trees.iter().map(|entry| &entry.descriptor).collect();
         presentation_cells.reconcile(&composed_trees);
         let cell_values = presentation_cells.snapshot();
 
         let ring_id = if modal_stack.top_capture_mode()
-            == render::ui::descriptor::CaptureMode::Capture
+            == postretro_ui::descriptor::CaptureMode::Capture
             && !ui_input_mode.ring_visible()
         {
             None
@@ -3060,7 +3060,7 @@ impl App {
             ui_focused_id
         };
 
-        render::ui::UiReadSnapshot::with_trees(
+        postretro_ui::UiReadSnapshot::with_trees(
             trees,
             slot_values,
             cell_values,
@@ -3088,12 +3088,14 @@ impl App {
         // register the face. A missing/unreadable file or a non-registering face is
         // logged and skipped — the `font` token then degrades to a system fallback
         // at shape time, but boot never aborts.
-        let Some(renderer) = self.renderer.as_mut() else {
+        let content_root = self.content_root.clone();
+        let (Some(renderer), Some(session)) = (self.renderer.as_mut(), self.session.as_mut())
+        else {
             return;
         };
         for (family, rel_path) in fonts.families {
-            let path = self.content_root.join(&rel_path);
-            let bytes = match render::ui::text::read_font_file(&path) {
+            let path = content_root.join(&rel_path);
+            let bytes = match postretro_ui::text::read_font_file(&path) {
                 Ok(bytes) => bytes,
                 Err(err) => {
                     log::warn!(
@@ -3104,7 +3106,7 @@ impl App {
                     continue;
                 }
             };
-            if renderer.register_ui_font(&family, bytes) {
+            if renderer.register_ui_font(&mut session.font_system, &family, bytes) {
                 log::info!(
                     "[UI] registered mod font '{family}' from '{}'",
                     path.display()
@@ -3340,6 +3342,7 @@ impl App {
 
         renderer.set_ui_snapshot(ui_snapshot);
         let surface_texture = match renderer.render_frame_indirect(
+            &mut session.font_system,
             CameraCullVisibility {
                 cells: &VisibleCells::DrawAll,
                 // Frontend/splash path: no world cull. DrawAll + non-portal
@@ -3415,7 +3418,7 @@ impl App {
     /// by `step` clamped to the slider's min/max, enqueuing a `setState` write
     /// applied at the game-logic command drain (the bound slot changes on N+1).
     fn apply_slider_nav_capture(&mut self, nav_intents: &mut Vec<input::NavIntent>) {
-        use render::ui::tree::NodeInteraction;
+        use postretro_ui::tree::NodeInteraction;
 
         let Some(focused_id) = self.ui_focused_id.as_deref() else {
             return;
@@ -3583,7 +3586,7 @@ impl App {
     /// rather than consuming it as a text-entry commit. Reads the same
     /// `ui_focused_id` + `ui_focus_rects` pair `apply_slider_nav_capture` does.
     fn focused_node_is_activatable_button(&self) -> bool {
-        use render::ui::tree::NodeInteraction;
+        use postretro_ui::tree::NodeInteraction;
         let Some(focused_id) = self.ui_focused_id.as_deref() else {
             return false;
         };
@@ -4474,7 +4477,7 @@ impl App {
             return;
         }
 
-        let want_menu = matches!(mode, render::ui::descriptor::CaptureMode::Capture);
+        let want_menu = matches!(mode, postretro_ui::descriptor::CaptureMode::Capture);
         match (want_menu, current_focus) {
             // A capturing tree opened (or stayed open): enter Menu, release cursor.
             (true, InputFocus::Gameplay) => self.set_input_focus(InputFocus::Menu),
@@ -4775,19 +4778,19 @@ mod tests {
     #[test]
     fn ui_button_action_classifier_reserves_ui_actions_before_named_reactions() {
         assert_eq!(
-            classify_ui_button_action(render::ui::actions::COMMIT_TEXT_ENTRY_ACTION),
+            classify_ui_button_action(postretro_ui::actions::COMMIT_TEXT_ENTRY_ACTION),
             UiButtonAction::CommitTextEntry
         );
         assert_eq!(
-            classify_ui_button_action(render::ui::actions::CLOSE_DIALOG_ACTION),
+            classify_ui_button_action(postretro_ui::actions::CLOSE_DIALOG_ACTION),
             UiButtonAction::CloseDialog
         );
         assert_eq!(
-            classify_ui_button_action(render::ui::actions::EXIT_TO_DESKTOP_ACTION),
+            classify_ui_button_action(postretro_ui::actions::EXIT_TO_DESKTOP_ACTION),
             UiButtonAction::ExitToDesktop
         );
         assert_eq!(
-            classify_ui_button_action(render::ui::actions::QUIT_TO_MENU_ACTION),
+            classify_ui_button_action(postretro_ui::actions::QUIT_TO_MENU_ACTION),
             UiButtonAction::QuitToMenu
         );
         assert_eq!(
@@ -4871,11 +4874,11 @@ mod tests {
 
     #[test]
     fn gameplay_snapshot_stays_neutral_on_gamepad_pause_close_frame() {
-        use crate::render::ui::descriptor::{
+        use postretro_ui::descriptor::{
             Align, AnchoredTree, CaptureMode, ContainerWidget, SpacingValue, Widget,
         };
-        use crate::render::ui::layout::Anchor;
-        use crate::render::ui::modal_stack::{ModalStack, ScopeTier};
+        use postretro_ui::layout::Anchor;
+        use postretro_ui::modal_stack::{ModalStack, ScopeTier};
 
         fn capturing_tree() -> AnchoredTree {
             AnchoredTree {
@@ -4906,16 +4909,16 @@ mod tests {
 
         let mut stack = ModalStack::new();
         stack.registry_mut().register(
-            render::ui::demo::PAUSE_MENU_NAME,
+            postretro_ui::demo::PAUSE_MENU_NAME,
             capturing_tree(),
             ScopeTier::Engine,
             false,
         );
-        stack.push_named(render::ui::demo::PAUSE_MENU_NAME, None);
+        stack.push_named(postretro_ui::demo::PAUSE_MENU_NAME, None);
         let ui_captured_gameplay_at_frame_start =
-            stack.top_capture_mode() == render::ui::descriptor::CaptureMode::Capture;
+            stack.top_capture_mode() == postretro_ui::descriptor::CaptureMode::Capture;
 
-        let routed = route_ui_button_action(render::ui::actions::CLOSE_DIALOG_ACTION, &mut stack);
+        let routed = route_ui_button_action(postretro_ui::actions::CLOSE_DIALOG_ACTION, &mut stack);
         assert_eq!(routed, UiButtonAction::CloseDialog);
         assert!(
             stack.is_empty(),
@@ -4923,7 +4926,7 @@ mod tests {
         );
         assert_ne!(
             stack.top_capture_mode(),
-            render::ui::descriptor::CaptureMode::Capture,
+            postretro_ui::descriptor::CaptureMode::Capture,
             "the post-pop stack alone would no longer gate gameplay",
         );
 
@@ -5349,8 +5352,8 @@ mod tests {
         );
     }
 
-    fn widget_contains_text(widget: &render::ui::descriptor::Widget, needle: &str) -> bool {
-        use render::ui::descriptor::Widget;
+    fn widget_contains_text(widget: &postretro_ui::descriptor::Widget, needle: &str) -> bool {
+        use postretro_ui::descriptor::Widget;
 
         match widget {
             Widget::Text(text) => text.content == needle,
@@ -5366,8 +5369,11 @@ mod tests {
         }
     }
 
-    fn button_action<'a>(widget: &'a render::ui::descriptor::Widget, id: &str) -> Option<&'a str> {
-        use render::ui::descriptor::Widget;
+    fn button_action<'a>(
+        widget: &'a postretro_ui::descriptor::Widget,
+        id: &str,
+    ) -> Option<&'a str> {
+        use postretro_ui::descriptor::Widget;
 
         match widget {
             Widget::Button(button) if button.id == id => Some(button.on_press.as_str()),
@@ -5391,7 +5397,7 @@ mod tests {
     }
 
     fn focus_button_action(
-        rects: &render::ui::tree::FocusRectList,
+        rects: &postretro_ui::tree::FocusRectList,
         result: &input::FocusTickResult,
     ) -> String {
         assert!(
@@ -5477,11 +5483,11 @@ mod tests {
     #[test]
     fn production_pause_menu_sdk_tree_drives_cpu_interaction_end_to_end() {
         use crate::input::{InputMode, NavIntent, PointerPos, UiFocusEngine};
-        use crate::render::ui::descriptor::CaptureMode;
-        use crate::render::ui::layout::Anchor;
-        use crate::render::ui::modal_stack::{ModalStack, ScopeTier};
-        use crate::render::ui::tree::CellValues;
         use postretro_scripting_core::data_descriptors::RegisteredUiTree;
+        use postretro_ui::descriptor::CaptureMode;
+        use postretro_ui::layout::Anchor;
+        use postretro_ui::modal_stack::{ModalStack, ScopeTier};
+        use postretro_ui::tree::CellValues;
 
         if !install_scripts_build_next_to_current_exe() {
             eprintln!("skipping: could not install scripts-build next to test binary");
@@ -5498,7 +5504,7 @@ mod tests {
             .expect("dev mod manifest exists")
             .ui_trees
             .iter()
-            .find(|tree| tree.name == render::ui::demo::PAUSE_MENU_NAME)
+            .find(|tree| tree.name == postretro_ui::demo::PAUSE_MENU_NAME)
             .expect("dev mod manifest exports the pauseMenu tree")
             .clone();
         assert!(
@@ -5512,14 +5518,14 @@ mod tests {
         assert_eq!(mod_pause.capture_mode, CaptureMode::Capture);
         assert_eq!(mod_pause.initial_focus.as_deref(), Some("pauseResume"));
         assert_eq!(mod_pause.accessible_name.as_deref(), Some("Pause menu"));
-        assert_eq!(mod_pause.role, Some(render::ui::descriptor::Role::Group));
+        assert_eq!(mod_pause.role, Some(postretro_ui::descriptor::Role::Group));
         assert!(widget_contains_text(&mod_pause.root, "PAUSED"));
-        let render::ui::descriptor::Widget::VStack(pause_root) = &mod_pause.root else {
+        let postretro_ui::descriptor::Widget::VStack(pause_root) = &mod_pause.root else {
             panic!("pause menu root is a vstack");
         };
         assert_eq!(
             pause_root.focus.as_ref().map(|focus| focus.kind()),
-            Some(render::ui::descriptor::FocusKind::Linear)
+            Some(postretro_ui::descriptor::FocusKind::Linear)
         );
         assert_eq!(
             pause_root.focus.as_ref().map(|focus| focus.wrap()),
@@ -5527,24 +5533,24 @@ mod tests {
         );
         assert_eq!(
             button_action(&mod_pause.root, "pauseResume"),
-            Some(render::ui::actions::CLOSE_DIALOG_ACTION),
+            Some(postretro_ui::actions::CLOSE_DIALOG_ACTION),
             "Resume resolves to the reserved close action wire value",
         );
         assert_eq!(
             button_action(&mod_pause.root, "pauseExitDesktop"),
-            Some(render::ui::actions::EXIT_TO_DESKTOP_ACTION),
+            Some(postretro_ui::actions::EXIT_TO_DESKTOP_ACTION),
             "Exit to Desktop resolves to the generic reserved quit action wire value",
         );
 
-        let theme = render::ui::theme::UiTheme::engine_default();
-        let mut retained = render::ui::tree::UiTree::from_descriptor(&mod_pause, &theme);
-        let mut font_system = render::ui::text::build_font_system();
+        let theme = postretro_ui::theme::UiTheme::engine_default();
+        let mut retained = postretro_ui::tree::UiTree::from_descriptor(&mod_pause, &theme);
+        let mut font_system = postretro_ui::text::build_font_system();
         let empty_slots = std::collections::HashMap::new();
         let empty_cells = CellValues::new();
         let draw = retained.build_draw_data_retained(
             [1280, 720],
             &mut font_system,
-            &render::ui::tree::ImageSizes::new(),
+            &postretro_ui::tree::ImageSizes::new(),
             &empty_slots,
             &empty_cells,
             0.0,
@@ -5572,8 +5578,8 @@ mod tests {
         );
 
         let fallback_path =
-            workspace_root().join(render::ui::tree_asset::ui_asset_path("pauseMenu.json"));
-        let fallback = render::ui::tree_asset::load_named_tree(&fallback_path)
+            workspace_root().join(postretro_ui::tree_asset::ui_asset_path("pauseMenu.json"));
+        let fallback = postretro_ui::tree_asset::load_named_tree(&fallback_path)
             .expect("engine pause fallback loads");
         assert!(
             widget_contains_text(&fallback.root, "PRESS ESC OR B TO RESUME"),
@@ -5582,18 +5588,18 @@ mod tests {
 
         let mut stack = ModalStack::new();
         stack.registry_mut().register(
-            render::ui::demo::PAUSE_MENU_NAME,
+            postretro_ui::demo::PAUSE_MENU_NAME,
             fallback.clone(),
             ScopeTier::Engine,
             false,
         );
         stack.register_script_trees(vec![pause_entry.clone()], ScopeTier::Mod);
         let resolved = stack
-            .tree(render::ui::demo::PAUSE_MENU_NAME)
+            .tree(postretro_ui::demo::PAUSE_MENU_NAME)
             .expect("pauseMenu resolves through tiered registry");
         assert_eq!(
             button_action(&resolved.root, "pauseResume"),
-            Some(render::ui::actions::CLOSE_DIALOG_ACTION),
+            Some(postretro_ui::actions::CLOSE_DIALOG_ACTION),
             "the returned mod tree shadows the fallback marker",
         );
         assert!(
@@ -5601,11 +5607,14 @@ mod tests {
             "shadowed mod tree does not expose the fallback marker",
         );
 
-        stack.push_named(render::ui::demo::PAUSE_MENU_NAME, None);
-        assert_eq!(stack.active_name(), Some(render::ui::demo::PAUSE_MENU_NAME));
+        stack.push_named(postretro_ui::demo::PAUSE_MENU_NAME, None);
+        assert_eq!(
+            stack.active_name(),
+            Some(postretro_ui::demo::PAUSE_MENU_NAME)
+        );
         assert_eq!(
             stack.top_capture_mode(),
-            render::ui::descriptor::CaptureMode::Capture
+            postretro_ui::descriptor::CaptureMode::Capture
         );
         assert_eq!(
             stack.entries()[0].descriptor.initial_focus.as_deref(),
@@ -5615,7 +5624,7 @@ mod tests {
 
         let mut keyboard_focus = UiFocusEngine::new();
         let initial = keyboard_focus.tick(
-            Some(render::ui::demo::PAUSE_MENU_NAME),
+            Some(postretro_ui::demo::PAUSE_MENU_NAME),
             Some(&focus_rects),
             &[],
             None,
@@ -5625,7 +5634,7 @@ mod tests {
         );
         assert_eq!(initial.focused.as_deref(), Some("pauseResume"));
         let keyboard_confirm = keyboard_focus.tick(
-            Some(render::ui::demo::PAUSE_MENU_NAME),
+            Some(postretro_ui::demo::PAUSE_MENU_NAME),
             Some(&focus_rects),
             &[NavIntent::Confirm],
             None,
@@ -5637,7 +5646,7 @@ mod tests {
 
         let mut gamepad_focus = UiFocusEngine::new();
         gamepad_focus.tick(
-            Some(render::ui::demo::PAUSE_MENU_NAME),
+            Some(postretro_ui::demo::PAUSE_MENU_NAME),
             Some(&focus_rects),
             &[],
             None,
@@ -5646,7 +5655,7 @@ mod tests {
             0.0,
         );
         let gamepad_confirm = gamepad_focus.tick(
-            Some(render::ui::demo::PAUSE_MENU_NAME),
+            Some(postretro_ui::demo::PAUSE_MENU_NAME),
             Some(&focus_rects),
             &[NavIntent::Confirm],
             None,
@@ -5662,7 +5671,7 @@ mod tests {
         };
         let mut pointer_focus = UiFocusEngine::new();
         let pointer_click = pointer_focus.tick(
-            Some(render::ui::demo::PAUSE_MENU_NAME),
+            Some(postretro_ui::demo::PAUSE_MENU_NAME),
             Some(&focus_rects),
             &[],
             None,
@@ -5674,7 +5683,7 @@ mod tests {
 
         assert_eq!(
             keyboard_action,
-            render::ui::actions::CLOSE_DIALOG_ACTION,
+            postretro_ui::actions::CLOSE_DIALOG_ACTION,
             "keyboard confirm resolves the reserved Resume action",
         );
         assert_eq!(
@@ -5693,7 +5702,7 @@ mod tests {
             "ui.closeDialog pops the active pause menu before named-reaction dispatch",
         );
 
-        stack.push_named(render::ui::demo::PAUSE_MENU_NAME, None);
+        stack.push_named(postretro_ui::demo::PAUSE_MENU_NAME, None);
         let ordinary = route_ui_button_action("resumePauseMenu", &mut stack);
         assert_eq!(
             ordinary,
@@ -5702,14 +5711,14 @@ mod tests {
         );
         assert_eq!(
             stack.active_name(),
-            Some(render::ui::demo::PAUSE_MENU_NAME),
+            Some(postretro_ui::demo::PAUSE_MENU_NAME),
             "ordinary names are not intercepted as reserved close actions",
         );
 
         stack.replace_script_tree_tier(Vec::<RegisteredUiTree>::new(), ScopeTier::Mod);
         assert_eq!(
             stack
-                .tree(render::ui::demo::PAUSE_MENU_NAME)
+                .tree(postretro_ui::demo::PAUSE_MENU_NAME)
                 .and_then(|tree| button_action(&tree.root, "pauseResume")),
             None,
             "staged omission reveals the fallback in the registry",
@@ -5720,11 +5729,11 @@ mod tests {
         );
         assert_eq!(
             button_action(&stack.entries()[0].descriptor.root, "pauseResume"),
-            Some(render::ui::actions::CLOSE_DIALOG_ACTION),
+            Some(postretro_ui::actions::CLOSE_DIALOG_ACTION),
             "already-open menu remains stable until closed",
         );
         stack.pop();
-        stack.push_named(render::ui::demo::PAUSE_MENU_NAME, None);
+        stack.push_named(postretro_ui::demo::PAUSE_MENU_NAME, None);
         assert!(
             widget_contains_text(
                 &stack.entries()[0].descriptor.root,
@@ -5741,11 +5750,11 @@ mod tests {
 
     #[test]
     fn nav_menu_policy_opens_closes_pause_and_ignores_other_modals() {
-        use crate::render::ui::descriptor::{
+        use postretro_ui::descriptor::{
             Align, AnchoredTree, CaptureMode, ContainerWidget, SpacingValue, Widget,
         };
-        use crate::render::ui::layout::Anchor;
-        use crate::render::ui::modal_stack::{ModalStack, ScopeTier};
+        use postretro_ui::layout::Anchor;
+        use postretro_ui::modal_stack::{ModalStack, ScopeTier};
 
         fn capturing_tree() -> AnchoredTree {
             AnchoredTree {
@@ -5776,7 +5785,7 @@ mod tests {
 
         let mut stack = ModalStack::new();
         stack.registry_mut().register(
-            render::ui::demo::PAUSE_MENU_NAME,
+            postretro_ui::demo::PAUSE_MENU_NAME,
             capturing_tree(),
             ScopeTier::Engine,
             false,
@@ -5788,7 +5797,7 @@ mod tests {
         apply_pause_menu_nav_policy(&mut stack);
         assert_eq!(
             stack.active_name(),
-            Some(render::ui::demo::PAUSE_MENU_NAME),
+            Some(postretro_ui::demo::PAUSE_MENU_NAME),
             "nav.menu opens pauseMenu on an empty modal stack",
         );
 
@@ -5968,10 +5977,10 @@ mod tests {
     }
 
     fn staged_tree(name: &str) -> RegisteredUiTree {
-        use crate::render::ui::descriptor::{
+        use postretro_ui::descriptor::{
             Align, AnchoredTree, CaptureMode, ContainerWidget, SpacingValue, Widget,
         };
-        use crate::render::ui::layout::Anchor;
+        use postretro_ui::layout::Anchor;
 
         RegisteredUiTree {
             name: name.to_string(),
@@ -6176,23 +6185,23 @@ mod tests {
         // Drain into the tiered registry AFTER the VM is gone — the exact ordering
         // the App's mod-init handler enforces (drain, then the VM has already
         // dropped inside run_mod_init).
-        let mut stack = render::ui::modal_stack::ModalStack::new();
-        stack.register_script_trees(trees, render::ui::modal_stack::ScopeTier::Mod);
+        let mut stack = postretro_ui::modal_stack::ModalStack::new();
+        stack.register_script_trees(trees, postretro_ui::modal_stack::ScopeTier::Mod);
 
         // A frame renders the registered tree with NO VM resident: resolve by name
         // and build draw data from the resolved descriptor alone.
         let resolved = stack
             .tree("banner")
             .expect("registered tree resolves by name");
-        let theme = render::ui::theme::UiTheme::engine_default();
-        let mut ui = render::ui::tree::UiTree::from_descriptor(resolved, &theme);
-        let mut fs = render::ui::text::build_font_system();
+        let theme = postretro_ui::theme::UiTheme::engine_default();
+        let mut ui = postretro_ui::tree::UiTree::from_descriptor(resolved, &theme);
+        let mut fs = postretro_ui::text::build_font_system();
         let data = ui.build_draw_data_retained(
             [1280, 720],
             &mut fs,
-            &render::ui::tree::ImageSizes::new(),
+            &postretro_ui::tree::ImageSizes::new(),
             &std::collections::HashMap::new(),
-            &render::ui::tree::CellValues::new(),
+            &postretro_ui::tree::CellValues::new(),
             0.0,
         );
         assert!(

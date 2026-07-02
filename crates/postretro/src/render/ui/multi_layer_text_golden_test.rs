@@ -104,7 +104,10 @@ fn text_tree(content: &str, offset: [f32; 2]) -> AnchoredTree {
 /// retained under its own stack index. This is the exact modal-stack shape the
 /// production gameplay path produces. Returns the two owned `UiDrawData` in
 /// bottom→top order.
-fn layout_two_layers(pass: &mut UiPass) -> [UiDrawData; 2] {
+fn layout_two_layers(
+    pass: &mut UiPass,
+    font_system: &mut postretro_ui::text::FontSystem,
+) -> [UiDrawData; 2] {
     let viewport = [TARGET_W, TARGET_H];
     let theme = UiTheme::engine_default();
     let images = ImageSizes::new();
@@ -112,6 +115,7 @@ fn layout_two_layers(pass: &mut UiPass) -> [UiDrawData; 2] {
     let cells = super::tree::CellValues::new();
 
     let lower = pass.layout_gameplay_tree(
+        font_system,
         0,
         &text_tree(S0, S0_OFFSET),
         viewport,
@@ -123,6 +127,7 @@ fn layout_two_layers(pass: &mut UiPass) -> [UiDrawData; 2] {
         0.0,
     );
     let upper = pass.layout_gameplay_tree(
+        font_system,
         1,
         &text_tree(S1, S1_OFFSET),
         viewport,
@@ -164,9 +169,10 @@ fn make_target(ctx: &GpuCtx) -> (wgpu::Texture, wgpu::TextureView) {
 fn render_single_composition(ctx: &GpuCtx) -> Readback {
     let format = wgpu::TextureFormat::Rgba8UnormSrgb;
     let mut pass = UiPass::new(&ctx.device, &ctx.queue, format);
+    let mut font_system = postretro_ui::text::build_font_system();
     let (target, view) = make_target(ctx);
 
-    let layers = layout_two_layers(&mut pass);
+    let layers = layout_two_layers(&mut pass, &mut font_system);
     let white = pass.white_bind_group().clone();
     let images = super::UiImageRegistry::default();
     // The text-only drivers carry no image nodes, so the image branch of
@@ -179,6 +185,7 @@ fn render_single_composition(ctx: &GpuCtx) -> Readback {
             label: Some("multi_layer_text single-composition encoder"),
         });
     pass.encode(
+        &mut font_system,
         &ctx.device,
         &ctx.queue,
         &mut encoder,

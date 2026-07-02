@@ -14,9 +14,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::render::ui::descriptor::{AnchoredTree, CellInit, LocalState, Widget};
-use crate::render::ui::tree::CellValues;
 use postretro_entities::slot_table::SlotValue;
+use postretro_ui::descriptor::{AnchoredTree, CellInit, LocalState, Widget};
+use postretro_ui::tree::CellValues;
 
 /// The app-side presentation-cell store. Keyed by `(scopeId, cellName)`; values
 /// are the same `SlotValue` shapes a `{ local }` bind resolves. Presentation-only
@@ -178,11 +178,11 @@ fn widget_children(widget: &Widget) -> Option<&[Widget]> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::render::ui::descriptor::{
+    use postretro_ui::descriptor::{
         Align, AnchoredTree, BindSource, ColorValue, ContainerWidget, SpacingValue, TextBind,
         TextWidget,
     };
-    use crate::render::ui::layout::Anchor;
+    use postretro_ui::layout::Anchor;
     use std::collections::BTreeMap;
 
     fn cells(pairs: &[(&str, CellInit)]) -> BTreeMap<String, CellInit> {

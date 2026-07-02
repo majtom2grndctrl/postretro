@@ -15,7 +15,7 @@ impl Renderer {
     /// pixels here — the renderer owns all GPU work. Idempotent: a re-install
     /// (e.g. on resume) swaps the texture. Returns the decoded pixel dimensions
     /// for boot logging.
-    pub fn install_splash_pixels(&mut self, loaded: &crate::ui_texture::UiTexture) -> [u32; 2] {
+    pub fn install_splash_pixels(&mut self, loaded: &postretro_ui::UiTexture) -> [u32; 2] {
         self.boot_splash
             .install_logo(&self.device, &self.queue, loaded)
     }
@@ -126,15 +126,21 @@ impl Renderer {
         full.ui_theme_generation = full.ui_theme_generation.wrapping_add(1);
     }
 
-    /// Install a runtime UI font face from owned TTF/OTF bytes (the net-new
-    /// runtime path behind `UiPass`/glyphon's `FontSystem`; the engine's primary/mono
-    /// faces are embedded at compile time). Renderer-owns-GPU: the glyphon
-    /// `FontSystem` lives in the renderer, so the mod-init drain in `main.rs` reads
-    /// the TTF bytes itself and hands them here. Returns `false` when the bytes
-    /// register no face under `family` (a malformed file or a family-name
+    /// Install a runtime UI font face from owned TTF/OTF bytes into the
+    /// session-owned `FontSystem` (the net-new runtime path behind
+    /// `UiPass`/glyphon; the engine's primary/mono faces are embedded at compile
+    /// time by `postretro_ui::text::build_font_system`). Returns `false` when the
+    /// bytes register no face under `family` (a malformed file or a family-name
     /// mismatch), so the caller surfaces a named diagnostic and skips rather than
     /// leaving a `font` token silently resolving to a system fallback.
-    pub fn register_ui_font(&mut self, family: &str, ttf_bytes: Vec<u8>) -> bool {
-        self.full_mut().ui.register_font(family, ttf_bytes)
+    pub fn register_ui_font(
+        &mut self,
+        font_system: &mut postretro_ui::text::FontSystem,
+        family: &str,
+        ttf_bytes: Vec<u8>,
+    ) -> bool {
+        self.full_mut()
+            .ui
+            .register_font(font_system, family, ttf_bytes)
     }
 }

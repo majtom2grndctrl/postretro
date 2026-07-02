@@ -15,6 +15,7 @@ use anyhow::{Context, Result};
 use postretro_entities::ScriptCtx;
 
 use crate::input;
+#[cfg(feature = "dev-tools")]
 use crate::render;
 use crate::scripting::builtins::{
     ClassnameDispatch, register_builtins as register_builtin_classnames,
@@ -73,7 +74,7 @@ pub(crate) struct Session {
     /// The focus rect list the renderer exported for the top tree LAST frame.
     /// Inner `Option` encodes "not exported yet," not "session not installed."
     /// See: context/lib/ui.md §4.
-    pub(crate) ui_focus_rects: Option<render::ui::tree::FocusRectList>,
+    pub(crate) ui_focus_rects: Option<postretro_ui::tree::FocusRectList>,
 
     /// Pointer-vs-focus interaction mode (hover moves focus only in `Pointer`).
     /// See: context/lib/input.md §7.
@@ -81,7 +82,12 @@ pub(crate) struct Session {
 
     /// Gameplay-UI modal stack + named-tree registry. Built-in trees register at
     /// build. See: context/lib/ui.md §1.
-    pub(crate) modal_stack: render::ui::modal_stack::ModalStack,
+    pub(crate) modal_stack: postretro_ui::modal_stack::ModalStack,
+
+    /// CPU font database + shaper for gameplay UI layout and glyphon text
+    /// preparation. Built with the engine default UI faces when the session
+    /// exists; boot splash remains font-free.
+    pub(crate) font_system: postretro_ui::text::FontSystem,
 
     /// Script runtime, script context, registries, and every session-lifetime
     /// system that captures a `ScriptCtx` clone.
@@ -390,30 +396,30 @@ impl Session {
         // The HUD registers under `HUD_NAME` and resolves as the always-on bottom
         // passthrough layer each frame. The pause menu, frontend menu, and
         // keyboard register as pushed-only modals.
-        let mut modal_stack = render::ui::modal_stack::ModalStack::new();
+        let mut modal_stack = postretro_ui::modal_stack::ModalStack::new();
         {
             let registry = modal_stack.registry_mut();
-            render::ui::tree_asset::register_tree_from_disk(
+            postretro_ui::tree_asset::register_tree_from_disk(
                 registry,
-                render::ui::tree_asset::HUD_NAME,
+                postretro_ui::tree_asset::HUD_NAME,
                 "hud.json",
                 true,
             );
-            render::ui::tree_asset::register_tree_from_disk(
+            postretro_ui::tree_asset::register_tree_from_disk(
                 registry,
-                render::ui::demo::PAUSE_MENU_NAME,
+                postretro_ui::demo::PAUSE_MENU_NAME,
                 "pauseMenu.json",
                 false,
             );
-            render::ui::tree_asset::register_tree_from_disk(
+            postretro_ui::tree_asset::register_tree_from_disk(
                 registry,
-                render::ui::demo::FRONTEND_MENU_NAME,
+                postretro_ui::demo::FRONTEND_MENU_NAME,
                 "frontendMenu.json",
                 false,
             );
-            render::ui::tree_asset::register_tree_from_disk(
+            postretro_ui::tree_asset::register_tree_from_disk(
                 registry,
-                render::ui::keyboard_asset::KEYBOARD_TREE_NAME,
+                postretro_ui::keyboard_asset::KEYBOARD_TREE_NAME,
                 "keyboard.json",
                 false,
             );
@@ -461,6 +467,7 @@ impl Session {
             ui_focus_rects: None,
             ui_input_mode: input::InputMode::default(),
             modal_stack,
+            font_system: postretro_ui::text::build_font_system(),
             scripting,
             presentation_cells: scripting_systems::presentation_cells::PresentationCellStore::new(),
             state_store_lifecycle: StateStoreLifecycle::default(),

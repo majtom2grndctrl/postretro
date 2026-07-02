@@ -22,10 +22,6 @@ glyphon.workspace = true
 glam.workspace = true
 bytemuck.workspace = true
 
-# Flexbox layout solver for the retained UI widget tree (M13 Goal B). Consumed
-# by the UI layout path; pure CPU, no GPU coupling.
-taffy.workspace = true
-
 # Collision (parry3d trimesh + ray queries). nalgebra types are confined to
 # the `collision` module per the entity_model.md §7 invariant.
 parry3d = { workspace = true }
@@ -80,6 +76,7 @@ postretro-visibility = { workspace = true }
 postretro-foundation = { workspace = true }
 postretro-entities = { workspace = true, features = ["script-ffi"] }
 postretro-scripting-core = { workspace = true }
+postretro-ui = { workspace = true }
 postretro-net = { workspace = true }
 
 # Debug UI (egui) — only compiled in when the `dev-tools` feature is enabled.
@@ -106,6 +103,8 @@ dev-tools = [
 postretro-script-compiler = { path = "../script-compiler" }
 
 [dev-dependencies]
+postretro-ui = { workspace = true, features = ["test-fixtures"] }
+
 # Enable the net crate's dev-only in-memory packet conditioner (`postretro_net::harness`:
 # `PacketConditioner`/`LinkConfig`) for the Phase 3 prediction/reconciliation latency
 # harness (M15 Phase 3 Task 6). The harness module is gated `#[cfg(any(test, feature =

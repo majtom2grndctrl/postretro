@@ -8,7 +8,7 @@
 
 use bytemuck::{Pod, Zeroable};
 
-use crate::ui_texture::UiTexture;
+use postretro_ui::UiTexture;
 
 const SPLASH_WGSL: &str = include_str!("../shaders/splash.wgsl");
 

@@ -296,7 +296,7 @@ fn runtime_opcode_vocabulary_appears_in_both_type_outputs() {
 }
 
 /// `WidgetAnchor` in both typedef outputs must enumerate EXACTLY the variants
-/// of `crate::render::ui::layout::Anchor` — no more, no less.
+/// of `postretro_ui::layout::Anchor` — no more, no less.
 ///
 /// The expected union is DERIVED from `Anchor::ALL`/`Anchor::wire()` (the
 /// single source of truth), not a hand-copied list. `wire()` is an
@@ -307,9 +307,9 @@ fn runtime_opcode_vocabulary_appears_in_both_type_outputs() {
 /// wire strings back to variants.
 #[test]
 fn widget_anchor_typedef_matches_layout_anchor_variants() {
-    use crate::render::ui::layout::Anchor;
     use crate::scripting::typedef::register_all;
     use postretro_entities::ctx::ScriptCtx;
+    use postretro_ui::layout::Anchor;
 
     let mut r = PrimitiveRegistry::new();
     register_all(&mut r, ScriptCtx::new());

@@ -197,9 +197,9 @@ impl Renderer {
     /// `load_skinned_model` cached it under. Returns an empty `Vec` when the model
     /// is not cached or has no animation — no error, no panic.
     ///
-    /// `pub` forwarder over the private `mesh_pass` (same seam as
-    /// [`Renderer::skinned_model_clip_by_name`]). Consumed by the level-load model
-    /// sweep (`main.rs`) to build the game-side clip tables.
+    /// `pub` forwarder over the private `mesh_pass` clip-metadata seam. Consumed
+    /// by the level-load model sweep (`main.rs`) to build the game-side clip
+    /// tables.
     pub fn skinned_model_clip_metadata(&self, model_handle: &str) -> Vec<mesh_pass::ClipMetadata> {
         self.full()
             .mesh_pass

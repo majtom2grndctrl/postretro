@@ -143,9 +143,9 @@ fn forward_wgsl_struct_strides_match_cpu_layout() {
         .expect("forward shader should declare struct GpuLight");
     assert_eq!(
         light_span as usize,
-        crate::lighting::GPU_LIGHT_SIZE,
+        postretro_lighting::GPU_LIGHT_SIZE,
         "forward.wgsl GpuLight stride ({light_span}) must match GPU_LIGHT_SIZE ({})",
-        crate::lighting::GPU_LIGHT_SIZE,
+        postretro_lighting::GPU_LIGHT_SIZE,
     );
 }
 

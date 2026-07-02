@@ -1,0 +1,12 @@
+[package]
+name = "postretro-lighting"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "CPU-only lighting packing and reachability math for Postretro"
+license.workspace = true
+
+[dependencies]
+glam.workspace = true
+postretro-level-loader = { path = "../level-loader", default-features = false }
+postretro-render-data.workspace = true

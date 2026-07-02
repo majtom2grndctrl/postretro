@@ -197,7 +197,7 @@ fn shadow_candidate_reach_uses_runtime_influence_volume() {
     let reachable = [(Vec3::splat(-1.0), Vec3::splat(1.0))];
 
     assert!(
-        !crate::lighting::light_reaches_visible_cell(
+        !postretro_lighting::light_reaches_visible_cell(
             Vec3::new(
                 light.origin[0] as f32,
                 light.origin[1] as f32,

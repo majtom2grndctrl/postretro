@@ -3583,6 +3583,7 @@ dependencies = [
  "postretro-foundation",
  "postretro-level-format",
  "postretro-level-loader",
+ "postretro-lighting",
  "postretro-model",
  "postretro-net",
  "postretro-render-data",
@@ -3675,6 +3676,15 @@ dependencies = [
  "postretro-level-format",
  "postretro-render-data",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "postretro-lighting"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "postretro-level-loader",
+ "postretro-render-data",
 ]
 
 [[package]]

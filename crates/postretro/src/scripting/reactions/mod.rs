@@ -10,8 +10,9 @@ pub(crate) use crate::fx::fog_reactions::{
     set_fog_params,
 };
 pub(crate) use crate::health::reactions as apply_damage;
-pub(crate) use crate::model::animation_reactions as set_animation_state;
+pub(crate) use animation as set_animation_state;
 
+pub(crate) mod animation;
 pub(crate) mod registry;
 pub(crate) mod system_commands;
 

@@ -1,45 +1,37 @@
-// Game-side skeletal hit-zone store + the standalone entity-raycast facility:
-// retains each model TYPE's CPU skeleton, clips, and authored joint-zone table
-// plus a derived broad-phase bound swept from the clips, and resolves the
-// nearest TARGETABLE entity a ray strikes (authored-AABB or bone-posed-capsule).
-//
-// CPU-only — no wgpu, no `crate::render`. nalgebra is confined to the `parry3d`
-// ray/capsule boundary inside this module; engine-facing types are all `glam`.
-// See: context/lib/entity_model.md §7 · rendering_pipeline.md §9
+// Game-side skeletal hit zones: stores CPU model pose data and resolves
+// weapon-agnostic entity ray hits against authored AABBs or trustworthy capsules.
+// See: context/lib/entity_model.md §7 · context/lib/rendering_pipeline.md §9
 
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use glam::{Mat4, Quat, Vec3};
+use glam::{Mat4, Vec3};
 use parry3d::math::{Isometry, Point, Vector};
 use parry3d::query::RayCast;
 use parry3d::shape::{Ball, Capsule};
 
-use crate::model::ModelHandle;
-use crate::model::anim::{BlendSource, Loop, sample_blended_world, sample_clip_looped_world};
-use crate::model::gltf_loader::{self, JointZone};
-use crate::model::sample_params::{ClipSample, FadeSource, MeshSampleParams, instance_phase};
-use crate::model::skeleton::{AnimationClip, Skeleton};
-use postretro_entities::components::health::HealthComponent;
+use postretro_entities::components::health::{HealthComponent, Hitbox};
 use postretro_entities::components::mesh::{MeshAnimation, MeshComponent};
 use postretro_entities::registry::{
     ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform,
 };
+use postretro_model::ModelHandle;
+use postretro_model::anim::{
+    BlendSource, LocalTrs, Loop, capture_blend, sample_blended_world, sample_clip_looped_world,
+};
+use postretro_model::gltf_loader::{self, JointZone};
+use postretro_model::sample_params::{
+    CaptureInstruction, ClipSample, FadeSource, MeshSampleParams, instance_phase,
+};
+use postretro_model::skeleton::{AnimationClip, RestLocal, Skeleton};
 use postretro_render_data::cone_frustum::Aabb;
 
 /// Engine default capsule radius (meters) for a zone-bearing joint whose
-/// authored `hitZoneRadius` is absent (`JointZone::radius == None`). The loader
-/// stores the radius as-authored; this is where the default is applied — the
-/// downstream-consumer policy `gltf_loader::read_joint_zone` defers to.
+/// authored `hitZoneRadius` is absent or invalid at this consumer boundary. The
+/// loader preserves only positive finite authored radii; direct `JointZone`
+/// construction can still bypass that loader policy.
 pub(crate) const DEFAULT_ZONE_RADIUS: f32 = 0.12;
-
-/// Number of FIXED, uniform time samples taken per clip when sweeping the
-/// derived broad-phase bound, INCLUDING both endpoints (`t = 0` and
-/// `t = clip.duration`). At least 8 (the plan floor) so a limb's swung arc is
-/// captured densely enough that the union encloses the full motion, not just the
-/// endpoints. Deterministic: the same model always yields the same bound.
-pub(crate) const BOUND_SAMPLES_PER_CLIP: usize = 8;
 
 /// One model TYPE's retained CPU hit-zone data, keyed by [`ModelHandle`] in the
 /// [`HitZoneStore`].
@@ -60,17 +52,20 @@ pub(crate) struct ModelHitZones {
     /// Per-joint authored hit zones, parallel to `skeleton.joints`. `None` where
     /// a joint carries no zone. Empty for a model with no zones at all.
     pub(crate) joint_zones: Vec<Option<JointZone>>,
-    /// Model-local broad-phase AABB swept from EVERY clip (≥8 uniform samples
-    /// each, endpoints included) and inflated by each joint's capsule radius.
-    /// `None` for an AABB-only model (no zone tags) — those skip the derived
-    /// bound and fall back to the authored hitbox elsewhere.
+    /// Model-local broad-phase AABB seeded from rest pose, then expanded from
+    /// every clip's key poses and conservative hierarchy reach.
+    /// `None` for an AABB-only model (no zone tags), OR for a zone-bearing model
+    /// whose bound is untrustworthy — non-finite (a directly-constructed NaN/Inf
+    /// pose that bypassed loader validation) or degenerate (every zone indexes
+    /// past the skeleton, so no capsule folds in). Either way a `None` here routes
+    /// the entity to the authored hitbox in the consumer.
     pub(crate) derived_bound: Option<Aabb>,
 }
 
 impl ModelHitZones {
-    /// True when this model carries at least one authored joint zone — i.e. the
-    /// skeletal hit-zone path applies and a [`derived_bound`](Self::derived_bound)
-    /// was computed.
+    /// True when this model carries at least one authored joint zone. A derived
+    /// bound may still be absent when the zone set is untrustworthy, in which
+    /// case consumers degrade to the coarse authored fallback.
     fn has_zones(joint_zones: &[Option<JointZone>]) -> bool {
         joint_zones.iter().any(Option::is_some)
     }
@@ -110,7 +105,8 @@ impl HitZoneStore {
     /// A failed/invalid load is non-fatal: it warns (naming the path) and installs
     /// nothing — mirroring `load_skinned_model`, so the sweep keeps going and the
     /// model simply has no hit-zone entry. Idempotent re-install replaces the
-    /// entry. The derived bound is computed once, here, from the loaded clips.
+    /// entry. The derived bound is computed once, here, from the loaded skeleton
+    /// rest pose and clips.
     pub(crate) fn insert_from_load(&mut self, model_rel: &str, content_root: &Path) {
         let open_path = content_root.join(model_rel);
         let model = match gltf_loader::load_model(&open_path) {
@@ -132,9 +128,11 @@ impl HitZoneStore {
         } = model;
 
         // Only zone-bearing models get a derived bound; an AABB-only model needs
-        // none here (it falls back to the authored hitbox in the consumer).
+        // none here (it falls back to the authored hitbox in the consumer). A
+        // non-finite bound also resolves to `None` (see `derive_bound`), degrading
+        // that model to the authored AABB.
         let derived_bound = if ModelHitZones::has_zones(&joint_zones) {
-            Some(derive_bound(&skeleton, &clips, &joint_zones))
+            derive_bound(&skeleton, &clips, &joint_zones)
         } else {
             None
         };
@@ -156,6 +154,15 @@ impl HitZoneStore {
     /// [`nearest_entity_hit`] looks the per-instance model up here.
     pub(crate) fn get(&self, handle: &ModelHandle) -> Option<&ModelHitZones> {
         self.models.get(handle)
+    }
+
+    /// True when `handle` has precise capsule zones available. Renderer
+    /// time-slicing uses this to keep drawn palettes frame-fresh for models whose
+    /// hitscan path can produce exact capsule hits.
+    pub(crate) fn has_precise_zones(&self, handle: &ModelHandle) -> bool {
+        self.models
+            .get(handle)
+            .is_some_and(|entry| entry.derived_bound.is_some())
     }
 
     /// Install a pre-built model entry under `handle` for tests in OTHER modules
@@ -194,77 +201,279 @@ pub(crate) fn unknown_zone_multiplier_tags<'a>(
     unknown
 }
 
-/// Capsule radius for joint `i`: the authored `hitZoneRadius` when present, the
-/// engine default [`DEFAULT_ZONE_RADIUS`] when the zone omits it, and the default
-/// for a non-zone joint too (a non-zone joint still occupies space the swept bound
-/// must enclose, so it inflates by the default rather than collapsing to a point).
-fn joint_radius(joint_zones: &[Option<JointZone>], i: usize) -> f32 {
-    match joint_zones.get(i).and_then(Option::as_ref) {
-        Some(JointZone {
-            radius: Some(r), ..
-        }) => *r,
-        _ => DEFAULT_ZONE_RADIUS,
-    }
+/// Capsule radius for a zone-bearing joint. Validate here too because
+/// `JointZone` is public and tests/tools can construct one without the loader.
+fn zone_radius(zone: &JointZone) -> f32 {
+    zone.radius
+        .filter(|r| r.is_finite() && *r > 0.0)
+        .unwrap_or(DEFAULT_ZONE_RADIUS)
 }
 
-/// Derive a zone-bearing model's model-local broad-phase AABB from its clips.
+/// Derive a zone-bearing model's model-local broad-phase AABB from rest + clips,
+/// or `None` when no trustworthy bound exists.
 ///
-/// Samples EVERY clip's joint world positions at [`BOUND_SAMPLES_PER_CLIP`]
-/// FIXED uniform times including both endpoints (`t = 0` and `t = duration`),
-/// unions every joint position across every sample, and inflates each by that
-/// joint's capsule radius (authored, or [`DEFAULT_ZONE_RADIUS`] when omitted) —
-/// so an animated limb at the far end of its swing is enclosed with its full
-/// capsule. The authored hitbox is deliberately NOT consulted: a limb must never
-/// silently swing outside the broad phase.
+/// Starts with rest-pose zone capsules, then samples every clip at its actual
+/// channel key times plus endpoints. A short authored excursion between widely
+/// spaced keys is therefore included. The bound then gets ONE
+/// conservative hierarchy reach envelope, unioned over all clips: translations
+/// and scales are bounded from key values, while rotations can swing descendants
+/// between key poses. The union-max envelope dominates not just each clip but
+/// every pairwise CROSSFADE BLEND of them (see [`joint_reach_bounds`]). Static
+/// zoned models with no clips still get a usable rest-pose bound.
 ///
-/// Deterministic (fixed sample times, fixed order) and computed once at load.
-/// A model with no clips still yields a well-formed bound over the rest pose
-/// (each clip falls back to rest for absent channels; with zero clips the box is
-/// the loader's zero box). Inflating by a sphere per joint (position ± radius on
-/// every axis) is a conservative superset of the true capsule, which is exactly
-/// what a broad phase wants.
+/// The authored hitbox is deliberately not consulted. A limb must never silently
+/// sit or swing outside the broad phase.
+///
+/// Returns `None` when a posed capsule center is non-finite (a directly-
+/// constructed NaN/Inf rest translation or keyframe value that bypassed loader
+/// validation): the precise broad phase is then untrustworthy, so the consumer
+/// degrades to the authored AABB rather than a poisoned box that would reject
+/// every ray. A degenerate zone set that folds in no capsule (every zone indexes
+/// past the skeleton, or an empty skeleton) likewise returns `None`.
 fn derive_bound(
     skeleton: &Skeleton,
     clips: &[AnimationClip],
     joint_zones: &[Option<JointZone>],
-) -> Aabb {
+) -> Option<Aabb> {
     let mut bound = Aabb::empty();
     // Reused across clips/samples — `sample_clip_looped_world` clears and refills.
     let mut world = Vec::new();
 
+    pose_rest(skeleton, &mut world);
+    if !expand_bound_for_zone_capsules(&mut bound, skeleton, &world, joint_zones) {
+        return None;
+    }
+
     for clip in clips {
-        for sample in 0..BOUND_SAMPLES_PER_CLIP {
-            let t = sample_time(clip.duration, sample);
-            // Clamp so the final sample lands exactly on the clip end (no wrap to
-            // frame 0), and earlier samples read their authored interior pose.
+        for t in clip_bound_times(clip) {
             sample_clip_looped_world(clip, skeleton, t, Loop::Clamp, &mut world);
-            for (i, joint_world) in world.iter().enumerate() {
-                let pos = joint_world.w_axis.truncate();
-                let r = joint_radius(joint_zones, i);
-                bound.expand(pos + Vec3::splat(r));
-                bound.expand(pos - Vec3::splat(r));
+            if !expand_bound_for_zone_capsules(&mut bound, skeleton, &world, joint_zones) {
+                return None;
             }
         }
     }
 
-    // No clips (or an empty skeleton) leaves the box inverted; collapse it to a
-    // well-formed zero box, matching `Aabb::from_points`' empty contract.
+    // One reach envelope over ALL clips (and thus all their blends), applied once
+    // as the conservative backstop to the key-time sampling above.
+    expand_bound_for_reach(&mut bound, skeleton, clips, joint_zones);
+
+    // An empty box here means NO zone capsule was ever folded in: `has_zones`
+    // gated us in, so every `Some` zone indexes past the skeleton (or the
+    // skeleton is empty) — a degenerate zone set. Degrade to `None` (coarse
+    // fallback), matching the non-finite case, rather than a zero box that would
+    // authoritatively reject nearly every ray.
     if bound.min.x > bound.max.x {
-        return Aabb::default();
+        return None;
     }
-    bound
+    // Defensive: the capsule guards above already bail on a non-finite pose and
+    // the reach envelope is finite by construction — but never hand back a
+    // non-finite box that the slab test would silently reject every ray against.
+    if !bound.min.is_finite() || !bound.max.is_finite() {
+        return None;
+    }
+    Some(bound)
 }
 
-/// The fixed time for `sample` in `0..BOUND_SAMPLES_PER_CLIP` across a clip of
-/// `duration` seconds: uniformly spaced with sample 0 at `t = 0` and the last
-/// sample at `t = duration`. A non-positive duration (static clip) collapses
-/// every sample to `0`. Deterministic by construction.
-fn sample_time(duration: f32, sample: usize) -> f32 {
-    if duration <= 0.0 || BOUND_SAMPLES_PER_CLIP <= 1 {
-        return 0.0;
+/// Expand `bound` by each tagged joint's posed capsule (its origin plus its first
+/// child's origin), inflated by the zone radius. Returns `false` if any posed
+/// capsule center is non-finite (NaN/Inf): such a center is NOT folded in (glam's
+/// comparison-based min/max would poison the whole box, and a later finite
+/// `expand` would silently un-poison it to a wrong, too-small box), and the
+/// `false` propagates up so the caller returns `None` (degrade to authored AABB).
+fn expand_bound_for_zone_capsules(
+    bound: &mut Aabb,
+    skeleton: &Skeleton,
+    world_joints: &[Mat4],
+    joint_zones: &[Option<JointZone>],
+) -> bool {
+    let mut finite = true;
+    for (joint_index, zone) in joint_zones.iter().enumerate() {
+        let Some(zone) = zone else {
+            continue;
+        };
+        let Some(joint_world) = world_joints.get(joint_index) else {
+            continue;
+        };
+        let radius = zone_radius(zone);
+        finite &= expand_bound_for_finite_sphere(bound, joint_world.w_axis.truncate(), radius);
+        if let Some(child_index) = first_child_index(skeleton, joint_index) {
+            if let Some(child_world) = world_joints.get(child_index) {
+                finite &=
+                    expand_bound_for_finite_sphere(bound, child_world.w_axis.truncate(), radius);
+            }
+        }
     }
-    let frac = sample as f32 / (BOUND_SAMPLES_PER_CLIP - 1) as f32;
-    frac * duration
+    finite
+}
+
+/// Expand `bound` by a sphere at `center` of `radius`, but only when `center` is
+/// finite. Returns whether the center was finite; a non-finite center is skipped
+/// (not folded in) so it cannot poison the box.
+fn expand_bound_for_finite_sphere(bound: &mut Aabb, center: Vec3, radius: f32) -> bool {
+    if !center.is_finite() {
+        return false;
+    }
+    let radius = Vec3::splat(radius);
+    bound.expand(center + radius);
+    bound.expand(center - radius);
+    true
+}
+
+fn clip_bound_times(clip: &AnimationClip) -> Vec<f32> {
+    let mut times = Vec::new();
+    times.push(0.0);
+    if clip.duration.is_finite() && clip.duration > 0.0 {
+        times.push(clip.duration);
+    }
+    for tracks in &clip.joints {
+        times.extend(
+            tracks
+                .translation
+                .times()
+                .iter()
+                .chain(tracks.rotation.times())
+                .chain(tracks.scale.times())
+                .copied()
+                .filter(|t| t.is_finite() && *t >= 0.0),
+        );
+    }
+    times.sort_by(f32::total_cmp);
+    times.dedup_by(|a, b| *a == *b);
+    times
+}
+
+/// Expand `bound` by the conservative hierarchy reach envelope: for each tagged
+/// joint (and its capsule's child endpoint), an origin-centered sphere of that
+/// joint's worst-case reach plus the zone radius. See [`joint_reach_bounds`] for
+/// the envelope's construction and why the sphere is origin-centered.
+fn expand_bound_for_reach(
+    bound: &mut Aabb,
+    skeleton: &Skeleton,
+    clips: &[AnimationClip],
+    joint_zones: &[Option<JointZone>],
+) {
+    let reach = joint_reach_bounds(skeleton, clips);
+    for (joint_index, zone) in joint_zones.iter().enumerate() {
+        let Some(zone) = zone else {
+            continue;
+        };
+        let radius = zone_radius(zone);
+        if let Some(reach) = reach.get(joint_index) {
+            expand_bound_for_origin_sphere(bound, *reach + radius);
+        }
+        if let Some(child_index) = first_child_index(skeleton, joint_index) {
+            if let Some(reach) = reach.get(child_index) {
+                expand_bound_for_origin_sphere(bound, *reach + radius);
+            }
+        }
+    }
+}
+
+/// Expand `bound` by an origin-centered sphere of `radius`. Takes only a radius
+/// because the reach envelope is a distance from the SKELETON-LOCAL ORIGIN, not a
+/// joint-centered box — an origin-centered sphere covers the joint in any
+/// direction the (untracked) rotations could swing it. See [`joint_reach_bounds`].
+fn expand_bound_for_origin_sphere(bound: &mut Aabb, radius: f32) {
+    let extent = Vec3::splat(radius.max(0.0));
+    bound.expand(extent);
+    bound.expand(-extent);
+}
+
+/// Per-joint worst-case reach: the farthest a joint's posed origin can sit from
+/// the SKELETON-LOCAL ORIGIN, via triangle-inequality accumulation of ancestor
+/// offsets and scale, UNIONED over all clips.
+///
+/// For each joint, `t_max` is the longest local translation it takes across its
+/// rest pose and every clip's keyframes; `s_max` is its largest absolute scale
+/// component likewise. A single parent-before-child pass accumulates
+/// `scale_chain[i] = scale_chain[parent] * s_max[i]` and
+/// `reach[i] = reach[parent] + scale_chain[parent] * t_max[i]`. Rotations do not
+/// enter: an operator-norm-1 rotation cannot lengthen `|t|`, and the reach feeds
+/// an origin-centered sphere (see [`expand_bound_for_origin_sphere`]) that covers
+/// any orientation — so ignoring rotation is conservative, not lossy.
+///
+/// Unioning `t_max`/`s_max` over ALL clips is what makes the envelope cover
+/// CROSSFADE BLENDS, not just each clip alone. A blend factor `lerp(a, b, w)`
+/// never exceeds `max(a, b) ≤` the per-joint union max, yet a blend's composed
+/// scale chain (concave in `w`, with an interior maximum) CAN exceed either
+/// clip's own chain — so a per-clip envelope would under-cover the worst blend
+/// pose. The union-max envelope dominates every clip and every pairwise blend.
+fn joint_reach_bounds(skeleton: &Skeleton, clips: &[AnimationClip]) -> Vec<f32> {
+    let mut reach = Vec::with_capacity(skeleton.joints.len());
+    let mut scale_chain = Vec::with_capacity(skeleton.joints.len());
+
+    for (i, joint) in skeleton.joints.iter().enumerate() {
+        let local_offset = max_translation_len(joint.rest_local.translation, clips, i);
+        let local_scale = max_scale_component(joint.rest_local.scale, clips, i);
+
+        let (joint_reach, joint_scale) = match joint.parent {
+            Some(parent) => {
+                let parent_reach = reach.get(parent).copied().unwrap_or(0.0);
+                let parent_scale = scale_chain.get(parent).copied().unwrap_or(1.0);
+                (
+                    parent_reach + parent_scale * local_offset,
+                    parent_scale * local_scale,
+                )
+            }
+            None => (local_offset, local_scale),
+        };
+        reach.push(joint_reach);
+        scale_chain.push(joint_scale);
+    }
+
+    reach
+}
+
+/// The longest local translation joint `joint_index` takes: its rest translation
+/// or any finite translation keyframe value across EVERY clip. Non-finite values
+/// are ignored (`finite_vec3`); a joint with no data contributes 0.
+fn max_translation_len(rest: Vec3, clips: &[AnimationClip], joint_index: usize) -> f32 {
+    let mut max_len = finite_vec3(rest).map_or(0.0, Vec3::length);
+    for clip in clips {
+        let Some(tracks) = clip.joints.get(joint_index) else {
+            continue;
+        };
+        for value in tracks
+            .translation
+            .values()
+            .iter()
+            .copied()
+            .filter_map(finite_vec3)
+        {
+            max_len = max_len.max(value.length());
+        }
+    }
+    max_len
+}
+
+/// The largest absolute scale component joint `joint_index` takes: its rest scale
+/// or any finite scale keyframe value across EVERY clip. Non-finite values are
+/// ignored; a joint with no data contributes the neutral scale 1.
+fn max_scale_component(rest: Vec3, clips: &[AnimationClip], joint_index: usize) -> f32 {
+    let mut max_scale = finite_vec3(rest).map_or(1.0, max_abs_component);
+    for clip in clips {
+        let Some(tracks) = clip.joints.get(joint_index) else {
+            continue;
+        };
+        for value in tracks
+            .scale
+            .values()
+            .iter()
+            .copied()
+            .filter_map(finite_vec3)
+        {
+            max_scale = max_scale.max(max_abs_component(value));
+        }
+    }
+    max_scale
+}
+
+fn finite_vec3(value: Vec3) -> Option<Vec3> {
+    value.is_finite().then_some(value)
+}
+
+fn max_abs_component(value: Vec3) -> f32 {
+    value.x.abs().max(value.y.abs()).max(value.z.abs())
 }
 
 // ---------------------------------------------------------------------------
@@ -283,8 +492,9 @@ fn sample_time(duration: f32, sample: usize) -> f32 {
 /// since `direction` is unit length) used to pick the nearest of several
 /// contenders; `point`/`normal` are world-space; `target` is the struck entity;
 /// `zone` is the authored zone tag of the struck bone capsule (`None` for an
-/// AABB-only entity, or a zone-bearing entity struck via a future non-tagged
-/// path that never arises today).
+/// AABB-only entity, or a zone-bearing entity that degraded to its authored AABB
+/// or derived reach bound because its precise pose was unavailable or its zone
+/// set was untrustworthy).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct EntityRayHit {
     /// Ray parameter (distance) of the entry impact, in `[0, range]`.
@@ -305,14 +515,22 @@ pub(crate) struct EntityRayHit {
 ///
 /// Standalone and weapon-agnostic: callable with any `origin` / `direction`
 /// (assumed unit length) / `range`. Targetable = health AND (an authored AABB
-/// hitbox OR a zone-bearing skinned model). For each:
+/// hitbox OR a skinned model whose hit-zone entry has a trustworthy derived
+/// bound). Degraded or untrustworthy zone entries use the authored AABB path
+/// instead. For each:
 /// - **AABB-only** (health + hitbox, no zone-bearing model): broad phase is the
 ///   authored AABB; narrow phase is the same AABB via [`ray_aabb_slab`].
-/// - **Zone-bearing** (health + a model with ≥1 tagged joint): broad phase is the
+/// - **Precise zone path** (health + trustworthy model bound): broad phase is the
 ///   model's derived bound (model-local, transformed to a world-axis-aligned
-///   enclosure by the entity's position+yaw); narrow phase poses the skeleton at
-///   the entity's current animation time and ray-tests one capsule per tagged
-///   joint. A zone-bearing model with NO tagged joints keeps AABB behavior.
+///   enclosure by the entity's full model transform); narrow phase poses the
+///   skeleton at the entity's current animation time and ray-tests one capsule per
+///   tagged joint. A no-tag or load-degraded model keeps AABB behavior. When the
+///   capsule result is NOT authoritative — the pose is UNAVAILABLE (a chained
+///   smooth-interrupt snapshot needing renderer-only data) or the zone set is a
+///   degenerate static-identity ball whose miss is untrustworthy — a precise-path
+///   entity degrades to the coarse fallback (authored AABB if present, else the
+///   derived reach bound) so a drawn enemy stays hittable; a trustworthy
+///   available-pose capsule miss stays a miss (no fallback).
 ///
 /// Zero-HP entities (pending-despawn this tick) are skipped so a corpse cannot
 /// absorb a shot for one frame. `anim_time` is the game-layer animation clock;
@@ -327,6 +545,19 @@ pub(crate) fn nearest_entity_hit(
     direction: Vec3,
     range: f32,
 ) -> Option<EntityRayHit> {
+    // The facility assumes a unit-length ray direction (so `toi` is a distance).
+    // A zero-length or non-finite direction poisons every slab/capsule test with
+    // inf/NaN times, silently rejecting or accepting every entity — refuse it
+    // early and report no hit. `debug_assert` catches a caller that forgot to
+    // normalize; release stays safe.
+    if !direction.is_finite() || direction.length_squared() < 1.0e-12 {
+        debug_assert!(
+            false,
+            "nearest_entity_hit requires a finite, non-zero direction"
+        );
+        return None;
+    }
+
     let mut nearest: Option<EntityRayHit> = None;
 
     for (id, value) in registry.iter_with_kind(ComponentKind::Health) {
@@ -350,19 +581,20 @@ pub(crate) fn nearest_entity_hit(
         };
 
         // Prefer the zone-bearing path when the entity's model carries tagged
-        // joints; otherwise fall back to the authored AABB. A zone-bearing model
-        // with NO tagged joints has no derived bound and falls through to AABB.
+        // joints; otherwise fall back to the authored AABB. A no-tag model (or a
+        // model whose derived bound came out non-finite) has no derived bound and
+        // falls through to AABB.
         let zoned = zone_bearing_entry(registry, store, id);
 
-        let hit = match (zoned, hitbox) {
-            (Some(zoned), _) => {
+        let hit = match zoned {
+            Some(zoned) => {
                 // The entity's animation, if any, drives the posed skeleton; a
                 // mesh with no animation block (stateless prop) poses to the
                 // model's first clip at the clock. The animation is cloned LAZILY
                 // — only AFTER the broad phase survives — so a broad-phase reject
                 // never deep-clones the state map. The closure keeps the registry
                 // borrow live so the reject path allocates nothing.
-                nearest_zone_hit(
+                match nearest_zone_hit(
                     zoned.zones,
                     transform,
                     zoned.origin_offset,
@@ -377,28 +609,37 @@ pub(crate) fn nearest_entity_hit(
                     origin,
                     direction,
                     range,
-                )
+                ) {
+                    // Pose available AND trustworthy: the capsule result is
+                    // AUTHORITATIVE. A `Resolved(None)` is a genuine miss
+                    // (broad-phase reject or no capsule on the ray) — a real posed
+                    // model uses its capsules, never its coarse AABB — so do NOT
+                    // fall back.
+                    ZoneResolve::Resolved(hit) => hit,
+                    // Pose NON-AUTHORITATIVE — either unreconstructable (a chained
+                    // smooth interrupt whose snapshot needs renderer-only data) or
+                    // a degenerate static-identity zone set whose origin-ball miss
+                    // is untrustworthy. Never report a no-hit the coarse phase
+                    // would have caught: degrade to the authored AABB when present,
+                    // else the model's derived reach bound, so a drawn zone-bearing
+                    // enemy is never unshootable.
+                    ZoneResolve::Unavailable => coarse_fallback_hit(
+                        origin,
+                        direction,
+                        transform,
+                        zoned.origin_offset,
+                        hitbox.as_ref(),
+                        zoned.zones,
+                        range,
+                        id,
+                    ),
+                }
             }
-            (None, Some(hitbox)) => {
-                let center = transform.position + hitbox.offset;
-                ray_aabb_slab(
-                    origin,
-                    direction,
-                    center - hitbox.half_extents,
-                    center + hitbox.half_extents,
-                    range,
-                )
-                .map(|(toi, normal)| EntityRayHit {
-                    toi,
-                    point: origin + direction * toi,
-                    normal,
-                    target: id,
-                    zone: None,
-                })
-            }
-            // Health but neither an authored hitbox nor a zone-bearing model:
-            // not targetable.
-            (None, None) => None,
+            // No zone-bearing model: the authored AABB is both broad and narrow
+            // phase. Health without a hitbox is not targetable.
+            None => hitbox
+                .as_ref()
+                .and_then(|hitbox| aabb_hit(origin, direction, transform, hitbox, range, id)),
         };
 
         if let Some(hit) = hit {
@@ -416,10 +657,10 @@ struct ZoneBearingEntry<'a> {
     origin_offset: Vec3,
 }
 
-/// The model hit-zone entry for an entity IF its mesh model is zone-bearing (has
-/// a derived bound, i.e. ≥1 tagged joint). `None` when the entity has no mesh,
-/// the model is unloaded, or the model carries no zone tags — in which case the
-/// caller falls back to the authored AABB (today's behavior, byte-identical).
+/// The model hit-zone entry for an entity IF its mesh model has a trustworthy
+/// derived bound. `None` when the entity has no mesh, the model is unloaded, the
+/// model carries no zone tags, or its zone set degraded at load — in which case
+/// the caller falls back to the authored AABB (today's behavior, byte-identical).
 fn zone_bearing_entry<'a>(
     registry: &EntityRegistry,
     store: &'a HitZoneStore,
@@ -434,10 +675,98 @@ fn zone_bearing_entry<'a>(
     })
 }
 
+/// Ray-test an entity's authored AABB hitbox, returning the entry hit or `None`
+/// on a miss. The coarse path for a non-zone entity, and the degrade target for a
+/// zone-bearing entity whose precise capsule pose is unavailable this query.
+fn aabb_hit(
+    origin: Vec3,
+    direction: Vec3,
+    transform: &Transform,
+    hitbox: &Hitbox,
+    range: f32,
+    id: EntityId,
+) -> Option<EntityRayHit> {
+    let center = transform.position + hitbox.offset;
+    ray_aabb_slab(
+        origin,
+        direction,
+        center - hitbox.half_extents,
+        center + hitbox.half_extents,
+        range,
+    )
+    .map(|(toi, normal)| EntityRayHit {
+        toi,
+        point: origin + direction * toi,
+        normal,
+        target: id,
+        zone: None,
+    })
+}
+
+/// Coarse last-resort fallback for a zone-bearing entity whose precise capsule
+/// result is NOT authoritative — the pose was unreconstructable, or the zone set
+/// is a degenerate static-identity ball. The invariant: never report a no-hit the
+/// coarse phase would have caught, so a drawn zone-bearing enemy is never
+/// unshootable. Ray-test the authored AABB when present; else the model's derived
+/// reach bound (a conservative superset of every posed capsule) treated as a
+/// capsule-less AABB in the same full-transform placement the capsule path uses.
+/// Both targets are coarse supersets, so this favors "drawn ⇒ shootable" without
+/// inventing hits outside the model's reachable envelope. Either way `zone` is
+/// `None` (no bone tag on a coarse hit).
+#[allow(clippy::too_many_arguments)] // a flat parameter list keeps the facility weapon/camera-free.
+fn coarse_fallback_hit(
+    origin: Vec3,
+    direction: Vec3,
+    transform: &Transform,
+    origin_offset: Vec3,
+    hitbox: Option<&Hitbox>,
+    zones: &ModelHitZones,
+    range: f32,
+    id: EntityId,
+) -> Option<EntityRayHit> {
+    if let Some(hitbox) = hitbox {
+        return aabb_hit(origin, direction, transform, hitbox, range, id);
+    }
+    // No authored AABB (a valid zone-only enemy): fall back to the derived reach
+    // bound, placed model→world exactly as the capsule broad phase places it.
+    let model_to_world = model_matrix(transform, origin_offset)?;
+    let bound = transformed_zone_bound(zones, &model_to_world, transform)?;
+    ray_aabb_slab(origin, direction, bound.min, bound.max, range).map(|(toi, normal)| {
+        EntityRayHit {
+            toi,
+            point: origin + direction * toi,
+            normal,
+            target: id,
+            zone: None,
+        }
+    })
+}
+
+/// The outcome of a zone-bearing entity's capsule query, distinguishing a
+/// NON-AUTHORITATIVE result (caller degrades to the coarse fallback) from a
+/// trustworthy one (caller trusts it, hit or miss). A real posed model uses its
+/// capsules, never its coarse AABB, so its miss stands; a non-authoritative result
+/// must never report a no-hit the coarse phase would have caught.
+enum ZoneResolve {
+    /// The capsule result is NOT authoritative: either the precise pose could not
+    /// be produced game-side (a chained smooth interrupt whose snapshot capture
+    /// needs renderer-only stored data), OR the zone set is a degenerate
+    /// static-identity ball whose miss is untrustworthy. The caller degrades to
+    /// the coarse fallback (authored AABB, else the derived reach bound).
+    Unavailable,
+    /// The pose was available and trustworthy: `Some` is the nearest capsule hit,
+    /// `None` an authoritative miss (broad-phase reject, or no capsule on the ray).
+    Resolved(Option<EntityRayHit>),
+}
+
 /// Ray-test one zone-bearing entity: broad phase against the model's derived
 /// bound (transformed to a world-axis-aligned enclosure), then per tagged joint
-/// a posed-capsule narrow test. Returns the nearest capsule hit within `range`,
-/// or `None` (broad-phase reject, or no tagged capsule on the ray).
+/// a posed-capsule narrow test. Returns [`ZoneResolve`]: `Resolved` (nearest hit
+/// or authoritative miss) when the pose is trustworthy, or `Unavailable` when the
+/// caller must degrade to the coarse fallback. `Unavailable` fires when the
+/// precise pose cannot be produced game-side, AND when the zone set is a
+/// degenerate static-identity ball whose miss is untrustworthy (a hit on that
+/// ball still resolves as a normal capsule hit, tag and all).
 #[allow(clippy::too_many_arguments)] // a flat parameter list keeps the facility weapon/camera-free.
 fn nearest_zone_hit(
     zones: &ModelHitZones,
@@ -449,28 +778,59 @@ fn nearest_zone_hit(
     origin: Vec3,
     direction: Vec3,
     range: f32,
-) -> Option<EntityRayHit> {
-    // Model→world by POSITION + the same MeshComponent origin offset that render
-    // uses, plus YAW only (no pitch/roll/scale). This is the game-tick placement,
-    // deliberately NOT the renderer's interpolated transform.
-    let model_to_world = position_yaw_matrix(transform, origin_offset);
+) -> ZoneResolve {
+    // Model→world uses the same full transform layout the renderer packs for the
+    // instance buffer: scale, rotation, and translation with the mesh origin
+    // offset folded into translation. This is the game-tick transform, not the
+    // renderer's sub-tick interpolated transform.
+    let Some(model_to_world) = model_matrix(transform, origin_offset) else {
+        return ZoneResolve::Unavailable;
+    };
+    let radius_scale = radius_scale(transform);
+
+    // A degenerate static-identity zone set (single rest-only joint at the model
+    // origin, no clips) collapses to a ~radius ball at the origin — not a
+    // trustworthy narrow phase. Its MISSES degrade to the coarse fallback so a
+    // shot the authored AABB would have caught is never dropped; a HIT on the ball
+    // still resolves as a normal capsule hit below.
+    let static_identity = is_static_identity_zone(zones);
 
     // Broad phase: the derived bound is model-local; transform it to a tight
-    // world-axis-aligned enclosure and ray-test that AABB. A reject here means
-    // no capsule can be hit (the bound encloses every posed capsule by
-    // construction), so we skip the narrow phase entirely — AND before resolving
-    // (cloning) the entity's animation, so a rejected entity pays no deep clone.
-    let bound = zones.derived_bound.as_ref()?.transformed(&model_to_world);
-    ray_aabb_slab(origin, direction, bound.min, bound.max, range)?;
+    // world-axis-aligned enclosure and ray-test that AABB. For a real skeleton a
+    // reject means no capsule can be hit (the bound encloses every posed capsule
+    // by construction) — a genuine miss, NOT a pose failure, so it does not
+    // degrade to the AABB (which lies inside this bound). Rejecting before
+    // resolving (cloning) the animation means a rejected entity pays no deep clone.
+    let Some(bound) = transformed_zone_bound(zones, &model_to_world, transform) else {
+        debug_assert!(false, "nearest_zone_hit reached with no derived bound");
+        return ZoneResolve::Unavailable;
+    };
+    if ray_aabb_slab(origin, direction, bound.min, bound.max, range).is_none() {
+        // A degenerate ball's broad-phase reject is untrustworthy — degrade so the
+        // coarse AABB (a superset) can still catch the shot.
+        return if static_identity {
+            ZoneResolve::Unavailable
+        } else {
+            ZoneResolve::Resolved(None)
+        };
+    }
 
     // Broad phase survived: NOW resolve (clone) the entity's animation. A mesh
     // with no animation block (stateless prop) poses to the model's first clip.
-    let animation = resolve_animation();
+    let animation = resolve_animation().map(|mut anim| {
+        resolve_animation_stamps_for_sampling(&mut anim, anim_time);
+        anim
+    });
 
     // Narrow phase: pose the skeleton at the entity's current animation time AND
     // the SAME per-instance phase the renderer draws with (seed = the raw
-    // `EntityId`), then test one capsule per tagged joint.
-    let world_joints = pose_world_joints(zones, animation.as_ref(), anim_time, id.to_raw());
+    // `EntityId`), then test one capsule per tagged joint. A `None` pose is
+    // UNAVAILABLE (a chained snapshot fade needing renderer-only data) — signal it
+    // so the caller degrades to the coarse fallback rather than reporting a miss.
+    let Some(world_joints) = pose_world_joints(zones, animation.as_ref(), anim_time, id.to_raw())
+    else {
+        return ZoneResolve::Unavailable;
+    };
 
     let mut nearest: Option<EntityRayHit> = None;
     for (joint_index, zone) in zones.joint_zones.iter().enumerate() {
@@ -485,9 +845,9 @@ fn nearest_zone_hit(
         // origin. A tagged LEAF joint (no child) is a zero-length sphere.
         let a_model = world_joint.w_axis.truncate();
         let b_model = first_child_origin(zones, &world_joints, joint_index);
-        let radius = zone.radius.unwrap_or(DEFAULT_ZONE_RADIUS);
+        let radius = zone_radius(zone) * radius_scale;
 
-        // Model→world for the two segment endpoints (position + yaw only).
+        // Model→world for the two segment endpoints.
         let a = model_to_world.transform_point3(a_model);
         let b_world = b_model.map(|b| model_to_world.transform_point3(b));
 
@@ -507,7 +867,37 @@ fn nearest_zone_hit(
         }
     }
 
-    nearest
+    // A degenerate origin-ball MISS is not authoritative — degrade to the coarse
+    // fallback rather than reporting a no-hit the authored AABB would have caught.
+    // A hit stands (it carries the bone tag).
+    if static_identity && nearest.is_none() {
+        return ZoneResolve::Unavailable;
+    }
+
+    ZoneResolve::Resolved(nearest)
+}
+
+/// True for a degenerate static-identity zone set: a single rest-only joint at
+/// the model origin with no usable animation channels. Such a model has no real
+/// rig — its zones collapse to one ~radius ball at the mesh origin, so a capsule
+/// miss is not a trustworthy verdict and the caller degrades to the coarse
+/// fallback. Loader-preserved zero-duration no-op clips count as static identity;
+/// any clip with a usable joint channel makes the model authoritative.
+fn is_static_identity_zone(zones: &ModelHitZones) -> bool {
+    zones
+        .clips
+        .iter()
+        .all(|clip| clip_has_no_usable_joint_channel(clip, zones.skeleton.joints.len()))
+        && zones.skeleton.joints.len() == 1
+        && zones.skeleton.joints[0].rest_local == RestLocal::default()
+}
+
+fn clip_has_no_usable_joint_channel(clip: &AnimationClip, joint_count: usize) -> bool {
+    clip.joints.iter().take(joint_count).all(|tracks| {
+        tracks.translation.times().is_empty()
+            && tracks.rotation.times().is_empty()
+            && tracks.scale.times().is_empty()
+    })
 }
 
 /// The model-local posed-origin of `joint_index`'s FIRST CHILD (lowest joint
@@ -518,38 +908,105 @@ fn first_child_origin(
     world_joints: &[Mat4],
     joint_index: usize,
 ) -> Option<Vec3> {
-    zones
-        .skeleton
+    first_child_index(&zones.skeleton, joint_index)
+        .and_then(|child_index| world_joints.get(child_index))
+        .map(|child| child.w_axis.truncate())
+}
+
+fn first_child_index(skeleton: &Skeleton, joint_index: usize) -> Option<usize> {
+    skeleton
         .joints
         .iter()
         .enumerate()
         .find(|(_, joint)| joint.parent == Some(joint_index))
-        .and_then(|(child_index, _)| world_joints.get(child_index))
-        .map(|child| child.w_axis.truncate())
+        .map(|(child_index, _)| child_index)
 }
 
-/// Compose the entity's model→world matrix from POSITION + YAW only. Pitch, roll,
-/// and scale are deliberately dropped: hit zones use the game-tick placement, not
-/// the renderer's interpolated full transform. Yaw is extracted from the stored
-/// quaternion as rotation about world +Y.
-fn position_yaw_matrix(transform: &Transform, origin_offset: Vec3) -> Mat4 {
-    let yaw = yaw_of(transform.rotation);
-    Mat4::from_rotation_translation(
-        Quat::from_rotation_y(yaw),
+/// Compose the entity's model→world matrix exactly like the render collector's
+/// instance transform: full scale + rotation, translated to `position +
+/// origin_offset`. Non-finite transforms are not authoritative for precise
+/// capsules, so callers degrade to a coarse fallback.
+fn model_matrix(transform: &Transform, origin_offset: Vec3) -> Option<Mat4> {
+    if !transform.position.is_finite()
+        || !transform.rotation.is_finite()
+        || !transform.scale.is_finite()
+        || !origin_offset.is_finite()
+    {
+        return None;
+    }
+    Some(Mat4::from_scale_rotation_translation(
+        transform.scale,
+        transform.rotation,
         transform.position + origin_offset,
-    )
+    ))
 }
 
-/// The yaw angle (rotation about world +Y) of a quaternion. Projects the
-/// quaternion's forward direction onto the XZ plane and takes its heading, so
-/// any pitch/roll baked into the quaternion is discarded.
-fn yaw_of(rotation: Quat) -> f32 {
-    let forward = rotation * Vec3::NEG_Z;
-    forward.x.atan2(-forward.z)
+/// Scale a spherical capsule radius by the transform's largest absolute axis.
+/// Uniform scale stays exact; non-uniform scale is conservative, matching the
+/// broad-phase "drawn stays shootable" rule without introducing ellipsoid tests.
+fn radius_scale(transform: &Transform) -> f32 {
+    max_abs_component(transform.scale).max(0.0)
+}
+
+/// Transform a model-local derived bound to world space and pad it for the
+/// conservative non-uniform-scale capsule radius used by the narrow phase.
+fn transformed_zone_bound(
+    zones: &ModelHitZones,
+    model_to_world: &Mat4,
+    transform: &Transform,
+) -> Option<Aabb> {
+    let mut bound = zones.derived_bound?.transformed(model_to_world);
+    let padding = non_uniform_radius_padding(zones, transform);
+    if padding > 0.0 {
+        let padding = Vec3::splat(padding);
+        bound.expand(bound.min - padding);
+        bound.expand(bound.max + padding);
+    }
+    Some(bound)
+}
+
+fn non_uniform_radius_padding(zones: &ModelHitZones, transform: &Transform) -> f32 {
+    let min_scale = transform
+        .scale
+        .x
+        .abs()
+        .min(transform.scale.y.abs())
+        .min(transform.scale.z.abs());
+    let extra_scale = (radius_scale(transform) - min_scale).max(0.0);
+    max_zone_radius(zones) * extra_scale
+}
+
+fn max_zone_radius(zones: &ModelHitZones) -> f32 {
+    zones
+        .joint_zones
+        .iter()
+        .filter_map(|zone| zone.as_ref())
+        .map(zone_radius)
+        .fold(0.0, f32::max)
+}
+
+/// Fill pending stamps in a cloned animation exactly as the render-stage resolve
+/// pass would before sampling. This lets same-tick hits evaluate the start of the
+/// visible crossfade instead of consuming a pending stamp as "new primary only".
+fn resolve_animation_stamps_for_sampling(anim: &mut MeshAnimation, now: f64) {
+    if anim.entered_at.is_none() {
+        anim.entered_at = Some(now);
+    }
+    if anim.previous_state.is_some() && anim.previous_entered_at.is_none() {
+        anim.previous_entered_at = Some(now);
+    }
 }
 
 /// Pose the model's skeleton at `anim_time` into per-joint MODEL-space world
-/// matrices (pre-inverse-bind).
+/// matrices (pre-inverse-bind), or `None` when the precise pose is UNAVAILABLE.
+///
+/// Fail-available contract: `None` means the game side cannot reconstruct the
+/// exact pose the renderer draws — specifically a chained smooth-interrupt
+/// snapshot fade whose capture references renderer-only stored data (mirrors the
+/// same case on [`pose_from_params`]). The caller degrades to the coarse fallback
+/// rather than posing a wrong fallback-clip capsule; it never means "the ray
+/// missed". A model with no clips, or an unresolved state, still poses (rest or
+/// first clip) and returns `Some`.
 ///
 /// When the entity carries an animation block, its current state resolves —
 /// through the SAME render-free [`mesh_anim::animate_entity`] the renderer's
@@ -570,7 +1027,7 @@ fn pose_world_joints(
     animation: Option<&MeshAnimation>,
     anim_time: f64,
     seed: u32,
-) -> Vec<Mat4> {
+) -> Option<Vec<Mat4>> {
     let mut out = Vec::new();
     let skeleton = zones.skeleton.as_ref();
     let clips = zones.clips.as_ref();
@@ -582,11 +1039,19 @@ fn pose_world_joints(
     // we fall through to the default pose.
     if let Some(anim) = animation {
         let phase = current_state_phase(anim, clips, seed);
-        if let Some(params) =
-            super::mesh_anim::animate_entity(anim, anim_time, phase).map(|r| r.sample)
-        {
-            pose_from_params(skeleton, clips, &params, &mut out);
-            return out;
+        if let Some(result) = super::mesh_anim::animate_entity(anim, anim_time, phase) {
+            let mut snapshot = Vec::new();
+            if pose_from_params(
+                skeleton,
+                clips,
+                &result.sample,
+                result.capture.as_ref(),
+                &mut snapshot,
+                &mut out,
+            ) {
+                return Some(out);
+            }
+            return None;
         }
     }
 
@@ -606,7 +1071,7 @@ fn pose_world_joints(
         }
         None => pose_rest(skeleton, &mut out),
     }
-    out
+    Some(out)
 }
 
 /// The per-instance phase offset for an entity's CURRENT animation state, derived
@@ -629,39 +1094,52 @@ fn current_state_phase(anim: &MeshAnimation, clips: &[AnimationClip], seed: u32)
 
 /// Pose the model's skeleton at `anim_time` per a resolved [`MeshSampleParams`]:
 /// sample the primary clip alone, or blend the primary against the active fade's
-/// FROM-leg. A [`FadeSource::Snapshot`] from-leg degrades to its carried
-/// `fallback` clip (the snapshot store is renderer-owned and unreadable game-
-/// side, so a snapshot fade samples the incoming clip — accepted scope). Writes
-/// per-joint MODEL-space world matrices into `out`.
+/// FROM-leg. A [`FadeSource::Snapshot`] from-leg must have a matching exact
+/// capture instruction; otherwise the pose is unavailable game-side and the
+/// caller skips capsule hits for this query.
 fn pose_from_params(
     skeleton: &Skeleton,
     clips: &[AnimationClip],
     params: &MeshSampleParams,
+    capture: Option<&CaptureInstruction>,
+    snapshot: &mut Vec<LocalTrs>,
     out: &mut Vec<Mat4>,
-) {
+) -> bool {
     let primary_src = clip_blend_source(clips, &params.primary);
     let Some(primary) = primary_src else {
         pose_rest(skeleton, out);
-        return;
+        return true;
     };
 
     match params.fade {
         Some(fade) => {
-            // Degrade a snapshot from-leg to its carried fallback clip.
-            let from_leg = match fade.from {
-                FadeSource::Clip(leg) => leg,
-                FadeSource::Snapshot { fallback, .. } => fallback,
-            };
-            match clip_blend_source(clips, &from_leg) {
-                Some(from) => sample_blended_world(&from, &primary, fade.weight, skeleton, out),
-                // Missing from-clip: sample the primary alone.
-                None => sample_clip_looped_world(
-                    clip_of(clips, params.primary.clip_index).unwrap(),
-                    skeleton,
-                    params.primary.time,
-                    params.primary.loop_policy,
-                    out,
-                ),
+            match fade.from {
+                FadeSource::Clip(leg) => match clip_blend_source(clips, &leg) {
+                    Some(from) => sample_blended_world(&from, &primary, fade.weight, skeleton, out),
+                    // Missing from-clip: sample the primary alone.
+                    None => sample_clip_looped_world(
+                        clip_of(clips, params.primary.clip_index).unwrap(),
+                        skeleton,
+                        params.primary.time,
+                        params.primary.loop_policy,
+                        out,
+                    ),
+                },
+                FadeSource::Snapshot { tag, .. } => {
+                    let Some(capture) = capture.filter(|capture| capture.tag == tag) else {
+                        return false;
+                    };
+                    if !capture_snapshot_pose(skeleton, clips, capture, snapshot) {
+                        return false;
+                    }
+                    sample_blended_world(
+                        &BlendSource::Snapshot(snapshot.as_slice()),
+                        &primary,
+                        fade.weight,
+                        skeleton,
+                        out,
+                    );
+                }
             }
         }
         None => sample_clip_looped_world(
@@ -671,6 +1149,36 @@ fn pose_from_params(
             params.primary.loop_policy,
             out,
         ),
+    }
+    true
+}
+
+fn capture_snapshot_pose(
+    skeleton: &Skeleton,
+    clips: &[AnimationClip],
+    capture: &CaptureInstruction,
+    out: &mut Vec<LocalTrs>,
+) -> bool {
+    let Some(outgoing) = exact_capture_source(clips, &capture.outgoing) else {
+        return false;
+    };
+    let Some(incoming) = clip_blend_source(clips, &capture.incoming) else {
+        return false;
+    };
+    capture_blend(&outgoing, &incoming, capture.weight, skeleton, out);
+    true
+}
+
+fn exact_capture_source<'a>(
+    clips: &'a [AnimationClip],
+    source: &FadeSource,
+) -> Option<BlendSource<'a>> {
+    match *source {
+        FadeSource::Clip(leg) => clip_blend_source(clips, &leg),
+        // A chained smooth interrupt needs the previous snapshot store entry.
+        // Hit zones cannot read the renderer-owned store, so do not pose a
+        // fallback clip capsule that the renderer is not drawing.
+        FadeSource::Snapshot { .. } => None,
     }
 }
 
@@ -810,7 +1318,7 @@ mod tests {
     // through `super::*` (the module's own imports).
     use super::*;
 
-    use crate::model::skeleton::{Interp, Joint, JointTracks, RestLocal, Track};
+    use postretro_model::skeleton::{Interp, Joint, JointTracks, RestLocal, Track};
 
     fn joint(parent: Option<usize>, rest: RestLocal) -> Joint {
         Joint {
@@ -825,42 +1333,6 @@ mod tests {
             tag: tag.to_string(),
             radius,
         })
-    }
-
-    // --- sample_time: the deterministic uniform-with-endpoints contract ------
-
-    #[test]
-    fn sample_time_spans_zero_to_duration_uniformly() {
-        let duration = 2.0;
-        let times: Vec<f32> = (0..BOUND_SAMPLES_PER_CLIP)
-            .map(|s| sample_time(duration, s))
-            .collect();
-        assert_eq!(times.len(), BOUND_SAMPLES_PER_CLIP);
-        const _: () = assert!(
-            BOUND_SAMPLES_PER_CLIP >= 8,
-            "plan floor: ≥8 samples per clip"
-        );
-        // Endpoints included exactly.
-        assert!((times[0] - 0.0).abs() < 1.0e-6, "first sample is t=0");
-        assert!(
-            (times[BOUND_SAMPLES_PER_CLIP - 1] - duration).abs() < 1.0e-6,
-            "last sample is t=duration"
-        );
-        // Strictly ascending and uniformly spaced.
-        let step = duration / (BOUND_SAMPLES_PER_CLIP - 1) as f32;
-        for s in 1..BOUND_SAMPLES_PER_CLIP {
-            assert!(
-                (times[s] - times[s - 1] - step).abs() < 1.0e-5,
-                "uniform step"
-            );
-        }
-    }
-
-    #[test]
-    fn sample_time_static_clip_collapses_to_zero() {
-        for s in 0..BOUND_SAMPLES_PER_CLIP {
-            assert_eq!(sample_time(0.0, s), 0.0, "non-positive duration → t=0");
-        }
     }
 
     // --- derived bound: encloses the SWEPT limb + radius, hitbox-independent --
@@ -879,11 +1351,12 @@ mod tests {
         };
         // Child joint (index 1) sweeps 0 → 10 on +X across the clip; root holds.
         let child_tracks = JointTracks {
-            translation: Track {
-                times: vec![0.0, 1.0],
-                values: vec![Vec3::ZERO, Vec3::new(10.0, 0.0, 0.0)],
-                mode: Interp::Linear,
-            },
+            translation: Track::new(
+                vec![0.0, 1.0],
+                vec![Vec3::ZERO, Vec3::new(10.0, 0.0, 0.0)],
+                Interp::Linear,
+            )
+            .expect("valid swept-limb translation track"),
             ..Default::default()
         };
         let clip = AnimationClip {
@@ -895,7 +1368,8 @@ mod tests {
         let child_radius = 0.5;
         let joint_zones = vec![None, zone("arm", Some(child_radius))];
 
-        let bound = derive_bound(&skeleton, std::slice::from_ref(&clip), &joint_zones);
+        let bound = derive_bound(&skeleton, std::slice::from_ref(&clip), &joint_zones)
+            .expect("finite bound");
 
         // The child reaches x=10 at the clip end; the bound must include x=10 plus
         // its capsule radius — proving the SWEPT extreme (not just t=0) is captured
@@ -905,10 +1379,10 @@ mod tests {
             "bound max.x {} must enclose swept limb tip (10) + radius ({child_radius})",
             bound.max.x
         );
-        // The near end (x=0) minus the default radius is the min (root at origin
-        // with default 0.12 radius, child also passes through x=0 at t=0).
+        // The tagged child passes through x=0 at t=0, so its own radius must be
+        // represented on the near side too.
         assert!(
-            bound.min.x <= 0.0 - DEFAULT_ZONE_RADIUS + 1.0e-4,
+            bound.min.x <= 0.0 - child_radius + 1.0e-4,
             "bound min.x {} must enclose the near pose minus radius",
             bound.min.x
         );
@@ -922,41 +1396,38 @@ mod tests {
         );
     }
 
-    /// An intermediate (mid-swing) sample must be inside the bound too — pinning
-    /// that the union covers the whole arc, not merely the two endpoints. A joint
-    /// that arcs through +Y between two endpoints both on the X axis would escape
-    /// an endpoints-only box; the ≥8 interior samples catch it.
+    /// Regression: a short authored keyframe excursion between widely spaced key
+    /// times must still be inside the derived broad-phase bound.
     #[test]
-    fn derived_bound_covers_mid_swing_arc_not_just_endpoints() {
+    fn derived_bound_includes_short_keyframe_excursion() {
         let skeleton = Skeleton {
             joints: vec![joint(None, RestLocal::default())],
         };
-        // Three keys: start (0,0,0), peak (0,8,0), end (0,0,0). Endpoints share
-        // y=0; the arc bulges to y=8 only mid-clip.
+        // The peak lives near the start of a long clip, then returns to origin
+        // between the next widely spaced key times. Key-time expansion must
+        // catch it where a coarse uniform sampling could step right over it.
         let tracks = JointTracks {
-            translation: Track {
-                times: vec![0.0, 0.5, 1.0],
-                values: vec![Vec3::ZERO, Vec3::new(0.0, 8.0, 0.0), Vec3::ZERO],
-                mode: Interp::Linear,
-            },
+            translation: Track::new(
+                vec![0.0, 0.01, 0.02, 1.0],
+                vec![Vec3::ZERO, Vec3::new(0.0, 8.0, 0.0), Vec3::ZERO, Vec3::ZERO],
+                Interp::Linear,
+            )
+            .expect("valid short-excursion translation track"),
             ..Default::default()
         };
         let clip = AnimationClip {
-            name: "arc".into(),
+            name: "snap".into(),
             duration: 1.0,
             joints: vec![tracks],
         };
         let joint_zones = vec![zone("head", Some(0.1))];
 
-        let bound = derive_bound(&skeleton, std::slice::from_ref(&clip), &joint_zones);
+        let bound = derive_bound(&skeleton, std::slice::from_ref(&clip), &joint_zones)
+            .expect("finite bound");
 
-        // An endpoints-only box would have max.y ≈ 0.1 (radius at y=0). The mid
-        // samples must push it toward the y=8 peak — uniform samples at 1/7..6/7
-        // hit the linear ramp, the closest landing near the peak.
         assert!(
-            bound.max.y > 4.0,
-            "mid-swing arc (peak y=8) must be enclosed; max.y {} too small \
-             (endpoints-only would miss it)",
+            bound.max.y >= 8.0 + 0.1 - 1.0e-4,
+            "short keyed peak y=8 plus radius must be enclosed; max.y {} too small",
             bound.max.y
         );
     }
@@ -978,7 +1449,8 @@ mod tests {
         // Zone present, radius omitted → default applies.
         let joint_zones = vec![zone("torso", None)];
 
-        let bound = derive_bound(&skeleton, std::slice::from_ref(&clip), &joint_zones);
+        let bound = derive_bound(&skeleton, std::slice::from_ref(&clip), &joint_zones)
+            .expect("finite bound");
 
         // Joint at origin, inflated by ±DEFAULT_ZONE_RADIUS on every axis.
         let expected = DEFAULT_ZONE_RADIUS;
@@ -991,6 +1463,200 @@ mod tests {
             (bound.min + Vec3::splat(expected)).length() < 1.0e-4,
             "min should be -default on each axis, got {:?}",
             bound.min
+        );
+    }
+
+    /// Regression: `JointZone` is public, so non-loader construction can carry
+    /// an invalid radius. Runtime consumers fall back to the engine default.
+    #[test]
+    fn invalid_public_radius_inflates_by_engine_default() {
+        let skeleton = Skeleton {
+            joints: vec![joint(None, RestLocal::default())],
+        };
+        let clip = AnimationClip {
+            name: "rest".into(),
+            duration: 0.0,
+            joints: vec![JointTracks::default()],
+        };
+        let joint_zones = vec![zone("torso", Some(f32::NAN))];
+
+        let bound = derive_bound(&skeleton, std::slice::from_ref(&clip), &joint_zones)
+            .expect("finite bound");
+
+        assert!(
+            (bound.max - Vec3::splat(DEFAULT_ZONE_RADIUS)).length() < 1.0e-4,
+            "invalid radius should use default max, got {:?}",
+            bound.max
+        );
+        assert!(
+            (bound.min + Vec3::splat(DEFAULT_ZONE_RADIUS)).length() < 1.0e-4,
+            "invalid radius should use default min, got {:?}",
+            bound.min
+        );
+    }
+
+    /// Regression: broad phase must inflate both endpoints of a parent-tagged
+    /// capsule by the parent zone radius. The child endpoint is part of that
+    /// same narrow-phase capsule even when the child has no zone tag.
+    #[test]
+    fn parent_zone_radius_inflates_child_endpoint() {
+        let child_rest = Vec3::new(10.0, 0.0, 0.0);
+        let parent_radius = 2.0;
+        let skeleton = Skeleton {
+            joints: vec![
+                joint(None, RestLocal::default()),
+                joint(
+                    Some(0),
+                    RestLocal {
+                        translation: child_rest,
+                        ..RestLocal::default()
+                    },
+                ),
+            ],
+        };
+        let joint_zones = vec![zone("torso", Some(parent_radius)), None];
+
+        let bound = derive_bound(&skeleton, &[], &joint_zones).expect("finite bound");
+
+        assert!(
+            bound.max.x >= child_rest.x + parent_radius - 1.0e-4,
+            "child endpoint must inherit parent capsule radius; max.x={}",
+            bound.max.x
+        );
+    }
+
+    /// A zone-bearing skeleton with no animation clips must still derive a bound
+    /// over its rest pose. Otherwise the broad phase collapses to the origin and
+    /// rejects static zoned targets before narrow phase can pose rest joints.
+    #[test]
+    fn derived_bound_without_clips_uses_rest_pose() {
+        let rest_pos = Vec3::new(4.0, 0.0, 0.0);
+        let skeleton = Skeleton {
+            joints: vec![
+                joint(None, RestLocal::default()),
+                joint(
+                    Some(0),
+                    RestLocal {
+                        translation: rest_pos,
+                        ..RestLocal::default()
+                    },
+                ),
+            ],
+        };
+        let radius = 0.25;
+        let joint_zones = vec![None, zone("hand", Some(radius))];
+
+        let bound = derive_bound(&skeleton, &[], &joint_zones).expect("finite bound");
+
+        assert!(
+            bound.max.x >= rest_pos.x + radius - 1.0e-4,
+            "rest joint at x={} plus radius {} must be inside bound; max.x={}",
+            rest_pos.x,
+            radius,
+            bound.max.x
+        );
+        assert!(
+            bound.min.x <= rest_pos.x - radius + 1.0e-4,
+            "rest joint at x={} minus radius {} must be inside bound; min.x={}",
+            rest_pos.x,
+            radius,
+            bound.min.x
+        );
+    }
+
+    /// Regression: the derived bound must enclose the worst-case CROSSFADE BLEND
+    /// of two clips, not just each clip's own key poses. A composed scale chain is
+    /// concave in the blend weight, so a mid-blend pose can reach FARTHER than
+    /// either clip alone — the reach envelope is unioned over all clips so it
+    /// dominates every pairwise blend.
+    ///
+    /// Chain 0->1->2 with joint 2 tagged at rest translation (L,0,0). Clip A
+    /// scales joint 1 by 3; clip B scales joint 0 by 3 (anti-correlated). Each
+    /// clip alone composes joint 2 to x=3L, but the w=0.5 blend composes to x=4L
+    /// (scales lerp to 2 and 2, 2*2*L) — outside the per-clip key poses. The
+    /// union-max envelope (here ~9L) must enclose that worst blend.
+    #[test]
+    fn derived_bound_encloses_worst_anticorrelated_blend_reach() {
+        const L: f32 = 2.0;
+        let skeleton = Skeleton {
+            joints: vec![
+                joint(None, RestLocal::default()),
+                joint(Some(0), RestLocal::default()),
+                joint(
+                    Some(1),
+                    RestLocal {
+                        translation: Vec3::new(L, 0.0, 0.0),
+                        ..RestLocal::default()
+                    },
+                ),
+            ],
+        };
+
+        fn scale_track(s: f32) -> JointTracks {
+            JointTracks {
+                scale: Track::new(
+                    vec![0.0, 1.0],
+                    vec![Vec3::splat(s), Vec3::splat(s)],
+                    Interp::Linear,
+                )
+                .expect("valid scale track"),
+                ..Default::default()
+            }
+        }
+
+        // Clip A scales joint 1 by 3; clip B scales joint 0 by 3 (anti-correlated).
+        let clip_a = AnimationClip {
+            name: "a".into(),
+            duration: 1.0,
+            joints: vec![
+                JointTracks::default(),
+                scale_track(3.0),
+                JointTracks::default(),
+            ],
+        };
+        let clip_b = AnimationClip {
+            name: "b".into(),
+            duration: 1.0,
+            joints: vec![
+                scale_track(3.0),
+                JointTracks::default(),
+                JointTracks::default(),
+            ],
+        };
+        let joint_zones = vec![None, None, zone("tip", Some(0.1))];
+
+        let bound = derive_bound(&skeleton, &[clip_a, clip_b], &joint_zones).expect("finite bound");
+
+        // Pin the INVARIANT (bound encloses the worst blend pose x=4L), not the
+        // exact envelope value — union-max is conservatively larger (~9L).
+        assert!(
+            bound.max.x >= 4.0 * L - 1.0e-4,
+            "bound.max.x {} must enclose the worst-case blend reach 4L={}",
+            bound.max.x,
+            4.0 * L,
+        );
+    }
+
+    /// Regression: a non-finite posed capsule center (a directly-constructed NaN
+    /// rest translation that bypassed loader validation) must NOT yield a poisoned
+    /// NaN bound that rejects every ray. `derive_bound` returns `None` so the model
+    /// degrades to the authored AABB and stays hittable.
+    #[test]
+    fn derived_bound_none_when_pose_non_finite() {
+        let skeleton = Skeleton {
+            joints: vec![joint(
+                None,
+                RestLocal {
+                    translation: Vec3::new(f32::NAN, 0.0, 0.0),
+                    ..RestLocal::default()
+                },
+            )],
+        };
+        let joint_zones = vec![zone("core", Some(0.2))];
+
+        assert!(
+            derive_bound(&skeleton, &[], &joint_zones).is_none(),
+            "a non-finite pose must degrade (None), not return a poisoned NaN bound"
         );
     }
 
@@ -1090,11 +1756,12 @@ mod tests {
         // WITHOUT wrapping (Loop::Wrap maps t==duration back to 0; t=1 < 2 is a
         // genuine interior sample).
         let child_tracks = JointTracks {
-            translation: Track {
-                times: vec![0.0, 2.0],
-                values: vec![Vec3::ZERO, Vec3::new(10.0, 0.0, 0.0)],
-                mode: Interp::Linear,
-            },
+            translation: Track::new(
+                vec![0.0, 2.0],
+                vec![Vec3::ZERO, Vec3::new(10.0, 0.0, 0.0)],
+                Interp::Linear,
+            )
+            .expect("valid swinging-limb translation track"),
             ..Default::default()
         };
         let clip = AnimationClip {
@@ -1104,17 +1771,111 @@ mod tests {
         };
         // Root untagged; child tagged leaf with an explicit radius.
         let joint_zones = vec![None, zone("hand", Some(0.3))];
-        let derived_bound = Some(derive_bound(
-            &skeleton,
-            std::slice::from_ref(&clip),
-            &joint_zones,
-        ));
+        let derived_bound = derive_bound(&skeleton, std::slice::from_ref(&clip), &joint_zones);
         ModelHitZones {
             skeleton: Arc::new(skeleton),
             clips: Arc::new(vec![clip]),
             joint_zones,
             derived_bound,
         }
+    }
+
+    fn const_x_clip(name: &str, x: f32) -> AnimationClip {
+        AnimationClip {
+            name: name.to_string(),
+            duration: 1.0,
+            joints: vec![JointTracks {
+                translation: Track::new(
+                    vec![0.0, 1.0],
+                    vec![Vec3::new(x, 0.0, 0.0), Vec3::new(x, 0.0, 0.0)],
+                    Interp::Linear,
+                )
+                .expect("valid const translation track"),
+                ..Default::default()
+            }],
+        }
+    }
+
+    fn smooth_interrupt_model() -> ModelHitZones {
+        let skeleton = Skeleton {
+            joints: vec![joint(None, RestLocal::default())],
+        };
+        let clips = vec![
+            const_x_clip("idle", 0.0),
+            const_x_clip("walk", 10.0),
+            const_x_clip("run", 100.0),
+        ];
+        let joint_zones = vec![zone("core", Some(0.25))];
+        let derived_bound = derive_bound(&skeleton, &clips, &joint_zones);
+        ModelHitZones {
+            skeleton: Arc::new(skeleton),
+            clips: Arc::new(clips),
+            joint_zones,
+            derived_bound,
+        }
+    }
+
+    /// A static zone-bearing model: no animation clips, one tagged leaf joint in
+    /// rest pose away from the origin.
+    fn static_rest_zone_model() -> ModelHitZones {
+        let skeleton = Skeleton {
+            joints: vec![
+                joint(None, RestLocal::default()),
+                joint(
+                    Some(0),
+                    RestLocal {
+                        translation: Vec3::new(4.0, 0.0, 0.0),
+                        ..RestLocal::default()
+                    },
+                ),
+            ],
+        };
+        let joint_zones = vec![None, zone("hand", Some(0.25))];
+        let derived_bound = derive_bound(&skeleton, &[], &joint_zones);
+
+        ModelHitZones {
+            skeleton: Arc::new(skeleton),
+            clips: Arc::new(vec![]),
+            joint_zones,
+            derived_bound,
+        }
+    }
+
+    #[test]
+    fn zone_hit_uses_full_transform_scale_and_pitch_roll() {
+        let mut reg = EntityRegistry::new();
+        let store = store_with("static", static_rest_zone_model());
+        let id = reg.spawn(Transform {
+            rotation: glam::Quat::from_rotation_z(std::f32::consts::FRAC_PI_2),
+            scale: Vec3::new(2.0, 1.0, 1.0),
+            ..Transform::default()
+        });
+        reg.set_component(
+            id,
+            HealthComponent {
+                max: 100.0,
+                current: 100.0,
+                hitbox: None,
+                death_handled: false,
+                zone_multipliers: std::collections::HashMap::new(),
+            },
+        )
+        .unwrap();
+        reg.set_component(id, MeshComponent::stateless("static".into()))
+            .unwrap();
+
+        let hit = nearest_entity_hit(
+            &reg,
+            &store,
+            0.0,
+            Vec3::new(0.0, 8.0, 10.0),
+            Vec3::new(0.0, 0.0, -1.0),
+            100.0,
+        )
+        .expect("full model transform places the rest joint at y=8");
+
+        assert_eq!(hit.target, id);
+        assert_eq!(hit.zone.as_deref(), Some("hand"));
     }
 
     /// Install a model in the store under `handle`.
@@ -1200,6 +1961,29 @@ mod tests {
         assert_eq!(posed.zone.as_deref(), Some("hand"), "zone tag surfaced");
     }
 
+    /// Regression: zoned skeletons with no clips are still hittable at their
+    /// rest-pose joint positions. The ray is far from the origin, so a zero
+    /// broad-phase box would reject before `pose_world_joints` falls back to rest.
+    #[test]
+    fn no_clip_zone_entity_hits_rest_pose_away_from_origin() {
+        let mut reg = EntityRegistry::new();
+        let store = store_with("static", static_rest_zone_model());
+        let id = spawn_zone_entity(&mut reg, "static", Vec3::ZERO);
+
+        let hit = nearest_entity_hit(
+            &reg,
+            &store,
+            0.0,
+            Vec3::new(4.0, 0.0, 10.0),
+            Vec3::new(0.0, 0.0, -1.0),
+            100.0,
+        )
+        .expect("rest-pose zone away from origin should pass broad phase and hit");
+
+        assert_eq!(hit.target, id);
+        assert_eq!(hit.zone.as_deref(), Some("hand"));
+    }
+
     /// An ANIMATED zone entity poses through the shared `animate_entity`
     /// resolver: its current state's clip-local time (`anim_time - entered_at`)
     /// drives the limb. Entered at t=3, sampled at t=4 → clip-local 1.0 → child at
@@ -1264,6 +2048,533 @@ mod tests {
             .expect("the state-posed limb lies on the ray");
         assert_eq!(hit.target, id);
         assert_eq!(hit.zone.as_deref(), Some("hand"));
+    }
+
+    /// Regression: smooth-interrupt snapshot fades must pose capsules from the
+    /// captured in-flight blend the renderer draws, not from the fallback clip.
+    #[test]
+    fn smooth_snapshot_fade_hits_captured_pose_not_fallback_clip() {
+        use postretro_entities::components::mesh::{
+            AnimationState, FadeSourceKind, InterruptPolicy, InterruptedOutgoing, MeshAnimation,
+        };
+
+        fn state(clip: &str, crossfade_ms: f32, clip_index: usize) -> AnimationState {
+            AnimationState {
+                clip: clip.into(),
+                looping: true,
+                crossfade_ms,
+                interrupt: InterruptPolicy::Smooth,
+                clip_index: Some(clip_index),
+            }
+        }
+
+        let mut reg = EntityRegistry::new();
+        let store = store_with("smooth", smooth_interrupt_model());
+
+        let mut states = HashMap::new();
+        states.insert("A".to_string(), state("idle", 0.0, 0));
+        states.insert("B".to_string(), state("walk", 200.0, 1));
+        states.insert("C".to_string(), state("run", 100.0, 2));
+        let mut anim = MeshAnimation::new(states, "A".into());
+
+        // A->B was halfway through when C smoothly interrupted at t=1.1.
+        // Renderer captures S = blend(A@1.1, B@1.1, 0.5) = x=5, then C fades
+        // from S. The snapshot fallback clip is B at x=10.
+        let t2 = 1.1_f64;
+        anim.current_state = "C".into();
+        anim.previous_state = Some("B".into());
+        anim.previous_entered_at = Some(1.0);
+        anim.entered_at = Some(t2);
+        anim.fade_source = FadeSourceKind::Snapshot;
+        anim.interrupted_outgoing = Some(InterruptedOutgoing::Clip {
+            state: "A".into(),
+            entered_at: 0.0,
+        });
+
+        let id = reg.spawn(Transform::default());
+        reg.set_component(
+            id,
+            HealthComponent {
+                max: 100.0,
+                current: 100.0,
+                hitbox: None,
+                death_handled: false,
+                zone_multipliers: std::collections::HashMap::new(),
+            },
+        )
+        .unwrap();
+        reg.set_component(
+            id,
+            MeshComponent {
+                model: "smooth".into(),
+                animation: Some(anim),
+                origin_offset: Vec3::ZERO,
+            },
+        )
+        .unwrap();
+
+        let dir = Vec3::new(0.0, 0.0, -1.0);
+        let captured = nearest_entity_hit(&reg, &store, t2, Vec3::new(5.0, 0.0, 10.0), dir, 100.0)
+            .expect("snapshot-captured pose at x=5 should be hittable");
+        assert_eq!(captured.target, id);
+        assert_eq!(captured.zone.as_deref(), Some("core"));
+
+        let fallback = nearest_entity_hit(&reg, &store, t2, Vec3::new(10.0, 0.0, 10.0), dir, 100.0);
+        assert!(
+            fallback.is_none(),
+            "fallback clip pose at x=10 must not be used for smooth snapshot hits"
+        );
+    }
+
+    /// Regression: a same-tick state switch leaves `entered_at` pending until the
+    /// render-stage resolve pass. Hit zones must evaluate that pending stamp like
+    /// render does: the start of the crossfade (`weight = 0`), not the new
+    /// primary pose alone.
+    #[test]
+    fn pending_entry_stamp_samples_start_of_visible_crossfade() {
+        use postretro_entities::components::mesh::{
+            AnimationState, InterruptPolicy, MeshAnimation,
+        };
+
+        fn state(clip: &str, crossfade_ms: f32, clip_index: usize) -> AnimationState {
+            AnimationState {
+                clip: clip.into(),
+                looping: true,
+                crossfade_ms,
+                interrupt: InterruptPolicy::Smooth,
+                clip_index: Some(clip_index),
+            }
+        }
+
+        let mut reg = EntityRegistry::new();
+        let store = store_with("smooth", smooth_interrupt_model());
+
+        let mut states = HashMap::new();
+        states.insert("A".to_string(), state("idle", 0.0, 0));
+        states.insert("B".to_string(), state("walk", 200.0, 1));
+        let mut anim = MeshAnimation::new(states, "A".into());
+        anim.current_state = "B".into();
+        anim.previous_state = Some("A".into());
+        anim.previous_entered_at = Some(0.0);
+        anim.entered_at = None;
+
+        let id = reg.spawn(Transform::default());
+        reg.set_component(
+            id,
+            HealthComponent {
+                max: 100.0,
+                current: 100.0,
+                hitbox: None,
+                death_handled: false,
+                zone_multipliers: std::collections::HashMap::new(),
+            },
+        )
+        .unwrap();
+        reg.set_component(
+            id,
+            MeshComponent {
+                model: "smooth".into(),
+                animation: Some(anim),
+                origin_offset: Vec3::ZERO,
+            },
+        )
+        .unwrap();
+
+        let dir = Vec3::new(0.0, 0.0, -1.0);
+        let outgoing_pose =
+            nearest_entity_hit(&reg, &store, 1.0, Vec3::new(0.0, 0.0, 10.0), dir, 100.0)
+                .expect("weight-0 crossfade still shows and hits the outgoing pose");
+        assert_eq!(outgoing_pose.target, id);
+        assert_eq!(outgoing_pose.zone.as_deref(), Some("core"));
+
+        let new_primary_pose =
+            nearest_entity_hit(&reg, &store, 1.0, Vec3::new(10.0, 0.0, 10.0), dir, 100.0);
+        assert!(
+            new_primary_pose.is_none(),
+            "pending stamp must not consume as the new primary-only pose"
+        );
+    }
+
+    /// Regression: a CHAINED smooth interrupt (the interrupted fade's OUTGOING leg
+    /// is itself a prior snapshot) cannot be reconstructed game-side — the capture
+    /// references renderer-only stored data — so the precise capsule pose is
+    /// UNAVAILABLE. A zone-bearing entity that has an authored hitbox must then
+    /// degrade to that AABB and stay hittable, not become fully unhittable for the
+    /// crossfade window.
+    #[test]
+    fn chained_snapshot_interrupt_degrades_to_authored_aabb() {
+        use postretro_entities::components::mesh::{
+            AnimationState, FadeSourceKind, InterruptPolicy, InterruptedOutgoing, MeshAnimation,
+        };
+
+        fn state(clip: &str, crossfade_ms: f32, clip_index: usize) -> AnimationState {
+            AnimationState {
+                clip: clip.into(),
+                looping: true,
+                crossfade_ms,
+                interrupt: InterruptPolicy::Smooth,
+                clip_index: Some(clip_index),
+            }
+        }
+
+        let mut reg = EntityRegistry::new();
+        let store = store_with("smooth", smooth_interrupt_model());
+
+        let mut states = HashMap::new();
+        states.insert("A".to_string(), state("idle", 0.0, 0));
+        states.insert("B".to_string(), state("walk", 200.0, 1));
+        states.insert("C".to_string(), state("run", 100.0, 2));
+        let mut anim = MeshAnimation::new(states, "A".into());
+
+        // C smoothly interrupted an in-flight A->B fade at t2=1.1; the interrupted
+        // fade's OUTGOING leg was ITSELF a prior snapshot, so the capture's
+        // `outgoing` is a `FadeSource::Snapshot` the game side cannot resolve.
+        let t2 = 1.1_f64;
+        anim.current_state = "C".into();
+        anim.previous_state = Some("B".into());
+        anim.previous_entered_at = Some(1.0);
+        anim.entered_at = Some(t2);
+        anim.fade_source = FadeSourceKind::Snapshot;
+        anim.interrupted_outgoing = Some(InterruptedOutgoing::Snapshot {
+            tag: 1.0_f64.to_bits(),
+        });
+
+        // Entity at the origin with an authored hitbox on the ray. Absent the
+        // degrade it takes the capsule path and, with the pose unavailable, would
+        // return `None` (unhittable) — the game-feel regression this fix closes.
+        let id = reg.spawn(Transform::default());
+        reg.set_component(
+            id,
+            HealthComponent {
+                max: 100.0,
+                current: 100.0,
+                hitbox: Some(Hitbox {
+                    half_extents: Vec3::splat(0.5),
+                    offset: Vec3::ZERO,
+                }),
+                death_handled: false,
+                zone_multipliers: std::collections::HashMap::new(),
+            },
+        )
+        .unwrap();
+        reg.set_component(
+            id,
+            MeshComponent {
+                model: "smooth".into(),
+                animation: Some(anim),
+                origin_offset: Vec3::ZERO,
+            },
+        )
+        .unwrap();
+
+        let hit = nearest_entity_hit(
+            &reg,
+            &store,
+            t2,
+            Vec3::new(0.0, 0.0, 10.0),
+            Vec3::new(0.0, 0.0, -1.0),
+            100.0,
+        )
+        .expect("chained snapshot interrupt degrades to the authored AABB and stays hittable");
+        assert_eq!(hit.target, id);
+        assert_eq!(hit.zone, None, "the AABB degrade carries no zone tag");
+    }
+
+    /// A degenerate static-identity zone model: one rest-only joint at the model
+    /// origin, no usable animation channels, one tagged zone (default radius).
+    /// `is_static_identity_zone` flags it, so a capsule MISS degrades to the
+    /// coarse fallback.
+    fn static_identity_zone_model() -> ModelHitZones {
+        static_identity_zone_model_with_clips(vec![])
+    }
+
+    fn static_identity_zone_model_with_clips(clips: Vec<AnimationClip>) -> ModelHitZones {
+        let skeleton = Skeleton {
+            joints: vec![joint(None, RestLocal::default())],
+        };
+        let joint_zones = vec![zone("core", None)];
+        let derived_bound = derive_bound(&skeleton, &clips, &joint_zones);
+        ModelHitZones {
+            skeleton: Arc::new(skeleton),
+            clips: Arc::new(clips),
+            joint_zones,
+            derived_bound,
+        }
+    }
+
+    fn no_op_clip() -> AnimationClip {
+        AnimationClip {
+            name: "noop".into(),
+            duration: 0.0,
+            joints: vec![JointTracks::default()],
+        }
+    }
+
+    /// A zone-only enemy (NO authored hitbox) whose precise pose is UNAVAILABLE
+    /// this query must still be shootable: absent an AABB, the facility degrades to
+    /// the model's derived reach bound so a drawn zone-bearing enemy is never
+    /// unhittable for the whole crossfade window. Reuses the chained-snapshot
+    /// (Unavailable) setup, but with `hitbox: None`.
+    #[test]
+    fn zone_only_no_hitbox_unavailable_falls_back_to_derived_bound() {
+        use postretro_entities::components::mesh::{
+            AnimationState, FadeSourceKind, InterruptPolicy, InterruptedOutgoing, MeshAnimation,
+        };
+
+        fn state(clip: &str, crossfade_ms: f32, clip_index: usize) -> AnimationState {
+            AnimationState {
+                clip: clip.into(),
+                looping: true,
+                crossfade_ms,
+                interrupt: InterruptPolicy::Smooth,
+                clip_index: Some(clip_index),
+            }
+        }
+
+        let mut reg = EntityRegistry::new();
+        let store = store_with("smooth", smooth_interrupt_model());
+
+        let mut states = HashMap::new();
+        states.insert("A".to_string(), state("idle", 0.0, 0));
+        states.insert("B".to_string(), state("walk", 200.0, 1));
+        states.insert("C".to_string(), state("run", 100.0, 2));
+        let mut anim = MeshAnimation::new(states, "A".into());
+
+        // Same chained smooth interrupt as above → the game side cannot reconstruct
+        // the capture → pose Unavailable.
+        let t2 = 1.1_f64;
+        anim.current_state = "C".into();
+        anim.previous_state = Some("B".into());
+        anim.previous_entered_at = Some(1.0);
+        anim.entered_at = Some(t2);
+        anim.fade_source = FadeSourceKind::Snapshot;
+        anim.interrupted_outgoing = Some(InterruptedOutgoing::Snapshot {
+            tag: 1.0_f64.to_bits(),
+        });
+
+        // NO authored hitbox: the only coarse fallback target is the derived bound.
+        let id = reg.spawn(Transform::default());
+        reg.set_component(
+            id,
+            HealthComponent {
+                max: 100.0,
+                current: 100.0,
+                hitbox: None,
+                death_handled: false,
+                zone_multipliers: std::collections::HashMap::new(),
+            },
+        )
+        .unwrap();
+        reg.set_component(
+            id,
+            MeshComponent {
+                model: "smooth".into(),
+                animation: Some(anim),
+                origin_offset: Vec3::ZERO,
+            },
+        )
+        .unwrap();
+
+        let hit = nearest_entity_hit(
+            &reg,
+            &store,
+            t2,
+            Vec3::new(0.0, 0.0, 10.0),
+            Vec3::new(0.0, 0.0, -1.0),
+            100.0,
+        )
+        .expect("a zone-only enemy with an unavailable pose degrades to its derived bound");
+        assert_eq!(hit.target, id);
+        assert_eq!(
+            hit.zone, None,
+            "the reach-bound degrade carries no zone tag"
+        );
+    }
+
+    /// A static prop with a hitZone but no real rig (single identity joint, no
+    /// clips) collapses its zones to a ~0.12 m ball at the origin. A shot that
+    /// MISSES that ball must not be an authoritative miss: it degrades to the
+    /// authored AABB (a superset) and still connects, carrying no zone tag.
+    #[test]
+    fn static_identity_prop_falls_back_to_authored_aabb_when_ball_missed() {
+        let mut reg = EntityRegistry::new();
+        let store = store_with("prop", static_identity_zone_model());
+
+        // Entity at the origin with a 1 m authored hitbox; the origin ball is only
+        // ~0.12 m. A -Z ray at x=0.5 misses the ball but strikes the AABB.
+        let id = reg.spawn(Transform::default());
+        reg.set_component(
+            id,
+            HealthComponent {
+                max: 100.0,
+                current: 100.0,
+                hitbox: Some(Hitbox {
+                    half_extents: Vec3::splat(1.0),
+                    offset: Vec3::ZERO,
+                }),
+                death_handled: false,
+                zone_multipliers: std::collections::HashMap::new(),
+            },
+        )
+        .unwrap();
+        reg.set_component(id, MeshComponent::stateless("prop".into()))
+            .unwrap();
+
+        let hit = nearest_entity_hit(
+            &reg,
+            &store,
+            0.0,
+            Vec3::new(0.5, 0.0, 10.0),
+            Vec3::new(0.0, 0.0, -1.0),
+            100.0,
+        )
+        .expect("a static-identity origin-ball miss degrades to the authored AABB");
+        assert_eq!(hit.target, id);
+        assert_eq!(hit.zone, None, "the AABB degrade carries no zone tag");
+        assert!(
+            approx(hit.toi, 9.0),
+            "near AABB face at z=1 → toi 9, got {}",
+            hit.toi
+        );
+    }
+
+    /// Regression: loader-preserved static/no-skin models can carry a
+    /// zero-duration clip with no usable joint channels. That clip must not make
+    /// the identity origin ball authoritative; a miss still degrades to the
+    /// authored AABB.
+    #[test]
+    fn static_identity_prop_with_noop_clip_falls_back_to_authored_aabb_when_ball_missed() {
+        let mut reg = EntityRegistry::new();
+        let store = store_with(
+            "prop",
+            static_identity_zone_model_with_clips(vec![no_op_clip()]),
+        );
+
+        let id = reg.spawn(Transform::default());
+        reg.set_component(
+            id,
+            HealthComponent {
+                max: 100.0,
+                current: 100.0,
+                hitbox: Some(Hitbox {
+                    half_extents: Vec3::splat(1.0),
+                    offset: Vec3::ZERO,
+                }),
+                death_handled: false,
+                zone_multipliers: std::collections::HashMap::new(),
+            },
+        )
+        .unwrap();
+        reg.set_component(id, MeshComponent::stateless("prop".into()))
+            .unwrap();
+
+        let hit = nearest_entity_hit(
+            &reg,
+            &store,
+            0.0,
+            Vec3::new(0.5, 0.0, 10.0),
+            Vec3::new(0.0, 0.0, -1.0),
+            100.0,
+        )
+        .expect("a static-identity no-op-clip miss degrades to the authored AABB");
+        assert_eq!(hit.target, id);
+        assert_eq!(hit.zone, None, "the AABB degrade carries no zone tag");
+        assert!(
+            approx(hit.toi, 9.0),
+            "near AABB face at z=1 -> toi 9, got {}",
+            hit.toi
+        );
+    }
+
+    /// The static-identity degrade is bounded to MISSES: a shot that actually
+    /// strikes the origin ball still resolves as a normal capsule hit with its
+    /// authored zone tag — the fallback never over-degrades a real hit.
+    #[test]
+    fn static_identity_prop_ball_hit_still_reports_zone() {
+        let mut reg = EntityRegistry::new();
+        let store = store_with("prop", static_identity_zone_model());
+
+        let id = reg.spawn(Transform::default());
+        reg.set_component(
+            id,
+            HealthComponent {
+                max: 100.0,
+                current: 100.0,
+                hitbox: Some(Hitbox {
+                    half_extents: Vec3::splat(1.0),
+                    offset: Vec3::ZERO,
+                }),
+                death_handled: false,
+                zone_multipliers: std::collections::HashMap::new(),
+            },
+        )
+        .unwrap();
+        reg.set_component(id, MeshComponent::stateless("prop".into()))
+            .unwrap();
+
+        // A -Z ray dead through the origin strikes the ~0.12 m ball.
+        let hit = nearest_entity_hit(
+            &reg,
+            &store,
+            0.0,
+            Vec3::new(0.0, 0.0, 10.0),
+            Vec3::new(0.0, 0.0, -1.0),
+            100.0,
+        )
+        .expect("a ray through the origin strikes the zone ball");
+        assert_eq!(hit.target, id);
+        assert_eq!(
+            hit.zone.as_deref(),
+            Some("core"),
+            "a real ball hit keeps its bone tag, not the coarse degrade"
+        );
+    }
+
+    /// AC (pose-available authority): when the capsule pose is AVAILABLE and the
+    /// ray misses every capsule, the result is a genuine miss — a zone-bearing
+    /// posed model uses its capsules, never its coarse authored AABB. Even with a
+    /// hitbox the ray WOULD strike, an available-pose miss must NOT fall back to
+    /// the AABB (unlike the pose-unavailable degrade).
+    #[test]
+    fn posed_zone_miss_does_not_fall_back_to_authored_aabb() {
+        let mut reg = EntityRegistry::new();
+        let store = store_with("mob", swinging_limb_model());
+
+        // A zone entity WITH a large authored hitbox the ray would strike if it
+        // were ever consulted on the available-pose path.
+        let id = reg.spawn(Transform::default());
+        reg.set_component(
+            id,
+            HealthComponent {
+                max: 100.0,
+                current: 100.0,
+                hitbox: Some(Hitbox {
+                    half_extents: Vec3::splat(4.0),
+                    offset: Vec3::ZERO,
+                }),
+                death_handled: false,
+                zone_multipliers: std::collections::HashMap::new(),
+            },
+        )
+        .unwrap();
+        reg.set_component(id, MeshComponent::stateless("mob".into()))
+            .unwrap();
+
+        // Posed at t=1 the only capsule (child sphere) sits at (5,0,0), r=0.3. A -Z
+        // ray at (2.5, 3.0) lies inside the broad bound AND inside the 4m hitbox,
+        // but nowhere near the capsule → the pose is available, so the miss stands.
+        let hit = nearest_entity_hit(
+            &reg,
+            &store,
+            1.0,
+            Vec3::new(2.5, 3.0, 10.0),
+            Vec3::new(0.0, 0.0, -1.0),
+            100.0,
+        );
+        assert!(
+            hit.is_none(),
+            "an available-pose capsule miss must NOT fall back to the authored AABB"
+        );
     }
 
     /// AC (zones never desync from visuals): a LOOPING entity with a NON-ZERO

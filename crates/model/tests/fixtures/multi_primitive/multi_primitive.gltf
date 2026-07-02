@@ -13,7 +13,11 @@
   "scene": 0,
   "nodes": [
     {
-      "mesh": 0
+      "mesh": 0,
+      "extras": {
+        "hitZone": "crate",
+        "hitZoneRadius": 0.75
+      }
     }
   ],
   "meshes": [

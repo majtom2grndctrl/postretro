@@ -134,7 +134,7 @@ impl Renderer {
         prm_cache_root: &Path,
     ) -> Option<Vec<String>> {
         let (model_path, handle) = resolve_model_open_path_and_handle(model_rel, content_root);
-        let model = match crate::model::gltf_loader::load_model(&model_path) {
+        let model = match postretro_model::gltf_loader::load_model(&model_path) {
             Ok(m) => m,
             Err(err) => {
                 log::warn!(
@@ -147,7 +147,7 @@ impl Renderer {
 
         let submesh_materials = self.resolve_skinned_model_material(&model, prm_cache_root);
 
-        let crate::model::gltf_loader::LoadedModel {
+        let postretro_model::gltf_loader::LoadedModel {
             mesh,
             skeleton,
             clips,
@@ -197,13 +197,13 @@ impl Renderer {
     /// `load_skinned_model` cached it under. Returns an empty `Vec` when the model
     /// is not cached or has no animation — no error, no panic.
     ///
-    /// `pub` forwarder over the private `mesh_pass` (same seam as
-    /// [`Renderer::skinned_model_clip_by_name`]). Consumed by the level-load model
-    /// sweep (`main.rs`) to build the game-side clip tables.
+    /// `pub` forwarder over the private `mesh_pass` clip-metadata seam. Consumed
+    /// by the level-load model sweep (`main.rs`) to build the game-side clip
+    /// tables.
     pub fn skinned_model_clip_metadata(&self, model_handle: &str) -> Vec<mesh_pass::ClipMetadata> {
         self.full()
             .mesh_pass
-            .model_clip_metadata(&crate::model::ModelHandle::from(model_handle))
+            .model_clip_metadata(&postretro_model::ModelHandle::from(model_handle))
     }
 
     /// Replace this frame's skinned-mesh instance list with the inputs emitted by
@@ -241,7 +241,7 @@ impl Renderer {
     /// and normal always use neutral placeholders in this slice.
     fn resolve_skinned_model_material(
         &mut self,
-        model: &crate::model::gltf_loader::LoadedModel,
+        model: &postretro_model::gltf_loader::LoadedModel,
         prm_cache_root: &Path,
     ) -> Vec<(wgpu::BindGroup, std::ops::Range<u32>)> {
         let plan = plan_submesh_materials(&model.submeshes);

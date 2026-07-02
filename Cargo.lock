@@ -3569,7 +3569,6 @@ dependencies = [
  "env_logger",
  "gilrs",
  "glam",
- "gltf",
  "glyphon",
  "image",
  "kira",
@@ -3584,6 +3583,7 @@ dependencies = [
  "postretro-foundation",
  "postretro-level-format",
  "postretro-level-loader",
+ "postretro-model",
  "postretro-net",
  "postretro-render-data",
  "postretro-script-compiler",
@@ -3674,6 +3674,22 @@ dependencies = [
  "log",
  "postretro-level-format",
  "postretro-render-data",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "postretro-model"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "bytemuck",
+ "glam",
+ "gltf",
+ "log",
+ "postretro-level-format",
+ "postretro-render-data",
+ "serde",
+ "serde_json",
  "thiserror 2.0.18",
 ]
 

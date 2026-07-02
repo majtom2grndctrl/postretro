@@ -4,13 +4,13 @@
 
 use std::collections::HashMap;
 
-use crate::model::ModelHandle;
-use crate::model::anim::Loop;
-use crate::model::sample_params::{
-    CaptureInstruction, ClipSample, FadeSource, MeshFade, MeshSampleParams,
-};
 use postretro_entities::components::mesh::{
     AnimationState, FadeSourceKind, InterruptedOutgoing, MeshAnimation,
+};
+use postretro_model::ModelHandle;
+use postretro_model::anim::Loop;
+use postretro_model::sample_params::{
+    CaptureInstruction, ClipSample, FadeSource, MeshFade, MeshSampleParams,
 };
 
 /// One model's clip table: authored clip name → glTF index, plus each clip's
@@ -138,7 +138,7 @@ fn crossfade_seconds(crossfade_ms: f32) -> f32 {
 /// Pack an entry stamp's bit pattern into a snapshot-store tag. Quantizing to the
 /// raw `f64` bits makes a re-emitted capture under a frozen clock compare equal
 /// (idempotent capture): the same `entered_at` yields the same tag.
-fn snapshot_tag(entered_at: f64) -> crate::model::sample_params::SnapshotTag {
+fn snapshot_tag(entered_at: f64) -> postretro_model::sample_params::SnapshotTag {
     entered_at.to_bits()
 }
 

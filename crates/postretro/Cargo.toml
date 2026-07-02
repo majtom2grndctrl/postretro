@@ -39,11 +39,7 @@ gilrs.workspace = true
 # Image loading
 image.workspace = true
 
-# glTF model loading (CPU-side `model` module).
-gltf.workspace = true
-
-# Content hashing — the model loader hashes baseColor PNG bytes to derive the
-# baked `.prm` cache key (mirrors the level compiler's filename-key recipe).
+# Content hashing for stable data signatures.
 blake3.workspace = true
 
 # Error handling
@@ -77,6 +73,7 @@ env_logger.workspace = true
 # Workspace members
 postretro-level-format = { workspace = true, features = ["gltf-resolve"] }
 postretro-level-loader = { workspace = true }
+postretro-model = { workspace = true }
 postretro-render-data = { workspace = true }
 postretro-visibility = { workspace = true }
 postretro-foundation = { workspace = true }

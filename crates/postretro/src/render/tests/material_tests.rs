@@ -68,7 +68,7 @@ fn model_cache_key_is_the_verbatim_handle_while_open_path_is_joined() {
     assert_eq!(open_path, content_root.join(model_rel));
     // Cache key is the raw handle, NOT the joined path — must match the
     // per-frame collector's `ModelHandle::from(mesh.model.clone())`.
-    assert_eq!(handle, crate::model::ModelHandle::from(model_rel));
+    assert_eq!(handle, postretro_model::ModelHandle::from(model_rel));
     assert_eq!(handle.as_str(), model_rel);
     // And the key is explicitly not the joined string.
     assert_ne!(handle.as_str(), open_path.to_string_lossy());
@@ -82,7 +82,7 @@ fn model_cache_key_is_the_verbatim_handle_while_open_path_is_joined() {
 // builds on: one distinct key per distinct material (deduped), one draw per
 // submesh covering its range, in submesh order.
 
-use crate::model::gltf_loader::Submesh;
+use postretro_model::gltf_loader::Submesh;
 
 fn submesh(key: &str, start: u32, end: u32) -> Submesh {
     Submesh {

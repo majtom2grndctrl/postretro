@@ -168,10 +168,12 @@ fn compose_world_pose(
     for (i, joint) in skeleton.joints.iter().enumerate() {
         let local = local_of(i, joint);
 
-        // Forward sweep: parent-before-child topo order guarantees the
-        // parent's world matrix is already in `world` when we reach a child.
+        // Forward sweep: parent-before-child topo order guarantees the parent's
+        // world matrix is already in `world` when we reach a child. Public field
+        // construction can violate that; degrade an invalid parent link to a
+        // root instead of panicking.
         let world_pose = match joint.parent {
-            Some(p) => world[p] * local,
+            Some(p) => world.get(p).copied().unwrap_or(Mat4::IDENTITY) * local,
             None => local,
         };
         world.push(world_pose);
@@ -235,7 +237,6 @@ fn compose_palette(
 ///
 /// Reuse: pass the same `out` every frame. A thread-local scratch holds the
 /// world-pose sweep, so a steady-state call performs no heap allocation.
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn sample_clip(
     clip: &AnimationClip,
     skeleton: &Skeleton,
@@ -311,7 +312,6 @@ pub fn sample_blended(
 /// Reuse: pass the same `out` every frame. `out` is cleared then filled to
 /// `skeleton.joints.len()`, so a steady-state call performs no heap allocation —
 /// the same contract as the palette samplers.
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn sample_clip_looped_world(
     clip: &AnimationClip,
     skeleton: &Skeleton,
@@ -342,7 +342,6 @@ pub fn sample_clip_looped_world(
 /// Reuse `out` across frames: a thread-local TRS scratch is reused and `out` is
 /// cleared then refilled, so steady-state world-pose blending allocates nothing —
 /// the same contract as [`sample_blended`].
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn sample_blended_world(
     a: &BlendSource,
     b: &BlendSource,
@@ -462,12 +461,13 @@ fn locate_span(times: &[f32], t: f32) -> Option<(usize, usize, f32)> {
 /// Sample a `Vec3` track (translation/scale). `Linear` lerps component-wise
 /// between the bracketing keys; `Step` holds the lower key (`i0`) with no blend.
 fn sample_vec3_track(track: &Track<Vec3>, t: f32) -> Option<Vec3> {
-    let (i0, i1, frac) = locate_span(&track.times, t)?;
-    let a = track.values[i0];
-    match track.mode {
+    let values = track.values();
+    let (i0, i1, frac) = locate_span(track.times(), t)?;
+    let a = values[i0];
+    match track.mode() {
         Interp::Step => Some(a),
         Interp::Linear => {
-            let b = track.values[i1];
+            let b = values[i1];
             Some(a.lerp(b, frac))
         }
     }
@@ -478,12 +478,13 @@ fn sample_vec3_track(track: &Track<Vec3>, t: f32) -> Option<Vec3> {
 /// glam's `slerp` handles the dot-sign flip internally, so the interpolation
 /// never takes the long way around. `Step` holds the lower key (`i0`).
 fn sample_quat_track(track: &Track<Quat>, t: f32) -> Option<Quat> {
-    let (i0, i1, frac) = locate_span(&track.times, t)?;
-    let a = track.values[i0].normalize();
-    if i0 == i1 || track.mode == Interp::Step {
+    let values = track.values();
+    let (i0, i1, frac) = locate_span(track.times(), t)?;
+    let a = values[i0].normalize();
+    if i0 == i1 || track.mode() == Interp::Step {
         return Some(a);
     }
-    let b = track.values[i1].normalize();
+    let b = values[i1].normalize();
     // glam's `slerp` already picks the shortest arc (it negates `b` when the dot
     // is negative), so we get the correct hemisphere without a manual flip.
     Some(a.slerp(b, frac).normalize())
@@ -492,7 +493,7 @@ fn sample_quat_track(track: &Track<Quat>, t: f32) -> Option<Quat> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::skeleton::Joint;
+    use crate::skeleton::Joint;
 
     const EPS: f32 = 1.0e-5;
 
@@ -711,12 +712,39 @@ mod tests {
         assert_vec3_eq(p_wrapped, p_early, "t = duration + eps wraps to t = eps");
     }
 
+    #[test]
+    fn invalid_parent_link_degrades_to_root_instead_of_panicking() {
+        let skeleton = Skeleton {
+            joints: vec![joint(Some(1), Mat4::IDENTITY, RestLocal::default())],
+        };
+        let tracks = JointTracks {
+            translation: Track {
+                times: vec![0.0],
+                values: vec![Vec3::new(3.0, 0.0, 0.0)],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let clip = translation_clip("invalid-parent", 0.0, vec![tracks]);
+
+        let mut out = Vec::new();
+        sample_clip(&clip, &skeleton, 0.0, &mut out);
+
+        assert_eq!(out.len(), 1);
+        let translation = Mat4::from_cols_array_2d(&out[0].matrix).w_axis.truncate();
+        assert_vec3_eq(
+            translation,
+            Vec3::new(3.0, 0.0, 0.0),
+            "invalid parent composes as a root",
+        );
+    }
+
     /// Tripwire 2 (CPU-only, no GPU): measure per-frame `sample_clip` cost on the
     /// real shipped skeleton + clip and print a min/mean/max summary. This is the
     /// CPU pose-sampling figure `findings.md` projects to wave scale; it needs no
     /// renderer, so it runs here. Gated on the asset existing (mirrors the loader's
     /// real-model test) and `#[ignore]`d so it only runs on demand:
-    ///   cargo test -p postretro --release sample_clip_cpu_cost -- --ignored --nocapture
+    ///   cargo test -p postretro-model --release sample_clip_cpu_cost -- --ignored --nocapture
     /// (Run `--release` for a representative steady-state figure; debug is far
     /// slower and not the number to report.)
     #[test]
@@ -731,7 +759,7 @@ mod tests {
             eprintln!("skipping: model asset not present at {}", path.display());
             return;
         }
-        let model = crate::model::gltf_loader::load_model(&path).expect("model loads");
+        let model = crate::gltf_loader::load_model(&path).expect("model loads");
         let clip = model.clips.first().expect("model has one clip");
         let skeleton = &model.skeleton;
 

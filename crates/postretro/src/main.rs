@@ -22,7 +22,6 @@ mod fx;
 mod health;
 mod input;
 mod lighting;
-mod model;
 mod movement;
 // The runtime nav graph is built in every build whenever a level carries a
 // baked navmesh; pathfinding consumes its query surface.
@@ -224,7 +223,7 @@ fn resolve_mesh_entity_clips(
             continue;
         };
         let model_name = component.model.clone();
-        let handle = crate::model::ModelHandle::from(model_name.clone());
+        let handle = postretro_model::ModelHandle::from(model_name.clone());
         let Some(anim) = component.animation.as_mut() else {
             continue;
         };
@@ -277,11 +276,11 @@ fn warn_unknown_zone_multipliers(
         if health.zone_multipliers.is_empty() {
             continue;
         }
-        let handle = crate::model::ModelHandle::from(mesh.model.clone());
+        let handle = postretro_model::ModelHandle::from(mesh.model.clone());
         let declared = health.zone_multipliers.keys().map(String::as_str);
         // A model with no hit-zone entry carries no zones: every declared tag is
         // unknown. Pass an empty zone table so the cross-check reports them all.
-        let empty_zones: Vec<Option<crate::model::gltf_loader::JointZone>> = Vec::new();
+        let empty_zones: Vec<Option<postretro_model::gltf_loader::JointZone>> = Vec::new();
         let joint_zones = store
             .get(&handle)
             .map(|m| m.joint_zones.as_slice())
@@ -1368,6 +1367,24 @@ impl ApplicationHandler for App {
                     return;
                 }
 
+                // The frame's animation sample clock is a single value shared by
+                // game-side hit-zone pose resolution and render collection. It is
+                // computed before game logic so same-tick animation switches hit
+                // with the exact stamp the visible frame will resolve below.
+                #[cfg(feature = "dev-tools")]
+                let frozen = self
+                    .renderer
+                    .as_ref()
+                    .is_some_and(|renderer| renderer.freeze_time());
+                #[cfg(not(feature = "dev-tools"))]
+                let frozen = false;
+                let frame_anim_time = Self::frame_anim_time(
+                    self.anim_time,
+                    frame_dt as f64,
+                    self.anim_time_scale,
+                    frozen,
+                );
+
                 // Tail of the Input stage: poll the gamepad. This must run
                 // BEFORE the `take_ready`/`advance_frame` pair below so gamepad
                 // nav intents land in `pending` ahead of promotion and share the
@@ -1812,7 +1829,7 @@ impl ApplicationHandler for App {
                             self.nav_graph.as_ref(),
                             script_ctx.gravity.get(),
                             self.active_wieldable,
-                            self.anim_time,
+                            frame_anim_time,
                             progress_tracker,
                             &mut self.ai_warned,
                             &command,
@@ -2013,24 +2030,13 @@ impl ApplicationHandler for App {
                 // desync this branch fixed. Read the freeze flag from the
                 // renderer — it owns the toggle (driven by the debug panel) — and
                 // skip the increment while frozen so both sides hold one phase.
-                #[cfg(feature = "dev-tools")]
-                let frozen = self
-                    .renderer
-                    .as_ref()
-                    .is_some_and(|renderer| renderer.freeze_time());
-                #[cfg(not(feature = "dev-tools"))]
-                let frozen = false;
                 if !frozen {
                     self.script_time += frame_dt as f64;
                     // Animation clock accumulates scaled dt at the same site,
                     // under the same freeze gate. Accumulation (not absolute-time
                     // scaling) keeps a mid-fade scale change from jumping poses;
                     // scale 0 holds every clip and fade. See scripting.md §10.3.
-                    self.anim_time = Self::advance_anim_clock(
-                        self.anim_time,
-                        frame_dt as f64,
-                        self.anim_time_scale,
-                    );
+                    self.anim_time = frame_anim_time;
                 }
 
                 // Position interpolated from tick-state slots; yaw/pitch from
@@ -2385,7 +2391,7 @@ impl ApplicationHandler for App {
                         // Same frame alpha the player camera reads from
                         // `frame_timing` — interpolate each mesh between its
                         // previous- and current-tick transforms.
-                        session.mesh_render.collect(
+                        session.mesh_render.collect_with_hit_zones(
                             &registry,
                             world,
                             &visible_cells,
@@ -2396,6 +2402,7 @@ impl ApplicationHandler for App {
                             // the portal flood-fill — drives the per-instance
                             // animation time-slicing distance bucket.
                             interp.position,
+                            &session.hit_zone_store,
                         );
                         renderer.set_mesh_draws(session.mesh_render.instances());
                     }
@@ -4355,6 +4362,17 @@ impl App {
     /// event loop. The freeze gate lives at the call site. See scripting.md §10.3.
     fn advance_anim_clock(prev: f64, frame_dt: f64, scale: f64) -> f64 {
         prev + frame_dt * scale
+    }
+
+    /// The animation clock value every pose consumer should use for one render
+    /// frame: either the held clock while time is frozen, or the post-advance
+    /// clock the visible frame will sample.
+    fn frame_anim_time(prev: f64, frame_dt: f64, scale: f64, frozen: bool) -> f64 {
+        if frozen {
+            prev
+        } else {
+            Self::advance_anim_clock(prev, frame_dt, scale)
+        }
     }
 
     /// Transition input focus, acquiring or releasing the cursor as required
@@ -6449,7 +6467,7 @@ mod tests {
             },
         ];
         tables.insert(
-            crate::model::ModelHandle::from("models/descriptor_mob/scene.gltf"),
+            postretro_model::ModelHandle::from("models/descriptor_mob/scene.gltf"),
             &meta,
         );
 
@@ -6526,7 +6544,7 @@ mod tests {
             },
         ];
         tables.insert(
-            crate::model::ModelHandle::from("models/remote_enemy/scene.gltf"),
+            postretro_model::ModelHandle::from("models/remote_enemy/scene.gltf"),
             &meta,
         );
 
@@ -6552,7 +6570,7 @@ mod tests {
         // `prop_mesh` entity simply renders nothing.
         let bad = std::path::Path::new("definitely/not/a/real/model.gltf");
         assert!(
-            crate::model::gltf_loader::load_model(bad).is_err(),
+            postretro_model::gltf_loader::load_model(bad).is_err(),
             "loading a missing glTF must return Err, never panic",
         );
     }
@@ -6654,6 +6672,24 @@ mod tests {
         assert!(
             (clock - 5.0).abs() < CLOCK_EPSILON,
             "scale 0 must hold the clock in place, got {clock}"
+        );
+    }
+
+    #[test]
+    fn frame_anim_time_uses_visible_frame_clock_unless_frozen() {
+        let prev = 7.0;
+        let dt = 1.0 / 60.0;
+        let scale = 0.5;
+
+        assert_eq!(
+            App::frame_anim_time(prev, dt, scale, false),
+            App::advance_anim_clock(prev, dt, scale),
+            "game-side pose queries and render collection share the visible frame's post-advance clock",
+        );
+        assert_eq!(
+            App::frame_anim_time(prev, dt, scale, true),
+            prev,
+            "dev freeze holds the shared pose clock",
         );
     }
 

@@ -41,8 +41,9 @@ impl SkinnedVertex {
     /// Used when a mesh primitive carries no skinning attributes (a static mesh
     /// hung under the skinned path) — joint 0 then resolves to the instance's
     /// world transform.
-    // Kept for the loader-broadening task that admits non-skinned primitives.
-    #[allow(dead_code)]
+    // Test-only constructor for rigid vertices: the loader emits this encoding
+    // ([0,0,0,0] / [255,0,0,0]) inline for non-skinned primitives and never
+    // calls this.
     pub fn rigid(
         position: [f32; 3],
         base_uv: [u16; 2],
@@ -61,23 +62,35 @@ impl SkinnedVertex {
 }
 
 /// A skinned mesh: one interleaved vertex stream plus a 32-bit index buffer.
-/// Materials and the skeleton are carried alongside in [`crate::model`], not
-/// embedded here.
+/// Materials and the skeleton are carried alongside on
+/// [`crate::gltf_loader::LoadedModel`], not embedded here.
+///
+/// `vertices` and `indices` stay public because the renderer uploads them
+/// directly across the crate boundary. Call [`SkinnedMesh::compute_bounds`]
+/// after changing vertex positions and before handing the mesh to renderer
+/// culling or shadow planning.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SkinnedMesh {
     pub vertices: Vec<SkinnedVertex>,
     pub indices: Vec<u32>,
     /// Tight LOCAL-space (bind-pose) AABB over every vertex position, computed at
-    /// glTF load. Carried CPU-side so the per-light caster cull (a later task)
-    /// can transform it by an instance's world transform and test it against a
-    /// light's cone/face frustum. It is a bind-pose bound; animation can push a
-    /// vertex slightly past it, which the cull treats conservatively (a missed
-    /// caster only loses a sliver of its own shadow at the silhouette). The
+    /// glTF load. Carried CPU-side so the per-light caster cull can transform it
+    /// by an instance's world transform and test it against a light's cone/face
+    /// frustum. This is an approximate bind-pose cull: animation can push a
+    /// vertex past the bound unless a swept or skinned bound is computed. The
     /// renderer-side uploaded model needs no copy — the cull reads this CPU side.
-    pub(crate) bounds: Aabb,
+    bounds: Aabb,
 }
 
 impl SkinnedMesh {
+    /// Cached local-space (bind-pose) AABB over every vertex position, valid only
+    /// once [`SkinnedMesh::compute_bounds`] has run (the glTF loader does this).
+    /// The value is eager and manually invalidated, not lazy: callers that mutate
+    /// public `vertices` must recompute before using it.
+    pub fn bounds(&self) -> Aabb {
+        self.bounds
+    }
+
     /// Recompute [`SkinnedMesh::bounds`] as the tight local-space AABB over every
     /// vertex position. A mesh with no vertices yields a zero box (see
     /// [`Aabb::from_points`]). Called by the glTF loader after merging primitives;
@@ -114,8 +127,8 @@ mod tests {
     #[test]
     fn skinned_vertex_layout_carries_a_tangent() {
         // Guards the committed layout: the skinned vertex must carry a packed
-        // tangent so normal mapping survives skinning. The glTF loader (`gltf_loader`)
-        // requires a matching TANGENT source attribute.
+        // tangent so normal mapping survives skinning. The glTF loader
+        // (`gltf_loader`) packs authored tangents or supplies the default.
         let v = SkinnedVertex::rigid([0.0; 3], [0, 0], [0, 0], [0xABCD, 0x1234]);
         assert_eq!(v.tangent_packed, [0xABCD, 0x1234]);
     }
@@ -129,6 +142,14 @@ mod tests {
 
     fn vertex_at(position: [f32; 3]) -> SkinnedVertex {
         SkinnedVertex::rigid(position, [0, 0], [0, 0], [0, 0])
+    }
+
+    fn assert_vec3_close(got: glam::Vec3, want: glam::Vec3) {
+        const EPS: f32 = 1.0e-6;
+        assert!(
+            (got - want).abs().cmple(glam::Vec3::splat(EPS)).all(),
+            "expected {want:?}, got {got:?}",
+        );
     }
 
     #[test]
@@ -146,8 +167,24 @@ mod tests {
             ..Default::default()
         };
         mesh.compute_bounds();
-        assert_eq!(mesh.bounds.min, glam::Vec3::new(-1.0, -4.0, -2.0));
-        assert_eq!(mesh.bounds.max, glam::Vec3::new(3.0, 2.0, 0.5));
+        assert_vec3_close(mesh.bounds.min, glam::Vec3::new(-1.0, -4.0, -2.0));
+        assert_vec3_close(mesh.bounds.max, glam::Vec3::new(3.0, 2.0, 0.5));
+    }
+
+    #[test]
+    fn compute_bounds_refreshes_after_public_vertex_mutation() {
+        let mut mesh = SkinnedMesh {
+            vertices: vec![vertex_at([0.0, 0.0, 0.0]), vertex_at([1.0, 1.0, 1.0])],
+            indices: vec![0, 1],
+            ..Default::default()
+        };
+
+        mesh.compute_bounds();
+        mesh.vertices[1].position = [4.0, 5.0, 6.0];
+        mesh.compute_bounds();
+
+        assert_vec3_close(mesh.bounds().min, glam::Vec3::ZERO);
+        assert_vec3_close(mesh.bounds().max, glam::Vec3::new(4.0, 5.0, 6.0));
     }
 
     #[test]
@@ -157,7 +194,7 @@ mod tests {
         // downstream frustum test never sees an inverted AABB.
         let mut mesh = SkinnedMesh::default();
         mesh.compute_bounds();
-        assert_eq!(mesh.bounds.min, glam::Vec3::ZERO);
-        assert_eq!(mesh.bounds.max, glam::Vec3::ZERO);
+        assert_vec3_close(mesh.bounds.min, glam::Vec3::ZERO);
+        assert_vec3_close(mesh.bounds.max, glam::Vec3::ZERO);
     }
 }

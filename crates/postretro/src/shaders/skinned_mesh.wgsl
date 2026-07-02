@@ -35,10 +35,9 @@
 // per-fragment dynamic-tier lights are evaluated with spot/point shadow
 // attenuation and summed into the SH composition.
 //
-// Design note (non-binding): the skinning vertex stage is kept separable so a
-// future position-only depth-only skinned variant (the shadow task) can share
-// `skin_matrix` and drop the color attributes (normal, UVs). Nothing depth-only
-// is built here.
+// Design note: skinned_depth.wgsl carries a matching `skin_matrix` helper for
+// its position-only path. WGSL has no shared module include, so keep changes to
+// skinning math mirrored across both shaders.
 
 // --- Group 0: camera ---------------------------------------------------------
 // Reuses the renderer's camera uniform (the full forward `Uniforms` buffer).

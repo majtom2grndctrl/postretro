@@ -126,7 +126,7 @@ pub(crate) struct SubmeshMaterialPlan {
 /// keys (first-seen order) and assign each submesh to its distinct key + range.
 /// Pure data logic — no GPU — so the dedup/range bookkeeping is unit-testable.
 pub(crate) fn plan_submesh_materials(
-    submeshes: &[crate::model::gltf_loader::Submesh],
+    submeshes: &[postretro_model::gltf_loader::Submesh],
 ) -> SubmeshMaterialPlan {
     let mut distinct_keys: Vec<String> = Vec::new();
     let mut draws: Vec<SubmeshDraw> = Vec::with_capacity(submeshes.len());
@@ -190,9 +190,9 @@ pub(crate) fn ascii_hex_nibble(byte: u8) -> Option<u8> {
 pub(crate) fn resolve_model_open_path_and_handle(
     model_rel: &str,
     content_root: &Path,
-) -> (std::path::PathBuf, crate::model::ModelHandle) {
+) -> (std::path::PathBuf, postretro_model::ModelHandle) {
     (
         content_root.join(model_rel),
-        crate::model::ModelHandle::from(model_rel.to_string()),
+        postretro_model::ModelHandle::from(model_rel.to_string()),
     )
 }

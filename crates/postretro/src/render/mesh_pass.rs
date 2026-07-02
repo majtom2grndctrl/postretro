@@ -5,7 +5,7 @@
 // Mirrors the shape of `crate::render::smoke::SmokePass` (`new` builds the
 // pipeline + layouts; a model cache keyed by handle mirrors `SmokePass::sheets`;
 // `render_frame` writes the per-frame buffers + records the draws). Owns ALL
-// wgpu for skinned meshes — `crate::model` stays wgpu-free.
+// wgpu for skinned meshes — `postretro_model` stays wgpu-free.
 //
 // Binding plan (forward, non-shadow):
 //   * group 0 = camera (shared renderer-owned camera uniform / bind group)
@@ -50,15 +50,15 @@ use std::collections::HashMap;
 
 use wgpu::util::DeviceExt;
 
-use crate::model::anim::{BlendSource, LocalTrs};
-use crate::model::mesh::SkinnedMesh;
-use crate::model::sample_params::{ClipSample, FadeSource, MeshSampleParams, SnapshotTag};
-use crate::model::skeleton::{AnimationClip, Skeleton};
-use crate::model::{BonePaletteEntry, ModelHandle};
 use crate::render::mesh_instances::{
     JointCounts, MAX_INSTANCES, MAX_PALETTE_ENTRIES, MeshFramePlan, instance_casts_into_cone,
 };
 use postretro_level_loader::LevelWorld;
+use postretro_model::anim::{BlendSource, LocalTrs};
+use postretro_model::mesh::SkinnedMesh;
+use postretro_model::sample_params::{ClipSample, FadeSource, MeshSampleParams, SnapshotTag};
+use postretro_model::skeleton::{AnimationClip, Skeleton};
+use postretro_model::{BonePaletteEntry, ModelHandle};
 use postretro_visibility::VisibleCells;
 
 /// Byte size of one `BonePaletteEntry` (mat4x4<f32> = 64 B).
@@ -434,7 +434,7 @@ impl SnapshotStore {
     /// list); a missing clip aborts the capture (no usable pose).
     fn apply_capture<'a>(
         &mut self,
-        capture: &crate::model::sample_params::CaptureInstruction,
+        capture: &postretro_model::sample_params::CaptureInstruction,
         skeleton: &Skeleton,
         resolve_clip: impl Fn(usize) -> Option<&'a AnimationClip>,
         scratch: &mut Vec<LocalTrs>,
@@ -480,7 +480,7 @@ impl SnapshotStore {
             }
         };
 
-        crate::model::anim::capture_blend(
+        postretro_model::anim::capture_blend(
             &outgoing,
             &incoming.as_blend_source(),
             capture.weight,
@@ -601,7 +601,7 @@ impl PaletteCache {
 struct ClipBlend<'a> {
     clip: &'a AnimationClip,
     time: f32,
-    loop_policy: crate::model::anim::Loop,
+    loop_policy: postretro_model::anim::Loop,
 }
 
 impl<'a> ClipBlend<'a> {
@@ -668,7 +668,7 @@ fn sample_instance<'a>(
 
     let Some(fade) = sample.fade else {
         // Steady state: single clip sample (the common, allocation-free path).
-        crate::model::anim::sample_clip_looped(
+        postretro_model::anim::sample_clip_looped(
             primary.clip,
             skeleton,
             primary.time,
@@ -686,7 +686,7 @@ fn sample_instance<'a>(
         FadeSource::Clip(leg) => {
             let Some(from) = clip_blend_source(&leg, resolve_clip) else {
                 // Outgoing clip gone: fall back to the primary alone.
-                crate::model::anim::sample_clip_looped(
+                postretro_model::anim::sample_clip_looped(
                     primary.clip,
                     skeleton,
                     primary.time,
@@ -695,7 +695,7 @@ fn sample_instance<'a>(
                 );
                 return true;
             };
-            crate::model::anim::sample_blended(
+            postretro_model::anim::sample_blended(
                 &from.as_blend_source(),
                 &primary_src,
                 fade.weight,
@@ -706,7 +706,7 @@ fn sample_instance<'a>(
         FadeSource::Snapshot { tag, fallback } => {
             match store.matching(seed, tag) {
                 Some(pose) => {
-                    crate::model::anim::sample_blended(
+                    postretro_model::anim::sample_blended(
                         &BlendSource::Snapshot(pose),
                         &primary_src,
                         fade.weight,
@@ -718,14 +718,14 @@ fn sample_instance<'a>(
                     // Store miss (capture frame culled): degrade to the fallback
                     // clip — a `"snap"`-equivalent blend the game layer never saw.
                     match clip_blend_source(&fallback, resolve_clip) {
-                        Some(from) => crate::model::anim::sample_blended(
+                        Some(from) => postretro_model::anim::sample_blended(
                             &from.as_blend_source(),
                             &primary_src,
                             fade.weight,
                             skeleton,
                             out,
                         ),
-                        None => crate::model::anim::sample_clip_looped(
+                        None => postretro_model::anim::sample_clip_looped(
                             primary.clip,
                             skeleton,
                             primary.time,
@@ -1030,7 +1030,7 @@ impl MeshPass {
                 module: &shader,
                 entry_point: Some("vs_main"),
                 // Vertex layout BUILT HERE from `SkinnedVertex`'s fields
-                // (model/ stays wgpu-free). Offsets:
+                // (postretro-model stays wgpu-free). Offsets:
                 //   position       Float32x3  @ 0
                 //   base_uv        Unorm16x2  @ 12  → vec2<f32> (0..1, decoded)
                 //   normal_oct     Uint16x2   @ 16
@@ -1043,7 +1043,7 @@ impl MeshPass {
                 // lighting, and normal-map passes reuse this vertex layout
                 // without a format change.
                 buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<crate::model::mesh::SkinnedVertex>()
+                    array_stride: std::mem::size_of::<postretro_model::mesh::SkinnedVertex>()
                         as wgpu::BufferAddress,
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &[
@@ -1154,7 +1154,7 @@ impl MeshPass {
                 // 28; stride is the full `SkinnedVertex` (the skipped attributes
                 // still occupy the stride, they are simply not declared).
                 buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<crate::model::mesh::SkinnedVertex>()
+                    array_stride: std::mem::size_of::<postretro_model::mesh::SkinnedVertex>()
                         as wgpu::BufferAddress,
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &[
@@ -1445,7 +1445,7 @@ impl MeshPass {
         // Stash the CPU-side local bound for the planner (drives the per-light
         // caster cull). Lives on the cache, NOT in `UploadedModel` — the GPU draw
         // never reads it.
-        self.model_bounds.insert(handle.clone(), mesh.bounds);
+        self.model_bounds.insert(handle.clone(), mesh.bounds());
         // Stash the full clip list cache-side (same rationale as `model_bounds`):
         // it keeps the clip-name / metadata query seam testable without a GPU.
         self.model_clips.insert(handle.clone(), clips);
@@ -1551,7 +1551,7 @@ impl MeshPass {
     /// base), evaluate any one-time snapshot-capture instruction into the
     /// per-entity snapshot store, then sample its pose into the palette at that
     /// base per the instance's resolved [`MeshSampleParams`] — a single clip
-    /// ([`crate::model::anim::sample_clip_looped`]), a clip→clip blend, or a
+    /// ([`postretro_model::anim::sample_clip_looped`]), a clip→clip blend, or a
     /// snapshot→clip blend. All sample times arrive in the params (the collector
     /// computed them from the animation clock), so the pass holds no render-clock
     /// of its own. The optional pose-sampling measurement uses an `Instant`, not
@@ -1573,6 +1573,7 @@ impl MeshPass {
         scratch: &mut Vec<BonePaletteEntry>,
     ) {
         if plan.groups.is_empty() {
+            self.palette_cache.end_frame();
             return;
         }
 
@@ -2616,7 +2617,7 @@ mod tests {
     // `clip_by_name` / `clip_metadata` free functions so the seam is testable here
     // without a GPU.
 
-    use crate::model::skeleton::AnimationClip;
+    use postretro_model::skeleton::AnimationClip;
 
     /// Build a named clip with `duration` and no per-joint tracks. The query seam
     /// keys on name + duration only; track contents are irrelevant to it.
@@ -2744,9 +2745,9 @@ mod tests {
         use std::path::PathBuf;
 
         let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/multi_clip/multi_clip.gltf");
+            .join("../model/tests/fixtures/multi_clip/multi_clip.gltf");
         let model =
-            crate::model::gltf_loader::load_model(&fixture).expect("multi-clip fixture loads");
+            postretro_model::gltf_loader::load_model(&fixture).expect("multi-clip fixture loads");
 
         let handle = ModelHandle::from("multi_clip");
         let map = clip_map(vec![(handle.clone(), model.clips.clone())]);
@@ -2782,12 +2783,12 @@ mod tests {
     // single-clip steady state, clip→clip + snapshot→clip blends, the missed-
     // capture degrade-to-fallback, idempotent capture, and the store lifecycle.
 
-    use crate::model::anim::Loop as AnimLoop;
-    use crate::model::sample_params::{
+    use glam::{Mat4, Quat};
+    use postretro_model::anim::Loop as AnimLoop;
+    use postretro_model::sample_params::{
         CaptureInstruction, ClipSample, FadeSource, MeshFade, MeshSampleParams,
     };
-    use crate::model::skeleton::{Joint, JointTracks, RestLocal, Skeleton, Track};
-    use glam::{Mat4, Quat};
+    use postretro_model::skeleton::{Interp, Joint, JointTracks, RestLocal, Skeleton, Track};
 
     /// Single-root skeleton with identity inverse-bind, so a palette entry's
     /// skinning matrix decomposes straight to the joint's local TRS.
@@ -2808,21 +2809,12 @@ mod tests {
             name: name.to_string(),
             duration: 1.0,
             joints: vec![JointTracks {
-                translation: Track {
-                    times: vec![0.0],
-                    values: vec![Vec3::new(tx, 0.0, 0.0)],
-                    ..Default::default()
-                },
-                rotation: Track {
-                    times: vec![0.0],
-                    values: vec![Quat::IDENTITY],
-                    ..Default::default()
-                },
-                scale: Track {
-                    times: vec![0.0],
-                    values: vec![Vec3::ONE],
-                    ..Default::default()
-                },
+                translation: Track::new(vec![0.0], vec![Vec3::new(tx, 0.0, 0.0)], Interp::Linear)
+                    .expect("valid constant translation track"),
+                rotation: Track::new(vec![0.0], vec![Quat::IDENTITY], Interp::Linear)
+                    .expect("valid constant rotation track"),
+                scale: Track::new(vec![0.0], vec![Vec3::ONE], Interp::Linear)
+                    .expect("valid constant scale track"),
             }],
         }
     }
@@ -3509,6 +3501,29 @@ mod tests {
         assert!(
             cache.must_sample(2, false),
             "the untouched entry is evicted → its next appearance forces a resample",
+        );
+    }
+
+    #[test]
+    fn palette_cache_empty_frame_evicts_all_entries() {
+        // Regression: an empty mesh plan still ends the palette-cache frame, so
+        // all previously cached culled-out poses are evicted before they re-enter.
+        let mut cache = PaletteCache::default();
+        cache.store(1, &palette_run(1.0, 2));
+        cache.store(2, &palette_run(2.0, 2));
+        cache.end_frame();
+        assert!(!cache.must_sample(1, false), "entry 1 survived setup");
+        assert!(!cache.must_sample(2, false), "entry 2 survived setup");
+
+        cache.end_frame();
+
+        assert!(
+            cache.must_sample(1, false),
+            "empty frame evicts entry 1 so re-entry forces resample",
+        );
+        assert!(
+            cache.must_sample(2, false),
+            "empty frame evicts entry 2 so re-entry forces resample",
         );
     }
 

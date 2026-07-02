@@ -1,16 +1,15 @@
-// CPU-only skinned-model module: mesh, skeleton, glTF load, animation sampling.
+// postretro-model crate: CPU-only mesh, skeleton, glTF load, animation sampling.
 // See: context/lib/rendering_pipeline.md §9
 //
-// This module is CPU-only by contract: it must not import or depend on `wgpu`.
-// The renderer (`crate::render`) owns GPU and builds the vertex layout / bind
+// This crate is CPU-only by contract: it must not import or depend on `wgpu`.
+// The renderer owns GPU and builds the vertex layout / bind
 // groups from these plain Pod types. Keep it that way.
 
-pub(crate) mod anim;
-pub(crate) mod animation_reactions;
-pub(crate) mod gltf_loader;
-pub(crate) mod mesh;
-pub(crate) mod sample_params;
-pub(crate) mod skeleton;
+pub mod anim;
+pub mod gltf_loader;
+pub mod mesh;
+pub mod sample_params;
+pub mod skeleton;
 
 use bytemuck::{Pod, Zeroable};
 
@@ -24,12 +23,11 @@ use bytemuck::{Pod, Zeroable};
 /// consumes it. Cloning is a `String` clone — cheap at the handful-of-models
 /// scale a frame carries.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct ModelHandle(pub(crate) String);
+pub struct ModelHandle(pub String);
 
 impl ModelHandle {
     /// The underlying handle string (the raw `MeshComponent.model` path).
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn as_str(&self) -> &str {
+    pub fn as_str(&self) -> &str {
         &self.0
     }
 }
@@ -56,22 +54,6 @@ impl From<String> for ModelHandle {
 /// shader adds a vertex's `joints[i]` to the base index to address its joint.
 /// This keeps one buffer for the whole frame and one small per-draw scalar,
 /// rather than a buffer (or bind group) per instance.
-///
-/// --- Provisional contracts (named, not frozen — the broadening tasks vote) ---
-///
-/// * **Per-instance / per-draw alignment to indirect draw.** When the
-///   many-instance indirect-draw task lands, the per-instance base index is
-///   expected to live in the same per-instance data path that task's
-///   indirect-draw shape carries (instance data SSBO indexed by draw), not a
-///   push constant. The exact carrier is that task's call.
-/// * **Depth-only skinned variant.** The shadow task chooses the depth-only
-///   skinned vertex/pipeline shape. It is expected to reuse this same palette
-///   buffer + base-index scheme (position + joints/weights only); the color
-///   attributes are dropped. Not allocated here.
-/// * **Lighting bind group.** The settled-lighting-interface task chooses the
-///   skinned mesh's lighting bind group (SH ambient + dynamic direct). The mesh
-///   pass leaves an additive slot for it (see `render::mesh_pass`); it is not
-///   allocated until that interface settles.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Pod, Zeroable)]
 pub struct BonePaletteEntry {

@@ -1,10 +1,9 @@
-// The shared group-0 frame uniform layout: FrameUniforms, its byte packer, the
-// lighting/shadow isolation enums, and the uniform-size/flag constants.
+// Shared group-0 frame uniform layout, flags, and byte packing.
 // See: context/lib/rendering_pipeline.md §4
 
-use super::*;
+use glam::{Mat4, Vec3};
 
-pub(crate) const UNIFORM_SIZE: usize = 128;
+pub const UNIFORM_SIZE: usize = 128;
 
 /// Bit 0 of `Uniforms.sdf_shadow_flags` — an SDF atlas is loaded, so the
 /// half-res factor target holds valid per-light visibility slices and the
@@ -189,44 +188,44 @@ impl DynamicDirectIsolation {
     }
 }
 
-pub(crate) struct FrameUniforms {
-    pub(crate) view_proj: Mat4,
-    pub(crate) camera_position: Vec3,
-    pub(crate) ambient_floor: f32,
-    pub(crate) light_count: u32,
-    pub(crate) time: f32,
-    pub(crate) lighting_isolation: LightingIsolation,
-    pub(crate) indirect_scale: f32,
+pub struct FrameUniforms {
+    pub view_proj: Mat4,
+    pub camera_position: Vec3,
+    pub ambient_floor: f32,
+    pub light_count: u32,
+    pub time: f32,
+    pub lighting_isolation: LightingIsolation,
+    pub indirect_scale: f32,
     /// Bitset of `SDF_SHADOW_FLAG_*` controlling the forward shader's SDF
     /// shadow-factor multiplies. Bit 0 gates the animated-baked term; bit 1
     /// gates the static-lightmap term (independent because the static-term
     /// multiply must skip a shadowed-mode lightmap to avoid double shadows).
-    pub(crate) sdf_shadow_flags: u32,
+    pub sdf_shadow_flags: u32,
     /// `SdfShadowMode` debug selector (Task 6). Encoded as the enum's `u32`
     /// repr (0=On, 1=Off, 2=Visualize). Overlays the per-term flags above:
     /// `Off` forces both SDF multiplies to 1.0; `Visualize` replaces the
     /// shaded color output with a grayscale R-channel view.
-    pub(crate) sdf_shadow_mode: SdfShadowMode,
+    pub sdf_shadow_mode: SdfShadowMode,
     /// Dev toggle: force per-light SDF visibility to 1.0 in the forward shader.
     /// Drives the "no double-count" visual A/B — with every sdf light fully
     /// lit, the additive per-light diffuse must reproduce the pre-change
     /// render (disjoint sets guarantee no re-weighting). Encoded as a u32
     /// (0 = normal, non-zero = forced) into the uniform's first pad slot.
-    pub(crate) sdf_force_visibility_one: bool,
+    pub sdf_force_visibility_one: bool,
     /// DYNAMIC baked-static-direct SH scale (0..1). Multiplies the direct term
     /// for the billboard path (the mesh path reads its own copy from the
     /// group-4 `DynamicDirectParams`). Repurposes the former `_sdf_pad1` slot.
-    pub(crate) dynamic_direct_scale: f32,
+    pub dynamic_direct_scale: f32,
     /// DYNAMIC-direct isolation mode (billboard path). Separate from
     /// `lighting_isolation`. Lands in a fresh trailing 16-byte row.
-    pub(crate) dynamic_direct_isolation: DynamicDirectIsolation,
+    pub dynamic_direct_isolation: DynamicDirectIsolation,
     /// Whether a baked DIRECT SH section is present. When false the dynamic
     /// shaders skip the direct sample (direct = 0), falling back to
     /// indirect-only. Owned here (and mirrored in the mesh uniform).
-    pub(crate) has_direct: bool,
+    pub has_direct: bool,
 }
 
-pub(crate) fn build_uniform_data(u: &FrameUniforms) -> [u8; UNIFORM_SIZE] {
+pub fn build_uniform_data(u: &FrameUniforms) -> [u8; UNIFORM_SIZE] {
     let mut bytes = [0u8; UNIFORM_SIZE];
     let cols = u.view_proj.to_cols_array();
     for (i, val) in cols.iter().enumerate() {
@@ -254,4 +253,203 @@ pub(crate) fn build_uniform_data(u: &FrameUniforms) -> [u8; UNIFORM_SIZE] {
     bytes[116..120].copy_from_slice(&has_direct.to_ne_bytes());
     // 120..128 stays zero — explicit pad rounding the tail row to 16 bytes.
     bytes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use glam::{Mat4, Vec3};
+
+    #[test]
+    fn uniform_data_has_correct_size() {
+        let data = build_uniform_data(&FrameUniforms {
+            view_proj: Mat4::IDENTITY,
+            camera_position: Vec3::ZERO,
+            ambient_floor: 0.05,
+            light_count: 0,
+            time: 0.0,
+            lighting_isolation: LightingIsolation::Normal,
+            indirect_scale: 1.0,
+            sdf_shadow_flags: 0,
+            sdf_shadow_mode: SdfShadowMode::On,
+            sdf_force_visibility_one: false,
+            dynamic_direct_scale: 1.0,
+            dynamic_direct_isolation: DynamicDirectIsolation::Combined,
+            has_direct: false,
+        });
+        assert_eq!(data.len(), UNIFORM_SIZE);
+    }
+
+    #[test]
+    fn uniform_data_encodes_sdf_shadow_flags_at_correct_offset() {
+        let data = build_uniform_data(&FrameUniforms {
+            view_proj: Mat4::IDENTITY,
+            camera_position: Vec3::ZERO,
+            ambient_floor: 0.0,
+            light_count: 0,
+            time: 0.0,
+            lighting_isolation: LightingIsolation::Normal,
+            indirect_scale: 1.0,
+            sdf_shadow_flags: SDF_SHADOW_FLAG_ATLAS_PRESENT,
+            sdf_shadow_mode: SdfShadowMode::On,
+            sdf_force_visibility_one: false,
+            dynamic_direct_scale: 0.0,
+            dynamic_direct_isolation: DynamicDirectIsolation::Combined,
+            has_direct: false,
+        });
+        let flags = u32::from_ne_bytes(data[96..100].try_into().unwrap());
+        assert_eq!(flags, SDF_SHADOW_FLAG_ATLAS_PRESENT);
+        assert_eq!(
+            u32::from_ne_bytes(data[100..104].try_into().unwrap()),
+            SdfShadowMode::On as u32,
+        );
+        assert!(data[104..128].iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn uniform_data_encodes_sdf_force_visibility_one_at_correct_offset() {
+        for (force, expected) in [(false, 0u32), (true, 1u32)] {
+            let data = build_uniform_data(&FrameUniforms {
+                view_proj: Mat4::IDENTITY,
+                camera_position: Vec3::ZERO,
+                ambient_floor: 0.0,
+                light_count: 0,
+                time: 0.0,
+                lighting_isolation: LightingIsolation::Normal,
+                indirect_scale: 1.0,
+                sdf_shadow_flags: 0,
+                sdf_shadow_mode: SdfShadowMode::On,
+                sdf_force_visibility_one: force,
+                dynamic_direct_scale: 0.0,
+                dynamic_direct_isolation: DynamicDirectIsolation::Combined,
+                has_direct: false,
+            });
+            assert_eq!(
+                u32::from_ne_bytes(data[104..108].try_into().unwrap()),
+                expected,
+            );
+            assert!(data[120..128].iter().all(|&b| b == 0));
+        }
+    }
+
+    #[test]
+    fn sdf_shadow_mode_round_trips_through_uniform() {
+        for mode in SdfShadowMode::ALL_VARIANTS {
+            let data = build_uniform_data(&FrameUniforms {
+                view_proj: Mat4::IDENTITY,
+                camera_position: Vec3::ZERO,
+                ambient_floor: 0.0,
+                light_count: 0,
+                time: 0.0,
+                lighting_isolation: LightingIsolation::Normal,
+                indirect_scale: 1.0,
+                sdf_shadow_flags: 0,
+                sdf_shadow_mode: mode,
+                sdf_force_visibility_one: false,
+                dynamic_direct_scale: 0.0,
+                dynamic_direct_isolation: DynamicDirectIsolation::Combined,
+                has_direct: false,
+            });
+            let decoded = u32::from_ne_bytes(data[100..104].try_into().unwrap());
+            assert_eq!(decoded, mode as u32);
+            assert!(data[120..128].iter().all(|&b| b == 0));
+        }
+    }
+
+    #[test]
+    fn uniform_data_encodes_dynamic_direct_tail_at_correct_offsets() {
+        let data = build_uniform_data(&FrameUniforms {
+            view_proj: Mat4::IDENTITY,
+            camera_position: Vec3::ZERO,
+            ambient_floor: 0.0,
+            light_count: 0,
+            time: 0.0,
+            lighting_isolation: LightingIsolation::Normal,
+            indirect_scale: 1.0,
+            sdf_shadow_flags: 0,
+            sdf_shadow_mode: SdfShadowMode::On,
+            sdf_force_visibility_one: false,
+            dynamic_direct_scale: 0.25,
+            dynamic_direct_isolation: DynamicDirectIsolation::IndirectOnly,
+            has_direct: true,
+        });
+        let scale = f32::from_ne_bytes(data[108..112].try_into().unwrap());
+        assert!((scale - 0.25).abs() < 1e-6);
+        assert_eq!(
+            u32::from_ne_bytes(data[112..116].try_into().unwrap()),
+            DynamicDirectIsolation::IndirectOnly as u32,
+        );
+        assert_eq!(u32::from_ne_bytes(data[116..120].try_into().unwrap()), 1);
+        assert!(data[120..128].iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn uniform_data_encodes_view_proj_camera_and_lighting_fields() {
+        let camera = Vec3::new(10.0, 20.0, 30.0);
+        let ambient_floor = 0.125_f32;
+        let light_count = 7_u32;
+        let indirect_scale = 0.5_f32;
+        let data = build_uniform_data(&FrameUniforms {
+            view_proj: Mat4::IDENTITY,
+            camera_position: camera,
+            ambient_floor,
+            light_count,
+            time: 0.0,
+            lighting_isolation: LightingIsolation::Normal,
+            indirect_scale,
+            sdf_shadow_flags: 0,
+            sdf_shadow_mode: SdfShadowMode::On,
+            sdf_force_visibility_one: false,
+            dynamic_direct_scale: 1.0,
+            dynamic_direct_isolation: DynamicDirectIsolation::Combined,
+            has_direct: false,
+        });
+
+        let mut floats = Vec::new();
+        for chunk in data.chunks_exact(4).take(16) {
+            floats.push(f32::from_ne_bytes(chunk.try_into().unwrap()));
+        }
+        let identity = Mat4::IDENTITY.to_cols_array();
+        for i in 0..16 {
+            assert!((floats[i] - identity[i]).abs() < 1e-6);
+        }
+
+        assert_eq!(f32::from_ne_bytes(data[64..68].try_into().unwrap()), 10.0);
+        assert_eq!(f32::from_ne_bytes(data[68..72].try_into().unwrap()), 20.0);
+        assert_eq!(f32::from_ne_bytes(data[72..76].try_into().unwrap()), 30.0);
+        assert!(
+            (f32::from_ne_bytes(data[76..80].try_into().unwrap()) - ambient_floor).abs() < 1e-6
+        );
+        assert_eq!(
+            u32::from_ne_bytes(data[80..84].try_into().unwrap()),
+            light_count,
+        );
+        assert_eq!(f32::from_ne_bytes(data[84..88].try_into().unwrap()), 0.0);
+        assert_eq!(u32::from_ne_bytes(data[88..92].try_into().unwrap()), 0);
+        assert!(
+            (f32::from_ne_bytes(data[92..96].try_into().unwrap()) - indirect_scale).abs() < 1e-6
+        );
+    }
+
+    #[test]
+    fn uniform_data_encodes_script_time_as_gpu_time_field() {
+        let script_time = 3.75_f32;
+        let data = build_uniform_data(&FrameUniforms {
+            view_proj: Mat4::IDENTITY,
+            camera_position: Vec3::ZERO,
+            ambient_floor: 0.0,
+            light_count: 0,
+            time: script_time,
+            lighting_isolation: LightingIsolation::Normal,
+            indirect_scale: 1.0,
+            sdf_shadow_flags: 0,
+            sdf_shadow_mode: SdfShadowMode::On,
+            sdf_force_visibility_one: false,
+            dynamic_direct_scale: 1.0,
+            dynamic_direct_isolation: DynamicDirectIsolation::Combined,
+            has_direct: false,
+        });
+        let t = f32::from_ne_bytes(data[84..88].try_into().unwrap());
+        assert!((t - script_time).abs() < 1e-6);
+    }
 }

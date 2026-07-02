@@ -5,13 +5,13 @@ use std::collections::HashMap;
 
 use glam::{Quat, Vec3};
 
-use crate::fx::fog_volume::{FogPointLight, FogVolume, MAX_FOG_POINT_LIGHTS};
 use postretro_entities::components::fog_volume::FogAnimation;
 use postretro_entities::registry::{
     ComponentKind, EntityId, EntityRegistry, FogVolumeComponent, Transform,
 };
 use postretro_level_format::fog_volumes::FogVolumeRecord;
 use postretro_level_loader::{LightType, MapLight};
+use postretro_render_cpu::fog_volume::{FogPointLight, FogVolume, MAX_FOG_POINT_LIGHTS};
 
 /// Authoring-time AABB and shape parameters cached alongside the entity. Not
 /// runtime-settable — these are baked at compile time and live in a side-table

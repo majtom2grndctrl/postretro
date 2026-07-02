@@ -7,6 +7,7 @@ use postretro_entities::components::particle::ParticleState;
 use postretro_entities::components::sprite_visual::SpriteVisual;
 use postretro_entities::registry::{ComponentKind, ComponentValue, EntityRegistry, Transform};
 use postretro_level_loader::LevelWorld;
+use postretro_render_cpu::smoke::SPRITE_INSTANCE_SIZE;
 use postretro_visibility::VisibleCells;
 
 /// Per-collection scratch buffers and warning state for the particle render
@@ -205,8 +206,9 @@ impl Default for ParticleRenderCollector {
     }
 }
 
-/// Pack one particle into the `SPRITE_INSTANCE_SIZE = 32` byte layout that
-/// matches the GPU-side `SpriteInstance` layout pinned in `crates/postretro/src/fx/smoke.rs`.
+/// Pack one particle into the shared sprite-instance layout pinned by
+/// `postretro_render_cpu::smoke::SPRITE_INSTANCE_SIZE` and the
+/// `billboard.wgsl` `SpriteInstance` contract.
 ///
 /// Layout: `(position.xyz, age) + (size, rotation, opacity, _pad)`.
 /// `SpriteVisual.tint` is intentionally not packed — the current GPU layout
@@ -217,6 +219,7 @@ fn pack_particle_instance(
     visual: &SpriteVisual,
     out: &mut Vec<u8>,
 ) {
+    let start_len = out.len();
     out.extend_from_slice(&transform.position.x.to_ne_bytes());
     out.extend_from_slice(&transform.position.y.to_ne_bytes());
     out.extend_from_slice(&transform.position.z.to_ne_bytes());
@@ -225,12 +228,12 @@ fn pack_particle_instance(
     out.extend_from_slice(&visual.rotation.to_ne_bytes());
     out.extend_from_slice(&visual.opacity.to_ne_bytes());
     out.extend_from_slice(&0.0f32.to_ne_bytes());
+    debug_assert_eq!(out.len() - start_len, SPRITE_INSTANCE_SIZE);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fx::smoke::SPRITE_INSTANCE_SIZE;
     use glam::Vec3;
     use postretro_entities::components::particle::ParticleState;
     use postretro_entities::components::sprite_visual::SpriteVisual;
@@ -240,8 +243,8 @@ mod tests {
 
     // The collector culls each billboard by the runtime cell of *its own* world
     // position against the frame's visible set. The membership half mirrors the
-    // mesh path (`mesh_pass::mesh_visible_in_cell`), whose own tests pin the
-    // membership decision against a synthetic visible-set.
+    // mesh path (`postretro_render_cpu::mesh_pass::mesh_visible_in_cell`), whose
+    // own tests pin the membership decision against a synthetic visible-set.
     //
     // `single_cell_world` is a minimal world where cell 0 spans all space, so any
     // position lands in cell 0; a visible set of `Culled([0])` includes it and

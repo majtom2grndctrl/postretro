@@ -28,6 +28,12 @@ pub struct StubScope {
     outputs: Vec<StubOutput>,
 }
 
+impl Default for StubScope {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl StubScope {
     pub fn new() -> Self {
         Self {

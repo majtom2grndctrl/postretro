@@ -1,0 +1,26 @@
+[package]
+name = "postretro-render-cpu"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "CPU-only renderer packing, planning, and visibility data for Postretro"
+license.workspace = true
+
+[features]
+default = []
+dev-tools = []
+
+[dependencies]
+bytemuck.workspace = true
+glam.workspace = true
+image.workspace = true
+log.workspace = true
+postretro-entities.workspace = true
+postretro-level-format = { workspace = true, features = ["gltf-resolve"] }
+postretro-level-loader.workspace = true
+postretro-model.workspace = true
+postretro-render-data.workspace = true
+postretro-visibility.workspace = true
+
+[dev-dependencies]
+postretro-lighting.workspace = true

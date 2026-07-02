@@ -3586,6 +3586,7 @@ dependencies = [
  "postretro-lighting",
  "postretro-model",
  "postretro-net",
+ "postretro-render-cpu",
  "postretro-render-data",
  "postretro-script-compiler",
  "postretro-scripting-core",
@@ -3717,6 +3718,23 @@ dependencies = [
  "log",
  "renet",
  "renet_netcode",
+]
+
+[[package]]
+name = "postretro-render-cpu"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "glam",
+ "image",
+ "log",
+ "postretro-entities",
+ "postretro-level-format",
+ "postretro-level-loader",
+ "postretro-lighting",
+ "postretro-model",
+ "postretro-render-data",
+ "postretro-visibility",
 ]
 
 [[package]]

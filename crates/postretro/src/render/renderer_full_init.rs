@@ -406,7 +406,7 @@ pub(crate) fn build_full_renderer(
         device,
         surface_config.width,
         surface_config.height,
-        crate::fx::fog_volume::clamp_fog_pixel_scale(0),
+        postretro_render_cpu::fog_volume::clamp_fog_pixel_scale(0),
         &depth_view,
         &uniform_bind_group_layout,
         &sh_volume_resources.bind_group_layout,

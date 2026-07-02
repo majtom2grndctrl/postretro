@@ -13,15 +13,6 @@ fn default_view_projection_is_finite() {
 }
 
 #[test]
-fn mip_lod_max_clamp_derivation() {
-    // The aniso sampler pool uses this clamp so no sampler reads past the uploaded mip chain.
-    assert_eq!(mip_lod_max_clamp(1), 0.0);
-    assert_eq!(mip_lod_max_clamp(8), 7.0);
-    // mip_count 0 is degenerate; saturating_sub keeps it at the base level.
-    assert_eq!(mip_lod_max_clamp(0), 0.0);
-}
-
-#[test]
 fn cast_world_vertices_roundtrips() {
     let input = vec![
         postretro_render_data::geometry::WorldVertex {

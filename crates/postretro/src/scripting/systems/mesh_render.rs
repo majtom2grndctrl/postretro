@@ -6,12 +6,12 @@ use std::collections::HashMap;
 
 use super::hit_zones::HitZoneStore;
 use super::mesh_anim::{self, MeshClipTables};
-use crate::render::mesh_instances::MeshInstanceInput;
-use crate::render::mesh_pass::mesh_visible;
 use postretro_entities::registry::{ComponentKind, ComponentValue, EntityRegistry, Transform};
 use postretro_level_loader::LevelWorld;
 use postretro_model::ModelHandle;
 use postretro_model::sample_params::MeshSampleParams;
+use postretro_render_cpu::mesh_instances::MeshInstanceInput;
+use postretro_render_cpu::mesh_pass::mesh_visible;
 use postretro_visibility::VisibleCells;
 
 /// Animation time-slicing distance thresholds + per-bucket resample strides.
@@ -856,7 +856,6 @@ mod tests {
 
     // --- Animated-state sample-param resolution through `collect` ---------------
 
-    use crate::render::mesh_pass::ClipMetadata;
     use postretro_entities::components::mesh::{AnimationState, InterruptPolicy, MeshAnimation};
     use postretro_entities::components::mesh::{
         resolve_pending_animation_stamps, switch_animation_state,
@@ -866,6 +865,7 @@ mod tests {
     use postretro_model::gltf_loader::JointZone;
     use postretro_model::sample_params::FadeSource;
     use postretro_model::skeleton::{Joint, RestLocal, Skeleton};
+    use postretro_render_cpu::mesh_pass::ClipMetadata;
     use postretro_render_data::cone_frustum::Aabb;
     use std::collections::HashMap;
     use std::sync::Arc;

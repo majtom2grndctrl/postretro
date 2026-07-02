@@ -8,7 +8,6 @@ pub mod debug_ui;
 pub mod fog_pass;
 pub mod frame_timing;
 pub mod loaded_texture;
-pub mod mesh_instances;
 pub mod mesh_pass;
 #[cfg(feature = "dev-tools")]
 pub mod nav_diagnostics;
@@ -30,8 +29,6 @@ mod curve_eval_test;
 mod sdf_light_select_test;
 
 // --- Extracted submodules (module root is slim; impls split by concern) ---
-mod fog_mask;
-mod frame_uniforms;
 mod material_plan;
 mod pipeline_layout;
 mod renderer_debug_ui;
@@ -65,19 +62,18 @@ use wgpu::util::DeviceExt;
 use winit::window::Window;
 
 use crate::compute_cull::ComputeCullPipeline;
-use crate::lighting::chunk_list::ChunkGrid;
 use crate::lighting::lightmap::LightmapResources;
 use crate::lighting::spot_shadow::SpotShadowPool;
 use crate::render::loaded_texture::{
     LoadedTexture, load_model_diffuse_texture, load_textures, placeholder_loaded_texture,
 };
 use postretro_level_format::alpha_lights::ALPHA_LIGHT_LEAF_UNASSIGNED;
-use postretro_level_format::fog_cell_masks::union_active_mask;
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 use postretro_level_loader::MapLight;
 use postretro_lighting::influence;
 use postretro_lighting::spec_buffer::{SPEC_LIGHT_SIZE, pack_spec_lights};
 use postretro_lighting::{GPU_LIGHT_SIZE, pack_lights, pack_lights_with_slots_into};
+use postretro_render_cpu::chunk_list::ChunkGrid;
 use postretro_render_data::geometry::BvhTree;
 use postretro_render_data::influence::LightInfluence;
 use postretro_render_data::material::Material;
@@ -92,12 +88,18 @@ use sh_compose::ShComposeResources;
 use sh_volume::ShVolumeResources;
 use smoke::SmokePass;
 
-use crate::fx::smoke::SpriteFrame;
+use postretro_render_cpu::smoke::SpriteFrame;
+
+// Cross-crate re-export: these items now live in `postretro_render_cpu`, kept
+// reachable here at their original `render::*` paths.
+pub(crate) use postretro_render_cpu::material_plan::{
+    parse_blake3_key, plan_submesh_materials, resolve_model_open_path_and_handle,
+};
+pub(crate) use postretro_render_cpu::mesh_instances;
+pub(crate) use postretro_render_cpu::{fog_mask::*, frame_uniforms::*};
 
 // Re-export the moved free items so they stay reachable at their original
 // `render::*` paths (external callers and sibling render modules depend on these).
-pub(crate) use fog_mask::*;
-pub(crate) use frame_uniforms::*;
 pub(crate) use material_plan::*;
 pub(crate) use pipeline_layout::*;
 pub(crate) use renderer_geometry::*;

@@ -315,9 +315,9 @@ fn storage_or_uniform_entry(
 
 #[cfg(test)]
 mod tests {
-    use crate::lighting::spot_shadow::light_space_matrix;
     use glam::Vec3;
     use postretro_level_loader::{FalloffModel, LightType, MapLight};
+    use postretro_lighting::light_space_matrix;
     use postretro_render_data::cone_frustum::{Aabb, aabb_intersects_frustum, cone_frustum_planes};
     use postretro_render_data::geometry::{BVH_NODE_FLAG_LEAF, BvhLeaf, BvhNode, BvhTree};
 

@@ -8,7 +8,7 @@
 
 ## Workspace
 
-15 crates in a Cargo workspace:
+16 crates in a Cargo workspace:
 
 | Crate | Type | Purpose |
 |-------|------|---------|
@@ -20,6 +20,7 @@
 | `postretro-level-format` | library | Shared PRL binary format types. Depended on by both engine and compiler. |
 | `postretro-model` | library | CPU-only glTF model loader — mesh, skeleton, animation sampling. |
 | `postretro-render-data` | library | CPU render data and geometry/frustum math shared by level loading, visibility, lighting, and model crates. |
+| `postretro-render-cpu` | library | CPU-only renderer packing, planning, and visibility data. |
 | `postretro-lighting` | library | CPU-only light packing and reachability math for shader-facing byte layouts. |
 | `postretro-level-loader` | library | CPU-only runtime PRL loading and level data. |
 | `postretro-visibility` | library | CPU-side runtime portal traversal and frustum visibility. |

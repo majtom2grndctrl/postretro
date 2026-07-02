@@ -1,11 +1,4 @@
-// Sprite-sheet loading and billboard layout constants for the scripted
-// particle pipeline. The legacy CPU `SmokeEmitter` ring buffer was retired
-// in scripting-foundation plan-3 sub-plan 8 — particle emission now flows
-// through `BillboardEmitterComponent` + the entity registry. This module
-// keeps the GPU-layout pins, the per-collection frame loader, and the
-// `SpriteFrame` carrier so the renderer's billboard pass and the particle
-// render collector still have one shared source of truth for the format.
-//
+// Sprite-sheet loading and billboard layout constants for particles.
 // See: context/lib/rendering_pipeline.md §7.4
 
 use std::path::Path;
@@ -67,8 +60,8 @@ pub struct SpriteFrame {
 }
 
 /// Load all frames for a sprite collection (e.g., `smoke_00.png`, `spark_01.png`, …)
-/// from `textures/<collection>/`. Returns `None` if no frames are found; in that
-/// case the renderer falls back to the checkerboard placeholder.
+/// from `textures/<collection>/`. Returns `None` if no frames are found; startup
+/// callers substitute a 1x1 white frame before renderer registration.
 pub fn load_collection_frames(texture_root: &Path, collection: &str) -> Option<Vec<SpriteFrame>> {
     if collection.is_empty() {
         return None;

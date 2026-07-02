@@ -5,7 +5,7 @@ use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3};
 
 // Authoritative definitions live in `postretro_level_format::fog_volumes`;
-// re-exported here so the renderer can import from a single crate-local path.
+// re-exported here for a single `postretro_render_cpu::fog_volume` path.
 pub use postretro_level_format::fog_volumes::{MAX_FOG_VOLUMES, MAX_PLANES_PER_VOLUME};
 
 /// Capacity (in `vec4<f32>` planes) of the global `fog_planes` storage buffer.

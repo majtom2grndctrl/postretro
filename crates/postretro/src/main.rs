@@ -6466,11 +6466,11 @@ mod tests {
         // (glTF index order). Hand-built so no GPU is needed.
         let mut tables = scripting_systems::mesh_anim::MeshClipTables::new();
         let meta = vec![
-            crate::render::mesh_pass::ClipMetadata {
+            postretro_render_cpu::mesh_pass::ClipMetadata {
                 name: "idle_clip".to_string(),
                 duration: 2.0,
             },
-            crate::render::mesh_pass::ClipMetadata {
+            postretro_render_cpu::mesh_pass::ClipMetadata {
                 name: "attack_clip".to_string(),
                 duration: 0.8,
             },
@@ -6543,11 +6543,11 @@ mod tests {
 
         let mut tables = scripting_systems::mesh_anim::MeshClipTables::new();
         let meta = vec![
-            crate::render::mesh_pass::ClipMetadata {
+            postretro_render_cpu::mesh_pass::ClipMetadata {
                 name: "Attack".to_string(),
                 duration: 0.8,
             },
-            crate::render::mesh_pass::ClipMetadata {
+            postretro_render_cpu::mesh_pass::ClipMetadata {
                 name: "Idle".to_string(),
                 duration: 2.0,
             },

@@ -18,7 +18,12 @@
 // shadow factor output), group 2 = static-light buffers the shared K-selection
 // helper reads.
 
-use glam::Mat4;
+#[allow(unused_imports)]
+pub use postretro_render_cpu::sdf_shadow::{
+    DEFAULT_MAX_MARCH_STEPS, DEFAULT_OPEN_SPACE_SKIP_THRESHOLD, DEFAULT_PENUMBRA_K,
+    DEFAULT_SURFACE_BIAS_VOXELS, SHADOW_PASS_PARAMS_SIZE, SdfShadowFrameInputs, SdfShadowShGrid,
+    SdfShadowTuning, pack_params_bytes,
+};
 
 use super::sdf_atlas::SdfAtlasResources;
 
@@ -43,128 +48,6 @@ pub const HALF_RES_SCALE: u32 = 2;
 /// Color format of the shadow-factor target. The four channels are the K = 4
 /// per-light SDF visibility slices: R = slot 0, G = slot 1, B = slot 2, A = slot 3.
 pub const SHADOW_FACTOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
-
-/// Default uniform values for the tuning knobs. Task 7 wires sliders to these.
-///
-/// Retuned for the fine-atlas trace (`sdf-shadow-fine-atlas-trace`). With true
-/// per-voxel (0.5 m) distances instead of the ~4 m coarse-brick lower bound,
-/// sphere-trace steps shrink sharply near surfaces, so more steps are needed to
-/// keep the same open-space reach to a distant occluder — bumped 48 → 64
-/// (well under the 256 hard clamp; the open-space early-out keeps the common
-/// case cheap, and the perf AC bounds the worst case). The `k*d/t` penumbra
-/// estimate sharpens once `d` is a real metric distance, so `penumbra_k` is
-/// softened 16 → 8 to keep penumbra width similar rather than over-hard.
-///
-/// The open-space skip threshold is seeded **loose** (8.0): the skip returns
-/// FULLY_LIT before marching when `E[d] > threshold × SH cell`, so a *small*
-/// threshold fires the skip on even a moderate gap and suppresses the per-light
-/// trace. Seeded loose so rays actually run on typical geometry; tighten via the
-/// Task 6 perf gate if open-space cost dominates (see
-/// `context/plans/in-progress/sdf-static-occluder-shadows/research.md` step 2
-/// for the threshold-sensitivity analysis).
-/// These are SEED values; adjust them live via the "SDF / Fog Quality" panel in
-/// the debug overlay (`dev-tools` feature).
-pub const DEFAULT_MAX_MARCH_STEPS: u32 = 64;
-pub const DEFAULT_OPEN_SPACE_SKIP_THRESHOLD: f32 = 8.0; // multiple of SH cell size (loose seed)
-pub const DEFAULT_PENUMBRA_K: f32 = 8.0;
-
-/// Self-shadow surface bias, in MULTIPLES of the SDF voxel size (0.5 m default,
-/// so the seed below ≈ 0.75 m). The shadow-ray ORIGIN is pushed off the shading
-/// surface ALONG THE GEOMETRIC NORMAL by `surface_bias × voxel` before tracing.
-/// This is the distance-field self-intersection fix (cf. UE mesh/global DF
-/// shadows): the caster is baked into the field, so a ray launched on a lit
-/// surface grazes that surface's own ≈0 field near the origin and the penumbra
-/// estimate reads it as occlusion — soft round dark blobs on faces that point at
-/// the light. A *normal* offset (not the former along-ray start) is what fixes
-/// the grazing case: when the light is off to the side, an along-ray start skims
-/// tangent to the surface and the penumbra estimate collapses to ~0, falsely
-/// darkening walls and the bridge top. Lifting along the normal clears the
-/// surface field regardless of light direction.
-///
-/// Seeded at 1.5 voxels (≈ 0.75 m) — a deliberately CONSERVATIVE normal offset.
-/// Reasoning: a normal offset risks peter-panning / light-leak (detached
-/// shadows) far more than the old along-ray start did, because it physically
-/// moves the origin away from the contact point, so a large value would let a
-/// nearby occluder's shadow detach from the surface. 1.5 voxels is enough to
-/// clear the caster's own quantization band (one fine voxel) PLUS the half-res
-/// depth-reconstruction error (sub-voxel at this resolution), while staying well
-/// under the ~1 m gap at which contact shadows visibly detach. The contact
-/// shadow at a block's base survives regardless — it comes from the trace
-/// HITTING the block (`d < voxel*0.5`), which fires from the first step, not from
-/// the penumbra term. Tune live via the "SDF surface bias (× voxel)" slider.
-pub const DEFAULT_SURFACE_BIAS_VOXELS: f32 = 1.5;
-
-/// Size in bytes of the `ShadowPassParams` uniform. Mirrors the WGSL struct
-/// in `shaders/sdf_shadow.wgsl`. std140-aligned: vec3<f32>/u32 pairs share
-/// 16-byte slots, mat4x4 takes 64.
-///
-/// Layout:
-///   0..64    inv_view_proj           (mat4x4<f32>)
-///   64..76   camera_position         (vec3<f32>)
-///   76..80   half_res_size_x         (u32)
-///   80..84   half_res_size_y         (u32)
-///   84..88   max_march_steps         (u32)
-///   88..92   open_space_skip_threshold (f32)
-///   92..96   penumbra_k              (f32)
-///   96..108  sh_grid_origin          (vec3<f32>)
-///   108..112 sh_has_volume           (u32)
-///   112..124 sh_cell_size            (vec3<f32>)
-///   124..128 surface_bias            (f32)  // former _pad0 slot
-///   128..140 sh_grid_dimensions      (vec3<u32>)
-///   140..144 _pad1                   (u32)
-pub const SHADOW_PASS_PARAMS_SIZE: usize = 144;
-
-/// Tuning knobs exposed to the Task 7 quality sliders. Held on the pass and
-/// uploaded each frame alongside the per-frame camera matrices.
-#[derive(Debug, Clone, Copy)]
-pub struct SdfShadowTuning {
-    pub max_march_steps: u32,
-    pub open_space_skip_threshold: f32,
-    pub penumbra_k: f32,
-    /// Self-shadow surface bias in multiples of the SDF voxel size. See
-    /// `DEFAULT_SURFACE_BIAS_VOXELS`.
-    pub surface_bias: f32,
-}
-
-impl Default for SdfShadowTuning {
-    fn default() -> Self {
-        Self {
-            max_march_steps: DEFAULT_MAX_MARCH_STEPS,
-            open_space_skip_threshold: DEFAULT_OPEN_SPACE_SKIP_THRESHOLD,
-            penumbra_k: DEFAULT_PENUMBRA_K,
-            surface_bias: DEFAULT_SURFACE_BIAS_VOXELS,
-        }
-    }
-}
-
-/// Per-frame inputs the renderer threads into the pass when encoding.
-#[derive(Debug, Clone, Copy)]
-pub struct SdfShadowFrameInputs {
-    pub inv_view_proj: Mat4,
-    pub camera_position: [f32; 3],
-}
-
-/// Static SH grid metadata captured at level load. Mirrors the relevant prefix
-/// of `ShGridInfo` so the SDF shadow pass can do the open-space skip without
-/// binding the whole group-3 bind group.
-#[derive(Debug, Clone, Copy)]
-pub struct SdfShadowShGrid {
-    pub origin: [f32; 3],
-    pub cell_size: [f32; 3],
-    pub dimensions: [u32; 3],
-    pub has_volume: bool,
-}
-
-impl Default for SdfShadowShGrid {
-    fn default() -> Self {
-        Self {
-            origin: [0.0; 3],
-            cell_size: [1.0; 3],
-            dimensions: [1, 1, 1],
-            has_volume: false,
-        }
-    }
-}
 
 /// Borrowed references to the static-light buffers (group 2) the K-selection
 /// helper reads. These are the SAME buffers the forward pass's lighting bind
@@ -645,60 +528,6 @@ fn light_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 4] {
     ]
 }
 
-/// Pack the `ShadowPassParams` uniform. Mirrors the WGSL struct in
-/// `sdf_shadow.wgsl` (see `SHADOW_PASS_PARAMS_SIZE` for the layout table).
-/// Kept as a free function so it can be unit-tested without a wgpu device.
-pub(crate) fn pack_params_bytes(
-    frame: SdfShadowFrameInputs,
-    half_res: (u32, u32),
-    tuning: SdfShadowTuning,
-    sh_grid: SdfShadowShGrid,
-    // TEMP DEBUG: SDF shadow path visualization. Packed into the former `_pad1`
-    // slot (bytes 140..144). 0 = production; 3 = trace-outcome paths; 4 = the
-    // reconstructed geometric normal (RGB = normal*0.5+0.5).
-    debug_mode: u32,
-) -> [u8; SHADOW_PASS_PARAMS_SIZE] {
-    let mut bytes = [0u8; SHADOW_PASS_PARAMS_SIZE];
-    // 0..64: inv_view_proj (column-major, same convention as the rest of the
-    // renderer's mat4 uploads — see `build_uniform_data` in render/mod.rs).
-    let cols = frame.inv_view_proj.to_cols_array();
-    for (i, v) in cols.iter().enumerate() {
-        let off = i * 4;
-        bytes[off..off + 4].copy_from_slice(&v.to_ne_bytes());
-    }
-    // 64..76: camera_position; 76..80: half_res_size_x.
-    bytes[64..68].copy_from_slice(&frame.camera_position[0].to_ne_bytes());
-    bytes[68..72].copy_from_slice(&frame.camera_position[1].to_ne_bytes());
-    bytes[72..76].copy_from_slice(&frame.camera_position[2].to_ne_bytes());
-    bytes[76..80].copy_from_slice(&half_res.0.to_ne_bytes());
-    // 80..84: half_res_size_y; 84..88: max_march_steps.
-    bytes[80..84].copy_from_slice(&half_res.1.to_ne_bytes());
-    bytes[84..88].copy_from_slice(&tuning.max_march_steps.to_ne_bytes());
-    // 88..92: open_space_skip_threshold; 92..96: penumbra_k.
-    bytes[88..92].copy_from_slice(&tuning.open_space_skip_threshold.to_ne_bytes());
-    bytes[92..96].copy_from_slice(&tuning.penumbra_k.to_ne_bytes());
-    // 96..108: sh_grid_origin; 108..112: sh_has_volume.
-    bytes[96..100].copy_from_slice(&sh_grid.origin[0].to_ne_bytes());
-    bytes[100..104].copy_from_slice(&sh_grid.origin[1].to_ne_bytes());
-    bytes[104..108].copy_from_slice(&sh_grid.origin[2].to_ne_bytes());
-    let has_vol: u32 = if sh_grid.has_volume { 1 } else { 0 };
-    bytes[108..112].copy_from_slice(&has_vol.to_ne_bytes());
-    // 112..124: sh_cell_size; 124..128: surface_bias (former _pad0 slot).
-    bytes[112..116].copy_from_slice(&sh_grid.cell_size[0].to_ne_bytes());
-    bytes[116..120].copy_from_slice(&sh_grid.cell_size[1].to_ne_bytes());
-    bytes[120..124].copy_from_slice(&sh_grid.cell_size[2].to_ne_bytes());
-    bytes[124..128].copy_from_slice(&tuning.surface_bias.to_ne_bytes());
-    // 128..140: sh_grid_dimensions; 140..144: debug_mode (former _pad1 slot).
-    bytes[128..132].copy_from_slice(&sh_grid.dimensions[0].to_ne_bytes());
-    bytes[132..136].copy_from_slice(&sh_grid.dimensions[1].to_ne_bytes());
-    bytes[136..140].copy_from_slice(&sh_grid.dimensions[2].to_ne_bytes());
-    // TEMP DEBUG: SDF shadow path visualization. 140..144: debug_mode value
-    // (0 = production, 3 = paths, 4 = normals) — carried verbatim so the shader
-    // branches on the actual mode.
-    bytes[140..144].copy_from_slice(&debug_mode.to_ne_bytes());
-    bytes
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -861,73 +690,6 @@ mod tests {
         );
     }
 
-    /// Validates the uniform packing matches the documented byte layout.
-    #[test]
-    fn pack_params_bytes_encodes_camera_half_res_and_tuning() {
-        let frame = SdfShadowFrameInputs {
-            inv_view_proj: Mat4::IDENTITY,
-            camera_position: [1.0, 2.0, 3.0],
-        };
-        let bytes = pack_params_bytes(
-            frame,
-            (320, 200),
-            SdfShadowTuning {
-                max_march_steps: 64,
-                open_space_skip_threshold: 1.5,
-                penumbra_k: 8.0,
-                surface_bias: 3.0,
-            },
-            SdfShadowShGrid {
-                origin: [-4.0, 0.0, -4.0],
-                cell_size: [1.0, 1.0, 1.0],
-                dimensions: [8, 4, 8],
-                has_volume: true,
-            },
-            // TEMP DEBUG: SDF shadow path visualization. 4 = normals mode.
-            4,
-        );
-        assert_eq!(bytes.len(), SHADOW_PASS_PARAMS_SIZE);
-
-        // Identity matrix: diagonal is 1.0 at columns (0,0), (1,1), (2,2), (3,3).
-        let diag0 = f32::from_ne_bytes(bytes[0..4].try_into().unwrap());
-        assert_eq!(diag0, 1.0);
-        let diag3 = f32::from_ne_bytes(bytes[60..64].try_into().unwrap());
-        assert_eq!(diag3, 1.0);
-
-        let cx = f32::from_ne_bytes(bytes[64..68].try_into().unwrap());
-        let cz = f32::from_ne_bytes(bytes[72..76].try_into().unwrap());
-        assert_eq!(cx, 1.0);
-        assert_eq!(cz, 3.0);
-
-        let half_x = u32::from_ne_bytes(bytes[76..80].try_into().unwrap());
-        let half_y = u32::from_ne_bytes(bytes[80..84].try_into().unwrap());
-        assert_eq!(half_x, 320);
-        assert_eq!(half_y, 200);
-
-        let max_steps = u32::from_ne_bytes(bytes[84..88].try_into().unwrap());
-        let skip_thresh = f32::from_ne_bytes(bytes[88..92].try_into().unwrap());
-        let k = f32::from_ne_bytes(bytes[92..96].try_into().unwrap());
-        assert_eq!(max_steps, 64);
-        assert_eq!(skip_thresh, 1.5);
-        assert_eq!(k, 8.0);
-
-        // surface_bias occupies the former _pad0 slot at 124..128.
-        let surface_bias = f32::from_ne_bytes(bytes[124..128].try_into().unwrap());
-        assert_eq!(surface_bias, 3.0);
-
-        let sh_origin_x = f32::from_ne_bytes(bytes[96..100].try_into().unwrap());
-        let has_vol = u32::from_ne_bytes(bytes[108..112].try_into().unwrap());
-        let sh_dim_x = u32::from_ne_bytes(bytes[128..132].try_into().unwrap());
-        assert_eq!(sh_origin_x, -4.0);
-        assert_eq!(has_vol, 1);
-        assert_eq!(sh_dim_x, 8);
-
-        // TEMP DEBUG: SDF shadow path visualization. debug_mode value occupies
-        // the former _pad1 slot at 140..144 (passed `4` = normals mode above).
-        let debug_mode = u32::from_ne_bytes(bytes[140..144].try_into().unwrap());
-        assert_eq!(debug_mode, 4);
-    }
-
     /// Sanity-check the half-res scaling — odd full-res dimensions still
     /// yield a non-zero half-res target.
     #[test]
@@ -936,66 +698,5 @@ mod tests {
         assert_eq!(compute_half_res(0, 0), (1, 1));
         assert_eq!(compute_half_res(320, 200), (160, 100));
         assert_eq!(compute_half_res(3, 5), (1, 2));
-    }
-
-    /// Task 7 setters clamp into the documented range and mutate the
-    /// in-memory tuning struct. Exercises the seam the debug-UI sliders write
-    /// through without needing a wgpu device.
-    #[test]
-    fn tuning_setters_clamp_and_mutate() {
-        let mut tuning = SdfShadowTuning::default();
-
-        // Replicate the clamping the setters apply — keeps the test honest if
-        // the bounds change.
-        let apply_max_march = |t: &mut SdfShadowTuning, v: u32| {
-            t.max_march_steps = v.clamp(1, 256);
-        };
-        let apply_skip = |t: &mut SdfShadowTuning, v: f32| {
-            t.open_space_skip_threshold = v.max(0.0);
-        };
-        let apply_k = |t: &mut SdfShadowTuning, v: f32| {
-            t.penumbra_k = v.max(0.01);
-        };
-
-        apply_max_march(&mut tuning, 0);
-        assert_eq!(tuning.max_march_steps, 1, "zero clamps up to 1");
-        apply_max_march(&mut tuning, 1024);
-        assert_eq!(tuning.max_march_steps, 256, "huge value clamps to 256");
-        apply_max_march(&mut tuning, 96);
-        assert_eq!(tuning.max_march_steps, 96);
-
-        apply_skip(&mut tuning, -1.0);
-        assert_eq!(tuning.open_space_skip_threshold, 0.0);
-        apply_skip(&mut tuning, 4.0);
-        assert_eq!(tuning.open_space_skip_threshold, 4.0);
-
-        apply_k(&mut tuning, 0.0);
-        assert!(tuning.penumbra_k > 0.0, "k must stay positive");
-        apply_k(&mut tuning, 32.0);
-        assert_eq!(tuning.penumbra_k, 32.0);
-
-        // The packing function picks up the mutated tuning verbatim.
-        let bytes = pack_params_bytes(
-            SdfShadowFrameInputs {
-                inv_view_proj: Mat4::IDENTITY,
-                camera_position: [0.0; 3],
-            },
-            (16, 16),
-            tuning,
-            SdfShadowShGrid::default(),
-            // TEMP DEBUG: SDF shadow path visualization. 0 = production path.
-            0,
-        );
-        let packed_max = u32::from_ne_bytes(bytes[84..88].try_into().unwrap());
-        let packed_k = f32::from_ne_bytes(bytes[92..96].try_into().unwrap());
-        assert_eq!(packed_max, 96);
-        assert_eq!(packed_k, 32.0);
-    }
-
-    #[test]
-    fn shadow_pass_params_size_matches_layout_doc() {
-        // The size doc-comment lists field offsets ending at 144; if a future
-        // edit drifts, this anchors the WGSL/Rust agreement.
-        assert_eq!(SHADOW_PASS_PARAMS_SIZE, 144);
     }
 }

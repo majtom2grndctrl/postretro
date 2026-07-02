@@ -18,7 +18,7 @@ use crate::startup::{
     BootState, InFlightLevelLoad, LevelLoadEntry, LevelRequest, LevelSource, LoadOutcome,
     StartupTimings, spawn_level_worker,
 };
-use crate::{App, fx, weapon};
+use crate::{App, weapon};
 use postretro_scripting_core::data_descriptors::LevelManifest;
 use postretro_scripting_core::reaction_dispatch::{
     fire_named_event_with_sequences, validate_sequence_primitives,
@@ -733,14 +733,15 @@ impl App {
                 if collection.is_empty() || !registered.insert(collection.clone()) {
                     continue;
                 }
-                let frames = fx::smoke::load_collection_frames(&texture_root, &collection)
-                    .unwrap_or_else(|| {
-                        vec![fx::smoke::SpriteFrame {
-                            data: vec![255, 255, 255, 255],
-                            width: 1,
-                            height: 1,
-                        }]
-                    });
+                let frames =
+                    postretro_render_cpu::smoke::load_collection_frames(&texture_root, &collection)
+                        .unwrap_or_else(|| {
+                            vec![postretro_render_cpu::smoke::SpriteFrame {
+                                data: vec![255, 255, 255, 255],
+                                width: 1,
+                                height: 1,
+                            }]
+                        });
                 renderer.register_smoke_collection(&collection, &frames, 0.3, c.lifetime);
                 particle_render.register_sprite(&collection);
             }
@@ -982,27 +983,29 @@ impl App {
                 if collection.is_empty() || !seen.insert(collection.clone()) {
                     continue;
                 }
-                let frames = fx::smoke::load_collection_frames(&texture_root, &collection)
-                    .unwrap_or_else(|| {
-                        vec![fx::smoke::SpriteFrame {
-                            data: vec![255, 255, 255, 255],
-                            width: 1,
-                            height: 1,
-                        }]
-                    });
+                let frames =
+                    postretro_render_cpu::smoke::load_collection_frames(&texture_root, &collection)
+                        .unwrap_or_else(|| {
+                            vec![postretro_render_cpu::smoke::SpriteFrame {
+                                data: vec![255, 255, 255, 255],
+                                width: 1,
+                                height: 1,
+                            }]
+                        });
                 renderer.register_smoke_collection(&collection, &frames, 0.3, c.lifetime);
                 particle_render.register_sprite(&collection);
             }
 
             let collection = weapon::impact_sprite_collection();
-            let frames = fx::smoke::load_collection_frames(&texture_root, collection)
-                .unwrap_or_else(|| {
-                    vec![fx::smoke::SpriteFrame {
-                        data: vec![255, 255, 255, 255],
-                        width: 1,
-                        height: 1,
-                    }]
-                });
+            let frames =
+                postretro_render_cpu::smoke::load_collection_frames(&texture_root, collection)
+                    .unwrap_or_else(|| {
+                        vec![postretro_render_cpu::smoke::SpriteFrame {
+                            data: vec![255, 255, 255, 255],
+                            width: 1,
+                            height: 1,
+                        }]
+                    });
             renderer.register_smoke_collection(
                 collection,
                 &frames,

@@ -3,12 +3,12 @@
 
 use std::collections::HashMap;
 
-use crate::render::sh_volume::{
+use postretro_level_loader::{FalloffModel, LightType, MapLight, ShadowType};
+use postretro_lighting::{GPU_LIGHT_SIZE, pack_light};
+use postretro_render_cpu::sh_volume::{
     ANIMATION_DESCRIPTOR_SIZE, SCRIPTED_BRIGHTNESS_SLOT, SCRIPTED_COLOR_SLOT_F32,
     SCRIPTED_FLOATS_PER_LIGHT,
 };
-use postretro_level_loader::{FalloffModel, LightType, MapLight, ShadowType};
-use postretro_lighting::{GPU_LIGHT_SIZE, pack_light};
 
 #[cfg(test)]
 use postretro_entities::components::light::LightAnimation;
@@ -454,7 +454,7 @@ impl LightBridge {
             }
         }
 
-        // Native endian matches `f32_slice_to_bytes` in sh_volume.rs.
+        // Matches `postretro_render_cpu::sh_volume` sample packing: native-endian f32 bytes.
         let samples_bytes = self
             .scripted_sample_buf
             .iter()
@@ -622,8 +622,8 @@ fn eval_effective_brightness(component: &LightComponent, current_time: f32) -> f
     }
 }
 
-/// Pack one `LightComponent`'s animation state into a 48-byte
-/// `AnimationDescriptor` matching the WGSL layout in `sh_volume.rs`.
+/// Pack one `LightComponent`'s animation state into the 48-byte descriptor
+/// layout owned by `postretro_render_cpu::sh_volume` and consumed by WGSL.
 ///
 /// **Sentinel:** `animation == None` produces an all-zero record. `forward.wgsl`
 /// reads zero counts as "no animation; use static fields." Every map light

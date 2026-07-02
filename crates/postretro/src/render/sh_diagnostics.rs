@@ -8,9 +8,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use glam::Vec3;
 
 use super::debug_lines::DebugLineRenderer;
-use super::sh_compose::f16_bits_to_f32;
 use super::sh_volume::{DeltaVolumeMeta, ShVolumeResources};
 use postretro_level_loader::LevelWorld;
+use postretro_render_cpu::sh_compose::f16_bits_to_f32;
 
 /// Coloring mode for per-probe markers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -119,7 +119,7 @@ impl Default for DiagnosticsState {
             sdf_open_space_skip_threshold: super::sdf_shadow::DEFAULT_OPEN_SPACE_SKIP_THRESHOLD,
             sdf_penumbra_k: super::sdf_shadow::DEFAULT_PENUMBRA_K,
             sdf_surface_bias: super::sdf_shadow::DEFAULT_SURFACE_BIAS_VOXELS,
-            fog_step_size: crate::fx::fog_volume::DEFAULT_FOG_STEP_SIZE,
+            fog_step_size: postretro_render_cpu::fog_volume::DEFAULT_FOG_STEP_SIZE,
             fog_pixel_scale: 4,
             spatial_wireframe_mode: WorldWireframeMode::Off,
             bvh_overlay_visible: false,

@@ -1,13 +1,5 @@
-// Skinned-mesh per-frame draw planning: group instances by model, assign each a
-// contiguous bone-palette run, and drop overflow past either fixed budget
-// (palette slots or the per-frame instance count).
+// Skinned-mesh per-frame draw planning and overflow handling.
 // See: context/lib/rendering_pipeline.md §9
-//
-// GPU-free by contract — this is the data-logic half of the renderer's mesh
-// pass (development_guide §4.1). The renderer's thin GPU layer in `mesh_pass.rs`
-// consumes a [`MeshFramePlan`] to write the palette/instance SSBOs and record
-// the instanced draws. Pure functions here so grouping, base-index assignment,
-// and overflow are unit-testable without a GPU.
 
 use glam::{Mat4, Vec4};
 
@@ -17,8 +9,8 @@ use postretro_render_data::cone_frustum::{Aabb, aabb_intersects_frustum};
 // `FadeSource`, `MeshFade`, `SnapshotTag`, `CaptureInstruction`) and the
 // `instance_phase` per-instance phase helper are render-free plain data/logic
 // and now live in `postretro_model::sample_params`, imported directly by both the
-// renderer (`mesh_pass`, `mesh_render`) and the game side (`mesh_anim`, the
-// hit-zone facility) — no renderer dependency crosses into game code.
+// renderer (`mesh_pass`) and game/scripting systems (`mesh_render`, `mesh_anim`,
+// the hit-zone facility) — no renderer dependency crosses into game code.
 use postretro_model::sample_params::{CaptureInstruction, MeshSampleParams};
 
 /// Fixed per-frame bone-palette budget, in `BonePaletteEntry` slots (one slot =
@@ -29,7 +21,7 @@ use postretro_model::sample_params::{CaptureInstruction, MeshSampleParams};
 /// shared palette buffer — negligible against the engine's atlas/geometry
 /// budgets. Instances whose palette run would exceed this are dropped (see
 /// [`plan_mesh_frame`]); the cap is a soft visual limit, never a panic.
-pub(crate) const MAX_PALETTE_ENTRIES: usize = 4096;
+pub const MAX_PALETTE_ENTRIES: usize = 4096;
 
 /// Fixed per-frame instance budget — the cap on how many instances the per-frame
 /// instance SSBO can hold. Defined here (the GPU-free planning half); the renderer
@@ -42,7 +34,7 @@ pub(crate) const MAX_PALETTE_ENTRIES: usize = 4096;
 /// slot (rigid / static-prop models carry one identity joint, so `run == 1`), so —
 /// with `MAX_INSTANCES == MAX_PALETTE_ENTRIES` — the palette cap fires no later than
 /// the instance cap even for a pure-rigid flood. One cap value covers both buffers.
-pub(crate) const MAX_INSTANCES: usize = MAX_PALETTE_ENTRIES;
+pub const MAX_INSTANCES: usize = MAX_PALETTE_ENTRIES;
 
 /// One skinned-mesh instance to consider for this frame: which model it draws,
 /// its final interpolated world transform, a deterministic phase seed (the raw
@@ -51,21 +43,21 @@ pub(crate) const MAX_INSTANCES: usize = MAX_PALETTE_ENTRIES;
 /// the render-frame collector (game side) after the visibility cull; consumed by
 /// the frame planner below.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct MeshInstanceInput {
-    pub(crate) model: ModelHandle,
-    pub(crate) transform: Mat4,
+pub struct MeshInstanceInput {
+    pub model: ModelHandle,
+    pub transform: Mat4,
     /// Deterministic per-instance animation-phase seed (raw `EntityId`). Folded
     /// into a phase offset so a spawned wave does not animate lock-step, and the
     /// key into the snapshot store.
-    pub(crate) phase_seed: u32,
+    pub phase_seed: u32,
     /// Resolved sample parameters: primary clip leg + optional crossfade. The
     /// collector computes these from entity state + the clip table; for a
     /// stateless `prop_mesh` entity this is [`MeshSampleParams::stateless`].
-    pub(crate) sample: MeshSampleParams,
+    pub sample: MeshSampleParams,
     /// One-time `"smooth"`-interrupt snapshot-capture instruction for this frame,
     /// if the entity crossed an interrupt this frame. Evaluated by the pass into
     /// the per-entity snapshot store before sampling (idempotent by tag).
-    pub(crate) capture: Option<CaptureInstruction>,
+    pub capture: Option<CaptureInstruction>,
     /// Animation time-slicing decision: `true` → re-sample this
     /// instance's pose this frame; `false` → the pass may re-upload its cached
     /// palette run and skip sampling. Decided game-side from the instance's
@@ -73,12 +65,12 @@ pub(crate) struct MeshInstanceInput {
     /// change, an active crossfade, or a renderer-side cache miss (the pass
     /// upgrades a miss to a resample regardless of this flag). A `Copy` bool —
     /// no per-instance heap.
-    pub(crate) resample: bool,
+    pub resample: bool,
     /// In the camera's portal-visible cell set. The mesh collector emits only
     /// visible instances, so live frame inputs are `true`. The planner keeps this
     /// flag to preserve a defensive forward-draw filter for synthetic or future
     /// callers.
-    pub(crate) forward_visible: bool,
+    pub forward_visible: bool,
 }
 
 /// One instance's resolved placement in the frame plan: its world transform, the
@@ -86,24 +78,24 @@ pub(crate) struct MeshInstanceInput {
 /// (carried through so the GPU layer can sample its clip into the run at a
 /// per-instance phase), and its model's LOCAL-space bound.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct PlannedInstance {
-    pub(crate) transform: Mat4,
-    pub(crate) palette_base: u32,
-    pub(crate) phase_seed: u32,
+pub struct PlannedInstance {
+    pub transform: Mat4,
+    pub palette_base: u32,
+    pub phase_seed: u32,
     /// The instance's model's LOCAL-space AABB (bind-pose bound), stamped from
     /// the renderer's model cache at plan time. The per-light caster cull
     /// transforms this by `transform` and tests it against a light's
     /// cone/face frustum to decide whether the instance casts into that light's
     /// shadow map. Surfaced CPU-side here; the GPU draw never reads it.
-    pub(crate) bounds: Aabb,
+    pub bounds: Aabb,
     /// Resolved per-frame sample parameters carried verbatim from the collector
     /// — the GPU layer feeds these to the pose sampler (single / blended /
     /// snapshot-blended), replacing the hardcoded first-clip-at-render-clock path.
-    pub(crate) sample: MeshSampleParams,
+    pub sample: MeshSampleParams,
     /// One-time `"smooth"`-interrupt capture instruction for this frame, if any.
     /// The GPU layer evaluates it into the snapshot store (idempotent by tag)
     /// before sampling this frame's pose.
-    pub(crate) capture: Option<CaptureInstruction>,
+    pub capture: Option<CaptureInstruction>,
     /// Animation time-slicing decision, carried verbatim from the
     /// instance input. `true` → the pass samples this instance's pose AND
     /// refreshes its palette cache; `false` → the pass re-uploads the cached
@@ -111,11 +103,11 @@ pub(crate) struct PlannedInstance {
     /// `false` to a resample regardless (the collector cannot see cache state),
     /// so a culled instance re-entering view never shows a stale pose. `Copy`
     /// bool — no per-instance heap.
-    pub(crate) resample: bool,
+    pub resample: bool,
     /// Carried verbatim from [`MeshInstanceInput::forward_visible`]. Live collector
     /// inputs are visible-only; `record_draws` still filters this flag so mixed
     /// synthetic inputs cannot draw non-forward instances.
-    pub(crate) forward_visible: bool,
+    pub forward_visible: bool,
 }
 
 /// All instances of one model, batched for a single instanced `draw_indexed` per
@@ -123,11 +115,11 @@ pub(crate) struct PlannedInstance {
 /// draw uses `instance_offset..instance_offset + instances.len()` and the shader
 /// reads each instance via `@builtin(instance_index)`.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct ModelDrawGroup {
-    pub(crate) model: ModelHandle,
+pub struct ModelDrawGroup {
+    pub model: ModelHandle,
     /// Offset of this group's first instance in the flat instance SSBO.
-    pub(crate) instance_offset: u32,
-    pub(crate) instances: Vec<PlannedInstance>,
+    pub instance_offset: u32,
+    pub instances: Vec<PlannedInstance>,
 }
 
 /// The per-frame skinned-mesh draw plan: one group per distinct model (in
@@ -135,17 +127,17 @@ pub(crate) struct ModelDrawGroup {
 /// dropped because either budget was exhausted (palette slots or the per-frame
 /// instance cap).
 #[derive(Debug, Clone, Default, PartialEq)]
-pub(crate) struct MeshFramePlan {
-    pub(crate) groups: Vec<ModelDrawGroup>,
+pub struct MeshFramePlan {
+    pub groups: Vec<ModelDrawGroup>,
     /// Total planned instances across all groups (== sum of group lengths). The
     /// instance SSBO is filled densely in group order, so a group's instances
     /// occupy `instance_offset..instance_offset + len`.
-    pub(crate) instance_count: u32,
+    pub instance_count: u32,
     /// Instances dropped because EITHER their palette run would exceed
     /// `MAX_PALETTE_ENTRIES` OR the instance count would reach `MAX_INSTANCES`
     /// (the per-frame instance SSBO size). The caller rate-limits a warning when
     /// this is non-zero.
-    pub(crate) dropped: u32,
+    pub dropped: u32,
 }
 
 /// Per-model lookups the GPU-free frame planner needs from the renderer's model
@@ -154,7 +146,7 @@ pub(crate) struct MeshFramePlan {
 /// `joint_count` returning `None` means the handle is not in the cache (never
 /// uploaded) — its instances are skipped, not budget-dropped. Keeps the planner
 /// GPU-free: the cache provides plain values, no wgpu reference crosses.
-pub(crate) trait JointCounts {
+pub trait JointCounts {
     fn joint_count(&self, model: &ModelHandle) -> Option<u32>;
     /// The model's local-space AABB, or a zero box if the handle is uncached
     /// (those instances are skipped before the bound is read, so the value is a
@@ -188,7 +180,7 @@ pub(crate) trait JointCounts {
 ///
 /// The returned plan's groups carry dense instance offsets so the GPU layer can
 /// write one flat instance SSBO and issue one instanced draw per group.
-pub(crate) fn plan_mesh_frame(
+pub fn plan_mesh_frame(
     instances: &[MeshInstanceInput],
     joints: &impl JointCounts,
 ) -> MeshFramePlan {
@@ -275,10 +267,7 @@ pub(crate) fn plan_mesh_frame(
 /// slot's depth layer; an enemy whose transformed bound lies outside the cone is
 /// not drawn into that slot. Drives the per-frame submitted-occluder counter that
 /// verifies the "enemy outside the cone is not drawn" acceptance criterion.
-pub(crate) fn instance_casts_into_cone(
-    instance: &PlannedInstance,
-    cone_planes: &[Vec4; 6],
-) -> bool {
+pub fn instance_casts_into_cone(instance: &PlannedInstance, cone_planes: &[Vec4; 6]) -> bool {
     let world_bound = instance.bounds.transformed(&instance.transform);
     aabb_intersects_frustum(&world_bound, cone_planes)
 }
@@ -506,8 +495,8 @@ mod tests {
     /// the transform-then-test path culls correctly.
     #[test]
     fn caster_cull_keeps_in_cone_drops_out_of_cone() {
-        use crate::lighting::spot_shadow::light_space_matrix;
         use postretro_level_loader::{FalloffModel, LightType, MapLight, ShadowType};
+        use postretro_lighting::light_space_matrix;
         use postretro_render_data::cone_frustum::cone_frustum_planes;
 
         // Spotlight at the origin aimed down -Z, 20 m range — same cone the
@@ -578,8 +567,8 @@ mod tests {
     /// on the cone axis, must classify as casting.
     #[test]
     fn caster_cull_encloses_rotated_bound() {
-        use crate::lighting::spot_shadow::light_space_matrix;
         use postretro_level_loader::{FalloffModel, LightType, MapLight, ShadowType};
+        use postretro_lighting::light_space_matrix;
         use postretro_render_data::cone_frustum::cone_frustum_planes;
 
         let light = MapLight {

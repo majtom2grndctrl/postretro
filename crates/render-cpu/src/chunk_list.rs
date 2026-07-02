@@ -1,9 +1,5 @@
-// Per-chunk light list: grid metadata + offset table + flat index list
-// uploaded to GPU storage buffers. Parsed from the `ChunkLightList` PRL
-// section; missing-section fallback is a zeroed grid with
-// `has_chunk_grid = 0` so the shader iterates the full spec buffer.
-//
-// See: lighting-chunk-lists/ Task B step 2
+// Per-chunk light-list grid metadata, offsets, and index packing.
+// See: context/lib/rendering_pipeline.md §4
 
 use postretro_level_format::chunk_light_list::ChunkLightListSection;
 

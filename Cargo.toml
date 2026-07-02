@@ -7,6 +7,7 @@ members = [
     "crates/level-format",
     "crates/model",
     "crates/render-data",
+    "crates/lighting",
     "crates/level-loader",
     "crates/visibility",
     "crates/level-compiler",
@@ -149,6 +150,7 @@ proptest = "1"
 postretro-level-format = { path = "crates/level-format" }
 postretro-model = { path = "crates/model" }
 postretro-render-data = { path = "crates/render-data" }
+postretro-lighting = { path = "crates/lighting" }
 postretro-level-loader = { path = "crates/level-loader" }
 postretro-visibility = { path = "crates/visibility" }
 postretro-foundation = { path = "crates/foundation" }

@@ -70,7 +70,7 @@ pub(crate) fn shadow_candidate_reaches_visible_cell(
     let influence = influence
         .cloned()
         .unwrap_or_else(uncullable_light_influence);
-    crate::lighting::light_reaches_visible_cell(
+    postretro_lighting::light_reaches_visible_cell(
         influence.center,
         influence.radius,
         reachable_cell_aabbs,

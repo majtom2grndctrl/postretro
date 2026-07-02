@@ -136,12 +136,14 @@ impl Renderer {
         let full = full
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
-        let expected_len = full.level_lights.len() * crate::lighting::GPU_LIGHT_SIZE;
+        let expected_len = full.level_lights.len() * postretro_lighting::GPU_LIGHT_SIZE;
         if full.last_lights_upload.len() == expected_len {
             let spot_changed =
-                crate::lighting::patch_shadow_slots(&mut full.last_lights_upload, &level_slots);
-            let cube_changed =
-                crate::lighting::patch_cube_slots(&mut full.last_lights_upload, &level_cube_slots);
+                postretro_lighting::patch_shadow_slots(&mut full.last_lights_upload, &level_slots);
+            let cube_changed = postretro_lighting::patch_cube_slots(
+                &mut full.last_lights_upload,
+                &level_cube_slots,
+            );
             if spot_changed || cube_changed {
                 queue.write_buffer(&full.lights_buffer, 0, &full.last_lights_upload);
             }
@@ -151,7 +153,7 @@ impl Renderer {
             // frame-zero still uploads valid lights + slots and seeds the mirror.
             let mut scratch = std::mem::take(&mut full.lights_pack_scratch);
             pack_lights_with_slots_into(&mut scratch, &full.level_lights, &level_slots);
-            crate::lighting::patch_cube_slots(&mut scratch, &level_cube_slots);
+            postretro_lighting::patch_cube_slots(&mut scratch, &level_cube_slots);
             if scratch != full.last_lights_upload {
                 queue.write_buffer(&full.lights_buffer, 0, &scratch);
                 full.last_lights_upload.clear();
@@ -191,7 +193,7 @@ impl Renderer {
             // this is set; an ineligible (e.g. toggle-off dynamic) slot keeps its
             // world shadow but draws none.
             full.spot_shadow_pool.slot_entity_eligible[slot as usize] =
-                crate::lighting::entity_occluder_eligible(candidate);
+                postretro_lighting::entity_occluder_eligible(candidate);
             let cols = m.to_cols_array();
             let mut bytes = [0u8; MAT_BYTES];
             for (i, v) in cols.iter().enumerate() {
@@ -381,7 +383,7 @@ impl Renderer {
                         if (cslot as usize) < 128 {
                             cube_occupancy |= 1u128 << cslot;
                         }
-                        let ent_ok = crate::lighting::entity_occluder_eligible(light);
+                        let ent_ok = postretro_lighting::entity_occluder_eligible(light);
                         format!("cube={cslot}{}", if ent_ok { "" } else { "(no_ent)" })
                     } else if !light.is_dynamic {
                         "NONE:baked".to_string()
@@ -550,7 +552,7 @@ impl Renderer {
             let candidate = &full.shadow_candidate_lights[light_idx];
             // Cube faces are entity-only: an ineligible point light draws
             // nothing, so it needs no per-face matrices either.
-            let eligible = crate::lighting::entity_occluder_eligible(candidate);
+            let eligible = postretro_lighting::entity_occluder_eligible(candidate);
             pool.slot_entity_eligible[slot as usize] = eligible;
             // CRITICAL: a cube slot's faces are only CLEARED + rendered when the
             // light is entity-eligible (the depth loop skips `None` face matrices).

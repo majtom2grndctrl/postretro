@@ -5,6 +5,8 @@
 use glam::{Mat4, Vec3};
 use postretro_level_loader::{LightType, MapLight};
 
+pub use postretro_lighting::NO_SHADOW_SLOT;
+
 /// Near-clip distance used when building a spot light's projection matrix.
 /// Matches the camera near-clip policy — close enough that self-shadowing
 /// acne is controlled by the depth bias, far enough to keep precision.
@@ -91,9 +93,6 @@ pub const SHADOW_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth3
 /// Resolution (per side) of each square shadow map in the pool.
 pub const SHADOW_MAP_RESOLUTION: u32 = 1024;
 
-/// Sentinel value written to the slot index field when no slot is allocated.
-pub const NO_SHADOW_SLOT: u32 = 0xFFFFFFFF;
-
 /// Size of the `array<mat4x4<f32>, SHADOW_POOL_SIZE>` storage buffer consumed
 /// by the forward shader at `@group(5) @binding(2)`.
 pub const LIGHT_SPACE_MATRICES_SIZE: u64 = (SHADOW_POOL_SIZE * 16 * 4) as u64;
@@ -137,7 +136,7 @@ pub struct SpotShadowPool {
     pub slot_cone_matrices: [Option<Mat4>; SHADOW_POOL_SIZE],
     /// Per-slot entity-occluder gate, written alongside `slot_cone_matrices` in
     /// `update_dynamic_light_slots`. `true` only when the slot's occupant passes
-    /// [`crate::lighting::entity_occluder_eligible`] (`casts_entity_shadows &&
+    /// [`postretro_lighting::entity_occluder_eligible`] (`casts_entity_shadows &&
     /// is_dynamic`). The shadow-depth render loop draws skinned entity occluders
     /// into a slot ONLY when this is `true`; an ineligible slot keeps its WORLD
     /// shadow but draws zero entity occluders. Separate from pool-slot

@@ -3,12 +3,12 @@
 
 use std::collections::HashMap;
 
-use crate::lighting::{GPU_LIGHT_SIZE, pack_light};
 use crate::render::sh_volume::{
     ANIMATION_DESCRIPTOR_SIZE, SCRIPTED_BRIGHTNESS_SLOT, SCRIPTED_COLOR_SLOT_F32,
     SCRIPTED_FLOATS_PER_LIGHT,
 };
 use postretro_level_loader::{FalloffModel, LightType, MapLight, ShadowType};
+use postretro_lighting::{GPU_LIGHT_SIZE, pack_light};
 
 #[cfg(test)]
 use postretro_entities::components::light::LightAnimation;

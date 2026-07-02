@@ -2224,7 +2224,7 @@ impl ApplicationHandler for App {
                 // eligibility test: a light is shadow-eligible when its influence
                 // sphere reaches one of these reachable cells — NOT when its own
                 // cell is in the camera PVS (see
-                // `lighting::light_reaches_visible_cell`). Intentionally the wider
+                // `postretro_lighting::light_reaches_visible_cell`). Intentionally the wider
                 // set, not the narrower drawable `visible_cells`, so a light in an
                 // empty reachable cell still counts. Empty = DrawAll sentinel
                 // (fallback visibility paths): every light eligible.

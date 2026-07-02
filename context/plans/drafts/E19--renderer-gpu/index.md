@@ -10,7 +10,7 @@ Extract all wgpu-touching render code into `postretro-renderer`, **absorbing** t
 
 ### In scope
 - Move all of `render/` that touches wgpu: `Renderer`/`FullRenderer` (`renderer_types.rs`), every `renderer_*.rs` impl file, every pass (forward/depth/wireframe/shadow/`mesh_pass` GPU/`smoke`/`fog_pass`/`screen_effects`/`splash_pass`/`sh_volume` compose/`sh_compose`/`animated_lightmap`/`sdf_atlas`/`sdf_shadow`/`frame_timing`/`debug_lines`/`debug_ui` GPU), `pipeline_layout` BGL objects, `loaded_texture` GPU upload, and the GPU UI pass (`ui/mod.rs` `UiPass` + `ui/text.rs` `UiTextRenderer`).
-- **Absorb the stray GPU modules** so no wgpu lives outside this crate: `compute_cull`, `candidate_cull`, `shadow_cull`, and `lighting::{spot_shadow,cube_shadow,lightmap,chunk_list}`. (`candidate_cull_mirror`/`candidate_cull_probes` are CPU test oracles — keep test-side or in `render-cpu`/dev.)
+- **Absorb the stray GPU modules** so no wgpu lives outside this crate: `compute_cull`, `candidate_cull`, `shadow_cull`, and `lighting::{spot_shadow,cube_shadow,lightmap}`. `chunk_list` stays in `postretro-render-cpu`; renderer consumes its byte payloads and owns upload/resources. (`candidate_cull_mirror`/`candidate_cull_probes` are CPU test oracles — keep test-side or in `render-cpu`/dev.)
 - **Opaque present handle:** replace `render_frame_indirect`'s `Result<Option<wgpu::SurfaceTexture>>` return with an opaque renderer-owned handle; the binary calls `renderer.present(handle)`. The handle encapsulates surface acquire (Success/Suboptimal/Outdated/Lost/Timeout/Validation), surface `TextureView` creation, encoder completion, and `present()`. Unify the gameplay and splash present paths behind it.
 - Depend on `postretro-ui`, `postretro-render-cpu`, `postretro-visibility`, `postretro-level-loader`, `postretro-render-data`, `postretro-lighting`, `postretro-model` (CPU glTF loader, `E19--model`), `postretro-entities`/`scripting-core` (snapshot values), `wgpu`, `winit`, `glyphon`, `glam`, `bytemuck`.
 - Update binary consumers (`main.rs`, `startup/lifecycle.rs`, `startup/splash_lifecycle.rs`, `session/mod.rs`) to import the renderer crate and drive the present loop via the handle.
@@ -32,7 +32,7 @@ Inherits the epic global acceptance criteria — see `E19--render-stack-decompos
 ## Tasks
 
 ### Task 1: Absorb stray GPU modules
-Move `compute_cull`/`candidate_cull`/`shadow_cull` + the four lighting GPU pools directly into the renderer crate at cut time — one transplant, no in-binary staging step. The `E19--renderer-gpu` verification gate (`rg wgpu`, `cargo tree` isolation, behavior-preservation) provides the safety an intermediate stage would; staging would only add churn.
+Move `compute_cull`/`candidate_cull`/`shadow_cull` + the three lighting GPU pools directly into the renderer crate at cut time — one transplant, no in-binary staging step. Keep `chunk_list` in `postretro-render-cpu`; renderer uploads its planned buffers. The `E19--renderer-gpu` verification gate (`rg wgpu`, `cargo tree` isolation, behavior-preservation) provides the safety an intermediate stage would; staging would only add churn.
 
 ### Task 2: Extract postretro-renderer
 Create the crate; move all wgpu render code + the GPU UI pass; wire deps on the lower crates; widen boundary symbols. `mesh_pass.rs`/`sh_volume.rs` are oversized but this is largely a move — split only if substantial edits are needed (split-before-extend).

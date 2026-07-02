@@ -149,7 +149,7 @@ impl App {
             session.presentation_cells.clear();
             session
                 .modal_stack
-                .clear_script_tree_tier(render::ui::modal_stack::ScopeTier::Level);
+                .clear_script_tree_tier(postretro_ui::modal_stack::ScopeTier::Level);
         }
         self.active_level_tags.clear();
         self.active_level_source = None;
@@ -773,7 +773,7 @@ impl App {
                 // installed.
                 session.modal_stack.register_script_trees(
                     std::mem::take(&mut manifest.ui_trees),
-                    render::ui::modal_stack::ScopeTier::Level,
+                    postretro_ui::modal_stack::ScopeTier::Level,
                 );
             }
             script_ctx.data_registry.borrow_mut().populate_level(
@@ -1115,7 +1115,7 @@ mod tests {
     use crate::input::InputFocus;
     use crate::scripting;
     use crate::scripting::primitives::register_all;
-    use crate::{collision, input, options, render, scripting_systems, view_feel};
+    use crate::{collision, input, options, scripting_systems, view_feel};
     use postretro_entities::{
         CrossingCondition, CrossingDescriptor, EntityTypeDescriptor, NamedReaction,
         PrimitiveDescriptor, ProgressDescriptor, ReactionDescriptor,
@@ -1174,7 +1174,8 @@ mod tests {
                 ui_focus: input::UiFocusEngine::new(),
                 ui_focus_rects: None,
                 ui_input_mode: input::InputMode::default(),
-                modal_stack: render::ui::modal_stack::ModalStack::new(),
+                modal_stack: postretro_ui::modal_stack::ModalStack::new(),
+                font_system: postretro_ui::text::build_font_system(),
                 scripting: crate::session::ScriptingCore {
                     script_runtime,
                     script_ctx: script_ctx.clone(),
@@ -1886,8 +1887,8 @@ mod tests {
             .registry_mut()
             .register(
                 "mainMenu",
-                render::ui::demo::build_frontend_menu_descriptor(),
-                render::ui::modal_stack::ScopeTier::Mod,
+                postretro_ui::demo::build_frontend_menu_descriptor(),
+                postretro_ui::modal_stack::ScopeTier::Mod,
                 false,
             );
         app.session.as_mut().unwrap().frontend = Some(Frontend {
@@ -1909,7 +1910,7 @@ mod tests {
         );
         assert_eq!(
             app.session.as_mut().unwrap().modal_stack.top_capture_mode(),
-            render::ui::descriptor::CaptureMode::Capture,
+            postretro_ui::descriptor::CaptureMode::Capture,
             "frontend menu must suppress gameplay through the capture-mode path",
         );
         assert_eq!(
@@ -1933,9 +1934,9 @@ mod tests {
             .modal_stack
             .registry_mut()
             .register(
-                render::ui::demo::FRONTEND_MENU_NAME,
-                render::ui::demo::build_frontend_menu_descriptor(),
-                render::ui::modal_stack::ScopeTier::Engine,
+                postretro_ui::demo::FRONTEND_MENU_NAME,
+                postretro_ui::demo::build_frontend_menu_descriptor(),
+                postretro_ui::modal_stack::ScopeTier::Engine,
                 false,
             );
         app.session.as_mut().unwrap().frontend = Some(Frontend {
@@ -1952,12 +1953,12 @@ mod tests {
 
         assert_eq!(
             app.session.as_mut().unwrap().modal_stack.active_name(),
-            Some(render::ui::demo::FRONTEND_MENU_NAME),
+            Some(postretro_ui::demo::FRONTEND_MENU_NAME),
             "unknown mod frontend menus must reveal the engine fallback",
         );
         assert_eq!(
             app.session.as_mut().unwrap().modal_stack.top_capture_mode(),
-            render::ui::descriptor::CaptureMode::Capture
+            postretro_ui::descriptor::CaptureMode::Capture
         );
         assert_eq!(
             app.level_requests.pop_front(),
@@ -1978,9 +1979,9 @@ mod tests {
             .modal_stack
             .registry_mut()
             .register(
-                render::ui::demo::FRONTEND_MENU_NAME,
-                render::ui::demo::build_frontend_menu_descriptor(),
-                render::ui::modal_stack::ScopeTier::Engine,
+                postretro_ui::demo::FRONTEND_MENU_NAME,
+                postretro_ui::demo::build_frontend_menu_descriptor(),
+                postretro_ui::modal_stack::ScopeTier::Engine,
                 false,
             );
         app.session
@@ -1990,8 +1991,8 @@ mod tests {
             .registry_mut()
             .register(
                 "oldMenu",
-                render::ui::demo::build_frontend_menu_descriptor(),
-                render::ui::modal_stack::ScopeTier::Mod,
+                postretro_ui::demo::build_frontend_menu_descriptor(),
+                postretro_ui::modal_stack::ScopeTier::Mod,
                 false,
             );
         app.session.as_mut().unwrap().frontend = Some(Frontend {
@@ -2020,7 +2021,7 @@ mod tests {
                 crossings: Vec::new(),
                 ui_trees: vec![RegisteredUiTree {
                     name: "newMenu".to_string(),
-                    tree: render::ui::demo::build_frontend_menu_descriptor(),
+                    tree: postretro_ui::demo::build_frontend_menu_descriptor(),
                     always_on: false,
                 }],
                 theme: Default::default(),
@@ -2068,18 +2069,18 @@ mod tests {
         app.commit_staged_ui_manifest(&omitted, &omitted_committed);
         assert_eq!(
             app.session.as_mut().unwrap().modal_stack.active_name(),
-            Some(render::ui::demo::FRONTEND_MENU_NAME),
+            Some(postretro_ui::demo::FRONTEND_MENU_NAME),
             "staged omission replaces the active frontend modal with the engine fallback",
         );
         assert_eq!(
             app.session.as_mut().unwrap().modal_stack.top_capture_mode(),
-            render::ui::descriptor::CaptureMode::Capture
+            postretro_ui::descriptor::CaptureMode::Capture
         );
     }
 
     #[test]
     fn no_backdrop_frontend_button_activation_dispatches_load_command() {
-        use crate::render::ui::tree::{FocusNeighbors, FocusRect, FocusRectList, NodeInteraction};
+        use postretro_ui::tree::{FocusNeighbors, FocusRect, FocusRectList, NodeInteraction};
 
         let mut app = test_app();
         app.boot_state = BootState::Frontend;
@@ -2092,9 +2093,9 @@ mod tests {
             .modal_stack
             .registry_mut()
             .register(
-                render::ui::demo::FRONTEND_MENU_NAME,
-                render::ui::demo::build_frontend_menu_descriptor(),
-                render::ui::modal_stack::ScopeTier::Engine,
+                postretro_ui::demo::FRONTEND_MENU_NAME,
+                postretro_ui::demo::build_frontend_menu_descriptor(),
+                postretro_ui::modal_stack::ScopeTier::Engine,
                 false,
             );
         app.present_frontend_menu();
@@ -2263,8 +2264,8 @@ mod tests {
             .registry_mut()
             .register(
                 "deathScreen",
-                render::ui::demo::build_frontend_menu_descriptor(),
-                render::ui::modal_stack::ScopeTier::Mod,
+                postretro_ui::demo::build_frontend_menu_descriptor(),
+                postretro_ui::modal_stack::ScopeTier::Mod,
                 false,
             );
         app.session
@@ -2322,8 +2323,8 @@ mod tests {
             .registry_mut()
             .register(
                 "mainMenu",
-                render::ui::demo::build_frontend_menu_descriptor(),
-                render::ui::modal_stack::ScopeTier::Mod,
+                postretro_ui::demo::build_frontend_menu_descriptor(),
+                postretro_ui::modal_stack::ScopeTier::Mod,
                 false,
             );
         app.session.as_mut().unwrap().frontend = Some(Frontend {

@@ -402,9 +402,8 @@ mod tests {
 
     // NOTE: the AC-3 contract test (styleRanges display value vs. crossing
     // authoritative slot diverging mid-tween) lives in
-    // `render/ui/style_ranges.rs` — it crosses the render/scripting seam, and
-    // `render` is not in scope in the `gen-script-types` bin that re-includes
-    // this `scripting` module tree.
+    // `postretro-ui` tree style-ranges tests. It crosses the UI CPU model /
+    // scripting-core boundary, so it does not belong in this detector test set.
 
     #[test]
     fn clear_drops_all_watchers() {

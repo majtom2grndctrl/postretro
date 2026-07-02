@@ -4,7 +4,7 @@
 // glyphon's own pipeline. Writes linear color into the sRGB surface (the surface
 // format encodes); a 1x1 white texel makes untextured panels and textured
 // images share one batch.
-// See: context/plans/in-progress/M13--ui-render-pass-slice
+// See: context/lib/ui.md
 
 // Device-pixel viewport. Drives the device-rect -> clip-space map; rebuilt per
 // frame from `surface_config`.
@@ -17,7 +17,7 @@ struct UiUbo {
 @group(0) @binding(1) var ui_tex: texture_2d<f32>;
 @group(0) @binding(2) var ui_sampler: sampler;
 
-// One instance = one panel/image. All rects in device pixels except color/uv.
+// One instance = one panel/image. All rects in device pixels except color/uv/depth.
 struct Instance {
     // rect.xy = top-left device px, rect.zw = size device px.
     @location(0) rect: vec4<f32>,
@@ -27,6 +27,8 @@ struct Instance {
     @location(2) color: vec4<f32>,
     // 9-slice margins in device px: left, top, right, bottom. All-zero = plain quad.
     @location(3) margin: vec4<f32>,
+    // Private UI depth. Smaller values are closer.
+    @location(4) depth: f32,
 };
 
 struct VsOut {
@@ -115,7 +117,7 @@ fn vs_main(@builtin(vertex_index) vid: u32, inst: Instance) -> VsOut {
     );
 
     var out: VsOut;
-    out.position = vec4<f32>(ndc, 0.0, 1.0);
+    out.position = vec4<f32>(ndc, inst.depth, 1.0);
     out.uv = vec2<f32>(x.y, y.y);
     out.color = inst.color;
     return out;

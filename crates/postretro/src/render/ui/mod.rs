@@ -1,104 +1,32 @@
 // UI render pass: hand-rolled instanced quad / 9-slice pipeline for panels and
 // images. One instance per panel/image carries (rect, UV rect, color, 9-slice
-// margin); the vertex stage expands each instance into 9 regions. All wgpu lives
-// here per renderer-owns-GPU. Shaped text is glyphon's own pipeline, owned by
-// the `text` submodule and recorded into this same pass after the quads.
+// margin, painter depth); the vertex stage expands each instance into 9 regions.
+// All wgpu lives here per renderer-owns-GPU. Shaped text is glyphon's own
+// pipeline, owned by the `text` submodule and recorded into this same pass after
+// the quads with matching painter depths.
 // See: context/lib/ui.md
 
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
-use crate::ui_texture::UiTexture;
+use postretro_ui::UiTexture;
+use postretro_ui::text::FontSystem;
 
-use self::text::UiTextRenderer;
-
-/// Logical-reference scaling model + device-pixel projection/snap. Pure CPU,
-/// no GPU handles — produces a `UiDrawList` the pass uploads at encode time.
-pub(crate) mod layout;
-
-/// Serde descriptor model for the UI widget tree: the `Widget` enum, its field
-/// structs, and the `AnchoredTree` placement envelope. Pure data — the retained
-/// tree (`tree`) maps it onto taffy and the renderer lays it out.
-pub(crate) mod descriptor;
+use self::text::{TextPrepareInput, UiTextRenderer};
 
 /// glyphon shaped-text half of the pass: embedded font, glyph atlas/renderer,
 /// and the shape→prepare→render→trim cycle. glyphon owns its own pipeline; the
-/// text draw records into this same render pass, after the quads.
+/// text draw records into this same render pass, after the quads. The UI depth
+/// target keeps later-layer quads in front of earlier-layer text.
 pub(crate) mod text;
 
-/// Retained widget tree: maps the `descriptor` model into a `taffy::TaffyTree`,
-/// computes flex/grid layout, and reads laid-out rects back into the device-pixel
-/// draw list + shaped-text entries through the `layout` projection path. taffy
-/// lives entirely here (renderer-owns-GPU). The renderer lays out the splash and
-/// gameplay descriptor trees through it.
-pub(crate) mod tree;
-
-/// UI theme-token table: named color/font/spacing tokens widgets resolve against,
-/// the engine default theme, and the `ThemeDescriptor` override wire form. Pure
-/// data — widgets (later tasks) reference tokens by name; the merge is per-token.
-pub(crate) mod theme;
-
-/// Continuous value→style mapping (`styleRanges`): the `StyleRanges`
-/// descriptor types and the widget-agnostic pure evaluator (value → resolved
-/// color + pulse/flash). Consumed from `tree`'s draw-data build; the `bar`
-/// widget reuses the same evaluator. Pure data — no taffy, no GPU.
-pub(crate) mod style_ranges;
-
-/// Reserved UI button-action names in the `ui.*` namespace. The App intercepts
-/// these before ordinary named-reaction dispatch.
-pub(crate) mod actions;
-
-/// App-side gameplay-UI modal stack + named-tree registry: resolves Goal E's
-/// `PushTree`/`PopTree` system commands by name into a bottom→top stack of
-/// descriptor trees, exposes an engine push/pop API, and builds the per-frame
-/// `UiReadSnapshot`. The top tree's capture mode drives the input seam + focus.
-/// Pure CPU — no taffy, no GPU. The splash stays outside the stack.
-pub(crate) mod modal_stack;
-
-pub(crate) use self::text::UiText;
-
-/// Demo gameplay HUD + pause-menu wiring. Both screens are now JSON-authored
-/// (`content/base/ui/hud.json`, `pauseMenu.json`), loaded through `tree_asset` and
-/// resolved by name from the registry; `demo` holds the `PAUSE_MENU_NAME` constant
-/// the App pushes under and the demo's behavioral tests (which load the shipped
-/// JSON as their source of truth).
-pub(crate) mod demo;
-
-/// Generic load-and-register path for engine-shipped UI descriptor trees: reads
-/// a named `AnchoredTree` from `content/base/ui/<file>.json` and registers it by
-/// name, warning once and degrading on a missing/malformed file. The shared boot
-/// wiring for the HUD, pause menu, and on-screen keyboard.
-pub(crate) mod tree_asset;
-
-/// Engine-shipped on-screen keyboard descriptor: loads
-/// `content/base/ui/keyboard.json` from disk at boot and registers it under the
-/// `keyboard` name. Read from disk (not embedded) so a layout edit + reload
-/// changes the keyboard with no Rust change.
-pub(crate) mod keyboard_asset;
-
-/// Hard-gate CPU assertion for the gameplay UI path: the renderer builds a
-/// non-empty draw list from a fixture descriptor tree, and an empty tree
-/// early-outs the UI pass (no `begin_render_pass`). Pure CPU — asserts the
-/// layout + early-out decision the renderer's gameplay path makes, without a GPU.
-#[cfg(test)]
-mod gameplay_ui_gate_test;
-
-/// Hard-gate CPU assertion for the demo gameplay HUD. The per-frame source of
-/// truth is `content/base/ui/hud.json` (loaded at boot, resolved by name from
-/// the registry); these tests use `demo::build_demo_descriptor` (test-only —
-/// reads the same JSON) to drive the retained gameplay `UiTree` end-to-end and
-/// assert bind resolution, the appearance-only-vs-content-change relayout split,
-/// the post-settle no-recompute frame, and the subscriber-aware unbound-slot
-/// no-op. Pure CPU — no GPU adapter.
-#[cfg(test)]
-mod demo_ui_gate_test;
-
-/// Hard-gate CPU assertions for the fonts+theming path: the theme-generation
-/// rebuild gate (reproduced CPU-side, mirroring `UiPass::layout_gameplay_tree`)
-/// and the exactly-one-warning-per-build fallback contract for unknown tokens.
-/// Pure CPU — no GPU adapter.
-#[cfg(test)]
-mod theme_gate_test;
+pub(crate) use postretro_ui::{
+    UiDrawList, UiInstance, UiReadSnapshot, UiText, UiUniform, descriptor, layout, theme, tree,
+};
+/// Re-exported only for the `#[cfg(test)]` submodules (`lifecycle_render_test`
+/// et al.), which reach them via `super::`.
+#[cfg_attr(not(test), allow(unused_imports))]
+pub(crate) use postretro_ui::{UiTreeEntry, demo, modal_stack};
 
 /// Shared headless GPU harness for the UI offscreen golden tests: the
 /// `pollster` device init (self-skip on no adapter) and the offscreen-texture
@@ -138,224 +66,27 @@ const UI_QUAD_WGSL: &str = include_str!("../../shaders/ui_quad.wgsl");
 /// 9 regions × `VERTS_PER_REGION` (= 6u) in `ui_quad.wgsl` = 54.
 const VERTS_PER_INSTANCE: u32 = 54;
 
-/// Per-instance draw record. Layout mirrors `UiInstance` in `ui_quad.wgsl`:
-/// four `vec4<f32>` attributes, tightly packed, no padding. Byte-for-byte
-/// stable so `bytemuck` can cast a slice straight into the instance buffer.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Pod, Zeroable)]
-pub(crate) struct UiInstance {
-    /// Device-pixel rect: `[x, y, width, height]`, top-left origin.
-    pub rect: [f32; 4],
-    /// UV rect into the bound texture: `[u0, v0, u_width, v_height]`.
-    pub uv_rect: [f32; 4],
-    /// Linear RGBA tint multiplied into the sampled texel.
-    pub color: [f32; 4],
-    /// 9-slice margin in device pixels: `[left, top, right, bottom]`. All zero
-    /// renders a plain stretched quad (the degenerate case).
-    pub margin: [f32; 4],
-}
-
-impl UiInstance {
-    /// Solid-color panel: full UV slice over the bound 1×1 white texel, with an
-    /// optional 9-slice margin. Color is linear RGBA. Production paths build
-    /// instances via `layout::project`; this ctor backs the corner-rect tests.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub fn panel(rect: [f32; 4], color: [f32; 4], margin: [f32; 4]) -> Self {
-        Self {
-            rect,
-            uv_rect: [0.0, 0.0, 1.0, 1.0],
-            color,
-            margin,
-        }
-    }
-
-    /// Textured image: samples the full bound texture, untinted (white).
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub fn image(rect: [f32; 4]) -> Self {
-        Self {
-            rect,
-            uv_rect: [0.0, 0.0, 1.0, 1.0],
-            color: [1.0, 1.0, 1.0, 1.0],
-            margin: [0.0; 4],
-        }
-    }
-
-    /// CPU-side derivation of the 9-slice corner rects (device pixels) for this
-    /// instance — the four fixed-size corners as `[x, y, w, h]` in order
-    /// top-left, top-right, bottom-left, bottom-right. Mirrors the shader's
-    /// `axis` margin clamp so layout assertions match what the GPU draws.
-    /// Used by tests (and future layout assertions); not consumed by the draw.
-    #[cfg(test)]
-    pub fn corner_rects(&self) -> [[f32; 4]; 4] {
-        let (x, y, w, h) = (self.rect[0], self.rect[1], self.rect[2], self.rect[3]);
-        let (ml, mt, mr, mb) = (
-            self.margin[0],
-            self.margin[1],
-            self.margin[2],
-            self.margin[3],
-        );
-        // Clamp margins so opposing corners never overrun the rect — matches
-        // `axis` in ui_quad.wgsl.
-        let clamp_axis = |full: f32, lo: f32, hi: f32| -> (f32, f32) {
-            let avail = full.max(0.0);
-            let lo_c = lo.clamp(0.0, avail);
-            let hi_c = hi.clamp(0.0, (avail - lo_c).max(0.0));
-            (lo_c, hi_c)
-        };
-        let (cl, cr) = clamp_axis(w, ml, mr);
-        let (ct, cb) = clamp_axis(h, mt, mb);
-        [
-            [x, y, cl, ct],                   // top-left
-            [x + w - cr, y, cr, ct],          // top-right
-            [x, y + h - cb, cl, cb],          // bottom-left
-            [x + w - cr, y + h - cb, cr, cb], // bottom-right
-        ]
-    }
-}
-
-/// Pure CPU draw list — a flat batch of instances sharing one bound texture.
-/// Built with no wgpu call so layout/scaling logic stays GPU-independent: the
-/// `layout` projection path populates it and the CPU layout tests assert against
-/// it. The pass uploads it to the instance buffer at encode time.
-#[derive(Debug, Default, Clone)]
-pub(crate) struct UiDrawList {
-    pub instances: Vec<UiInstance>,
-}
-
-impl UiDrawList {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn push(&mut self, instance: UiInstance) {
-        self.instances.push(instance);
-    }
-
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub fn clear(&mut self) {
-        self.instances.clear();
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.instances.is_empty()
-    }
-
-    pub fn len(&self) -> usize {
-        self.instances.len()
-    }
-}
-
-/// One entry in the gameplay UI modal stack as published on the read snapshot:
-/// a named descriptor tree plus its resolved input behavior and the optional
-/// `onCommit` reaction carried from the `PushTree` that opened it. The renderer
-/// draws the stack bottom→top; the app reads the TOP entry's `capture_mode` to
-/// drive the input seam and focus. The App fires `on_commit` from the text-entry
-/// commit seam; the renderer never reads it.
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct UiTreeEntry {
-    /// Registry name the tree was registered/pushed under. Identifies the entry
-    /// in the stack (e.g. for diagnostics); the renderer keys retained state by
-    /// stack position, not by name.
-    pub name: String,
-    /// The descriptor tree to lay out and draw this frame.
-    pub descriptor: descriptor::AnchoredTree,
-    /// Resolved capture behavior (from the descriptor's `capture_mode` envelope).
-    /// Only the TOP entry's mode is acted on by the app's input seam.
-    pub capture_mode: descriptor::CaptureMode,
-    /// Optional named reaction fired by the App when this tree commits (carried
-    /// from `PushTree { on_commit }`).
-    pub on_commit: Option<String>,
-}
-
-/// Once-per-frame published read-only snapshot the UI pass reads when it records.
-/// Stored on the `Renderer` via a setter the `App` calls just before each render
-/// call — NOT threaded as a render parameter, so both render signatures stay
-/// stable.
-///
-/// Carries the gameplay UI modal stack (a Vec of trees drawn bottom→top) and the
-/// frame's resolved slot values. The renderer reads `trees`/`slot_values` on the
-/// gameplay path. The boot splash does NOT use this — it is a renderer-owned
-/// pass independent of the UI system. Descriptors are carried here — never
-/// laid-out rects; taffy/glyphon live in the renderer per renderer-owns-GPU.
-/// Slot values are cloned out of the live `SlotTable` once per frame so the
-/// renderer never borrows the live store — preserving the renderer/game-logic
-/// boundary. Value-less slots are omitted; a present key always carries a
-/// resolved value.
-#[derive(Debug, Clone, Default)]
-pub(crate) struct UiReadSnapshot {
-    /// The gameplay UI modal stack for this frame, drawn bottom→top (`trees[0]`
-    /// is the bottom, the last entry is the top/active tree). Empty (the default)
-    /// on the splash path and whenever gameplay publishes no UI — the renderer's
-    /// UI pass then early-outs each empty/absent layer. The bottom-of-stack layer
-    /// is the HUD (`content/base/ui/hud.json`), resolved by name from the registry
-    /// and published by `main.rs`; modal trees pushed via the named-tree registry
-    /// stack above it.
-    pub trees: Vec<UiTreeEntry>,
-    /// Resolved state-store values for this frame, keyed by dotted slot name.
-    /// Cloned out of the live `SlotTable` once per frame (see the type doc).
-    /// Only slots that currently hold a value appear; value-less slots are
-    /// skipped. Empty on the splash path.
-    pub slot_values: std::collections::HashMap<String, postretro_entities::SlotValue>,
-    /// Resolved presentation-cell values for this frame, keyed by
-    /// `(scopeId, cellName)`. Published from the app-side cell
-    /// store the same way `slot_values` flows from the slot table — so a `{ local }`
-    /// bind resolves against the live cell value without the descriptor (compared
-    /// by the retained reuse gate) ever changing. Empty on the splash path and
-    /// whenever no `localState` scope composes.
-    pub cell_values: tree::CellValues,
-    /// Deterministic frame time in seconds, accumulated from per-frame `dt`
-    /// (`App::script_time`) — NEVER wall-clock. Stays `f64` end-to-end to match
-    /// the App's accumulator. The retained gameplay build threads it down so the
-    /// tween runtime can ease bound display values over time. `0.0` (the default)
-    /// on the splash/fresh path, where inertness is structural — that path takes
-    /// no time at all.
-    pub time_seconds: f64,
-    /// The focused node id in the active (top) stack tree, resolved app-side by
-    /// the focus engine the previous frame. The UI pass draws the focus ring around
-    /// this node's rect on the top layer. `None` (the default) when nothing is
-    /// focused; the ring may trail a focus change by one frame (the same N→N+1
-    /// latency every UI event carries).
-    pub focused_id: Option<String>,
-}
-
-impl UiReadSnapshot {
-    /// Snapshot carrying the gameplay UI modal stack (the content side) plus the
-    /// frame's resolved slot-value snapshot and the deterministic frame time. The
-    /// renderer lays each tree out bottom→top into the UI draw list, resolves
-    /// `bind` slots against `slot_values`, and threads `time_seconds` into the
-    /// retained build so the tween runtime can ease bound display values over time.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub fn with_trees(
-        trees: Vec<UiTreeEntry>,
-        slot_values: std::collections::HashMap<String, postretro_entities::SlotValue>,
-        cell_values: tree::CellValues,
-        time_seconds: f64,
-        focused_id: Option<String>,
-    ) -> Self {
-        Self {
-            trees,
-            slot_values,
-            cell_values,
-            time_seconds,
-            focused_id,
-        }
-    }
-}
-
 /// Small key→bind-group registry for `image` widget assets. The descriptor's
 /// `image` nodes reference a texture by string key; the renderer pre-registers
 /// the known keys and resolves each image batch's key through this map to the
-/// bind group the draw binds.
+/// bind group the draw binds. The same entries also expose natural image sizes
+/// to the CPU layout pass so image nodes measure from uploaded asset dimensions.
 ///
 /// Only pre-registered keys resolve — dynamic asset streaming is out of scope.
-/// Only the splash logo key is pre-registered; the current demo gameplay HUD has
-/// no `image` nodes. An unknown key is skipped-with-warn at draw time — the
-/// image batch simply does not draw, and a single warning names the missing key.
-/// Each entry owns its texture so the bind group's view stays valid for the
-/// registry's lifetime.
+/// An unknown key is skipped-with-warn at draw time — the image batch simply
+/// does not draw, and a single warning names the missing key. Each entry owns
+/// its texture so the bind group's view stays valid for the registry's lifetime.
+///
+/// E19's current UI manifest surface carries trees, theme tokens, and font
+/// assets, but no authored UI image asset list/path contract. `register_uploaded`
+/// is the renderer-owned seam that future producer will call; until then
+/// production may legitimately run with an empty registry.
 #[derive(Default)]
 pub(crate) struct UiImageRegistry {
     entries: std::collections::HashMap<String, UiImageEntry>,
+    image_sizes: tree::ImageSizes,
+    image_sizes_generation: u64,
+    warned_missing: std::cell::RefCell<std::collections::HashSet<String>>,
 }
 
 struct UiImageEntry {
@@ -365,36 +96,111 @@ struct UiImageEntry {
 }
 
 impl UiImageRegistry {
+    /// Install an already-uploaded UI texture and its bind group. Renderer code
+    /// creates the GPU objects; the registry keeps the texture alive, resolves
+    /// the key at draw time, and exposes the same texture's natural size to
+    /// layout.
+    #[allow(dead_code)]
+    pub fn register_uploaded(
+        &mut self,
+        key: impl Into<String>,
+        texture: wgpu::Texture,
+        bind_group: wgpu::BindGroup,
+        size: [u32; 2],
+    ) {
+        let key = key.into();
+        let natural_size = [size[0] as f32, size[1] as f32];
+        if self.image_sizes.get(&key).copied() != Some(natural_size) {
+            self.image_sizes_generation = self.image_sizes_generation.wrapping_add(1);
+        }
+        self.image_sizes.insert(key.clone(), natural_size);
+        self.warned_missing.borrow_mut().remove(&key);
+        self.entries.insert(
+            key,
+            UiImageEntry {
+                _texture: texture,
+                bind_group,
+            },
+        );
+    }
+
+    /// Natural reference sizes for registered UI image assets. Passed directly
+    /// into `UiTree` layout; this is the production counterpart to CPU tests that
+    /// build a non-empty `ImageSizes` fixture.
+    pub fn image_sizes(&self) -> &tree::ImageSizes {
+        &self.image_sizes
+    }
+
+    /// Monotonic generation for natural-size availability. Retained UI layout
+    /// uses this as an external measure input: a late image upload can change an
+    /// image node from zero-sized to naturally sized even when the descriptor,
+    /// slots, viewport, and theme are unchanged.
+    pub fn image_sizes_generation(&self) -> u64 {
+        self.image_sizes_generation
+    }
+
     /// Resolve `key` to its bind group, or `None` if no such key is registered.
     /// The live read side: `UiComposition::from_layer_draws` resolves each
-    /// gameplay image batch's asset key through here. No production writer exists
-    /// yet — the boot splash owns its logo in `BootSplashPass`, and the demo HUD
-    /// has no `image` nodes — so the registry currently resolves nothing; the
-    /// writer lands with the first gameplay image node.
+    /// gameplay image batch's asset key through here.
     pub fn resolve(&self, key: &str) -> Option<&wgpu::BindGroup> {
-        self.entries.get(key).map(|e| &e.bind_group)
+        if let Some(entry) = self.entries.get(key) {
+            return Some(&entry.bind_group);
+        }
+        if self.warned_missing.borrow_mut().insert(key.to_string()) {
+            log::warn!(
+                "[Renderer] UI image asset key '{key}' is not registered; skipping its draw"
+            );
+        }
+        None
     }
-}
 
-/// UI uniform: device viewport in pixels. 16 bytes (vec2 + vec2 pad) to match
-/// `UiUniform` in `ui_quad.wgsl` and satisfy uniform alignment.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
-struct UiUniform {
-    viewport: [f32; 2],
-    _pad: [f32; 2],
+    #[cfg(test)]
+    fn register_size_for_test(&mut self, key: &str, size: [u32; 2]) {
+        let natural_size = [size[0] as f32, size[1] as f32];
+        if self.image_sizes.get(key).copied() != Some(natural_size) {
+            self.image_sizes_generation = self.image_sizes_generation.wrapping_add(1);
+        }
+        self.image_sizes.insert(key.to_string(), natural_size);
+    }
 }
 
 /// Initial instance-buffer capacity (records). Grows on demand in `encode`.
 const INITIAL_INSTANCE_CAPACITY: usize = 64;
-const INSTANCE_SIZE: usize = std::mem::size_of::<UiInstance>();
+const INSTANCE_SIZE: usize = std::mem::size_of::<GpuUiInstance>();
+const UI_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24Plus;
+
+/// Renderer-local instance layout. CPU UI draw lists stay GPU-free and carry no
+/// painter depth; composition assigns depth as it uploads each batch.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct GpuUiInstance {
+    rect: [f32; 4],
+    uv_rect: [f32; 4],
+    color: [f32; 4],
+    margin: [f32; 4],
+    depth: f32,
+}
+
+impl GpuUiInstance {
+    fn from_ui(instance: &UiInstance, depth: f32) -> Self {
+        Self {
+            rect: instance.rect,
+            uv_rect: instance.uv_rect,
+            color: instance.color,
+            margin: instance.margin,
+            depth,
+        }
+    }
+}
 
 /// Instanced quad / 9-slice pass for panels and images. Owns its pipeline, BGL,
 /// sampler, uniform buffer, instance buffer, and a 1×1 white texture so solid
-/// panels and textured images share one instanced batch. Designed for a single
-/// color target with no depth attachment so glyphon's text draw can share the pass.
+/// panels and textured images share one instanced path. Uses a private UI depth
+/// target so glyphon's text draw can share the pass while opaque upper-layer
+/// quads still hard-occlude lower-layer text.
 pub(crate) struct UiPass {
-    pipeline: wgpu::RenderPipeline,
+    opaque_pipeline: wgpu::RenderPipeline,
+    translucent_pipeline: wgpu::RenderPipeline,
     uniform_buffer: wgpu::Buffer,
     instance_buffer: wgpu::Buffer,
     instance_capacity: usize,
@@ -411,12 +217,18 @@ pub(crate) struct UiPass {
     /// draw records into this same render pass, after the quads. See `text`.
     text: UiTextRenderer,
 
+    /// Private depth target for the UI pass. It is cleared every encode and only
+    /// exists to preserve painter order across the quad/text draw split.
+    depth_texture: Option<wgpu::Texture>,
+    depth_view: Option<wgpu::TextureView>,
+    depth_size: [u32; 2],
+
     /// Per-stack-layer retained gameplay trees, held across frames so each
     /// layer's dirty-gate and bound-value diff pay off (a fresh tree is always
     /// dirty). One entry per modal-stack layer, indexed bottom→top to match the
     /// snapshot's `trees`; empty until the first gameplay frame installs a layer.
-    /// The splash deliberately does NOT use this — it stays on the stateless
-    /// `layout_tree` fresh-build path.
+    /// The boot splash deliberately does NOT use this; it renders through
+    /// `BootSplashPass`, outside gameplay UI and the retained tree stack.
     gameplay_trees: Vec<RetainedGameplayTree>,
 }
 
@@ -446,13 +258,19 @@ pub(crate) struct UiBatch<'a> {
     pub bind_group: &'a wgpu::BindGroup,
 }
 
+struct OrderedUiBatch<'a> {
+    instances: Vec<UiInstance>,
+    order: usize,
+    bind_group: &'a wgpu::BindGroup,
+    writes_depth: bool,
+}
+
 /// The whole frame's UI composition: every modal-stack layer's quad batches and
-/// shaped-text runs, concatenated in bottom→top painter order, as the single unit
+/// shaped-text runs in bottom→top painter order, as the single unit
 /// `UiPass::encode` records. The encode boundary is the WHOLE composition, never
 /// one layer — making the historical per-layer encode loop (which clobbered the
-/// shared glyphon vertex buffer across layers; see `UiPass::encode`'s disjoint-
-/// region comment for the sibling quad-path rule) unrepresentable on the
-/// production surface.
+/// shared glyphon vertex buffer across layers) unrepresentable on the production
+/// surface.
 ///
 /// **Invariant — one `prepare`/vertex-buffer fill per surface composition.** All
 /// layers funnel through ONE `encode`, so glyphon's `prepare` (which overwrites
@@ -460,24 +278,30 @@ pub(crate) struct UiBatch<'a> {
 /// The text path obeys the same "one fill per composition" rule the quad path
 /// already enforces by giving each batch a disjoint instance-buffer region.
 ///
-/// Borrows the raw quad data (`batches` hold `UiBatch<'a>`, each borrowing a
-/// `&UiDrawList` + bind group, zero quad copy); owns the concatenated text runs
-/// (`texts: Vec<UiText>`). Built in the caller's frame scope so the borrows
-/// coexist with the `&mut self.ui` encode call. Two constructors:
-/// `from_layer_draws` (gameplay modal stack) and `from_batches` (the standalone
-/// splash assembly).
+/// Owns renderer-local quad batches and concatenated text runs. Each batch and
+/// text run also carries a composition order. `encode` still draws quads before
+/// glyphon text, but the private UI depth target makes later opaque commands
+/// occlude earlier commands across that split. Translucent/image batches
+/// depth-test without writing depth so they do not hard-erase lower text before
+/// glyphon renders; exact source-over ordering between translucent quads and text
+/// is still limited by glyphon's single render call. Built in the caller's frame
+/// scope so the bind-group borrows coexist with the `&mut self.ui` encode call.
+/// Two constructors: `from_layer_draws` (gameplay modal stack) and `from_batches`
+/// (test assembly).
 pub(crate) struct UiComposition<'a> {
-    batches: Vec<UiBatch<'a>>,
+    batches: Vec<OrderedUiBatch<'a>>,
     texts: Vec<UiText>,
+    text_orders: Vec<usize>,
+    order_count: usize,
 }
 
 impl<'a> UiComposition<'a> {
     /// Gameplay constructor: fold the per-layer `UiDrawData` slice (bottom→top)
-    /// into one composition. Each layer contributes, in order, its non-empty panel
-    /// quads (bound to `white_bind_group`), then each non-empty image batch (its
-    /// `asset` key resolved through `images` to a bind group; an unregistered key
-    /// is skipped-with-debug-log), then its text runs. This is the painter order
-    /// the prior per-layer loop produced, now in a single composed unit.
+    /// into one composition. Production draw data carries a per-item paint stream,
+    /// so A/B/A image nodes stay A/B/A instead of collapsing into one asset batch,
+    /// and renderer-added focus rings can sit above the focused content. Hand-built
+    /// tests that mutate the legacy lists directly fall back to the old coarse
+    /// order.
     ///
     /// `white_bind_group` and `images` outlive the returned composition (they are
     /// the pass's own resources); `layer_draws` is the caller's frame-scoped fold
@@ -487,32 +311,102 @@ impl<'a> UiComposition<'a> {
         white_bind_group: &'a wgpu::BindGroup,
         images: &'a UiImageRegistry,
     ) -> Self {
-        let mut batches: Vec<UiBatch<'a>> = Vec::new();
+        let mut batches: Vec<OrderedUiBatch<'a>> = Vec::new();
         let mut texts: Vec<UiText> = Vec::new();
+        let mut text_orders: Vec<usize> = Vec::new();
+        let mut order = 0usize;
         for draw in layer_draws {
-            if !draw.quads.is_empty() {
-                batches.push(UiBatch {
-                    list: &draw.quads,
-                    bind_group: white_bind_group,
-                });
+            if draw.paint_order.is_empty() {
+                append_legacy_draw_order(
+                    draw,
+                    white_bind_group,
+                    images,
+                    &mut batches,
+                    &mut texts,
+                    &mut text_orders,
+                    &mut order,
+                );
+                continue;
             }
-            // Unknown key degrades by skipping just that batch. Logged at debug,
-            // not warn: this gameplay path runs every frame with no dedup, so a
-            // persistently-missing key would spam at warn (development_guide §6.1).
-            for (asset, list) in &draw.images {
-                if list.is_empty() {
-                    continue;
-                }
-                match images.resolve(asset) {
-                    Some(bind_group) => batches.push(UiBatch { list, bind_group }),
-                    None => log::debug!(
-                        "[Renderer] UI image asset key '{asset}' is not registered — skipping its draw"
-                    ),
+
+            // Invariant: once `paint_order` is non-empty, it is the complete
+            // record of every item in `quads`/`images`/`texts` — production
+            // collection routes exclusively through `push_quad`/`push_image`/
+            // `push_text`, which append to both in lockstep. A partially
+            // populated `paint_order` (some items pushed, some added directly
+            // to the grouped lists) would silently drop the directly-added
+            // items below, since only ops in the stream get drawn.
+            #[cfg(debug_assertions)]
+            {
+                let grouped_len = draw.quads.len()
+                    + draw
+                        .images
+                        .iter()
+                        .map(|(_, list)| list.len())
+                        .sum::<usize>()
+                    + draw.texts.len();
+                debug_assert_eq!(
+                    draw.paint_order.len(),
+                    grouped_len,
+                    "UiDrawData.paint_order is non-empty but incomplete: {} ops vs {} grouped items \
+                     (quads + images + texts). A non-empty-but-incomplete paint_order silently drops \
+                     whichever grouped items were added directly instead of through push_quad/push_image/push_text. \
+                     All production collection must route through those push_* helpers to keep the stream complete.",
+                    draw.paint_order.len(),
+                    grouped_len,
+                );
+            }
+
+            for op in &draw.paint_order {
+                match *op {
+                    tree::UiPaintOp::Quad { index } => {
+                        if let Some(instance) = draw.quads.instances.get(index).copied() {
+                            append_ordered_quad_batch(
+                                &mut batches,
+                                white_bind_group,
+                                instance,
+                                order,
+                                true,
+                            );
+                            order += 1;
+                        }
+                    }
+                    tree::UiPaintOp::Image { batch, index } => {
+                        let Some((asset, list)) = draw.images.get(batch) else {
+                            continue;
+                        };
+                        let Some(instance) = list.instances.get(index).copied() else {
+                            continue;
+                        };
+                        // Unknown key degrades by skipping just that image. The
+                        // registry emits one warning per missing key, not per frame.
+                        if let Some(bind_group) = images.resolve(asset) {
+                            append_ordered_quad_batch(
+                                &mut batches,
+                                bind_group,
+                                instance,
+                                order,
+                                false,
+                            );
+                            order += 1;
+                        }
+                    }
+                    tree::UiPaintOp::Text { index } => {
+                        if let Some(text) = draw.texts.get(index) {
+                            text_orders.push(order);
+                            texts.push(text.clone());
+                            order += 1;
+                        }
+                    }
                 }
             }
-            texts.extend_from_slice(&draw.texts);
         }
-        Self { batches, texts }
+        Self {
+            batches,
+            texts,
+            text_orders,
+            order_count: order,
+        }
     }
 
     /// Constructor from already-assembled batches and text — a single-layer
@@ -521,7 +415,23 @@ impl<'a> UiComposition<'a> {
     /// off the UI pass); kept for that test's disjoint-region coverage.
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn from_batches(batches: Vec<UiBatch<'a>>, texts: Vec<UiText>) -> Self {
-        Self { batches, texts }
+        let order_count = batches.len() + usize::from(!texts.is_empty());
+        let text_order = batches.len();
+        Self {
+            batches: batches
+                .into_iter()
+                .enumerate()
+                .map(|(order, batch)| OrderedUiBatch {
+                    instances: batch.list.instances.clone(),
+                    order,
+                    bind_group: batch.bind_group,
+                    writes_depth: batch.list.instances.iter().all(instance_writes_depth),
+                })
+                .collect(),
+            text_orders: std::iter::repeat_n(text_order, texts.len()).collect(),
+            texts,
+            order_count,
+        }
     }
 
     /// `true` when the composition records nothing — no quad batches and no text.
@@ -529,6 +439,64 @@ impl<'a> UiComposition<'a> {
     pub fn is_empty(&self) -> bool {
         self.batches.is_empty() && self.texts.is_empty()
     }
+}
+
+fn append_ordered_quad_batch<'a>(
+    batches: &mut Vec<OrderedUiBatch<'a>>,
+    bind_group: &'a wgpu::BindGroup,
+    instance: UiInstance,
+    order: usize,
+    allow_depth_write: bool,
+) {
+    batches.push(OrderedUiBatch {
+        instances: vec![instance],
+        order,
+        bind_group,
+        writes_depth: allow_depth_write && instance_writes_depth(&instance),
+    });
+}
+
+fn append_legacy_draw_order<'a>(
+    draw: &'a tree::UiDrawData,
+    white_bind_group: &'a wgpu::BindGroup,
+    images: &'a UiImageRegistry,
+    batches: &mut Vec<OrderedUiBatch<'a>>,
+    texts: &mut Vec<UiText>,
+    text_orders: &mut Vec<usize>,
+    order: &mut usize,
+) {
+    if !draw.quads.is_empty() {
+        batches.push(OrderedUiBatch {
+            instances: draw.quads.instances.clone(),
+            order: *order,
+            bind_group: white_bind_group,
+            writes_depth: draw.quads.instances.iter().all(instance_writes_depth),
+        });
+        *order += 1;
+    }
+    for (asset, list) in &draw.images {
+        if list.is_empty() {
+            continue;
+        }
+        if let Some(bind_group) = images.resolve(asset) {
+            batches.push(OrderedUiBatch {
+                instances: list.instances.clone(),
+                order: *order,
+                bind_group,
+                writes_depth: false,
+            });
+            *order += 1;
+        }
+    }
+    if !draw.texts.is_empty() {
+        text_orders.extend(std::iter::repeat_n(*order, draw.texts.len()));
+        texts.extend_from_slice(&draw.texts);
+        *order += 1;
+    }
+}
+
+fn instance_writes_depth(instance: &UiInstance) -> bool {
+    instance.color[3] >= 1.0
 }
 
 impl UiPass {
@@ -587,8 +555,9 @@ impl UiPass {
             immediate_size: 0,
         });
 
-        // Per-instance vertex buffer: the four vec4 attributes of `UiInstance`.
-        // No per-vertex buffer — geometry is generated from `vertex_index`.
+        // Per-instance vertex buffer: the four vec4 attributes from `UiInstance`
+        // plus one renderer-local painter depth. No per-vertex buffer — geometry
+        // is generated from `vertex_index`.
         let instance_layout = wgpu::VertexBufferLayout {
             array_stride: INSTANCE_SIZE as u64,
             step_mode: wgpu::VertexStepMode::Instance,
@@ -613,40 +582,32 @@ impl UiPass {
                     offset: 48,
                     shader_location: 3,
                 },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32,
+                    offset: 64,
+                    shader_location: 4,
+                },
             ],
         };
 
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("UI Quad Pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[instance_layout],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                ..Default::default()
-            },
-            // Depth disabled: the UI pass attaches no depth target, so glyphon's
-            // text draw can share this single-color-target configuration.
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: surface_format,
-                    // Standard alpha blend over the existing surface contents.
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+        let opaque_pipeline = create_ui_quad_pipeline(
+            device,
+            &pipeline_layout,
+            &shader,
+            &instance_layout,
+            surface_format,
+            true,
+            "UI Quad Pipeline",
+        );
+        let translucent_pipeline = create_ui_quad_pipeline(
+            device,
+            &pipeline_layout,
+            &shader,
+            &instance_layout,
+            surface_format,
+            false,
+            "UI Quad Translucent Pipeline",
+        );
 
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("UI Quad Sampler"),
@@ -705,18 +666,23 @@ impl UiPass {
         });
 
         // glyphon shaped-text state — its own pipeline/atlas, constructed here
-        // so `FontSystem`/`TextAtlas` build in `Renderer::new` rather than on the
-        // first shaped frame. See `text::UiTextRenderer::new`.
-        let text = UiTextRenderer::new(device, queue, surface_format);
+        // so `TextAtlas` builds in `Renderer::new` rather than on the first
+        // shaped frame. The CPU `FontSystem` is session-owned.
+        let text =
+            UiTextRenderer::new(device, queue, surface_format, ui_depth_stencil_state(false));
 
         Self {
-            pipeline,
+            opaque_pipeline,
+            translucent_pipeline,
             uniform_buffer,
             instance_buffer,
             instance_capacity: INITIAL_INSTANCE_CAPACITY,
             white_view,
             white_bind_group,
             text,
+            depth_texture: None,
+            depth_view: None,
+            depth_size: [0, 0],
             gameplay_trees: Vec::new(),
         }
     }
@@ -727,14 +693,20 @@ impl UiPass {
         &self.white_bind_group
     }
 
-    /// Install a runtime font face into the shaped-text `FontSystem` (the net-new
-    /// runtime path; the embedded primary/mono faces are registered once at
-    /// construction). Delegates to `text::UiTextRenderer::register_font`; returns
-    /// `false` if the bytes register no face under `family`, so the renderer caller
-    /// can surface a load-time diagnostic and skip rather than leave a `font` token
-    /// resolving to a system fallback.
-    pub fn register_font(&mut self, family: &str, ttf_bytes: Vec<u8>) -> bool {
-        self.text.register_font(family, ttf_bytes)
+    /// Install a runtime font face into the session-owned shaped-text
+    /// `FontSystem` (the net-new runtime path; the embedded primary/mono faces
+    /// are registered once by `postretro_ui::text::build_font_system`). Delegates
+    /// to `text::UiTextRenderer::register_font`; returns `false` if the bytes
+    /// register no face under `family`, so the renderer caller can surface a
+    /// load-time diagnostic and skip rather than leave a `font` token resolving
+    /// to a system fallback.
+    pub fn register_font(
+        &mut self,
+        font_system: &mut FontSystem,
+        family: &str,
+        ttf_bytes: Vec<u8>,
+    ) -> bool {
+        self.text.register_font(font_system, family, ttf_bytes)
     }
 
     /// Lay out ONE modal-stack layer's descriptor tree through the RETAINED
@@ -757,8 +729,8 @@ impl UiPass {
     ///
     /// The caller drives layers `0..stack_len` in order and calls
     /// `truncate_gameplay_stack(stack_len)` once per frame so popped layers drop
-    /// their retained state. The splash stays on `layout_tree` (fresh build per
-    /// frame) — it is transient and carries no bindings.
+    /// their retained state. The boot splash never calls this — it renders through
+    /// `BootSplashPass`, outside gameplay UI and the retained tree stack.
     ///
     /// `time_seconds` is the deterministic, dt-accumulated frame time threaded
     /// down to the retained build for the tween runtime to ease bound values over
@@ -769,10 +741,12 @@ impl UiPass {
     #[allow(clippy::too_many_arguments)]
     pub fn layout_gameplay_tree(
         &mut self,
+        font_system: &mut FontSystem,
         layer: usize,
         tree: &descriptor::AnchoredTree,
         viewport: [u32; 2],
         image_sizes: &tree::ImageSizes,
+        image_sizes_generation: u64,
         slot_values: &std::collections::HashMap<String, postretro_entities::SlotValue>,
         cell_values: &tree::CellValues,
         theme: &theme::UiTheme,
@@ -809,14 +783,17 @@ impl UiPass {
         }
 
         let retained = &mut self.gameplay_trees[layer];
-        retained.tree.build_draw_data_retained(
-            viewport,
-            self.text.font_system_mut(),
-            image_sizes,
-            slot_values,
-            cell_values,
-            time_seconds,
-        )
+        retained
+            .tree
+            .build_draw_data_retained_with_image_generation(
+                viewport,
+                font_system,
+                image_sizes,
+                image_sizes_generation,
+                slot_values,
+                cell_values,
+                time_seconds,
+            )
     }
 
     /// Export the flat hit-test / focus rect list for the TOP stack layer (the
@@ -859,6 +836,13 @@ impl UiPass {
         }
     }
 
+    /// Mark the command buffer containing the UI encode as submitted. The debug
+    /// text guard resets here, not at `encode` entry, so two UI encodes recorded
+    /// before one submit still count as two glyphon prepares and trip the guard.
+    pub fn mark_submitted(&mut self) {
+        self.text.reset_prepare_guard();
+    }
+
     /// Record a whole-frame `UiComposition` (every modal-stack layer's quad
     /// batches + text runs, in painter order) into `view`. The encode boundary is
     /// the COMPOSITION, not one layer — a caller cannot loop `encode` per layer, so
@@ -867,25 +851,28 @@ impl UiPass {
     /// surface composition" invariant; its text-path sibling is the disjoint
     /// per-batch instance-buffer region the quad loop below documents.
     ///
-    /// Single color target, no depth; the caller's `load` op controls whether the
-    /// surface is cleared first (splash phase clears to black; the gameplay path
-    /// loads). `load` rides alongside `&UiComposition` because clear-vs-load is a
-    /// target concern, not a composition one.
+    /// Single color target plus a private UI depth target; the caller's `load` op
+    /// controls whether the color surface is cleared first. The depth target is
+    /// always cleared. `load` rides alongside `&UiComposition` because
+    /// clear-vs-load is a target concern, not a composition one.
     ///
-    /// Order matters: quads first, then text. Quad instances upload to the
-    /// instance buffer and draw one instanced batch each; then glyphon's
-    /// `TextRenderer::render` records its own draw INTO THE SAME render pass,
-    /// AFTER the quads, so text composites over the panels/images into the same
-    /// surface view. glyphon's atlas upload + CPU layout (`prepare`) runs BEFORE
-    /// the pass opens (it needs `device`/`queue`, not the pass). With no quads
-    /// and no text the pass still opens so the caller's `load` op lands.
+    /// Record order is quads first, then one glyphon text draw. Painter order is
+    /// preserved for opaque occlusion by depth: later composition commands use
+    /// smaller depth, so an opaque top-layer panel/backdrop rejects lower-layer
+    /// text even though text records after quads. Translucent/image batches test
+    /// depth but do not write it, preventing hard erasure of lower text; exact
+    /// alpha source-over interleaving with text would require splitting glyphon's
+    /// single render call. glyphon's atlas upload + CPU layout (`prepare`) runs
+    /// BEFORE the pass opens (it needs `device`/`queue`, not the pass). With no
+    /// quads and no text the pass still opens so the caller's `load` op lands.
     // Wide by necessity: the GPU handles (device/queue/encoder/view), the
     // viewport, the target's `load` op, and the whole-frame `UiComposition` are
     // all distinct encode inputs; bundling them into a builder would obscure the
-    // single-pass contract the splash + gameplay paths both record through.
+    // single-pass contract for gameplay UI composition.
     #[allow(clippy::too_many_arguments)]
     pub fn encode(
         &mut self,
+        font_system: &mut FontSystem,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
@@ -894,17 +881,11 @@ impl UiPass {
         load: wgpu::LoadOp<wgpu::Color>,
         composition: &UiComposition<'_>,
     ) {
-        // Keep the `&[UiBatch]`/`&[UiText]` shape internal to the pass — the public
-        // boundary takes the whole composition, the quad/text loops below the
-        // slices it spans.
-        let batches: &[UiBatch<'_>] = &composition.batches;
+        // Keep ordered batch/text slices internal to the pass. The public
+        // boundary takes the whole composition so caller-side per-layer encode
+        // loops stay unrepresentable.
+        let batches: &[OrderedUiBatch<'_>] = &composition.batches;
         let texts: &[UiText] = &composition.texts;
-
-        // Reset the once-per-composition prepare guard at the single per-frame
-        // call site both the splash and gameplay paths funnel through. The guard
-        // fires if glyphon `prepare` is reached more than once within this encoded
-        // composition (a future intra-composition regression).
-        self.text.reset_prepare_guard();
 
         queue.write_buffer(
             &self.uniform_buffer,
@@ -923,7 +904,7 @@ impl UiPass {
         // batch's data — recording a draw between writes does not snapshot the
         // buffer, since the writes resolve on the queue timeline, not the
         // command-recording timeline. Disjoint per-batch regions sidestep this.
-        let total_instances: usize = batches.iter().map(|b| b.list.len()).sum();
+        let total_instances: usize = batches.iter().map(|b| b.instances.len()).sum();
         if total_instances > self.instance_capacity {
             self.grow_instance_buffer(device, total_instances);
         }
@@ -934,10 +915,29 @@ impl UiPass {
         // the `render` call below only records draw commands. The buffers must
         // outlive `prepare` (the `TextArea`s borrow them), so they live in this
         // `Vec` for the duration of `encode`. Empty `texts` => no text work.
-        let text_buffers = self.text.shape_text(texts, viewport);
-        let prepared = self
-            .text
-            .prepare_text(device, queue, viewport, texts, &text_buffers);
+        let text_buffers = self.text.shape_text(font_system, texts, viewport);
+        let text_depths: Vec<f32> = composition
+            .text_orders
+            .iter()
+            .map(|&order| painter_depth(order, composition.order_count))
+            .collect();
+        let prepared = self.text.prepare_text(
+            font_system,
+            device,
+            queue,
+            TextPrepareInput {
+                viewport,
+                texts,
+                buffers: &text_buffers,
+                depths: &text_depths,
+            },
+        );
+
+        self.ensure_depth_target(device, viewport);
+        let depth_view = self
+            .depth_view
+            .as_ref()
+            .expect("UI depth target created before render pass");
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("UI Pass"),
@@ -950,7 +950,14 @@ impl UiPass {
                     store: wgpu::StoreOp::Store,
                 },
             })],
-            depth_stencil_attachment: None,
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Discard,
+                }),
+                stencil_ops: None,
+            }),
             timestamp_writes: None,
             ..Default::default()
         });
@@ -959,20 +966,30 @@ impl UiPass {
         // batch K starts at `offset_k = (sum of prior batch lens) * INSTANCE_SIZE`.
         // The draw binds the vertex buffer from `offset_k` and uses instance
         // range `0..count_k`, so it reads its own region without relying on a
-        // non-zero `first_instance`. Per-batch byte offsets are multiples of the
-        // 64-byte instance stride, satisfying write_buffer/vertex-offset
-        // alignment. Empty batches are skipped without consuming a region.
-        pass.set_pipeline(&self.pipeline);
+        // non-zero `first_instance`. Empty batches are skipped without consuming
+        // a region.
         let mut offset = 0u64;
-        for batch in batches {
-            if batch.list.is_empty() {
+        for ordered in batches {
+            if ordered.instances.is_empty() {
                 continue;
             }
-            let bytes: &[u8] = bytemuck::cast_slice(&batch.list.instances);
+            let depth = painter_depth(ordered.order, composition.order_count);
+            let upload: Vec<GpuUiInstance> = ordered
+                .instances
+                .iter()
+                .map(|instance| GpuUiInstance::from_ui(instance, depth))
+                .collect();
+            let bytes: &[u8] = bytemuck::cast_slice(&upload);
             queue.write_buffer(&self.instance_buffer, offset, bytes);
-            pass.set_bind_group(0, batch.bind_group, &[]);
+            let pipeline = if ordered.writes_depth {
+                &self.opaque_pipeline
+            } else {
+                &self.translucent_pipeline
+            };
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, ordered.bind_group, &[]);
             pass.set_vertex_buffer(0, self.instance_buffer.slice(offset..));
-            pass.draw(0..VERTS_PER_INSTANCE, 0..batch.list.len() as u32);
+            pass.draw(0..VERTS_PER_INSTANCE, 0..ordered.instances.len() as u32);
             offset += bytes.len() as u64;
         }
 
@@ -991,6 +1008,32 @@ impl UiPass {
         self.text.trim();
     }
 
+    fn ensure_depth_target(&mut self, device: &wgpu::Device, viewport: [u32; 2]) {
+        let size = [viewport[0].max(1), viewport[1].max(1)];
+        if self.depth_view.is_some() && self.depth_size == size {
+            return;
+        }
+
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("UI Depth Texture"),
+            size: wgpu::Extent3d {
+                width: size[0],
+                height: size[1],
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: UI_DEPTH_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        self.depth_texture = Some(texture);
+        self.depth_view = Some(view);
+        self.depth_size = size;
+    }
+
     fn grow_instance_buffer(&mut self, device: &wgpu::Device, needed: usize) {
         let mut capacity = self.instance_capacity.max(1);
         while capacity < needed {
@@ -1006,18 +1049,83 @@ impl UiPass {
     }
 }
 
+fn create_ui_quad_pipeline(
+    device: &wgpu::Device,
+    pipeline_layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    instance_layout: &wgpu::VertexBufferLayout<'_>,
+    surface_format: wgpu::TextureFormat,
+    depth_write_enabled: bool,
+    label: &'static str,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some(label),
+        layout: Some(pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vs_main"),
+            buffers: std::slice::from_ref(instance_layout),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        },
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            ..Default::default()
+        },
+        // Private UI depth preserves painter order across the quad/text split.
+        // Opaque quads write it for hard occlusion; translucent/image batches
+        // only test so they do not erase lower text before glyphon renders.
+        depth_stencil: Some(ui_depth_stencil_state(depth_write_enabled)),
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some("fs_main"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: surface_format,
+                // Standard alpha blend over the existing surface contents.
+                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        }),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+fn ui_depth_stencil_state(depth_write_enabled: bool) -> wgpu::DepthStencilState {
+    wgpu::DepthStencilState {
+        format: UI_DEPTH_FORMAT,
+        depth_write_enabled: Some(depth_write_enabled),
+        depth_compare: Some(wgpu::CompareFunction::LessEqual),
+        stencil: wgpu::StencilState::default(),
+        bias: wgpu::DepthBiasState::default(),
+    }
+}
+
+fn painter_depth(order: usize, order_count: usize) -> f32 {
+    if order_count == 0 {
+        return 0.0;
+    }
+    1.0 - ((order as f32 + 1.0) / (order_count as f32 + 1.0))
+}
+
 /// Ring thickness in device pixels (before viewport scale is folded into the
 /// rect math). A thin 2px outline reads as a focus ring without obscuring content.
 const FOCUS_RING_THICKNESS: f32 = 2.0;
 
 /// Append a focus-ring outline (four thin bars) around `rect` (device px
-/// `[x, y, w, h]`) to `quads`. The ring sits `inset` device px OUTSIDE the rect
+/// `[x, y, w, h]`) to `draw`. The ring sits `inset` device px OUTSIDE the rect
 /// (the `xs` spacing token, scaled), framing the focused node without overlapping
 /// it. `color` is the resolved `focus.ring` token (linear RGBA). Drawn as four
 /// solid `UiInstance::panel` bars (top, bottom, left, right) so it needs no new
-/// pipeline — it rides the existing white-texel quad batch. The focused id rides
-/// the snapshot, so the ring may trail a focus change by one frame.
-pub(crate) fn push_focus_ring(quads: &mut UiDrawList, rect: [f32; 4], inset: f32, color: [f32; 4]) {
+/// pipeline. The focused id rides the snapshot, so the ring may trail a focus
+/// change by one frame.
+pub(crate) fn push_focus_ring(
+    draw: &mut tree::UiDrawData,
+    rect: [f32; 4],
+    inset: f32,
+    color: [f32; 4],
+) {
     let t = FOCUS_RING_THICKNESS;
     // Outer frame: the focused rect grown outward by the inset.
     let ox = rect[0] - inset;
@@ -1029,10 +1137,10 @@ pub(crate) fn push_focus_ring(quads: &mut UiDrawList, rect: [f32; 4], inset: f32
     }
     let bar = |r: [f32; 4]| UiInstance::panel(r, color, [0.0; 4]);
     // Top, bottom (full width), then left/right (between the horizontal bars).
-    quads.push(bar([ox, oy, ow, t]));
-    quads.push(bar([ox, oy + oh - t, ow, t]));
-    quads.push(bar([ox, oy + t, t, (oh - 2.0 * t).max(0.0)]));
-    quads.push(bar([ox + ow - t, oy + t, t, (oh - 2.0 * t).max(0.0)]));
+    draw.push_quad(bar([ox, oy, ow, t]));
+    draw.push_quad(bar([ox, oy + oh - t, ow, t]));
+    draw.push_quad(bar([ox, oy + t, t, (oh - 2.0 * t).max(0.0)]));
+    draw.push_quad(bar([ox + ow - t, oy + t, t, (oh - 2.0 * t).max(0.0)]));
 }
 
 /// Upload a CPU RGBA8 `UiTexture` and return the GPU texture. sRGB format so
@@ -1079,76 +1187,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ui_instance_byte_layout_is_64_bytes_no_padding() {
-        // The shader's instance vertex layout (four Float32x4 at offsets
-        // 0/16/32/48, stride 64) depends on this exact packing.
-        assert_eq!(std::mem::size_of::<UiInstance>(), 64);
-        assert_eq!(std::mem::align_of::<UiInstance>(), 4);
-        // Field offsets the VertexAttribute table hardcodes.
-        let probe = UiInstance {
-            rect: [1.0, 2.0, 3.0, 4.0],
-            uv_rect: [5.0, 6.0, 7.0, 8.0],
-            color: [9.0, 10.0, 11.0, 12.0],
-            margin: [13.0, 14.0, 15.0, 16.0],
-        };
-        let bytes: &[u8] = bytemuck::bytes_of(&probe);
-        assert_eq!(bytes.len(), 64);
-        // First field starts at offset 0, last vec4 at offset 48.
-        assert_eq!(&bytes[0..4], &1.0f32.to_le_bytes());
-        assert_eq!(&bytes[48..52], &13.0f32.to_le_bytes());
-    }
-
-    #[test]
-    fn uniform_is_16_bytes() {
-        assert_eq!(std::mem::size_of::<UiUniform>(), 16);
-    }
-
-    #[test]
-    fn zero_margin_corner_rects_collapse() {
-        // A plain quad (zero margin) has zero-size corners — the whole rect is
-        // the stretched center region.
-        let inst = UiInstance::panel([10.0, 20.0, 100.0, 60.0], [1.0; 4], [0.0; 4]);
-        for c in inst.corner_rects() {
-            assert_eq!(c[2], 0.0, "corner width collapses with zero margin");
-            assert_eq!(c[3], 0.0, "corner height collapses with zero margin");
-        }
-    }
-
-    #[test]
-    fn nine_slice_corner_rects_are_fixed_size_and_anchored() {
-        // 8px corners on a 100x60 rect at (10,20). Corners keep their 8px size
-        // and sit at the four rect corners regardless of center stretch.
-        let inst = UiInstance::panel([10.0, 20.0, 100.0, 60.0], [1.0; 4], [8.0, 8.0, 8.0, 8.0]);
-        let [tl, tr, bl, br] = inst.corner_rects();
-        assert_eq!(tl, [10.0, 20.0, 8.0, 8.0]);
-        assert_eq!(tr, [10.0 + 100.0 - 8.0, 20.0, 8.0, 8.0]);
-        assert_eq!(bl, [10.0, 20.0 + 60.0 - 8.0, 8.0, 8.0]);
-        assert_eq!(br, [10.0 + 100.0 - 8.0, 20.0 + 60.0 - 8.0, 8.0, 8.0]);
-    }
-
-    #[test]
-    fn corner_rects_clamp_when_margins_exceed_rect() {
-        // Margins larger than the rect must not produce overlapping/negative
-        // corners — they clamp to the available space (mirrors axis).
-        let inst = UiInstance::panel([0.0, 0.0, 10.0, 10.0], [1.0; 4], [8.0, 8.0, 8.0, 8.0]);
-        let [tl, tr, _bl, _br] = inst.corner_rects();
-        // Left corner gets 8, right corner gets the remaining 2.
-        assert_eq!(tl[2], 8.0);
-        assert_eq!(tr[2], 2.0);
-        assert!(tr[0] >= tl[0] + tl[2] - 1e-6, "corners do not overlap");
-    }
-
-    #[test]
-    fn draw_list_push_and_clear() {
-        let mut list = UiDrawList::new();
-        assert!(list.is_empty());
-        list.push(UiInstance::image([0.0, 0.0, 5.0, 5.0]));
-        assert_eq!(list.len(), 1);
-        list.clear();
-        assert!(list.is_empty());
-    }
-
-    #[test]
     fn ui_quad_wgsl_parses_and_validates() {
         let module =
             naga::front::wgsl::parse_str(UI_QUAD_WGSL).expect("ui_quad.wgsl should parse as WGSL");
@@ -1168,5 +1206,53 @@ mod tests {
         )
         .validate(&module)
         .expect("ui_quad.wgsl must pass naga validation");
+    }
+
+    #[test]
+    fn image_registry_exposes_registered_natural_sizes_to_layout() {
+        let mut registry = UiImageRegistry::default();
+        assert_eq!(registry.image_sizes_generation(), 0);
+
+        registry.register_size_for_test("ui/icon", [32, 16]);
+
+        assert_eq!(
+            registry.image_sizes().get("ui/icon").copied(),
+            Some([32.0, 16.0]),
+            "layout must receive natural image sizes from the renderer registry"
+        );
+        assert_eq!(registry.image_sizes_generation(), 1);
+
+        registry.register_size_for_test("ui/icon", [32, 16]);
+        assert_eq!(
+            registry.image_sizes_generation(),
+            1,
+            "re-registering the same size must not invalidate retained layout"
+        );
+    }
+
+    #[test]
+    fn focus_ring_appends_after_existing_content_in_paint_order() {
+        let mut draw = tree::UiDrawData::default();
+        draw.push_image("ui/icon", UiInstance::image([10.0, 10.0, 16.0, 16.0]));
+
+        push_focus_ring(
+            &mut draw,
+            [10.0, 10.0, 16.0, 16.0],
+            2.0,
+            [1.0, 1.0, 0.0, 1.0],
+        );
+
+        assert_eq!(draw.quads.len(), 4, "focus ring emits four quad bars");
+        assert_eq!(draw.paint_order.len(), 5);
+        assert!(
+            matches!(draw.paint_order[0], tree::UiPaintOp::Image { .. }),
+            "focused image remains first in painter order",
+        );
+        assert!(
+            draw.paint_order[1..]
+                .iter()
+                .all(|op| matches!(op, tree::UiPaintOp::Quad { .. })),
+            "focus ring quads append after focused content",
+        );
     }
 }

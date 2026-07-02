@@ -1,14 +1,9 @@
-// Generator-bin-only shim. Included ONLY by `src/bin/gen_script_types.rs` via
-// `#[path]` to stand in for `layout::Anchor` without dragging the renderer's
-// GPU-coupled draw-list projection into the typedef generator. NOT part of the
-// engine's `render::ui::layout` (that is `layout.rs`). See the bin's header.
+// Scripting-core UI anchor definition. Shared by SDK typedef generation and
+// re-exported by the CPU `postretro-ui` layout module.
 //
-// MUST mirror `layout::Anchor` in layout.rs — its variants AND its `ALL`/`wire`
-// API — add a variant there, add it here. `typedef.rs` is compiled into BOTH
-// the engine bin (real `layout`) and this generator bin (this shim); the
+// MUST expose every authored anchor variant plus `ALL`/`wire`. The
 // `widget_anchor_typedef_matches_layout_anchor_variants` test derives the
-// expected `WidgetAnchor` union from `Anchor::ALL`/`wire()`, so this shim must
-// expose the same API or the gen-bin test build breaks.
+// expected `WidgetAnchor` union from `Anchor::ALL`/`wire()`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Anchor {
@@ -24,7 +19,7 @@ pub enum Anchor {
 }
 
 impl Anchor {
-    /// Mirror of `layout::Anchor::ALL`. Used by downstream drift guards.
+    /// Source list used by downstream drift guards.
     pub const ALL: &[Anchor] = &[
         Anchor::TopLeft,
         Anchor::Top,
@@ -37,7 +32,7 @@ impl Anchor {
         Anchor::BottomRight,
     ];
 
-    /// Mirror of `layout::Anchor::wire`. Exhaustive `match` (no `_` arm).
+    /// Stable wire spelling for each anchor. Exhaustive `match` (no `_` arm).
     pub fn wire(self) -> &'static str {
         match self {
             Anchor::TopLeft => "topLeft",

@@ -11,14 +11,14 @@
 //! keeps its focus while the top tree navigates; only the TOP tree takes focus and
 //! activation.
 //!
-//! It consumes the [`FocusRectList`](crate::render::ui::tree::FocusRectList) the
+//! It consumes the [`FocusRectList`](postretro_ui::tree::FocusRectList) the
 //! renderer published the PREVIOUS frame (the N→N+1 contract applied in reverse),
 //! so the focus ring may trail a focus change by one frame — the same latency every
 //! UI event carries.
 
 use crate::input::ui_dispatch::PointerPos;
 use crate::input::ui_nav::NavIntent;
-use crate::render::ui::tree::{FocusKind, FocusRect, FocusRectList, NodeInteraction, RepeatPolicy};
+use postretro_ui::tree::{FocusKind, FocusRect, FocusRectList, NodeInteraction, RepeatPolicy};
 
 /// Resolve a captured-nav value step for a focused `slider` (M13 Goal F, Task 4).
 /// Partitions `nav_intents` into captured — removed in place — and uncaptured —
@@ -663,7 +663,7 @@ fn linear_step(
 /// `None` when no non-disabled member lies that way.
 fn linear_index_step(
     rects: &FocusRectList,
-    group: &crate::render::ui::tree::FocusGroup,
+    group: &postretro_ui::tree::FocusGroup,
     current_id: &str,
     delta: i32,
     wrap: bool,
@@ -777,7 +777,7 @@ fn contains(rect: [f32; 4], px: f32, py: f32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::render::ui::tree::{FocusGroup, FocusNeighbors, FocusRect, RepeatPolicy};
+    use postretro_ui::tree::{FocusGroup, FocusNeighbors, FocusRect, RepeatPolicy};
 
     fn rect(id: &str, r: [f32; 4], z: u32, group: Option<usize>) -> FocusRect {
         FocusRect {

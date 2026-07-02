@@ -4,7 +4,7 @@
 -- (Containers -- VStack/HStack/Grid -- live in `layout.luau`.) Each mirrors the
 -- `emitter()` precedent: a props table validated synchronously (throwing a
 -- field-named error), documented defaults, a plain descriptor table whose keys
--- are the camelCase wire form of the matching `render/ui/descriptor.rs` `Widget`
+-- are the camelCase wire form of the matching `postretro-ui` descriptor `Widget`
 -- variant. Exported as members of a returned module table (the `UiReactionsSdk`
 -- / `reactions.luau` precedent) so a future loader installs them as globals.
 --

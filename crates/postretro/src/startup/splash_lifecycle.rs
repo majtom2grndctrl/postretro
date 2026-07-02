@@ -271,7 +271,7 @@ impl App {
                     // tier, before the mod-init VM context drops.
                     session.modal_stack.register_script_trees(
                         std::mem::take(&mut manifest.ui_trees),
-                        render::ui::modal_stack::ScopeTier::Mod,
+                        postretro_ui::modal_stack::ScopeTier::Mod,
                     );
 
                     committed_frontend = Some(manifest.frontend.take());

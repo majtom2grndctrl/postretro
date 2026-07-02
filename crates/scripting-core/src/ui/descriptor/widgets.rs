@@ -50,8 +50,8 @@ pub enum Widget {
 }
 
 /// Leaf text run. `content` is the literal string; `font_size` is logical px;
-/// `color` is linear RGBA. The run is sized by the glyphon measure seam and laid
-/// out in its container's flow.
+/// `color` is linear RGBA. CPU `postretro-ui` measures the run with cosmic-text
+/// and lays it out in its container's flow.
 ///
 /// `bind` is the optional state-binding: when present, the rendered string is
 /// resolved from a store slot at draw-data build time and `content` serves only

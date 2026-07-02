@@ -1,8 +1,8 @@
 // UI placement-envelope factory (M13 G1a, Task 4): `Tree(...)` wraps a root
 // widget descriptor (from the `widgets`/`layout` factories) in the `AnchoredTree`
 // shape — `anchor`, `offset`, `root`, and the optional `captureMode`/
-// `initialFocus`/`textEntryTarget`. Mirrors `render/ui/descriptor.rs`'s
-// `AnchoredTree` serde wire form: camelCase keys, and `captureMode` omitted when
+// `initialFocus`/`textEntryTarget`. Mirrors the `postretro-ui` descriptor
+// contract for `AnchoredTree`: camelCase keys, and `captureMode` omitted when
 // passthrough (the default) so a HUD/pre-F tree round-trips byte-identically.
 //
 // Pure builder: constructing a tree has no engine side effect — the FFI boundary

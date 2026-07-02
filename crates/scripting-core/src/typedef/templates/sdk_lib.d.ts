@@ -348,11 +348,12 @@
 
   // -------------------------------------------------------------------------
   // UI widget / layout / tree / state factories (M13 G1a). Pure builders
-  // installed as prelude globals: each returns the camelCase wire descriptor of
-  // the matching `render/ui/descriptor.rs` variant and throws a field-named
-  // `Error` on invalid props. Source of truth: sdk/lib/ui/{widgets,layout,tree,
-  // state}.ts. Containers and `Tree` take `children`/`root` as a POSITIONAL
-  // second argument (Compose/SwiftUI lineage), not a prop.
+  // installed as prelude globals: each returns the camelCase wire descriptor for
+  // the `postretro-ui` descriptor contract and throws a field-named `Error` on
+  // invalid props. Source of truth: sdk/lib/ui/{widgets,layout,tree,state}.ts
+  // plus scripting-core typedef templates. Containers and `Tree` take
+  // `children`/`root` as a POSITIONAL second argument (Compose/SwiftUI lineage),
+  // not a prop.
 
   /** A spacing slot for gaps and padding: either an inline logical-pixel number or a branded spacing token from `getDesignTokens(theme)`. Theme spacing affects styling/layout rhythm, not anchored tree placement. */
   export type WidgetSpacing = number | SpacingToken;

@@ -32,7 +32,7 @@ use super::gpu_test_harness::{GpuCtx, Readback, read_texture_rgba8, try_init_gpu
 use super::layout::Anchor;
 use super::theme::UiTheme;
 use super::tree::{ImageSizes, UiDrawData};
-use super::{UiComposition, UiPass};
+use super::{UiComposition, UiInstance, UiPass, UiText};
 
 /// Offscreen target = the EXACT 1280x720 logical-reference canvas. At this size
 /// `layout::device_scale` is 1.0 with a zero letterbox origin, so a `TopLeft`
@@ -71,6 +71,10 @@ const FONT_SIZE: f32 = 48.0;
 /// can't contaminate the ink measurement, and they are disjoint by construction.
 const S0_BAND: (u32, u32) = (115, 195);
 const S1_BAND: (u32, u32) = (415, 495);
+const LOWER_VISIBLE_OFFSET: [f32; 2] = [80.0, 270.0];
+const LOWER_VISIBLE_BAND: (u32, u32) = (265, 345);
+const OCCLUDED_TEXT_OFFSET: [f32; 2] = [80.0, 120.0];
+const OCCLUDED_TEXT_BAND: (u32, u32) = (115, 195);
 
 /// A single-`text`-node tree placed at `offset` from the top-left, rendering
 /// `content`. Literal white text — no bind needed; the assertion is over drawn
@@ -104,7 +108,10 @@ fn text_tree(content: &str, offset: [f32; 2]) -> AnchoredTree {
 /// retained under its own stack index. This is the exact modal-stack shape the
 /// production gameplay path produces. Returns the two owned `UiDrawData` in
 /// bottom→top order.
-fn layout_two_layers(pass: &mut UiPass) -> [UiDrawData; 2] {
+fn layout_two_layers(
+    pass: &mut UiPass,
+    font_system: &mut postretro_ui::text::FontSystem,
+) -> [UiDrawData; 2] {
     let viewport = [TARGET_W, TARGET_H];
     let theme = UiTheme::engine_default();
     let images = ImageSizes::new();
@@ -112,10 +119,12 @@ fn layout_two_layers(pass: &mut UiPass) -> [UiDrawData; 2] {
     let cells = super::tree::CellValues::new();
 
     let lower = pass.layout_gameplay_tree(
+        font_system,
         0,
         &text_tree(S0, S0_OFFSET),
         viewport,
         &images,
+        0,
         &slots,
         &cells,
         &theme,
@@ -123,10 +132,12 @@ fn layout_two_layers(pass: &mut UiPass) -> [UiDrawData; 2] {
         0.0,
     );
     let upper = pass.layout_gameplay_tree(
+        font_system,
         1,
         &text_tree(S1, S1_OFFSET),
         viewport,
         &images,
+        0,
         &slots,
         &cells,
         &theme,
@@ -164,9 +175,10 @@ fn make_target(ctx: &GpuCtx) -> (wgpu::Texture, wgpu::TextureView) {
 fn render_single_composition(ctx: &GpuCtx) -> Readback {
     let format = wgpu::TextureFormat::Rgba8UnormSrgb;
     let mut pass = UiPass::new(&ctx.device, &ctx.queue, format);
+    let mut font_system = postretro_ui::text::build_font_system();
     let (target, view) = make_target(ctx);
 
-    let layers = layout_two_layers(&mut pass);
+    let layers = layout_two_layers(&mut pass, &mut font_system);
     let white = pass.white_bind_group().clone();
     let images = super::UiImageRegistry::default();
     // The text-only drivers carry no image nodes, so the image branch of
@@ -179,6 +191,7 @@ fn render_single_composition(ctx: &GpuCtx) -> Readback {
             label: Some("multi_layer_text single-composition encoder"),
         });
     pass.encode(
+        &mut font_system,
         &ctx.device,
         &ctx.queue,
         &mut encoder,
@@ -189,6 +202,74 @@ fn render_single_composition(ctx: &GpuCtx) -> Readback {
     );
 
     read_texture_rgba8(ctx, &target, TARGET_W, TARGET_H, encoder)
+}
+
+fn render_cross_layer_panel(ctx: &GpuCtx, alpha: f32) -> Readback {
+    let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+    let mut pass = UiPass::new(&ctx.device, &ctx.queue, format);
+    let mut font_system = postretro_ui::text::build_font_system();
+    let (target, view) = make_target(ctx);
+
+    let mut lower = UiDrawData::default();
+    lower.texts.push(UiText::new(
+        "LOWER SHOULD BE COVERED",
+        OCCLUDED_TEXT_OFFSET,
+        FONT_SIZE,
+        [255, 255, 255, 255],
+        postretro_ui::text::UI_FONT_FAMILY,
+    ));
+    lower.texts.push(UiText::new(
+        "LOWER SURVIVES",
+        LOWER_VISIBLE_OFFSET,
+        FONT_SIZE,
+        [255, 255, 255, 255],
+        postretro_ui::text::UI_FONT_FAMILY,
+    ));
+
+    let mut upper = UiDrawData::default();
+    upper.quads.push(UiInstance::panel(
+        [0.0, 105.0, TARGET_W as f32, 110.0],
+        [1.0, 0.0, 0.0, alpha],
+        [0.0; 4],
+    ));
+    upper.texts.push(UiText::new(
+        S1,
+        S1_OFFSET,
+        FONT_SIZE,
+        [255, 255, 255, 255],
+        postretro_ui::text::UI_FONT_FAMILY,
+    ));
+
+    let layers = [lower, upper];
+    let white = pass.white_bind_group().clone();
+    let images = super::UiImageRegistry::default();
+    let composition = UiComposition::from_layer_draws(&layers, &white, &images);
+
+    let mut encoder = ctx
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("multi_layer_text occlusion encoder"),
+        });
+    pass.encode(
+        &mut font_system,
+        &ctx.device,
+        &ctx.queue,
+        &mut encoder,
+        &view,
+        [TARGET_W, TARGET_H],
+        wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+        &composition,
+    );
+
+    read_texture_rgba8(ctx, &target, TARGET_W, TARGET_H, encoder)
+}
+
+fn render_cross_layer_occlusion(ctx: &GpuCtx) -> Readback {
+    render_cross_layer_panel(ctx, 1.0)
+}
+
+fn render_cross_layer_translucent_overlay(ctx: &GpuCtx) -> Readback {
+    render_cross_layer_panel(ctx, 0.5)
 }
 
 /// Count "inked" pixels (meaningfully brighter than the black clear) within a
@@ -203,6 +284,20 @@ fn band_ink(rb: &Readback, y0: u32, y1: u32) -> u32 {
         for x in 0..rb.width {
             let p = rb.at(x, y);
             if p[0] > INK_THRESHOLD || p[1] > INK_THRESHOLD || p[2] > INK_THRESHOLD {
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
+fn band_non_red_ink(rb: &Readback, y0: u32, y1: u32) -> u32 {
+    const INK_THRESHOLD: u8 = 48;
+    let mut count = 0;
+    for y in y0..=y1.min(rb.height - 1) {
+        for x in 0..rb.width {
+            let p = rb.at(x, y);
+            if p[1] > INK_THRESHOLD || p[2] > INK_THRESHOLD {
                 count += 1;
             }
         }
@@ -253,5 +348,53 @@ fn single_composition_keeps_each_layer_text() {
         "lower band ink ({lower}) is not clearly lighter than upper ({upper}) — \
          the lower layer may have been clobbered with S1's glyphs (S0 should be the \
          short run, far less ink than the long run S1)",
+    );
+}
+
+// Regression: flattening all layer text after all layer quads let lower-layer
+// text draw over a top modal's panel/backdrop.
+#[test]
+fn upper_layer_panel_occludes_lower_layer_text_without_losing_other_text() {
+    let Some(ctx) = try_init_gpu() else {
+        eprintln!("[multi_layer_text_golden_test] skipping: no GPU adapter available");
+        return;
+    };
+
+    let rb = render_cross_layer_occlusion(&ctx);
+
+    let hidden_non_red = band_non_red_ink(&rb, OCCLUDED_TEXT_BAND.0, OCCLUDED_TEXT_BAND.1);
+    assert!(
+        hidden_non_red < 8,
+        "lower-layer text leaked over the upper red panel: {hidden_non_red} non-red ink pixels",
+    );
+
+    let lower_visible = band_ink(&rb, LOWER_VISIBLE_BAND.0, LOWER_VISIBLE_BAND.1);
+    assert!(
+        lower_visible > 0,
+        "uncovered lower-layer text did not render through the single-prepare path",
+    );
+
+    let upper = band_ink(&rb, S1_BAND.0, S1_BAND.1);
+    assert!(
+        upper > 0,
+        "upper-layer text did not render through the single-prepare path",
+    );
+}
+
+// Regression: translucent upper quads used the opaque depth-writing path, so
+// lower-layer text failed depth and contributed nothing through the overlay.
+#[test]
+fn translucent_upper_layer_panel_does_not_hard_erase_lower_layer_text() {
+    let Some(ctx) = try_init_gpu() else {
+        eprintln!("[multi_layer_text_golden_test] skipping: no GPU adapter available");
+        return;
+    };
+
+    let rb = render_cross_layer_translucent_overlay(&ctx);
+
+    let hidden_non_red = band_non_red_ink(&rb, OCCLUDED_TEXT_BAND.0, OCCLUDED_TEXT_BAND.1);
+    assert!(
+        hidden_non_red > 0,
+        "lower-layer text contributed no ink through the translucent upper panel",
     );
 }

@@ -1,0 +1,20 @@
+[package]
+name = "postretro-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "CPU-only UI data, layout, and descriptor logic for Postretro"
+license.workspace = true
+
+[dependencies]
+postretro-scripting-core.workspace = true
+postretro-entities.workspace = true
+taffy.workspace = true
+cosmic-text.workspace = true
+bytemuck.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+log.workspace = true
+
+[features]
+test-fixtures = []

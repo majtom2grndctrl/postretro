@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 
 use crate::startup::SplashSource;
-use crate::ui_texture::UiTexture;
+use postretro_ui::UiTexture;
 
 fn resolve_path(source: &SplashSource) -> PathBuf {
     match source {

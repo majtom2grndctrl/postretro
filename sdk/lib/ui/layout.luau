@@ -4,7 +4,7 @@
 -- props table comes first and `children` is a POSITIONAL second argument, not a
 -- prop. Each mirrors `emitter()`: synchronous field-named validation, documented
 -- defaults, a plain descriptor table whose keys are the camelCase wire form of
--- the matching `render/ui/descriptor.rs` container variant. Exported as members
+-- the matching `postretro-ui` descriptor container variant. Exported as members
 -- of a returned module table (the `UiReactionsSdk` precedent).
 --
 -- Containers take NO state bind. They may carry a backdrop `fill`/`border`

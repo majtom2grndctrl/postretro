@@ -183,7 +183,7 @@ impl Renderer {
                 continue;
             }
             let candidate = &full.shadow_candidate_lights[light_idx];
-            let m = crate::lighting::spot_shadow::light_space_matrix(candidate);
+            let m = postretro_lighting::light_space_matrix(candidate);
             // Stash the SAME light-space matrix uploaded to bind-group-5 below —
             // the shadow-depth render loop reads it to build this slot's cone
             // cull frustum planes (one source of truth, no recomputation).

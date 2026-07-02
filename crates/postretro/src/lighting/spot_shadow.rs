@@ -5,49 +5,9 @@
 use glam::{Mat4, Vec3};
 use postretro_level_loader::{LightType, MapLight};
 
-pub use postretro_lighting::NO_SHADOW_SLOT;
-
-/// Near-clip distance used when building a spot light's projection matrix.
-/// Matches the camera near-clip policy — close enough that self-shadowing
-/// acne is controlled by the depth bias, far enough to keep precision.
-pub const SHADOW_NEAR_CLIP: f32 = 0.1;
-
-/// Build a light-space view-projection matrix for a spot light, producing
-/// NDC that the forward shader converts to `[0, 1]` UVs for sampling.
-///
-/// `far` clamps to `falloff_range` but we enforce a minimum so zero-range
-/// or degenerate lights don't produce a zero-extent frustum.
-pub fn light_space_matrix(light: &MapLight) -> Mat4 {
-    let eye = Vec3::new(
-        light.origin[0] as f32,
-        light.origin[1] as f32,
-        light.origin[2] as f32,
-    );
-    let mut dir = Vec3::new(
-        light.cone_direction[0],
-        light.cone_direction[1],
-        light.cone_direction[2],
-    );
-    if dir.length_squared() < 1e-8 {
-        dir = Vec3::new(0.0, 0.0, -1.0);
-    } else {
-        dir = dir.normalize();
-    }
-    // Pick an up vector not colinear with `dir`.
-    let world_up = if dir.y.abs() > 0.99 {
-        Vec3::new(0.0, 0.0, 1.0)
-    } else {
-        Vec3::new(0.0, 1.0, 0.0)
-    };
-    let target = eye + dir;
-    let view = Mat4::look_at_rh(eye, target, world_up);
-
-    let fov_y = (2.0 * light.cone_angle_outer).max(0.05);
-    let far = light.falloff_range.max(0.5);
-    // `perspective_rh` in glam targets Vulkan/D3D/Metal depth range [0, 1].
-    let proj = Mat4::perspective_rh(fov_y, 1.0, SHADOW_NEAR_CLIP, far);
-    proj * view
-}
+#[cfg(test)]
+use postretro_lighting::light_space_matrix;
+pub use postretro_lighting::{NO_SHADOW_SLOT, SHADOW_NEAR_CLIP};
 
 /// Number of shadow-map slots in the pool. Re-tunable.
 pub const SHADOW_POOL_SIZE: usize = 96;

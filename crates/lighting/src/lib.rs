@@ -14,6 +14,46 @@ use postretro_level_loader::{FalloffModel, LightType, MapLight};
 /// Sentinel value written to a shadow-slot field when no slot is allocated.
 pub const NO_SHADOW_SLOT: u32 = 0xFFFF_FFFF;
 
+/// Near-clip distance used when building a spot light's projection matrix.
+/// Matches the camera near-clip policy — close enough that self-shadowing
+/// acne is controlled by the depth bias, far enough to keep precision.
+pub const SHADOW_NEAR_CLIP: f32 = 0.1;
+
+/// Build a light-space view-projection matrix for a spot light, producing
+/// NDC that the forward shader converts to `[0, 1]` UVs for sampling.
+///
+/// `far` clamps to `falloff_range` but we enforce a minimum so zero-range
+/// or degenerate lights don't produce a zero-extent frustum.
+pub fn light_space_matrix(light: &MapLight) -> glam::Mat4 {
+    let eye = glam::Vec3::new(
+        light.origin[0] as f32,
+        light.origin[1] as f32,
+        light.origin[2] as f32,
+    );
+    let mut dir = glam::Vec3::new(
+        light.cone_direction[0],
+        light.cone_direction[1],
+        light.cone_direction[2],
+    );
+    if dir.length_squared() < 1e-8 {
+        dir = glam::Vec3::new(0.0, 0.0, -1.0);
+    } else {
+        dir = dir.normalize();
+    }
+    let world_up = if dir.y.abs() > 0.99 {
+        glam::Vec3::new(0.0, 0.0, 1.0)
+    } else {
+        glam::Vec3::new(0.0, 1.0, 0.0)
+    };
+    let target = eye + dir;
+    let view = glam::Mat4::look_at_rh(eye, target, world_up);
+
+    let fov_y = (2.0 * light.cone_angle_outer).max(0.05);
+    let far = light.falloff_range.max(0.5);
+    let proj = glam::Mat4::perspective_rh(fov_y, 1.0, SHADOW_NEAR_CLIP, far);
+    proj * view
+}
+
 /// On-disk size of a single `GpuLight` record in the storage buffer.
 ///
 /// Layout matches the WGSL `GpuLight` struct in `forward.wgsl` — four

@@ -6,13 +6,13 @@ use std::collections::HashMap;
 
 use glam::Vec3;
 
-use crate::fx::smoke::MAX_SPRITES;
 use postretro_entities::components::billboard_emitter::{BillboardEmitterComponent, SpinAnimation};
 use postretro_entities::components::particle::ParticleState;
 use postretro_entities::components::sprite_visual::SpriteVisual;
 use postretro_entities::registry::{
     ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform,
 };
+use postretro_render_cpu::smoke::MAX_SPRITES;
 
 use super::eval_curve;
 

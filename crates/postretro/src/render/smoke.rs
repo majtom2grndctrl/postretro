@@ -12,7 +12,7 @@ use std::num::NonZeroU64;
 
 use wgpu::util::DeviceExt;
 
-use crate::fx::smoke::{SPRITE_INSTANCE_SIZE, SpriteFrame};
+use postretro_render_cpu::smoke::{SPRITE_INSTANCE_SIZE, SpriteFrame};
 
 /// Byte size of `SpriteDrawParams` (one `vec4<f32>` = 16 B, padded to 16).
 pub const SPRITE_DRAW_PARAMS_SIZE: usize = 16;

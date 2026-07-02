@@ -1,7 +1,8 @@
 // Per-frame fog-volume cell-mask derivation and sphere/fog-AABB intersection.
 // See: context/lib/rendering_pipeline.md
 
-use super::*;
+use glam::Vec3;
+use postretro_level_format::fog_cell_masks::union_active_mask;
 
 /// Derives the per-frame active fog-volume bitmask from the wider
 /// fog-reachable cell set produced by portal traversal.
@@ -23,7 +24,7 @@ use super::*;
 ///
 /// Must be called after `FogPass::set_canonical_volumes`; before = 0
 /// canonical count = 0 mask.
-pub(crate) fn compute_fog_cell_mask(
+pub fn compute_fog_cell_mask(
     fog_reachable: &[u32],
     fog_cell_masks: Option<&[u32]>,
     canonical_volume_count: u32,
@@ -68,11 +69,7 @@ pub(crate) fn compute_fog_cell_mask(
 
 /// Returns `true` when `aabbs` is empty — conservative for pre-`set_fog_aabbs` frames;
 /// spots are discarded by `FogPass::active()` before reaching the raymarch anyway.
-pub(crate) fn sphere_intersects_any_fog_aabb(
-    center: Vec3,
-    radius: f32,
-    aabbs: &[(Vec3, Vec3)],
-) -> bool {
+pub fn sphere_intersects_any_fog_aabb(center: Vec3, radius: f32, aabbs: &[(Vec3, Vec3)]) -> bool {
     if aabbs.is_empty() {
         return true;
     }
@@ -85,4 +82,102 @@ pub(crate) fn sphere_intersects_any_fog_aabb(
         }
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compute_fog_cell_mask_culled_unions_visible_cell_masks() {
+        let masks = vec![0b001u32, 0b010, 0b101, 0b000];
+        let fog_reachable = [1u32, 2];
+        let active = compute_fog_cell_mask(&fog_reachable, Some(&masks), 3, Some(1));
+        assert_eq!(active, 0b111);
+    }
+
+    #[test]
+    fn compute_fog_cell_mask_drawall_returns_all_canonical_slots() {
+        let masks = vec![0u32; 4];
+        assert_eq!(compute_fog_cell_mask(&[], Some(&masks), 3, Some(0)), 0b111);
+        assert_eq!(compute_fog_cell_mask(&[], None, 3, Some(0)), 0b111);
+    }
+
+    #[test]
+    fn compute_fog_cell_mask_caller_without_mask_table_gets_all_slots() {
+        let fog_reachable = [0u32, 1, 2];
+        assert_eq!(
+            compute_fog_cell_mask(&fog_reachable, None, 4, Some(0)),
+            0b1111
+        );
+    }
+
+    #[test]
+    fn compute_fog_cell_mask_zero_canonical_volumes_returns_zero() {
+        assert_eq!(compute_fog_cell_mask(&[], None, 0, Some(0)), 0);
+        assert_eq!(
+            compute_fog_cell_mask(&[0u32], Some(&[0xFFu32]), 0, Some(0)),
+            0
+        );
+    }
+
+    #[test]
+    fn compute_fog_cell_mask_unions_camera_cell_when_absent_from_fog_reachable() {
+        let masks = vec![0b001u32, 0b010, 0b000, 0b100];
+        let fog_reachable = [0u32, 1];
+        let active = compute_fog_cell_mask(&fog_reachable, Some(&masks), 3, Some(3));
+        assert_eq!(active, 0b111);
+    }
+
+    #[test]
+    fn compute_fog_cell_mask_camera_cell_union_is_idempotent_when_already_reachable() {
+        let masks = vec![0b001u32, 0b010, 0b100];
+        let fog_reachable = [0u32, 2];
+        let with_cam = compute_fog_cell_mask(&fog_reachable, Some(&masks), 3, Some(2));
+        let without_cam = compute_fog_cell_mask(&fog_reachable, Some(&masks), 3, None);
+        assert_eq!(with_cam, without_cam);
+        assert_eq!(with_cam, 0b101);
+    }
+
+    #[test]
+    fn sphere_intersects_any_fog_aabb_inside_passes() {
+        let aabbs = vec![(Vec3::new(-1.0, -1.0, -1.0), Vec3::new(1.0, 1.0, 1.0))];
+        assert!(sphere_intersects_any_fog_aabb(
+            Vec3::new(0.0, 0.0, 0.0),
+            0.1,
+            &aabbs,
+        ));
+    }
+
+    #[test]
+    fn sphere_intersects_any_fog_aabb_outside_all_drops() {
+        let aabbs = vec![
+            (Vec3::new(-1.0, -1.0, -1.0), Vec3::new(1.0, 1.0, 1.0)),
+            (Vec3::new(50.0, 50.0, 50.0), Vec3::new(52.0, 52.0, 52.0)),
+        ];
+        assert!(!sphere_intersects_any_fog_aabb(
+            Vec3::new(100.0, 100.0, 100.0),
+            5.0,
+            &aabbs,
+        ));
+    }
+
+    #[test]
+    fn sphere_intersects_any_fog_aabb_empty_list_passes_everything() {
+        assert!(sphere_intersects_any_fog_aabb(
+            Vec3::new(0.0, 0.0, 0.0),
+            1.0,
+            &[],
+        ));
+    }
+
+    #[test]
+    fn sphere_intersects_any_fog_aabb_grazing_edge_passes() {
+        let aabbs = vec![(Vec3::new(0.0, 0.0, 0.0), Vec3::new(1.0, 1.0, 1.0))];
+        assert!(sphere_intersects_any_fog_aabb(
+            Vec3::new(2.0, 0.5, 0.5),
+            1.0,
+            &aabbs,
+        ));
+    }
 }

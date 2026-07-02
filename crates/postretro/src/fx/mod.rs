@@ -1,6 +1,4 @@
-// FX subsystem: particle effects, billboard rendering, and fog volume CPU types.
-// See: context/lib/rendering_pipeline.md §7.4, §7.5
+// FX scripting reactions: emitter and fog-volume property setters.
+// See: context/lib/scripting.md §10.1, §10.2
 pub(crate) mod emitter_reactions;
 pub(crate) mod fog_reactions;
-pub mod fog_volume;
-pub mod smoke;

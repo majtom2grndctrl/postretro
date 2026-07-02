@@ -11,7 +11,7 @@
 
 use glam::{Mat4, Vec3};
 
-use crate::fx::fog_volume::{
+use postretro_render_cpu::fog_volume::{
     self, FOG_PARAMS_SIZE, FOG_PLANES_BUFFER_CAPACITY, FOG_POINT_LIGHT_SIZE, FOG_SPOT_LIGHT_SIZE,
     FOG_VOLUME_SIZE, FogPointLight, FogSpotLight, FogVolume, MAX_FOG_POINT_LIGHTS, MAX_FOG_VOLUMES,
     clamp_fog_pixel_scale,

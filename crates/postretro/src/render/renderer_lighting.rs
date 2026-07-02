@@ -293,7 +293,9 @@ impl Renderer {
     /// Collects dynamic spots with a shadow slot this frame.
     /// Unslotted spots excluded — no usable light-space matrix in the shader.
     /// Pre-multiplies color × intensity × brightness; mirrors `FogVolumeBridge::update_points`.
-    pub(super) fn collect_fog_spot_lights(&self) -> Vec<crate::fx::fog_volume::FogSpotLight> {
+    pub(super) fn collect_fog_spot_lights(
+        &self,
+    ) -> Vec<postretro_render_cpu::fog_volume::FogSpotLight> {
         const BRIGHTNESS_SUPPRESSION_THRESHOLD: f32 = 0.01;
         let full = self.full();
         let slot_assignment = &full.spot_shadow_pool.slot_assignment;
@@ -331,7 +333,7 @@ impl Renderer {
                 continue;
             }
             let intensity = light.intensity * multiplier;
-            out.push(crate::fx::fog_volume::FogSpotLight {
+            out.push(postretro_render_cpu::fog_volume::FogSpotLight {
                 position: [
                     light.origin[0] as f32,
                     light.origin[1] as f32,
@@ -355,7 +357,7 @@ impl Renderer {
     /// GPU repack happens in `render_frame_indirect` after the portal-cull mask is known.
     /// Empty input clears the list → `FogPass::active` returns false.
     pub fn upload_fog_volumes(&mut self, bytes: &[u8], planes: &[Vec<[f32; 4]>], live_mask: u32) {
-        let stride = std::mem::size_of::<crate::fx::fog_volume::FogVolume>();
+        let stride = std::mem::size_of::<postretro_render_cpu::fog_volume::FogVolume>();
         if bytes.is_empty() {
             self.full_mut().fog.set_canonical_volumes(&[], &[], 0);
             return;
@@ -371,7 +373,7 @@ impl Renderer {
             self.full_mut().fog.set_canonical_volumes(&[], &[], 0);
             return;
         }
-        let volumes: &[crate::fx::fog_volume::FogVolume] = bytemuck::cast_slice(bytes);
+        let volumes: &[postretro_render_cpu::fog_volume::FogVolume] = bytemuck::cast_slice(bytes);
         self.full_mut()
             .fog
             .set_canonical_volumes(volumes, planes, live_mask);
@@ -405,7 +407,7 @@ impl Renderer {
 
     /// Bytes: tightly packed `[FogPointLight]`. Empty input zeroes `point_count`.
     pub fn upload_fog_points(&mut self, bytes: &[u8]) {
-        let stride = std::mem::size_of::<crate::fx::fog_volume::FogPointLight>();
+        let stride = std::mem::size_of::<postretro_render_cpu::fog_volume::FogPointLight>();
         let Self { queue, full, .. } = self;
         let full = full
             .as_mut()
@@ -424,7 +426,8 @@ impl Renderer {
             full.fog.point_count = 0;
             return;
         }
-        let points: &[crate::fx::fog_volume::FogPointLight] = bytemuck::cast_slice(bytes);
+        let points: &[postretro_render_cpu::fog_volume::FogPointLight] =
+            bytemuck::cast_slice(bytes);
         full.fog.upload_points(queue, points);
     }
 

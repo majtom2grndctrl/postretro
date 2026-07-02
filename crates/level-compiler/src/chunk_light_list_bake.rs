@@ -1257,7 +1257,7 @@ mod tests {
     /// placeholder) over the runtime light list, then asserting the emitted
     /// index lands on the intended SDF light in that compacted array. We pin at
     /// the baker level (rather than calling `pack_spec_lights`, which lives in
-    /// the `postretro` crate and would cross a crate boundary) by mirroring its
+    /// `postretro-lighting` and would cross a crate boundary) by mirroring its
     /// filter here; `pack_spec_lights` has its own `skips_dynamic_lights` test
     /// holding up the other half of the seam.
     #[test]

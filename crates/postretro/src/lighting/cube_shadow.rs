@@ -180,7 +180,7 @@ pub struct CubeShadowPool {
     pub slot_assignment: Vec<u32>,
     /// Per-slot entity-occluder gate, written alongside `face_matrices`. `true`
     /// only when the slot's occupant passes
-    /// [`crate::lighting::entity_occluder_eligible`]. Cube faces are ENTITY-ONLY
+    /// [`postretro_lighting::entity_occluder_eligible`]. Cube faces are ENTITY-ONLY
     /// in v1, so an ineligible point light draws NOTHING into its faces.
     pub slot_entity_eligible: Vec<bool>,
 }
@@ -265,7 +265,7 @@ pub fn cube_pool_enabled(cube_array_supported: bool) -> bool {
 /// The SHADER-facing cube slot for a light that owns a ranked pool slot.
 ///
 /// Cube faces are ENTITY-ONLY in v1: a slot is only ever CLEARED + rendered when
-/// its light is [`crate::lighting::entity_occluder_eligible`] (the depth loop
+/// its light is [`postretro_lighting::entity_occluder_eligible`] (the depth loop
 /// skips slots with no per-face matrices). A point light that owns a ranked slot
 /// but is NOT entity-eligible therefore has cube faces holding stale/uninitialized
 /// depth — sampling them reads garbage (frequently fully shadowed), which would

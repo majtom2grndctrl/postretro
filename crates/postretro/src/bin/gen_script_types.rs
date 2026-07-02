@@ -10,16 +10,6 @@ use postretro_entities::ctx::ScriptCtx;
 use postretro_scripting_core::primitives_registry::PrimitiveRegistry;
 use postretro_scripting_core::typedef::write_type_definitions;
 
-#[allow(dead_code, unused_imports)]
-#[path = "../lighting/script_primitives.rs"]
-mod lighting_script_primitives;
-
-mod lighting {
-    pub(crate) mod script_primitives {
-        pub(crate) use crate::lighting_script_primitives::*;
-    }
-}
-
 #[path = "../scripting"]
 mod scripting {
     #![allow(dead_code, unused_imports)]

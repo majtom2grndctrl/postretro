@@ -3683,8 +3683,14 @@ name = "postretro-lighting"
 version = "0.1.0"
 dependencies = [
  "glam",
+ "mlua",
+ "postretro-entities",
+ "postretro-foundation",
  "postretro-level-loader",
  "postretro-render-data",
+ "postretro-scripting-core",
+ "rquickjs",
+ "serde_json",
 ]
 
 [[package]]

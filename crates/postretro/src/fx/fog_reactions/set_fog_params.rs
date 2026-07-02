@@ -624,7 +624,7 @@ mod tests {
     ///
     /// Mirrors the two input shapes used by
     /// `set_light_animation_quickjs_and_luau_produce_identical_output` in
-    /// `crates/postretro/src/lighting/script_primitives.rs`: a JS object
+    /// `crates/lighting/src/script_primitives.rs`: a JS object
     /// literal with camelCase keys, and a Luau table with the same keys.
     #[test]
     fn set_fog_params_quickjs_and_luau_produce_identical_output() {

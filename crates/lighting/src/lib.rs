@@ -5,6 +5,8 @@
 //! `postretro`.
 
 pub mod influence;
+#[cfg(feature = "script-ffi")]
+pub mod script_primitives;
 pub mod spec_buffer;
 
 use postretro_level_loader::{FalloffModel, LightType, MapLight};

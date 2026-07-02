@@ -75,7 +75,7 @@ postretro-level-format = { workspace = true, features = ["gltf-resolve"] }
 postretro-level-loader = { workspace = true }
 postretro-model = { workspace = true }
 postretro-render-data = { workspace = true }
-postretro-lighting = { workspace = true }
+postretro-lighting = { workspace = true, features = ["script-ffi"] }
 postretro-visibility = { workspace = true }
 postretro-foundation = { workspace = true }
 postretro-entities = { workspace = true, features = ["script-ffi"] }

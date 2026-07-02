@@ -1,3 +1,6 @@
+//! Renderer-owned lighting GPU pools and barrel modules.
+//! See: context/lib/rendering_pipeline.md §4.
+
 pub mod chunk_list;
 pub mod cube_shadow;
 pub mod lightmap;

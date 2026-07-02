@@ -1,4 +1,6 @@
-// Light-domain scripting primitives: `setLightAnimation` (definition context).
+// Light-domain scripting primitives: `setLightAnimation` definition context.
+// Also owns world-query shared typedef registrations to preserve SDK typedef order:
+// `WorldQueryComponent`, `WorldQueryFilter`, `Entity`, and `EmitterEntity`.
 // See: context/lib/scripting.md
 
 use postretro_entities::components::light::{LightAnimation, LightComponent};
@@ -100,7 +102,7 @@ fn validate_and_normalize(
         // path; remove it. Brightness-only animation on a now-static
         // light is admitted unchanged.
         //
-        // See: context/plans/in-progress/sdf-static-occluder-shadows/index.md §Task 1b
+        // Historical source: context/plans/done/sdf-static-occluder-shadows/.
     }
     if let Some(ref mut dirs) = anim.direction {
         if dirs.is_empty() {

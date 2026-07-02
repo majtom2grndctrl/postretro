@@ -4,7 +4,7 @@
 
 ## Goal
 
-Extract the wgpu-free UI subtree into a CPU-only crate so the largest inbound consumer surface (menus, HUD, focus, scripted presentation cells) depends on pure UI data/logic, and editing UI code does not recompile the renderer or VMs.
+Extract the wgpu-free UI subtree into a CPU-only crate so the largest inbound consumer surface (menus, HUD, focus, scripted presentation cells) depends on pure UI data/logic, and editing UI code recompiles a small leaf crate rather than the whole `postretro` monolith.
 
 ## Scope
 
@@ -32,7 +32,7 @@ Extract the wgpu-free UI subtree into a CPU-only crate so the largest inbound co
 ## Acceptance criteria
 Inherits the epic global acceptance criteria — see `E19--render-stack-decomposition/index.md`. Durable decisions are captured into `context/lib/` per spec as each spec is approved — not in one batch at first promotion.
 - [ ] Crate is a workspace member; `cargo build --workspace` + `cargo test --workspace` pass; UI tree/focus/layout/theming/gate tests pass from their relocated home in `postretro-ui`. The GPU-coupled golden/harness tests (`gpu_test_harness.rs`, `multi_batch_test.rs`, `multi_layer_text_golden_test.rs`) do not relocate — they continue to pass unchanged in `postretro-renderer` — and `lifecycle_render_test.rs` continues to pass in `postretro`.
-- [ ] `cargo tree -p postretro-ui` (default features) shows no `wgpu`/`winit`/`glyphon`/`kira`/`mlua`/`rquickjs`.
+- [ ] `cargo tree -p postretro-ui` (default features) shows no `wgpu`/`winit`/`glyphon`/`kira`. `mlua`/`rquickjs` are pulled only transitively via `postretro-scripting-core` (accepted — epic Decision 13).
 - [ ] `UiPass` + `UiTextRenderer` remain in the renderer crate and compile against `postretro-ui`, with `cosmic-text` version-unified across both crates so the `&mut FontSystem` borrow typechecks.
 - [ ] No `postretro-ui` → `crate::input` edge; `UiReadSnapshot` carries `descriptor::CaptureMode` transitively, on its `UiTreeEntry.capture_mode` entries (it has no `capture_mode` field of its own).
 - [ ] The dead shims `render/ui/_gen_layout_shim.rs` and `render/ui/_gen_tree_shim.rs` no longer exist in-tree.

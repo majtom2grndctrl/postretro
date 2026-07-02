@@ -131,7 +131,13 @@ Plans ship in this sequence:
 - [x] **SE — Post-UI screen-space effects.** Vignette, flash, screen shake as full-screen quads driven by slots (research §13). These reach into the scene compositor, where Epic 9 tonemap/fog and Epic 10 post live — its own goal precisely because it carries the one real cross-epic merge. **Coordinate with Epic 9/10.** Depends on the foundation (A–C) and the slots E exposes. `context/plans/done/M13--screen-space-effects/`
 - [ ] **BIS — Built-in screens + egui retirement.** HUD, pause, dialog, level-load, death / respawn, damage vignette (research §14) — descriptor authoring on the finished primitives, the epic payoff (the Epic 10-style "integrated outcome needs both" convergence). Includes the **egui-retirement checklist:** the new UI must replicate whatever the egui overlay provides — the `POSTRETRO_GPU_TIMING` / frame-stats diagnostics (per `CLAUDE.md`) — before egui is removed. Depends on G1, E, F, SE, and G2 (the reactive selection/visibility primitives its stateful/tabbed screens build on).
 
-**Deferred / detail-on-open (unchanged):** minigames-as-built-in-entity-types (research §17), in-world viewport UI (research §19), localization runtime (research §19), screen-reader a11y (research §19, §20).
+**Deferred / detail-on-open:**
+
+- Minigames-as-built-in-entity-types (research §17).
+- In-world viewport UI (research §19).
+- Localization runtime (research §19).
+- Screen-reader a11y (research §19, §20).
+- **UI compositor fidelity + image asset pipeline.** Exact source-over ordering between translucent quads/images and glyphon text needs a deliberate compositor design; the current single glyphon render call cannot perfectly interleave text with translucent UI geometry. UI image widgets also need an authored asset registration path so production trees receive texture sizes and bind groups through the renderer-owned registry.
 
 The spine A → B → C is sequential. Then D → (E ‖ F): D before E (token dependency), F concurrent with E, with the F/D layout-module merge-coordination noted. TW (value tweening) joins this band, dependent only on C and concurrent with D/E/F. TE (text entry) trails E + F as the wave's integration consumer. G1 converges D + E + F. Then G2 (reactive selection/visibility + a11y/type-safety) lands on G1, before BIS consumes its primitives. BIS and SE follow (SE needs compositor coordination with Epic 9/10; SE is independent of G2 and may ship in parallel). The deferred set stays detail-on-open.
 

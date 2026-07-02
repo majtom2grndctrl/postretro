@@ -3,7 +3,7 @@
 // props object comes first and `children` is a POSITIONAL second argument, not a
 // prop. Each mirrors `emitter()`: synchronous field-named validation, documented
 // defaults, a plain descriptor whose keys are the camelCase wire form of the
-// matching `render/ui/descriptor.rs` container variant.
+// matching `postretro-ui` descriptor container variant.
 //
 // Containers take NO state bind (only text/panel/slider/bar bind). They may
 // carry a backdrop `fill`/`border`, a `focus` policy, and focus fields. Field

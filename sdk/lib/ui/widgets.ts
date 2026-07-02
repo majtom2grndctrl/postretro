@@ -3,7 +3,7 @@
 // (Containers — VStack/HStack/Grid — live in `./layout`.) Each mirrors the
 // `emitter()` precedent: a `Props` object validated synchronously, throwing a
 // field-named `Error`, returning a plain descriptor object whose keys are the
-// camelCase wire form of the matching `render/ui/descriptor.rs` `Widget` variant.
+// camelCase wire form of the matching `postretro-ui` descriptor `Widget` variant.
 //
 // Pure builders: constructing a widget has no engine side effect — the FFI
 // boundary is the eventual `return` of the authored tree. Bound props accept

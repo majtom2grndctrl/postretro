@@ -151,7 +151,7 @@ impl UiTree {
                         );
                     }
                 }
-                data.quads.push(project_quad(
+                data.push_quad(project_quad(
                     ref_origin,
                     layout,
                     scale,
@@ -166,7 +166,7 @@ impl UiTree {
                 // texture defaults apply. Quads for the same key concatenate into
                 // one batch; the renderer resolves the key→bind-group at encode.
                 let rect = project_rect(ref_origin, layout, scale, canvas_origin);
-                data.image_quad_for(asset).push(UiInstance::image(rect));
+                data.push_image(asset, UiInstance::image(rect));
             }
             Some(NodeContext::Bar {
                 bind_scope,
@@ -182,8 +182,7 @@ impl UiTree {
             }) => {
                 // Background quad fills the whole laid-out rect.
                 let rect = project_rect(ref_origin, layout, scale, canvas_origin);
-                data.quads
-                    .push(UiInstance::panel(rect, *background, [0.0; 4]));
+                data.push_quad(UiInstance::panel(rect, *background, [0.0; 4]));
 
                 // The displayed value: the eased tween display when active (the
                 // styleRanges/fill-fraction contract reads the value the widget
@@ -220,8 +219,7 @@ impl UiTree {
                 let fill_width = (rect[2] * fraction).round();
                 if fill_width > 0.0 {
                     let fill_rect = [rect[0], rect[1], fill_width, rect[3]];
-                    data.quads
-                        .push(UiInstance::panel(fill_rect, fill_color, [0.0; 4]));
+                    data.push_quad(UiInstance::panel(fill_rect, fill_color, [0.0; 4]));
                 }
             }
             Some(NodeContext::Text {
@@ -307,7 +305,7 @@ impl UiTree {
                 // laid out in flow (its container's `align` centers it on the
                 // measured run width), so no per-node centering shift is applied.
                 let rect = project_rect(ref_origin, layout, scale, canvas_origin);
-                data.texts.push(UiText::new(
+                data.push_text(UiText::new(
                     resolved,
                     [rect[0], rect[1]],
                     font_size * scale,

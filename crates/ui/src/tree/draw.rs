@@ -183,17 +183,28 @@ impl From<&super::super::descriptor::FocusNeighbors> for FocusNeighbors {
     }
 }
 
+/// One draw item in a tree's painter-order stream. Payload data stays in the
+/// grouped lists (`quads`, `images`, `texts`); this stream records which payload
+/// was emitted at each point in the layout walk, so the renderer can batch
+/// without collapsing A/B/A image order or moving focus rings below content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UiPaintOp {
+    Quad { index: usize },
+    Image { batch: usize, index: usize },
+    Text { index: usize },
+}
+
 /// Computed draw entries from one tree: a device-pixel panel quad `UiDrawList`,
-/// per-asset image quad lists, and device-positioned shaped-text lines. Panels
-/// draw first (one batch, the pass's white texel), then each image group (one
-/// batch per `asset`, its own bound texture), then text composites over them —
-/// the order the UI pass records in.
+/// per-asset image quad lists, device-positioned shaped-text lines, and the
+/// painter-order stream tying them together. The grouped fields remain the
+/// stable CPU readback surface; `paint_order` is the renderer's ordering
+/// contract.
 ///
 /// Image quads are split out from panels because each `asset` key binds a
 /// distinct texture: the renderer resolves the key through its image registry to
 /// a bind group, so the tree groups image quads by key rather than folding them
-/// into the panel list. `images` preserves first-seen key order so draw order is
-/// deterministic.
+/// into the panel list. `images` preserves first-seen key order for readback;
+/// `paint_order` preserves actual draw order, including repeated asset keys.
 #[derive(Debug, Default, Clone)]
 pub struct UiDrawData {
     pub quads: UiDrawList,
@@ -201,6 +212,7 @@ pub struct UiDrawData {
     /// `(asset_key, quads)`; the renderer binds the key's texture for its quads.
     pub images: Vec<(String, UiDrawList)>,
     pub texts: Vec<UiText>,
+    pub paint_order: Vec<UiPaintOp>,
 }
 
 impl UiDrawData {
@@ -214,15 +226,40 @@ impl UiDrawData {
             && self.images.iter().all(|(_, list)| list.is_empty())
     }
 
+    pub fn push_quad(&mut self, instance: UiInstance) {
+        let index = self.quads.len();
+        self.quads.push(instance);
+        self.paint_order.push(UiPaintOp::Quad { index });
+    }
+
+    pub fn push_image(&mut self, asset: &str, instance: UiInstance) {
+        let batch = self.image_batch_index(asset);
+        let index = self.images[batch].1.len();
+        self.images[batch].1.push(instance);
+        self.paint_order.push(UiPaintOp::Image { batch, index });
+    }
+
+    pub fn push_text(&mut self, text: UiText) {
+        let index = self.texts.len();
+        self.texts.push(text);
+        self.paint_order.push(UiPaintOp::Text { index });
+    }
+
     /// Mutable handle to the quad list for `asset`, creating an empty list in
-    /// first-seen order if the key is new. Keeps all quads sharing a texture in
-    /// one batch so the renderer issues one draw per bound image.
+    /// first-seen order if the key is new. Kept for tests and readback helpers
+    /// that only care about grouped image output. Production collection uses
+    /// `push_image` so `paint_order` stays complete.
     pub fn image_quad_for(&mut self, asset: &str) -> &mut UiDrawList {
+        let idx = self.image_batch_index(asset);
+        &mut self.images[idx].1
+    }
+
+    fn image_batch_index(&mut self, asset: &str) -> usize {
         if let Some(idx) = self.images.iter().position(|(k, _)| k == asset) {
-            return &mut self.images[idx].1;
+            return idx;
         }
         self.images.push((asset.to_string(), UiDrawList::new()));
-        &mut self.images.last_mut().expect("just pushed").1
+        self.images.len() - 1
     }
 }
 
@@ -485,4 +522,32 @@ pub fn linear_rgba_to_srgb_u8(color: [f32; 4]) -> [u8; 4] {
         encode(color[2]),
         (color[3].clamp(0.0, 1.0) * 255.0).round() as u8,
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn paint_order_preserves_repeated_image_assets() {
+        let mut data = UiDrawData::default();
+
+        data.push_image("ui/a", UiInstance::image([0.0, 0.0, 8.0, 8.0]));
+        data.push_image("ui/b", UiInstance::image([8.0, 0.0, 8.0, 8.0]));
+        data.push_image("ui/a", UiInstance::image([16.0, 0.0, 8.0, 8.0]));
+
+        assert_eq!(data.images.len(), 2, "storage stays grouped by asset");
+        assert_eq!(data.images[0].0, "ui/a");
+        assert_eq!(data.images[0].1.len(), 2);
+        assert_eq!(data.images[1].0, "ui/b");
+        assert_eq!(
+            data.paint_order,
+            [
+                UiPaintOp::Image { batch: 0, index: 0 },
+                UiPaintOp::Image { batch: 1, index: 0 },
+                UiPaintOp::Image { batch: 0, index: 1 },
+            ],
+            "painter stream keeps A/B/A order even though storage batches A together",
+        );
+    }
 }

@@ -264,6 +264,27 @@ pub fn harvest_visibility(
     }
 }
 
+/// Harvest image nodes in descriptor/taffy lockstep so retained layout can
+/// re-measure them when renderer-owned image-size availability changes after a
+/// tree has already cached a zero-size missing lookup.
+pub fn harvest_image_nodes(
+    taffy: &TaffyTree<NodeContext>,
+    widget: &Widget,
+    node: NodeId,
+    out: &mut Vec<NodeId>,
+) {
+    if matches!(widget, Widget::Image(_)) {
+        out.push(node);
+    }
+
+    if let Some(children) = widget_children(widget) {
+        let taffy_children = taffy.children(node).expect("node children resolve");
+        for (child_widget, child_node) in children.iter().zip(taffy_children) {
+            harvest_image_nodes(taffy, child_widget, child_node, out);
+        }
+    }
+}
+
 /// The scope id a container's `localState` declaration opens, if any. `None`
 /// when the container declares no `localState`, so its subtree
 /// inherits the enclosing scope.

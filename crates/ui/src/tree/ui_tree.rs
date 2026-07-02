@@ -19,7 +19,7 @@ use super::bindings::{
 use super::build::build_node;
 use super::draw::UiDrawData;
 use super::predicate::resolve_predicate;
-use super::widget_meta::{harvest_visibility, measure_node};
+use super::widget_meta::{harvest_image_nodes, harvest_visibility, measure_node};
 use super::{CellValues, ImageSizes};
 
 pub use super::node_context::{NodeContext, VisibilityState};
@@ -62,6 +62,14 @@ pub struct UiTree {
     /// flip, toggles the node's taffy `Display` (`None` ⇄ `Flex`) and marks it
     /// dirty. A node without `visibleWhen` never appears here and stays visible.
     visibility: HashMap<NodeId, VisibilityState>,
+    /// Image leaf nodes whose intrinsic size depends on renderer-owned
+    /// `ImageSizes`. The map itself is an external measure input, so retained
+    /// layout needs a compact generation check and a way to dirty only the nodes
+    /// that can change when new image sizes become available.
+    image_nodes: Vec<NodeId>,
+    /// Renderer-provided generation for `ImageSizes` used by the last retained
+    /// layout. Fresh/test one-shot layout does not cache this external input.
+    last_image_sizes_generation: Option<u64>,
 }
 
 impl UiTree {
@@ -86,6 +94,8 @@ impl UiTree {
         // always treated as a change).
         let mut visibility = HashMap::new();
         harvest_visibility(&taffy, &tree.root, root, None, &mut visibility);
+        let mut image_nodes = Vec::new();
+        harvest_image_nodes(&taffy, &tree.root, root, &mut image_nodes);
         Self {
             taffy,
             root,
@@ -100,6 +110,8 @@ impl UiTree {
             #[cfg(any(test, feature = "test-fixtures"))]
             draw_rebuild_count: 0,
             visibility,
+            image_nodes,
+            last_image_sizes_generation: None,
         }
     }
 
@@ -132,6 +144,13 @@ impl UiTree {
         self.taffy
             .mark_dirty(node)
             .expect("node exists in its own tree");
+    }
+
+    fn mark_image_nodes_dirty(&mut self) {
+        let image_nodes = self.image_nodes.clone();
+        for node in image_nodes {
+            self.mark_dirty(node);
+        }
     }
 
     /// Whether `node` is currently hidden (`Display::None`) by a false
@@ -186,7 +205,6 @@ impl UiTree {
     /// an absent slot falls back to the literal descriptor value. Layout never
     /// depends on it — only the drawn payload does — so binding never re-triggers
     /// a recompute.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn build_draw_data(
         &mut self,
         device_size: [u32; 2],
@@ -256,16 +274,42 @@ impl UiTree {
     /// A slot with no binding in the tree never compares, so it invalidates
     /// nothing (no rebuild, no relayout).
     ///
-    /// Layout recompute is gated on `viewport_changed || taffy.dirty(root)`
-    /// (the latter set by a structural rebuild or the diff's `mark_dirty`).
-    /// Draw-list rebuild runs on `layout recomputed || any bound value changed
-    /// || viewport changed`; otherwise the cached `UiDrawData` is cloned and
-    /// returned, so a settled frame walks nothing.
+    /// Layout recompute is gated on viewport changes, taffy dirtiness, and the
+    /// generation of the renderer-owned image-size map. The generation handles
+    /// late image registration: a key that measured as missing on one frame can
+    /// recover when the renderer uploads its texture and exposes its natural
+    /// size. Draw-list rebuild runs on `layout recomputed || any bound value
+    /// changed || viewport changed`; otherwise the cached `UiDrawData` is cloned
+    /// and returned, so a settled frame walks nothing.
     pub fn build_draw_data_retained(
         &mut self,
         device_size: [u32; 2],
         font_system: &mut FontSystem,
         image_sizes: &ImageSizes,
+        slot_values: &HashMap<String, SlotValue>,
+        cell_values: &CellValues,
+        time_seconds: f64,
+    ) -> UiDrawData {
+        self.build_draw_data_retained_with_image_generation(
+            device_size,
+            font_system,
+            image_sizes,
+            0,
+            slot_values,
+            cell_values,
+            time_seconds,
+        )
+    }
+
+    // Wide by necessity: viewport, text/image measurement inputs, bound values,
+    // cell values, and frame time are all distinct retained-build inputs.
+    #[allow(clippy::too_many_arguments)]
+    pub fn build_draw_data_retained_with_image_generation(
+        &mut self,
+        device_size: [u32; 2],
+        font_system: &mut FontSystem,
+        image_sizes: &ImageSizes,
+        image_sizes_generation: u64,
         slot_values: &HashMap<String, SlotValue>,
         // Resolved presentation-cell values for the frame, keyed by
         // `(scopeId, cellName)`. `{ local }` binds resolve
@@ -287,11 +331,17 @@ impl UiTree {
         } = self.resolve_bindings(slot_values, cell_values, time_seconds);
 
         let viewport_changed = self.last_viewport != Some(device_size);
+        let image_sizes_changed = self.last_image_sizes_generation != Some(image_sizes_generation);
+        if image_sizes_changed {
+            self.mark_image_nodes_dirty();
+        }
         // taffy reports the root dirty after a structural rebuild OR after the
-        // diff marked a content-changed text node dirty (taffy propagates the
-        // flag to the root). `content_changed` is OR-ed in as a belt-and-braces
-        // guard in case dirty propagation ever fails to reach the root.
+        // diff marked a content-changed text node dirty, or after a renderer
+        // image-size generation change dirtied image leaves. `content_changed`
+        // and `image_sizes_changed` are OR-ed in as belt-and-braces guards in
+        // case dirty propagation ever fails to reach the root.
         let structural_or_content = content_changed
+            || image_sizes_changed
             || self
                 .taffy
                 .dirty(self.root)
@@ -311,6 +361,7 @@ impl UiTree {
                 )
                 .expect("taffy layout must succeed for a well-formed UI tree");
             self.last_viewport = Some(device_size);
+            self.last_image_sizes_generation = Some(image_sizes_generation);
             self.recompute_count += 1;
         }
 

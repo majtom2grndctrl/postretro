@@ -1,9 +1,10 @@
 // CPU-side UI texture data: PNG-decoded RGBA8 used by splash and 2D blits.
-// World-material textures live in `render::loaded_texture` (wgpu handles).
+// World-material textures live in the renderer crate (`postretro`'s
+// `render::loaded_texture` today, wgpu handles).
 // See: context/lib/resource_management.md
 
 /// CPU-side decoded RGBA8 texture for UI surfaces (splash, HUD, 2D blits).
-/// World materials use `render::loaded_texture::LoadedTexture` instead.
+/// World materials use the renderer crate's `LoadedTexture` instead.
 #[derive(Debug, Clone)]
 pub struct UiTexture {
     pub data: Vec<u8>,

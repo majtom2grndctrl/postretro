@@ -7,9 +7,9 @@ use bytemuck::{Pod, Zeroable};
 
 use super::{descriptor, tree};
 
-/// Per-instance draw record. Layout mirrors `UiInstance` in `ui_quad.wgsl`:
-/// four `vec4<f32>` attributes, tightly packed, no padding. Byte-for-byte
-/// stable so `bytemuck` can cast a slice straight into the instance buffer.
+/// Per-instance CPU draw-list record for one UI quad. Layout is byte-stable for
+/// app->renderer handoff and bytemuck-based CPU tests; the renderer converts
+/// these records to its local GPU instance layout when it uploads the draw list.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Pod, Zeroable)]
 pub struct UiInstance {
@@ -28,7 +28,6 @@ impl UiInstance {
     /// Solid-color panel: full UV slice over the bound 1x1 white texel, with an
     /// optional 9-slice margin. Color is linear RGBA. Production paths build
     /// instances via `layout::project`; this ctor backs the corner-rect tests.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn panel(rect: [f32; 4], color: [f32; 4], margin: [f32; 4]) -> Self {
         Self {
             rect,
@@ -39,7 +38,6 @@ impl UiInstance {
     }
 
     /// Textured image: samples the full bound texture, untinted (white).
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn image(rect: [f32; 4]) -> Self {
         Self {
             rect,
@@ -100,7 +98,6 @@ impl UiDrawList {
         self.instances.push(instance);
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn clear(&mut self) {
         self.instances.clear();
     }
@@ -243,7 +240,6 @@ impl UiReadSnapshot {
     /// renderer lays each tree out bottom->top into the UI draw list, resolves
     /// `bind` slots against `slot_values`, and threads `time_seconds` into the
     /// retained build so the tween runtime can ease bound display values over time.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn with_trees(
         trees: Vec<UiTreeEntry>,
         slot_values: std::collections::HashMap<String, postretro_entities::SlotValue>,
@@ -267,11 +263,10 @@ mod tests {
 
     #[test]
     fn ui_instance_byte_layout_is_64_bytes_no_padding() {
-        // The shader's instance vertex layout (four Float32x4 at offsets
-        // 0/16/32/48, stride 64) depends on this exact packing.
+        // Keep the CPU draw-list ABI stable for app->renderer handoff.
         assert_eq!(std::mem::size_of::<UiInstance>(), 64);
         assert_eq!(std::mem::align_of::<UiInstance>(), 4);
-        // Field offsets the VertexAttribute table hardcodes.
+        // Field offsets used by the CPU ABI.
         let probe = UiInstance {
             rect: [1.0, 2.0, 3.0, 4.0],
             uv_rect: [5.0, 6.0, 7.0, 8.0],

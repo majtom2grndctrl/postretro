@@ -20,9 +20,9 @@ pub use super::super::{
 pub use super::super::build::INTERACTIVE_LABEL_COLOR;
 pub use crate::descriptor::{
     Align, AnchoredTree, BarMax, BarMaxStateRef, BarWidget, BindSource, ButtonWidget, CaptureMode,
-    ColorValue, ContainerWidget, Easing, GridWidget, LocalState, PanelBind, PanelTween,
-    PanelWidget, Predicate, PredicateValue, SliderBind, SliderWidget, SpacerWidget, SpacingValue,
-    TextBind, TextTween, TextWidget, Widget,
+    ColorValue, ContainerWidget, Easing, GridWidget, ImageWidget, LocalState, PanelBind,
+    PanelTween, PanelWidget, Predicate, PredicateValue, SliderBind, SliderWidget, SpacerWidget,
+    SpacingValue, TextBind, TextTween, TextWidget, Widget,
 };
 pub use crate::layout::{Anchor, REFERENCE_HEIGHT, REFERENCE_WIDTH};
 pub use crate::style_ranges::{StyleEntry, StyleRanges};

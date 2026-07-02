@@ -542,10 +542,11 @@ export type WidgetStyleRanges = { max: number, entries: { upTo: number?, color: 
 -- ---------------------------------------------------------------------------
 -- UI widget / layout / tree / state factories (M13 G1a). Pure builders are
 -- available through `require("postretro/ui")`: each returns the camelCase wire
--- descriptor of the matching `render/ui/descriptor.rs` variant and errors with a
+-- descriptor for the `postretro-ui` descriptor contract and errors with a
 -- field-named message on invalid props. Source of truth: sdk/lib/ui/{widgets,
--- layout,tree,state}.luau. Containers and `Tree` take `children`/`root` as a
--- POSITIONAL second argument (Compose/SwiftUI lineage), not a prop.
+-- layout,tree,state}.luau plus scripting-core typedef templates. Containers and
+-- `Tree` take `children`/`root` as a POSITIONAL second argument
+-- (Compose/SwiftUI lineage), not a prop.
 
 --- A spacing slot for gaps and padding: either an inline logical-pixel number or
 --- a spacing token from `getDesignTokens(theme)`. Theme spacing affects styling/layout rhythm,

@@ -533,9 +533,9 @@ impl Renderer {
         // with all layers' glyphs concatenated in painter order, sidesteps it.
         let mut layer_draws: Vec<ui::tree::UiDrawData> = Vec::with_capacity(stack.len());
         for (layer, tree) in stack.iter().enumerate() {
-            // Image sizes are optional for gameplay layers — an `image` node with
-            // no size entry measures to zero. The boot splash sizes its logo in
-            // its own `BootSplashPass`, independent of this gameplay path.
+            // Image widgets measure from the renderer-owned image registry. A
+            // missing key still collapses, but the registry now warns once when
+            // the draw path tries to bind it instead of failing silently.
             // Bound text/panel nodes resolve against the snapshot's slot values
             // (disjoint field borrow from `&mut self.ui`). The cloned `stack`
             // above already released the snapshot, so this borrow is clean.
@@ -544,7 +544,8 @@ impl Renderer {
                 layer,
                 tree,
                 ui_viewport,
-                &ui::tree::ImageSizes::new(),
+                full.ui_images.image_sizes(),
+                full.ui_images.image_sizes_generation(),
                 &full.ui_snapshot.slot_values,
                 &full.ui_snapshot.cell_values,
                 &full.ui_theme,
@@ -555,8 +556,8 @@ impl Renderer {
             // draw the engine ring around the focused node's rect on it. The
             // focused id rode in on the snapshot (resolved app-side last frame, so
             // it may trail a focus change by one frame). The ring is a `focus.ring`
-            // bordered frame inset by the `xs` spacing token; appended to this
-            // layer's quad list so it composites over the layer's own quads.
+            // bordered frame inset by the `xs` spacing token; appended through
+            // the layer's paint stream so it composites over the focused content.
             let is_top = layer + 1 == stack.len();
             if is_top {
                 if let Some(focused) = full.ui_snapshot.focused_id.as_deref() {
@@ -572,7 +573,7 @@ impl Renderer {
                             .ui_theme
                             .color("focus.ring")
                             .unwrap_or([1.0, 0.0, 1.0, 1.0]);
-                        ui::push_focus_ring(&mut draw.quads, fr.rect, inset, ring_color);
+                        ui::push_focus_ring(&mut draw, fr.rect, inset, ring_color);
                     }
                 }
             }
@@ -622,11 +623,11 @@ impl Renderer {
             timing.encode_resolve(&mut encoder);
         }
 
-        // Last use of the UI-region destructure: the boot `queue` local submits.
-        // After this statement NLL releases the `&mut self` reborrow, so the
-        // submit/readback tail below may touch `self` again (the
-        // `encode_sh_probe_readback` helper takes `&mut self`).
+        // Submit the UI-region encoder, then reset the glyphon prepare guard at
+        // the same boundary. After the guard reset, NLL releases the `&mut self`
+        // reborrow, so the submit/readback tail below may touch `self` again.
         queue.submit(std::iter::once(encoder.finish()));
+        full.ui.mark_submitted();
 
         #[cfg(feature = "dev-tools")]
         self.encode_sh_probe_readback();

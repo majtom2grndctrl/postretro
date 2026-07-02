@@ -8,14 +8,25 @@
 
 ## Workspace
 
-Four crates in a Cargo workspace:
+15 crates in a Cargo workspace:
 
 | Crate | Type | Purpose |
 |-------|------|---------|
 | `postretro` | binary | Engine / game runtime |
+| `postretro-ui` | library | CPU-only UI: descriptors, taffy layout, retained tree, modal stack, themes, cosmic-text measurement. Renderer consumes draw lists and text payloads at the GPU boundary. |
+| `postretro-foundation` | library | VM-free foundation data and evaluation substrate — movement, IR, value types. |
+| `postretro-entities` | library | VM-free entity registry and data substrate. |
+| `postretro-scripting-core` | library | VM-coupled scripting runtime substrate — hosts, FFI conversion, registries, SDK types. |
 | `postretro-level-format` | library | Shared PRL binary format types. Depended on by both engine and compiler. |
-| `postretro-level-compiler` | binary | Offline level compiler. TrenchBroom `.map` → `.prl` binary. |
-| `postretro-script-compiler` | binary | Script bundler sidecar. Bundles TS/JS/Luau into QuickJS-compatible output. |
+| `postretro-model` | library | CPU-only glTF model loader — mesh, skeleton, animation sampling. |
+| `postretro-render-data` | library | CPU render data and geometry/frustum math shared by level loading, visibility, lighting, and model crates. |
+| `postretro-lighting` | library | CPU-only light packing and reachability math for shader-facing byte layouts. |
+| `postretro-level-loader` | library | CPU-only runtime PRL loading and level data. |
+| `postretro-visibility` | library | CPU-side runtime portal traversal and frustum visibility. |
+| `postretro-level-compiler` | binary | Offline level compiler. TrenchBroom `.map` → `.prl` binary (binary name: `prl-build`). |
+| `postretro-script-compiler` | binary | TS → JS bundler/transpiler sidecar; isolates swc from the engine binary (binary name: `scripts-build`). |
+| `postretro-net` | library | Netcode transport and wire codec for co-op multiplayer. glam-free and postretro-free — dependency arrow only points engine → net. |
+| `xtask` | binary | Development workflow task runner (build, run, lint commands). |
 
 ## Stack
 

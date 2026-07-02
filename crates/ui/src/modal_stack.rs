@@ -132,7 +132,7 @@ impl UiTreeRegistry {
         );
     }
 
-    pub fn replace_tier(
+    pub(crate) fn replace_tier(
         &mut self,
         tier: ScopeTier,
         trees: impl IntoIterator<Item = RegisteredUiTree>,
@@ -318,7 +318,6 @@ impl ModalStack {
     /// per-frame compose step pulls the HUD via `always_on_layers` rather than
     /// resolving `HUD_NAME` by hand; production pushes resolve by name through
     /// `push_named`. Only the tiered-resolution tests exercise this accessor.
-    #[cfg_attr(not(test), allow(dead_code))] // public read seam; production resolves via push_named — accessor is test-only
     pub fn tree(&self, name: &str) -> Option<&AnchoredTree> {
         self.registry.resolve(name)
     }
@@ -365,7 +364,7 @@ impl ModalStack {
     /// and push it as the top modal. Frontend presentation uses this so both mod
     /// and engine fallback menus suppress gameplay through the existing modal
     /// capture path even if an authored tree omitted `captureMode`.
-    pub fn push_named_capturing(&mut self, name: &str) -> bool {
+    pub(crate) fn push_named_capturing(&mut self, name: &str) -> bool {
         let Some((tier, mut descriptor)) = self
             .registry
             .resolve_with_tier(name)
@@ -410,7 +409,6 @@ impl ModalStack {
 
     /// Engine push API: push a descriptor tree directly (pause/dialog opened from
     /// Rust, not via a registered name). `name` labels the entry for diagnostics.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn push(&mut self, name: impl Into<String>, descriptor: AnchoredTree) {
         self.stack.push(StackedTree {
             name: name.into(),

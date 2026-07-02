@@ -1,8 +1,11 @@
 // glyphon shaped-text half of the UI pass: the embedded font, the glyph
 // atlas/renderer, and the shape→prepare→render→trim cycle. glyphon ships its OWN
 // pipeline and atlas — none of this routes through the quad pipeline in `mod.rs`;
-// the text draw records INTO the same render pass, after the quads.
+// the text draw records INTO the same render pass, after the quads, with depth
+// testing against the UI pass's private depth target.
 // See: context/lib/ui.md
+
+use std::collections::HashSet;
 
 use glyphon::{
     Attrs, Buffer as TextBuffer, Cache as GlyphCache, Color as GlyphColor, Family, Metrics,
@@ -10,7 +13,7 @@ use glyphon::{
 };
 
 use postretro_ui::UiText;
-use postretro_ui::text::{FontSystem, LINE_HEIGHT_FACTOR, font_family_is_registered};
+use postretro_ui::text::{FontSystem, LINE_HEIGHT_FACTOR};
 
 /// glyphon shaped-text state for the UI pass: glyph raster cache and glyphon's
 /// own GPU atlas/renderer. Owned by `UiPass`, which drives it from `encode`.
@@ -34,14 +37,20 @@ pub(crate) struct UiTextRenderer {
     /// glyphon's text pipeline/draw recorder.
     text_renderer: TextRenderer,
     /// Debug-only guard: counts glyphon `prepare` invocations since the last
-    /// `reset_prepare_guard` (called at `UiPass::encode` entry). The shared
-    /// vertex buffer `prepare` fills is overwritten at offset 0, so a SECOND
-    /// `prepare` within one encoded composition would clobber the first layer's
-    /// glyphs — the invariant is one `prepare` per composed frame. A
-    /// `debug_assert!` in `prepare_text` fires if this exceeds one. Release builds
-    /// carry no guard cost (the field and its uses are `cfg(debug_assertions)`).
+    /// submitted UI command buffer. The shared vertex buffer `prepare` fills is
+    /// overwritten at offset 0, so a SECOND `prepare` before submit would clobber
+    /// the first composition's glyphs. A `debug_assert!` in `prepare_text` fires
+    /// if this exceeds one. Release builds carry no guard cost (the field and its
+    /// uses are `cfg(debug_assertions)`).
     #[cfg(debug_assertions)]
     prepare_count: u32,
+}
+
+pub(crate) struct TextPrepareInput<'a> {
+    pub(crate) viewport: [u32; 2],
+    pub(crate) texts: &'a [UiText],
+    pub(crate) buffers: &'a [TextBuffer],
+    pub(crate) depths: &'a [f32],
 }
 
 impl UiTextRenderer {
@@ -49,6 +58,7 @@ impl UiTextRenderer {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         surface_format: wgpu::TextureFormat,
+        depth_stencil: wgpu::DepthStencilState,
     ) -> Self {
         // Build glyphon's own GPU/cache state here so `TextAtlas` construction
         // happens in `Renderer::new` (not on the first shaped frame). We do NOT
@@ -68,7 +78,7 @@ impl UiTextRenderer {
             &mut text_atlas,
             device,
             wgpu::MultisampleState::default(),
-            None,
+            Some(depth_stencil),
         );
 
         Self {
@@ -82,9 +92,8 @@ impl UiTextRenderer {
         }
     }
 
-    /// Reset the once-per-composition `prepare` guard. Called at `UiPass::encode`
-    /// entry so each encoded gameplay UI composition starts the count fresh.
-    /// No-op in release.
+    /// Reset the once-per-submit `prepare` guard. Called after the command buffer
+    /// containing the UI encode is submitted. No-op in release.
     pub fn reset_prepare_guard(&mut self) {
         #[cfg(debug_assertions)]
         {
@@ -103,7 +112,7 @@ impl UiTextRenderer {
         viewport: [u32; 2],
     ) -> Vec<TextBuffer> {
         let mut buffers = Vec::with_capacity(texts.len());
-        for t in texts {
+        for (i, t) in texts.iter().enumerate() {
             let metrics = Metrics::new(t.font_size, t.font_size * LINE_HEIGHT_FACTOR);
             let mut buffer = TextBuffer::new(font_system, metrics);
             // Bound the layout box to the backbuffer: glyphon needs a finite
@@ -117,7 +126,7 @@ impl UiTextRenderer {
             buffer.set_text(
                 font_system,
                 &t.content,
-                &Attrs::new().family(Family::Name(&t.family)),
+                &Attrs::new().family(Family::Name(&t.family)).metadata(i),
                 Shaping::Advanced,
                 None,
             );
@@ -145,8 +154,9 @@ impl UiTextRenderer {
         family: &str,
         ttf_bytes: Vec<u8>,
     ) -> bool {
+        let before = font_face_ids_for_family(font_system, family);
         font_system.db_mut().load_font_data(ttf_bytes);
-        font_family_is_registered(font_system, family)
+        font_family_gained_face(font_system, family, &before)
     }
 
     /// Run glyphon's `prepare` (CPU layout + atlas upload) for the shaped lines.
@@ -159,30 +169,39 @@ impl UiTextRenderer {
         font_system: &mut FontSystem,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        viewport: [u32; 2],
-        texts: &[UiText],
-        buffers: &[TextBuffer],
+        input: TextPrepareInput<'_>,
     ) -> bool {
+        let TextPrepareInput {
+            viewport,
+            texts,
+            buffers,
+            depths,
+        } = input;
+
         if texts.is_empty() {
             return false;
         }
 
-        // Once-per-composition guard: this is placed AFTER the empty-text
+        debug_assert_eq!(
+            texts.len(),
+            depths.len(),
+            "each shaped UI text run needs one painter depth",
+        );
+
+        // Once-per-submit guard: this is placed AFTER the empty-text
         // early-return so empty-text frames never count. The shared vertex buffer
-        // `prepare` fills is overwritten at offset 0, so a SECOND `prepare` within
-        // one encoded composition would clobber the first layer's glyphs. The
-        // guard fires if more than one `prepare` is reached per `UiPass::encode`
-        // (reset there); release builds carry no cost. The historical
-        // per-encode-loop clobber resets the guard between encodes, so it is NOT
-        // caught here — a separate test covers that.
+        // `prepare` fills is overwritten at offset 0, so a SECOND `prepare`
+        // before submit would clobber the first composition's glyphs. The guard
+        // resets after submit, so two `UiPass::encode` calls recorded into one
+        // command buffer are caught here; release builds carry no cost.
         #[cfg(debug_assertions)]
         {
             self.prepare_count += 1;
             debug_assert!(
                 self.prepare_count <= 1,
-                "glyphon prepare reached {} times in one composition — the shared \
+                "glyphon prepare reached {} times before submit — the shared \
                  vertex buffer is overwritten at offset 0, so a second prepare \
-                 clobbers earlier layers' glyphs (one prepare per composition)",
+                 clobbers earlier glyphs (one prepare per submitted UI composition)",
                 self.prepare_count,
             );
         }
@@ -210,7 +229,7 @@ impl UiTextRenderer {
             custom_glyphs: &[],
         });
 
-        match self.text_renderer.prepare(
+        match self.text_renderer.prepare_with_depth(
             device,
             queue,
             font_system,
@@ -218,6 +237,7 @@ impl UiTextRenderer {
             &self.viewport,
             areas,
             &mut self.swash_cache,
+            |metadata| depths.get(metadata).copied().unwrap_or(0.0),
         ) {
             Ok(()) => true,
             Err(e) => {
@@ -247,5 +267,42 @@ impl UiTextRenderer {
     /// grows monotonically as text content changes (e.g. a counting version line).
     pub fn trim(&mut self) {
         self.text_atlas.trim();
+    }
+}
+
+fn font_face_ids_for_family(font_system: &FontSystem, family: &str) -> HashSet<String> {
+    font_system
+        .db()
+        .faces()
+        .filter(|face| face.families.iter().any(|(name, _)| name == family))
+        .map(|face| face.id.to_string())
+        .collect()
+}
+
+fn font_family_gained_face(
+    font_system: &FontSystem,
+    family: &str,
+    before: &HashSet<String>,
+) -> bool {
+    font_face_ids_for_family(font_system, family)
+        .difference(before)
+        .next()
+        .is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn font_delta_validation_rejects_malformed_bytes_when_family_already_exists() {
+        let mut font_system = postretro_ui::text::build_font_system();
+        let family = postretro_ui::text::UI_FONT_FAMILY;
+        let before = font_face_ids_for_family(&font_system, family);
+        assert!(!before.is_empty(), "engine family should be preloaded");
+
+        font_system.db_mut().load_font_data(b"not a font".to_vec());
+
+        assert!(!font_family_gained_face(&font_system, family, &before));
     }
 }

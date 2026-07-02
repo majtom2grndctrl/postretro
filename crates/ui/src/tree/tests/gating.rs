@@ -191,6 +191,57 @@ fn viewport_change_forces_layout_recompute() {
 }
 
 #[test]
+fn image_size_generation_change_remeasures_cached_missing_image() {
+    // Regression: a first frame with an unregistered image key cached a zero-size
+    // layout. A later registry upload changed ImageSizes, but retained layout had
+    // no input generation to force the image leaf to re-measure.
+    let tree = anchored(Widget::Image(ImageWidget {
+        asset: "ui/icon".to_string(),
+        id: None,
+        focus_neighbors: Default::default(),
+        label: None,
+        decorative: true,
+        visible_when: None,
+        role: None,
+    }));
+    let mut ui = UiTree::from_descriptor(&tree, &theme());
+    let mut fs = font_system();
+    let mut images = ImageSizes::new();
+
+    let missing = ui.build_draw_data_retained_with_image_generation(
+        [1280, 720],
+        &mut fs,
+        &images,
+        0,
+        &no_slots(),
+        &no_cells(),
+        0.0,
+    );
+    assert_eq!(ui.recompute_count(), 1);
+    assert_eq!(missing.images[0].1.instances[0].rect[2], 0.0);
+    assert_eq!(missing.images[0].1.instances[0].rect[3], 0.0);
+
+    images.insert("ui/icon".to_string(), [64.0, 32.0]);
+    let recovered = ui.build_draw_data_retained_with_image_generation(
+        [1280, 720],
+        &mut fs,
+        &images,
+        1,
+        &no_slots(),
+        &no_cells(),
+        0.0,
+    );
+
+    assert_eq!(
+        ui.recompute_count(),
+        2,
+        "image-size generation change must trigger a retained relayout",
+    );
+    assert_eq!(recovered.images[0].1.instances[0].rect[2], 64.0);
+    assert_eq!(recovered.images[0].1.instances[0].rect[3], 32.0);
+}
+
+#[test]
 fn rebuilt_tree_recomputes_from_empty_cache() {
     // Structural change = a new tree built from a (possibly new) descriptor.
     // The fresh tree's root cache is empty, so its first layout computes even

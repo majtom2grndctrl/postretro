@@ -1,7 +1,7 @@
 // UI layout/projection: maps 1280x720 logical-reference rects to device-pixel
 // quad instances. Pure CPU-side — no wgpu call, holds no GPU handle — so the
 // produced draw list is GPU-independent and asserted by the CPU draw-list tests.
-// See: context/plans/in-progress/M13--descriptor-tree-layout
+// See: context/lib/ui.md
 
 use super::{UiDrawList, UiInstance};
 
@@ -62,7 +62,6 @@ impl UiElement {
     /// Solid-color panel with a 9-slice margin (logical-reference px). Now only
     /// layout tests exercise this directly; runtime UI projects descriptor
     /// borders through the retained tree path.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn panel_9slice(
         anchor: Anchor,
         offset: [f32; 2],
@@ -79,7 +78,6 @@ impl UiElement {
     /// Textured image: full texture, untinted (white). Splash images now flow
     /// through the descriptor tree's `image` nodes; the layout tests still use
     /// this for the projection-path assertions.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn image(anchor: Anchor, offset: [f32; 2], size: [f32; 2]) -> Self {
         Self {
             anchor,
@@ -114,7 +112,6 @@ pub fn device_scale(device_size: [u32; 2]) -> f32 {
 /// coordinates to device pixels: `device = origin + logical * scale`. Now
 /// test-only: the boot splash and gameplay paths project through `tree`, which
 /// owns its own `canvas_origin`.
-#[cfg_attr(not(test), allow(dead_code))]
 fn canvas_origin(device_size: [u32; 2], scale: f32) -> [f32; 2] {
     let scaled_w = REFERENCE_WIDTH * scale;
     let scaled_h = REFERENCE_HEIGHT * scale;
@@ -132,7 +129,6 @@ fn canvas_origin(device_size: [u32; 2], scale: f32) -> [f32; 2] {
 /// stay on pixel boundaries. Text is NOT routed through here — text rendering
 /// keeps sub-pixel positions. Test-only since the boot splash stopped projecting
 /// through `layout`.
-#[cfg_attr(not(test), allow(dead_code))]
 fn project_element(elem: &UiElement, device_size: [u32; 2], scale: f32) -> UiInstance {
     let origin = canvas_origin(device_size, scale);
     let (afx, afy) = anchor_fractions(elem.anchor);
@@ -179,7 +175,6 @@ fn project_element(elem: &UiElement, device_size: [u32; 2], scale: f32) -> UiIns
 /// `UiDrawList` with no GPU interaction. Element order is preserved (draw order).
 /// Callable from tests with no GPU context. Test-only now: the boot splash no
 /// longer projects through this path.
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn project(elements: &[UiElement], device_size: [u32; 2]) -> UiDrawList {
     let scale = device_scale(device_size);
     let mut list = UiDrawList::new();

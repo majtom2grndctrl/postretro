@@ -30,7 +30,7 @@ PRL stores a deduplicated texture name list (`TextureNames` section) plus a para
 
 **Level load.** For each `TextureCacheKeys[i]`, the engine opens `<workspace>/baked/materials/<hex>.prm`, parses it with `PrmFile::from_bytes_partial`, and uploads each present slot's mip chain directly. A zero key produces a silent placeholder. A corrupt or missing sidecar logs a `warn!` and substitutes per-slot placeholders; cleanly-parsed slots from a partially-corrupt file are used. The runtime never opens a PNG for world materials. Model materials use the same diffuse-addressed cache but consume only diffuse; specular and normal remain neutral even when a shared world bundle contains richer slots.
 
-**UI textures.** `UiTexture` (`crates/postretro/src/ui_texture.rs`) loads PNGs directly at runtime via the splash and HUD paths. CPU-side only; no wgpu handles.
+**UI textures.** `postretro_ui::UiTexture` (`crates/ui/src/ui_texture.rs`, package `postretro-ui`) loads PNGs directly at runtime via the splash and HUD paths. CPU-side only; no wgpu handles.
 
 ### 1.3 Sprite Animations
 
@@ -191,7 +191,7 @@ The renderer owns all GPU-side resources: wgpu buffers, textures, samplers. CPU-
 
 | Type | Location | Description |
 |------|----------|-------------|
-| `UiTexture` | `crates/postretro/src/ui_texture.rs` | CPU-side `{ data, width, height }`. RGBA8 decoded from PNG. Used for splash and HUD blits. No wgpu handles. |
+| `postretro_ui::UiTexture` | `crates/ui/src/ui_texture.rs` (`postretro-ui`) | CPU-side `{ data, width, height }`. RGBA8 decoded from PNG. Used for splash and HUD blits. No wgpu handles. |
 | `LoadedTexture` | `crates/postretro/src/render/loaded_texture.rs` | World- and model-material GPU resources: wgpu handles for diffuse, specular, and normal slots plus `mip_count`. World loading consumes all available slots; model loading consumes diffuse only. Lives inside the renderer module to preserve the "Renderer owns GPU" invariant. |
 
 ### 7.2 Lifecycle

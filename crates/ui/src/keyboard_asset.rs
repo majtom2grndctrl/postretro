@@ -22,14 +22,14 @@ pub const KEYBOARD_TREE_NAME: &str = "keyboard";
 /// canonical value lives in `actions`; this alias keeps the keyboard asset tests
 /// and comments close to the JSON that references it.
 #[cfg(test)]
-pub const COMMIT_TEXT_ENTRY_SENTINEL: &str = super::actions::COMMIT_TEXT_ENTRY_ACTION;
+pub(crate) const COMMIT_TEXT_ENTRY_SENTINEL: &str = super::actions::COMMIT_TEXT_ENTRY_ACTION;
 
 /// Engine-shipped keyboard descriptor path, relative to the working directory —
 /// the same `content/base/...` convention the splash PNG uses. The boot path
 /// registers the keyboard through `tree_asset::register_tree_from_disk`; this
 /// anchors the same asset for the keyboard's own deserialization tests.
 #[cfg(test)]
-pub fn keyboard_asset_path() -> PathBuf {
+pub(crate) fn keyboard_asset_path() -> PathBuf {
     ui_asset_path("keyboard.json")
 }
 

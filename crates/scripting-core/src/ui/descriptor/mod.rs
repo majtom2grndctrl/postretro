@@ -1,7 +1,7 @@
 // Serde descriptor model for the UI widget tree: the barrel that wires together
 // the shared value types, focus-traversal types, widget vocabulary, and the
 // `AnchoredTree` placement envelope, and re-exports them so the whole descriptor
-// API surface stays addressable from `render::ui::descriptor::*`.
+// API surface stays addressable from `postretro_scripting_core::ui::descriptor::*`.
 // See: context/lib/ui.md
 
 mod accessibility;

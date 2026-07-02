@@ -36,9 +36,11 @@ pub fn build_demo_descriptor() -> super::descriptor::AnchoredTree {
     load_ui_fixture("hud.json")
 }
 
-/// The shipped pause-menu descriptor (`content/base/ui/pauseMenu.json`).
-#[cfg(any(test, feature = "test-fixtures"))]
-pub fn build_pause_menu_descriptor() -> super::descriptor::AnchoredTree {
+/// The shipped pause-menu descriptor (`content/base/ui/pauseMenu.json`). Only
+/// this crate's own tests consume it (its `test-fixtures` siblings are used
+/// cross-crate; this one is not), so it stays `#[cfg(test)]`-only.
+#[cfg(test)]
+pub(crate) fn build_pause_menu_descriptor() -> super::descriptor::AnchoredTree {
     load_ui_fixture("pauseMenu.json")
 }
 

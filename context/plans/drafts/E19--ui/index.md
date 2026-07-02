@@ -13,12 +13,12 @@ Extract the wgpu-free UI subtree into a CPU-only crate so the largest inbound co
   - descriptor surface (already `pub use postretro_scripting_core::ui::descriptor::*` — keep the dependency; `descriptor/mod.rs` now holds only that re-export shim plus its wire-format round-trip tests, the dead local files having already been dropped per `E19--leaf-hygiene-and-boundary-prep` — preserve the shim and its tests on the move),
   - `modal_stack.rs`, `layout.rs`, `theme`/`style_ranges`, `actions.rs` (pure-CPU reserved action constants, e.g. `COMMIT_TEXT_ENTRY_ACTION`),
   - `tree/*` (`ui_tree`, `build`, `bindings`, `ui_tree_collect`, `widget_meta`, `style`, `ui_tree_focus`, `node_context`, `draw`, `predicate`, and the `tree/tests/*` suite),
-  - `tree_asset.rs`, `keyboard_asset.rs`, `demo.rs` (menu name constants + `build_frontend_menu_descriptor`),
+  - `tree_asset.rs`, `keyboard_asset.rs`, `demo.rs` (menu name constants + `build_frontend_menu_descriptor`) — their `#[cfg(test)]` `CARGO_MANIFEST_DIR` path anchors keep the same `../..` workspace-root depth, since `postretro-ui` is a sibling crate under `crates/`,
   - the CPU text helpers (`build_font_system`, `measure_run`, `font_family_is_registered`, `read_font_file`),
   - the CPU output/wire types: `UiInstance`, `UiDrawList`, `UiUniform`, `UiReadSnapshot`, `UiTreeEntry` (co-located in `ui/mod.rs` with the GPU pass; `UiTreeEntry` carries `capture_mode: descriptor::CaptureMode` per `E19--leaf-hygiene-and-boundary-prep`), and `UiText` (co-located in `ui/text.rs` with `UiTextRenderer`) — `UiDrawData`/`FocusRect`/`FocusRectList`/`FocusGroup`/`FocusNeighbors`/`NodeInteraction` already live in `tree/draw.rs` and move with `tree/*` above,
   - the CPU-only gate/lifecycle test files: `lifecycle_render_test.rs`, `demo_ui_gate_test.rs`, `gameplay_ui_gate_test.rs`, `theme_gate_test.rs` — all four reproduce a renderer decision headless with no GPU adapter and no `wgpu` call (verified: zero `wgpu::` references in any of the four),
   - `UiTexture` (from the crate-root `ui_texture.rs` — `crate::ui_texture`, a `pub struct`, not under `render/ui/`) — lands here. Neither `postretro-ui` nor `postretro-renderer` exists yet, but the splash path already consumes `UiTexture` today; per the epic's Decision 4 the future renderer crate will depend on `postretro-ui` regardless, so a separate 12-line crate buys nothing.
-- Hoist `UiInstance`/`UiDrawList`/`UiUniform`/`UiTreeEntry` **out** of `ui/mod.rs` (today co-located with the GPU pass), and `UiText` **out** of `ui/text.rs` (today co-located with `UiTextRenderer`), into the CPU crate.
+- Hoist `UiInstance`/`UiDrawList`/`UiUniform`/`UiReadSnapshot`/`UiTreeEntry` **out** of `ui/mod.rs` (today co-located with the GPU pass), and `UiText` **out** of `ui/text.rs` (today co-located with `UiTextRenderer`), into the CPU crate.
 - Depend on `postretro-scripting-core` (descriptor model), `postretro-entities` (unconditional — `SlotValue`, imported across `tree/*` and the gate tests), `taffy`, `cosmic-text` (direct, for `FontSystem`/measurement — version-unified with the `cosmic-text` `glyphon` pulls renderer-side, so the `FontSystem` type identity holds across the ownership seam with `UiTextRenderer`), `serde`, `serde_json`, `log`. Dev-dep on `postretro-foundation` for `ModThemeTokens` (`lifecycle_render_test.rs`). **No `crate::input`, no wgpu, no `glyphon`, no `glam`** (zero usage anywhere in `render/ui/`).
 - Update consumers — `main.rs`, `startup/lifecycle.rs`, `startup/splash_lifecycle.rs` (`render::ui::modal_stack::ScopeTier`), `session/mod.rs`, `input/ui_focus.rs`, `scripting/systems/presentation_cells.rs`, `scripting/typedef/tests/surface.rs` — to import from `postretro-ui`.
 - Delete the dead generator-bin shims `render/ui/_gen_layout_shim.rs` and `render/ui/_gen_tree_shim.rs` — no `mod`/`#[path]` reference to either exists anywhere in the repo (confirmed by repo-wide grep); their own header comments claiming inclusion by `src/bin/gen_script_types.rs` are stale — that bin only pulls in `scripting::{entity_world_primitives, primitives, state_store}`.
@@ -32,15 +32,15 @@ Extract the wgpu-free UI subtree into a CPU-only crate so the largest inbound co
 Inherits the epic global acceptance criteria — see `E19--render-stack-decomposition/index.md`. Durable decisions are captured into `context/lib/` per spec as each spec is approved — not in one batch at first promotion.
 - [ ] Crate is a workspace member; `cargo build --workspace` + `cargo test --workspace` pass; UI tree/focus/layout/theming/gate tests pass from their relocated home in `postretro-ui`. The GPU-coupled golden/harness tests (`gpu_test_harness.rs`, `multi_batch_test.rs`, `multi_layer_text_golden_test.rs`) do not relocate — they continue to pass unchanged in `postretro-renderer`.
 - [ ] `cargo tree -p postretro-ui` (default features) shows no `wgpu`/`winit`/`glyphon`/`kira`/`mlua`/`rquickjs`.
-- [ ] `UiPass` + `UiTextRenderer` remain in the renderer crate and compile against `postretro-ui`.
+- [ ] `UiPass` + `UiTextRenderer` remain in the renderer crate and compile against `postretro-ui`, with `cosmic-text` version-unified across both crates so the `&mut FontSystem` borrow typechecks.
 - [ ] No `postretro-ui` → `crate::input` edge; `UiReadSnapshot` carries `descriptor::CaptureMode` transitively, on its `UiTreeEntry.capture_mode` entries (it has no `capture_mode` field of its own).
 - [ ] The dead shims `render/ui/_gen_layout_shim.rs` and `render/ui/_gen_tree_shim.rs` no longer exist in-tree.
-- [ ] The typedef drift test stays byte-identical.
+- [ ] The typedef drift test (`scripting/typedef/tests/committed.rs`) stays byte-identical; the `surface.rs` consumer update above is an import-only source edit and does not change generated output.
 
 ## Tasks
 
 ### Task 1: Hoist CPU output types out of the GPU pass
-Move `UiInstance`/`UiDrawList`/`UiUniform`/`UiTreeEntry` out of `ui/mod.rs`, and `UiText` out of `ui/text.rs`, into a CPU module, leaving `UiPass`/`UiTextRenderer` referencing them.
+Move `UiInstance`/`UiDrawList`/`UiUniform`/`UiReadSnapshot`/`UiTreeEntry` out of `ui/mod.rs`, and `UiText` out of `ui/text.rs`, into a CPU module, leaving `UiPass`/`UiTextRenderer` referencing them.
 
 ### Task 2: Extract postretro-ui
 Create the crate, move the CPU subtree + `UiTexture`, wire deps, update all consumers.

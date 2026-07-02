@@ -30,7 +30,7 @@ Read `context/lib/index.md` — use agent router to identify which context files
 
 **If given a plan/task path:**
 Read the plan from `context/plans/in-progress/<plan-name>/<task-name>.md`. Extract:
-- Shared Context section (constraints that apply across all tasks)
+- Goal section (constraints that apply across all tasks)
 - Your specific task — description, acceptance criteria, dependencies
 
 **If given an ad-hoc description:**

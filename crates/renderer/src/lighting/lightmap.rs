@@ -279,10 +279,10 @@ pub(crate) fn usable_atlas_dimensions(
         .map(|s| (s.irr_width, s.irr_height))
 }
 
-/// Filter out an absent (`None`), zero-dimension, oversize, or too-many-layers
-/// `LightmapSection`, returning `None` so the caller falls through to the neutral
-/// placeholder. Pure dimension-vs-limit comparison — unit-testable without a real
-/// wgpu device.
+/// Filter out an absent (`None`), zero-dimension, zero-layer, oversize, or
+/// too-many-layers `LightmapSection`, returning `None` so the caller falls
+/// through to the neutral placeholder. Pure dimension-vs-limit comparison —
+/// unit-testable without a real wgpu device.
 fn filter_usable_section(
     section: Option<&LightmapSection>,
     max_texture_dimension_2d: u32,
@@ -290,6 +290,7 @@ fn filter_usable_section(
 ) -> Option<&LightmapSection> {
     section
         .filter(|s| s.irr_width > 0 && s.irr_height > 0)
+        .filter(|s| s.layer_count > 0)
         .filter(|s| {
             let fits =
                 s.irr_width <= max_texture_dimension_2d && s.irr_height <= max_texture_dimension_2d;
@@ -474,7 +475,54 @@ fn upload_placeholder_direction(device: &wgpu::Device, queue: &wgpu::Queue) -> w
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+    use std::sync::OnceLock;
+
+    use log::{Level, Log, Metadata, Record};
     use postretro_level_format::lightmap::LightmapMode;
+
+    thread_local! {
+        static LOG_BUFFER: RefCell<Option<Vec<(Level, String)>>> = const { RefCell::new(None) };
+    }
+
+    struct CaptureLogger;
+
+    impl Log for CaptureLogger {
+        fn enabled(&self, _metadata: &Metadata<'_>) -> bool {
+            true
+        }
+
+        fn log(&self, record: &Record<'_>) {
+            LOG_BUFFER.with(|buffer| {
+                if let Some(records) = buffer.borrow_mut().as_mut() {
+                    records.push((record.level(), format!("{}", record.args())));
+                }
+            });
+        }
+
+        fn flush(&self) {}
+    }
+
+    static CAPTURE_LOGGER: CaptureLogger = CaptureLogger;
+    static LOGGER_INSTALLED: OnceLock<bool> = OnceLock::new();
+
+    fn capture_logs(f: impl FnOnce()) -> Option<Vec<(Level, String)>> {
+        let logger_installed =
+            *LOGGER_INSTALLED.get_or_init(|| match log::set_logger(&CAPTURE_LOGGER) {
+                Ok(()) => {
+                    log::set_max_level(log::LevelFilter::Trace);
+                    true
+                }
+                Err(_) => false,
+            });
+        if !logger_installed {
+            return None;
+        }
+
+        LOG_BUFFER.with(|buffer| *buffer.borrow_mut() = Some(Vec::new()));
+        f();
+        Some(LOG_BUFFER.with(|buffer| buffer.borrow_mut().take().unwrap_or_default()))
+    }
 
     fn fake_section(width: u32, height: u32) -> LightmapSection {
         fake_section_layers(width, height, 1)
@@ -515,29 +563,25 @@ mod tests {
         );
     }
 
-    /// Task 4a — the over-limit degrade AC requires not just a drop-to-
-    /// placeholder, but a logged `[Renderer]`-prefixed error so triage can
-    /// trace the silent flat-ambient fall-through. Capture the log records
-    /// emitted during the filter call and assert the prefix + the format the
-    /// AC pins (no real oversize allocation; the test runs against the pure
-    /// dimension-comparison path).
     #[test]
     fn oversize_section_logs_renderer_prefixed_error() {
-        let oversize = fake_section(16_384, 4096);
-        // Capture log records on this thread, scoped to the filter call.
-        let records = crate::scripting::reactions::log_capture::capture(|| {
-            let _ = filter_usable_section(Some(&oversize), 8192, 256);
-        });
+        let oversize = fake_section(16_384, 8192);
+        let Some(captured) = capture_logs(|| {
+            assert!(filter_usable_section(Some(&oversize), 8192, 256).is_none());
+        }) else {
+            eprintln!(
+                "skipping lightmap log-capture assertion: another test logger is already installed"
+            );
+            return;
+        };
+
         assert!(
-            records
-                .iter()
-                .any(|(level, msg)| *level == log::Level::Error
-                    && msg.starts_with("[Renderer]")
-                    && msg.contains("Lightmap atlas")
-                    && msg.contains("16384")
-                    && msg.contains("8192")),
-            "expected a `[Renderer]`-prefixed error naming the oversize atlas and the granted \
-             limit; got records: {records:?}",
+            captured.iter().any(|(level, message)| {
+                *level == Level::Error
+                    && message.starts_with("[Renderer] Lightmap atlas 16384x8192")
+                    && message.contains("maxTextureDimension2D 8192")
+            }),
+            "oversize lightmap rejection should log one renderer-prefixed error, got {captured:?}",
         );
     }
 
@@ -562,6 +606,20 @@ mod tests {
         assert!(
             filter_usable_section(Some(&empty), 8192, 256).is_none(),
             "zero-dimension section must drop to placeholder regardless of limit",
+        );
+    }
+
+    /// Format contract (`postretro_level_format::lightmap`) requires
+    /// `layer_count >= 1`; `from_bytes` reads the field raw without gating. A
+    /// corrupt section with `layer_count == 0` must drop to the neutral
+    /// placeholder rather than reach `upload_irradiance_texture`, which would
+    /// build a zero-extent wgpu texture and panic in validation.
+    #[test]
+    fn zero_layer_count_section_filtered_out() {
+        let no_layers = fake_section_layers(64, 64, 0);
+        assert!(
+            filter_usable_section(Some(&no_layers), 8192, 256).is_none(),
+            "zero-layer section must drop to placeholder regardless of limit",
         );
     }
 

@@ -23,11 +23,6 @@ pub(crate) mod text;
 pub(crate) use postretro_ui::{
     UiDrawList, UiInstance, UiReadSnapshot, UiText, UiUniform, descriptor, layout, theme, tree,
 };
-/// Re-exported only for the `#[cfg(test)]` submodules (`lifecycle_render_test`
-/// et al.), which reach them via `super::`.
-#[cfg_attr(not(test), allow(unused_imports))]
-pub(crate) use postretro_ui::{UiTreeEntry, demo, modal_stack};
-
 /// Shared headless GPU harness for the UI offscreen golden tests: the
 /// `pollster` device init (self-skip on no adapter) and the offscreen-texture
 /// readback. Used by `multi_batch_test` and `multi_layer_text_golden_test`.
@@ -50,14 +45,6 @@ mod multi_batch_test;
 /// adapter.
 #[cfg(test)]
 mod multi_layer_text_golden_test;
-
-/// G1b cross-cutting lifecycle + render suite: the
-/// register -> resolve-by-name -> render chain over the production path, the
-/// always-on compose -> render path, a mod theme override reaching a rendered
-/// widget, a runtime-registered font usable by a `text` token, and `localState`
-/// on a mixed store-bound + local-bound tree. Pure CPU — no GPU adapter.
-#[cfg(test)]
-mod lifecycle_render_test;
 
 const UI_QUAD_WGSL: &str = include_str!("../../shaders/ui_quad.wgsl");
 

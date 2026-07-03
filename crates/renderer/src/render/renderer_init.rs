@@ -114,6 +114,7 @@ impl Renderer {
             surface,
             surface_config,
             is_surface_configured: true,
+            surface_reconfigure_pending: false,
             has_multi_draw_indirect,
             cube_array_supported,
             boot_splash,

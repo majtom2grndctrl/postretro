@@ -200,7 +200,10 @@ impl Renderer {
     /// `pub` forwarder over the private `mesh_pass` clip-metadata seam. Consumed
     /// by the level-load model sweep (`main.rs`) to build the game-side clip
     /// tables.
-    pub fn skinned_model_clip_metadata(&self, model_handle: &str) -> Vec<mesh_pass::ClipMetadata> {
+    pub fn skinned_model_clip_metadata(
+        &self,
+        model_handle: &str,
+    ) -> Vec<postretro_render_cpu::mesh_pass::ClipMetadata> {
         self.full()
             .mesh_pass
             .model_clip_metadata(&postretro_model::ModelHandle::from(model_handle))
@@ -212,7 +215,10 @@ impl Renderer {
     /// `render_frame_indirect`. The renderer plans these into per-model draw
     /// groups + palette runs and records the draws; it needs no world reference
     /// because the cull already happened game-side.
-    pub fn set_mesh_draws(&mut self, instances: &[mesh_instances::MeshInstanceInput]) {
+    pub fn set_mesh_draws(
+        &mut self,
+        instances: &[postretro_render_cpu::mesh_instances::MeshInstanceInput],
+    ) {
         self.full_mut().mesh_draws.clear();
         self.full_mut().mesh_draws.extend_from_slice(instances);
     }

@@ -6,6 +6,8 @@ use glam::{Mat4, Vec3};
 /// Horizontal field of view in radians (100 degrees).
 pub const HFOV: f32 = 100.0 * std::f32::consts::PI / 180.0;
 
+// The renderer's fog pass duplicates these values (`RENDERER_NEAR_CLIP` /
+// `RENDERER_FAR_CLIP` in the renderer crate) — keep both in sync.
 pub const NEAR: f32 = 0.1;
 pub const FAR: f32 = 4096.0;
 

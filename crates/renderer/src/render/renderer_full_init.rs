@@ -2,6 +2,7 @@
 // built from boot state (the boot phase lives in `renderer_init.rs`).
 // See: context/lib/rendering_pipeline.md
 
+use super::renderer_types::FullRenderer;
 use super::*;
 
 /// Full-phase construction: builds every steady-state pipeline/pass/resource from

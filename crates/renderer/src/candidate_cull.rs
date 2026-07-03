@@ -53,7 +53,7 @@ pub(crate) fn serialize_candidate_params(candidate_count: u32) -> Vec<u8> {
 /// [`GatherStatus::OutOfRange`] `out` holds only the partial gather up to the
 /// bad id and the caller must discard it (route to the tree walk).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum GatherStatus {
+pub enum GatherStatus {
     /// The flat list of global BVH-leaf indices to test this frame is now in
     /// the caller's `out` scratch. May be empty (every visible cell owns no
     /// drawable leaves) — the caller still clears the camera buffers, then
@@ -86,7 +86,7 @@ pub(crate) enum GatherStatus {
 /// immediately — the caller must not use the partial set from a corrupt id.
 /// The CSR was cross-validated at load (spans in-bounds, drawable-only,
 /// exact-once coverage), so no per-span re-checking happens here.
-pub(crate) fn gather_candidate_leaves(
+pub fn gather_candidate_leaves(
     index: &CellDrawIndex,
     visible_cells: &[u32],
     out: &mut Vec<u32>,

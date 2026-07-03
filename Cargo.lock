@@ -3564,21 +3564,17 @@ dependencies = [
  "bytemuck",
  "directories",
  "egui",
- "egui-wgpu",
  "egui-winit",
  "env_logger",
  "gilrs",
  "glam",
- "glyphon",
  "image",
  "kira",
  "log",
  "mlua",
- "naga",
  "notify",
  "notify-debouncer-full",
  "parry3d",
- "pollster",
  "postretro-entities",
  "postretro-foundation",
  "postretro-level-format",
@@ -3588,6 +3584,7 @@ dependencies = [
  "postretro-net",
  "postretro-render-cpu",
  "postretro-render-data",
+ "postretro-renderer",
  "postretro-script-compiler",
  "postretro-scripting-core",
  "postretro-ui",
@@ -3596,11 +3593,9 @@ dependencies = [
  "rquickjs",
  "serde",
  "serde_json",
- "splines",
  "tempfile",
  "thiserror 2.0.18",
  "toml",
- "wgpu",
  "winit",
 ]
 
@@ -3743,6 +3738,37 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "glam",
+]
+
+[[package]]
+name = "postretro-renderer"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "egui",
+ "egui-wgpu",
+ "egui-winit",
+ "glam",
+ "glyphon",
+ "image",
+ "log",
+ "naga",
+ "pollster",
+ "postretro-entities",
+ "postretro-level-format",
+ "postretro-level-loader",
+ "postretro-lighting",
+ "postretro-model",
+ "postretro-render-cpu",
+ "postretro-render-data",
+ "postretro-scripting-core",
+ "postretro-ui",
+ "postretro-visibility",
+ "proptest",
+ "splines",
+ "wgpu",
+ "winit",
 ]
 
 [[package]]

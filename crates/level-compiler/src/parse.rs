@@ -1744,8 +1744,8 @@ mod tests {
 
     /// Vertex winding contract: the first triangle's geometric normal (cross
     /// of the first two edges) must align with the stored side normal.
-    /// Vertices appear CCW when viewed from the front, which is what
-    /// `wgpu::FrontFace::Ccw` requires after upload.
+    /// Vertices appear CCW when viewed from the front, matching the renderer's
+    /// front-face convention after upload.
     #[test]
     fn brush_side_winding_aligns_with_side_normal() {
         let map_data = parse_map_file(&test_map_path(), MapFormat::IdTech2)

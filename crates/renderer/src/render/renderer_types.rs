@@ -5,7 +5,7 @@
 use super::*;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct ClearColor {
+pub struct ClearColor {
     pub r: f64,
     pub g: f64,
     pub b: f64,
@@ -20,6 +20,27 @@ impl From<ClearColor> for wgpu::Color {
             b: color.b,
             a: color.a,
         }
+    }
+}
+
+/// Opaque handle for an acquired swapchain texture ready to present.
+pub struct PresentHandle {
+    output: wgpu::SurfaceTexture,
+}
+
+impl PresentHandle {
+    pub(super) fn new(output: wgpu::SurfaceTexture) -> Self {
+        Self { output }
+    }
+
+    pub(super) fn surface_view(&self) -> wgpu::TextureView {
+        self.output
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default())
+    }
+
+    pub(super) fn present(self) {
+        self.output.present();
     }
 }
 
@@ -351,6 +372,7 @@ pub struct Renderer {
     pub(super) surface: wgpu::Surface<'static>,
     pub(super) surface_config: wgpu::SurfaceConfiguration,
     pub(super) is_surface_configured: bool,
+    pub(super) surface_reconfigure_pending: bool,
 
     /// `has_multi_draw_indirect` flag cached for `finish_full_init` and
     /// `install_level_geometry`. Boot-phase: derived from the adapter, needed to

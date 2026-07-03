@@ -47,14 +47,12 @@ impl Renderer {
     #[cfg(feature = "dev-tools")]
     pub fn render_debug_ui(
         &mut self,
-        surface_texture: &wgpu::SurfaceTexture,
+        present_handle: &mut PresentHandle,
         textures_delta: egui::TexturesDelta,
         paint_jobs: Vec<egui::ClippedPrimitive>,
         pixels_per_point: f32,
     ) -> Result<()> {
-        let surface_view = surface_texture
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
+        let surface_view = present_handle.surface_view();
         let screen_desc = egui_wgpu::ScreenDescriptor {
             size_in_pixels: [self.surface_config.width, self.surface_config.height],
             pixels_per_point,

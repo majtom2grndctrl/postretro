@@ -10,18 +10,19 @@ mod agent;
 mod agent_steering;
 mod audio;
 mod camera;
-mod candidate_cull;
+#[cfg(test)]
+mod candidate_cull {
+    pub use postretro_renderer::{GatherStatus, gather_candidate_leaves};
+}
 #[cfg(test)]
 mod candidate_cull_mirror;
 #[cfg(test)]
 mod candidate_cull_probes;
 mod collision;
-mod compute_cull;
 mod frame_timing;
 mod fx;
 mod health;
 mod input;
-mod lighting;
 mod movement;
 // The runtime nav graph is built in every build whenever a level carries a
 // baked navmesh; pathfinding consumes its query surface.
@@ -41,7 +42,6 @@ mod scripting;
 // held on `App` as `Option<Session>` and built after the first visible frame.
 // See: context/lib/boot_sequence.md §1
 mod session;
-mod shadow_cull;
 mod sim;
 mod startup;
 mod view_feel;
@@ -2483,7 +2483,7 @@ impl ApplicationHandler for App {
                         // edges. No-op unless the `Alt+Shift+N` toggle is on
                         // and the map carried a baked navmesh.
                         if let Some(nav_graph) = self.nav_graph.as_ref() {
-                            renderer.emit_nav_diagnostics(nav_graph);
+                            render::nav_diagnostics::emit(renderer, nav_graph);
                         }
                         // Chase-agent path overlay: corridor + funnel
                         // waypoints for the `Alt+Shift+G` demo agent. Reads
@@ -2559,7 +2559,7 @@ impl ApplicationHandler for App {
                     );
                     renderer.set_ui_snapshot(ui_snapshot);
 
-                    let surface_texture = match renderer.render_frame_indirect(
+                    let present_handle = match renderer.render_frame_indirect(
                         &mut session.font_system,
                         CameraCullVisibility {
                             cells: &visible_cells,
@@ -2596,12 +2596,15 @@ impl ApplicationHandler for App {
                     if let Some(session) = self.session.as_mut() {
                         session.ui_focus_rects = Some(exported_rects);
                     }
-                    if let Some(surface_texture) = surface_texture {
+                    if let Some(present_handle) = present_handle {
+                        #[cfg(feature = "dev-tools")]
+                        let mut present_handle = present_handle;
+
                         #[cfg(feature = "dev-tools")]
                         {
                             if let Some((textures_delta, paint_jobs, scale)) = debug_ui_frame {
                                 if let Err(err) = renderer.render_debug_ui(
-                                    &surface_texture,
+                                    &mut present_handle,
                                     textures_delta,
                                     paint_jobs,
                                     scale,
@@ -2612,15 +2615,15 @@ impl ApplicationHandler for App {
                                 }
                             }
                         }
-                        surface_texture.present();
-                    }
-                    if self.pending_level_log {
-                        // First level frame just submitted — close out
-                        // log line C with the present-cost of the frame
-                        // the user is about to see.
-                        self.level_timings.record("first_level_frame");
-                        log::info!("{}", self.level_timings.summary());
-                        self.pending_level_log = false;
+                        renderer.present(present_handle);
+                        if self.pending_level_log {
+                            // First level frame just presented — close out
+                            // log line C with the present-cost of the frame
+                            // the user is about to see.
+                            self.level_timings.record("first_level_frame");
+                            log::info!("{}", self.level_timings.summary());
+                            self.pending_level_log = false;
+                        }
                     }
                 }
 
@@ -3125,18 +3128,26 @@ impl App {
     /// clear to black, then draw the logo quad once one is installed. The boot
     /// splash is independent of the UI system — `paint_splash` publishes no UI
     /// snapshot and does not query the renderer for a capture mode (the input
-    /// seam stays passthrough during boot). Returns the present outcome so the
-    /// splash schedule advances only on a presented frame; a transient surface
-    /// failure (`NeedsRedraw`) requests another redraw without advancing.
-    fn paint_splash(
-        &mut self,
-        _event_loop: &ActiveEventLoop,
-    ) -> render::splash_pass::PresentOutcome {
+    /// seam stays passthrough during boot). Returns true only after presentation
+    /// so the splash schedule advances on a visible frame; a transient surface
+    /// failure requests another redraw without advancing.
+    fn paint_splash(&mut self, event_loop: &ActiveEventLoop) -> bool {
         match self.renderer.as_mut() {
             // Splash requires only boot-ready (surface/device/queue/boot-splash).
-            Some(renderer) if renderer.is_boot_ready() => renderer.render_splash_frame(),
+            Some(renderer) if renderer.is_boot_ready() => match renderer.render_splash_frame() {
+                Ok(Some(handle)) => {
+                    renderer.present(handle);
+                    true
+                }
+                Ok(None) => false,
+                Err(err) => {
+                    self.exit_result = Err(err);
+                    event_loop.exit();
+                    false
+                }
+            },
             // Surface not yet configured: nothing presented, ask to redraw.
-            _ => render::splash_pass::PresentOutcome::NeedsRedraw,
+            _ => false,
         }
     }
 
@@ -3341,7 +3352,7 @@ impl App {
         renderer.clear_debug_lines();
 
         renderer.set_ui_snapshot(ui_snapshot);
-        let surface_texture = match renderer.render_frame_indirect(
+        let present_handle = match renderer.render_frame_indirect(
             &mut session.font_system,
             CameraCullVisibility {
                 cells: &VisibleCells::DrawAll,
@@ -3370,8 +3381,8 @@ impl App {
         if let Some(session) = self.session.as_mut() {
             session.ui_focus_rects = Some(exported_rects);
         }
-        if let Some(surface_texture) = surface_texture {
-            surface_texture.present();
+        if let Some(present_handle) = present_handle {
+            renderer.present(present_handle);
         }
 
         let frame_cpu = Instant::now().duration_since(frame_start);

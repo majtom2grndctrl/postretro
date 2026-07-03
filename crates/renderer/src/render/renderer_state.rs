@@ -83,6 +83,7 @@ impl Renderer {
             device,
             surface,
             surface_config,
+            surface_reconfigure_pending,
             full,
             ..
         } = self;
@@ -96,6 +97,7 @@ impl Renderer {
             wgpu::PresentMode::AutoNoVsync
         };
         surface.configure(device, surface_config);
+        *surface_reconfigure_pending = false;
         full.vsync_enabled
     }
 

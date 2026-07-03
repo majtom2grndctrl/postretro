@@ -9,6 +9,7 @@ members = [
     "crates/model",
     "crates/render-data",
     "crates/render-cpu",
+    "crates/renderer",
     "crates/lighting",
     "crates/level-loader",
     "crates/visibility",
@@ -158,6 +159,7 @@ postretro-level-format = { path = "crates/level-format" }
 postretro-model = { path = "crates/model" }
 postretro-render-data = { path = "crates/render-data" }
 postretro-render-cpu = { path = "crates/render-cpu" }
+postretro-renderer = { path = "crates/renderer" }
 postretro-lighting = { path = "crates/lighting" }
 postretro-level-loader = { path = "crates/level-loader" }
 postretro-visibility = { path = "crates/visibility" }

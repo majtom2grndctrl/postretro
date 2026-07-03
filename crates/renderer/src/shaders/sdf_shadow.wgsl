@@ -1,7 +1,7 @@
 // Half-resolution SDF static-occluder shadow compute pass.
 // See: context/lib/rendering_pipeline.md §7
 
-// ---- Group 0: SDF atlas (mirrors crates/postretro/src/render/sdf_atlas.rs) ----
+// ---- Group 0: SDF atlas (mirrors crates/renderer/src/render/sdf_atlas.rs) ----
 
 struct SdfAtlasMeta {
     world_min: vec3<f32>,

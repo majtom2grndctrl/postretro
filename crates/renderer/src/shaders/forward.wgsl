@@ -130,7 +130,7 @@ struct ChunkGridInfo {
 // A 3D texture (@binding(14) sh_depth_moments) carries per-probe depth moments
 // (R = mean, G = mean²) for the depth-aware visibility term.
 // When `grid.has_sh_volume` is 0 the bindings point at dummy textures and
-// the shader skips SH sampling. See postretro/src/render/sh_volume.rs.
+// the shader skips SH sampling. See crates/renderer/src/render/sh_volume.rs.
 struct ShGridInfo {
     grid_origin: vec3<f32>,
     has_sh_volume: u32,
@@ -152,7 +152,7 @@ struct ShGridInfo {
 };
 
 // Per-light animation descriptor — matches ANIMATION_DESCRIPTOR_SIZE (48 B)
-// in postretro/src/render/sh_volume.rs. Field order diverges from the spec
+// in crates/renderer/src/render/sh_volume.rs. Field order diverges from the spec
 // prose to hit exactly 48 bytes: with the spec's original order, color_count
 // ends at byte 44 and trailing vec2<f32> padding (AlignOf=8) would be pushed
 // to 48, making the struct 56 B and stride 64. Instead we pack four scalars
@@ -653,7 +653,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     //   7 = AnimatedDeltaOnly  — animated SH delta (no separate term yet)
     //   8 = DynamicOnly        — dynamic direct lights only
     //   9 = SpecularOnly       — specular only
-    // See `LightingIsolation` in postretro/src/render/mod.rs.
+    // See `LightingIsolation` in crates/renderer/src/render/mod.rs.
     let use_lightmap = (iso == 0u) || (iso == 2u) || (iso == 5u);
     // Modes 6 and 7 both route through `use_indirect` until Task E adds a
     // separate animated-delta term; mode 7 shows nothing useful intentionally.

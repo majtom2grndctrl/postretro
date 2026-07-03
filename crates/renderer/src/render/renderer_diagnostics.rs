@@ -229,7 +229,7 @@ impl Renderer {
     /// pre-UI visibility, independent of the active GPU cull path. `None` when
     /// no cull pipeline is loaded.
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
-    pub fn visibility_diagnostics(&self) -> Option<crate::compute_cull::BvhCullDiagnostics> {
+    pub(crate) fn visibility_diagnostics(&self) -> Option<crate::compute_cull::BvhCullDiagnostics> {
         self.full().bvh_cull_diagnostics
     }
 
@@ -248,14 +248,6 @@ impl Renderer {
     #[allow(dead_code)]
     pub fn has_sdf_atlas(&self) -> bool {
         self.full().sdf_atlas_resources.present
-    }
-
-    /// Borrow the SDF atlas resources. The SDF shadow pass consumes the
-    /// bind group + layout here; no other pass should bind these — forward
-    /// gets only an upsampled shadow-factor texture in group 5.
-    #[allow(dead_code)]
-    pub fn sdf_atlas_resources(&self) -> &SdfAtlasResources {
-        &self.full().sdf_atlas_resources
     }
 
     /// Lightmap bake mode read from the PRL (Shadowed = visibility baked in).
@@ -314,16 +306,23 @@ impl Renderer {
         );
     }
 
-    /// Emit navmesh diagnostic debug lines (region rectangles + portal edges)
-    /// from the runtime nav graph. No-op while the overlay is toggled off.
-    /// Must run after `clear_debug_lines` and before the frame's debug-line
-    /// pass, mirroring `emit_sh_diagnostics`.
+    /// Push one depth-tested diagnostic line segment into the per-frame
+    /// debug-line buffer. Unconditional: the segment handed in is always
+    /// buffered. Binary-side diagnostics translate their domain data into plain
+    /// segments so renderer APIs do not name game/nav types, and gate their own
+    /// emission (e.g. via `nav_overlay_enabled`) before calling.
     #[cfg(feature = "dev-tools")]
-    pub fn emit_nav_diagnostics(&mut self, graph: &crate::nav::NavGraph) {
-        if !self.full().show_navmesh {
-            return;
-        }
-        nav_diagnostics::emit(graph, &mut self.full_mut().debug_lines);
+    pub fn push_debug_line(&mut self, start: Vec3, end: Vec3, color: [u8; 4]) {
+        self.full_mut().debug_lines.push_line(start, end, color);
+    }
+
+    /// Push one always-on-top diagnostic line segment. Unconditional and kept
+    /// graph-agnostic for the same reasons as `push_debug_line`.
+    #[cfg(feature = "dev-tools")]
+    pub fn push_debug_line_overlay(&mut self, start: Vec3, end: Vec3, color: [u8; 4]) {
+        self.full_mut()
+            .debug_lines
+            .push_line_overlay(start, end, color);
     }
 
     /// Emit agent path/corridor diagnostic debug lines: the corridor from the
@@ -331,12 +330,11 @@ impl Renderer {
     /// plus a per-waypoint cross marker sized to the capsule `radius`. Gated by
     /// the same navmesh overlay toggle (`Alt+Shift+N`) so the path draws
     /// alongside the region/portal overlay. Must run after `clear_debug_lines`
-    /// and before the frame's debug-line pass, mirroring `emit_nav_diagnostics`.
+    /// and before the frame's debug-line pass so the path shares the same
+    /// per-frame debug-line lifecycle as other overlay emitters.
     ///
     /// Keeps all wgpu renderer-side (Renderer-owns-GPU): the call site hands in
-    /// plain agent geometry, never a debug-line / wgpu handle. The render-private
-    /// `nav_diagnostics::emit_agent_path` (it is `pub(super)`) is reached only
-    /// through this wrapper.
+    /// plain agent geometry, never a debug-line / wgpu handle.
     #[cfg(feature = "dev-tools")]
     pub fn emit_agent_path_overlay(
         &mut self,
@@ -348,13 +346,40 @@ impl Renderer {
         if !self.full().show_navmesh {
             return;
         }
-        nav_diagnostics::emit_agent_path(
-            position,
-            path,
-            cursor,
-            radius,
-            &mut self.full_mut().debug_lines,
-        );
+        const COLOR_AGENT_PATH: [u8; 4] = [120, 255, 120, 255];
+        const COLOR_AGENT_WAYPOINT: [u8; 4] = [255, 120, 220, 255];
+
+        let remaining = path.get(cursor..).unwrap_or(&[]);
+        if remaining.is_empty() {
+            return;
+        }
+
+        let mut prev = position;
+        for &waypoint in remaining {
+            self.full_mut()
+                .debug_lines
+                .push_line(prev, waypoint, COLOR_AGENT_PATH);
+            prev = waypoint;
+        }
+
+        let arm = radius.max(0.05);
+        for &waypoint in remaining {
+            self.full_mut().debug_lines.push_line(
+                waypoint - Vec3::new(arm, 0.0, 0.0),
+                waypoint + Vec3::new(arm, 0.0, 0.0),
+                COLOR_AGENT_WAYPOINT,
+            );
+            self.full_mut().debug_lines.push_line(
+                waypoint - Vec3::new(0.0, 0.0, arm),
+                waypoint + Vec3::new(0.0, 0.0, arm),
+                COLOR_AGENT_WAYPOINT,
+            );
+            self.full_mut().debug_lines.push_line(
+                waypoint - Vec3::new(0.0, arm, 0.0),
+                waypoint + Vec3::new(0.0, arm, 0.0),
+                COLOR_AGENT_WAYPOINT,
+            );
+        }
     }
 
     /// Draw an "ugly-but-honest" wireframe capsule at each replicated remote
@@ -383,6 +408,14 @@ impl Renderer {
         for &center in centers {
             debug_lines.push_capsule_overlay(center, radius, half_height, REMOTE_ENTITY_COLOR);
         }
+    }
+
+    /// `true` when the navmesh overlay is toggled on (`Alt+Shift+N`). Lets a
+    /// diagnostics caller gate its own per-frame segment emission once, up
+    /// front, instead of building segments the renderer would drop.
+    #[cfg(feature = "dev-tools")]
+    pub fn nav_overlay_enabled(&self) -> bool {
+        self.full().show_navmesh
     }
 
     /// Flip the navmesh overlay on/off. Bound to `Alt+Shift+N`.

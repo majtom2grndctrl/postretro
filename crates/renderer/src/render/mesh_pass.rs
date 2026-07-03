@@ -402,10 +402,11 @@ struct StoredSnapshot {
 /// `model_bounds` precedent) so the smooth-interrupt logic is unit-testable
 /// without a `wgpu::Device`.
 ///
-/// Lifecycle: a capture instruction installs (or refreshes) an entry; a planned
-/// frame without an active snapshot fade for that entity (fade over, or tag
-/// mismatch on replacement) drops it. Bounded by planned-instance count and
-/// emptied wholesale at level load by [`MeshPass::clear_for_level_load`].
+/// Lifecycle: a capture instruction installs (or refreshes) an entry; end-of-frame
+/// retention keeps only entries whose entity has an active matching snapshot fade
+/// in the current plan. Culled, budget-dropped, despawned, and no-mesh frames
+/// evict stale entries. Emptied wholesale at level load by
+/// [`MeshPass::clear_for_level_load`].
 #[derive(Debug, Default)]
 struct SnapshotStore {
     entries: HashMap<u32, StoredSnapshot>,
@@ -493,9 +494,16 @@ impl SnapshotStore {
             .map(|e| e.pose.as_slice())
     }
 
-    /// Drop an entity's entry (fade over, or a replacement-fade tag mismatch).
-    fn drop_entry(&mut self, seed: u32) {
-        self.entries.remove(&seed);
+    /// End-of-frame retention. A snapshot survives only when the same entity had
+    /// an active snapshot fade whose tag matched the stored capture this frame.
+    fn retain_active_snapshot_fades(&mut self, active_fades: &HashMap<u32, SnapshotTag>) {
+        if active_fades.is_empty() {
+            self.entries.clear();
+            return;
+        }
+
+        self.entries
+            .retain(|seed, stored| active_fades.get(seed).is_some_and(|tag| *tag == stored.tag));
     }
 
     /// Empty the store (level-load clear).
@@ -816,10 +824,10 @@ pub struct MeshPass {
 
     /// Per-entity `"smooth"`-interrupt snapshot store, keyed by entity seed. A
     /// GPU-free CPU map (the `model_bounds` precedent): a capture instruction
-    /// installs an entry, a planned frame without an active snapshot fade drops
-    /// it, and [`MeshPass::clear_for_level_load`] empties it at level load. The
-    /// frozen pose is the blend source a `"smooth"` fade resumes from with no
-    /// discontinuity.
+    /// installs an entry, and end-of-frame retention keeps it only while the
+    /// current plan has an active matching snapshot fade for that entity. Level
+    /// load clears the store. The frozen pose is the blend source a `"smooth"`
+    /// fade resumes from with no discontinuity.
     snapshot_store: SnapshotStore,
 
     /// Per-entity palette cache for animation time-slicing, keyed by
@@ -1547,11 +1555,11 @@ impl MeshPass {
     /// the render clock.
     ///
     /// Snapshot-store lifecycle: a capture installs/refreshes an entry (idempotent
-    /// by tag); an instance whose fade is NOT an active matching snapshot fade
-    /// drops its entry (fade over, or a replacement-fade tag mismatch). A
-    /// snapshot fade whose store entry is missing (its capture frame was culled /
-    /// budget-dropped) degrades to the fallback clip — a discontinuity no one saw
-    /// because the entity was not drawn at the interrupt instant.
+    /// by tag), then frame-end retention keeps only entries for entities with an
+    /// active matching snapshot fade in the current plan. A snapshot fade whose
+    /// store entry is missing (its capture frame was culled / budget-dropped)
+    /// degrades to the fallback clip — a discontinuity no one saw because the
+    /// entity was not drawn at the interrupt instant.
     ///
     /// Cull is the caller's job — see [`postretro_render_cpu::mesh_pass::mesh_visible`];
     /// the plan already holds only surviving, in-budget instances.
@@ -1562,6 +1570,8 @@ impl MeshPass {
         scratch: &mut Vec<BonePaletteEntry>,
     ) {
         if plan.groups.is_empty() {
+            self.snapshot_store
+                .retain_active_snapshot_fades(&HashMap::new());
             self.palette_cache.end_frame();
             return;
         }
@@ -1585,6 +1595,7 @@ impl MeshPass {
         let measure = pose_sample_stats.is_some();
         let mut sampled_instances: u64 = 0;
         let mut sample_elapsed = std::time::Duration::ZERO;
+        let mut active_snapshot_fades: HashMap<u32, SnapshotTag> = HashMap::new();
 
         for group in &plan.groups {
             let Some(model) = models.get(&group.model) else {
@@ -1615,18 +1626,14 @@ impl MeshPass {
                     );
                 }
 
-                // Lifecycle: drop this entity's store entry unless its fade is an
-                // active snapshot fade whose tag matches a stored entry. The
-                // capture above just installed the matching entry on a capture
-                // frame, so an in-progress smooth fade survives; a finished or
-                // clip/snap fade clears it.
-                let keep_snapshot = matches!(
-                    inst.sample.fade.map(|f| f.from),
-                    Some(FadeSource::Snapshot { tag, .. })
-                        if snapshot_store.matching(inst.phase_seed, tag).is_some()
-                );
-                if !keep_snapshot {
-                    snapshot_store.drop_entry(inst.phase_seed);
+                // Retention mark: the capture above just installed the matching
+                // entry on a capture frame, so this frame's snapshot fade can
+                // sample it below and keep it at frame end. Missing/stale tags are
+                // left unmarked and will fall back during sampling, then evict.
+                if let Some(FadeSource::Snapshot { tag, .. }) = inst.sample.fade.map(|f| f.from) {
+                    if snapshot_store.matching(inst.phase_seed, tag).is_some() {
+                        active_snapshot_fades.insert(inst.phase_seed, tag);
+                    }
                 }
 
                 // Time-slicing decision. Sample when the collector asked
@@ -1678,6 +1685,10 @@ impl MeshPass {
         // this frame's planned instances (bounded by MAX_INSTANCES / the palette
         // budget) and a culled-out entity's stale run does not linger.
         palette_cache.end_frame();
+
+        // Evict snapshots after sampling, not before: a capture frame's snapshot
+        // fade must resolve against the capture that landed earlier in this pass.
+        snapshot_store.retain_active_snapshot_fades(&active_snapshot_fades);
 
         // Fold this frame's pose-sampling tallies in and flush the rate-limited
         // line when the interval elapses. Only `Some` under POSTRETRO_GPU_TIMING.
@@ -2705,6 +2716,15 @@ mod tests {
     // per-instance blend selection are unit-testable without a device. These pin:
     // single-clip steady state, clip→clip + snapshot→clip blends, the missed-
     // capture degrade-to-fallback, idempotent capture, and the store lifecycle.
+    //
+    // Paired producer coverage lives game-side in
+    // `scripting::systems::mesh_anim`:
+    // - `smooth_interrupt_capture_freezes_interrupted_blend_at_entry_stamp`
+    // - `smooth_interrupt_capture_can_chain_from_prior_snapshot_tag`
+    //
+    // Together, those tests prove the game layer emits the CPU-only
+    // `CaptureInstruction`/`MeshSampleParams` contract and these tests prove the
+    // renderer consumes it without exposing renderer internals across crates.
 
     use glam::{Mat4, Quat};
     use postretro_model::anim::Loop as AnimLoop;
@@ -2873,6 +2893,60 @@ mod tests {
         );
     }
 
+    /// Mirrors the public CPU payload produced by the game-side
+    /// `smooth_interrupt_capture_freezes_interrupted_blend_at_entry_stamp` test:
+    /// A→B is halfway through when C smoothly interrupts, so the renderer freezes
+    /// S = blend(A, B, 0.5), then samples C's fade from S with no pop.
+    #[test]
+    fn smooth_interrupt_cpu_contract_reproduces_snapshot_then_eases_to_primary() {
+        let skel = one_joint_skeleton();
+        let clips = [
+            const_x_clip("idle", 0.0),
+            const_x_clip("walk", 10.0),
+            const_x_clip("run", 100.0),
+        ];
+        let mut store = SnapshotStore::default();
+        let tag = 1.1_f64.to_bits();
+
+        let capture = CaptureInstruction {
+            seed: 7,
+            tag,
+            outgoing: FadeSource::Clip(clip_leg(0, 1.1)),
+            incoming: clip_leg(1, 0.1),
+            weight: 0.5,
+        };
+        let mut scratch = Vec::new();
+        store.apply_capture(&capture, &skel, |i| clips.get(i), &mut scratch);
+        let captured = store.matching(7, tag).expect("snapshot stored");
+        assert!(
+            (captured[0].translation.x - 5.0).abs() < 1.0e-4,
+            "S = blend(A=0, B=10, 0.5)"
+        );
+
+        let sample = |weight| MeshSampleParams {
+            primary: clip_leg(2, 0.0),
+            fade: Some(MeshFade {
+                from: FadeSource::Snapshot {
+                    tag,
+                    fallback: clip_leg(1, 0.1),
+                },
+                weight,
+            }),
+        };
+        let mut out = Vec::new();
+        sample_instance(&sample(0.0), &skel, &store, 7, &|i| clips.get(i), &mut out);
+        assert!(
+            (palette_x(&out) - 5.0).abs() < 1.0e-4,
+            "interrupt-instant sample starts from captured S"
+        );
+
+        sample_instance(&sample(0.5), &skel, &store, 7, &|i| clips.get(i), &mut out);
+        assert!(
+            (palette_x(&out) - 52.5).abs() < 1.0e-4,
+            "mid-fade sample eases from S=5 toward C=100"
+        );
+    }
+
     /// Capture is IDEMPOTENT by tag: a re-emission under the same tag evaluates
     /// nothing (a frozen-clock re-render does not re-capture a moved pose).
     #[test]
@@ -3015,291 +3089,8 @@ mod tests {
         );
     }
 
-    // --- End-to-end smooth-interrupt palette continuity (game side → renderer) --
-    //
-    // Drives the WHOLE smooth-interrupt path with no GPU: build a `MeshAnimation`,
-    // start an A→B fade, switch to C (smooth) mid-flight, run the game-side resolve
-    // pass + `animate_entity`, then feed the emitted capture + sample params into
-    // `apply_capture`/`sample_instance` and read the palette. Asserts the pose at
-    // the interrupt instant equals the pre-switch in-flight blend (no pop) and
-    // then eases toward C. Regression: a "smooth" interrupt that captured the
-    // outgoing leg (or dropped the in-flight blend's OUT leg) snapped instead.
-
-    use postretro_entities::components::mesh::{
-        AnimationState as GameState, FadeSourceKind, InterruptPolicy, MeshAnimation,
-    };
-    use std::collections::HashMap as GameMap;
-
-    /// Build a game-side `AnimationState` with an explicit resolved clip index.
-    fn game_state(clip: &str, crossfade_ms: f32, clip_index: usize) -> GameState {
-        GameState {
-            clip: clip.into(),
-            looping: true,
-            crossfade_ms,
-            interrupt: InterruptPolicy::Smooth,
-            clip_index: Some(clip_index),
-        }
-    }
-
-    /// A three-state animation: A=idle(clip0), B=walk(clip1), C=run(clip2), all
-    /// looping, B/C fading in over `b_ms`/`c_ms`. Used to drive an A→B fade then a
-    /// smooth interrupt to C.
-    fn abc_animation(b_ms: f32, c_ms: f32) -> MeshAnimation {
-        let mut states = GameMap::new();
-        states.insert("A".into(), game_state("idle", 0.0, 0));
-        states.insert("B".into(), game_state("walk", b_ms, 1));
-        states.insert("C".into(), game_state("run", c_ms, 2));
-        MeshAnimation::new(states, "A".into())
-    }
-
     #[test]
-    fn smooth_interrupt_end_to_end_no_pop_then_eases_to_c() {
-        // A→B fade in flight (B over 0.2s); at t=1.1 (w_AB = 0.5) interrupt to C
-        // (smooth, C over 0.1s). The interrupt-instant pose must equal
-        // blend(A, B, 0.5) with NO discontinuity, then ease toward C.
-        let skel = one_joint_skeleton();
-        // clip0 A x=0, clip1 B x=10, clip2 C x=100 (const, so blends are exact).
-        let clips = [
-            const_x_clip("idle", 0.0),
-            const_x_clip("walk", 10.0),
-            const_x_clip("run", 100.0),
-        ];
-        let resolve = |i: usize| clips.get(i);
-
-        let mut anim = abc_animation(200.0, 100.0);
-        // A entered at 0.0 (resolved), B fading in from A at 1.0.
-        anim.entered_at = Some(0.0);
-        anim.current_state = "B".into();
-        anim.previous_state = Some("A".into());
-        anim.previous_entered_at = Some(0.0);
-        // B's own entry stamp:
-        anim.entered_at = Some(1.0);
-        anim.fade_source = FadeSourceKind::Clip;
-
-        // Mid-B-fade: interrupt to C (smooth). Mirror what
-        // `switch_animation_state` records for a smooth interrupt, then resolve C's
-        // stamp to the interrupt instant t2 = 1.1.
-        anim.interrupted_outgoing = Some(
-            postretro_entities::components::mesh::InterruptedOutgoing::Clip {
-                state: "A".into(),
-                entered_at: 0.0,
-            },
-        );
-        anim.previous_state = Some("B".into());
-        anim.previous_entered_at = Some(1.0);
-        anim.current_state = "C".into();
-        anim.fade_source = FadeSourceKind::Snapshot;
-        let t2 = 1.1_f64; // C entered_at — the interrupt instant
-        anim.entered_at = Some(t2);
-
-        // Expected in-flight pose the entity showed JUST before the switch:
-        // blend(A, B, w_AB) with w_AB = (t2 - B_stamp)/B_crossfade = 0.1/0.2 = 0.5.
-        let expected_s_x = 0.0 * 0.5 + 10.0 * 0.5; // = 5.0
-
-        // Game side: emit the capture + sample params at the interrupt instant.
-        let result =
-            crate::scripting_systems::mesh_anim::animate_entity(&anim, t2, 0.0).expect("animates");
-        let capture = result.capture.expect("smooth interrupt emits a capture");
-
-        // Renderer side: apply the capture, then sample the pose this frame.
-        let mut store = SnapshotStore::default();
-        let mut scratch = Vec::new();
-        store.apply_capture(&capture, &skel, resolve, &mut scratch);
-
-        let mut out = Vec::new();
-        sample_instance(&result.sample, &skel, &store, 0, &resolve, &mut out);
-        assert!(
-            (palette_x(&out) - expected_s_x).abs() < 1.0e-3,
-            "interrupt-instant pose must equal the in-flight blend {expected_s_x}, got {}",
-            palette_x(&out),
-        );
-
-        // Now advance into C's fade window: the pose must ease toward C (x=100),
-        // moving away from S. At t = t2 + 0.05 (halfway through C's 0.1s window)
-        // the snapshot→C blend weight is 0.5, so x = blend(5.0, 100.0, 0.5) = 52.5.
-        let mid = crate::scripting_systems::mesh_anim::animate_entity(&anim, t2 + 0.05, 0.0)
-            .expect("animates mid-C-fade");
-        // The capture is idempotent (same tag) — re-applying changes nothing.
-        store.apply_capture(
-            &mid.capture.expect("re-emitted capture under frozen stamp"),
-            &skel,
-            resolve,
-            &mut scratch,
-        );
-        let mut out_mid = Vec::new();
-        sample_instance(&mid.sample, &skel, &store, 0, &resolve, &mut out_mid);
-        let x_mid = palette_x(&out_mid);
-        assert!(
-            (x_mid - 52.5).abs() < 1.0e-3,
-            "mid-C-fade pose eases from S(5.0) toward C(100.0): expected 52.5, got {x_mid}",
-        );
-        assert!(
-            x_mid > expected_s_x,
-            "the pose moves toward C, not back toward the outgoing leg",
-        );
-    }
-
-    #[test]
-    fn smooth_interrupt_end_to_end_chained_snapshot_no_pop() {
-        // Snapshot-of-snapshot: a smooth interrupt over an ALREADY-smooth fade.
-        // A→B interrupted to C (smooth) leaves a snapshot S1 = blend(A,B,0.5).
-        // Then C is interrupted to D (smooth) mid-C-fade: the new capture must
-        // blend against S1 (store HIT) so D's fade resumes from the live pose
-        // (blend(S1, C, w_C)) with no discontinuity.
-        let skel = one_joint_skeleton();
-        let clips = [
-            const_x_clip("idle", 0.0),  // A clip0
-            const_x_clip("walk", 10.0), // B clip1
-            const_x_clip("run", 100.0), // C clip2
-            const_x_clip("dash", 50.0), // D clip3
-        ];
-        let resolve = |i: usize| clips.get(i);
-
-        // First interrupt (A→B → C) at t2a = 1.1, capturing S1 = blend(A,B,0.5)=5.0,
-        // tagged bits(1.1). Build the post-first-interrupt anim directly.
-        let mut anim = {
-            let mut states = GameMap::new();
-            states.insert("A".into(), game_state("idle", 0.0, 0));
-            states.insert("B".into(), game_state("walk", 200.0, 1));
-            states.insert("C".into(), game_state("run", 100.0, 2));
-            states.insert("D".into(), game_state("dash", 100.0, 3));
-            MeshAnimation::new(states, "A".into())
-        };
-        let t2a = 1.1_f64;
-        anim.current_state = "C".into();
-        anim.previous_state = Some("B".into());
-        anim.previous_entered_at = Some(1.0);
-        anim.entered_at = Some(t2a);
-        anim.fade_source = FadeSourceKind::Snapshot;
-        anim.interrupted_outgoing = Some(
-            postretro_entities::components::mesh::InterruptedOutgoing::Clip {
-                state: "A".into(),
-                entered_at: 0.0,
-            },
-        );
-
-        // Apply the first capture into the store (S1 tagged bits(1.1)).
-        let first = crate::scripting_systems::mesh_anim::animate_entity(&anim, t2a, 0.0)
-            .unwrap()
-            .capture
-            .expect("first smooth interrupt capture");
-        let mut store = SnapshotStore::default();
-        let mut scratch = Vec::new();
-        store.apply_capture(&first, &skel, resolve, &mut scratch);
-        let s1_x = palette_x_trs(store.matching(0, t2a.to_bits()).expect("S1 stored"));
-        assert!((s1_x - 5.0).abs() < 1.0e-3, "S1 = blend(A,B,0.5) = 5.0");
-
-        // Second interrupt (C → D, smooth) at t2b = t2a + 0.05 (w_C = 0.5 over C's
-        // 0.1s window). The interrupted fade was the SNAPSHOT fade S1→C, so D's
-        // capture references the prior snapshot S1 (tag bits(t2a)) and blends
-        // blend(S1, C, 0.5) = blend(5.0, 100.0, 0.5) = 52.5 — the live pose.
-        let t2b = t2a + 0.05;
-        anim.current_state = "D".into();
-        anim.previous_state = Some("C".into());
-        anim.previous_entered_at = Some(t2a);
-        anim.entered_at = Some(t2b);
-        anim.fade_source = FadeSourceKind::Snapshot;
-        // The interrupted fade (S1→C) had a SNAPSHOT outgoing: stash references S1.
-        anim.interrupted_outgoing = Some(
-            postretro_entities::components::mesh::InterruptedOutgoing::Snapshot {
-                tag: t2a.to_bits(),
-            },
-        );
-
-        let second = crate::scripting_systems::mesh_anim::animate_entity(&anim, t2b, 0.0)
-            .expect("animates")
-            .capture
-            .expect("second (chained) smooth interrupt capture");
-        store.apply_capture(&second, &skel, resolve, &mut scratch);
-        let s2_x = palette_x_trs(store.matching(0, t2b.to_bits()).expect("S2 stored"));
-        assert!(
-            (s2_x - 52.5).abs() < 1.0e-3,
-            "chained capture S2 = blend(S1, C, 0.5) = 52.5 (no pop), got {s2_x}",
-        );
-        // And the prior snapshot S1 is superseded.
-        assert!(
-            store.matching(0, t2a.to_bits()).is_none(),
-            "S1 is superseded by the chained capture S2",
-        );
-
-        // Sample D's fade at its instant (weight 0) → reproduces S2 exactly.
-        let mut out = Vec::new();
-        let sample = crate::scripting_systems::mesh_anim::animate_entity(&anim, t2b, 0.0)
-            .unwrap()
-            .sample;
-        sample_instance(&sample, &skel, &store, 0, &resolve, &mut out);
-        assert!(
-            (palette_x(&out) - 52.5).abs() < 1.0e-3,
-            "D's fade at the interrupt instant reproduces S2 (no discontinuity)",
-        );
-    }
-
-    #[test]
-    fn culled_interrupt_frame_reconstructs_same_snapshot_idempotently() {
-        // The capture frame is CULLED (never applied). On the first PLANNED frame —
-        // later in C's fade window — the re-evaluated capture must reconstruct the
-        // SAME interrupt-instant snapshot S, because legs are sampled at the frozen
-        // entered_at, not the moving clock. Regression: sampling at the live clock
-        // installed a drifted mid-fade pose on a late capture.
-        let skel = one_joint_skeleton();
-        let clips = [
-            const_x_clip("idle", 0.0),
-            const_x_clip("walk", 10.0),
-            const_x_clip("run", 100.0),
-        ];
-        let resolve = |i: usize| clips.get(i);
-
-        let mut anim = abc_animation(200.0, 100.0);
-        let t2 = 1.1_f64;
-        anim.current_state = "C".into();
-        anim.previous_state = Some("B".into());
-        anim.previous_entered_at = Some(1.0);
-        anim.entered_at = Some(t2);
-        anim.fade_source = FadeSourceKind::Snapshot;
-        anim.interrupted_outgoing = Some(
-            postretro_entities::components::mesh::InterruptedOutgoing::Clip {
-                state: "A".into(),
-                entered_at: 0.0,
-            },
-        );
-
-        // The capture as it would be emitted AT the interrupt instant (the frame
-        // that got culled — never applied to the store).
-        let at_instant = crate::scripting_systems::mesh_anim::animate_entity(&anim, t2, 0.0)
-            .unwrap()
-            .capture
-            .expect("interrupt-instant capture");
-
-        // The capture re-emitted on a LATER planned frame (clock advanced to
-        // t2 + 0.06, deep into C's fade). It must be byte-identical: same tag, same
-        // outgoing/incoming legs (frozen at t2), same weight.
-        let late = crate::scripting_systems::mesh_anim::animate_entity(&anim, t2 + 0.06, 0.0)
-            .unwrap()
-            .capture
-            .expect("late re-emitted capture");
-        assert_eq!(
-            at_instant, late,
-            "a culled capture, re-emitted late, reconstructs the SAME instruction",
-        );
-
-        // And applying the late capture to a cold store yields S = blend(A,B,0.5).
-        let mut store = SnapshotStore::default();
-        let mut scratch = Vec::new();
-        store.apply_capture(&late, &skel, resolve, &mut scratch);
-        let s_x = palette_x_trs(store.matching(0, t2.to_bits()).expect("S stored late"));
-        assert!(
-            (s_x - 5.0).abs() < 1.0e-3,
-            "the late capture reconstructs the interrupt-instant S = 5.0, got {s_x}",
-        );
-    }
-
-    /// Read joint 0's X translation directly out of a stored snapshot's TRS buffer.
-    fn palette_x_trs(pose: &[LocalTrs]) -> f32 {
-        pose[0].translation.x
-    }
-
-    #[test]
-    fn snapshot_store_drop_and_clear() {
+    fn snapshot_store_empty_frame_evicts_captured_entry() {
         let skel = one_joint_skeleton();
         let clips = [const_x_clip("a", 0.0), const_x_clip("b", 1.0)];
         let mut store = SnapshotStore::default();
@@ -3317,10 +3108,60 @@ mod tests {
             &mut scratch,
         );
         assert!(store.matching(1, 5).is_some());
-        store.drop_entry(1);
+
+        // Regression: an empty/no-entity plan used to skip snapshot-store
+        // lifecycle work, leaving captured smooth-interrupt poses alive until
+        // level load.
+        store.retain_active_snapshot_fades(&HashMap::new());
         assert!(
             store.matching(1, 5).is_none(),
-            "drop_entry removes the entry"
+            "a frame with no active planned snapshot fades evicts the capture"
+        );
+    }
+
+    #[test]
+    fn snapshot_store_retains_only_active_matching_fades_and_clear_empties_it() {
+        let skel = one_joint_skeleton();
+        let clips = [const_x_clip("a", 0.0), const_x_clip("b", 1.0)];
+        let mut store = SnapshotStore::default();
+        let mut scratch = Vec::new();
+
+        store.apply_capture(
+            &CaptureInstruction {
+                seed: 1,
+                tag: 5,
+                outgoing: FadeSource::Clip(clip_leg(0, 0.0)),
+                incoming: clip_leg(1, 0.0),
+                weight: 0.5,
+            },
+            &skel,
+            |i| clips.get(i),
+            &mut scratch,
+        );
+
+        store.apply_capture(
+            &CaptureInstruction {
+                seed: 2,
+                tag: 7,
+                outgoing: FadeSource::Clip(clip_leg(0, 0.0)),
+                incoming: clip_leg(1, 0.0),
+                weight: 0.5,
+            },
+            &skel,
+            |i| clips.get(i),
+            &mut scratch,
+        );
+
+        let mut active = HashMap::new();
+        active.insert(1, 5);
+        store.retain_active_snapshot_fades(&active);
+        assert!(
+            store.matching(1, 5).is_some(),
+            "matching active fade survives"
+        );
+        assert!(
+            store.matching(2, 7).is_none(),
+            "absent planned entity is evicted"
         );
 
         // A tag mismatch never matches even when an entry exists.
@@ -3338,6 +3179,7 @@ mod tests {
         );
         assert!(store.matching(2, 6).is_none(), "tag mismatch never matches");
         store.clear();
+        assert!(store.matching(1, 5).is_none(), "clear empties kept entries");
         assert!(store.matching(2, 5).is_none(), "clear empties the store");
     }
 

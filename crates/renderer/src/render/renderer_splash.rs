@@ -7,9 +7,13 @@
 
 use super::*;
 
-use crate::render::splash_pass::PresentOutcome;
-
 impl Renderer {
+    /// Present an acquired frame handle. Surface ownership stays inside the
+    /// renderer; callers only decide whether to present a returned handle.
+    pub fn present(&self, handle: PresentHandle) {
+        handle.present();
+    }
+
     /// Upload the decoded boot-splash logo into the boot splash pass and build
     /// its bind group. The app decodes the PNG on the boot thread and hands the
     /// pixels here — the renderer owns all GPU work. Idempotent: a re-install
@@ -21,38 +25,19 @@ impl Renderer {
     }
 
     /// Render one boot-splash frame to the swapchain: clear to black, then draw
-    /// the logo quad when one is installed. Returns `Presented` once a command
-    /// buffer is submitted and the surface texture presents; a transient surface
-    /// failure returns `NeedsRedraw` so startup re-requests a redraw WITHOUT
-    /// advancing its splash schedule or recording first-frame timings.
+    /// the logo quad when one is installed. Returns a present handle once a
+    /// command buffer is submitted; a transient or recoverable surface failure
+    /// returns `Ok(None)` so startup re-requests a redraw WITHOUT advancing its
+    /// splash schedule or recording first-frame timings.
     ///
     /// The boot splash writes the swapchain directly — it never touches
     /// `scene_color`, the UI pass, or `UiReadSnapshot` (rendering_pipeline §7.8).
-    pub fn render_splash_frame(&mut self) -> PresentOutcome {
-        let output = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(tex) => tex,
-            wgpu::CurrentSurfaceTexture::Suboptimal(tex) => {
-                self.surface.configure(&self.device, &self.surface_config);
-                tex
-            }
-            wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
-                return PresentOutcome::NeedsRedraw;
-            }
-            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-                // Reconfigure and ask for another redraw without advancing the
-                // splash state — the frame never presented.
-                self.surface.configure(&self.device, &self.surface_config);
-                return PresentOutcome::NeedsRedraw;
-            }
-            wgpu::CurrentSurfaceTexture::Validation => {
-                log::warn!("[Renderer] surface validation error during splash; requesting redraw");
-                return PresentOutcome::NeedsRedraw;
-            }
+    pub fn render_splash_frame(&mut self) -> Result<Option<PresentHandle>> {
+        let Some(handle) = self.acquire_present_handle("splash frame")? else {
+            return Ok(None);
         };
 
-        let view = output
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
+        let view = handle.surface_view();
 
         let mut encoder = self
             .device
@@ -65,8 +50,7 @@ impl Renderer {
             .encode(&self.queue, &mut encoder, &view, viewport);
 
         self.queue.submit(std::iter::once(encoder.finish()));
-        output.present();
-        PresentOutcome::Presented
+        Ok(Some(handle))
     }
 
     /// Drop the uploaded boot-splash logo so post-handoff frames record nothing.
@@ -78,7 +62,7 @@ impl Renderer {
     /// Store the once-per-frame read snapshot. The App calls this just before each
     /// gameplay/frontend render call; the UI pass reads it when it records. Keeps
     /// the render signature stable. The boot splash does NOT use this.
-    pub fn set_ui_snapshot(&mut self, snapshot: ui::UiReadSnapshot) {
+    pub fn set_ui_snapshot(&mut self, snapshot: postretro_ui::UiReadSnapshot) {
         self.full_mut().ui_snapshot = snapshot;
     }
 
@@ -87,7 +71,7 @@ impl Renderer {
     /// app→renderer snapshot. The App reads this after a gameplay render (which
     /// laid out the stack) and feeds it to the focus engine the NEXT frame
     /// (N→N+1 in reverse). Empty when no gameplay layer is active. See: ui.md §4.
-    pub fn export_ui_focus_rects(&self) -> ui::tree::FocusRectList {
+    pub fn export_ui_focus_rects(&self) -> postretro_ui::tree::FocusRectList {
         let Self {
             surface_config,
             full,
@@ -120,7 +104,7 @@ impl Renderer {
     // `Renderer` needs a GPU device, so this seam is exercised by running the
     // engine, not the CPU test suite; the merge it relies on is covered in
     // `theme.rs`.
-    pub fn set_ui_theme(&mut self, theme: ui::theme::UiTheme) {
+    pub fn set_ui_theme(&mut self, theme: postretro_ui::theme::UiTheme) {
         let full = self.full_mut();
         full.ui_theme = theme;
         full.ui_theme_generation = full.ui_theme_generation.wrapping_add(1);

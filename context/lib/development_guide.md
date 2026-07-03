@@ -8,7 +8,7 @@
 
 ## Workspace
 
-16 crates in a Cargo workspace:
+17 crates in a Cargo workspace:
 
 | Crate | Type | Purpose |
 |-------|------|---------|
@@ -21,6 +21,7 @@
 | `postretro-model` | library | CPU-only glTF model loader — mesh, skeleton, animation sampling. |
 | `postretro-render-data` | library | CPU render data and geometry/frustum math shared by level loading, visibility, lighting, and model crates. |
 | `postretro-render-cpu` | library | CPU-only renderer packing, planning, and visibility data. |
+| `postretro-renderer` | library | GPU-owning renderer. All wgpu calls — passes, pipelines, shaders — live here. Consumes CPU-packed render data; the "Renderer owns GPU" boundary. |
 | `postretro-lighting` | library | CPU-only light packing and reachability math for shader-facing byte layouts. |
 | `postretro-level-loader` | library | CPU-only runtime PRL loading and level data. |
 | `postretro-visibility` | library | CPU-side runtime portal traversal and frustum visibility. |
@@ -36,17 +37,22 @@
 | Concern | Crate |
 |---------|-------|
 | Windowing | winit 0.30 |
-| GPU | wgpu 29 (Vulkan, Metal, DX12) |
 | Math | glam |
 | PRL loading | postretro-level-format |
 | Audio | kira 0.12 |
 | Gamepad | gilrs 0.11 |
 | Errors | thiserror 2 (subsystems), anyhow 1 (top-level) |
-| Async blocking | pollster 0.4 (wgpu adapter/device init only) |
 | Logging | log 0.4 + env_logger 0.11 |
 | Scripting (JS/TS) | rquickjs (QuickJS embed) |
 | Scripting (Luau) | mlua (Luau embed) |
 | Collision | parry3d 0.17 (nalgebra-based — convert to glam at collision module boundary; nalgebra types must not cross into engine code) |
+
+### Renderer (`postretro-renderer`)
+
+| Concern | Crate |
+|---------|-------|
+| GPU | wgpu 29 (Vulkan, Metal, DX12) |
+| Async blocking | pollster 0.4 (wgpu adapter/device init only) |
 
 ### Level compiler (`postretro-level-compiler`)
 

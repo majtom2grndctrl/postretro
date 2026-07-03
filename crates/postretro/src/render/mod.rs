@@ -1,112 +1,32 @@
-// Renderer: GPU init, texture upload, depth pre-pass + forward pipelines, and draw.
-// See: context/lib/rendering_pipeline.md
-pub mod animated_lightmap;
-#[cfg(feature = "dev-tools")]
-pub mod debug_lines;
-#[cfg(feature = "dev-tools")]
-pub mod debug_ui;
-pub mod fog_pass;
-pub mod frame_timing;
-pub mod loaded_texture;
-pub mod mesh_pass;
-#[cfg(feature = "dev-tools")]
-pub mod nav_diagnostics;
-pub mod screen_effects;
-pub mod sdf_atlas;
-pub mod sdf_shadow;
-pub mod sh_compose;
-#[cfg(feature = "dev-tools")]
-pub mod sh_diagnostics;
-pub mod sh_volume;
-pub mod smoke;
+// Binary-side render facade: re-export the GPU renderer crate and keep CPU-only
+// splash decoding local to the engine boot path.
+// See: context/lib/rendering_pipeline.md §7.8
+
 pub mod splash;
-pub mod splash_pass;
-pub mod ui;
 
 #[cfg(test)]
-mod curve_eval_test;
-#[cfg(test)]
-mod sdf_light_select_test;
+mod ui_lifecycle_render_test;
 
-// --- Extracted submodules (module root is slim; impls split by concern) ---
-mod material_plan;
-mod pipeline_layout;
-mod renderer_debug_ui;
-mod renderer_diagnostics;
-mod renderer_frame;
-mod renderer_full_init;
-mod renderer_geometry;
-mod renderer_init;
-mod renderer_init_pipelines;
-mod renderer_init_resources;
-mod renderer_light_slots;
-mod renderer_lighting;
-mod renderer_models;
-mod renderer_render_frame;
-mod renderer_resources;
-mod renderer_shadow_passes;
-mod renderer_splash;
-mod renderer_state;
-mod renderer_types;
+#[cfg(feature = "dev-tools")]
+pub(crate) mod nav_diagnostics;
 
-#[cfg(test)]
-mod tests;
+#[cfg(feature = "dev-tools")]
+pub mod debug_ui {
+    pub use postretro_renderer::{DebugUi, draw_diagnostics_panel};
+}
 
-use std::collections::HashMap;
-use std::path::Path;
-use std::sync::Arc;
-
-use anyhow::{Context, Result};
-use glam::{Mat4, Vec3};
-use wgpu::util::DeviceExt;
-use winit::window::Window;
-
-use crate::compute_cull::ComputeCullPipeline;
-use crate::lighting::lightmap::LightmapResources;
-use crate::lighting::spot_shadow::SpotShadowPool;
-use crate::render::loaded_texture::{
-    LoadedTexture, load_model_diffuse_texture, load_textures, placeholder_loaded_texture,
+#[allow(unused_imports)]
+pub use postretro_renderer::{
+    BvhOverlayBudget, BvhOverlayColorMode, BvhOverlayDepthMode, BvhOverlayState,
+    CameraCullDiagnostics, CameraCullPath, CellOverlayState, ClearColor, DEFAULT_AMBIENT_FLOOR,
+    DEFAULT_DYNAMIC_DIRECT_SCALE, DEFAULT_INDIRECT_SCALE, DynamicDirectIsolation, LevelGeometry,
+    LightingIsolation, LocatorDiagnostics, PortalOverlayState, PresentHandle, Renderer,
+    SdfShadowMode, SpatialCellSetDiagnostics, SpatialDiagnostics, WorldWireframeMode,
+    level_world_to_geometry,
 };
-use postretro_level_format::alpha_lights::ALPHA_LIGHT_LEAF_UNASSIGNED;
-use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
-use postretro_level_loader::MapLight;
-use postretro_lighting::influence;
-use postretro_lighting::spec_buffer::{SPEC_LIGHT_SIZE, pack_spec_lights};
-use postretro_lighting::{GPU_LIGHT_SIZE, pack_lights, pack_lights_with_slots_into};
-use postretro_render_cpu::chunk_list::ChunkGrid;
-use postretro_render_data::geometry::BvhTree;
-use postretro_render_data::influence::LightInfluence;
-use postretro_render_data::material::Material;
-use postretro_visibility::{CameraCullVisibility, VisibilityPath, VisibleCells};
 
-use fog_pass::FogPass;
-use frame_timing::FrameTiming;
-use screen_effects::ScreenEffectsPass;
-use sdf_atlas::SdfAtlasResources;
-use sdf_shadow::{SdfShadowFrameInputs, SdfShadowPass, SdfShadowShGrid};
-use sh_compose::ShComposeResources;
-use sh_volume::ShVolumeResources;
-use smoke::SmokePass;
-
-use postretro_render_cpu::smoke::SpriteFrame;
-
-// Cross-crate re-export: these items now live in `postretro_render_cpu`, kept
-// reachable here at their original `render::*` paths.
-pub(crate) use postretro_render_cpu::material_plan::{
-    parse_blake3_key, plan_submesh_materials, resolve_model_open_path_and_handle,
+#[cfg(feature = "dev-tools")]
+#[allow(unused_imports)]
+pub use postretro_renderer::{
+    DeltaVolumeMeta, FrameTimingSnapshot, MarkerMode, ShDiagnosticsState,
 };
-pub(crate) use postretro_render_cpu::mesh_instances;
-pub(crate) use postretro_render_cpu::{fog_mask::*, frame_uniforms::*};
-
-// Re-export the moved free items so they stay reachable at their original
-// `render::*` paths (external callers and sibling render modules depend on these).
-pub(crate) use material_plan::*;
-pub(crate) use pipeline_layout::*;
-pub(crate) use renderer_geometry::*;
-pub(crate) use renderer_lighting::*;
-pub(crate) use renderer_types::*;
-
-// Internal init/render helpers used by the `impl Renderer` files via `use super::*`.
-use renderer_full_init::*;
-use renderer_init_pipelines::*;
-use renderer_init_resources::*;

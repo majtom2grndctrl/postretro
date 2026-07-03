@@ -5,6 +5,44 @@
 use super::*;
 
 impl Renderer {
+    pub(super) fn reconfigure_surface(&mut self) {
+        self.is_surface_configured = false;
+        self.surface.configure(&self.device, &self.surface_config);
+        self.is_surface_configured = true;
+        self.surface_reconfigure_pending = false;
+    }
+
+    pub(super) fn acquire_present_handle(&mut self, phase: &str) -> Result<Option<PresentHandle>> {
+        if self.surface_reconfigure_pending {
+            self.reconfigure_surface();
+        }
+
+        let output = match self.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(tex) => tex,
+            wgpu::CurrentSurfaceTexture::Suboptimal(tex) => {
+                self.surface_reconfigure_pending = true;
+                tex
+            }
+            wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
+                return Ok(None);
+            }
+            wgpu::CurrentSurfaceTexture::Outdated => {
+                self.reconfigure_surface();
+                return Ok(None);
+            }
+            wgpu::CurrentSurfaceTexture::Lost => {
+                log::warn!("[Renderer] surface lost during {phase}; reconfiguring");
+                self.reconfigure_surface();
+                return Ok(None);
+            }
+            wgpu::CurrentSurfaceTexture::Validation => {
+                anyhow::bail!("surface validation error during {phase}");
+            }
+        };
+
+        Ok(Some(PresentHandle::new(output)))
+    }
+
     /// Camera owns aspect ratio; caller must also call `update_per_frame_uniforms`.
     ///
     /// Works in BOTH phases. The surface reconfigure is boot-phase and always
@@ -21,6 +59,7 @@ impl Renderer {
         self.surface_config.height = height;
         self.surface.configure(&self.device, &self.surface_config);
         self.is_surface_configured = true;
+        self.surface_reconfigure_pending = false;
 
         // Full-phase targets only — skip when boot-only (splash still presents).
         if self.full.is_none() {

@@ -669,6 +669,121 @@ mod tests {
     }
 
     #[test]
+    fn smooth_interrupt_capture_freezes_interrupted_blend_at_entry_stamp() {
+        // Producer half of the renderer-side
+        // `smooth_interrupt_cpu_contract_reproduces_snapshot_then_eases_to_primary`
+        // seam test:
+        // A→B is halfway through when C smoothly interrupts at t2. The emitted
+        // capture instruction must describe the frozen interrupt-instant blend,
+        // not the later render clock, so a culled capture frame can be replayed.
+        let mut anim = anim_with(
+            &[
+                ("A", state("idle", true, 0.0, Some(0))),
+                ("B", state("walk", true, 200.0, Some(1))),
+                ("C", state("run", true, 100.0, Some(2))),
+            ],
+            "C",
+            Some(1.1),
+        );
+        anim.previous_state = Some("B".into());
+        anim.previous_entered_at = Some(1.0);
+        anim.fade_source = FadeSourceKind::Snapshot;
+        anim.interrupted_outgoing = Some(InterruptedOutgoing::Clip {
+            state: "A".into(),
+            entered_at: 0.0,
+        });
+
+        let t2 = 1.1_f64;
+        let at_interrupt = animate_entity(&anim, t2, 0.0).expect("animates at interrupt");
+        let capture = at_interrupt
+            .capture
+            .expect("smooth interrupt emits capture");
+        assert_eq!(capture.tag, t2.to_bits());
+        assert_eq!(capture.incoming.clip_index, 1, "IN is interrupted B");
+        assert!(
+            (capture.incoming.time - 0.1).abs() < EPS,
+            "IN is sampled at frozen t2 on B's timeline"
+        );
+        assert!(
+            (capture.weight - 0.5).abs() < EPS,
+            "A→B was halfway through at t2"
+        );
+        let FadeSource::Clip(outgoing) = capture.outgoing else {
+            panic!("first smooth interrupt captures from outgoing clip A");
+        };
+        assert_eq!(outgoing.clip_index, 0, "OUT is stashed A");
+        assert!(
+            (outgoing.time - 1.1).abs() < EPS,
+            "OUT is also sampled at frozen t2"
+        );
+
+        let fade = at_interrupt.sample.fade.expect("C fade is active");
+        let FadeSource::Snapshot { tag, fallback } = fade.from else {
+            panic!("C fade must blend from the snapshot source");
+        };
+        assert_eq!(tag, t2.to_bits());
+        assert_eq!(fallback, capture.incoming);
+        assert!(
+            (fade.weight - 0.0).abs() < EPS,
+            "at the interrupt instant, C starts from the captured snapshot"
+        );
+
+        let late = animate_entity(&anim, t2 + 0.06, 0.0)
+            .expect("animates later in C fade")
+            .capture
+            .expect("capture re-emits while C fade is active");
+        assert_eq!(
+            late, capture,
+            "re-emitted capture stays byte-identical after a culled capture frame"
+        );
+    }
+
+    #[test]
+    fn smooth_interrupt_capture_can_chain_from_prior_snapshot_tag() {
+        // Producer half for the renderer's `chained_capture_blends_against_prior_snapshot`:
+        // if a smooth interrupt cuts across an already-smooth fade, the game
+        // layer cannot carry renderer-owned pose data, so it emits a snapshot
+        // reference plus the same incoming fallback used by sampling.
+        let prior_tag = 1.1_f64.to_bits();
+        let t2 = 1.15_f64;
+        let mut anim = anim_with(
+            &[
+                ("C", state("run", true, 100.0, Some(2))),
+                ("D", state("dash", true, 100.0, Some(3))),
+            ],
+            "D",
+            Some(t2),
+        );
+        anim.previous_state = Some("C".into());
+        anim.previous_entered_at = Some(1.1);
+        anim.fade_source = FadeSourceKind::Snapshot;
+        anim.interrupted_outgoing = Some(InterruptedOutgoing::Snapshot { tag: prior_tag });
+
+        let result = animate_entity(&anim, t2, 0.0).expect("animates chained interrupt");
+        let capture = result
+            .capture
+            .expect("chained smooth interrupt emits capture");
+        assert_eq!(capture.tag, t2.to_bits());
+        assert_eq!(capture.incoming.clip_index, 2, "IN is interrupted C");
+        assert!(
+            (capture.incoming.time - 0.05).abs() < EPS,
+            "C is sampled at frozen second-interrupt stamp"
+        );
+        assert!(
+            (capture.weight - 0.5).abs() < EPS,
+            "the interrupted snapshot→C fade was halfway through"
+        );
+        let FadeSource::Snapshot { tag, fallback } = capture.outgoing else {
+            panic!("chained smooth interrupt must reference the prior snapshot");
+        };
+        assert_eq!(tag, prior_tag);
+        assert_eq!(
+            fallback, capture.incoming,
+            "prior snapshot miss degrades to the interrupted incoming"
+        );
+    }
+
+    #[test]
     fn state_elapsed_reports_progress_and_completion() {
         let table = ModelClipTable::from_metadata(&meta(&[("idle", 2.0), ("attack", 1.0)]));
 

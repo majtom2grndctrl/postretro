@@ -49,20 +49,6 @@ const SPLASH_CLEAR_COLOR: wgpu::Color = wgpu::Color {
 /// first caps it. A wide banner logo is width-bound on most windows.
 const LOGO_MAX_FRACTION: f32 = 0.7;
 
-/// Outcome of a splash present attempt. The boot state machine advances its
-/// frame schedule only on `Presented`; a transient surface failure
-/// (`Outdated`/`Lost`/timeout) yields `NeedsRedraw` so startup re-requests a
-/// redraw WITHOUT recording `first_black_frame` / `first_splash_frame` or moving
-/// to the next splash frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PresentOutcome {
-    /// A command buffer was submitted and the surface texture presented.
-    Presented,
-    /// The surface could not present this attempt (outdated/lost/timeout). The
-    /// surface was reconfigured where applicable; the caller should redraw.
-    NeedsRedraw,
-}
-
 /// Splash uniform: device viewport (vec2 + pad for 16-byte alignment) and the
 /// logo's device-pixel rect `[x, y, w, h]`. Mirrors `SplashUniform` in
 /// `splash.wgsl`.

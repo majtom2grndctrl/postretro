@@ -1,0 +1,45 @@
+[package]
+name = "postretro-renderer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Renderer-owned GPU backend for Postretro"
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+bytemuck.workspace = true
+glam.workspace = true
+glyphon.workspace = true
+image.workspace = true
+log.workspace = true
+pollster.workspace = true
+postretro-entities.workspace = true
+postretro-level-format = { workspace = true, features = ["gltf-resolve"] }
+postretro-level-loader.workspace = true
+postretro-lighting.workspace = true
+postretro-model.workspace = true
+postretro-render-cpu.workspace = true
+postretro-render-data.workspace = true
+postretro-scripting-core.workspace = true
+postretro-ui.workspace = true
+postretro-visibility.workspace = true
+wgpu.workspace = true
+winit.workspace = true
+
+egui = { version = "0.34", optional = true }
+egui-wgpu = { version = "0.34", optional = true, features = ["winit"] }
+egui-winit = { version = "0.34", optional = true }
+
+[features]
+dev-tools = [
+    "dep:egui",
+    "dep:egui-wgpu",
+    "dep:egui-winit",
+]
+
+[dev-dependencies]
+naga = { version = "29", features = ["wgsl-in"] }
+postretro-ui = { workspace = true, features = ["test-fixtures"] }
+proptest.workspace = true
+splines = "4"

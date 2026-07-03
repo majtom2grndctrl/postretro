@@ -4,6 +4,12 @@
 
 use super::*;
 
+// Must match the near/far the caller bakes into `view_proj`
+// (`postretro::camera::{NEAR, FAR}`) — the fog pass reconstructs
+// view-space depth by inverting that projection.
+const RENDERER_NEAR_CLIP: f32 = 0.1;
+const RENDERER_FAR_CLIP: f32 = 4096.0;
+
 impl Renderer {
     #[allow(clippy::too_many_arguments)]
     pub fn render_frame_indirect(
@@ -19,36 +25,17 @@ impl Renderer {
         now_seconds: f64,
         clear_color: ClearColor,
         render_world: bool,
-    ) -> Result<Option<wgpu::SurfaceTexture>> {
+    ) -> Result<Option<PresentHandle>> {
         // The drawable visible-cell set; candidate-cull eligibility derives
         // from `cam_vis` (set + path provenance) inside `record_pre_scene_compute`.
         let visible: &VisibleCells = cam_vis.cells;
 
         self.full_mut().debug_frame = self.full().debug_frame.wrapping_add(1);
-        let output = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(tex) => tex,
-            wgpu::CurrentSurfaceTexture::Suboptimal(tex) => {
-                self.surface.configure(&self.device, &self.surface_config);
-                tex
-            }
-            wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
-                return Ok(None);
-            }
-            wgpu::CurrentSurfaceTexture::Outdated => {
-                self.surface.configure(&self.device, &self.surface_config);
-                return Ok(None);
-            }
-            wgpu::CurrentSurfaceTexture::Lost => {
-                anyhow::bail!("surface lost");
-            }
-            wgpu::CurrentSurfaceTexture::Validation => {
-                anyhow::bail!("surface validation error");
-            }
+        let Some(handle) = self.acquire_present_handle("gameplay frame")? else {
+            return Ok(None);
         };
 
-        let view = output
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
+        let view = handle.surface_view();
 
         let mut encoder = self
             .device
@@ -416,8 +403,8 @@ impl Renderer {
                     queue,
                     inv_view_proj,
                     full.last_camera_position,
-                    crate::camera::NEAR,
-                    crate::camera::FAR,
+                    RENDERER_NEAR_CLIP,
+                    RENDERER_FAR_CLIP,
                 );
             }
 
@@ -672,6 +659,6 @@ impl Renderer {
 
         // Caller (`App`) presents after optionally appending the egui overlay
         // pass via `render_debug_ui`.
-        Ok(Some(output))
+        Ok(Some(handle))
     }
 }

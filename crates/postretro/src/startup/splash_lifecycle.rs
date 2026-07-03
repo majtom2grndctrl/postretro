@@ -8,7 +8,6 @@ use winit::event_loop::ActiveEventLoop;
 
 use crate::App;
 use crate::render;
-use crate::render::splash_pass::PresentOutcome;
 use crate::scripting::state_persistence::{
     STATE_FILE_PATH, load_persisted_state, overlay_persisted_state,
 };
@@ -53,7 +52,7 @@ impl App {
     /// transient surface failure requests another redraw WITHOUT advancing the
     /// schedule, so the timing marks a real presented frame.
     fn run_splash_frame_zero(&mut self, event_loop: &ActiveEventLoop) -> bool {
-        if self.paint_splash(event_loop) == PresentOutcome::NeedsRedraw {
+        if !self.paint_splash(event_loop) {
             self.request_redraw();
             return false;
         }
@@ -94,7 +93,7 @@ impl App {
         // Run deferred mod init + the boot transition only after the splash
         // (logo) frame actually presents — a transient surface failure just
         // re-requests the redraw, holding the schedule on frame 1.
-        if self.paint_splash_after_black(event_loop) == PresentOutcome::NeedsRedraw {
+        if !self.paint_splash_after_black(event_loop) {
             self.request_redraw();
             return false;
         }
@@ -199,17 +198,16 @@ impl App {
 
     /// Paint the now-decoded splash and emit log line A. Records
     /// `first_splash_frame` and resets `mod_timings` only after the logo frame
-    /// presents; on a transient surface failure it returns `NeedsRedraw` so the
-    /// caller holds the schedule and re-requests a redraw.
-    fn paint_splash_after_black(&mut self, event_loop: &ActiveEventLoop) -> PresentOutcome {
-        let outcome = self.paint_splash(event_loop);
-        if outcome == PresentOutcome::NeedsRedraw {
-            return outcome;
+    /// presents; on a transient surface failure it returns false so the caller
+    /// holds the schedule and re-requests a redraw.
+    fn paint_splash_after_black(&mut self, event_loop: &ActiveEventLoop) -> bool {
+        if !self.paint_splash(event_loop) {
+            return false;
         }
         self.boot_timings.record("first_splash_frame");
         log::info!("{}", self.boot_timings.summary());
         self.mod_timings = StartupTimings::new();
-        outcome
+        true
     }
 
     /// Run `mod_init` and commit its validated manifest into the engine-global

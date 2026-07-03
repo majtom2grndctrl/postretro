@@ -8,15 +8,8 @@ license.workspace = true
 default-run = "postretro"
 
 [dependencies]
-# Windowing and GPU
+# Windowing
 winit.workspace = true
-wgpu.workspace = true
-pollster.workspace = true
-
-# Shaped, anti-aliased text — the engine default UI text path. glyphon owns its
-# own pipeline/atlas; the UI pass records its text draw into the shared UI render
-# pass. Version pinned at the workspace root (wgpu-29-compatible 0.11).
-glyphon.workspace = true
 
 # Math
 glam.workspace = true
@@ -72,6 +65,7 @@ postretro-level-loader = { workspace = true }
 postretro-model = { workspace = true }
 postretro-render-data = { workspace = true }
 postretro-render-cpu = { workspace = true }
+postretro-renderer = { workspace = true }
 postretro-lighting = { workspace = true, features = ["script-ffi"] }
 postretro-visibility = { workspace = true }
 postretro-foundation = { workspace = true }
@@ -81,13 +75,10 @@ postretro-ui = { workspace = true }
 postretro-net = { workspace = true }
 
 # Debug UI (egui) — only compiled in when the `dev-tools` feature is enabled.
-# Pinned to 0.34: that release line requires `wgpu ^29` and `winit ^0.30`,
-# which matches the workspace's `wgpu = "29"` / `winit = "0.30"`. See
-# `context/plans/in-progress/egui-debug-ui-foundation/research.md` for the
-# compatibility matrix.
+# Pinned to 0.34 for the binary's `egui-winit` integration with winit 0.30.
+# Renderer-side egui/wgpu compatibility belongs to `postretro-renderer`.
 egui = { version = "0.34", optional = true }
 egui-winit = { version = "0.34", optional = true }
-egui-wgpu = { version = "0.34", optional = true, features = ["winit"] }
 
 [features]
 # Pulls in the egui-based debug panel and its diagnostic chord. Without this
@@ -95,9 +86,9 @@ egui-wgpu = { version = "0.34", optional = true, features = ["winit"] }
 dev-tools = [
     "dep:egui",
     "dep:egui-winit",
-    "dep:egui-wgpu",
     "postretro-level-loader/dev-tools",
     "postretro-net/dev-tools",
+    "postretro-renderer/dev-tools",
 ]
 
 [build-dependencies]
@@ -120,17 +111,8 @@ postretro-net = { workspace = true, features = ["dev-tools"] }
 # the audio module are confined to `#[cfg(test)]`, so the non-test crate never
 # names mock even though it ships in the kira dependency.
 
-# Pinned to the same version wgpu 29 re-exports transitively so the WGSL
-# struct-stride regression test parses against the exact WGSL dialect the
-# runtime shader compiles with.
-naga = { version = "29", features = ["wgsl-in"] }
-
-# Property-based testing for shadow math invariants.
+# Property-based testing for binary simulation determinism invariants.
 proptest = { workspace = true }
-
-# Reference Catmull-Rom evaluator for WGSL parity tests
-# (see src/render/curve_eval_test.rs).
-splines = "4"
 
 # Injected temp dirs for the `options` persistence tests — keeps load/save tests
 # off the real user config dir. Not used by the atomic-save path (that hand-rolls

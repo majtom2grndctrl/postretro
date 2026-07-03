@@ -151,22 +151,21 @@ pub(crate) fn build_full_renderer(
             crate::lighting::spot_shadow::SHADOW_POOL_SIZE,
         )
     });
-    let cube_shadow_cull = cube_array_supported
-        .then(|| {
-            compute_cull.as_ref().map(|c| {
-                crate::shadow_cull::ShadowCullPipeline::new(
-                    device,
-                    c.node_buffer(),
-                    c.leaf_buffer(),
-                    c.total_leaves(),
-                    c.bucket_ranges().to_vec(),
-                    c.has_multi_draw_indirect(),
-                    crate::lighting::cube_shadow::CUBE_COUNT
-                        * crate::lighting::cube_shadow::CUBE_FACES,
-                )
-            })
+    let cube_shadow_cull = if cube_array_supported {
+        compute_cull.as_ref().map(|c| {
+            crate::shadow_cull::ShadowCullPipeline::new(
+                device,
+                c.node_buffer(),
+                c.leaf_buffer(),
+                c.total_leaves(),
+                c.bucket_ranges().to_vec(),
+                c.has_multi_draw_indirect(),
+                crate::lighting::cube_shadow::CUBE_COUNT * crate::lighting::cube_shadow::CUBE_FACES,
+            )
         })
-        .flatten();
+    } else {
+        None
+    };
 
     let (_depth_texture, depth_view) =
         create_depth_texture(device, surface_config.width, surface_config.height);

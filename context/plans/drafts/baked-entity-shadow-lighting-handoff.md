@@ -87,8 +87,10 @@ Three candidate techniques emerged. Two are live; one is rejected.
 - E10 pools: `lighting/spot_shadow.rs`, `lighting/cube_shadow.rs`; the static-depth cache is E10 Task 7.
 - Sampled-texture guard: `forward_pipeline_sampled_texture_request_matches_bgl_definitions` (the ~13-14/16 pin).
 
-## Gotcha banked from the regression hunt (cube faces are entity-only)
-The E10 cube point-shadow faces hold **entity occluders only — no world geometry baseline**. Consequence learned the hard way: a slot's occupied faces must be **cleared (to far = 1.0) every frame independent of whether any occluder is drawn** — otherwise an eligible point light with no skinned mesh in its PVS samples uninitialized cube depth (~0.0), which under `CompareFunction::Less` reads as fully shadowed and zeroes the light's world contribution (view-dependent, because cube slots are only assigned to PVS-visible lights). This is the same seam the deferred **world-self-shadow-under-point-lights** open question would later fill (adding a world-geometry baseline to the faces, like the spot path already has). When that work happens, the "always clear" invariant and the entity-only assumption are the things to revisit.
+## Gotcha banked from the regression hunt (cube faces were entity-only)
+**RESOLVED SINCE:** the world-geometry baseline has landed — cube faces now render cone-culled world geometry plus entity occluders (branch `claude/warren-dynamic-light-shadows-170etp`; `rendering_pipeline.md` §7.1 step 8), and the entity-only assumption below no longer holds. The "always clear" invariant survived the transition (`cube_face_needs_clear` + its regression test) and still governs.
+
+Original gotcha, kept for the reasoning: the E10 cube point-shadow faces held **entity occluders only — no world geometry baseline**. Consequence learned the hard way: a slot's occupied faces must be **cleared (to far = 1.0) every frame independent of whether any occluder is drawn** — otherwise an eligible point light with no skinned mesh in its PVS samples uninitialized cube depth (~0.0), which under `CompareFunction::Less` reads as fully shadowed and zeroes the light's world contribution (view-dependent, because cube slots are only assigned to PVS-visible lights).
 
 ## Open threads NOT part of these plans (don't conflate)
 - **Cleanup:** the E10 plan + FGD "physically impossible" wording should be softened to the precise claim (open question #3). `roadmap.md:206` still calls E10 the "12-light pixmap shadow pool" — stale (now 96-slot 2D-array + cube-array); offered to refresh, not done.

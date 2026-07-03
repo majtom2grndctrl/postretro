@@ -1,5 +1,6 @@
-// Per-slot GPU cone cull for the spot-shadow depth passes.
-// See: context/lib/rendering_pipeline.md §7.1 (step 6) · §4 (spot shadows)
+// Per-region GPU frustum cull for the shadow depth passes: one instance per
+// pool — spot slots (step 6) and point cube-slot faces (step 8).
+// See: context/lib/rendering_pipeline.md §7.1 (steps 6 & 8) · §4 (dynamic direct)
 
 use glam::Mat4;
 use wgpu::util::DeviceExt;

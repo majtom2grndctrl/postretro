@@ -29,10 +29,18 @@ impl Renderer {
         effective_brightness: &[f32],
         reachable_cell_aabbs: &[(Vec3, Vec3)],
     ) {
-        // Candidate set is `is_dynamic`-filtered; if the map has no dynamic
-        // lights the pool stays empty — early-return without disturbing
-        // previous slots.
+        // Candidate set is `is_dynamic`-filtered; a map with no dynamic lights
+        // ranks nothing. Clear both pools' occupancy before returning: a stale
+        // `Some` cone/face matrix carried over from a previous level would
+        // keep its depth passes — full world rasterizations — running every
+        // frame against slots no light samples (this map's lights all pack
+        // the `NO_SHADOW_SLOT` sentinel).
         if self.full().shadow_candidate_lights.is_empty() {
+            let full = self.full_mut();
+            full.spot_shadow_pool.clear_occupancy();
+            if let Some(pool) = &mut full.cube_shadow_pool {
+                pool.clear_occupancy();
+            }
             return;
         }
 

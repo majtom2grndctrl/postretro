@@ -9,7 +9,7 @@ committed variants:
 |-----|----------|----------|
 | `stress-warren.map`        | 157 rooms, no lights | geometry/BVH walk + portal traversal only |
 | `stress-warren-lit.map`    | 157 rooms, 157 **mixed** lights (≈half baked / half runtime) | + the lightmap/SH **bake** AND the per-frame forward light loop, light culling, and shadow pools |
-| `stress-warren-crates.map` | 71 rooms, 142 crate stacks, 71 **mixed** lights (36 spot) | + **shadow casting** from both paths: static spots bake crate shadows into the lightmap, dynamic spots rasterize the crate-filled world into runtime shadow maps |
+| `stress-warren-crates.map` | 71 rooms, 142 crate stacks, 71 **mixed** lights (36 spot) | + **shadow casting** from both paths: static spots bake crate shadows into the lightmap, dynamic spots and points rasterize the crate-filled world into runtime shadow maps |
 
 All surfaces use the bundled `50-free-textures` collection, whose diffuses carry
 `_n`/`_s` normal+specular siblings — prl-build auto-bundles them into the `.prm`
@@ -121,7 +121,7 @@ different cost paths:
   single scene stresses the bake **and** the runtime path at once. The two
   committed lit maps use this. Static lights get `_light_size 0.75` for a soft
   (rather than 1-texel-hard) penumbra; static spots/points bake crate shadows
-  into the lightmap while dynamic spots cast them at runtime.
+  into the lightmap while dynamic spots and points cast them at runtime.
 
 **Expected static-light warning.** At `--lightmap-density 0.5` each static light
 logs a one-line `sub-texel penumbra (~1.00 texel)` warning — its softened

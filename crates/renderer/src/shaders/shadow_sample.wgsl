@@ -96,7 +96,7 @@ const CUBE_FACE_RESOLUTION: f32 = 512.0;
 // world-unit offset applied here at sample time. The two act at DIFFERENT
 // pipeline stages on DIFFERENT values, so they never double-count on one
 // fragment. (The cube depth pass also carries the same hardware `DepthBiasState`
-// on its entity occluders; this receiver-side bias is added on top, by design —
+// on its world and entity occluder draws; this receiver-side bias adds on top, by design —
 // cube faces are 512² vs spot 1024² and perspective-depth acne is worst near the
 // far plane, so the acne/peter-panning trade-off needs its own knob.)
 const POINT_SHADOW_DEPTH_BIAS: f32 = 0.08;

@@ -93,6 +93,15 @@ const CUBE_FACE_UPS: [Vec3; CUBE_FACES] = [
 /// Pure math — no GPU. Unit-tested for sphere coverage and direction→face
 /// mapping. The far plane clamps `falloff_range` to a small minimum so a
 /// zero-range or degenerate light still yields a finite frustum.
+///
+/// Far-plane freshness contract: this projects with the CANDIDATE list's
+/// `falloff_range` (frozen at level load), while `sample_point_shadow`
+/// reconstructs its compare reference from the LIVE GPU record's
+/// `direction_and_range.w`. The two must be the same value — a runtime
+/// mutation of a cube-slot light's range would desync the stored depth from
+/// the reconstruction and mis-shadow at every depth. No current path mutates
+/// range (the light bridge animates intensity/color); whoever adds range
+/// animation must refresh the shadow candidates alongside the GPU repack.
 pub fn cube_face_matrices(light: &MapLight) -> [Mat4; CUBE_FACES] {
     let eye = Vec3::new(
         light.origin[0] as f32,
@@ -272,6 +281,18 @@ impl CubeShadowPool {
     /// Flat index into `face_views` / `face_matrices` for a `(slot, face)` pair.
     pub fn face_layer(slot: u32, face: usize) -> usize {
         slot as usize * CUBE_FACES + face
+    }
+
+    /// Clear all per-frame occupancy: face matrices, entity gates, assignment.
+    /// The cube counterpart of [`SpotShadowPool::clear_occupancy`] — called
+    /// when a frame ranks zero candidates so no stale occupied face keeps its
+    /// 6 depth passes rasterizing world geometry that no light samples.
+    ///
+    /// [`SpotShadowPool::clear_occupancy`]: crate::lighting::spot_shadow::SpotShadowPool::clear_occupancy
+    pub fn clear_occupancy(&mut self) {
+        self.face_matrices.fill(None);
+        self.slot_entity_eligible.fill(false);
+        self.slot_assignment.clear();
     }
 }
 

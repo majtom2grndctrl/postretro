@@ -433,9 +433,11 @@ fn sample_open_distance(world: vec3<f32>) -> f32 {
 // `max_dist` is the world-meter distance at which the march must stop — the
 // distance to the light for a finite point/spot source. Geometry at or beyond
 // the light is NOT an occluder (it lies behind or around the light, with a clear
-// line of sight to the lit surface), so the march is clamped to it. Callers with
-// an infinite/directional source pass a large value (e.g. the 64 m hard cap) to
-// preserve the original fixed-length behavior.
+// line of sight to the lit surface), so the march is clamped to it. `max_dist`
+// must be a real light distance: it also feeds the `cone_scale` light-size cap,
+// so a directional caller passing a huge sentinel would inflate `cone_scale`
+// until the soft term never darkens (hard hits only). No such caller exists —
+// `trace_light_visibility` passes the finite per-light distance.
 fn trace_shadow(origin: vec3<f32>, dir: vec3<f32>, max_dist: f32, normal: vec3<f32>) -> f32 {
     if (sdf_meta.present == 0u) {
         return FULLY_LIT;

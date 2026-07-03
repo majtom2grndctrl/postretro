@@ -25,7 +25,9 @@ Triage review panel findings and dispatch agents to fix them. Coordinate — don
 
 ### 1. Triage
 
-Classify each finding from the review panel output:
+**Re-verify before classifying.** Findings may be stale — the branch can advance mid-review and concurrent agents may have already fixed things. For each finding, grep the named symbol in its *current* location (it may have moved or been renamed) and confirm the defect still exists. Drop already-resolved findings; don't dispatch fixes for them. When two panels disagree on a finding, resolve on a decisive fact (e.g. what the pre-refactor code did), not by vote-count.
+
+Classify each surviving finding from the review panel output:
 
 **Small blast radius** — Sonnet, concurrent:
 - Confined to a single file

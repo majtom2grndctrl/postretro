@@ -1,11 +1,15 @@
 // Dynamic point-light cube-array shadow pool: per-light 6-face omnidirectional
-// depth, ranked into a fixed-capacity cube-array. Entity occluders ONLY in v1
-// (no world geometry rendered into cube faces).
+// depth, ranked into a fixed-capacity cube-array. Each occupied face renders
+// cone-culled WORLD geometry (static occluders — crates, pillars) plus skinned
+// entity occluders, mirroring the spot pool's occluder split.
 //
-// WHY entity-only v1: rendering world geometry into cube faces costs 6 face-passes
-// × world-BVH traversal depth per point light — prohibitive at the budget. Entity
-// occluders alone deliver the visible impact (monsters/movers self- and
-// cross-shadowing under a point light) at a predictable, far smaller cost.
+// v1 shipped entity-only faces because a naive world draw cost 6 full
+// world-BVH rasterizations per point light. The per-region GPU frustum cull
+// (`shadow_cull.rs`, one indirect sub-region per (slot, face) gated by that
+// face's 90° frustum) bounds the world cost to the geometry each face can
+// actually see, which is what made world occluders affordable — and what makes
+// dynamic point lights shadow static geometry at all (the stress-warren maps
+// exposed the gap: `light_dynamic` rooms had crates casting no shadow).
 //
 // See: context/lib/rendering_pipeline.md §7.1 (shadow passes), §4 (lighting)
 
@@ -20,7 +24,8 @@ pub const CUBE_NEAR_CLIP: f32 = 0.1;
 
 /// Number of cube slots in the pool, sized to realistic concurrent demand after
 /// PVS culling + influence ranking — NOT worst case. Each occupied slot draws
-/// entity occluders into 6 faces, so the cost (and the VRAM) scales with this.
+/// cone-culled world geometry + entity occluders into 6 faces, so the cost
+/// (and the VRAM) scales with this.
 ///
 /// VRAM justification: a `Depth32Float` cube-array is
 /// `CUBE_FACE_RESOLUTION² × 4 B × 6 faces × CUBE_COUNT`.
@@ -180,8 +185,9 @@ pub struct CubeShadowPool {
     pub slot_assignment: Vec<u32>,
     /// Per-slot entity-occluder gate, written alongside `face_matrices`. `true`
     /// only when the slot's occupant passes
-    /// [`postretro_lighting::entity_occluder_eligible`]. Cube faces are ENTITY-ONLY
-    /// in v1, so an ineligible point light draws NOTHING into its faces.
+    /// [`postretro_lighting::entity_occluder_eligible`]. Gates ONLY the skinned
+    /// entity draw — every occupied face renders its world-depth baseline
+    /// regardless, exactly like the spot pool's per-slot entity gate.
     pub slot_entity_eligible: Vec<bool>,
 }
 
@@ -262,44 +268,24 @@ pub fn cube_pool_enabled(cube_array_supported: bool) -> bool {
     cube_array_supported
 }
 
-/// The SHADER-facing cube slot for a light that owns a ranked pool slot.
-///
-/// Cube faces are ENTITY-ONLY in v1: a slot is only ever CLEARED + rendered when
-/// its light is [`postretro_lighting::entity_occluder_eligible`] (the depth loop
-/// skips slots with no per-face matrices). A point light that owns a ranked slot
-/// but is NOT entity-eligible therefore has cube faces holding stale/uninitialized
-/// depth — sampling them reads garbage (frequently fully shadowed), which would
-/// ZERO the light. (The spot path avoids this because every occupied spot slot
-/// always renders a Clear(1.0)+world-depth baseline; cube faces carry no world
-/// geometry and no clear.)
-///
-/// So the forward shader must only sample a slot that actually contains a
-/// rendered occluder. For an ineligible light this returns the
-/// [`crate::lighting::spot_shadow::NO_SHADOW_SLOT`] sentinel (unshadowed,
-/// shadow factor 1.0) — matching the off-camera (no-slot) path; for an eligible
-/// light it returns the ranked `slot` unchanged.
-pub fn shader_facing_cube_slot(slot: u32, entity_eligible: bool) -> u32 {
-    if entity_eligible {
-        slot
-    } else {
-        crate::lighting::spot_shadow::NO_SHADOW_SLOT
-    }
-}
-
 /// Whether the cube depth loop must open a `Clear(1.0)` render pass for an
-/// occupied (`face_matrix.is_some()`) eligible face THIS frame.
+/// occupied (`face_matrix.is_some()`) face THIS frame.
 ///
-/// The decisive invariant the renderer loop must honour: an occupied eligible
-/// face is cleared to the far plane (NDC depth 1.0) EVERY frame it is occupied,
-/// regardless of whether any skinned-mesh occluder exists — exactly as the spot
-/// pool always lays down a `Clear(1.0)` baseline for every occupied slot.
+/// The decisive invariant the renderer loop must honour: an occupied face is
+/// cleared to the far plane (NDC depth 1.0) EVERY frame it is occupied,
+/// regardless of whether any world geometry or skinned-mesh occluder exists —
+/// exactly as the spot pool always lays down a `Clear(1.0)` baseline for every
+/// occupied slot. Every ranked slot's faces are occupied (occupancy no longer
+/// depends on entity eligibility), and the world-depth draw rides the same
+/// pass, so a ranked slot is always safe for the shader to sample.
 ///
-/// Returns `true` for any occupied face. The depth loop submits entity occluders
-/// only when a mesh frame plan exists, but the clear itself must NOT be gated on
-/// the plan: gating it (the prior bug) left an occupied eligible cube uncleared
-/// whenever no mesh entity was in the PVS, so an on-screen eligible point light
-/// sampled stale/zero depth and read fully shadowed (`CompareFunction::Less`:
-/// a positive reference is never `< 0`), zeroing its world illumination.
+/// Returns `true` for any occupied face. The depth loop gates the occluder
+/// draws (world on `has_geometry`, entities on the mesh frame plan + the
+/// slot's entity eligibility), but the clear itself must NOT be gated: gating
+/// it (the prior bug) left an occupied cube uncleared whenever no occluder
+/// existed, so an on-screen point light sampled stale/zero depth and read
+/// fully shadowed (`CompareFunction::Less`: a positive reference is never
+/// `< 0`), zeroing its world illumination.
 ///
 /// With the clear unconditional, an occluder-free face stores 1.0, the shader's
 /// reference (`<= 1.0`) compares `reference < 1.0` for any fragment nearer than
@@ -532,58 +518,30 @@ mod tests {
         );
     }
 
-    /// Regression (branch `claude/dynamic-mesh-shadows-jvl96j`): a dynamic point
-    /// light that owns a ranked cube slot but does NOT cast entity shadows must be
-    /// handed the SENTINEL to the shader, not its slot. Cube faces are entity-only
-    /// and are never cleared/rendered for an ineligible light, so sampling that
-    /// slot reads stale depth and zeros the light when its origin is on-screen.
-    /// Masking to the sentinel makes an occluder-free cube a no-op (shadow 1.0),
-    /// matching the off-camera path and how the spot path stays correct.
-    #[test]
-    fn occluder_free_cube_slot_reads_as_sentinel() {
-        // Eligible light keeps its slot (faces ARE rendered).
-        assert_eq!(
-            shader_facing_cube_slot(3, true),
-            3,
-            "entity-eligible light keeps its ranked cube slot"
-        );
-        // Ineligible light (e.g. an animated `light_dynamic` with
-        // casts_entity_shadows off) must downgrade to the sentinel so the forward
-        // shader takes the unshadowed path instead of sampling an uncleared cube.
-        assert_eq!(
-            shader_facing_cube_slot(0, false),
-            NO_SHADOW_SLOT,
-            "occluder-free (entity-ineligible) cube slot must read as sentinel (full light)"
-        );
-        assert_eq!(
-            shader_facing_cube_slot(5, false),
-            NO_SHADOW_SLOT,
-            "ineligibility masks regardless of which slot was ranked"
-        );
-    }
-
     /// Regression (branch `claude/dynamic-mesh-shadows-jvl96j`, the bug a91bb61
-    /// MISSED): an ENTITY-ELIGIBLE on-screen dynamic point light (e.g. the
-    /// `arena_wave_2` `light_dynamic` group — `casts_entity_shadows` defaults
-    /// true, so these are eligible) owns a ranked cube slot and the shader DOES
-    /// sample it. Its occupied faces must be cleared to the far plane (1.0) every
-    /// frame they are occupied, EVEN when no skinned-mesh occluder is in the PVS
-    /// (the arena's meshes are all off-screen). Before the fix the whole cube
-    /// depth loop — clear included — was gated on a mesh frame plan existing, so
-    /// with no in-PVS mesh the occupied faces were never cleared and held ~0.0;
-    /// the eligible on-screen light then read fully shadowed and winked out, while
-    /// off-screen (no-slot/sentinel) lights stayed lit.
+    /// MISSED): an on-screen dynamic point light owns a ranked cube slot and the
+    /// shader samples it. Its occupied faces must be cleared to the far plane
+    /// (1.0) every frame they are occupied, EVEN when no occluder is drawn (no
+    /// skinned mesh in the PVS, and — for empty maps — no world geometry).
+    /// Before the fix the whole cube depth loop — clear included — was gated on
+    /// a mesh frame plan existing, so with no in-PVS mesh the occupied faces
+    /// were never cleared and held ~0.0; the on-screen light then read fully
+    /// shadowed and winked out, while off-screen (no-slot/sentinel) lights
+    /// stayed lit.
     ///
     /// `cube_face_needs_clear` encodes the corrected invariant: an occupied face
-    /// is cleared regardless of mesh-plan presence. Unoccupied faces are skipped.
+    /// is cleared regardless of occluder presence. Unoccupied faces are skipped.
+    /// (With world geometry now rendered into every occupied face, occupancy no
+    /// longer depends on entity eligibility, so the invariant covers every
+    /// ranked slot.)
     #[test]
-    fn occupied_eligible_face_clears_without_mesh_plan() {
-        // Occupied face: must be cleared whether or not any mesh occluder exists.
+    fn occupied_face_clears_without_occluders() {
+        // Occupied face: must be cleared whether or not any occluder exists.
         assert!(
             cube_face_needs_clear(true),
-            "an occupied eligible cube face must be cleared (to far=1.0) every \
-             frame, with or without a mesh frame plan — otherwise an on-screen \
-             eligible point light samples uncleared depth and is zeroed"
+            "an occupied cube face must be cleared (to far=1.0) every frame, \
+             with or without occluder draws — otherwise an on-screen point \
+             light samples uncleared depth and is zeroed"
         );
         // Unoccupied face (no per-face matrix): nothing to clear or sample.
         assert!(

@@ -168,9 +168,9 @@ def pick(pool, key):
 
 # Crate stacks: small solid box-brushes piled on the room floor. They are world
 # geometry, so they (a) add to the per-frame geometry/BVH walk, (b) cast real
-# dynamic shadows under SPOT lights (the spot-shadow depth pass rasterizes world
-# geometry; point/cube shadows render entity occluders only -- see
-# rendering_pipeline.md §4, §7.1), and (c) carve the room's empty leaf into
+# dynamic shadows under both dynamic light types (the spot-shadow depth pass and
+# the point cube-shadow face passes both rasterize cone-culled world geometry --
+# see rendering_pipeline.md §4, §7.1), and (c) carve the room's empty leaf into
 # several BSP leaves, so they spend the 4096-leaf budget and lower room count.
 CRATE_EDGE = 112      # crate cube edge (Quake units, ~2.8 m)
 CRATE_MARGIN = 192    # keep stacks this far from interior walls (clear of doors)

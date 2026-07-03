@@ -34,13 +34,14 @@ python3 tools/gen_stress_map.py --grid 8 8 5 --door-prob 0.2
 `--crates N` piles N solid box-brush stacks on each room floor. They are world
 geometry, which has three consequences:
 
-- **Shadow casting.** The spot-light shadow pass rasterizes *world geometry* into
-  each spot's depth map (`rendering_pipeline.md` §7.1), so crates cast real
-  dynamic shadows under spotlights. Point/cube lights render entity occluders
-  only — crate brushes do **not** shadow under them. `--spot-frac` raises the
-  share of lights that are spots (the crate map uses 0.5) so more shadow-map
-  passes run over the crate-laden world each frame. (Crates also bake hard/soft
-  shadows under `--lights static`.)
+- **Shadow casting.** Both dynamic shadow paths rasterize *world geometry*
+  (`rendering_pipeline.md` §7.1): the spot pass into each spot's depth map, and
+  the point cube pass into each occupied cube slot's 6 faces (per-face
+  cone-culled) — so crates cast real dynamic shadows under dynamic spots AND
+  under the `CUBE_COUNT = 6` nearest dynamic point lights (extras render
+  unshadowed). `--spot-frac` raises the share of lights that are spots (the
+  crate map uses 0.5) so more shadow-map passes run over the crate-laden world
+  each frame. (Crates also bake hard/soft shadows under `--lights static`.)
 - **Geometry + material load.** More triangles in the per-frame walk, textured
   with wood (`wood_bark_*`) for extra material buckets.
 - **Leaf cost.** Each crate carves the room's empty leaf into several, spending

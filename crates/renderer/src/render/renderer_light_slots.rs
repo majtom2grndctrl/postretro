@@ -494,14 +494,15 @@ impl Renderer {
     ///
     /// Shares the spot path's per-light eligibility (`visible_lights`) and the
     /// SHARED scoring/drop ranking core, so cube and spot slot assignment cannot
-    /// drift. Cube faces are ENTITY-ONLY in v1 — `slot_entity_eligible` decides
-    /// whether the depth loop draws anything into a slot at all.
+    /// drift. Cube faces render WORLD geometry (per-face cone-culled, mirroring
+    /// the spot depth pass) plus entity occluders; `slot_entity_eligible` gates
+    /// only the entity draw, exactly like the spot path's per-slot entity gate.
     ///
-    /// The RETURNED (shader-facing) assignment masks any light that owns a ranked
-    /// slot but is not `entity_occluder_eligible` back to the sentinel: its cube
-    /// faces are never cleared/rendered (the depth loop skips `None` matrices), so
-    /// the shader must not sample that slot. See `cube_shadow::shader_facing_cube_slot`.
-    /// The pool's internal `slot_assignment` keeps the raw rank for diagnostics.
+    /// Every ranked slot's faces get matrices — occupancy no longer depends on
+    /// `entity_occluder_eligible`. Each occupied face receives a Clear(1.0) +
+    /// world-depth baseline every frame (the invariant that makes it safe for
+    /// the shader to sample any ranked slot), so the returned assignment is the
+    /// raw rank with no shader-facing masking.
     fn update_cube_light_slots(
         &mut self,
         camera_position: Vec3,
@@ -527,13 +528,6 @@ impl Renderer {
             visible_lights,
         );
 
-        // Shader-facing slot assignment, returned to the caller and patched into
-        // each point light's `cone_angles_and_pad.w`. It DIVERGES from the
-        // internal `slot_assignment` for ineligible lights: see the per-light
-        // masking below. Starts as a copy of the rank and is downgraded to the
-        // sentinel for any light whose cube faces will not be rendered.
-        let mut shader_slot_assignment = slot_assignment.clone();
-
         // Reset per-face matrices + per-slot entity gate; reoccupied faces
         // overwrite, the rest stay `None`/`false` so the render loop skips them.
         let face_count = cube_shadow::CUBE_COUNT * cube_shadow::CUBE_FACES;
@@ -550,25 +544,15 @@ impl Renderer {
                 continue;
             }
             let candidate = &full.shadow_candidate_lights[light_idx];
-            // Cube faces are entity-only: an ineligible point light draws
-            // nothing, so it needs no per-face matrices either.
-            let eligible = postretro_lighting::entity_occluder_eligible(candidate);
-            pool.slot_entity_eligible[slot as usize] = eligible;
-            // CRITICAL: a cube slot's faces are only CLEARED + rendered when the
-            // light is entity-eligible (the depth loop skips `None` face matrices).
-            // An ineligible slot's faces hold stale/uninitialized depth, so the
-            // shader must NOT sample them — `shader_facing_cube_slot` downgrades
-            // those to the sentinel (unshadowed). Unlike the spot path, where every
-            // occupied slot always renders a Clear(1.0)+world-depth baseline, a cube
-            // face carries no world geometry and no clear, so sampling an
-            // occluder-free face would read garbage (often fully shadowed) and ZERO
-            // the light when its origin is on-screen (slots are only assigned to
-            // visible lights — hence the view-dependence of the original bug).
-            shader_slot_assignment[light_idx] =
-                cube_shadow::shader_facing_cube_slot(slot, eligible);
-            if !eligible {
-                continue;
-            }
+            // EVERY ranked slot gets face matrices: the depth loop clears each
+            // occupied face to the far plane and renders cone-culled WORLD
+            // geometry into it every frame (same Clear(1.0)+world baseline as
+            // an occupied spot slot), so the shader may sample any ranked slot.
+            // `slot_entity_eligible` gates only whether skinned ENTITY
+            // occluders are additionally drawn into the faces — the same
+            // occluder split as the spot path.
+            pool.slot_entity_eligible[slot as usize] =
+                postretro_lighting::entity_occluder_eligible(candidate);
             let face_mats = cube_shadow::cube_face_matrices(candidate);
             for (face, m) in face_mats.iter().enumerate() {
                 let layer = cube_shadow::CubeShadowPool::face_layer(slot, face);
@@ -582,10 +566,9 @@ impl Renderer {
         }
         queue.write_buffer(&full.cube_shadow_vs_uniform_buffer, 0, &vertex_uniforms);
 
-        pool.slot_assignment = slot_assignment;
-        // Return the SHADER-facing assignment (ineligible lights masked to the
-        // sentinel), not the raw rank — the caller patches this into the light
-        // buffer, and only slots with rendered occluders may be sampled.
-        shader_slot_assignment
+        pool.slot_assignment = slot_assignment.clone();
+        // The raw rank IS the shader-facing assignment: every ranked slot's
+        // faces carry a rendered world-depth baseline, so no masking is needed.
+        slot_assignment
     }
 }

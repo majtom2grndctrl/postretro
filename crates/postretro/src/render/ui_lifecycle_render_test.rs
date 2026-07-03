@@ -12,12 +12,15 @@ use postretro_scripting_core::runtime::StagedManifestCommitOutcome;
 use postretro_scripting_core::staged_manifest::{
     StagedManifest, StagedManifestBuildResult, StagedManifestBuildStatus,
 };
+use postretro_ui::UiTreeEntry;
 use postretro_ui::descriptor::{
-    Align, AnchoredTree, BindSource, CaptureMode, ColorValue, ContainerWidget, LocalState,
-    PanelBind, PanelWidget, SpacingValue, TextBind, TextWidget, Widget,
+    Align, AnchoredTree, BarMax, BarMaxStateRef, BarWidget, BindSource, CaptureMode, ColorValue,
+    ContainerWidget, Easing, LocalState, PanelBind, PanelWidget, SliderBind, SpacingValue,
+    TextBind, TextTween, TextWidget, Widget,
 };
 use postretro_ui::layout::Anchor;
 use postretro_ui::modal_stack::{ModalStack, ScopeTier};
+use postretro_ui::style_ranges::{StyleEntry, StyleRanges};
 use postretro_ui::theme::{ThemeDescriptor, UiTheme};
 use postretro_ui::tree::{CellValues, ImageSizes, UiDrawData, UiTree};
 
@@ -547,5 +550,299 @@ fn mixed_tree_renders_both_store_and_local_binds() {
     assert!(
         rendered.contains(&"3"),
         "local-bound text rendered: {rendered:?}"
+    );
+}
+
+// --- Always-on compose is a stateless read (removal-next-frame) ---------------
+
+#[test]
+fn unregistered_always_on_name_never_enters_the_composed_set() {
+    // The removal-next-frame property in its assertable form: `always_on_layers()`
+    // is a stateless read over the registry, so a name that is NOT registered (the
+    // state after an entry is removed) never composes — the layer disappears the
+    // moment its entry is gone.
+    let stack = ModalStack::new();
+    assert!(
+        stack.always_on_layers().is_empty(),
+        "an empty registry composes no always-on layers",
+    );
+    assert!(
+        !stack
+            .always_on_layers()
+            .iter()
+            .any(|entry| entry.name == "scanlines"),
+        "an unregistered name is absent from the composed set",
+    );
+}
+
+// --- localState cell persistence across settled frames -----------------------
+
+fn one_cell(scope: &str, cell: &str, value: SlotValue) -> CellValues {
+    let mut m = CellValues::new();
+    m.insert((scope.to_string(), cell.to_string()), value);
+    m
+}
+
+#[test]
+fn cell_write_on_mixed_tree_persists_without_a_settled_frame_recompute() {
+    // The live cell value rides the snapshot, not the compared descriptor, so on
+    // the production mixed tree: changing ONLY the cell value across frames
+    // rebuilds the draw list (a content re-measure) but a follow-up frame with the
+    // SAME snapshot recomputes nothing — the cell persists at a stable value
+    // without forcing layout churn. Asserted via `recompute_count()`.
+    let tree = mixed_tree("hudScope");
+    let mut ui = UiTree::from_descriptor(&tree, &UiTheme::engine_default());
+    let mut fs = font_system();
+    let slots = HashMap::from([("player.health".to_string(), SlotValue::Number(50.0))]);
+    let cells = one_cell("hudScope", "count", SlotValue::Number(9.0));
+
+    ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, &cells, 0.0);
+    let after_first = ui.recompute_count();
+    // Re-run the SAME snapshot: nothing changed, so nothing recomputes.
+    ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, &cells, 0.0);
+    assert_eq!(
+        ui.recompute_count(),
+        after_first,
+        "a settled frame on the mixed tree recomputes nothing (cell rides the snapshot)",
+    );
+    // The cell value is still rendered (persists across the settled frame).
+    let data = ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &slots, &cells, 0.0);
+    assert!(
+        data.texts.iter().any(|t| t.content == "9"),
+        "the cell value persists across frames",
+    );
+}
+
+// --- Retained-draw-data reuse across frames, health-bar easeOut tween ---------
+//
+// Restores the property the dropped heavy test
+// `development_hud_cold_launch_and_staged_snapshots_build_retained_draw_data`
+// guarded through its `RetainedLayerHarness` path: a HUD health bar whose bind
+// carries an easeOut tween, drawn through the retained path across frames, eases
+// the DISPLAYED fill fraction between health changes — a mid-tween frame renders
+// an in-flight fraction strictly between the two settled endpoints, and a later
+// frame settles to the new value (and into the critical style band). The original
+// built this HUD by shelling out to `scripts-build` (mod-init over
+// `content/dev/start-script.ts`); this synthetic sibling builds the same descriptor
+// in-memory — no `run_mod_init`, no `ScriptCtx` — mirroring the surviving tests.
+
+const HUD_BAR_BACKGROUND: [f32; 4] = [0.035, 0.045, 0.060, 1.0];
+const HUD_BAR_HEALTHY: [f32; 4] = [0.12, 0.72, 0.40, 1.0];
+const HUD_BAR_CRITICAL: [f32; 4] = [0.86, 0.06, 0.12, 1.0];
+
+/// Publish a `player.health` / `player.maxHealth` store snapshot as the engine's
+/// per-frame slot map. The heavy original wrote these through `write_store_slot`
+/// on a live `ScriptCtx` and read the slot table back; the surviving in-memory
+/// tests construct the slot map directly (see `mixed_tree_renders_both_...`), so
+/// this mirrors that.
+fn publish_health_snapshot(health: f32, max_health: f32) -> HashMap<String, SlotValue> {
+    HashMap::from([
+        ("player.health".to_string(), SlotValue::Number(health)),
+        (
+            "player.maxHealth".to_string(),
+            SlotValue::Number(max_health),
+        ),
+    ])
+}
+
+/// A HUD health bar bound to `player.health` over a `player.maxHealth` state max,
+/// with an 180 ms easeOut tween on the bind and a critical style band at or below
+/// a 0.25 displayed fraction. Faithful to the production HUD bar the original
+/// exercised, built in-memory.
+fn health_bar_tree() -> AnchoredTree {
+    AnchoredTree {
+        anchor: Anchor::BottomLeft,
+        offset: [24.0, -24.0],
+        root: Widget::Bar(BarWidget {
+            bind: SliderBind {
+                source: BindSource::Slot {
+                    slot: "player.health".into(),
+                },
+                tween: Some(TextTween {
+                    duration_ms: 180.0,
+                    easing: Easing::EaseOut,
+                    from: None,
+                }),
+            },
+            max: BarMax::State(BarMaxStateRef {
+                slot: "player.maxHealth".into(),
+            }),
+            fill: ColorValue::Literal(HUD_BAR_HEALTHY),
+            background: ColorValue::Literal(HUD_BAR_BACKGROUND),
+            id: None,
+            style_ranges: Some(StyleRanges {
+                max: 1.0,
+                entries: vec![
+                    StyleEntry {
+                        up_to: Some(0.25),
+                        color: Some(ColorValue::Literal(HUD_BAR_CRITICAL)),
+                        pulse: None,
+                        flash: None,
+                    },
+                    StyleEntry {
+                        up_to: None,
+                        color: Some(ColorValue::Literal(HUD_BAR_HEALTHY)),
+                        pulse: None,
+                        flash: None,
+                    },
+                ],
+            }),
+            visible_when: None,
+            role: None,
+        }),
+        capture_mode: CaptureMode::Passthrough,
+        initial_focus: None,
+        text_entry_target: None,
+        accessible_name: None,
+        role: None,
+    }
+}
+
+/// Faithful shrink of the original `RetainedLayerHarness`: it lazily builds one
+/// `UiTree` per composed always-on layer and draws each through the RETAINED path,
+/// so per-frame draw data is reused/updated across frames rather than rebuilt from
+/// scratch. That reuse is what carries the tween's in-flight display value between
+/// frames.
+struct RetainedLayerHarness {
+    trees: Vec<UiTree>,
+    font_system: postretro_ui::text::FontSystem,
+}
+
+impl RetainedLayerHarness {
+    fn new() -> Self {
+        Self {
+            trees: Vec::new(),
+            font_system: font_system(),
+        }
+    }
+
+    fn draw_layers(
+        &mut self,
+        layers: &[UiTreeEntry],
+        theme: &UiTheme,
+        slots: &HashMap<String, SlotValue>,
+        time_seconds: f64,
+    ) -> Vec<UiDrawData> {
+        if self.trees.len() != layers.len() {
+            self.trees = layers
+                .iter()
+                .map(|layer| UiTree::from_descriptor(&layer.descriptor, theme))
+                .collect();
+        }
+        layers
+            .iter()
+            .enumerate()
+            .map(|(index, _layer)| {
+                self.trees[index].build_draw_data_retained(
+                    [1280, 720],
+                    &mut self.font_system,
+                    &no_images(),
+                    slots,
+                    &CellValues::new(),
+                    time_seconds,
+                )
+            })
+            .collect()
+    }
+}
+
+fn matches_bar_fill(color: [f32; 4]) -> bool {
+    approx_color(color, HUD_BAR_HEALTHY) || approx_color(color, HUD_BAR_CRITICAL)
+}
+
+/// Displayed fill fraction = fill quad width / background quad width.
+fn bar_fraction(data: &UiDrawData) -> f32 {
+    let background = data
+        .quads
+        .instances
+        .iter()
+        .find(|quad| approx_color(quad.color, HUD_BAR_BACKGROUND))
+        .expect("HUD health bar background quad renders");
+    let fill = data
+        .quads
+        .instances
+        .iter()
+        .find(|quad| matches_bar_fill(quad.color))
+        .expect("HUD health bar fill quad renders");
+    fill.rect[2] / background.rect[2]
+}
+
+fn bar_fill_color(data: &UiDrawData) -> [f32; 4] {
+    data.quads
+        .instances
+        .iter()
+        .find(|quad| matches_bar_fill(quad.color))
+        .expect("HUD health bar fill quad renders")
+        .color
+}
+
+#[test]
+fn retained_draw_data_reuses_across_frames_and_reflects_health_tween() {
+    // Compose the health-bar HUD as a mod always-on layer (the register -> compose
+    // path the production frame runs), then draw it through the retained harness.
+    let mut stack = ModalStack::new();
+    stack
+        .registry_mut()
+        .register("hud", health_bar_tree(), ScopeTier::Mod, true);
+    let theme = UiTheme::engine_default();
+    let layers = stack.always_on_layers();
+    assert_eq!(
+        layers.iter().map(|l| l.name.as_str()).collect::<Vec<_>>(),
+        vec!["hud"],
+        "the health-bar HUD composes as a single always-on layer",
+    );
+
+    let mut retained = RetainedLayerHarness::new();
+
+    // Frame 0 — full health. No tween `from`, so the first resolution snaps to the
+    // target: the bar fills completely and reads the healthy band.
+    let full_slots = publish_health_snapshot(100.0, 100.0);
+    let full_draws = retained.draw_layers(&layers, &theme, &full_slots, 0.0);
+    let full_fraction = bar_fraction(&full_draws[0]);
+    assert!(
+        (full_fraction - 1.0).abs() < 0.01,
+        "full health fills the bar, got {full_fraction}",
+    );
+    assert!(
+        approx_color(bar_fill_color(&full_draws[0]), HUD_BAR_HEALTHY),
+        "full health renders the healthy band",
+    );
+
+    // Frame 1 — retarget to low health at t=0: the tween segment starts easing from
+    // the settled full value toward the new target (retained reuse carries the
+    // in-flight display value forward from here).
+    let low_slots = publish_health_snapshot(20.0, 100.0);
+    retained.draw_layers(&layers, &theme, &low_slots, 0.0);
+
+    // Frame 2 — 90 ms into the 180 ms easeOut tween: the displayed fraction is
+    // in-flight, strictly between the two settled endpoints (full 1.0 and low 0.2).
+    let mid_draws = retained.draw_layers(&layers, &theme, &low_slots, 0.09);
+    let mid_fraction = bar_fraction(&mid_draws[0]);
+    assert!(
+        mid_fraction > 0.2 + 1e-3 && mid_fraction < full_fraction - 1e-3,
+        "mid-tween fraction is in-flight strictly between low (0.2) and full ({full_fraction}), got {mid_fraction}",
+    );
+    assert!(
+        !approx_color(bar_fill_color(&mid_draws[0]), HUD_BAR_CRITICAL),
+        "the critical band must wait until the displayed fraction crosses its threshold, got {:?}",
+        bar_fill_color(&mid_draws[0]),
+    );
+
+    // Frame 3 — past the 180 ms duration: the displayed value settles to the new
+    // target, reaching 20 / 100 and crossing into the critical band.
+    let settled_draws = retained.draw_layers(&layers, &theme, &low_slots, 0.181);
+    let settled_fraction = bar_fraction(&settled_draws[0]);
+    assert!(
+        (settled_fraction - 0.2).abs() < 0.015,
+        "settled bar reaches 20 / 100, got {settled_fraction}",
+    );
+    assert!(
+        settled_fraction < mid_fraction - 1e-3,
+        "the settled low fraction sits below the mid-tween fraction ({mid_fraction}), got {settled_fraction}",
+    );
+    assert!(
+        approx_color(bar_fill_color(&settled_draws[0]), HUD_BAR_CRITICAL),
+        "settled low health reaches the critical style band, got {:?}",
+        bar_fill_color(&settled_draws[0]),
     );
 }

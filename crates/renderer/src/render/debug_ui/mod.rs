@@ -460,7 +460,7 @@ fn draw_volumes_tab(
                 renderer.set_sdf_open_space_skip_threshold(state.sdf_open_space_skip_threshold);
             }
 
-            ui.label("SDF penumbra k (larger = harder shadow)");
+            ui.label("SDF penumbra k (larger = harder shadow; light size capped at 1 voxel)");
             if ui
                 .add(egui::Slider::new(&mut state.sdf_penumbra_k, 1.0_f32..=64.0))
                 .changed()

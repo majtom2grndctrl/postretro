@@ -44,30 +44,45 @@ pub const CUBE_FACE_RESOLUTION: u32 = 512;
 /// layers `slot*6 .. slot*6 + 6`.
 pub const CUBE_FACES: usize = 6;
 
-/// The 6 cube-face directions in the canonical wgpu/D3D cube-map face order:
-/// +X, -X, +Y, -Y, +Z, -Z. A sampling layer index `slot*6 + face` follows this
-/// order so the forward sample path maps a world direction to a face with the
-/// standard major-axis selection.
+/// Per-layer look directions for a slot's 6 faces, paired with
+/// [`CUBE_FACE_UPS`].
+///
+/// WHY this is not the plain +X,-X,+Y,-Y,+Z,-Z hardware face order: the
+/// hardware cube-sampling convention's per-face (s, t, major-axis) basis is
+/// LEFT-handed, so no right-handed `look_at_rh` view can reproduce it — one
+/// mirror is required somewhere between render and sample. Rather than mirror
+/// the projection (which reverses triangle winding and would need `Cw`
+/// variants of the shared depth pipelines), the shader mirrors the LOOKUP:
+/// `sample_point_shadow` flips the y component of the direction before
+/// sampling (`shadow_sample.wgsl`). Under a y-flipped lookup the hardware's
+/// ±Y faces exchange, so layer 2 (hardware +Y) holds the image rendered
+/// looking -Y and layer 3 (hardware -Y) the image rendered looking +Y; the
+/// other four faces are y-mirror-invariant in face SELECTION and come out
+/// texel-exact with their GL-style ups below. The
+/// `cube_face_layers_round_trip_hardware_sampling` test pins the whole
+/// arrangement (tables + shader flip) against an emulation of the hardware
+/// convention, so neither side can drift alone.
 const CUBE_FACE_DIRS: [Vec3; CUBE_FACES] = [
-    Vec3::new(1.0, 0.0, 0.0),  // +X
-    Vec3::new(-1.0, 0.0, 0.0), // -X
-    Vec3::new(0.0, 1.0, 0.0),  // +Y
-    Vec3::new(0.0, -1.0, 0.0), // -Y
-    Vec3::new(0.0, 0.0, 1.0),  // +Z
-    Vec3::new(0.0, 0.0, -1.0), // -Z
+    Vec3::new(1.0, 0.0, 0.0),  // layer 0: hardware +X face
+    Vec3::new(-1.0, 0.0, 0.0), // layer 1: hardware -X face
+    Vec3::new(0.0, -1.0, 0.0), // layer 2: hardware +Y face (y-flipped lookup)
+    Vec3::new(0.0, 1.0, 0.0),  // layer 3: hardware -Y face (y-flipped lookup)
+    Vec3::new(0.0, 0.0, 1.0),  // layer 4: hardware +Z face
+    Vec3::new(0.0, 0.0, -1.0), // layer 5: hardware -Z face
 ];
 
-/// Per-face "up" vectors, paired with `CUBE_FACE_DIRS`. The ±Y faces look along
-/// the Y axis, so their up is along Z (any vector not colinear with the look
-/// direction); the other four use -Y. These match the standard cube-map face
-/// orientation convention so all 6 faces tile the sphere with no gap or overlap.
+/// Per-face "up" vectors, paired with `CUBE_FACE_DIRS`. The Y-looking layers
+/// use a Z up (any vector not colinear with the look direction); the other
+/// four use -Y. Together with the shader's y-flipped lookup these place every
+/// direction at exactly the texel the hardware sampler reads — see the
+/// [`CUBE_FACE_DIRS`] doc and the round-trip test for the derivation.
 const CUBE_FACE_UPS: [Vec3; CUBE_FACES] = [
-    Vec3::new(0.0, -1.0, 0.0), // +X
-    Vec3::new(0.0, -1.0, 0.0), // -X
-    Vec3::new(0.0, 0.0, 1.0),  // +Y
-    Vec3::new(0.0, 0.0, -1.0), // -Y
-    Vec3::new(0.0, -1.0, 0.0), // +Z
-    Vec3::new(0.0, -1.0, 0.0), // -Z
+    Vec3::new(0.0, -1.0, 0.0), // layer 0 (+X)
+    Vec3::new(0.0, -1.0, 0.0), // layer 1 (-X)
+    Vec3::new(0.0, 0.0, -1.0), // layer 2 (looks -Y)
+    Vec3::new(0.0, 0.0, 1.0),  // layer 3 (looks +Y)
+    Vec3::new(0.0, -1.0, 0.0), // layer 4 (+Z)
+    Vec3::new(0.0, -1.0, 0.0), // layer 5 (-Z)
 ];
 
 /// Build the 6 light-space view-projection matrices for a point light's cube
@@ -608,5 +623,97 @@ mod tests {
             SHADOW_SRC.contains("/ CUBE_FACE_RESOLUTION)"),
             "shadow_sample.wgsl must scale the PCF tap by the named CUBE_FACE_RESOLUTION const"
         );
+    }
+
+    /// WebGPU cube-map sampling emulation: face selection by dominant axis
+    /// plus the spec's per-face (sc, tc, ma) table, with t increasing DOWNWARD
+    /// (wgpu top-left texture origin). This is what `textureSampleCompareLevel`
+    /// does with the lookup vector before the depth compare.
+    fn hardware_cube_lookup(r: Vec3) -> (usize, f32, f32) {
+        let (ax, ay, az) = (r.x.abs(), r.y.abs(), r.z.abs());
+        let (face, sc, tc, ma) = if ax >= ay && ax >= az {
+            if r.x >= 0.0 {
+                (0, -r.z, -r.y, ax)
+            } else {
+                (1, r.z, -r.y, ax)
+            }
+        } else if ay >= ax && ay >= az {
+            if r.y >= 0.0 {
+                (2, r.x, r.z, ay)
+            } else {
+                (3, r.x, -r.z, ay)
+            }
+        } else if r.z >= 0.0 {
+            (4, r.x, -r.y, az)
+        } else {
+            (5, -r.x, -r.y, az)
+        };
+        (face, 0.5 * (sc / ma + 1.0), 0.5 * (tc / ma + 1.0))
+    }
+
+    /// The load-bearing invariant of the whole cube path: for ANY direction,
+    /// the depth texel the shader's y-flipped lookup reads is exactly the
+    /// texel the depth pass rendered that direction's geometry to — same
+    /// layer, same uv, and the same NDC depth the shader reconstructs as its
+    /// compare reference. The hardware convention's per-face basis is
+    /// left-handed, so a right-handed face render can only match it through
+    /// one mirror: the shader's lookup y-flip, completed by the swapped ±Y
+    /// layers in `CUBE_FACE_DIRS`. If either side changes alone (the tables,
+    /// the layer order, or the WGSL flip), every direction reads a mirrored
+    /// texel — walls compare against ceiling/floor depths and shade
+    /// themselves into darkness under a point light that should light them.
+    #[test]
+    fn cube_face_layers_round_trip_hardware_sampling() {
+        let far = 20.0f32;
+        let light = point_light([0.0, 0.0, 0.0], far, true);
+        let mats = cube_face_matrices(&light);
+
+        // Pin the WGSL flip so it can't be "simplified away" without failing
+        // here (the render-side tables assume it).
+        const SHADOW_SRC: &str = include_str!("../shaders/shadow_sample.wgsl");
+        assert!(
+            SHADOW_SRC.contains("vec3<f32>(dir.x, -dir.y, dir.z)"),
+            "shadow_sample.wgsl must sample the cube with a y-flipped lookup vector"
+        );
+
+        // Dense sphere sweep — off-axis directions on every face.
+        for i in 0..32 {
+            for j in 0..16 {
+                let theta = (i as f32 + 0.5) / 32.0 * std::f32::consts::TAU;
+                let phi = (j as f32 + 0.5) / 16.0 * std::f32::consts::PI;
+                let r = Vec3::new(
+                    phi.sin() * theta.cos(),
+                    phi.cos(),
+                    phi.sin() * theta.sin(),
+                );
+                let dist = 5.0f32;
+
+                // Shader side: y-flipped lookup → hardware face + uv.
+                let (face, hu, hv) = hardware_cube_lookup(Vec3::new(r.x, -r.y, r.z));
+
+                // Render side: the same world point through that layer's matrix.
+                let clip = mats[face] * (r * dist).extend(1.0);
+                assert!(clip.w > 0.0, "dir {r:?} must be in front of layer {face}");
+                let ndc = clip.truncate() / clip.w;
+                let (ru, rv) = (0.5 + 0.5 * ndc.x, 0.5 - 0.5 * ndc.y);
+                assert!(
+                    (hu - ru).abs() < 1e-4 && (hv - rv).abs() < 1e-4,
+                    "dir {r:?}: hardware reads layer {face} uv ({hu:.4},{hv:.4}) but \
+                     the depth pass rendered it at ({ru:.4},{rv:.4})"
+                );
+
+                // The shader's reference-depth reconstruction matches the NDC
+                // depth the pass stored at that texel.
+                let axis_depth = r.x.abs().max(r.y.abs()).max(r.z.abs()) * dist;
+                let a = far / (far - CUBE_NEAR_CLIP);
+                let reference =
+                    a - (CUBE_NEAR_CLIP * far) / ((far - CUBE_NEAR_CLIP) * axis_depth);
+                assert!(
+                    (reference - ndc.z).abs() < 1e-4,
+                    "dir {r:?}: reconstructed reference {reference} != stored NDC depth {}",
+                    ndc.z
+                );
+            }
+        }
     }
 }

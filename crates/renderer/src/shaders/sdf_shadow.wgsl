@@ -460,6 +460,18 @@ fn trace_shadow(origin: vec3<f32>, dir: vec3<f32>, max_dist: f32, normal: vec3<f
     var t: f32 = start_eps;
     var factor: f32 = FULLY_LIT;
     let k = max(params.penumbra_k, 1.0);
+    // Penumbra sharpness with a voxel cap on the virtual light size. The
+    // receiver-angle term `k·h/(t−y)` models an area light of radius
+    // `max_dist/k` — a radius that GROWS with receiver distance, so a lamp
+    // mounted ~a voxel under a ceiling darkens every distant receiver in its
+    // room: near the light the mount surface sits inside the oversized
+    // virtual disk and the estimator reads it as occlusion. Capping the disk
+    // at ONE VOXEL (`max(k, max_dist/voxel)`) keeps any light mounted at
+    // least ~a voxel off a surface fully lit while leaving short-range
+    // (`max_dist ≤ k·voxel`) contact penumbras exactly as `k` tunes them.
+    // The capped term is pointwise ≥ the uncapped one, so it only ever
+    // REMOVES false darkening; hard hits are untouched.
+    let cone_scale = max(k, max_dist / voxel);
     // Bounded march length: the 64 m hard cap AND the distance to the light,
     // whichever is closer. Stopping at the light keeps geometry behind/around it
     // from being counted as an occluder. Pull in by one voxel so a surface the
@@ -513,7 +525,9 @@ fn trace_shadow(origin: vec3<f32>, dir: vec3<f32>, max_dist: f32, normal: vec3<f
         if (t > start_eps && h <= ph) {
             let y = h * h / (2.0 * max(ph, voxel * 0.5));
             let estimate = sqrt(max(h * h - y * y, 0.0));
-            let soft = k * estimate / max(t - y, voxel);
+            // `cone_scale` (not bare `k`) — see its declaration for the
+            // voxel cap on the virtual light size.
+            let soft = cone_scale * estimate / max(t - y, voxel);
             // Part A — fade the soft term toward fully-lit at grazing angles.
             factor = min(factor, mix(1.0, soft, graze));
         }
@@ -553,6 +567,7 @@ fn debug_trace_outcome(origin: vec3<f32>, dir: vec3<f32>, max_dist: f32, normal:
     var t: f32 = start_eps;
     var factor: f32 = FULLY_LIT;
     let k = max(params.penumbra_k, 1.0);
+    let cone_scale = max(k, max_dist / voxel);
     let max_t = max(min(64.0, max_dist - voxel), start_eps);
 
     // Part A — mirror the production trace so the debug viz reflects it.
@@ -576,7 +591,8 @@ fn debug_trace_outcome(origin: vec3<f32>, dir: vec3<f32>, max_dist: f32, normal:
         if (t > start_eps && h <= ph) {
             let y = h * h / (2.0 * max(ph, voxel * 0.5));
             let estimate = sqrt(max(h * h - y * y, 0.0));
-            let soft = k * estimate / max(t - y, voxel);
+            // Voxel-capped virtual light size — mirrors `trace_shadow`.
+            let soft = cone_scale * estimate / max(t - y, voxel);
             factor = min(factor, mix(1.0, soft, graze));
         }
         ph = h;

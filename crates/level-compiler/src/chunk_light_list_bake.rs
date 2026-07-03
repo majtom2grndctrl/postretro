@@ -30,6 +30,16 @@ pub const MAX_SECTION_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
 /// Offset along ray direction to avoid self-intersection on the emitting surface.
 const RAY_EPSILON: f32 = 1.0e-3;
 
+/// A hit within this distance of a visibility sample does not count as
+/// occlusion. Samples are proxies for receiver SURFACES, so the closing
+/// centimeters of a segment are expected to touch the receiving geometry
+/// itself — a sample lying on a floor or wall plane would otherwise read as
+/// "occluded by its own floor" (with only `RAY_EPSILON` of slack the outcome
+/// was float luck, which is exactly how ground-layer cells were randomly
+/// dropped: the grid's half-cell pad puts a ground cell's midheight ON the
+/// floor plane of any map whose geometry AABB min sits at the floor).
+const SAMPLE_END_TOLERANCE_METERS: f32 = 0.02;
+
 /// Per-fragment SDF-shadow budget. Runtime traces at most K `sdf`-tagged lights
 /// per `chunk_grid` cell; extras are dropped (treated lit). The half-res shadow
 /// target has four RGBA channels — slot i maps to channel i. Compiler warns when
@@ -214,6 +224,23 @@ pub fn bake_chunk_light_list(
                     if !overlaps_chunk(light, chunk_min, chunk_max) {
                         continue;
                     }
+                    // A cell that CONTAINS the light keeps it unconditionally:
+                    // fragments right next to the light are lit no matter what
+                    // the centroid-keyed portal filter or the visibility rays
+                    // say — both key on proxy points that can sit in a
+                    // different room (or inside geometry) than the light, and
+                    // an 8 m cell routinely spans both.
+                    if matches!(light.light_type, LightType::Point | LightType::Spot) {
+                        let origin = Vec3::new(
+                            light.origin.x as f32,
+                            light.origin.y as f32,
+                            light.origin.z as f32,
+                        );
+                        if origin.cmpge(chunk_min).all() && origin.cmple(chunk_max).all() {
+                            bucket.push(slot);
+                            continue;
+                        }
+                    }
                     if !chunk_filter_bypassed {
                         if let Some(reachable) = &light_reachable[idx] {
                             if !reachable.contains(&chunk_leaf) {
@@ -226,9 +253,8 @@ pub fn bake_chunk_light_list(
                         inputs.primitives,
                         inputs.geometry,
                         light,
-                        chunk_min,
-                        chunk_max,
-                        chunk_centroid,
+                        (chunk_min, chunk_max),
+                        (geo_min, geo_max),
                     ) {
                         continue;
                     }
@@ -415,20 +441,25 @@ fn overlaps_chunk(light: &MapLight, chunk_min: Vec3, chunk_max: Vec3) -> bool {
     }
 }
 
-/// Returns `true` if any of 4 shadow rays (centroid + 3 light-facing face midpoints)
-/// reaches the light unoccluded. Directional lights cast from sample toward sun,
-/// mirroring the `segment_clear`-based hard-ray approach used by
-/// `lightmap_bake::soft_visibility`'s zero-size short-circuit.
+/// Returns `true` if any of 9 shadow rays (sample-box center + 8 inset corners,
+/// see `sample_points`) reaches the light unoccluded. Directional lights cast
+/// from sample toward sun, mirroring the `segment_clear`-based hard-ray
+/// approach used by `lightmap_bake::soft_visibility`'s zero-size short-circuit.
+///
+/// This is a CONSERVATIVE cull: it answers "could any receiver in this cell
+/// possibly see the light". A false KEEP costs one redundant runtime candidate;
+/// a false DROP is a cell-sized (8 m) hole cut out of the light — an `sdf`
+/// light's runtime direct term (and every static light's specular) reads this
+/// list per fragment, so a wrong drop is directly visible. Err lit.
 fn any_ray_unoccluded(
     bvh: &Bvh<f32, 3>,
     primitives: &[BvhPrimitive],
     geometry: &GeometryResult,
     light: &MapLight,
-    chunk_min: Vec3,
-    chunk_max: Vec3,
-    chunk_centroid: Vec3,
+    chunk_bounds: (Vec3, Vec3),
+    world_bounds: (Vec3, Vec3),
 ) -> bool {
-    let samples = sample_points(light, chunk_min, chunk_max, chunk_centroid);
+    let samples = sample_points(light, chunk_bounds, world_bounds);
     for sample in samples {
         if segment_clear(bvh, primitives, geometry, light, sample) {
             return true;
@@ -437,42 +468,68 @@ fn any_ray_unoccluded(
     false
 }
 
-fn sample_points(light: &MapLight, chunk_min: Vec3, chunk_max: Vec3, centroid: Vec3) -> [Vec3; 4] {
-    let to_centroid = match light.light_type {
-        LightType::Directional => {
-            // Sun shines along cone_direction; faces the light means outward normal
-            // points away from it, so `to_centroid` = `aim` (not `-aim`).
-            Vec3::from(light.cone_direction.unwrap_or([0.0, -1.0, 0.0])).normalize_or_zero()
+/// Visibility sample points for a (light, cell) pair: the center + 8 corners of
+/// the cell AABB clipped to the light's influence AABB (`origin ± falloff` —
+/// the only region where the light can matter) and to the geometry AABB (the
+/// only region where receivers can exist), with the corners inset off the box
+/// faces.
+///
+/// The former scheme (cell centroid + 3 light-facing face midpoints) sampled
+/// cell-geometry landmarks that routinely DEGENERATE onto world geometry: with
+/// the grid's half-cell pad, a ground-layer cell's midheight sits exactly on
+/// the floor plane of any map whose geometry min is the floor, face midpoints
+/// sit on cell faces (which walls love to align with), and the vertical face
+/// midpoint lands above low ceilings. All four rays then graze or cross
+/// geometry and the light is dropped from a cell it plainly illuminates — the
+/// observed failure dropped a light from the very cell CONTAINING it, cutting
+/// a box-shaped hole out of the light. The influence/world clip keeps every
+/// sample where visibility is actually at stake, and the inset keeps corners
+/// off planes that coincide with cell or world faces.
+fn sample_points(
+    light: &MapLight,
+    (chunk_min, chunk_max): (Vec3, Vec3),
+    (world_min, world_max): (Vec3, Vec3),
+) -> [Vec3; 9] {
+    let mut lo = chunk_min.max(world_min);
+    let mut hi = chunk_max.min(world_max);
+    if let LightType::Point | LightType::Spot = light.light_type {
+        let center = Vec3::new(
+            light.origin.x as f32,
+            light.origin.y as f32,
+            light.origin.z as f32,
+        );
+        let radius = light.falloff_range.max(0.0);
+        lo = lo.max(center - Vec3::splat(radius));
+        hi = hi.min(center + Vec3::splat(radius));
+    }
+    // A clip can empty an axis (float slack on a sphere-graze, or a cell fully
+    // outside the world pad). Collapse that axis to the midpoint of the raw
+    // cell interval rather than inventing an inverted box.
+    for axis in 0..3 {
+        if lo[axis] > hi[axis] {
+            let mid = (chunk_min[axis] + chunk_max[axis]) * 0.5;
+            lo[axis] = mid;
+            hi[axis] = mid;
         }
-        LightType::Point | LightType::Spot => {
-            let origin = Vec3::new(
-                light.origin.x as f32,
-                light.origin.y as f32,
-                light.origin.z as f32,
-            );
-            (centroid - origin).normalize_or_zero()
-        }
-    };
-
-    // The three axis signs of `-to_centroid` pick exactly 3 of the 6 cube faces.
-    let facing = -to_centroid;
-    let mut pts = [centroid; 4];
-    pts[1] = if facing.x >= 0.0 {
-        Vec3::new(chunk_max.x, centroid.y, centroid.z)
-    } else {
-        Vec3::new(chunk_min.x, centroid.y, centroid.z)
-    };
-    pts[2] = if facing.y >= 0.0 {
-        Vec3::new(centroid.x, chunk_max.y, centroid.z)
-    } else {
-        Vec3::new(centroid.x, chunk_min.y, centroid.z)
-    };
-    pts[3] = if facing.z >= 0.0 {
-        Vec3::new(centroid.x, centroid.y, chunk_max.z)
-    } else {
-        Vec3::new(centroid.x, centroid.y, chunk_min.z)
-    };
-    pts
+    }
+    let center = (lo + hi) * 0.5;
+    // Pull corners off the box faces (quarter-extent, capped at 0.5 m) so they
+    // cannot sit exactly on a wall/floor plane flush with a box face. A
+    // zero-extent axis stays collapsed — the on-plane case is what
+    // `SAMPLE_END_TOLERANCE_METERS` absorbs.
+    let inset = ((hi - lo) * 0.25).min(Vec3::splat(0.5));
+    let (a, b) = (lo + inset, hi - inset);
+    [
+        center,
+        Vec3::new(a.x, a.y, a.z),
+        Vec3::new(b.x, a.y, a.z),
+        Vec3::new(a.x, b.y, a.z),
+        Vec3::new(b.x, b.y, a.z),
+        Vec3::new(a.x, a.y, b.z),
+        Vec3::new(b.x, a.y, b.z),
+        Vec3::new(a.x, b.y, b.z),
+        Vec3::new(b.x, b.y, b.z),
+    ]
 }
 
 fn segment_clear(
@@ -511,7 +568,13 @@ fn segment_clear(
         Vector3::new(dir.x, dir.y, dir.z),
     );
     let candidates = bvh.traverse(&ray, primitives);
-    let max_distance = length - RAY_EPSILON;
+    // Stop counting hits a couple of centimeters short of the sample: a graze
+    // at the endpoint is the receiving surface itself, not an occluder (see
+    // `SAMPLE_END_TOLERANCE_METERS`).
+    let max_distance = length - SAMPLE_END_TOLERANCE_METERS.max(RAY_EPSILON);
+    if max_distance <= 0.0 {
+        return true;
+    }
     let geom = &geometry.geometry;
     for prim in candidates {
         let start = prim.index_offset as usize;
@@ -1589,6 +1652,159 @@ mod tests {
             sdf.range > EPS && dist < sdf.range,
             "SDF light range {} must cover the floor->light distance {dist}",
             sdf.range,
+        );
+    }
+
+    /// Every cell a light's influence sphere touches must KEEP the light on an
+    /// open floor — even though the grid's half-cell pad puts every ground
+    /// cell's midheight (and thus the sample-box y, clamped to the floor-only
+    /// geometry AABB) exactly ON the floor plane. Under the old centroid + 3
+    /// face-midpoint sampling those grazing rays read as occlusion by float
+    /// luck, randomly cutting cell-sized box holes out of the light (observed
+    /// on combat-demo: the sdf spot was dropped from the cell containing it).
+    /// `SAMPLE_END_TOLERANCE_METERS` makes an endpoint graze read as the
+    /// receiving surface, not an occluder.
+    #[test]
+    fn open_floor_cells_in_range_always_keep_the_light() {
+        let geo = single_quad_geometry();
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        // Ceiling-spot geometry from the observed repro: light 2.5 m above the
+        // floor, short falloff, nothing occluding anywhere.
+        let light_pos = DVec3::new(0.0, 2.5, 0.0);
+        let range = 3.8_f32;
+        let lights = vec![point_light(light_pos, range)];
+        let alpha_lights = AlphaLightsNs::from_lights(&lights);
+        let inputs = ChunkLightListInputs {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+            lights: &alpha_lights,
+            tree: &empty_tree(),
+            portals: &[],
+            exterior_leaves: &HashSet::new(),
+        };
+        let section = bake_chunk_light_list(&inputs, 4.0, 64).unwrap();
+        assert_eq!(section.has_grid, 1);
+
+        let origin = Vec3::from(section.grid_origin);
+        let cell = section.cell_size;
+        let center = Vec3::new(
+            light_pos.x as f32,
+            light_pos.y as f32,
+            light_pos.z as f32,
+        );
+        let [nx, ny, nz] = section.grid_dimensions;
+        for z in 0..nz {
+            for y in 0..ny {
+                for x in 0..nx {
+                    let cmin = origin + Vec3::new(x as f32, y as f32, z as f32) * cell;
+                    let cmax = cmin + Vec3::splat(cell);
+                    let closest = center.clamp(cmin, cmax);
+                    if (closest - center).length_squared() > range * range {
+                        continue; // outside influence — not required to hold it
+                    }
+                    let linear = (z * ny * nx + y * nx + x) as usize;
+                    let count = section.offsets[linear].count;
+                    assert_eq!(
+                        count, 1,
+                        "unoccluded in-range cell ({x},{y},{z}) [{cmin:?}..{cmax:?}] \
+                         must keep the light"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The cell CONTAINING a light keeps it even when every visibility sample
+    /// is occluded: a light boxed in by geometry still lights the box's own
+    /// interior surfaces, which live in that same cell. The former all-rays
+    /// cull keyed only on proxy points outside the enclosure and dropped the
+    /// light from its own cell.
+    #[test]
+    fn cell_containing_the_light_survives_full_sample_occlusion() {
+        // Floor plus a closed 1 m cube shell centered on the light. Every
+        // sample point of the containing cell lies outside the shell, so all
+        // 9 rays are blocked.
+        let mut geo = single_quad_geometry();
+        {
+            let geom = &mut geo.geometry;
+            let (lo, hi) = (Vec3::new(-0.5, 1.5, -0.5), Vec3::new(0.5, 2.5, 0.5));
+            let corners = [
+                Vec3::new(lo.x, lo.y, lo.z),
+                Vec3::new(hi.x, lo.y, lo.z),
+                Vec3::new(hi.x, hi.y, lo.z),
+                Vec3::new(lo.x, hi.y, lo.z),
+                Vec3::new(lo.x, lo.y, hi.z),
+                Vec3::new(hi.x, lo.y, hi.z),
+                Vec3::new(hi.x, hi.y, hi.z),
+                Vec3::new(lo.x, hi.y, hi.z),
+            ];
+            // 6 faces as corner-index quads (winding irrelevant: the ray test
+            // is double-sided).
+            let quads: [[usize; 4]; 6] = [
+                [0, 1, 2, 3], // -z
+                [4, 5, 6, 7], // +z
+                [0, 3, 7, 4], // -x
+                [1, 2, 6, 5], // +x
+                [0, 1, 5, 4], // -y
+                [3, 2, 6, 7], // +y
+            ];
+            for q in quads {
+                let base = geom.vertices.len() as u32;
+                for &ci in &q {
+                    let p = corners[ci];
+                    geom.vertices.push(Vertex::new(
+                        [p.x, p.y, p.z],
+                        [0.0, 0.0],
+                        [0.0, 1.0, 0.0],
+                        [1.0, 0.0, 0.0],
+                        true,
+                        [0.0, 0.0],
+                        0,
+                    ));
+                }
+                let start = geom.indices.len() as u32;
+                geom.indices
+                    .extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+                geom.faces.push(FaceMeta {
+                    leaf_index: 0,
+                    texture_index: 0,
+                });
+                geo.face_index_ranges.push(FaceIndexRange {
+                    index_offset: start,
+                    index_count: 6,
+                });
+            }
+        }
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+
+        let light_pos = DVec3::new(0.0, 2.0, 0.0); // inside the shell
+        let lights = vec![point_light(light_pos, 3.0)];
+        let alpha_lights = AlphaLightsNs::from_lights(&lights);
+        let inputs = ChunkLightListInputs {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+            lights: &alpha_lights,
+            tree: &empty_tree(),
+            portals: &[],
+            exterior_leaves: &HashSet::new(),
+        };
+        let section = bake_chunk_light_list(&inputs, 8.0, 64).unwrap();
+        assert_eq!(section.has_grid, 1);
+
+        let origin = Vec3::from(section.grid_origin);
+        let cell = section.cell_size;
+        let center = Vec3::new(0.0, 2.0, 0.0);
+        let cx = ((center.x - origin.x) / cell).floor() as u32;
+        let cy = ((center.y - origin.y) / cell).floor() as u32;
+        let cz = ((center.z - origin.z) / cell).floor() as u32;
+        let [nx, ny, _] = section.grid_dimensions;
+        let linear = (cz * ny * nx + cy * nx + cx) as usize;
+        assert_eq!(
+            section.offsets[linear].count,
+            1,
+            "the cell containing the boxed-in light must keep it"
         );
     }
 }

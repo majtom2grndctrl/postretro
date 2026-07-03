@@ -69,5 +69,5 @@ Author `content/dev/maps/movement-feel.map` with the five stations (pillar wedge
 
 ## Open questions
 
-- **Label density at wave scale.** Sixteen overlapping labels may be unreadable; if so, cap labels to the N nearest agents or add a panel slider. Decide during the first manual check — not up front.
+- **Label density at wave scale.** A dense wave's overlapping labels may be unreadable; if so, cap labels to the N nearest agents or add a panel slider. Decide during the first manual check — not up front.
 - **Row-feed shape for the Agents tab.** Prepared-rows (binary assembles strings) is the boundary-clean default; if the panel later needs interaction per agent (select-to-highlight), a small ID-keyed struct may replace strings. Defer until a consumer needs it.

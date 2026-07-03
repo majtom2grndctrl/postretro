@@ -498,7 +498,7 @@ impl Renderer {
     /// the spot depth pass) plus entity occluders; `slot_entity_eligible` gates
     /// only the entity draw, exactly like the spot path's per-slot entity gate.
     ///
-    /// Every ranked slot's faces get matrices — occupancy no longer depends on
+    /// Every ranked slot's faces get matrices — occupancy is independent of
     /// `entity_occluder_eligible`. Each occupied face receives a Clear(1.0) +
     /// world-depth baseline every frame (the invariant that makes it safe for
     /// the shader to sample any ranked slot), so the returned assignment is the

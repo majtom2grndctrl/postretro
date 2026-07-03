@@ -3,13 +3,12 @@
 // cone-culled WORLD geometry (static occluders — crates, pillars) plus skinned
 // entity occluders, mirroring the spot pool's occluder split.
 //
-// v1 shipped entity-only faces because a naive world draw cost 6 full
+// WHY per-face world draws fit the budget: a naive world draw costs 6 full
 // world-BVH rasterizations per point light. The per-region GPU frustum cull
 // (`shadow_cull.rs`, one indirect sub-region per (slot, face) gated by that
 // face's 90° frustum) bounds the world cost to the geometry each face can
-// actually see, which is what made world occluders affordable — and what makes
-// dynamic point lights shadow static geometry at all (the stress-warren maps
-// exposed the gap: `light_dynamic` rooms had crates casting no shadow).
+// actually see, which is what lets dynamic point lights shadow static geometry
+// under a predictable budget.
 //
 // See: context/lib/rendering_pipeline.md §7.1 (shadow passes), §4 (lighting)
 
@@ -275,8 +274,8 @@ pub fn cube_pool_enabled(cube_array_supported: bool) -> bool {
 /// cleared to the far plane (NDC depth 1.0) EVERY frame it is occupied,
 /// regardless of whether any world geometry or skinned-mesh occluder exists —
 /// exactly as the spot pool always lays down a `Clear(1.0)` baseline for every
-/// occupied slot. Every ranked slot's faces are occupied (occupancy no longer
-/// depends on entity eligibility), and the world-depth draw rides the same
+/// occupied slot. Every ranked slot's faces are occupied (occupancy is
+/// independent of entity eligibility), and the world-depth draw rides the same
 /// pass, so a ranked slot is always safe for the shader to sample.
 ///
 /// Returns `true` for any occupied face. The depth loop gates the occluder

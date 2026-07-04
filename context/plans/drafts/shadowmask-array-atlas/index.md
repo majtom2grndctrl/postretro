@@ -5,8 +5,10 @@
 > limits on large maps the way the SH octahedral atlas does (`plans/drafts/sh-array-atlas/`), and does
 > it need the same 2D→`texture_2d_array` treatment?
 > **Answer:** no. The shadowmask atlas was **born layer-shaped** and rides the lightmap's
-> already-array-atlased `SharedAtlas` verbatim. It cannot overflow any limit the lightmap doesn't
-> overflow first, and every overflow axis is already handled — graceful at load, hard-fail at bake.
+> already-array-atlased `SharedAtlas` (the static irradiance/direction atlases) verbatim. Its three
+> size axes equal the lightmap's by current compiler wiring, not by a wire-format or loader invariant —
+> but the load-time device-limit guard is unconditional, so it cannot breach a device limit the lightmap
+> doesn't breach first, and every overflow axis is already handled — graceful at load, hard-fail at bake.
 > **Related:** `context/lib/rendering_pipeline.md` §4 (Promoted static lights, lightmap array atlas) ·
 > `context/lib/build_pipeline.md` §PRL section IDs (id 22 Lightmap, id 42 ShadowmaskAtlas) ·
 > `context/plans/drafts/sh-array-atlas/index.md` (the sibling — a **real** gap, contrasted below) ·
@@ -54,8 +56,11 @@ The shadowmask bake does **not** size itself. It reads the dimensions straight o
 - `crates/level-compiler/src/shadowmask_bake.rs:64-67` (`bake_shadowmask_atlas`) passes
   `shared.atlas_width`, `shared.atlas_height`, and `layer_count_from_shared(shared)` into the section.
 - `layer_count_from_shared` (`shadowmask_bake.rs:305-312`) = `max(placement.layer + 1)` over the
-  **lightmap's own chart placements** — byte-for-byte the same spilled layer count the lightmap layer
-  bake computes (`crates/level-compiler/src/lightmap_layer.rs:219-224`, identical expression).
+  **lightmap's own chart placements**, while the `Lightmap` section separately stores `pack.layer_count`
+  (`lightmap_layer.rs:219-224`). `SharedAtlas` (`lightmap_layer.rs:179-184`) carries no `layer_count`
+  field — these are two independently-computed expressions (different variable names throughout:
+  `placement`/`shared` vs `p`/`atlas`) that agree only because `pack_layers` always places a chart on
+  its highest opened layer, not because they share a source.
 - The `SharedAtlas` (`lightmap_layer.rs:179-183`) is the packing produced by the lightmap's
   multi-bin `pack_layers`, which caps **each layer** at `MAX_ATLAS_DIMENSION = 8192`
   (`crates/level-compiler/src/lightmap_bake.rs:34`) and spills overflow onto new layers up to
@@ -63,15 +68,20 @@ The shadowmask bake does **not** size itself. It reads the dimensions straight o
   (`lightmap_bake.rs:63,798`).
 
 So `ShadowmaskAtlasSection.width = irr_width ≤ 8192`, `height = irr_height ≤ 8192`,
-`layer_count = lightmap layer_count ≤ 256` — **by construction**. The CPU format
-(`crates/level-format/src/shadowmask_atlas.rs`) has carried `width`/`height`/`layer_count` + a
-layer-major payload since it shipped; the runtime honors all three.
+`layer_count = lightmap layer_count ≤ 256` — equal by current compiler wiring, not by a format or
+loader invariant: `crates/level-compiler/src/main.rs:987-992` threads the same
+`atlas_width`/`atlas_height`/`placements` into both the lightmap and shadowmask sections. The CPU
+format (`crates/level-format/src/shadowmask_atlas.rs:10-19`) stores `width`/`height`/`layer_count` as
+free `u32`s — nothing in the format or the load guard (`filter_usable_shadowmask_section`) checks them
+against the lightmap's, only against the device. The runtime honors all three regardless.
 
 ## The overflow arithmetic
 
 The question "on stress-warren, would any axis exceed the limit?" has a structural answer that needs no
-per-map measurement: **the shadowmask's three size axes are identically the lightmap's three size
-axes.** There is no independent growth driver.
+per-map measurement: **the shadowmask's three size axes equal the lightmap's three size axes by
+current compiler wiring** (not an enforced invariant — see above). There is no independent growth
+driver: the shadowmask never computes its own size, it only carries forward whatever the lightmap
+produced.
 
 - **Per-layer width/height.** Sourced from `shared.atlas_width/height`, each `≤ MAX_ATLAS_DIMENSION =
   8192` by the lightmap packer's per-layer cap. Cannot exceed `max_texture_dimension_2d = 8192`.
@@ -87,9 +97,12 @@ axes.** There is no independent growth driver.
 Contrast the SH arithmetic that **does** overflow (`sh-array-atlas` §Problem): SH atlas side =
 `ceil(sqrt(total_probe_count)) × tile_dimension`, with `total_probe_count = grid_x·grid_y·grid_z`
 volumetric — on warren-scale that side exceeds 8192, and (before that spec) the SH GPU path was a
-single `texture_2d`. The shadowmask has **neither** property: no volumetric size driver (it is
-surface-area-bound like the lightmap, already tiled into ≤8192² layers) and no single-2D GPU path (it
-is already `D2Array`).
+single `texture_2d` with no layer spill. The shadowmask is not immune to overflow either — a big enough
+map hits a hard `LayerOverflow` at 256 layers in the lightmap bake, a clean abort, not a device breach.
+The real difference: SH packs a single unbounded 2D texture with no layer spill, while the shadowmask
+inherits the lightmap's layer-spilling array atlas (`pack_layers`, per-layer 8192 cap, hard
+`LayerOverflow` at 256 layers). Volumetric vs surface-area-bound growth is why SH's probe count grows
+faster into its limit — not why the shadowmask is safe.
 
 ## Device limits and graceful behavior (verified)
 
@@ -107,7 +120,7 @@ errors — no wgpu-default panic risk (`crates/renderer/src/render/renderer_init
 `layer_count ≤ max_texture_array_layers`; on failure it logs a `[Renderer]` error and returns `None`,
 so the caller uploads a 1×1×1 fully-visible placeholder (`upload_placeholder_shadowmask`,
 `lightmap.rs:574-595`) and sets `shadowmask_present = false`. The CPU-side promoted metadata also gates
-the union term off when `shadowmask_present == false` (`renderer_resources.rs:198,281,423`;
+the union term off when `shadowmask_present == false` (`renderer_resources.rs:198,423`;
 `renderer_light_slots.rs:277-284`), so the placeholder is a hard disable, never a wrong-looking
 fallback. This mirrors the lightmap's own guard (`filter_usable_section`, `lightmap.rs:324-358`) and the
 SH volume's atlas-fits-device filter. Because the bake caps guarantee conformant output, this guard is
@@ -142,8 +155,10 @@ exists for the shadowmask. The shadowmask atlas got the array treatment at birth
 lightmap's shipped array atlas — which is exactly why the merged CPU format already carried
 `width`/`height`/`layer_count` and a layer-major payload.
 
-Recommendation: close this thread. Do not promote. If a reviewer wants a guard against future drift,
-the highest-value (still optional) addition is a compiler test asserting `ShadowmaskAtlas.width/height/
-layer_count` equal the emitted `Lightmap` irradiance atlas's — pinning the invariant this whole
-investigation rests on. That is a test, not a feature, and only if the existing `layer_count > 1`
-round-trip fixtures (`static-light-shadowmask-world-receipt` T2) are judged insufficient.
+Recommendation: close this thread. Do not promote. This investigation's safety conclusion doesn't need
+the dims-equality to hold — the device guard is unconditional either way — but the dims-equality is
+still the one assumption left unpinned by anything in the format or the loader, and it is worth pinning:
+a compiler test asserting `ShadowmaskAtlas.width/height/layer_count` equal the emitted `Lightmap`
+irradiance atlas's, exactly because `main.rs`'s wiring is the only thing currently holding them equal.
+That is a test, not a feature, and only add it if the existing `layer_count > 1` round-trip fixtures
+(`static-light-shadowmask-world-receipt` T2) are judged insufficient.

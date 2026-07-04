@@ -109,10 +109,15 @@ Four fixes, sequenced `(d) → (b) → (c) → (a)`:
 
 - [ ] `cargo build -p postretro` and the renderer crate compile clean with no warnings.
 - [ ] `cargo test -p postretro-renderer` passes, including the existing
-  `shadow_candidate_reaches_visible_cell` tests (`render/tests/light_filter_tests.rs`) updated for
-  the tightened gate, and new tests pinning that ranking is screen-space-influence-driven, not
-  raw-distance-driven (a monotonicity/property assertion, not a fixed order — the metric itself
-  stays open).
+  `shadow_candidate_reaches_visible_cell` tests (`render/tests/light_filter_tests.rs:212`, `:223`)
+  updated for the tightened gate — note this update is minor (at most a rename if
+  `reachable_cell_aabbs` no longer means "fog-reachable"): the helper's own semantics don't tighten,
+  so this test does NOT exercise the one-hop expansion, which is the load-bearing fix and lives in
+  `main.rs`. That expansion is covered by the manual pitch-down AC below, not a renderer unit test;
+  consider adding a `main.rs`-side unit test of the one-hop expansion as an automated guard. Also add
+  new tests pinning that ranking is screen-space-influence-driven, not raw-distance-driven — varying
+  only an on-screen/off-screen (frustum-position) factor with distance and `falloff_range` held fixed
+  (a monotonicity/property assertion, not a fixed order — the metric itself stays open).
 - [ ] **(d)** With `POSTRETRO_GPU_TIMING=1`, the per-frame timing log gains `shadow_cull` and
   `shadow_depth` lines. On `stress-warren-lit` / `stress-warren-crates` pre-(b), those lines
   dominate the frame; post-(b)+(c) they shrink sharply.
@@ -125,8 +130,9 @@ Four fixes, sequenced `(d) → (b) → (c) → (a)`:
   that lights a wall the camera sees; confirm its shadow persists on pitch-down — the regression the
   wide gate originally fixed does not return).
 - [ ] **(c)** Both the spot and cube single slot × leaf dispatches produce the same per-slot cull
-  output as the old per-slot loops (culled-leaf sets identical for a fixed camera/pool; shadow
-  visuals unchanged).
+  output as the old per-slot loops: for a fixed camera/pool, read back the indirect buffer's
+  per-slot sub-regions (`region_stride_bytes`-spaced) before and after the change and diff the
+  culled-leaf sets slot-by-slot — not a visual-only check. Shadow visuals unchanged.
 - [ ] **Net** `stress-warren-lit` and `stress-warren-crates` frame time returns to the v-sync
   baseline of plain `stress-warren`. Verified manually via
   `POSTRETRO_GPU_TIMING=1 cargo run -p xtask -- run <map>.prl`.
@@ -166,7 +172,12 @@ Wire `timestamp_writes` at the three sites, replacing `None`:
   last, with `timestamp_writes: None` on every pass in between. Where the adapter supports
   `TIMESTAMP_QUERY_INSIDE_ENCODERS`, the encoder-level alternative from the wrinkle below may be used
   instead. Either way, the single `TIMING_PAIR_SHADOW_DEPTH` aggregate spans BOTH the spot depth
-  block and the cube depth block — one pair covering first-spot-pass to last-cube-pass, not two.
+  block (`record_spot_shadow_depth`) and the cube depth block (`record_cube_shadow_depth`, `:293`) —
+  two SEPARATE functions, each independently conditional and possibly empty (e.g. a map with no point
+  lights emits zero cube passes). The begin/end timestamps must land on the actual first/last
+  EXECUTED pass across both functions, not an assumed first-spot-pass-to-last-cube-pass pair. The
+  encoder-level `TIMESTAMP_QUERY_INSIDE_ENCODERS` option sidesteps this cross-function branching
+  entirely, since it brackets the whole block regardless of which passes actually ran.
 
 **Wrinkle (call out as a task caveat).** The compute cull is a single pass and brackets cleanly. The
 spot and cube depth passes are ~100 SEPARATE `begin_render_pass` calls — they cannot each take a
@@ -196,7 +207,10 @@ camera renders), expanded by a single portal step so a caster one wall behind a 
 qualifies. Concretely, change the AABB set the caller passes as `reachable_cell_aabbs` (and rename
 if it no longer means "fog-reachable"), and update `shadow_candidate_reaches_visible_cell`
 (`renderer_lighting.rs:62`) and its tests (`render/tests/light_filter_tests.rs:212`, `:223`)
-accordingly. The `ALPHA_LIGHT_LEAF_UNASSIGNED` cull and the empty-slice DrawAll sentinel stay.
+accordingly. The `ALPHA_LIGHT_LEAF_UNASSIGNED` cull and the empty-slice DrawAll sentinel stay. The
+real consumer is `update_dynamic_light_slots`'s call site at `renderer_render_frame.rs:58`, fed the
+AABBs `main.rs` passes at `~:2569` — a rename of `reachable_cell_aabbs` (if it no longer means
+"fog-reachable") must cover both the `main.rs` build site and this renderer call site.
 
 This is entirely `postretro/src/main.rs` plumbing, not a renderer-side data-threading change — both
 pieces the expansion needs are already in scope where `reachable_cell_aabbs` is built (`main.rs`
@@ -217,7 +231,15 @@ non-drawable cell that lights a drawable receiver still passes (see the correctn
 portal hop is the tuning knob: wide enough to catch through-portal receivers, narrow enough to
 starve the pool of casters that reach only empty/off-screen cells.
 
-**Screen-space ranking.** Replace the raw camera-distance score in `rank_lights` (`spot_shadow.rs:436`,
+**Screen-space ranking.** Both rankers take only `camera_position` + `camera_near_clip` today
+(`rank_lights` `spot_shadow.rs:399`, `rank_point_lights` `cube_shadow.rs:138`) — no frustum or
+projection input. Plumb the camera's view-projection (or an extracted frustum) into both functions
+for the clamped/off-screen term below. The existing `(falloff_range/distance)²` score is already an
+angular-size proxy, so the new metric must add a distinct frustum-position term (on-screen vs.
+off-screen, or frustum-clamped projected size) — a metric that only reorders on distance or falloff
+range is not screen-space ranking; it's the same score restated.
+
+Replace the raw camera-distance score in `rank_lights` (`spot_shadow.rs:436`,
 `(falloff_range / distance)²`) with a screen-space influence estimate — how much of the frame the
 light's shadowed region can plausibly cover (e.g. projected influence-sphere solid angle, or
 projected radius / distance clamped to the frustum). Mirror the change in the cube ranker
@@ -229,9 +251,11 @@ Note the complementary draft `perf-anti-penumbra-pvs` shrinks the drawable PVS t
 input — reference only; do not depend on or fold in.
 
 **Deliverable: ranking property test.** Add a test that pins ranking as
-screen-space-influence-driven, not raw-distance-driven — assert the order changes when relative
-screen-space influence changes even with distance held fixed (or reversed), rather than pinning one
-fixed order for one fixed input. The metric itself stays open; the test only pins the property.
+screen-space-influence-driven, not raw-distance-driven — hold BOTH distance and `falloff_range` fixed
+and vary only an on-screen/off-screen (frustum-position) factor, asserting the order changes with it.
+Varying distance or `falloff_range` alone does not discriminate: today's `(falloff_range/distance)²`
+formula already reorders on either one, so the test must isolate the frustum-position term the new
+metric adds. The metric's exact shape stays open; the test only pins this property.
 
 ### Task 3 — (c) Parallelize the per-slot cone culls
 
@@ -242,7 +266,20 @@ dispatch.
 
 `dispatch_occupied_slots` (`shadow_cull.rs:245–289`) currently loops occupied slots and issues one
 `dispatch_workgroups(1, 1, 1)` per slot (`:286–289`), each a single workgroup walking the whole BVH
-serially. Replace with ONE dispatch parameterized over (slot, leaf) pairs so the BVH walk runs in
+serially.
+
+**The cull shader is shared with the camera cull — do not mutate it in place.** `shadow_cull.rs`
+builds its compute module from `CULL_SHADER_SOURCE`, i.e. `bvh_cull.wgsl` (named in the doc comment
+at `shadow_cull.rs:19`) — the SAME source `compute_cull.rs:36` uses for the camera cull, and
+`shadow_cull.rs:88–89` notes "the shader is the same module, so the binding types must match
+`compute_cull.rs`." A layout-pinning test (`candidate_shader_reuses_bvh_cull_struct_layouts`,
+`compute_cull.rs:1073`) asserts its struct strides. Changing binding-0's type or the dispatch model
+in `bvh_cull.wgsl` breaks the camera cull path and trips that test. Fork a shadow-specific shader /
+entry point (or a cull variant module) for the single-dispatch-over-(slot,leaf) model and its
+slot-indexed cone-plane buffer, and build `ShadowCullPipeline` from the fork; `bvh_cull.wgsl` and the
+camera cull path stay untouched.
+
+Replace with ONE dispatch parameterized over (slot, leaf) pairs so the BVH walk runs in
 parallel across all occupied slots at once. A single dispatch cannot rebind per-slot uniforms, so the
 per-slot cone planes (currently one uniform buffer per slot, written before the pass at `:261–275`)
 move into ONE slot-indexed buffer — an array/storage buffer indexed by a slot id derived from the

@@ -17,7 +17,7 @@ Four-reviewer panel (codebase anchor, broad design, implementability/executor le
 
 ## Supersedes
 
-`context/plans/drafts/baked-entity-shadow-lighting-handoff.md` — project owner reviewed and redirected: ignore its Path A recommendation (leaning away from SDF for shadows/lights entirely), go shadowmask-flavored, but never runtime static→static shadowing. Its feasibility anchors remain useful; its recommendation does not stand.
+`baked-entity-shadow-lighting-handoff.md` (formerly in `drafts/`, deleted at promotion — recover from git history if needed) — project owner reviewed and redirected: ignore its Path A recommendation (leaning away from SDF for shadows/lights entirely), go shadowmask-flavored, but never runtime static→static shadowing. Its feasibility anchors remain useful; its recommendation does not stand.
 
 ## Owner decisions (2026-07-04 session)
 

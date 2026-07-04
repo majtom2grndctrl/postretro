@@ -1058,9 +1058,12 @@ impl App {
                 // metadata (glTF index order). A failed load cached nothing, so the
                 // metadata is empty and the table maps no clips.
                 let meta = renderer.skinned_model_clip_metadata(model);
-                session
-                    .mesh_clip_tables
-                    .insert(postretro_model::ModelHandle::from(model.clone()), &meta);
+                let bounds = renderer.skinned_model_local_bounds(model);
+                session.mesh_clip_tables.insert_with_bounds(
+                    postretro_model::ModelHandle::from(model.clone()),
+                    &meta,
+                    bounds,
+                );
                 // Build this model's game-side hit-zone entry by re-loading the
                 // glTF independently.
                 session
@@ -1508,6 +1511,8 @@ mod tests {
             animated_light_weight_maps: None,
             delta_sh_volumes: None,
             direct_sh_volume: None,
+            direct_sh_delta_volumes: None,
+            entity_shadow_lights: vec![],
             data_script: None,
             map_entities: Vec::new(),
             fog_volumes: Vec::new(),

@@ -126,6 +126,26 @@ impl Renderer {
     }
 
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub fn promoted_depth_cache_promoted_count(&self) -> u32 {
+        self.full().promoted_depth_cache_promoted_count
+    }
+
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub fn promoted_depth_cache_world_render_skips(&self) -> u32 {
+        self.full().promoted_depth_cache_world_render_skips
+    }
+
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub fn promoted_depth_cache_cull_dispatch_skips(&self) -> u32 {
+        self.full().promoted_depth_cache_cull_dispatch_skips
+    }
+
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub fn promoted_entity_occluders_submitted(&self) -> u32 {
+        self.full().promoted_entity_occluders_submitted
+    }
+
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
     pub fn ambient_floor(&self) -> f32 {
         self.full().ambient_floor
     }
@@ -166,6 +186,21 @@ impl Renderer {
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
     pub fn set_dynamic_direct_isolation(&mut self, mode: DynamicDirectIsolation) {
         self.full_mut().dynamic_direct_isolation = mode;
+    }
+
+    #[cfg(feature = "dev-tools")]
+    pub(crate) fn direct_sh_debug_override(&self) -> DirectShDebugOverride {
+        self.full().direct_sh_debug_override
+    }
+
+    #[cfg(feature = "dev-tools")]
+    pub(crate) fn set_direct_sh_debug_override(&mut self, value: DirectShDebugOverride) {
+        let value = DirectShDebugOverride {
+            enabled: value.enabled,
+            selection_index: value.selection_index,
+            weight: value.weight.clamp(0.0, 1.0),
+        };
+        self.full_mut().direct_sh_debug_override = value;
     }
 
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]

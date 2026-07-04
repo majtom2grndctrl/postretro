@@ -46,7 +46,9 @@ use postretro_level_format::octahedral::{
 };
 use rayon::prelude::*;
 
-use crate::affinity_grid::{AFFINITY_FACTOR, AffinityInputs, decompose_affinity};
+use crate::affinity_grid::{
+    AFFINITY_FACTOR, AffinityInputs, build_csr, csr_entry_cells, decompose_affinity,
+};
 use crate::bvh_build::BvhPrimitive;
 use crate::geometry::GeometryResult;
 use crate::light_namespaces::AnimatedBakedLights;
@@ -210,65 +212,6 @@ pub fn log_stats(section: &DeltaShVolumesSection) {
         section.affinity_dims[1],
         section.affinity_dims[2],
     );
-}
-
-// ---------------------------------------------------------------------------
-// CSR construction
-
-/// Invert `per_light_cells` (light → affinity cells it reaches) into a CSR index
-/// keyed by affinity cell (cell → lights touching it). Returns
-/// `(affinity_offsets, affinity_lights)`:
-///   - `affinity_offsets` has `cell_count + 1` entries; `offsets[c]..offsets[c+1]`
-///     bounds cell `c`'s slice of `affinity_lights`. The trailing entry equals
-///     `affinity_lights.len()`.
-///   - `affinity_lights` is the flat light-index list, grouped by cell. Within a
-///     cell, lights appear in ascending light index (deterministic output).
-fn build_csr(per_light_cells: &[Vec<u32>], affinity_cell_count: usize) -> (Vec<u32>, Vec<u32>) {
-    // Count how many lights touch each cell (counting sort over cells).
-    let mut counts = vec![0u32; affinity_cell_count];
-    for cells in per_light_cells {
-        for &cell in cells {
-            counts[cell as usize] += 1;
-        }
-    }
-
-    // Prefix-sum the counts into offsets.
-    let mut affinity_offsets = vec![0u32; affinity_cell_count + 1];
-    let mut running = 0u32;
-    for c in 0..affinity_cell_count {
-        affinity_offsets[c] = running;
-        running += counts[c];
-    }
-    affinity_offsets[affinity_cell_count] = running;
-
-    // Scatter lights into their cells. Iterating lights in ascending order keeps
-    // each cell's slice ascending without a separate sort. `cursor` tracks the
-    // next free slot per cell.
-    let mut affinity_lights = vec![0u32; running as usize];
-    let mut cursor: Vec<u32> = affinity_offsets[..affinity_cell_count].to_vec();
-    for (light, cells) in per_light_cells.iter().enumerate() {
-        for &cell in cells {
-            let slot = cursor[cell as usize] as usize;
-            affinity_lights[slot] = light as u32;
-            cursor[cell as usize] += 1;
-        }
-    }
-
-    (affinity_offsets, affinity_lights)
-}
-
-/// Expand the CSR offsets into a per-entry cell index, parallel to
-/// `affinity_lights` / `delta_subblocks`. Entry `i` belongs to cell `cells[i]`.
-fn csr_entry_cells(affinity_offsets: &[u32]) -> Vec<u32> {
-    let total = *affinity_offsets.last().unwrap_or(&0) as usize;
-    let mut cells = Vec::with_capacity(total);
-    for cell in 0..affinity_offsets.len().saturating_sub(1) {
-        let count = affinity_offsets[cell + 1] - affinity_offsets[cell];
-        for _ in 0..count {
-            cells.push(cell as u32);
-        }
-    }
-    cells
 }
 
 // ---------------------------------------------------------------------------
@@ -590,30 +533,6 @@ mod tests {
             tags: vec![],
             shadow_type: crate::map_data::ShadowType::StaticLightMap,
         }
-    }
-
-    // --- CSR inversion -----------------------------------------------------
-
-    #[test]
-    fn build_csr_inverts_per_light_cells_into_cell_keyed_offsets() {
-        // 3 cells, 3 lights:
-        //   light 0 → cells {0, 2}
-        //   light 1 → cells {2}
-        //   light 2 → cells {0}
-        // Expected per cell: cell 0 → [0, 2], cell 1 → [], cell 2 → [0, 1].
-        let per_light_cells = vec![vec![0u32, 2], vec![2], vec![0]];
-        let (offsets, lights) = build_csr(&per_light_cells, 3);
-
-        // Offsets monotonic non-decreasing, length cell_count + 1, last == len.
-        assert_eq!(offsets.len(), 4);
-        assert!(offsets.windows(2).all(|w| w[0] <= w[1]));
-        assert_eq!(*offsets.last().unwrap() as usize, lights.len());
-
-        // cell 0 → lights [0, 2], cell 1 → empty, cell 2 → lights [0, 1].
-        let slice = |c: usize| &lights[offsets[c] as usize..offsets[c + 1] as usize];
-        assert_eq!(slice(0), &[0, 2]);
-        assert_eq!(slice(1), &[] as &[u32]);
-        assert_eq!(slice(2), &[0, 1]);
     }
 
     // --- Sub-block layout --------------------------------------------------

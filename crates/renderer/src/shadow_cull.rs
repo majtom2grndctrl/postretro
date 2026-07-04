@@ -242,12 +242,13 @@ impl ShadowCullPipeline {
     /// `slot_matrices.len()` must not exceed the construction-time
     /// `region_count`. Runs after the camera BVH cull and before the shadow
     /// depth render passes.
-    pub fn dispatch_occupied_slots(
+    pub fn dispatch_occupied_slots_filtered(
         &self,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         slot_matrices: &[Option<Mat4>],
-    ) {
+        mut should_dispatch: impl FnMut(usize) -> bool,
+    ) -> u32 {
         debug_assert!(
             slot_matrices.len() <= self.slot_uniform_buffers.len(),
             "slot_matrices ({}) exceeds the construction-time region count ({})",
@@ -255,7 +256,7 @@ impl ShadowCullPipeline {
             self.slot_uniform_buffers.len(),
         );
         if self.total_leaves == 0 {
-            return;
+            return 0;
         }
 
         // Write each occupied slot's cone planes into its own uniform first,
@@ -263,6 +264,9 @@ impl ShadowCullPipeline {
         // submitted commands).
         let mut occupied: Vec<usize> = Vec::new();
         for (slot, matrix) in slot_matrices.iter().enumerate() {
+            if !should_dispatch(slot) {
+                continue;
+            }
             let Some(matrix) = matrix else { continue };
             let planes = extract_frustum_planes_for_gpu(matrix);
             let uniforms = CullUniforms { planes };
@@ -275,9 +279,10 @@ impl ShadowCullPipeline {
         }
 
         if occupied.is_empty() {
-            return;
+            return 0;
         }
 
+        let dispatch_count = occupied.len() as u32;
         let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("Shadow Cull Pass"),
             timestamp_writes: None,
@@ -287,6 +292,7 @@ impl ShadowCullPipeline {
             compute_pass.set_bind_group(0, &self.slot_bind_groups[slot], &[]);
             compute_pass.dispatch_workgroups(1, 1, 1);
         }
+        dispatch_count
     }
 
     /// Issue the per-slot indirect depth draw from `slot`'s indirect

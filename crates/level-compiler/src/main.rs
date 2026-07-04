@@ -13,6 +13,7 @@ pub mod chart_raster;
 pub mod chunk_light_list_bake;
 pub mod delta_sh_bake;
 pub mod direct_sh_bake;
+pub mod entity_shadow_select;
 #[cfg(test)]
 pub mod fixture_pipeline;
 pub mod fog_cell_masks;
@@ -32,6 +33,7 @@ pub mod portals;
 pub mod sdf_bake;
 pub mod sh_bake;
 pub mod sh_group;
+pub mod shadowmask_bake;
 pub mod texture_mips;
 pub mod texture_validation;
 pub mod visibility;
@@ -885,6 +887,139 @@ fn main() -> anyhow::Result<()> {
     };
     timings.push(("Direct SH Bake", stage_start.elapsed()));
 
+    progress.start_stage("Entity shadow light selection...");
+    let stage_start = Instant::now();
+    let raw_entity_shadow_lights_section = direct_sh_volume_section.as_ref().and_then(|_| {
+        let inputs = entity_shadow_select::EntityShadowSelectionInputs {
+            bvh: &bvh,
+            primitives: &bvh_primitives,
+            geometry: &geo_result,
+            static_lights: &static_baked_lights,
+            alpha_lights: &alpha_lights_ns,
+            params: map_data.entity_shadow_params,
+        };
+        let section = entity_shadow_select::select_entity_shadow_lights(&inputs);
+        if section.light_indices.is_empty() {
+            None
+        } else {
+            Some(section)
+        }
+    });
+    timings.push(("EntityShadowLights", stage_start.elapsed()));
+    if args.verbose {
+        if let Some(ref section) = raw_entity_shadow_lights_section {
+            log::info!(
+                "EntityShadowLights: selected {} static light candidate(s)",
+                section.light_indices.len()
+            );
+        } else {
+            log::info!("EntityShadowLights: skipped (no DirectShVolume selection)");
+        }
+    }
+
+    progress.start_stage("Direct SH delta volume bake...");
+    let stage_start = Instant::now();
+    let raw_direct_sh_delta_volumes_section =
+        raw_entity_shadow_lights_section
+            .as_ref()
+            .and_then(|section| {
+                let inputs = direct_sh_bake::DirectBakeInputs {
+                    sh_ctx: &sh_ctx,
+                    portals: &generated_portals,
+                };
+                direct_sh_bake::bake_direct_sh_delta_volumes(
+                    &inputs,
+                    &sh_config,
+                    &alpha_lights_ns,
+                    section,
+                )
+            });
+    timings.push(("Direct SH Delta Bake", stage_start.elapsed()));
+
+    let (entity_shadow_lights_section, direct_sh_delta_volumes_section) =
+        match raw_entity_shadow_lights_section {
+            Some(selection) => match raw_direct_sh_delta_volumes_section {
+                Some(deltas)
+                    if direct_sh_volume_section.as_ref().is_some_and(|direct| {
+                        pack::direct_sh_delta_is_usable_for_selection(
+                            &deltas,
+                            direct,
+                            selection.light_indices.len(),
+                        )
+                    }) =>
+                {
+                    (Some(selection), Some(deltas))
+                }
+                Some(_) => {
+                    log::warn!(
+                        "EntityShadowLights: clearing {} selected static light candidate(s) because DirectShDeltaVolumes is unusable for the DirectShVolume base",
+                        selection.light_indices.len()
+                    );
+                    (None, None)
+                }
+                None => {
+                    log::warn!(
+                        "EntityShadowLights: clearing {} selected static light candidate(s) because DirectShDeltaVolumes is absent",
+                        selection.light_indices.len()
+                    );
+                    (None, None)
+                }
+            },
+            None => (None, None),
+        };
+    if args.verbose {
+        if let Some(ref section) = direct_sh_delta_volumes_section {
+            log::info!(
+                "DirectShDeltaVolumes: {} CSR entr(y/ies), affinity grid {}x{}x{}",
+                section.affinity_lights.len(),
+                section.affinity_dims[0],
+                section.affinity_dims[1],
+                section.affinity_dims[2],
+            );
+        } else {
+            log::info!("DirectShDeltaVolumes: skipped (no usable selected light deltas)");
+        }
+    }
+
+    progress.start_stage("Shadowmask atlas bake...");
+    let stage_start = Instant::now();
+    let shadowmask_atlas_section = if entity_shadow_lights_section.is_some() {
+        let shared = lightmap_layer::SharedAtlas {
+            charts: &face_charts,
+            placements: &face_placements,
+            atlas_width,
+            atlas_height,
+        };
+        shadowmask_bake::bake_shadowmask_atlas_cached(
+            entity_shadow_lights_section.as_ref(),
+            &alpha_lights_ns,
+            &shared,
+            &bvh,
+            &bvh_primitives,
+            &geo_result,
+            final_lightmap_density,
+            args.soft_shadow_samples,
+            stage_cache.as_ref(),
+        )
+    } else {
+        None
+    };
+    timings.push(("ShadowmaskAtlas", stage_start.elapsed()));
+    if args.verbose {
+        if let Some(ref section) = shadowmask_atlas_section {
+            log::info!(
+                "ShadowmaskAtlas: {}x{}x{}, {} selected channel entr(y/ies), {} bytes",
+                section.width,
+                section.height,
+                section.layer_count,
+                section.channels.len(),
+                section.data.len(),
+            );
+        } else {
+            log::info!("ShadowmaskAtlas: skipped (no selected static lights)");
+        }
+    }
+
     progress.start_stage("Chunk light list bake...");
     let stage_start = Instant::now();
     let chunk_light_list_section = {
@@ -1100,6 +1235,9 @@ fn main() -> anyhow::Result<()> {
         &light_influence_section,
         &sh_volume_section,
         direct_sh_volume_section.as_ref(),
+        entity_shadow_lights_section.as_ref(),
+        direct_sh_delta_volumes_section.as_ref(),
+        shadowmask_atlas_section.as_ref(),
         &lightmap_section,
         &chunk_light_list_section,
         animated_light_chunks_section.as_ref(),
@@ -1146,8 +1284,9 @@ struct Args {
     /// on non-finite/≤0 values in the CLI parser).
     lightmap_density: Option<f32>,
     /// Soft-shadow area-sample count (penumbra escalation target). Raising it
-    /// invalidates both the cached lightmap stage and the cached animated
-    /// weight-map stage, triggering a re-bake of each. Default
+    /// invalidates cached lightmap layers, any shadowmask memo keyed through
+    /// selected layer hashes, and the cached animated weight-map stage,
+    /// triggering a re-bake/rebuild of each affected stage. Default
     /// `lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT`.
     soft_shadow_samples: u32,
     /// SDF occluder-atlas voxel edge length in meters. Overrides

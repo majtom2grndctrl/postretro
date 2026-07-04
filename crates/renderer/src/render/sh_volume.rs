@@ -84,6 +84,14 @@ pub struct ShVolumeResources {
     /// mesh-only fields.
     #[allow(dead_code)]
     pub direct_atlas_view: wgpu::TextureView,
+    /// Sampled view over the immutable base direct atlas. The direct compose
+    /// pass samples this even when entity/billboard consumers are rebound to
+    /// the composed `Rgba16Float` atlas.
+    pub direct_base_atlas_view: wgpu::TextureView,
+    /// Storage-write view over the optional composed direct atlas. `None` when
+    /// no selected static-light direct deltas are present, so old maps allocate
+    /// no composed direct-atlas VRAM and keep sampling the base atlas.
+    pub direct_composed_storage_view: Option<wgpu::TextureView>,
     /// Owned here but shared with the compose pass — one upload, two bind groups.
     /// CPU mirror kept alongside so per-frame `active` edits patch bytes and flush in one `write_buffer`.
     pub animation: AnimatedLightBuffers,
@@ -245,6 +253,9 @@ impl ShVolumeResources {
         queue: &wgpu::Queue,
         section: Option<&OctahedralShVolumeSection>,
         direct_section: Option<&DirectShVolumeSection>,
+        direct_delta_section: Option<
+            &postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection,
+        >,
         map_light_count: usize,
         probe_occlusion_enabled: bool,
     ) -> Self {
@@ -433,12 +444,33 @@ impl ShVolumeResources {
         // BC6H load path. The uncompressed-debug tag routes to `Rgba16Float`.
         // Absent section → a 4×4 BC6H zero-block dummy (valid for `Bc6hRgbUfloat`,
         // never sampled — Task 6's `has_direct` flag gates the sample off).
+        let direct_usage = resolve_direct_atlas_usage(direct_section, direct_delta_section);
         let (direct_atlas_texture, has_direct) =
             upload_direct_atlas_texture(device, queue, direct_section);
-        let direct_atlas_view = direct_atlas_texture.create_view(&wgpu::TextureViewDescriptor {
-            label: Some("SH Direct Octahedral Atlas View"),
-            ..Default::default()
-        });
+        let direct_base_atlas_view =
+            direct_atlas_texture.create_view(&wgpu::TextureViewDescriptor {
+                label: Some("SH Direct Octahedral Base Atlas View"),
+                ..Default::default()
+            });
+        let (direct_atlas_view, direct_composed_storage_view) =
+            if has_direct && direct_usage.needs_composed_atlas {
+                let texture = create_direct_composed_atlas_texture(
+                    device,
+                    direct_usage.atlas_dimensions,
+                    "SH Direct Composed Octahedral Atlas",
+                );
+                let sampled = texture.create_view(&wgpu::TextureViewDescriptor {
+                    label: Some("SH Direct Composed Octahedral Atlas Sampled View"),
+                    ..Default::default()
+                });
+                let storage = texture.create_view(&wgpu::TextureViewDescriptor {
+                    label: Some("SH Direct Composed Octahedral Atlas Storage View"),
+                    ..Default::default()
+                });
+                (sampled, Some(storage))
+            } else {
+                (direct_base_atlas_view.clone(), None)
+            };
 
         // Mesh-only dynamic-direct params uniform (binding 16). Seeded to the
         // production default (full scale, Combined, has_direct from the section);
@@ -553,6 +585,8 @@ impl ShVolumeResources {
             total_atlas_storage_view,
             depth_moment_texture,
             direct_atlas_view,
+            direct_base_atlas_view,
+            direct_composed_storage_view,
             animation,
             scripted_light_descriptors: scripted_light_descriptors_buffer,
             scripted_light_count: map_light_count as u32,
@@ -917,6 +951,51 @@ fn upload_direct_atlas_dummy(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu
     )
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct DirectAtlasUsage {
+    needs_composed_atlas: bool,
+    atlas_dimensions: [u32; 2],
+}
+
+fn resolve_direct_atlas_usage(
+    direct_section: Option<&DirectShVolumeSection>,
+    direct_delta_section: Option<
+        &postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection,
+    >,
+) -> DirectAtlasUsage {
+    let has_deltas = direct_delta_section
+        .map(|section| !section.affinity_lights.is_empty())
+        .unwrap_or(false);
+    let Some(section) = direct_section.filter(|_| has_deltas) else {
+        return DirectAtlasUsage::default();
+    };
+    DirectAtlasUsage {
+        needs_composed_atlas: true,
+        atlas_dimensions: section.atlas_dimensions,
+    }
+}
+
+fn create_direct_composed_atlas_texture(
+    device: &wgpu::Device,
+    atlas_dimensions: [u32; 2],
+    label: &str,
+) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d {
+            width: atlas_dimensions[0].max(1),
+            height: atlas_dimensions[1].max(1),
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba16Float,
+        usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    })
+}
+
 fn upload_depth_moment_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -1205,6 +1284,50 @@ mod tests {
             } => {}
             other => panic!("unexpected SH direct atlas binding type: {other:?}"),
         }
+    }
+
+    #[test]
+    fn direct_atlas_usage_allocates_composed_texture_only_for_nonempty_deltas() {
+        let direct = DirectShVolumeSection {
+            grid_origin: [0.0; 3],
+            cell_size: [1.0; 3],
+            grid_dimensions: [1, 1, 1],
+            tile_dimension: 6,
+            tile_border: 1,
+            atlas_dimensions: [6, 6],
+            atlas_tiles_per_row: 1,
+            irradiance_format: IRRADIANCE_FORMAT_BC6H,
+            atlas: vec![0; 64],
+        };
+        let empty_delta =
+            postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection {
+                affinity_factor: postretro_level_format::delta_sh_volumes::AFFINITY_FACTOR,
+                affinity_dims: [1, 1, 1],
+                tile_dimension: 6,
+                tile_border: 1,
+                affinity_offsets: vec![0, 0],
+                affinity_lights: Vec::new(),
+                delta_subblocks: Vec::new(),
+            };
+        let nonempty_delta =
+            postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection {
+                affinity_lights: vec![0],
+                affinity_offsets: vec![0, 1],
+                delta_subblocks: vec![
+                    0;
+                    postretro_level_format::delta_sh_volumes::PROBES_PER_CELL
+                        * postretro_level_format::delta_sh_volumes::DEFAULT_DELTA_PROBE_F16_STRIDE
+                ],
+                ..empty_delta.clone()
+            };
+
+        assert!(!resolve_direct_atlas_usage(Some(&direct), None).needs_composed_atlas);
+        assert!(
+            !resolve_direct_atlas_usage(Some(&direct), Some(&empty_delta)).needs_composed_atlas
+        );
+        let usage = resolve_direct_atlas_usage(Some(&direct), Some(&nonempty_delta));
+        assert!(usage.needs_composed_atlas);
+        assert_eq!(usage.atlas_dimensions, [6, 6]);
     }
 
     /// baked-static-direct-sh Task 6: the mesh group-4 SUPERSET layout is the

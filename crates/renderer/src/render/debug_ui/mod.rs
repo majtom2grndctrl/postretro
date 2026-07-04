@@ -80,6 +80,9 @@ pub struct DiagnosticsState {
     /// Scale slider for the baked static-direct SH term on entities/billboards.
     /// Independent of `indirect_scale` (which controls the static-surface indirect).
     pub dynamic_direct_scale: f32,
+    pub direct_sh_override_enabled: bool,
+    pub direct_sh_override_selection: u32,
+    pub direct_sh_override_weight: f32,
     // SDF and fog controls are seeded from live renderer values on first draw;
     // see the `seeded` flag below.
     pub sdf_max_march_steps: u32,
@@ -112,6 +115,9 @@ impl Default for DiagnosticsState {
             ambient_floor: super::DEFAULT_AMBIENT_FLOOR,
             indirect_scale: super::DEFAULT_INDIRECT_SCALE,
             dynamic_direct_scale: super::DEFAULT_DYNAMIC_DIRECT_SCALE,
+            direct_sh_override_enabled: false,
+            direct_sh_override_selection: 0,
+            direct_sh_override_weight: 0.0,
             // Placeholder values overwritten by the seed-from-renderer pass on
             // first draw (see `draw_diagnostics_panel`). Match the SDF /
             // fog defaults so the struct is still legible in isolation.
@@ -205,6 +211,10 @@ pub fn draw_diagnostics_panel(
         state.ambient_floor = renderer.ambient_floor();
         state.indirect_scale = renderer.indirect_scale();
         state.dynamic_direct_scale = renderer.dynamic_direct_scale();
+        let direct_override = renderer.direct_sh_debug_override();
+        state.direct_sh_override_enabled = direct_override.enabled;
+        state.direct_sh_override_selection = direct_override.selection_index;
+        state.direct_sh_override_weight = direct_override.weight;
         // Pull live SDF and fog tuning so sliders open at the engine's current
         // values, not the struct-default placeholders.
         state.sdf_max_march_steps = renderer.sdf_max_march_steps();
@@ -295,6 +305,47 @@ fn draw_lighting_tab(ui: &mut egui::Ui, state: &mut DiagnosticsState, renderer: 
                 });
             if dyn_iso != prev_dyn_iso {
                 renderer.set_dynamic_direct_isolation(dyn_iso);
+            }
+
+            ui.separator();
+            let mut direct_override = renderer.direct_sh_debug_override();
+            let mut changed = false;
+            if ui
+                .checkbox(
+                    &mut state.direct_sh_override_enabled,
+                    "Direct SH Delta Override",
+                )
+                .changed()
+            {
+                direct_override.enabled = state.direct_sh_override_enabled;
+                changed = true;
+            }
+            ui.horizontal(|ui| {
+                ui.label("Selection");
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut state.direct_sh_override_selection)
+                            .range(0..=255),
+                    )
+                    .changed()
+                {
+                    direct_override.selection_index = state.direct_sh_override_selection;
+                    changed = true;
+                }
+            });
+            ui.label("Direct SH Delta Weight");
+            if ui
+                .add(egui::Slider::new(
+                    &mut state.direct_sh_override_weight,
+                    0.0_f32..=1.0,
+                ))
+                .changed()
+            {
+                direct_override.weight = state.direct_sh_override_weight;
+                changed = true;
+            }
+            if changed {
+                renderer.set_direct_sh_debug_override(direct_override);
             }
 
             let mut probe_occlusion = renderer.probe_occlusion_enabled();

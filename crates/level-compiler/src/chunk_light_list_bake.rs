@@ -1713,11 +1713,7 @@ mod tests {
 
         let origin = Vec3::from(section.grid_origin);
         let cell = section.cell_size;
-        let center = Vec3::new(
-            light_pos.x as f32,
-            light_pos.y as f32,
-            light_pos.z as f32,
-        );
+        let center = Vec3::new(light_pos.x as f32, light_pos.y as f32, light_pos.z as f32);
         let [nx, ny, nz] = section.grid_dimensions;
         for z in 0..nz {
             for y in 0..ny {
@@ -1836,8 +1832,14 @@ mod tests {
                     ));
                 }
                 let start = geom.indices.len() as u32;
-                geom.indices
-                    .extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+                geom.indices.extend_from_slice(&[
+                    base,
+                    base + 1,
+                    base + 2,
+                    base,
+                    base + 2,
+                    base + 3,
+                ]);
                 geom.faces.push(FaceMeta {
                     leaf_index: 0,
                     texture_index: 0,
@@ -1874,8 +1876,7 @@ mod tests {
         let [nx, ny, _] = section.grid_dimensions;
         let linear = (cz * ny * nx + cy * nx + cx) as usize;
         assert_eq!(
-            section.offsets[linear].count,
-            1,
+            section.offsets[linear].count, 1,
             "the cell containing the boxed-in light must keep it"
         );
     }

@@ -19,6 +19,7 @@ script-ffi = [
 
 [dependencies]
 glam.workspace = true
+log.workspace = true
 postretro-level-loader = { path = "../level-loader", default-features = false }
 postretro-render-data.workspace = true
 postretro-foundation = { path = "../foundation", default-features = false, optional = true }
@@ -27,3 +28,6 @@ postretro-scripting-core = { path = "../scripting-core", default-features = fals
 serde_json = { workspace = true, optional = true }
 rquickjs = { workspace = true, optional = true }
 mlua = { workspace = true, optional = true }
+
+[dev-dependencies]
+proptest.workspace = true

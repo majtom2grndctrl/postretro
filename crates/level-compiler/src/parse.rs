@@ -14,8 +14,8 @@ use shambler::face::{FaceWinding, face_centers, face_indices, face_vertices};
 
 use crate::format::quake_map;
 use crate::map_data::{
-    BrushPlane, BrushSide, BrushVolume, EntityInfo, MapData, MapEntityRecord, MapFogVolume,
-    MapLight, NavParams, TextureProjection,
+    BrushPlane, BrushSide, BrushVolume, EntityInfo, EntityShadowParams, MapData, MapEntityRecord,
+    MapFogVolume, MapLight, NavParams, TextureProjection,
 };
 use crate::map_format::MapFormat;
 use postretro_level_format::fog_volumes::{MAX_FOG_VOLUMES, MAX_PLANES_PER_VOLUME};
@@ -172,12 +172,13 @@ fn get_property(geo_map: &GeoMap, entity_id: &EntityId, key: &str) -> Option<Str
     props.iter().find(|p| p.key == key).map(|p| p.value.clone())
 }
 
-/// Resolve a positive-float worldspawn nav KVP, falling back to `default` when
+/// Resolve a positive-float worldspawn KVP, falling back to `default` when
 /// the key is absent or its value is non-finite/≤0. Mirrors the
 /// `_lightmap_density` parse posture: invalid values warn and fall back rather
 /// than halting the build (the key names the offending KVP — worldspawn has no
-/// meaningful per-entity origin to name).
-fn parse_positive_nav_kvp(
+/// meaningful per-entity origin to name). Shared by the `nav_*` and
+/// `entity_shadow_*` worldspawn KVPs.
+fn parse_positive_worldspawn_kvp(
     geo_map: &GeoMap,
     worldspawn_id: &EntityId,
     key: &str,
@@ -203,6 +204,17 @@ fn parse_positive_nav_kvp(
             }
         },
     }
+}
+
+/// `entity_shadow_*` worldspawn KVP parser — thin call-site alias for
+/// [`parse_positive_worldspawn_kvp`].
+fn parse_entity_shadow_kvp(
+    geo_map: &GeoMap,
+    worldspawn_id: &EntityId,
+    key: &str,
+    default: f32,
+) -> f32 {
+    parse_positive_worldspawn_kvp(geo_map, worldspawn_id, key, default)
 }
 
 /// Extract all key-value pairs for an entity as a property bag. Thin
@@ -362,35 +374,51 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     // `fog_pixel_scale` form (the majority for engine-authored worldspawn KVPs).
     let nav_defaults = NavParams::default();
     let nav_params = NavParams {
-        agent_radius: parse_positive_nav_kvp(
+        agent_radius: parse_positive_worldspawn_kvp(
             &geo_map,
             &worldspawn_id,
             "nav_agent_radius",
             nav_defaults.agent_radius,
         ),
-        agent_height: parse_positive_nav_kvp(
+        agent_height: parse_positive_worldspawn_kvp(
             &geo_map,
             &worldspawn_id,
             "nav_agent_height",
             nav_defaults.agent_height,
         ),
-        step_height: parse_positive_nav_kvp(
+        step_height: parse_positive_worldspawn_kvp(
             &geo_map,
             &worldspawn_id,
             "nav_step_height",
             nav_defaults.step_height,
         ),
-        max_slope_deg: parse_positive_nav_kvp(
+        max_slope_deg: parse_positive_worldspawn_kvp(
             &geo_map,
             &worldspawn_id,
             "nav_max_slope",
             nav_defaults.max_slope_deg,
         ),
-        cell_size: parse_positive_nav_kvp(
+        cell_size: parse_positive_worldspawn_kvp(
             &geo_map,
             &worldspawn_id,
             "nav_cell_size",
             nav_defaults.cell_size,
+        ),
+    };
+
+    let entity_shadow_defaults = EntityShadowParams::default();
+    let entity_shadow_params = EntityShadowParams {
+        min_intensity_ratio: parse_entity_shadow_kvp(
+            &geo_map,
+            &worldspawn_id,
+            "entity_shadow_min_intensity_ratio",
+            entity_shadow_defaults.min_intensity_ratio,
+        ),
+        min_range: parse_entity_shadow_kvp(
+            &geo_map,
+            &worldspawn_id,
+            "entity_shadow_min_range",
+            entity_shadow_defaults.min_range,
         ),
     };
 
@@ -766,6 +794,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         initial_gravity,
         lightmap_density,
         nav_params,
+        entity_shadow_params,
     })
 }
 
@@ -2627,6 +2656,23 @@ mod tests {
     }
 
     #[test]
+    fn parse_map_file_reads_entity_shadow_thresholds_from_worldspawn() {
+        let map_data = parse_worldspawn_with_kvp(
+            "\"entity_shadow_min_intensity_ratio\" \"0.6\"\n\"entity_shadow_min_range\" \"6.5\"",
+        );
+
+        assert_eq!(map_data.entity_shadow_params.min_intensity_ratio, 0.6);
+        assert_eq!(map_data.entity_shadow_params.min_range, 6.5);
+    }
+
+    #[test]
+    fn parse_map_file_entity_shadow_thresholds_default_when_absent() {
+        let map_data = parse_worldspawn_with_kvp("");
+
+        assert_eq!(map_data.entity_shadow_params, EntityShadowParams::default());
+    }
+
+    #[test]
     fn empty_brush_set_not_detected_as_axis_aligned() {
         // No brushes → fall through to the plane-bounded path so the resolver
         // surfaces the empty-brush error instead of producing a silent ellipsoid.
@@ -2647,7 +2693,7 @@ mod tests {
     // -- nav_* worldspawn KVP parsing --
     //
     // Each test exercises one of the five `nav_*` keys that feed `NavParams` via
-    // `parse_positive_nav_kvp`. The fixture helper `parse_worldspawn_with_kvp`
+    // `parse_positive_worldspawn_kvp`. The fixture helper `parse_worldspawn_with_kvp`
     // is reused from the `_lightmap_density` tests above.
 
     #[test]

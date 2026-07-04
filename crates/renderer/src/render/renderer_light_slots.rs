@@ -1,8 +1,13 @@
-// Dynamic direct-light slot assignment, spot/cube shadow-pool packing, and the
+// Runtime direct-light slot assignment, spot/cube shadow-pool packing, and the
 // shadow-debug trace.
 // See: context/lib/rendering_pipeline.md §4
 
+use super::renderer_types::{
+    FullRenderer, MAX_PROMOTED_CUBE, MAX_PROMOTED_SPOT, PromotedShadowPoolKind,
+    PromotedStaticLightRecord,
+};
 use super::*;
+use postretro_render_cpu::frame_uniforms::TOTAL_LIGHT_COUNT_OFFSET;
 
 impl Renderer {
     /// Sub-0.01 lights excluded from slot ranking — animated-dark lights don't waste a shadow slot.
@@ -17,30 +22,43 @@ impl Renderer {
     /// reconstruction. Empty = DrawAll sentinel (fallback visibility paths):
     /// every cell-assigned light stays eligible.
     ///
-    /// The **candidate set** is `self.shadow_candidate_lights`
-    /// (full level lights filtered by `is_dynamic`), which is the same set as
-    /// `self.level_lights` (also `is_dynamic`-filtered) modulo ordering.
-    /// `effective_brightness` is keyed on `level_lights` indices, so candidate
-    /// brightness is translated through the original full level-light index.
+    /// The **candidate set** is `self.shadow_candidate_lights`: dynamic-tier
+    /// lights plus compiler-selected static lights eligible for entity-shadow
+    /// promotion. `effective_brightness` is keyed on the dynamic-tier
+    /// `level_lights` array, so dynamic candidate brightness is translated
+    /// through the original full level-light index.
     pub fn update_dynamic_light_slots(
         &mut self,
         camera_position: Vec3,
         camera_near_clip: f32,
         effective_brightness: &[f32],
         reachable_cell_aabbs: &[(Vec3, Vec3)],
+        now_seconds: f64,
+        promotion_mesh_frame_plan: Option<&mesh_instances::MeshFramePlan>,
     ) {
-        // Candidate set is `is_dynamic`-filtered; a map with no dynamic lights
-        // ranks nothing. Clear both pools' occupancy before returning: a stale
-        // `Some` cone/face matrix carried over from a previous level would
-        // keep its depth passes — full world rasterizations — running every
-        // frame against slots no light samples (this map's lights all pack
-        // the `NO_SHADOW_SLOT` sentinel).
+        // No runtime shadow candidates this frame. Clear both pools' occupancy:
+        // a stale `Some` cone/face matrix carried over from a previous level
+        // would keep its depth passes — full world rasterizations — running
+        // every frame against slots no light samples.
         if self.full().shadow_candidate_lights.is_empty() {
-            let full = self.full_mut();
+            let Self { queue, full, .. } = self;
+            let full = full
+                .as_mut()
+                .expect("renderer full-init must complete before full-ready paths run");
             full.spot_shadow_pool.clear_occupancy();
             if let Some(pool) = &mut full.cube_shadow_pool {
                 pool.clear_occupancy();
             }
+            full.promoted_static_records.clear();
+            for w in &mut full.promoted_static_weights {
+                *w = 0.0;
+            }
+            full.total_light_count = full.light_count;
+            queue.write_buffer(
+                &full.uniform_buffer,
+                TOTAL_LIGHT_COUNT_OFFSET,
+                &full.total_light_count.to_ne_bytes(),
+            );
             return;
         }
 
@@ -61,6 +79,11 @@ impl Renderer {
         let mut visible_lights = vec![false; self.full().shadow_candidate_lights.len()];
         {
             let full = self.full();
+            // Fixed within the frame — build the source→level reverse lookup once
+            // so each candidate's brightness read is O(1) instead of scanning
+            // `level_light_source_indices`.
+            let level_light_index_lookup =
+                build_level_light_index_lookup(&full.level_light_source_indices);
             for (i, light) in full.shadow_candidate_lights.iter().enumerate() {
                 let reaches_view = shadow_candidate_reaches_visible_cell(
                     light,
@@ -70,6 +93,19 @@ impl Renderer {
                 if !reaches_view {
                     continue;
                 }
+                if full
+                    .shadow_candidate_selection_indices
+                    .get(i)
+                    .and_then(|selection| *selection)
+                    .is_some()
+                    && !selected_static_light_has_shadow_entity(
+                        light,
+                        full.shadow_candidate_influences.get(i),
+                        promotion_mesh_frame_plan,
+                    )
+                {
+                    continue;
+                }
                 // Brightness suppression is indexed by `level_lights` (the
                 // forward / scripted-bridge index space). For candidates not in
                 // `level_lights` we have no per-frame brightness — treat as 1.0.
@@ -77,8 +113,8 @@ impl Renderer {
                     .shadow_candidate_source_indices
                     .get(i)
                     .and_then(|&source_index| {
-                        level_brightness_for_candidate(
-                            &full.level_light_source_indices,
+                        level_brightness_for_candidate_indexed(
+                            &level_light_index_lookup,
                             source_index,
                             effective_brightness,
                         )
@@ -91,11 +127,14 @@ impl Renderer {
             }
         }
 
-        let slot_assignment = SpotShadowPool::rank_lights(
-            &self.full().shadow_candidate_lights,
+        let mut slot_assignment = assign_shadow_pool_slots_with_promoted_static(
+            self.full(),
+            PromotedShadowPoolKind::Spot,
             camera_position,
             camera_near_clip,
             &visible_lights,
+            crate::lighting::spot_shadow::SHADOW_POOL_SIZE,
+            MAX_PROMOTED_SPOT,
         );
 
         // Rank dynamic POINT lights into the cube pool and upload their per-face
@@ -104,12 +143,67 @@ impl Renderer {
         // below alongside the spot slots. Runs before the patch block so both
         // slot fields land in one upload.
         let stride = self.full().shadow_vs_stride as usize;
-        let cube_slot_assignment = self.update_cube_light_slots(
+        let mut cube_slot_assignment = self.update_cube_light_slots(
             camera_position,
             camera_near_clip,
             &visible_lights,
             stride,
         );
+
+        let frame_dt = {
+            let full = self.full_mut();
+            let previous = full.promoted_static_last_update_time.replace(now_seconds);
+            previous
+                .map(|t| (now_seconds - t).clamp(0.0, 0.25) as f32)
+                .unwrap_or(1.0 / 60.0)
+        };
+        self.update_promoted_static_weights_and_records(
+            &slot_assignment,
+            &cube_slot_assignment,
+            &visible_lights,
+            camera_position,
+            camera_near_clip,
+            frame_dt,
+        );
+        {
+            let full = self.full();
+            clear_zero_weight_promoted_assignments(
+                &full.shadow_candidate_selection_indices,
+                &full.promoted_static_weights,
+                &mut slot_assignment,
+            );
+            clear_zero_weight_promoted_assignments(
+                &full.shadow_candidate_selection_indices,
+                &full.promoted_static_weights,
+                &mut cube_slot_assignment,
+            );
+        }
+        if !cube_slot_assignment.is_empty() {
+            if let Some(pool) = self.full_mut().cube_shadow_pool.as_mut() {
+                let mut live_slots = [false; crate::lighting::cube_shadow::CUBE_COUNT];
+                for &slot in &cube_slot_assignment {
+                    if slot != postretro_lighting::NO_SHADOW_SLOT {
+                        if let Some(live) = live_slots.get_mut(slot as usize) {
+                            *live = true;
+                        }
+                    }
+                }
+                for (slot, live) in live_slots.iter().copied().enumerate() {
+                    if live {
+                        continue;
+                    }
+                    pool.slot_entity_eligible[slot] = false;
+                    for face in 0..crate::lighting::cube_shadow::CUBE_FACES {
+                        let layer = crate::lighting::cube_shadow::CubeShadowPool::face_layer(
+                            slot as u32,
+                            face,
+                        );
+                        pool.face_matrices[layer] = None;
+                    }
+                }
+                pool.slot_assignment = cube_slot_assignment.clone();
+            }
+        }
 
         // The GPU lights buffer is keyed on `level_lights`. Translate slot
         // assignments from candidate-index space into `level_lights`-index
@@ -144,31 +238,61 @@ impl Renderer {
         let full = full
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
-        let expected_len = full.level_lights.len() * postretro_lighting::GPU_LIGHT_SIZE;
-        if full.last_lights_upload.len() == expected_len {
-            let spot_changed =
-                postretro_lighting::patch_shadow_slots(&mut full.last_lights_upload, &level_slots);
-            let cube_changed = postretro_lighting::patch_cube_slots(
-                &mut full.last_lights_upload,
-                &level_cube_slots,
-            );
-            if spot_changed || cube_changed {
-                queue.write_buffer(&full.lights_buffer, 0, &full.last_lights_upload);
-            }
-        } else {
-            // Mirror not yet sized to the current light set (before the first
-            // bridge upload, or the light count changed): full static pack so
-            // frame-zero still uploads valid lights + slots and seeds the mirror.
-            let mut scratch = std::mem::take(&mut full.lights_pack_scratch);
-            pack_lights_with_slots_into(&mut scratch, &full.level_lights, &level_slots);
-            postretro_lighting::patch_cube_slots(&mut scratch, &level_cube_slots);
-            if scratch != full.last_lights_upload {
-                queue.write_buffer(&full.lights_buffer, 0, &scratch);
-                full.last_lights_upload.clear();
-                full.last_lights_upload.extend_from_slice(&scratch);
-            }
-            full.lights_pack_scratch = scratch;
+        let mut scratch = std::mem::take(&mut full.lights_pack_scratch);
+        build_count_split_light_upload(full, &level_slots, &level_cube_slots, &mut scratch);
+        if scratch != full.last_lights_upload {
+            queue.write_buffer(&full.lights_buffer, 0, &scratch);
+            full.last_lights_upload.clear();
+            full.last_lights_upload.extend_from_slice(&scratch);
         }
+        full.lights_pack_scratch = scratch;
+
+        // The influence buffer's dynamic prefix is packed once at level load and
+        // never changes per frame (`level_light_influences` is load-time state),
+        // so the only per-frame movement is the promoted-static tail. Gate the
+        // re-upload on promoted records existing: old maps (no selected static
+        // lights → never any promoted records) then pay zero per-frame CPU→GPU
+        // copy. When records drop back to empty the stale tail is left in place
+        // but is never read — the forward/mesh loops bound by the light count.
+        // The `entity_shadow_light_influences` vector is raw-length N and
+        // index-parallel to the selection index, so `[selection_index]` is a
+        // direct aligned lookup for every promoted record.
+        if !full.promoted_static_records.is_empty() {
+            debug_assert_eq!(
+                full.entity_shadow_light_influences.len(),
+                full.promoted_static_states.len(),
+                "selected-static influence vector must be raw-length N, index-parallel to selection index",
+            );
+            let mut influence_bytes = std::mem::take(&mut full.influence_pack_scratch);
+            influence_bytes.clear();
+            influence::pack_influence_into(&mut influence_bytes, &full.level_light_influences);
+            for record in &full.promoted_static_records {
+                let influence =
+                    &full.entity_shadow_light_influences[record.selection_index as usize];
+                influence::pack_influence_into(
+                    &mut influence_bytes,
+                    std::slice::from_ref(influence),
+                );
+            }
+            shadowmask::pack_forward_shadowmask_metadata(
+                &full.promoted_static_records,
+                &full.entity_shadow_spec_light_indices,
+                &full.shadowmask_channels,
+                full.shadowmask_present,
+                &mut full.forward_shadowmask_metadata_scratch,
+            );
+            influence_bytes.extend_from_slice(&full.forward_shadowmask_metadata_scratch);
+            if influence_bytes.is_empty() {
+                influence_bytes.resize(16, 0);
+            }
+            queue.write_buffer(&full.influence_buffer, 0, &influence_bytes);
+            full.influence_pack_scratch = influence_bytes;
+        }
+        queue.write_buffer(
+            &full.uniform_buffer,
+            TOTAL_LIGHT_COUNT_OFFSET,
+            &full.total_light_count.to_ne_bytes(),
+        );
 
         // Upload slot matrices to both fragment-side storage (group 5 binding 2)
         // and vertex-side dynamic-offset uniform buffer. Matrices come from
@@ -200,8 +324,13 @@ impl Renderer {
             // shadow-depth loop draws skinned occluders into the slot only when
             // this is set; an ineligible (e.g. toggle-off dynamic) slot keeps its
             // world shadow but draws none.
+            let promoted_static = full
+                .shadow_candidate_selection_indices
+                .get(light_idx)
+                .and_then(|selection| *selection)
+                .is_some();
             full.spot_shadow_pool.slot_entity_eligible[slot as usize] =
-                postretro_lighting::entity_occluder_eligible(candidate);
+                postretro_lighting::entity_occluder_eligible(candidate, promoted_static);
             let cols = m.to_cols_array();
             let mut bytes = [0u8; MAT_BYTES];
             for (i, v) in cols.iter().enumerate() {
@@ -250,14 +379,16 @@ impl Renderer {
     ///   `LightInfluence` sphere reaches a fog/light-reachable cell), `bright`
     ///   (live animated brightness), `elig`
     ///   (passed
-    ///   the reach+brightness gate feeding `rank_lights`/`rank_point_lights`), and
+    ///   the reach+brightness gate feeding the spot/point shadow rankers), and
     ///   `slot` (assigned SPOT shadow slot or `NONE:<reason>`) plus `cube`
     ///   (assigned POINT cube shadow slot or `NONE:<reason>` — closes the prior
     ///   blind spot where point lights only ever showed `NONE:not_spot`). NOTE
     ///   these read the STATIC load-time `shadow_candidate_lights` — a scripted
     ///   sweep light's animated position/cone is NOT reflected here.
-    /// - `casters`: `in_pvs` vs `off_pvs` from collected mesh draw inputs. The
-    ///   strict collector should keep `off_pvs=0`.
+    /// - `casters`: `in_pvs` vs `off_pvs` from collected mesh draw inputs.
+    ///   `off_pvs` can include shadow-only casters retained because a selected
+    ///   static entity-shadow light reaches them, even when they are not
+    ///   forward-visible.
     pub(super) fn emit_shadow_debug(
         &mut self,
         view_proj: Mat4,
@@ -308,6 +439,10 @@ impl Renderer {
         let mut spot_overflow: usize = 0;
         let mut cube_overflow: usize = 0;
         let mut light_lines: Vec<String> = Vec::new();
+        // Fixed within the frame — build the source→level reverse lookup once so
+        // the per-light brightness read is O(1).
+        let level_light_index_lookup =
+            build_level_light_index_lookup(&self.full().level_light_source_indices);
         for (i, light) in self.full().shadow_candidate_lights.iter().enumerate() {
             // Legacy own-cell-PVS membership (no longer the gate; kept so a reader
             // can SEE it diverge from `reach` — the whole point of the fix).
@@ -332,8 +467,8 @@ impl Renderer {
                 .shadow_candidate_source_indices
                 .get(i)
                 .and_then(|&source_index| {
-                    level_brightness_for_candidate(
-                        &self.full().level_light_source_indices,
+                    level_brightness_for_candidate_indexed(
+                        &level_light_index_lookup,
                         source_index,
                         effective_brightness,
                     )
@@ -391,7 +526,14 @@ impl Renderer {
                         if (cslot as usize) < 128 {
                             cube_occupancy |= 1u128 << cslot;
                         }
-                        let ent_ok = postretro_lighting::entity_occluder_eligible(light);
+                        let promoted_static = self
+                            .full()
+                            .shadow_candidate_selection_indices
+                            .get(i)
+                            .and_then(|selection| *selection)
+                            .is_some();
+                        let ent_ok =
+                            postretro_lighting::entity_occluder_eligible(light, promoted_static);
                         format!("cube={cslot}{}", if ent_ok { "" } else { "(no_ent)" })
                     } else if !light.is_dynamic {
                         "NONE:baked".to_string()
@@ -432,8 +574,9 @@ impl Renderer {
             ));
         }
 
-        // Mesh visibility split. The strict collector emits visible-only draw
-        // inputs, so `off_pvs` should stay zero outside synthetic/future callers.
+        // Mesh visibility split. Forward-visible inputs render in the mesh pass;
+        // off-PVS inputs are retained only when selected static entity-shadow
+        // lights need them as shadow casters.
         let in_pvs = self
             .full()
             .mesh_draws
@@ -525,16 +668,24 @@ impl Renderer {
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
 
-        let Some(pool) = full.cube_shadow_pool.as_mut() else {
+        if full.cube_shadow_pool.is_none() {
             return Vec::new();
-        };
+        }
 
-        let slot_assignment = cube_shadow::rank_point_lights(
-            &full.shadow_candidate_lights,
+        let slot_assignment = assign_shadow_pool_slots_with_promoted_static(
+            full,
+            PromotedShadowPoolKind::Cube,
             camera_position,
             camera_near_clip,
             visible_lights,
+            cube_shadow::CUBE_COUNT,
+            MAX_PROMOTED_CUBE,
         );
+
+        let pool = full
+            .cube_shadow_pool
+            .as_mut()
+            .expect("cube pool presence checked above");
 
         // Reset per-face matrices + per-slot entity gate; reoccupied faces
         // overwrite, the rest stay `None`/`false` so the render loop skips them.
@@ -559,8 +710,13 @@ impl Renderer {
             // `slot_entity_eligible` gates only whether skinned ENTITY
             // occluders are additionally drawn into the faces — the same
             // occluder split as the spot path.
+            let promoted_static = full
+                .shadow_candidate_selection_indices
+                .get(light_idx)
+                .and_then(|selection| *selection)
+                .is_some();
             pool.slot_entity_eligible[slot as usize] =
-                postretro_lighting::entity_occluder_eligible(candidate);
+                postretro_lighting::entity_occluder_eligible(candidate, promoted_static);
             let face_mats = cube_shadow::cube_face_matrices(candidate);
             for (face, m) in face_mats.iter().enumerate() {
                 let layer = cube_shadow::CubeShadowPool::face_layer(slot, face);
@@ -578,5 +734,548 @@ impl Renderer {
         // The raw rank IS the shader-facing assignment: every ranked slot's
         // faces carry a rendered world-depth baseline, so no masking is needed.
         slot_assignment
+    }
+
+    fn update_promoted_static_weights_and_records(
+        &mut self,
+        spot_assignment: &[u32],
+        cube_assignment: &[u32],
+        visible_lights: &[bool],
+        camera_position: Vec3,
+        camera_near_clip: f32,
+        frame_dt: f32,
+    ) {
+        const PROMOTE_SECONDS: f32 = 0.3;
+        const STICKY_SECONDS: f32 = 0.5;
+        const DEMOTE_SECONDS: f32 = 0.3;
+
+        let Self { queue, full, .. } = self;
+        let full = full
+            .as_mut()
+            .expect("renderer full-init must complete before full-ready paths run");
+
+        full.promoted_static_records.clear();
+        if full.promoted_static_weights.len() != full.promoted_static_states.len() {
+            full.promoted_static_weights
+                .resize(full.promoted_static_states.len(), 0.0);
+        }
+        // The selected-static vectors are raw-length N and index-parallel to the
+        // selection index, so every `[selection_index]` below is a direct aligned
+        // lookup into the same N-length space the weight buffer and baked delta
+        // `affinity_lights` use.
+        debug_assert_eq!(
+            full.entity_shadow_light_source_indices.len(),
+            full.promoted_static_states.len(),
+            "selected-static source-index vector must be raw-length N, index-parallel to selection index",
+        );
+
+        for (selection_index, state) in full.promoted_static_states.iter_mut().enumerate() {
+            let candidate_index = full
+                .shadow_candidate_selection_indices
+                .iter()
+                .position(|idx| *idx == Some(selection_index));
+
+            let assigned = candidate_index.and_then(|candidate_index| {
+                let spot = spot_assignment
+                    .get(candidate_index)
+                    .copied()
+                    .unwrap_or(postretro_lighting::NO_SHADOW_SLOT);
+                if spot != postretro_lighting::NO_SHADOW_SLOT {
+                    return Some((PromotedShadowPoolKind::Spot, spot, candidate_index));
+                }
+                let cube = cube_assignment
+                    .get(candidate_index)
+                    .copied()
+                    .unwrap_or(postretro_lighting::NO_SHADOW_SLOT);
+                (cube != postretro_lighting::NO_SHADOW_SLOT).then_some((
+                    PromotedShadowPoolKind::Cube,
+                    cube,
+                    candidate_index,
+                ))
+            });
+
+            if let Some((pool_kind, slot, candidate_index)) = assigned {
+                state.pool_kind = Some(pool_kind);
+                state.slot = slot;
+                if let Some(light) = full.shadow_candidate_lights.get(candidate_index) {
+                    state.last_score =
+                        candidate_slot_score(light, camera_position, camera_near_clip);
+                }
+                let gate_passed = visible_lights.get(candidate_index).copied().unwrap_or(true);
+                if gate_passed {
+                    state.sticky_remaining = STICKY_SECONDS;
+                    state.weight = step_toward(state.weight, 1.0, frame_dt / PROMOTE_SECONDS);
+                } else if state.sticky_remaining > 0.0 {
+                    state.sticky_remaining = (state.sticky_remaining - frame_dt).max(0.0);
+                } else {
+                    state.weight = step_toward(state.weight, 0.0, frame_dt / DEMOTE_SECONDS);
+                }
+                if state.weight > 0.0 {
+                    let global_light_index =
+                        full.entity_shadow_light_source_indices[selection_index];
+                    full.promoted_static_records
+                        .push(PromotedStaticLightRecord {
+                            global_light_index: global_light_index as u32,
+                            selection_index: selection_index as u32,
+                            pool_kind,
+                            slot,
+                            weight: state.weight.clamp(0.0, 1.0),
+                        });
+                }
+            } else {
+                state.pool_kind = None;
+                state.sticky_remaining = 0.0;
+                state.weight = step_toward(state.weight, 0.0, frame_dt / DEMOTE_SECONDS);
+            }
+
+            full.promoted_static_weights[selection_index] = state.weight.clamp(0.0, 1.0);
+        }
+
+        full.promoted_static_weight_scratch.clear();
+        full.promoted_static_weight_scratch
+            .reserve(full.promoted_static_weights.len().max(1).saturating_mul(4));
+        if full.promoted_static_weights.is_empty() {
+            full.promoted_static_weight_scratch
+                .extend_from_slice(&0.0f32.to_ne_bytes());
+        } else {
+            for &weight in &full.promoted_static_weights {
+                full.promoted_static_weight_scratch
+                    .extend_from_slice(&weight.clamp(0.0, 1.0).to_ne_bytes());
+            }
+        }
+        queue.write_buffer(
+            &full.promoted_static_weight_buffer,
+            0,
+            &full.promoted_static_weight_scratch,
+        );
+        full.total_light_count = full.light_count + full.promoted_static_records.len() as u32;
+    }
+}
+
+/// Adapts a `MapLight` + camera to the shared shadow-slot score. The score
+/// FORMULA lives once in [`postretro_lighting::shadow_ranking::slot_score`];
+/// this only supplies the light→camera distance from the renderer's light type.
+fn candidate_slot_score(light: &MapLight, camera_position: Vec3, camera_near_clip: f32) -> f32 {
+    let light_pos = Vec3::new(
+        light.origin[0] as f32,
+        light.origin[1] as f32,
+        light.origin[2] as f32,
+    );
+    let dist = (light_pos - camera_position).length();
+    postretro_lighting::shadow_ranking::slot_score(light.falloff_range, dist, camera_near_clip)
+}
+
+/// Eviction hysteresis margin: a challenger takes an incumbent's slot only when
+/// it out-scores the incumbent by this factor. Renderer-owned tuning policy fed
+/// to the wgpu-free ranker (see the static-light-entity-shadows plan, Task 4).
+const EVICTION_MARGIN: f32 = 1.25;
+
+/// Rank this pool's lights (dynamic-tier + promoted-static) into slots through
+/// the shared [`postretro_lighting::shadow_ranking`] core. The renderer-specific
+/// state — which lights are promoted-static, and each slot's prior occupant for
+/// hysteresis — is assembled here; the pure score sort, cap enforcement, and
+/// tier-neutral eviction live in the lighting crate so the spot and cube pools
+/// cannot drift and no scoring/assignment formula is duplicated.
+fn assign_shadow_pool_slots_with_promoted_static(
+    full: &FullRenderer,
+    pool_kind: PromotedShadowPoolKind,
+    camera_position: Vec3,
+    camera_near_clip: f32,
+    eligible_lights: &[bool],
+    capacity: usize,
+    promoted_cap: usize,
+) -> Vec<u32> {
+    let light_type = match pool_kind {
+        PromotedShadowPoolKind::Spot => postretro_level_loader::LightType::Spot,
+        PromotedShadowPoolKind::Cube => postretro_level_loader::LightType::Point,
+    };
+
+    // Unified candidate set: every eligible light of this pool's type competes on
+    // score alone — no tier is reserved ahead of the sort (Resolution 2).
+    let mut candidates = Vec::new();
+    for (candidate_index, light) in full.shadow_candidate_lights.iter().enumerate() {
+        if light.light_type != light_type {
+            continue;
+        }
+        if eligible_lights
+            .get(candidate_index)
+            .is_some_and(|eligible| !eligible)
+        {
+            continue;
+        }
+        let is_promoted_static = full
+            .shadow_candidate_selection_indices
+            .get(candidate_index)
+            .and_then(|selection| *selection)
+            .is_some();
+        // A baked, non-selected light never earns a runtime slot.
+        if !is_promoted_static && !light.is_dynamic {
+            continue;
+        }
+        candidates.push(postretro_lighting::shadow_ranking::SlotCandidate {
+            candidate_index,
+            score: candidate_slot_score(light, camera_position, camera_near_clip),
+            is_promoted_static,
+        });
+    }
+
+    let incumbents = build_slot_incumbents(
+        full,
+        pool_kind,
+        capacity,
+        camera_position,
+        camera_near_clip,
+        eligible_lights,
+    );
+
+    postretro_lighting::shadow_ranking::assign_slots_with_hysteresis(
+        &candidates,
+        &incumbents,
+        capacity,
+        promoted_cap,
+        full.shadow_candidate_lights.len(),
+        EVICTION_MARGIN,
+    )
+}
+
+/// Prior-frame slot occupants for tier-neutral eviction hysteresis. Static
+/// incumbents are the promoted lights still holding a slot with weight `w > 0`
+/// (the demote sticky window keeps them here after their gate fails, so their
+/// weight ramps down while the slot is held). Dynamic incumbents are the
+/// still-eligible dynamic lights that held a slot last frame — they have no
+/// sticky window, so an ineligible dynamic frees its slot immediately. Every
+/// incumbent's `score` is the CURRENT-frame score so a camera jump is reflected
+/// before the margin comparison.
+fn build_slot_incumbents(
+    full: &FullRenderer,
+    pool_kind: PromotedShadowPoolKind,
+    capacity: usize,
+    camera_position: Vec3,
+    camera_near_clip: f32,
+    eligible_lights: &[bool],
+) -> Vec<postretro_lighting::shadow_ranking::SlotIncumbent> {
+    use postretro_lighting::shadow_ranking::SlotIncumbent;
+    let mut incumbents = Vec::new();
+
+    // Static incumbents: the promoted-static weight state owns their slot and
+    // sticky window, independent of this frame's eligibility.
+    for (selection_index, state) in full.promoted_static_states.iter().enumerate() {
+        if state.pool_kind != Some(pool_kind) || state.weight <= 0.0 {
+            continue;
+        }
+        let slot = state.slot as usize;
+        if slot >= capacity {
+            continue;
+        }
+        let Some(candidate_index) = full
+            .shadow_candidate_selection_indices
+            .iter()
+            .position(|idx| *idx == Some(selection_index))
+        else {
+            continue;
+        };
+        let score = full
+            .shadow_candidate_lights
+            .get(candidate_index)
+            .map(|light| candidate_slot_score(light, camera_position, camera_near_clip))
+            .unwrap_or(state.last_score)
+            .max(0.0);
+        incumbents.push(SlotIncumbent {
+            slot,
+            candidate_index,
+            score,
+            is_promoted_static: true,
+        });
+    }
+
+    // Dynamic incumbents: last frame's assignment for this pool, restricted to
+    // still-eligible dynamic (non-selected) lights.
+    let prior = match pool_kind {
+        PromotedShadowPoolKind::Spot => full.spot_shadow_pool.slot_assignment.as_slice(),
+        PromotedShadowPoolKind::Cube => full
+            .cube_shadow_pool
+            .as_ref()
+            .map(|pool| pool.slot_assignment.as_slice())
+            .unwrap_or(&[]),
+    };
+    for (candidate_index, &slot) in prior.iter().enumerate() {
+        if slot == postretro_lighting::NO_SHADOW_SLOT {
+            continue;
+        }
+        let slot = slot as usize;
+        if slot >= capacity {
+            continue;
+        }
+        let is_promoted_static = full
+            .shadow_candidate_selection_indices
+            .get(candidate_index)
+            .and_then(|selection| *selection)
+            .is_some();
+        if is_promoted_static {
+            // Statics come from the weight state above; skip so a slot is not
+            // seeded twice.
+            continue;
+        }
+        let Some(light) = full.shadow_candidate_lights.get(candidate_index) else {
+            continue;
+        };
+        if !light.is_dynamic {
+            continue;
+        }
+        if !eligible_lights
+            .get(candidate_index)
+            .copied()
+            .unwrap_or(true)
+        {
+            continue;
+        }
+        incumbents.push(SlotIncumbent {
+            slot,
+            candidate_index,
+            score: candidate_slot_score(light, camera_position, camera_near_clip).max(0.0),
+            is_promoted_static: false,
+        });
+    }
+
+    incumbents
+}
+
+fn clear_zero_weight_promoted_assignments(
+    selection_indices: &[Option<usize>],
+    weights: &[f32],
+    assignment: &mut [u32],
+) {
+    for (candidate_index, slot) in assignment.iter_mut().enumerate() {
+        if *slot == postretro_lighting::NO_SHADOW_SLOT {
+            continue;
+        }
+        let Some(selection_index) = selection_indices
+            .get(candidate_index)
+            .and_then(|selection_index| *selection_index)
+        else {
+            continue;
+        };
+        if weights
+            .get(selection_index)
+            .is_none_or(|weight| *weight <= 0.0)
+        {
+            *slot = postretro_lighting::NO_SHADOW_SLOT;
+        }
+    }
+}
+
+fn step_toward(value: f32, target: f32, step: f32) -> f32 {
+    if step <= 0.0 {
+        return value.clamp(0.0, 1.0);
+    }
+    if value < target {
+        (value + step).min(target)
+    } else {
+        (value - step).max(target)
+    }
+    .clamp(0.0, 1.0)
+}
+
+fn selected_static_light_has_shadow_entity(
+    light: &MapLight,
+    influence: Option<&LightInfluence>,
+    plan: Option<&mesh_instances::MeshFramePlan>,
+) -> bool {
+    let Some(plan) = plan else {
+        return false;
+    };
+    let influence = influence.cloned().unwrap_or(LightInfluence {
+        center: Vec3::new(
+            light.origin[0] as f32,
+            light.origin[1] as f32,
+            light.origin[2] as f32,
+        ),
+        radius: f32::MAX,
+    });
+    let center = influence.center;
+    let radius_sq = influence.radius.max(light.falloff_range).max(0.0).powi(2);
+    plan.groups
+        .iter()
+        .flat_map(|group| group.instances.iter())
+        .any(|instance| {
+            let world = instance.bounds.transformed(&instance.transform);
+            let closest = center.clamp(world.min, world.max);
+            closest.distance_squared(center) <= radius_sq
+        })
+}
+
+fn build_count_split_light_upload(
+    full: &FullRenderer,
+    level_spot_slots: &[u32],
+    level_cube_slots: &[u32],
+    bytes: &mut Vec<u8>,
+) {
+    bytes.clear();
+    let dynamic_bytes = full.level_lights.len() * postretro_lighting::GPU_LIGHT_SIZE;
+    if full.last_lights_upload.len() >= dynamic_bytes && dynamic_bytes > 0 {
+        bytes.extend_from_slice(&full.last_lights_upload[..dynamic_bytes]);
+        postretro_lighting::patch_shadow_slots(bytes, level_spot_slots);
+        postretro_lighting::patch_cube_slots(bytes, level_cube_slots);
+    } else if !full.level_lights.is_empty() {
+        pack_lights_with_slots_into(bytes, &full.level_lights, level_spot_slots);
+        postretro_lighting::patch_cube_slots(bytes, level_cube_slots);
+    }
+
+    // `entity_shadow_lights` is raw-length N and index-parallel to the selection
+    // index, so `[selection_index]` is a direct aligned lookup for every promoted
+    // record — no compacted-vs-raw index divergence, and the light record it
+    // appends stays in lock-step with the influence tail packed in
+    // `update_dynamic_light_slots` (both key on the same selection index).
+    debug_assert_eq!(
+        full.entity_shadow_lights.len(),
+        full.promoted_static_states.len(),
+        "selected-static light vector must be raw-length N, index-parallel to selection index",
+    );
+    for record in &full.promoted_static_records {
+        let light = &full.entity_shadow_lights[record.selection_index as usize];
+        let mut weighted = light.clone();
+        weighted.intensity *= record.weight.clamp(0.0, 1.0);
+        let spot_slot = match record.pool_kind {
+            PromotedShadowPoolKind::Spot => record.slot,
+            PromotedShadowPoolKind::Cube => postretro_lighting::NO_SHADOW_SLOT,
+        };
+        bytes.extend_from_slice(&postretro_lighting::pack_light_with_slot(
+            &weighted, spot_slot,
+        ));
+        if record.pool_kind == PromotedShadowPoolKind::Cube {
+            let start = bytes.len() - postretro_lighting::GPU_LIGHT_SIZE;
+            postretro_lighting::patch_cube_slots(&mut bytes[start..], &[record.slot]);
+        }
+    }
+
+    if bytes.is_empty() {
+        bytes.resize(postretro_lighting::GPU_LIGHT_SIZE, 0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn promoted_static_record_schema_carries_task4_contract_fields() {
+        let record = PromotedStaticLightRecord {
+            global_light_index: 42,
+            selection_index: 3,
+            pool_kind: PromotedShadowPoolKind::Cube,
+            slot: 1,
+            weight: 0.75,
+        };
+
+        assert_eq!(record.global_light_index, 42);
+        assert_eq!(record.selection_index, 3);
+        assert_eq!(record.pool_kind, PromotedShadowPoolKind::Cube);
+        assert_eq!(record.slot, 1);
+        assert!((0.0..=1.0).contains(&record.weight));
+    }
+
+    #[test]
+    fn promoted_static_caps_match_task4_budget() {
+        assert_eq!(MAX_PROMOTED_SPOT, 8);
+        assert_eq!(MAX_PROMOTED_CUBE, 2);
+    }
+
+    #[test]
+    fn promoted_weight_step_is_reversible_and_clamped() {
+        let w = step_toward(0.0, 1.0, 0.5);
+        assert!((w - 0.5).abs() < 1.0e-6);
+        let w = step_toward(w, 0.0, 0.2);
+        assert!((w - 0.3).abs() < 1.0e-6);
+        assert_eq!(step_toward(0.95, 1.0, 0.2), 1.0);
+        assert_eq!(step_toward(0.05, 0.0, 0.2), 0.0);
+    }
+
+    // The pure score sort, promoted-static cap, and tier-neutral eviction
+    // hysteresis now live in `postretro_lighting::shadow_ranking` — their
+    // regression tests (cap-full static swap, dynamic⇄static eviction, the 1.25x
+    // margin) moved there with the code. This module keeps the renderer-owned
+    // state tests below.
+
+    #[test]
+    fn zero_weight_promoted_static_assignment_is_cleared_before_occupancy() {
+        let selection_indices = [Some(0), None, Some(1)];
+        let weights = [0.0, 0.25];
+        let mut assignment = [2, 3, 4];
+
+        clear_zero_weight_promoted_assignments(&selection_indices, &weights, &mut assignment);
+
+        assert_eq!(assignment[0], postretro_lighting::NO_SHADOW_SLOT);
+        assert_eq!(assignment[1], 3, "dynamic assignments are not touched");
+        assert_eq!(assignment[2], 4, "nonzero promoted assignments survive");
+    }
+
+    #[test]
+    fn selected_static_entity_gate_uses_planned_instances_only() {
+        use postretro_level_loader::{FalloffModel, LightType, MapLight, ShadowType};
+        use postretro_model::ModelHandle;
+        use postretro_model::sample_params::MeshSampleParams;
+        use postretro_render_cpu::mesh_instances::{
+            MeshFramePlan, ModelDrawGroup, PlannedInstance,
+        };
+        use postretro_render_data::cone_frustum::Aabb;
+        use postretro_render_data::influence::LightInfluence;
+
+        let light = MapLight {
+            origin: [0.0, 0.0, 0.0],
+            light_type: LightType::Spot,
+            intensity: 1.0,
+            color: [1.0, 1.0, 1.0],
+            falloff_model: FalloffModel::Linear,
+            falloff_range: 4.0,
+            cone_angle_inner: 0.3,
+            cone_angle_outer: 0.4,
+            cone_direction: [0.0, 0.0, -1.0],
+            is_dynamic: false,
+            casts_entity_shadows: true,
+            animated_slot: None,
+            tags: vec![],
+            cell_index: 0,
+            shadow_type: ShadowType::StaticLightMap,
+        };
+        let influence = LightInfluence {
+            center: Vec3::ZERO,
+            radius: 4.0,
+        };
+        let planned_inside = PlannedInstance {
+            transform: glam::Mat4::from_translation(Vec3::new(1.0, 0.0, 0.0)),
+            palette_base: 0,
+            phase_seed: 1,
+            bounds: Aabb {
+                min: Vec3::splat(-0.5),
+                max: Vec3::splat(0.5),
+            },
+            sample: MeshSampleParams::stateless(0.0),
+            capture: None,
+            resample: true,
+            forward_visible: false,
+        };
+        let planned_outside = PlannedInstance {
+            transform: glam::Mat4::from_translation(Vec3::new(20.0, 0.0, 0.0)),
+            phase_seed: 2,
+            ..planned_inside.clone()
+        };
+        let plan = MeshFramePlan {
+            groups: vec![ModelDrawGroup {
+                model: ModelHandle::from("grunt"),
+                instance_offset: 0,
+                instances: vec![planned_outside, planned_inside],
+            }],
+            instance_count: 2,
+            dropped: 0,
+        };
+
+        assert!(
+            !selected_static_light_has_shadow_entity(&light, Some(&influence), None),
+            "without a planned/renderable mesh set, raw mesh inputs must not promote a static light",
+        );
+        assert!(
+            selected_static_light_has_shadow_entity(&light, Some(&influence), Some(&plan)),
+            "planned shadow-only instances may promote selected static lights",
+        );
     }
 }

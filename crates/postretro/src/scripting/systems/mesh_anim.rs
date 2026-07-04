@@ -12,6 +12,7 @@ use postretro_model::anim::Loop;
 use postretro_model::sample_params::{
     CaptureInstruction, ClipSample, FadeSource, MeshFade, MeshSampleParams,
 };
+use postretro_render_data::cone_frustum::Aabb;
 
 /// One model's clip table: authored clip name → glTF index, plus each clip's
 /// duration by index (parallel to the glTF clip list). Built at level load from
@@ -60,12 +61,14 @@ impl ModelClipTable {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct MeshClipTables {
     tables: HashMap<ModelHandle, ModelClipTable>,
+    bounds: HashMap<ModelHandle, Aabb>,
 }
 
 impl MeshClipTables {
     pub(crate) fn new() -> Self {
         Self {
             tables: HashMap::new(),
+            bounds: HashMap::new(),
         }
     }
 
@@ -73,15 +76,19 @@ impl MeshClipTables {
     /// from an empty table set (mirrors the renderer's model-cache clear).
     pub(crate) fn clear(&mut self) {
         self.tables.clear();
+        self.bounds.clear();
     }
 
-    /// Install (or replace) a model's clip table from its renderer-side clip
-    /// metadata. Idempotent re-install replaces the entry.
-    pub(crate) fn insert(
+    /// Install a model's clip table and local-space bound. The bound mirrors the
+    /// renderer-side model cache and lets game-side visibility retain off-PVS
+    /// shadow casters by transformed bounds, not just model origin.
+    pub(crate) fn insert_with_bounds(
         &mut self,
         handle: ModelHandle,
         meta: &[postretro_render_cpu::mesh_pass::ClipMetadata],
+        bounds: Aabb,
     ) {
+        self.bounds.insert(handle.clone(), bounds);
         self.tables
             .insert(handle, ModelClipTable::from_metadata(meta));
     }
@@ -89,6 +96,12 @@ impl MeshClipTables {
     /// The clip table for a model handle, or `None` if the model never uploaded.
     pub(crate) fn get(&self, handle: &ModelHandle) -> Option<&ModelClipTable> {
         self.tables.get(handle)
+    }
+
+    /// The model's local-space bound, or a zero box when the model never
+    /// uploaded. A zero box preserves the legacy origin-only degradation path.
+    pub(crate) fn model_bounds(&self, handle: &ModelHandle) -> Aabb {
+        self.bounds.get(handle).copied().unwrap_or_default()
     }
 }
 

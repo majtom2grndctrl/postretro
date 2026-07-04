@@ -21,6 +21,8 @@ use postretro_level_format::data_script::DataScriptSection;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::delta_sh_volumes::DeltaShVolumesSection;
 #[cfg(feature = "load-prl")]
+use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
+#[cfg(feature = "load-prl")]
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::fog_volumes::FogVolumeRecord;
@@ -34,6 +36,8 @@ use postretro_level_format::navmesh::NavMeshSection;
 use postretro_level_format::sdf_atlas::SdfAtlasSection;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
+#[cfg(feature = "load-prl")]
+use postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 #[cfg(feature = "load-prl")]
@@ -106,6 +110,28 @@ pub enum PrlLoadError {
         "PRL file has a DeltaShVolumes section (id 27) but no base OctahedralShVolume section (id 34) — the compose pass cannot derive affinity dims without the base grid; recompile with `prl-build`"
     )]
     DeltaShMissingBaseVolume,
+    #[error(
+        "DirectShDeltaVolumes affinity_factor {found} != engine AFFINITY_FACTOR {expected} — recompile the .prl with the current `prl-build`"
+    )]
+    DirectShDeltaAffinityFactorMismatch { found: u8, expected: u8 },
+    #[error(
+        "DirectShDeltaVolumes affinity_dims {found:?} != ceil(base DirectShVolume dims {base_dims:?} / {factor}) = {expected:?} — recompile the .prl with the current `prl-build`"
+    )]
+    DirectShDeltaAffinityDimsMismatch {
+        found: [u32; 3],
+        base_dims: [u32; 3],
+        factor: u32,
+        expected: [u32; 3],
+    },
+    #[error(
+        "DirectShDeltaVolumes tile geometry {found_dimension}+border {found_border} does not match base DirectShVolume tile geometry {base_dimension}+border {base_border} — recompile the .prl with the current `prl-build`"
+    )]
+    DirectShDeltaTileGeometryMismatch {
+        found_dimension: u32,
+        found_border: u32,
+        base_dimension: u32,
+        base_border: u32,
+    },
 }
 
 /// Face → index-range mapping lives on BVH leaves; `FaceMeta` carries only
@@ -385,6 +411,21 @@ pub struct LevelWorld {
     /// moments.
     #[cfg(feature = "load-prl")]
     pub direct_sh_volume: Option<DirectShVolumeSection>,
+    /// Sparse direct-SH deltas for selected static lights. `None` when no
+    /// selected lights were emitted, or when deltas are missing/unusable.
+    /// Missing or unusable deltas also clear `entity_shadow_lights`.
+    #[cfg(feature = "load-prl")]
+    pub direct_sh_delta_volumes: Option<DirectShDeltaVolumesSection>,
+    /// Runtime level-light indices selected by the compiler for static-light
+    /// entity-shadow promotion. Empty for legacy maps, maps without direct SH,
+    /// maps whose compiler selection found no eligible lights, or maps whose
+    /// direct-SH deltas are missing/unusable.
+    #[cfg(feature = "load-prl")]
+    pub entity_shadow_lights: Vec<u32>,
+    /// Per-selected-light world visibility masks for entity→world static-light
+    /// shadows. `channels[i]` aligns with `entity_shadow_lights[i]`.
+    #[cfg(feature = "load-prl")]
+    pub shadowmask_atlas: Option<ShadowmaskAtlasSection>,
     /// `None` when level has no `data_script` worldspawn KVP.
     /// See: context/lib/scripting.md §2 (Data context lifecycle)
     #[cfg(feature = "load-prl")]
@@ -495,6 +536,12 @@ impl LevelWorld {
             delta_sh_volumes: None,
             #[cfg(feature = "load-prl")]
             direct_sh_volume: None,
+            #[cfg(feature = "load-prl")]
+            direct_sh_delta_volumes: None,
+            #[cfg(feature = "load-prl")]
+            entity_shadow_lights: Vec::new(),
+            #[cfg(feature = "load-prl")]
+            shadowmask_atlas: None,
             #[cfg(feature = "load-prl")]
             data_script: None,
             #[cfg(feature = "load-prl")]
@@ -925,7 +972,10 @@ mod slim_tests {
 mod tests {
     use super::*;
     use crate::load_prl;
-    use crate::prl_loader::{expected_affinity_dims, validate_cell_draw_index, validate_delta_sh};
+    use crate::prl_loader::{
+        convert_alpha_lights, expected_affinity_dims, validate_cell_draw_index, validate_delta_sh,
+        validate_direct_sh_delta, validate_entity_shadow_light_selection,
+    };
     use postretro_level_format::SectionId;
     use postretro_level_format::alpha_lights::{
         ALPHA_LIGHT_LEAF_UNASSIGNED, AlphaFalloffModel, AlphaLightType, AlphaLightsSection,
@@ -951,6 +1001,7 @@ mod tests {
     use postretro_level_format::delta_sh_volumes::{
         AFFINITY_FACTOR, DEFAULT_DELTA_PROBE_F16_STRIDE, DeltaShVolumesSection, PROBES_PER_CELL,
     };
+    use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
     use postretro_level_format::octahedral::{
         DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION,
     };
@@ -972,6 +1023,31 @@ mod tests {
             affinity_offsets: offsets,
             affinity_lights: vec![0],
             delta_subblocks: vec![0u16; PROBES_PER_CELL * DEFAULT_DELTA_PROBE_F16_STRIDE],
+        }
+    }
+
+    fn direct_delta_section_for(
+        affinity_dims: [u32; 3],
+        affinity_lights: Vec<u32>,
+    ) -> DirectShDeltaVolumesSection {
+        let cell_count = (affinity_dims[0] * affinity_dims[1] * affinity_dims[2]) as usize;
+        let mut offsets = vec![0u32; cell_count + 1];
+        for o in offsets.iter_mut().skip(1) {
+            *o = affinity_lights.len() as u32;
+        }
+        DirectShDeltaVolumesSection {
+            affinity_factor: AFFINITY_FACTOR,
+            affinity_dims,
+            tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
+            tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
+            affinity_offsets: offsets,
+            delta_subblocks: vec![
+                0u16;
+                affinity_lights.len()
+                    * PROBES_PER_CELL
+                    * DEFAULT_DELTA_PROBE_F16_STRIDE
+            ],
+            affinity_lights,
         }
     }
 
@@ -1021,6 +1097,82 @@ mod tests {
         let section = delta_section_for(expected_affinity_dims(base_dims, AFFINITY_FACTOR));
         let base = base_octahedral_section(base_dims);
         assert!(validate_delta_sh(&section, Some(&base)).is_ok());
+    }
+
+    #[test]
+    fn validate_direct_sh_delta_accepts_selection_indices() {
+        let base = minimal_direct_sh_volume_section();
+        let section = direct_delta_section_for(
+            expected_affinity_dims(base.grid_dimensions, AFFINITY_FACTOR),
+            vec![0, 1],
+        );
+
+        assert!(validate_direct_sh_delta(&section, &base, 2).is_ok());
+    }
+
+    #[test]
+    fn validate_direct_sh_delta_rejects_alpha_light_indices() {
+        let base = minimal_direct_sh_volume_section();
+        let section = direct_delta_section_for(
+            expected_affinity_dims(base.grid_dimensions, AFFINITY_FACTOR),
+            vec![0, 2],
+        );
+
+        let err = validate_direct_sh_delta(&section, &base, 2).unwrap_err();
+
+        assert!(
+            err.to_string().contains("selection index 2 out of range"),
+            "expected selection-index validation error, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn validate_direct_sh_delta_rejects_missing_selected_light_coverage() {
+        let base = minimal_direct_sh_volume_section();
+        let section = direct_delta_section_for(
+            expected_affinity_dims(base.grid_dimensions, AFFINITY_FACTOR),
+            vec![0],
+        );
+
+        let err = validate_direct_sh_delta(&section, &base, 2).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("missing usable delta entry for selected light index 1"),
+            "expected missing selected-light coverage error, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn validate_entity_shadow_lights_accepts_static_lightmap_point_or_spot() {
+        let lights = convert_alpha_lights(sample_alpha_lights());
+
+        assert!(validate_entity_shadow_light_selection(&[0], &lights).is_ok());
+    }
+
+    #[test]
+    fn validate_entity_shadow_lights_rejects_dynamic_directional_and_sdf_lights() {
+        let mut alpha = sample_alpha_lights();
+        alpha.lights[0].shadow_type = AlphaShadowType::Sdf;
+        let lights = convert_alpha_lights(alpha);
+
+        let sdf = validate_entity_shadow_light_selection(&[0], &lights).unwrap_err();
+        assert!(
+            sdf.to_string().contains("static_light_map"),
+            "expected SDF contributor rejection, got {sdf:?}",
+        );
+
+        let dynamic = validate_entity_shadow_light_selection(&[1], &lights).unwrap_err();
+        assert!(
+            dynamic.to_string().contains("dynamic-tier"),
+            "expected dynamic-tier rejection, got {dynamic:?}",
+        );
+
+        let directional = validate_entity_shadow_light_selection(&[2], &lights).unwrap_err();
+        assert!(
+            directional.to_string().contains("directional"),
+            "expected directional rejection, got {directional:?}",
+        );
     }
 
     #[test]
@@ -1155,6 +1307,9 @@ mod tests {
             animated_light_weight_maps: None,
             delta_sh_volumes: None,
             direct_sh_volume: None,
+            direct_sh_delta_volumes: None,
+            entity_shadow_lights: Vec::new(),
+            shadowmask_atlas: None,
             data_script: None,
             map_entities: Vec::new(),
             fog_volumes: Vec::new(),
@@ -1242,6 +1397,9 @@ mod tests {
             animated_light_weight_maps: None,
             delta_sh_volumes: None,
             direct_sh_volume: None,
+            direct_sh_delta_volumes: None,
+            entity_shadow_lights: Vec::new(),
+            shadowmask_atlas: None,
             data_script: None,
             map_entities: Vec::new(),
             fog_volumes: Vec::new(),
@@ -1283,6 +1441,9 @@ mod tests {
             animated_light_weight_maps: None,
             delta_sh_volumes: None,
             direct_sh_volume: None,
+            direct_sh_delta_volumes: None,
+            entity_shadow_lights: Vec::new(),
+            shadowmask_atlas: None,
             data_script: None,
             map_entities: Vec::new(),
             fog_volumes: Vec::new(),
@@ -1451,6 +1612,22 @@ mod tests {
         write_prl_fixture_raw(sections, name)
     }
 
+    fn geometry_blob(section: GeometrySection) -> prl_format::SectionBlob {
+        prl_format::SectionBlob {
+            section_id: SectionId::Geometry as u32,
+            version: 1,
+            data: section.to_bytes(),
+        }
+    }
+
+    fn bvh_blob(section: BvhSection) -> prl_format::SectionBlob {
+        prl_format::SectionBlob {
+            section_id: SectionId::Bvh as u32,
+            version: 1,
+            data: section.to_bytes(),
+        }
+    }
+
     fn default_cells_blob() -> prl_format::SectionBlob {
         let section = CellsSection {
             cells: vec![
@@ -1534,6 +1711,91 @@ mod tests {
         };
         prl_format::SectionBlob {
             section_id: SectionId::OctahedralShVolume as u32,
+            version: 1,
+            data: section.to_bytes(),
+        }
+    }
+
+    fn minimal_direct_sh_volume_section() -> DirectShVolumeSection {
+        use postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H;
+        use postretro_level_format::octahedral::irradiance_atlas_dimensions;
+        use postretro_level_format::octahedral::irradiance_atlas_tiles_per_row;
+
+        let grid = [1, 1, 1];
+        let tile_dimension = DEFAULT_IRRADIANCE_TILE_DIMENSION;
+        let atlas_dimensions = irradiance_atlas_dimensions(grid, tile_dimension);
+        let atlas_tiles_per_row = irradiance_atlas_tiles_per_row(grid).unwrap();
+        let padded_w = atlas_dimensions[0].div_ceil(4) * 4;
+        let padded_h = atlas_dimensions[1].div_ceil(4) * 4;
+        let atlas_len = (padded_w / 4 * padded_h / 4) as usize * 16;
+
+        DirectShVolumeSection {
+            grid_origin: [0.0; 3],
+            cell_size: [1.0; 3],
+            grid_dimensions: grid,
+            tile_dimension,
+            tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
+            atlas_dimensions,
+            atlas_tiles_per_row,
+            irradiance_format: IRRADIANCE_FORMAT_BC6H,
+            atlas: vec![0; atlas_len],
+        }
+    }
+
+    fn direct_sh_volume_blob(section: DirectShVolumeSection) -> prl_format::SectionBlob {
+        prl_format::SectionBlob {
+            section_id: SectionId::DirectShVolume as u32,
+            version: 1,
+            data: section.to_bytes(),
+        }
+    }
+
+    fn entity_shadow_lights_blob(indices: Vec<u32>) -> prl_format::SectionBlob {
+        let section = postretro_level_format::entity_shadow_lights::EntityShadowLightsSection {
+            light_indices: indices,
+        };
+        prl_format::SectionBlob {
+            section_id: SectionId::EntityShadowLights as u32,
+            version: 1,
+            data: section.to_bytes(),
+        }
+    }
+
+    fn lightmap_blob(width: u32, height: u32, layer_count: u32) -> prl_format::SectionBlob {
+        let texels = (width * height * layer_count) as usize;
+        let section = postretro_level_format::lightmap::LightmapSection {
+            layer_count,
+            irr_width: width,
+            irr_height: height,
+            irr_texel_density: 0.04,
+            irradiance: vec![0; texels * postretro_level_format::lightmap::IRRADIANCE_TEXEL_BYTES],
+            irradiance_format: postretro_level_format::lightmap::IRRADIANCE_FORMAT_RGBA16F,
+            dir_width: width,
+            dir_height: height,
+            dir_texel_density: 0.04,
+            direction: vec![255; texels * postretro_level_format::lightmap::DIRECTION_TEXEL_BYTES],
+            mode: postretro_level_format::lightmap::LightmapMode::Shadowed,
+        };
+        prl_format::SectionBlob {
+            section_id: SectionId::Lightmap as u32,
+            version: 1,
+            data: section.to_bytes(),
+        }
+    }
+
+    fn shadowmask_blob(
+        section: postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection,
+    ) -> prl_format::SectionBlob {
+        prl_format::SectionBlob {
+            section_id: SectionId::ShadowmaskAtlas as u32,
+            version: 1,
+            data: section.to_bytes(),
+        }
+    }
+
+    fn direct_sh_delta_blob(section: DirectShDeltaVolumesSection) -> prl_format::SectionBlob {
+        prl_format::SectionBlob {
+            section_id: SectionId::DirectShDeltaVolumes as u32,
             version: 1,
             data: section.to_bytes(),
         }
@@ -4203,6 +4465,387 @@ mod tests {
         assert_eq!(parsed.atlas_dimensions, atlas_dimensions);
         assert_eq!(parsed.irradiance_format, IRRADIANCE_FORMAT_BC6H);
         assert_eq!(parsed.atlas.len(), block_count * 16);
+
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_parses_entity_shadow_lights_when_direct_sh_is_present() {
+        let geom = sample_geometry();
+        let bvh = sample_bvh_section();
+        let direct_sh = minimal_direct_sh_volume_section();
+        let direct_sh_delta = direct_delta_section_for(
+            expected_affinity_dims(direct_sh.grid_dimensions, AFFINITY_FACTOR),
+            vec![0],
+        );
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: geom.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: bvh.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::AlphaLights as u32,
+                version: 1,
+                data: sample_alpha_lights().to_bytes(),
+            },
+            direct_sh_volume_blob(direct_sh),
+            entity_shadow_lights_blob(vec![0]),
+            direct_sh_delta_blob(direct_sh_delta),
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+
+        let tmp = write_prl_fixture(sections, "postretro_test_entity_shadow_lights.prl");
+        let world = load_prl(tmp.to_str().unwrap())
+            .expect("PRL with DirectShVolume and EntityShadowLights must load");
+
+        assert_eq!(world.entity_shadow_lights, vec![0]);
+        assert!(world.direct_sh_delta_volumes.is_some());
+        assert!(
+            world.shadowmask_atlas.is_none(),
+            "missing ShadowmaskAtlas must not clear EntityShadowLights or direct SH deltas"
+        );
+
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_exposes_shadowmask_atlas_multi_layer_payload() {
+        let shadowmask = postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection {
+            width: 2,
+            height: 1,
+            layer_count: 2,
+            channels: vec![0],
+            data: vec![255, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+        };
+        let direct_sh = minimal_direct_sh_volume_section();
+        let direct_sh_delta = direct_delta_section_for(
+            expected_affinity_dims(direct_sh.grid_dimensions, AFFINITY_FACTOR),
+            vec![0],
+        );
+        let sections = vec![
+            geometry_blob(sample_geometry()),
+            bvh_blob(sample_bvh_section()),
+            prl_format::SectionBlob {
+                section_id: SectionId::AlphaLights as u32,
+                version: 1,
+                data: sample_alpha_lights().to_bytes(),
+            },
+            direct_sh_volume_blob(direct_sh),
+            entity_shadow_lights_blob(vec![0]),
+            direct_sh_delta_blob(direct_sh_delta),
+            lightmap_blob(2, 1, 2),
+            shadowmask_blob(shadowmask.clone()),
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+
+        let tmp = write_prl_fixture(sections, "postretro_test_shadowmask_atlas.prl");
+        let world = load_prl(tmp.to_str().unwrap()).expect("PRL with ShadowmaskAtlas must load");
+        let loaded = world
+            .shadowmask_atlas
+            .expect("ShadowmaskAtlas section must be exposed");
+
+        assert_eq!(loaded.layer_count, 2);
+        assert_eq!(loaded.channels, shadowmask.channels);
+        assert_eq!(loaded.data, shadowmask.data);
+
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_degrades_malformed_entity_shadow_lights_to_empty() {
+        // A malformed EntityShadowLights section (non-ascending indices) must warn
+        // and degrade to empty — not brick the whole level load — mirroring the
+        // sibling DirectShDeltaVolumes degradation path.
+        let geom = sample_geometry();
+        let bvh = sample_bvh_section();
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: geom.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: bvh.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::AlphaLights as u32,
+                version: 1,
+                data: sample_alpha_lights().to_bytes(),
+            },
+            direct_sh_volume_blob(minimal_direct_sh_volume_section()),
+            entity_shadow_lights_blob(vec![2, 1]),
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+
+        let tmp = write_prl_fixture(
+            sections,
+            "postretro_test_entity_shadow_lights_malformed.prl",
+        );
+        let world = load_prl(tmp.to_str().unwrap())
+            .expect("malformed EntityShadowLights must degrade to empty, not fail load");
+
+        assert!(world.entity_shadow_lights.is_empty());
+
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_degrades_invalid_entity_shadow_light_selection_to_empty() {
+        // A structurally valid section that selects an ineligible light (index 1
+        // is dynamic-tier in `sample_alpha_lights`) must warn and degrade to
+        // empty, not fail the whole load.
+        let geom = sample_geometry();
+        let bvh = sample_bvh_section();
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: geom.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: bvh.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::AlphaLights as u32,
+                version: 1,
+                data: sample_alpha_lights().to_bytes(),
+            },
+            direct_sh_volume_blob(minimal_direct_sh_volume_section()),
+            entity_shadow_lights_blob(vec![1]),
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+
+        let tmp = write_prl_fixture(
+            sections,
+            "postretro_test_entity_shadow_lights_invalid_selection.prl",
+        );
+        let world = load_prl(tmp.to_str().unwrap())
+            .expect("invalid EntityShadowLights selection must degrade to empty, not fail load");
+
+        assert!(world.entity_shadow_lights.is_empty());
+
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_clears_entity_shadow_lights_without_direct_sh_deltas() {
+        let geom = sample_geometry();
+        let bvh = sample_bvh_section();
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: geom.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: bvh.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::AlphaLights as u32,
+                version: 1,
+                data: sample_alpha_lights().to_bytes(),
+            },
+            direct_sh_volume_blob(minimal_direct_sh_volume_section()),
+            entity_shadow_lights_blob(vec![0]),
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+
+        let tmp = write_prl_fixture(sections, "postretro_test_entity_shadow_lights_no_delta.prl");
+        let world = load_prl(tmp.to_str().unwrap())
+            .expect("EntityShadowLights without DirectShDeltaVolumes must degrade to empty");
+
+        assert!(world.entity_shadow_lights.is_empty());
+        assert!(world.direct_sh_delta_volumes.is_none());
+
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_ignores_direct_sh_deltas_without_entity_shadow_lights() {
+        let geom = sample_geometry();
+        let bvh = sample_bvh_section();
+        let direct_sh = minimal_direct_sh_volume_section();
+        let direct_sh_delta = direct_delta_section_for(
+            expected_affinity_dims(direct_sh.grid_dimensions, AFFINITY_FACTOR),
+            Vec::new(),
+        );
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: geom.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: bvh.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::AlphaLights as u32,
+                version: 1,
+                data: sample_alpha_lights().to_bytes(),
+            },
+            direct_sh_volume_blob(direct_sh),
+            direct_sh_delta_blob(direct_sh_delta),
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+
+        let tmp = write_prl_fixture(
+            sections,
+            "postretro_test_direct_sh_deltas_no_entity_shadow_lights.prl",
+        );
+        let world = load_prl(tmp.to_str().unwrap())
+            .expect("DirectShDeltaVolumes without EntityShadowLights must load as no promotion");
+
+        assert!(world.entity_shadow_lights.is_empty());
+        assert!(world.direct_sh_delta_volumes.is_none());
+
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_clears_entity_shadow_lights_when_direct_sh_deltas_are_unusable() {
+        let geom = sample_geometry();
+        let bvh = sample_bvh_section();
+        let direct_sh = minimal_direct_sh_volume_section();
+        let direct_sh_delta = direct_delta_section_for(
+            expected_affinity_dims(direct_sh.grid_dimensions, AFFINITY_FACTOR),
+            vec![1],
+        );
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: geom.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: bvh.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::AlphaLights as u32,
+                version: 1,
+                data: sample_alpha_lights().to_bytes(),
+            },
+            direct_sh_volume_blob(direct_sh),
+            entity_shadow_lights_blob(vec![0]),
+            direct_sh_delta_blob(direct_sh_delta),
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+
+        let tmp = write_prl_fixture(
+            sections,
+            "postretro_test_entity_shadow_lights_bad_delta.prl",
+        );
+        let world = load_prl(tmp.to_str().unwrap())
+            .expect("unusable DirectShDeltaVolumes must degrade to no promotion");
+
+        assert!(world.entity_shadow_lights.is_empty());
+        assert!(world.direct_sh_delta_volumes.is_none());
+
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_clears_entity_shadow_lights_when_direct_sh_deltas_are_partial() {
+        let geom = sample_geometry();
+        let bvh = sample_bvh_section();
+        let direct_sh = minimal_direct_sh_volume_section();
+        let direct_sh_delta = direct_delta_section_for(
+            expected_affinity_dims(direct_sh.grid_dimensions, AFFINITY_FACTOR),
+            vec![0],
+        );
+        let mut alpha_lights = sample_alpha_lights();
+        alpha_lights.lights[1].is_dynamic = false;
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: geom.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: bvh.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::AlphaLights as u32,
+                version: 1,
+                data: alpha_lights.to_bytes(),
+            },
+            direct_sh_volume_blob(direct_sh),
+            entity_shadow_lights_blob(vec![0, 1]),
+            direct_sh_delta_blob(direct_sh_delta),
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+
+        let tmp = write_prl_fixture(
+            sections,
+            "postretro_test_entity_shadow_lights_partial_delta.prl",
+        );
+        let world = load_prl(tmp.to_str().unwrap())
+            .expect("partial DirectShDeltaVolumes must degrade to no promotion");
+
+        assert!(world.entity_shadow_lights.is_empty());
+        assert!(world.direct_sh_delta_volumes.is_none());
+
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_ignores_entity_shadow_lights_without_direct_sh() {
+        let geom = sample_geometry();
+        let bvh = sample_bvh_section();
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: geom.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: bvh.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::AlphaLights as u32,
+                version: 1,
+                data: sample_alpha_lights().to_bytes(),
+            },
+            entity_shadow_lights_blob(vec![0, 2]),
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+
+        let tmp = write_prl_fixture(
+            sections,
+            "postretro_test_entity_shadow_lights_no_direct.prl",
+        );
+        let world = load_prl(tmp.to_str().unwrap())
+            .expect("EntityShadowLights without DirectShVolume must degrade to empty");
+
+        assert!(world.entity_shadow_lights.is_empty());
 
         std::fs::remove_file(&tmp).ok();
     }

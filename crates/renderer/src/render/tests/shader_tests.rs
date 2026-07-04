@@ -149,6 +149,121 @@ fn forward_wgsl_struct_strides_match_cpu_layout() {
     );
 }
 
+#[test]
+fn count_split_shader_consumers_use_expected_loop_bounds() {
+    let forward_src = include_str!("../../shaders/forward.wgsl");
+    assert!(
+        forward_src.contains("let light_count = select(0u, uniforms.light_count, use_dynamic);"),
+        "forward world lighting must stay bounded by dynamic-only uniforms.light_count",
+    );
+    assert!(
+        !forward_src.contains("uniforms.total_light_count, use_dynamic"),
+        "forward world lighting must not evaluate promoted static records",
+    );
+
+    let billboard_src = include_str!("../../shaders/billboard.wgsl");
+    assert!(
+        billboard_src.contains("let light_count = uniforms.total_light_count;"),
+        "billboards must evaluate dynamic plus promoted static records",
+    );
+
+    let mesh_src = include_str!("../../shaders/skinned_mesh.wgsl");
+    assert!(
+        mesh_src.contains("select(0u, mesh_light_params.light_count, use_dynamic)"),
+        "mesh lighting must use the renderer-provided total light count",
+    );
+}
+
+#[test]
+fn forward_shader_shadowmask_union_uses_promoted_count_and_safe_metadata_tail() {
+    let src = include_str!("../../shaders/forward.wgsl");
+    let start = src
+        .find("fn shadowmask_union_subtraction(")
+        .expect("forward shader must declare the shadowmask union helper");
+    let helper = &src[start
+        ..src
+            .find("@fragment")
+            .expect("fragment entry follows helpers")];
+
+    assert!(
+        helper.contains("if uniforms.total_light_count <= uniforms.light_count"),
+        "no promoted lights must return before reading promoted metadata"
+    );
+    assert!(
+        helper.contains("let promoted_count = uniforms.total_light_count - uniforms.light_count;"),
+        "shadowmask loop must be bounded by promoted count"
+    );
+    assert!(
+        helper.contains("let influence_index = uniforms.light_count + p;"),
+        "influence-volume early-out must read the promoted influence before metadata"
+    );
+    assert!(
+        helper.contains(
+            "let meta_index = uniforms.total_light_count + p * SHADOWMASK_META_VEC4S_PER_RECORD;"
+        ),
+        "metadata must live after the dynamic+promoted influence prefix"
+    );
+    assert!(
+        helper.contains("if meta_index + 1u >= influence_len"),
+        "metadata reads must be bounds-guarded so stale tails are not read"
+    );
+    assert!(
+        helper.contains("channel == SHADOWMASK_CHANNEL_DROPPED"),
+        "dropped 0xFF channels must skip the union term"
+    );
+    assert!(
+        helper.contains("let spec_idx = meta0_bits.z;"),
+        "shader must consume the CPU-uploaded compact spec_lights index"
+    );
+    assert!(
+        helper.contains("let weight = clamp(meta0.w, 0.0, 1.0);"),
+        "shader must use raw promoted-set w from metadata, not GpuLight color"
+    );
+}
+
+#[test]
+fn forward_shader_shadowmask_visualization_mode_is_wired() {
+    let src = include_str!("../../shaders/forward.wgsl");
+    assert!(
+        src.contains("@group(4) @binding(6) var shadowmask_atlas: texture_2d_array<f32>;"),
+        "shadowmask atlas must be one sampled texture in the lightmap group"
+    );
+    assert!(
+        src.contains("uniforms.sdf_shadow_mode == SHADOWMASK_VISUALIZE_MODE"),
+        "mode 5 must visualize the union subtraction magnitude"
+    );
+    assert!(
+        src.contains("return vec4<f32>(shadowmask_union, base_color.a);"),
+        "visualization mode should show the union term directly"
+    );
+}
+
+#[test]
+fn direct_sh_compose_debug_override_isolates_single_selection() {
+    let src = include_str!("../../shaders/direct_sh_compose.wgsl");
+    let selection_weight_start = src
+        .find("fn selection_weight(")
+        .expect("direct_sh_compose.wgsl should declare selection_weight");
+    let selection_weight = &src[selection_weight_start..];
+    let live_weights_start = selection_weight
+        .find("if (selection_index >= arrayLength(&selection_weights))")
+        .expect("selection_weight should keep the live weights bounds check");
+    let debug_branch = &selection_weight[..live_weights_start];
+
+    assert!(
+        debug_branch.contains("if (debug_override.enabled != 0u)"),
+        "debug override should take over selection weighting when enabled",
+    );
+    assert!(
+        debug_branch.contains("selection_index == debug_override.selection_index"),
+        "debug override should apply the slider only to the selected light",
+    );
+    assert!(
+        debug_branch.contains("return 0.0;"),
+        "debug override must suppress all other selected lights",
+    );
+}
+
 /// Task 5 (sdf-static-occluder-shadows): the forward shader must parse
 /// cleanly with the new SDF shadow-factor bindings (`sdf_shadow_factor` and
 /// `sdf_shadow_depth` on group 5 bindings 3 and 4) and must declare the

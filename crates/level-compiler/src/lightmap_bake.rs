@@ -1291,9 +1291,35 @@ pub(crate) fn light_texel_contribution(
     area_sample_count: u32,
     trace: impl Fn(Vec3, Vec3) -> bool,
 ) -> (Vec3, Vec3) {
+    let (irr, weighted_dir, _) = light_texel_contribution_and_visibility(
+        light,
+        world_p,
+        surface_normal,
+        seed,
+        area_sample_count,
+        trace,
+    );
+    (irr, weighted_dir)
+}
+
+/// Single-light texel bake plus the raw soft visibility used by ShadowmaskAtlas.
+///
+/// The returned visibility is `None` when the light has no direct term at this
+/// texel (out of range, backfacing, outside spot cone, etc.). Otherwise it is
+/// exactly the raw `soft_visibility` value that the irradiance path multiplies
+/// into the unshadowed direct term, including `Some(0.0)` for fully occluded
+/// but otherwise contributing texels.
+pub(crate) fn light_texel_contribution_and_visibility(
+    light: &MapLight,
+    world_p: Vec3,
+    surface_normal: Vec3,
+    seed: u64,
+    area_sample_count: u32,
+    trace: impl Fn(Vec3, Vec3) -> bool,
+) -> (Vec3, Vec3, Option<f32>) {
     let (contribution, to_light) = light_contribution_and_direction(light, world_p, surface_normal);
     if contribution.length_squared() <= 1.0e-12 {
-        return (Vec3::ZERO, Vec3::ZERO);
+        return (Vec3::ZERO, Vec3::ZERO, None);
     }
     // Lightmaps always bake shadowed: an occluded texel goes dark so a
     // `static_light_map` light's static shadow lives in the atlas.
@@ -1310,7 +1336,7 @@ pub(crate) fn light_texel_contribution(
         trace,
     );
     if v <= 0.0 {
-        return (Vec3::ZERO, Vec3::ZERO);
+        return (Vec3::ZERO, Vec3::ZERO, Some(0.0));
     }
     let irr = contribution * v;
     // Weight the dominant-direction accumulation by `v` too: in a penumbra a
@@ -1318,7 +1344,7 @@ pub(crate) fn light_texel_contribution(
     // fully-visible one, matching the softened irradiance it contributes.
     let lum = (contribution.x + contribution.y + contribution.z) * v;
     let weighted_dir = to_light * lum;
-    (irr, weighted_dir)
+    (irr, weighted_dir, Some(v))
 }
 
 fn falloff(light: &MapLight, distance: f32) -> f32 {

@@ -9,7 +9,7 @@ use crate::bvh_build::BvhPrimitive;
 use crate::chart_raster::{ChartPlacement, chart_interior_dims, chart_texel_world_position};
 use crate::geometry::GeometryResult;
 use crate::lightmap_bake::{
-    Chart, CompositedAtlas, light_texel_contribution, segment_clear, texel_seed,
+    Chart, CompositedAtlas, light_texel_contribution_and_visibility, segment_clear, texel_seed,
 };
 use crate::map_data::{LightType, MapLight};
 use glam::DVec3;
@@ -19,7 +19,7 @@ use glam::DVec3;
 /// invalidates all cached layers and forces a re-bake. Each cached stage owns
 /// its own version constant and bumps independently — the layer codec evolves
 /// separately from the per-group SH and animated-weight-map stages.
-pub const LAYER_FORMAT_VERSION: u32 = 3;
+pub const LAYER_FORMAT_VERSION: u32 = 4;
 
 /// Bump when the composite/dilate/`encode_section` pipeline or
 /// `LightmapSection::to_bytes` serialization changes. Folded into the
@@ -65,11 +65,15 @@ pub struct LayerTexel {
     pub weighted_dir: [f32; 3],
     /// Surface-normal fallback for the degenerate-direction branch.
     pub fallback_normal: [f32; 3],
+    /// Raw soft visibility for this light at this texel, or -1.0 when the light
+    /// has no direct term here. This feeds the shadowmask bake and is not folded
+    /// into Lightmap section output except through `irradiance`/`weighted_dir`.
+    pub raw_visibility: f32,
 }
 
 // Pins the fixed codec stride: `to_bytes`/`from_bytes` cast the blob directly
 // via bytemuck; any field change that shifts the stride breaks the on-disk format.
-const _: () = assert!(std::mem::size_of::<LayerTexel>() == 44);
+const _: () = assert!(std::mem::size_of::<LayerTexel>() == 48);
 
 /// One light's contribution across the shared atlas.
 ///
@@ -239,7 +243,7 @@ pub fn bake_light_layer(
                 let surface_normal = chart.normal;
                 let seed = texel_seed(atlas_x as u32, atlas_y as u32);
 
-                let (irr, weighted_dir) = light_texel_contribution(
+                let (irr, weighted_dir, raw_visibility) = light_texel_contribution_and_visibility(
                     light,
                     world_p,
                     surface_normal,
@@ -254,6 +258,7 @@ pub fn bake_light_layer(
                     irradiance: irr.to_array(),
                     weighted_dir: weighted_dir.to_array(),
                     fallback_normal: surface_normal.to_array(),
+                    raw_visibility: raw_visibility.unwrap_or(-1.0),
                 });
             }
         }
@@ -767,6 +772,7 @@ mod tests {
                 irradiance: [0.4, 0.1, 0.2],
                 weighted_dir: [0.0, 1.0, 0.5],
                 fallback_normal: [0.0, 1.0, 0.0],
+                raw_visibility: 1.0,
             },
             LayerTexel {
                 idx: mk_idx(5, 4),
@@ -774,6 +780,7 @@ mod tests {
                 irradiance: [0.0, 0.0, 0.0], // covered-but-dark on layer 1
                 weighted_dir: [0.0, 0.0, 0.0], // → fallback-normal branch
                 fallback_normal: [1.0, 0.0, 0.0],
+                raw_visibility: 0.0,
             },
         ];
         // Light B: overlaps A's layer-0 texel (sum + direction accumulate) and
@@ -785,6 +792,7 @@ mod tests {
                 irradiance: [0.3, 0.2, 0.0],
                 weighted_dir: [1.0, 0.0, 0.0],
                 fallback_normal: [0.0, 1.0, 0.0],
+                raw_visibility: 1.0,
             },
             LayerTexel {
                 idx: mk_idx(5, 4),
@@ -792,6 +800,7 @@ mod tests {
                 irradiance: [0.6, 0.5, 0.4],
                 weighted_dir: [0.0, 0.0, 1.0],
                 fallback_normal: [1.0, 0.0, 0.0],
+                raw_visibility: 0.5,
             },
         ];
 

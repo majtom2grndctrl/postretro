@@ -46,7 +46,7 @@ pub(crate) fn request_renderer_device(
     // every targeted backend reports far higher (Metal/AMD = 128) — the
     // adapter pre-check below confirms the granted maximum still covers it.
     //
-    // Derived (14 when CUBE_ARRAY is supported, 13 without) from the actual
+    // Derived (15 when CUBE_ARRAY is supported, 14 without) from the actual
     // BGLs that compose the forward pipeline layout, so it can never drift from
     // the real binding count:
     //   Group 1 — material (3): diffuse, specular, normal
@@ -55,8 +55,9 @@ pub(crate) fn request_renderer_device(
     //                              the VERTEX stage; entry is VERTEX | FRAGMENT so it
     //                              counts against the fragment budget; forward/fog
     //                              carry the entry but never sample it)
-    //   Group 4 — lightmap (4): static irradiance, static dominant-direction,
-    //                           animated-contribution atlas, animated dominant-direction
+    //   Group 4 — lightmap (5): static irradiance, static dominant-direction,
+    //                           animated-contribution atlas, animated dominant-direction,
+    //                           shadowmask atlas
     //   Group 5 — shadow (4 with CUBE_ARRAY, else 3): spot-shadow depth array (binding 0),
     //                           SDF shadow factor (binding 3), scene depth (binding 4),
     //                           point-light cube-array depth (binding 5; present only when
@@ -284,12 +285,16 @@ pub(crate) fn build_lighting_bind_group(
     dynamic_influences: &[LightInfluence],
     geometry: Option<&LevelGeometry>,
 ) -> LightingResources {
+    let promoted_capacity = geometry
+        .map(|g| g.entity_shadow_lights.len())
+        .unwrap_or_default();
+    let light_record_capacity = (level_lights.len() + promoted_capacity).max(1);
     // wgpu rejects zero-size storage buffers — pad to one dummy; light_count stays 0.
-    let lights_data = if !level_lights.is_empty() {
-        pack_lights(level_lights)
-    } else {
-        vec![0u8; GPU_LIGHT_SIZE]
-    };
+    let mut lights_data = Vec::with_capacity(light_record_capacity * GPU_LIGHT_SIZE);
+    if !level_lights.is_empty() {
+        lights_data.extend_from_slice(&pack_lights(level_lights));
+    }
+    lights_data.resize(light_record_capacity * GPU_LIGHT_SIZE, 0);
     let lights_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Direct Lights Storage Buffer"),
         contents: &lights_data,
@@ -297,11 +302,15 @@ pub(crate) fn build_lighting_bind_group(
     });
 
     // Influence volume buffer — same dummy strategy as lights.
-    let influence_data = if !dynamic_influences.is_empty() {
-        influence::pack_influence(dynamic_influences)
-    } else {
-        vec![0u8; 16]
-    };
+    let influence_record_capacity = shadowmask::influence_capacity_with_shadowmask_metadata(
+        level_lights.len(),
+        promoted_capacity,
+    );
+    let mut influence_data = Vec::with_capacity(influence_record_capacity * 16);
+    if !dynamic_influences.is_empty() {
+        influence::pack_influence_into(&mut influence_data, dynamic_influences);
+    }
+    influence_data.resize(influence_record_capacity * 16, 0);
     let influence_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Light Influence Storage Buffer"),
         contents: &influence_data,
@@ -544,6 +553,8 @@ pub(crate) fn build_frame_timing(
         pass_labels[TIMING_PAIR_SDF_SHADOW] = "sdf_shadow";
         pass_labels[TIMING_PAIR_FORWARD] = "forward";
         pass_labels[TIMING_PAIR_SH_COMPOSE] = "sh_compose";
+        pass_labels[TIMING_PAIR_DIRECT_SH_COMPOSE] = "direct_sh_compose";
+        pass_labels[TIMING_PAIR_PROMOTED_DEPTH_CACHE] = "promoted_depth_cache_upper";
         pass_labels[TIMING_PAIR_SMOKE] = "smoke";
         Some(FrameTiming::new(device, queue, pass_labels))
     } else {
@@ -561,6 +572,7 @@ pub(crate) fn build_initial_uniform_data(
         camera_position: Vec3::ZERO,
         ambient_floor,
         light_count,
+        total_light_count: light_count,
         time: 0.0,
         lighting_isolation: LightingIsolation::Normal,
         indirect_scale: DEFAULT_INDIRECT_SCALE,

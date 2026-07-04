@@ -4,6 +4,7 @@
 use glam::{Mat4, Vec3};
 
 pub const UNIFORM_SIZE: usize = 128;
+pub const TOTAL_LIGHT_COUNT_OFFSET: u64 = 120;
 
 /// Bit 0 of `Uniforms.sdf_shadow_flags` — an SDF atlas is loaded, so the
 /// half-res factor target holds valid per-light visibility slices and the
@@ -43,12 +44,15 @@ pub enum SdfShadowMode {
     // is sane at edges/corners vs garbage. Diagnostic only — remove with the
     // rest of the `// TEMP DEBUG:` markers.
     VisualizeNormals = 4,
+    // Visualizes the static-light shadowmask world-receipt union subtraction
+    // magnitude. Normal mode still applies the production subtraction.
+    ShadowmaskUnion = 5,
 }
 
 impl SdfShadowMode {
     /// All variants in display order. Used by the debug UI dropdown.
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
-    pub const ALL_VARIANTS: [SdfShadowMode; 5] = [
+    pub const ALL_VARIANTS: [SdfShadowMode; 6] = [
         SdfShadowMode::On,
         SdfShadowMode::Off,
         SdfShadowMode::Visualize,
@@ -56,6 +60,7 @@ impl SdfShadowMode {
         SdfShadowMode::VisualizeDebugPaths,
         // TEMP DEBUG: SDF shadow path visualization.
         SdfShadowMode::VisualizeNormals,
+        SdfShadowMode::ShadowmaskUnion,
     ];
 
     #[allow(dead_code)]
@@ -68,6 +73,7 @@ impl SdfShadowMode {
             SdfShadowMode::VisualizeDebugPaths => "Visualize: debug paths",
             // TEMP DEBUG: SDF shadow path visualization.
             SdfShadowMode::VisualizeNormals => "Visualize: normals",
+            SdfShadowMode::ShadowmaskUnion => "Visualize: shadowmask union",
         }
     }
 }
@@ -223,6 +229,11 @@ pub struct FrameUniforms {
     /// shaders skip the direct sample (direct = 0), falling back to
     /// indirect-only. Owned here (and mirrored in the mesh uniform).
     pub has_direct: bool,
+    /// Runtime direct-light records available to dynamic entity consumers.
+    /// `light_count` remains the dynamic-tier count for the forward world path;
+    /// this total additionally includes promoted static lights appended after
+    /// the dynamic records.
+    pub total_light_count: u32,
 }
 
 pub fn build_uniform_data(u: &FrameUniforms) -> [u8; UNIFORM_SIZE] {
@@ -251,7 +262,9 @@ pub fn build_uniform_data(u: &FrameUniforms) -> [u8; UNIFORM_SIZE] {
     bytes[112..116].copy_from_slice(&dyn_iso.to_ne_bytes());
     let has_direct: u32 = u.has_direct as u32;
     bytes[116..120].copy_from_slice(&has_direct.to_ne_bytes());
-    // 120..128 stays zero — explicit pad rounding the tail row to 16 bytes.
+    let total_off = TOTAL_LIGHT_COUNT_OFFSET as usize;
+    bytes[total_off..total_off + 4].copy_from_slice(&u.total_light_count.to_ne_bytes());
+    // 124..128 stays zero — explicit pad rounding the tail row to 16 bytes.
     bytes
 }
 
@@ -276,6 +289,7 @@ mod tests {
             dynamic_direct_scale: 1.0,
             dynamic_direct_isolation: DynamicDirectIsolation::Combined,
             has_direct: false,
+            total_light_count: 0,
         });
         assert_eq!(data.len(), UNIFORM_SIZE);
     }
@@ -296,6 +310,7 @@ mod tests {
             dynamic_direct_scale: 0.0,
             dynamic_direct_isolation: DynamicDirectIsolation::Combined,
             has_direct: false,
+            total_light_count: 0,
         });
         let flags = u32::from_ne_bytes(data[96..100].try_into().unwrap());
         assert_eq!(flags, SDF_SHADOW_FLAG_ATLAS_PRESENT);
@@ -323,6 +338,7 @@ mod tests {
                 dynamic_direct_scale: 0.0,
                 dynamic_direct_isolation: DynamicDirectIsolation::Combined,
                 has_direct: false,
+                total_light_count: 0,
             });
             assert_eq!(
                 u32::from_ne_bytes(data[104..108].try_into().unwrap()),
@@ -349,6 +365,7 @@ mod tests {
                 dynamic_direct_scale: 0.0,
                 dynamic_direct_isolation: DynamicDirectIsolation::Combined,
                 has_direct: false,
+                total_light_count: 0,
             });
             let decoded = u32::from_ne_bytes(data[100..104].try_into().unwrap());
             assert_eq!(decoded, mode as u32);
@@ -372,6 +389,7 @@ mod tests {
             dynamic_direct_scale: 0.25,
             dynamic_direct_isolation: DynamicDirectIsolation::IndirectOnly,
             has_direct: true,
+            total_light_count: 11,
         });
         let scale = f32::from_ne_bytes(data[108..112].try_into().unwrap());
         assert!((scale - 0.25).abs() < 1e-6);
@@ -380,7 +398,8 @@ mod tests {
             DynamicDirectIsolation::IndirectOnly as u32,
         );
         assert_eq!(u32::from_ne_bytes(data[116..120].try_into().unwrap()), 1);
-        assert!(data[120..128].iter().all(|&b| b == 0));
+        assert_eq!(u32::from_ne_bytes(data[120..124].try_into().unwrap()), 11);
+        assert!(data[124..128].iter().all(|&b| b == 0));
     }
 
     #[test]
@@ -403,6 +422,7 @@ mod tests {
             dynamic_direct_scale: 1.0,
             dynamic_direct_isolation: DynamicDirectIsolation::Combined,
             has_direct: false,
+            total_light_count: light_count,
         });
 
         let mut floats = Vec::new();
@@ -448,6 +468,7 @@ mod tests {
             dynamic_direct_scale: 1.0,
             dynamic_direct_isolation: DynamicDirectIsolation::Combined,
             has_direct: false,
+            total_light_count: 0,
         });
         let t = f32::from_ne_bytes(data[84..88].try_into().unwrap());
         assert!((t - script_time).abs() < 1e-6);

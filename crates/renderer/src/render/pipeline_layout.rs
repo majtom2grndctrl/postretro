@@ -134,8 +134,10 @@ pub(crate) const TIMING_PAIR_DEPTH_PREPASS: usize = 2;
 pub(crate) const TIMING_PAIR_SDF_SHADOW: usize = 3;
 pub(crate) const TIMING_PAIR_FORWARD: usize = 4;
 pub(crate) const TIMING_PAIR_SH_COMPOSE: usize = 5;
-pub(crate) const TIMING_PAIR_SMOKE: usize = 6;
-pub(crate) const TIMING_PAIR_COUNT: usize = 7;
+pub(crate) const TIMING_PAIR_DIRECT_SH_COMPOSE: usize = 6;
+pub(crate) const TIMING_PAIR_PROMOTED_DEPTH_CACHE: usize = 7;
+pub(crate) const TIMING_PAIR_SMOKE: usize = 8;
+pub(crate) const TIMING_PAIR_COUNT: usize = 9;
 
 // Must match `Uniforms` in forward.wgsl and wireframe.wgsl (both bind the same buffer).
 // std140: vec3<f32> aligns to 16 bytes; camera_position and ambient_floor share a slot.
@@ -143,7 +145,8 @@ pub(crate) const TIMING_PAIR_COUNT: usize = 7;
 //   80..84   light_count  84..88  time  88..92   lighting_isolation  92..96  indirect_scale
 //   96..100  sdf_shadow_flags  100..104 sdf_shadow_mode
 //   104..108 sdf_force_visibility_one  108..112 dynamic_direct_scale
-//   112..116 dynamic_direct_isolation  116..120 has_direct  120..128 _pad
+//   112..116 dynamic_direct_isolation  116..120 has_direct
+//   120..124 total_light_count  124..128 _pad
 // `sdf_shadow_flags` gates whether the forward samples the half-res SDF
 // visibility target at all:
 //   bit 0 = a baked SDF atlas is loaded, so the four RGBA channels hold valid
@@ -155,7 +158,8 @@ pub(crate) const TIMING_PAIR_COUNT: usize = 7;
 // is the dev "force visibility to 1.0" toggle for the no-double-count A/B.
 // The dynamic-direct tail (Task 6 of baked-static-direct-sh): repurposes the
 // old `_sdf_pad1` slot (108..112) for `dynamic_direct_scale`, then a fresh
-// 16-byte row carries `dynamic_direct_isolation` + `has_direct` + padding.
+// 16-byte row carries `dynamic_direct_isolation` + `has_direct` +
+// `total_light_count` + padding.
 // Only billboard.wgsl reads these (the mesh path uses its own group-4
 // `DynamicDirectParams`); forward/wireframe declare them as inert tail so the
 // shared 3-way byte contract (Rust writer + forward.wgsl + billboard.wgsl)
@@ -388,7 +392,7 @@ pub(crate) fn forward_pipeline_sampled_texture_count(cube_array_supported: bool)
     // Groups 0 (uniform) and 2 (lighting) carry no textures, but include them so
     // adding a texture entry to either BGL is caught here automatically. Group 5's
     // count is feature-conditional: the cube-array point-shadow texture (binding 5)
-    // is present only when `cube_array_supported` (14 total with it, 13 without).
+    // is present only when `cube_array_supported` (15 total with it, 14 without).
     fragment_sampled_textures(&uniform_bind_group_layout_entries())
         + fragment_sampled_textures(&material_bind_group_layout_entries())
         + fragment_sampled_textures(&lighting_bind_group_layout_entries())

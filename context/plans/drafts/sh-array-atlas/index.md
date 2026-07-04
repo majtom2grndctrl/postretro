@@ -118,15 +118,18 @@ trilinear probe blend never filters across a layer boundary.
   layer); a round-trip test for the multi-layer `OctahedralShVolume` v8 and `DirectShVolume` v2 wire
   formats covering single-layer (`layer_count = 1`) and multi-layer cases; a test asserting the prior
   section versions (7 / 1) are rejected with the existing version-mismatch error.
-- [ ] `cargo test -p postretro-level-compiler` passes, including a test that bakes (or packs) a
-  synthetic probe grid large enough to overflow one 8192² layer and asserts a deterministic
-  multi-layer result: layer count > 1, every per-layer dimension ≤ 8192, and each probe's tile on
-  exactly one layer.
+- [ ] `cargo test -p postretro-level-compiler` passes, including a test that packs (pure packing math
+  over a synthetic probe count via `tile_location` — not a real radiance bake, infeasible at this
+  probe count) a synthetic probe grid large enough to overflow one 8192² layer and asserts a
+  deterministic multi-layer result: layer count > 1, every per-layer dimension ≤ 8192, and each
+  probe's tile on exactly one layer.
 - [ ] A large map that **currently refuses** SH (logs the `sh_volume.rs:257–274` `[Renderer]` error)
   now loads its SH volume: `has_sh_volume = 1`, no refusal log, indirect lighting visible. Verified
   manually via `cargo run -p xtask -- run <overflowing-map>.prl`. This is a 2D-atlas-overflow map —
   probe count high enough to overflow one 8192² atlas layer while every grid axis stays ≤ 2048, so the
   depth-moment 3D guard does not fire; a grid-axis-overflow map is the separate graceful-disable case.
+  No existing dev map has enough probes to overflow a layer while keeping every axis ≤ 2048 — this
+  fixture must be purpose-authored, not a quick synthetic, for the AC to be reproducible.
 - [ ] Re-baked existing maps load with `layer_count = 1` and render identically (same probe values,
   same lit result) to the pre-change build. `campaign-test.prl` re-baked and renders with no
   `[Renderer]` SH error.
@@ -154,9 +157,13 @@ per-layer `max_dim` and produce `layer_count`, a shared per-layer `(atlas_width,
 `tiles_per_layer`, and `tile_location(probe_index) → (layer, tile_x, tile_y)`. Tiles pack in
 x-fastest probe order into a near-square per-layer grid capped at `max_dim`; when the next tile would
 exceed the per-layer tile budget, open a new layer. Add `const MAX_SH_ATLAS_LAYERS: u32 = 256`. Keep
-the existing single-atlas functions intact until Task 3/4 repoint their callers (or provide the new
-math as the general form with the old ones as the `layer_count == 1` special case). Whole tiles are
-atomic — never split across layers. Add unit tests per the AC (per-layer-dim bound, layer assignment,
+`irradiance_tile_origin` / `irradiance_atlas_dimensions` / `irradiance_atlas_tiles_per_row`
+byte-identical and add the layer-aware analogues alongside them — do not refactor the old functions
+into a shared general form with `layer_count == 1` as a special case. They have numerous live callers
+beyond this file (`sh_group.rs`, `sh_bake.rs`, `direct_sh_bake.rs`, `sh_volume.rs` in both
+`level-format` and the renderer, `sh_diagnostics.rs`, `prl.rs`); Task 3/4 repoint the ones that need
+the layer-aware form deliberately, one call site at a time. Whole tiles are atomic — never split
+across layers. Add unit tests per the AC (per-layer-dim bound, layer assignment,
 tile-on-one-layer, deterministic order). Include a note distinguishing the **atlas array layer** this
 introduces from the compiler's per-light incremental-bake "layer" concept — do not conflate them.
 
@@ -182,22 +189,35 @@ multi-layer cases of the `OctahedralShVolumeSection` v8 and `DirectShVolumeSecti
 test per section asserting `from_bytes` rejects the prior version (7, respectively 1) with the existing
 version-mismatch error.
 
+Adding the two non-Option fields breaks constructor literals elsewhere in the tree — `sh_bake.rs`,
+`sh_group.rs`, `direct_sh_bake.rs`, `pack.rs` (level-compiler), test helpers in
+`sh_volume.rs`/`direct_sh_volume.rs` (level-format), `render-cpu/sh_volume.rs`, and `prl.rs`. Phase
+1→2 ordering covers the fix, but expect this compile fallout before Task 3/4 land.
+
 Update the wire-format descriptions in `context/lib/build_pipeline.md` (ids 34/35).
 
 ### Task 3: Layer-aware SH bake
 
 In `crates/level-compiler/src/sh_bake.rs`: resolve each probe's `(layer, tile_x, tile_y)` from Task 1's
 `tile_location` and write its base tile into the layer-major base-atlas blob at the layer's slice
-offset (`layer × atlas_width × atlas_height` texels + within-layer tile origin). Emit `layer_count`,
-`tiles_per_layer`, and the single shared `atlas_dimensions` onto the id 34 section. Do the same for the direct atlas (id 35) —
-reuse the identical layer assignment; the BC6H encoder is per-image, so encode each layer's per-layer
-atlas independently and concatenate the encoded blocks in layer order (mirrors the lightmap plan's
-per-layer BC6H loop). A grid needing more than `MAX_SH_ATLAS_LAYERS` layers is a hard bake error
-(named, analogous to `LayerOverflow`); a single probe grid whose per-layer atlas can't fit one layer
-cannot happen (tiles are fixed 6×6 and always fit). Add the compiler-side multi-layer test from the AC
-(synthetic overflowing grid → deterministic multi-layer packing). The bake stays deterministic:
-layer-major writes are order-preserving, so the byte-identity / determinism invariant
-(`build_pipeline.md` §Determinism invariant) holds — same inputs, same layer-major bytes.
+offset (`layer × atlas_width × atlas_height` texels + within-layer tile origin), in the cold
+whole-volume packer `pack_octahedral_irradiance_atlas`. Emit `layer_count`, `tiles_per_layer`, and the
+single shared `atlas_dimensions` onto the id 34 section. The warm cached per-group path packs the same
+base atlas independently in `crates/level-compiler/src/sh_group.rs` (`empty_assembled_section` +
+`place_group`) — a co-equal edit site, not a fallback; both paths must emit identical layer-major
+output (same `layer_count` and `tiles_per_layer`) for the same probe grid. Do the same for the direct
+atlas (id 35), packed in `crates/level-compiler/src/direct_sh_bake.rs`'s `pack_atlas` (not
+`sh_bake.rs`) — reuse the identical layer assignment; the BC6H encoder (`encode_direct_section_bc6h`,
+same file) currently encodes the whole atlas in one shot and must become a per-layer loop: encode each
+layer's per-layer atlas independently and concatenate the encoded blocks in layer order (mirrors the
+lightmap plan's per-layer BC6H loop). A grid needing more than `MAX_SH_ATLAS_LAYERS` layers is a hard
+bake error (named, analogous to `LayerOverflow`); a single probe grid whose per-layer atlas can't fit
+one layer cannot happen (tiles are fixed 6×6 and always fit). Add the compiler-side multi-layer test
+from the AC: this exercises the pure packing math (`tile_location` over a synthetic probe count), not
+a real radiance bake — overflowing one 8192² layer needs >1.86M probes (`(8192/6)² ≈ 1365²`
+tiles/layer), infeasible for an actual bake at test time. The bake stays deterministic: layer-major
+writes are order-preserving, so the byte-identity / determinism invariant (`build_pipeline.md`
+§Determinism invariant) holds — same inputs, same layer-major bytes.
 
 ### Task 4: Runtime array texture pipeline
 
@@ -220,11 +240,16 @@ In `crates/renderer/src/render/sh_volume.rs`:
   work's `array_layers_sufficient` in `renderer_init_resources.rs`; no conformant adapter exercises the
   fail path). Keep the `has_sh_volume = 0` / `has_direct = 0` fallback for the (now
   corrupt-section-only) refusal case.
-- Add the **depth-moment 3D fits-device guard**: before `upload_depth_moment_texture` (920–961),
-  check the grid dims against `max_texture_dimension_3d`; on overflow, disable SH (same fallback path
-  as the atlas refusal) and log a `[Renderer]` error. Pure helper, unit-tested.
+- Add the **depth-moment 3D fits-device guard**: fold it into the `usable` filter chain (257–274) as
+  an additional filter alongside the existing atlas-dimension check, checking the grid dims against
+  `max_texture_dimension_3d` — not a guard inserted at the `upload_depth_moment_texture` call site
+  (called ~326, defined 920–961), since by then `usable` has already gated SH presence and the base
+  atlas is already uploaded with `present = true` set at 334 (311–334). Folding it into the filter
+  chain means an overflow yields the same `present = false` fallback the atlas guard produces, instead
+  of a partially-committed SH volume. Pure helper, unit-tested.
 - Upload the new `ShGridInfo` fields (`tiles_per_layer` / `atlas_layer_count`) alongside the existing
-  atlas metadata.
+  atlas metadata, in `build_grid_info_bytes`/`ShGridInfoParams` (`crates/render-cpu/src/sh_volume.rs`,
+  not this renderer file) — write them into the `_pad3` region at offsets 84 and 88.
 
 In `crates/renderer/src/render/renderer_init_resources.rs`: no new limit — the lightmap work already
 sets `max_texture_array_layers: REQUIRED_MAX_TEXTURE_ARRAY_LAYERS` (256) in `required_limits` and adds
@@ -232,8 +257,9 @@ the adapter pre-check. Confirm 256 layers covers the SH need at 8192²/layer (it
 ≫ any shippable probe grid) and reuse it. If the SH tile atlas ever needs a distinct floor, note it —
 but 256 is shared and sufficient.
 
-In `crates/renderer/src/render/prl_loader`-equivalent SH load path: extend the `info!` log to emit
-`{n} layer(s)` per the AC.
+In `crates/level-loader/src/prl_loader.rs`'s `load_prl`: extend the existing inline
+`[PRL] OctahedralShVolume: …` `info!` log (not a separate helper function — it's inline in the section
+match arm) to include `{n} layer(s)` per the AC.
 
 ### Task 5: Shader layer derivation across the sampling passes and compose
 
@@ -254,15 +280,24 @@ In `crates/renderer/src/shaders/sh_sample.wgsl`:
   own probe `idx` and now its own layer independently, so a blend that spans probes on different layers
   simply issues 8 independent single-layer fetches. No hardware filtering crosses a layer boundary
   (each tile + its 1-texel border lives wholly on one layer), so there is **no new seam**.
+- `crates/renderer/src/render/sh_diagnostics.rs:471` (dev-tools probe markers) also calls
+  `irradiance_tile_origin` and will need the layer once this task repoints the old fn's callers — out
+  of the critical AC path, and a miss surfaces as a compile error, not a silent bug.
 
 This one shared helper is included by `forward.wgsl` (fragment), `fog_volume.wgsl` (compute), and
 `billboard.wgsl` (vertex), plus the `skinned_mesh.wgsl` mesh superset — so the layer derivation lands
 in all sampling passes at once. In each of those shaders, add the new field(s) (`tiles_per_layer`,
 `atlas_layer_count`) to the mirrored `ShGridInfo` struct, matching the Rust upload order and std140
-padding. (The `atlas_dimensions` in the uniform is now the **per-layer** dimension — confirm every
-reader divides by per-layer dims, which `sample_probe_atlas_tex` already does via
-`textureDimensions(atlas)`; the array `textureDimensions` returns per-layer extent, so that path stays
-correct.)
+padding. `forward.wgsl`, `billboard.wgsl`, and `skinned_mesh.wgsl` carry the full 96-byte `ShGridInfo`
+layout (`probe_occlusion@80`, `_pad3`/`_pad4`/`_pad5@84..96`), so the two fields simply replace the pad
+slots at 84/88. `fog_volume.wgsl` is the load-bearing exception: its `ShGridInfo` stops at `_pad2` (80
+bytes — no `probe_occlusion`/pad tail), so it must be **extended** to the full 96-byte layout (add the
+80..84 slot, then `tiles_per_layer@84` / `atlas_layer_count@88`), not treated as a same-offset rename.
+A naive append after fog's `_pad2` puts the field at offset 80 vs. the Rust upload's 84 — silent std140
+drift, wrong layer sampled in the fog pass, no compile error. (The `atlas_dimensions` in the uniform is
+now the **per-layer** dimension — confirm every reader divides by per-layer dims, which
+`sample_probe_atlas_tex` already does via `textureDimensions(atlas)`; the array `textureDimensions`
+returns per-layer extent, so that path stays correct.)
 
 In `crates/renderer/src/shaders/sh_compose.wgsl`:
 - `sh_base_atlas`: `texture_2d<f32>` → `texture_2d_array<f32>`; `sh_total_atlas`:
@@ -273,10 +308,19 @@ In `crates/renderer/src/shaders/sh_compose.wgsl`:
   atlas_tiles_per_row)`, then `textureLoad`(`sh_base_atlas`, layer)/`textureStore`(`sh_total_atlas`,
   layer) at `(p, layer)`. `affinity_offsets`/`delta_subblocks` stay keyed by this same `probe_index`
   unchanged — `DeltaShVolumes` (id 27) is out of scope and needs no format change; only the
-  atlas-texel↔`probe_index` mapping gains the layer term. Add `tiles_per_layer` / `atlas_layer_count`
-  to the `GridDims` uniform.
+  atlas-texel↔`probe_index` mapping gains the layer term. The `in_grid` out-of-bounds guard (currently
+  `tile.x + tile.y * atlas_tiles_per_row >= total_probes`) must switch to a check on the
+  layer-inclusive `probe_index` (`probe_index >= total_probes`) — otherwise the partially-filled last
+  layer's slack texels wrongly map onto valid probes from an earlier layer. Add `tiles_per_layer` /
+  `atlas_layer_count` to the `GridDims` uniform. The Rust-side byte builder, `build_compose_grid_bytes`
+  (`COMPOSE_GRID_DIMS_SIZE`, currently 48) in `crates/render-cpu/src/sh_compose.rs`, must grow 48 → 64
+  with the two fields plus tail padding; its caller in `crates/renderer/src/render/sh_compose.rs`
+  (~line 117, currently passing 6 args) must pass the new fields.
 - Dispatch dimensions: composing per-layer means the dispatch grid is per-layer `(atlas_width,
   atlas_height)` × `layer_count`; adjust the workgroup dispatch so every layer's texels are covered.
+  The per-layer dispatch lives in `crates/renderer/src/render/sh_compose.rs`'s `dispatch` — it
+  currently issues a 2D dispatch with the workgroup z-count hardcoded to 1; set it to `layer_count`
+  instead, or layers ≥ 1 are never composed.
 
 ## Sequencing
 

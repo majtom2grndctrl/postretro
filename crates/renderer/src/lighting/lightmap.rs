@@ -782,7 +782,7 @@ mod tests {
     #[test]
     fn bgl_entries_pin_sampler_split() {
         let entries = bind_group_layout_entries();
-        assert_eq!(entries.len(), 6, "group-4 BGL grew to 6 entries");
+        assert_eq!(entries.len(), 7, "group-4 BGL grew to 7 entries");
 
         let tex_sample = |b: u32| {
             entries

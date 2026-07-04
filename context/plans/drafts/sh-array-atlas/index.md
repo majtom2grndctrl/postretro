@@ -13,8 +13,9 @@ volume is a **2D octahedral atlas**, not a 3D texture: one Rgba16Float base tile
 (`OctahedralShVolume`, PRL id 34) and one BC6H direct tile atlas (`DirectShVolume`, PRL id 35), each
 packing one octahedral tile per probe into a near-square 2D layout. The atlas side is
 `ceil(sqrt(total_probe_count)) × tile_dimension` (`crates/level-format/src/octahedral.rs:78–111`),
-and the probe count is **volumetric** — `grid_x × grid_y × grid_z` over the map's AABB
-(`crates/level-compiler/src/sh_bake.rs:361–368`). On warren-scale maps the atlas side exceeds the
+and the probe count is **volumetric** — a `grid_x × grid_y × grid_z` grid derived from the map's AABB
+(`crates/level-compiler/src/sh_bake.rs:361–368` `grid_dimensions`; the literal product is
+`total_probe_count` in `crates/level-format/src/octahedral.rs:129`). On warren-scale maps the atlas side exceeds the
 device `max_texture_dimension_2d` (engine-required floor 8192,
 `crates/renderer/src/render/renderer_init_resources.rs`).
 
@@ -50,11 +51,16 @@ trilinear probe blend never filters across a layer boundary.
   `MAX_SH_ATLAS_LAYERS = 256` (matches the runtime array-layer floor). Whole tiles are the atomic
   packing unit — a tile never straddles a layer.
 - **Restructure `OctahedralShVolume` (id 34)** (`crates/level-format/src/sh_volume.rs`): add
-  `layer_count`, per-layer `atlas_dimensions`, and a **layer-major** atlas blob (layer 0, layer 1, …).
-  Bump `SH_VOLUME_VERSION` (7 → 8); stale sections rejected at parse.
+  `layer_count`, `tiles_per_layer`, a single shared `atlas_dimensions` used by every layer (last layer
+  may be partially filled — not one dim pair per layer), and a **layer-major** atlas blob (layer 0,
+  layer 1, …). Bump `SH_VOLUME_VERSION` (7 → 8); stale sections rejected at parse.
 - **Restructure `DirectShVolume` (id 35)** (`crates/level-format/src/direct_sh_volume.rs`): same
-  `layer_count` + per-layer dims + layer-major BC6H blob. Bump `DIRECT_SH_VOLUME_VERSION` (1 → 2).
-  Direction/geometry reuses id 34's probe layout and layer assignment verbatim.
+  `layer_count` + `tiles_per_layer` + shared `atlas_dimensions` (one pair, not per-layer) + layer-major
+  BC6H blob. Bump `DIRECT_SH_VOLUME_VERSION` (1 → 2). Direction/geometry reuses id 34's probe layout
+  and layer assignment verbatim.
+- **Existing content re-bakes.** The version bump (7 → 8, 1 → 2) rejects old sections outright — no
+  live migration path. All `.prl` fixtures and dev maps, including `campaign-test.prl`, re-bake from
+  source as part of this change.
 - **Layer-aware bake** (`crates/level-compiler/src/sh_bake.rs`): pack base and direct tiles into
   layer-major atlas blobs via the new octahedral math; write each probe's tile into its assigned
   layer slice. Single-probe-grid maps that fit one layer emit `layer_count = 1` (bit-for-bit the same
@@ -82,7 +88,8 @@ trilinear probe blend never filters across a layer boundary.
   guard so an oversized moment texture disables SH gracefully (like the atlas refusal) instead of
   failing at `write_texture`. This is a guard only — no tiling.
 - Update `context/lib/build_pipeline.md` (ids 34/35 descriptions, §Octahedral irradiance volume bake)
-  to document the multi-layer atlas layout.
+  to document the multi-layer atlas layout. Also update `context/lib/rendering_pipeline.md` §4
+  (Lighting) and §10 (Boundary Rule) — the atlas is now `texture_2d_array`, layer derived in-shader.
 
 ### Out of scope
 
@@ -117,10 +124,12 @@ trilinear probe blend never filters across a layer boundary.
   exactly one layer.
 - [ ] A large map that **currently refuses** SH (logs the `sh_volume.rs:257–274` `[Renderer]` error)
   now loads its SH volume: `has_sh_volume = 1`, no refusal log, indirect lighting visible. Verified
-  manually via `cargo run -p xtask -- run <overflowing-map>.prl`.
-- [ ] Existing maps are unchanged: a single-layer bake emits `layer_count = 1` and renders
-  identically (same probe values, same lit result) to the pre-change build. `campaign-test.prl` loads
-  and renders with no `[Renderer]` SH error.
+  manually via `cargo run -p xtask -- run <overflowing-map>.prl`. This is a 2D-atlas-overflow map —
+  probe count high enough to overflow one 8192² atlas layer while every grid axis stays ≤ 2048, so the
+  depth-moment 3D guard does not fire; a grid-axis-overflow map is the separate graceful-disable case.
+- [ ] Re-baked existing maps load with `layer_count = 1` and render identically (same probe values,
+  same lit result) to the pre-change build. `campaign-test.prl` re-baked and renders with no
+  `[Renderer]` SH error.
 - [ ] No added sampled-texture binding. The `BIND_SH_TOTAL_ATLAS` and `BIND_SH_DIRECT_ATLAS` entries
   change `D2 → D2Array` **in place**; the SH group-3 / group-4 BGL binding *count* is unchanged, so the
   shared layout stays within Metal's 16-sampled-texture-per-stage budget (a test asserting the SH BGL
@@ -153,18 +162,25 @@ introduces from the compiler's per-light incremental-bake "layer" concept — do
 
 ### Task 2: Restructure OctahedralShVolume (id 34) and DirectShVolume (id 35) for multi-layer
 
-In `crates/level-format/src/sh_volume.rs`: add `layer_count` and per-layer `atlas_dimensions` to the
-section; change the atlas payload to a **layer-major** blob (layer 0 fully, then layer 1, …), each
-layer `atlas_width × atlas_height` texels in the declared format (Rgba16Float). Bump
+In `crates/level-format/src/sh_volume.rs`: add `layer_count` and `tiles_per_layer` to the section;
+`atlas_dimensions` stays a single `(width, height)` pair, now describing one shared per-layer size, not
+the whole atlas. Change the atlas payload to a **layer-major** blob (layer 0 fully, then layer 1, …),
+each layer `atlas_width × atlas_height` texels in the declared format (Rgba16Float). Bump
 `SH_VOLUME_VERSION` 7 → 8; `from_bytes` rejects version ≠ 8 with the existing named mismatch error.
 Single-layer bakes write `layer_count = 1`; the v8 layout is always used. Update `to_bytes`,
 `from_bytes`, `placeholder`, and the section's tests.
 
 In `crates/level-format/src/direct_sh_volume.rs`: the same restructure for the BC6H direct atlas —
-`layer_count`, per-layer dims, layer-major BC6H blob (each layer's block rows concatenated in layer
-order). Bump `DIRECT_SH_VOLUME_VERSION` 1 → 2; reject version ≠ 2. The direct atlas reuses id 34's
-probe layout and per-probe layer assignment verbatim (same tile geometry, same
-`probe_index → layer`), so it carries no independent packing decision — only the same `layer_count`.
+`layer_count`, `tiles_per_layer`, the same single shared `atlas_dimensions` pair, layer-major BC6H blob
+(each layer's block rows concatenated in layer order). Bump `DIRECT_SH_VOLUME_VERSION` 1 → 2; reject
+version ≠ 2. The direct atlas reuses id 34's probe layout and per-probe layer assignment verbatim
+(same tile geometry, same `probe_index → layer`), so it carries no independent packing decision — only
+the same `layer_count` and `tiles_per_layer`.
+
+Add unit tests per the AC: a round-trip test for both the single-layer (`layer_count = 1`) and
+multi-layer cases of the `OctahedralShVolumeSection` v8 and `DirectShVolumeSection` v2 layouts, plus a
+test per section asserting `from_bytes` rejects the prior version (7, respectively 1) with the existing
+version-mismatch error.
 
 Update the wire-format descriptions in `context/lib/build_pipeline.md` (ids 34/35).
 
@@ -172,8 +188,8 @@ Update the wire-format descriptions in `context/lib/build_pipeline.md` (ids 34/3
 
 In `crates/level-compiler/src/sh_bake.rs`: resolve each probe's `(layer, tile_x, tile_y)` from Task 1's
 `tile_location` and write its base tile into the layer-major base-atlas blob at the layer's slice
-offset (`layer × atlas_width × atlas_height` texels + within-layer tile origin). Emit `layer_count`
-and per-layer `atlas_dimensions` onto the id 34 section. Do the same for the direct atlas (id 35) —
+offset (`layer × atlas_width × atlas_height` texels + within-layer tile origin). Emit `layer_count`,
+`tiles_per_layer`, and the single shared `atlas_dimensions` onto the id 34 section. Do the same for the direct atlas (id 35) —
 reuse the identical layer assignment; the BC6H encoder is per-image, so encode each layer's per-layer
 atlas independently and concatenate the encoded blocks in layer order (mirrors the lightmap plan's
 per-layer BC6H loop). A grid needing more than `MAX_SH_ATLAS_LAYERS` layers is a hard bake error
@@ -194,11 +210,16 @@ In `crates/renderer/src/render/sh_volume.rs`:
   `D2Array` and the sampled view `D2Array`.
 - `sh_bind_group_layout_entries` (~634): change `BIND_SH_TOTAL_ATLAS` and `BIND_SH_DIRECT_ATLAS`
   `view_dimension` from `D2` to `D2Array`. **No binding is added** — dimension changes in place.
+  `mesh_bind_group_layout_entries` (~619) composes this function directly, so the mesh group-4
+  superset BGL (`ShVolumeResources.mesh_bind_group_layout`) picks up both `D2Array` entries
+  automatically — no separate mesh-side BGL edit needed.
 - Replace the atlas-side of the `ShVolume::new` fits-check (257–274) and the direct fits-check
   (834–849) with a guard against per-layer `atlas_dimensions ≤ max_texture_dimension_2d` **and**
-  `layer_count ≤ max_texture_array_layers`. Factor the comparison into a pure helper and unit-test it
-  (no conformant adapter exercises the fail path). Keep the `has_sh_volume = 0` /
-  `has_direct = 0` fallback for the (now corrupt-section-only) refusal case.
+  `layer_count ≤ max_texture_array_layers`. Factor the comparison into a pure helper,
+  `sh_atlas_fits(per_layer_dim, layer_count, limits) -> bool`, and unit-test it (mirrors the lightmap
+  work's `array_layers_sufficient` in `renderer_init_resources.rs`; no conformant adapter exercises the
+  fail path). Keep the `has_sh_volume = 0` / `has_direct = 0` fallback for the (now
+  corrupt-section-only) refusal case.
 - Add the **depth-moment 3D fits-device guard**: before `upload_depth_moment_texture` (920–961),
   check the grid dims against `max_texture_dimension_3d`; on overflow, disable SH (same fallback path
   as the atlas refusal) and log a `[Renderer]` error. Pure helper, unit-tested.
@@ -221,6 +242,12 @@ In `crates/renderer/src/shaders/sh_sample.wgsl`:
   `layer = tile_slot / tiles_per_layer` and the within-layer `tile_origin`, returning both.
 - Change `sample_probe_atlas_tex` to take/sample a `texture_2d_array<f32>` with the derived layer as
   the array index; `sh_total_atlas` and the passed `direct_atlas` become `texture_2d_array<f32>`.
+- Convert the `sh_direct_atlas` global var declarations in `billboard.wgsl` (binding 15) and
+  `skinned_mesh.wgsl` (group 4 binding 15) — each currently `var sh_direct_atlas: texture_2d<f32>` —
+  to `texture_2d_array<f32>`, mirroring the base sampler's layer derivation. `sample_sh_direct` call
+  sites (`sample_sh_indirect_direct_corners`, `sample_sh_direct_corners_depth_aware`) already take
+  `direct_atlas` as a parameter, so this is a declared-type change at each binding site, not a
+  signature change.
 - The 8-tap corner loops (`sample_sh_indirect_corners_pair`,
   `sample_sh_indirect_direct_corners`) are unchanged in structure — each corner already resolves its
   own probe `idx` and now its own layer independently, so a blend that spans probes on different layers
@@ -239,9 +266,14 @@ correct.)
 In `crates/renderer/src/shaders/sh_compose.wgsl`:
 - `sh_base_atlas`: `texture_2d<f32>` → `texture_2d_array<f32>`; `sh_total_atlas`:
   `texture_storage_2d<rgba16float, write>` → `texture_storage_2d_array<rgba16float, write>`.
-- The compose kernel maps a workgroup thread to an atlas texel; derive the layer from the composed
-  tile's probe index (same `tile_location` math, hand-mirrored) and pass it to `textureLoad`(base)/
-  `textureStore`(total). Add `tiles_per_layer` / `atlas_layer_count` to the `GridDims` uniform.
+- The compose kernel maps a workgroup thread to an atlas texel within one layer's dispatch slice.
+  Extend `map_atlas_texel`'s reverse mapping (currently `probe_index = tile.x + tile.y *
+  atlas_tiles_per_row`) to `probe_index = layer * grid.tiles_per_layer + (tile.x + tile.y *
+  atlas_tiles_per_row)`, then `textureLoad`(`sh_base_atlas`, layer)/`textureStore`(`sh_total_atlas`,
+  layer) at `(p, layer)`. `affinity_offsets`/`delta_subblocks` stay keyed by this same `probe_index`
+  unchanged — `DeltaShVolumes` (id 27) is out of scope and needs no format change; only the
+  atlas-texel↔`probe_index` mapping gains the layer term. Add `tiles_per_layer` / `atlas_layer_count`
+  to the `GridDims` uniform.
 - Dispatch dimensions: composing per-layer means the dispatch grid is per-layer `(atlas_width,
   atlas_height)` × `layer_count`; adjust the workgroup dispatch so every layer's texels are covered.
 
@@ -261,20 +293,95 @@ together since they share `tile_location` semantics.
 
 ### OctahedralShVolume (PRL id 34), version 8
 
-Header adds `u32 layer_count` (≥ 1); `atlas_dimensions` is now the **per-layer** `(width, height)`
-(pow2, per-layer ≤ 8192). Probe metadata records (validity, f16 E[d], f16 E[d²]) are unchanged and
-still x-fastest `probe_index = x + y·grid_x + z·grid_x·grid_y`. The atlas blob is **layer-major**:
-layer 0's full per-layer atlas, then layer 1, … `layer_count − 1`; each layer is
-`atlas_width × atlas_height` Rgba16Float texels row-major. Tile placement within a layer:
+Header grows from 68 to 76 bytes, appending two fields after the existing `atlas_tiles_per_row`:
+
+| Offset | Field | Type | Notes |
+| --- | --- | --- | --- |
+| 0 | `version` | `u32` | `= 8` |
+| 4 | `grid_origin` | `f32 × 3` | |
+| 16 | `cell_size` | `f32 × 3` | |
+| 28 | `grid_dimensions` | `u32 × 3` | |
+| 40 | `probe_stride` | `u32` | `= OCTAHEDRAL_PROBE_STRIDE` |
+| 44 | `animated_light_count` | `u32` | |
+| 48 | `tile_dimension` | `u32` | |
+| 52 | `tile_border` | `u32` | |
+| 56 | `atlas_width` | `u32` | **shared by every layer** — not per-layer |
+| 60 | `atlas_height` | `u32` | **shared by every layer** — not per-layer |
+| 64 | `atlas_tiles_per_row` | `u32` | tile columns within one layer (unchanged field, now scoped per-layer) |
+| 68 | `layer_count` | `u32` | **new**, ≥ 1 |
+| 72 | `tiles_per_layer` | `u32` | **new** — tile capacity of one layer; the shader derives `layer = probe_index / tiles_per_layer` from this stored field, it is never re-derived from `atlas_dimensions` |
+
+`atlas_dimensions` is a single `(atlas_width, atlas_height)` pair used by every layer — all layers
+share one size; the last layer is simply partially filled (near-square slack lands there), matching
+the lightmap array atlas. It is not one dim pair per layer.
+
+Probe metadata records (validity, f16 E[d], f16 E[d²]) are unchanged, unmoved, and stay **linear by
+`probe_index`** (`x + y·grid_x + z·grid_x·grid_y`) — only the atlas blob below is layer-major. The
+atlas blob is **layer-major**: layer 0's full `atlas_width × atlas_height` Rgba16Float texels
+row-major, then layer 1, … `layer_count − 1`. Tile placement within a layer:
 `tile_slot = probe_index − layer × tiles_per_layer`, `tile_x = (tile_slot % tiles_per_row)·tile_dim`,
 `tile_y = (tile_slot / tiles_per_row)·tile_dim`, `layer = probe_index / tiles_per_layer`. Parsers
 reject `version ≠ 8`.
 
 ### DirectShVolume (PRL id 35), version 2
 
-Same `layer_count` + per-layer `atlas_dimensions` addition; layer-major BC6H blob (each layer encoded
-independently as its own per-layer image, concatenated in layer order). Reuses id 34's probe layout
-and per-probe layer assignment — no independent packing. Parsers reject `version ≠ 2`.
+Header grows from 68 to 76 bytes, same insertion point (after `atlas_tiles_per_row`, before
+`irradiance_format`/`irradiance_len`):
+
+| Offset | Field | Type | Notes |
+| --- | --- | --- | --- |
+| 0 | `version` | `u32` | `= 2` |
+| 4 | `grid_origin` | `f32 × 3` | |
+| 16 | `cell_size` | `f32 × 3` | |
+| 28 | `grid_dimensions` | `u32 × 3` | |
+| 40 | `tile_dimension` | `u32` | |
+| 44 | `tile_border` | `u32` | |
+| 48 | `atlas_width` | `u32` | shared by every layer, reused verbatim from id 34 |
+| 52 | `atlas_height` | `u32` | shared by every layer, reused verbatim from id 34 |
+| 56 | `atlas_tiles_per_row` | `u32` | reused verbatim from id 34 |
+| 60 | `layer_count` | `u32` | **new**, reused verbatim from id 34 |
+| 64 | `tiles_per_layer` | `u32` | **new**, reused verbatim from id 34 |
+| 68 | `irradiance_format` | `u32` | `IRRADIANCE_FORMAT_BC6H` / `_RGBA16F` |
+| 72 | `irradiance_len` | `u32` | byte length of the atlas blob |
+
+Atlas blob (`irradiance_len` bytes) is layer-major BC6H (each layer encoded independently as its own
+per-layer image, concatenated in layer order). Reuses id 34's probe layout and per-probe layer
+assignment — no independent packing. Parsers reject `version ≠ 2`.
+
+## Uniform layout
+
+`ShGridInfo` (hand-mirrored in `forward.wgsl`, `fog_volume.wgsl`, `billboard.wgsl`,
+`skinned_mesh.wgsl`, all currently identical, 96 bytes) already carries three trailing unused `u32`
+pad slots (`_pad3`, `_pad4`, `_pad5` at bytes 84..96, per `crates/render-cpu/src/sh_volume.rs`'s
+`SH_GRID_INFO_SIZE`/`build_grid_info_bytes` doc comment). The two new fields fill that existing slack —
+no struct growth, no realignment risk:
+
+| Offset | Field | Type | Notes |
+| --- | --- | --- | --- |
+| 84 | `tiles_per_layer` | `u32` | replaces `_pad3` |
+| 88 | `atlas_layer_count` | `u32` | replaces `_pad4` |
+| 92 | (reserved) | `u32` | was `_pad5`; stays zero padding |
+
+`build_grid_info_bytes` (Task 4, `render-cpu/src/sh_volume.rs`) writes both at 84..92; the four shader
+mirrors (Task 5) rename `_pad3`/`_pad4` to the same two fields at the same offsets. `atlas_dimensions`
+in the uniform stays the per-layer dims (unchanged meaning); `atlas_tiles_per_row` stays the existing
+field. `tiles_per_layer` sits **alongside** `atlas_tiles_per_row`, not in place of it — the shader
+needs both (`atlas_tiles_per_row` for the within-layer `tile_x`/`tile_y`, `tiles_per_layer` for
+`layer = probe_index / tiles_per_layer`).
+
+The compose pass's `GridDims` (`sh_compose.wgsl`, 48 bytes, no existing slack — its last field,
+`atlas_tiles_per_row`, exactly fills the final 16-byte row) has no free padding, so its two new fields
+append at the end with explicit tail padding to preserve std140 16-byte struct alignment:
+
+| Offset | Field | Type | Notes |
+| --- | --- | --- | --- |
+| 48 | `tiles_per_layer` | `u32` | new |
+| 52 | `atlas_layer_count` | `u32` | new |
+| 56 | `_pad0` / `_pad1` | `u32 × 2` | new explicit padding — struct grows 48 → 64 bytes |
+
+`COMPOSE_GRID_DIMS_SIZE` (`crates/render-cpu/src/sh_compose.rs`) and the WGSL `GridDims` struct must
+grow together; if a shader/Rust layout-parity test exists for `GridDims`, extend it here too (see Risks
+§std140 uniform drift).
 
 ## Decisions
 

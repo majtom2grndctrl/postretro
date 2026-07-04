@@ -238,8 +238,9 @@ In `crates/renderer/src/render/prl_loader`-equivalent SH load path: extend the `
 ### Task 5: Shader layer derivation across the sampling passes and compose
 
 In `crates/renderer/src/shaders/sh_sample.wgsl`:
-- Change `probe_tile_origin(idx)` to compute the probe's linear index, then derive
-  `layer = tile_slot / tiles_per_layer` and the within-layer `tile_origin`, returning both.
+- Change `probe_tile_origin(idx)` to compute the probe's linear index `probe_index`, then derive
+  `layer = probe_index / tiles_per_layer` and the within-layer `tile_origin` (from
+  `tile_slot = probe_index − layer × tiles_per_layer`), returning both.
 - Change `sample_probe_atlas_tex` to take/sample a `texture_2d_array<f32>` with the derived layer as
   the array index; `sh_total_atlas` and the passed `direct_atlas` become `texture_2d_array<f32>`.
 - Convert the `sh_direct_atlas` global var declarations in `billboard.wgsl` (binding 15) and
@@ -350,11 +351,13 @@ assignment — no independent packing. Parsers reject `version ≠ 2`.
 
 ## Uniform layout
 
-`ShGridInfo` (hand-mirrored in `forward.wgsl`, `fog_volume.wgsl`, `billboard.wgsl`,
-`skinned_mesh.wgsl`, all currently identical, 96 bytes) already carries three trailing unused `u32`
-pad slots (`_pad3`, `_pad4`, `_pad5` at bytes 84..96, per `crates/render-cpu/src/sh_volume.rs`'s
-`SH_GRID_INFO_SIZE`/`build_grid_info_bytes` doc comment). The two new fields fill that existing slack —
-no struct growth, no realignment risk:
+`ShGridInfo` in `forward.wgsl`, `billboard.wgsl`, and `skinned_mesh.wgsl` is the identical 96-byte
+layout and already carries three trailing unused `u32` pad slots (`_pad3`, `_pad4`, `_pad5` at bytes
+84..96, per `crates/render-cpu/src/sh_volume.rs`'s `SH_GRID_INFO_SIZE`/`build_grid_info_bytes` doc
+comment). In those three the two new fields fill existing slack — no struct growth, no realignment
+risk. **`fog_volume.wgsl` is the exception:** its `ShGridInfo` currently stops at `_pad2` (80 bytes,
+no `probe_occlusion`/`_pad3`/`_pad4`/`_pad5`), so it must be **extended** to the 96-byte layout (add
+the 80..84 slot, then the two fields at 84/88) — not treated as a rename. Field placement:
 
 | Offset | Field | Type | Notes |
 | --- | --- | --- | --- |
@@ -362,8 +365,9 @@ no struct growth, no realignment risk:
 | 88 | `atlas_layer_count` | `u32` | replaces `_pad4` |
 | 92 | (reserved) | `u32` | was `_pad5`; stays zero padding |
 
-`build_grid_info_bytes` (Task 4, `render-cpu/src/sh_volume.rs`) writes both at 84..92; the four shader
-mirrors (Task 5) rename `_pad3`/`_pad4` to the same two fields at the same offsets. `atlas_dimensions`
+`build_grid_info_bytes` (Task 4, `render-cpu/src/sh_volume.rs`) writes both at 84..92; the three
+96-byte mirrors (Task 5) rename `_pad3`/`_pad4` to the same two fields at the same offsets, while
+`fog_volume.wgsl` is extended to match. `atlas_dimensions`
 in the uniform stays the per-layer dims (unchanged meaning); `atlas_tiles_per_row` stays the existing
 field. `tiles_per_layer` sits **alongside** `atlas_tiles_per_row`, not in place of it — the shader
 needs both (`atlas_tiles_per_row` for the within-layer `tile_x`/`tile_y`, `tiles_per_layer` for

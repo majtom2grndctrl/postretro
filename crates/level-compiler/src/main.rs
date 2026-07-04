@@ -13,6 +13,7 @@ pub mod chart_raster;
 pub mod chunk_light_list_bake;
 pub mod delta_sh_bake;
 pub mod direct_sh_bake;
+pub mod entity_shadow_select;
 #[cfg(test)]
 pub mod fixture_pipeline;
 pub mod fog_cell_masks;
@@ -885,6 +886,100 @@ fn main() -> anyhow::Result<()> {
     };
     timings.push(("Direct SH Bake", stage_start.elapsed()));
 
+    progress.start_stage("Entity shadow light selection...");
+    let stage_start = Instant::now();
+    let raw_entity_shadow_lights_section = direct_sh_volume_section.as_ref().and_then(|_| {
+        let inputs = entity_shadow_select::EntityShadowSelectionInputs {
+            bvh: &bvh,
+            primitives: &bvh_primitives,
+            geometry: &geo_result,
+            static_lights: &static_baked_lights,
+            alpha_lights: &alpha_lights_ns,
+            params: map_data.entity_shadow_params,
+        };
+        let section = entity_shadow_select::select_entity_shadow_lights(&inputs);
+        if section.light_indices.is_empty() {
+            None
+        } else {
+            Some(section)
+        }
+    });
+    timings.push(("EntityShadowLights", stage_start.elapsed()));
+    if args.verbose {
+        if let Some(ref section) = raw_entity_shadow_lights_section {
+            log::info!(
+                "EntityShadowLights: selected {} static light candidate(s)",
+                section.light_indices.len()
+            );
+        } else {
+            log::info!("EntityShadowLights: skipped (no DirectShVolume selection)");
+        }
+    }
+
+    progress.start_stage("Direct SH delta volume bake...");
+    let stage_start = Instant::now();
+    let raw_direct_sh_delta_volumes_section =
+        raw_entity_shadow_lights_section
+            .as_ref()
+            .and_then(|section| {
+                let inputs = direct_sh_bake::DirectBakeInputs {
+                    sh_ctx: &sh_ctx,
+                    portals: &generated_portals,
+                };
+                direct_sh_bake::bake_direct_sh_delta_volumes(
+                    &inputs,
+                    &sh_config,
+                    &alpha_lights_ns,
+                    section,
+                )
+            });
+    timings.push(("Direct SH Delta Bake", stage_start.elapsed()));
+
+    let (entity_shadow_lights_section, direct_sh_delta_volumes_section) =
+        match raw_entity_shadow_lights_section {
+            Some(selection) => match raw_direct_sh_delta_volumes_section {
+                Some(deltas)
+                    if direct_sh_volume_section.as_ref().is_some_and(|direct| {
+                        pack::direct_sh_delta_is_usable_for_selection(
+                            &deltas,
+                            direct,
+                            selection.light_indices.len(),
+                        )
+                    }) =>
+                {
+                    (Some(selection), Some(deltas))
+                }
+                Some(_) => {
+                    log::warn!(
+                        "EntityShadowLights: clearing {} selected static light candidate(s) because DirectShDeltaVolumes is unusable for the DirectShVolume base",
+                        selection.light_indices.len()
+                    );
+                    (None, None)
+                }
+                None => {
+                    log::warn!(
+                        "EntityShadowLights: clearing {} selected static light candidate(s) because DirectShDeltaVolumes is absent",
+                        selection.light_indices.len()
+                    );
+                    (None, None)
+                }
+            },
+            None => (None, None),
+        };
+    if args.verbose {
+        if let Some(ref section) = direct_sh_delta_volumes_section {
+            log::info!(
+                "DirectShDeltaVolumes: {} CSR entr(y/ies), affinity grid {}x{}x{}",
+                section.affinity_lights.len(),
+                section.affinity_dims[0],
+                section.affinity_dims[1],
+                section.affinity_dims[2],
+            );
+        } else {
+            log::info!("DirectShDeltaVolumes: skipped (no usable selected light deltas)");
+        }
+    }
+
     progress.start_stage("Chunk light list bake...");
     let stage_start = Instant::now();
     let chunk_light_list_section = {
@@ -1100,6 +1195,8 @@ fn main() -> anyhow::Result<()> {
         &light_influence_section,
         &sh_volume_section,
         direct_sh_volume_section.as_ref(),
+        entity_shadow_lights_section.as_ref(),
+        direct_sh_delta_volumes_section.as_ref(),
         &lightmap_section,
         &chunk_light_list_section,
         animated_light_chunks_section.as_ref(),

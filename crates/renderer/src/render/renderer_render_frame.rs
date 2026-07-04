@@ -51,8 +51,38 @@ impl Renderer {
         // are visible, flickering garbage into the markers. It runs after a
         // blocking `poll(Wait)` below, once the compose submit has retired.
 
-        // mem::take avoids a simultaneous borrow of self; returned after call to reuse the allocation.
+        // Selected-static promotion gates on the renderable/planned mesh set, not
+        // raw collected inputs: uncached models and budget overflow cannot promote
+        // a light that would have no entity depth draw this frame.
+        let selected_static_needs_mesh_gate = if render_world {
+            let full = self.full();
+            full.shadow_candidate_lights
+                .iter()
+                .zip(&full.shadow_candidate_selection_indices)
+                .any(|(light, selection)| {
+                    selection.is_some()
+                        && (light.light_type == postretro_level_loader::LightType::Spot
+                            || (light.light_type == postretro_level_loader::LightType::Point
+                                && full.cube_shadow_pool.is_some()))
+                })
+        } else {
+            false
+        };
+        let promotion_mesh_frame_plan: Option<mesh_instances::MeshFramePlan> = if render_world
+            && self.full().mesh_pass.has_model()
+            && !self.full().mesh_draws.is_empty()
+            && selected_static_needs_mesh_gate
+        {
+            Some(mesh_instances::plan_mesh_frame(
+                &self.full().mesh_draws,
+                &self.full().mesh_pass,
+            ))
+        } else {
+            None
+        };
         if render_world {
+            // mem::take avoids a simultaneous borrow of self; returned after call
+            // to reuse the allocation.
             let eff_brightness = std::mem::take(&mut self.full_mut().light_effective_brightness);
             let last_camera_position = self.full().last_camera_position;
             self.update_dynamic_light_slots(
@@ -60,6 +90,8 @@ impl Renderer {
                 crate::lighting::spot_shadow::SHADOW_NEAR_CLIP,
                 &eff_brightness,
                 reachable_cell_aabbs,
+                now_seconds,
+                promotion_mesh_frame_plan.as_ref(),
             );
             // Env-gated diagnostics (POSTRETRO_SHADOW_DEBUG=1) — read-only, runs
             // right after slot assignment so it sees this frame's decisions. No
@@ -75,6 +107,34 @@ impl Renderer {
                 );
             }
             self.full_mut().light_effective_brightness = eff_brightness;
+
+            #[cfg(feature = "dev-tools")]
+            let direct_sh_debug_override = self.full().direct_sh_debug_override;
+            #[cfg(not(feature = "dev-tools"))]
+            let direct_sh_debug_override = DirectShDebugOverride::default();
+            let direct_sh_active = self
+                .full()
+                .promoted_static_weights
+                .iter()
+                .any(|weight| *weight > 0.0)
+                || direct_sh_debug_override.active();
+            {
+                let Self { queue, full, .. } = self;
+                let full = full
+                    .as_mut()
+                    .expect("renderer full-init must complete before full-ready paths run");
+                let direct_sh_ts = full
+                    .frame_timing
+                    .as_ref()
+                    .map(|t| t.compute_pass_writes(TIMING_PAIR_DIRECT_SH_COMPOSE));
+                full.direct_sh_compose.dispatch_if_needed(
+                    queue,
+                    &mut encoder,
+                    direct_sh_active,
+                    direct_sh_debug_override,
+                    direct_sh_ts,
+                );
+            }
         }
 
         // --- Skinned-mesh pose/upload HOIST ----------------------------------
@@ -90,9 +150,27 @@ impl Renderer {
             && !self.full().mesh_draws.is_empty()
         {
             // Plan: group instances by model, assign each a contiguous palette
-            // run, drop any overflow past the fixed budget. GPU-free.
-            let plan =
-                mesh_instances::plan_mesh_frame(&self.full().mesh_draws, &self.full().mesh_pass);
+            // run, drop any overflow past the fixed budget. GPU-free. A selected
+            // static-light gate may have already built the all-instance CPU plan
+            // above so promotion ranking sees the same renderable/overflow
+            // result as the upload path. If no promoted slot exists after
+            // ranking, discard shadow-only retained instances before pose
+            // sampling and buffer upload; only promoted static slots can consume
+            // them.
+            let plan = if self.full().promoted_static_records.is_empty() {
+                mesh_instances::plan_forward_visible_mesh_frame(
+                    &self.full().mesh_draws,
+                    &self.full().mesh_pass,
+                )
+            } else {
+                match promotion_mesh_frame_plan {
+                    Some(plan) => plan,
+                    None => mesh_instances::plan_mesh_frame(
+                        &self.full().mesh_draws,
+                        &self.full().mesh_pass,
+                    ),
+                }
+            };
 
             // Overflow drops excess instances rather than corrupting the
             // palette or panicking — rate-limited warning. Covers BOTH the
@@ -128,7 +206,39 @@ impl Renderer {
             None
         };
 
-        if render_world && self.full().has_geometry && self.full().index_count > 0 {
+        if render_world {
+            let full = self.full_mut();
+            if let Some(cache) = &mut full.promoted_depth_cache {
+                let plan = cache.plan_frame(&full.promoted_static_records);
+                full.promoted_depth_cache_promoted_count = plan.counters.promoted_count;
+                full.promoted_depth_cache_world_render_skips =
+                    plan.counters.cached_world_render_skips;
+                // Per-frame reset; the real cull-dispatch-skip count is accumulated
+                // in the spot/cube shadow passes (`+= skipped_*_cull_dispatches`).
+                full.promoted_depth_cache_cull_dispatch_skips = 0;
+                full.promoted_entity_occluders_submitted = 0;
+                full.promoted_depth_cache_frame_plan = plan;
+            } else {
+                // No selection → no cache → no promoted slots this frame. The
+                // default plan makes every `*_for_slot` lookup miss, so the
+                // promoted branches in the shadow passes never run.
+                full.promoted_depth_cache_frame_plan = PromotedDepthCacheFramePlan::default();
+                full.promoted_depth_cache_promoted_count = 0;
+                full.promoted_depth_cache_world_render_skips = 0;
+                full.promoted_depth_cache_cull_dispatch_skips = 0;
+                full.promoted_entity_occluders_submitted = 0;
+            }
+        } else {
+            let full = self.full_mut();
+            full.promoted_depth_cache_frame_plan = PromotedDepthCacheFramePlan::default();
+            full.promoted_depth_cache_promoted_count = 0;
+            full.promoted_depth_cache_world_render_skips = 0;
+            full.promoted_depth_cache_cull_dispatch_skips = 0;
+            full.promoted_entity_occluders_submitted = 0;
+            full.promoted_depth_cache_timing_open = false;
+        }
+
+        if render_world {
             self.record_spot_shadow_depth(&mut encoder, mesh_frame_plan.as_ref());
         }
 
@@ -255,13 +365,13 @@ impl Renderer {
         // read, so an entity and its shadow share one pose (no one-frame lag).
         if render_world {
             if let Some(plan) = &mesh_frame_plan {
-                // Mesh group-2 params uniform (binding 4): the dynamic-light count, the
+                // Mesh group-2 params uniform (binding 4): the runtime-light count, the
                 // frame's render-clock time (the SAME value written to forward
                 // `Uniforms.time` this frame — cached in `update_per_frame_uniforms` —
                 // so the scripted-light curves the mesh loop evaluates stay
                 // phase-coherent), and the SAME `lighting_isolation` value written to
                 // forward `Uniforms.lighting_isolation` this frame, so the mesh
-                // dynamic-direct term participates in the lighting-isolation debug
+                // runtime-direct term participates in the lighting-isolation debug
                 // modes exactly as the world dynamic term does (the shader derives
                 // `use_dynamic` from it, mirroring forward.wgsl).
                 {
@@ -271,7 +381,7 @@ impl Renderer {
                         .expect("renderer full-init must complete before full-ready paths run");
                     full.mesh_pass.write_light_params(
                         queue,
-                        full.light_count,
+                        full.total_light_count,
                         full.mesh_dynamic_time,
                         full.lighting_isolation as u32,
                         full.ambient_floor,

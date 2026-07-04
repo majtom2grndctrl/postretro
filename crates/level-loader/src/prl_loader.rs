@@ -18,7 +18,9 @@ use postretro_level_format::cells::CellsSection;
 use postretro_level_format::chunk_light_list::ChunkLightListSection;
 use postretro_level_format::data_script::DataScriptSection;
 use postretro_level_format::delta_sh_volumes::{AFFINITY_FACTOR, DeltaShVolumesSection};
+use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
+use postretro_level_format::entity_shadow_lights::EntityShadowLightsSection;
 use postretro_level_format::fog_cell_masks::FogCellMasksSection;
 use postretro_level_format::fog_volumes::{FogVolumeRecord, FogVolumesSection, MAX_FOG_VOLUMES};
 use postretro_level_format::geometry::{GeometrySection, NO_TEXTURE};
@@ -247,6 +249,111 @@ pub(crate) fn validate_delta_sh(
         });
     }
 
+    Ok(())
+}
+
+pub(crate) fn validate_direct_sh_delta(
+    section: &DirectShDeltaVolumesSection,
+    direct: &DirectShVolumeSection,
+    selected_light_count: usize,
+) -> Result<(), PrlLoadError> {
+    if section.affinity_factor != AFFINITY_FACTOR {
+        return Err(PrlLoadError::DirectShDeltaAffinityFactorMismatch {
+            found: section.affinity_factor,
+            expected: AFFINITY_FACTOR,
+        });
+    }
+
+    let base_dims = direct.grid_dimensions;
+    let expected = expected_affinity_dims(base_dims, AFFINITY_FACTOR);
+    if section.affinity_dims != expected {
+        return Err(PrlLoadError::DirectShDeltaAffinityDimsMismatch {
+            found: section.affinity_dims,
+            base_dims,
+            factor: AFFINITY_FACTOR as u32,
+            expected,
+        });
+    }
+
+    if section.tile_dimension != direct.tile_dimension || section.tile_border != direct.tile_border
+    {
+        return Err(PrlLoadError::DirectShDeltaTileGeometryMismatch {
+            found_dimension: section.tile_dimension,
+            found_border: section.tile_border,
+            base_dimension: direct.tile_dimension,
+            base_border: direct.tile_border,
+        });
+    }
+
+    for (entry, &selection_index) in section.affinity_lights.iter().enumerate() {
+        if selection_index as usize >= selected_light_count {
+            return Err(section_validation(
+                "DirectShDeltaVolumes",
+                format!(
+                    "affinity_lights[{entry}] selection index {selection_index} out of range for {selected_light_count} selected light(s)"
+                ),
+            ));
+        }
+    }
+
+    let mut seen_selection_indices = vec![false; selected_light_count];
+    for &selection_index in &section.affinity_lights {
+        seen_selection_indices[selection_index as usize] = true;
+    }
+    if let Some(missing_index) = seen_selection_indices
+        .iter()
+        .position(|&has_delta| !has_delta)
+    {
+        return Err(section_validation(
+            "DirectShDeltaVolumes",
+            format!(
+                "missing usable delta entry for selected light index {missing_index} of {selected_light_count}"
+            ),
+        ));
+    }
+
+    Ok(())
+}
+
+pub(crate) fn validate_entity_shadow_light_selection(
+    selected_light_indices: &[u32],
+    lights: &[MapLight],
+) -> Result<(), PrlLoadError> {
+    for &index in selected_light_indices {
+        let Some(light) = lights.get(index as usize) else {
+            return Err(section_validation(
+                "EntityShadowLights",
+                format!(
+                    "light index {index} exceeds level light count {}",
+                    lights.len()
+                ),
+            ));
+        };
+        if light.is_dynamic {
+            return Err(section_validation(
+                "EntityShadowLights",
+                format!("light index {index} references a dynamic-tier light"),
+            ));
+        }
+        if light.light_type == LightType::Directional {
+            return Err(section_validation(
+                "EntityShadowLights",
+                format!("light index {index} references a directional light"),
+            ));
+        }
+        if light.shadow_type != ShadowType::StaticLightMap {
+            return Err(section_validation(
+                "EntityShadowLights",
+                format!("light index {index} is not a static_light_map direct contributor"),
+            ));
+        }
+        if light.animated_slot.is_some() {
+            return Err(section_validation(
+                "EntityShadowLights",
+                format!("light index {index} references an animated static light"),
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -1488,6 +1595,125 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         None => None,
     };
 
+    let mut entity_shadow_lights: Vec<u32> = match prl_format::read_section_data(
+        &mut cursor,
+        &meta,
+        SectionId::EntityShadowLights as u32,
+    )? {
+        // A corrupt/tampered EntityShadowLights section degrades to empty (warn +
+        // clear), mirroring the sibling DirectShDeltaVolumes path below — presence
+        // without a usable selection means "no promotion", not a bricked load.
+        // Older PRLs (absent section) already load fine via the `None` arm. The
+        // outer `?` still propagates a structurally broken section table.
+        Some(data) => match EntityShadowLightsSection::from_bytes(&data) {
+            Ok(section) => {
+                if direct_sh_volume.is_none() {
+                    if !section.light_indices.is_empty() {
+                        log::warn!(
+                            "[PRL] EntityShadowLights present without DirectShVolume; ignoring {} selected light(s)",
+                            section.light_indices.len()
+                        );
+                    }
+                    Vec::new()
+                } else if let Err(err) =
+                    validate_entity_shadow_light_selection(&section.light_indices, &lights)
+                {
+                    log::warn!(
+                        "[PRL] EntityShadowLights invalid selection; clearing {} selected static light(s): {err}",
+                        section.light_indices.len()
+                    );
+                    Vec::new()
+                } else {
+                    log::info!(
+                        "[PRL] EntityShadowLights: {} selected static light(s)",
+                        section.light_indices.len()
+                    );
+                    section.light_indices
+                }
+            }
+            Err(err) => {
+                log::warn!(
+                    "[PRL] EntityShadowLights malformed; treating as empty (no promotion): {err}"
+                );
+                Vec::new()
+            }
+        },
+        None => Vec::new(),
+    };
+
+    let direct_sh_delta_volumes: Option<DirectShDeltaVolumesSection> =
+        match prl_format::read_section_data(
+            &mut cursor,
+            &meta,
+            SectionId::DirectShDeltaVolumes as u32,
+        )? {
+            Some(data) => {
+                if entity_shadow_lights.is_empty() {
+                    log::warn!(
+                        "[PRL] DirectShDeltaVolumes present without selected EntityShadowLights; ignoring section"
+                    );
+                    None
+                } else {
+                    match DirectShDeltaVolumesSection::from_bytes(&data) {
+                        Ok(section) => {
+                            if let Some(direct) = direct_sh_volume.as_ref() {
+                                match validate_direct_sh_delta(
+                                    &section,
+                                    direct,
+                                    entity_shadow_lights.len(),
+                                ) {
+                                    Ok(()) => {
+                                        log::info!(
+                                            "[PRL] DirectShDeltaVolumes: {} selected-light CSR entr(y/ies), affinity grid {}×{}×{} ({} delta subblock halves)",
+                                            section.affinity_lights.len(),
+                                            section.affinity_dims[0],
+                                            section.affinity_dims[1],
+                                            section.affinity_dims[2],
+                                            section.delta_subblocks.len(),
+                                        );
+                                        Some(section)
+                                    }
+                                    Err(err) => {
+                                        log::warn!(
+                                            "[PRL] DirectShDeltaVolumes unusable for EntityShadowLights; clearing {} selected static light(s): {err}",
+                                            entity_shadow_lights.len()
+                                        );
+                                        entity_shadow_lights.clear();
+                                        None
+                                    }
+                                }
+                            } else {
+                                log::warn!(
+                                    "[PRL] DirectShDeltaVolumes present without DirectShVolume; clearing {} selected static light(s)",
+                                    entity_shadow_lights.len()
+                                );
+                                entity_shadow_lights.clear();
+                                None
+                            }
+                        }
+                        Err(err) => {
+                            log::warn!(
+                                "[PRL] DirectShDeltaVolumes malformed; clearing {} selected static light(s): {err}",
+                                entity_shadow_lights.len()
+                            );
+                            entity_shadow_lights.clear();
+                            None
+                        }
+                    }
+                }
+            }
+            None => {
+                if !entity_shadow_lights.is_empty() {
+                    log::warn!(
+                        "[PRL] EntityShadowLights present without DirectShDeltaVolumes; clearing {} selected static light(s)",
+                        entity_shadow_lights.len()
+                    );
+                    entity_shadow_lights.clear();
+                }
+                None
+            }
+        };
+
     // Optional — absent when map has no `data_script` worldspawn KVP.
     let data_script: Option<DataScriptSection> =
         match prl_format::read_section_data(&mut cursor, &meta, SectionId::DataScript as u32)? {
@@ -1711,6 +1937,8 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         animated_light_weight_maps,
         delta_sh_volumes,
         direct_sh_volume,
+        direct_sh_delta_volumes,
+        entity_shadow_lights,
         data_script,
         map_entities,
         fog_volumes,
@@ -1720,4 +1948,48 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         navmesh,
         cell_draw_index,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn static_light() -> MapLight {
+        MapLight {
+            origin: [0.0, 0.0, 0.0],
+            light_type: LightType::Point,
+            intensity: 1.0,
+            color: [1.0, 1.0, 1.0],
+            falloff_model: FalloffModel::Linear,
+            falloff_range: 8.0,
+            cone_angle_inner: 0.0,
+            cone_angle_outer: 0.0,
+            cone_direction: [0.0, 0.0, 0.0],
+            is_dynamic: false,
+            casts_entity_shadows: false,
+            animated_slot: None,
+            tags: Vec::new(),
+            cell_index: ALPHA_LIGHT_LEAF_UNASSIGNED,
+            shadow_type: ShadowType::StaticLightMap,
+        }
+    }
+
+    #[test]
+    fn entity_shadow_selection_rejects_animated_static_light_for_degrade_path() {
+        let mut light = static_light();
+        light.animated_slot = Some(0);
+
+        let err = validate_entity_shadow_light_selection(&[0], &[light]).unwrap_err();
+
+        match err {
+            PrlLoadError::SectionValidation { section, message } => {
+                assert_eq!(section, "EntityShadowLights");
+                assert!(
+                    message.contains("animated static light"),
+                    "unexpected validation message: {message}"
+                );
+            }
+            other => panic!("unexpected validation error: {other:?}"),
+        }
+    }
 }

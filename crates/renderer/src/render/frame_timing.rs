@@ -154,6 +154,19 @@ impl FrameTiming {
         }
     }
 
+    /// Encoder-level timestamp bracket for commands that are not inside a
+    /// render or compute pass, such as texture copies.
+    pub fn write_encoder_start(&self, encoder: &mut wgpu::CommandEncoder, pair_idx: usize) {
+        self.mark_pair_written(pair_idx);
+        let base = (pair_idx as u32) * QUERIES_PER_PASS;
+        encoder.write_timestamp(&self.query_set, base);
+    }
+
+    pub fn write_encoder_end(&self, encoder: &mut wgpu::CommandEncoder, pair_idx: usize) {
+        let base = (pair_idx as u32) * QUERIES_PER_PASS;
+        encoder.write_timestamp(&self.query_set, base + 1);
+    }
+
     fn mark_pair_written(&self, pair_idx: usize) {
         if pair_idx < 64 {
             self.pairs_written

@@ -56,6 +56,17 @@ pub(crate) struct FilteredDynamicLights {
     pub source_indices: Vec<usize>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub(crate) struct FilteredShadowCandidates {
+    pub lights: Vec<MapLight>,
+    pub influences: Vec<LightInfluence>,
+    /// Original index into the full level-light list for each candidate.
+    pub source_indices: Vec<usize>,
+    /// Selection index for selected static lights; `None` for dynamic-tier
+    /// candidates.
+    pub selection_indices: Vec<Option<usize>>,
+}
+
 /// Shadow candidate reachability uses the runtime influence volume, not the
 /// authored light origin/range. Missing influence entries are uncullable,
 /// matching the loader/forward-light degradation contract.
@@ -108,13 +119,23 @@ pub(crate) fn filter_dynamic_lights(
 /// whether moving-ENTITY occluders are drawn into the already-allocated slot
 /// (`entity_occluder_eligible`), not whether the slot exists.
 ///
-/// Ranking is layered on top of the existing `eligible_lights`
-/// visibility/brightness slice in `rank_lights`.
+/// Ranking runs downstream in `assign_shadow_pool_slots_with_promoted_static`
+/// (renderer_light_slots.rs): it scores this candidate slice and competes the
+/// dynamic and promoted-static lights for the pool's slots.
+#[cfg(test)]
 pub(crate) fn filter_entity_shadow_candidates(
     lights: &[MapLight],
     influences: &[LightInfluence],
-) -> FilteredDynamicLights {
-    let mut filtered = FilteredDynamicLights::default();
+) -> FilteredShadowCandidates {
+    filter_entity_shadow_candidates_with_selection(lights, influences, &[])
+}
+
+pub(crate) fn filter_entity_shadow_candidates_with_selection(
+    lights: &[MapLight],
+    influences: &[LightInfluence],
+    entity_shadow_lights: &[u32],
+) -> FilteredShadowCandidates {
+    let mut filtered = FilteredShadowCandidates::default();
     for (i, l) in lights.iter().enumerate().filter(|(_, l)| l.is_dynamic) {
         let inf = influences
             .get(i)
@@ -123,24 +144,145 @@ pub(crate) fn filter_entity_shadow_candidates(
         filtered.lights.push(l.clone());
         filtered.influences.push(inf);
         filtered.source_indices.push(i);
+        filtered.selection_indices.push(None);
+    }
+    // Compacted: a skipped selected-static entry is simply not a candidate. The
+    // stamped `selection_index` is the RAW position in `entity_shadow_lights`,
+    // so it stays aligned with the raw-length parallel vectors below.
+    for (selection_index, &source_index) in entity_shadow_lights.iter().enumerate() {
+        let source_index = source_index as usize;
+        let Some((light, inf)) = resolve_selected_static_light(lights, influences, source_index)
+        else {
+            continue;
+        };
+        filtered.lights.push(light);
+        filtered.influences.push(inf);
+        filtered.source_indices.push(source_index);
+        filtered.selection_indices.push(Some(selection_index));
     }
     filtered
 }
 
-/// Match a shadow candidate's source level-light index against the
-/// `level_lights` slice and return that level-light's per-frame effective
-/// brightness. Returns `None` when the candidate is no longer represented in
-/// `level_lights`.
-pub(crate) fn level_brightness_for_candidate(
+/// Build the selected-static light/influence/source-index vectors index-parallel
+/// to the selection index (0..N over `entity_shadow_lights`), NOT compacted: the
+/// promotion driver, the per-selected-light weight buffer, and the baked delta
+/// `affinity_lights` all key on the raw selection index, so every position must
+/// occupy its slot. A skipped entry (dynamic-tier or a corrupt out-of-range
+/// index) carries a sentinel that no candidate references — the driver never
+/// promotes it, so the slot is never read; it exists only to keep the lookup
+/// `[selection_index]` a direct aligned index.
+pub(crate) fn filter_selected_static_entity_shadow_lights(
+    lights: &[MapLight],
+    influences: &[LightInfluence],
+    entity_shadow_lights: &[u32],
+) -> FilteredDynamicLights {
+    let mut filtered = FilteredDynamicLights::default();
+    for &source_index in entity_shadow_lights {
+        let source_index = source_index as usize;
+        match resolve_selected_static_light(lights, influences, source_index) {
+            Some((light, inf)) => {
+                filtered.lights.push(light);
+                filtered.influences.push(inf);
+                filtered.source_indices.push(source_index);
+            }
+            None => {
+                filtered.lights.push(sentinel_selected_static_light());
+                filtered.influences.push(uncullable_light_influence());
+                filtered.source_indices.push(UNPROMOTABLE_SOURCE_INDEX);
+            }
+        }
+    }
+    filtered
+}
+
+/// Resolve one selected-static entry by its source index into the full level
+/// light array. `Some(light, influence)` when the index is in range AND the
+/// light is baked-tier (`!is_dynamic`); `None` when the entry can never promote
+/// (out-of-range index, or a dynamic-tier light). Missing influence entries
+/// fall back to uncullable, matching the loader/forward-light degradation
+/// contract. Shared by the candidate filter (skips `None`) and the parallel
+/// selected-static filter (fills `None` slots with a sentinel).
+fn resolve_selected_static_light(
+    lights: &[MapLight],
+    influences: &[LightInfluence],
+    source_index: usize,
+) -> Option<(MapLight, LightInfluence)> {
+    let light = lights.get(source_index)?;
+    if light.is_dynamic {
+        return None;
+    }
+    let influence = influences
+        .get(source_index)
+        .cloned()
+        .unwrap_or_else(uncullable_light_influence);
+    Some((light.clone(), influence))
+}
+
+/// Source-index marker for a selected-static slot that resolved to nothing.
+/// Never referenced by a candidate, so never read as a promoted light index.
+const UNPROMOTABLE_SOURCE_INDEX: usize = usize::MAX;
+
+/// Placeholder light for a selected-static slot that resolved to nothing (a
+/// dynamic-tier or out-of-range index in the `EntityShadowLights` section).
+/// Keeps `filter_selected_static_entity_shadow_lights` index-parallel to the
+/// selection index; the driver never promotes it, so it is never read.
+fn sentinel_selected_static_light() -> MapLight {
+    MapLight {
+        origin: [0.0; 3],
+        light_type: postretro_level_loader::LightType::Point,
+        intensity: 0.0,
+        color: [0.0; 3],
+        falloff_model: postretro_level_loader::FalloffModel::Linear,
+        falloff_range: 0.0,
+        cone_angle_inner: 0.0,
+        cone_angle_outer: 0.0,
+        cone_direction: [0.0, 0.0, 1.0],
+        is_dynamic: false,
+        casts_entity_shadows: false,
+        animated_slot: None,
+        tags: Vec::new(),
+        cell_index: ALPHA_LIGHT_LEAF_UNASSIGNED,
+        shadow_type: postretro_level_loader::ShadowType::StaticLightMap,
+    }
+}
+
+/// Build a reverse lookup from full-level-light source index to `level_lights`
+/// position, so per-candidate brightness reads are O(1) instead of a linear
+/// scan of `level_light_source_indices` (fixed within a frame). Sized to the
+/// largest source index present; absent indices read back `None` (candidate not
+/// represented in `level_lights`).
+pub(crate) fn build_level_light_index_lookup(
     level_light_source_indices: &[usize],
+) -> Vec<Option<usize>> {
+    let len = level_light_source_indices
+        .iter()
+        .copied()
+        .max()
+        .map_or(0, |m| m + 1);
+    let mut lookup = vec![None; len];
+    for (level_idx, &source_index) in level_light_source_indices.iter().enumerate() {
+        if let Some(slot) = lookup.get_mut(source_index) {
+            *slot = Some(level_idx);
+        }
+    }
+    lookup
+}
+
+/// Look up a shadow candidate's per-frame effective brightness by its source
+/// level-light index, via the reverse lookup from `build_level_light_index_lookup`.
+/// Returns `None` when the candidate is not represented in `level_lights`. The
+/// per-frame hot paths build the lookup once and call this directly, keeping the
+/// per-candidate cost O(1).
+pub(crate) fn level_brightness_for_candidate_indexed(
+    level_light_index_lookup: &[Option<usize>],
     candidate_source_index: usize,
     effective_brightness: &[f32],
 ) -> Option<f32> {
-    level_light_source_indices
-        .iter()
-        .enumerate()
-        .find(|(_, source_index)| **source_index == candidate_source_index)
-        .and_then(|(i, _)| effective_brightness.get(i).copied())
+    level_light_index_lookup
+        .get(candidate_source_index)
+        .copied()
+        .flatten()
+        .and_then(|level_idx| effective_brightness.get(level_idx).copied())
 }
 
 /// Translate a slot assignment from candidate-index space into
@@ -171,6 +313,16 @@ pub(crate) fn slot_assignment_for_level_lights(
         }
     }
     out
+}
+
+pub(crate) fn shadow_candidate_is_promoted_static(
+    selection_indices: &[Option<usize>],
+    candidate_index: usize,
+) -> bool {
+    selection_indices
+        .get(candidate_index)
+        .and_then(|selection| *selection)
+        .is_some()
 }
 
 impl Renderer {
@@ -302,21 +454,38 @@ impl Renderer {
         if slot_assignment.is_empty() {
             return Vec::new();
         }
+        // Fixed within the frame — build the source→level reverse lookup once so
+        // each per-slot brightness read is O(1) instead of scanning
+        // `level_light_source_indices`.
+        let level_light_index_lookup =
+            build_level_light_index_lookup(&full.level_light_source_indices);
         let mut out = Vec::new();
         for (light_idx, &slot) in slot_assignment.iter().enumerate() {
             if slot == crate::lighting::spot_shadow::NO_SHADOW_SLOT {
                 continue;
             }
-            let Some(light) = full.level_lights.get(light_idx) else {
+            if shadow_candidate_is_promoted_static(
+                &full.shadow_candidate_selection_indices,
+                light_idx,
+            ) {
+                continue;
+            }
+            let Some(light) = full.shadow_candidate_lights.get(light_idx) else {
                 continue;
             };
             if !matches!(light.light_type, postretro_level_loader::LightType::Spot) {
                 continue;
             }
             let multiplier = full
-                .light_effective_brightness
+                .shadow_candidate_source_indices
                 .get(light_idx)
-                .copied()
+                .and_then(|&source_index| {
+                    level_brightness_for_candidate_indexed(
+                        &level_light_index_lookup,
+                        source_index,
+                        &full.light_effective_brightness,
+                    )
+                })
                 .unwrap_or(1.0);
             if multiplier < BRIGHTNESS_SUPPRESSION_THRESHOLD {
                 continue;

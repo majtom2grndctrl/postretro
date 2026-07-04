@@ -40,8 +40,9 @@ pub const MAX_INSTANCES: usize = MAX_PALETTE_ENTRIES;
 /// its final interpolated world transform, a deterministic phase seed (the raw
 /// `EntityId`) used to de-sync animation across a wave, the resolved per-frame
 /// sample parameters, and an optional one-time capture instruction. Produced by
-/// the render-frame collector (game side) after the visibility cull; consumed by
-/// the frame planner below.
+/// the render-frame collector (game side) after forward visibility and selected
+/// static-light shadow relevance are classified; consumed by the frame planner
+/// below.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MeshInstanceInput {
     pub model: ModelHandle,
@@ -66,10 +67,9 @@ pub struct MeshInstanceInput {
     /// upgrades a miss to a resample regardless of this flag). A `Copy` bool —
     /// no per-instance heap.
     pub resample: bool,
-    /// In the camera's portal-visible cell set. The mesh collector emits only
-    /// visible instances, so live frame inputs are `true`. The planner keeps this
-    /// flag to preserve a defensive forward-draw filter for synthetic or future
-    /// callers.
+    /// In the camera's portal-visible cell set. Selected static-light shadow
+    /// casters may be retained with this `false`; the forward draw filters them
+    /// out while shadow depth passes may still consume them.
     pub forward_visible: bool,
 }
 
@@ -104,9 +104,9 @@ pub struct PlannedInstance {
     /// so a culled instance re-entering view never shows a stale pose. `Copy`
     /// bool — no per-instance heap.
     pub resample: bool,
-    /// Carried verbatim from [`MeshInstanceInput::forward_visible`]. Live collector
-    /// inputs are visible-only; `record_draws` still filters this flag so mixed
-    /// synthetic inputs cannot draw non-forward instances.
+    /// Carried verbatim from [`MeshInstanceInput::forward_visible`]. `record_draws`
+    /// filters this flag so selected static-light shadow casters outside the
+    /// forward-visible set do not draw in the color pass.
     pub forward_visible: bool,
 }
 
@@ -174,9 +174,10 @@ pub trait JointCounts {
 /// `joints` (never uploaded) is silently skipped and not counted as a budget
 /// drop.
 ///
-/// The mesh collector emits visible-only instances. If a synthetic or future
-/// caller passes mixed visibility flags, the forward-visible set is budgeted
-/// first so non-forward instances cannot evict drawable meshes.
+/// The mesh collector may emit mixed forward/non-forward instances when a
+/// non-forward mesh is relevant to a selected static-light shadow. The
+/// forward-visible set is budgeted first so shadow-only instances cannot evict
+/// drawable meshes.
 ///
 /// The returned plan's groups carry dense instance offsets so the GPU layer can
 /// write one flat instance SSBO and issue one instanced draw per group.
@@ -184,20 +185,37 @@ pub fn plan_mesh_frame(
     instances: &[MeshInstanceInput],
     joints: &impl JointCounts,
 ) -> MeshFramePlan {
-    let mut groups: Vec<ModelDrawGroup> = Vec::new();
-    let mut palette_cursor: usize = 0;
-    let mut instance_count: usize = 0;
-    let mut dropped: u32 = 0;
-
-    // Budget forward-visible instances first. Live collector input is visible-only,
-    // but mixed synthetic input should never evict a forward instance.
-    // Two passes over the slice, no clone.
+    // Budget forward-visible instances first so shadow-only inputs never evict a
+    // forward instance. Two passes over the slice, no clone.
     let forward_first = instances
         .iter()
         .filter(|i| i.forward_visible)
         .chain(instances.iter().filter(|i| !i.forward_visible));
 
-    for inst in forward_first {
+    plan_ordered_mesh_frame(forward_first, joints)
+}
+
+/// Plan only forward-visible instances, using the same cache/budget behavior as
+/// [`plan_mesh_frame`]. Used when shadow-only retained instances cannot be
+/// consumed by any promoted static slot this frame; dynamic-light shadow passes
+/// and the forward mesh pass then keep the pre-promotion cost profile.
+pub fn plan_forward_visible_mesh_frame(
+    instances: &[MeshInstanceInput],
+    joints: &impl JointCounts,
+) -> MeshFramePlan {
+    plan_ordered_mesh_frame(instances.iter().filter(|i| i.forward_visible), joints)
+}
+
+fn plan_ordered_mesh_frame<'a>(
+    ordered_instances: impl Iterator<Item = &'a MeshInstanceInput>,
+    joints: &impl JointCounts,
+) -> MeshFramePlan {
+    let mut groups: Vec<ModelDrawGroup> = Vec::new();
+    let mut palette_cursor: usize = 0;
+    let mut instance_count: usize = 0;
+    let mut dropped: u32 = 0;
+
+    for inst in ordered_instances {
         let Some(joint_count) = joints.joint_count(&inst.model) else {
             // Model not in the cache (never uploaded) — skip, not a budget drop.
             continue;
@@ -471,6 +489,33 @@ mod tests {
                 .flat_map(|g| &g.instances)
                 .all(|i| i.forward_visible),
             "only forward-visible instances survived the budget squeeze",
+        );
+    }
+
+    #[test]
+    fn forward_visible_plan_excludes_shadow_only_instances_before_upload() {
+        let joints = joints(&[("grunt", 10)]);
+        let instances = [
+            instance("grunt", 1.0, 0),
+            non_forward_instance("grunt", 2.0, 1),
+            instance("grunt", 3.0, 2),
+        ];
+        let plan = plan_forward_visible_mesh_frame(&instances, &joints);
+
+        let seeds: Vec<u32> = plan
+            .groups
+            .iter()
+            .flat_map(|g| g.instances.iter().map(|i| i.phase_seed))
+            .collect();
+        assert_eq!(seeds, vec![0, 2]);
+        assert_eq!(plan.instance_count, 2);
+        assert_eq!(plan.dropped, 0);
+        assert!(
+            plan.groups
+                .iter()
+                .flat_map(|g| &g.instances)
+                .all(|i| i.forward_visible),
+            "forward-only upload plan must not contain shadow-only instances",
         );
     }
 

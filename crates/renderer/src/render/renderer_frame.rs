@@ -150,6 +150,7 @@ impl Renderer {
             camera_position,
             ambient_floor: full.ambient_floor,
             light_count: full.light_count,
+            total_light_count: full.total_light_count,
             time,
             lighting_isolation: full.lighting_isolation,
             indirect_scale: full.indirect_scale,

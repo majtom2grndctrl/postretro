@@ -12,6 +12,8 @@ use postretro_model::ModelHandle;
 use postretro_model::sample_params::MeshSampleParams;
 use postretro_render_cpu::mesh_instances::MeshInstanceInput;
 use postretro_render_cpu::mesh_pass::mesh_visible;
+use postretro_render_data::cone_frustum::Aabb;
+use postretro_render_data::influence::LightInfluence;
 use postretro_visibility::VisibleCells;
 
 /// Animation time-slicing distance thresholds + per-bucket resample strides.
@@ -78,7 +80,10 @@ fn should_resample(distance: f32, frame_index: u64, seed: u32, force: bool) -> b
 /// Runs in the render-frame collection sub-stage (NOT the game-logic tick): it
 /// reads the registry + the world + this frame's visible-cell set, applies the
 /// pure `mesh_pass::mesh_visible` cull, and emits per-instance draw inputs
-/// (model handle + interpolated world transform). It never touches wgpu — the
+/// (model handle + interpolated world transform). Forward-visible instances draw
+/// in the color pass; non-forward instances are retained only when they intersect
+/// a compiler-selected static entity-shadow light, so they can cast into promoted
+/// static shadow maps without drawing forward. It never touches wgpu — the
 /// renderer consumes [`instances`] and owns the GPU upload + draw recording.
 ///
 /// [`instances`]: MeshRenderCollector::instances
@@ -252,7 +257,18 @@ impl MeshRenderCollector {
             };
             let current_model_position = current.position + mesh.origin_offset;
             let forward_visible = mesh_visible(world, visible, current_model_position);
-            if !forward_visible {
+            let handle = ModelHandle::from(mesh.model.clone());
+            let current_model_transform = glam::Mat4::from_scale_rotation_translation(
+                current.scale,
+                current.rotation,
+                current_model_position,
+            );
+            let current_model_bounds = tables
+                .model_bounds(&handle)
+                .transformed(&current_model_transform);
+            let selected_static_shadow_relevant =
+                selected_static_shadow_light_reaches_bounds(world, &current_model_bounds);
+            if !forward_visible && !selected_static_shadow_relevant {
                 continue;
             }
             // Draw at the interpolated transform (smooth between ticks). Fall
@@ -262,7 +278,6 @@ impl MeshRenderCollector {
                 .interpolated_transform(id, alpha)
                 .unwrap_or(*current);
 
-            let handle = ModelHandle::from(mesh.model.clone());
             let seed = id.to_raw();
             let (sample, capture) =
                 resolve_sample(mesh.animation.as_ref(), &handle, tables, anim_time, seed);
@@ -331,6 +346,35 @@ impl MeshRenderCollector {
     pub(crate) fn resample_count(&self) -> u32 {
         self.resample_count
     }
+}
+
+fn selected_static_shadow_light_reaches_bounds(world: &LevelWorld, bounds: &Aabb) -> bool {
+    world.entity_shadow_lights.iter().any(|&light_index| {
+        let influence = world
+            .light_influences
+            .get(light_index as usize)
+            .cloned()
+            .or_else(|| influence_from_light(world.lights.get(light_index as usize)));
+        let Some(influence) = influence else {
+            return false;
+        };
+        let closest = influence.center.clamp(bounds.min, bounds.max);
+        closest.distance_squared(influence.center) <= influence.radius.max(0.0).powi(2)
+    })
+}
+
+fn influence_from_light(
+    light: Option<&postretro_level_loader::MapLight>,
+) -> Option<LightInfluence> {
+    let light = light?;
+    Some(LightInfluence {
+        center: glam::Vec3::new(
+            light.origin[0] as f32,
+            light.origin[1] as f32,
+            light.origin[2] as f32,
+        ),
+        radius: light.falloff_range,
+    })
 }
 
 /// The state fingerprint for an animated entity: its current entered-state stamp
@@ -479,6 +523,8 @@ mod tests {
             animated_light_weight_maps: None,
             delta_sh_volumes: None,
             direct_sh_volume: None,
+            direct_sh_delta_volumes: None,
+            entity_shadow_lights: vec![],
             data_script: None,
             map_entities: Vec::new(),
             fog_volumes: Vec::new(),
@@ -549,6 +595,13 @@ mod tests {
             center: Vec3::ZERO,
             radius: 20.0,
         }];
+        world
+    }
+
+    fn single_cell_world_with_selected_static_shadow_light() -> LevelWorld {
+        let mut world = single_cell_world_with_covering_shadow_light();
+        world.lights[0].is_dynamic = false;
+        world.entity_shadow_lights = vec![0];
         world
     }
 
@@ -893,9 +946,10 @@ mod tests {
     /// Tables for a model "grunt" with idle (idx 0, 2s) + walk (idx 1, 2s).
     fn grunt_tables() -> MeshClipTables {
         let mut t = MeshClipTables::new();
-        t.insert(
+        t.insert_with_bounds(
             ModelHandle::from("grunt"),
             &clip_meta(&[("idle", 2.0), ("walk", 2.0)]),
+            Aabb::default(),
         );
         t
     }
@@ -933,7 +987,11 @@ mod tests {
         let world = single_cell_world();
         let mut collector = MeshRenderCollector::new();
         let mut tables = MeshClipTables::new();
-        tables.insert(ModelHandle::from("prop"), &clip_meta(&[("spin", 4.0)]));
+        tables.insert_with_bounds(
+            ModelHandle::from("prop"),
+            &clip_meta(&[("spin", 4.0)]),
+            Aabb::default(),
+        );
         spawn_mesh(&mut reg, "prop", Vec3::new(1.0, 0.0, 0.0));
         spawn_mesh(&mut reg, "prop", Vec3::new(2.0, 0.0, 0.0));
 
@@ -1358,6 +1416,73 @@ mod tests {
         assert!(
             collector.instances().is_empty(),
             "a mesh in cell 0 must not be retained when only cell 1 is visible",
+        );
+    }
+
+    #[test]
+    fn collect_keeps_nonvisible_mesh_when_selected_static_light_reaches_it() {
+        // Static-light entity shadows need a shadow-caster set wider than the
+        // forward-visible set. Non-forward instances still skip the color pass via
+        // `forward_visible = false`, but can cast into promoted static shadow maps.
+        let mut registry = EntityRegistry::new();
+        let mut collector = MeshRenderCollector::new();
+        let world = single_cell_world_with_selected_static_shadow_light();
+        spawn_mesh(&mut registry, "decraniated", Vec3::new(1.0, 0.0, 0.0));
+
+        collector.collect(
+            &registry,
+            &world,
+            &VisibleCells::Culled(vec![1]),
+            1.0,
+            0.0,
+            &MeshClipTables::new(),
+            glam::Vec3::ZERO,
+        );
+
+        assert_eq!(collector.instances().len(), 1);
+        assert!(
+            !collector.instances()[0].forward_visible,
+            "selected static-light shadow casters outside the forward set must not draw forward",
+        );
+    }
+
+    #[test]
+    fn collect_retains_selected_static_shadow_caster_by_bounds_not_origin() {
+        // Regression: off-PVS selected-static casters were retained only when
+        // their model origin was inside the light. The renderer culls shadow
+        // casters by transformed model bounds, so collection must use the same
+        // conservative sphere-vs-AABB relevance.
+        let mut registry = EntityRegistry::new();
+        let mut collector = MeshRenderCollector::new();
+        let mut world = single_cell_world_with_selected_static_shadow_light();
+        world.lights[0].falloff_range = 5.0;
+        world.light_influences[0].radius = 5.0;
+        spawn_mesh(&mut registry, "wide-prop", Vec3::new(6.0, 0.0, 0.0));
+
+        let mut tables = MeshClipTables::new();
+        tables.insert_with_bounds(
+            ModelHandle::from("wide-prop"),
+            &[],
+            Aabb {
+                min: Vec3::new(-2.0, -0.5, -0.5),
+                max: Vec3::new(0.0, 0.5, 0.5),
+            },
+        );
+
+        collector.collect(
+            &registry,
+            &world,
+            &VisibleCells::Culled(vec![1]),
+            1.0,
+            0.0,
+            &tables,
+            glam::Vec3::ZERO,
+        );
+
+        assert_eq!(collector.instances().len(), 1);
+        assert!(
+            !collector.instances()[0].forward_visible,
+            "origin is outside radius, but transformed bounds intersect the selected static light",
         );
     }
 

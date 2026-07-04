@@ -12,7 +12,9 @@ pub mod cells;
 pub mod chunk_light_list;
 pub mod data_script;
 pub mod delta_sh_volumes;
+pub mod direct_sh_delta_volumes;
 pub mod direct_sh_volume;
+pub mod entity_shadow_lights;
 pub mod fog_cell_masks;
 pub mod fog_volumes;
 pub mod geometry;
@@ -232,6 +234,15 @@ pub enum SectionId {
     /// split planes but its terminal children are cell ids, not BSP leaf
     /// records. See `cell_locator::CellLocatorSection`.
     CellLocator = 39,
+
+    /// Compiler-selected baked-tier level-light indices that may later be
+    /// promoted into runtime entity-shadow pools. See
+    /// `entity_shadow_lights::EntityShadowLightsSection`.
+    EntityShadowLights = 40,
+
+    /// Per-selected-light sparse direct-SH delta tiles, indexed by affinity
+    /// cell. See `direct_sh_delta_volumes::DirectShDeltaVolumesSection`.
+    DirectShDeltaVolumes = 41,
 }
 
 impl SectionId {
@@ -264,6 +275,8 @@ impl SectionId {
             37 => Some(Self::CellDrawIndex),
             38 => Some(Self::Cells),
             39 => Some(Self::CellLocator),
+            40 => Some(Self::EntityShadowLights),
+            41 => Some(Self::DirectShDeltaVolumes),
             _ => None,
         }
     }

@@ -100,28 +100,28 @@
 // entity 2
 {
 "classname" "target_dummy"
-"origin" "200 200 16"
+"origin" "808 248 16"
 "angles" "0 180 0"
 "_tags" "dummy"
 }
 // entity 3
 {
 "classname" "target_dummy"
-"origin" "200 240 16"
-"angles" "0 180 0"
+"origin" "216 240 16"
+"angles" "0 0 0"
 "_tags" "dummy"
 }
 // entity 4
 {
 "classname" "target_dummy"
-"origin" "200 280 16"
+"origin" "440 264 16"
 "angles" "0 180 0"
 "_tags" "dummy"
 }
 // entity 5
 {
 "classname" "target_dummy"
-"origin" "200 320 16"
+"origin" "664 256 16"
 "angles" "0 180 0"
 "_tags" "dummy"
 }
@@ -129,80 +129,80 @@
 {
 "classname" "light_spot"
 "origin" "160 256 100"
-"light" "175"
-"_falloff_range" "150"
+"light" "400"
+"_falloff_range" "300"
 "_cone" "20"
-"_cone2" "50"
+"_cone2" "75"
 "_color" "255 203 157"
 "angles" "-90 0 0"
 }
 // entity 7
 {
 "classname" "light_spot"
-"origin" "384 160 100"
-"light" "175"
-"_falloff_range" "150"
+"origin" "384 32 100"
+"light" "400"
+"_falloff_range" "300"
 "_cone" "20"
-"_cone2" "50"
+"_cone2" "75"
 "_color" "255 203 157"
-"angles" "-90 0 0"
+"angles" "-75 90 0"
 }
 // entity 8
 {
 "classname" "light_spot"
-"origin" "512 384 100"
-"light" "175"
-"_falloff_range" "150"
+"origin" "448 480 100"
+"light" "400"
+"_falloff_range" "300"
 "_cone" "20"
-"_cone2" "50"
+"_cone2" "75"
 "_color" "255 203 157"
-"angles" "-90 0 0"
-"_shadow_type" "sdf"
+"angles" "-75 -90 0"
 }
 // entity 9
 {
 "classname" "light_spot"
-"origin" "640 160 100"
-"light" "175"
-"_falloff_range" "150"
+"origin" "640 32 100"
+"light" "400"
+"_falloff_range" "300"
 "_cone" "20"
-"_cone2" "50"
+"_cone2" "75"
 "_color" "255 203 157"
-"angles" "-90 0 0"
+"angles" "-75 90 0"
+"style" "2"
 }
 // entity 10
 {
 "classname" "light_spot"
 "origin" "896 256 100"
-"light" "175"
-"_falloff_range" "150"
+"light" "400"
+"_falloff_range" "300"
 "_cone" "20"
-"_cone2" "50"
+"_cone2" "75"
 "_color" "255 203 157"
 "angles" "-90 0 0"
 }
 // entity 11
 {
 "classname" "light_spot"
-"origin" "256 448 100"
-"light" "175"
-"_falloff_range" "150"
+"origin" "256 480 100"
+"light" "400"
+"_falloff_range" "300"
 "_cone" "20"
-"_cone2" "50"
+"_cone2" "75"
 "_color" "255 203 157"
-"angles" "-90 0 0"
+"angles" "-75 -90 0"
 }
 // entity 12
 {
 "classname" "light_spot"
-"origin" "768 448 100"
-"light" "175"
-"_falloff_range" "150"
+"origin" "768 480 100"
+"light" "400"
+"_falloff_range" "300"
 "_cone" "20"
-"_cone2" "50"
+"_cone2" "75"
 "_color" "255 203 157"
 "_shadow_type" "static_light_map"
-"angles" "-90 0 0"
+"angles" "-75 -90 0"
 }
 // entity 13
 {
@@ -210,4 +210,26 @@
 "origin" "944 256 16"
 "angles" "0 180 0"
 "_tags" "enemy"
+}
+// entity 14
+{
+"classname" "light_spot"
+"origin" "16 80 100"
+"light" "100"
+"_falloff_range" "3000"
+"_cone" "10"
+"_cone2" "40"
+"_color" "0 60 233"
+"angles" "25 0 0"
+}
+// entity 15
+{
+"classname" "light_spot"
+"origin" "1016 424 104"
+"light" "400"
+"_falloff_range" "3000"
+"_cone" "10"
+"_cone2" "40"
+"_color" "0 60 233"
+"angles" "25 180 0"
 }

@@ -2366,12 +2366,13 @@ impl ApplicationHandler for App {
 
                     // Mesh render — emits per-instance inputs (model handle +
                     // interpolated transform + phase seed) for skinned-mesh
-                    // entities, culling each against this frame's visible set
-                    // via `mesh_pass::mesh_visible`. Like the particle collector
-                    // it never touches wgpu; the renderer consumes the inputs
-                    // via `set_mesh_draws`. Runs before `render_frame_indirect`,
-                    // while `visible_cells` is still live (it is reclaimed into
-                    // scratch after).
+                    // entities. Forward visibility comes from
+                    // `mesh_pass::mesh_visible`; selected-static shadow casters
+                    // can be retained as non-forward instances. Like the particle
+                    // collector it never touches wgpu; the renderer consumes the
+                    // inputs via `set_mesh_draws`. Runs before
+                    // `render_frame_indirect`, while `visible_cells` is still live
+                    // (it is reclaimed into scratch after).
                     if let Some(world) = self.level.as_ref() {
                         // Resolve pass: fill every pending animation entry
                         // stamp from this frame's post-advance animation clock
@@ -6486,9 +6487,10 @@ mod tests {
                 duration: 0.8,
             },
         ];
-        tables.insert(
+        tables.insert_with_bounds(
             postretro_model::ModelHandle::from("models/descriptor_mob/scene.gltf"),
             &meta,
+            postretro_render_data::cone_frustum::Aabb::default(),
         );
 
         resolve_mesh_entity_clips(&mut registry, &tables);
@@ -6563,9 +6565,10 @@ mod tests {
                 duration: 2.0,
             },
         ];
-        tables.insert(
+        tables.insert_with_bounds(
             postretro_model::ModelHandle::from("models/remote_enemy/scene.gltf"),
             &meta,
+            postretro_render_data::cone_frustum::Aabb::default(),
         );
 
         resolve_mesh_entity_clips(&mut registry, &tables);

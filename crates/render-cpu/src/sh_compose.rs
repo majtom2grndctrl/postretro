@@ -1,9 +1,10 @@
-// Animated SH delta compose sizing and parameter packing.
+// Animated SH and direct SH delta compose sizing and parameter packing.
 // See: context/lib/rendering_pipeline.md §4
 
 use postretro_level_format::delta_sh_volumes::{
     AFFINITY_FACTOR, DeltaShVolumesSection, delta_probe_f16_stride,
 };
+use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 
 const COMPOSE_GRID_DIMS_SIZE: usize = 48;
 
@@ -54,6 +55,14 @@ pub struct DeltaComposeBuffers {
     pub affinity_dims: [u32; 3],
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct DirectDeltaComposeBuffers {
+    pub delta_subblocks: Vec<u16>,
+    pub affinity_offsets: Vec<u32>,
+    pub affinity_lights: Vec<u32>,
+    pub affinity_dims: [u32; 3],
+}
+
 pub fn build_delta_buffers(
     delta: Option<&DeltaShVolumesSection>,
     grid_dimensions: [u32; 3],
@@ -75,6 +84,27 @@ pub fn build_delta_buffers(
         affinity_offsets: delta.affinity_offsets.clone(),
         affinity_lights: delta.affinity_lights.clone(),
         animation_descriptor_indices: delta.animation_descriptor_indices.clone(),
+        affinity_dims: delta.affinity_dims,
+    }
+}
+
+pub fn build_direct_delta_buffers(
+    delta: Option<&DirectShDeltaVolumesSection>,
+    grid_dimensions: [u32; 3],
+) -> DirectDeltaComposeBuffers {
+    let Some(delta) = delta else {
+        let affinity_dims = affinity_dims_for_grid(grid_dimensions);
+        return DirectDeltaComposeBuffers {
+            delta_subblocks: Vec::new(),
+            affinity_offsets: vec![0; affinity_cell_count(affinity_dims) + 1],
+            affinity_lights: Vec::new(),
+            affinity_dims,
+        };
+    };
+    DirectDeltaComposeBuffers {
+        delta_subblocks: delta.delta_subblocks.clone(),
+        affinity_offsets: delta.affinity_offsets.clone(),
+        affinity_lights: delta.affinity_lights.clone(),
         affinity_dims: delta.affinity_dims,
     }
 }
@@ -175,6 +205,7 @@ mod tests {
     use postretro_level_format::delta_sh_volumes::{
         DEFAULT_DELTA_PROBE_F16_STRIDE, PROBES_PER_CELL,
     };
+    use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
     use postretro_level_format::octahedral::{
         DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION,
     };
@@ -224,6 +255,36 @@ mod tests {
         assert_eq!(b.affinity_offsets, vec![0, 1, 1, 2]);
         assert_eq!(b.affinity_lights, vec![0, 1]);
         assert_eq!(b.animation_descriptor_indices, vec![4, u32::MAX]);
+        assert_eq!(b.delta_subblocks, subblocks);
+    }
+
+    #[test]
+    fn build_direct_delta_buffers_no_section_returns_empty_payload_with_full_empty_offsets() {
+        let b = build_direct_delta_buffers(None, [5, 2, 1]);
+        assert!(b.delta_subblocks.is_empty());
+        assert_eq!(b.affinity_dims, [2, 1, 1]);
+        assert_eq!(b.affinity_offsets, vec![0, 0, 0]);
+        assert!(b.affinity_lights.is_empty());
+    }
+
+    #[test]
+    fn build_direct_delta_buffers_maps_section_fields_keeping_f16() {
+        let mut subblocks = sample_subblock(10);
+        subblocks.extend(sample_subblock(200));
+        let section = DirectShDeltaVolumesSection {
+            affinity_factor: AFFINITY_FACTOR,
+            affinity_dims: [3, 1, 1],
+            tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
+            tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
+            affinity_offsets: vec![0, 1, 1, 2],
+            affinity_lights: vec![0, 1],
+            delta_subblocks: subblocks.clone(),
+        };
+
+        let b = build_direct_delta_buffers(Some(&section), [12, 1, 1]);
+        assert_eq!(b.affinity_dims, [3, 1, 1]);
+        assert_eq!(b.affinity_offsets, vec![0, 1, 1, 2]);
+        assert_eq!(b.affinity_lights, vec![0, 1]);
         assert_eq!(b.delta_subblocks, subblocks);
     }
 }

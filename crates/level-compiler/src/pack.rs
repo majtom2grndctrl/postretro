@@ -22,8 +22,12 @@ use postretro_level_format::cells::{
 };
 use postretro_level_format::chunk_light_list::ChunkLightListSection;
 use postretro_level_format::data_script::DataScriptSection;
-use postretro_level_format::delta_sh_volumes::DeltaShVolumesSection;
+use postretro_level_format::delta_sh_volumes::{
+    AFFINITY_FACTOR, DeltaShVolumesSection, PROBES_PER_CELL,
+};
+use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
+use postretro_level_format::entity_shadow_lights::EntityShadowLightsSection;
 use postretro_level_format::fog_cell_masks::FogCellMasksSection;
 use postretro_level_format::fog_volumes::{FogVolumeRecord, FogVolumesSection};
 use postretro_level_format::light_influence::{InfluenceRecord, LightInfluenceSection};
@@ -152,6 +156,84 @@ pub fn encode_light_influence(lights: &AlphaLightsNs<'_>) -> LightInfluenceSecti
         .collect();
 
     LightInfluenceSection { records }
+}
+
+pub(crate) fn direct_sh_delta_covers_selection(
+    section: &DirectShDeltaVolumesSection,
+    selected_light_count: usize,
+) -> bool {
+    if selected_light_count == 0 {
+        return false;
+    }
+
+    let mut seen = vec![false; selected_light_count];
+    for &selection_index in &section.affinity_lights {
+        let Some(slot) = seen.get_mut(selection_index as usize) else {
+            return false;
+        };
+        *slot = true;
+    }
+
+    seen.into_iter().all(|has_delta| has_delta)
+}
+
+pub(crate) fn direct_sh_delta_has_valid_csr_shape(section: &DirectShDeltaVolumesSection) -> bool {
+    let Some(affinity_cell_count) = (section.affinity_dims[0] as usize)
+        .checked_mul(section.affinity_dims[1] as usize)
+        .and_then(|n| n.checked_mul(section.affinity_dims[2] as usize))
+    else {
+        return false;
+    };
+    let Some(expected_offsets_len) = affinity_cell_count.checked_add(1) else {
+        return false;
+    };
+    if section.affinity_offsets.len() != expected_offsets_len {
+        return false;
+    }
+    if section.affinity_offsets.first().copied() != Some(0) {
+        return false;
+    }
+    if !section
+        .affinity_offsets
+        .windows(2)
+        .all(|window| window[0] <= window[1])
+    {
+        return false;
+    }
+    if section
+        .affinity_offsets
+        .last()
+        .and_then(|&offset| usize::try_from(offset).ok())
+        != Some(section.affinity_lights.len())
+    {
+        return false;
+    }
+
+    section
+        .affinity_lights
+        .len()
+        .checked_mul(PROBES_PER_CELL)
+        .and_then(|n| n.checked_mul(section.delta_probe_f16_stride()))
+        == Some(section.delta_subblocks.len())
+}
+
+pub(crate) fn direct_sh_delta_is_usable_for_selection(
+    section: &DirectShDeltaVolumesSection,
+    direct: &DirectShVolumeSection,
+    selected_light_count: usize,
+) -> bool {
+    let expected_affinity_dims = [
+        direct.grid_dimensions[0].div_ceil(AFFINITY_FACTOR as u32),
+        direct.grid_dimensions[1].div_ceil(AFFINITY_FACTOR as u32),
+        direct.grid_dimensions[2].div_ceil(AFFINITY_FACTOR as u32),
+    ];
+
+    section.affinity_factor == AFFINITY_FACTOR
+        && section.affinity_dims == expected_affinity_dims
+        && section.tile_dimension == direct.tile_dimension
+        && section.tile_border == direct.tile_border
+        && direct_sh_delta_has_valid_csr_shape(section)
+        && direct_sh_delta_covers_selection(section, selected_light_count)
 }
 
 /// Encode the collected non-light, non-worldspawn map entities into a
@@ -473,6 +555,8 @@ pub fn pack_and_write_portals(
     light_influence: &LightInfluenceSection,
     sh_volume: &OctahedralShVolumeSection,
     direct_sh_volume: Option<&DirectShVolumeSection>,
+    entity_shadow_lights: Option<&EntityShadowLightsSection>,
+    direct_sh_delta_volumes: Option<&DirectShDeltaVolumesSection>,
     lightmap: &LightmapSection,
     chunk_light_list: &ChunkLightListSection,
     animated_light_chunks: Option<&AnimatedLightChunksSection>,
@@ -520,6 +604,22 @@ pub fn pack_and_write_portals(
     let light_influence_bytes = light_influence.to_bytes();
     let sh_volume_bytes = sh_volume.to_bytes();
     let direct_sh_volume_bytes = direct_sh_volume.map(|s| s.to_bytes());
+    let entity_shadow_light_count = entity_shadow_lights
+        .map(|section| section.light_indices.len())
+        .unwrap_or(0);
+    let has_usable_direct_sh_deltas =
+        if let (Some(direct), Some(deltas)) = (direct_sh_volume, direct_sh_delta_volumes) {
+            direct_sh_delta_is_usable_for_selection(deltas, direct, entity_shadow_light_count)
+        } else {
+            false
+        };
+    let entity_shadow_lights_bytes = entity_shadow_lights
+        .filter(|_| has_usable_direct_sh_deltas)
+        .filter(|s| !s.light_indices.is_empty())
+        .map(|s| s.to_bytes());
+    let direct_sh_delta_volumes_bytes = direct_sh_delta_volumes
+        .filter(|_| has_usable_direct_sh_deltas)
+        .map(|s| s.to_bytes());
     let lightmap_bytes = lightmap.to_bytes();
     let chunk_light_list_bytes = chunk_light_list.to_bytes();
     let animated_light_chunks_bytes = animated_light_chunks.map(|s| s.to_bytes());
@@ -599,6 +699,16 @@ pub fn pack_and_write_portals(
         &mut sections,
         SectionId::DirectShVolume as u32,
         direct_sh_volume_bytes.clone(),
+    );
+    append_optional_section(
+        &mut sections,
+        SectionId::EntityShadowLights as u32,
+        entity_shadow_lights_bytes.clone(),
+    );
+    append_optional_section(
+        &mut sections,
+        SectionId::DirectShDeltaVolumes as u32,
+        direct_sh_delta_volumes_bytes.clone(),
     );
     append_optional_section(
         &mut sections,
@@ -715,6 +825,21 @@ pub fn pack_and_write_portals(
             bytes.len(),
             section.total_probes(),
             section.irradiance_format,
+        );
+    }
+    if let (Some(section), Some(bytes)) = (entity_shadow_lights, &entity_shadow_lights_bytes) {
+        log::info!(
+            "  EntityShadowLights: {} bytes ({} selected light(s))",
+            bytes.len(),
+            section.light_indices.len(),
+        );
+    }
+    if let (Some(section), Some(bytes)) = (direct_sh_delta_volumes, &direct_sh_delta_volumes_bytes)
+    {
+        log::info!(
+            "  DirectShDeltaVolumes: {} bytes ({} CSR entries)",
+            bytes.len(),
+            section.affinity_lights.len(),
         );
     }
     log::info!(
@@ -1044,6 +1169,53 @@ mod tests {
         }
     }
 
+    fn minimal_direct_sh_volume() -> DirectShVolumeSection {
+        use postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H;
+        use postretro_level_format::octahedral::{
+            DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION,
+            irradiance_atlas_dimensions, irradiance_atlas_tiles_per_row,
+        };
+
+        let grid = [1, 1, 1];
+        let tile_dimension = DEFAULT_IRRADIANCE_TILE_DIMENSION;
+        let atlas_dimensions = irradiance_atlas_dimensions(grid, tile_dimension);
+        let atlas_tiles_per_row = irradiance_atlas_tiles_per_row(grid).unwrap();
+        let padded_w = atlas_dimensions[0].div_ceil(4) * 4;
+        let padded_h = atlas_dimensions[1].div_ceil(4) * 4;
+        let atlas_len = (padded_w / 4 * padded_h / 4) as usize * 16;
+
+        DirectShVolumeSection {
+            grid_origin: [0.0, 0.0, 0.0],
+            cell_size: [1.0, 1.0, 1.0],
+            grid_dimensions: grid,
+            tile_dimension,
+            tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
+            atlas_dimensions,
+            atlas_tiles_per_row,
+            irradiance_format: IRRADIANCE_FORMAT_BC6H,
+            atlas: vec![0; atlas_len],
+        }
+    }
+
+    fn minimal_direct_sh_delta_volumes() -> DirectShDeltaVolumesSection {
+        use postretro_level_format::delta_sh_volumes::{
+            AFFINITY_FACTOR, DEFAULT_DELTA_PROBE_F16_STRIDE, PROBES_PER_CELL,
+        };
+        use postretro_level_format::octahedral::{
+            DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION,
+        };
+
+        DirectShDeltaVolumesSection {
+            affinity_factor: AFFINITY_FACTOR,
+            affinity_dims: [1, 1, 1],
+            tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
+            tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
+            affinity_offsets: vec![0, 1],
+            affinity_lights: vec![0],
+            delta_subblocks: vec![0; PROBES_PER_CELL * DEFAULT_DELTA_PROBE_F16_STRIDE],
+        }
+    }
+
     fn placeholder_lightmap() -> LightmapSection {
         LightmapSection::placeholder()
     }
@@ -1162,6 +1334,8 @@ mod tests {
             &empty_light_influence(),
             &empty_sh_volume(),
             None,
+            None,
+            None,
             &placeholder_lightmap(),
             &placeholder_chunk_light_list(),
             None,
@@ -1214,6 +1388,317 @@ mod tests {
     }
 
     #[test]
+    fn pack_write_emits_entity_shadow_lights_only_with_direct_sh_and_usable_deltas() {
+        fn write_with(
+            output: &Path,
+            direct_sh_volume: Option<&DirectShVolumeSection>,
+            entity_shadow_lights: Option<&EntityShadowLightsSection>,
+            direct_sh_delta_volumes: Option<&DirectShDeltaVolumesSection>,
+        ) {
+            let texture_cache_keys: HashMap<String, [u8; 32]> = HashMap::new();
+            pack_and_write_portals(
+                output,
+                &sample_geo_result(),
+                &texture_cache_keys,
+                &sample_leaves(),
+                &sample_tree(),
+                &PortalsSection {
+                    vertices: vec![],
+                    portals: vec![],
+                },
+                &HashSet::new(),
+                &sample_bvh(),
+                &[],
+                &empty_alpha_lights(),
+                &empty_light_influence(),
+                &empty_sh_volume(),
+                direct_sh_volume,
+                entity_shadow_lights,
+                direct_sh_delta_volumes,
+                &placeholder_lightmap(),
+                &placeholder_chunk_light_list(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                &FogVolumesSection::default(),
+                None,
+                None,
+                None,
+                Some(sample_cell_draw_index_bytes()),
+            )
+            .expect("pack should succeed");
+        }
+
+        let dir = std::env::temp_dir().join("postretro_test_pack");
+        let _ = std::fs::create_dir_all(&dir);
+        let direct = minimal_direct_sh_volume();
+        let selected = EntityShadowLightsSection {
+            light_indices: vec![0],
+        };
+        let delta = minimal_direct_sh_delta_volumes();
+
+        let output_with_direct = dir.join("test_pack_entity_shadow_with_direct.prl");
+        write_with(
+            &output_with_direct,
+            Some(&direct),
+            Some(&selected),
+            Some(&delta),
+        );
+        let data = std::fs::read(&output_with_direct).expect("should read output file");
+        let mut cursor = Cursor::new(&data);
+        let meta = read_container(&mut cursor).expect("should read container");
+        assert!(
+            meta.find_section(SectionId::EntityShadowLights as u32)
+                .is_some()
+        );
+
+        let output_without_delta = dir.join("test_pack_entity_shadow_without_delta.prl");
+        write_with(&output_without_delta, Some(&direct), Some(&selected), None);
+        let data = std::fs::read(&output_without_delta).expect("should read output file");
+        let mut cursor = Cursor::new(&data);
+        let meta = read_container(&mut cursor).expect("should read container");
+        assert!(
+            meta.find_section(SectionId::EntityShadowLights as u32)
+                .is_none()
+        );
+
+        let output_without_direct = dir.join("test_pack_entity_shadow_without_direct.prl");
+        write_with(&output_without_direct, None, Some(&selected), Some(&delta));
+        let data = std::fs::read(&output_without_direct).expect("should read output file");
+        let mut cursor = Cursor::new(&data);
+        let meta = read_container(&mut cursor).expect("should read container");
+        assert!(
+            meta.find_section(SectionId::EntityShadowLights as u32)
+                .is_none()
+        );
+
+        let empty_selection = EntityShadowLightsSection {
+            light_indices: Vec::new(),
+        };
+        let output_empty = dir.join("test_pack_entity_shadow_empty_selection.prl");
+        write_with(&output_empty, Some(&direct), Some(&empty_selection), None);
+        let data = std::fs::read(&output_empty).expect("should read output file");
+        let mut cursor = Cursor::new(&data);
+        let meta = read_container(&mut cursor).expect("should read container");
+        assert!(
+            meta.find_section(SectionId::EntityShadowLights as u32)
+                .is_none()
+        );
+
+        let _ = std::fs::remove_file(&output_with_direct);
+        let _ = std::fs::remove_file(&output_without_delta);
+        let _ = std::fs::remove_file(&output_without_direct);
+        let _ = std::fs::remove_file(&output_empty);
+    }
+
+    #[test]
+    fn pack_write_emits_direct_sh_delta_only_with_direct_sh_and_selection() {
+        fn write_with(
+            output: &Path,
+            direct_sh_volume: Option<&DirectShVolumeSection>,
+            entity_shadow_lights: Option<&EntityShadowLightsSection>,
+            direct_sh_delta_volumes: Option<&DirectShDeltaVolumesSection>,
+        ) {
+            let texture_cache_keys: HashMap<String, [u8; 32]> = HashMap::new();
+            pack_and_write_portals(
+                output,
+                &sample_geo_result(),
+                &texture_cache_keys,
+                &sample_leaves(),
+                &sample_tree(),
+                &PortalsSection {
+                    vertices: vec![],
+                    portals: vec![],
+                },
+                &HashSet::new(),
+                &sample_bvh(),
+                &[],
+                &empty_alpha_lights(),
+                &empty_light_influence(),
+                &empty_sh_volume(),
+                direct_sh_volume,
+                entity_shadow_lights,
+                direct_sh_delta_volumes,
+                &placeholder_lightmap(),
+                &placeholder_chunk_light_list(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                &FogVolumesSection::default(),
+                None,
+                None,
+                None,
+                Some(sample_cell_draw_index_bytes()),
+            )
+            .expect("pack should succeed");
+        }
+
+        let dir = std::env::temp_dir().join("postretro_test_pack");
+        let _ = std::fs::create_dir_all(&dir);
+        let direct = minimal_direct_sh_volume();
+        let selected = EntityShadowLightsSection {
+            light_indices: vec![0],
+        };
+        let delta = minimal_direct_sh_delta_volumes();
+
+        let output_all = dir.join("test_pack_direct_delta_all_inputs.prl");
+        write_with(&output_all, Some(&direct), Some(&selected), Some(&delta));
+        let data = std::fs::read(&output_all).expect("should read output file");
+        let mut cursor = Cursor::new(&data);
+        let meta = read_container(&mut cursor).expect("should read container");
+        assert!(
+            meta.find_section(SectionId::DirectShDeltaVolumes as u32)
+                .is_some()
+        );
+
+        let output_no_selection = dir.join("test_pack_direct_delta_no_selection.prl");
+        write_with(&output_no_selection, Some(&direct), None, Some(&delta));
+        let data = std::fs::read(&output_no_selection).expect("should read output file");
+        let mut cursor = Cursor::new(&data);
+        let meta = read_container(&mut cursor).expect("should read container");
+        assert!(
+            meta.find_section(SectionId::DirectShDeltaVolumes as u32)
+                .is_none()
+        );
+
+        let output_no_direct = dir.join("test_pack_direct_delta_no_direct.prl");
+        write_with(&output_no_direct, None, Some(&selected), Some(&delta));
+        let data = std::fs::read(&output_no_direct).expect("should read output file");
+        let mut cursor = Cursor::new(&data);
+        let meta = read_container(&mut cursor).expect("should read container");
+        assert!(
+            meta.find_section(SectionId::DirectShDeltaVolumes as u32)
+                .is_none()
+        );
+
+        let partial_selection = EntityShadowLightsSection {
+            light_indices: vec![0, 1],
+        };
+        let output_partial = dir.join("test_pack_direct_delta_partial_selection.prl");
+        write_with(
+            &output_partial,
+            Some(&direct),
+            Some(&partial_selection),
+            Some(&delta),
+        );
+        let data = std::fs::read(&output_partial).expect("should read output file");
+        let mut cursor = Cursor::new(&data);
+        let meta = read_container(&mut cursor).expect("should read container");
+        assert!(
+            meta.find_section(SectionId::DirectShDeltaVolumes as u32)
+                .is_none()
+        );
+        assert!(
+            meta.find_section(SectionId::EntityShadowLights as u32)
+                .is_none()
+        );
+
+        let _ = std::fs::remove_file(&output_all);
+        let _ = std::fs::remove_file(&output_no_selection);
+        let _ = std::fs::remove_file(&output_no_direct);
+        let _ = std::fs::remove_file(&output_partial);
+    }
+
+    #[test]
+    fn pack_write_omits_entity_shadow_sections_for_malformed_direct_delta_csr() {
+        fn write_with_delta(output: &Path, delta: &DirectShDeltaVolumesSection) {
+            let texture_cache_keys: HashMap<String, [u8; 32]> = HashMap::new();
+            let direct = minimal_direct_sh_volume();
+            let selected = EntityShadowLightsSection {
+                light_indices: vec![0],
+            };
+            pack_and_write_portals(
+                output,
+                &sample_geo_result(),
+                &texture_cache_keys,
+                &sample_leaves(),
+                &sample_tree(),
+                &PortalsSection {
+                    vertices: vec![],
+                    portals: vec![],
+                },
+                &HashSet::new(),
+                &sample_bvh(),
+                &[],
+                &empty_alpha_lights(),
+                &empty_light_influence(),
+                &empty_sh_volume(),
+                Some(&direct),
+                Some(&selected),
+                Some(delta),
+                &placeholder_lightmap(),
+                &placeholder_chunk_light_list(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                &FogVolumesSection::default(),
+                None,
+                None,
+                None,
+                Some(sample_cell_draw_index_bytes()),
+            )
+            .expect("pack should succeed");
+        }
+
+        fn assert_shadow_sections_omitted(output: &Path) {
+            let data = std::fs::read(output).expect("should read output file");
+            let mut cursor = Cursor::new(&data);
+            let meta = read_container(&mut cursor).expect("should read container");
+            assert!(
+                meta.find_section(SectionId::EntityShadowLights as u32)
+                    .is_none()
+            );
+            assert!(
+                meta.find_section(SectionId::DirectShDeltaVolumes as u32)
+                    .is_none()
+            );
+        }
+
+        let dir = std::env::temp_dir().join("postretro_test_pack");
+        let _ = std::fs::create_dir_all(&dir);
+        let base_delta = minimal_direct_sh_delta_volumes();
+
+        let cases = [
+            ("bad_offset_len", {
+                let mut delta = base_delta.clone();
+                delta.affinity_offsets = vec![0];
+                delta
+            }),
+            ("bad_first_offset", {
+                let mut delta = base_delta.clone();
+                delta.affinity_offsets = vec![1, 1];
+                delta
+            }),
+            ("bad_trailing_offset", {
+                let mut delta = base_delta.clone();
+                delta.affinity_offsets = vec![0, 2];
+                delta
+            }),
+            ("bad_subblock_len", {
+                let mut delta = base_delta.clone();
+                delta.delta_subblocks.pop();
+                delta
+            }),
+        ];
+
+        for (name, delta) in cases {
+            let output = dir.join(format!("test_pack_direct_delta_{name}.prl"));
+            write_with_delta(&output, &delta);
+            assert_shadow_sections_omitted(&output);
+            let _ = std::fs::remove_file(&output);
+        }
+    }
+
+    #[test]
     fn pack_write_rejects_missing_cell_draw_index_for_non_empty_bvh() {
         let dir = std::env::temp_dir().join("postretro_test_pack");
         let _ = std::fs::create_dir_all(&dir);
@@ -1242,6 +1727,8 @@ mod tests {
             &alpha_lights,
             &empty_light_influence(),
             &empty_sh_volume(),
+            None,
+            None,
             None,
             &placeholder_lightmap(),
             &placeholder_chunk_light_list(),
@@ -1297,6 +1784,8 @@ mod tests {
             &empty_light_influence(),
             &empty_sh_volume(),
             None,
+            None,
+            None,
             &placeholder_lightmap(),
             &placeholder_chunk_light_list(),
             None,
@@ -1347,6 +1836,8 @@ mod tests {
             &alpha_lights,
             &empty_light_influence(),
             &empty_sh_volume(),
+            None,
+            None,
             None,
             &placeholder_lightmap(),
             &placeholder_chunk_light_list(),
@@ -1439,6 +1930,8 @@ mod tests {
             &alpha_lights,
             &light_influence,
             &sh_volume,
+            None,
+            None,
             None,
             &placeholder_lightmap(),
             &placeholder_chunk_light_list(),

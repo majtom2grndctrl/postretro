@@ -7,7 +7,7 @@
 
 // --- Group 0: camera uniforms (shared with forward pass) ---
 // Shares the forward pass's group-0 uniform buffer. The billboard path reads
-// `view_proj`, `camera_position`, `light_count`, and the dynamic-direct tail
+// `view_proj`, `camera_position`, `total_light_count`, and the dynamic-direct tail
 // (`direct_scale` / `dynamic_direct_isolation` / `has_direct`); the rest are
 // declared so the field offsets line up with the Rust `Uniforms` writer (a
 // 3-way byte contract: render/mod.rs + forward.wgsl + billboard.wgsl). The
@@ -32,7 +32,8 @@ struct Uniforms {
     dynamic_direct_isolation: u32,
     // 0 when the baked DIRECT SH section is absent → skip the direct sample.
     has_direct: u32,
-    _pad: u32,
+    // Dynamic-tier records plus promoted static records appended after them.
+    total_light_count: u32,
     _dyn_pad1: u32,
 };
 
@@ -321,10 +322,10 @@ fn vs_main(@builtin(vertex_index) vidx: u32) -> VertexOutput {
     }
 
     // Dynamic direct (diffuse only — sharp specular highlights on billboards
-    // read as artifact). Hoisted from the fragment stage; iterates a uniform
-    // `light_count`, keeping vertex-stage control flow uniform.
+    // read as artifact). Hoisted from the fragment stage; iterates uniform
+    // `total_light_count`, keeping vertex-stage control flow uniform.
     var dynamic_diffuse = vec3<f32>(0.0);
-    let light_count = uniforms.light_count;
+    let light_count = uniforms.total_light_count;
     for (var i: u32 = 0u; i < light_count; i = i + 1u) {
         let influence = light_influence[i];
         let inf_radius = influence.w;

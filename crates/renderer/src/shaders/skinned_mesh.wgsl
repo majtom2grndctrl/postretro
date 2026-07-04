@@ -56,12 +56,11 @@ struct CameraUniforms {
 @group(1) @binding(0) var base_texture: texture_2d<f32>;
 @group(1) @binding(5) var aniso_sampler: sampler;
 
-// --- Group 2: dynamic direct lighting ----------------------------------------
-// Filled by M10 Task 2. Binding map PINNED across both M10 mesh specs (the BGL
-// in render/mesh_pass.rs is authoritative): b0 dynamic-light records (the
-// renderer's `is_dynamic`-filtered set — the dynamic tier only; static-tier
-// direct for movers is the group-4 baked atlas, so no double-count), b1 per-light
-// influence volumes, b2 scripted-animation descriptors (forward's group-3 b13
+// --- Group 2: runtime direct lighting ----------------------------------------
+// Filled by the runtime-light upload. Binding map PINNED across both M10 mesh specs (the BGL
+// in render/mesh_pass.rs is authoritative): b0 runtime light records (dynamic
+// tier first, promoted static lights appended), b1 matching per-light influence
+// volumes, b2 scripted-animation descriptors (forward's group-3 b13
 // `scripted_light_descriptors`, SAME buffer), b3 scripted-animation curve samples
 // (forward's group-3 b12 `anim_samples`, SAME buffer), b4 the mesh-side params
 // uniform. b5–b8 carry the shadow-receipt bindings (declared further below).
@@ -104,7 +103,8 @@ struct AnimationDescriptor {
 // that reference. Same buffer forward binds at its group-3 b12.
 @group(2) @binding(3) var<storage, read> anim_samples: array<f32>;
 
-// Mesh-side group-2 params uniform: dynamic-light count, the frame's render-clock
+// Mesh-side group-2 params uniform: runtime/direct light count (dynamic tier plus
+// promoted static records), the frame's render-clock
 // `time` (the SAME value the renderer writes to forward `Uniforms.time` that
 // frame, so the scripted curves stay phase-coherent), and `lighting_isolation` —
 // the SAME `LightingIsolation` value the renderer uploads to forward
@@ -398,9 +398,9 @@ fn sample_sh_direct(world_pos: vec3<f32>, shading_normal: vec3<f32>, geo_normal:
     );
 }
 
-// Runtime dynamic-direct light loop — mirrors forward.wgsl's dynamic-tier loop
-// (the b0 buffer is the renderer's `is_dynamic`-filtered set, so static lights
-// cannot leak in), but DIFFUSE-ONLY: Lambert against the interpolated skinned
+// Runtime direct light loop — mirrors forward.wgsl's dynamic-tier loop with
+// promoted static records appended for entity receivers, but DIFFUSE-ONLY:
+// Lambert against the interpolated skinned
 // normal `n`, no specular and no normal-map perturbation (the mesh path has
 // neither — see rendering_pipeline.md §9). Each per-light term is attenuated by
 // the light's shadow map: the spot slot from `cone_angles_and_pad.z` indexes

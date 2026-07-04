@@ -149,6 +149,57 @@ fn forward_wgsl_struct_strides_match_cpu_layout() {
     );
 }
 
+#[test]
+fn count_split_shader_consumers_use_expected_loop_bounds() {
+    let forward_src = include_str!("../../shaders/forward.wgsl");
+    assert!(
+        forward_src.contains("let light_count = select(0u, uniforms.light_count, use_dynamic);"),
+        "forward world lighting must stay bounded by dynamic-only uniforms.light_count",
+    );
+    assert!(
+        !forward_src.contains("uniforms.total_light_count, use_dynamic"),
+        "forward world lighting must not evaluate promoted static records",
+    );
+
+    let billboard_src = include_str!("../../shaders/billboard.wgsl");
+    assert!(
+        billboard_src.contains("let light_count = uniforms.total_light_count;"),
+        "billboards must evaluate dynamic plus promoted static records",
+    );
+
+    let mesh_src = include_str!("../../shaders/skinned_mesh.wgsl");
+    assert!(
+        mesh_src.contains("select(0u, mesh_light_params.light_count, use_dynamic)"),
+        "mesh lighting must use the renderer-provided total light count",
+    );
+}
+
+#[test]
+fn direct_sh_compose_debug_override_isolates_single_selection() {
+    let src = include_str!("../../shaders/direct_sh_compose.wgsl");
+    let selection_weight_start = src
+        .find("fn selection_weight(")
+        .expect("direct_sh_compose.wgsl should declare selection_weight");
+    let selection_weight = &src[selection_weight_start..];
+    let live_weights_start = selection_weight
+        .find("if (selection_index >= arrayLength(&selection_weights))")
+        .expect("selection_weight should keep the live weights bounds check");
+    let debug_branch = &selection_weight[..live_weights_start];
+
+    assert!(
+        debug_branch.contains("if (debug_override.enabled != 0u)"),
+        "debug override should take over selection weighting when enabled",
+    );
+    assert!(
+        debug_branch.contains("selection_index == debug_override.selection_index"),
+        "debug override should apply the slider only to the selected light",
+    );
+    assert!(
+        debug_branch.contains("return 0.0;"),
+        "debug override must suppress all other selected lights",
+    );
+}
+
 /// Task 5 (sdf-static-occluder-shadows): the forward shader must parse
 /// cleanly with the new SDF shadow-factor bindings (`sdf_shadow_factor` and
 /// `sdf_shadow_depth` on group 5 bindings 3 and 4) and must declare the

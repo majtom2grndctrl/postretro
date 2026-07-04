@@ -196,10 +196,14 @@ pub fn aabb_intersects_frustum(aabb: &Aabb, planes: &[Vec4; 6]) -> bool {
 /// below. A non-invertible matrix (degenerate light) yields a point AABB at the
 /// origin, which the AABB-vs-frustum predicate handles without panicking.
 ///
-/// Retained as a cone-cull helper and exercised by the cone-frustum and
-/// shadow-ranking regression tests; the camera-frustum pre-filter that once
-/// called it in the forward path was removed (it could wrongly drop a shadow
-/// whose cone reached a camera-visible receiver — see `SpotShadowPool::rank_lights`).
+/// Retained as a cone-cull helper and exercised by this crate's cone-frustum
+/// tests plus the `postretro_lighting::shadow_ranking`
+/// `dynamic_spot_keeps_slot_when_cone_aabb_outside_pitched_camera_frustum`
+/// regression, which uses it to prove a spot's cone AABB can leave the pitched
+/// camera frustum. The camera-frustum pre-filter that once called it in the
+/// forward path was removed (it could wrongly drop a shadow whose cone reached a
+/// camera-visible receiver — see
+/// `postretro_lighting::shadow_ranking::rank_spot_lights`).
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn cone_enclosing_aabb(light_space_matrix: &Mat4) -> Aabb {
     let inv = light_space_matrix.inverse();

@@ -2,7 +2,7 @@
 // built from boot state (the boot phase lives in `renderer_init.rs`).
 // See: context/lib/rendering_pipeline.md
 
-use super::renderer_types::FullRenderer;
+use super::renderer_types::{FullRenderer, PromotedStaticLightState};
 use super::*;
 
 /// Full-phase construction: builds every steady-state pipeline/pass/resource from
@@ -51,10 +51,21 @@ pub(crate) fn build_full_renderer(
     let level_lights = filtered_level_lights.lights;
     let dynamic_influences = filtered_level_lights.influences;
     let level_light_source_indices = filtered_level_lights.source_indices;
-    let filtered_shadow_candidates = filter_entity_shadow_candidates(full_lights, full_influences);
+    let entity_shadow_indices = geometry.map(|g| g.entity_shadow_lights).unwrap_or(&[]);
+    let selected_static = filter_selected_static_entity_shadow_lights(
+        full_lights,
+        full_influences,
+        entity_shadow_indices,
+    );
+    let filtered_shadow_candidates = filter_entity_shadow_candidates_with_selection(
+        full_lights,
+        full_influences,
+        entity_shadow_indices,
+    );
     let shadow_candidate_lights = filtered_shadow_candidates.lights;
     let shadow_candidate_influences = filtered_shadow_candidates.influences;
     let shadow_candidate_source_indices = filtered_shadow_candidates.source_indices;
+    let shadow_candidate_selection_indices = filtered_shadow_candidates.selection_indices;
     let light_count = level_lights.len() as u32;
     let ambient_floor = DEFAULT_AMBIENT_FLOOR;
     let sh_fast_env = std::env::var("POSTRETRO_SH_FAST").ok();
@@ -185,7 +196,8 @@ pub(crate) fn build_full_renderer(
         queue,
         geometry.and_then(|g| g.sh_volume),
         geometry.and_then(|g| g.direct_sh_volume),
-        level_lights.len(),
+        geometry.and_then(|g| g.direct_sh_delta_volumes),
+        level_lights.len() + selected_static.lights.len(),
         probe_occlusion_enabled,
     );
 
@@ -461,6 +473,28 @@ pub(crate) fn build_full_renderer(
         &uniform_bind_group_layout,
     );
 
+    let promoted_static_weight_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Promoted Static Light Weights"),
+        size: (entity_shadow_indices.len().max(1) * 4) as u64,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let direct_sh_compose = DirectShComposeResources::new(
+        device,
+        &sh_volume_resources,
+        geometry.and_then(|g| g.direct_sh_volume),
+        geometry.and_then(|g| g.direct_sh_delta_volumes),
+        &promoted_static_weight_buffer,
+    );
+    // Only allocate the promoted-slot depth cache when the map has a non-empty
+    // entity-shadow selection; an empty/absent selection can never promote a
+    // light, so the cache arrays would be pure wasted VRAM.
+    let promoted_depth_cache = if entity_shadow_indices.is_empty() {
+        None
+    } else {
+        Some(PromotedDepthCache::new(device))
+    };
+
     Ok(FullRenderer {
         pipeline,
         depth_prepass_pipeline,
@@ -471,7 +505,9 @@ pub(crate) fn build_full_renderer(
         uniform_buffer,
         uniform_bind_group,
         lighting_bind_group,
+        influence_buffer,
         light_count,
+        total_light_count: light_count,
         mesh_dynamic_time: 0.0,
         ambient_floor,
         indirect_scale: DEFAULT_INDIRECT_SCALE,
@@ -490,21 +526,45 @@ pub(crate) fn build_full_renderer(
         #[cfg(feature = "dev-tools")]
         frozen_time: 0.0,
         sh_compose,
+        direct_sh_compose,
         lightmap_resources,
         animated_lightmap,
         lights_buffer,
         last_lights_upload: Vec::new(),
         lights_pack_scratch: Vec::new(),
+        influence_pack_scratch: Vec::new(),
         level_lights,
         level_light_source_indices,
+        level_light_influences: dynamic_influences,
+        entity_shadow_lights: selected_static.lights,
+        entity_shadow_light_influences: selected_static.influences,
+        entity_shadow_light_source_indices: selected_static.source_indices,
         shadow_candidate_lights,
         shadow_candidate_source_indices,
+        shadow_candidate_selection_indices,
         shadow_candidate_influences,
         light_effective_brightness: Vec::new(),
         last_camera_position: Vec3::ZERO,
         last_view_proj: Mat4::IDENTITY,
         spot_shadow_pool,
         cube_shadow_pool,
+        promoted_static_states: vec![
+            PromotedStaticLightState::default();
+            entity_shadow_indices.len()
+        ],
+        promoted_static_records: Vec::new(),
+        promoted_static_weights: vec![0.0; entity_shadow_indices.len()],
+        promoted_static_weight_buffer,
+        promoted_static_weight_scratch: Vec::new(),
+        promoted_static_last_update_time: None,
+        promoted_depth_cache,
+        promoted_depth_cache_frame_plan: PromotedDepthCacheFramePlan::default(),
+        promoted_depth_cache_promoted_count: 0,
+        promoted_depth_cache_world_render_skips: 0,
+        promoted_depth_cache_cull_dispatch_skips: 0,
+        promoted_depth_cache_timing_open: false,
+        #[cfg(feature = "dev-tools")]
+        direct_sh_debug_override: DirectShDebugOverride::default(),
         cube_shadow_vs_uniform_buffer,
         cube_shadow_vs_bind_group,
         shadow_vs_uniform_buffer,
@@ -563,6 +623,7 @@ pub(crate) fn build_full_renderer(
         mesh_overflow_last_warn: f32::NEG_INFINITY,
         spot_entity_occluders_submitted: 0,
         cube_entity_occluders_submitted: 0,
+        promoted_entity_occluders_submitted: 0,
         ui,
         ui_images: ui::UiImageRegistry::default(),
         ui_snapshot: ui::UiReadSnapshot::default(),

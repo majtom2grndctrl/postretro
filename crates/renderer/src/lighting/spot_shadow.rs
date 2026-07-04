@@ -105,6 +105,18 @@ pub struct SpotShadowPool {
 }
 
 impl SpotShadowPool {
+    /// Clear all per-frame occupancy: cone matrices, entity gates, assignment.
+    /// Called when a frame ranks zero candidates (a level with no dynamic
+    /// lights following one that had them) so no stale slot keeps its depth
+    /// pass rasterizing world geometry — the shader never samples those slots
+    /// (every light packs the `NO_SHADOW_SLOT` sentinel), so a survivor is
+    /// pure wasted GPU work.
+    pub fn clear_occupancy(&mut self) {
+        self.slot_cone_matrices = [None; SHADOW_POOL_SIZE];
+        self.slot_entity_eligible = [false; SHADOW_POOL_SIZE];
+        self.slot_assignment.clear();
+    }
+
     /// Build the bind group layout for `@group(5)` of the forward shader.
     ///
     /// Group 5 has five or six entries depending on `cube_array_supported`:

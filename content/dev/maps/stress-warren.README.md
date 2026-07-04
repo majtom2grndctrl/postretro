@@ -9,7 +9,7 @@ committed variants:
 |-----|----------|----------|
 | `stress-warren.map`        | 157 rooms, no lights | geometry/BVH walk + portal traversal only |
 | `stress-warren-lit.map`    | 157 rooms, 157 **mixed** lights (≈half baked / half runtime) | + the lightmap/SH **bake** AND the per-frame forward light loop, light culling, and shadow pools |
-| `stress-warren-crates.map` | 71 rooms, 142 crate stacks, 71 **mixed** lights (36 spot) | + **shadow casting** from both paths: static spots bake crate shadows into the lightmap, dynamic spots rasterize the crate-filled world into runtime shadow maps |
+| `stress-warren-crates.map` | 71 rooms, 142 crate stacks, 71 **mixed** lights (36 spot) | + **shadow casting** from both paths: static spots bake crate shadows into the lightmap, dynamic spots and points rasterize the crate-filled world into runtime shadow maps |
 
 All surfaces use the bundled `50-free-textures` collection, whose diffuses carry
 `_n`/`_s` normal+specular siblings — prl-build auto-bundles them into the `.prm`
@@ -34,13 +34,14 @@ python3 tools/gen_stress_map.py --grid 8 8 5 --door-prob 0.2
 `--crates N` piles N solid box-brush stacks on each room floor. They are world
 geometry, which has three consequences:
 
-- **Shadow casting.** The spot-light shadow pass rasterizes *world geometry* into
-  each spot's depth map (`rendering_pipeline.md` §7.1), so crates cast real
-  dynamic shadows under spotlights. Point/cube lights render entity occluders
-  only — crate brushes do **not** shadow under them. `--spot-frac` raises the
-  share of lights that are spots (the crate map uses 0.5) so more shadow-map
-  passes run over the crate-laden world each frame. (Crates also bake hard/soft
-  shadows under `--lights static`.)
+- **Shadow casting.** Both dynamic shadow paths rasterize *world geometry*
+  (`rendering_pipeline.md` §7.1): the spot pass into each spot's depth map, and
+  the point cube pass into each occupied cube slot's 6 faces (per-face
+  cone-culled) — so crates cast real dynamic shadows under dynamic spots AND
+  under the `CUBE_COUNT = 6` nearest dynamic point lights (extras render
+  unshadowed). `--spot-frac` raises the share of lights that are spots (the
+  crate map uses 0.5) so more shadow-map passes run over the crate-laden world
+  each frame. (Crates also bake hard/soft shadows under `--lights static`.)
 - **Geometry + material load.** More triangles in the per-frame walk, textured
   with wood (`wood_bark_*`) for extra material buckets.
 - **Leaf cost.** Each crate carves the room's empty leaf into several, spending
@@ -120,7 +121,7 @@ different cost paths:
   single scene stresses the bake **and** the runtime path at once. The two
   committed lit maps use this. Static lights get `_light_size 0.75` for a soft
   (rather than 1-texel-hard) penumbra; static spots/points bake crate shadows
-  into the lightmap while dynamic spots cast them at runtime.
+  into the lightmap while dynamic spots and points cast them at runtime.
 
 **Expected static-light warning.** At `--lightmap-density 0.5` each static light
 logs a one-line `sub-texel penumbra (~1.00 texel)` warning — its softened

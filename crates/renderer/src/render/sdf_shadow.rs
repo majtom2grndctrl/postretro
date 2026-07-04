@@ -699,4 +699,134 @@ mod tests {
         assert_eq!(compute_half_res(320, 200), (160, 100));
         assert_eq!(compute_half_res(3, 5), (1, 2));
     }
+
+    /// Rust twin of `trace_shadow`'s march loop (`sdf_shadow.wgsl`) against an
+    /// analytic field, with the grazing fade at 1 (receiver faces the light)
+    /// and no open-space skip. Transcribes the WGSL loop line-for-line so the
+    /// penumbra estimator's BEHAVIOR is pinned on CPU; the source-scan assert
+    /// below ties it to the shader text. `cone_cap` toggles the voxel cap on
+    /// the virtual light size — `false` reproduces the plain receiver-angle
+    /// term for the comparison asserts.
+    fn trace_twin(
+        origin: glam::Vec3,
+        dir: glam::Vec3,
+        max_dist: f32,
+        cone_cap: bool,
+        field: impl Fn(glam::Vec3) -> f32,
+    ) -> f32 {
+        let voxel = 0.5f32; // DEFAULT_VOXEL_SIZE_METERS
+        let start_eps = voxel * 0.5;
+        let mut t = start_eps;
+        let mut factor = 1.0f32;
+        let k = 8.0f32; // DEFAULT_PENUMBRA_K
+        let cone_scale = if cone_cap { k.max(max_dist / voxel) } else { k };
+        let max_t = (64.0f32.min(max_dist - voxel)).max(start_eps);
+        let mut ph = 1.0e10f32;
+        for _ in 0..64 {
+            let p = origin + dir * t;
+            let h = field(p);
+            if h < voxel * 0.5 {
+                return 0.0;
+            }
+            if t > start_eps && h <= ph {
+                let y = h * h / (2.0 * ph.max(voxel * 0.5));
+                let estimate = (h * h - y * y).max(0.0).sqrt();
+                let soft = cone_scale * estimate / (t - y).max(voxel);
+                factor = factor.min(soft);
+            }
+            ph = h;
+            t += h.max(voxel * 0.5);
+            if t > max_t {
+                break;
+            }
+        }
+        factor.clamp(0.0, 1.0)
+    }
+
+    /// The soft term's virtual light size is capped at one SDF voxel
+    /// (`cone_scale = max(k, max_dist/voxel)`). Uncapped, the receiver-angle
+    /// `k·h/(t−y)` term models a light disk of radius `distance/k` that GROWS
+    /// with receiver distance: a ceiling lamp ~0.6 m (≈ one voxel) under the
+    /// ceiling sends every shadow ray through the ceiling's near field close
+    /// to the light, the oversized disk reads that as occlusion, and every
+    /// wall beyond `k·clearance` meters darkens in proportion to its distance
+    /// — false shadows across a whole room. The cap keeps such lights fully
+    /// lit, leaves short-range (`max_dist ≤ k·voxel`) penumbras exactly as
+    /// `k` tunes them, and — being pointwise ≥ the uncapped term — can only
+    /// remove darkening, never add it. Hard hits are untouched.
+    #[test]
+    fn penumbra_cone_caps_virtual_light_size_at_one_voxel() {
+        // Ceiling plane at y = 4; lamp 0.6 m below it; receiver on a wall
+        // 10 m away. The field models only the ceiling (the mechanism under
+        // test); walls/floor don't matter to it.
+        let light = glam::Vec3::new(0.0, 3.4, 0.0);
+        let origin = glam::Vec3::new(10.0, 2.0, 0.0);
+        let to_light = light - origin;
+        let max_dist = to_light.length();
+        let dir = to_light / max_dist;
+        let ceiling = |p: glam::Vec3| 4.0 - p.y;
+
+        // Capped cone: clear line of sight → fully lit.
+        let lit = trace_twin(origin, dir, max_dist, true, ceiling);
+        assert!(
+            lit >= 0.99,
+            "clear sight to a ceiling-mounted lamp must be fully lit, got {lit}"
+        );
+
+        // The uncapped term on the same march darkens this receiver — the
+        // false-shadow regression the cap exists to block.
+        let uncapped = trace_twin(origin, dir, max_dist, false, ceiling);
+        assert!(
+            uncapped < 0.7,
+            "sanity: the uncapped receiver-angle term darkens this receiver \
+             ({uncapped}) — if it no longer does, this scenario stopped \
+             exercising the mechanism"
+        );
+
+        // Short range (max_dist ≤ k·voxel): the cap is inactive and the look
+        // `k` tunes is unchanged — capped and uncapped agree exactly. The
+        // point occluder sits 0.3 m off the ray (below one voxel's soft
+        // window near the light, above the 0.25 m hit threshold everywhere)
+        // so the runs land in a live penumbra rather than comparing 1.0s.
+        let near_light = glam::Vec3::new(0.0, 3.4, 0.0);
+        let near_origin = glam::Vec3::new(3.4, 2.4, 0.0);
+        let near_to = near_light - near_origin;
+        let (near_d, near_dir) = (near_to.length(), near_to.normalize());
+        assert!(near_d <= 8.0 * 0.5, "scenario must sit inside the cap-free range");
+        let occluder = near_origin + near_dir * 2.8 + glam::Vec3::new(0.0, 0.0, 0.3);
+        let field = |p: glam::Vec3| ceiling(p).min((p - occluder).length());
+        let capped_near = trace_twin(near_origin, near_dir, near_d, true, field);
+        let uncapped_near = trace_twin(near_origin, near_dir, near_d, false, field);
+        assert_eq!(
+            capped_near, uncapped_near,
+            "within k·voxel of the light the cap must not change the factor"
+        );
+        assert!(
+            (0.01..0.99).contains(&capped_near),
+            "the short-range scenario must land in the penumbra (got {capped_near}) \
+             so the equality above compares live soft terms, not two 1.0s"
+        );
+
+        // A sphere ON the segment still hard-shadows.
+        let block_center = origin + dir * (max_dist * 0.5);
+        let blocked = trace_twin(origin, dir, max_dist, true, |p| {
+            ceiling(p).min((p - block_center).length() - 0.2)
+        });
+        assert_eq!(blocked, 0.0, "blocking occluder must hard-shadow");
+
+        // Tie the twin to the shader: the capped scale and the soft term
+        // appear in BOTH `trace_shadow` and its debug twin.
+        let src = include_str!("../shaders/sdf_shadow.wgsl");
+        assert_eq!(
+            src.matches("let cone_scale = max(k, max_dist / voxel);").count(),
+            2,
+            "voxel-capped cone scale must appear in trace_shadow and debug_trace_outcome"
+        );
+        assert_eq!(
+            src.matches("let soft = cone_scale * estimate / max(t - y, voxel);")
+                .count(),
+            2,
+            "soft term must use cone_scale in trace_shadow and debug_trace_outcome"
+        );
+    }
 }

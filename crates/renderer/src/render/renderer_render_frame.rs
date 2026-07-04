@@ -132,30 +132,32 @@ impl Renderer {
             self.record_spot_shadow_depth(&mut encoder, mesh_frame_plan.as_ref());
         }
 
-        // --- Cube point-light shadow depth loop (entity-only) ----------------
-        // For each occupied cube slot whose light is `entity_occluder_eligible`,
-        // CLEAR all 6 faces to the far plane (1.0) and render entity occluders
-        // into them. Cube faces carry NO world geometry in v1, so this loop is
-        // independent of `has_geometry`; an ineligible point light (which has no
-        // per-face matrices) is skipped entirely. Per face: a depth render pass
-        // into the `slot*6 + face` D2Array view, projecting by that face's
-        // light-space matrix (group 0, dynamic offset into the cube VS uniform
-        // buffer), with the per-instance cone cull inside `record_skinned_depth`
-        // testing each bound against the face's 90° frustum planes. Reuses the
-        // SAME cube-ready depth pipeline as the spot path.
+        // --- Cube point-light shadow depth loop -------------------------------
+        // For each occupied cube slot, CLEAR all 6 faces to the far plane (1.0),
+        // render cone-culled WORLD geometry into them (so static occluders —
+        // crates, pillars — shadow under dynamic point lights, same as pooled
+        // dynamic spots), then render entity occluders when the slot's light is
+        // `entity_occluder_eligible`. Per face: a depth render pass into the
+        // `slot*6 + face` D2Array view, projecting by that face's light-space
+        // matrix (group 0, dynamic offset into the cube VS uniform buffer). The
+        // world draw pulls from that face's `cube_shadow_cull` indirect
+        // sub-region (per-face 90° frustum, all-cells); entity instances are
+        // CPU-culled inside `record_skinned_depth` against the same planes.
+        // Reuses the SAME depth pipeline as the spot path.
         //
         // CRITICAL: the per-face Clear(1.0) baseline must run for EVERY occupied
-        // eligible face regardless of whether any skinned-mesh occluders exist
-        // this frame. Gating the whole loop on `mesh_frame_plan` being `Some`
-        // (the prior bug) meant that when no mesh entity was in the PVS — e.g. a
-        // combat arena whose meshes are all off-screen — the occupied faces were
-        // NEVER cleared and held stale/uninitialized depth (~0.0). An on-screen
-        // eligible point light then sampled that garbage and read fully shadowed
-        // (CompareFunction::Less: reference >= 0 is never < 0), zeroing its world
-        // illumination. Off-screen lights own no slot (sentinel), so they stayed
-        // lit — the view-dependent symptom. The clear is now unconditional and
-        // the occluder draw is the only mesh-plan-gated step, mirroring the spot
-        // path's "every occupied slot gets a Clear(1.0) baseline" invariant.
+        // face regardless of whether any occluder draws happen this frame.
+        // Gating the whole loop on `mesh_frame_plan` being `Some` (the prior
+        // bug) meant that when no mesh entity was in the PVS — e.g. a combat
+        // arena whose meshes are all off-screen — the occupied faces were NEVER
+        // cleared and held stale/uninitialized depth (~0.0). An on-screen point
+        // light then sampled that garbage and read fully shadowed
+        // (CompareFunction::Less: reference >= 0 is never < 0), zeroing its
+        // world illumination. Off-screen lights own no slot (sentinel), so they
+        // stayed lit — the view-dependent symptom. The clear stays
+        // unconditional; the world and entity draws are the only gated steps,
+        // mirroring the spot path's "every occupied slot gets a Clear(1.0)
+        // baseline" invariant.
         self.full_mut().cube_entity_occluders_submitted = 0;
         if render_world {
             self.record_cube_shadow_depth(&mut encoder, mesh_frame_plan.as_ref());

@@ -96,7 +96,7 @@ const CUBE_FACE_RESOLUTION: f32 = 512.0;
 // world-unit offset applied here at sample time. The two act at DIFFERENT
 // pipeline stages on DIFFERENT values, so they never double-count on one
 // fragment. (The cube depth pass also carries the same hardware `DepthBiasState`
-// on its entity occluders; this receiver-side bias is added on top, by design —
+// on its world and entity occluder draws; this receiver-side bias adds on top, by design —
 // cube faces are 512² vs spot 1024² and perspective-depth acne is worst near the
 // far plane, so the acne/peter-panning trade-off needs its own knob.)
 const POINT_SHADOW_DEPTH_BIAS: f32 = 0.08;
@@ -115,8 +115,13 @@ fn cube_face_ndc_depth(d: f32, near: f32, far: f32) -> f32 {
 
 // Sample the cube-array shadow map for a dynamic point light. Returns 0.0 (fully
 // shadowed) to 1.0 (fully lit). The cube face is selected by hardware from the
-// `light→fragment` direction vector, so there is no per-face seam to handle and
-// every direction is covered.
+// lookup vector, so there is no per-face seam to handle and every direction is
+// covered. The lookup is the `light→fragment` direction with its Y component
+// NEGATED: the hardware cube convention's per-face basis is left-handed, so the
+// right-handed face renders are stored y-mirrored (with the ±Y layers swapped to
+// match — `CUBE_FACE_DIRS` in cube_shadow.rs) and this flip is what maps a world
+// direction onto the texel its depth was rendered to. Pinned texel-exact by
+// `cube_face_layers_round_trip_hardware_sampling`.
 //
 // `slot_index`: cube slot from `GpuLight.cone_angles_and_pad.w`. `light_pos`:
 // the light world position; `world_pos`: the shaded fragment; `far_range`: the
@@ -141,8 +146,12 @@ fn sample_point_shadow(
     if dist < 1e-4 {
         return 1.0;
     }
-    // Direction from light toward the fragment — the cube lookup vector.
+    // Direction from light toward the fragment, then the y-flipped cube lookup
+    // vector (see the function doc — the flip matches the y-mirrored face
+    // renders). Everything below samples with `lookup`; `dir` only feeds the
+    // flip and the axis-depth, which is flip-invariant (absolute values).
     let dir = to_frag / dist;
+    let lookup = vec3<f32>(dir.x, -dir.y, dir.z);
     // Dominant-axis magnitude = the view-space depth on the selected face. Apply
     // the world-space bias here (pull the receiver toward the light) before
     // projecting, then convert to the stored NDC depth. `textureSampleCompareLevel`
@@ -153,12 +162,12 @@ fn sample_point_shadow(
     let biased_depth = max(axis_depth - POINT_SHADOW_DEPTH_BIAS, CUBE_NEAR_CLIP);
     let reference = clamp(cube_face_ndc_depth(biased_depth, CUBE_NEAR_CLIP, far), 0.0, 1.0);
 
-    // Build an orthonormal basis around `dir` so the PCF taps offset the lookup
-    // vector perpendicular to it (Bevy's cube PCF pattern). `up` is chosen to
-    // avoid degeneracy when `dir` is near the Y axis.
-    let up = select(vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(1.0, 0.0, 0.0), abs(dir.y) > 0.99);
-    let tangent = normalize(cross(up, dir));
-    let bitangent = cross(dir, tangent);
+    // Build an orthonormal basis around `lookup` so the PCF taps offset the
+    // lookup vector perpendicular to it (Bevy's cube PCF pattern). `up` is
+    // chosen to avoid degeneracy when `lookup` is near the Y axis.
+    let up = select(vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(1.0, 0.0, 0.0), abs(lookup.y) > 0.99);
+    let tangent = normalize(cross(up, lookup));
+    let bitangent = cross(lookup, tangent);
     // Angular tap spacing: scale `SPOT_SHADOW_PCF_RADIUS` by one cube-face texel
     // angle (face FOV 90° over the face resolution) so the shared radius reads as
     // "texels" on the cube faces too.
@@ -168,7 +177,7 @@ fn sample_point_shadow(
     for (var dy = -1; dy <= 1; dy = dy + 1) {
         for (var dx = -1; dx <= 1; dx = dx + 1) {
             let offset = (tangent * f32(dx) + bitangent * f32(dy)) * texel_angle;
-            let sample_dir = normalize(dir + offset);
+            let sample_dir = normalize(lookup + offset);
             lit = lit + textureSampleCompareLevel(
                 point_shadow_cube,
                 spot_shadow_compare,

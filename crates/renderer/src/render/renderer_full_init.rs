@@ -134,8 +134,12 @@ pub(crate) fn build_full_renderer(
     let candidate_cull = compute_cull
         .as_ref()
         .map(|c| crate::candidate_cull::CandidateCullPipeline::new(device, c.total_leaves()));
-    // Sibling shadow cull owner shares the camera cull's read-only BVH
+    // Sibling shadow cull owners share the camera cull's read-only BVH
     // node/leaf buffers (uploaded once). Built/rebuilt in lockstep with it.
+    // Spot instance: one region per pool slot, planes from the slot's cone
+    // matrix. Cube instance: one region per (slot, face), planes from that
+    // face's 90° perspective matrix — only when the cube pool exists (adapter
+    // has CUBE_ARRAY_TEXTURES), since without it no cube depth pass ever runs.
     let shadow_cull = compute_cull.as_ref().map(|c| {
         crate::shadow_cull::ShadowCullPipeline::new(
             device,
@@ -144,8 +148,24 @@ pub(crate) fn build_full_renderer(
             c.total_leaves(),
             c.bucket_ranges().to_vec(),
             c.has_multi_draw_indirect(),
+            crate::lighting::spot_shadow::SHADOW_POOL_SIZE,
         )
     });
+    let cube_shadow_cull = if cube_array_supported {
+        compute_cull.as_ref().map(|c| {
+            crate::shadow_cull::ShadowCullPipeline::new(
+                device,
+                c.node_buffer(),
+                c.leaf_buffer(),
+                c.total_leaves(),
+                c.bucket_ranges().to_vec(),
+                c.has_multi_draw_indirect(),
+                crate::lighting::cube_shadow::CUBE_COUNT * crate::lighting::cube_shadow::CUBE_FACES,
+            )
+        })
+    } else {
+        None
+    };
 
     let (_depth_texture, depth_view) =
         create_depth_texture(device, surface_config.width, surface_config.height);
@@ -499,6 +519,7 @@ pub(crate) fn build_full_renderer(
         compute_cull,
         candidate_cull,
         shadow_cull,
+        cube_shadow_cull,
         wireframe_cull_status_pipeline,
         wireframe_visible_pipeline,
         wireframe_index_buffer,

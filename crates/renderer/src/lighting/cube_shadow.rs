@@ -1,11 +1,14 @@
 // Dynamic point-light cube-array shadow pool: per-light 6-face omnidirectional
-// depth, ranked into a fixed-capacity cube-array. Entity occluders ONLY in v1
-// (no world geometry rendered into cube faces).
+// depth, ranked into a fixed-capacity cube-array. Each occupied face renders
+// cone-culled WORLD geometry (static occluders — crates, pillars) plus skinned
+// entity occluders, mirroring the spot pool's occluder split.
 //
-// WHY entity-only v1: rendering world geometry into cube faces costs 6 face-passes
-// × world-BVH traversal depth per point light — prohibitive at the budget. Entity
-// occluders alone deliver the visible impact (monsters/movers self- and
-// cross-shadowing under a point light) at a predictable, far smaller cost.
+// WHY per-face world draws fit the budget: a naive world draw costs 6 full
+// world-BVH rasterizations per point light. The per-region GPU frustum cull
+// (`shadow_cull.rs`, one indirect sub-region per (slot, face) gated by that
+// face's 90° frustum) bounds the world cost to the geometry each face can
+// actually see, which is what lets dynamic point lights shadow static geometry
+// under a predictable budget.
 //
 // See: context/lib/rendering_pipeline.md §7.1 (shadow passes), §4 (lighting)
 
@@ -20,7 +23,8 @@ pub const CUBE_NEAR_CLIP: f32 = 0.1;
 
 /// Number of cube slots in the pool, sized to realistic concurrent demand after
 /// PVS culling + influence ranking — NOT worst case. Each occupied slot draws
-/// entity occluders into 6 faces, so the cost (and the VRAM) scales with this.
+/// cone-culled world geometry + entity occluders into 6 faces, so the cost
+/// (and the VRAM) scales with this.
 ///
 /// VRAM justification: a `Depth32Float` cube-array is
 /// `CUBE_FACE_RESOLUTION² × 4 B × 6 faces × CUBE_COUNT`.
@@ -40,30 +44,45 @@ pub const CUBE_FACE_RESOLUTION: u32 = 512;
 /// layers `slot*6 .. slot*6 + 6`.
 pub const CUBE_FACES: usize = 6;
 
-/// The 6 cube-face directions in the canonical wgpu/D3D cube-map face order:
-/// +X, -X, +Y, -Y, +Z, -Z. A sampling layer index `slot*6 + face` follows this
-/// order so the forward sample path maps a world direction to a face with the
-/// standard major-axis selection.
+/// Per-layer look directions for a slot's 6 faces, paired with
+/// [`CUBE_FACE_UPS`].
+///
+/// WHY this is not the plain +X,-X,+Y,-Y,+Z,-Z hardware face order: the
+/// hardware cube-sampling convention's per-face (s, t, major-axis) basis is
+/// LEFT-handed, so no right-handed `look_at_rh` view can reproduce it — one
+/// mirror is required somewhere between render and sample. Rather than mirror
+/// the projection (which reverses triangle winding and would need `Cw`
+/// variants of the shared depth pipelines), the shader mirrors the LOOKUP:
+/// `sample_point_shadow` flips the y component of the direction before
+/// sampling (`shadow_sample.wgsl`). Under a y-flipped lookup the hardware's
+/// ±Y faces exchange, so layer 2 (hardware +Y) holds the image rendered
+/// looking -Y and layer 3 (hardware -Y) the image rendered looking +Y; the
+/// other four faces are y-mirror-invariant in face SELECTION and come out
+/// texel-exact with their GL-style ups below. The
+/// `cube_face_layers_round_trip_hardware_sampling` test pins the whole
+/// arrangement (tables + shader flip) against an emulation of the hardware
+/// convention, so neither side can drift alone.
 const CUBE_FACE_DIRS: [Vec3; CUBE_FACES] = [
-    Vec3::new(1.0, 0.0, 0.0),  // +X
-    Vec3::new(-1.0, 0.0, 0.0), // -X
-    Vec3::new(0.0, 1.0, 0.0),  // +Y
-    Vec3::new(0.0, -1.0, 0.0), // -Y
-    Vec3::new(0.0, 0.0, 1.0),  // +Z
-    Vec3::new(0.0, 0.0, -1.0), // -Z
+    Vec3::new(1.0, 0.0, 0.0),  // layer 0: hardware +X face
+    Vec3::new(-1.0, 0.0, 0.0), // layer 1: hardware -X face
+    Vec3::new(0.0, -1.0, 0.0), // layer 2: hardware +Y face (y-flipped lookup)
+    Vec3::new(0.0, 1.0, 0.0),  // layer 3: hardware -Y face (y-flipped lookup)
+    Vec3::new(0.0, 0.0, 1.0),  // layer 4: hardware +Z face
+    Vec3::new(0.0, 0.0, -1.0), // layer 5: hardware -Z face
 ];
 
-/// Per-face "up" vectors, paired with `CUBE_FACE_DIRS`. The ±Y faces look along
-/// the Y axis, so their up is along Z (any vector not colinear with the look
-/// direction); the other four use -Y. These match the standard cube-map face
-/// orientation convention so all 6 faces tile the sphere with no gap or overlap.
+/// Per-face "up" vectors, paired with `CUBE_FACE_DIRS`. The Y-looking layers
+/// use a Z up (any vector not colinear with the look direction); the other
+/// four use -Y. Together with the shader's y-flipped lookup these place every
+/// direction at exactly the texel the hardware sampler reads — see the
+/// [`CUBE_FACE_DIRS`] doc and the round-trip test for the derivation.
 const CUBE_FACE_UPS: [Vec3; CUBE_FACES] = [
-    Vec3::new(0.0, -1.0, 0.0), // +X
-    Vec3::new(0.0, -1.0, 0.0), // -X
-    Vec3::new(0.0, 0.0, 1.0),  // +Y
-    Vec3::new(0.0, 0.0, -1.0), // -Y
-    Vec3::new(0.0, -1.0, 0.0), // +Z
-    Vec3::new(0.0, -1.0, 0.0), // -Z
+    Vec3::new(0.0, -1.0, 0.0), // layer 0 (+X)
+    Vec3::new(0.0, -1.0, 0.0), // layer 1 (-X)
+    Vec3::new(0.0, 0.0, -1.0), // layer 2 (looks -Y)
+    Vec3::new(0.0, 0.0, 1.0),  // layer 3 (looks +Y)
+    Vec3::new(0.0, -1.0, 0.0), // layer 4 (+Z)
+    Vec3::new(0.0, -1.0, 0.0), // layer 5 (-Z)
 ];
 
 /// Build the 6 light-space view-projection matrices for a point light's cube
@@ -74,6 +93,15 @@ const CUBE_FACE_UPS: [Vec3; CUBE_FACES] = [
 /// Pure math — no GPU. Unit-tested for sphere coverage and direction→face
 /// mapping. The far plane clamps `falloff_range` to a small minimum so a
 /// zero-range or degenerate light still yields a finite frustum.
+///
+/// Far-plane freshness contract: this projects with the CANDIDATE list's
+/// `falloff_range` (frozen at level load), while `sample_point_shadow`
+/// reconstructs its compare reference from the LIVE GPU record's
+/// `direction_and_range.w`. The two must be the same value — a runtime
+/// mutation of a cube-slot light's range would desync the stored depth from
+/// the reconstruction and mis-shadow at every depth. No current path mutates
+/// range (the light bridge animates intensity/color); whoever adds range
+/// animation must refresh the shadow candidates alongside the GPU repack.
 pub fn cube_face_matrices(light: &MapLight) -> [Mat4; CUBE_FACES] {
     let eye = Vec3::new(
         light.origin[0] as f32,
@@ -180,8 +208,9 @@ pub struct CubeShadowPool {
     pub slot_assignment: Vec<u32>,
     /// Per-slot entity-occluder gate, written alongside `face_matrices`. `true`
     /// only when the slot's occupant passes
-    /// [`postretro_lighting::entity_occluder_eligible`]. Cube faces are ENTITY-ONLY
-    /// in v1, so an ineligible point light draws NOTHING into its faces.
+    /// [`postretro_lighting::entity_occluder_eligible`]. Gates ONLY the skinned
+    /// entity draw — every occupied face renders its world-depth baseline
+    /// regardless, exactly like the spot pool's per-slot entity gate.
     pub slot_entity_eligible: Vec<bool>,
 }
 
@@ -253,6 +282,18 @@ impl CubeShadowPool {
     pub fn face_layer(slot: u32, face: usize) -> usize {
         slot as usize * CUBE_FACES + face
     }
+
+    /// Clear all per-frame occupancy: face matrices, entity gates, assignment.
+    /// The cube counterpart of [`SpotShadowPool::clear_occupancy`] — called
+    /// when a frame ranks zero candidates so no stale occupied face keeps its
+    /// 6 depth passes rasterizing world geometry that no light samples.
+    ///
+    /// [`SpotShadowPool::clear_occupancy`]: crate::lighting::spot_shadow::SpotShadowPool::clear_occupancy
+    pub fn clear_occupancy(&mut self) {
+        self.face_matrices.fill(None);
+        self.slot_entity_eligible.fill(false);
+        self.slot_assignment.clear();
+    }
 }
 
 /// Pure disable decision for the cube pool, factored out so the
@@ -262,44 +303,24 @@ pub fn cube_pool_enabled(cube_array_supported: bool) -> bool {
     cube_array_supported
 }
 
-/// The SHADER-facing cube slot for a light that owns a ranked pool slot.
-///
-/// Cube faces are ENTITY-ONLY in v1: a slot is only ever CLEARED + rendered when
-/// its light is [`postretro_lighting::entity_occluder_eligible`] (the depth loop
-/// skips slots with no per-face matrices). A point light that owns a ranked slot
-/// but is NOT entity-eligible therefore has cube faces holding stale/uninitialized
-/// depth — sampling them reads garbage (frequently fully shadowed), which would
-/// ZERO the light. (The spot path avoids this because every occupied spot slot
-/// always renders a Clear(1.0)+world-depth baseline; cube faces carry no world
-/// geometry and no clear.)
-///
-/// So the forward shader must only sample a slot that actually contains a
-/// rendered occluder. For an ineligible light this returns the
-/// [`crate::lighting::spot_shadow::NO_SHADOW_SLOT`] sentinel (unshadowed,
-/// shadow factor 1.0) — matching the off-camera (no-slot) path; for an eligible
-/// light it returns the ranked `slot` unchanged.
-pub fn shader_facing_cube_slot(slot: u32, entity_eligible: bool) -> u32 {
-    if entity_eligible {
-        slot
-    } else {
-        crate::lighting::spot_shadow::NO_SHADOW_SLOT
-    }
-}
-
 /// Whether the cube depth loop must open a `Clear(1.0)` render pass for an
-/// occupied (`face_matrix.is_some()`) eligible face THIS frame.
+/// occupied (`face_matrix.is_some()`) face THIS frame.
 ///
-/// The decisive invariant the renderer loop must honour: an occupied eligible
-/// face is cleared to the far plane (NDC depth 1.0) EVERY frame it is occupied,
-/// regardless of whether any skinned-mesh occluder exists — exactly as the spot
-/// pool always lays down a `Clear(1.0)` baseline for every occupied slot.
+/// The decisive invariant the renderer loop must honour: an occupied face is
+/// cleared to the far plane (NDC depth 1.0) EVERY frame it is occupied,
+/// regardless of whether any world geometry or skinned-mesh occluder exists —
+/// exactly as the spot pool always lays down a `Clear(1.0)` baseline for every
+/// occupied slot. Every ranked slot's faces are occupied (occupancy is
+/// independent of entity eligibility), and the world-depth draw rides the same
+/// pass, so a ranked slot is always safe for the shader to sample.
 ///
-/// Returns `true` for any occupied face. The depth loop submits entity occluders
-/// only when a mesh frame plan exists, but the clear itself must NOT be gated on
-/// the plan: gating it (the prior bug) left an occupied eligible cube uncleared
-/// whenever no mesh entity was in the PVS, so an on-screen eligible point light
-/// sampled stale/zero depth and read fully shadowed (`CompareFunction::Less`:
-/// a positive reference is never `< 0`), zeroing its world illumination.
+/// Returns `true` for any occupied face. The depth loop gates the occluder
+/// draws (world on `has_geometry`, entities on the mesh frame plan + the
+/// slot's entity eligibility), but the clear itself must NOT be gated: gating
+/// it (the prior bug) left an occupied cube uncleared whenever no occluder
+/// existed, so an on-screen point light sampled stale/zero depth and read
+/// fully shadowed (`CompareFunction::Less`: a positive reference is never
+/// `< 0`), zeroing its world illumination.
 ///
 /// With the clear unconditional, an occluder-free face stores 1.0, the shader's
 /// reference (`<= 1.0`) compares `reference < 1.0` for any fragment nearer than
@@ -532,58 +553,30 @@ mod tests {
         );
     }
 
-    /// Regression (branch `claude/dynamic-mesh-shadows-jvl96j`): a dynamic point
-    /// light that owns a ranked cube slot but does NOT cast entity shadows must be
-    /// handed the SENTINEL to the shader, not its slot. Cube faces are entity-only
-    /// and are never cleared/rendered for an ineligible light, so sampling that
-    /// slot reads stale depth and zeros the light when its origin is on-screen.
-    /// Masking to the sentinel makes an occluder-free cube a no-op (shadow 1.0),
-    /// matching the off-camera path and how the spot path stays correct.
-    #[test]
-    fn occluder_free_cube_slot_reads_as_sentinel() {
-        // Eligible light keeps its slot (faces ARE rendered).
-        assert_eq!(
-            shader_facing_cube_slot(3, true),
-            3,
-            "entity-eligible light keeps its ranked cube slot"
-        );
-        // Ineligible light (e.g. an animated `light_dynamic` with
-        // casts_entity_shadows off) must downgrade to the sentinel so the forward
-        // shader takes the unshadowed path instead of sampling an uncleared cube.
-        assert_eq!(
-            shader_facing_cube_slot(0, false),
-            NO_SHADOW_SLOT,
-            "occluder-free (entity-ineligible) cube slot must read as sentinel (full light)"
-        );
-        assert_eq!(
-            shader_facing_cube_slot(5, false),
-            NO_SHADOW_SLOT,
-            "ineligibility masks regardless of which slot was ranked"
-        );
-    }
-
     /// Regression (branch `claude/dynamic-mesh-shadows-jvl96j`, the bug a91bb61
-    /// MISSED): an ENTITY-ELIGIBLE on-screen dynamic point light (e.g. the
-    /// `arena_wave_2` `light_dynamic` group — `casts_entity_shadows` defaults
-    /// true, so these are eligible) owns a ranked cube slot and the shader DOES
-    /// sample it. Its occupied faces must be cleared to the far plane (1.0) every
-    /// frame they are occupied, EVEN when no skinned-mesh occluder is in the PVS
-    /// (the arena's meshes are all off-screen). Before the fix the whole cube
-    /// depth loop — clear included — was gated on a mesh frame plan existing, so
-    /// with no in-PVS mesh the occupied faces were never cleared and held ~0.0;
-    /// the eligible on-screen light then read fully shadowed and winked out, while
-    /// off-screen (no-slot/sentinel) lights stayed lit.
+    /// MISSED): an on-screen dynamic point light owns a ranked cube slot and the
+    /// shader samples it. Its occupied faces must be cleared to the far plane
+    /// (1.0) every frame they are occupied, EVEN when no occluder is drawn (no
+    /// skinned mesh in the PVS, and — for empty maps — no world geometry).
+    /// Before the fix the whole cube depth loop — clear included — was gated on
+    /// a mesh frame plan existing, so with no in-PVS mesh the occupied faces
+    /// were never cleared and held ~0.0; the on-screen light then read fully
+    /// shadowed and winked out, while off-screen (no-slot/sentinel) lights
+    /// stayed lit.
     ///
     /// `cube_face_needs_clear` encodes the corrected invariant: an occupied face
-    /// is cleared regardless of mesh-plan presence. Unoccupied faces are skipped.
+    /// is cleared regardless of occluder presence. Unoccupied faces are skipped.
+    /// (With world geometry now rendered into every occupied face, occupancy no
+    /// longer depends on entity eligibility, so the invariant covers every
+    /// ranked slot.)
     #[test]
-    fn occupied_eligible_face_clears_without_mesh_plan() {
-        // Occupied face: must be cleared whether or not any mesh occluder exists.
+    fn occupied_face_clears_without_occluders() {
+        // Occupied face: must be cleared whether or not any occluder exists.
         assert!(
             cube_face_needs_clear(true),
-            "an occupied eligible cube face must be cleared (to far=1.0) every \
-             frame, with or without a mesh frame plan — otherwise an on-screen \
-             eligible point light samples uncleared depth and is zeroed"
+            "an occupied cube face must be cleared (to far=1.0) every frame, \
+             with or without occluder draws — otherwise an on-screen point \
+             light samples uncleared depth and is zeroed"
         );
         // Unoccupied face (no per-face matrix): nothing to clear or sample.
         assert!(
@@ -651,5 +644,97 @@ mod tests {
             SHADOW_SRC.contains("/ CUBE_FACE_RESOLUTION)"),
             "shadow_sample.wgsl must scale the PCF tap by the named CUBE_FACE_RESOLUTION const"
         );
+    }
+
+    /// WebGPU cube-map sampling emulation: face selection by dominant axis
+    /// plus the spec's per-face (sc, tc, ma) table, with t increasing DOWNWARD
+    /// (wgpu top-left texture origin). This is what `textureSampleCompareLevel`
+    /// does with the lookup vector before the depth compare.
+    fn hardware_cube_lookup(r: Vec3) -> (usize, f32, f32) {
+        let (ax, ay, az) = (r.x.abs(), r.y.abs(), r.z.abs());
+        let (face, sc, tc, ma) = if ax >= ay && ax >= az {
+            if r.x >= 0.0 {
+                (0, -r.z, -r.y, ax)
+            } else {
+                (1, r.z, -r.y, ax)
+            }
+        } else if ay >= ax && ay >= az {
+            if r.y >= 0.0 {
+                (2, r.x, r.z, ay)
+            } else {
+                (3, r.x, -r.z, ay)
+            }
+        } else if r.z >= 0.0 {
+            (4, r.x, -r.y, az)
+        } else {
+            (5, -r.x, -r.y, az)
+        };
+        (face, 0.5 * (sc / ma + 1.0), 0.5 * (tc / ma + 1.0))
+    }
+
+    /// The load-bearing invariant of the whole cube path: for ANY direction,
+    /// the depth texel the shader's y-flipped lookup reads is exactly the
+    /// texel the depth pass rendered that direction's geometry to — same
+    /// layer, same uv, and the same NDC depth the shader reconstructs as its
+    /// compare reference. The hardware convention's per-face basis is
+    /// left-handed, so a right-handed face render can only match it through
+    /// one mirror: the shader's lookup y-flip, completed by the swapped ±Y
+    /// layers in `CUBE_FACE_DIRS`. If either side changes alone (the tables,
+    /// the layer order, or the WGSL flip), every direction reads a mirrored
+    /// texel — walls compare against ceiling/floor depths and shade
+    /// themselves into darkness under a point light that should light them.
+    #[test]
+    fn cube_face_layers_round_trip_hardware_sampling() {
+        let far = 20.0f32;
+        let light = point_light([0.0, 0.0, 0.0], far, true);
+        let mats = cube_face_matrices(&light);
+
+        // Pin the WGSL flip so it can't be "simplified away" without failing
+        // here (the render-side tables assume it).
+        const SHADOW_SRC: &str = include_str!("../shaders/shadow_sample.wgsl");
+        assert!(
+            SHADOW_SRC.contains("vec3<f32>(dir.x, -dir.y, dir.z)"),
+            "shadow_sample.wgsl must sample the cube with a y-flipped lookup vector"
+        );
+
+        // Dense sphere sweep — off-axis directions on every face.
+        for i in 0..32 {
+            for j in 0..16 {
+                let theta = (i as f32 + 0.5) / 32.0 * std::f32::consts::TAU;
+                let phi = (j as f32 + 0.5) / 16.0 * std::f32::consts::PI;
+                let r = Vec3::new(
+                    phi.sin() * theta.cos(),
+                    phi.cos(),
+                    phi.sin() * theta.sin(),
+                );
+                let dist = 5.0f32;
+
+                // Shader side: y-flipped lookup → hardware face + uv.
+                let (face, hu, hv) = hardware_cube_lookup(Vec3::new(r.x, -r.y, r.z));
+
+                // Render side: the same world point through that layer's matrix.
+                let clip = mats[face] * (r * dist).extend(1.0);
+                assert!(clip.w > 0.0, "dir {r:?} must be in front of layer {face}");
+                let ndc = clip.truncate() / clip.w;
+                let (ru, rv) = (0.5 + 0.5 * ndc.x, 0.5 - 0.5 * ndc.y);
+                assert!(
+                    (hu - ru).abs() < 1e-4 && (hv - rv).abs() < 1e-4,
+                    "dir {r:?}: hardware reads layer {face} uv ({hu:.4},{hv:.4}) but \
+                     the depth pass rendered it at ({ru:.4},{rv:.4})"
+                );
+
+                // The shader's reference-depth reconstruction matches the NDC
+                // depth the pass stored at that texel.
+                let axis_depth = r.x.abs().max(r.y.abs()).max(r.z.abs()) * dist;
+                let a = far / (far - CUBE_NEAR_CLIP);
+                let reference =
+                    a - (CUBE_NEAR_CLIP * far) / ((far - CUBE_NEAR_CLIP) * axis_depth);
+                assert!(
+                    (reference - ndc.z).abs() < 1e-4,
+                    "dir {r:?}: reconstructed reference {reference} != stored NDC depth {}",
+                    ndc.z
+                );
+            }
+        }
     }
 }

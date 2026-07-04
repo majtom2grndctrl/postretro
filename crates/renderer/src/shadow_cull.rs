@@ -1,5 +1,6 @@
-// Per-slot GPU cone cull for the spot-shadow depth passes.
-// See: context/lib/rendering_pipeline.md §7.1 (step 6) · §4 (spot shadows)
+// Per-region GPU frustum cull for the shadow depth passes: one instance per
+// pool — spot slots (step 6) and point cube-slot faces (step 8).
+// See: context/lib/rendering_pipeline.md §7.1 (steps 6 & 8) · §4 (dynamic direct)
 
 use glam::Mat4;
 use wgpu::util::DeviceExt;
@@ -8,17 +9,23 @@ use crate::compute_cull::{
     CULL_SHADER_SOURCE, CULL_UNIFORMS_SIZE, CullUniforms, DRAW_INDIRECT_SIZE, SetTextureFn,
     VISIBLE_CELLS_WORDS, draw_indirect_buckets, serialize_cull_uniforms,
 };
-use crate::lighting::spot_shadow::SHADOW_POOL_SIZE;
 use postretro_render_data::cone_frustum::extract_frustum_planes_for_gpu;
 use postretro_render_data::geometry::BucketRange;
 
-/// Persistent, renderer-owned per-slot cone cull for the spot-shadow pool —
-/// sibling to the camera `ComputeCullPipeline`. Built at init/level-load and
-/// shares the read-only BVH node/leaf storage buffers uploaded once by the
-/// camera cull (no per-frame BVH re-serialization). Each occupied shadow slot
-/// dispatches the same `bvh_cull.wgsl` traversal into its own indirect
-/// sub-region, gated by the slot's cone frustum planes only (the shared
-/// visible-cells buffer is all-ones, neutralizing the `cell_is_visible` AND).
+/// Persistent, renderer-owned per-slot frustum cull for the shadow depth
+/// passes — sibling to the camera `ComputeCullPipeline`. Built at
+/// init/level-load and shares the read-only BVH node/leaf storage buffers
+/// uploaded once by the camera cull (no per-frame BVH re-serialization). Each
+/// occupied shadow slot dispatches the same `bvh_cull.wgsl` traversal into its
+/// own indirect sub-region, gated by that slot's light-space frustum planes
+/// only (the shared visible-cells buffer is all-ones, neutralizing the
+/// `cell_is_visible` AND).
+///
+/// Two instances exist: one sized `SHADOW_POOL_SIZE` for the spot pool (one
+/// region per slot, planes from the slot's cone matrix) and one sized
+/// `CUBE_COUNT × CUBE_FACES` for the point cube pool (one region per FACE,
+/// planes from that face's 90° perspective matrix). The region count is fixed
+/// at construction via `new`'s `region_count`.
 ///
 /// WHY cone-only (no camera-PVS AND): an occluder outside the camera PVS can
 /// still cast a shadow onto a receiver the camera sees. ANDing the cone test
@@ -36,7 +43,7 @@ pub struct ShadowCullPipeline {
     /// the uniform (binding 0) and the indirect sub-region (binding 4) differ.
     slot_bind_groups: Vec<wgpu::BindGroup>,
 
-    /// ONE indirect buffer carved into `SHADOW_POOL_SIZE` sub-regions by offset:
+    /// ONE indirect buffer carved into `region_count` sub-regions by offset:
     /// each sub-region holds the full per-leaf layout (`total_leaves` slots ×
     /// 20 bytes), matching the camera path's per-leaf layout and BVH leaf
     /// ordering exactly. Sub-regions are spaced by `region_stride_bytes`, not
@@ -59,6 +66,10 @@ impl ShadowCullPipeline {
     /// `ComputeCullPipeline` is (re)built so the bind groups reference the
     /// freshly-uploaded BVH buffers — if the level reloads and rebuilds the
     /// camera cull, this must be rebuilt too.
+    ///
+    /// `region_count` fixes the number of indirect sub-regions (and per-region
+    /// uniform/bind-group pairs): the spot pool passes `SHADOW_POOL_SIZE`, the
+    /// cube pool `CUBE_COUNT × CUBE_FACES`.
     pub fn new(
         device: &wgpu::Device,
         node_buffer: &wgpu::Buffer,
@@ -66,6 +77,7 @@ impl ShadowCullPipeline {
         total_leaves: u32,
         bucket_ranges: Vec<BucketRange>,
         has_multi_draw_indirect: bool,
+        region_count: usize,
     ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Shadow Cull Compute Shader"),
@@ -113,7 +125,7 @@ impl ShadowCullPipeline {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
-        // ONE indirect buffer, `SHADOW_POOL_SIZE` sub-regions of `total_leaves`
+        // ONE indirect buffer, `region_count` sub-regions of `total_leaves`
         // slots each. Each sub-region holds the full per-leaf layout.
         //
         // Each sub-region is bound as a STORAGE buffer (binding 4) at its base
@@ -126,12 +138,13 @@ impl ShadowCullPipeline {
         let region_slots = total_leaves.max(1) as u64;
         let region_bytes = region_slots * DRAW_INDIRECT_SIZE;
         let region_stride_bytes = region_bytes.next_multiple_of(256);
-        // Pool sizing: SHADOW_POOL_SIZE (64) slots × the aligned per-slot region.
-        // A future reader sizing large community maps should expect this 64×
-        // multiplier on top of the padded per-region footprint.
+        // Pool sizing: `region_count` regions × the aligned per-region size. A
+        // future reader sizing large community maps should expect this
+        // `region_count`× multiplier (96 for the spot instance, 36 for the
+        // cube instance) on top of the padded per-region footprint.
         let indirect_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Shadow Cull Indirect Buffer"),
-            size: SHADOW_POOL_SIZE as u64 * region_stride_bytes,
+            size: region_count as u64 * region_stride_bytes,
             usage: wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::INDIRECT
                 | wgpu::BufferUsages::COPY_DST,
@@ -148,9 +161,9 @@ impl ShadowCullPipeline {
             mapped_at_creation: false,
         });
 
-        let mut slot_uniform_buffers = Vec::with_capacity(SHADOW_POOL_SIZE);
-        let mut slot_bind_groups = Vec::with_capacity(SHADOW_POOL_SIZE);
-        for slot in 0..SHADOW_POOL_SIZE {
+        let mut slot_uniform_buffers = Vec::with_capacity(region_count);
+        let mut slot_bind_groups = Vec::with_capacity(region_count);
+        for slot in 0..region_count {
             let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("Shadow Cull Uniforms"),
                 size: CULL_UNIFORMS_SIZE as u64,
@@ -202,9 +215,9 @@ impl ShadowCullPipeline {
         }
 
         log::info!(
-            "[Renderer] Shadow cull pipeline ready: {} leaves, {} slots, multi_draw={}",
+            "[Renderer] Shadow cull pipeline ready: {} leaves, {} regions, multi_draw={}",
             total_leaves,
-            SHADOW_POOL_SIZE,
+            region_count,
             has_multi_draw_indirect,
         );
 
@@ -221,17 +234,26 @@ impl ShadowCullPipeline {
     }
 
     /// Run one compute pass that loops the occupied slots, dispatching the BVH
-    /// traversal into each slot's indirect sub-region with that slot's cone
-    /// frustum planes. `slot_matrices[slot]` is the slot's light-space matrix
-    /// (the single source of truth from `update_dynamic_light_slots`); `None`
-    /// slots are skipped. Runs after the camera BVH cull and before the
-    /// spot-shadow depth render passes.
+    /// traversal into each slot's indirect sub-region with that slot's
+    /// light-space frustum planes. `slot_matrices[slot]` is the slot's
+    /// light-space matrix (the single source of truth from
+    /// `update_dynamic_light_slots` — the spot pool's per-slot cone matrices,
+    /// or the cube pool's per-face matrices); `None` slots are skipped.
+    /// `slot_matrices.len()` must not exceed the construction-time
+    /// `region_count`. Runs after the camera BVH cull and before the shadow
+    /// depth render passes.
     pub fn dispatch_occupied_slots(
         &self,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
-        slot_matrices: &[Option<Mat4>; SHADOW_POOL_SIZE],
+        slot_matrices: &[Option<Mat4>],
     ) {
+        debug_assert!(
+            slot_matrices.len() <= self.slot_uniform_buffers.len(),
+            "slot_matrices ({}) exceeds the construction-time region count ({})",
+            slot_matrices.len(),
+            self.slot_uniform_buffers.len(),
+        );
         if self.total_leaves == 0 {
             return;
         }

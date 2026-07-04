@@ -609,6 +609,13 @@ pub(super) struct FullRenderer {
     /// `compute_cull`, sharing its read-only BVH node/leaf buffers. `None` for
     /// maps with no BVH (kept in lockstep with `compute_cull`).
     pub(super) shadow_cull: Option<crate::shadow_cull::ShadowCullPipeline>,
+    /// Per-FACE frustum cull for the point cube-shadow depth passes: one
+    /// indirect sub-region per `(cube slot, face)` layer
+    /// (`CUBE_COUNT × CUBE_FACES` regions), planes from that face's 90°
+    /// perspective matrix. Same construction and lockstep-rebuild contract as
+    /// `shadow_cull`; additionally `None` when the cube pool itself is off
+    /// (adapter lacks `CUBE_ARRAY_TEXTURES`).
+    pub(super) cube_shadow_cull: Option<crate::shadow_cull::ShadowCullPipeline>,
 
     pub(super) wireframe_cull_status_pipeline: wgpu::RenderPipeline,
     pub(super) wireframe_visible_pipeline: wgpu::RenderPipeline,

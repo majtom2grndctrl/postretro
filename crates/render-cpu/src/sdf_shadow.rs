@@ -5,6 +5,13 @@ use glam::Mat4;
 
 pub const DEFAULT_MAX_MARCH_STEPS: u32 = 64;
 pub const DEFAULT_OPEN_SPACE_SKIP_THRESHOLD: f32 = 8.0;
+
+/// Penumbra sharpness (larger = harder shadow). The trace's soft term models
+/// an area light of radius `distance/k`, CAPPED at one SDF voxel
+/// (`sdf_shadow.wgsl`, `cone_scale`): uncapped, the virtual disk grows with
+/// receiver distance until a light mounted ~a voxel under a ceiling darkens
+/// every distant receiver in its room. Within `k·voxel` meters of the light
+/// the cap is inactive and `k` tunes contact penumbras exactly.
 pub const DEFAULT_PENUMBRA_K: f32 = 8.0;
 
 /// Self-shadow surface bias, in MULTIPLES of the SDF voxel size (0.5 m default,

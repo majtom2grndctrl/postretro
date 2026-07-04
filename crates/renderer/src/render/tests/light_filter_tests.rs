@@ -245,8 +245,9 @@ fn duplicate_dynamic_lights_use_source_index_for_candidate_brightness() {
     assert_eq!(candidates.source_indices, vec![0, 2]);
 
     let effective_brightness = [0.25, 0.85];
-    let brightness = level_brightness_for_candidate(
-        &level.source_indices,
+    let lookup = build_level_light_index_lookup(&level.source_indices);
+    let brightness = level_brightness_for_candidate_indexed(
+        &lookup,
         candidates.source_indices[1],
         &effective_brightness,
     );
@@ -281,4 +282,43 @@ fn duplicate_dynamic_lights_use_source_index_for_slot_translation() {
     );
 
     assert_eq!(translated, vec![NO_SHADOW_SLOT, 3]);
+}
+
+#[test]
+fn selected_static_lights_join_shadow_candidates_with_selection_index() {
+    let mut static_spot = mk_light(2.0, false);
+    static_spot.light_type = postretro_level_loader::LightType::Spot;
+    let lights = vec![mk_light(1.0, true), static_spot, mk_light(3.0, true)];
+    let influences = vec![
+        LightInfluence {
+            center: Vec3::new(1.0, 0.0, 0.0),
+            radius: 1.0,
+        },
+        LightInfluence {
+            center: Vec3::new(2.0, 0.0, 0.0),
+            radius: 2.0,
+        },
+        LightInfluence {
+            center: Vec3::new(3.0, 0.0, 0.0),
+            radius: 3.0,
+        },
+    ];
+
+    let candidates = filter_entity_shadow_candidates_with_selection(&lights, &influences, &[1]);
+
+    assert_eq!(candidates.source_indices, vec![0, 2, 1]);
+    assert_eq!(candidates.selection_indices, vec![None, None, Some(0)]);
+    assert!(!candidates.lights[2].is_dynamic);
+    assert_f32_near(candidates.influences[2].radius, 2.0);
+}
+
+#[test]
+fn fog_candidate_filter_identifies_selected_static_candidates() {
+    let selection_indices = [None, Some(0), None, Some(3)];
+
+    assert!(!shadow_candidate_is_promoted_static(&selection_indices, 0));
+    assert!(shadow_candidate_is_promoted_static(&selection_indices, 1));
+    assert!(!shadow_candidate_is_promoted_static(&selection_indices, 2));
+    assert!(shadow_candidate_is_promoted_static(&selection_indices, 3));
+    assert!(!shadow_candidate_is_promoted_static(&selection_indices, 99));
 }

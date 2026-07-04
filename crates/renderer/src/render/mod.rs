@@ -5,10 +5,12 @@ mod animated_lightmap;
 mod debug_lines;
 #[cfg(feature = "dev-tools")]
 mod debug_ui;
+mod direct_sh_compose;
 mod fog_pass;
 mod frame_timing;
 mod loaded_texture;
 mod mesh_pass;
+mod promoted_depth_cache;
 mod screen_effects;
 mod sdf_atlas;
 mod sdf_shadow;
@@ -76,8 +78,10 @@ use postretro_render_data::influence::LightInfluence;
 use postretro_render_data::material::Material;
 use postretro_visibility::{CameraCullVisibility, VisibilityPath, VisibleCells};
 
+use direct_sh_compose::{DirectShComposeResources, DirectShDebugOverride};
 use fog_pass::FogPass;
 use frame_timing::FrameTiming;
+use promoted_depth_cache::{PromotedDepthCache, PromotedDepthCacheFramePlan};
 use screen_effects::ScreenEffectsPass;
 use sdf_atlas::SdfAtlasResources;
 use sdf_shadow::{SdfShadowFrameInputs, SdfShadowPass, SdfShadowShGrid};

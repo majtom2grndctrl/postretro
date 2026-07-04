@@ -7,6 +7,7 @@
 pub mod influence;
 #[cfg(feature = "script-ffi")]
 pub mod script_primitives;
+pub mod shadow_ranking;
 pub mod spec_buffer;
 
 use postretro_level_loader::{FalloffModel, LightType, MapLight};
@@ -89,17 +90,17 @@ pub const CUBE_SLOT_BYTE_OFFSET: usize = 60;
 ///
 /// This is the SECOND of two separate gates (see
 /// `context/lib/rendering_pipeline.md` §7.1): pool-*slot* eligibility (does the
-/// light get a shadow map for its WORLD shadow) is `is_dynamic` in
-/// `SpotShadowPool::rank_lights`; entity-*occluder* rendering into that slot is
+/// light get a shadow map for its WORLD shadow) is handled by the shadow
+/// rankers in [`shadow_ranking`]; entity-*occluder* rendering into that slot is
 /// this gate. A dynamic light with `casts_entity_shadows` off still casts its
 /// world shadow but draws no entity occluders, so the two gates must not be
 /// conflated.
 ///
-/// `casts_entity_shadows && is_dynamic`: only `is_dynamic` lights (the
-/// `light_dynamic`/`light_dynamic_spot` classnames) cast crisp runtime entity
-/// shadows, and the per-light `casts_entity_shadows` toggle opts that in.
-pub fn entity_occluder_eligible(light: &MapLight) -> bool {
-    light.casts_entity_shadows && light.is_dynamic
+/// Dynamic lights opt in with `casts_entity_shadows`; promoted static lights
+/// always draw entity occluders while assigned, because promotion exists only
+/// for crisp runtime entity shadows.
+pub fn entity_occluder_eligible(light: &MapLight, promoted_static: bool) -> bool {
+    promoted_static || (light.casts_entity_shadows && light.is_dynamic)
 }
 
 /// Shadow-slot eligibility predicate: does this light's influence volume reach
@@ -411,10 +412,8 @@ mod tests {
         u32::from_ne_bytes(src[offset..offset + 4].try_into().unwrap())
     }
 
-    /// The entity-occluder gate is `casts_entity_shadows && is_dynamic`: a
-    /// dynamic light with the toggle on draws entity occluders; the toggle off,
-    /// or a non-dynamic light, draws none (it may still cast a world shadow).
-    /// This is the predicate Task 3 builds the FGD/compiler semantics around.
+    /// Dynamic entity-occluder eligibility is `casts_entity_shadows &&
+    /// is_dynamic`; promoted static lights bypass that authored toggle.
     #[test]
     fn entity_occluder_gate_requires_dynamic_and_toggle() {
         let mut light = sample_spot();
@@ -423,14 +422,14 @@ mod tests {
         light.is_dynamic = true;
         light.casts_entity_shadows = true;
         assert!(
-            entity_occluder_eligible(&light),
+            entity_occluder_eligible(&light, false),
             "dynamic light with casts_entity_shadows on must render entity occluders"
         );
 
         // Dynamic + toggle off → not eligible (world shadow only).
         light.casts_entity_shadows = false;
         assert!(
-            !entity_occluder_eligible(&light),
+            !entity_occluder_eligible(&light, false),
             "dynamic light with the toggle off casts no entity shadow"
         );
 
@@ -439,8 +438,12 @@ mod tests {
         light.is_dynamic = false;
         light.casts_entity_shadows = true;
         assert!(
-            !entity_occluder_eligible(&light),
+            !entity_occluder_eligible(&light, false),
             "a non-dynamic light never renders entity occluders, even toggled on"
+        );
+        assert!(
+            entity_occluder_eligible(&light, true),
+            "a promoted static light renders entity occluders unconditionally"
         );
     }
 

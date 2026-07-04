@@ -1,6 +1,6 @@
 // Postretro FGD: entity definitions for TrenchBroom authoring.
 // Parsed by postretro-level-compiler.
-// See: context/lib/build_pipeline.md §Built-in Classname Routing
+// See: context/lib/build_pipeline.md §Custom FGD
 
 @SolidClass = worldspawn : "World"
 [
@@ -25,6 +25,11 @@
     // maps need to author this. Non-finite / <= 0 values are warned and the
     // default is used. The `--lightmap-density` CLI flag overrides this KVP.
     _lightmap_density(float) : "Lightmap texel size in meters (default 0.04; smaller = finer)" : ""
+    // Compiler-owned thresholds for selecting baked static lights that may cast
+    // runtime shadows onto moving entities. These tune the heuristic per map;
+    // individual lights do not carry an opt-in/opt-out KVP.
+    entity_shadow_min_intensity_ratio(float) : "Entity-shadow static-light selection: minimum intensity as a ratio of the map's brightest static light (default 0.5)." : ""
+    entity_shadow_min_range(float) : "Entity-shadow static-light selection: minimum falloff range in meters (default 4.0)." : ""
     // Navigation-bake agent and grid parameters. All values are in meters
     // (nav_max_slope in degrees). Absent or invalid (non-finite / <= 0) values
     // fall back to the engine default with a warning — only author these when
@@ -99,13 +104,11 @@
     //   1. static-geo technique (`_shadow_type`, BAKED tier only) — how this
     //      fixed-position light's shadow from STATIC geometry resolves:
     //      lightmap or sdf (below).
-    //   2. entity-shadow toggle (`_cast_entity_shadows`, DYNAMIC tier only) —
-    //      whether a runtime light casts shadows from moving ENTITIES. It lives
-    //      on the DynamicLight base, NOT here: a baked light's contribution is
-    //      summed into the monolithic lightmap with no separable runtime term,
-    //      so entity shadows are not possible without changing its storage.
-    //      Authoring it on a baked light is warn-cleared by the compiler.
-    //      (Feasibility analysis: context/plans/drafts/baked-entity-shadow-lighting-handoff.md)
+    //   2. entity-shadow handling — dynamic lights expose `_cast_entity_shadows`
+    //      below. Baked-tier lights have no per-light KVP: prl-build
+    //      automatically selects eligible static_light_map point/spot lights for
+    //      runtime entity-shadow promotion, then the DirectShVolume delta path
+    //      handles the no-double-count handoff for moving receivers.
     //
     // `_shadow_type` is the baked-tier static-geo sub-choice. The two values are
     // disjoint — a light's direct shadow comes from exactly one, so no
@@ -119,7 +122,7 @@
     // The DYNAMIC tier is NOT a shadow-type value — dynamic lights are
     // authored as their own entities (light_dynamic / light_dynamic_spot),
     // which set is_dynamic by classname.
-    // See context/plans/in-progress/sdf-per-light-shadows/.
+    // See context/lib/rendering_pipeline.md §4.
     _shadow_type(choices) : "How this baked light's static-geometry shadow resolves. Lightmap = baked, soft, cheap (the default). SDF = runtime-traced, sharper, tweakable without a re-bake. Separate from _cast_entity_shadows (the moving-entity toggle on dynamic lights)." : "static_light_map" =
     [
         "static_light_map" : "Static Lightmap - baked, soft, free at runtime, fixed at bake time. The default for nearly all static lights."
@@ -167,9 +170,10 @@
 
 // Dynamic-tier lights. The primary lighting split is bake participation: these
 // lights bake into NOTHING (no lightmap, no SH) and are evaluated entirely at
-// runtime, rationed by the 96-slot shadow-map pool. They are the only tier that
-// can shadow MOVING entities, and the only path for script-driven (gameplay)
-// intensity/color — a script curve can't be baked.
+// runtime, rationed by the 96-slot shadow-map pool. Static baked lights can also
+// be compiler-selected for entity-shadow promotion when moving receivers enter
+// their influence; dynamic lights remain the authored path for script-driven
+// (gameplay) intensity/color — a script curve can't be baked.
 //
 // The base deliberately OMITS every bake KVP (`style`, `_phase`, `*_curve`,
 // `period_ms`, `_curve_phase`, `_bake_only`, `_shadow_type`, `_animated`):
@@ -196,14 +200,12 @@
     ]
     // `_cast_entity_shadows` toggles whether this dynamic light casts shadows
     // from moving ENTITIES (enemies / moving meshes), drawn as occluders into
-    // the light's shadow-map slot. Default ON — the dynamic tier is the only
-    // path to entity shadows, so it is on by default and authored off to skip
-    // the per-entity occluder cost. Turning it off does NOT remove the light's
+    // the light's shadow-map slot. Default ON for dynamic lights and authored
+    // off to skip the per-entity occluder cost. Turning it off does NOT remove the light's
     // WORLD shadow (static occluders like pillars) — that rides the dynamic
     // tier itself. This toggle is valid ONLY on dynamic lights; on a baked
-    // light the compiler warn-clears it (the summed lightmap has no separable
-    // runtime term to multiply by a shadow factor - not possible without storage
-    // changes; see context/plans/drafts/baked-entity-shadow-lighting-handoff.md).
+    // light the compiler warn-clears it; static entity-shadow promotion is
+    // automatic for eligible baked-tier lights and has no per-light KVP.
     _cast_entity_shadows(choices) : "Cast Entity (Moving-Mesh) Shadows" : 1 =
     [
         0 : "Off"

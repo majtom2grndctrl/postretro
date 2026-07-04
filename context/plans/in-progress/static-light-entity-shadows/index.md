@@ -106,7 +106,7 @@ No script/Luau/JS surface. No per-light KVP — selection is compiler-owned.
 
 Both sections little-endian, matching existing PRL conventions. SectionIds pre-assigned (registry's highest is 39): **40 = EntityShadowLights, 41 = DirectShDeltaVolumes** (42 is reserved by the dependent shadowmask plan); registry updated in the same commit that adds each section.
 
-- **EntityShadowLights (40)**: `u32` count, then `count × u32` light indices (ascending, indices into the level light array). Emitted only when the map bakes a `DirectShVolume`; empty selection = section omitted; loaders treat absence — or presence without a `DirectShVolume` — as empty.
+- **EntityShadowLights (40)**: `u32` count, then `count × u32` light indices (ascending, indices into the level light array). Nonempty selections are emitted and loaded only with usable `DirectShDeltaVolumes` that structurally match the direct SH volume and cover every selection index. Empty selection, missing direct SH, missing/malformed deltas, or partial delta coverage = both sections omitted or cleared.
 - **DirectShDeltaVolumes (41)**: mirrors `DeltaShVolumes` (section id 27, `crates/level-format/src/delta_sh_volumes.rs`) field-for-field — same header/grid geometry as the direct SH volume it deltas against, `affinity_offsets` (`u32`, len cell_count+1), `affinity_lights` (`u32`, flat, grouped by cell), dense 64-probe f16 RGBA octahedral sub-blocks index-parallel to `affinity_lights` — except: `affinity_lights` entries are SELECTION indices (0-based positions in EntityShadowLights order), and there is no animation-descriptor mapping (promotion weight is runtime state, not baked). Empty selection = section omitted.
 
 ## Open questions

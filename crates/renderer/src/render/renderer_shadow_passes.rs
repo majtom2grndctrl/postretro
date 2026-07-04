@@ -2,6 +2,7 @@
 // See: context/lib/rendering_pipeline.md §7.1, §7.6
 
 use super::*;
+use crate::render::mesh_pass::MeshDepthInstanceFilter;
 
 fn wireframe_draws_leaf(
     mode: WorldWireframeMode,
@@ -177,7 +178,9 @@ impl Renderer {
 
     /// Spot-shadow depth loop: per occupied slot, render world geometry (indirect,
     /// cone-culled) then skinned-entity occluders into that slot's depth map.
-    /// Caller gates on `render_world && self.has_geometry && self.index_count > 0`.
+    /// Caller gates on `render_world`; this pass gates only world draws on
+    /// geometry presence so promoted-static cache clears/copies and entity overlays
+    /// still run on empty-world maps.
     pub(super) fn record_spot_shadow_depth(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -188,6 +191,8 @@ impl Renderer {
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
         let stride = full.shadow_vs_stride;
+        let draw_world = full.has_geometry && full.index_count > 0;
+        let cache_plan = full.promoted_depth_cache_frame_plan.clone();
         let slot_assignment = full.spot_shadow_pool.slot_assignment.clone();
         let mut used_slots: Vec<u32> = slot_assignment
             .iter()
@@ -207,15 +212,135 @@ impl Renderer {
         // gated by that slot's cone frustum planes. Runs after the camera
         // BVH cull and before the per-slot depth render passes below, so the
         // sub-regions are populated when each slot draws indirect.
-        if let Some(shadow_cull) = &full.shadow_cull {
-            shadow_cull.dispatch_occupied_slots(
-                queue,
-                encoder,
-                &full.spot_shadow_pool.slot_cone_matrices,
-            );
+        if draw_world {
+            if let Some(shadow_cull) = &full.shadow_cull {
+                let occupied_slots: Vec<bool> = full
+                    .spot_shadow_pool
+                    .slot_cone_matrices
+                    .iter()
+                    .map(Option::is_some)
+                    .collect();
+                full.promoted_depth_cache_cull_dispatch_skips +=
+                    cache_plan.skipped_spot_cull_dispatches(&occupied_slots);
+                shadow_cull.dispatch_occupied_slots_filtered(
+                    queue,
+                    encoder,
+                    &full.spot_shadow_pool.slot_cone_matrices,
+                    |slot| cache_plan.should_dispatch_spot_cull(slot),
+                );
+            }
         }
 
         for slot in used_slots {
+            let promoted_plan = cache_plan.spot_for_slot(slot);
+            if let Some(plan) = promoted_plan {
+                // Open the coarse promoted-depth-cache GPU-timing pair lazily on the
+                // first promoted slot; it closes at the end of the cube loop.
+                // This span is an UPPER BOUND: interleaved dynamic spot slots
+                // and the whole cube dynamic-shadow loop fall inside it. A tight
+                // bracket over only the promoted cache-render + copy + entity
+                // regions would need per-region accumulation — promoted and
+                // dynamic slots interleave in the sorted slot order, and one
+                // timestamp pair (`[2i, 2i+1]`) cannot sum disjoint spans (a
+                // second open/close overwrites the first). So the pair stays
+                // coarse by design.
+                if !full.promoted_depth_cache_timing_open {
+                    if let Some(timing) = &full.frame_timing {
+                        timing.write_encoder_start(encoder, TIMING_PAIR_PROMOTED_DEPTH_CACHE);
+                    }
+                    full.promoted_depth_cache_timing_open = true;
+                }
+                if plan.needs_world_render {
+                    {
+                        let cache_view = full
+                            .promoted_depth_cache
+                            .as_ref()
+                            .expect("promoted spot plan implies cache allocated")
+                            .spot_view(plan);
+                        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                            label: Some("Promoted Spot World Depth Cache Pass"),
+                            color_attachments: &[],
+                            depth_stencil_attachment: Some(
+                                wgpu::RenderPassDepthStencilAttachment {
+                                    view: cache_view,
+                                    depth_ops: Some(wgpu::Operations {
+                                        load: wgpu::LoadOp::Clear(1.0),
+                                        store: wgpu::StoreOp::Store,
+                                    }),
+                                    stencil_ops: None,
+                                },
+                            ),
+                            timestamp_writes: None,
+                            ..Default::default()
+                        });
+                        if draw_world {
+                            pass.set_pipeline(&full.shadow_depth_pipeline);
+                            pass.set_bind_group(0, &full.shadow_vs_bind_group, &[slot * stride]);
+                            pass.set_vertex_buffer(0, full.vertex_buffer.slice(..));
+                            pass.set_index_buffer(
+                                full.index_buffer.slice(..),
+                                wgpu::IndexFormat::Uint32,
+                            );
+                            if let Some(shadow_cull) = &full.shadow_cull {
+                                shadow_cull.draw_slot_indirect(&mut pass, slot, None);
+                            } else {
+                                pass.draw_indexed(0..full.index_count, 0, 0..1);
+                            }
+                        }
+                    }
+                    full.promoted_depth_cache
+                        .as_mut()
+                        .expect("promoted spot plan implies cache allocated")
+                        .mark_spot_world_rendered(plan);
+                }
+
+                full.promoted_depth_cache
+                    .as_ref()
+                    .expect("promoted spot plan implies cache allocated")
+                    .copy_spot_to_pool(encoder, plan, &full.spot_shadow_pool.array_texture);
+
+                if let Some(mesh_plan) = &mesh_frame_plan {
+                    if full.spot_shadow_pool.slot_entity_eligible[slot as usize] {
+                        if let Some(cone_matrix) =
+                            full.spot_shadow_pool.slot_cone_matrices[slot as usize]
+                        {
+                            let cone_planes =
+                                postretro_render_data::cone_frustum::cone_frustum_planes(
+                                    &cone_matrix,
+                                );
+                            let view = &full.spot_shadow_pool.views[slot as usize];
+                            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                                label: Some("Promoted Spot Entity Shadow Depth Pass"),
+                                color_attachments: &[],
+                                depth_stencil_attachment: Some(
+                                    wgpu::RenderPassDepthStencilAttachment {
+                                        view,
+                                        depth_ops: Some(wgpu::Operations {
+                                            load: wgpu::LoadOp::Load,
+                                            store: wgpu::StoreOp::Store,
+                                        }),
+                                        stencil_ops: None,
+                                    },
+                                ),
+                                timestamp_writes: None,
+                                ..Default::default()
+                            });
+                            let submitted = full.mesh_pass.record_skinned_depth(
+                                &mut pass,
+                                mesh_plan,
+                                MeshDepthInstanceFilter::IncludeShadowOnly,
+                                &full.shadow_vs_bind_group,
+                                slot * stride,
+                                &cone_planes,
+                            );
+                            full.spot_entity_occluders_submitted += submitted;
+                            full.promoted_entity_occluders_submitted += submitted;
+                        }
+                    }
+                }
+                continue;
+            }
+
             let view = &full.spot_shadow_pool.views[slot as usize];
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Spot Shadow Depth Pass"),
@@ -231,19 +356,21 @@ impl Renderer {
                 timestamp_writes: None,
                 ..Default::default()
             });
-            pass.set_pipeline(&full.shadow_depth_pipeline);
-            pass.set_bind_group(0, &full.shadow_vs_bind_group, &[slot * stride]);
-            pass.set_vertex_buffer(0, full.vertex_buffer.slice(..));
-            pass.set_index_buffer(full.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-            // Indirect cone-culled draw from this slot's sub-region. The
-            // depth-only shadow pipeline has no group-1 material slot, so
-            // `None` skips the texture bind (matching the depth pre-pass).
-            // Fall back to the full unconditional draw if the shadow cull
-            // owner is absent (no BVH).
-            if let Some(shadow_cull) = &full.shadow_cull {
-                shadow_cull.draw_slot_indirect(&mut pass, slot, None);
-            } else {
-                pass.draw_indexed(0..full.index_count, 0, 0..1);
+            if draw_world {
+                pass.set_pipeline(&full.shadow_depth_pipeline);
+                pass.set_bind_group(0, &full.shadow_vs_bind_group, &[slot * stride]);
+                pass.set_vertex_buffer(0, full.vertex_buffer.slice(..));
+                pass.set_index_buffer(full.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                // Indirect cone-culled draw from this slot's sub-region. The
+                // depth-only shadow pipeline has no group-1 material slot, so
+                // `None` skips the texture bind (matching the depth pre-pass).
+                // Fall back to the full unconditional draw if the shadow cull
+                // owner is absent (no BVH).
+                if let Some(shadow_cull) = &full.shadow_cull {
+                    shadow_cull.draw_slot_indirect(&mut pass, slot, None);
+                } else {
+                    pass.draw_indexed(0..full.index_count, 0, 0..1);
+                }
             }
 
             // Skinned ENTITY occluders into the SAME slot, through the
@@ -275,6 +402,7 @@ impl Renderer {
                             full.mesh_pass.record_skinned_depth(
                                 &mut pass,
                                 plan,
+                                MeshDepthInstanceFilter::ForwardVisibleOnly,
                                 &full.shadow_vs_bind_group,
                                 slot * stride,
                                 &cone_planes,
@@ -299,6 +427,7 @@ impl Renderer {
         let full = full
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
+        let cache_plan = full.promoted_depth_cache_frame_plan.clone();
         if let Some(pool) = &full.cube_shadow_pool {
             let stride = full.shadow_vs_stride;
             let draw_world = full.has_geometry && full.index_count > 0;
@@ -310,7 +439,16 @@ impl Renderer {
             // is the same source of truth the VS uniforms were uploaded from.
             if draw_world {
                 if let Some(cube_cull) = &full.cube_shadow_cull {
-                    cube_cull.dispatch_occupied_slots(queue, encoder, &pool.face_matrices);
+                    let occupied_layers: Vec<bool> =
+                        pool.face_matrices.iter().map(Option::is_some).collect();
+                    full.promoted_depth_cache_cull_dispatch_skips +=
+                        cache_plan.skipped_cube_cull_dispatches(&occupied_layers);
+                    cube_cull.dispatch_occupied_slots_filtered(
+                        queue,
+                        encoder,
+                        &pool.face_matrices,
+                        |layer| cache_plan.should_dispatch_cube_cull(layer),
+                    );
                 }
             }
 
@@ -325,6 +463,120 @@ impl Renderer {
                     continue;
                 }
                 let face_matrix = face_matrix_opt.expect("face_needs_clear implies occupied");
+                let slot = layer / crate::lighting::cube_shadow::CUBE_FACES;
+                let face = layer % crate::lighting::cube_shadow::CUBE_FACES;
+                let promoted_plan = cache_plan.cube_for_slot(slot as u32);
+
+                if let Some(plan) = promoted_plan {
+                    // Same coarse promoted-depth-cache timing pair as the spot loop
+                    // (see its open site): opens here only when no promoted spot
+                    // opened it first. Still the same upper-bound span.
+                    if !full.promoted_depth_cache_timing_open {
+                        if let Some(timing) = &full.frame_timing {
+                            timing.write_encoder_start(encoder, TIMING_PAIR_PROMOTED_DEPTH_CACHE);
+                        }
+                        full.promoted_depth_cache_timing_open = true;
+                    }
+                    if plan.needs_world_render {
+                        {
+                            let cache_view = full
+                                .promoted_depth_cache
+                                .as_ref()
+                                .expect("promoted cube plan implies cache allocated")
+                                .cube_face_view(plan, face);
+                            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                                label: Some("Promoted Cube World Depth Cache Pass"),
+                                color_attachments: &[],
+                                depth_stencil_attachment: Some(
+                                    wgpu::RenderPassDepthStencilAttachment {
+                                        view: cache_view,
+                                        depth_ops: Some(wgpu::Operations {
+                                            load: wgpu::LoadOp::Clear(1.0),
+                                            store: wgpu::StoreOp::Store,
+                                        }),
+                                        stencil_ops: None,
+                                    },
+                                ),
+                                timestamp_writes: None,
+                                ..Default::default()
+                            });
+
+                            if draw_world {
+                                pass.set_pipeline(&full.shadow_depth_pipeline);
+                                pass.set_bind_group(
+                                    0,
+                                    &full.cube_shadow_vs_bind_group,
+                                    &[layer as u32 * stride],
+                                );
+                                pass.set_vertex_buffer(0, full.vertex_buffer.slice(..));
+                                pass.set_index_buffer(
+                                    full.index_buffer.slice(..),
+                                    wgpu::IndexFormat::Uint32,
+                                );
+                                if let Some(cube_cull) = &full.cube_shadow_cull {
+                                    cube_cull.draw_slot_indirect(&mut pass, layer as u32, None);
+                                } else {
+                                    pass.draw_indexed(0..full.index_count, 0, 0..1);
+                                }
+                            }
+                        }
+                        if face + 1 == crate::lighting::cube_shadow::CUBE_FACES {
+                            full.promoted_depth_cache
+                                .as_mut()
+                                .expect("promoted cube plan implies cache allocated")
+                                .mark_cube_world_rendered(plan);
+                        }
+                    }
+
+                    full.promoted_depth_cache
+                        .as_ref()
+                        .expect("promoted cube plan implies cache allocated")
+                        .copy_cube_face_to_pool(
+                            encoder,
+                            plan,
+                            face,
+                            &pool.array_texture,
+                            layer as u32,
+                        );
+
+                    if let Some(mesh_plan) = &mesh_frame_plan {
+                        if pool.slot_entity_eligible[slot] {
+                            let face_planes =
+                                postretro_render_data::cone_frustum::cone_frustum_planes(
+                                    &face_matrix,
+                                );
+                            let view = &pool.face_views[layer];
+                            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                                label: Some("Promoted Cube Entity Shadow Depth Pass"),
+                                color_attachments: &[],
+                                depth_stencil_attachment: Some(
+                                    wgpu::RenderPassDepthStencilAttachment {
+                                        view,
+                                        depth_ops: Some(wgpu::Operations {
+                                            load: wgpu::LoadOp::Load,
+                                            store: wgpu::StoreOp::Store,
+                                        }),
+                                        stencil_ops: None,
+                                    },
+                                ),
+                                timestamp_writes: None,
+                                ..Default::default()
+                            });
+                            let submitted = full.mesh_pass.record_skinned_depth(
+                                &mut pass,
+                                mesh_plan,
+                                MeshDepthInstanceFilter::IncludeShadowOnly,
+                                &full.cube_shadow_vs_bind_group,
+                                layer as u32 * stride,
+                                &face_planes,
+                            );
+                            full.cube_entity_occluders_submitted += submitted;
+                            full.promoted_entity_occluders_submitted += submitted;
+                        }
+                    }
+                    continue;
+                }
+
                 let view = &pool.face_views[layer];
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("Cube Shadow Depth Pass"),
@@ -371,23 +623,33 @@ impl Renderer {
                 // draws zero entity occluders. With neither draw the face still
                 // holds its Clear(1.0) baseline, so an occluder-free cube reads
                 // as fully lit (shadow factor 1.0).
-                let slot = layer / crate::lighting::cube_shadow::CUBE_FACES;
                 if let Some(plan) = &mesh_frame_plan {
                     if pool.slot_entity_eligible[slot] {
                         // Face frustum planes from the same matrix uploaded to the cube
                         // VS uniform buffer — one source of truth for cull + projection.
                         let face_planes =
                             postretro_render_data::cone_frustum::cone_frustum_planes(&face_matrix);
-                        full.cube_entity_occluders_submitted += full.mesh_pass.record_skinned_depth(
-                            &mut pass,
-                            plan,
-                            &full.cube_shadow_vs_bind_group,
-                            layer as u32 * stride,
-                            &face_planes,
-                        );
+                        full.cube_entity_occluders_submitted +=
+                            full.mesh_pass.record_skinned_depth(
+                                &mut pass,
+                                plan,
+                                MeshDepthInstanceFilter::ForwardVisibleOnly,
+                                &full.cube_shadow_vs_bind_group,
+                                layer as u32 * stride,
+                                &face_planes,
+                            );
                     }
                 }
             }
+        }
+        // Close the coarse promoted-depth-cache timing pair opened in either shadow
+        // loop. The span is an upper bound over promoted work (see the spot
+        // open site) — interleaved dynamic-shadow work is attributed here too.
+        if full.promoted_depth_cache_timing_open {
+            if let Some(timing) = &full.frame_timing {
+                timing.write_encoder_end(encoder, TIMING_PAIR_PROMOTED_DEPTH_CACHE);
+            }
+            full.promoted_depth_cache_timing_open = false;
         }
     }
 }

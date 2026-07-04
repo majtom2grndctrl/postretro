@@ -26,7 +26,7 @@ pub const LIGHT_CLASSNAMES: &[&str] = &[
 
 /// Dynamic-tier light classnames — unbaked, runtime-only lights. The parser
 /// sets `is_dynamic = true` from membership here; bake participation is the
-/// primary lighting split (see `context/plans/in-progress/sdf-per-light-shadows/architecture.md`).
+/// primary lighting split (see `context/lib/rendering_pipeline.md` §4).
 const DYNAMIC_LIGHT_CLASSNAMES: &[&str] = &["light_dynamic", "light_dynamic_spot"];
 
 /// Quake authoring reference for the `light` property. A mapper-authored
@@ -329,12 +329,12 @@ pub fn translate_light(
 
     // `_cast_entity_shadows` controls whether this light casts shadows from
     // dynamic ENTITIES (enemies / moving meshes). It is valid ONLY on
-    // dynamic-tier lights, where it defaults ON: a baked light's world shadow is
-    // frozen in the lightmap and can never render a moving occluder, so the
-    // toggle is physically meaningless there. Authoring it on a non-dynamic
-    // light is a soft error — warn and CLEAR it rather than carrying a value
-    // that can never take effect. The light's own WORLD-shadow pool eligibility
-    // rides `is_dynamic` alone (see `SpotShadowPool::rank_lights`).
+    // dynamic-tier lights, where it defaults ON. Authoring it on a baked-tier
+    // light is a soft error: warn and CLEAR it because the per-light KVP does
+    // not apply there. Baked-tier static lights may still be compiler-selected
+    // for runtime moving-entity shadows. The light's own WORLD-shadow pool
+    // eligibility rides `is_dynamic` alone (see
+    // `postretro_lighting::shadow_ranking::rank_spot_lights`).
     let authored_entity_shadows = match parse_optional_int(props, "_cast_entity_shadows")? {
         Some(0) => Some(false),
         Some(1) => Some(true),
@@ -354,8 +354,8 @@ pub fn translate_light(
         if authored_entity_shadows == Some(true) {
             log::warn!(
                 "light {}: '_cast_entity_shadows' is only valid on dynamic-tier lights \
-                 (light_dynamic / light_dynamic_spot); a baked light's world shadow is frozen \
-                 in the lightmap. Clearing the flag.",
+                 (light_dynamic / light_dynamic_spot); baked-tier lights use compiler-selected \
+                 entity-shadow promotion instead. Clearing the flag.",
                 format_light_ref(classname, origin),
             );
         }
@@ -1067,8 +1067,8 @@ mod tests {
     }
 
     /// `_cast_entity_shadows` is only valid on dynamic-tier lights. Authored
-    /// `on` for a baked (non-`is_dynamic`) light is rejected at compile time —
-    /// the value is cleared so it can never reach the runtime occluder gate.
+    /// `on` for a baked (non-`is_dynamic`) light is warn-cleared so the KVP
+    /// does not reach the runtime occluder gate.
     #[test]
     fn cast_entity_shadows_cleared_on_baked_light() {
         let p = props(&[

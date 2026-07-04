@@ -284,12 +284,16 @@ pub(crate) fn build_lighting_bind_group(
     dynamic_influences: &[LightInfluence],
     geometry: Option<&LevelGeometry>,
 ) -> LightingResources {
+    let promoted_capacity = geometry
+        .map(|g| g.entity_shadow_lights.len())
+        .unwrap_or_default();
+    let light_record_capacity = (level_lights.len() + promoted_capacity).max(1);
     // wgpu rejects zero-size storage buffers — pad to one dummy; light_count stays 0.
-    let lights_data = if !level_lights.is_empty() {
-        pack_lights(level_lights)
-    } else {
-        vec![0u8; GPU_LIGHT_SIZE]
-    };
+    let mut lights_data = Vec::with_capacity(light_record_capacity * GPU_LIGHT_SIZE);
+    if !level_lights.is_empty() {
+        lights_data.extend_from_slice(&pack_lights(level_lights));
+    }
+    lights_data.resize(light_record_capacity * GPU_LIGHT_SIZE, 0);
     let lights_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Direct Lights Storage Buffer"),
         contents: &lights_data,
@@ -297,11 +301,11 @@ pub(crate) fn build_lighting_bind_group(
     });
 
     // Influence volume buffer — same dummy strategy as lights.
-    let influence_data = if !dynamic_influences.is_empty() {
-        influence::pack_influence(dynamic_influences)
-    } else {
-        vec![0u8; 16]
-    };
+    let mut influence_data = Vec::with_capacity(light_record_capacity * 16);
+    if !dynamic_influences.is_empty() {
+        influence::pack_influence_into(&mut influence_data, dynamic_influences);
+    }
+    influence_data.resize(light_record_capacity * 16, 0);
     let influence_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Light Influence Storage Buffer"),
         contents: &influence_data,
@@ -544,6 +548,8 @@ pub(crate) fn build_frame_timing(
         pass_labels[TIMING_PAIR_SDF_SHADOW] = "sdf_shadow";
         pass_labels[TIMING_PAIR_FORWARD] = "forward";
         pass_labels[TIMING_PAIR_SH_COMPOSE] = "sh_compose";
+        pass_labels[TIMING_PAIR_DIRECT_SH_COMPOSE] = "direct_sh_compose";
+        pass_labels[TIMING_PAIR_PROMOTED_DEPTH_CACHE] = "promoted_depth_cache_upper";
         pass_labels[TIMING_PAIR_SMOKE] = "smoke";
         Some(FrameTiming::new(device, queue, pass_labels))
     } else {
@@ -561,6 +567,7 @@ pub(crate) fn build_initial_uniform_data(
         camera_position: Vec3::ZERO,
         ambient_floor,
         light_count,
+        total_light_count: light_count,
         time: 0.0,
         lighting_isolation: LightingIsolation::Normal,
         indirect_scale: DEFAULT_INDIRECT_SCALE,

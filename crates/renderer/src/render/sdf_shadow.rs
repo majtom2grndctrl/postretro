@@ -792,7 +792,10 @@ mod tests {
         let near_origin = glam::Vec3::new(3.4, 2.4, 0.0);
         let near_to = near_light - near_origin;
         let (near_d, near_dir) = (near_to.length(), near_to.normalize());
-        assert!(near_d <= 8.0 * 0.5, "scenario must sit inside the cap-free range");
+        assert!(
+            near_d <= 8.0 * 0.5,
+            "scenario must sit inside the cap-free range"
+        );
         let occluder = near_origin + near_dir * 2.8 + glam::Vec3::new(0.0, 0.0, 0.3);
         let field = |p: glam::Vec3| ceiling(p).min((p - occluder).length());
         let capped_near = trace_twin(near_origin, near_dir, near_d, true, field);
@@ -818,7 +821,8 @@ mod tests {
         // appear in BOTH `trace_shadow` and its debug twin.
         let src = include_str!("../shaders/sdf_shadow.wgsl");
         assert_eq!(
-            src.matches("let cone_scale = max(k, max_dist / voxel);").count(),
+            src.matches("let cone_scale = max(k, max_dist / voxel);")
+                .count(),
             2,
             "voxel-capped cone scale must appear in trace_shadow and debug_trace_outcome"
         );

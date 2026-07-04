@@ -12,9 +12,9 @@
 //
 // See: context/lib/rendering_pipeline.md §7.1 (shadow passes), §4 (lighting)
 
-use crate::lighting::spot_shadow::{SHADOW_DEPTH_FORMAT, assign_ranked_slots};
+use crate::lighting::spot_shadow::SHADOW_DEPTH_FORMAT;
 use glam::{Mat4, Vec3};
-use postretro_level_loader::{LightType, MapLight};
+use postretro_level_loader::MapLight;
 
 /// Near-clip distance for a cube face's perspective projection. Matches the spot
 /// path's `SHADOW_NEAR_CLIP` — close enough that depth bias controls acne, far
@@ -121,65 +121,6 @@ pub fn cube_face_matrices(light: &MapLight) -> [Mat4; CUBE_FACES] {
     matrices
 }
 
-/// Rank dynamic point lights into the cube pool, mirroring the spot ranker's
-/// scoring/drop policy via the SHARED [`assign_ranked_slots`] core so the two
-/// cannot drift. Pool-slot eligibility is `is_dynamic && Point`; lights beyond
-/// `CUBE_COUNT` are dropped lowest-ranked-first (graceful, no panic).
-///
-/// `eligible_lights` is the caller's per-light visibility/brightness gate
-/// (indexed by light); an empty (or short) slice treats every light as eligible,
-/// matching the spot ranker's first-frame contract.
-///
-/// Influence score is the same `(falloff_range / max(distance, near_clip))²`
-/// heuristic the spot ranker uses, so spot and point rank consistently.
-///
-/// Returns a Vec indexed by light index: each entry is a slot (`0..CUBE_COUNT`)
-/// or [`crate::lighting::spot_shadow::NO_SHADOW_SLOT`].
-pub fn rank_point_lights(
-    lights: &[MapLight],
-    camera_position: Vec3,
-    camera_near_clip: f32,
-    eligible_lights: &[bool],
-) -> Vec<u32> {
-    let candidates: Vec<(usize, f32)> = lights
-        .iter()
-        .enumerate()
-        .filter_map(|(idx, light)| {
-            // Pool eligibility: dynamic point lights only. The spot pool owns
-            // dynamic spots; baked lights bake their shadow into the lightmap.
-            if !light.is_dynamic || light.light_type != LightType::Point {
-                return None;
-            }
-            // Per-light eligibility (visibility + brightness), folded by the
-            // caller. Empty slice = all-eligible (first-frame / test contract).
-            if idx < eligible_lights.len() && !eligible_lights[idx] {
-                return None;
-            }
-            let light_pos = Vec3::new(
-                light.origin[0] as f32,
-                light.origin[1] as f32,
-                light.origin[2] as f32,
-            );
-            let dist = (light_pos - camera_position).length();
-            let denom = dist.max(camera_near_clip);
-            let score = (light.falloff_range / denom).powi(2);
-            Some((idx, score))
-        })
-        .collect();
-
-    if candidates.len() > CUBE_COUNT {
-        log::debug!(
-            "[CubeShadowPool] {} pool-eligible point lights; {} assigned to cube slots, {} unshadowed",
-            candidates.len(),
-            CUBE_COUNT,
-            candidates.len() - CUBE_COUNT
-        );
-    }
-
-    // SHARED scoring/drop core — identical policy to the spot ranker.
-    assign_ranked_slots(candidates, CUBE_COUNT, lights.len())
-}
-
 /// Renderer-owned cube-array point-shadow pool. A single `Depth32Float`
 /// cube-array texture allocated once, with:
 ///   * one `CubeArray` view bound into the forward pass's group-5 sample path,
@@ -239,7 +180,11 @@ impl CubeShadowPool {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: SHADOW_DEPTH_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            // Copy destination only: promoted-face depth is copied IN from the
+            // promoted depth cache. The pool is never a copy source.
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
 
@@ -332,13 +277,12 @@ pub fn cube_face_needs_clear(face_occupied: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lighting::spot_shadow::NO_SHADOW_SLOT;
     use postretro_level_loader::{FalloffModel, ShadowType};
 
     fn point_light(origin: [f64; 3], falloff_range: f32, is_dynamic: bool) -> MapLight {
         MapLight {
             origin,
-            light_type: LightType::Point,
+            light_type: postretro_level_loader::LightType::Point,
             intensity: 1.0,
             color: [1.0, 1.0, 1.0],
             falloff_model: FalloffModel::InverseSquared,
@@ -443,98 +387,6 @@ mod tests {
                 assert!(v.is_finite(), "face matrix entries must be finite");
             }
         }
-    }
-
-    // --- Ranking (capacity-agnostic) -----------------------------------------
-
-    /// Pool eligibility is `is_dynamic && Point`: a dynamic point light gets a
-    /// slot; a baked point light and a dynamic spot do not.
-    #[test]
-    fn dynamic_point_qualifies_baked_and_spot_do_not() {
-        let mut spot = point_light([0.0, 0.0, 0.0], 10.0, true);
-        spot.light_type = LightType::Spot;
-        let lights = vec![
-            point_light([0.0, 0.0, 0.0], 10.0, true), // dynamic point → slot
-            point_light([5.0, 0.0, 0.0], 10.0, false), // baked point → no slot
-            spot,                                     // dynamic spot → no slot
-        ];
-        let a = rank_point_lights(&lights, Vec3::ZERO, 0.1, &[]);
-        assert_ne!(a[0], NO_SHADOW_SLOT, "dynamic point must get a cube slot");
-        assert_eq!(a[1], NO_SHADOW_SLOT, "baked point must not get a slot");
-        assert_eq!(
-            a[2], NO_SHADOW_SLOT,
-            "dynamic spot must not get a cube slot"
-        );
-    }
-
-    /// Closer lights outrank farther ones (shared influence heuristic).
-    #[test]
-    fn closer_point_light_ranks_higher() {
-        let lights = vec![
-            point_light([0.0, 0.0, 0.0], 10.0, true),
-            point_light([100.0, 0.0, 0.0], 10.0, true),
-        ];
-        let a = rank_point_lights(&lights, Vec3::ZERO, 0.1, &[]);
-        assert_eq!(a[0], 0, "closer light gets slot 0");
-        assert_eq!(a[1], 1, "farther light gets slot 1");
-    }
-
-    /// Capacity-agnostic overflow: with `CUBE_COUNT + N` eligible lights, exactly
-    /// `CUBE_COUNT` get slots and the rest are dropped gracefully — no panic, no
-    /// duplicate slots. Parameterized on the configured `CUBE_COUNT`.
-    #[test]
-    fn overflow_drops_lowest_ranked_within_capacity() {
-        let overflow = 4;
-        let total = CUBE_COUNT + overflow;
-        // Place lights at increasing distance so rank == index; the farthest
-        // `overflow` lights are the ones dropped.
-        let lights: Vec<MapLight> = (0..total)
-            .map(|i| point_light([i as f64 * 10.0, 0.0, 0.0], 10.0, true))
-            .collect();
-        let a = rank_point_lights(&lights, Vec3::ZERO, 0.1, &[]);
-
-        let assigned: Vec<u32> = a.iter().copied().filter(|&s| s != NO_SHADOW_SLOT).collect();
-        assert_eq!(
-            assigned.len(),
-            CUBE_COUNT,
-            "exactly CUBE_COUNT lights get slots regardless of candidate count"
-        );
-        // Every assigned slot is unique and within capacity.
-        let mut sorted = assigned.clone();
-        sorted.sort_unstable();
-        sorted.dedup();
-        assert_eq!(sorted.len(), assigned.len(), "no slot assigned twice");
-        assert!(
-            assigned.iter().all(|&s| (s as usize) < CUBE_COUNT),
-            "every slot index is within capacity"
-        );
-        // The closest CUBE_COUNT lights (indices 0..CUBE_COUNT) are the survivors.
-        for (i, slot) in a.iter().enumerate() {
-            if i < CUBE_COUNT {
-                assert_ne!(*slot, NO_SHADOW_SLOT, "closest light {i} must keep a slot");
-            } else {
-                assert_eq!(*slot, NO_SHADOW_SLOT, "overflow light {i} must be dropped");
-            }
-        }
-    }
-
-    /// The per-light eligibility slice gates slot allocation: an ineligible light
-    /// is dropped even when it would otherwise rank first.
-    #[test]
-    fn eligibility_slice_culls_ineligible_lights() {
-        let lights = vec![
-            point_light([0.0, 0.0, 0.0], 10.0, true), // closest, but ineligible
-            point_light([50.0, 0.0, 0.0], 10.0, true),
-        ];
-        let a = rank_point_lights(&lights, Vec3::ZERO, 0.1, &[false, true]);
-        assert_eq!(a[0], NO_SHADOW_SLOT, "ineligible light must be dropped");
-        assert_ne!(a[1], NO_SHADOW_SLOT, "eligible light keeps its slot");
-    }
-
-    #[test]
-    fn empty_light_list_produces_empty_assignment() {
-        let a = rank_point_lights(&[], Vec3::ZERO, 0.1, &[]);
-        assert!(a.is_empty());
     }
 
     // --- Adapter gate (no GPU) -----------------------------------------------
@@ -702,11 +554,7 @@ mod tests {
             for j in 0..16 {
                 let theta = (i as f32 + 0.5) / 32.0 * std::f32::consts::TAU;
                 let phi = (j as f32 + 0.5) / 16.0 * std::f32::consts::PI;
-                let r = Vec3::new(
-                    phi.sin() * theta.cos(),
-                    phi.cos(),
-                    phi.sin() * theta.sin(),
-                );
+                let r = Vec3::new(phi.sin() * theta.cos(), phi.cos(), phi.sin() * theta.sin());
                 let dist = 5.0f32;
 
                 // Shader side: y-flipped lookup → hardware face + uv.
@@ -727,8 +575,7 @@ mod tests {
                 // depth the pass stored at that texel.
                 let axis_depth = r.x.abs().max(r.y.abs()).max(r.z.abs()) * dist;
                 let a = far / (far - CUBE_NEAR_CLIP);
-                let reference =
-                    a - (CUBE_NEAR_CLIP * far) / ((far - CUBE_NEAR_CLIP) * axis_depth);
+                let reference = a - (CUBE_NEAR_CLIP * far) / ((far - CUBE_NEAR_CLIP) * axis_depth);
                 assert!(
                     (reference - ndc.z).abs() < 1e-4,
                     "dir {r:?}: reconstructed reference {reference} != stored NDC depth {}",

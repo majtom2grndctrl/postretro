@@ -159,7 +159,7 @@ pub enum FalloffModel {
 /// default `StaticLightMap`). Two values only — the dynamic tier is selected by
 /// classname (sets `is_dynamic`), NOT by a shadow-type value. The direct
 /// techniques are disjoint, so no contribution is double-counted.
-/// See `context/plans/in-progress/sdf-per-light-shadows/`.
+/// See `context/lib/rendering_pipeline.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum ShadowType {
     /// Direct light + shadow baked into the lightmap; bounce baked into SH.
@@ -207,6 +207,9 @@ pub const DEFAULT_LIGHT_SIZE: f32 = 0.25;
 /// `_angular_diameter` is absent. An explicit `0` is preserved (hard shadow).
 /// See `MapLight::angular_diameter`.
 pub const DEFAULT_ANGULAR_DIAMETER_DEG: f32 = 0.5;
+
+pub const DEFAULT_ENTITY_SHADOW_MIN_INTENSITY_RATIO: f32 = 0.5;
+pub const DEFAULT_ENTITY_SHADOW_MIN_RANGE: f32 = 4.0;
 
 /// Format-agnostic light record. The SH baker and runtime direct path both
 /// consume `Vec<MapLight>`; neither sees source-format vocabulary.
@@ -266,7 +269,8 @@ pub struct MapLight {
     /// Marker for the dynamic (shadow-map) tier. Set `true` by the parser from
     /// the dynamic-tier CLASSNAME (`light_dynamic` / `light_dynamic_spot`), NOT
     /// from a shadow-type value. Dynamic-tier lights bake into nothing and route
-    /// to the shadow-map path; the only tier that can shadow moving entities.
+    /// to the shadow-map path. Baked-tier static lights may still be compiler-
+    /// selected for runtime moving-entity shadows.
     ///
     /// The namespace filters (`StaticBakedLights` / `AnimatedBakedLights` in
     /// `light_namespaces.rs`) key on this position axis (`!is_dynamic`) — never
@@ -278,8 +282,8 @@ pub struct MapLight {
     /// Whether this light casts shadows from dynamic ENTITIES (enemies /
     /// moving meshes). FGD `_cast_entity_shadows`. Valid only on dynamic-tier
     /// lights (`is_dynamic`), where it defaults `true`; the translator
-    /// warn-clears it on any baked-tier light (a baked light's world shadow is
-    /// frozen in the lightmap, so it can never render moving-entity occluders).
+    /// warn-clears the authored KVP on baked-tier lights. Static baked lights
+    /// may still be compiler-selected for runtime moving-entity shadows.
     /// Pool-slot eligibility for the light's own WORLD shadow rides `is_dynamic`
     /// alone — a dynamic light with this `false` still casts its world shadow,
     /// it just draws no entity occluders.
@@ -486,6 +490,24 @@ pub struct MapData {
     /// the navmesh bake stage (no CLI override). See
     /// `context/lib/build_pipeline.md` §Navigation bake.
     pub nav_params: NavParams,
+    /// Compiler-owned static-light entity-shadow selection thresholds resolved
+    /// from worldspawn KVPs.
+    pub entity_shadow_params: EntityShadowParams,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EntityShadowParams {
+    pub min_intensity_ratio: f32,
+    pub min_range: f32,
+}
+
+impl Default for EntityShadowParams {
+    fn default() -> Self {
+        Self {
+            min_intensity_ratio: DEFAULT_ENTITY_SHADOW_MIN_INTENSITY_RATIO,
+            min_range: DEFAULT_ENTITY_SHADOW_MIN_RANGE,
+        }
+    }
 }
 
 /// Navigation-bake parameters resolved from worldspawn `nav_*` KVPs (or engine

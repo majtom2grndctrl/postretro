@@ -32,7 +32,14 @@
 //
 // See: context/lib/build_pipeline.md, context/lib/rendering_pipeline.md §4
 
+use postretro_level_format::delta_sh_volumes::{
+    AFFINITY_FACTOR as FORMAT_AFFINITY_FACTOR,
+    DEFAULT_DELTA_PROBE_F16_STRIDE as FORMAT_DEFAULT_DELTA_PROBE_F16_STRIDE,
+    PROBES_PER_CELL as FORMAT_PROBES_PER_CELL,
+};
+use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
+use postretro_level_format::entity_shadow_lights::EntityShadowLightsSection;
 use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F};
 use postretro_level_format::octahedral::{
     DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION, irradiance_atlas_dimensions,
@@ -41,9 +48,12 @@ use postretro_level_format::octahedral::{
 use postretro_level_format::sh_volume::OctahedralAtlasTexel;
 use rayon::prelude::*;
 
-use crate::affinity_grid::{AFFINITY_FACTOR, AffinityReachInputs, decompose_affinity_for_lights};
+use crate::affinity_grid::{
+    AFFINITY_FACTOR, AffinityReachInputs, build_csr, csr_entry_cells, decompose_affinity_for_lights,
+};
 use crate::bc6h;
 use crate::cache::{CacheKey, StageCache};
+use crate::light_namespaces::AlphaLightsNs;
 use crate::map_data::{MapLight, ShadowType};
 use crate::portals::Portal;
 use crate::sh_bake::{
@@ -241,6 +251,194 @@ pub fn bake_direct_sh_volume(
         irradiance_format: IRRADIANCE_FORMAT_RGBA16F,
         atlas,
     }
+}
+
+/// Bake sparse per-selected-light direct SH deltas. `affinity_lights` entries are
+/// positions in `EntityShadowLightsSection::light_indices`, not AlphaLights or
+/// source light indices.
+pub fn bake_direct_sh_delta_volumes(
+    inputs: &DirectBakeInputs<'_, '_>,
+    config: &ShConfig,
+    alpha_lights: &AlphaLightsNs<'_>,
+    entity_shadow_lights: &EntityShadowLightsSection,
+) -> Option<DirectShDeltaVolumesSection> {
+    if entity_shadow_lights.light_indices.is_empty()
+        || inputs.sh_ctx.geometry.geometry.vertices.is_empty()
+    {
+        return None;
+    }
+
+    let layout = probe_grid_layout(inputs.sh_ctx, config);
+    if layout.is_empty() {
+        return None;
+    }
+
+    let selected = selected_direct_lights(inputs, alpha_lights, entity_shadow_lights);
+    if selected.is_empty() {
+        return None;
+    }
+    let selected_lights: Vec<&MapLight> = selected.iter().map(|entry| entry.light).collect();
+
+    let geometry_vertices: Vec<[f32; 3]> = inputs
+        .sh_ctx
+        .geometry
+        .geometry
+        .vertices
+        .iter()
+        .map(|v| v.position)
+        .collect();
+    let reach = AffinityReachInputs {
+        geometry_vertices: &geometry_vertices,
+        tree: inputs.sh_ctx.tree,
+        exterior_leaves: inputs.sh_ctx.exterior_leaves,
+        portals: inputs.portals,
+        probe_spacing: config.probe_spacing,
+    };
+    let decomposition = decompose_affinity_for_lights(&reach, &selected_lights);
+    let affinity_dims = decomposition.affinity_dims;
+    let affinity_cell_count = decomposition.affinity_cell_count();
+    let (affinity_offsets, affinity_lights) =
+        build_csr(&decomposition.per_light_cells, affinity_cell_count);
+    if affinity_lights.is_empty() {
+        return None;
+    }
+
+    let csr_cells = csr_entry_cells(&affinity_offsets);
+    let delta_subblocks: Vec<u16> = affinity_lights
+        .par_iter()
+        .zip(csr_cells.par_iter())
+        .flat_map(|(&selection_index, &cell)| {
+            let entry = selected[selection_index as usize];
+            bake_direct_delta_subblock(inputs, &layout, entry.light, entry.static_index, cell)
+        })
+        .collect();
+
+    Some(DirectShDeltaVolumesSection {
+        affinity_factor: FORMAT_AFFINITY_FACTOR,
+        affinity_dims,
+        tile_dimension: TILE_DIMENSION,
+        tile_border: TILE_BORDER,
+        affinity_offsets,
+        affinity_lights,
+        delta_subblocks,
+    })
+}
+
+#[derive(Clone, Copy)]
+struct SelectedDirectLight<'a> {
+    light: &'a MapLight,
+    static_index: u64,
+}
+
+fn selected_direct_lights<'a>(
+    inputs: &DirectBakeInputs<'_, 'a>,
+    alpha_lights: &AlphaLightsNs<'a>,
+    entity_shadow_lights: &EntityShadowLightsSection,
+) -> Vec<SelectedDirectLight<'a>> {
+    use std::collections::HashMap;
+
+    let source_by_alpha = alpha_lights
+        .entries()
+        .iter()
+        .enumerate()
+        .map(|(alpha_index, entry)| (alpha_index as u32, entry.source_index))
+        .collect::<HashMap<_, _>>();
+
+    let direct_by_source = inputs
+        .sh_ctx
+        .static_lights
+        .entries()
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| entry.light.shadow_type == ShadowType::StaticLightMap)
+        .map(|(static_index, entry)| {
+            (
+                entry.source_index,
+                SelectedDirectLight {
+                    light: entry.light,
+                    static_index: static_index as u64,
+                },
+            )
+        })
+        .collect::<HashMap<_, _>>();
+
+    entity_shadow_lights
+        .light_indices
+        .iter()
+        .filter_map(|alpha_index| {
+            source_by_alpha
+                .get(alpha_index)
+                .and_then(|source_index| direct_by_source.get(source_index))
+                .copied()
+        })
+        .collect()
+}
+
+fn bake_direct_delta_subblock(
+    inputs: &DirectBakeInputs<'_, '_>,
+    layout: &ProbeGridLayout,
+    light: &MapLight,
+    static_index: u64,
+    affinity_cell: u32,
+) -> Vec<u16> {
+    let nx = layout.dims[0] as usize;
+    let ny = layout.dims[1] as usize;
+    let cell_x = affinity_cell % (layout.dims[0].div_ceil(AFFINITY_FACTOR));
+    let cell_y = (affinity_cell / layout.dims[0].div_ceil(AFFINITY_FACTOR))
+        % layout.dims[1].div_ceil(AFFINITY_FACTOR);
+    let cell_z = affinity_cell
+        / (layout.dims[0].div_ceil(AFFINITY_FACTOR) * layout.dims[1].div_ceil(AFFINITY_FACTOR));
+
+    let ctx = RaytracingCtx {
+        bvh: inputs.sh_ctx.bvh,
+        primitives: inputs.sh_ctx.primitives,
+        geometry: inputs.sh_ctx.geometry,
+    };
+    let mut out =
+        Vec::with_capacity(FORMAT_PROBES_PER_CELL * FORMAT_DEFAULT_DELTA_PROBE_F16_STRIDE);
+
+    for local_z in 0..AFFINITY_FACTOR {
+        for local_y in 0..AFFINITY_FACTOR {
+            for local_x in 0..AFFINITY_FACTOR {
+                let px = cell_x * AFFINITY_FACTOR + local_x;
+                let py = cell_y * AFFINITY_FACTOR + local_y;
+                let pz = cell_z * AFFINITY_FACTOR + local_z;
+                let tile = if px < layout.dims[0] && py < layout.dims[1] && pz < layout.dims[2] {
+                    let probe_index = pz as usize * nx * ny + py as usize * nx + px as usize;
+                    if layout.validity[probe_index] != 0 {
+                        let probe_pos = vec3_from(layout.probe_positions[probe_index]);
+                        let coefficients = bake_probe_direct_rgb(
+                            &ctx,
+                            probe_pos,
+                            &[light],
+                            &[static_index],
+                            probe_index as u64,
+                        );
+                        pack_octahedral_irradiance_tile(
+                            &coefficients,
+                            true,
+                            TILE_DIMENSION,
+                            TILE_BORDER,
+                        )
+                    } else {
+                        pack_octahedral_irradiance_tile(
+                            &[0.0; 27],
+                            false,
+                            TILE_DIMENSION,
+                            TILE_BORDER,
+                        )
+                    }
+                } else {
+                    pack_octahedral_irradiance_tile(&[0.0; 27], false, TILE_DIMENSION, TILE_BORDER)
+                };
+                for texel in tile {
+                    out.extend_from_slice(&texel.rgba);
+                }
+            }
+        }
+    }
+
+    out
 }
 
 /// Bake one probe's packed octahedral direct-SH tile. Invalid probes pack the
@@ -599,11 +797,12 @@ mod tests {
     use super::*;
     use crate::bvh_build::build_bvh;
     use crate::geometry::{FaceIndexRange, GeometryResult};
-    use crate::light_namespaces::{AnimatedBakedLights, StaticBakedLights};
+    use crate::light_namespaces::{AlphaLightsNs, AnimatedBakedLights, StaticBakedLights};
     use crate::map_data::{FalloffModel, LightAnimation, LightType, ShadowType};
     use crate::partition::{Aabb as CompilerAabb, BspChild, BspLeaf, BspNode, BspTree};
     use crate::portals::Portal;
     use glam::DVec3;
+    use postretro_level_format::entity_shadow_lights::EntityShadowLightsSection;
     use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
     use postretro_level_format::octahedral::irradiance_interior_texel_direction;
     use postretro_level_format::texture_names::TextureNamesSection;
@@ -726,6 +925,20 @@ mod tests {
             .collect()
     }
 
+    fn decode_atlas_f32(section: &DirectShVolumeSection) -> Vec<[f32; 4]> {
+        decode_atlas(section)
+            .into_iter()
+            .map(|rgba| {
+                [
+                    f16_to_f32(rgba[0]),
+                    f16_to_f32(rgba[1]),
+                    f16_to_f32(rgba[2]),
+                    f16_to_f32(rgba[3]),
+                ]
+            })
+            .collect()
+    }
+
     /// Decode f16 bits → f32 (finite non-negative magnitudes; the irradiance
     /// atlas is always non-negative).
     fn f16_to_f32(bits: u16) -> f32 {
@@ -777,6 +990,97 @@ mod tests {
 
     fn flat_index(x: usize, y: usize, z: usize, dims: [u32; 3]) -> usize {
         z * dims[0] as usize * dims[1] as usize + y * dims[0] as usize + x
+    }
+
+    fn bake_direct_for_lights(lights: &[MapLight], geo: &GeometryResult) -> DirectShVolumeSection {
+        let (bvh, prims, _) = build_bvh(geo).unwrap();
+        let tree = tree_all_empty();
+        let exterior: HashSet<usize> = HashSet::new();
+        let static_lights = StaticBakedLights::from_lights(lights);
+        let animated_lights = AnimatedBakedLights::from_lights(lights);
+        let sh_ctx = ShBakeCtx {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: geo,
+            tree: &tree,
+            exterior_leaves: &exterior,
+            static_lights: &static_lights,
+            animated_lights: &animated_lights,
+            total_light_count: lights.len(),
+        };
+        let inputs = DirectBakeInputs {
+            sh_ctx: &sh_ctx,
+            portals: &[],
+        };
+        bake_direct_sh_volume(&inputs, &ShConfig { probe_spacing: 1.0 })
+    }
+
+    fn accumulate_delta_atlas(
+        base: &DirectShVolumeSection,
+        delta: &DirectShDeltaVolumesSection,
+    ) -> Vec<[f32; 4]> {
+        let texel_count = base.atlas_dimensions[0] as usize * base.atlas_dimensions[1] as usize;
+        let mut atlas = vec![[0.0f32; 4]; texel_count];
+        let affinity_x = delta.affinity_dims[0];
+        let affinity_y = delta.affinity_dims[1];
+        let tile_dim = delta.tile_dimension as usize;
+        let probe_stride = tile_dim * tile_dim * 4;
+        let subblock_stride = FORMAT_PROBES_PER_CELL * probe_stride;
+        let mut entry_index = 0usize;
+
+        for cell in 0..delta.affinity_cell_count() {
+            let cell_x = cell as u32 % affinity_x;
+            let cell_y = (cell as u32 / affinity_x) % affinity_y;
+            let cell_z = cell as u32 / (affinity_x * affinity_y);
+            for _ in delta.affinity_offsets[cell]..delta.affinity_offsets[cell + 1] {
+                let subblock_base = entry_index * subblock_stride;
+                for local_z in 0..AFFINITY_FACTOR {
+                    for local_y in 0..AFFINITY_FACTOR {
+                        for local_x in 0..AFFINITY_FACTOR {
+                            let px = cell_x * AFFINITY_FACTOR + local_x;
+                            let py = cell_y * AFFINITY_FACTOR + local_y;
+                            let pz = cell_z * AFFINITY_FACTOR + local_z;
+                            let local_probe = (local_x
+                                + local_y * AFFINITY_FACTOR
+                                + local_z * AFFINITY_FACTOR * AFFINITY_FACTOR)
+                                as usize;
+                            if px >= base.grid_dimensions[0]
+                                || py >= base.grid_dimensions[1]
+                                || pz >= base.grid_dimensions[2]
+                            {
+                                continue;
+                            }
+                            let probe_index = flat_index(
+                                px as usize,
+                                py as usize,
+                                pz as usize,
+                                base.grid_dimensions,
+                            );
+                            let origin = irradiance_tile_origin(
+                                probe_index,
+                                base.tile_dimension,
+                                base.atlas_tiles_per_row,
+                            );
+                            let probe_base = subblock_base + local_probe * probe_stride;
+                            for tile_y in 0..tile_dim {
+                                for tile_x in 0..tile_dim {
+                                    let src = probe_base + (tile_y * tile_dim + tile_x) * 4;
+                                    let dst_x = origin[0] as usize + tile_x;
+                                    let dst_y = origin[1] as usize + tile_y;
+                                    let dst = dst_y * base.atlas_dimensions[0] as usize + dst_x;
+                                    for (channel, out) in atlas[dst].iter_mut().enumerate() {
+                                        *out += f16_to_f32(delta.delta_subblocks[src + channel]);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                entry_index += 1;
+            }
+        }
+
+        atlas
     }
 
     /// AC 9: byte-identical output across two runs on identical inputs.
@@ -1065,6 +1369,125 @@ mod tests {
             global_indices,
             vec![0],
             "kept light keeps its global static index"
+        );
+    }
+
+    #[test]
+    fn direct_sh_delta_affinity_lights_are_selection_indices() {
+        let geo = floor_and_walls_geometry();
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let tree = tree_all_empty();
+        let exterior: HashSet<usize> = HashSet::new();
+        let lights = vec![
+            static_point_light(DVec3::new(0.5, 1.0, 0.5), 50.0, [1.0, 0.7, 0.4]),
+            static_point_light(DVec3::new(2.0, 1.0, 2.0), 50.0, [0.2, 0.2, 0.2]),
+            static_point_light(DVec3::new(3.5, 1.0, 3.5), 50.0, [0.4, 0.7, 1.0]),
+        ];
+        let static_lights = StaticBakedLights::from_lights(&lights);
+        let animated_lights = AnimatedBakedLights::from_lights(&lights);
+        let alpha_lights = AlphaLightsNs::from_lights(&lights);
+        let sh_ctx = ShBakeCtx {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+            tree: &tree,
+            exterior_leaves: &exterior,
+            static_lights: &static_lights,
+            animated_lights: &animated_lights,
+            total_light_count: lights.len(),
+        };
+        let inputs = DirectBakeInputs {
+            sh_ctx: &sh_ctx,
+            portals: &[],
+        };
+        let selected = EntityShadowLightsSection {
+            light_indices: vec![0, 2],
+        };
+
+        let delta = bake_direct_sh_delta_volumes(
+            &inputs,
+            &ShConfig { probe_spacing: 1.0 },
+            &alpha_lights,
+            &selected,
+        )
+        .expect("selected lights should produce direct deltas");
+
+        assert!(
+            delta.affinity_lights.iter().all(|&index| index < 2),
+            "affinity_lights must store selection indices, not AlphaLights indices: {:?}",
+            delta.affinity_lights,
+        );
+        assert!(
+            delta.affinity_lights.contains(&1),
+            "the second selected light must be encoded as selection index 1"
+        );
+        assert!(
+            !delta.affinity_lights.contains(&2),
+            "AlphaLights index 2 must not appear in affinity_lights"
+        );
+    }
+
+    #[test]
+    fn direct_sh_delta_subtraction_matches_bake_excluding_selected_light() {
+        const DELTA_SUBTRACTION_EPSILON: f32 = 0.02;
+
+        let geo = floor_and_walls_geometry();
+        let selected_light = static_point_light(DVec3::new(0.5, 1.0, 0.5), 50.0, [0.2, 0.12, 0.06]);
+        let kept_light = static_point_light(DVec3::new(3.5, 2.0, 3.5), 50.0, [0.06, 0.12, 0.2]);
+        let lights = vec![selected_light.clone(), kept_light.clone()];
+
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let tree = tree_all_empty();
+        let exterior: HashSet<usize> = HashSet::new();
+        let static_lights = StaticBakedLights::from_lights(&lights);
+        let animated_lights = AnimatedBakedLights::from_lights(&lights);
+        let alpha_lights = AlphaLightsNs::from_lights(&lights);
+        let sh_ctx = ShBakeCtx {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+            tree: &tree,
+            exterior_leaves: &exterior,
+            static_lights: &static_lights,
+            animated_lights: &animated_lights,
+            total_light_count: lights.len(),
+        };
+        let inputs = DirectBakeInputs {
+            sh_ctx: &sh_ctx,
+            portals: &[],
+        };
+        let config = ShConfig { probe_spacing: 1.0 };
+
+        let base = bake_direct_sh_volume(&inputs, &config);
+        let selected = EntityShadowLightsSection {
+            light_indices: vec![0],
+        };
+        let delta =
+            bake_direct_sh_delta_volumes(&inputs, &config, &alpha_lights, &selected).unwrap();
+        let excluded = bake_direct_for_lights(&[kept_light], &geo);
+
+        assert_eq!(base.grid_dimensions, excluded.grid_dimensions);
+        let base_atlas = decode_atlas_f32(&base);
+        let delta_atlas = accumulate_delta_atlas(&base, &delta);
+        let excluded_atlas = decode_atlas_f32(&excluded);
+
+        let mut max_error = 0.0f32;
+        for ((base_texel, delta_texel), excluded_texel) in base_atlas
+            .iter()
+            .zip(delta_atlas.iter())
+            .zip(excluded_atlas.iter())
+        {
+            for channel in 0..3 {
+                let composed = (base_texel[channel] - delta_texel[channel]).max(0.0);
+                let error = (composed - excluded_texel[channel]).abs();
+                max_error = max_error.max(error);
+            }
+        }
+
+        assert!(
+            max_error <= DELTA_SUBTRACTION_EPSILON,
+            "base - selected direct delta must match a bake excluding selected lights; \
+             max_error={max_error}, tolerance={DELTA_SUBTRACTION_EPSILON}",
         );
     }
 

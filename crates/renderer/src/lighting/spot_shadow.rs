@@ -2,8 +2,7 @@
 //
 // See: context/lib/rendering_pipeline.md §4 (Dynamic direct, spot shadow maps)
 
-use glam::{Mat4, Vec3};
-use postretro_level_loader::{LightType, MapLight};
+use glam::Mat4;
 
 #[cfg(test)]
 use postretro_lighting::light_space_matrix;
@@ -11,41 +10,6 @@ pub use postretro_lighting::{NO_SHADOW_SLOT, SHADOW_NEAR_CLIP};
 
 /// Number of shadow-map slots in the pool. Re-tunable.
 pub const SHADOW_POOL_SIZE: usize = 96;
-
-/// Shared scoring/drop core for the shadow-slot rankers (spot pool here, cube
-/// point pool in `cube_shadow.rs`). Takes pre-filtered, pre-scored candidates
-/// — each `(light_index, influence_score)` — plus the pool `capacity` and the
-/// total light count, and returns a `slot_assignment` Vec indexed by light
-/// index: each entry is a slot (`0..capacity`) or [`NO_SHADOW_SLOT`].
-///
-/// Sorts by score descending, breaking ties by ascending light index for
-/// determinism, then assigns the top `capacity` to dense slots `0..capacity`;
-/// every lower-ranked candidate keeps `NO_SHADOW_SLOT` (dropped gracefully —
-/// no panic). Spot and point rankers supply their own light-type filter and
-/// influence score but MUST share this drop policy so the two cannot drift.
-///
-/// `candidates` is taken by value (mutated in place by the sort) so the caller
-/// does not pay a clone.
-pub fn assign_ranked_slots(
-    mut candidates: Vec<(usize, f32)>,
-    capacity: usize,
-    light_count: usize,
-) -> Vec<u32> {
-    let mut slot_assignment = vec![NO_SHADOW_SLOT; light_count];
-
-    // Sort by score (descending), then by index (ascending) for determinism.
-    candidates.sort_by(|a, b| {
-        b.1.partial_cmp(&a.1)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then(a.0.cmp(&b.0))
-    });
-
-    for (slot, (light_idx, _score)) in candidates.iter().take(capacity).enumerate() {
-        slot_assignment[*light_idx] = slot as u32;
-    }
-
-    slot_assignment
-}
 
 /// Depth format for shadow maps.
 pub const SHADOW_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -269,7 +233,11 @@ impl SpotShadowPool {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: SHADOW_DEPTH_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            // Copy destination only: promoted-slot depth is copied IN from the
+            // promoted depth cache. The pool is never a copy source.
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
 
@@ -365,94 +333,6 @@ impl SpotShadowPool {
             point_cube_view,
         );
     }
-
-    /// Compute the slot-assignment ranking for visible shadow-casting spot lights.
-    ///
-    /// Takes the candidate light list and the camera position. Identifies spot
-    /// lights that are pool-eligible (`is_dynamic && Spot`) and pass the caller's
-    /// per-light visibility/brightness gate, ranks them by a distance-based
-    /// influence heuristic, and assigns the top `SHADOW_POOL_SIZE` to slots.
-    ///
-    /// **No camera-orientation coupling.** Slot eligibility depends only on the
-    /// light's tier/type and the caller's `eligible_lights` gate (cell visibility
-    /// and brightness, neither of which is a function of camera *orientation*);
-    /// the limited pool is then ranked by distance score alone. This mirrors the
-    /// point-light ranker (`rank_point_lights`) and means the SET of lights that
-    /// receive a shadow slot is invariant under camera pitch/yaw at a fixed
-    /// position. A previous version pre-filtered candidates by testing each
-    /// cone's enclosing AABB against the camera frustum; that over-approximation
-    /// could still wrongly drop a shadow whose cone reached a camera-visible
-    /// receiver (the shadow vanished purely on pitch-down), so it was removed.
-    /// Per-slot cone culling of occluders still happens later in `shadow_cull.rs`
-    /// (light-cone based, not camera based).
-    ///
-    /// The caller passes the full-level light slice; the pool-eligibility gate
-    /// is `is_dynamic && Spot`. Only dynamic-tier spotlights get a shadow slot —
-    /// the shadow depth pass renders WORLD geometry, so a pooled dynamic spot
-    /// shadows static occluders (e.g. pillars) regardless of the per-light
-    /// `casts_entity_shadows` toggle (which only gates moving-ENTITY occluders,
-    /// drawn into the same slot by `entity_occluder_eligible`). A baked light's
-    /// world shadow is frozen in the lightmap, so it never needs a slot.
-    ///
-    /// Returns a Vec indexed by light index (into the slice the caller
-    /// passes): entry is the slot index (`0..SHADOW_POOL_SIZE`) or NO_SHADOW_SLOT.
-    pub fn rank_lights(
-        lights: &[MapLight],
-        camera_position: Vec3,
-        camera_near_clip: f32,
-        eligible_lights: &[bool],
-    ) -> Vec<u32> {
-        // Collect pool-eligible spot lights with their distance scores.
-        let candidates: Vec<(usize, f32)> = lights
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, light)| {
-                // Pool eligibility: only dynamic-tier spotlights get a shadow
-                // slot. The shadow depth pass renders WORLD geometry, so a pooled
-                // dynamic spot shadows static occluders (pillars) regardless of
-                // the `casts_entity_shadows` toggle (which gates moving-ENTITY
-                // occluders into the same slot, not slot allocation). Baked lights
-                // bake their world shadow into the lightmap and need no slot.
-                if !light.is_dynamic || light.light_type != LightType::Spot {
-                    return None;
-                }
-
-                // Per-light eligibility gate. The caller folds visibility and
-                // animated-brightness suppression into this slice; an empty
-                // (or short) slice is treated as all-eligible so existing
-                // tests and the first-frame pre-bridge call keep working.
-                if idx < eligible_lights.len() && !eligible_lights[idx] {
-                    return None;
-                }
-
-                // Compute heuristic score: (falloff_range / max(distance, near_clip))^2
-                let light_pos = Vec3::new(
-                    light.origin[0] as f32,
-                    light.origin[1] as f32,
-                    light.origin[2] as f32,
-                );
-                let dist = (light_pos - camera_position).length();
-                let denom = dist.max(camera_near_clip);
-                let score = (light.falloff_range / denom).powi(2);
-
-                Some((idx, score))
-            })
-            .collect();
-
-        if candidates.len() > SHADOW_POOL_SIZE {
-            log::debug!(
-                "[ShadowPool] {} pool-eligible spot lights visible; {} assigned to slots, {} unshadowed",
-                candidates.len(),
-                SHADOW_POOL_SIZE,
-                candidates.len() - SHADOW_POOL_SIZE
-            );
-        }
-
-        // Shared scoring/drop core: sort by score, assign top SHADOW_POOL_SIZE
-        // to slots, drop the rest. The cube point-pool ranker calls the SAME
-        // core so the two cannot drift.
-        assign_ranked_slots(candidates, SHADOW_POOL_SIZE, lights.len())
-    }
 }
 
 // Thin GPU plumbing: one positional arg per group-5 binding resource. Splitting
@@ -509,10 +389,11 @@ fn build_bind_group(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use glam::Vec3;
+    use postretro_level_loader::MapLight;
     use postretro_render_data::cone_frustum::{
         Aabb, aabb_intersects_frustum, cone_enclosing_aabb, cone_frustum_planes,
     };
-    use proptest::prelude::*;
 
     /// Scan a WGSL source for the `LightSpaceMatrices` array length, i.e. the
     /// `N` in `array<mat4x4<f32>, N>`. Returns `None` if the declaration is
@@ -607,35 +488,11 @@ mod tests {
         );
     }
 
-    /// Pool eligibility is `is_dynamic` (a baked light's world shadow is frozen
-    /// in the lightmap, so only dynamic lights get a slot). The bool param sets
-    /// `is_dynamic`; `casts_entity_shadows` stays `false` here because it gates
-    /// moving-ENTITY occluders into the slot, not slot allocation itself.
-    fn test_light(_idx: u32, origin: [f64; 3], falloff_range: f32, is_dynamic: bool) -> MapLight {
-        MapLight {
-            origin,
-            light_type: LightType::Spot,
-            intensity: 1.0,
-            color: [1.0, 1.0, 1.0],
-            falloff_model: postretro_level_loader::FalloffModel::Linear,
-            falloff_range,
-            cone_angle_inner: 0.3,
-            cone_angle_outer: 0.6,
-            cone_direction: [0.0, 0.0, -1.0],
-            is_dynamic,
-            casts_entity_shadows: false,
-            animated_slot: None,
-            tags: vec![],
-            cell_index: 0,
-            shadow_type: postretro_level_loader::ShadowType::StaticLightMap,
-        }
-    }
-
     /// Spotlight at the origin aimed down -Z, used by light-space matrix tests.
     fn spot_down_neg_z() -> MapLight {
         MapLight {
             origin: [0.0, 0.0, 0.0],
-            light_type: LightType::Spot,
+            light_type: postretro_level_loader::LightType::Spot,
             intensity: 1.0,
             color: [1.0, 1.0, 1.0],
             falloff_model: postretro_level_loader::FalloffModel::Linear,
@@ -650,220 +507,6 @@ mod tests {
             cell_index: 0,
             shadow_type: postretro_level_loader::ShadowType::StaticLightMap,
         }
-    }
-
-    /// Build a `view_proj` matrix from an eye, pitch, and yaw (radians). Used by
-    /// the orientation-sweep tests to vary only the camera's looking direction
-    /// while holding position fixed.
-    fn camera_view_proj(eye: Vec3, pitch: f32, yaw: f32) -> Mat4 {
-        // Forward from yaw (around +Y) and pitch (around the camera right axis),
-        // matching a Y-up, forward = -Z convention at (pitch=0, yaw=0).
-        let forward = Vec3::new(
-            yaw.sin() * pitch.cos(),
-            pitch.sin(),
-            -yaw.cos() * pitch.cos(),
-        )
-        .normalize();
-        let world_up = if forward.y.abs() > 0.99 {
-            Vec3::Z
-        } else {
-            Vec3::Y
-        };
-        let view = Mat4::look_at_rh(eye, eye + forward, world_up);
-        let proj = Mat4::perspective_rh(std::f32::consts::FRAC_PI_2, 1.0, 0.1, 4096.0);
-        proj * view
-    }
-
-    #[test]
-    fn empty_light_list_produces_empty_assignment() {
-        let assignment = SpotShadowPool::rank_lights(&[], Vec3::ZERO, 0.1, &[]);
-        assert!(assignment.is_empty());
-    }
-
-    #[test]
-    fn baked_spots_are_not_assigned() {
-        // Non-dynamic (baked-tier) spotlights never get a slot: their world
-        // shadow is frozen in the lightmap.
-        let lights = vec![
-            test_light(0, [0.0, 0.0, 0.0], 10.0, false),
-            test_light(1, [10.0, 0.0, 0.0], 10.0, false),
-        ];
-        let assignment = SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[]);
-        assert_eq!(assignment[0], NO_SHADOW_SLOT);
-        assert_eq!(assignment[1], NO_SHADOW_SLOT);
-    }
-
-    /// Dynamic-tier spotlights are pool-eligible — they shadow static world
-    /// occluders (e.g. pillars) through the world-geometry depth pass. A dynamic
-    /// spot lands in a pool slot regardless of the `casts_entity_shadows` toggle
-    /// (which only gates moving-ENTITY occluders into that slot).
-    #[test]
-    fn dynamic_spot_qualifies_for_pool() {
-        let lights = vec![test_light(0, [0.0, 0.0, 0.0], 10.0, true)];
-        let assignment = SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[]);
-        assert_ne!(assignment[0], NO_SHADOW_SLOT);
-    }
-
-    /// The pool is spotlights-only. Making the dynamic tier pool-eligible by
-    /// default widened the candidate set to every dynamic light, so the `Spot`
-    /// guard is now the sole thing keeping dynamic POINT lights
-    /// (`light_dynamic`) out of the spot pool. `campaign-test.map` ships such
-    /// lights, so cover the exclusion explicitly.
-    #[test]
-    fn dynamic_point_light_is_not_assigned() {
-        let mut light = test_light(0, [0.0, 0.0, 0.0], 10.0, true);
-        light.light_type = LightType::Point;
-        let lights = vec![light];
-        let assignment = SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[]);
-        assert_eq!(assignment[0], NO_SHADOW_SLOT);
-    }
-
-    #[test]
-    fn point_lights_are_not_assigned() {
-        let mut light = test_light(0, [0.0, 0.0, 0.0], 10.0, true);
-        light.light_type = LightType::Point;
-        let lights = vec![light];
-        let assignment = SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[]);
-        assert_eq!(assignment[0], NO_SHADOW_SLOT);
-    }
-
-    #[test]
-    fn two_dynamic_spots_both_assigned() {
-        let lights = vec![
-            test_light(0, [0.0, 0.0, 0.0], 10.0, true),
-            test_light(1, [10.0, 0.0, 0.0], 10.0, true),
-        ];
-        let assignment = SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[]);
-        assert_ne!(assignment[0], NO_SHADOW_SLOT);
-        assert_ne!(assignment[1], NO_SHADOW_SLOT);
-        // Should be different slots.
-        assert_ne!(assignment[0], assignment[1]);
-    }
-
-    #[test]
-    fn nine_lights_all_assigned_when_pool_has_capacity() {
-        let mut lights = Vec::new();
-        for i in 0..9 {
-            lights.push(test_light(
-                i as u32,
-                [i as f64 * 10.0, 0.0, 0.0],
-                10.0,
-                true,
-            ));
-        }
-        let assignment = SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[]);
-
-        let assigned_count = assignment.iter().filter(|&&s| s != NO_SHADOW_SLOT).count();
-        assert_eq!(assigned_count, 9, "all 9 lights fit within pool capacity");
-
-        let unshadowed_count = assignment.iter().filter(|&&s| s == NO_SHADOW_SLOT).count();
-        assert_eq!(unshadowed_count, 0, "no lights left unshadowed");
-    }
-
-    #[test]
-    fn closer_light_ranks_higher() {
-        // Light 0 at origin is much closer than light 1 at distance 100.
-        let lights = vec![
-            test_light(0, [0.0, 0.0, 0.0], 10.0, true),
-            test_light(1, [100.0, 0.0, 0.0], 10.0, true),
-        ];
-        let assignment = SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[]);
-        // Light 0 should get slot 0 (lower index = higher rank).
-        assert_eq!(assignment[0], 0);
-        assert_eq!(assignment[1], 1);
-    }
-
-    #[test]
-    fn larger_falloff_ranks_higher() {
-        // Both at same distance; light 0 has larger falloff_range.
-        let lights = vec![
-            test_light(0, [0.0, 0.0, -10.0], 20.0, true),
-            test_light(1, [0.0, 0.0, -10.0], 10.0, true),
-        ];
-        let assignment = SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[]);
-        // Light 0 (larger range) should get slot 0.
-        assert_eq!(assignment[0], 0);
-        assert_eq!(assignment[1], 1);
-    }
-
-    #[test]
-    fn ties_broken_by_light_index() {
-        // Two lights with identical distance and falloff_range.
-        let lights = vec![
-            test_light(0, [10.0, 0.0, 0.0], 10.0, true),
-            test_light(1, [10.0, 0.0, 0.0], 10.0, true),
-        ];
-        let assignment = SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[]);
-        // Light 0 (lower index) should get slot 0; light 1 gets slot 1.
-        assert_eq!(assignment[0], 0);
-        assert_eq!(assignment[1], 1);
-    }
-
-    #[test]
-    fn lights_in_invisible_cells_are_culled() {
-        let lights = vec![
-            test_light(0, [0.0, 0.0, -10.0], 10.0, true),
-            test_light(1, [10.0, 0.0, -10.0], 10.0, true),
-            test_light(2, [20.0, 0.0, -10.0], 10.0, true),
-        ];
-        let bitmask = [true, false, true];
-        let assignment = SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &bitmask);
-        assert_ne!(assignment[0], NO_SHADOW_SLOT);
-        assert_eq!(assignment[1], NO_SHADOW_SLOT);
-        assert_ne!(assignment[2], NO_SHADOW_SLOT);
-    }
-
-    #[test]
-    fn nine_lights_with_eight_visible_assigns_eight() {
-        // The invisible light (index 0) is placed closest to the camera so it
-        // would otherwise rank #1 by heuristic — proving the bitmask filter
-        // takes precedence over the score.
-        let mut lights = Vec::new();
-        lights.push(test_light(0, [0.0, 0.0, -1.0], 10.0, true));
-        for i in 1..9 {
-            lights.push(test_light(
-                i as u32,
-                [i as f64 * 50.0, 0.0, -10.0],
-                10.0,
-                true,
-            ));
-        }
-        let mut bitmask = vec![true; 9];
-        bitmask[0] = false;
-        let assignment = SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &bitmask);
-
-        assert_eq!(assignment[0], NO_SHADOW_SLOT);
-        let assigned_count = assignment[1..]
-            .iter()
-            .filter(|&&s| s != NO_SHADOW_SLOT)
-            .count();
-        assert_eq!(
-            assigned_count, 8,
-            "all 8 visible lights get slots (pool has 96 capacity)"
-        );
-    }
-
-    #[test]
-    fn empty_bitmask_treated_as_all_visible() {
-        let lights = vec![
-            test_light(0, [0.0, 0.0, -10.0], 10.0, true),
-            test_light(1, [10.0, 0.0, -10.0], 10.0, true),
-            test_light(2, [20.0, 0.0, -10.0], 10.0, true),
-        ];
-        let assignment = SpotShadowPool::rank_lights(&lights, Vec3::ZERO, 0.1, &[]);
-        assert_ne!(assignment[0], NO_SHADOW_SLOT);
-        assert_ne!(assignment[1], NO_SHADOW_SLOT);
-        assert_ne!(assignment[2], NO_SHADOW_SLOT);
-    }
-
-    #[test]
-    fn camera_near_clip_clamps_denominator() {
-        // Light very close to camera (distance < near_clip). Heuristic should clamp.
-        let lights = vec![test_light(0, [0.001, 0.0, 0.0], 10.0, true)];
-        let camera_near_clip = 0.1;
-        let assignment = SpotShadowPool::rank_lights(&lights, Vec3::ZERO, camera_near_clip, &[]);
-        // Should still be assigned.
-        assert_eq!(assignment[0], 0);
     }
 
     /// AC#2: a world AABB inside the cone is classified inside; one fully
@@ -984,140 +627,5 @@ mod tests {
             !aabb_intersects_frustum(&clearly_outside, &planes),
             "AABB well outside the cone side plane must not intersect"
         );
-    }
-
-    /// Regression: dynamic spot lost its shadow slot when its cone AABB left the
-    /// pitched camera frustum (shadow vanished on pitch-down).
-    ///
-    /// The light sits well off to the side of the camera, its cone reaching a
-    /// receiver the camera can see, but the cone's enclosing AABB falls outside
-    /// the pitched-down camera frustum. The old camera-frustum pre-filter dropped
-    /// it here (`NO_SHADOW_SLOT`); slot eligibility must not depend on camera
-    /// orientation, so it now keeps its slot.
-    #[test]
-    fn dynamic_spot_keeps_slot_when_cone_aabb_outside_pitched_camera_frustum() {
-        // Light far off to the +X side, aimed straight down -Z.
-        let lights = vec![test_light(0, [500.0, 0.0, -10.0], 10.0, true)];
-        // Camera at the origin pitched sharply down — its frustum points at the
-        // floor near x=0 and does not contain the light's cone AABB.
-        let camera_eye = Vec3::ZERO;
-        let pitched_down = camera_view_proj(camera_eye, -std::f32::consts::FRAC_PI_2 + 0.2, 0.0);
-        // Sanity: the cone AABB really is outside this frustum (otherwise the
-        // test wouldn't exercise the bug).
-        let cone_aabb = cone_enclosing_aabb(&light_space_matrix(&lights[0]));
-        let planes: [glam::Vec4; 6] =
-            postretro_render_data::cone_frustum::extract_frustum_planes_for_gpu(&pitched_down)
-                .map(|p| glam::Vec4::new(p[0], p[1], p[2], p[3]));
-        assert!(
-            !aabb_intersects_frustum(&cone_aabb, &planes),
-            "test precondition: cone AABB must sit outside the pitched camera frustum"
-        );
-
-        let assignment = SpotShadowPool::rank_lights(&lights, camera_eye, 0.1, &[]);
-        assert_ne!(
-            assignment[0], NO_SHADOW_SLOT,
-            "dynamic spot must keep its shadow slot regardless of where the camera looks"
-        );
-    }
-
-    proptest! {
-        /// The SET of lights receiving a shadow slot must be invariant under
-        /// camera orientation. Fix the lights and the camera POSITION, sweep
-        /// pitch and yaw across their full ranges, and assert the assigned-slot
-        /// set never changes. This pins the position-independence symptom: the
-        /// shadow vanished purely on camera pitch-down.
-        #[test]
-        fn shadow_slot_set_invariant_under_camera_orientation(
-            pitch in -1.55f32..1.55,
-            yaw in -std::f32::consts::PI..std::f32::consts::PI,
-        ) {
-            // A spread of dynamic spots around the scene, all within pool
-            // capacity so distance ranking never drops any of them.
-            let lights = vec![
-                test_light(0, [0.0, 0.0, -10.0], 10.0, true),
-                test_light(1, [500.0, 0.0, -10.0], 10.0, true),
-                test_light(2, [-300.0, 50.0, 200.0], 10.0, true),
-                test_light(3, [0.0, 200.0, 0.0], 10.0, true),
-            ];
-            let eye = Vec3::new(0.0, 0.0, 0.0);
-
-            // Baseline: camera looking straight ahead.
-            let baseline = SpotShadowPool::rank_lights(&lights, eye, 0.1, &[]);
-            let baseline_set: std::collections::BTreeSet<usize> = baseline
-                .iter()
-                .enumerate()
-                .filter(|&(_, s)| *s != NO_SHADOW_SLOT)
-                .map(|(i, _)| i)
-                .collect();
-
-            // Orientation only changes the (unused) view direction; position is
-            // fixed. The eye is the only thing rank_lights consumes from the
-            // camera, so the set must match the baseline for every orientation.
-            let _ = camera_view_proj(eye, pitch, yaw); // documents the swept pose
-            let swept = SpotShadowPool::rank_lights(&lights, eye, 0.1, &[]);
-            let swept_set: std::collections::BTreeSet<usize> = swept
-                .iter()
-                .enumerate()
-                .filter(|&(_, s)| *s != NO_SHADOW_SLOT)
-                .map(|(i, _)| i)
-                .collect();
-
-            prop_assert_eq!(
-                swept_set,
-                baseline_set,
-                "the set of shadow-slot lights must not change with camera orientation",
-            );
-        }
-    }
-
-    /// Position/ranking guard: at a fixed orientation, sweeping the camera
-    /// position changes slot assignment only through the documented distance
-    /// ranking when the candidate pool overflows. With more candidates than a
-    /// small capacity, the closest lights win the slots — and the winners track
-    /// camera position, confirming distance ranking is live and not coupled to
-    /// orientation.
-    #[test]
-    fn slot_ranking_follows_camera_position_when_pool_overflows() {
-        // Two dynamic spots far apart on the X axis. Use the shared drop core
-        // with a capacity of 1 so exactly one wins — the closer one.
-        let near_a = Vec3::new(0.0, 0.0, 0.0);
-        let near_b = Vec3::new(100.0, 0.0, 0.0);
-        let lights = vec![
-            test_light(0, [0.0, 0.0, 0.0], 10.0, true),
-            test_light(1, [100.0, 0.0, 0.0], 10.0, true),
-        ];
-
-        // Full ranking keeps both (pool is large); the score still orders them.
-        let from_a = SpotShadowPool::rank_lights(&lights, near_a, 0.1, &[]);
-        assert_eq!(from_a[0], 0, "closest-to-A light 0 ranks first");
-        assert_eq!(from_a[1], 1);
-
-        // Move the camera next to light 1: now light 1 ranks first. The slot
-        // ORDER tracks distance — the only documented coupling to the camera.
-        let from_b = SpotShadowPool::rank_lights(&lights, near_b, 0.1, &[]);
-        assert_eq!(from_b[1], 0, "closest-to-B light 1 ranks first");
-        assert_eq!(from_b[0], 1);
-
-        // And under genuine pool overflow (capacity 1 via the shared core), only
-        // the closer light survives — proving the drop is distance-driven.
-        let score = |light: &MapLight, cam: Vec3| -> f32 {
-            let p = Vec3::new(
-                light.origin[0] as f32,
-                light.origin[1] as f32,
-                light.origin[2] as f32,
-            );
-            (light.falloff_range / (p - cam).length().max(0.1)).powi(2)
-        };
-        let cands_a: Vec<(usize, f32)> = lights
-            .iter()
-            .enumerate()
-            .map(|(i, l)| (i, score(l, near_a)))
-            .collect();
-        let overflow_a = assign_ranked_slots(cands_a, 1, lights.len());
-        assert_eq!(
-            overflow_a[0], 0,
-            "with capacity 1, closest-to-A wins the slot"
-        );
-        assert_eq!(overflow_a[1], NO_SHADOW_SLOT);
     }
 }

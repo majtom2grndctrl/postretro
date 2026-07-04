@@ -11,8 +11,9 @@
 //   * group 0 = camera (shared renderer-owned camera uniform / bind group)
 //   * group 1 = material (the `build_material_bind_group` bind group — the SH-lit
 //               fragment samples diffuse + aniso sampler from this group)
-//   * group 2 = dynamic direct lighting + shadow receipt (fully allocated b0–b8):
-//               b0 dynamic-light records, b1 per-light influence volumes, b2
+//   * group 2 = runtime direct lighting + shadow receipt (fully allocated b0–b8):
+//               b0 dynamic-tier records plus promoted static records, b1
+//               per-light influence volumes, b2
 //               scripted-animation descriptors, b3 scripted-animation curve
 //               samples, b4 the mesh-side params uniform; b5 spot shadow depth,
 //               b6 comparison sampler, b7 light-space matrices uniform, b8 the
@@ -144,14 +145,14 @@ fn skinned_mesh_shader_source(cube_array_supported: bool) -> std::borrow::Cow<'s
     }
 }
 
-/// Mesh-side group-2 params uniform (binding 4): dynamic-light count, the frame's
+/// Mesh-side group-2 params uniform (binding 4): runtime-light count, the frame's
 /// render-clock time, and `lighting_isolation`. `time` is the SAME render-clock
 /// value the renderer uploads to forward `Uniforms.time` that frame (the renderer
 /// caches it and threads it in), so the scripted-light animated curves the mesh
 /// loop evaluates stay phase-coherent with the forward pass and the CPU light
 /// bridge. `lighting_isolation` is the SAME `LightingIsolation` value the renderer
 /// writes to forward `Uniforms.lighting_isolation` that frame, so the mesh
-/// dynamic-direct term participates in the lighting-isolation debug modes exactly
+/// runtime-direct term participates in the lighting-isolation debug modes exactly
 /// as the world dynamic term does (the shader derives `use_dynamic` from it,
 /// mirroring forward.wgsl). `ambient_floor` is the SAME constant ambient fill the
 /// renderer uploads to forward `Uniforms.ambient_floor` that frame; the mesh
@@ -192,14 +193,34 @@ fn build_light_params_bytes(params: MeshLightParams) -> Vec<u8> {
 /// helper append) — it declares only the buffers it reads.
 const SKINNED_DEPTH_SHADER_SOURCE: &str = include_str!("../shaders/skinned_depth.wgsl");
 
-/// GPU-free builder for the mesh group-2 (dynamic direct lighting + shadow
+/// Which planned mesh instances a shadow-depth pass may consume.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MeshDepthInstanceFilter {
+    /// Ordinary dynamic-light shadow maps keep the historical path: only meshes
+    /// visible to the forward pass cast entity shadows.
+    ForwardVisibleOnly,
+    /// Promoted static-light slots may use the forward-visible set plus
+    /// shadow-only retained instances selected for static-light relevance.
+    IncludeShadowOnly,
+}
+
+impl MeshDepthInstanceFilter {
+    fn includes(self, instance: &postretro_render_cpu::mesh_instances::PlannedInstance) -> bool {
+        match self {
+            MeshDepthInstanceFilter::ForwardVisibleOnly => instance.forward_visible,
+            MeshDepthInstanceFilter::IncludeShadowOnly => true,
+        }
+    }
+}
+
+/// GPU-free builder for the mesh group-2 (runtime direct lighting + shadow
 /// receipt) BGL entries. Single source of truth: `MeshPass::new` builds the layout
 /// from this, and the headless `mesh_group2_bgl_matches_shader_bindings` test
 /// re-derives the binding map and per-stage storage budget from the SAME entries —
 /// so a drift in either the shader's group-2 declarations or the budget fails CI
 /// before a real GPU would reject the pipeline. Pinned binding map (mirrors
 /// `skinned_mesh.wgsl` group 2 and rendering_pipeline.md §9, §10):
-///   b0 dynamic-light records (the `is_dynamic`-filtered set), b1 per-light
+///   b0 dynamic-tier records plus promoted static records, b1 per-light
 ///   influence volumes, b2 scripted-animation descriptors, b3 scripted-animation
 ///   curve samples, b4 the mesh-side params uniform (all FRAGMENT-only). The
 ///   dynamic-light loop runs in the fragment stage, so b0–b3 contribute FOUR
@@ -242,7 +263,7 @@ fn mesh_light_bind_group_layout_entries(
         count: None,
     };
     let mut entries = vec![
-        // b0: dynamic-light records (is_dynamic-filtered set).
+        // b0: dynamic-tier records first, promoted static records appended.
         storage_entry(0),
         // b1: per-light influence volumes.
         storage_entry(1),
@@ -771,10 +792,10 @@ pub struct MeshPass {
     /// bind group is built once at init.
     instance_bind_group: wgpu::BindGroup,
 
-    /// Group 2 BGL (dynamic direct lighting). Pinned binding map (see
-    /// [`MeshPass::new`]): b0 dynamic-light records, b1 per-light influence
-    /// volumes, b2 scripted-animation descriptors, b3 scripted-animation curve
-    /// samples, b4 the mesh-side params uniform. b0–b3 alias the SAME
+    /// Group 2 BGL (runtime direct lighting). Pinned binding map (see
+    /// [`MeshPass::new`]): b0 dynamic-tier records plus promoted static records,
+    /// b1 per-light influence volumes, b2 scripted-animation descriptors, b3
+    /// scripted-animation curve samples, b4 the mesh-side params uniform. b0–b3 alias the SAME
     /// renderer-owned GPU buffers forward binds; b4 is owned here. Retained so
     /// the bind group can be rebuilt on buffer reallocation (level load).
     light_bind_group_layout: wgpu::BindGroupLayout,
@@ -971,12 +992,9 @@ impl MeshPass {
                 ],
             });
 
-        // Group 2: dynamic direct lighting. Binding map PINNED across both M10
-        // mesh specs — b0 dynamic-light records (the renderer's `is_dynamic`-
-        // filtered set, NOT the shadow-candidate set, so the lighting-tier split
-        // holds by construction — plan D10: the mesh dynamic loop evaluates the
-        // dynamic tier only, static-tier direct for movers is the group-4 baked
-        // atlas), b1 per-light influence volumes, b2 scripted-animation
+        // Group 2: runtime direct lighting. Binding map PINNED across both M10
+        // mesh specs — b0 dynamic-tier records plus promoted static records
+        // appended by the renderer, b1 per-light influence volumes, b2 scripted-animation
         // descriptors (forward's group-3 b13 `scripted_light_descriptors`, the
         // SAME buffer rebound here), b3 scripted-animation curve samples
         // (forward's group-3 b12 `anim_samples`, same buffer), b4 the
@@ -1273,18 +1291,18 @@ impl MeshPass {
         }
     }
 
-    /// (Re)build the group-2 dynamic-direct light bind group over the renderer's
+    /// (Re)build the group-2 runtime-direct light bind group over the renderer's
     /// runtime light buffers. Called once after geometry installs and again on any
     /// reallocation of these buffers (level load), mirroring how the renderer
     /// rebuilds its forward `lighting_bind_group`. The buffers are owned by the
     /// renderer and bound here by reference; b4 is this pass's own
     /// `light_params_buffer`.
     ///
-    /// `lights` MUST be the `is_dynamic`-FILTERED dynamic-light set (the renderer's
-    /// `filter_dynamic_lights` output / `lights_buffer`), NOT the shadow-candidate
-    /// set — binding the filtered set is what makes the lighting-tier split hold by
-    /// construction (plan D10). `influence` is the per-light influence-volume
-    /// buffer. `scripted_descriptors` is forward's group-3 b13
+    /// The runtime-light buffer's dynamic prefix is the renderer's
+    /// `filter_dynamic_lights` output; promoted static records may be appended each
+    /// frame and are loop-bound by the params uniform. Do not bind the raw
+    /// shadow-candidate set here. `influence` is the matching per-light
+    /// influence-volume buffer. `scripted_descriptors` is forward's group-3 b13
     /// `scripted_light_descriptors`; `anim_samples` is forward's group-3 b12
     /// `anim_samples` — the SAME GPU buffers, rebound at mesh group 2 b2/b3.
     ///
@@ -1489,6 +1507,15 @@ impl MeshPass {
     /// build the game-side clip tables.
     pub fn model_clip_metadata(&self, handle: &ModelHandle) -> Vec<ClipMetadata> {
         clip_metadata(&self.model_clips, handle)
+    }
+
+    /// The cached local-space bound for a skinned model. Returns a zero box when
+    /// the model is absent, matching the frame planner's degradation path.
+    pub fn model_local_bounds(
+        &self,
+        handle: &ModelHandle,
+    ) -> postretro_render_data::cone_frustum::Aabb {
+        self.model_bounds.get(handle).copied().unwrap_or_default()
     }
 
     /// Whether any model has been uploaded. The renderer skips the pass entirely
@@ -1708,17 +1735,17 @@ impl MeshPass {
     /// caller before recording — the renderer owns those bind groups (camera is
     /// shared across passes; SH uses the mesh-superset `mesh_bind_group`).
     ///
-    /// The mesh collector emits visible-only instances, so normal frame plans are
-    /// all forward-visible. This still filters `forward_visible` as a defensive
-    /// guard for mixed synthetic plans, batching contiguous visible runs so the
-    /// common all-visible frame issues one draw per group/submesh.
+    /// The mesh collector can include shadow-only instances for selected static
+    /// lights. Filter `forward_visible` so those instances feed shadow depth but
+    /// skip the color pass, batching contiguous visible runs so the common
+    /// all-visible frame issues one draw per group/submesh.
     pub fn record_draws(&self, pass: &mut wgpu::RenderPass<'_>, plan: &MeshFramePlan) {
         if plan.groups.is_empty() {
             return;
         }
 
         pass.set_pipeline(&self.pipeline);
-        // Group 2 (dynamic direct lighting): the runtime light buffers + the
+        // Group 2 (runtime direct lighting): the runtime light buffers + the
         // per-frame params uniform. Set once for the frame. The pipeline layout
         // declares group 2, so the bind group MUST be present before any mesh
         // draw — the renderer wires it (`rebuild_light_bind_group`) once geometry
@@ -1769,6 +1796,9 @@ impl MeshPass {
 
     /// Record skinned ENTITY occluders into a shadow map through the
     /// parameterized depth-only path, culled per-slot by the slot's cone frustum.
+    /// `filter` controls whether the pass uses only forward-visible instances
+    /// (ordinary dynamic-light slots) or includes shadow-only retained instances
+    /// (promoted static-light slots).
     /// `light_space_bind_group` + `dynamic_offset` select the per-render
     /// light-space matrix at group 0 (the spot path passes the renderer's
     /// `shadow_vs_bind_group` and the per-slot offset; a cube path would pass a
@@ -1804,6 +1834,7 @@ impl MeshPass {
         &self,
         pass: &mut wgpu::RenderPass<'_>,
         plan: &MeshFramePlan,
+        filter: MeshDepthInstanceFilter,
         light_space_bind_group: &wgpu::BindGroup,
         dynamic_offset: u32,
         cone_planes: &[glam::Vec4; 6],
@@ -1829,6 +1860,9 @@ impl MeshPass {
             pass.set_vertex_buffer(0, model.vertex_buffer.slice(..));
             pass.set_index_buffer(model.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             for (i, inst) in group.instances.iter().enumerate() {
+                if !filter.includes(inst) {
+                    continue;
+                }
                 // Per-light caster cull: skip instances whose transformed bound
                 // does not intersect this slot's cone. An enemy outside the cone
                 // is not drawn into the slot.
@@ -2014,6 +2048,29 @@ mod tests {
         )
         .validate(&module)
         .expect("skinned_depth.wgsl must pass naga validation");
+    }
+
+    #[test]
+    fn depth_instance_filter_keeps_dynamic_shadows_forward_visible_only() {
+        let visible = postretro_render_cpu::mesh_instances::PlannedInstance {
+            transform: glam::Mat4::IDENTITY,
+            palette_base: 0,
+            phase_seed: 1,
+            bounds: postretro_render_data::cone_frustum::Aabb::default(),
+            sample: MeshSampleParams::stateless(0.0),
+            capture: None,
+            resample: true,
+            forward_visible: true,
+        };
+        let shadow_only = postretro_render_cpu::mesh_instances::PlannedInstance {
+            forward_visible: false,
+            ..visible.clone()
+        };
+
+        assert!(MeshDepthInstanceFilter::ForwardVisibleOnly.includes(&visible));
+        assert!(!MeshDepthInstanceFilter::ForwardVisibleOnly.includes(&shadow_only));
+        assert!(MeshDepthInstanceFilter::IncludeShadowOnly.includes(&visible));
+        assert!(MeshDepthInstanceFilter::IncludeShadowOnly.includes(&shadow_only));
     }
 
     /// The `skin_matrix` function is duplicated verbatim from `skinned_mesh.wgsl`
@@ -2226,37 +2283,33 @@ mod tests {
     }
 
     // CONTRACT-DOC PIN (not a behavioral test): the lighting-tier split — mesh
-    // group-2 b0 carries the renderer's `filter_dynamic_lights` output (the
-    // `is_dynamic`-filtered set), so static lights are excluded BY CONSTRUCTION —
-    // lives in the actual bind-group wiring (`rebuild_light_bind_group`), which
-    // takes a `lights` slice and cannot be exercised without a GPU. This test does
-    // NOT verify that wiring; it is a string pin that keeps the DOCUMENTED contract
-    // present and self-consistent: the shader's b0 declaration and the
-    // `rebuild_light_bind_group` doc both must keep naming the
-    // `filter_dynamic_lights` / `is_dynamic`-filtered set as the b0 source. If a
-    // future edit deletes or contradicts that documented contract, this fails —
-    // flagging the docs for review. It would NOT catch a wiring bug that rebound b0
-    // to the wrong buffer while leaving the doc strings intact; that is the GPU
-    // layer, verified by running the engine (testing_guide §3).
+    // group-2 b0 carries dynamic-tier records first, then promoted static records
+    // appended by the renderer. This lives in the actual bind-group wiring
+    // (`rebuild_light_bind_group`), which takes a `lights` slice and cannot be
+    // exercised without a GPU. This test does NOT verify that wiring; it is a
+    // string pin that keeps the DOCUMENTED contract present and self-consistent.
+    // If a future edit deletes or contradicts that documented contract, this
+    // fails — flagging the docs for review. It would NOT catch a wiring bug that
+    // rebound b0 to the wrong buffer while leaving the doc strings intact; that is
+    // the GPU layer, verified by running the engine (testing_guide §3).
     #[test]
-    fn skinned_mesh_b0_filtered_dynamic_lights_contract_is_documented() {
-        // The shader's b0 declaration documents the filtered-set invariant.
+    fn skinned_mesh_b0_count_split_contract_is_documented() {
+        // The shader's b0 declaration documents the count-split invariant.
         let shader_src = include_str!("../shaders/skinned_mesh.wgsl");
         assert!(
             shader_src.contains("@group(2) @binding(0) var<storage, read> lights"),
-            "skinned_mesh.wgsl must declare the dynamic-light records at group-2 b0",
+            "skinned_mesh.wgsl must declare runtime light records at group-2 b0",
         );
         assert!(
-            shader_src.contains("`is_dynamic`-filtered set"),
-            "the b0 declaration must document that it carries the is_dynamic-filtered set \
-             (static lights excluded by construction)",
+            shader_src.contains("promoted static lights appended"),
+            "the b0 declaration must document the dynamic-first/promoted-static-appended split",
         );
-        // The wiring contract (`rebuild_light_bind_group`) names the
-        // `filter_dynamic_lights` output as the REQUIRED b0 source.
+        // The wiring contract (`rebuild_light_bind_group`) names the count split
+        // as the REQUIRED b0 source.
         let rust_src = include_str!("mesh_pass.rs");
         assert!(
-            rust_src.contains("filter_dynamic_lights"),
-            "rebuild_light_bind_group must pin the filter_dynamic_lights output as the b0 source",
+            rust_src.contains("dynamic-tier records plus promoted static records"),
+            "rebuild_light_bind_group must pin the count-split runtime light records as the b0 source",
         );
     }
 

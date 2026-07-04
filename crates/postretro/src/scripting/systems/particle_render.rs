@@ -289,6 +289,8 @@ mod tests {
             animated_light_weight_maps: None,
             delta_sh_volumes: None,
             direct_sh_volume: None,
+            direct_sh_delta_volumes: None,
+            entity_shadow_lights: vec![],
             data_script: None,
             map_entities: Vec::new(),
             fog_volumes: Vec::new(),

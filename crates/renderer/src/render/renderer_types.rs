@@ -337,6 +337,13 @@ pub struct LevelGeometry<'a> {
     /// dummy and the dynamic shaders skip the direct sample (indirect-only).
     pub direct_sh_volume:
         Option<&'a postretro_level_format::direct_sh_volume::DirectShVolumeSection>,
+    /// Sparse per-selected-light direct SH deltas used to compose the sampled
+    /// direct atlas when static lights promote into shadow pools.
+    pub direct_sh_delta_volumes:
+        Option<&'a postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection>,
+    /// Selection-order list of global level-light indices eligible for runtime
+    /// entity-shadow promotion.
+    pub entity_shadow_lights: &'a [u32],
     /// `None` → no SDF static-occluder atlas; runtime SDF shadow pass disabled.
     /// An empty-geometry section (zero grid dims) is treated the same way.
     pub sdf_atlas: Option<&'a postretro_level_format::sdf_atlas::SdfAtlasSection>,
@@ -353,6 +360,48 @@ pub struct LevelGeometry<'a> {
     /// cull pipeline.
     pub cell_draw_index: Option<&'a postretro_level_loader::CellDrawIndex>,
     pub texture_materials: &'a [postretro_render_data::material::Material],
+}
+
+/// First-guess promoted-slot budgets (cache VRAM ≈ 32 MiB spot + 12 MiB cube),
+/// tuned on §10 target hardware. See the static-light-entity-shadows plan.
+pub(crate) const MAX_PROMOTED_SPOT: usize = 8;
+pub(crate) const MAX_PROMOTED_CUBE: usize = 2;
+
+/// Which dynamic shadow pool a promoted static light's world depth is cached
+/// into and rendered from.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PromotedShadowPoolKind {
+    Spot,
+    Cube,
+}
+
+/// One static light promoted into a shadow pool slot this frame. Pinned Task-4
+/// contract (see the static-light-entity-shadows plan); consumed by Tasks 5-6.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct PromotedStaticLightRecord {
+    /// Index into the level's full light array.
+    pub global_light_index: u32,
+    /// 0-based position in `EntityShadowLights` order — the space the delta
+    /// `affinity_lights` and the per-selected-light weight buffer are indexed by.
+    pub selection_index: u32,
+    /// Which shadow pool (spot or cube) the light is promoted into.
+    pub pool_kind: PromotedShadowPoolKind,
+    /// Slot index within that pool.
+    pub slot: u32,
+    /// Promotion crossfade weight w ∈ [0,1] — 0 is fully baked SH, 1 is fully
+    /// the runtime pool term (see rendering_pipeline.md §4 "Promoted static lights").
+    pub weight: f32,
+}
+
+/// Per-candidate-light promotion tracking across frames: current weight,
+/// sticky hold-over time, and which pool slot (if any) the light occupies.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct PromotedStaticLightState {
+    pub weight: f32,
+    pub sticky_remaining: f32,
+    pub pool_kind: Option<PromotedShadowPoolKind>,
+    pub slot: u32,
+    pub last_score: f32,
 }
 
 /// Boot-phase renderer: the minimal GPU state needed to present the boot splash
@@ -450,7 +499,12 @@ pub(super) struct FullRenderer {
     /// Always bound; maps with zero lights get a 1-element dummy buffer —
     /// wgpu rejects zero-sized storage buffer bindings.
     pub(super) lighting_bind_group: wgpu::BindGroup,
+    pub(super) influence_buffer: wgpu::Buffer,
     pub(super) light_count: u32,
+    /// Dynamic-tier records plus promoted static records appended for entity
+    /// consumers this frame. Forward world rendering continues to use
+    /// `light_count`; mesh/billboard use this total.
+    pub(super) total_light_count: u32,
     /// The frame's forward `Uniforms.time` value, cached by
     /// `update_per_frame_uniforms` so the skinned-mesh group-2 params uniform
     /// (`MeshLightParams.time`) is written from the SAME render-clock value the
@@ -518,6 +572,11 @@ pub(super) struct FullRenderer {
     /// before the depth pre-pass so the storage→sampled barrier resolves first.
     pub(super) sh_compose: ShComposeResources,
 
+    /// Optional direct-SH compose pass. Disabled entirely when a level has no
+    /// selected static direct deltas; in that path the base direct atlas remains
+    /// bound and no composed direct texture exists.
+    pub(super) direct_sh_compose: DirectShComposeResources,
+
     /// Absent Lightmap section → 1×1 white/neutral placeholder; no shader branch.
     pub(super) lightmap_resources: LightmapResources,
 
@@ -534,10 +593,20 @@ pub(super) struct FullRenderer {
     /// `last_lights_upload` in place via `patch_shadow_slots` — scratch
     /// is not touched in that branch.
     pub(super) lights_pack_scratch: Vec<u8>,
+    /// Scratch buffer for per-frame influence upload. Dynamic influences are
+    /// followed by promoted static influences, matching the count-split light
+    /// buffer without allocating in the render hot path.
+    pub(super) influence_pack_scratch: Vec<u8>,
     #[allow(dead_code)]
     pub(super) level_lights: Vec<MapLight>,
     /// Original full level-light index for each `level_lights` entry.
     pub(super) level_light_source_indices: Vec<usize>,
+    pub(super) level_light_influences: Vec<LightInfluence>,
+    /// Selected static lights in `EntityShadowLights` order. Source indices are
+    /// global level-light indices.
+    pub(super) entity_shadow_lights: Vec<MapLight>,
+    pub(super) entity_shadow_light_influences: Vec<LightInfluence>,
+    pub(super) entity_shadow_light_source_indices: Vec<usize>,
     /// Candidate set for the spot/cube shadow pools — sourced from the FULL level
     /// light set filtered by `is_dynamic`. Dynamic-tier lights
     /// (`light_dynamic`/`light_dynamic_spot`) are pool-eligible so dynamic
@@ -547,6 +616,8 @@ pub(super) struct FullRenderer {
     pub(super) shadow_candidate_lights: Vec<MapLight>,
     /// Original full level-light index for each `shadow_candidate_lights` entry.
     pub(super) shadow_candidate_source_indices: Vec<usize>,
+    /// Selection index for a shadow candidate. `None` means dynamic-tier.
+    pub(super) shadow_candidate_selection_indices: Vec<Option<usize>>,
     /// Candidate-indexed influence volumes paired with `shadow_candidate_lights`.
     /// Missing/short PRL influence data is represented by an uncullable sentinel
     /// so shadow eligibility follows the same degradation contract as forward
@@ -565,6 +636,23 @@ pub(super) struct FullRenderer {
     /// `Some` iff `cube_array_supported`, so its presence mirrors group-5 binding
     /// 5's presence in the shared BGL.
     pub(super) cube_shadow_pool: Option<crate::lighting::cube_shadow::CubeShadowPool>,
+    pub(super) promoted_static_states: Vec<PromotedStaticLightState>,
+    pub(super) promoted_static_records: Vec<PromotedStaticLightRecord>,
+    pub(super) promoted_static_weights: Vec<f32>,
+    pub(super) promoted_static_weight_buffer: wgpu::Buffer,
+    pub(super) promoted_static_weight_scratch: Vec<u8>,
+    pub(super) promoted_static_last_update_time: Option<f64>,
+    /// `None` for maps with an empty/absent `EntityShadowLights` selection —
+    /// no light can ever promote, so the ~44 MiB spot/cube depth cache arrays
+    /// are never allocated. `Some` only when the selection is non-empty.
+    pub(super) promoted_depth_cache: Option<PromotedDepthCache>,
+    pub(super) promoted_depth_cache_frame_plan: PromotedDepthCacheFramePlan,
+    pub(super) promoted_depth_cache_promoted_count: u32,
+    pub(super) promoted_depth_cache_world_render_skips: u32,
+    pub(super) promoted_depth_cache_cull_dispatch_skips: u32,
+    pub(super) promoted_depth_cache_timing_open: bool,
+    #[cfg(feature = "dev-tools")]
+    pub(super) direct_sh_debug_override: DirectShDebugOverride,
     /// Per-(cube slot, face) light-space matrix uniforms, dynamic-offset like
     /// `shadow_vs_uniform_buffer`. Slot `slot*6 + face` carries that face's
     /// matrix; the skinned-depth pass selects it by dynamic offset.
@@ -713,11 +801,11 @@ pub(super) struct FullRenderer {
 
     /// Per-frame skinned-mesh instance list: surviving (model handle,
     /// interpolated transform, phase seed) tuples. Refilled each frame via
-    /// `set_mesh_draws` from the render-frame mesh collector (which culls each
-    /// entity via `mesh_pass::mesh_visible` against the frame's `VisibleCells` +
-    /// the `LevelWorld`, then emits survivors at their interpolated transform).
-    /// Empty when no mesh entity is visible. Planned into per-model draw groups
-    /// + palette runs each frame by `mesh_instances::plan_mesh_frame`.
+    /// `set_mesh_draws` from the render-frame mesh collector (which classifies
+    /// forward visibility via `mesh_pass::mesh_visible` and may retain additional
+    /// selected-static-light shadow casters as non-forward instances). Empty when
+    /// no mesh entity is visible or shadow-relevant. Planned into per-model draw
+    /// groups + palette runs each frame by `mesh_instances::plan_mesh_frame`.
     pub(super) mesh_draws: Vec<mesh_instances::MeshInstanceInput>,
 
     /// Reusable bone-palette scratch for per-frame per-instance sampling.
@@ -747,6 +835,12 @@ pub(super) struct FullRenderer {
     /// and only when their bound intersects a face frustum. Reset to 0 at the
     /// start of the cube-shadow depth loop.
     pub(super) cube_entity_occluders_submitted: u32,
+
+    /// CPU-side count of skinned ENTITY occluder submissions into promoted
+    /// static-light shadow slots/faces last frame. This is a subset of the spot
+    /// and cube totals above, used to pin that warm promoted slots draw entities
+    /// only after the cached world depth copy.
+    pub(super) promoted_entity_occluders_submitted: u32,
 
     /// Instanced UI quad / 9-slice pass for panels and images plus glyphon text.
     /// Built alongside `fog`; records the splash (splash phase) and an empty draw

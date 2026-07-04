@@ -55,7 +55,7 @@ struct Uniforms {
     dynamic_direct_scale: f32,
     dynamic_direct_isolation: u32,
     has_direct: u32,
-    _dyn_pad0: u32,
+    total_light_count: u32,
     _dyn_pad1: u32,
 };
 

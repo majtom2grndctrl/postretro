@@ -209,12 +209,24 @@ impl Renderer {
             .model_clip_metadata(&postretro_model::ModelHandle::from(model_handle))
     }
 
+    /// The local-space bound for a cached skinned model, keyed by the same
+    /// `model_handle` string as [`Self::skinned_model_clip_metadata`].
+    pub fn skinned_model_local_bounds(
+        &self,
+        model_handle: &str,
+    ) -> postretro_render_data::cone_frustum::Aabb {
+        self.full()
+            .mesh_pass
+            .model_local_bounds(&postretro_model::ModelHandle::from(model_handle))
+    }
+
     /// Replace this frame's skinned-mesh instance list with the inputs emitted by
-    /// the render-frame mesh collector (already culled, at interpolated
-    /// transforms). Called once per frame in the collection sub-stage, before
-    /// `render_frame_indirect`. The renderer plans these into per-model draw
-    /// groups + palette runs and records the draws; it needs no world reference
-    /// because the cull already happened game-side.
+    /// the render-frame mesh collector (forward visibility and selected-static
+    /// shadow relevance already classified, at interpolated transforms). Called
+    /// once per frame in the collection sub-stage, before `render_frame_indirect`.
+    /// The renderer plans these into per-model draw groups + palette runs and
+    /// records the draws; it needs no world reference because classification
+    /// already happened game-side.
     pub fn set_mesh_draws(
         &mut self,
         instances: &[postretro_render_cpu::mesh_instances::MeshInstanceInput],

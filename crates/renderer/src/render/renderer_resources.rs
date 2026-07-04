@@ -2,6 +2,7 @@
 // model loading.
 // See: context/lib/resource_management.md
 
+use super::renderer_types::PromotedStaticLightState;
 use super::*;
 
 impl Renderer {
@@ -63,6 +64,8 @@ impl Renderer {
             animated_light_weight_maps: None,
             delta_sh_volumes: None,
             direct_sh_volume: None,
+            direct_sh_delta_volumes: None,
+            entity_shadow_lights: &[],
             sdf_atlas: None,
             lightmap_mode: postretro_level_loader::LightmapMode::default(),
             cell_draw_index: None,
@@ -147,18 +150,29 @@ impl Renderer {
         let level_lights = filtered_level_lights.lights;
         let dynamic_influences = filtered_level_lights.influences;
         let level_light_source_indices = filtered_level_lights.source_indices;
-        let filtered_shadow_candidates =
-            filter_entity_shadow_candidates(geometry.lights, geometry.light_influences);
+        let selected_static = filter_selected_static_entity_shadow_lights(
+            geometry.lights,
+            geometry.light_influences,
+            geometry.entity_shadow_lights,
+        );
+        let filtered_shadow_candidates = filter_entity_shadow_candidates_with_selection(
+            geometry.lights,
+            geometry.light_influences,
+            geometry.entity_shadow_lights,
+        );
         let shadow_candidate_lights = filtered_shadow_candidates.lights;
         let shadow_candidate_influences = filtered_shadow_candidates.influences;
         let shadow_candidate_source_indices = filtered_shadow_candidates.source_indices;
+        let shadow_candidate_selection_indices = filtered_shadow_candidates.selection_indices;
         full.light_count = level_lights.len() as u32;
+        full.total_light_count = full.light_count;
 
-        let lights_data = if !level_lights.is_empty() {
-            pack_lights(&level_lights)
-        } else {
-            vec![0u8; GPU_LIGHT_SIZE]
-        };
+        let light_record_capacity = (level_lights.len() + selected_static.lights.len()).max(1);
+        let mut lights_data = Vec::with_capacity(light_record_capacity * GPU_LIGHT_SIZE);
+        if !level_lights.is_empty() {
+            lights_data.extend_from_slice(&pack_lights(&level_lights));
+        }
+        lights_data.resize(light_record_capacity * GPU_LIGHT_SIZE, 0);
         let lights_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Direct Lights Storage Buffer"),
             contents: &lights_data,
@@ -167,20 +181,56 @@ impl Renderer {
         full.lights_buffer = lights_buffer;
         full.level_lights = level_lights;
         full.level_light_source_indices = level_light_source_indices;
+        full.entity_shadow_lights = selected_static.lights;
+        full.entity_shadow_light_influences = selected_static.influences;
+        full.entity_shadow_light_source_indices = selected_static.source_indices;
+        full.promoted_static_states =
+            vec![PromotedStaticLightState::default(); geometry.entity_shadow_lights.len()];
+        full.promoted_static_records.clear();
+        full.promoted_static_weights = vec![0.0; geometry.entity_shadow_lights.len()];
+        full.promoted_static_weight_scratch.clear();
+        full.promoted_static_last_update_time = None;
+        // Match the init-time policy: the cache exists only for a non-empty
+        // selection. A same-selection reload keeps the existing cache and just
+        // clears its layer state; a swap to an empty selection frees the cache
+        // (VRAM back to zero); a swap from empty to selection-bearing allocates
+        // it. Mirrors the conditional weight-buffer allocation below.
+        if geometry.entity_shadow_lights.is_empty() {
+            full.promoted_depth_cache = None;
+        } else if let Some(cache) = &mut full.promoted_depth_cache {
+            cache.reset_level();
+        } else {
+            full.promoted_depth_cache = Some(PromotedDepthCache::new(device));
+        }
+        full.promoted_depth_cache_frame_plan = PromotedDepthCacheFramePlan::default();
+        full.promoted_depth_cache_promoted_count = 0;
+        full.promoted_depth_cache_world_render_skips = 0;
+        full.promoted_depth_cache_cull_dispatch_skips = 0;
+        full.promoted_depth_cache_timing_open = false;
+        full.promoted_entity_occluders_submitted = 0;
+        full.promoted_static_weight_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Promoted Static Light Weights"),
+            size: (geometry.entity_shadow_lights.len().max(1) * 4) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         full.shadow_candidate_lights = shadow_candidate_lights;
         full.shadow_candidate_source_indices = shadow_candidate_source_indices;
         full.shadow_candidate_influences = shadow_candidate_influences;
+        full.shadow_candidate_selection_indices = shadow_candidate_selection_indices;
 
-        let influence_data = if !dynamic_influences.is_empty() {
-            influence::pack_influence(&dynamic_influences)
-        } else {
-            vec![0u8; 16]
-        };
+        let mut influence_data = Vec::with_capacity(light_record_capacity * 16);
+        if !dynamic_influences.is_empty() {
+            influence::pack_influence_into(&mut influence_data, &dynamic_influences);
+        }
+        influence_data.resize(light_record_capacity * 16, 0);
         let influence_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Light Influence Storage Buffer"),
             contents: &influence_data,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
+        full.influence_buffer = influence_buffer;
+        full.level_light_influences = dynamic_influences;
 
         let spec_lights_data = {
             let packed = pack_spec_lights(geometry.lights);
@@ -228,7 +278,7 @@ impl Renderer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: influence_buffer.as_entire_binding(),
+                    resource: full.influence_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
@@ -255,7 +305,8 @@ impl Renderer {
             queue,
             geometry.sh_volume,
             geometry.direct_sh_volume,
-            full.level_lights.len(),
+            geometry.direct_sh_delta_volumes,
+            full.level_lights.len() + full.entity_shadow_lights.len(),
             full.probe_occlusion_enabled,
         );
 
@@ -274,7 +325,7 @@ impl Renderer {
         full.mesh_pass.rebuild_light_bind_group(
             device,
             &full.lights_buffer,
-            &influence_buffer,
+            &full.influence_buffer,
             &full.sh_volume_resources.scripted_light_descriptors,
             &full.sh_volume_resources.animation.anim_samples,
             &full.spot_shadow_pool.array_view,
@@ -297,6 +348,13 @@ impl Renderer {
             compose_sh_volume,
             compose_delta_sh_volumes,
             &full.uniform_bind_group_layout,
+        );
+        full.direct_sh_compose = DirectShComposeResources::new(
+            device,
+            &full.sh_volume_resources,
+            geometry.direct_sh_volume,
+            geometry.direct_sh_delta_volumes,
+            &full.promoted_static_weight_buffer,
         );
         #[cfg(feature = "dev-tools")]
         {
@@ -433,6 +491,7 @@ impl Renderer {
         full.has_geometry = has_geometry;
         full.last_lights_upload.clear();
         full.lights_pack_scratch.clear();
+        full.influence_pack_scratch.clear();
         full.light_effective_brightness.clear();
         full.stored_texture_materials = geometry.texture_materials.to_vec();
 

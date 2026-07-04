@@ -44,7 +44,7 @@ struct Uniforms {
     _dynamic_direct_scale_inert: u32,
     _dyn_pad0: u32,
     _dyn_pad1: u32,
-    _dyn_pad2: u32,
+    _total_light_count_inert: u32,
     _dyn_pad3: u32,
 };
 

@@ -6,6 +6,33 @@
 > (ids 34/35) · `context/plans/done/lightmap-array-atlas/` (the template) ·
 > `context/research/spatial-streaming.md` §2/§5/§6/§8 (SH is the first per-cluster residency target).
 
+> **Post-merge status (re-anchored against HEAD after `static-light-shadowmask-world-receipt`):**
+> The core premise is **intact** — ids 34/35 are still single 2D octahedral atlases packed near-square
+> by `ceil(sqrt(total_probe_count))` (`octahedral.rs`), still overflow `max_texture_dimension_2d`
+> (8192), and the version constants are unchanged (`SH_VOLUME_VERSION = 7`,
+> `DIRECT_SH_VOLUME_VERSION = 1`). Tasks 1–3 (packing math, wire format, bake) are unaffected. All
+> line-number anchors below have been re-verified and corrected for the merge's file growth
+> (`sh_volume.rs` +131 lines; direct/delta SH additions).
+>
+> **New scope gap — a second runtime compose pass.** The merge added a parallel *direct SH compose*
+> path (`crates/renderer/src/render/direct_sh_compose.rs`, `shaders/direct_sh_compose.wgsl`,
+> `crates/level-format/src/direct_sh_delta_volumes.rs`, id 41 `DirectShDeltaVolumes`). When a map
+> emits `EntityShadowLights` + `DirectShDeltaVolumes`, `ShVolume::new` (via
+> `resolve_direct_atlas_usage` + `create_direct_composed_atlas_texture`, `sh_volume.rs:447–473`)
+> runtime-composes a **direct composed atlas** (`Rgba16Float` storage texture at the id-35
+> `atlas_dimensions`), and `BIND_SH_DIRECT_ATLAS` samples *that composed atlas*, not the base BC6H
+> texture. This composed direct atlas **also overflows `max_texture_dimension_2d`** on large maps, so
+> the D2→D2Array conversion this spec targets is now **two compose passes, not one**. **Tasks 4 and 5
+> are under-scoped:** their direct-atlas handling only covers `upload_direct_atlas_texture` (the base
+> texture) and `sh_compose.wgsl` (the indirect total atlas). They must additionally array-convert
+> `create_direct_composed_atlas_texture`, `direct_sh_compose.wgsl` (its own
+> `texture_storage_2d<rgba16float, write>` → `_2d_array`, per-layer `map_atlas_texel`, and z-dispatch),
+> and — because `direct_sh_compose.rs` **shares** `build_compose_grid_bytes` /
+> `COMPOSE_GRID_DIMS_SIZE` with `sh_compose.rs` — extend `direct_sh_compose.wgsl`'s `GridDims` struct
+> in lockstep with the 48→64 growth (else silent std140 drift in the direct compose pass). The
+> Decisions note "the compose pass is a fourth touch-point" now understates this: there are **two**
+> runtime compose passes. No task is obsolete or already-done; Task 4/5 gain the direct-compose surface.
+
 ## Problem
 
 Large maps are refused their SH irradiance volume at load. The GPU representation of the baked SH
@@ -20,13 +47,15 @@ device `max_texture_dimension_2d` (engine-required floor 8192,
 `crates/renderer/src/render/renderer_init_resources.rs`).
 
 When the atlas overflows, the renderer refuses it: the fits-check in `ShVolume::new`
-(`crates/renderer/src/render/sh_volume.rs:257–274`) and the sibling check for the direct atlas
-(`sh_volume.rs:834–849`) log a `[Renderer]` error and disable the volume — `has_sh_volume = 0`, and
+(`crates/renderer/src/render/sh_volume.rs:269–285`, the `usable` filter) and the sibling check for the
+direct atlas (`upload_direct_atlas_texture`, `sh_volume.rs:869–883`) log a `[Renderer]` error and
+disable the volume — `has_sh_volume = 0`, and
 every fragment falls back to `ambient_floor + direct_sum`. The whole map loses baked indirect
 lighting because the atlas is one texel too wide.
 
-**The exact limit hit:** `max_texture_dimension_2d` (8192), on the 2D octahedral tile atlases (ids 34
-and 35). This is the same overflow the lightmap atlas hit, and it takes the same fix: spill the
+**The exact limit hit:** `max_texture_dimension_2d` (engine-required floor 8192,
+`REQUIRED_MAX_TEXTURE_DIMENSION_2D` in `renderer_init_resources.rs:130`), on the 2D octahedral tile
+atlases (ids 34 and 35). This is the same overflow the lightmap atlas hit, and it takes the same fix: spill the
 oversized single 2D atlas into an N-layer `texture_2d_array`, trading `max_texture_dimension_2d`
 pressure for `max_texture_array_layers` headroom (floor 256, already requested in `required_limits`
 by the lightmap work).
@@ -83,7 +112,7 @@ trilinear probe blend never filters across a layer boundary.
   structs in `forward.wgsl`, `fog_volume.wgsl`, `billboard.wgsl`, `skinned_mesh.wgsl` (and the
   `GridDims` copy in `sh_compose.wgsl`), kept in std140 lockstep with the Rust-side upload.
 - **Depth-moment 3D fits-device guard** (small, separate): the SH depth-moment texture is a genuine 3D
-  texture (`sh_volume.rs:920–961`, `TextureDimension::D3`) sized by grid dims; it hits
+  texture (`upload_depth_moment_texture`, `sh_volume.rs:999–1040`, `TextureDimension::D3`) sized by grid dims; it hits
   `max_texture_dimension_3d` (wgpu default 2048), not the 2D limit, and today has no fits-check. Add a
   guard so an oversized moment texture disables SH gracefully (like the atlas refusal) instead of
   failing at `write_texture`. This is a guard only — no tiling.
@@ -123,7 +152,7 @@ trilinear probe blend never filters across a layer boundary.
   probe count) a synthetic probe grid large enough to overflow one 8192² layer and asserts a
   deterministic multi-layer result: layer count > 1, every per-layer dimension ≤ 8192, and each
   probe's tile on exactly one layer.
-- [ ] A large map that **currently refuses** SH (logs the `sh_volume.rs:257–274` `[Renderer]` error)
+- [ ] A large map that **currently refuses** SH (logs the `sh_volume.rs:269–285` `[Renderer]` error)
   now loads its SH volume: `has_sh_volume = 1`, no refusal log, indirect lighting visible. Verified
   manually via `cargo run -p xtask -- run <overflowing-map>.prl`. This is a 2D-atlas-overflow map —
   probe count high enough to overflow one 8192² atlas layer while every grid axis stays ≤ 2048, so the
@@ -222,29 +251,36 @@ writes are order-preserving, so the byte-identity / determinism invariant (`buil
 ### Task 4: Runtime array texture pipeline
 
 In `crates/renderer/src/render/sh_volume.rs`:
-- `upload_atlas_texture` (base, ~762) and `upload_direct_atlas_texture` (~829): create the texture with
+- `upload_atlas_texture` (base, ~796) and `upload_direct_atlas_texture` (~863): create the texture with
   `depth_or_array_layers = section.layer_count`, `dimension = D2`, and a `D2Array` view; upload the
   layer-major blob (one `write_texture` per layer, or one call over the array). BC6H per-layer 4-block
   alignment already handled per layer.
-- `create_total_atlas_texture` (~965): create with `layer_count` array layers; the storage view becomes
+- `create_total_atlas_texture` (~1044): create with `layer_count` array layers; the storage view becomes
   `D2Array` and the sampled view `D2Array`.
-- `sh_bind_group_layout_entries` (~634): change `BIND_SH_TOTAL_ATLAS` and `BIND_SH_DIRECT_ATLAS`
-  `view_dimension` from `D2` to `D2Array`. **No binding is added** — dimension changes in place.
-  `mesh_bind_group_layout_entries` (~619) composes this function directly, so the mesh group-4
+- **Direct composed atlas (post-merge, see Post-merge status):** `create_direct_composed_atlas_texture`
+  (~978) builds a second runtime-composed storage texture at the id-35 `atlas_dimensions`, bound at
+  `BIND_SH_DIRECT_ATLAS` (`sh_volume.rs:447–473`) when `resolve_direct_atlas_usage` reports
+  `needs_composed_atlas` (map has `EntityShadowLights` + id-41 `DirectShDeltaVolumes`). It **also
+  overflows `max_texture_dimension_2d`** and needs the same `layer_count` array layers + `D2Array`
+  storage/sampled views as the total atlas. Extend the fits guard to cover its `atlas_dimensions` too.
+- `sh_bind_group_layout_entries` (~668): change `BIND_SH_TOTAL_ATLAS` (`view_dimension` at ~684) and
+  `BIND_SH_DIRECT_ATLAS` (~763) `view_dimension` from `D2` to `D2Array`. **No binding is added** —
+  dimension changes in place.
+  `mesh_bind_group_layout_entries` (~653) composes this function directly, so the mesh group-4
   superset BGL (`ShVolumeResources.mesh_bind_group_layout`) picks up both `D2Array` entries
   automatically — no separate mesh-side BGL edit needed.
-- Replace the atlas-side of the `ShVolume::new` fits-check (257–274) and the direct fits-check
-  (834–849) with a guard against per-layer `atlas_dimensions ≤ max_texture_dimension_2d` **and**
+- Replace the atlas-side of the `ShVolume::new` fits-check (269–285) and the direct fits-check
+  (`upload_direct_atlas_texture`, 869–883) with a guard against per-layer `atlas_dimensions ≤ max_texture_dimension_2d` **and**
   `layer_count ≤ max_texture_array_layers`. Factor the comparison into a pure helper,
   `sh_atlas_fits(per_layer_dim, layer_count, limits) -> bool`, and unit-test it (mirrors the lightmap
   work's `array_layers_sufficient` in `renderer_init_resources.rs`; no conformant adapter exercises the
   fail path). Keep the `has_sh_volume = 0` / `has_direct = 0` fallback for the (now
   corrupt-section-only) refusal case.
-- Add the **depth-moment 3D fits-device guard**: fold it into the `usable` filter chain (257–274) as
+- Add the **depth-moment 3D fits-device guard**: fold it into the `usable` filter chain (269–285) as
   an additional filter alongside the existing atlas-dimension check, checking the grid dims against
   `max_texture_dimension_3d` — not a guard inserted at the `upload_depth_moment_texture` call site
-  (called ~326, defined 920–961), since by then `usable` has already gated SH presence and the base
-  atlas is already uploaded with `present = true` set at 334 (311–334). Folding it into the filter
+  (called ~336, defined 999–1040), since by then `usable` has already gated SH presence and the base
+  atlas is already uploaded with `present = true` set at 345 (322–345). Folding it into the filter
   chain means an overflow yields the same `present = false` fallback the atlas guard produces, instead
   of a partially-committed SH volume. Pure helper, unit-tested.
 - Upload the new `ShGridInfo` fields (`tiles_per_layer` / `atlas_layer_count`) alongside the existing
@@ -313,14 +349,25 @@ In `crates/renderer/src/shaders/sh_compose.wgsl`:
   layer-inclusive `probe_index` (`probe_index >= total_probes`) — otherwise the partially-filled last
   layer's slack texels wrongly map onto valid probes from an earlier layer. Add `tiles_per_layer` /
   `atlas_layer_count` to the `GridDims` uniform. The Rust-side byte builder, `build_compose_grid_bytes`
-  (`COMPOSE_GRID_DIMS_SIZE`, currently 48) in `crates/render-cpu/src/sh_compose.rs`, must grow 48 → 64
-  with the two fields plus tail padding; its caller in `crates/renderer/src/render/sh_compose.rs`
-  (~line 117, currently passing 6 args) must pass the new fields.
+  (`COMPOSE_GRID_DIMS_SIZE`, currently 48, in `crates/render-cpu/src/sh_compose.rs:9`/`:125`, 6 params)
+  must grow 48 → 64 with the two fields plus tail padding; its caller in
+  `crates/renderer/src/render/sh_compose.rs` (~line 117, currently passing 6 args) must pass the new
+  fields. **This builder is shared** — `crates/renderer/src/render/direct_sh_compose.rs:104` also calls
+  `build_compose_grid_bytes`, so the 48→64 growth silently changes the direct compose pass's uniform
+  too; `direct_sh_compose.wgsl`'s `GridDims` struct must be extended in the same lockstep (see
+  Post-merge status), or the direct compose pass reads a mismatched std140 layout with no compile error.
 - Dispatch dimensions: composing per-layer means the dispatch grid is per-layer `(atlas_width,
   atlas_height)` × `layer_count`; adjust the workgroup dispatch so every layer's texels are covered.
-  The per-layer dispatch lives in `crates/renderer/src/render/sh_compose.rs`'s `dispatch` — it
-  currently issues a 2D dispatch with the workgroup z-count hardcoded to 1; set it to `layer_count`
-  instead, or layers ≥ 1 are never composed.
+  The per-layer dispatch lives in `crates/renderer/src/render/sh_compose.rs`'s `dispatch` (~256) — it
+  currently issues a 2D dispatch with the workgroup z-count hardcoded to 1 (`wg_z = 1`, ~271); set it to
+  `layer_count` instead, or layers ≥ 1 are never composed. **The direct compose pass has its own
+  dispatch** (`direct_sh_compose.rs`'s `dispatch_if_needed` ~226, `dispatch_workgroups` ~259) that needs
+  the same z = `layer_count` fix once its composed atlas becomes `D2Array`.
+- **`crates/renderer/src/shaders/direct_sh_compose.wgsl` (post-merge, see Post-merge status):** the same
+  array conversion as `sh_compose.wgsl` — `direct_composed_atlas`
+  (`texture_storage_2d<rgba16float, write>` → `_2d_array`), `direct_base_atlas` layer-aware
+  `map_atlas_texel`, and the extended `GridDims` struct — when the direct composed atlas becomes
+  `D2Array`.
 
 ## Sequencing
 
@@ -453,6 +500,9 @@ grow together; if a shader/Rust layout-parity test exists for `GridDims`, extend
   every frame by the compose compute pass from `sh_base_atlas` + animated deltas. So `D2Array` must
   cover a storage-texture-array write (`texture_storage_2d_array`) and per-layer dispatch, not just a
   sampled-texture read. This has no lightmap analogue and carries the main incremental risk (below).
+  **Post-merge correction:** there are now **two** runtime compose passes, not one — the indirect total
+  atlas *and* the direct composed atlas (`direct_sh_compose`, see Post-merge status). Both need the
+  storage-array write + per-layer dispatch treatment.
 - **Cluster-friendly layer packing (streaming seam, not scoped here).** `spatial-streaming.md` §2/§8
   names SH the heaviest baked artifact and the first per-cluster residency target. Keep the
   `probe_index → layer` mapping a contiguous linear-index range per layer so a future pass can align

@@ -2,6 +2,19 @@
 
 Grounded 2026-07-04 against source. Line numbers are ephemeral; verify before use. Serves both this plan and `static-light-shadowmask-world-receipt`.
 
+## Review panel (2026-07-04)
+
+Four-reviewer panel (codebase anchor, broad design, implementability/executor lens, decision-fidelity + cross-plan coherence) ran against the first committed draft; all findings applied in the follow-up commit. Highest-value corrections, kept here because they encode non-obvious source facts:
+
+- Fog is NOT a light-buffer count consumer: `collect_fog_spot_lights` (`renderer_lighting.rs`) walks `spot_shadow_pool.slot_assignment` with no tier test — promoted statics need an explicit not-promoted filter there, a count split does nothing for fog.
+- The `DirectShVolume` contributor set filters neither `bake_only` nor directional; the selection domain is a strict subset (and `bake_only` lights have no runtime light index — `light_namespaces.rs` drops them from the on-disk set).
+- Three separate light-count uniforms exist (forward `uniforms.light_count`, billboard reads the SAME shared group-0 struct, mesh `mesh_light_params.light_count`); billboard needs a new `total_light_count` field in the shared struct — a 3-way byte-contract change.
+- One shared GPU light buffer feeds forward and mesh group-2 b0 (`filter_dynamic_lights` → `lights_buffer`); the count-split appends to it.
+- No `copy_texture_to_texture` exists anywhere in `crates/`; pool depth textures carry only `RENDER_ATTACHMENT | TEXTURE_BINDING` — the depth cache adds `COPY_SRC`/`COPY_DST` and is the engine's first Depth32Float T2T copy.
+- `apply_cosine_lobe_rgb` confirmed linear per coefficient (per-band scalar multiply applied after the cross-light sum) — the delta-sum-exactness claim holds.
+- SectionId registry's highest allocated id is 39 → 40/41/42 pre-assigned across the two plans.
+- Union-term hazard (shadowmask plan): in a baked soft penumbra with no entity, raw `max(0, baked_vis − hard_PCF_vis)` hardens the static penumbra — a prohibited runtime static→static shadow; now a hard prototype-gate condition with ramp-bias as the committed remedy.
+
 ## Supersedes
 
 `context/plans/drafts/baked-entity-shadow-lighting-handoff.md` — project owner reviewed and redirected: ignore its Path A recommendation (leaning away from SDF for shadows/lights entirely), go shadowmask-flavored, but never runtime static→static shadowing. Its feasibility anchors remain useful; its recommendation does not stand.
@@ -55,6 +68,6 @@ Grounded 2026-07-04 against source. Line numbers are ephemeral; verify before us
 
 - `spot_shadow.rs` 1123 — extended by promotion → split task (Task 1).
 - `renderer_shadow_passes.rs` 879 — depth-cache changes → new module, don't grow (pinned in Task 6).
-- `mesh_pass.rs` 3310 — only bind-group swap here; E19 render-cpu is already carving it, do not split in this plan.
+- `mesh_pass.rs` 3309 — only bind-group swap here; E19 render-cpu is already carving it, do not split in this plan.
 - `lightmap_bake.rs` 3818 — selection lives in a new module (pinned in Task 2); shadowmask bake reuses `lightmap_layer.rs` (1713).
 - `forward.wgsl` 1055 — shadowmask plan adds a term; WGSL has no module split mechanism beyond helper concatenation; keep the union term in a shared helper file.

@@ -1,5 +1,5 @@
-// Per-chunk static-light list builder.
-// See: lighting-chunk-lists/
+// Per-chunk static-light list builder (ChunkLightList section).
+// See: context/lib/build_pipeline.md (PRL sections table)
 
 use bvh::bvh::Bvh;
 use bvh::ray::Ray;
@@ -43,7 +43,7 @@ const SAMPLE_END_TOLERANCE_METERS: f32 = 0.02;
 /// Per-fragment SDF-shadow budget. Runtime traces at most K `sdf`-tagged lights
 /// per `chunk_grid` cell; extras are dropped (treated lit). The half-res shadow
 /// target has four RGBA channels — slot i maps to channel i. Compiler warns when
-/// a cell exceeds K. See `context/plans/in-progress/sdf-per-light-shadows/`.
+/// a cell exceeds K. See `context/plans/done/sdf-per-light-shadows/`.
 ///
 /// Must equal `SDF_SELECT_K` in `sdf_light_select.wgsl` — that constant drives
 /// runtime selection and the half-res texture layout. Raising K also requires
@@ -220,16 +220,23 @@ pub fn bake_chunk_light_list(
                     || inputs.exterior_leaves.contains(&chunk_leaf);
 
                 let bucket = &mut per_chunk[chunk_idx];
+                // Slots kept by the contains-light guard below, ascending
+                // (static_slots order). Consulted at cap truncation so a
+                // contained light is never the one evicted.
+                let mut contained_slots: Vec<u32> = Vec::new();
                 for (idx, &(slot, light)) in static_slots.iter().enumerate() {
                     if !overlaps_chunk(light, chunk_min, chunk_max) {
                         continue;
                     }
-                    // A cell that CONTAINS the light keeps it unconditionally:
-                    // fragments right next to the light are lit no matter what
-                    // the centroid-keyed portal filter or the visibility rays
-                    // say — both key on proxy points that can sit in a
-                    // different room (or inside geometry) than the light, and
-                    // an 8 m cell routinely spans both.
+                    // A cell that CONTAINS the light keeps it: fragments right
+                    // next to the light are lit no matter what the
+                    // centroid-keyed portal filter or the visibility rays say —
+                    // both key on proxy points that can sit in a different room
+                    // (or inside geometry) than the light, and an 8 m cell
+                    // routinely spans both. The keep survives the overflow cap
+                    // too (contained slots are partitioned to the front before
+                    // truncation below); it yields only past `cap` contained
+                    // lights in one cell.
                     if matches!(light.light_type, LightType::Point | LightType::Spot) {
                         let origin = Vec3::new(
                             light.origin.x as f32,
@@ -237,6 +244,7 @@ pub fn bake_chunk_light_list(
                             light.origin.z as f32,
                         );
                         if origin.cmpge(chunk_min).all() && origin.cmple(chunk_max).all() {
+                            contained_slots.push(slot);
                             bucket.push(slot);
                             continue;
                         }
@@ -270,6 +278,20 @@ pub fn bake_chunk_light_list(
                          clamping to cap {cap}, dropping {dropped}",
                         bucket.len(),
                     );
+                    // Plain truncation is slot-index biased: it would evict the
+                    // highest slots, including a light the contains-guard just
+                    // promised to keep — re-cutting the box hole the guard
+                    // exists to prevent. Stable-partition contained lights to
+                    // the front so eviction only reaches them after every
+                    // non-contained light is gone. Bucket order is otherwise
+                    // free: both runtime consumers are order-independent (the
+                    // sdf K-selection re-ranks by influence; the specular loop
+                    // sums the whole window).
+                    if !contained_slots.is_empty() {
+                        // `contained_slots` is ascending — binary_search is the
+                        // membership test.
+                        bucket.sort_by_key(|s| contained_slots.binary_search(s).is_err());
+                    }
                     bucket.truncate(cap);
                 }
             }
@@ -353,8 +375,11 @@ pub fn bake_chunk_light_list(
 
 /// Warn when more than `k` `sdf`-tagged lights cover a single `chunk_grid` cell.
 /// Runtime traces at most `k` per fragment; extras are dropped (treated lit).
-/// Coverage uses the same `overlaps_chunk` metric as the runtime cull.
-/// Returns over-K cell count (for tests); logging is the production effect.
+/// Coverage uses the `overlaps_chunk` sphere test alone — a SUPERSET of baked
+/// membership (every kept light first passes `overlaps_chunk`), so the warning
+/// may over-report but never misses a cell where the runtime K could drop a
+/// baked light. Returns over-K cell count (for tests); logging is the
+/// production effect.
 fn warn_oversubscribed_sdf_cells(
     sdf_lights: &[&MapLight],
     world_min: Vec3,
@@ -1713,6 +1738,53 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The contains-light guard survives per-chunk cap truncation: plain
+    /// `truncate(cap)` is slot-index biased and would evict the highest slots
+    /// first — including a contained light, re-cutting the box hole the guard
+    /// prevents. Contained slots are partitioned to the front before the cut.
+    #[test]
+    fn contained_light_survives_per_chunk_cap_truncation() {
+        let geo = single_quad_geometry();
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        // 69 lights OUTSIDE the target cell (origins at x = 6 > cell max 4)
+        // whose range overlaps it, then the contained light LAST — the highest
+        // compacted slot, first in line for a slot-biased eviction.
+        let mut lights: Vec<MapLight> = (0..69)
+            .map(|_| point_light(DVec3::new(6.0, 2.0, 0.0), 30.0))
+            .collect();
+        lights.push(point_light(DVec3::new(0.0, 2.0, 0.0), 3.0));
+        let contained_slot = 69u32;
+        let alpha_lights = AlphaLightsNs::from_lights(&lights);
+        let inputs = ChunkLightListInputs {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+            lights: &alpha_lights,
+            tree: &empty_tree(),
+            portals: &[],
+            exterior_leaves: &HashSet::new(),
+        };
+        let section = bake_chunk_light_list(&inputs, 8.0, 64).unwrap();
+        assert_eq!(section.has_grid, 1);
+
+        let origin = Vec3::from(section.grid_origin);
+        let cell = section.cell_size;
+        let center = Vec3::new(0.0, 2.0, 0.0);
+        let cx = ((center.x - origin.x) / cell).floor() as u32;
+        let cy = ((center.y - origin.y) / cell).floor() as u32;
+        let cz = ((center.z - origin.z) / cell).floor() as u32;
+        let [nx, ny, _] = section.grid_dimensions;
+        let linear = (cz * ny * nx + cy * nx + cx) as usize;
+        let entry = section.offsets[linear];
+        assert_eq!(entry.count, 64, "cell must be clamped to the cap");
+        let start = entry.offset as usize;
+        let kept = &section.light_indices[start..start + entry.count as usize];
+        assert!(
+            kept.contains(&contained_slot),
+            "the contained light (slot {contained_slot}) must survive cap truncation"
+        );
     }
 
     /// The cell CONTAINING a light keeps it even when every visibility sample

@@ -153,7 +153,7 @@ PRL header `version` is 4. Loading a file with any other version fails.
 | ShVolume | 20 | Retired legacy L2 SH irradiance payload; stale files are rejected by section-internal version |
 | LightInfluence | 21 | When compiled with lighting |
 | Lightmap | 22 | Always (placeholder atlas when a map has no static lights) |
-| ChunkLightList | 23 | Always; per-chunk static-light index lists for specular culling |
+| ChunkLightList | 23 | Always; per-chunk static-light index lists for specular culling and runtime sdf-light selection |
 | AnimatedLightChunks | 24 | When compiled with animated lights |
 | AnimatedLightWeightMaps | 25 | When compiled with animated lights; per-texel weight maps for the compose pass |
 | LightTags | 26 | When at least one light carries a tag; one space-delimited tag-list string per AlphaLight record (empty string = untagged) |

@@ -37,6 +37,8 @@ use postretro_level_format::sdf_atlas::SdfAtlasSection;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 #[cfg(feature = "load-prl")]
+use postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection;
+#[cfg(feature = "load-prl")]
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 #[cfg(feature = "load-prl")]
 use thiserror::Error;
@@ -420,6 +422,10 @@ pub struct LevelWorld {
     /// direct-SH deltas are missing/unusable.
     #[cfg(feature = "load-prl")]
     pub entity_shadow_lights: Vec<u32>,
+    /// Per-selected-light world visibility masks for entity→world static-light
+    /// shadows. `channels[i]` aligns with `entity_shadow_lights[i]`.
+    #[cfg(feature = "load-prl")]
+    pub shadowmask_atlas: Option<ShadowmaskAtlasSection>,
     /// `None` when level has no `data_script` worldspawn KVP.
     /// See: context/lib/scripting.md §2 (Data context lifecycle)
     #[cfg(feature = "load-prl")]
@@ -534,6 +540,8 @@ impl LevelWorld {
             direct_sh_delta_volumes: None,
             #[cfg(feature = "load-prl")]
             entity_shadow_lights: Vec::new(),
+            #[cfg(feature = "load-prl")]
+            shadowmask_atlas: None,
             #[cfg(feature = "load-prl")]
             data_script: None,
             #[cfg(feature = "load-prl")]
@@ -1301,6 +1309,7 @@ mod tests {
             direct_sh_volume: None,
             direct_sh_delta_volumes: None,
             entity_shadow_lights: Vec::new(),
+            shadowmask_atlas: None,
             data_script: None,
             map_entities: Vec::new(),
             fog_volumes: Vec::new(),
@@ -1390,6 +1399,7 @@ mod tests {
             direct_sh_volume: None,
             direct_sh_delta_volumes: None,
             entity_shadow_lights: Vec::new(),
+            shadowmask_atlas: None,
             data_script: None,
             map_entities: Vec::new(),
             fog_volumes: Vec::new(),
@@ -1433,6 +1443,7 @@ mod tests {
             direct_sh_volume: None,
             direct_sh_delta_volumes: None,
             entity_shadow_lights: Vec::new(),
+            shadowmask_atlas: None,
             data_script: None,
             map_entities: Vec::new(),
             fog_volumes: Vec::new(),
@@ -1601,6 +1612,22 @@ mod tests {
         write_prl_fixture_raw(sections, name)
     }
 
+    fn geometry_blob(section: GeometrySection) -> prl_format::SectionBlob {
+        prl_format::SectionBlob {
+            section_id: SectionId::Geometry as u32,
+            version: 1,
+            data: section.to_bytes(),
+        }
+    }
+
+    fn bvh_blob(section: BvhSection) -> prl_format::SectionBlob {
+        prl_format::SectionBlob {
+            section_id: SectionId::Bvh as u32,
+            version: 1,
+            data: section.to_bytes(),
+        }
+    }
+
     fn default_cells_blob() -> prl_format::SectionBlob {
         let section = CellsSection {
             cells: vec![
@@ -1729,6 +1756,38 @@ mod tests {
         };
         prl_format::SectionBlob {
             section_id: SectionId::EntityShadowLights as u32,
+            version: 1,
+            data: section.to_bytes(),
+        }
+    }
+
+    fn lightmap_blob(width: u32, height: u32, layer_count: u32) -> prl_format::SectionBlob {
+        let texels = (width * height * layer_count) as usize;
+        let section = postretro_level_format::lightmap::LightmapSection {
+            layer_count,
+            irr_width: width,
+            irr_height: height,
+            irr_texel_density: 0.04,
+            irradiance: vec![0; texels * postretro_level_format::lightmap::IRRADIANCE_TEXEL_BYTES],
+            irradiance_format: postretro_level_format::lightmap::IRRADIANCE_FORMAT_RGBA16F,
+            dir_width: width,
+            dir_height: height,
+            dir_texel_density: 0.04,
+            direction: vec![255; texels * postretro_level_format::lightmap::DIRECTION_TEXEL_BYTES],
+            mode: postretro_level_format::lightmap::LightmapMode::Shadowed,
+        };
+        prl_format::SectionBlob {
+            section_id: SectionId::Lightmap as u32,
+            version: 1,
+            data: section.to_bytes(),
+        }
+    }
+
+    fn shadowmask_blob(
+        section: postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection,
+    ) -> prl_format::SectionBlob {
+        prl_format::SectionBlob {
+            section_id: SectionId::ShadowmaskAtlas as u32,
             version: 1,
             data: section.to_bytes(),
         }
@@ -4448,6 +4507,54 @@ mod tests {
 
         assert_eq!(world.entity_shadow_lights, vec![0]);
         assert!(world.direct_sh_delta_volumes.is_some());
+        assert!(
+            world.shadowmask_atlas.is_none(),
+            "missing ShadowmaskAtlas must not clear EntityShadowLights or direct SH deltas"
+        );
+
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_exposes_shadowmask_atlas_multi_layer_payload() {
+        let shadowmask = postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection {
+            width: 2,
+            height: 1,
+            layer_count: 2,
+            channels: vec![0],
+            data: vec![255, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+        };
+        let direct_sh = minimal_direct_sh_volume_section();
+        let direct_sh_delta = direct_delta_section_for(
+            expected_affinity_dims(direct_sh.grid_dimensions, AFFINITY_FACTOR),
+            vec![0],
+        );
+        let sections = vec![
+            geometry_blob(sample_geometry()),
+            bvh_blob(sample_bvh_section()),
+            prl_format::SectionBlob {
+                section_id: SectionId::AlphaLights as u32,
+                version: 1,
+                data: sample_alpha_lights().to_bytes(),
+            },
+            direct_sh_volume_blob(direct_sh),
+            entity_shadow_lights_blob(vec![0]),
+            direct_sh_delta_blob(direct_sh_delta),
+            lightmap_blob(2, 1, 2),
+            shadowmask_blob(shadowmask.clone()),
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+
+        let tmp = write_prl_fixture(sections, "postretro_test_shadowmask_atlas.prl");
+        let world = load_prl(tmp.to_str().unwrap()).expect("PRL with ShadowmaskAtlas must load");
+        let loaded = world
+            .shadowmask_atlas
+            .expect("ShadowmaskAtlas section must be exposed");
+
+        assert_eq!(loaded.layer_count, 2);
+        assert_eq!(loaded.channels, shadowmask.channels);
+        assert_eq!(loaded.data, shadowmask.data);
 
         std::fs::remove_file(&tmp).ok();
     }

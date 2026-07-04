@@ -263,10 +263,12 @@ pub(crate) fn build_full_renderer(
         device,
         queue,
         geometry.and_then(|g| g.lightmap),
+        geometry.and_then(|g| g.shadowmask_atlas),
         &lightmap_bind_group_layout,
         &animated_lightmap.forward_view,
         &animated_lightmap.direction_forward_view,
     );
+    let shadowmask_present = lightmap_resources.shadowmask_present;
 
     // SDF half-res shadow pass (Task 4). Always allocated — dispatch is
     // gated on `sdf_atlas_resources.present`. Owns the half-res factor
@@ -539,6 +541,16 @@ pub(crate) fn build_full_renderer(
         entity_shadow_lights: selected_static.lights,
         entity_shadow_light_influences: selected_static.influences,
         entity_shadow_light_source_indices: selected_static.source_indices,
+        entity_shadow_spec_light_indices: shadowmask::build_selection_spec_light_indices(
+            full_lights,
+            entity_shadow_indices,
+        ),
+        shadowmask_channels: geometry
+            .and_then(|g| g.shadowmask_atlas)
+            .map(|section| section.channels.clone())
+            .unwrap_or_default(),
+        shadowmask_present,
+        forward_shadowmask_metadata_scratch: Vec::new(),
         shadow_candidate_lights,
         shadow_candidate_source_indices,
         shadow_candidate_selection_indices,

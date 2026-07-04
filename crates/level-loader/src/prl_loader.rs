@@ -32,6 +32,7 @@ use postretro_level_format::navmesh::NavMeshSection;
 use postretro_level_format::portals::PortalsSection;
 use postretro_level_format::sdf_atlas::SdfAtlasSection;
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
+use postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection;
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 use postretro_level_format::texture_names::TextureNamesSection;
 use postretro_level_format::{self as prl_format, SectionId};
@@ -1445,6 +1446,43 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
             }
         };
 
+    let mut shadowmask_atlas: Option<ShadowmaskAtlasSection> = match prl_format::read_section_data(
+        &mut cursor,
+        &meta,
+        SectionId::ShadowmaskAtlas as u32,
+    )? {
+        Some(data) => match ShadowmaskAtlasSection::from_bytes(&data) {
+            Ok(section) => {
+                let dims_match = lightmap.as_ref().is_none_or(|lm| {
+                    section.width == lm.irr_width
+                        && section.height == lm.irr_height
+                        && section.layer_count == lm.layer_count
+                });
+                if !dims_match {
+                    log::warn!(
+                        "[PRL] ShadowmaskAtlas dimensions do not match Lightmap irradiance atlas; ignoring section"
+                    );
+                    None
+                } else {
+                    log::info!(
+                        "[PRL] ShadowmaskAtlas: {}x{} atlas, {} layer(s), {} selected channel entr(y/ies), {} payload byte(s)",
+                        section.width,
+                        section.height,
+                        section.layer_count,
+                        section.channels.len(),
+                        section.data.len(),
+                    );
+                    Some(section)
+                }
+            }
+            Err(err) => {
+                log::warn!("[PRL] ShadowmaskAtlas malformed; ignoring section: {err}");
+                None
+            }
+        },
+        None => None,
+    };
+
     // Optional — absent → no static-occluder SDF; runtime shadow pass disabled.
     // An empty-geometry section (zero grid dims) is also a valid "no SDF"
     // marker; the renderer collapses it to the same disabled state.
@@ -1714,6 +1752,22 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
             }
         };
 
+    if let Some(section) = shadowmask_atlas.as_ref() {
+        if entity_shadow_lights.is_empty() {
+            log::warn!(
+                "[PRL] ShadowmaskAtlas present without usable EntityShadowLights; ignoring section"
+            );
+            shadowmask_atlas = None;
+        } else if section.channels.len() != entity_shadow_lights.len() {
+            log::warn!(
+                "[PRL] ShadowmaskAtlas channel table has {} entr(y/ies), but EntityShadowLights has {}; ignoring section",
+                section.channels.len(),
+                entity_shadow_lights.len(),
+            );
+            shadowmask_atlas = None;
+        }
+    }
+
     // Optional — absent when map has no `data_script` worldspawn KVP.
     let data_script: Option<DataScriptSection> =
         match prl_format::read_section_data(&mut cursor, &meta, SectionId::DataScript as u32)? {
@@ -1939,6 +1993,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         direct_sh_volume,
         direct_sh_delta_volumes,
         entity_shadow_lights,
+        shadowmask_atlas,
         data_script,
         map_entities,
         fog_volumes,

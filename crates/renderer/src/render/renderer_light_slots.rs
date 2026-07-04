@@ -274,6 +274,14 @@ impl Renderer {
                     std::slice::from_ref(influence),
                 );
             }
+            shadowmask::pack_forward_shadowmask_metadata(
+                &full.promoted_static_records,
+                &full.entity_shadow_spec_light_indices,
+                &full.shadowmask_channels,
+                full.shadowmask_present,
+                &mut full.forward_shadowmask_metadata_scratch,
+            );
+            influence_bytes.extend_from_slice(&full.forward_shadowmask_metadata_scratch);
             if influence_bytes.is_empty() {
                 influence_bytes.resize(16, 0);
             }

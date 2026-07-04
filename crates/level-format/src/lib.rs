@@ -30,6 +30,7 @@ pub mod portals;
 pub mod prm;
 pub mod sdf_atlas;
 pub mod sh_volume;
+pub mod shadowmask_atlas;
 pub mod texture_cache_keys;
 pub mod texture_names;
 
@@ -243,6 +244,11 @@ pub enum SectionId {
     /// Per-selected-light sparse direct-SH delta tiles, indexed by affinity
     /// cell. See `direct_sh_delta_volumes::DirectShDeltaVolumesSection`.
     DirectShDeltaVolumes = 41,
+
+    /// Per-selected-light baked world-visibility masks, packed up to four
+    /// overlapping selected lights into RGBA channels. See
+    /// `shadowmask_atlas::ShadowmaskAtlasSection`.
+    ShadowmaskAtlas = 42,
 }
 
 impl SectionId {
@@ -277,6 +283,7 @@ impl SectionId {
             39 => Some(Self::CellLocator),
             40 => Some(Self::EntityShadowLights),
             41 => Some(Self::DirectShDeltaVolumes),
+            42 => Some(Self::ShadowmaskAtlas),
             _ => None,
         }
     }

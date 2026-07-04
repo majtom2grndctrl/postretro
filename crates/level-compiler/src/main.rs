@@ -33,6 +33,7 @@ pub mod portals;
 pub mod sdf_bake;
 pub mod sh_bake;
 pub mod sh_group;
+pub mod shadowmask_bake;
 pub mod texture_mips;
 pub mod texture_validation;
 pub mod visibility;
@@ -980,6 +981,45 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
+    progress.start_stage("Shadowmask atlas bake...");
+    let stage_start = Instant::now();
+    let shadowmask_atlas_section = if entity_shadow_lights_section.is_some() {
+        let shared = lightmap_layer::SharedAtlas {
+            charts: &face_charts,
+            placements: &face_placements,
+            atlas_width,
+            atlas_height,
+        };
+        shadowmask_bake::bake_shadowmask_atlas_cached(
+            entity_shadow_lights_section.as_ref(),
+            &alpha_lights_ns,
+            &shared,
+            &bvh,
+            &bvh_primitives,
+            &geo_result,
+            final_lightmap_density,
+            args.soft_shadow_samples,
+            stage_cache.as_ref(),
+        )
+    } else {
+        None
+    };
+    timings.push(("ShadowmaskAtlas", stage_start.elapsed()));
+    if args.verbose {
+        if let Some(ref section) = shadowmask_atlas_section {
+            log::info!(
+                "ShadowmaskAtlas: {}x{}x{}, {} selected channel entr(y/ies), {} bytes",
+                section.width,
+                section.height,
+                section.layer_count,
+                section.channels.len(),
+                section.data.len(),
+            );
+        } else {
+            log::info!("ShadowmaskAtlas: skipped (no selected static lights)");
+        }
+    }
+
     progress.start_stage("Chunk light list bake...");
     let stage_start = Instant::now();
     let chunk_light_list_section = {
@@ -1197,6 +1237,7 @@ fn main() -> anyhow::Result<()> {
         direct_sh_volume_section.as_ref(),
         entity_shadow_lights_section.as_ref(),
         direct_sh_delta_volumes_section.as_ref(),
+        shadowmask_atlas_section.as_ref(),
         &lightmap_section,
         &chunk_light_list_section,
         animated_light_chunks_section.as_ref(),
@@ -1243,8 +1284,9 @@ struct Args {
     /// on non-finite/≤0 values in the CLI parser).
     lightmap_density: Option<f32>,
     /// Soft-shadow area-sample count (penumbra escalation target). Raising it
-    /// invalidates both the cached lightmap stage and the cached animated
-    /// weight-map stage, triggering a re-bake of each. Default
+    /// invalidates cached lightmap layers, any shadowmask memo keyed through
+    /// selected layer hashes, and the cached animated weight-map stage,
+    /// triggering a re-bake/rebuild of each affected stage. Default
     /// `lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT`.
     soft_shadow_samples: u32,
     /// SDF occluder-atlas voxel edge length in meters. Overrides

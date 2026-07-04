@@ -44,12 +44,15 @@ pub enum SdfShadowMode {
     // is sane at edges/corners vs garbage. Diagnostic only — remove with the
     // rest of the `// TEMP DEBUG:` markers.
     VisualizeNormals = 4,
+    // Visualizes the static-light shadowmask world-receipt union subtraction
+    // magnitude. Normal mode still applies the production subtraction.
+    ShadowmaskUnion = 5,
 }
 
 impl SdfShadowMode {
     /// All variants in display order. Used by the debug UI dropdown.
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
-    pub const ALL_VARIANTS: [SdfShadowMode; 5] = [
+    pub const ALL_VARIANTS: [SdfShadowMode; 6] = [
         SdfShadowMode::On,
         SdfShadowMode::Off,
         SdfShadowMode::Visualize,
@@ -57,6 +60,7 @@ impl SdfShadowMode {
         SdfShadowMode::VisualizeDebugPaths,
         // TEMP DEBUG: SDF shadow path visualization.
         SdfShadowMode::VisualizeNormals,
+        SdfShadowMode::ShadowmaskUnion,
     ];
 
     #[allow(dead_code)]
@@ -69,6 +73,7 @@ impl SdfShadowMode {
             SdfShadowMode::VisualizeDebugPaths => "Visualize: debug paths",
             // TEMP DEBUG: SDF shadow path visualization.
             SdfShadowMode::VisualizeNormals => "Visualize: normals",
+            SdfShadowMode::ShadowmaskUnion => "Visualize: shadowmask union",
         }
     }
 }

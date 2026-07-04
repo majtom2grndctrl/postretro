@@ -34,32 +34,32 @@ to compiler-side cache plumbing.
 
 ## Acceptance criteria
 
-- [ ] A warm cached rebuild with unchanged inputs can serve
+- [x] A warm cached rebuild with unchanged inputs can serve
   `ShadowmaskAtlasSection` from a `"shadowmask_atlas"` entry and skips selected
   layer reads, selected layer bakes, channel assignment, quantization, and
   section encoding.
-- [ ] On a `"shadowmask_atlas"` miss, selected-light layers are loaded from or
+- [x] On a `"shadowmask_atlas"` miss, selected-light layers are loaded from or
   written to existing `"lightmap_layer"` entries. Missing selected layers are
   baked once and stored under the existing `lightmap_layer::LAYER_FORMAT_VERSION`
   key.
-- [ ] The cached warm output bytes for `ShadowmaskAtlasSection` match the
+- [x] The cached warm output bytes for `ShadowmaskAtlasSection` match the
   uncached `shadowmask_bake::bake_shadowmask_atlas` output byte-for-byte for the
   same inputs.
-- [ ] `--release` and `--no-cache` bypass all `"shadowmask_atlas"` reads/writes
+- [x] `--release` and `--no-cache` bypass all `"shadowmask_atlas"` reads/writes
   and produce the same section bytes as the current recompute path.
-- [ ] Changing `EntityShadowLightsSection.light_indices` membership changes
+- [x] Changing `EntityShadowLightsSection.light_indices` membership changes
   the `"shadowmask_atlas"` key; a focused helper test also pins the key as
   order-sensitive even though valid emitted sections are ascending today.
-- [ ] Changing `--soft-shadow-samples` changes the selected layer input hashes
+- [x] Changing `--soft-shadow-samples` changes the selected layer input hashes
   and therefore changes the `"shadowmask_atlas"` key.
-- [ ] Changing atlas dimensions, atlas layer placement, or selected-light atlas
+- [x] Changing atlas dimensions, atlas layer placement, or selected-light atlas
   layout changes the `"shadowmask_atlas"` key.
-- [ ] Channel assignment/drop policy, visibility quantization, and
+- [x] Channel assignment/drop policy, visibility quantization, and
   `ShadowmaskAtlasSection::to_bytes` serialization changes are covered by a
   `SHADOWMASK_ATLAS_STAGE_VERSION` bump or equivalent stage epoch.
-- [ ] Corrupt `"shadowmask_atlas"` entries are treated as misses: the compiler
+- [x] Corrupt `"shadowmask_atlas"` entries are treated as misses: the compiler
   logs a warning, rebuilds the section, and overwrites the cache entry.
-- [ ] Tests verify the no-cache path writes no `"shadowmask_atlas"` entry and
+- [x] Tests verify the no-cache path writes no `"shadowmask_atlas"` entry and
   does not read existing entries.
 
 ## Tasks

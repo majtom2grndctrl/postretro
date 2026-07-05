@@ -89,7 +89,7 @@ Within the chosen methodology, two integration shapes were compared (research §
   animated frame (`renderer_lighting.rs:361–389`); the shadow pool patches per-light slot bytes
   keyed on level index (`renderer_light_slots.rs:208–248`); the promoted-static tail is appended
   **at offset `light_count`** and read by `shadowmask_union_subtraction`
-  (`forward.wgsl:738–758`); shadowmask metadata sits after `total_light_count` in the influence
+  (`forward.wgsl:730–758`); shadowmask metadata sits after `total_light_count` in the influence
   buffer (`renderer_light_slots.rs:260–290`); and the scripted-light descriptor buffer is
   index-parallel to `level_lights` (`scripted_light_descriptors[i]`, `forward.wgsl:1113`).
   Compaction breaks or forces per-frame rewrites of all of it, plus billboard/mesh consumers.
@@ -120,9 +120,12 @@ Within the chosen methodology, two integration shapes were compared (research §
 - **Any change to shadow-slot eligibility.** The wide reachable-set gate
   (`shadow_candidate_reaches_visible_cell`) and the orientation-invariance invariant that protects
   it stay untouched — see "Relationship" below.
-- **Billboard and skinned-mesh light loops.** They iterate `total_light_count`
-  (`billboard.wgsl:328`; `skinned_mesh.wgsl:443` fed from `renderer_render_frame.rs:384`) and keep
-  doing so: billboard lighting is per-vertex over few sprites, mesh fragments cover little screen.
+- **Billboard and skinned-mesh light loops.** They iterate the total count
+  (`billboard.wgsl:328` reads `uniforms.total_light_count`; `skinned_mesh.wgsl:443` reads
+  `mesh_light_params.light_count`, whose field name says "light_count" but carries the *total*
+  count, written from `total_light_count` at `renderer_render_frame.rs:384` — same loop, two
+  symbols) and keep doing so: billboard lighting is per-vertex over few sprites, mesh fragments
+  cover little screen.
   Because the buffers are untouched, leaving them on full iteration is safe by construction. A
   follow-on may extend the index list to them if profiling demands.
 - **Clustered forward+ / per-tile binning.** Deferred as before (`rendering_pipeline.md` §13,
@@ -183,15 +186,19 @@ must keep feeding those paths unchanged.
 
 ## Acceptance criteria
 
-- [ ] `cargo build -p postretro` and `cargo test -p postretro-renderer -p postretro-lighting`
-  pass clean, no warnings.
+- [ ] `cargo build -p postretro` and `cargo test -p postretro-renderer -p postretro-lighting
+  -p postretro-render-cpu` pass clean, no warnings. (`render-cpu` holds the `frame_uniforms.rs`
+  byte tests updated by the offset-124 AC below.)
 - [ ] **Correctness (the keep-test):** a `postretro-lighting` unit test constructs a light whose
   own cell is NOT in the drawn set but whose influence sphere reaches a drawn cell's AABB, and
   asserts its index **is kept** in the visible list (the forward twin of
   `light_with_off_pvs_leaf_but_reachable_receiver_is_eligible`, `lib.rs:751`). Companion tests: a
   light reaching no drawn cell is culled; empty drawn-AABB slice (DrawAll sentinel) keeps all;
-  an uncullable-influence light (radius `f32::MAX`) is always kept; a visible count exceeding the
-  index-list capacity yields the identity sentinel (full iteration), never truncation.
+  an uncullable-influence light (radius `f32::MAX`) is always kept. The overflow→identity-sentinel
+  behavior lives renderer-side (Task 3 owns the capacity and the sentinel substitution, not the
+  `postretro-lighting` predicate), so it is pinned by a separate `postretro-renderer` test: a
+  visible count exceeding `MAX_VISIBLE_LIGHT_INDICES` yields the identity sentinel (full iteration),
+  never truncation.
 - [ ] **No pixel change:** with the dev A/B toggle, culled vs identity renders are
   indistinguishable on `campaign-test.prl` and `stress-warren-lit.prl`, including under
   `LightingIsolation::DynamicOnly` (mode 8) where any dropped light is maximally visible. Manual.
@@ -207,14 +214,18 @@ must keep feeding those paths unchanged.
 - [ ] **Perf:** on `stress-warren-lit.prl`, from a vantage where most of the warren is
   portal-occluded, the `forward` line of `POSTRETRO_GPU_TIMING=1` drops materially versus the
   toggle-off baseline, and the logged per-frame visible-light count is a small fraction of the
-  ~157 total. Manual, via `POSTRETRO_GPU_TIMING=1 cargo run -p xtask -- run
-  content/dev/maps/stress-warren-lit.prl`.
+  ~157 total. Manual, via `RUST_LOG=info POSTRETRO_GPU_TIMING=1 cargo run -p xtask -- run
+  content/dev/maps/stress-warren-lit.prl`. The visible-count log MUST be emitted at a level this
+  command surfaces (`log::info!`, or under the `POSTRETRO_GPU_TIMING` gate itself) — not a bare
+  `log::debug!` that this command would swallow.
 - [ ] `build_uniform_data` seeds the new `visible_light_count` field with the identity sentinel,
   and the `frame_uniforms.rs` byte tests are updated for offset 124..128 (several currently assert
   `data[124..128]` — or a range containing it — is all-zero).
 - [ ] A frame that skips the per-frame cull write (`render_world = false`: the frontend path at
   `main.rs:3356` passes `DrawAll` + empty slices) renders with full iteration — no stale index
   list is ever consumed (the sentinel seed guarantees it).
+- [ ] **Docs:** `rendering_pipeline.md` §7.1 step 3 gains the per-frame visible-index list, and the
+  §7.3 dynamic-loop bullet reads "Loop over the frame's portal-visible dynamic lights" (Task 4).
 
 ## Tasks
 
@@ -241,8 +252,13 @@ Same sphere-vs-AABB `closest = origin.clamp(min, max)` test, early-out on first 
 drawn cells) with `any` short-circuit — at warren scale (~157 lights × ~10²-cells drawn) about
 10³–10⁴ clamp/dot ops per frame, i.e. the same order as the shadow gate the frame already runs
 (`renderer_light_slots.rs:87–95`). No spatial index needed; do not add one. Caller-owned `out`
-keeps steady-state frames allocation-free. Unit tests per the ACs (keep-test, cull-test, sentinel,
-uncullable, plus determinism of index order — ascending).
+keeps steady-state frames allocation-free. **Input contract (load-bearing):** the `influences`
+slice is exactly the dynamic `[0, light_count)` range (`full.level_light_influences`, length =
+`light_count = level_lights.len()`), so every emitted index is `< light_count` — the forward loop
+indexes only dynamic records, never a promoted-static tail entry at `[light_count,
+total_light_count)`. Add a `debug_assert!` that every produced index is `< influences.len()`. Unit
+tests per the ACs (keep-test, cull-test, sentinel, uncullable, plus determinism of index order —
+ascending).
 
 ### Task 2 — Plumb drawn-cell AABBs from the app
 
@@ -261,7 +277,7 @@ document why the *shadow* inputs use the wider set; add the mirror-image comment
 FRAGMENT-visible storage-buffer entry set already sits at the downlevel/WebGPU ceiling of 8 —
 five in group 2 (`lighting_bind_group_layout_entries`,
 `crates/renderer/src/render/pipeline_layout.rs:279–312`) plus three in group 3
-(`sh_bind_group_layout_entries`, `crates/renderer/src/render/sh_volume.rs:722–738`) — and §10
+(`sh_bind_group_layout_entries`, `crates/renderer/src/render/sh_volume.rs:710`) — and §10
 refuses to raise `max_storage_buffers_per_shader_stage`. A uniform index list costs a
 uniform-buffer slot instead (forward is far under that per-stage limit).
 
@@ -270,7 +286,7 @@ uniform-buffer slot instead (forward is far under that per-stage limit).
   minimally — billboard/fog never read it; the billboard VERTEX storage budget test
   `billboard_pipeline_vertex_storage_buffer_count` at `pipeline_layout.rs:373` is unaffected
   because the entry is neither storage nor VERTEX). Update **both** bind-group creation sites
-  against this BGL: `build_lighting_bind_group` (`renderer_init_resources.rs:283–367`) and the
+  against this BGL: `build_lighting_bind_group` (`renderer_init_resources.rs:281–367`) and the
   level-install rebuild (`renderer_resources.rs:288`). A missed site fails bind-group creation
   loudly.
 - Create the buffer once at init: fixed capacity `MAX_VISIBLE_LIGHT_INDICES` (1024 indices packed
@@ -279,21 +295,28 @@ uniform-buffer slot instead (forward is far under that per-stage limit).
 - Add `pub const VISIBLE_LIGHT_COUNT_OFFSET: u64 = 124;` to
   `crates/render-cpu/src/frame_uniforms.rs` (the documented free pad,
   `build_uniform_data` `:268–269`) and seed the field with the identity sentinel (e.g.
-  `0xFFFF_FFFF`) in `build_uniform_data`; update the pad-zero assertions in that file's tests.
+  `0xFFFF_FFFF`) in `build_uniform_data`; update every group-0 tail-zero assertion (`data[124..128]`
+  or any range covering it). These are confined to `frame_uniforms.rs` (the `sdf_shadow.rs` and
+  shadow-pass `124..128` slots are a different uniform layout, not group 0) — but grep to confirm no
+  other group-0 byte test asserts the tail is zero.
 - Per frame, inside `render_frame_indirect`'s `render_world` block (adjacent to
   `update_dynamic_light_slots`, `renderer_render_frame.rs:83–109`): run Task 1's predicate over
   `full.level_light_influences` (the CPU mirror, `renderer_resources.rs:250`) and the new
-  `drawn_cell_aabbs`; if the count exceeds capacity or the cull is toggled off, write the identity
-  sentinel to `VISIBLE_LIGHT_COUNT_OFFSET`; else upload the packed index rows (skip when unchanged
-  from last frame — mirror the `last_lights_upload` compare pattern,
-  `renderer_light_slots.rs:243–247`) and patch the count. The 4-byte count patch after
-  `update_per_frame_uniforms`'s full 128-byte write (called earlier in the frame, `main.rs:2338`;
-  writer at `renderer_frame.rs:148–164`) follows the existing `TOTAL_LIGHT_COUNT_OFFSET` patch
-  precedent (`renderer_light_slots.rs:291–295`).
+  `drawn_cell_aabbs`; if the count exceeds capacity or the cull is toggled off, patch the identity
+  sentinel to `VISIBLE_LIGHT_COUNT_OFFSET`; else patch the real visible count and upload the packed
+  index rows. **The 4-byte count patch is unconditional every cull frame** — only the ≤4 KiB index-
+  row upload is dedup-skippable when the list is unchanged (mirror the `last_lights_upload` compare
+  pattern, `renderer_light_slots.rs:243–247`). This is not optional: `update_per_frame_uniforms`
+  rewrites the full 128-byte group-0 uniform every frame (called earlier, `main.rs:2338`; writer at
+  `renderer_frame.rs:148–164`), re-seeding offset 124 back to the sentinel — so skipping the count
+  patch on an unchanged steady-state frame would silently revert to full iteration exactly when the
+  cull should win most. The patch itself follows the existing `TOTAL_LIGHT_COUNT_OFFSET` precedent
+  (`renderer_light_slots.rs:291–295`).
 - Dev A/B toggle: an env-gated flag (e.g. `POSTRETRO_FORWARD_LIGHT_CULL=0`) forcing the identity
-  sentinel, read once at init. Log the per-frame visible count behind the existing
-  `POSTRETRO_SHADOW_DEBUG` emit or a rate-limited `log::debug!` — implementor's call; the perf AC
-  needs the count observable.
+  sentinel, read once at init. Log the per-frame visible count at a level the perf-AC command
+  (`RUST_LOG=info POSTRETRO_GPU_TIMING=1 …`) actually surfaces — a rate-limited `log::info!`, or
+  fold it into the `POSTRETRO_GPU_TIMING` emit itself. A bare `log::debug!` is insufficient: the
+  perf AC requires the count observable under that exact command.
 
 ### Task 4 — Shader loop indirection
 
@@ -307,11 +330,14 @@ In `crates/renderer/src/shaders/forward.wgsl`:
 - Change the world loop head (`:1093–1094`): iterate `k` over the effective bound — the identity
   sentinel selects `light_count` and `i = k`; otherwise the bound is
   `min(visible_light_count, light_count)` and `i` is fetched from the index list
-  (`row = k >> 2`, lane `k & 3`). Keep the `use_dynamic` isolation gate (`select(0u, …)`
+  (`row = k >> 2`, lane `k & 3`). The `min` guards only the *count* against a corrupt
+  over-capacity value; the index *values* are already guaranteed `< light_count` by Task 1's
+  dynamic-only input contract, so no promoted-static tail entry is ever shaded in the dynamic loop.
+  Keep the `use_dynamic` isolation gate (`select(0u, …)`
   pattern, `:1093`) and keep the per-fragment influence early-out — it is still the fine cull for
   the surviving lights. Every body read (`light_influence[i]`, `lights[i]`,
   `scripted_light_descriptors[i]`, slot fields) keeps indexing the untouched full buffers.
-- Do **not** touch `shadowmask_union_subtraction` (`:738–758`), the static-specular chunk loop,
+- Do **not** touch `shadowmask_union_subtraction` (`:730–758`), the static-specular chunk loop,
   or any other shader. Billboard (`billboard.wgsl:328`) and mesh (`skinned_mesh.wgsl:443`) loops
   stay byte-identical.
 - Update the pinning test `count_split_shader_consumers_use_expected_loop_bounds`
@@ -363,7 +389,7 @@ change until Task 4); Task 4 flips the loop and carries the A/B verification.
   test. If a seam artifact ever surfaces, an epsilon pad on the sphere radius in Task 1 is the
   one-line mitigation; do not preemptively add it.
 - **BGL change misses a bind-group site.** Adding binding 6 requires both creation sites
-  (`renderer_init_resources.rs:283–367`, `renderer_resources.rs:288`) — a miss fails loudly at
+  (`renderer_init_resources.rs:281–367`, `renderer_resources.rs:288`) — a miss fails loudly at
   bind-group creation, not silently.
 - **Uniform-struct mirror drift.** The rename touches three WGSL mirrors of one 128-byte layout;
   stride and every offset are unchanged, and pipeline creation validates stride. The updated

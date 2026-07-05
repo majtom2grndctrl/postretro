@@ -295,7 +295,9 @@ but 256 is shared and sufficient.
 
 In `crates/level-loader/src/prl_loader.rs`'s `load_prl`: extend the existing inline
 `[PRL] OctahedralShVolume: …` `info!` log (not a separate helper function — it's inline in the section
-match arm) to include `{n} layer(s)` per the AC.
+match arm) to include the atlas layer count per the AC. The existing line already ends with
+`{} animated layers` (animated-light delta layers — a *different* concept); phrase the new field
+unambiguously, e.g. `{n} atlas layer(s)`, so the two "layer" counts are not confused in the log.
 
 ### Task 5: Shader layer derivation across the sampling passes and compose
 
@@ -338,6 +340,12 @@ returns per-layer extent, so that path stays correct.)
 In `crates/renderer/src/shaders/sh_compose.wgsl`:
 - `sh_base_atlas`: `texture_2d<f32>` → `texture_2d_array<f32>`; `sh_total_atlas`:
   `texture_storage_2d<rgba16float, write>` → `texture_storage_2d_array<rgba16float, write>`.
+- **Compose-pass BGL (Rust side).** The compose pipeline has its own group-1 BGL,
+  `compose_bgl_entries` in `crates/renderer/src/render/sh_compose.rs` (~276), separate from the
+  group-3/4 sampling BGL Task 4 edits. Binding 0 (`sh_base_atlas`, `Texture`) and binding 1
+  (`sh_total_atlas`, `StorageTexture`) each declare `view_dimension: D2` and must flip to `D2Array` in
+  lockstep with the shader's array declarations — a mismatch fails pipeline creation (loud, not silent).
+  The bound views (`base_atlas_view`, `total_atlas_storage_view`) become `D2Array` in Task 4.
 - The compose kernel maps a workgroup thread to an atlas texel within one layer's dispatch slice.
   Extend `map_atlas_texel`'s reverse mapping (currently `probe_index = tile.x + tile.y *
   atlas_tiles_per_row`) to `probe_index = layer * grid.tiles_per_layer + (tile.x + tile.y *
@@ -367,7 +375,11 @@ In `crates/renderer/src/shaders/sh_compose.wgsl`:
   array conversion as `sh_compose.wgsl` — `direct_composed_atlas`
   (`texture_storage_2d<rgba16float, write>` → `_2d_array`), `direct_base_atlas` layer-aware
   `map_atlas_texel`, and the extended `GridDims` struct — when the direct composed atlas becomes
-  `D2Array`.
+  `D2Array`. Its compose pipeline also has its own group-0 BGL,
+  `compose_bgl_entries` in `crates/renderer/src/render/direct_sh_compose.rs` (~269): binding 0
+  (`direct_base_atlas`, `Texture`) and binding 1 (`direct_composed_atlas`, `StorageTexture`) both
+  declare `view_dimension: D2` and must flip to `D2Array` alongside the shader, same as the indirect
+  compose BGL above.
 
 ## Sequencing
 

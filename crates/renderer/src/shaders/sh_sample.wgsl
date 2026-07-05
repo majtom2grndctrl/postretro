@@ -63,35 +63,46 @@ fn sh_corner_index(gi: vec3<u32>, corner_offset: vec3<u32>) -> vec3<i32> {
     return clamp(vec3<i32>(gi + corner_offset), vec3<i32>(0), gmax);
 }
 
-fn probe_tile_origin(idx: vec3<i32>) -> vec2<u32> {
+struct ProbeAtlasLocation {
+    layer: u32,
+    tile_origin: vec2<u32>,
+};
+
+fn probe_tile_origin(idx: vec3<i32>) -> ProbeAtlasLocation {
     let x = u32(idx.x);
     let y = u32(idx.y);
     let z = u32(idx.z);
     let probe_index = x + y * sh_grid.grid_dimensions.x
         + z * sh_grid.grid_dimensions.x * sh_grid.grid_dimensions.y;
+    let tiles_per_layer = max(sh_grid.tiles_per_layer, 1u);
+    let layer = probe_index / tiles_per_layer;
+    let tile_slot = probe_index - layer * tiles_per_layer;
     let tiles_per_row = max(sh_grid.atlas_tiles_per_row, 1u);
-    return vec2<u32>(
-        (probe_index % tiles_per_row) * sh_grid.tile_dimension,
-        (probe_index / tiles_per_row) * sh_grid.tile_dimension,
+    return ProbeAtlasLocation(
+        layer,
+        vec2<u32>(
+            (tile_slot % tiles_per_row) * sh_grid.tile_dimension,
+            (tile_slot / tiles_per_row) * sh_grid.tile_dimension,
+        ),
     );
 }
 
 // Atlas-parameterized tile fetch. The tile geometry (origin, octahedral remap,
 // border, dimensions) is identical across the indirect and direct octahedral
 // atlases because they share one probe grid layout, so the only difference is
-// which `texture_2d<f32>` is sampled. Passing the atlas as an argument keeps
+// which `texture_2d_array<f32>` is sampled. Passing the atlas as an argument keeps
 // `sh_sample.wgsl` binding-agnostic: consumers that only declare the indirect
 // atlas (forward.wgsl, fog_volume.wgsl) never name the direct atlas, while the
 // dynamic-entity shaders (skinned_mesh, billboard) can fetch a second atlas with
 // the same math. `sh_atlas_sampler`/`sh_grid` remain shared module bindings.
-fn sample_probe_atlas_tex(atlas: texture_2d<f32>, idx: vec3<i32>, dir: vec3<f32>) -> vec4<f32> {
-    let origin = probe_tile_origin(idx);
+fn sample_probe_atlas_tex(atlas: texture_2d_array<f32>, idx: vec3<i32>, dir: vec3<f32>) -> vec4<f32> {
+    let location = probe_tile_origin(idx);
     let oct = oct_encode_unquantized(dir);
     let interior = max(sh_grid.tile_interior, 1u);
     // Mirror `irradiance_interior_texel_direction`: interior texel centers
     // live at `border + (i + 0.5)`, so the inverse sample coordinate is
     // `border + oct * interior`. The 1-texel copied border catches seam taps.
-    let texel = vec2<f32>(origin)
+    let texel = vec2<f32>(location.tile_origin)
         + vec2<f32>(f32(sh_grid.tile_border))
         + oct * vec2<f32>(f32(interior));
     // Normalize by the SAMPLED atlas's OWN physical extent, not the logical
@@ -105,7 +116,7 @@ fn sample_probe_atlas_tex(atlas: texture_2d<f32>, idx: vec3<i32>, dir: vec3<f32>
     // the sample. `textureDimensions(atlas)` keeps this helper binding-agnostic.
     let atlas_dimensions = max(textureDimensions(atlas), vec2<u32>(1u));
     let uv = texel / vec2<f32>(atlas_dimensions);
-    return textureSampleLevel(atlas, sh_atlas_sampler, uv, 0.0);
+    return textureSampleLevel(atlas, sh_atlas_sampler, uv, i32(location.layer), 0.0);
 }
 
 fn sample_probe_atlas(idx: vec3<i32>, dir: vec3<f32>) -> vec4<f32> {
@@ -216,7 +227,7 @@ fn sample_sh_indirect_corners_pair(
 // stays ON for the direct term (entities are not static surfaces) and reads the
 // shared `sh_depth_moments` (same grid → same moments) used by the indirect path.
 fn sample_sh_indirect_direct_corners(
-    direct_atlas: texture_2d<f32>,
+    direct_atlas: texture_2d_array<f32>,
     gi: vec3<u32>,
     gfrac: vec3<f32>,
     sample_world: vec3<f32>,
@@ -268,7 +279,7 @@ fn sample_sh_indirect_direct_corners(
 // weight sum, but only the direct radiance is returned. Consumers that already
 // computed the indirect term separately use this to add the direct contribution.
 fn sample_sh_direct_corners_depth_aware(
-    direct_atlas: texture_2d<f32>,
+    direct_atlas: texture_2d_array<f32>,
     gi: vec3<u32>,
     gfrac: vec3<f32>,
     sample_world: vec3<f32>,

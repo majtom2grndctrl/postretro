@@ -147,9 +147,9 @@ struct ShGridInfo {
     tile_interior: u32,
     _pad2: u32,
     probe_occlusion: u32,
+    tiles_per_layer: u32,
+    atlas_layer_count: u32,
     _pad3: u32,
-    _pad4: u32,
-    _pad5: u32,
 };
 
 // Per-light animation descriptor — matches ANIMATION_DESCRIPTOR_SIZE (48 B)
@@ -177,7 +177,7 @@ struct AnimationDescriptor {
     direction_count: u32,
 };
 
-@group(3) @binding(1) var sh_total_atlas: texture_2d<f32>;
+@group(3) @binding(1) var sh_total_atlas: texture_2d_array<f32>;
 @group(3) @binding(2) var sh_atlas_sampler: sampler;
 @group(3) @binding(10) var<uniform> sh_grid: ShGridInfo;
 

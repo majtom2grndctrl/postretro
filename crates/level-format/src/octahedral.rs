@@ -6,6 +6,7 @@
 /// different default without a format break.
 pub const DEFAULT_IRRADIANCE_TILE_DIMENSION: u32 = 6;
 pub const DEFAULT_IRRADIANCE_TILE_BORDER: u32 = 1;
+pub const MAX_SH_ATLAS_LAYERS: u32 = 256;
 
 /// Tile resolution the current runtime (sampler shaders + delta/compose passes)
 /// is pinned to. This is a *capability* limit, not a format constraint: the
@@ -124,6 +125,111 @@ pub fn irradiance_tile_origin(
         tile_x as u32 * tile_dimension,
         tile_y as u32 * tile_dimension,
     ]
+}
+
+/// Layer-aware SH octahedral atlas layout.
+///
+/// This "layer" is a GPU texture-array slice for whole-tile atlas packing. It
+/// is separate from the compiler's per-light incremental-bake layer cache.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IrradianceAtlasArrayLayout {
+    pub layer_count: u32,
+    pub atlas_width: u32,
+    pub atlas_height: u32,
+    pub tiles_per_layer: u32,
+    pub atlas_tiles_per_row: u32,
+}
+
+/// Tile columns for each layer of a layer-aware SH octahedral atlas.
+pub fn irradiance_atlas_array_tiles_per_row(
+    grid_dimensions: [u32; 3],
+    tile_dimension: u32,
+    max_dim: u32,
+) -> Option<u32> {
+    irradiance_atlas_array_layout(grid_dimensions, tile_dimension, max_dim)
+        .map(|layout| layout.atlas_tiles_per_row)
+}
+
+/// Shared per-layer atlas dimensions for a layer-aware SH octahedral atlas.
+pub fn irradiance_atlas_array_dimensions(
+    grid_dimensions: [u32; 3],
+    tile_dimension: u32,
+    max_dim: u32,
+) -> Option<[u32; 2]> {
+    irradiance_atlas_array_layout(grid_dimensions, tile_dimension, max_dim)
+        .map(|layout| [layout.atlas_width, layout.atlas_height])
+}
+
+/// Layer-aware layout for SH octahedral atlas tiles.
+///
+/// Probes retain x-fastest linear order. Each layer uses one shared near-square
+/// tile grid capped by `max_dim`; when the next tile would exceed that layer's
+/// tile budget, packing continues at tile `(0, 0)` in the next array layer.
+pub fn irradiance_atlas_array_layout(
+    grid_dimensions: [u32; 3],
+    tile_dimension: u32,
+    max_dim: u32,
+) -> Option<IrradianceAtlasArrayLayout> {
+    let total = total_probe_count(grid_dimensions)?;
+    if total == 0 {
+        return Some(IrradianceAtlasArrayLayout {
+            layer_count: 0,
+            atlas_width: 0,
+            atlas_height: 0,
+            tiles_per_layer: 0,
+            atlas_tiles_per_row: 0,
+        });
+    }
+    if tile_dimension == 0 {
+        return None;
+    }
+    let max_tiles_per_axis = max_dim / tile_dimension;
+    if max_tiles_per_axis == 0 {
+        return None;
+    }
+
+    let max_layer_tiles = (max_tiles_per_axis as u64).checked_mul(max_tiles_per_axis as u64)?;
+    let target_layer_tiles = total.min(max_layer_tiles);
+    let atlas_tiles_per_row =
+        u32::try_from(ceil_sqrt_u64(target_layer_tiles).min(max_tiles_per_axis as u64)).ok()?;
+    let tile_rows = target_layer_tiles.div_ceil(atlas_tiles_per_row as u64);
+    let atlas_tile_rows = u32::try_from(tile_rows).ok()?;
+    let tiles_per_layer = atlas_tiles_per_row.checked_mul(atlas_tile_rows)?;
+    let layer_count = u32::try_from(total.div_ceil(tiles_per_layer as u64)).ok()?;
+    if layer_count > MAX_SH_ATLAS_LAYERS {
+        return None;
+    }
+    let atlas_width = atlas_tiles_per_row.checked_mul(tile_dimension)?;
+    let atlas_height = atlas_tile_rows.checked_mul(tile_dimension)?;
+    if atlas_width > max_dim || atlas_height > max_dim {
+        return None;
+    }
+
+    Some(IrradianceAtlasArrayLayout {
+        layer_count,
+        atlas_width,
+        atlas_height,
+        tiles_per_layer,
+        atlas_tiles_per_row,
+    })
+}
+
+/// Tile grid location for a probe in a layer-aware SH octahedral atlas.
+///
+/// Returns `[layer, tile_x, tile_y]` in tile coordinates. Multiply `tile_x` and
+/// `tile_y` by the tile dimension to get the texel origin within the layer.
+pub fn irradiance_array_tile_location(
+    probe_index: usize,
+    tiles_per_layer: u32,
+    atlas_tiles_per_row: u32,
+) -> [u32; 3] {
+    let tiles_per_layer = tiles_per_layer.max(1) as usize;
+    let tiles_per_row = atlas_tiles_per_row.max(1) as usize;
+    let layer = probe_index / tiles_per_layer;
+    let local_tile = probe_index % tiles_per_layer;
+    let tile_x = local_tile % tiles_per_row;
+    let tile_y = local_tile / tiles_per_row;
+    [layer as u32, tile_x as u32, tile_y as u32]
 }
 
 fn total_probe_count(grid_dimensions: [u32; 3]) -> Option<u64> {
@@ -400,6 +506,74 @@ mod tests {
         assert_eq!(irradiance_tile_origin(4, 6, 5), [24, 0]);
         assert_eq!(irradiance_tile_origin(5, 6, 5), [0, 6]);
         assert_eq!(irradiance_tile_origin(23, 6, 5), [18, 24]);
+    }
+
+    #[test]
+    fn irradiance_atlas_array_layout_spills_whole_tiles_across_layers() {
+        let layout = irradiance_atlas_array_layout([20, 1, 1], 6, 20).unwrap();
+
+        assert_eq!(layout.layer_count, 3);
+        assert_eq!(layout.tiles_per_layer, 9);
+        assert_eq!(layout.atlas_tiles_per_row, 3);
+        assert_eq!([layout.atlas_width, layout.atlas_height], [18, 18]);
+        assert!(layout.atlas_width <= 20);
+        assert!(layout.atlas_height <= 20);
+        assert_eq!(
+            irradiance_atlas_array_tiles_per_row([20, 1, 1], 6, 20),
+            Some(3)
+        );
+        assert_eq!(
+            irradiance_atlas_array_dimensions([20, 1, 1], 6, 20),
+            Some([18, 18])
+        );
+    }
+
+    #[test]
+    fn irradiance_array_tile_location_keeps_x_fastest_probe_order() {
+        let layout = irradiance_atlas_array_layout([20, 1, 1], 6, 20).unwrap();
+
+        let cases = [
+            (0, [0, 0, 0]),
+            (1, [0, 1, 0]),
+            (2, [0, 2, 0]),
+            (3, [0, 0, 1]),
+            (8, [0, 2, 2]),
+            (9, [1, 0, 0]),
+            (10, [1, 1, 0]),
+            (17, [1, 2, 2]),
+            (18, [2, 0, 0]),
+            (19, [2, 1, 0]),
+        ];
+
+        for (probe_index, expected) in cases {
+            assert_eq!(
+                irradiance_array_tile_location(
+                    probe_index,
+                    layout.tiles_per_layer,
+                    layout.atlas_tiles_per_row
+                ),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn irradiance_array_tile_location_keeps_each_tile_inside_one_layer() {
+        let tile_dimension = 6;
+        let layout = irradiance_atlas_array_layout([20, 1, 1], tile_dimension, 20).unwrap();
+
+        for probe_index in 0..20 {
+            let [layer, tile_x, tile_y] = irradiance_array_tile_location(
+                probe_index,
+                layout.tiles_per_layer,
+                layout.atlas_tiles_per_row,
+            );
+            assert!(layer < layout.layer_count);
+            let tile_origin_x = tile_x * tile_dimension;
+            let tile_origin_y = tile_y * tile_dimension;
+            assert!(tile_origin_x + tile_dimension <= layout.atlas_width);
+            assert!(tile_origin_y + tile_dimension <= layout.atlas_height);
+        }
     }
 
     #[test]

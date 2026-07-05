@@ -253,6 +253,95 @@ pub(crate) fn validate_delta_sh(
     Ok(())
 }
 
+pub(crate) fn validate_direct_sh_layout(
+    section: &DirectShVolumeSection,
+    base: &OctahedralShVolumeSection,
+) -> Result<(), PrlLoadError> {
+    if section.grid_origin != base.grid_origin {
+        return Err(section_validation(
+            "DirectShVolume",
+            format!(
+                "grid_origin {:?} does not match OctahedralShVolume grid_origin {:?}",
+                section.grid_origin, base.grid_origin
+            ),
+        ));
+    }
+    if section.cell_size != base.cell_size {
+        return Err(section_validation(
+            "DirectShVolume",
+            format!(
+                "cell_size {:?} does not match OctahedralShVolume cell_size {:?}",
+                section.cell_size, base.cell_size
+            ),
+        ));
+    }
+    if section.grid_dimensions != base.grid_dimensions {
+        return Err(section_validation(
+            "DirectShVolume",
+            format!(
+                "grid_dimensions {:?} does not match OctahedralShVolume grid_dimensions {:?}",
+                section.grid_dimensions, base.grid_dimensions
+            ),
+        ));
+    }
+    if section.tile_dimension != base.tile_dimension {
+        return Err(section_validation(
+            "DirectShVolume",
+            format!(
+                "tile_dimension {} does not match OctahedralShVolume tile_dimension {}",
+                section.tile_dimension, base.tile_dimension
+            ),
+        ));
+    }
+    if section.tile_border != base.tile_border {
+        return Err(section_validation(
+            "DirectShVolume",
+            format!(
+                "tile_border {} does not match OctahedralShVolume tile_border {}",
+                section.tile_border, base.tile_border
+            ),
+        ));
+    }
+    if section.atlas_dimensions != base.atlas_dimensions {
+        return Err(section_validation(
+            "DirectShVolume",
+            format!(
+                "atlas_dimensions {:?} does not match OctahedralShVolume atlas_dimensions {:?}",
+                section.atlas_dimensions, base.atlas_dimensions
+            ),
+        ));
+    }
+    if section.atlas_tiles_per_row != base.atlas_tiles_per_row {
+        return Err(section_validation(
+            "DirectShVolume",
+            format!(
+                "atlas_tiles_per_row {} does not match OctahedralShVolume atlas_tiles_per_row {}",
+                section.atlas_tiles_per_row, base.atlas_tiles_per_row
+            ),
+        ));
+    }
+    if section.layer_count != base.layer_count {
+        return Err(section_validation(
+            "DirectShVolume",
+            format!(
+                "layer_count {} does not match OctahedralShVolume layer_count {}",
+                section.layer_count, base.layer_count
+            ),
+        ));
+    }
+    if section.tiles_per_layer != base.tiles_per_layer {
+        return Err(section_validation(
+            "DirectShVolume",
+            format!(
+                "tiles_per_layer {} does not match OctahedralShVolume tiles_per_layer {}",
+                section.tiles_per_layer, base.tiles_per_layer
+            ),
+        ));
+    }
+
+    Ok(())
+}
+
 pub(crate) fn validate_direct_sh_delta(
     section: &DirectShDeltaVolumesSection,
     direct: &DirectShVolumeSection,
@@ -1380,16 +1469,18 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         Some(data) => {
             let section = OctahedralShVolumeSection::from_bytes(&data)?;
             log::info!(
-                "[PRL] OctahedralShVolume: {}×{}×{} grid ({} probes, {}×{} atlas, tile {} + border {}, {} tile(s)/row, {} animated layers)",
+                "[PRL] OctahedralShVolume: {}×{}×{} grid ({} probes, {}×{} atlas, {} atlas layer(s), tile {} + border {}, {} tile(s)/row, {} tile(s)/layer, {} animated descriptor(s))",
                 section.grid_dimensions[0],
                 section.grid_dimensions[1],
                 section.grid_dimensions[2],
                 section.probes.len(),
                 section.atlas_dimensions[0],
                 section.atlas_dimensions[1],
+                section.layer_count,
                 section.tile_dimension,
                 section.tile_border,
                 section.atlas_tiles_per_row,
+                section.tiles_per_layer,
                 section.animation_descriptors.len(),
             );
             Some(section)
@@ -1593,7 +1684,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
 
             // Validation (mirrors the section-version reject path): a mismatched
             // bake must fail the load with a clear error rather than feed the
-            // compose pass garbage. `sh_volume` (id 20) was loaded above.
+            // compose pass garbage. `sh_volume` (id 34) was loaded above.
             validate_delta_sh(&section, sh_volume.as_ref())?;
 
             log::info!(
@@ -1611,31 +1702,55 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         None => None,
     };
 
-    // Optional — absent for legacy v7 maps (no `SH_VOLUME_VERSION` bump) and for
-    // maps with no static lights. Dynamic objects fall back to indirect-only.
+    // Optional — absent when the map has no static direct SH/static lights.
+    // Dynamic objects fall back to indirect-only.
     let direct_sh_volume: Option<DirectShVolumeSection> = match prl_format::read_section_data(
         &mut cursor,
         &meta,
         SectionId::DirectShVolume as u32,
     )? {
-        Some(data) => {
-            let section = DirectShVolumeSection::from_bytes(&data)?;
-            log::info!(
-                "[PRL] DirectShVolume: {}×{}×{} grid ({} probes, {}×{} atlas, tile {} + border {}, {} tile(s)/row, format {}, {} atlas byte(s))",
-                section.grid_dimensions[0],
-                section.grid_dimensions[1],
-                section.grid_dimensions[2],
-                section.total_probes(),
-                section.atlas_dimensions[0],
-                section.atlas_dimensions[1],
-                section.tile_dimension,
-                section.tile_border,
-                section.atlas_tiles_per_row,
-                section.irradiance_format,
-                section.atlas.len(),
-            );
-            Some(section)
-        }
+        Some(data) => match DirectShVolumeSection::from_bytes(&data) {
+            Ok(section) => {
+                if let Some(base) = sh_volume.as_ref() {
+                    match validate_direct_sh_layout(&section, base) {
+                        Ok(()) => {
+                            log::info!(
+                                "[PRL] DirectShVolume: {}×{}×{} grid ({} probes, {}×{} atlas, {} atlas layer(s), tile {} + border {}, {} tile(s)/row, {} tile(s)/layer, format {}, {} atlas byte(s))",
+                                section.grid_dimensions[0],
+                                section.grid_dimensions[1],
+                                section.grid_dimensions[2],
+                                section.total_probes(),
+                                section.atlas_dimensions[0],
+                                section.atlas_dimensions[1],
+                                section.layer_count,
+                                section.tile_dimension,
+                                section.tile_border,
+                                section.atlas_tiles_per_row,
+                                section.tiles_per_layer,
+                                section.irradiance_format,
+                                section.atlas.len(),
+                            );
+                            Some(section)
+                        }
+                        Err(err) => {
+                            log::warn!(
+                                "[PRL] DirectShVolume layout does not match OctahedralShVolume; ignoring section: {err}"
+                            );
+                            None
+                        }
+                    }
+                } else {
+                    log::warn!(
+                        "[PRL] DirectShVolume present without OctahedralShVolume; ignoring section"
+                    );
+                    None
+                }
+            }
+            Err(err) => {
+                log::warn!("[PRL] DirectShVolume malformed; ignoring section: {err}");
+                None
+            }
+        },
         None => None,
     };
 
@@ -2015,6 +2130,45 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
 mod tests {
     use super::*;
 
+    fn matching_direct_and_base_sh() -> (DirectShVolumeSection, OctahedralShVolumeSection) {
+        let mut direct = DirectShVolumeSection::placeholder();
+        let mut base = OctahedralShVolumeSection::placeholder();
+
+        direct.grid_origin = [1.0, 2.0, 3.0];
+        base.grid_origin = direct.grid_origin;
+        direct.cell_size = [0.5, 0.75, 1.25];
+        base.cell_size = direct.cell_size;
+        direct.grid_dimensions = [2, 3, 4];
+        base.grid_dimensions = direct.grid_dimensions;
+        direct.tile_dimension = 6;
+        base.tile_dimension = direct.tile_dimension;
+        direct.tile_border = 1;
+        base.tile_border = direct.tile_border;
+        direct.atlas_dimensions = [24, 18];
+        base.atlas_dimensions = direct.atlas_dimensions;
+        direct.atlas_tiles_per_row = 4;
+        base.atlas_tiles_per_row = direct.atlas_tiles_per_row;
+        direct.layer_count = 1;
+        base.layer_count = direct.layer_count;
+        direct.tiles_per_layer = 24;
+        base.tiles_per_layer = direct.tiles_per_layer;
+
+        (direct, base)
+    }
+
+    fn assert_direct_sh_layout_message(err: PrlLoadError, expected: &str) {
+        match err {
+            PrlLoadError::SectionValidation { section, message } => {
+                assert_eq!(section, "DirectShVolume");
+                assert!(
+                    message.contains(expected),
+                    "expected validation message to contain `{expected}`, got `{message}`"
+                );
+            }
+            other => panic!("unexpected validation error: {other:?}"),
+        }
+    }
+
     fn static_light() -> MapLight {
         MapLight {
             origin: [0.0, 0.0, 0.0],
@@ -2033,6 +2187,26 @@ mod tests {
             cell_index: ALPHA_LIGHT_LEAF_UNASSIGNED,
             shadow_type: ShadowType::StaticLightMap,
         }
+    }
+
+    #[test]
+    fn direct_sh_layout_rejects_grid_origin_mismatch() {
+        let (mut direct, base) = matching_direct_and_base_sh();
+        direct.grid_origin[0] += 1.0;
+
+        let err = validate_direct_sh_layout(&direct, &base).unwrap_err();
+
+        assert_direct_sh_layout_message(err, "grid_origin");
+    }
+
+    #[test]
+    fn direct_sh_layout_rejects_cell_size_mismatch() {
+        let (mut direct, base) = matching_direct_and_base_sh();
+        direct.cell_size[2] += 0.25;
+
+        let err = validate_direct_sh_layout(&direct, &base).unwrap_err();
+
+        assert_direct_sh_layout_message(err, "cell_size");
     }
 
     #[test]

@@ -203,12 +203,12 @@ struct ShGridInfo {
     tile_interior: u32,
     _pad2: u32,
     probe_occlusion: u32,
+    tiles_per_layer: u32,
+    atlas_layer_count: u32,
     _pad3: u32,
-    _pad4: u32,
-    _pad5: u32,
 };
 
-@group(4) @binding(1) var sh_total_atlas: texture_2d<f32>;
+@group(4) @binding(1) var sh_total_atlas: texture_2d_array<f32>;
 @group(4) @binding(2) var sh_atlas_sampler: sampler;
 @group(4) @binding(10) var<uniform> sh_grid: ShGridInfo;
 @group(4) @binding(14) var sh_depth_moments: texture_3d<f32>;
@@ -216,7 +216,7 @@ struct ShGridInfo {
 // `BIND_SH_DIRECT_ATLAS` (group 4 binding 15) on the mesh group-4 superset by
 // render/sh_volume.rs. Same octahedral tile geometry as `sh_total_atlas`, so it
 // samples through the shared `sh_sample.wgsl` chain with the same grid/sampler.
-@group(4) @binding(15) var sh_direct_atlas: texture_2d<f32>;
+@group(4) @binding(15) var sh_direct_atlas: texture_2d_array<f32>;
 
 // Mesh-only dynamic-direct debug params (binding 16). The mesh path reads a
 // trimmed group-0 camera uniform (only `view_proj`), so the scale / isolation /

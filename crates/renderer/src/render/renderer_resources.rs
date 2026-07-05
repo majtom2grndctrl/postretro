@@ -376,7 +376,7 @@ impl Renderer {
         #[cfg(feature = "dev-tools")]
         {
             full.sh_delta_volumes_meta = collect_delta_volume_meta(geometry.delta_sh_volumes);
-            // Atlas dims (hence readback buffer size) change per level — rebuild.
+            // Atlas shape (hence readback buffer size) changes per level — rebuild.
             full.sh_probe_readback = sh_diagnostics::ShProbeReadback::new(
                 device,
                 full.sh_volume_resources.grid_dimensions,
@@ -384,6 +384,8 @@ impl Renderer {
                 full.sh_volume_resources.tile_dimension,
                 full.sh_volume_resources.tile_border,
                 full.sh_volume_resources.atlas_tiles_per_row,
+                full.sh_volume_resources.tiles_per_layer,
+                full.sh_volume_resources.atlas_layer_count,
             );
         }
 

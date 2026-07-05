@@ -32,7 +32,9 @@ pub const DYNAMIC_DIRECT_PARAMS_SIZE: usize = 16;
 ///   72..76  tile_interior     (u32)
 ///   76..80  _pad2             (u32)
 ///   80..84  probe_occlusion   (u32, 0 or 1)
-///   84..96  _pad3             (three u32 slots)
+///   84..88  tiles_per_layer   (u32)
+///   88..92  atlas_layer_count (u32)
+///   92..96  _pad3             (u32)
 pub const SH_GRID_INFO_SIZE: usize = 96;
 pub const DEFAULT_PROBE_OCCLUSION: bool = true;
 pub const ANIMATION_DESCRIPTOR_SIZE: usize = 48;
@@ -62,6 +64,8 @@ pub struct ShGridInfoParams {
     pub tile_dimension: u32,
     pub tile_border: u32,
     pub atlas_tiles_per_row: u32,
+    pub tiles_per_layer: u32,
+    pub atlas_layer_count: u32,
     pub present: bool,
     pub probe_occlusion_enabled: bool,
 }
@@ -98,6 +102,8 @@ pub fn build_grid_info_bytes(params: ShGridInfoParams) -> [u8; SH_GRID_INFO_SIZE
         .saturating_sub(params.tile_border.saturating_mul(2));
     bytes[72..76].copy_from_slice(&interior.to_ne_bytes());
     bytes[80..84].copy_from_slice(&(params.probe_occlusion_enabled as u32).to_ne_bytes());
+    bytes[84..88].copy_from_slice(&params.tiles_per_layer.to_ne_bytes());
+    bytes[88..92].copy_from_slice(&params.atlas_layer_count.to_ne_bytes());
     bytes
 }
 
@@ -259,6 +265,7 @@ mod tests {
             postretro_level_format::octahedral::irradiance_atlas_dimensions(grid, 6);
         let atlas_tiles_per_row =
             postretro_level_format::octahedral::irradiance_atlas_tiles_per_row(grid).unwrap();
+        let tiles_per_layer = (atlas_dimensions[0] / 6).saturating_mul(atlas_dimensions[1] / 6);
         OctahedralShVolumeSection {
             grid_origin: [0.0; 3],
             cell_size: [1.0; 3],
@@ -267,6 +274,8 @@ mod tests {
             tile_dimension: 6,
             tile_border: 1,
             atlas_dimensions,
+            layer_count: 1,
+            tiles_per_layer,
             atlas_tiles_per_row,
             probes: vec![OctahedralShProbe::default(); probe_count],
             atlas_texels: vec![
@@ -298,6 +307,8 @@ mod tests {
             tile_dimension: 6,
             tile_border: 1,
             atlas_tiles_per_row: 11,
+            tiles_per_layer: 121,
+            atlas_layer_count: 3,
             present: true,
             probe_occlusion_enabled: true,
         });
@@ -315,6 +326,8 @@ mod tests {
         assert_eq!(u32::from_ne_bytes(bytes[68..72].try_into().unwrap()), 0);
         assert_eq!(u32::from_ne_bytes(bytes[72..76].try_into().unwrap()), 4);
         assert_eq!(u32::from_ne_bytes(bytes[80..84].try_into().unwrap()), 1);
+        assert_eq!(u32::from_ne_bytes(bytes[84..88].try_into().unwrap()), 121);
+        assert_eq!(u32::from_ne_bytes(bytes[88..92].try_into().unwrap()), 3);
     }
 
     #[test]
@@ -327,6 +340,8 @@ mod tests {
             tile_dimension: 1,
             tile_border: 0,
             atlas_tiles_per_row: 1,
+            tiles_per_layer: 1,
+            atlas_layer_count: 1,
             present: false,
             probe_occlusion_enabled: true,
         });
@@ -352,6 +367,8 @@ mod tests {
                 tile_dimension: 1,
                 tile_border: 0,
                 atlas_tiles_per_row: 1,
+                tiles_per_layer: 1,
+                atlas_layer_count: 1,
                 present: true,
                 probe_occlusion_enabled: enabled,
             });
@@ -359,7 +376,9 @@ mod tests {
                 u32::from_ne_bytes(bytes[80..84].try_into().unwrap()),
                 expected,
             );
-            assert!(bytes[84..96].iter().all(|&b| b == 0));
+            assert_eq!(u32::from_ne_bytes(bytes[84..88].try_into().unwrap()), 1);
+            assert_eq!(u32::from_ne_bytes(bytes[88..92].try_into().unwrap()), 1);
+            assert!(bytes[92..96].iter().all(|&b| b == 0));
         }
     }
 

@@ -5,8 +5,8 @@
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
 use postretro_render_cpu::sh_compose::{
-    build_compose_grid_bytes, build_direct_delta_buffers, pad_storage_bytes, u16_slice_to_bytes,
-    u32_slice_to_bytes,
+    ComposeGridParams, build_compose_grid_bytes, build_direct_delta_buffers, pad_storage_bytes,
+    u16_slice_to_bytes, u32_slice_to_bytes,
 };
 
 use super::sh_volume::ShVolumeResources;
@@ -45,7 +45,7 @@ impl DirectShDebugOverride {
 struct DirectShComposePipeline {
     pipeline: wgpu::ComputePipeline,
     bind_group: wgpu::BindGroup,
-    dispatch_dimensions: [u32; 2],
+    dispatch_dimensions: [u32; 3],
     debug_override_buffer: wgpu::Buffer,
     pending_copy_through: bool,
     was_active: bool,
@@ -101,14 +101,16 @@ impl DirectShComposeResources {
             usage: wgpu::BufferUsages::STORAGE,
         });
 
-        let grid_bytes = build_compose_grid_bytes(
-            section.grid_dimensions,
-            section.atlas_dimensions,
-            section.tile_dimension,
-            section.tile_border,
-            section.atlas_tiles_per_row,
-            buffers.affinity_dims,
-        );
+        let grid_bytes = build_compose_grid_bytes(ComposeGridParams {
+            grid_dimensions: section.grid_dimensions,
+            atlas_dimensions: section.atlas_dimensions,
+            tile_dimension: section.tile_dimension,
+            tile_border: section.tile_border,
+            atlas_tiles_per_row: section.atlas_tiles_per_row,
+            tiles_per_layer: section.tiles_per_layer,
+            atlas_layer_count: section.layer_count,
+            affinity_dims: buffers.affinity_dims,
+        });
         let grid_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Direct SH Compose Grid Dims"),
             contents: &grid_bytes[..],
@@ -214,7 +216,11 @@ impl DirectShComposeResources {
             pipeline: Some(DirectShComposePipeline {
                 pipeline,
                 bind_group,
-                dispatch_dimensions: section.atlas_dimensions,
+                dispatch_dimensions: [
+                    section.atlas_dimensions[0],
+                    section.atlas_dimensions[1],
+                    section.layer_count,
+                ],
                 debug_override_buffer,
                 pending_copy_through: true,
                 was_active: false,
@@ -259,7 +265,7 @@ impl DirectShComposeResources {
         pass.dispatch_workgroups(
             pipeline.dispatch_dimensions[0].div_ceil(8).max(1),
             pipeline.dispatch_dimensions[1].div_ceil(8).max(1),
-            1,
+            pipeline.dispatch_dimensions[2].max(1),
         );
         pipeline.pending_copy_through = false;
         pipeline.was_active = active;
@@ -273,7 +279,7 @@ fn compose_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
             visibility: wgpu::ShaderStages::COMPUTE,
             ty: wgpu::BindingType::Texture {
                 sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                view_dimension: wgpu::TextureViewDimension::D2,
+                view_dimension: wgpu::TextureViewDimension::D2Array,
                 multisampled: false,
             },
             count: None,
@@ -294,7 +300,7 @@ fn compose_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
             ty: wgpu::BindingType::StorageTexture {
                 access: wgpu::StorageTextureAccess::WriteOnly,
                 format: wgpu::TextureFormat::Rgba16Float,
-                view_dimension: wgpu::TextureViewDimension::D2,
+                view_dimension: wgpu::TextureViewDimension::D2Array,
             },
             count: None,
         },

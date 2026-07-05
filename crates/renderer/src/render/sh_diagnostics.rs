@@ -286,6 +286,8 @@ pub struct ShProbeReadback {
     tile_dimension: u32,
     tile_border: u32,
     atlas_tiles_per_row: u32,
+    tiles_per_layer: u32,
+    atlas_layer_count: u32,
     /// Row stride in the readback buffer: `atlas_width * 8` rounded up to
     /// `COPY_BYTES_PER_ROW_ALIGNMENT`. The decode skips the per-row padding.
     padded_bytes_per_row: u32,
@@ -311,13 +313,16 @@ impl ShProbeReadback {
         tile_dimension: u32,
         tile_border: u32,
         atlas_tiles_per_row: u32,
+        tiles_per_layer: u32,
+        atlas_layer_count: u32,
     ) -> Self {
         let atlas_width = atlas_dimensions[0].max(1);
         let atlas_height = atlas_dimensions[1].max(1);
+        let layer_count = atlas_layer_count.max(1);
         let unpadded = atlas_width * Self::BYTES_PER_TEXEL;
         let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
         let padded_bytes_per_row = unpadded.div_ceil(align) * align;
-        let buffer_size = padded_bytes_per_row as u64 * atlas_height as u64;
+        let buffer_size = padded_bytes_per_row as u64 * atlas_height as u64 * layer_count as u64;
 
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("SH Probe Irradiance Readback"),
@@ -334,6 +339,8 @@ impl ShProbeReadback {
             tile_dimension,
             tile_border,
             atlas_tiles_per_row,
+            tiles_per_layer,
+            atlas_layer_count: layer_count,
             padded_bytes_per_row,
             wanted: false,
             copied_pending: false,
@@ -380,7 +387,7 @@ impl ShProbeReadback {
             wgpu::Extent3d {
                 width: self.atlas_dimensions[0].max(1),
                 height: self.atlas_dimensions[1].max(1),
-                depth_or_array_layers: 1,
+                depth_or_array_layers: self.atlas_layer_count,
             },
         );
         self.copied_pending = true;
@@ -412,6 +419,8 @@ impl ShProbeReadback {
             let tile_dimension = self.tile_dimension;
             let tile_border = self.tile_border;
             let atlas_tiles_per_row = self.atlas_tiles_per_row;
+            let tiles_per_layer = self.tiles_per_layer;
+            let atlas_layer_count = self.atlas_layer_count;
             let stride = self.padded_bytes_per_row;
             self.buffer
                 .slice(0..size)
@@ -425,6 +434,8 @@ impl ShProbeReadback {
                             tile_dimension,
                             tile_border,
                             atlas_tiles_per_row,
+                            tiles_per_layer,
+                            atlas_layer_count,
                             stride,
                         );
                         drop(view);
@@ -454,6 +465,8 @@ fn decode_probe_irradiance_atlas(
     tile_dimension: u32,
     tile_border: u32,
     atlas_tiles_per_row: u32,
+    tiles_per_layer: u32,
+    atlas_layer_count: u32,
     padded_bytes_per_row: u32,
 ) -> Vec<[f32; 3]> {
     let nx = dims[0].max(1) as usize;
@@ -461,25 +474,37 @@ fn decode_probe_irradiance_atlas(
     let nz = dims[2].max(1) as usize;
     let atlas_width = atlas_dimensions[0].max(1);
     let atlas_height = atlas_dimensions[1].max(1);
+    let layer_count = atlas_layer_count.max(1);
     let stride = padded_bytes_per_row as usize;
+    let layer_stride = stride * atlas_height as usize;
     let mut out = Vec::with_capacity(nx * ny * nz);
     let interior_start = tile_border.min(tile_dimension);
     let interior_end = tile_dimension
         .saturating_sub(tile_border)
         .max(interior_start);
     for probe in 0..nx * ny * nz {
-        let origin = postretro_level_format::octahedral::irradiance_tile_origin(
-            probe,
-            tile_dimension,
-            atlas_tiles_per_row,
-        );
+        let [layer, tile_x, tile_y] =
+            postretro_level_format::octahedral::irradiance_array_tile_location(
+                probe,
+                tiles_per_layer,
+                atlas_tiles_per_row,
+            );
+        if layer >= layer_count {
+            out.push([0.0; 3]);
+            continue;
+        }
+        let origin = [
+            tile_x.saturating_mul(tile_dimension),
+            tile_y.saturating_mul(tile_dimension),
+        ];
+        let layer_offset = layer as usize * layer_stride;
         let mut sum = [0.0f32; 3];
         let mut count = 0u32;
         for local_y in interior_start..interior_end {
             for local_x in interior_start..interior_end {
                 let x = origin[0].saturating_add(local_x).min(atlas_width - 1);
                 let y = origin[1].saturating_add(local_y).min(atlas_height - 1);
-                let o = y as usize * stride + x as usize * 8;
+                let o = layer_offset + y as usize * stride + x as usize * 8;
                 // Guard against a readback buffer shorter than the atlas geometry
                 // implies — e.g. a stale `bytes` captured before an atlas-dimension
                 // change on level reload. We read 6 bytes (RGB f16) here, so any
@@ -577,11 +602,64 @@ mod tests {
             tile_dimension,
             tile_border,
             atlas_tiles_per_row,
+            2,
+            1,
             stride as u32,
         );
         assert_eq!(out.len(), 2);
         assert_eq!(out[0], [2.0, 0.0, 0.0]);
         assert_eq!(out[1], [0.0, 3.0, 0.0]);
+    }
+
+    #[test]
+    fn decode_probe_irradiance_atlas_reads_layer_major_probe_tiles() {
+        use crate::render::sh_volume::f32_to_f16_bits;
+
+        // Regression: multi-layer SH atlases store later probes in subsequent
+        // array layers. Decode must use the same layer-major tile placement as
+        // the runtime sampler instead of reading every probe from layer 0.
+        let dims = [3u32, 1, 1];
+        let tile_dimension = 2u32;
+        let tile_border = 0u32;
+        let atlas_tiles_per_row = 2u32;
+        let tiles_per_layer = 2u32;
+        let atlas_layer_count = 2u32;
+        let atlas_dimensions = [4u32, 2u32];
+        let stride = 256usize;
+        let layer_stride = stride * atlas_dimensions[1] as usize;
+        let mut bytes = vec![0u8; layer_stride * atlas_layer_count as usize];
+
+        let write_tile = |bytes: &mut [u8], layer: usize, tile_x: usize, rgb: [f32; 3]| {
+            for local_y in 0..tile_dimension as usize {
+                for local_x in 0..tile_dimension as usize {
+                    let x = tile_x * tile_dimension as usize + local_x;
+                    let y = local_y;
+                    let off = layer * layer_stride + y * stride + x * 8;
+                    for (i, &c) in rgb.iter().enumerate() {
+                        bytes[off + i * 2..off + i * 2 + 2]
+                            .copy_from_slice(&f32_to_f16_bits(c).to_le_bytes());
+                    }
+                }
+            }
+        };
+
+        write_tile(&mut bytes, 0, 0, [1.0, 0.0, 0.0]);
+        write_tile(&mut bytes, 0, 1, [0.0, 2.0, 0.0]);
+        write_tile(&mut bytes, 1, 0, [0.0, 0.0, 3.0]);
+
+        let out = decode_probe_irradiance_atlas(
+            &bytes,
+            dims,
+            atlas_dimensions,
+            tile_dimension,
+            tile_border,
+            atlas_tiles_per_row,
+            tiles_per_layer,
+            atlas_layer_count,
+            stride as u32,
+        );
+
+        assert_eq!(out, vec![[1.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 3.0]]);
     }
 
     /// Probe storage layout is z-major: index = x + y*Nx + z*Nx*Ny. This

@@ -4,8 +4,7 @@
 
 use crate::FormatError;
 use crate::octahedral::{
-    DEFAULT_IRRADIANCE_TILE_BORDER, RUNTIME_SUPPORTED_TILE_DIMENSION, irradiance_atlas_dimensions,
-    irradiance_atlas_tiles_per_row,
+    DEFAULT_IRRADIANCE_TILE_BORDER, RUNTIME_SUPPORTED_TILE_DIMENSION, irradiance_atlas_array_layout,
 };
 
 /// Section-internal version written as the first u32 of the `OctahedralShVolume`
@@ -23,10 +22,13 @@ use crate::octahedral::{
 /// version 5 — trailing `map-light-index → animated-light section slot` table
 /// (Task 2c of `sdf-static-occluder-shadows`), `u32::MAX` = no slot; version 6 —
 /// base irradiance replaced the per-probe SH coefficients with a 2D octahedral
-/// `Rgba16Float` atlas (per-probe validity/depth moments retained); version 7
-/// (current) — octahedral atlas packing changed from z-stacked grid rows to
-/// near-square linear tile rows and stores `atlas_tiles_per_row` in the header.
-pub const SH_VOLUME_VERSION: u32 = 7;
+/// `Rgba16Float` atlas (per-probe validity/depth moments retained); version 7 —
+/// octahedral atlas packing changed from z-stacked grid rows to near-square
+/// linear tile rows and stores `atlas_tiles_per_row` in the header; version 8
+/// (current) — atlas metadata became layer-aware for 2D array texture uploads,
+/// storing shared per-layer dimensions plus `layer_count` and
+/// `tiles_per_layer`.
+pub const SH_VOLUME_VERSION: u32 = 8;
 
 /// Sentinel for "this map light has no animated-light section slot" in
 /// `OctahedralShVolumeSection.slot_for_map_light`. Non-animated lights and any
@@ -103,7 +105,7 @@ impl Default for AnimationDescriptor {
 /// On-disk layout (all little-endian):
 ///
 /// ```text
-///   Header (68 bytes):
+///   Header (76 bytes):
 ///     u32      version                (= SH_VOLUME_VERSION)
 ///     f32 × 3  grid_origin
 ///     f32 × 3  cell_size
@@ -112,9 +114,11 @@ impl Default for AnimationDescriptor {
 ///     u32      animated_light_count
 ///     u32      tile_dimension         (default 6, border included)
 ///     u32      tile_border            (default 1)
-///     u32      atlas_width            (texels)
-///     u32      atlas_height           (texels)
-///     u32      atlas_tiles_per_row    (near-square linear tile packing)
+///     u32      atlas_width            (shared per-layer texels)
+///     u32      atlas_height           (shared per-layer texels)
+///     u32      atlas_tiles_per_row    (per-layer tile columns)
+///     u32      layer_count            (2D array layers)
+///     u32      tiles_per_layer        (whole probe tiles per layer)
 ///
 ///   Probe metadata records (probe_stride bytes each, x-fastest order):
 ///     u8       validity
@@ -123,7 +127,7 @@ impl Default for AnimationDescriptor {
 ///     u8 × 3   padding
 ///
 ///   Atlas texels:
-///     row-major atlas_width × atlas_height texels
+///     layer-major, then row-major atlas_width × atlas_height texels per layer
 ///     f16 × 4 RGBA per texel
 ///
 ///   Animation descriptor table and map-light slot table:
@@ -140,6 +144,8 @@ pub struct OctahedralShVolumeSection {
     pub tile_dimension: u32,
     pub tile_border: u32,
     pub atlas_dimensions: [u32; 2],
+    pub layer_count: u32,
+    pub tiles_per_layer: u32,
     pub atlas_tiles_per_row: u32,
     pub probes: Vec<OctahedralShProbe>,
     pub atlas_texels: Vec<OctahedralAtlasTexel>,
@@ -148,7 +154,26 @@ pub struct OctahedralShVolumeSection {
 }
 
 impl OctahedralShVolumeSection {
-    pub const HEADER_SIZE: usize = 68;
+    pub const HEADER_SIZE: usize = 76;
+
+    pub fn placeholder() -> Self {
+        Self {
+            grid_origin: [0.0; 3],
+            cell_size: [1.0; 3],
+            grid_dimensions: [0, 0, 0],
+            probe_stride: OCTAHEDRAL_PROBE_STRIDE,
+            tile_dimension: RUNTIME_SUPPORTED_TILE_DIMENSION,
+            tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
+            atlas_dimensions: [0, 0],
+            layer_count: 0,
+            tiles_per_layer: 0,
+            atlas_tiles_per_row: 0,
+            probes: Vec::new(),
+            atlas_texels: Vec::new(),
+            animation_descriptors: Vec::new(),
+            slot_for_map_light: Vec::new(),
+        }
+    }
 
     pub fn total_probes(&self) -> usize {
         self.grid_dimensions[0] as usize
@@ -157,20 +182,27 @@ impl OctahedralShVolumeSection {
     }
 
     pub fn total_atlas_texels(&self) -> usize {
-        self.atlas_dimensions[0] as usize * self.atlas_dimensions[1] as usize
+        self.layer_count as usize
+            * self.atlas_dimensions[0] as usize
+            * self.atlas_dimensions[1] as usize
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
         let total_probes = self.total_probes();
         debug_assert_eq!(self.probes.len(), total_probes);
         debug_assert_eq!(self.atlas_texels.len(), self.total_atlas_texels());
-        debug_assert_eq!(
-            self.atlas_tiles_per_row,
-            irradiance_atlas_tiles_per_row(self.grid_dimensions).unwrap_or(0)
-        );
-        debug_assert_eq!(
-            self.atlas_dimensions,
-            irradiance_atlas_dimensions(self.grid_dimensions, self.tile_dimension)
+        debug_assert!(
+            expected_array_layout(
+                self.grid_dimensions,
+                self.tile_dimension,
+                self.atlas_dimensions,
+            )
+            .is_some_and(|layout| {
+                self.layer_count == layout.layer_count
+                    && self.tiles_per_layer == layout.tiles_per_layer
+                    && self.atlas_tiles_per_row == layout.atlas_tiles_per_row
+                    && self.atlas_dimensions == [layout.atlas_width, layout.atlas_height]
+            })
         );
 
         let mut buf = Vec::with_capacity(
@@ -196,6 +228,8 @@ impl OctahedralShVolumeSection {
         buf.extend_from_slice(&self.atlas_dimensions[0].to_le_bytes());
         buf.extend_from_slice(&self.atlas_dimensions[1].to_le_bytes());
         buf.extend_from_slice(&self.atlas_tiles_per_row.to_le_bytes());
+        buf.extend_from_slice(&self.layer_count.to_le_bytes());
+        buf.extend_from_slice(&self.tiles_per_layer.to_le_bytes());
 
         for probe in &self.probes {
             buf.push(probe.validity);
@@ -216,7 +250,7 @@ impl OctahedralShVolumeSection {
     }
 
     pub fn from_bytes(data: &[u8]) -> crate::Result<Self> {
-        if data.len() < Self::HEADER_SIZE {
+        if data.len() < 4 {
             return Err(truncated("octahedral header"));
         }
 
@@ -231,6 +265,9 @@ impl OctahedralShVolumeSection {
                      recompile the .prl with the current `prl-build`"
                 ),
             )));
+        }
+        if data.len() < Self::HEADER_SIZE {
+            return Err(truncated("octahedral header"));
         }
         let grid_origin = [
             read_f32(data, o),
@@ -262,6 +299,10 @@ impl OctahedralShVolumeSection {
         o += 8;
         let atlas_tiles_per_row = read_u32(data, o);
         o += 4;
+        let layer_count = read_u32(data, o);
+        o += 4;
+        let tiles_per_layer = read_u32(data, o);
+        o += 4;
         debug_assert_eq!(o, Self::HEADER_SIZE);
 
         if probe_stride < OCTAHEDRAL_PROBE_STRIDE {
@@ -275,6 +316,8 @@ impl OctahedralShVolumeSection {
             grid_dimensions,
             tile_dimension,
             atlas_dimensions,
+            layer_count,
+            tiles_per_layer,
             atlas_tiles_per_row,
         )?;
 
@@ -306,12 +349,12 @@ impl OctahedralShVolumeSection {
             o += probe_stride as usize;
         }
 
-        let total_atlas_texels = (atlas_dimensions[0] as usize)
-            .checked_mul(atlas_dimensions[1] as usize)
+        let total_atlas_texels = (layer_count as usize)
+            .checked_mul(atlas_dimensions[0] as usize)
+            .and_then(|n| n.checked_mul(atlas_dimensions[1] as usize))
             .ok_or_else(|| {
                 invalid_data(format!(
-                    "octahedral sh volume atlas_dimensions {:?} overflow",
-                    atlas_dimensions,
+                    "octahedral sh volume layer_count {layer_count} and atlas_dimensions {atlas_dimensions:?} overflow",
                 ))
             })?;
         let atlas_bytes = total_atlas_texels
@@ -354,6 +397,8 @@ impl OctahedralShVolumeSection {
             tile_dimension,
             tile_border,
             atlas_dimensions,
+            layer_count,
+            tiles_per_layer,
             atlas_tiles_per_row,
             probes,
             atlas_texels,
@@ -388,6 +433,8 @@ fn validate_octahedral_grid_and_atlas(
     grid_dimensions: [u32; 3],
     tile_dimension: u32,
     atlas_dimensions: [u32; 2],
+    layer_count: u32,
+    tiles_per_layer: u32,
     atlas_tiles_per_row: u32,
 ) -> crate::Result<()> {
     let zero_axes = grid_dimensions.iter().filter(|&&d| d == 0).count();
@@ -397,32 +444,57 @@ fn validate_octahedral_grid_and_atlas(
                 "octahedral sh volume grid_dimensions {grid_dimensions:?} are malformed: empty grids must be [0, 0, 0]"
             )));
         }
-        if atlas_dimensions != [0, 0] || atlas_tiles_per_row != 0 {
+        if atlas_dimensions != [0, 0]
+            || layer_count != 0
+            || tiles_per_layer != 0
+            || atlas_tiles_per_row != 0
+        {
             return Err(invalid_data(format!(
-                "octahedral sh volume empty grid must use atlas_dimensions [0, 0] and atlas_tiles_per_row 0, got atlas_dimensions {atlas_dimensions:?}, atlas_tiles_per_row {atlas_tiles_per_row}"
+                "octahedral sh volume empty grid must use atlas_dimensions [0, 0], layer_count 0, tiles_per_layer 0, and atlas_tiles_per_row 0, got atlas_dimensions {atlas_dimensions:?}, layer_count {layer_count}, tiles_per_layer {tiles_per_layer}, atlas_tiles_per_row {atlas_tiles_per_row}"
             )));
         }
         return Ok(());
     }
 
-    let expected_tiles_per_row = irradiance_atlas_tiles_per_row(grid_dimensions).ok_or_else(|| {
+    let layout = expected_array_layout(grid_dimensions, tile_dimension, atlas_dimensions).ok_or_else(|| {
         invalid_data(format!(
-            "octahedral sh volume grid_dimensions {grid_dimensions:?} overflow while computing atlas_tiles_per_row"
+            "octahedral sh volume grid_dimensions {grid_dimensions:?}, tile_dimension {tile_dimension}, and atlas_dimensions {atlas_dimensions:?} do not describe a valid layer-aware atlas layout"
         ))
     })?;
-    if atlas_tiles_per_row != expected_tiles_per_row {
-        return Err(invalid_data(format!(
-            "octahedral sh volume atlas_tiles_per_row {atlas_tiles_per_row}, expected {expected_tiles_per_row} for grid_dimensions {grid_dimensions:?}"
-        )));
-    }
-
-    let expected_atlas_dimensions = irradiance_atlas_dimensions(grid_dimensions, tile_dimension);
+    let expected_atlas_dimensions = [layout.atlas_width, layout.atlas_height];
     if atlas_dimensions != expected_atlas_dimensions {
         return Err(invalid_data(format!(
-            "octahedral sh volume atlas_dimensions {atlas_dimensions:?}, expected {expected_atlas_dimensions:?} for grid_dimensions {grid_dimensions:?}, tile_dimension {tile_dimension}, atlas_tiles_per_row {atlas_tiles_per_row}"
+            "octahedral sh volume atlas_dimensions {atlas_dimensions:?}, expected {expected_atlas_dimensions:?} for grid_dimensions {grid_dimensions:?}, tile_dimension {tile_dimension}"
+        )));
+    }
+    if layer_count != layout.layer_count {
+        return Err(invalid_data(format!(
+            "octahedral sh volume layer_count {layer_count}, expected {} for grid_dimensions {grid_dimensions:?}, atlas_dimensions {atlas_dimensions:?}",
+            layout.layer_count
+        )));
+    }
+    if tiles_per_layer != layout.tiles_per_layer {
+        return Err(invalid_data(format!(
+            "octahedral sh volume tiles_per_layer {tiles_per_layer}, expected {} for grid_dimensions {grid_dimensions:?}, atlas_dimensions {atlas_dimensions:?}",
+            layout.tiles_per_layer
+        )));
+    }
+    if atlas_tiles_per_row != layout.atlas_tiles_per_row {
+        return Err(invalid_data(format!(
+            "octahedral sh volume atlas_tiles_per_row {atlas_tiles_per_row}, expected {} for grid_dimensions {grid_dimensions:?}, atlas_dimensions {atlas_dimensions:?}",
+            layout.atlas_tiles_per_row
         )));
     }
     Ok(())
+}
+
+fn expected_array_layout(
+    grid_dimensions: [u32; 3],
+    tile_dimension: u32,
+    atlas_dimensions: [u32; 2],
+) -> Option<crate::octahedral::IrradianceAtlasArrayLayout> {
+    let max_dim = atlas_dimensions[0].max(atlas_dimensions[1]);
+    irradiance_atlas_array_layout(grid_dimensions, tile_dimension, max_dim)
 }
 
 fn write_animation_descriptors(buf: &mut Vec<u8>, descriptors: &[AnimationDescriptor]) {
@@ -577,14 +649,19 @@ fn read_u16(data: &[u8], at: usize) -> u16 {
 mod tests {
     use super::*;
     use crate::lightmap::f32_to_f16_bits;
+    use crate::octahedral::DEFAULT_IRRADIANCE_TILE_DIMENSION;
 
     fn oct_section(grid: [u32; 3]) -> OctahedralShVolumeSection {
+        oct_section_with_max_dim(grid, 8192)
+    }
+
+    fn oct_section_with_max_dim(grid: [u32; 3], max_dim: u32) -> OctahedralShVolumeSection {
         let total = (grid[0] * grid[1] * grid[2]) as usize;
-        let tile_dimension = 6;
-        let tile_border = 1;
-        let atlas_dimensions = irradiance_atlas_dimensions(grid, tile_dimension);
-        let atlas_tiles_per_row = irradiance_atlas_tiles_per_row(grid).unwrap();
-        let atlas_total = (atlas_dimensions[0] * atlas_dimensions[1]) as usize;
+        let tile_dimension = DEFAULT_IRRADIANCE_TILE_DIMENSION;
+        let tile_border = DEFAULT_IRRADIANCE_TILE_BORDER;
+        let layout = irradiance_atlas_array_layout(grid, tile_dimension, max_dim).unwrap();
+        let atlas_dimensions = [layout.atlas_width, layout.atlas_height];
+        let atlas_total = (layout.layer_count * layout.atlas_width * layout.atlas_height) as usize;
         OctahedralShVolumeSection {
             grid_origin: [1.0, 2.0, 3.0],
             cell_size: [0.5, 0.5, 0.5],
@@ -593,7 +670,9 @@ mod tests {
             tile_dimension,
             tile_border,
             atlas_dimensions,
-            atlas_tiles_per_row,
+            layer_count: layout.layer_count,
+            tiles_per_layer: layout.tiles_per_layer,
+            atlas_tiles_per_row: layout.atlas_tiles_per_row,
             probes: (0..total)
                 .map(|i| OctahedralShProbe {
                     validity: (i % 2) as u8,
@@ -612,9 +691,19 @@ mod tests {
     }
 
     #[test]
-    fn octahedral_round_trip_preserves_metadata_and_atlas() {
+    fn octahedral_round_trip_preserves_single_layer_metadata_and_atlas() {
         let section = oct_section([2, 2, 1]);
+        assert_eq!(section.layer_count, 1);
         let bytes = section.to_bytes();
+        assert_eq!(
+            &bytes[64..68],
+            section.atlas_tiles_per_row.to_le_bytes().as_slice()
+        );
+        assert_eq!(&bytes[68..72], section.layer_count.to_le_bytes().as_slice());
+        assert_eq!(
+            &bytes[72..76],
+            section.tiles_per_layer.to_le_bytes().as_slice()
+        );
         let expected_len = OctahedralShVolumeSection::HEADER_SIZE
             + 4 * OCTAHEDRAL_PROBE_STRIDE as usize
             + (12 * 12) * OCTAHEDRAL_ATLAS_TEXEL_STRIDE as usize
@@ -627,8 +716,22 @@ mod tests {
     }
 
     #[test]
+    fn octahedral_round_trip_preserves_multi_layer_metadata_and_atlas() {
+        let section = oct_section_with_max_dim([20, 1, 1], 20);
+        assert_eq!(section.layer_count, 3);
+        assert_eq!(section.tiles_per_layer, 9);
+        assert_eq!(section.atlas_tiles_per_row, 3);
+        assert_eq!(section.atlas_dimensions, [18, 18]);
+
+        let bytes = section.to_bytes();
+        let restored = OctahedralShVolumeSection::from_bytes(&bytes).unwrap();
+        assert_eq!(restored, section);
+        assert_eq!(restored.to_bytes(), bytes);
+    }
+
+    #[test]
     fn octahedral_empty_volume_round_trips() {
-        let section = oct_section([0, 0, 0]);
+        let section = OctahedralShVolumeSection::placeholder();
         let bytes = section.to_bytes();
         assert_eq!(bytes.len(), OctahedralShVolumeSection::HEADER_SIZE + 4);
         let restored = OctahedralShVolumeSection::from_bytes(&bytes).unwrap();
@@ -640,10 +743,14 @@ mod tests {
         let section = oct_section([3, 2, 4]);
         assert_eq!(section.atlas_tiles_per_row, 5);
         assert_eq!(section.atlas_dimensions, [30, 30]);
+        assert_eq!(section.layer_count, 1);
+        assert_eq!(section.tiles_per_layer, 25);
 
         let restored = OctahedralShVolumeSection::from_bytes(&section.to_bytes()).unwrap();
         assert_eq!(restored.atlas_tiles_per_row, 5);
         assert_eq!(restored.atlas_dimensions, [30, 30]);
+        assert_eq!(restored.layer_count, 1);
+        assert_eq!(restored.tiles_per_layer, 25);
     }
 
     #[test]
@@ -692,9 +799,12 @@ mod tests {
 
     #[test]
     fn octahedral_rejects_partial_empty_grid() {
-        let mut section = oct_section([0, 0, 0]);
-        section.grid_dimensions = [0, 2, 1];
-        let err = OctahedralShVolumeSection::from_bytes(&section.to_bytes()).unwrap_err();
+        let section = OctahedralShVolumeSection::placeholder();
+        let mut bytes = section.to_bytes();
+        bytes[28..32].copy_from_slice(&0u32.to_le_bytes());
+        bytes[32..36].copy_from_slice(&2u32.to_le_bytes());
+        bytes[36..40].copy_from_slice(&1u32.to_le_bytes());
+        let err = OctahedralShVolumeSection::from_bytes(&bytes).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("empty grids must be [0, 0, 0]"),
@@ -719,11 +829,11 @@ mod tests {
     fn octahedral_rejects_previous_section_version() {
         let section = oct_section([1, 1, 1]);
         let mut bytes = section.to_bytes();
-        bytes[0..4].copy_from_slice(&5u32.to_le_bytes());
+        bytes[0..4].copy_from_slice(&7u32.to_le_bytes());
         let err = OctahedralShVolumeSection::from_bytes(&bytes).unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("version"),
+            msg.contains("version 7") && msg.contains("expected 8"),
             "expected version-mismatch error, got: {msg}",
         );
     }

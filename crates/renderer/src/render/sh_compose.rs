@@ -4,8 +4,8 @@
 
 use postretro_level_format::delta_sh_volumes::DeltaShVolumesSection;
 use postretro_render_cpu::sh_compose::{
-    ComposeStorageFootprint, build_compose_grid_bytes, build_delta_buffers, pad_storage_bytes,
-    u16_slice_to_bytes, u32_slice_to_bytes,
+    ComposeGridParams, ComposeStorageFootprint, build_compose_grid_bytes, build_delta_buffers,
+    pad_storage_bytes, u16_slice_to_bytes, u32_slice_to_bytes,
 };
 
 use super::sh_volume::{ANIMATION_DESCRIPTOR_SIZE, AnimatedLightBuffers, ShVolumeResources};
@@ -42,7 +42,7 @@ pub struct ShComposeResources {
     bind_group: wgpu::BindGroup,
     /// Atlas dimensions. Drives the dispatch shape — one thread per atlas
     /// texel, rounded up to the shader's 8×8 workgroup size.
-    dispatch_dimensions: [u32; 2],
+    dispatch_dimensions: [u32; 3],
 }
 
 impl ShComposeResources {
@@ -114,14 +114,16 @@ impl ShComposeResources {
         };
         footprint.log();
 
-        let grid_bytes = build_compose_grid_bytes(
-            sh.grid_dimensions,
-            sh.atlas_dimensions,
-            sh.tile_dimension,
-            sh.tile_border,
-            sh.atlas_tiles_per_row,
-            buffers.affinity_dims,
-        );
+        let grid_bytes = build_compose_grid_bytes(ComposeGridParams {
+            grid_dimensions: sh.grid_dimensions,
+            atlas_dimensions: sh.atlas_dimensions,
+            tile_dimension: sh.tile_dimension,
+            tile_border: sh.tile_border,
+            atlas_tiles_per_row: sh.atlas_tiles_per_row,
+            tiles_per_layer: sh.tiles_per_layer,
+            atlas_layer_count: sh.atlas_layer_count,
+            affinity_dims: buffers.affinity_dims,
+        });
         let grid_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("SH Compose Grid Dims"),
             contents: &grid_bytes[..],
@@ -246,7 +248,11 @@ impl ShComposeResources {
         Self {
             pipeline,
             bind_group,
-            dispatch_dimensions: sh.atlas_dimensions,
+            dispatch_dimensions: [
+                sh.atlas_dimensions[0],
+                sh.atlas_dimensions[1],
+                sh.atlas_layer_count,
+            ],
         }
     }
 
@@ -268,7 +274,7 @@ impl ShComposeResources {
         pass.set_bind_group(1, &self.bind_group, &[]);
         let wg_x = self.dispatch_dimensions[0].div_ceil(8).max(1);
         let wg_y = self.dispatch_dimensions[1].div_ceil(8).max(1);
-        let wg_z = 1;
+        let wg_z = self.dispatch_dimensions[2].max(1);
         pass.dispatch_workgroups(wg_x, wg_y, wg_z);
     }
 }
@@ -280,7 +286,7 @@ fn compose_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
             visibility: wgpu::ShaderStages::COMPUTE,
             ty: wgpu::BindingType::Texture {
                 sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                view_dimension: wgpu::TextureViewDimension::D2,
+                view_dimension: wgpu::TextureViewDimension::D2Array,
                 multisampled: false,
             },
             count: None,
@@ -291,7 +297,7 @@ fn compose_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
             ty: wgpu::BindingType::StorageTexture {
                 access: wgpu::StorageTextureAccess::WriteOnly,
                 format: wgpu::TextureFormat::Rgba16Float,
-                view_dimension: wgpu::TextureViewDimension::D2,
+                view_dimension: wgpu::TextureViewDimension::D2Array,
             },
             count: None,
         },

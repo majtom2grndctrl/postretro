@@ -16,7 +16,7 @@ regardless of pause/throttle.
 - Custom `log` backend that collects/tallies warnings and forwards them to the active reporter, so
   warnings no longer race the progress spinner on stderr.
 - `Reporter` abstraction with a plain (non-TTY) impl and a ratatui TUI impl, replacing `BuildProgress`.
-- End-of-run warning tally in both reporters.
+- End-of-run warning tally (total count plus the list of formatted warning records) in both reporters.
 - `Governor`: one cooperative gate polled by parallel and serial bake work-items, unifying pause and
   core-throttle. Pause parks work-items mid-stage; throttle caps concurrent active work-items to N
   live permits without resizing the rayon pool.
@@ -24,7 +24,7 @@ regardless of pause/throttle.
   delta SH, direct-SH-delta, animated weight maps).
 - ratatui layout: left column of the map's planned compile steps with an active-step animation,
   per-step %/ETA at the column foot, bottom panel with a live core-count control and a pause/resume
-  toggle, plus a warning/log region. Dedicated input-event thread.
+  toggle, plus a warning/log region. Bake runs on a worker thread; main thread owns render + input.
 - Behavior-preserving extraction of the linear `fn main` stage sequence into a stage-orchestration
   module.
 - CLI: initial core count flag and TUI force/disable flag; TTY-gated reporter selection.
@@ -35,7 +35,8 @@ regardless of pause/throttle.
 - Any change to bake math, PRL sections, cache keys, or stage versions — output bytes are unchanged.
 - Parallelizing the serial lightmap stage (it stays single-threaded; throttle documented as no-op there).
 - Throttling non-work-item stages (parse, BSP, geometry, packing) — they run to completion untouched.
-- A new PRL section or wire format. The optional ETA-priors file is a dev-local cache, not shipped.
+- A new PRL section or wire format. No persisted ETA-priors file; whole-build ETA is best-effort
+  in-memory extrapolation only.
 - GPU / renderer changes (this crate has no GPU dependency).
 - Progress/ETA for the fast serial stages beyond a running/done indicator.
 
@@ -64,8 +65,11 @@ regardless of pause/throttle.
       sequences.
 - [ ] A CLI flag sets the initial core count and a CLI flag forces or disables the TUI; both appear in
       `--help`.
+- [ ] On normal exit, error, bail, and panic, the terminal is left in cooked mode on the main screen
+      with no residual control state.
 - [ ] After the pipeline extraction, `fn main` no longer holds the inline stage sequence and a bake of
-      the same map produces artifacts identical to before the refactor.
+      the same map produces byte-identical `.prl` output and an identical Build Summary table to
+      before the refactor.
 
 ## Tasks
 
@@ -78,7 +82,8 @@ chunk-light-list, animated-light-chunks, animated-weight-maps, SDF atlas, textur
 Behavior-preservingly extract this sequence into a new stage-orchestration module (e.g.
 `src/pipeline.rs`) that owns the ordered stage execution, the `timings` vector, and the Build Summary
 table, while `fn main` shrinks to arg parsing, cache construction, output-dir precheck, and a single
-call into the orchestrator. Keep the current `BuildProgress` spinner and `env_logger` init exactly as
+call into the orchestrator — invoked directly from `fn main` in plain mode; Task 4 moves this call onto
+a spawned worker thread in TUI mode. Keep the current `BuildProgress` spinner and `env_logger` init exactly as
 they are — this task adds NO new behavior, changes NO bake logic, and must produce byte-identical
 `.prl` output and an identical Build Summary for the same input. The extraction must expose a seam
 where each stage has a stable identifier and human label and where the orchestrator (not each inline
@@ -94,7 +99,8 @@ orchestrator to them, retiring `BuildProgress`. (1) A `Reporter` trait with meth
 and stages call: begin a stage (by the stable id + label from Task 1), declare a stage's total work
 units, advance progress, mark a stage finished or skipped, record a warning, and finalize the build
 with the timing summary; plus a `PlainReporter` impl reproducing today's non-TTY behavior (timestamped
-stage lines or a simple progress line) and printing an end-of-run warning tally. (2) A `Governor`
+stage lines or a simple progress line) and printing an end-of-run warning tally: the total warning
+count plus the list of formatted warning records. (2) A `Governor`
 struct: a cooperative gate holding a paused flag and a live permit count, exposing `checkpoint()` (fast
 poll that parks the caller while paused, for serial loops) and an RAII `enter()` guard (parks while
 paused, then acquires one of N permits, parking callers beyond N, releasing on drop, for parallel
@@ -104,8 +110,8 @@ global pool is left at all cores; the Governor caps concurrent active work-items
 worker threads are the accepted oversubscription cost. (3) A `log::Log` backend installed via
 `log::set_boxed_logger` that replaces the `env_logger::Builder...init()` call, preserves
 `RUST_LOG`/verbose filtering, tallies `warn`-and-above counts, and forwards each formatted record to a
-shared sink the active reporter drains (so the 99 existing `log::warn!`/`eprintln!` sites are NOT
-edited). The orchestrator owns the `Reporter` and `Governor` (behind shared handles — `Arc` for the
+shared sink the active reporter drains (the 99 existing `log::warn!` sites are NOT edited — the
+installed logger captures them automatically). The orchestrator owns the `Reporter` and `Governor` (behind shared handles — `Arc` for the
 Governor so worker threads and the input thread share it) and threads them toward the stages. Warnings
 currently written with `eprintln!` in compiler code should route through `log` so the tally captures
 them; converting those specific `eprintln!` sites to `log::warn!` is in scope only where needed for the
@@ -117,43 +123,54 @@ Thread the `Governor` and a per-stage progress counter (an `AtomicUsize` the rep
 parallel bake and the serial lightmap, so pause and throttle take effect mid-stage and the reporter can
 show %/ETA. The counter is incremented inside the work-item closures; it feeds display ONLY and must
 not alter the order-preserving `.map()/.flat_map().collect()` results — the pre-BC6H byte-identity
-determinism invariant (build_pipeline.md §Determinism) must hold, so do not introduce float reductions,
-`HashMap`-ordered output, or reordering. Instrument these parallel work-item sites by inserting a
-`governor.enter()` guard at the top of each closure and a counter increment per completed item, and set
-the stage total before the loop: SH probe bake in `sh_bake.rs` (`bake_probe`, total `layout.total_probes()`)
-and its warm grouped path in `sh_group.rs` (`bake_or_load_group`); direct SH probe tiles in
-`direct_sh_bake.rs` (`bake_probe_tile`, total `layout.total_probes()`); the direct-SH-delta and
-delta-SH CSR sub-block bakes in `direct_sh_bake.rs` and `delta_sh_bake.rs` (per-`affinity_lights` entry);
-and the animated weight-map chunk bake in `animated_light_weight_maps.rs` (`bake_one_chunk`, total
-`chunks.len()`). For the serial lightmap, thread the gate into `bake_monolithic_atlas` (cold) and
-`bake_light_layer` (warm) in `lightmap_bake.rs`/`lightmap_layer.rs` and call `governor.checkpoint()`
-inside the per-face `for` loop (total `placements.len()`) so pause halts it mid-stage — but do NOT add
-`enter()` permits there, since the stage is single-threaded and the throttle is a documented no-op for
-it. The gate/counter reach these functions by adding a field to each stage's existing `Ctx`/`Inputs`
-struct (`ShBakeCtx`, `DirectBakeInputs`, `DeltaBakeInputs`, `WeightMapInputs`, `LightmapBakeCtx`, and
-the warm lightmap layer call) or an added parameter, populated by the Task 1 orchestrator from the
-Task 2 handles; enumerate and update every call site in the orchestrator. A gate with all cores
-permitted and never paused must reproduce today's behavior and timing within noise.
+determinism invariant (the Determinism invariant in build_pipeline.md) must hold, so do not introduce
+float reductions, `HashMap`-ordered output, or reordering. Instrument these parallel work-item sites by
+inserting a `governor.enter()` guard at the top of each closure and a counter increment per completed
+item, and set the stage total before the loop: SH probe bake in `sh_bake.rs` (`bake_probe`, total
+`layout.total_probes()`) and its warm grouped path in `sh_group.rs` (`bake_or_load_group`); direct SH
+probe tiles in `direct_sh_bake.rs` (`bake_probe_tile`, total `layout.total_probes()`); the
+direct-SH-delta and delta-SH CSR sub-block bakes in `direct_sh_bake.rs` and `delta_sh_bake.rs`
+(per-`affinity_lights` entry); and the animated weight-map chunk bake in
+`animated_light_weight_maps.rs` (`bake_one_chunk`, total `chunks.len()`). For the serial lightmap,
+thread the gate into `bake_monolithic_atlas` (cold) and `bake_light_layer` (warm) in
+`lightmap_bake.rs`/`lightmap_layer.rs` and call `governor.checkpoint()` inside the per-face `for` loop
+(total `placements.len()`) so pause halts it mid-stage — but do NOT add `enter()` permits there, since
+the stage is single-threaded and the throttle is a documented no-op for it. The gate/counter reach
+these functions by adding a field to each stage's existing `Ctx`/`Inputs` struct (`ShBakeCtx`,
+`DirectBakeInputs`, `DeltaBakeInputs`, `WeightMapInputs`, `LightmapBakeCtx`, and the warm lightmap layer
+call) or an added parameter, populated by the Task 1 orchestrator from the Task 2 handles; enumerate
+and update every call site in the orchestrator. A gate with all cores permitted and never paused must
+reproduce today's behavior and timing within noise. `governor.enter()` is acquired only at the
+outermost work-item boundary; a gated closure must not block on other gated work, which would deadlock
+at low permit counts (e.g. `-j 1`).
 
-### Task 4: ratatui TUI reporter and input thread
+### Task 4: ratatui TUI reporter and render loop
 
 Add `ratatui` + `crossterm` to `crates/level-compiler/Cargo.toml` and implement a `TuiReporter` that
-satisfies the Task 2 `Reporter` trait, plus a dedicated input-event thread. Layout: a left column
-listing the map's planned compile steps (the ordered stage id/label set the orchestrator knows for this
-map — omit stages known absent up front such as SDF when the map has no SDF lights, and render stages
-that resolve to no-ops as skipped) with an in-progress animation on the active step; the active step's
-percent complete and projected completion time shown at the foot of that column, computed from the
-Task 3 progress counter and the stage total (per-stage % reliable; whole-build ETA best-effort, from
-elapsed/done extrapolation and optionally per-stage priors persisted dev-local); a bottom panel with a
-live core-count control (slider/±) bound to the `Governor` permit count and a pause/resume toggle bound
-to the `Governor` paused flag; and a region that renders warnings/log records drained from the Task 2
-logger sink without disturbing the step column. The input thread reads key events (quit, pause toggle,
-core up/down) via crossterm and mutates the shared `Arc<Governor>` — increasing permits and clearing
-pause wake parked workers through the Task 2 setters. The TUI must restore the terminal (leave raw
-mode / alternate screen) on normal exit, on error, and on a build that bails. Rendering reads reporter
-state at a fixed tick; it never blocks the bake. This task consumes the `Reporter` trait and `Governor`
-from Task 2 and displays counters populated by Task 3, but edits disjoint files (tui module, Cargo.toml)
-from Task 3.
+satisfies the Task 2 `Reporter` trait. Layout: a left column listing the map's planned compile steps
+(the ordered stage id/label set the orchestrator knows for this map — omit stages known absent up
+front such as SDF when the map has no SDF lights, and render stages that resolve to no-ops as skipped)
+with an in-progress animation on the active step; the active step's percent complete and projected
+completion time shown at the foot of that column, computed from the Task 3 progress counter and the
+stage total (per-stage % reliable; whole-build ETA best-effort, from elapsed/done extrapolation only);
+a bottom panel with a live core-count control (slider/±, range `1..=available_parallelism()` via
+`std::thread::available_parallelism()` — permits above the core count are inert) bound to the
+`Governor` permit count and a pause/resume toggle bound to the `Governor` paused flag; and a region
+that renders warnings/log records drained from the Task 2 logger sink without disturbing the step
+column. Thread model: in TUI mode the bake (the Task 1 orchestrator call) runs on a spawned worker
+thread while the main thread owns the ratatui render + input loop at a fixed tick — reading key events
+(quit, pause toggle, core up/down) via crossterm and mutating the shared `Arc<Governor>` (increasing
+permits and clearing pause wake parked workers through the Task 2 setters) — with reporter and
+progress-counter state `Arc`-shared between the render/main thread and the bake worker thread;
+rendering never blocks the bake. In plain (non-TTY) mode the bake runs directly on the main thread as
+today, with no render loop. The TUI must restore the terminal (leave raw mode / alternate screen) on
+normal exit, on error, on a build that bails, and on panic — via an RAII guard whose `Drop` restores
+the terminal on unwind (optionally paired with a panic hook that restores then re-raises), so a panic
+mid-bake cannot leave the terminal in raw mode / alternate screen. On finalize, after leaving the
+alternate screen / raw mode, the `TuiReporter` drains the full logger record list and prints the total
+warning count plus the listing to the normal screen, so scrolled-out warnings still appear (satisfying
+AC 2 in TUI mode). This task consumes the `Reporter` trait and `Governor` from Task 2 and displays
+counters populated by Task 3, but edits disjoint files (tui module, Cargo.toml) from Task 3.
 
 ### Task 5: CLI flags, TTY gating, integration verification
 
@@ -161,15 +178,20 @@ Wire reporter selection and controls end-to-end. Add two CLI flags to `parse_arg
 struct and `help_text()` in `main.rs`: one setting the initial core count (e.g. `-j`/`--jobs <N>`,
 default = available parallelism, validated `>= 1`) which seeds the `Governor` permit count, and one
 forcing or disabling the TUI (e.g. `--tui`/`--no-tui`). Select the reporter at startup: use the
-`TuiReporter` only when TUI is not disabled AND both stdout and stderr are TTYs
-(`std::io::IsTerminal`); otherwise use the `PlainReporter` (CI, pipes, `xtask`, redirected streams) —
-`--tui` forces the TUI attempt, `--no-tui` forces plain. In plain/non-TTY mode the core count comes
+`TuiReporter` only when TUI is not disabled AND stdout, stderr, and stdin are all TTYs
+(`std::io::stdout().is_terminal() && std::io::stderr().is_terminal() && std::io::stdin().is_terminal()`);
+otherwise use the `PlainReporter` (CI, pipes, `xtask`, redirected streams). `--tui` overrides only the
+default reporter-selection heuristic, never the TTY requirement: on a non-TTY, `--tui` errors out with
+a clear message rather than emitting terminal control sequences (so AC 10 always holds); `--no-tui`
+forces plain regardless of TTY. In plain/non-TTY mode the core count comes
 only from `-j` (no live slider) and pause is unavailable, but the Governor still applies the `-j`
 permit cap; emit no terminal control sequences. Confirm the whole feature on a real bake: run
 `cargo run -p postretro-level-compiler -- <map>` interactively to exercise the TUI, pause/resume, and
 the live core slider mid-bake (including mid-lightmap pause); run it piped/non-TTY to confirm plain
-fallback and the warning tally; and diff `.prl` output of a paused/throttled TUI build against a
-straight `--no-cache` build of the same map to confirm byte-identity.
+fallback and the warning tally; and, holding cache mode constant, diff `.prl` output of a
+paused/throttled `--no-cache` build against a straight (unthrottled, no-pause) `--no-cache` build of
+the same map to confirm byte-identity — never compare a warm-TUI build against a cold-`--no-cache`
+build, since that conflates warm-vs-cold caching with pause-vs-throttle.
 
 ## Sequencing
 
@@ -194,21 +216,20 @@ reporters from Tasks 2/4, the gate wiring from Task 3, and cannot verify byte-id
 - **Governor:** `struct Governor { inner: Mutex<GateState>, cvar: Condvar }` with
   `GateState { paused: bool, permits: usize, active: usize }`. `checkpoint()` waits while `paused`.
   `enter()` waits while `paused || active >= permits`, then `active += 1`; drop decrements and notifies.
-  `set_permits`/`set_paused` mutate state and `notify_all`. Shared as `Arc<Governor>`.
+  `set_permits`/`set_paused` mutate state and `notify_all`. Shared as `Arc<Governor>`. Reducing `permits`
+  below the current `active` count does not preempt in-flight work-items — they keep their permits and
+  concurrency converges downward as items complete; new admissions are throttled immediately. The
+  core-count readout shows the target permit count (the set value), not the transient `active` count.
 - **Progress:** per-stage `Arc<AtomicUsize>` + a known total; reporter computes `%` and
   `ETA = elapsed * (total - done) / done`. Counters are display-only — never fed back into bake output.
 - **Stage ids:** an enum or `&'static str` id + label per stage, produced by the orchestrator; the TUI
   left column is the predicted-present subset for the map (drop SDF when `!map_needs_sdf_atlas`, mark
   runtime no-ops skipped).
 - **Logger sink:** `CollectingLogger` holds `Arc<Mutex<Vec<Record>>>` + an `AtomicUsize` warn counter;
-  reporters drain/format it. Installed with `log::set_boxed_logger`, wrapping an env-filter so
-  `RUST_LOG`/verbose still work.
-- **TTY gate:** `std::io::stdout().is_terminal() && std::io::stderr().is_terminal()`, mirroring the
-  EOF-tolerant pattern already in `precheck_output_dir`.
-
-## Open questions
-
-- Flag spellings: `-j`/`--jobs` and `--tui`/`--no-tui` are suggestions — confirm the preferred names.
-- Whole-build ETA: ship the best-effort elapsed/done extrapolation only, or also persist per-stage
-  priors dev-local for a first-stage estimate? Sketch assumes the former is required, priors optional.
+  reporters drain/format it. Startup creates the shared sink first, then clones it into both the
+  installed `log` logger and the selected reporter. Installed with `log::set_boxed_logger`, wrapping an
+  env-filter so `RUST_LOG`/verbose still work.
+- **TTY gate:** `std::io::stdout().is_terminal() && std::io::stderr().is_terminal() &&
+  std::io::stdin().is_terminal()`, mirroring the EOF-tolerant pattern already in
+  `precheck_output_dir`.
 </content>

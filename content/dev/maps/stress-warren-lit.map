@@ -10279,7 +10279,7 @@
 }
 // entity 6
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "1920 -3840 296"
 "light" "150"
 "_color" "180 0 255"

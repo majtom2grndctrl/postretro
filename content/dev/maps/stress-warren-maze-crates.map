@@ -7072,7 +7072,7 @@
 }
 // entity 3
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-640 -2560 296"
 "light" "150"
 "_color" "255 0 200"
@@ -7098,7 +7098,7 @@
 }
 // entity 5
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "1920 -3200 296"
 "light" "150"
 "_color" "40 160 255"
@@ -7108,7 +7108,7 @@
 }
 // entity 6
 {
-"classname" "light_dynamic_spot"
+"classname" "light_spot"
 "origin" "3200 -2560 296"
 "light" "220"
 "_color" "180 0 255"
@@ -7134,7 +7134,7 @@
 }
 // entity 8
 {
-"classname" "light_dynamic_spot"
+"classname" "light_spot"
 "origin" "1920 -1280 296"
 "light" "220"
 "_color" "255 60 60"
@@ -7170,11 +7170,10 @@
 "_cone" "30"
 "_cone2" "48"
 "angles" "-90 0 0"
-"_shadow_type" "sdf"
 }
 // entity 11
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "640 0 296"
 "light" "150"
 "_color" "255 0 200"
@@ -7200,7 +7199,7 @@
 }
 // entity 13
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-1920 1280 296"
 "light" "150"
 "_color" "40 160 255"
@@ -7239,7 +7238,7 @@
 }
 // entity 16
 {
-"classname" "light_dynamic_spot"
+"classname" "light_spot"
 "origin" "3200 1280 296"
 "light" "220"
 "_color" "255 60 60"
@@ -7265,7 +7264,7 @@
 }
 // entity 18
 {
-"classname" "light_dynamic_spot"
+"classname" "light_spot"
 "origin" "1280 2560 296"
 "light" "220"
 "_color" "0 255 200"
@@ -7278,7 +7277,7 @@
 }
 // entity 19
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-1280 3200 296"
 "light" "150"
 "_color" "255 0 200"
@@ -7288,7 +7287,7 @@
 }
 // entity 20
 {
-"classname" "light_dynamic_spot"
+"classname" "light_spot"
 "origin" "3200 3200 296"
 "light" "220"
 "_color" "255 160 40"
@@ -7301,7 +7300,7 @@
 }
 // entity 21
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-2560 -3200 680"
 "light" "150"
 "_color" "40 160 255"
@@ -7327,7 +7326,7 @@
 }
 // entity 23
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "2560 -3200 680"
 "light" "150"
 "_color" "0 255 120"
@@ -7337,7 +7336,7 @@
 }
 // entity 24
 {
-"classname" "light_dynamic_spot"
+"classname" "light_spot"
 "origin" "-2560 -1280 680"
 "light" "220"
 "_color" "255 60 60"
@@ -7350,7 +7349,7 @@
 }
 // entity 25
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "1920 -1920 680"
 "light" "150"
 "_color" "120 220 255"
@@ -7389,7 +7388,7 @@
 }
 // entity 28
 {
-"classname" "light_dynamic_spot"
+"classname" "light_spot"
 "origin" "1920 0 680"
 "light" "220"
 "_color" "255 160 40"
@@ -7431,7 +7430,7 @@
 }
 // entity 31
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-1920 1280 680"
 "light" "150"
 "_color" "0 255 120"
@@ -7441,7 +7440,7 @@
 }
 // entity 32
 {
-"classname" "light_dynamic_spot"
+"classname" "light_spot"
 "origin" "-640 640 680"
 "light" "220"
 "_color" "255 60 60"
@@ -7512,7 +7511,7 @@
 }
 // entity 37
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "3200 1920 680"
 "light" "150"
 "_color" "40 160 255"
@@ -7538,7 +7537,7 @@
 }
 // entity 39
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "0 3200 680"
 "light" "150"
 "_color" "0 255 120"
@@ -7600,11 +7599,10 @@
 "_falloff_range" "1400"
 "delay" "0"
 "style" "0"
-"_shadow_type" "sdf"
 }
 // entity 44
 {
-"classname" "light_dynamic_spot"
+"classname" "light_spot"
 "origin" "640 -2560 1064"
 "light" "220"
 "_color" "255 160 40"
@@ -7646,7 +7644,7 @@
 }
 // entity 47
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "1920 -1280 1064"
 "light" "150"
 "_color" "0 255 120"
@@ -7656,7 +7654,7 @@
 }
 // entity 48
 {
-"classname" "light_dynamic_spot"
+"classname" "light_spot"
 "origin" "3200 -1920 1064"
 "light" "220"
 "_color" "255 60 60"
@@ -7682,7 +7680,7 @@
 }
 // entity 50
 {
-"classname" "light_dynamic_spot"
+"classname" "light_spot"
 "origin" "-640 -640 1064"
 "light" "220"
 "_color" "0 255 200"
@@ -7695,7 +7693,7 @@
 }
 // entity 51
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "640 -640 1064"
 "light" "150"
 "_color" "255 0 200"
@@ -7734,7 +7732,7 @@
 }
 // entity 54
 {
-"classname" "light_dynamic_spot"
+"classname" "light_spot"
 "origin" "1920 640 1064"
 "light" "220"
 "_color" "180 0 255"
@@ -7747,7 +7745,7 @@
 }
 // entity 55
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-3200 1920 1064"
 "light" "150"
 "_color" "0 255 120"
@@ -7786,7 +7784,7 @@
 }
 // entity 58
 {
-"classname" "light_dynamic_spot"
+"classname" "light_spot"
 "origin" "640 1920 1064"
 "light" "220"
 "_color" "0 255 200"
@@ -7799,7 +7797,7 @@
 }
 // entity 59
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "2560 1920 1064"
 "light" "150"
 "_color" "255 0 200"

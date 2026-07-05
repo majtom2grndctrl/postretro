@@ -1,6 +1,6 @@
 # Forward Dynamic-Light Visibility Cull
 
-> **Status:** ready (promoted after review-draft-spec + review-implementability). Sibling of
+> **Status:** done (implemented; pending owner performance/visual acceptance before mainline inclusion). Sibling of
 > `context/plans/drafts/perf-shadow-caster-culling/` — both attack
 > large-map dynamic-light cost, on different frame stages (this = the forward shading loop; that =
 > the shadow world re-raster). Independent; no build-order dependency between them.

@@ -1452,29 +1452,35 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         SectionId::ShadowmaskAtlas as u32,
     )? {
         Some(data) => match ShadowmaskAtlasSection::from_bytes(&data) {
-            Ok(section) => {
-                let dims_match = lightmap.as_ref().is_none_or(|lm| {
-                    section.width == lm.irr_width
+            Ok(section) => match lightmap.as_ref() {
+                Some(lm) => {
+                    if section.width == lm.irr_width
                         && section.height == lm.irr_height
                         && section.layer_count == lm.layer_count
-                });
-                if !dims_match {
+                    {
+                        log::info!(
+                            "[PRL] ShadowmaskAtlas: {}x{} atlas, {} layer(s), {} selected channel entr(y/ies), {} payload byte(s)",
+                            section.width,
+                            section.height,
+                            section.layer_count,
+                            section.channels.len(),
+                            section.data.len(),
+                        );
+                        Some(section)
+                    } else {
+                        log::warn!(
+                            "[PRL] ShadowmaskAtlas dimensions do not match Lightmap irradiance atlas; ignoring section"
+                        );
+                        None
+                    }
+                }
+                None => {
                     log::warn!(
-                        "[PRL] ShadowmaskAtlas dimensions do not match Lightmap irradiance atlas; ignoring section"
+                        "[PRL] ShadowmaskAtlas present without Lightmap; ignoring SectionId 42"
                     );
                     None
-                } else {
-                    log::info!(
-                        "[PRL] ShadowmaskAtlas: {}x{} atlas, {} layer(s), {} selected channel entr(y/ies), {} payload byte(s)",
-                        section.width,
-                        section.height,
-                        section.layer_count,
-                        section.channels.len(),
-                        section.data.len(),
-                    );
-                    Some(section)
                 }
-            }
+            },
             Err(err) => {
                 log::warn!("[PRL] ShadowmaskAtlas malformed; ignoring section: {err}");
                 None

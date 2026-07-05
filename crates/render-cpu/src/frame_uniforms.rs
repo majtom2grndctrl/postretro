@@ -207,10 +207,11 @@ pub struct FrameUniforms {
     /// gates the static-lightmap term (independent because the static-term
     /// multiply must skip a shadowed-mode lightmap to avoid double shadows).
     pub sdf_shadow_flags: u32,
-    /// `SdfShadowMode` debug selector (Task 6). Encoded as the enum's `u32`
-    /// repr (0=On, 1=Off, 2=Visualize). Overlays the per-term flags above:
-    /// `Off` forces both SDF multiplies to 1.0; `Visualize` replaces the
-    /// shaded color output with a grayscale R-channel view.
+    /// `SdfShadowMode` debug selector. Encoded as the enum's `u32` repr; keep
+    /// the enum variants above as the source of truth for mode ids. Overlays
+    /// the per-term flags above: `Off` forces both SDF multiplies to 1.0;
+    /// visualization modes replace the shaded color output with diagnostic
+    /// views.
     pub sdf_shadow_mode: SdfShadowMode,
     /// Dev toggle: force per-light SDF visibility to 1.0 in the forward shader.
     /// Drives the "no double-count" visual A/B — with every sdf light fully

@@ -1513,6 +1513,7 @@ mod tests {
             direct_sh_volume: None,
             direct_sh_delta_volumes: None,
             entity_shadow_lights: vec![],
+            shadowmask_atlas: None,
             data_script: None,
             map_entities: Vec::new(),
             fog_volumes: Vec::new(),

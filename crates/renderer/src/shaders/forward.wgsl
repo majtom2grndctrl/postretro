@@ -610,10 +610,14 @@ fn sdf_visibility_for_light(sel: SdfLightSelection, factor: vec4<f32>, light_idx
 // this union term from baked static direct; mode 5 visualizes the subtraction
 // magnitude so baked-vs-runtime darker-wins checks are repeatable.
 const SHADOWMASK_VISUALIZE_MODE: u32 = 5u;
-const SHADOWMASK_INVALID_INDEX: u32 = 0xffffffffu;
-const SHADOWMASK_CHANNEL_DROPPED: u32 = 0xffu;
+const SHADOWMASK_INVALID_INDEX_VALUE: f32 = -1.0;
+const SHADOWMASK_CHANNEL_DROPPED: f32 = 4.0;
 const SHADOWMASK_POOL_SPOT: u32 = 0u;
 const SHADOWMASK_POOL_CUBE: u32 = 1u;
+const SHADOWMASK_POOL_SPOT_VALUE: f32 = 0.0;
+const SHADOWMASK_POOL_CUBE_VALUE: f32 = 1.0;
+const SHADOWMASK_SPOT_SLOT_COUNT: u32 = 96u;
+const SHADOWMASK_CUBE_SLOT_COUNT: u32 = 6u;
 const SHADOWMASK_EPS: f32 = 1.0e-4;
 const SHADOWMASK_NDOTL_EPS: f32 = 1.0e-2;
 const SHADOWMASK_SPOT_KERNEL_RADIUS: i32 = 2;
@@ -707,17 +711,17 @@ fn shadowmask_sample_spot_shadow_wide(
 }
 
 fn shadowmask_shadow_visibility(pool_kind: u32, slot: u32, sl: SpecLight, world_pos: vec3<f32>) -> f32 {
-    if slot == SHADOWMASK_INVALID_INDEX {
-        return 1.0;
-    }
     if pool_kind == SHADOWMASK_POOL_SPOT {
-        if slot >= 96u {
+        if slot >= SHADOWMASK_SPOT_SLOT_COUNT {
             return 1.0;
         }
         let light_proj = light_space_matrices.m[slot];
         return shadowmask_sample_spot_shadow_wide(slot, world_pos, light_proj);
     }
     if pool_kind == SHADOWMASK_POOL_CUBE {
+        if slot >= SHADOWMASK_CUBE_SLOT_COUNT {
+            return 1.0;
+        }
         return sample_point_shadow(slot, sl.position_and_range.xyz, world_pos, sl.position_and_range.w);
     }
     return 1.0;
@@ -757,17 +761,38 @@ fn shadowmask_union_subtraction(
         }
         let meta0 = light_influence[meta_index];
         let meta1 = light_influence[meta_index + 1u];
-        let meta0_bits = bitcast<vec4<u32>>(meta0);
-        let meta1_bits = bitcast<vec4<u32>>(meta1);
-        let spec_idx = meta0_bits.z;
+        let spec_idx_value = meta0.z;
         let weight = clamp(meta0.w, 0.0, 1.0);
-        let pool_kind = meta1_bits.x;
-        let slot = meta1_bits.y;
-        let channel = meta1_bits.z;
+        let pool_kind_value = meta1.x;
+        let slot_value = meta1.y;
+        let channel_value = meta1.z;
 
-        if channel == SHADOWMASK_CHANNEL_DROPPED || spec_idx == SHADOWMASK_INVALID_INDEX || spec_idx >= spec_len || weight <= 0.0 {
+        if weight <= 0.0 ||
+           spec_idx_value <= SHADOWMASK_INVALID_INDEX_VALUE ||
+           spec_idx_value >= f32(spec_len) ||
+           channel_value < 0.0 ||
+           channel_value >= SHADOWMASK_CHANNEL_DROPPED {
             continue;
         }
+        if pool_kind_value != SHADOWMASK_POOL_SPOT_VALUE && pool_kind_value != SHADOWMASK_POOL_CUBE_VALUE {
+            continue;
+        }
+        if floor(spec_idx_value) != spec_idx_value ||
+           floor(slot_value) != slot_value ||
+           floor(channel_value) != channel_value {
+            continue;
+        }
+        if (pool_kind_value == SHADOWMASK_POOL_SPOT_VALUE &&
+            (slot_value < 0.0 || slot_value >= f32(SHADOWMASK_SPOT_SLOT_COUNT))) ||
+           (pool_kind_value == SHADOWMASK_POOL_CUBE_VALUE &&
+            (slot_value < 0.0 || slot_value >= f32(SHADOWMASK_CUBE_SLOT_COUNT))) {
+            continue;
+        }
+
+        let spec_idx = u32(spec_idx_value);
+        let pool_kind = u32(pool_kind_value);
+        let slot = u32(slot_value);
+        let channel = u32(channel_value);
         let sl = spec_lights[spec_idx];
         let direct = shadowmask_direct(sl, world_pos, mesh_n, bump_n);
         if direct.valid == 0u {

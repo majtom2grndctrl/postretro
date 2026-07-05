@@ -208,11 +208,51 @@ fn forward_shader_shadowmask_union_uses_promoted_count_and_safe_metadata_tail() 
         "metadata reads must be bounds-guarded so stale tails are not read"
     );
     assert!(
-        helper.contains("channel == SHADOWMASK_CHANNEL_DROPPED"),
-        "dropped 0xFF channels must skip the union term"
+        !helper.contains("bitcast<vec4<u32>>(meta"),
+        "promoted metadata lives in a float storage tail and must be read as numeric f32 values, not raw u32 bit patterns"
     );
     assert!(
-        helper.contains("let spec_idx = meta0_bits.z;"),
+        src.contains("const SHADOWMASK_INVALID_INDEX_VALUE: f32 = -1.0;")
+            && src.contains("const SHADOWMASK_CHANNEL_DROPPED: f32 = 4.0;"),
+        "shadowmask metadata sentinels must be normal numeric floats"
+    );
+    assert!(
+        helper.contains("channel_value >= SHADOWMASK_CHANNEL_DROPPED"),
+        "dropped channels must use the float-safe 4.0 sentinel and skip the union term before u32 casts"
+    );
+    let spec_guard = helper
+        .find("spec_idx_value <= SHADOWMASK_INVALID_INDEX_VALUE")
+        .expect("invalid spec indices must be rejected as float metadata");
+    let spec_cast = helper
+        .find("let spec_idx = u32(spec_idx_value);")
+        .expect("shader must consume the CPU-uploaded compact spec_lights index");
+    assert!(
+        spec_guard < spec_cast,
+        "spec index metadata must be bounds-guarded before casting to u32"
+    );
+    let channel_guard = helper
+        .find("channel_value >= SHADOWMASK_CHANNEL_DROPPED")
+        .expect("dropped channel sentinel must be checked");
+    let channel_cast = helper
+        .find("let channel = u32(channel_value);")
+        .expect("shader must cast the checked numeric channel");
+    assert!(
+        channel_guard < channel_cast,
+        "channel metadata must be sentinel/range-guarded before casting to u32"
+    );
+    assert!(
+        helper.contains("floor(spec_idx_value) != spec_idx_value")
+            && helper.contains("floor(slot_value) != slot_value")
+            && helper.contains("floor(channel_value) != channel_value"),
+        "metadata values must be integer-valued floats before u32 casts"
+    );
+    assert!(
+        helper.contains("slot_value >= f32(SHADOWMASK_SPOT_SLOT_COUNT)")
+            && helper.contains("slot_value >= f32(SHADOWMASK_CUBE_SLOT_COUNT)"),
+        "shadow pool slots must be range-guarded before indexing or sampling"
+    );
+    assert!(
+        helper.contains("let spec_idx = u32(spec_idx_value);"),
         "shader must consume the CPU-uploaded compact spec_lights index"
     );
     assert!(

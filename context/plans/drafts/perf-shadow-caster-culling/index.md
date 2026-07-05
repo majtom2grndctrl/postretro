@@ -1,395 +1,359 @@
 # Shadow Caster Culling
 
-> **Status:** draft. Per-frame crawl on large lit maps — the dynamic shadow pool saturates and
-> re-rasterizes the world (plus a whole-BVH cone cull) for ~100 slots every frame.
-> **Related:** `context/lib/rendering_pipeline.md` §4 (shadow pool), §7.1 (pass ordering) ·
-> `context/plans/done/perf-dynamic-light-pvs-cull/` (the origin-cell gate this tightens) ·
-> `context/plans/ready/static-light-entity-shadows/` Task 6 (the depth-cache mechanism fix (a) reuses) ·
-> `context/plans/drafts/perf-anti-penumbra-pvs/` (shrinks the drawable PVS this consumes — complementary,
-> not folded in).
+> **Status:** draft — REDESIGNED post-merge. The original premise (bound the *count* of
+> occupied dynamic shadow slots by tightening the eligibility gate + screen-space ranking) was
+> overtaken by the `static-light-shadowmask-world-receipt` / promoted-static-light merge, which landed
+> the depth-cache and ranking infrastructure and — critically — locked in an invariant that **bars**
+> the old gate-tightening fix. The remaining crawl driver is per-slot *cost* on the up-to-96+36
+> DYNAMIC slots, which the merge left entirely on the uncached, serial per-slot path.
+> **Related:** `context/lib/rendering_pipeline.md` §4 (dynamic direct, promoted static lights), §7.1
+> steps 6–8 (shadow cone cull + depth passes) · `context/plans/done/perf-dynamic-light-pvs-cull/` (the
+> origin-cell gate history) · `context/plans/ready/static-light-shadowmask-world-receipt/` (the merge
+> that landed `promoted_depth_cache.rs` + `shadow_ranking.rs`) · `context/plans/drafts/perf-anti-penumbra-pvs/`
+> (shrinks the drawable PVS — complementary, not folded in).
+
+## Post-merge baseline
+
+The shadow subsystem was reworked. Establish what already exists before adding scope.
+
+**Promoted-static depth cache — the fix-(a) mechanism now exists in tree.**
+`crates/renderer/src/render/promoted_depth_cache.rs` (`PromotedDepthCache`) is exactly the
+"`Depth32Float` cache array + `COPY_SRC` + depth-to-depth copy + warm/skip counters" the old fix (a)
+proposed reusing. Per frame `plan_frame` (`:197`) assigns each promoted-static record a stable cache
+layer keyed on `(global_light_index, selection_index, slot)` (`CacheKey`, `:8`), tracks a `warm`
+flag per layer, and emits `needs_world_render` (`:36`). Warm slots skip the world raster; their
+depth is initialized in the live pool by `copy_spot_to_pool` / `copy_cube_face_to_pool` (`:225`,
+`:260`). It also emits a **cull-side skip** (`should_dispatch_spot_cull` `:83`,
+`should_dispatch_cube_cull` `:90`) so a warm slot contributes zero cone-cull work. **But the cache is
+sized and keyed for PROMOTED STATIC lights only** — budget `MAX_PROMOTED_SPOT = 8` +
+`MAX_PROMOTED_CUBE = 2` (`renderer_types.rs:371–372`), records are `PromotedStaticLightRecord`. It has
+**no dirty test** (static lights never move) and does **not** cover dynamic-tier slots at all.
+
+**Slot ranking + hysteresis — moved to a wgpu-free crate, position-only by design.**
+Ranking left the renderer's `spot_shadow.rs` / `cube_shadow.rs` (the old `rank_lights` /
+`assign_ranked_slots` anchors are gone) and now lives in `crates/lighting/src/shadow_ranking.rs`.
+The score is unchanged: `slot_score = (falloff_range / max(distance, near_clip))²` (`:10`), a
+**position-only** metric — `rank_spot_lights` / `rank_point_lights` (`:51`, `:82`) take
+`camera_position` + `camera_near_clip` and **no** view-projection or frustum. The renderer drives them
+through `assign_slots_with_hysteresis` (`:193`), which adds tier-neutral eviction hysteresis: a
+dynamic light **keeps its slot frame-to-frame** unless a challenger out-scores its incumbent by
+`EVICTION_MARGIN = 1.25` (`renderer_light_slots.rs:871`; incumbents built at `:949`). This gives
+dynamic slots the **stable light-keyed binding** the old fix (a) said "does NOT exist for dynamic
+lights today."
+
+**Orientation-invariance is now a locked invariant.** Two tests pin that the assigned-slot SET must
+not change with camera orientation (only eye position): the regression
+`dynamic_spot_keeps_slot_when_cone_aabb_outside_pitched_camera_frustum` (`shadow_ranking.rs:817`) and
+the proptest `shadow_slot_set_invariant_under_camera_orientation` (`:850`). This is the merge's
+resolution of the pitch-down "entity shadow vanished" bug — and it directly **bars** the old fix (b)
+(gate against the orientation-dependent drawable PVS, rank by frustum-position). See the disposition
+table.
+
+**Eligibility gate — unchanged (still wide).** `update_dynamic_light_slots`
+(`renderer_light_slots.rs:30`) still builds `visible_lights` (`:79–127`) by testing each candidate's
+runtime influence sphere against `reachable_cell_aabbs` — the WIDE portal-reachable set including
+empty `face_count == 0` cells (`shadow_candidate_reaches_visible_cell`, `renderer_lighting.rs:73`,
+documented `renderer_light_slots.rs:16–24`). The merge did NOT narrow it — deliberately, per the
+invariant above.
+
+**GPU timing — encoder-level brackets landed; the dynamic shadow passes are still dark.**
+`frame_timing.rs` gained `write_encoder_start` / `write_encoder_end` (`:159–168`) for encoder-level
+(non-pass) spans, and the registry gained `TIMING_PAIR_PROMOTED_DEPTH_CACHE = 7`
+(`pipeline_layout.rs:138`, `TIMING_PAIR_COUNT = 9`), label `"promoted_depth_cache_upper"`
+(`renderer_init_resources.rs:557`). That pair is a **coarse upper bound** that — by design — also
+swallows the interleaved dynamic shadow-depth passes (`renderer_shadow_passes.rs:646–647`), **but only
+opens when a promoted-static slot exists** (`:247`, `:474`). A pure-dynamic warren with zero promoted
+lights (e.g. `stress-warren-lit`) gets **no** shadow-depth timing at all, and the shadow cone-cull
+compute pass is still `timestamp_writes: None` (`shadow_cull.rs:288`) on every map.
+
+## Post-merge disposition of the original four fixes
+
+| Fix | Verdict | Deciding anchor |
+| --- | --- | --- |
+| **(d)** shadow timestamp brackets | **Partial → still needed** | Encoder-level mech + `promoted_depth_cache_upper` pair landed (`frame_timing.rs:159`, `pipeline_layout.rs:138`), but `shadow_cull.rs:288` is still `None` and the depth bracket only opens with a promoted slot (`renderer_shadow_passes.rs:247`). Dynamic-only maps stay dark. |
+| **(b)** tighter gate + screen-space ranking | **Obsolete / contra-indicated → DROPPED** | The merge locked orientation-invariance of slot eligibility (`shadow_ranking.rs:817`, `:850`). Both halves of (b) — drawable-PVS gate and frustum-position ranking — are orientation-dependent and would reintroduce the exact pitch-down regression those tests guard. |
+| **(c)** parallelize the per-slot cone culls | **Still needed → re-anchored** | `dispatch_occupied_slots_filtered` (`shadow_cull.rs:245`) still loops `dispatch_workgroups(1,1,1)` per occupied slot (`:291–294`); the `should_dispatch` closure only skips *warm promoted* slots. Shared-shader hazard still live (see Task 2). |
+| **(a)** dynamic depth caching | **Infra delivered; dynamic extension still needed → now PRIMARY** | `promoted_depth_cache.rs` is the reusable mechanism, but covers only ≤8 spot + ≤2 cube *promoted-static* slots (`renderer_types.rs:371`). Dynamic slots re-raster world depth every frame (`renderer_shadow_passes.rs:344`, `:580`). Its missing prerequisites — stable slot binding (hysteresis) and the cache/cull-skip mechanism — now exist. |
 
 ## Problem
 
-Plain unlit `stress-warren.prl` runs at v-sync. Its lit variants crawl: `stress-warren-lit` (~157
-lights) and `stress-warren-crates` (36 spot casters). VRAM and camera-side culling are fine — the
-drain is entirely in the dynamic shadow pool.
+Plain unlit `stress-warren.prl` runs at v-sync. Its lit variants crawl: `stress-warren-lit`
+(~157 lights, no promoted-static lights) and `stress-warren-crates` (36 spot casters over static
+crates). VRAM and camera-side culling are fine — the drain is entirely in the **dynamic** shadow pool.
 
-**Saturation mechanism.** Baked lights never enter the pool; only dynamic-tier lights compete for
-slots. For every occupied slot, every frame, the renderer does two expensive things:
+Dynamic-tier spot and point lights that clear the wide (unchanged) reachable gate saturate the pool to
+its caps — `SHADOW_POOL_SIZE = 96` spot slots (`spot_shadow.rs:12`) plus `CUBE_COUNT = 6` cube slots ×
+`CUBE_FACES = 6` = 36 cube faces (`cube_shadow.rs:36`, `:45`). For every occupied **dynamic** slot,
+every frame, the renderer does two expensive things the merge left untouched:
 
-1. **Re-rasterizes world depth** — one `begin_render_pass` per spot slot
-   (`renderer_shadow_passes.rs:220`) and one per cube face (`:329`), each drawing the slot's culled
-   world geometry.
-2. **Runs a whole-BVH cone cull** — one `dispatch_workgroups(1, 1, 1)` per occupied slot
-   (`shadow_cull.rs:286–289`), each a single workgroup walking the entire BVH serially.
+1. **Re-rasterizes world depth** — one dedicated `begin_render_pass` per dynamic spot slot ("Spot
+   Shadow Depth Pass", `renderer_shadow_passes.rs:345`) and one per dynamic cube face ("Cube Shadow
+   Depth Pass", `:581`), each drawing the slot's cone-culled world geometry via `draw_slot_indirect`.
+2. **Runs a whole-BVH cone cull** — one `dispatch_workgroups(1, 1, 1)` per occupied slot inside
+   `dispatch_occupied_slots_filtered` (`shadow_cull.rs:291–294`), each a single workgroup walking the
+   entire BVH serially. Two instances loop this: spot (`region_count = 96`) and cube
+   (`region_count = 36`), called at `renderer_shadow_passes.rs:225` / `:446`.
 
-In an open, densely-portaled warren, dozens of dynamic casters all legitimately reach the visible
-set, so the pool fills to its caps — `SHADOW_POOL_SIZE = 96` spot slots (`spot_shadow.rs:13`) plus
-`CUBE_COUNT = 6` cube slots × 6 faces = 36 cube faces (`cube_shadow.rs:36`). The result is ~100+
-render passes and ~100+ serial single-workgroup whole-BVH walks per frame. That is the crawl.
+Result on a saturated warren: ~100+ render passes and ~100+ serial single-workgroup whole-BVH walks
+per frame. The merge's promoted-depth cache + cull-skip + hysteresis address only the ≤8 spot + ≤2
+cube **promoted-static** slots; the up-to-96+36 **dynamic** slots remain fully on the uncached, serial
+path. That is the crawl.
 
-**Root cause — the eligibility gate is too loose.** `update_dynamic_light_slots`
-(`renderer_light_slots.rs:25`) gates each candidate through
-`shadow_candidate_reaches_visible_cell` (`renderer_lighting.rs:62`), which tests the light's runtime
-influence sphere against `reachable_cell_aabbs` — the **wide portal-reachable set**
-(`renderer_light_slots.rs:11–18` documents this: same source as `light_reachable_cell_mask`, and it
-deliberately includes empty `face_count == 0` cells). It is NOT the narrow drawable `VisibleCells`
-PVS. In an open warren that reachable set is huge, so almost every caster clears the gate and enters
-the pool.
-
-The gate was widened deliberately (`perf-dynamic-light-pvs-cull` shipped the narrower origin-cell
-gate; a later fix widened it back to the influence-vs-reachable-cell test because the own-cell-PVS
-gate dropped a light whose cell left the shrinking PVS on pitch-down, making entity shadows vanish).
-So the fix is not to revert — it is to gate against a set that is tight enough to bound the slot
-count but still wide enough to keep any caster that lights a **visible receiver**.
-
-**Ranking gives no slot stability.** `rank_lights` (`spot_shadow.rs:399`) scores each candidate by
-`(falloff_range / max(distance, near_clip))²` (`:436`) and re-sorts by that distance-derived score
-every frame (`assign_ranked_slots` def `spot_shadow.rs:29`, sort at `:37`, call site `:454`). Slot
-identity is unstable frame-to-frame; only candidates past the 96/6 caps are dropped. The cube pool
-ranks through the same core (`rank_point_lights`, `cube_shadow.rs:138`).
-
-**The cost is invisible to profiling.** Both shadow passes set `timestamp_writes: None`
-(`shadow_cull.rs:283`; spot depth `renderer_shadow_passes.rs:231`; cube depth `:340`), so
-`POSTRETRO_GPU_TIMING` shows nothing for the dominant cost. Any before/after measurement is blind
-until that is fixed.
+**Why the old lever (bound the count) is gone.** The original spec's primary fix — narrow the
+eligibility gate to the drawable PVS and rank by screen-space footprint — is now contra-indicated:
+the merge established that shadow-slot eligibility must be **orientation-independent** (the pitch-down
+invariant, `shadow_ranking.rs:817` / `:850`). The drawable PVS shrinks on pitch-down; a frustum-position
+ranking reorders on look direction. Either would resurrect the "entity shadow vanished" bug. The
+orientation-independent count is already capped (96 spot + 6 cube via `assign_slots_with_hysteresis`
+overflow), and lowering that cap is a quality knob, not this plan's concern. **So the only levers left
+attack per-slot COST**, not count.
 
 ## Goal
 
-Return `stress-warren-lit` and `stress-warren-crates` to the v-sync baseline of plain
-`stress-warren` by bounding the number of occupied shadow slots — which multiplies BOTH the
-render-pass count and the cone-cull dispatch count — without dropping any caster that shadows a
-visible receiver. Make the shadow passes measurable first so the win is provable, parallelize the
-surviving cone culls, and (optionally, last) skip world re-raster for static-in-place casters.
+Return `stress-warren-lit` and `stress-warren-crates` toward the v-sync baseline of plain
+`stress-warren` by driving the per-frame cost of each occupied **dynamic** slot toward the
+promoted-static cost profile — without narrowing the eligibility gate or reintroducing any
+orientation dependence. Make the dynamic shadow passes measurable first (so the win is provable on a
+promoted-light-free map), parallelize the surviving cone culls (a count-independent, VRAM-free win
+that helps every occupied slot), then extend the existing promoted-depth cache to static-in-place
+dynamic slots so the stationary majority skip their per-frame world re-raster and cull.
 
 ## Scope
 
 ### In scope
 
-Four fixes, sequenced `(d) → (b) → (c) → (a)`:
+Three fixes, sequenced `(d) → (c) → (a)`:
 
-- **(d) Shadow timestamp brackets (size S, measurement prerequisite).** Make the shadow cull and
-  shadow depth passes visible to `POSTRETRO_GPU_TIMING`. Extend the `TIMING_PAIR_*` registry
-  (`pipeline_layout.rs:131–138`, `TIMING_PAIR_COUNT` currently 7), add labels
-  (`renderer_init_resources.rs:540–548`), and wire `timestamp_writes` at the three shadow sites via
-  `frame_timing.rs` `compute_pass_writes` / `render_pass_writes` (`:136–155`).
-- **(b) Tighter caster gate + screen-space ranking (size M–L, THE crawl fix).** Gate
-  shadow-caster eligibility against the drawable PVS + one portal hop instead of the wide
-  fog-reachable set, and rank by screen-space influence instead of raw camera distance. Cuts the
-  occupied-slot count. Touches the `visible_lights` construction and
-  `shadow_candidate_reaches_visible_cell` (`renderer_light_slots.rs:61–92`,
-  `renderer_lighting.rs:62`), the caller that supplies `reachable_cell_aabbs`, and the scoring in
-  `rank_lights` / `rank_point_lights`.
-- **(c) Parallelize the per-slot cone culls (size M, independent win).** Replace the
-  `dispatch_workgroups(1, 1, 1)`-per-slot loop in `shadow_cull.rs::dispatch_occupied_slots`
-  (`:286–289`) with one dispatch over slot × leaf pairs, turning ~100 serial single-workgroup
-  whole-BVH walks into one parallel pass. In scope for BOTH pools: the cube pool runs a second
-  instance of the same cull pipeline (its 36 faces each currently run their own whole-BVH cone cull
-  too), so the unified dispatch covers the spot path and the cube/`rank_point_lights` path. Helps
-  whatever slots survive (b).
-- **(a) Dynamic depth caching (size L, optional, last).** Cache a non-moving caster's world depth so
-  a static-in-place dynamic light skips its per-frame world re-raster. Reuses the depth-cache
-  mechanism designed in `static-light-entity-shadows` Task 6.
+- **(d) Dynamic shadow timestamp brackets (size S, measurement prerequisite).** Bracket the shadow
+  cone-cull compute pass and the dynamic shadow-depth loop so `POSTRETRO_GPU_TIMING` shows them on
+  every map — including promoted-light-free warrens where today's `promoted_depth_cache_upper` bracket
+  never opens. Reuse the encoder-level `write_encoder_start` / `write_encoder_end`
+  (`frame_timing.rs:159`).
+- **(c) Parallelize the per-slot cone culls (size M, biggest count-independent win).** Replace the
+  `dispatch_workgroups(1,1,1)`-per-slot loop with one dispatch over (slot, leaf) pairs. No VRAM cost,
+  helps every occupied slot regardless of caching. In scope for BOTH the spot
+  (`region_count = 96`) and cube (`region_count = 36`) instances. **Fork the shared shader — do not
+  mutate `bvh_cull.wgsl` in place** (see Task 2).
+- **(a) Extend the promoted-depth cache to static-in-place dynamic slots (size L, primary
+  re-raster win).** Give dynamic slots a budgeted world-depth cache so a non-moving dynamic caster
+  skips its per-frame world raster and cone cull, exactly as a warm promoted-static slot does today.
+  Reuse `promoted_depth_cache.rs`'s array + copy + warm/skip machinery; add the one piece statics
+  don't need — a **cone/position dirty test** so a *moving* dynamic light re-renders.
 
 ### Out of scope
 
-- **Streaming / residency.** No change to what geometry is resident.
-- **SDF / depth-moment device-limit guards.** `stress-warren-maze-crates` panics on load today for
-  lack of these guards; adding them is a separate plan. See the interlock in Acceptance criteria.
-- **Bake time.** No compiler-side work here.
-- **The `static-light-entity-shadows` feature itself.** Fix (a) *reuses its Task 6 depth-cache
-  mechanism* but does not implement or depend on the static-light promotion feature. That feature's
-  cache covers only ≤10 static promoted lights (`MAX_PROMOTED_SPOT = 8` + `MAX_PROMOTED_CUBE = 2`)
-  and explicitly leaves dynamic lights on the per-frame path; fix (a) extends the same mechanism to
-  dynamic slots.
-- **Compile-time PVS tightening.** `perf-anti-penumbra-pvs` shrinks the drawable PVS that fix (b)
-  consumes as input; it is complementary and independent. Do not fold it in.
+- **Gate tightening / screen-space ranking (the old fix (b)).** Barred by the orientation-invariance
+  invariant (`shadow_ranking.rs:817`, `:850`). Do NOT narrow `shadow_candidate_reaches_visible_cell`
+  to the drawable PVS and do NOT add a frustum-position term to `slot_score`. If the pool cap itself
+  is ever revisited, that is an orientation-independent quality knob in a separate plan, not here.
+- **Lowering `SHADOW_POOL_SIZE` / `CUBE_COUNT`.** A quality trade, separate concern.
+- **Moving-light world raster.** A genuinely moving dynamic light fails the dirty test and re-renders
+  every frame; (c) still parallelizes its cull, but caching cannot help it. Not a gap to close here.
+- **Streaming / residency, SDF / depth-moment device-limit guards, bake time, compile-time PVS
+  tightening.** Unchanged from the original spec's non-goals. `stress-warren-maze-crates` still panics
+  on load for lack of the SDF/moment guards — iterate on `stress-warren-lit` / `stress-warren-crates`,
+  which load today.
+- **The promoted-static feature itself.** (a) extends its cache machinery to dynamic slots; it does
+  not modify promoted-static promotion, weights, or the SH-delta subtraction.
 
 ## Acceptance criteria
 
-- [ ] `cargo build -p postretro` and the renderer crate compile clean with no warnings.
-- [ ] `cargo test -p postretro-renderer` passes, including the existing
-  `shadow_candidate_reaches_visible_cell` tests (`render/tests/light_filter_tests.rs:212`, `:223`)
-  updated for the tightened gate — note this update is minor (at most a rename if
-  `reachable_cell_aabbs` no longer means "fog-reachable"): the helper's own semantics don't tighten,
-  so this test does NOT exercise the one-hop expansion, which is the load-bearing fix and lives in
-  `main.rs`. That expansion is covered by the manual pitch-down AC below, not a renderer unit test;
-  consider adding a `main.rs`-side unit test of the one-hop expansion as an automated guard. Also add
-  new tests pinning that ranking is screen-space-influence-driven, not raw-distance-driven — varying
-  only an on-screen/off-screen (frustum-position) factor with distance and `falloff_range` held fixed
-  (a monotonicity/property assertion, not a fixed order — the metric itself stays open).
-- [ ] **(d)** With `POSTRETRO_GPU_TIMING=1`, the per-frame timing log gains `shadow_cull` and
-  `shadow_depth` lines. On `stress-warren-lit` / `stress-warren-crates` pre-(b), those lines
-  dominate the frame; post-(b)+(c) they shrink sharply.
-- [ ] **(b)** With `POSTRETRO_SHADOW_DEBUG=1` (`emit_shadow_debug`,
-  `renderer_light_slots.rs:261`), the `spot=<used>/96 … cube=<used>/… spot_overflow=… cube_overflow=…`
-  line shows `spot_used` / `cube_used` falling sharply and `spot_overflow` / `cube_overflow`
-  collapsing toward 0 on both stress maps, versus the pre-fix saturated counts.
-- [ ] **(b) correctness** A caster whose own cell is not drawable but whose influence reaches a
-  visible receiver through a portal still receives a slot (manual: place/keep a spot behind a portal
-  that lights a wall the camera sees; confirm its shadow persists on pitch-down — the regression the
-  wide gate originally fixed does not return).
-- [ ] **(c)** Both the spot and cube single slot × leaf dispatches produce the same per-slot cull
-  output as the old per-slot loops: for a fixed camera/pool, read back the indirect buffer's
-  per-slot sub-regions (`region_stride_bytes`-spaced) before and after the change and diff the
-  culled-leaf sets slot-by-slot — not a visual-only check. Shadow visuals unchanged.
-- [ ] **Net** `stress-warren-lit` and `stress-warren-crates` frame time returns to the v-sync
-  baseline of plain `stress-warren`. Verified manually via
-  `POSTRETRO_GPU_TIMING=1 cargo run -p xtask -- run <map>.prl`.
-- [ ] **(a), if landed** A static-in-place dynamic caster's per-frame world-depth draw drops to zero
-  after its cache warms (skip counters), and its leaf range is excluded from the unified cone-cull
-  dispatch (b)+(c) leave in place, while a caster whose cone matrix changed re-renders. No shadow
-  visual change. This AC depends on (c)'s output shape (the unified dispatch) when both land — if (a)
-  lands without (c), "excluded from the dispatch" instead means the per-slot dispatch is skipped for
-  that slot.
-
-**Interlock (not scoped here):** full-scale validation on `stress-warren-maze-crates` is blocked
-until the SDF / depth-moment device-limit guards land — that map panics on load today. Iterate and
-validate on `stress-warren-lit` and `stress-warren-crates`, which load today.
+- [ ] `cargo build -p postretro` and `cargo build -p postretro-renderer` compile clean, no warnings.
+- [ ] `cargo test -p postretro-renderer` and `cargo test -p postretro-lighting` pass, including the
+  orientation-invariance guards (`shadow_ranking.rs:817`, `:850`) **unchanged** — this plan must not
+  perturb them. The `promoted_depth_cache.rs` cache tests still pass and gain dynamic-tier analogues
+  (a static-in-place dynamic slot warms and stops re-rendering; a moved dynamic slot re-renders).
+- [ ] **(d)** With `POSTRETRO_GPU_TIMING=1` on `stress-warren-lit` (no promoted lights) the per-frame
+  timing log gains a `shadow_cull` line and a `shadow_depth` line that are non-zero and dominate the
+  frame pre-(c)/(a); both shrink sharply post-(c)+(a). The existing `promoted_depth_cache_upper` line
+  is unchanged.
+- [ ] **(c)** The parallel (slot, leaf) dispatch produces the same per-slot cull output as the old
+  per-slot loop for both pools: for a fixed camera/pool, read back the indirect buffer's per-slot
+  sub-regions (`region_stride_bytes`-spaced, `shadow_cull.rs:316`) before and after and diff the
+  culled-leaf sets slot-by-slot. Shadow visuals unchanged. The camera cull path and its layout-pinning
+  test (`candidate_shader_reuses_bvh_cull_struct_layouts`, `compute_cull.rs:1073`) are untouched.
+- [ ] **(a)** A static-in-place dynamic caster's per-frame world-depth render pass drops to zero after
+  its cache warms (skip counter), and its slot is excluded from the cone-cull work (via the same
+  `should_dispatch_*` skip the promoted path uses), while a caster whose cone/position changed
+  re-renders that frame. No shadow visual change. Cache VRAM stays O(dynamic budget), not O(pool size).
+- [ ] **(b) diagnostics unchanged.** `POSTRETRO_SHADOW_DEBUG=1` (`emit_shadow_debug`,
+  `renderer_light_slots.rs:392`) still logs the `spot=<used>/96 … cube=<used>/… spot_overflow=…
+  cube_overflow=…` line (`:619–635`). This plan does **not** aim to collapse `spot_used`/`cube_used`
+  (that was the dropped gate-tighten fix); the counts stay driven by the wide gate.
+- [ ] **Net** `stress-warren-lit` and `stress-warren-crates` frame time returns toward the v-sync
+  baseline of plain `stress-warren`, verified manually via
+  `POSTRETRO_GPU_TIMING=1 cargo run -p xtask -- run <map>.prl`. Both maps' casters are static-in-place,
+  so (a) removes their world raster and (c) their serial cull.
 
 ## Tasks
 
-### Task 1 — (d) Shadow timestamp brackets
+### Task 1 — (d) Dynamic shadow timestamp brackets
 
-Make the shadow passes measurable; this is the prerequisite for proving every later fix.
+Make the dynamic shadow cull and depth passes measurable on **every** map, not just those with
+promoted-static lights. Prerequisite for proving (c) and (a).
 
-Add two pairs to the `TIMING_PAIR_*` registry (`pipeline_layout.rs:131–138`): `TIMING_PAIR_SHADOW_CULL`
-and `TIMING_PAIR_SHADOW_DEPTH`, bumping `TIMING_PAIR_COUNT` (7 → 9). Add matching labels
-(`"shadow_cull"`, `"shadow_depth"`) in the `pass_labels` vec (`renderer_init_resources.rs:540–548`).
+Add two pairs to the registry (`pipeline_layout.rs:131–140`): `TIMING_PAIR_SHADOW_CULL` and
+`TIMING_PAIR_SHADOW_DEPTH`, bumping `TIMING_PAIR_COUNT` (9 → 11). Add matching labels
+(`"shadow_cull"`, `"shadow_depth"`) to the `pass_labels` vec (`renderer_init_resources.rs:549–558`).
+Both stay well under `frame_timing`'s 64-pair ceiling (`mark_pair_written`, `frame_timing.rs:171`).
 
-Wire `timestamp_writes` at the three sites, replacing `None`:
+- **Shadow cull** — one compute pass, trivially bracketable. Pass
+  `compute_pass_writes(TIMING_PAIR_SHADOW_CULL)` (`frame_timing.rs:147`) into
+  `dispatch_occupied_slots_filtered`, replacing `timestamp_writes: None` (`shadow_cull.rs:288`). Note
+  both pools (spot at `renderer_shadow_passes.rs:225`, cube at `:446`) run this pipeline; bracket each
+  under the same pair — the pass ran when either dispatched. (`render_pass_writes` /
+  `compute_pass_writes` always write both `beginning`/`end` on one pass, so a single compute pass per
+  call is clean; the two calls are separate passes — accept two same-pair spans across the frame,
+  matching how `accumulate` sums a pair per frame, or bracket only the spot instance if cube is
+  frequently empty. Implementor's call; the AC needs a non-zero `shadow_cull` line.)
+- **Shadow depth** — the dynamic depth loops are ~100 separate `begin_render_pass` calls, so they
+  cannot each carry a pair. Use the **encoder-level** bracket the merge already added
+  (`write_encoder_start` / `write_encoder_end`, `frame_timing.rs:159–168`): open
+  `TIMING_PAIR_SHADOW_DEPTH` at the top of `record_spot_shadow_depth` (`renderer_shadow_passes.rs:184`)
+  and close it at the bottom of `record_cube_shadow_depth` (`:654`), spanning both loops
+  **unconditionally** (do NOT gate on a promoted slot, unlike the existing
+  `promoted_depth_cache_upper` open at `:247`/`:474`). This is a coarse aggregate that includes the
+  promoted-cache work too; that overlap with `promoted_depth_cache_upper` is acceptable — `shadow_depth`
+  is the whole-loop total, `promoted_depth_cache_upper` the promoted-only upper bound. Keep the
+  existing `promoted_depth_cache_upper` pair as-is.
 
-- **Shadow cull compute pass** (`shadow_cull.rs:283`) — one compute pass, trivially bracketable.
-  Pass `compute_pass_writes(TIMING_PAIR_SHADOW_CULL)` (`frame_timing.rs:147`).
-- **Spot depth** (`renderer_shadow_passes.rs:220`/`:231`) and **cube depth** (`:329`/`:340`) — the
-  default is a coarse begin/end pair straddling the whole block. `render_pass_writes(pair_idx)`
-  (`frame_timing.rs:136–144`) does not fit directly: it always writes BOTH
-  `beginning_of_pass_write_index` and `end_of_pass_write_index` onto the SAME pass, and its
-  pair-tracking (`mark_pair_written`, `:157`) is private to `frame_timing.rs`. Add a small
-  `pub(crate)` variant (or split `render_pass_writes` into begin-only/end-only halves) that still
-  calls `mark_pair_written` but lets the caller put `beginning_of_pass_write_index: Some(base)` on
-  the first `begin_render_pass` in the block and `end_of_pass_write_index: Some(base + 1)` on the
-  last, with `timestamp_writes: None` on every pass in between. Where the adapter supports
-  `TIMESTAMP_QUERY_INSIDE_ENCODERS`, the encoder-level alternative from the wrinkle below may be used
-  instead. Either way, the single `TIMING_PAIR_SHADOW_DEPTH` aggregate spans BOTH the spot depth
-  block (`record_spot_shadow_depth`) and the cube depth block (`record_cube_shadow_depth`, `:293`) —
-  two SEPARATE functions, each independently conditional and possibly empty (e.g. a map with no point
-  lights emits zero cube passes). The begin/end timestamps must land on the actual first/last
-  EXECUTED pass across both functions, not an assumed first-spot-pass-to-last-cube-pass pair. The
-  encoder-level `TIMESTAMP_QUERY_INSIDE_ENCODERS` option sidesteps this cross-function branching
-  entirely, since it brackets the whole block regardless of which passes actually ran.
+**Wrinkle.** `write_encoder_start`/`end` write raw encoder timestamps outside any pass; they need no
+`TIMESTAMP_QUERY_INSIDE_ENCODERS` feature (that is only for timestamps *inside* a pass), so no adapter
+gate is needed — the existing `promoted_depth_cache_upper` bracket already uses this path.
 
-**Wrinkle (call out as a task caveat).** The compute cull is a single pass and brackets cleanly. The
-spot and cube depth passes are ~100 SEPARATE `begin_render_pass` calls — they cannot each take a
-timestamp pair, because `frame_timing` caps at 64 pairs (`mark_pair_written` guards `pair_idx < 64`,
-`frame_timing.rs:157`) and there are only two allocated for shadows. Do NOT try to bracket each
-depth pass individually. Both the `shadow_cull` bracket AND a `shadow_depth` aggregate are required
-for v1 — "cull-only for v1, defer depth" is not an acceptable outcome (AC(d) requires the
-`shadow_depth` line). Pick one aggregate approach in implementation:
-- an encoder-level timestamp straddling the whole depth-pass block (requires the
-  `TIMESTAMP_QUERY_INSIDE_ENCODERS` wgpu feature — check adapter support and gate on it), or
-- a coarse begin/end pair around the first and last depth pass in the block (approximate, but zero
-  new features).
+### Task 2 — (c) Parallelize the per-slot cone culls
 
-Bracket the cull cleanly regardless; which aggregate approach to use for depth is the only judgment
-call.
+The biggest count-independent win: turns ~130 serial single-workgroup whole-BVH walks into one
+parallel pass, at zero VRAM cost, helping every occupied slot whether or not (a) caches it. In scope
+for both instances built by `ShadowCullPipeline::new` (`shadow_cull.rs:73`): the spot instance
+(`region_count = SHADOW_POOL_SIZE = 96`) and the cube instance (`region_count = CUBE_COUNT × CUBE_FACES
+= 36`), both dispatched by `dispatch_occupied_slots_filtered` (`:245`).
 
-### Task 2 — (b) Tighter caster gate + screen-space ranking
+`dispatch_occupied_slots_filtered` currently loops occupied slots and issues one
+`dispatch_workgroups(1, 1, 1)` each (`:291–294`), every one a single workgroup walking the whole BVH.
 
-The crawl fix. Cutting the occupied-slot count multiplies down BOTH the render-pass count and the
-cone-cull dispatch count.
+**The cull shader is shared with the camera cull — fork, do not mutate.** `ShadowCullPipeline` builds
+its module from `CULL_SHADER_SOURCE` = `bvh_cull.wgsl` (`shadow_cull.rs:9`, `:84`; the include lives
+at `compute_cull.rs:36`) — the SAME source the camera `ComputeCullPipeline` uses, and
+`shadow_cull.rs:88` notes the binding types must match `compute_cull.rs`. The layout-pinning test
+`candidate_shader_reuses_bvh_cull_struct_layouts` (`compute_cull.rs:1073`) asserts its struct strides.
+Changing binding-0's type or the dispatch model in `bvh_cull.wgsl` breaks the camera cull and trips
+that test. **Fork a shadow-specific shader / entry point** (a cull variant module) for the
+single-dispatch-over-(slot, leaf) model and its slot-indexed cone-plane buffer, and build
+`ShadowCullPipeline` from the fork; `bvh_cull.wgsl` and the camera path stay untouched.
 
-**Tighter gate.** Today `update_dynamic_light_slots` (`renderer_light_slots.rs:25`) builds
-`visible_lights` by testing each candidate's influence sphere against `reachable_cell_aabbs` — the
-wide portal-reachable set including empty `face_count == 0` cells. Replace the input set with the
-**drawable PVS + one portal hop**: the cells that actually feed draws (the `VisibleCells` set the
-camera renders), expanded by a single portal step so a caster one wall behind a visible cell still
-qualifies. Concretely, change the AABB set the caller passes as `reachable_cell_aabbs` (and rename
-if it no longer means "fog-reachable"), and update `shadow_candidate_reaches_visible_cell`
-(`renderer_lighting.rs:62`) and its tests (`render/tests/light_filter_tests.rs:212`, `:223`)
-accordingly. The `ALPHA_LIGHT_LEAF_UNASSIGNED` cull and the empty-slice DrawAll sentinel stay. The
-real consumer is `update_dynamic_light_slots`'s call site at `renderer_render_frame.rs:58`, fed the
-AABBs `main.rs` passes at `~:2569` — a rename of `reachable_cell_aabbs` (if it no longer means
-"fog-reachable") must cover both the `main.rs` build site and this renderer call site.
+Replace with ONE dispatch parameterized over (slot, leaf) pairs so the BVH walk runs in parallel
+across all occupied slots at once. A single dispatch cannot rebind per-slot uniforms, so the per-slot
+cone planes (today one uniform buffer + bind group per slot, written at `shadow_cull.rs:263–279`) move
+into ONE slot-indexed buffer indexed by a slot id derived from the (slot, leaf) pair. Drop the
+per-slot uniform/bind-group entirely; do NOT preserve it. **Invariant that must hold:** each slot's
+culled leaves land in the same indirect sub-region `draw_slot_indirect` reads
+(`shadow_cull.rs:301–325`, keyed on `region_stride_bytes`) — the parallelization changes how cone
+planes are bound and how the walk is dispatched, not the region layout or the draw side. The warm-slot
+skip that (a) and the promoted path rely on (`should_dispatch_*`, threaded through the `should_dispatch`
+closure at `:250`) must survive: a skipped slot contributes no (slot, leaf) pairs to the dispatch.
 
-This is entirely `postretro/src/main.rs` plumbing, not a renderer-side data-threading change — both
-pieces the expansion needs are already in scope where `reachable_cell_aabbs` is built (`main.rs`
-~`:2230`): the drawable `visible_cells: VisibleCells` is bound earlier in the same match arm
-(`~:2168`, from `postretro_visibility::determine_visible_cells`), and the portal adjacency to expand
-it by one hop already exists at runtime on `LevelWorld` (`world.cell_portal_count(cell)` /
-`world.cell_portal_index(cell, i)` walking `cell_portal_refs` into `world.portals[idx]`, whose
-`front_cell`/`back_cell` give the neighbor — the same accessors `portal_vis::portal_traverse` already
-uses for its DFS, `portal_vis.rs:240–255`). Build the expanded cell-id set in `main.rs` (own it there,
-alongside the existing `reachable_cell_aabbs` construction): start from `VisibleCells::Culled`'s ids
-(or, on `VisibleCells::DrawAll`, fall back to the current wide `fog_reachable` set — there is nothing
-narrower to expand), union in each cell's one-hop neighbors via `cell_portal_count`/`cell_portal_index`,
-then map ids to AABBs via `world.cells[..].bounds_min/bounds_max` exactly as the current
-`reachable_cell_aabbs` construction does.
+**Doc update, same change.** `context/lib/rendering_pipeline.md` §7.1 step 6 says "Shadow cone cull …
+dispatches BVH traversal gated by that slot's cone frustum only" per-slot — correct it to describe the
+unified (slot, leaf) dispatch.
 
-This is a gate on the light's **influence reach**, not on the caster's own cell — a caster in a
-non-drawable cell that lights a drawable receiver still passes (see the correctness risk). One
-portal hop is the tuning knob: wide enough to catch through-portal receivers, narrow enough to
-starve the pool of casters that reach only empty/off-screen cells.
+### Task 3 — (a) Extend the promoted-depth cache to static-in-place dynamic slots
 
-**Screen-space ranking.** Both rankers take only `camera_position` + `camera_near_clip` today
-(`rank_lights` `spot_shadow.rs:399`, `rank_point_lights` `cube_shadow.rs:138`) — no frustum or
-projection input. Plumb the camera's view-projection (or an extracted frustum) into both functions
-for the clamped/off-screen term below. The existing `(falloff_range/distance)²` score is already an
-angular-size proxy, so the new metric must add a distinct frustum-position term (on-screen vs.
-off-screen, or frustum-clamped projected size) — a metric that only reorders on distance or falloff
-range is not screen-space ranking; it's the same score restated.
+Now the primary re-raster win (with gate-tightening off the table, caching the stationary majority is
+how the world-raster half of per-slot cost falls). Reuse `promoted_depth_cache.rs` rather than
+building parallel machinery.
 
-Replace the raw camera-distance score in `rank_lights` (`spot_shadow.rs:436`,
-`(falloff_range / distance)²`) with a screen-space influence estimate — how much of the frame the
-light's shadowed region can plausibly cover (e.g. projected influence-sphere solid angle, or
-projected radius / distance clamped to the frustum). Mirror the change in the cube ranker
-(`rank_point_lights`, `cube_shadow.rs:138`) since both flow through the shared `assign_ranked_slots`
-core. This makes slot occupancy track on-screen contribution rather than proximity, so the capped
-slots go to the casters that matter and overflow drops the rest.
+The mechanism already exists for promoted-static slots: a `Depth32Float` cache array sized to the
+budget, `COPY_SRC` textures, a depth-to-depth `copy_*_to_pool` into the live slot, `warm` /
+`needs_world_render` planning (`promoted_depth_cache.rs:36`, `:197`), and a cull-side skip
+(`should_dispatch_spot_cull` `:83`). Two prerequisites the old fix (a) flagged as missing now exist:
+**stable slot binding** (the merge's hysteresis keeps a dynamic light in its slot across frames unless
+out-scored by `EVICTION_MARGIN`, `renderer_light_slots.rs:871`) and the cache/skip mechanism itself.
 
-Note the complementary draft `perf-anti-penumbra-pvs` shrinks the drawable PVS this task consumes as
-input — reference only; do not depend on or fold in.
+Extend the cache to dynamic slots:
 
-**Deliverable: ranking property test.** Add a test that pins ranking as
-screen-space-influence-driven, not raw-distance-driven — hold BOTH distance and `falloff_range` fixed
-and vary only an on-screen/off-screen (frustum-position) factor, asserting the order changes with it.
-Varying distance or `falloff_range` alone does not discriminate: today's `(falloff_range/distance)²`
-formula already reorders on either one, so the test must isolate the frustum-position term the new
-metric adds. The metric's exact shape stays open; the test only pins this property.
+- **Dynamic cache arrays, budgeted.** Add spot + cube dynamic-tier cache arrays alongside the existing
+  promoted ones in `PromotedDepthCache` (or a sibling `DynamicDepthCache` reusing its helpers —
+  implementor's call; prefer reuse of `assign_layer` `:314`, `retain_active_layers` `:304`, `copy_*`
+  `:225`/`:260`). Size to a **small dynamic budget** `N`, NOT the 96+36 pool — cache VRAM stays
+  O(budget). A 1024² `Depth32Float` spot layer is 4 MiB, so the budget is a deliberate VRAM draw-down
+  (the live spot pool is already 96 × 4 MiB); pick a small `N` and treat caching as best-effort:
+  slots beyond `N` stay on the per-frame path. Evict LRU by last-dirty frame.
+- **Light-keyed cache key.** Key on the dynamic light's identity (its candidate/level-light index and
+  slot), analogous to `CacheKey` (`:8`), so hysteresis-stable slots hold their cache entry across
+  frames and a slot reassignment invalidates it (mirrors `slot_reassignment_invalidates_cache_layer`,
+  `:475`).
+- **Cone/position dirty test — the one new piece.** Statics never move, so the promoted cache has no
+  dirty test. A dynamic light can move: compare the slot's current light-space cone matrix (the
+  `slot_cone_matrices` / `face_matrices` already stashed for the cull, `renderer_light_slots.rs:322`,
+  `spot_shadow.rs:60`) against the matrix cached when the depth was last rendered; `needs_world_render`
+  only when it changed (beyond an epsilon). A clean slot skips both the world raster and — via the
+  same `should_dispatch_*` path — the cone cull.
+- **Wire into the depth loops.** In `record_spot_shadow_depth` / `record_cube_shadow_depth`
+  (`renderer_shadow_passes.rs:184`, `:421`), the dynamic branch (the `else` after
+  `promoted_plan`, `:344`, `:580`) currently always opens a full world-depth pass. Give it the same
+  warm/copy/entity structure the promoted branch uses (`:253–341`): warm + clean → copy cache→pool +
+  optional entity occluders, no world pass; dirty or unbudgeted → render world into the cache (or
+  straight into the pool if unbudgeted) and mark warm. Entity occluders still re-render per frame via
+  `LoadOp::Load` (`:318`), unchanged.
 
-### Task 3 — (c) Parallelize the per-slot cone culls
-
-Independent of (b); helps whatever slots survive it. In scope for both call sites:
-`renderer_shadow_passes.rs:211` (spot, `shadow_cull`) and `:313` (cube, `cube_cull`) both call
-`dispatch_occupied_slots` on their own `ShadowCullPipeline` instance today; both get the unified
-dispatch.
-
-`dispatch_occupied_slots` (`shadow_cull.rs:245–289`) currently loops occupied slots and issues one
-`dispatch_workgroups(1, 1, 1)` per slot (`:286–289`), each a single workgroup walking the whole BVH
-serially.
-
-**The cull shader is shared with the camera cull — do not mutate it in place.** `shadow_cull.rs`
-builds its compute module from `CULL_SHADER_SOURCE`, i.e. `bvh_cull.wgsl` (named in the doc comment
-at `shadow_cull.rs:19`) — the SAME source `compute_cull.rs:36` uses for the camera cull, and
-`shadow_cull.rs:88–89` notes "the shader is the same module, so the binding types must match
-`compute_cull.rs`." A layout-pinning test (`candidate_shader_reuses_bvh_cull_struct_layouts`,
-`compute_cull.rs:1073`) asserts its struct strides. Changing binding-0's type or the dispatch model
-in `bvh_cull.wgsl` breaks the camera cull path and trips that test. Fork a shadow-specific shader /
-entry point (or a cull variant module) for the single-dispatch-over-(slot,leaf) model and its
-slot-indexed cone-plane buffer, and build `ShadowCullPipeline` from the fork; `bvh_cull.wgsl` and the
-camera cull path stay untouched.
-
-Replace with ONE dispatch parameterized over (slot, leaf) pairs so the BVH walk runs in
-parallel across all occupied slots at once. A single dispatch cannot rebind per-slot uniforms, so the
-per-slot cone planes (currently one uniform buffer per slot, written before the pass at `:261–275`)
-move into ONE slot-indexed buffer — an array/storage buffer indexed by a slot id derived from the
-(slot, leaf) pair — so every occupied slot's planes are simultaneously readable within the single
-dispatch. Drop the old per-slot uniform/bind-group binding entirely; do NOT try to preserve it. What
-must still hold: each slot's culled leaves land in the same indirect sub-region the matching
-`draw_slot_indirect` reads (`:295+`, keyed on `region_stride_bytes`). The parallelization changes how
-the cone planes are bound and how the walk is dispatched, not the region layout or the draw side.
-
-**Doc update, same change.** `context/lib/rendering_pipeline.md` §7.1 step 6 says "Shadow cone cull
-always uses the tree walk" — correct it to describe the unified (slot, leaf) dispatch.
-
-### Task 4 — (a) Dynamic depth caching (optional, last)
-
-Smallest marginal return; do after (b)+(c) or defer entirely. Caching alone does NOT bound
-saturation — an uncached-but-cached-depth pool still runs ~100 live passes for the copy + entity
-draw; (b) is what bounds the pass count. This only removes the world *re-raster* cost from slots
-that survive (b).
-
-Cache a non-moving caster's world depth so a static-in-place dynamic light skips its per-frame world
-rasterization. This needs two pieces that do NOT exist for dynamic lights today:
-
-- **Stable light-keyed slot binding.** `rank_lights` re-sorts by score every frame, so a light's
-  slot identity is unstable — a cache keyed on slot index would thrash. Introduce a light-keyed slot
-  binding so a light holds its cache across frames.
-- **Cone-matrix dirty test.** Detect when a slot's cone/face matrix is unchanged since the cached
-  depth was rendered; only then skip the world draw.
-- **Cull-side skip.** A cached-and-clean slot's leaf range must also be excluded from the cone-cull
-  work, not just the world draw. If (c) has landed, this means excluding the slot's (slot, leaf)
-  pairs from the unified dispatch's work; if (a) lands before (c), it means skipping that slot's
-  entry in the old per-slot loop. Either way, a cached slot contributes zero cull work per frame, not
-  just zero world-raster work.
-
-**Reuse the `static-light-entity-shadows` Task 6 mechanism** (reference, do not re-derive): a
-dedicated `Depth32Float` cache array sized to the budget, pool + cache textures carrying
-`COPY_SRC` / `COPY_DST` usage, a depth-to-depth `copy_texture_to_texture` into the live slot each
-frame, the copy-replaces-clear invariant (`cube_face_needs_clear` — the copy stands in for the
-Clear, never leaves stale depth), and skip counters. That feature's cache is sized for ≤10 static
-promoted lights (`MAX_PROMOTED_SPOT = 8` + `MAX_PROMOTED_CUBE = 2`) and explicitly leaves dynamic
-lights on the per-frame path; this task extends the same array/copy machinery to dynamic slots that
-pass the dirty test. Cache VRAM stays O(budget), not O(pool size). Entity occluders still re-render
-per frame on top of the copied world depth via `LoadOp::Load`.
-
-**Cache budget (keep brief — optional/last).** Up to 96 spot + 6 cube slots could pass the dirty
-test at once, but the reused static array is sized for ≤10. Pick a small dynamic-tier budget (e.g.
-reuse the existing `MAX_PROMOTED_SPOT`/`MAX_PROMOTED_CUBE` sizing, or a similarly small dedicated
-constant) and treat caching as best-effort up to that N: slots beyond the budget stay on the
-per-frame path. Eviction is LRU by last-dirty frame — when a new clean slot needs a cache entry and
-the budget is full, evict the entry that has gone longest without being marked dirty.
+Keep the copy-replaces-clear invariant (`cube_face_needs_clear`, `cube_shadow.rs`) — a warm copy
+stands in for the `Clear(1.0)` baseline and never leaves stale depth.
 
 ## Sequencing
 
-`(d) → (b) → (c) → (a)`.
+`(d) → (c) → (a)`.
 
-- **(d) first.** Measurement prerequisite — without shadow-pass timestamps, no later fix is provable.
-- **(b) next.** The crawl fix; it bounds the slot count and therefore both the pass count and the
-  cull dispatch count. Everything downstream operates on the reduced pool.
-- **(c) is independent of (b).** It can land in parallel with or before (b); it parallelizes whatever
-  slots exist. Sequenced after (b) only so its win is measured against the already-reduced pool.
-- **(a) is optional and last.** Smallest marginal return once (b) has bounded the pool; skippable for
-  v1. It depends on the stable-slot-binding + dirty-test infrastructure it introduces, and reuses the
-  Task 6 depth cache.
+- **(d) first.** Without dynamic shadow-pass timestamps on a promoted-light-free map, no later fix is
+  provable. Size S.
+- **(c) next.** Count-independent, VRAM-free, helps every occupied slot; the parallel-cull win is
+  visible on both stress maps immediately and does not depend on (a).
+- **(a) last.** Highest value on static-in-place warrens (both stress maps qualify) but the largest
+  change and the only one with a VRAM budget to tune. Reuses (c)'s warm-skip path for the cull side.
 
 ## Decisions
 
-- **Gate-tightening is the primary fix, not caching.** The crawl is a *count* problem: ~100 occupied
-  slots × (one render pass + one whole-BVH cull dispatch) each. Caching depth (fix a) removes only
-  the world-raster half of each surviving slot's cost and still leaves ~100 live passes doing the
-  copy + entity draw + (uncached) cull. Only tightening the gate (fix b) reduces the slot count
-  itself, which is the single multiplier on every per-slot cost. So (b) is sized M–L and load-bearing;
-  (a) is L but optional and marginal.
-- **Timestamps first.** The dominant cost is currently invisible to `POSTRETRO_GPU_TIMING`
-  (`timestamp_writes: None` at all three shadow sites). Landing (d) first — a size-S change — makes
-  the crawl measurable so (b) and (c) can be proven rather than asserted, and so regressions are
-  caught by the same tool.
-- **Reach gate, not own-cell gate.** The gate stays a test on the light's influence reaching a
-  drawable-relevant cell, not on the caster's own cell being drawable. The narrower own-cell gate was
-  already tried (`perf-dynamic-light-pvs-cull`) and reverted because it dropped through-portal
-  casters on pitch-down. Drawable-PVS-plus-one-hop is the middle ground.
+- **Attack cost, not count.** The merge barred gate-tightening (orientation invariance,
+  `shadow_ranking.rs:817` / `:850`), and lowering the pool cap is a quality knob. So the levers are
+  per-slot: parallelize the cull (c, count-independent) and cache the world raster of stationary slots
+  (a). The old spec's "gate-tightening is the primary fix" is inverted — it is now out of scope.
+- **Reuse the merged cache, don't fork it.** `promoted_depth_cache.rs` already implements the exact
+  array/copy/warm/skip mechanism the old fix (a) planned to import from `static-light-entity-shadows`
+  Task 6. Extend it (or a sibling sharing its helpers) rather than building a second cache.
+- **Budget, not full-pool.** A 96-spot + 36-cube-face full cache roughly doubles shadow VRAM (spot
+  pool alone is 96 × 1024² × 4 B). Keep the dynamic cache O(budget) with LRU eviction; overflow slots
+  stay on the per-frame path and are the parallel cull's (c) job to keep cheap.
+- **Timestamps first, measured on a promoted-free map.** `stress-warren-lit` has no promoted-static
+  lights, so today's `promoted_depth_cache_upper` bracket never opens there and the crawl is invisible.
+  The new `shadow_cull` + `shadow_depth` pairs must open unconditionally.
 
 ## Risks
 
-- **Tighter-gate correctness (highest).** The gate must NOT drop a caster whose light reaches a
-  visible RECEIVER through a portal even when the caster's own cell is not drawable. This is exactly
-  the regression the wide gate was widened to fix (entity shadows vanishing on pitch-down as the PVS
-  shrank). The one-portal-hop expansion is the mitigation; if one hop proves too narrow on real maps,
-  the hop count is the tuning knob. Pin with the pitch-down through-portal test in Acceptance.
-- **Depth-timestamp aggregation wrinkle.** The ~100 separate depth `begin_render_pass` calls cannot
-  each carry a timestamp pair (64-pair ceiling, two pairs allocated). The aggregate/encoder-level
-  approach (Task 1) may need the `TIMESTAMP_QUERY_INSIDE_ENCODERS` feature; if the target adapter
-  lacks it, fall back to the coarse first-to-last-pass pair — the `shadow_depth` line is required
-  either way, just coarser on adapters without the feature. The cull number is exact regardless.
-- **Screen-space ranking heuristic tuning.** "Screen-space influence" is an estimate (projected
-  solid angle / clamped projected radius). A bad estimate could starve a genuinely dominant caster or
-  favor a large-but-occluded one. Keep the heuristic simple and tune against the two stress maps;
-  ranking only decides *which* casters fill the capped slots, so a mis-rank degrades quality, not
-  correctness.
-- **(c) region-contract drift.** The single slot × leaf dispatch must write each slot's culled leaves
-  into the same indirect sub-region `draw_slot_indirect` reads. A mismatch silently corrupts shadow
-  draws. Pin with the per-slot cull-output equivalence check in Acceptance.
+- **(c) region-contract drift (highest for c).** The single (slot, leaf) dispatch must write each
+  slot's culled leaves into the same indirect sub-region `draw_slot_indirect` reads
+  (`shadow_cull.rs:301–325`, `region_stride_bytes`-keyed). A mismatch silently corrupts shadow draws.
+  Pin with the per-slot cull-output equivalence check in Acceptance.
+- **Shared-shader breakage (c).** Mutating `bvh_cull.wgsl` in place would break the camera cull and
+  trip `candidate_shader_reuses_bvh_cull_struct_layouts` (`compute_cull.rs:1073`). Fork the shader; the
+  AC requires the camera path and that test untouched.
+- **Dirty-test correctness (a).** A too-loose epsilon leaves a moved light showing stale shadow; too
+  tight defeats the cache. A dynamic light whose *world occluders* changed but whose cone matrix did
+  not (rare — world geometry is static) is safe because world depth is a function of the cone matrix
+  alone. Entity occluders always re-render (`LoadOp::Load`), so entity motion never needs invalidation.
+- **VRAM budget (a).** The dynamic cache is a fixed draw-down on top of the live pool. Keep `N` small
+  and LRU-evicted; validate residency on the compatibility-floor GPU (rendering_pipeline.md §10).
+- **Overlapping timing spans (d).** `shadow_depth` (whole loop) and `promoted_depth_cache_upper`
+  (promoted-only, opened inside the loop) overlap by design — they measure different scopes, not a
+  double-count of one span. Document it in the pass-label comment.
 
 ## Related work
 
-- **`context/plans/done/perf-dynamic-light-pvs-cull/`** — shipped the origin-cell shadow gate that
-  fix (b) tightens. Its own-cell-PVS gate was later widened to the influence-vs-reachable-cell test
-  (the current loose gate); (b) re-narrows the *input set* without reverting to own-cell semantics.
-- **`context/plans/ready/static-light-entity-shadows/` Task 6** — the depth-cache mechanism fix (a)
-  reuses: dedicated `Depth32Float` cache array, `COPY_SRC`/`COPY_DST`, depth-to-depth copy,
-  copy-replaces-clear invariant, skip counters. Covers only ≤10 static promoted lights today and
-  leaves dynamic lights on the per-frame path; (a) extends it to dynamic slots.
-- **`context/plans/drafts/perf-anti-penumbra-pvs/`** — shrinks the drawable PVS that fix (b) consumes
-  as its input set. Complementary and independent; the two compound (a tighter PVS makes the
-  drawable-plus-one-hop gate tighter still) but neither depends on the other.
+- **`context/plans/ready/static-light-shadowmask-world-receipt/`** — the merge that landed
+  `promoted_depth_cache.rs`, `shadow_ranking.rs::assign_slots_with_hysteresis`, and the
+  orientation-invariance invariant. (a) extends its cache to dynamic slots; (b)'s premise died with its
+  invariant.
+- **`context/plans/done/perf-dynamic-light-pvs-cull/`** — shipped the origin-cell gate, later widened
+  to the influence-vs-reachable-cell test. That widening is now protected by the orientation-invariance
+  tests; do not re-narrow it.
+- **`context/plans/drafts/perf-anti-penumbra-pvs/`** — shrinks the drawable PVS. Complementary and
+  independent; it does not interact with this plan now that the drawable-PVS gate is out of scope.

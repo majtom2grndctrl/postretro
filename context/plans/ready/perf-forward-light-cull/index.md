@@ -1,6 +1,7 @@
 # Forward Dynamic-Light Visibility Cull
 
-> **Status:** draft. Sibling of `context/plans/drafts/perf-shadow-caster-culling/` — both attack
+> **Status:** ready (promoted after review-draft-spec + review-implementability). Sibling of
+> `context/plans/drafts/perf-shadow-caster-culling/` — both attack
 > large-map dynamic-light cost, on different frame stages (this = the forward shading loop; that =
 > the shadow world re-raster). Independent; no build-order dependency between them.
 > **Related:** `context/lib/rendering_pipeline.md` §2 (portal visibility), §4 (dynamic direct),

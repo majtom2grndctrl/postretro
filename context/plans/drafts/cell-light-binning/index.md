@@ -15,7 +15,7 @@
 > (cells id 38, cell locator id 39, `ChunkLightList` id 23, affinity CSRs,
 > `FogCellMasks` id 31) · `context/research/spatial-streaming.md` (cells are the
 > one residency substrate) · sibling perf drafts
-> `context/plans/drafts/perf-forward-light-cull/`,
+> `context/plans/ready/perf-forward-light-cull/`,
 > `context/plans/drafts/perf-shadow-caster-culling/`,
 > `context/plans/drafts/perf-promoted-static-light-load/`.
 

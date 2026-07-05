@@ -8,7 +8,7 @@
 > not a crawl.
 > **Related:** `context/lib/rendering_pipeline.md` §4 ("Promoted static lights"), §7.1 steps 7–8 ·
 > `context/lib/build_pipeline.md` §PRL section IDs (EntityShadowLights id 40) ·
-> `context/plans/drafts/perf-forward-light-cull/` (the dynamic-tier sibling; the per-fragment tail
+> `context/plans/ready/perf-forward-light-cull/` (the dynamic-tier sibling; the per-fragment tail
 > analyzed here is why the promoted records are *out of scope* there) ·
 > `context/plans/drafts/perf-shadow-caster-culling/` (where a selection cap, if ever wanted, belongs).
 

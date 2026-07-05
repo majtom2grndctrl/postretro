@@ -1,14 +1,24 @@
+> **⚠️ SHELVED 2026-07-05 — implemented on branch `experiments/perf-fordward-light-cull` (pushed to origin), intentionally not merged.**
+> Profiling on the stress-warren maps showed this optimizes a non-bottleneck: it culls the dynamic
+> forward-light loop, but that loop isn't the frame cost on the slow maps (runtime shadow rasterization
+> is), and the engine's static-lighting direction — animated weight maps + the static-light shadowmask —
+> makes stationary dynamic lights unnecessary (author them static). A/B (`POSTRETRO_FORWARD_LIGHT_CULL=0`
+> vs `1`) showed no win and occasional regression from the per-frame index upload + shader indirection.
+> Dynamic lights have since been purged from the stress maps until kinematic movers land. Revisit only if
+> a GPU capture on a realistic (static-lit + moving-entity) map shows the forward light loop hot. Related
+> direction: `context/plans/roadmap.md` Epic 17 bullet E.
+
 # Forward Dynamic-Light Visibility Cull
 
 > **Status:** done (implemented; pending owner performance/visual acceptance before mainline inclusion). Sibling of
-> `context/plans/drafts/perf-shadow-caster-culling/` — both attack
+> `context/research/archived-plans/perf-shadow-caster-culling/ (archived)` — both attack
 > large-map dynamic-light cost, on different frame stages (this = the forward shading loop; that =
 > the shadow world re-raster). Independent; no build-order dependency between them.
 > **Related:** `context/lib/rendering_pipeline.md` §2 (portal visibility), §4 (dynamic direct),
 > §7.1 step 3 (light list upload), §7.3 (world light loop), §10 (per-stage binding budgets) ·
 > `context/lib/build_pipeline.md` §PRL section IDs (Cells id 38, ChunkLightList id 23) ·
 > `context/plans/done/perf-dynamic-light-pvs-cull/` (the own-cell-gate history this must not
-> repeat) · `context/plans/drafts/perf-shadow-caster-culling/` (sibling; see "Relationship" below).
+> repeat) · `context/research/archived-plans/perf-shadow-caster-culling/ (archived)` (sibling; see "Relationship" below).
 
 ## Problem
 
@@ -137,7 +147,7 @@ Within the chosen methodology, two integration shapes were compared (research §
   (`renderer_light_slots.rs:851`, `:797/:813–824`; `renderer_types.rs:371–372`), independent of
   map-wide static count — so it does not share this spec's growth problem and needs no cull. The
   static specular loop is already chunk-list culled. The promoted-static population was assessed
-  separately: `context/plans/drafts/perf-promoted-static-light-load/` (bounded per-fragment; the
+  separately: `context/research/archived-plans/perf-promoted-static-light-load/` (bounded per-fragment; the
   only growth is a CPU-side selection scan, outside this spec's mechanism).
 - **Influence-volume tightening** (spot-cone-shaped influences, animated-aim-aware volumes). The
   cull consumes the same load-time `LightInfluence` spheres the per-fragment early-out uses.
@@ -435,7 +445,7 @@ choice). Map authors should reach for that before either spec's machinery is ass
 - **`crates/level-compiler/src/chunk_light_list_bake.rs`** — the baked per-cell light-list
   precedent (static specular). Left as-is; see Methodology for why baking doesn't fit the dynamic
   tier.
-- **`context/plans/drafts/cell-light-binning/`** — design investigation that considered folding this
+- **`context/research/archived-plans/cell-light-binning/ (archived)`** — design investigation that considered folding this
   cull into a shared cell→light index. Conclusion: fork **(b)** — keep this spec standalone. Its
   `visible_forward_light_indices` predicate *is* the shared bin's forward gather for one cell set, so
   shipping it pre-builds the exact primitive the binning would later reuse (a refactor, not a rewrite).

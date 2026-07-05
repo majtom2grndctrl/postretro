@@ -1,3 +1,10 @@
+> **⚠️ ARCHIVED 2026-07-05 — moved out of active drafts; not a spec to build.**
+> This is a findings note, and its conclusion still stands and stays relevant: the promoted-static /
+> shadowmask light path (now central to the static-lighting direction) is per-frame **bounded and
+> cheap** (≤ 10 per-fragment), the only growth being a cheap CPU selection scan worth a documented cap.
+> Kept as reference; archived only so it stops surfacing in the active-drafts scan. See
+> `context/plans/roadmap.md` Epic 17 for the live moving-light / shadow direction.
+
 # Promoted / Selected-Static Light Load — Findings
 
 > **Status:** findings note (not a spec). Answers: does the entity-shadow merge make **static**
@@ -10,7 +17,7 @@
 > `context/lib/build_pipeline.md` §PRL section IDs (EntityShadowLights id 40) ·
 > `context/plans/ready/perf-forward-light-cull/` (the dynamic-tier sibling; the per-fragment tail
 > analyzed here is why the promoted records are *out of scope* there) ·
-> `context/plans/drafts/perf-shadow-caster-culling/` (where a selection cap, if ever wanted, belongs).
+> `context/research/archived-plans/perf-shadow-caster-culling/` (archived) (where a selection cap, if ever wanted, belongs).
 
 ## Three load classes, three verdicts
 
@@ -85,7 +92,7 @@ O(N).
 Promoted-static shadow slots are capped at `MAX_PROMOTED_SPOT = 8` + `MAX_PROMOTED_CUBE = 2`
 (`renderer_types.rs:371–372`) and their world depth is cached
 (`crates/renderer/src/render/promoted_depth_cache.rs`), so the shadow path adds no per-frame
-re-raster growth. See `perf-shadow-caster-culling` for the dynamic-slot cost that plan targets.
+re-raster growth. See `context/research/archived-plans/perf-shadow-caster-culling/` (archived) for the dynamic-slot cost that plan targets.
 
 ## Verdict: does the fix fold into `perf-forward-light-cull`? No.
 
@@ -117,24 +124,24 @@ small multiple of the runtime promoted budget (10) so the runtime always has eno
 fill its slots but the per-frame scans stay bounded. This lands in
 `crates/level-compiler/src/entity_shadow_select.rs:52–71` (add the sort-and-truncate after the
 eligibility filter) and is a natural companion to the promoted-cap discussion in
-`perf-shadow-caster-culling` (both are about the ≤ 10 promoted budget and what feeds it).
+`context/research/archived-plans/perf-shadow-caster-culling/` (archived) (both are about the ≤ 10 promoted budget and what feeds it).
 
 **It is not urgent.** At present scales the scans are microseconds and the VRAM is kilobytes. This
 note's purpose is to record that the growth exists, is CPU/VRAM (not per-fragment), and has a clean
 one-file fix if a map ever provokes it.
 
 The top-K cap is the point fix. The *consolidated* fix is a shared static cell→light index
-(`context/plans/drafts/cell-light-binning/`), which would turn these class-2 scans into cheap
+(`context/research/archived-plans/cell-light-binning/`) (archived), which would turn these class-2 scans into cheap
 per-cell gathers — but that is a streaming-era build gated on cell clustering, so prefer the top-K
 cap if this is ever provoked before streaming lands.
 
 ## Cross-reference placement
 
 If the maintainer wants a pointer from the shadow spec, add one bullet to
-`context/plans/drafts/perf-shadow-caster-culling/index.md` under **`## Related work`** (after the
+`context/research/archived-plans/perf-shadow-caster-culling/index.md` (archived) under **`## Related work`** (after the
 `perf-anti-penumbra-pvs` bullet, ~line 358):
 
-> - **`context/plans/drafts/perf-promoted-static-light-load/`** — findings note: the promoted-static
+> - **`context/research/archived-plans/perf-promoted-static-light-load/`** — findings note: the promoted-static
 >   *forward-entity* per-fragment load is bounded at ≤ 10 by the same `MAX_PROMOTED_SPOT + CUBE`
 >   budget this plan caps. The only growth is the CPU selection/promotion scan over the uncapped
 >   baked `EntityShadowLights` set; a top-K selection cap in `entity_shadow_select.rs` is the

@@ -1,3 +1,6 @@
+> **⚠️ ARCHIVED 2026-07-05 — not an active plan. Do not implement from this.**
+> This investigation's recommendation was "defer binning, ship `perf-forward-light-cull` as a point solution." That point solution is now being shelved (it optimized a non-bottleneck for the engine's static-lighting design), so the recommendation is moot. Kept for the research mapping of the engine's per-frame light-reach queries only. Live disposition: `context/plans/roadmap.md` Epic 17.
+
 # Cell → Light Binning — Design Investigation
 
 > **Status:** design investigation, NOT a ready-to-build spec. Maps the engine's
@@ -16,8 +19,8 @@
 > `FogCellMasks` id 31) · `context/research/spatial-streaming.md` (cells are the
 > one residency substrate) · sibling perf drafts
 > `context/plans/ready/perf-forward-light-cull/`,
-> `context/plans/drafts/perf-shadow-caster-culling/`,
-> `context/plans/drafts/perf-promoted-static-light-load/`.
+> `context/research/archived-plans/perf-shadow-caster-culling/`,
+> `context/research/archived-plans/perf-promoted-static-light-load/`.
 
 Anchors verified at HEAD `fd10d58`.
 

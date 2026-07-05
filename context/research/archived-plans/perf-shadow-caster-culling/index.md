@@ -1,3 +1,6 @@
+> **⚠️ ARCHIVED 2026-07-05 — not an active plan. Do not implement from this.**
+> The premise shifted after review: animated-light weight maps + the static-light shadowmask make *stationary* dynamic lights vestigial (author them static), so the primary depth-cache fix (a) targets a case good authoring eliminates. The idle-mover variant of that cache belongs to the kinematic movers epic (reuse `promoted_depth_cache.rs` + a mover at-rest signal). The parallel-BVH-walk technique (c) is measure-gated — resurrect only if a GPU capture shows a cull hot at production scale. Live disposition: `context/plans/roadmap.md` Epic 17 bullet E. Kept here for the research/reasoning only.
+
 # Shadow Caster Culling
 
 > **Status:** draft — REDESIGNED post-merge. The original premise (bound the *count* of
@@ -361,7 +364,7 @@ stands in for the `Clear(1.0)` baseline and never leaves stale depth.
   large-map dynamic-light cost. Independent (no build-order dependency); its tight drawn-cell cull is
   contribution-only and does not touch this plan's wide eligibility gate. Its perf AC reuses the existing
   `forward` timing pair; this plan's Task 1 brackets remain the shadow-side measurement substrate.
-- **`context/plans/drafts/perf-promoted-static-light-load/`** — findings note: the promoted-static
+- **`context/research/archived-plans/perf-promoted-static-light-load/`** — findings note: the promoted-static
   *forward-entity* per-fragment load is bounded at ≤ 10 by the same `MAX_PROMOTED_SPOT + CUBE` budget this
   plan caps. The only growth is the CPU selection/promotion scan over the uncapped baked
   `EntityShadowLights` set; a top-K selection cap in `entity_shadow_select.rs` is the companion lever if

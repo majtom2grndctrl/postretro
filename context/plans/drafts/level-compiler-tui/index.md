@@ -47,7 +47,8 @@ regardless of pause/throttle.
 - [ ] Every build ends with a summary reporting the total warning count and listing the warnings that
       fired, even ones that scrolled out of view during the bake.
 - [ ] While a quantifiable stage runs (lightmap, SH, direct SH, delta SH, direct-SH-delta, animated
-      weight maps), the display shows that stage's percent complete and a projected completion time.
+      weight maps), the stage's percent complete and a projected completion time are shown — in the
+      TUI's per-step column foot, and in plain mode as a discrete printed line.
 - [ ] The step column lists the steps planned for the map being compiled — content-dependent, e.g. no
       SDF row when the map has no SDF lights — with a visible in-progress animation on the active step,
       and steps that turn out to be no-ops render as skipped.
@@ -61,10 +62,12 @@ regardless of pause/throttle.
 - [ ] For a fixed map and flags, the compiled `.prl` is byte-identical whether the build ran with
       pausing/throttling/TUI or ran straight through with none of them.
 - [ ] With stdout/stderr not a TTY (CI, pipe, `xtask`, redirected stdin), the compiler runs without the
-      TUI, prints plain per-stage progress plus the warning tally, and emits no terminal control
-      sequences.
+      TUI, prints plain per-stage progress — including percent and ETA as discrete lines, not a
+      redrawing spinner — plus the warning tally, and emits no terminal control sequences.
 - [ ] A CLI flag sets the initial core count and a CLI flag forces or disables the TUI; both appear in
       `--help`.
+- [ ] With no `-j` flag, the default core count is fewer than all logical cores (leaves CPU
+      headroom), so an unattended default build does not saturate every core.
 - [ ] On normal exit, error, bail, and panic, the terminal is left in cooked mode on the main screen
       with no residual control state.
 - [ ] After the pipeline extraction, `fn main` no longer holds the inline stage sequence and a bake of
@@ -106,7 +109,9 @@ and stages call: begin a stage (by the stable id + label from Task 1), declare a
 units, advance progress, mark a stage finished or skipped, record a warning, and finalize the build
 with the timing summary (the orchestrator calls skip when a stage's guard or `is_empty` check yields
 placeholder/`None` output, so AC4 renders it skipped); plus a `PlainReporter` impl reproducing today's non-TTY behavior (timestamped
-stage lines or a simple progress line) and printing an end-of-run warning tally: the total warning
+stage lines or a simple progress line) plus per-stage percent and ETA emitted as discrete printed
+lines (driven by the Task 3 counters, never a redrawing spinner, so CI/`xtask` logs stay clean), and
+printing an end-of-run warning tally: the total warning
 count plus the list of formatted warning records. (2) A `Governor`
 struct: a cooperative gate holding a paused flag and a live permit count, exposing `checkpoint()` (fast
 poll that parks the caller while paused, for serial loops) and an RAII `enter()` guard (parks while
@@ -188,7 +193,8 @@ counters populated by Task 3, but edits disjoint files (tui module, Cargo.toml) 
 
 Wire reporter selection and controls end-to-end. Add two CLI flags to `parse_args_from` / the `Args`
 struct and `help_text()` in `main.rs`: one setting the initial core count (e.g. `-j`/`--jobs <N>`,
-default = available parallelism, validated `>= 1`) which seeds the `Governor` permit count, and one
+default leaves CPU headroom: `max(1, available_parallelism - 1)`, or `- 2` when
+`available_parallelism > 8`, validated `>= 1`) which seeds the `Governor` permit count, and one
 forcing or disabling the TUI (e.g. `--tui`/`--no-tui`). Select the reporter at startup: use the
 `TuiReporter` only when TUI is not disabled AND stdout, stderr, and stdin are all TTYs
 (`std::io::stdout().is_terminal() && std::io::stderr().is_terminal() && std::io::stdin().is_terminal()`);

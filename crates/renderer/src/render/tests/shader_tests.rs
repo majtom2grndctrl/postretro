@@ -492,22 +492,7 @@ fn forward_shader_specular_reads_sdf_visibility_slice() {
 /// declaration in `forward.wgsl`.
 #[test]
 fn forward_wgsl_sh_grid_info_matches_cpu_layout() {
-    let module =
-        naga::front::wgsl::parse_str(SHADER_SOURCE).expect("forward shader should parse as WGSL");
-
-    let mut seen = std::collections::HashMap::new();
-    for (_handle, ty) in module.types.iter() {
-        if let naga::TypeInner::Struct { span, .. } = &ty.inner
-            && let Some(name) = &ty.name
-        {
-            seen.insert(name.clone(), *span);
-        }
-    }
-
-    let span = seen
-        .get("ShGridInfo")
-        .copied()
-        .expect("forward shader should declare struct ShGridInfo");
+    let span = wgsl_struct_span(SHADER_SOURCE, "ShGridInfo", "forward shader");
     assert_eq!(
         span as usize,
         sh_volume::SH_GRID_INFO_SIZE,
@@ -515,14 +500,86 @@ fn forward_wgsl_sh_grid_info_matches_cpu_layout() {
         sh_volume::SH_GRID_INFO_SIZE,
     );
 
-    let desc_span = seen
-        .get("AnimationDescriptor")
-        .copied()
-        .expect("forward shader should declare struct AnimationDescriptor");
+    let desc_span = wgsl_struct_span(SHADER_SOURCE, "AnimationDescriptor", "forward shader");
     assert_eq!(
         desc_span as usize,
         sh_volume::ANIMATION_DESCRIPTOR_SIZE,
         "forward.wgsl AnimationDescriptor stride ({desc_span}) must match ANIMATION_DESCRIPTOR_SIZE ({})",
         sh_volume::ANIMATION_DESCRIPTOR_SIZE,
     );
+}
+
+#[test]
+fn sh_grid_info_consumer_shaders_match_cpu_layout() {
+    const BILLBOARD_SHADER_SOURCE: &str = concat!(
+        include_str!("../../shaders/billboard.wgsl"),
+        "\n",
+        include_str!("../../shaders/sh_sample.wgsl"),
+    );
+    const FOG_SHADER_SOURCE: &str = concat!(
+        include_str!("../../shaders/fog_volume.wgsl"),
+        "\n",
+        include_str!("../../shaders/sh_sample.wgsl"),
+    );
+    const SKINNED_MESH_SHADER_SOURCE: &str = concat!(
+        include_str!("../../shaders/skinned_mesh.wgsl"),
+        "\n",
+        include_str!("../../shaders/sh_sample.wgsl"),
+        "\n",
+        include_str!("../../shaders/curve_eval.wgsl"),
+        "\n",
+        include_str!("../../shaders/light_eval.wgsl"),
+        "\n",
+        include_str!("../../shaders/shadow_sample.wgsl"),
+    );
+
+    for (label, source) in [
+        ("forward", SHADER_SOURCE),
+        ("billboard", BILLBOARD_SHADER_SOURCE),
+        ("fog_volume", FOG_SHADER_SOURCE),
+        ("skinned_mesh", SKINNED_MESH_SHADER_SOURCE),
+    ] {
+        let span = wgsl_struct_span(source, "ShGridInfo", label);
+        assert_eq!(
+            span as usize,
+            sh_volume::SH_GRID_INFO_SIZE,
+            "{label}.wgsl ShGridInfo stride ({span}) must match SH_GRID_INFO_SIZE ({})",
+            sh_volume::SH_GRID_INFO_SIZE,
+        );
+    }
+}
+
+#[test]
+fn sh_compose_grid_dims_shader_layouts_match_cpu_packer() {
+    const SH_COMPOSE_SHADER_SOURCE: &str = concat!(
+        include_str!("../../shaders/sh_compose.wgsl"),
+        "\n",
+        include_str!("../../shaders/curve_eval.wgsl"),
+    );
+    const DIRECT_SH_COMPOSE_SHADER_SOURCE: &str =
+        include_str!("../../shaders/direct_sh_compose.wgsl");
+
+    for (label, source) in [
+        ("sh_compose", SH_COMPOSE_SHADER_SOURCE),
+        ("direct_sh_compose", DIRECT_SH_COMPOSE_SHADER_SOURCE),
+    ] {
+        let span = wgsl_struct_span(source, "GridDims", label);
+        assert_eq!(
+            span, 64,
+            "{label}.wgsl GridDims stride ({span}) must match build_compose_grid_bytes",
+        );
+    }
+}
+
+fn wgsl_struct_span(source: &str, name: &str, label: &str) -> u32 {
+    let module = naga::front::wgsl::parse_str(source)
+        .unwrap_or_else(|err| panic!("{label} should parse as WGSL: {err}"));
+    for (_handle, ty) in module.types.iter() {
+        if let naga::TypeInner::Struct { span, .. } = &ty.inner
+            && ty.name.as_deref() == Some(name)
+        {
+            return *span;
+        }
+    }
+    panic!("{label} should declare struct {name}");
 }

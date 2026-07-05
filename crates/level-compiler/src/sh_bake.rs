@@ -9,15 +9,16 @@ use glam::{DVec3, Vec3};
 use nalgebra::{Point3, Vector3};
 use postretro_level_format::lightmap::f32_to_f16_bits;
 use postretro_level_format::octahedral::{
-    DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION, irradiance_atlas_dimensions,
-    irradiance_atlas_tiles_per_row, irradiance_interior_texel_direction, irradiance_tile_origin,
-    irradiance_tile_source_texel,
+    DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION, IrradianceAtlasArrayLayout,
+    MAX_SH_ATLAS_LAYERS, irradiance_array_tile_location, irradiance_atlas_array_layout,
+    irradiance_interior_texel_direction, irradiance_tile_source_texel,
 };
 use postretro_level_format::sh_volume::{
     ANIMATED_SLOT_NONE, AnimationDescriptor, OCTAHEDRAL_PROBE_STRIDE, OctahedralAtlasTexel,
     OctahedralShProbe, OctahedralShVolumeSection,
 };
 use rayon::prelude::*;
+use thiserror::Error;
 
 use crate::bvh_build::BvhPrimitive;
 use crate::geometry::GeometryResult;
@@ -30,6 +31,7 @@ use crate::partition::{BspTree, find_leaf_for_point};
 pub const DEFAULT_PROBE_SPACING: f32 = 1.0;
 
 const RAYS_PER_PROBE: u32 = 256;
+pub(crate) const MAX_SH_ATLAS_DIMENSION: u32 = 8192;
 
 /// Indirect-only: lightmap carries the direct term; folding direct into SH would double-count it at runtime.
 const BOUNCE_ALBEDO: f32 = 0.45;
@@ -42,6 +44,20 @@ const RAY_EPSILON: f32 = 1.0e-3;
 /// Rotates the Fibonacci lattice off the (0,0,1) axis so axis-aligned light directions
 /// don't land on a degenerate sample. No RNG — identical input yields byte-identical output.
 const SAMPLING_LATTICE_OFFSET: u64 = 0x5048_4542_414b_4552; // "PHBAKER"
+
+#[derive(Debug, Error)]
+pub(crate) enum ShAtlasBakeError {
+    #[error(
+        "SH atlas layer overflow: packing probe grid {grid_dimensions:?} needs more than \
+         {max_layers} array layers at max per-layer dimension {max_dim}; raise `probe_spacing` \
+         or split the map"
+    )]
+    LayerOverflow {
+        grid_dimensions: [u32; 3],
+        max_dim: u32,
+        max_layers: u32,
+    },
+}
 
 /// Shared between the base SH baker and per-light delta SH baker (`delta_sh_bake.rs`).
 pub(crate) struct RaytracingCtx<'a> {
@@ -201,6 +217,8 @@ pub fn bake_sh_volume(inputs: &ShBakeCtx<'_>, config: &ShConfig) -> OctahedralSh
             tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
             tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
             atlas_dimensions: [0, 0],
+            layer_count: 0,
+            tiles_per_layer: 0,
             atlas_tiles_per_row: 0,
             probes: Vec::new(),
             atlas_texels: Vec::new(),
@@ -239,16 +257,14 @@ pub fn bake_sh_volume(inputs: &ShBakeCtx<'_>, config: &ShConfig) -> OctahedralSh
         })
         .collect();
     let base_probes: Vec<OctahedralShProbe> = baked_probes.iter().map(|p| p.metadata).collect();
-    let atlas_dimensions = irradiance_atlas_dimensions(dims, DEFAULT_IRRADIANCE_TILE_DIMENSION);
-    let atlas_tiles_per_row = irradiance_atlas_tiles_per_row(dims)
-        .expect("non-empty SH probe grid should have a valid atlas tile row count");
+    let atlas_layout = sh_atlas_array_layout(dims, DEFAULT_IRRADIANCE_TILE_DIMENSION)
+        .unwrap_or_else(|e| panic!("{e}"));
     let atlas_texels = pack_octahedral_irradiance_atlas(
         &baked_probes,
         dims,
         DEFAULT_IRRADIANCE_TILE_DIMENSION,
         DEFAULT_IRRADIANCE_TILE_BORDER,
-        atlas_dimensions,
-        atlas_tiles_per_row,
+        atlas_layout,
     );
 
     // Per-light monochrome SH layers removed; animated indirect is handled by the SH compose pass via delta SH volumes.
@@ -273,8 +289,10 @@ pub fn bake_sh_volume(inputs: &ShBakeCtx<'_>, config: &ShConfig) -> OctahedralSh
         probe_stride: OCTAHEDRAL_PROBE_STRIDE,
         tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
         tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
-        atlas_dimensions,
-        atlas_tiles_per_row,
+        atlas_dimensions: [atlas_layout.atlas_width, atlas_layout.atlas_height],
+        layer_count: atlas_layout.layer_count,
+        tiles_per_layer: atlas_layout.tiles_per_layer,
+        atlas_tiles_per_row: atlas_layout.atlas_tiles_per_row,
         probes: base_probes,
         atlas_texels,
         animation_descriptors,
@@ -306,7 +324,7 @@ pub fn log_stats(section: &OctahedralShVolumeSection) {
 
     log::info!(
         "OctahedralShVolume: grid {}x{}x{} = {total} probes ({valid} valid, \
-         {invalid} invalid), tile {} (border {}), atlas {}x{} ({} tile(s)/row), cell {}m, \
+         {invalid} invalid), tile {} (border {}), atlas {}x{}x{} ({} tile(s)/row, {} tile(s)/layer), cell {}m, \
          depth E[d] mean {avg_mean_d:.2}m / max {max_mean_d:.2}m, \
          {} animated light(s)",
         dims[0],
@@ -316,10 +334,25 @@ pub fn log_stats(section: &OctahedralShVolumeSection) {
         section.tile_border,
         section.atlas_dimensions[0],
         section.atlas_dimensions[1],
+        section.layer_count,
         section.atlas_tiles_per_row,
+        section.tiles_per_layer,
         section.cell_size[0],
         section.animation_descriptors.len(),
     );
+}
+
+pub(crate) fn sh_atlas_array_layout(
+    grid_dimensions: [u32; 3],
+    tile_dimension: u32,
+) -> Result<IrradianceAtlasArrayLayout, ShAtlasBakeError> {
+    irradiance_atlas_array_layout(grid_dimensions, tile_dimension, MAX_SH_ATLAS_DIMENSION).ok_or(
+        ShAtlasBakeError::LayerOverflow {
+            grid_dimensions,
+            max_dim: MAX_SH_ATLAS_DIMENSION,
+            max_layers: MAX_SH_ATLAS_LAYERS,
+        },
+    )
 }
 
 /// Decode IEEE 754 binary16 bits → f32. The inverse of
@@ -709,21 +742,28 @@ fn pack_octahedral_irradiance_atlas(
     grid_dimensions: [u32; 3],
     tile_dimension: u32,
     border: u32,
-    atlas_dimensions: [u32; 2],
-    atlas_tiles_per_row: u32,
+    atlas_layout: IrradianceAtlasArrayLayout,
 ) -> Vec<OctahedralAtlasTexel> {
     let total = (grid_dimensions[0] as usize)
         * (grid_dimensions[1] as usize)
         * (grid_dimensions[2] as usize);
     debug_assert_eq!(probes.len(), total);
-    let atlas_texel_count = atlas_dimensions[0] as usize * atlas_dimensions[1] as usize;
+    let atlas_width = atlas_layout.atlas_width as usize;
+    let layer_texel_count = atlas_width * atlas_layout.atlas_height as usize;
+    let atlas_texel_count = atlas_layout.layer_count as usize * layer_texel_count;
     let mut atlas = vec![OctahedralAtlasTexel::default(); atlas_texel_count];
     if total == 0 {
         return atlas;
     }
 
     for (probe_index, probe) in probes.iter().enumerate() {
-        let origin = irradiance_tile_origin(probe_index, tile_dimension, atlas_tiles_per_row);
+        let [layer, tile_x, tile_y] = irradiance_array_tile_location(
+            probe_index,
+            atlas_layout.tiles_per_layer,
+            atlas_layout.atlas_tiles_per_row,
+        );
+        let origin = [tile_x * tile_dimension, tile_y * tile_dimension];
+        let layer_offset = layer as usize * layer_texel_count;
         let tile = pack_octahedral_irradiance_tile(
             &probe.coefficients,
             probe.metadata.validity != 0,
@@ -736,7 +776,7 @@ fn pack_octahedral_irradiance_atlas(
                 let texel = tile[(tile_y * tile_dimension + tile_x) as usize];
                 let atlas_x = origin[0] + tile_x;
                 let atlas_y = origin[1] + tile_y;
-                let atlas_off = (atlas_y * atlas_dimensions[0] + atlas_x) as usize;
+                let atlas_off = layer_offset + atlas_y as usize * atlas_width + atlas_x as usize;
                 atlas[atlas_off] = texel;
             }
         }
@@ -1153,6 +1193,9 @@ mod tests {
     use crate::map_data::{FalloffModel, LightType};
     use crate::partition::{Aabb as CompilerAabb, BspLeaf, BspTree};
     use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
+    use postretro_level_format::octahedral::{
+        irradiance_array_tile_location, irradiance_atlas_array_layout,
+    };
     use postretro_level_format::texture_names::TextureNamesSection;
 
     fn apply_cosine_lobe_mono(acc: &mut [f32; 9]) {
@@ -1361,9 +1404,71 @@ mod tests {
         let section = bake_sh_volume(&inputs, &ShConfig { probe_spacing: 1.0 });
         assert_eq!(section.grid_dimensions, [0, 0, 0]);
         assert_eq!(section.atlas_dimensions, [0, 0]);
+        assert_eq!(section.layer_count, 0);
+        assert_eq!(section.tiles_per_layer, 0);
         assert_eq!(section.atlas_tiles_per_row, 0);
         assert!(section.probes.is_empty());
         assert!(section.atlas_texels.is_empty());
+    }
+
+    #[test]
+    fn synthetic_probe_grid_spills_to_deterministic_layer_major_atlas() {
+        let grid = [1_900_000, 1, 1];
+        let tile_dimension = DEFAULT_IRRADIANCE_TILE_DIMENSION;
+        let layout = sh_atlas_array_layout(grid, tile_dimension).unwrap();
+        let direct_layout =
+            irradiance_atlas_array_layout(grid, tile_dimension, MAX_SH_ATLAS_DIMENSION).unwrap();
+
+        assert_eq!(layout, direct_layout);
+        assert!(layout.layer_count > 1);
+        assert!(layout.atlas_width <= MAX_SH_ATLAS_DIMENSION);
+        assert!(layout.atlas_height <= MAX_SH_ATLAS_DIMENSION);
+
+        let total = grid[0] as usize * grid[1] as usize * grid[2] as usize;
+        let mut seen = vec![false; layout.layer_count as usize * layout.tiles_per_layer as usize];
+        for probe_index in 0..total {
+            let [layer, tile_x, tile_y] = irradiance_array_tile_location(
+                probe_index,
+                layout.tiles_per_layer,
+                layout.atlas_tiles_per_row,
+            );
+            assert!(layer < layout.layer_count);
+            assert!(tile_x * tile_dimension + tile_dimension <= layout.atlas_width);
+            assert!(tile_y * tile_dimension + tile_dimension <= layout.atlas_height);
+
+            let flat_tile = layer as usize * layout.tiles_per_layer as usize
+                + tile_y as usize * layout.atlas_tiles_per_row as usize
+                + tile_x as usize;
+            assert!(
+                !seen[flat_tile],
+                "probe {probe_index} reused atlas tile {flat_tile}"
+            );
+            seen[flat_tile] = true;
+        }
+
+        let second = sh_atlas_array_layout(grid, tile_dimension).unwrap();
+        assert_eq!(layout, second);
+        assert_eq!(seen.into_iter().filter(|&used| used).count(), total);
+    }
+
+    #[test]
+    fn sh_atlas_array_layout_rejects_grids_above_layer_cap() {
+        let max_tiles_per_axis = MAX_SH_ATLAS_DIMENSION / DEFAULT_IRRADIANCE_TILE_DIMENSION;
+        let tiles_per_layer = max_tiles_per_axis * max_tiles_per_axis;
+        let grid = [tiles_per_layer * MAX_SH_ATLAS_LAYERS + 1, 1, 1];
+
+        let err = sh_atlas_array_layout(grid, DEFAULT_IRRADIANCE_TILE_DIMENSION).unwrap_err();
+        match err {
+            ShAtlasBakeError::LayerOverflow {
+                grid_dimensions,
+                max_dim,
+                max_layers,
+            } => {
+                assert_eq!(grid_dimensions, grid);
+                assert_eq!(max_dim, MAX_SH_ATLAS_DIMENSION);
+                assert_eq!(max_layers, MAX_SH_ATLAS_LAYERS);
+            }
+        }
     }
 
     /// Empty geometry still emits a `slot_for_map_light` table sized to

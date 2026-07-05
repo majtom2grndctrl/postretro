@@ -42,8 +42,8 @@ use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
 use postretro_level_format::entity_shadow_lights::EntityShadowLightsSection;
 use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F};
 use postretro_level_format::octahedral::{
-    DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION, irradiance_atlas_dimensions,
-    irradiance_atlas_tiles_per_row, irradiance_tile_origin,
+    DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION, IrradianceAtlasArrayLayout,
+    irradiance_array_tile_location,
 };
 use postretro_level_format::sh_volume::OctahedralAtlasTexel;
 use rayon::prelude::*;
@@ -58,7 +58,8 @@ use crate::map_data::{MapLight, ShadowType};
 use crate::portals::Portal;
 use crate::sh_bake::{
     ProbeGridLayout, RaytracingCtx, ShBakeCtx, ShConfig, bake_probe_direct_rgb,
-    pack_octahedral_irradiance_tile, probe_grid_layout, static_light_refs, vec3_from,
+    pack_octahedral_irradiance_tile, probe_grid_layout, sh_atlas_array_layout, static_light_refs,
+    vec3_from,
 };
 use crate::sh_group::geometry_content_hash;
 
@@ -66,10 +67,10 @@ use crate::sh_group::geometry_content_hash;
 pub const DIRECT_SH_STAGE_ID: &str = "direct_sh_volume";
 
 /// Bump when the direct SH bake's output computation changes (the radiance
-/// assembly, the cull, the octahedral packing, or the section layout). Versions
-/// independently from the indirect SH stages and from the section-internal
-/// `DIRECT_SH_VOLUME_VERSION` (which guards the on-disk format).
-pub const DIRECT_SH_STAGE_VERSION: u32 = 1;
+/// assembly, the reach cull, atlas packing, or cached section payload layout).
+/// Versions independently from the indirect SH stages and from the
+/// section-internal `DIRECT_SH_VOLUME_VERSION` (which guards the on-disk format).
+pub const DIRECT_SH_STAGE_VERSION: u32 = 2;
 
 const TILE_DIMENSION: u32 = DEFAULT_IRRADIANCE_TILE_DIMENSION;
 const TILE_BORDER: u32 = DEFAULT_IRRADIANCE_TILE_BORDER;
@@ -93,6 +94,8 @@ fn empty_section() -> DirectShVolumeSection {
         tile_dimension: TILE_DIMENSION,
         tile_border: TILE_BORDER,
         atlas_dimensions: [0, 0],
+        layer_count: 0,
+        tiles_per_layer: 0,
         atlas_tiles_per_row: 0,
         irradiance_format: IRRADIANCE_FORMAT_RGBA16F,
         atlas: Vec::new(),
@@ -231,10 +234,9 @@ pub fn bake_direct_sh_volume(
         })
         .collect();
 
-    let atlas_dimensions = irradiance_atlas_dimensions(dims, TILE_DIMENSION);
-    let atlas_tiles_per_row = irradiance_atlas_tiles_per_row(dims)
-        .expect("non-empty SH probe grid should have a valid atlas tile row count");
-    let atlas = pack_atlas(&tiles, atlas_dimensions, atlas_tiles_per_row);
+    let atlas_layout =
+        sh_atlas_array_layout(dims, TILE_DIMENSION).unwrap_or_else(|e| panic!("{e}"));
+    let atlas = pack_atlas(&tiles, atlas_layout);
 
     DirectShVolumeSection {
         grid_origin: [
@@ -246,8 +248,10 @@ pub fn bake_direct_sh_volume(
         grid_dimensions: dims,
         tile_dimension: TILE_DIMENSION,
         tile_border: TILE_BORDER,
-        atlas_dimensions,
-        atlas_tiles_per_row,
+        atlas_dimensions: [atlas_layout.atlas_width, atlas_layout.atlas_height],
+        layer_count: atlas_layout.layer_count,
+        tiles_per_layer: atlas_layout.tiles_per_layer,
+        atlas_tiles_per_row: atlas_layout.atlas_tiles_per_row,
         irradiance_format: IRRADIANCE_FORMAT_RGBA16F,
         atlas,
     }
@@ -500,19 +504,26 @@ fn bake_probe_tile(
 /// block, so the BC6H encoder in [`encode_direct_section_bc6h`] reads a familiar input.
 fn pack_atlas(
     tiles: &[Vec<OctahedralAtlasTexel>],
-    atlas_dimensions: [u32; 2],
-    atlas_tiles_per_row: u32,
+    atlas_layout: IrradianceAtlasArrayLayout,
 ) -> Vec<u8> {
-    let atlas_texel_count = atlas_dimensions[0] as usize * atlas_dimensions[1] as usize;
+    let atlas_width = atlas_layout.atlas_width as usize;
+    let layer_texel_count = atlas_width * atlas_layout.atlas_height as usize;
+    let atlas_texel_count = atlas_layout.layer_count as usize * layer_texel_count;
     let mut atlas = vec![OctahedralAtlasTexel::default(); atlas_texel_count];
     for (probe_index, tile) in tiles.iter().enumerate() {
-        let origin = irradiance_tile_origin(probe_index, TILE_DIMENSION, atlas_tiles_per_row);
+        let [layer, tile_x, tile_y] = irradiance_array_tile_location(
+            probe_index,
+            atlas_layout.tiles_per_layer,
+            atlas_layout.atlas_tiles_per_row,
+        );
+        let origin = [tile_x * TILE_DIMENSION, tile_y * TILE_DIMENSION];
+        let layer_offset = layer as usize * layer_texel_count;
         for tile_y in 0..TILE_DIMENSION {
             for tile_x in 0..TILE_DIMENSION {
                 let texel = tile[(tile_y * TILE_DIMENSION + tile_x) as usize];
                 let atlas_x = origin[0] + tile_x;
                 let atlas_y = origin[1] + tile_y;
-                let off = (atlas_y * atlas_dimensions[0] + atlas_x) as usize;
+                let off = layer_offset + atlas_y as usize * atlas_width + atlas_x as usize;
                 atlas[off] = texel;
             }
         }
@@ -717,7 +728,7 @@ pub fn log_cull_savings(inputs: &DirectBakeInputs<'_, '_>, config: &ShConfig) ->
 /// it alongside the post-compression size.
 pub fn direct_dense_atlas_byte_size(section: &DirectShVolumeSection) -> usize {
     let (padded_w, padded_h) = bc6h_padded_atlas_dimensions(section.atlas_dimensions);
-    padded_w as usize * padded_h as usize * 16
+    section.layer_count as usize * padded_w as usize * padded_h as usize * 16
 }
 
 /// Round each atlas axis up to the next multiple of 4 so the BC6H encoder's
@@ -761,26 +772,34 @@ pub fn encode_direct_section_bc6h(
     let aw = section.atlas_dimensions[0];
     let ah = section.atlas_dimensions[1];
     let (padded_w, padded_h) = bc6h_padded_atlas_dimensions(section.atlas_dimensions);
+    let source_layer_stride = aw as usize * ah as usize * 8;
+    let encoded_layer_len = (padded_w / 4) as usize * (padded_h / 4) as usize * 16;
+    let mut bc6h_bytes = Vec::with_capacity(section.layer_count as usize * encoded_layer_len);
 
-    // Decode the row-major f16×4 RGBA atlas into the padded RGBA-f32 buffer the
-    // encoder expects (`padded_w · padded_h · 4` floats). The padded fringe stays
-    // zero. Source texels are 8 bytes (4 × f16); RGB feeds the encoder, A drops.
-    let mut rgba_f32 = vec![0.0f32; padded_w as usize * padded_h as usize * 4];
-    for y in 0..ah {
-        for x in 0..aw {
-            let src = ((y * aw + x) * 8) as usize;
-            let dst = ((y * padded_w + x) * 4) as usize;
-            for c in 0..4 {
-                let bits = u16::from_le_bytes([
-                    section.atlas[src + c * 2],
-                    section.atlas[src + c * 2 + 1],
-                ]);
-                rgba_f32[dst + c] = crate::sh_bake::f16_bits_to_f32(bits);
+    for layer in 0..section.layer_count as usize {
+        // Decode one row-major f16×4 RGBA layer into the padded RGBA-f32 buffer
+        // the encoder expects (`padded_w · padded_h · 4` floats). The padded
+        // fringe stays zero. Source texels are 8 bytes (4 × f16); RGB feeds the
+        // encoder, A drops.
+        let mut rgba_f32 = vec![0.0f32; padded_w as usize * padded_h as usize * 4];
+        let source_layer = layer * source_layer_stride;
+        for y in 0..ah {
+            for x in 0..aw {
+                let src = source_layer + ((y * aw + x) * 8) as usize;
+                let dst = ((y * padded_w + x) * 4) as usize;
+                for c in 0..4 {
+                    let bits = u16::from_le_bytes([
+                        section.atlas[src + c * 2],
+                        section.atlas[src + c * 2 + 1],
+                    ]);
+                    rgba_f32[dst + c] = crate::sh_bake::f16_bits_to_f32(bits);
+                }
             }
         }
+        bc6h_bytes.extend_from_slice(&bc6h::encode_bc6h_rgb_from_f32_rgba(
+            &rgba_f32, padded_w, padded_h,
+        ));
     }
-
-    let bc6h_bytes = bc6h::encode_bc6h_rgb_from_f32_rgba(&rgba_f32, padded_w, padded_h);
 
     DirectShVolumeSection {
         irradiance_format: IRRADIANCE_FORMAT_BC6H,
@@ -805,6 +824,7 @@ mod tests {
     use postretro_level_format::entity_shadow_lights::EntityShadowLightsSection;
     use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
     use postretro_level_format::octahedral::irradiance_interior_texel_direction;
+    use postretro_level_format::octahedral::irradiance_tile_origin;
     use postretro_level_format::texture_names::TextureNamesSection;
     use std::collections::HashSet;
 
@@ -1527,6 +1547,8 @@ mod tests {
         let section = bake_direct_sh_volume(&inputs, &ShConfig { probe_spacing: 1.0 });
         assert_eq!(section.grid_dimensions, [0, 0, 0]);
         assert_eq!(section.atlas_dimensions, [0, 0]);
+        assert_eq!(section.layer_count, 0);
+        assert_eq!(section.tiles_per_layer, 0);
         assert!(section.atlas.is_empty());
     }
 
@@ -1576,7 +1598,8 @@ mod tests {
         // Blob length equals the padded 4×4-block payload size.
         let padded_w = raw.atlas_dimensions[0].div_ceil(4) * 4;
         let padded_h = raw.atlas_dimensions[1].div_ceil(4) * 4;
-        let expected_len = (padded_w / 4) as usize * (padded_h / 4) as usize * 16;
+        let expected_len =
+            raw.layer_count as usize * (padded_w / 4) as usize * (padded_h / 4) as usize * 16;
         assert_eq!(encoded.atlas.len(), expected_len);
 
         // The encoded section round-trips through the format codec.
@@ -1627,8 +1650,42 @@ mod tests {
         let padded_h = raw.atlas_dimensions[1].div_ceil(4) * 4;
         assert_eq!(
             direct_dense_atlas_byte_size(&raw),
-            padded_w as usize * padded_h as usize * 16,
+            raw.layer_count as usize * padded_w as usize * padded_h as usize * 16,
         );
+    }
+
+    #[test]
+    fn encode_direct_section_bc6h_concatenates_layer_blocks_in_order() {
+        let grid = [20, 1, 1];
+        let atlas_layout =
+            postretro_level_format::octahedral::irradiance_atlas_array_layout(grid, 6, 20).unwrap();
+        assert!(atlas_layout.layer_count > 1);
+        let atlas_dimensions = [atlas_layout.atlas_width, atlas_layout.atlas_height];
+        let layer_bytes = atlas_dimensions[0] as usize * atlas_dimensions[1] as usize * 8;
+        let raw = DirectShVolumeSection {
+            grid_origin: [0.0, 0.0, 0.0],
+            cell_size: [1.0, 1.0, 1.0],
+            grid_dimensions: grid,
+            tile_dimension: 6,
+            tile_border: 1,
+            atlas_dimensions,
+            layer_count: atlas_layout.layer_count,
+            tiles_per_layer: atlas_layout.tiles_per_layer,
+            atlas_tiles_per_row: atlas_layout.atlas_tiles_per_row,
+            irradiance_format: IRRADIANCE_FORMAT_RGBA16F,
+            atlas: vec![0; atlas_layout.layer_count as usize * layer_bytes],
+        };
+
+        let encoded = encode_direct_section_bc6h(&raw, false);
+        let (padded_w, padded_h) = bc6h_padded_atlas_dimensions(raw.atlas_dimensions);
+        let encoded_layer_len = (padded_w / 4) as usize * (padded_h / 4) as usize * 16;
+        assert_eq!(
+            encoded.atlas.len(),
+            raw.layer_count as usize * encoded_layer_len
+        );
+        assert_eq!(encoded.layer_count, raw.layer_count);
+        assert_eq!(encoded.tiles_per_layer, raw.tiles_per_layer);
+        DirectShVolumeSection::from_bytes(&encoded.to_bytes()).unwrap();
     }
 
     /// An empty section (no probe grid) passes through the encoder untouched —

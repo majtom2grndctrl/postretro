@@ -88,12 +88,12 @@ struct ShGridInfo {
     tile_interior: u32,
     _pad2: u32,
     probe_occlusion: u32,
+    tiles_per_layer: u32,
+    atlas_layer_count: u32,
     _pad3: u32,
-    _pad4: u32,
-    _pad5: u32,
 };
 
-@group(3) @binding(1) var sh_total_atlas: texture_2d<f32>;
+@group(3) @binding(1) var sh_total_atlas: texture_2d_array<f32>;
 @group(3) @binding(2) var sh_atlas_sampler: sampler;
 @group(3) @binding(10) var<uniform> sh_grid: ShGridInfo;
 
@@ -125,7 +125,7 @@ struct AnimationDescriptor {
 // group layout — declared here at group 3, the same group billboard binds
 // `sh_total_atlas` in. Same octahedral tile geometry as `sh_total_atlas`, so it
 // samples through the shared `sh_sample.wgsl` chain with the same grid/sampler.
-@group(3) @binding(15) var sh_direct_atlas: texture_2d<f32>;
+@group(3) @binding(15) var sh_direct_atlas: texture_2d_array<f32>;
 
 // --- Group 6: sprite instance storage buffer ---
 struct SpriteInstance {

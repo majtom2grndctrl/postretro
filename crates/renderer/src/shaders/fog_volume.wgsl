@@ -37,9 +37,13 @@ struct ShGridInfo {
     atlas_tile_rows: u32, // computed Rust-side but not read by this shader — tile placement derives from atlas_tiles_per_row
     tile_interior: u32,
     _pad2: u32,
+    probe_occlusion: u32,
+    tiles_per_layer: u32,
+    atlas_layer_count: u32,
+    _pad3: u32,
 }
 
-@group(3) @binding(1) var sh_total_atlas: texture_2d<f32>;
+@group(3) @binding(1) var sh_total_atlas: texture_2d_array<f32>;
 @group(3) @binding(2) var sh_atlas_sampler: sampler;
 @group(3) @binding(10) var<uniform> sh_grid: ShGridInfo;
 

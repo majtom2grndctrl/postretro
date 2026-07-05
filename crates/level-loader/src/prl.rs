@@ -404,11 +404,11 @@ pub struct LevelWorld {
     #[cfg(feature = "load-prl")]
     pub delta_sh_volumes: Option<DeltaShVolumesSection>,
     /// Dense baked DIRECT static-light octahedral atlas for dynamic objects
-    /// (mesh entities + billboards). `None` for legacy v7 maps / maps with no
-    /// static lights — dynamic objects fall back to indirect-only (the renderer
-    /// binds a 4×4 BC6H zero dummy). Tile geometry is byte-identical to
-    /// `sh_volume`; the runtime reuses that section's grid uniform + depth
-    /// moments.
+    /// (mesh entities + billboards). `None` when the map has no static direct
+    /// SH/static lights, or when the section is unusable — dynamic objects fall
+    /// back to indirect-only (the renderer binds a 4×4 BC6H zero dummy). Tile
+    /// geometry is byte-identical to `sh_volume`; the runtime reuses that
+    /// section's grid uniform + depth moments.
     #[cfg(feature = "load-prl")]
     pub direct_sh_volume: Option<DirectShVolumeSection>,
     /// Sparse direct-SH deltas for selected static lights. `None` when no
@@ -417,7 +417,7 @@ pub struct LevelWorld {
     #[cfg(feature = "load-prl")]
     pub direct_sh_delta_volumes: Option<DirectShDeltaVolumesSection>,
     /// Runtime level-light indices selected by the compiler for static-light
-    /// entity-shadow promotion. Empty for legacy maps, maps without direct SH,
+    /// entity-shadow promotion. Empty for maps without direct SH/static lights,
     /// maps whose compiler selection found no eligible lights, or maps whose
     /// direct-SH deltas are missing/unusable.
     #[cfg(feature = "load-prl")]
@@ -1054,14 +1054,16 @@ mod tests {
     fn base_octahedral_section(grid_dimensions: [u32; 3]) -> OctahedralShVolumeSection {
         let probe_count =
             grid_dimensions[0] as usize * grid_dimensions[1] as usize * grid_dimensions[2] as usize;
-        let atlas_dimensions = postretro_level_format::octahedral::irradiance_atlas_dimensions(
+        let layout = postretro_level_format::octahedral::irradiance_atlas_array_layout(
             grid_dimensions,
             DEFAULT_IRRADIANCE_TILE_DIMENSION,
-        );
-        let atlas_tiles_per_row =
-            postretro_level_format::octahedral::irradiance_atlas_tiles_per_row(grid_dimensions)
-                .unwrap();
-        let atlas_texel_count = atlas_dimensions[0] as usize * atlas_dimensions[1] as usize;
+            8192,
+        )
+        .unwrap();
+        let atlas_dimensions = [layout.atlas_width, layout.atlas_height];
+        let atlas_texel_count = layout.layer_count as usize
+            * atlas_dimensions[0] as usize
+            * atlas_dimensions[1] as usize;
         OctahedralShVolumeSection {
             grid_origin: [0.0; 3],
             cell_size: [1.0; 3],
@@ -1070,7 +1072,40 @@ mod tests {
             tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
             tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
             atlas_dimensions,
-            atlas_tiles_per_row,
+            layer_count: layout.layer_count,
+            tiles_per_layer: layout.tiles_per_layer,
+            atlas_tiles_per_row: layout.atlas_tiles_per_row,
+            probes: vec![
+                postretro_level_format::sh_volume::OctahedralShProbe::default();
+                probe_count
+            ],
+            atlas_texels: vec![
+                postretro_level_format::sh_volume::OctahedralAtlasTexel::default();
+                atlas_texel_count
+            ],
+            animation_descriptors: Vec::new(),
+            slot_for_map_light: Vec::new(),
+        }
+    }
+
+    fn base_octahedral_section_for_direct(
+        direct: &DirectShVolumeSection,
+    ) -> OctahedralShVolumeSection {
+        let probe_count = direct.total_probes();
+        let atlas_texel_count = direct.layer_count as usize
+            * direct.atlas_dimensions[0] as usize
+            * direct.atlas_dimensions[1] as usize;
+        OctahedralShVolumeSection {
+            grid_origin: direct.grid_origin,
+            cell_size: direct.cell_size,
+            grid_dimensions: direct.grid_dimensions,
+            probe_stride: postretro_level_format::sh_volume::OCTAHEDRAL_PROBE_STRIDE,
+            tile_dimension: direct.tile_dimension,
+            tile_border: direct.tile_border,
+            atlas_dimensions: direct.atlas_dimensions,
+            layer_count: direct.layer_count,
+            tiles_per_layer: direct.tiles_per_layer,
+            atlas_tiles_per_row: direct.atlas_tiles_per_row,
             probes: vec![
                 postretro_level_format::sh_volume::OctahedralShProbe::default();
                 probe_count
@@ -1607,7 +1642,17 @@ mod tests {
             .iter()
             .any(|section| section.section_id == SectionId::OctahedralShVolume as u32)
         {
-            sections.push(default_octahedral_sh_volume_blob());
+            if let Some(direct) = sections
+                .iter()
+                .find(|section| section.section_id == SectionId::DirectShVolume as u32)
+                .and_then(|section| DirectShVolumeSection::from_bytes(&section.data).ok())
+            {
+                sections.push(octahedral_sh_volume_blob(
+                    base_octahedral_section_for_direct(&direct),
+                ));
+            } else {
+                sections.push(default_octahedral_sh_volume_blob());
+            }
         }
         write_prl_fixture_raw(sections, name)
     }
@@ -1703,12 +1748,18 @@ mod tests {
             tile_dimension: postretro_level_format::octahedral::DEFAULT_IRRADIANCE_TILE_DIMENSION,
             tile_border: postretro_level_format::octahedral::DEFAULT_IRRADIANCE_TILE_BORDER,
             atlas_dimensions: [0, 0],
+            layer_count: 0,
+            tiles_per_layer: 0,
             atlas_tiles_per_row: 0,
             probes: Vec::new(),
             atlas_texels: Vec::new(),
             animation_descriptors: Vec::new(),
             slot_for_map_light: Vec::new(),
         };
+        octahedral_sh_volume_blob(section)
+    }
+
+    fn octahedral_sh_volume_blob(section: OctahedralShVolumeSection) -> prl_format::SectionBlob {
         prl_format::SectionBlob {
             section_id: SectionId::OctahedralShVolume as u32,
             version: 1,
@@ -1718,16 +1769,15 @@ mod tests {
 
     fn minimal_direct_sh_volume_section() -> DirectShVolumeSection {
         use postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H;
-        use postretro_level_format::octahedral::irradiance_atlas_dimensions;
-        use postretro_level_format::octahedral::irradiance_atlas_tiles_per_row;
+        use postretro_level_format::octahedral::irradiance_atlas_array_layout;
 
         let grid = [1, 1, 1];
         let tile_dimension = DEFAULT_IRRADIANCE_TILE_DIMENSION;
-        let atlas_dimensions = irradiance_atlas_dimensions(grid, tile_dimension);
-        let atlas_tiles_per_row = irradiance_atlas_tiles_per_row(grid).unwrap();
+        let layout = irradiance_atlas_array_layout(grid, tile_dimension, 8192).unwrap();
+        let atlas_dimensions = [layout.atlas_width, layout.atlas_height];
         let padded_w = atlas_dimensions[0].div_ceil(4) * 4;
         let padded_h = atlas_dimensions[1].div_ceil(4) * 4;
-        let atlas_len = (padded_w / 4 * padded_h / 4) as usize * 16;
+        let atlas_len = layout.layer_count as usize * (padded_w / 4 * padded_h / 4) as usize * 16;
 
         DirectShVolumeSection {
             grid_origin: [0.0; 3],
@@ -1736,7 +1786,9 @@ mod tests {
             tile_dimension,
             tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
             atlas_dimensions,
-            atlas_tiles_per_row,
+            layer_count: layout.layer_count,
+            tiles_per_layer: layout.tiles_per_layer,
+            atlas_tiles_per_row: layout.atlas_tiles_per_row,
             irradiance_format: IRRADIANCE_FORMAT_BC6H,
             atlas: vec![0; atlas_len],
         }
@@ -4368,9 +4420,9 @@ mod tests {
         std::fs::remove_file(&tmp).ok();
     }
 
-    /// AC 6: a legacy map without the new DirectShVolume section loads and
-    /// surfaces `direct_sh_volume = None` (dynamic objects fall back to
-    /// indirect-only; the renderer binds the 4×4 BC6H dummy).
+    /// A map without static direct SH/static lights loads and surfaces
+    /// `direct_sh_volume = None` (dynamic objects fall back to indirect-only;
+    /// the renderer binds the 4×4 BC6H dummy).
     #[test]
     fn load_prl_absent_direct_sh_volume_section_yields_none() {
         let geom = sample_geometry();
@@ -4392,8 +4444,8 @@ mod tests {
         ];
 
         let tmp = write_prl_fixture(sections, "postretro_test_no_direct_sh_volume.prl");
-        let world =
-            load_prl(tmp.to_str().unwrap()).expect("legacy PRL without DirectShVolume must load");
+        let world = load_prl(tmp.to_str().unwrap())
+            .expect("PRL without static direct SH/static lights must load");
         assert!(
             world.direct_sh_volume.is_none(),
             "absent DirectShVolume section should yield None (indirect-only fallback)"
@@ -4409,18 +4461,19 @@ mod tests {
         use postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H;
         use postretro_level_format::octahedral::{
             DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION,
-            irradiance_atlas_dimensions, irradiance_atlas_tiles_per_row,
+            irradiance_atlas_array_layout,
         };
 
         let grid = [3u32, 2, 4];
         let tile_dimension = DEFAULT_IRRADIANCE_TILE_DIMENSION;
-        let atlas_dimensions = irradiance_atlas_dimensions(grid, tile_dimension);
-        let atlas_tiles_per_row = irradiance_atlas_tiles_per_row(grid).unwrap();
+        let layout = irradiance_atlas_array_layout(grid, tile_dimension, 8192).unwrap();
+        let atlas_dimensions = [layout.atlas_width, layout.atlas_height];
         // BC6H blob length for the 4-aligned padded atlas (the emitter rounds
         // each axis up to a multiple of 4 before encoding).
         let padded_w = atlas_dimensions[0].div_ceil(4) * 4;
         let padded_h = atlas_dimensions[1].div_ceil(4) * 4;
-        let block_count = (padded_w / 4) as usize * (padded_h / 4) as usize;
+        let block_count =
+            layout.layer_count as usize * (padded_w / 4) as usize * (padded_h / 4) as usize;
         let section = DirectShVolumeSection {
             grid_origin: [1.0, 2.0, 3.0],
             cell_size: [0.5, 0.5, 0.5],
@@ -4428,7 +4481,9 @@ mod tests {
             tile_dimension,
             tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
             atlas_dimensions,
-            atlas_tiles_per_row,
+            layer_count: layout.layer_count,
+            tiles_per_layer: layout.tiles_per_layer,
+            atlas_tiles_per_row: layout.atlas_tiles_per_row,
             irradiance_format: IRRADIANCE_FORMAT_BC6H,
             atlas: vec![0u8; block_count * 16],
         };
@@ -4465,6 +4520,45 @@ mod tests {
         assert_eq!(parsed.atlas_dimensions, atlas_dimensions);
         assert_eq!(parsed.irradiance_format, IRRADIANCE_FORMAT_BC6H);
         assert_eq!(parsed.atlas.len(), block_count * 16);
+
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_clears_direct_sh_volume_when_layout_mismatches_base_sh_volume() {
+        // Regression: DirectShVolume reuses OctahedralShVolume layout; accepting
+        // mismatched probe/tile/array fields lets shaders derive bad layers.
+        let geom = sample_geometry();
+        let bvh = sample_bvh_section();
+        let direct_sh = minimal_direct_sh_volume_section();
+        let sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: geom.to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: bvh.to_bytes(),
+            },
+            octahedral_sh_volume_blob(base_octahedral_section([2, 1, 1])),
+            direct_sh_volume_blob(direct_sh),
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+
+        let tmp = write_prl_fixture(
+            sections,
+            "postretro_test_direct_sh_volume_layout_mismatch.prl",
+        );
+        let world = load_prl(tmp.to_str().unwrap())
+            .expect("mismatched DirectShVolume layout must degrade without failing load");
+
+        assert!(
+            world.direct_sh_volume.is_none(),
+            "mismatched DirectShVolume must be cleared before reaching LevelWorld"
+        );
 
         std::fs::remove_file(&tmp).ok();
     }

@@ -15,6 +15,7 @@ target
 
 # Claude Code (local settings — project rules live in context/)
 .claude/settings.local.json
+.claude/scheduled_tasks.lock
 
 # Compiled map assets (only *.map source files are tracked)
 *.bsp

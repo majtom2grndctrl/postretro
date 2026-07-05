@@ -12,6 +12,10 @@ struct GridDims {
     delta_probe_f16_stride: u32,
     affinity_dims: vec3<u32>,
     atlas_tiles_per_row: u32,
+    tiles_per_layer: u32,
+    atlas_layer_count: u32,
+    _pad0: u32,
+    _pad1: u32,
 };
 
 struct DebugOverride {
@@ -25,12 +29,12 @@ struct DebugOverride {
     _pad4: f32,
 };
 
-@group(0) @binding(0) var direct_base_atlas: texture_2d<f32>;
+@group(0) @binding(0) var direct_base_atlas: texture_2d_array<f32>;
 // Non-filtering (nearest) sampler. The base atlas is BC6H block-compressed at
 // rest; Metal disallows textureLoad (lowered to `.read()`) on compressed formats,
 // so the base value is fetched via a point sample at the exact texel center.
 @group(0) @binding(2) var base_sampler: sampler;
-@group(0) @binding(1) var direct_composed_atlas: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(1) var direct_composed_atlas: texture_storage_2d_array<rgba16float, write>;
 @group(0) @binding(18) var<uniform> grid: GridDims;
 @group(0) @binding(20) var<storage, read> delta_subblocks: array<u32>;
 @group(0) @binding(21) var<storage, read> affinity_offsets: array<u32>;
@@ -47,24 +51,28 @@ struct AtlasTexelMapping {
     in_grid: bool,
 };
 
-fn map_atlas_texel(atlas_texel: vec2<u32>) -> AtlasTexelMapping {
+fn map_atlas_texel(atlas_texel: vec3<u32>) -> AtlasTexelMapping {
     let tile_dim = max(grid.tile_dimension, 1u);
-    let tile = atlas_texel / vec2<u32>(tile_dim);
-    let tile_texel = atlas_texel % vec2<u32>(tile_dim);
+    let tile = atlas_texel.xy / vec2<u32>(tile_dim);
+    let tile_texel = atlas_texel.xy % vec2<u32>(tile_dim);
 
     let total_probes = grid.grid_dimensions.x * grid.grid_dimensions.y * grid.grid_dimensions.z;
     let tiles_per_row = max(grid.atlas_tiles_per_row, 1u);
+    let tiles_per_layer = max(grid.tiles_per_layer, 1u);
+    let tile_slot = tile.x + tile.y * tiles_per_row;
+    let probe_index = atlas_texel.z * tiles_per_layer + tile_slot;
     if (
         total_probes == 0u
+        || atlas_texel.z >= grid.atlas_layer_count
         || tile.x >= tiles_per_row
-        || tile.x + tile.y * tiles_per_row >= total_probes
+        || tile_slot >= tiles_per_layer
+        || probe_index >= total_probes
         || grid.grid_dimensions.x == 0u
         || grid.grid_dimensions.y == 0u
     ) {
         return AtlasTexelMapping(vec3<u32>(0u), tile_texel, false);
     }
 
-    let probe_index = tile.x + tile.y * tiles_per_row;
     let xy = grid.grid_dimensions.x * grid.grid_dimensions.y;
     let z = probe_index / xy;
     let rem = probe_index - z * xy;
@@ -122,27 +130,32 @@ fn selection_weight(selection_index: u32) -> f32 {
 
 @compute @workgroup_size(8, 8, 1)
 fn compose_main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    if (gid.x >= grid.atlas_dimensions.x || gid.y >= grid.atlas_dimensions.y) {
+    if (
+        gid.x >= grid.atlas_dimensions.x
+        || gid.y >= grid.atlas_dimensions.y
+        || gid.z >= grid.atlas_layer_count
+    ) {
         return;
     }
 
     let p = vec2<i32>(i32(gid.x), i32(gid.y));
+    let layer = i32(gid.z);
     // BC6H base atlas: sample at the exact texel center with a non-filtering
     // sampler. Nearest sampling at a texel-center UV returns the BC6H-decoded
     // texel verbatim — identical to textureLoad, which Metal rejects on
     // compressed formats — with no cross-texel blend. `p` (integer coord) still
     // drives the textureStore output below.
     let uv = (vec2<f32>(p) + 0.5) / vec2<f32>(textureDimensions(direct_base_atlas));
-    let base = textureSampleLevel(direct_base_atlas, base_sampler, uv, 0.0);
-    let atlas_mapping = map_atlas_texel(gid.xy);
+    let base = textureSampleLevel(direct_base_atlas, base_sampler, uv, layer, 0.0);
+    let atlas_mapping = map_atlas_texel(gid);
     if (!atlas_mapping.in_grid) {
-        textureStore(direct_composed_atlas, p, base);
+        textureStore(direct_composed_atlas, p, layer, base);
         return;
     }
 
     let affinity = map_probe_to_affinity(atlas_mapping.probe);
     if (!affinity.in_range) {
-        textureStore(direct_composed_atlas, p, base);
+        textureStore(direct_composed_atlas, p, layer, base);
         return;
     }
 
@@ -161,5 +174,5 @@ fn compose_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     }
 
-    textureStore(direct_composed_atlas, p, vec4<f32>(max(accum, vec3<f32>(0.0)), base.a));
+    textureStore(direct_composed_atlas, p, layer, vec4<f32>(max(accum, vec3<f32>(0.0)), base.a));
 }

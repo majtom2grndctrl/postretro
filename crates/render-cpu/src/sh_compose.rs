@@ -6,7 +6,19 @@ use postretro_level_format::delta_sh_volumes::{
 };
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 
-const COMPOSE_GRID_DIMS_SIZE: usize = 48;
+const COMPOSE_GRID_DIMS_SIZE: usize = 64;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ComposeGridParams {
+    pub grid_dimensions: [u32; 3],
+    pub atlas_dimensions: [u32; 2],
+    pub tile_dimension: u32,
+    pub tile_border: u32,
+    pub atlas_tiles_per_row: u32,
+    pub tiles_per_layer: u32,
+    pub atlas_layer_count: u32,
+    pub affinity_dims: [u32; 3],
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ComposeStorageFootprint {
@@ -122,27 +134,23 @@ fn affinity_cell_count(dims: [u32; 3]) -> usize {
     dims[0] as usize * dims[1] as usize * dims[2] as usize
 }
 
-pub fn build_compose_grid_bytes(
-    grid_dimensions: [u32; 3],
-    atlas_dimensions: [u32; 2],
-    tile_dimension: u32,
-    tile_border: u32,
-    atlas_tiles_per_row: u32,
-    affinity_dims: [u32; 3],
-) -> [u8; COMPOSE_GRID_DIMS_SIZE] {
+pub fn build_compose_grid_bytes(params: ComposeGridParams) -> [u8; COMPOSE_GRID_DIMS_SIZE] {
     let mut bytes = [0u8; COMPOSE_GRID_DIMS_SIZE];
-    bytes[0..4].copy_from_slice(&grid_dimensions[0].to_ne_bytes());
-    bytes[4..8].copy_from_slice(&grid_dimensions[1].to_ne_bytes());
-    bytes[8..12].copy_from_slice(&grid_dimensions[2].to_ne_bytes());
-    bytes[12..16].copy_from_slice(&tile_dimension.to_ne_bytes());
-    bytes[16..20].copy_from_slice(&atlas_dimensions[0].to_ne_bytes());
-    bytes[20..24].copy_from_slice(&atlas_dimensions[1].to_ne_bytes());
-    bytes[24..28].copy_from_slice(&tile_border.to_ne_bytes());
-    bytes[28..32].copy_from_slice(&(delta_probe_f16_stride(tile_dimension) as u32).to_ne_bytes());
-    bytes[32..36].copy_from_slice(&affinity_dims[0].to_ne_bytes());
-    bytes[36..40].copy_from_slice(&affinity_dims[1].to_ne_bytes());
-    bytes[40..44].copy_from_slice(&affinity_dims[2].to_ne_bytes());
-    bytes[44..48].copy_from_slice(&atlas_tiles_per_row.to_ne_bytes());
+    bytes[0..4].copy_from_slice(&params.grid_dimensions[0].to_ne_bytes());
+    bytes[4..8].copy_from_slice(&params.grid_dimensions[1].to_ne_bytes());
+    bytes[8..12].copy_from_slice(&params.grid_dimensions[2].to_ne_bytes());
+    bytes[12..16].copy_from_slice(&params.tile_dimension.to_ne_bytes());
+    bytes[16..20].copy_from_slice(&params.atlas_dimensions[0].to_ne_bytes());
+    bytes[20..24].copy_from_slice(&params.atlas_dimensions[1].to_ne_bytes());
+    bytes[24..28].copy_from_slice(&params.tile_border.to_ne_bytes());
+    bytes[28..32]
+        .copy_from_slice(&(delta_probe_f16_stride(params.tile_dimension) as u32).to_ne_bytes());
+    bytes[32..36].copy_from_slice(&params.affinity_dims[0].to_ne_bytes());
+    bytes[36..40].copy_from_slice(&params.affinity_dims[1].to_ne_bytes());
+    bytes[40..44].copy_from_slice(&params.affinity_dims[2].to_ne_bytes());
+    bytes[44..48].copy_from_slice(&params.atlas_tiles_per_row.to_ne_bytes());
+    bytes[48..52].copy_from_slice(&params.tiles_per_layer.to_ne_bytes());
+    bytes[52..56].copy_from_slice(&params.atlas_layer_count.to_ne_bytes());
     bytes
 }
 
@@ -286,5 +294,35 @@ mod tests {
         assert_eq!(b.affinity_offsets, vec![0, 1, 1, 2]);
         assert_eq!(b.affinity_lights, vec![0, 1]);
         assert_eq!(b.delta_subblocks, subblocks);
+    }
+
+    #[test]
+    fn build_compose_grid_bytes_packs_layer_fields_at_std140_tail() {
+        let bytes = build_compose_grid_bytes(ComposeGridParams {
+            grid_dimensions: [2, 3, 4],
+            atlas_dimensions: [120, 60],
+            tile_dimension: 6,
+            tile_border: 1,
+            atlas_tiles_per_row: 20,
+            tiles_per_layer: 400,
+            atlas_layer_count: 3,
+            affinity_dims: [1, 2, 3],
+        });
+
+        let word = |offset: usize| {
+            u32::from_ne_bytes([
+                bytes[offset],
+                bytes[offset + 1],
+                bytes[offset + 2],
+                bytes[offset + 3],
+            ])
+        };
+
+        assert_eq!(bytes.len(), COMPOSE_GRID_DIMS_SIZE);
+        assert_eq!(word(44), 20);
+        assert_eq!(word(48), 400);
+        assert_eq!(word(52), 3);
+        assert_eq!(word(56), 0);
+        assert_eq!(word(60), 0);
     }
 }

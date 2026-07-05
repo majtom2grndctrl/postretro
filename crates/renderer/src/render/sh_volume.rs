@@ -65,6 +65,10 @@ pub struct ShVolumeResources {
     pub tile_border: u32,
     #[allow(dead_code)]
     pub atlas_tiles_per_row: u32,
+    #[allow(dead_code)]
+    pub tiles_per_layer: u32,
+    #[allow(dead_code)]
+    pub atlas_layer_count: u32,
     /// Sampled view over the base octahedral atlas; consumed by the compose pass.
     pub base_atlas_view: wgpu::TextureView,
     /// Storage-writeable view over the total octahedral atlas; consumed by the compose pass.
@@ -89,8 +93,9 @@ pub struct ShVolumeResources {
     /// the composed `Rgba16Float` atlas.
     pub direct_base_atlas_view: wgpu::TextureView,
     /// Storage-write view over the optional composed direct atlas. `None` when
-    /// no selected static-light direct deltas are present, so old maps allocate
-    /// no composed direct-atlas VRAM and keep sampling the base atlas.
+    /// no selected static-light direct deltas are present, so maps without
+    /// direct deltas allocate no composed direct-atlas VRAM and keep sampling
+    /// the base atlas.
     pub direct_composed_storage_view: Option<wgpu::TextureView>,
     /// Owned here but shared with the compose pass — one upload, two bind groups.
     /// CPU mirror kept alongside so per-frame `active` edits patch bytes and flush in one `write_buffer`.
@@ -265,20 +270,34 @@ impl ShVolumeResources {
         });
 
         // A zero-dimension grid is treated the same as a missing/empty section.
-        let max_texture_dimension_2d = device.limits().max_texture_dimension_2d;
+        let limits = device.limits();
         let usable = section
             .filter(|s| {
                 s.grid_dimensions[0] > 0 && s.grid_dimensions[1] > 0 && s.grid_dimensions[2] > 0
             })
             .filter(|s| {
-                let fits = s.atlas_dimensions[0] <= max_texture_dimension_2d
-                    && s.atlas_dimensions[1] <= max_texture_dimension_2d;
+                let fits = sh_atlas_fits(s.atlas_dimensions, s.layer_count, &limits);
                 if !fits {
                     log::error!(
-                        "[Renderer] Octahedral SH atlas {}x{} exceeds device maxTextureDimension2D {}; disabling SH volume for this level",
+                        "[Renderer] Octahedral SH atlas {}x{}x{} exceeds device limits (maxTextureDimension2D {}, maxTextureArrayLayers {}); disabling SH volume for this level",
                         s.atlas_dimensions[0],
                         s.atlas_dimensions[1],
-                        max_texture_dimension_2d,
+                        s.layer_count,
+                        limits.max_texture_dimension_2d,
+                        limits.max_texture_array_layers,
+                    );
+                }
+                fits
+            })
+            .filter(|s| {
+                let fits = sh_depth_moment_fits(s.grid_dimensions, &limits);
+                if !fits {
+                    log::error!(
+                        "[Renderer] SH depth-moment grid {}x{}x{} exceeds device maxTextureDimension3D {}; disabling SH volume for this level",
+                        s.grid_dimensions[0],
+                        s.grid_dimensions[1],
+                        s.grid_dimensions[2],
+                        limits.max_texture_dimension_3d,
                     );
                 }
                 fits
@@ -291,6 +310,8 @@ impl ShVolumeResources {
         let tile_dimension: u32;
         let tile_border: u32;
         let atlas_tiles_per_row: u32;
+        let tiles_per_layer: u32;
+        let atlas_layer_count: u32;
         let present: bool;
         let base_atlas_texture: wgpu::Texture;
         let total_atlas_texture: wgpu::Texture;
@@ -324,12 +345,14 @@ impl ShVolumeResources {
                 device,
                 queue,
                 sec.atlas_dimensions,
+                sec.layer_count,
                 &sec.atlas_texels,
                 "SH Base Octahedral Atlas",
             );
             total_atlas_texture = create_total_atlas_texture(
                 device,
                 sec.atlas_dimensions,
+                sec.layer_count,
                 "SH Total Octahedral Atlas",
             );
             let moments = pack_probe_depth_moments(&sec.probes, sec.grid_dimensions);
@@ -342,6 +365,8 @@ impl ShVolumeResources {
             tile_dimension = sec.tile_dimension;
             tile_border = sec.tile_border;
             atlas_tiles_per_row = sec.atlas_tiles_per_row;
+            tiles_per_layer = sec.tiles_per_layer;
+            atlas_layer_count = sec.layer_count;
             present = true;
         } else {
             let dummy = dummy_depth_moment_payload();
@@ -350,11 +375,12 @@ impl ShVolumeResources {
                 device,
                 queue,
                 [1, 1],
+                1,
                 &dummy_texel,
                 "SH Base Octahedral Atlas Dummy",
             );
             total_atlas_texture =
-                create_total_atlas_texture(device, [1, 1], "SH Total Octahedral Atlas Dummy");
+                create_total_atlas_texture(device, [1, 1], 1, "SH Total Octahedral Atlas Dummy");
             depth_moment_texture = upload_depth_moment_texture(device, queue, [1, 1, 1], &dummy);
             grid_origin = [0.0; 3];
             cell_size = [1.0; 3];
@@ -363,6 +389,8 @@ impl ShVolumeResources {
             tile_dimension = 1;
             tile_border = 0;
             atlas_tiles_per_row = 1;
+            tiles_per_layer = 1;
+            atlas_layer_count = 1;
             present = false;
         }
 
@@ -410,6 +438,8 @@ impl ShVolumeResources {
             tile_dimension,
             tile_border,
             atlas_tiles_per_row,
+            tiles_per_layer,
+            atlas_layer_count,
             present,
             probe_occlusion_enabled,
         });
@@ -421,16 +451,19 @@ impl ShVolumeResources {
 
         let base_atlas_view = base_atlas_texture.create_view(&wgpu::TextureViewDescriptor {
             label: Some("SH Base Octahedral Atlas View"),
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
             ..Default::default()
         });
         let total_atlas_sampled_view =
             total_atlas_texture.create_view(&wgpu::TextureViewDescriptor {
                 label: Some("SH Total Octahedral Atlas Sampled View"),
+                dimension: Some(wgpu::TextureViewDimension::D2Array),
                 ..Default::default()
             });
         let total_atlas_storage_view =
             total_atlas_texture.create_view(&wgpu::TextureViewDescriptor {
                 label: Some("SH Total Octahedral Atlas Storage View"),
+                dimension: Some(wgpu::TextureViewDimension::D2Array),
                 ..Default::default()
             });
         let depth_moment_view = depth_moment_texture.create_view(&wgpu::TextureViewDescriptor {
@@ -442,14 +475,16 @@ impl ShVolumeResources {
         // created with `Bc6hRgbUfloat` and the compressed blocks upload verbatim
         // (hardware decode at sample), mirroring the lightmap irradiance atlas's
         // BC6H load path. The uncompressed-debug tag routes to `Rgba16Float`.
-        // Absent section → a 4×4 BC6H zero-block dummy (valid for `Bc6hRgbUfloat`,
-        // never sampled — Task 6's `has_direct` flag gates the sample off).
+        // Absent/disabled section → a 4×4 BC6H zero-block dummy (valid for
+        // `Bc6hRgbUfloat`, never sampled because `has_direct` gates the sample off).
+        let direct_section = direct_section_when_base_present(present, direct_section);
         let direct_usage = resolve_direct_atlas_usage(direct_section, direct_delta_section);
         let (direct_atlas_texture, has_direct) =
             upload_direct_atlas_texture(device, queue, direct_section);
         let direct_base_atlas_view =
             direct_atlas_texture.create_view(&wgpu::TextureViewDescriptor {
                 label: Some("SH Direct Octahedral Base Atlas View"),
+                dimension: Some(wgpu::TextureViewDimension::D2Array),
                 ..Default::default()
             });
         let (direct_atlas_view, direct_composed_storage_view) =
@@ -457,14 +492,17 @@ impl ShVolumeResources {
                 let texture = create_direct_composed_atlas_texture(
                     device,
                     direct_usage.atlas_dimensions,
+                    direct_usage.layer_count,
                     "SH Direct Composed Octahedral Atlas",
                 );
                 let sampled = texture.create_view(&wgpu::TextureViewDescriptor {
                     label: Some("SH Direct Composed Octahedral Atlas Sampled View"),
+                    dimension: Some(wgpu::TextureViewDimension::D2Array),
                     ..Default::default()
                 });
                 let storage = texture.create_view(&wgpu::TextureViewDescriptor {
                     label: Some("SH Direct Composed Octahedral Atlas Storage View"),
+                    dimension: Some(wgpu::TextureViewDimension::D2Array),
                     ..Default::default()
                 });
                 (sampled, Some(storage))
@@ -581,6 +619,8 @@ impl ShVolumeResources {
             tile_dimension,
             tile_border,
             atlas_tiles_per_row,
+            tiles_per_layer,
+            atlas_layer_count,
             base_atlas_view,
             total_atlas_storage_view,
             depth_moment_texture,
@@ -637,6 +677,8 @@ impl ShVolumeResources {
             tile_dimension: self.tile_dimension,
             tile_border: self.tile_border,
             atlas_tiles_per_row: self.atlas_tiles_per_row,
+            tiles_per_layer: self.tiles_per_layer,
+            atlas_layer_count: self.atlas_layer_count,
             present: self.present,
             probe_occlusion_enabled: enabled,
         });
@@ -681,7 +723,7 @@ pub(super) fn sh_bind_group_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> 
         visibility: vis,
         ty: wgpu::BindingType::Texture {
             sample_type: wgpu::TextureSampleType::Float { filterable: true },
-            view_dimension: wgpu::TextureViewDimension::D2,
+            view_dimension: wgpu::TextureViewDimension::D2Array,
             multisampled: false,
         },
         count: None,
@@ -760,7 +802,7 @@ pub(super) fn sh_bind_group_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> 
         visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
         ty: wgpu::BindingType::Texture {
             sample_type: wgpu::TextureSampleType::Float { filterable: true },
-            view_dimension: wgpu::TextureViewDimension::D2,
+            view_dimension: wgpu::TextureViewDimension::D2Array,
             multisampled: false,
         },
         count: None,
@@ -793,17 +835,36 @@ fn dummy_depth_moment_payload() -> [u16; 4] {
     [0u16; 4]
 }
 
+fn sh_atlas_fits(per_layer_dim: [u32; 2], layer_count: u32, limits: &wgpu::Limits) -> bool {
+    per_layer_dim[0] > 0
+        && per_layer_dim[1] > 0
+        && layer_count > 0
+        && per_layer_dim[0] <= limits.max_texture_dimension_2d
+        && per_layer_dim[1] <= limits.max_texture_dimension_2d
+        && layer_count <= limits.max_texture_array_layers
+}
+
+fn sh_depth_moment_fits(grid_dimensions: [u32; 3], limits: &wgpu::Limits) -> bool {
+    grid_dimensions[0] > 0
+        && grid_dimensions[1] > 0
+        && grid_dimensions[2] > 0
+        && grid_dimensions[0] <= limits.max_texture_dimension_3d
+        && grid_dimensions[1] <= limits.max_texture_dimension_3d
+        && grid_dimensions[2] <= limits.max_texture_dimension_3d
+}
+
 fn upload_atlas_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     atlas_dimensions: [u32; 2],
+    layer_count: u32,
     texels: &[OctahedralAtlasTexel],
     label: &str,
 ) -> wgpu::Texture {
     let size = wgpu::Extent3d {
         width: atlas_dimensions[0].max(1),
         height: atlas_dimensions[1].max(1),
-        depth_or_array_layers: 1,
+        depth_or_array_layers: layer_count.max(1),
     };
 
     let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -821,6 +882,9 @@ fn upload_atlas_texture(
     for texel in texels {
         halves.extend_from_slice(&texel.rgba);
     }
+    let expected_halves =
+        size.width as usize * size.height as usize * size.depth_or_array_layers as usize * 4;
+    debug_assert_eq!(halves.len(), expected_halves);
     let byte_slice = u16_slice_to_bytes(&halves);
 
     queue.write_texture(
@@ -852,11 +916,11 @@ fn upload_atlas_texture(
 /// This mirrors the lightmap irradiance atlas's BC6H load path
 /// (`lighting::lightmap::upload_irradiance_texture`).
 ///
-/// When the section is absent (legacy v7 map / no static lights), upload a
-/// minimal valid 4×4 `Bc6hRgbUfloat` zero-block texture — a single 16-byte zero
-/// block satisfies BC6H's ≥4 / 4-aligned rule. A 1×1 texture is invalid for
-/// `Bc6hRgbUfloat`. The dummy is never sampled (Task 6's `has_direct` flag gates
-/// the direct sample off), so its contents are irrelevant.
+/// When no usable static DIRECT SH section is available, upload a minimal valid
+/// 4×4 `Bc6hRgbUfloat` zero-block texture — a single 16-byte zero block
+/// satisfies BC6H's ≥4 / 4-aligned rule. A 1×1 texture is invalid for
+/// `Bc6hRgbUfloat`. The dummy is never sampled (`has_direct` gates the direct
+/// sample off), so its contents are irrelevant.
 /// Returns `(texture, has_direct)`. `has_direct` is false when the section is
 /// absent or unusable (the dummy is bound), so the dynamic shaders skip the
 /// direct sample entirely.
@@ -865,18 +929,17 @@ fn upload_direct_atlas_texture(
     queue: &wgpu::Queue,
     section: Option<&DirectShVolumeSection>,
 ) -> (wgpu::Texture, bool) {
-    let max_texture_dimension_2d = device.limits().max_texture_dimension_2d;
+    let limits = device.limits();
     let usable = section.filter(|s| {
-        let fits = s.atlas_dimensions[0] <= max_texture_dimension_2d
-            && s.atlas_dimensions[1] <= max_texture_dimension_2d
-            && s.atlas_dimensions[0] > 0
-            && s.atlas_dimensions[1] > 0;
+        let fits = sh_atlas_fits(s.atlas_dimensions, s.layer_count, &limits);
         if !fits {
             log::error!(
-                "[Renderer] Direct SH atlas {}x{} exceeds device maxTextureDimension2D {} (or is empty); binding the direct dummy for this level",
+                "[Renderer] Direct SH atlas {}x{}x{} exceeds device limits (maxTextureDimension2D {}, maxTextureArrayLayers {}) or is empty; binding the direct dummy for this level",
                 s.atlas_dimensions[0],
                 s.atlas_dimensions[1],
-                max_texture_dimension_2d,
+                s.layer_count,
+                limits.max_texture_dimension_2d,
+                limits.max_texture_array_layers,
             );
         }
         fits
@@ -910,7 +973,7 @@ fn upload_direct_atlas_texture(
             size: wgpu::Extent3d {
                 width,
                 height,
-                depth_or_array_layers: 1,
+                depth_or_array_layers: sec.layer_count,
             },
             mip_level_count: 1,
             sample_count: 1,
@@ -951,10 +1014,18 @@ fn upload_direct_atlas_dummy(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu
     )
 }
 
+fn direct_section_when_base_present(
+    base_present: bool,
+    direct_section: Option<&DirectShVolumeSection>,
+) -> Option<&DirectShVolumeSection> {
+    direct_section.filter(|_| base_present)
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct DirectAtlasUsage {
     needs_composed_atlas: bool,
     atlas_dimensions: [u32; 2],
+    layer_count: u32,
 }
 
 fn resolve_direct_atlas_usage(
@@ -972,12 +1043,14 @@ fn resolve_direct_atlas_usage(
     DirectAtlasUsage {
         needs_composed_atlas: true,
         atlas_dimensions: section.atlas_dimensions,
+        layer_count: section.layer_count,
     }
 }
 
 fn create_direct_composed_atlas_texture(
     device: &wgpu::Device,
     atlas_dimensions: [u32; 2],
+    layer_count: u32,
     label: &str,
 ) -> wgpu::Texture {
     device.create_texture(&wgpu::TextureDescriptor {
@@ -985,7 +1058,7 @@ fn create_direct_composed_atlas_texture(
         size: wgpu::Extent3d {
             width: atlas_dimensions[0].max(1),
             height: atlas_dimensions[1].max(1),
-            depth_or_array_layers: 1,
+            depth_or_array_layers: layer_count.max(1),
         },
         mip_level_count: 1,
         sample_count: 1,
@@ -1044,6 +1117,7 @@ fn upload_depth_moment_texture(
 fn create_total_atlas_texture(
     device: &wgpu::Device,
     atlas_dimensions: [u32; 2],
+    layer_count: u32,
     label: &str,
 ) -> wgpu::Texture {
     // dev-tools reads back the composed atlas for the irradiance probe-marker
@@ -1061,7 +1135,7 @@ fn create_total_atlas_texture(
         size: wgpu::Extent3d {
             width: atlas_dimensions[0].max(1),
             height: atlas_dimensions[1].max(1),
-            depth_or_array_layers: 1,
+            depth_or_array_layers: layer_count.max(1),
         },
         mip_level_count: 1,
         sample_count: 1,
@@ -1074,11 +1148,16 @@ fn create_total_atlas_texture(
 
 #[cfg(feature = "dev-tools")]
 fn probe_average_irradiance(section: &OctahedralShVolumeSection, probe_index: usize) -> [f32; 3] {
-    let origin = postretro_level_format::octahedral::irradiance_tile_origin(
-        probe_index,
-        section.tile_dimension,
-        section.atlas_tiles_per_row,
-    );
+    let [layer, tile_x, tile_y] =
+        postretro_level_format::octahedral::irradiance_array_tile_location(
+            probe_index,
+            section.tiles_per_layer,
+            section.atlas_tiles_per_row,
+        );
+    let origin = [
+        tile_x.saturating_mul(section.tile_dimension),
+        tile_y.saturating_mul(section.tile_dimension),
+    ];
     let interior_start = section.tile_border.min(section.tile_dimension);
     let interior_end = section
         .tile_dimension
@@ -1094,7 +1173,10 @@ fn probe_average_irradiance(section: &OctahedralShVolumeSection, probe_index: us
             let y = origin[1]
                 .saturating_add(local_y)
                 .min(section.atlas_dimensions[1].saturating_sub(1));
-            let idx = (y * section.atlas_dimensions[0] + x) as usize;
+            let layer_offset = layer as usize
+                * section.atlas_dimensions[0] as usize
+                * section.atlas_dimensions[1] as usize;
+            let idx = layer_offset + (y * section.atlas_dimensions[0] + x) as usize;
             if let Some(texel) = section.atlas_texels.get(idx) {
                 sum[0] += f16_bits_to_f32_local(texel.rgba[0]);
                 sum[1] += f16_bits_to_f32_local(texel.rgba[1]);
@@ -1214,6 +1296,8 @@ mod tests {
             tile_dimension: 1,
             tile_border: 0,
             atlas_tiles_per_row: 1,
+            tiles_per_layer: 1,
+            atlas_layer_count: 1,
             present: false,
             probe_occlusion_enabled: true,
         });
@@ -1222,6 +1306,56 @@ mod tests {
             flag, 0,
             "missing SH section must disable shader SH sampling"
         );
+    }
+
+    #[test]
+    fn sh_atlas_fits_accepts_per_layer_dimensions_and_array_layers_within_limits() {
+        let limits = wgpu::Limits {
+            max_texture_dimension_2d: 64,
+            max_texture_array_layers: 4,
+            ..Default::default()
+        };
+
+        assert!(sh_atlas_fits([64, 32], 4, &limits));
+        assert!(sh_atlas_fits([1, 1], 1, &limits));
+    }
+
+    #[test]
+    fn sh_atlas_fits_rejects_empty_or_over_limit_array_atlases() {
+        let limits = wgpu::Limits {
+            max_texture_dimension_2d: 64,
+            max_texture_array_layers: 4,
+            ..Default::default()
+        };
+
+        assert!(!sh_atlas_fits([0, 32], 1, &limits));
+        assert!(!sh_atlas_fits([65, 32], 1, &limits));
+        assert!(!sh_atlas_fits([32, 65], 1, &limits));
+        assert!(!sh_atlas_fits([32, 32], 0, &limits));
+        assert!(!sh_atlas_fits([32, 32], 5, &limits));
+    }
+
+    #[test]
+    fn sh_depth_moment_fits_accepts_3d_grid_within_limit() {
+        let limits = wgpu::Limits {
+            max_texture_dimension_3d: 32,
+            ..Default::default()
+        };
+
+        assert!(sh_depth_moment_fits([32, 16, 8], &limits));
+    }
+
+    #[test]
+    fn sh_depth_moment_fits_rejects_empty_or_over_limit_3d_grid() {
+        let limits = wgpu::Limits {
+            max_texture_dimension_3d: 32,
+            ..Default::default()
+        };
+
+        assert!(!sh_depth_moment_fits([0, 16, 8], &limits));
+        assert!(!sh_depth_moment_fits([33, 16, 8], &limits));
+        assert!(!sh_depth_moment_fits([16, 33, 8], &limits));
+        assert!(!sh_depth_moment_fits([16, 8, 33], &limits));
     }
 
     #[test]
@@ -1255,6 +1389,24 @@ mod tests {
     }
 
     #[test]
+    fn sh_bind_group_layout_uses_array_view_for_total_atlas() {
+        let entries = sh_bind_group_layout_entries();
+        let entry = entries
+            .iter()
+            .find(|entry| entry.binding == BIND_SH_TOTAL_ATLAS)
+            .expect("group 3 layout should include SH total atlas");
+
+        match entry.ty {
+            wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2Array,
+                multisampled: false,
+            } => {}
+            other => panic!("unexpected SH total atlas binding type: {other:?}"),
+        }
+    }
+
+    #[test]
     fn sh_bind_group_layout_includes_direct_atlas_after_depth_moments() {
         // The plan named binding 13, but 13/14 were already claimed; the direct
         // atlas takes the actual next free index (15). Task 6's mesh-only
@@ -1279,7 +1431,7 @@ mod tests {
         match entry.ty {
             wgpu::BindingType::Texture {
                 sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                view_dimension: wgpu::TextureViewDimension::D2,
+                view_dimension: wgpu::TextureViewDimension::D2Array,
                 multisampled: false,
             } => {}
             other => panic!("unexpected SH direct atlas binding type: {other:?}"),
@@ -1295,6 +1447,8 @@ mod tests {
             tile_dimension: 6,
             tile_border: 1,
             atlas_dimensions: [6, 6],
+            layer_count: 1,
+            tiles_per_layer: 1,
             atlas_tiles_per_row: 1,
             irradiance_format: IRRADIANCE_FORMAT_BC6H,
             atlas: vec![0; 64],
@@ -1328,6 +1482,28 @@ mod tests {
         let usage = resolve_direct_atlas_usage(Some(&direct), Some(&nonempty_delta));
         assert!(usage.needs_composed_atlas);
         assert_eq!(usage.atlas_dimensions, [6, 6]);
+        assert_eq!(usage.layer_count, 1);
+    }
+
+    #[test]
+    fn direct_section_is_disabled_when_base_sh_is_unusable() {
+        let direct = DirectShVolumeSection {
+            grid_origin: [0.0; 3],
+            cell_size: [1.0; 3],
+            grid_dimensions: [1, 1, 1],
+            tile_dimension: 6,
+            tile_border: 1,
+            atlas_dimensions: [6, 6],
+            layer_count: 1,
+            tiles_per_layer: 1,
+            atlas_tiles_per_row: 1,
+            irradiance_format: IRRADIANCE_FORMAT_BC6H,
+            atlas: vec![0; 64],
+        };
+
+        assert!(direct_section_when_base_present(true, Some(&direct)).is_some());
+        assert!(direct_section_when_base_present(false, Some(&direct)).is_none());
+        assert!(direct_section_when_base_present(true, None).is_none());
     }
 
     /// baked-static-direct-sh Task 6: the mesh group-4 SUPERSET layout is the
@@ -1475,8 +1651,8 @@ mod tests {
             "fog shader should stay on the explicit no-depth SH compatibility helper",
         );
         assert!(
-            !FOG_CONSUMER_SOURCE.contains("probe_occlusion"),
-            "fog shader must not declare or read the Probe Occlusion toggle",
+            !FOG_CONSUMER_SOURCE.contains("sh_grid.probe_occlusion"),
+            "fog shader must not read the Probe Occlusion toggle",
         );
     }
 

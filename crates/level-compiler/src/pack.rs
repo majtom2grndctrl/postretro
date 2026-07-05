@@ -1182,6 +1182,8 @@ mod tests {
             tile_dimension: postretro_level_format::octahedral::DEFAULT_IRRADIANCE_TILE_DIMENSION,
             tile_border: postretro_level_format::octahedral::DEFAULT_IRRADIANCE_TILE_BORDER,
             atlas_dimensions: [0, 0],
+            layer_count: 0,
+            tiles_per_layer: 0,
             atlas_tiles_per_row: 0,
             probes: Vec::new(),
             atlas_texels: Vec::new(),
@@ -1194,16 +1196,17 @@ mod tests {
         use postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H;
         use postretro_level_format::octahedral::{
             DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION,
-            irradiance_atlas_dimensions, irradiance_atlas_tiles_per_row,
+            irradiance_atlas_array_layout,
         };
 
         let grid = [1, 1, 1];
         let tile_dimension = DEFAULT_IRRADIANCE_TILE_DIMENSION;
-        let atlas_dimensions = irradiance_atlas_dimensions(grid, tile_dimension);
-        let atlas_tiles_per_row = irradiance_atlas_tiles_per_row(grid).unwrap();
+        let atlas_layout = irradiance_atlas_array_layout(grid, tile_dimension, 8192).unwrap();
+        let atlas_dimensions = [atlas_layout.atlas_width, atlas_layout.atlas_height];
         let padded_w = atlas_dimensions[0].div_ceil(4) * 4;
         let padded_h = atlas_dimensions[1].div_ceil(4) * 4;
-        let atlas_len = (padded_w / 4 * padded_h / 4) as usize * 16;
+        let atlas_len =
+            atlas_layout.layer_count as usize * (padded_w / 4 * padded_h / 4) as usize * 16;
 
         DirectShVolumeSection {
             grid_origin: [0.0, 0.0, 0.0],
@@ -1212,7 +1215,9 @@ mod tests {
             tile_dimension,
             tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
             atlas_dimensions,
-            atlas_tiles_per_row,
+            layer_count: atlas_layout.layer_count,
+            tiles_per_layer: atlas_layout.tiles_per_layer,
+            atlas_tiles_per_row: atlas_layout.atlas_tiles_per_row,
             irradiance_format: IRRADIANCE_FORMAT_BC6H,
             atlas: vec![0; atlas_len],
         }

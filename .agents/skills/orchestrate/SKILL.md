@@ -45,9 +45,36 @@ Commit the move.
 
 For each phase in the sequencing section:
 
-**Sequential:** One `worker` agent at a time. Use `model: "gpt-5.5"` with `reasoning_effort: "high"` for complex, cross-cutting, architectural, or integration-heavy tasks, and `reasoning_effort: "medium"` for bounded implementation tasks. Wait for completion before starting the next.
+**Agent sizing:** Use `model: "gpt-5.5"` for implementation agents. Start with `reasoning_effort: "medium"` for bounded tasks. Promote to `"high"` only when the task has real uncertainty or broad contracts.
 
-**Concurrent:** Spawn all independent phase `worker` agents simultaneously via multiple `spawn_agent` calls in one message. Use `model: "gpt-5.5"` and choose `reasoning_effort: "medium"` or `"high"` per task complexity.
+Use `"high"` when the task touches any of:
+- GPU contracts, shader layouts, bind groups, or renderer scheduling
+- Persistent formats, cache keys, PRL sections, or migration behavior
+- Offset-sensitive layouts: wire headers, byte builders, std140 mirrors, shader structs, cache payloads
+- Cross-crate data flow or shared runtime contracts
+- Producer/consumer seams split across loader, compiler, renderer, shader, or diagnostics code
+- Ambiguous acceptance criteria or design choices that must be resolved from code
+- Manual visual behavior that automated tests cannot fully prove
+
+Use `"medium"` for:
+- Localized implementation with a clear module home
+- Focused tests for an already specified behavior
+- Loader/exposure plumbing for an already defined section
+- Mechanical propagation across call sites
+- Small review fixes with low blast radius
+
+Do not use `"high"` just because a task is a build task. Use the smallest agent that can safely satisfy the task and its acceptance criteria.
+
+**High-effort briefing.** For persistent or mirrored layouts, name what stays fixed.
+Include unchanged offsets, bindings, versions, cache epochs, and mirror structs.
+Require offset/layout assertions when layouts are hand-mirrored or stale input must be rejected.
+
+**Medium-effort boundary.** Use medium only when one local contract is enough.
+If another crate, runtime stage, shader, cache, or diagnostic path consumes the output, use high or split the task.
+
+**Sequential:** One `worker` agent at a time. Wait for completion before starting the next.
+
+**Concurrent:** Spawn all independent phase `worker` agents simultaneously via multiple `spawn_agent` calls in one message. Choose `reasoning_effort` per task using the sizing guide above.
 
 > **Cargo under concurrency.** Run concurrent agents in isolated worktrees — separate `target/` dirs, cap 3 (see `development_guide.md`). Separate target dirs have no shared build lock, so each agent runs `cargo check` and focused tests freely. Agents sharing one `target/` must not: they serialize on cargo's build lock and churn the incremental cache. Defer their compile/test to one post-phase pass, as `/fix-review-findings` does.
 
@@ -58,6 +85,12 @@ For each phase in the sequencing section:
 4. Instruction to follow `context/lib/development_guide.md` conventions
 5. Instruction to run `cargo check` before considering the task complete (isolated worktrees only — see note above)
 6. Instruction to run focused tests for the touched crate/module/behavior, not a full workspace `cargo test` (concurrent agents: isolated worktrees only). Full workspace tests are the coordinator's final gate. Never run a bare `cargo test -p postretro-level-compiler` (cold `prl-build` bakes, ~1h).
+
+For layout or contract tasks, also provide:
+- Existing fields, offsets, bindings, and versions that must remain stable.
+- Every downstream consumer that derives meaning from the changed data.
+- Required negative tests for stale, malformed, or mismatched data.
+- Whether optional sections degrade to `None`/dummy resources or fail load.
 
 **Do NOT provide:**
 - Other tasks' details (the agent doesn't need them)
@@ -79,6 +112,8 @@ Between phases, check that prerequisites for the next phase are satisfied.
 When all phases are done:
 - Run the full preflight once after integration: `cargo fmt --check && cargo clippy -- -D warnings && cargo test`
 - Run a `/review-panel` on code edited in this session
+- For producer/consumer changes, ensure the review panel includes a correctness tracer for each seam: compiler→format→loader, loader→renderer, renderer→shader, and runtime→diagnostics when touched.
+- For persistent or mirrored layouts, ensure the review panel includes a contract verifier for versioning, offset order, cache epoch, validation, docs, and tests.
 - Report review panel findings to user to discuss which feedback to act on
 
 ### 6. Landing the plane

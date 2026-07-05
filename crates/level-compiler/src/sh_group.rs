@@ -1,5 +1,5 @@
 // Per-probe-group SH bake + cache (warm iteration path).
-// See: context/plans/done/incremental-bake-per-element/index.md (Task 6)
+// Durable cache and warm/cold bake contracts live in context/lib/build_pipeline.md.
 //
 // Partitions the probe grid into 4³ spatial groups. Each group is baked over its
 // probe subset with the per-probe algorithm (`sh_bake::bake_probe`) and a
@@ -18,7 +18,8 @@
 use blake3::Hasher;
 use glam::DVec3;
 use postretro_level_format::octahedral::{
-    DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION, irradiance_tile_origin,
+    DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION,
+    irradiance_array_tile_location,
 };
 use postretro_level_format::sh_volume::{
     OctahedralAtlasTexel, OctahedralShProbe, OctahedralShVolumeSection,
@@ -29,7 +30,7 @@ use crate::cache::{CacheKey, StageCache};
 use crate::map_data::{LightType, MapLight};
 use crate::sh_bake::{
     BakedProbe, ProbeGridLayout, ShBakeCtx, ShConfig, bake_probe, pack_octahedral_irradiance_tile,
-    probe_grid_layout, static_light_refs, vec3_from,
+    probe_grid_layout, sh_atlas_array_layout, static_light_refs, vec3_from,
 };
 
 /// Cache stage id for per-group SH entries on the shared `StageCache`.
@@ -558,9 +559,6 @@ pub(crate) fn empty_assembled_section(
     layout: &ProbeGridLayout,
     shell: ShVolumeShell,
 ) -> OctahedralShVolumeSection {
-    use postretro_level_format::octahedral::{
-        irradiance_atlas_dimensions, irradiance_atlas_tiles_per_row,
-    };
     use postretro_level_format::sh_volume::OCTAHEDRAL_PROBE_STRIDE;
 
     if layout.is_empty() {
@@ -572,6 +570,8 @@ pub(crate) fn empty_assembled_section(
             tile_dimension: TILE_DIMENSION,
             tile_border: TILE_BORDER,
             atlas_dimensions: [0, 0],
+            layer_count: 0,
+            tiles_per_layer: 0,
             atlas_tiles_per_row: 0,
             probes: Vec::new(),
             atlas_texels: Vec::new(),
@@ -582,10 +582,11 @@ pub(crate) fn empty_assembled_section(
 
     let dims = layout.dims;
     let total = layout.total_probes();
-    let atlas_dimensions = irradiance_atlas_dimensions(dims, TILE_DIMENSION);
-    let atlas_tiles_per_row = irradiance_atlas_tiles_per_row(dims)
-        .expect("non-empty SH probe grid should have a valid atlas tile row count");
-    let atlas_texel_count = atlas_dimensions[0] as usize * atlas_dimensions[1] as usize;
+    let atlas_layout =
+        sh_atlas_array_layout(dims, TILE_DIMENSION).unwrap_or_else(|e| panic!("{e}"));
+    let atlas_texel_count = atlas_layout.layer_count as usize
+        * atlas_layout.atlas_width as usize
+        * atlas_layout.atlas_height as usize;
 
     OctahedralShVolumeSection {
         grid_origin: [
@@ -598,8 +599,10 @@ pub(crate) fn empty_assembled_section(
         probe_stride: OCTAHEDRAL_PROBE_STRIDE,
         tile_dimension: TILE_DIMENSION,
         tile_border: TILE_BORDER,
-        atlas_dimensions,
-        atlas_tiles_per_row,
+        atlas_dimensions: [atlas_layout.atlas_width, atlas_layout.atlas_height],
+        layer_count: atlas_layout.layer_count,
+        tiles_per_layer: atlas_layout.tiles_per_layer,
+        atlas_tiles_per_row: atlas_layout.atlas_tiles_per_row,
         probes: vec![OctahedralShProbe::default(); total],
         atlas_texels: vec![OctahedralAtlasTexel::default(); atlas_texel_count],
         animation_descriptors: shell.animation_descriptors,
@@ -609,21 +612,29 @@ pub(crate) fn empty_assembled_section(
 
 /// Place one baked group's records into `section` at their global offsets. Each
 /// probe's metadata goes to `probes[global_index]`; its tile is byte-copied to
-/// the atlas at `irradiance_tile_origin(global_index, ...)`. Pure placement.
+/// the layer-major atlas at `irradiance_array_tile_location(global_index, ...)`.
+/// Pure placement.
 pub(crate) fn place_group(section: &mut OctahedralShVolumeSection, group: &BakedGroup) {
     let atlas_width = section.atlas_dimensions[0] as usize;
+    let layer_texel_count = atlas_width * section.atlas_dimensions[1] as usize;
     for (slot, &global_index) in group.probe_indices.iter().enumerate() {
         let record = &group.records[slot];
         section.probes[global_index] = record.metadata;
 
-        let origin =
-            irradiance_tile_origin(global_index, TILE_DIMENSION, section.atlas_tiles_per_row);
+        let [layer, tile_x, tile_y] = irradiance_array_tile_location(
+            global_index,
+            section.tiles_per_layer,
+            section.atlas_tiles_per_row,
+        );
+        let origin = [tile_x * TILE_DIMENSION, tile_y * TILE_DIMENSION];
+        let layer_offset = layer as usize * layer_texel_count;
         for tile_y in 0..TILE_DIMENSION {
             for tile_x in 0..TILE_DIMENSION {
                 let texel = record.tile[(tile_y * TILE_DIMENSION + tile_x) as usize];
                 let ax = origin[0] + tile_x;
                 let ay = origin[1] + tile_y;
-                section.atlas_texels[ay as usize * atlas_width + ax as usize] = texel;
+                section.atlas_texels[layer_offset + ay as usize * atlas_width + ax as usize] =
+                    texel;
             }
         }
     }

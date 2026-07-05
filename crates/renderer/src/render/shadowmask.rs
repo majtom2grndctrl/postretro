@@ -1,7 +1,5 @@
 // Renderer-side CPU packing for static-light shadowmask world receipt.
-// The shader reads promoted-light metadata from the existing group-2
-// `light_influence` storage tail, avoiding a new fragment-visible storage
-// binding.
+// Governing context: context/lib/rendering_pipeline.md
 
 use super::renderer_types::{PromotedShadowPoolKind, PromotedStaticLightRecord};
 use postretro_level_format::shadowmask_atlas::SHADOWMASK_CHANNEL_DROPPED;
@@ -11,6 +9,10 @@ pub(crate) const FORWARD_SHADOWMASK_META_VEC4S_PER_RECORD: usize = 2;
 pub(crate) const FORWARD_SHADOWMASK_METADATA_BYTES_PER_RECORD: usize =
     FORWARD_SHADOWMASK_META_VEC4S_PER_RECORD * 16;
 pub(crate) const FORWARD_SHADOWMASK_INVALID_INDEX: u32 = u32::MAX;
+// Metadata is appended to `array<vec4<f32>>`, so sentinels must be ordinary
+// numeric floats rather than raw integer bit patterns.
+const FORWARD_SHADOWMASK_INVALID_INDEX_VALUE: f32 = -1.0;
+const FORWARD_SHADOWMASK_DROPPED_CHANNEL_VALUE: f32 = 4.0;
 
 pub(crate) fn influence_capacity_with_shadowmask_metadata(
     dynamic_light_count: usize,
@@ -80,20 +82,32 @@ pub(crate) fn pack_forward_shadowmask_metadata(
             PromotedShadowPoolKind::Cube => 1u32,
         };
 
-        push_u32(out, record.global_light_index);
-        push_u32(out, record.selection_index);
-        push_u32(out, spec_index);
+        push_f32(out, record.global_light_index as f32);
+        push_f32(out, record.selection_index as f32);
+        push_f32(out, metadata_index_value(spec_index));
         push_f32(out, record.weight.clamp(0.0, 1.0));
 
-        push_u32(out, pool_kind);
-        push_u32(out, record.slot);
-        push_u32(out, channel as u32);
-        push_u32(out, 0);
+        push_f32(out, pool_kind as f32);
+        push_f32(out, record.slot as f32);
+        push_f32(out, metadata_channel_value(channel));
+        push_f32(out, 0.0);
     }
 }
 
-fn push_u32(out: &mut Vec<u8>, value: u32) {
-    out.extend_from_slice(&value.to_ne_bytes());
+fn metadata_index_value(index: u32) -> f32 {
+    if index == FORWARD_SHADOWMASK_INVALID_INDEX {
+        FORWARD_SHADOWMASK_INVALID_INDEX_VALUE
+    } else {
+        index as f32
+    }
+}
+
+fn metadata_channel_value(channel: u8) -> f32 {
+    if channel == SHADOWMASK_CHANNEL_DROPPED {
+        FORWARD_SHADOWMASK_DROPPED_CHANNEL_VALUE
+    } else {
+        channel as f32
+    }
 }
 
 fn push_f32(out: &mut Vec<u8>, value: f32) {
@@ -123,10 +137,6 @@ mod tests {
             cell_index: 0,
             shadow_type: ShadowType::StaticLightMap,
         }
-    }
-
-    fn read_u32(bytes: &[u8], offset: usize) -> u32 {
-        u32::from_ne_bytes(bytes[offset..offset + 4].try_into().unwrap())
     }
 
     fn read_f32(bytes: &[u8], offset: usize) -> f32 {
@@ -165,13 +175,16 @@ mod tests {
         );
 
         assert_eq!(bytes.len(), FORWARD_SHADOWMASK_METADATA_BYTES_PER_RECORD);
-        assert_eq!(read_u32(&bytes, 0), 7);
-        assert_eq!(read_u32(&bytes, 4), 0);
-        assert_eq!(read_u32(&bytes, 8), 2);
+        assert_eq!(read_f32(&bytes, 0), 7.0);
+        assert_eq!(read_f32(&bytes, 4), 0.0);
+        assert_eq!(read_f32(&bytes, 8), 2.0);
         assert!((read_f32(&bytes, 12) - 0.5).abs() < 1.0e-6);
-        assert_eq!(read_u32(&bytes, 16), 0);
-        assert_eq!(read_u32(&bytes, 20), 3);
-        assert_eq!(read_u32(&bytes, 24), SHADOWMASK_CHANNEL_DROPPED as u32);
+        assert_eq!(read_f32(&bytes, 16), 0.0);
+        assert_eq!(read_f32(&bytes, 20), 3.0);
+        assert_eq!(
+            read_f32(&bytes, 24),
+            FORWARD_SHADOWMASK_DROPPED_CHANNEL_VALUE
+        );
     }
 
     #[test]
@@ -187,9 +200,33 @@ mod tests {
 
         pack_forward_shadowmask_metadata(&records, &[0], &[0], false, &mut bytes);
 
-        assert_eq!(read_u32(&bytes, 16), 1);
-        assert_eq!(read_u32(&bytes, 20), 1);
-        assert_eq!(read_u32(&bytes, 24), SHADOWMASK_CHANNEL_DROPPED as u32);
+        assert_eq!(read_f32(&bytes, 16), 1.0);
+        assert_eq!(read_f32(&bytes, 20), 1.0);
+        assert_eq!(
+            read_f32(&bytes, 24),
+            FORWARD_SHADOWMASK_DROPPED_CHANNEL_VALUE
+        );
+    }
+
+    #[test]
+    fn invalid_spec_index_is_uploaded_as_float_safe_sentinel() {
+        let records = [PromotedStaticLightRecord {
+            global_light_index: 2,
+            selection_index: 4,
+            pool_kind: PromotedShadowPoolKind::Spot,
+            slot: 0,
+            weight: 1.0,
+        }];
+        let mut bytes = Vec::new();
+
+        pack_forward_shadowmask_metadata(&records, &[], &[0], true, &mut bytes);
+
+        assert_eq!(read_f32(&bytes, 8), FORWARD_SHADOWMASK_INVALID_INDEX_VALUE);
+        assert_ne!(
+            u32::from_ne_bytes(bytes[8..12].try_into().unwrap()),
+            FORWARD_SHADOWMASK_INVALID_INDEX,
+            "invalid metadata must not depend on preserving raw u32 payload bits through a float load",
+        );
     }
 
     #[test]

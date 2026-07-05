@@ -1,5 +1,5 @@
 // Per-light shadowmask bake for selected static entity-shadow lights.
-// CPU-only compiler side; renderer consumes the PRL section later.
+// Governing context: context/lib/build_pipeline.md
 
 use std::collections::HashMap;
 
@@ -39,14 +39,14 @@ pub fn bake_shadowmask_atlas(
     }
 
     let mut selected = Vec::with_capacity(selection.light_indices.len());
-    for &alpha_index in &selection.light_indices {
+    for (selection_index, &alpha_index) in selection.light_indices.iter().enumerate() {
         let Some(entry) = alpha_lights.entries().get(alpha_index as usize) else {
             log::warn!(
                 "[ShadowmaskAtlas] selected AlphaLights index {alpha_index} is out of range; marking dropped"
             );
             continue;
         };
-        selected.push((alpha_index, entry.light));
+        selected.push((selection_index, alpha_index, entry.light));
     }
     if selected.is_empty() {
         return Some(empty_section_for_selection(
@@ -57,7 +57,7 @@ pub fn bake_shadowmask_atlas(
 
     let layers: Vec<LightmapLayer> = selected
         .iter()
-        .map(|(_, light)| {
+        .map(|(_, _, light)| {
             bake_light_layer(light, shared, bvh, primitives, geometry, area_sample_count)
         })
         .collect();
@@ -102,7 +102,7 @@ pub fn bake_shadowmask_atlas_cached(
 
     let mut selected = Vec::with_capacity(selection.light_indices.len());
     let mut layer_input_hashes = Vec::with_capacity(selection.light_indices.len());
-    for &alpha_index in &selection.light_indices {
+    for (selection_index, &alpha_index) in selection.light_indices.iter().enumerate() {
         let Some(entry) = alpha_lights.entries().get(alpha_index as usize) else {
             log::warn!(
                 "[ShadowmaskAtlas] selected AlphaLights index {alpha_index} is out of range; marking dropped"
@@ -120,7 +120,7 @@ pub fn bake_shadowmask_atlas_cached(
             area_sample_count,
         );
         layer_input_hashes.push(input_hash);
-        selected.push((alpha_index, entry.light, input_hash));
+        selected.push((selection_index, alpha_index, entry.light, input_hash));
     }
 
     let layer_count = layer_count_from_shared(shared);
@@ -139,7 +139,17 @@ pub fn bake_shadowmask_atlas_cached(
 
     let cached_section = cache.get(&section_key).and_then(|bytes| {
         match ShadowmaskAtlasSection::from_bytes(&bytes) {
-            Ok(section) => Some(section),
+            Ok(section) => match validate_cached_shadowmask_section(
+                &section, selection, shared, layer_count,
+            ) {
+                Ok(()) => Some(section),
+                Err(reason) => {
+                    log::warn!(
+                        "[Compiler] shadowmask_atlas cache entry does not match current atlas ({reason}), rebuilding"
+                    );
+                    None
+                }
+            },
             Err(err) => {
                 log::warn!("[Compiler] corrupt shadowmask_atlas section, rebuilding: {err}");
                 None
@@ -154,8 +164,8 @@ pub fn bake_shadowmask_atlas_cached(
     log::info!("[cache] shadowmask_atlas miss");
     let mut selected_refs = Vec::with_capacity(selected.len());
     let mut layers = Vec::with_capacity(selected.len());
-    for (alpha_index, light, input_hash) in selected {
-        selected_refs.push((alpha_index, light));
+    for (selection_index, alpha_index, light, input_hash) in selected {
+        selected_refs.push((selection_index, alpha_index, light));
         let layer_key = CacheKey::new(
             "lightmap_layer",
             lightmap_layer::LAYER_FORMAT_VERSION,
@@ -164,6 +174,15 @@ pub fn bake_shadowmask_atlas_cached(
         let layer = match cache
             .get(&layer_key)
             .and_then(|bytes| lightmap_layer::LightmapLayer::from_bytes(&bytes))
+            .and_then(|layer| match validate_cached_lightmap_layer(&layer, shared, layer_count) {
+                Ok(()) => Some(layer),
+                Err(reason) => {
+                    log::warn!(
+                        "[Compiler] corrupt lightmap_layer cache entry for shadowmask selected AlphaLights index {alpha_index} ({reason}), re-baking"
+                    );
+                    None
+                }
+            })
         {
             Some(layer) => {
                 log::info!("[cache] lightmap_layer hit");
@@ -198,15 +217,15 @@ pub fn bake_shadowmask_atlas_cached(
 ///
 /// `selected` and `layers` must be in the same order as
 /// `selection.light_indices`, after dropping any out-of-range selected
-/// `AlphaLights` entries the same way the uncached path does. The channel table
-/// is still padded to the original selection length so the output keeps the
-/// `EntityShadowLights` selection-index contract.
+/// `AlphaLights` entries the same way the uncached path does. Each `selected`
+/// entry carries its original selection index so invalid earlier selections do
+/// not shift the channel table.
 pub fn bake_shadowmask_atlas_from_layers(
     selection: &EntityShadowLightsSection,
     atlas_width: u32,
     atlas_height: u32,
     layer_count: u32,
-    selected: &[(u32, &MapLight)],
+    selected: &[(usize, u32, &MapLight)],
     layers: &[LightmapLayer],
 ) -> Option<ShadowmaskAtlasSection> {
     if selection.light_indices.is_empty() {
@@ -318,12 +337,80 @@ fn invalid_selected_light_hash(alpha_index: u32) -> [u8; 32] {
     *hasher.finalize().as_bytes()
 }
 
+fn validate_cached_shadowmask_section(
+    section: &ShadowmaskAtlasSection,
+    selection: &EntityShadowLightsSection,
+    shared: &SharedAtlas<'_>,
+    layer_count: u32,
+) -> Result<(), String> {
+    if section.width != shared.atlas_width || section.height != shared.atlas_height {
+        return Err(format!(
+            "dimensions {}x{} != {}x{}",
+            section.width, section.height, shared.atlas_width, shared.atlas_height
+        ));
+    }
+    if section.layer_count != layer_count {
+        return Err(format!(
+            "layer_count {} != {}",
+            section.layer_count, layer_count
+        ));
+    }
+    if section.channels.len() != selection.light_indices.len() {
+        return Err(format!(
+            "channel count {} != selected light count {}",
+            section.channels.len(),
+            selection.light_indices.len()
+        ));
+    }
+    Ok(())
+}
+
+fn validate_cached_lightmap_layer(
+    layer: &LightmapLayer,
+    shared: &SharedAtlas<'_>,
+    layer_count: u32,
+) -> Result<(), String> {
+    if layer.atlas_width != shared.atlas_width || layer.atlas_height != shared.atlas_height {
+        return Err(format!(
+            "dimensions {}x{} != {}x{}",
+            layer.atlas_width, layer.atlas_height, shared.atlas_width, shared.atlas_height
+        ));
+    }
+    if layer.layer_count != layer_count {
+        return Err(format!(
+            "layer_count {} != {}",
+            layer.layer_count, layer_count
+        ));
+    }
+
+    let Some(plane) = (shared.atlas_width as usize).checked_mul(shared.atlas_height as usize)
+    else {
+        return Err("atlas dimensions overflow texel plane size".to_string());
+    };
+    for (texel_index, texel) in layer.texels.iter().enumerate() {
+        if texel.layer >= layer_count {
+            return Err(format!(
+                "texel {texel_index} layer {} out of bounds for {} layers",
+                texel.layer, layer_count
+            ));
+        }
+        if texel.idx as usize >= plane {
+            return Err(format!(
+                "texel {texel_index} idx {} out of bounds for {} texels",
+                texel.idx, plane
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 fn build_shadowmask_from_layers(
     width: u32,
     height: u32,
     layer_count: usize,
     selected_light_count: usize,
-    selected: &[(u32, &MapLight)],
+    selected: &[(usize, u32, &MapLight)],
     layers: &[LightmapLayer],
 ) -> ShadowmaskAtlasSection {
     let plane = (width * height) as usize;
@@ -347,11 +434,21 @@ fn build_shadowmask_from_layers(
         .collect();
 
     let graph = overlap_graph(&masks);
-    let channels = assign_channels_with_drops(&graph, selected);
+    let compact_channels = assign_channels_with_drops(&graph, selected);
+    let mut channels = vec![SHADOWMASK_CHANNEL_DROPPED; selected_light_count];
+    for (compact_index, &(selection_index, _, _)) in selected.iter().enumerate() {
+        if selection_index < channels.len() {
+            channels[selection_index] = compact_channels
+                .get(compact_index)
+                .copied()
+                .unwrap_or(SHADOWMASK_CHANNEL_DROPPED);
+        }
+    }
+
     let mut data = vec![255u8; texel_count * 4];
-    for (selection_index, mask) in masks.iter().enumerate() {
-        let channel = channels
-            .get(selection_index)
+    for (compact_index, mask) in masks.iter().enumerate() {
+        let channel = compact_channels
+            .get(compact_index)
             .copied()
             .unwrap_or(SHADOWMASK_CHANNEL_DROPPED);
         if channel == SHADOWMASK_CHANNEL_DROPPED {
@@ -366,14 +463,9 @@ fn build_shadowmask_from_layers(
         width,
         height,
         layer_count: layer_count as u32,
-        channels: pad_channels_to_selection_count(channels, selected_light_count),
+        channels,
         data,
     }
-}
-
-fn pad_channels_to_selection_count(mut channels: Vec<u8>, selected_light_count: usize) -> Vec<u8> {
-    channels.resize(selected_light_count, SHADOWMASK_CHANNEL_DROPPED);
-    channels
 }
 
 fn overlap_graph(masks: &[Vec<(usize, u8)>]) -> Vec<Vec<bool>> {
@@ -395,7 +487,10 @@ fn overlap_graph(masks: &[Vec<(usize, u8)>]) -> Vec<Vec<bool>> {
     graph
 }
 
-fn assign_channels_with_drops(graph: &[Vec<bool>], selected: &[(u32, &MapLight)]) -> Vec<u8> {
+fn assign_channels_with_drops(
+    graph: &[Vec<bool>],
+    selected: &[(usize, u32, &MapLight)],
+) -> Vec<u8> {
     let mut active = vec![true; graph.len()];
     loop {
         if let Some(channels) = color_graph(graph, &active) {
@@ -421,16 +516,16 @@ fn assign_channels_with_drops(graph: &[Vec<bool>], selected: &[(u32, &MapLight)]
     }
 }
 
-fn lowest_intensity_active(selected: &[(u32, &MapLight)], active: &[bool]) -> Option<usize> {
+fn lowest_intensity_active(selected: &[(usize, u32, &MapLight)], active: &[bool]) -> Option<usize> {
     active
         .iter()
         .enumerate()
         .filter(|&(_, is_active)| *is_active)
         .min_by(|&(a, _), &(b, _)| {
-            light_intensity_score(selected[a].1)
-                .total_cmp(&light_intensity_score(selected[b].1))
-                .then(a.cmp(&b))
+            light_intensity_score(selected[a].2)
+                .total_cmp(&light_intensity_score(selected[b].2))
                 .then(selected[a].0.cmp(&selected[b].0))
+                .then(selected[a].1.cmp(&selected[b].1))
         })
         .map(|(i, _)| i)
 }
@@ -665,18 +760,205 @@ mod tests {
         )
     }
 
+    fn shadowmask_section(
+        width: u32,
+        height: u32,
+        layer_count: u32,
+        channels: Vec<u8>,
+        value: u8,
+    ) -> ShadowmaskAtlasSection {
+        ShadowmaskAtlasSection {
+            width,
+            height,
+            layer_count,
+            channels,
+            data: vec![value; (width * height * layer_count * 4) as usize],
+        }
+    }
+
+    enum BadCachedSection {
+        Dimensions,
+        LayerCount,
+        ChannelCount,
+    }
+
+    fn bad_cached_section(
+        shared: &SharedAtlas<'_>,
+        kind: BadCachedSection,
+    ) -> ShadowmaskAtlasSection {
+        match kind {
+            BadCachedSection::Dimensions => shadowmask_section(
+                shared.atlas_width + 1,
+                shared.atlas_height,
+                layer_count_from_shared(shared),
+                vec![0],
+                0,
+            ),
+            BadCachedSection::LayerCount => shadowmask_section(
+                shared.atlas_width,
+                shared.atlas_height,
+                layer_count_from_shared(shared) + 1,
+                vec![0],
+                0,
+            ),
+            BadCachedSection::ChannelCount => shadowmask_section(
+                shared.atlas_width,
+                shared.atlas_height,
+                layer_count_from_shared(shared),
+                vec![0, 1],
+                0,
+            ),
+        }
+    }
+
+    fn assert_cached_section_rebuilt_from_seeded_layer(label: &str, kind: BadCachedSection) {
+        let mut test_light = light(5.0);
+        test_light.origin = DVec3::new(0.25, 1.0, 0.25);
+        let lights = vec![test_light];
+        let (geo, prepared, bvh, primitives) = cache_fixture(&lights);
+        let shared = shared_from_prepared(&prepared);
+        let alpha_lights = AlphaLightsNs::from_lights(&lights);
+        let selection = EntityShadowLightsSection {
+            light_indices: vec![0],
+        };
+        let (layer_key, input_hash) =
+            layer_key(&lights[0], &shared, &primitives, &geo, AREA_SAMPLES);
+        let section_key = shadowmask_key(&selection, &shared, &[input_hash]);
+        let selected = selected_refs(&selection, &alpha_lights);
+        let seeded_layer = layer(
+            shared.atlas_width,
+            shared.atlas_height,
+            layer_count_from_shared(&shared),
+            &[(0, 0, 0.25)],
+        );
+        let expected = bake_shadowmask_atlas_from_layers(
+            &selection,
+            shared.atlas_width,
+            shared.atlas_height,
+            layer_count_from_shared(&shared),
+            &selected,
+            std::slice::from_ref(&seeded_layer),
+        )
+        .unwrap();
+
+        let dir = fresh_cache_dir(label);
+        let cache = StageCache::new(&dir).expect("cache dir");
+        cache.put(&section_key, &bad_cached_section(&shared, kind).to_bytes());
+        cache.put(&layer_key, &seeded_layer.to_bytes());
+
+        let result = bake_shadowmask_atlas_cached(
+            Some(&selection),
+            &alpha_lights,
+            &shared,
+            &bvh,
+            &primitives,
+            &geo,
+            DENSITY,
+            AREA_SAMPLES,
+            Some(&cache),
+        )
+        .expect("rebuilt section");
+
+        assert_eq!(result, expected);
+        let overwritten = cache
+            .get(&section_key)
+            .expect("mismatched section entry overwritten");
+        assert_eq!(
+            ShadowmaskAtlasSection::from_bytes(&overwritten).unwrap(),
+            expected
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    enum BadCachedLayer {
+        Metadata,
+        TexelBounds,
+    }
+
+    fn bad_cached_layer(shared: &SharedAtlas<'_>, kind: BadCachedLayer) -> LightmapLayer {
+        match kind {
+            BadCachedLayer::Metadata => layer(
+                shared.atlas_width + 1,
+                shared.atlas_height,
+                layer_count_from_shared(shared) + 1,
+                &[(0, 0, 0.25)],
+            ),
+            BadCachedLayer::TexelBounds => layer(
+                shared.atlas_width,
+                shared.atlas_height,
+                layer_count_from_shared(shared),
+                &[
+                    (shared.atlas_width * shared.atlas_height, 0, 0.25),
+                    (0, layer_count_from_shared(shared), 0.5),
+                ],
+            ),
+        }
+    }
+
+    fn assert_cached_layer_rejected_and_rebaked(label: &str, kind: BadCachedLayer) {
+        let mut test_light = light(5.0);
+        test_light.origin = DVec3::new(0.25, 1.0, 0.25);
+        let lights = vec![test_light];
+        let (geo, prepared, bvh, primitives) = cache_fixture(&lights);
+        let shared = shared_from_prepared(&prepared);
+        let alpha_lights = AlphaLightsNs::from_lights(&lights);
+        let selection = EntityShadowLightsSection {
+            light_indices: vec![0],
+        };
+        let (layer_key, input_hash) =
+            layer_key(&lights[0], &shared, &primitives, &geo, AREA_SAMPLES);
+        let section_key = shadowmask_key(&selection, &shared, &[input_hash]);
+        let invalid = bad_cached_layer(&shared, kind);
+
+        let dir = fresh_cache_dir(label);
+        let cache = StageCache::new(&dir).expect("cache dir");
+        cache.put(&layer_key, &invalid.to_bytes());
+
+        let result = bake_shadowmask_atlas_cached(
+            Some(&selection),
+            &alpha_lights,
+            &shared,
+            &bvh,
+            &primitives,
+            &geo,
+            DENSITY,
+            AREA_SAMPLES,
+            Some(&cache),
+        )
+        .expect("rebuilt section");
+
+        let stored_layer = cache
+            .get(&layer_key)
+            .and_then(|bytes| LightmapLayer::from_bytes(&bytes))
+            .expect("invalid layer entry overwritten by rebake");
+        assert_ne!(
+            stored_layer, invalid,
+            "invalid decodable lightmap_layer payload must not be reused"
+        );
+        validate_cached_lightmap_layer(&stored_layer, &shared, layer_count_from_shared(&shared))
+            .expect("rebaked layer matches current atlas");
+
+        let stored_section = cache.get(&section_key).expect("shadowmask section stored");
+        assert_eq!(
+            ShadowmaskAtlasSection::from_bytes(&stored_section).unwrap(),
+            result
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn selected_refs<'a>(
         selection: &EntityShadowLightsSection,
         alpha_lights: &'a AlphaLightsNs<'a>,
-    ) -> Vec<(u32, &'a MapLight)> {
+    ) -> Vec<(usize, u32, &'a MapLight)> {
         selection
             .light_indices
             .iter()
-            .filter_map(|&alpha_index| {
+            .enumerate()
+            .filter_map(|(selection_index, &alpha_index)| {
                 alpha_lights
                     .entries()
                     .get(alpha_index as usize)
-                    .map(|entry| (alpha_index, entry.light))
+                    .map(|entry| (selection_index, alpha_index, entry.light))
             })
             .collect()
     }
@@ -684,7 +966,11 @@ mod tests {
     #[test]
     fn single_light_mask_writes_raw_visibility_to_assigned_channel() {
         let lights = vec![(0, light(5.0))];
-        let selected: Vec<(u32, &MapLight)> = lights.iter().map(|(i, l)| (*i, l)).collect();
+        let selected: Vec<(usize, u32, &MapLight)> = lights
+            .iter()
+            .enumerate()
+            .map(|(selection_index, (i, l))| (selection_index, *i, l))
+            .collect();
         let layers = vec![layer(2, 1, 1, &[(0, 0, 0.25), (1, 0, 1.0)])];
 
         let section = build_shadowmask_from_layers(2, 1, 1, 1, &selected, &layers);
@@ -697,7 +983,11 @@ mod tests {
     #[test]
     fn overlapping_lights_use_different_channels() {
         let lights = vec![(0, light(5.0)), (1, light(4.0))];
-        let selected: Vec<(u32, &MapLight)> = lights.iter().map(|(i, l)| (*i, l)).collect();
+        let selected: Vec<(usize, u32, &MapLight)> = lights
+            .iter()
+            .enumerate()
+            .map(|(selection_index, (i, l))| (selection_index, *i, l))
+            .collect();
         let layers = vec![
             layer(1, 1, 1, &[(0, 0, 0.25)]),
             layer(1, 1, 1, &[(0, 0, 0.5)]),
@@ -719,7 +1009,11 @@ mod tests {
             (3, light(3.0)),
             (4, light(2.0)),
         ];
-        let selected: Vec<(u32, &MapLight)> = lights.iter().map(|(i, l)| (*i, l)).collect();
+        let selected: Vec<(usize, u32, &MapLight)> = lights
+            .iter()
+            .enumerate()
+            .map(|(selection_index, (i, l))| (selection_index, *i, l))
+            .collect();
         let layers: Vec<LightmapLayer> = (0..5).map(|_| layer(1, 1, 1, &[(0, 0, 1.0)])).collect();
 
         let section = build_shadowmask_from_layers(1, 1, 1, 5, &selected, &layers);
@@ -738,7 +1032,11 @@ mod tests {
     #[test]
     fn multi_layer_payload_uses_layer_major_texel_indexing() {
         let lights = vec![(0, light(5.0))];
-        let selected: Vec<(u32, &MapLight)> = lights.iter().map(|(i, l)| (*i, l)).collect();
+        let selected: Vec<(usize, u32, &MapLight)> = lights
+            .iter()
+            .enumerate()
+            .map(|(selection_index, (i, l))| (selection_index, *i, l))
+            .collect();
         let layers = vec![layer(1, 1, 2, &[(0, 1, 0.5)])];
 
         let section = build_shadowmask_from_layers(1, 1, 2, 1, &selected, &layers);
@@ -746,6 +1044,25 @@ mod tests {
         assert_eq!(section.data.len(), 8);
         assert_eq!(section.data[0], 255);
         assert_eq!(section.data[4], 128);
+    }
+
+    // Regression: an invalid earlier AlphaLights selection compacted the valid
+    // light left, so the channel table no longer matched selection indices.
+    #[test]
+    fn invalid_selected_alpha_light_preserves_original_channel_slot() {
+        let valid_light = light(5.0);
+        let selected = vec![(1usize, 0u32, &valid_light)];
+        let selection = EntityShadowLightsSection {
+            light_indices: vec![99, 0],
+        };
+        let layers = vec![layer(1, 1, 1, &[(0, 0, 0.25)])];
+
+        let section =
+            bake_shadowmask_atlas_from_layers(&selection, 1, 1, 1, &selected, &layers).unwrap();
+
+        assert_eq!(section.channels[0], SHADOWMASK_CHANNEL_DROPPED);
+        assert_ne!(section.channels[1], SHADOWMASK_CHANNEL_DROPPED);
+        assert_eq!(section.data[section.channels[1] as usize], 64);
     }
 
     #[test]
@@ -781,19 +1098,20 @@ mod tests {
         )
         .unwrap();
 
-        let selected: Vec<(u32, &MapLight)> = selection
+        let selected: Vec<(usize, u32, &MapLight)> = selection
             .light_indices
             .iter()
-            .filter_map(|&alpha_index| {
+            .enumerate()
+            .filter_map(|(selection_index, &alpha_index)| {
                 alpha_lights
                     .entries()
                     .get(alpha_index as usize)
-                    .map(|entry| (alpha_index, entry.light))
+                    .map(|entry| (selection_index, alpha_index, entry.light))
             })
             .collect();
         let layers: Vec<LightmapLayer> = selected
             .iter()
-            .map(|(_, light)| bake_light_layer(light, &shared, &bvh, &primitives, &geo, 4))
+            .map(|(_, _, light)| bake_light_layer(light, &shared, &bvh, &primitives, &geo, 4))
             .collect();
 
         let preloaded = bake_shadowmask_atlas_from_layers(
@@ -863,6 +1181,30 @@ mod tests {
     }
 
     #[test]
+    fn shadowmask_atlas_cache_hit_with_wrong_dimensions_is_rebuilt() {
+        assert_cached_section_rebuilt_from_seeded_layer(
+            "wrong_section_dimensions",
+            BadCachedSection::Dimensions,
+        );
+    }
+
+    #[test]
+    fn shadowmask_atlas_cache_hit_with_wrong_layer_count_is_rebuilt() {
+        assert_cached_section_rebuilt_from_seeded_layer(
+            "wrong_section_layer_count",
+            BadCachedSection::LayerCount,
+        );
+    }
+
+    #[test]
+    fn shadowmask_atlas_cache_hit_with_wrong_channel_count_is_rebuilt() {
+        assert_cached_section_rebuilt_from_seeded_layer(
+            "wrong_section_channel_count",
+            BadCachedSection::ChannelCount,
+        );
+    }
+
+    #[test]
     fn shadowmask_atlas_cache_miss_reuses_existing_layers_and_stores_section() {
         let mut test_light = light(5.0);
         test_light.origin = DVec3::new(0.25, 1.0, 0.25);
@@ -920,6 +1262,19 @@ mod tests {
             expected
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn shadowmask_atlas_layer_cache_rejects_wrong_atlas_metadata() {
+        assert_cached_layer_rejected_and_rebaked("wrong_layer_metadata", BadCachedLayer::Metadata);
+    }
+
+    #[test]
+    fn shadowmask_atlas_layer_cache_rejects_out_of_bounds_texels() {
+        assert_cached_layer_rejected_and_rebaked(
+            "out_of_bounds_layer_texel",
+            BadCachedLayer::TexelBounds,
+        );
     }
 
     #[test]

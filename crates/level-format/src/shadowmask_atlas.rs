@@ -1,5 +1,5 @@
 // ShadowmaskAtlas PRL section (ID 42): per-selected-light baked visibility masks.
-// See: context/plans/in-progress/static-light-shadowmask-world-receipt/index.md
+// Governing context: context/lib/build_pipeline.md
 
 use crate::FormatError;
 

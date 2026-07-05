@@ -777,12 +777,12 @@ mod tests {
     }
 
     // The group-4 BGL is a fixed contract with `forward.wgsl`'s `@binding`
-    // decorators. This pins the sampler split decided in Task 5: which textures
-    // are filterable, and the two sampler bindings (nearest + linear).
+    // decorators. This pins which textures are filterable, and the two sampler
+    // bindings (nearest + linear).
     #[test]
     fn bgl_entries_pin_sampler_split() {
         let entries = bind_group_layout_entries();
-        assert_eq!(entries.len(), 7, "group-4 BGL grew to 7 entries");
+        assert_eq!(entries.len(), 7, "group-4 BGL must expose seven bindings");
 
         let tex_sample = |b: u32| {
             entries
@@ -810,6 +810,10 @@ mod tests {
         );
         assert_eq!(
             tex_sample(BIND_ANIMATED_ATLAS),
+            Some(wgpu::TextureSampleType::Float { filterable: true })
+        );
+        assert_eq!(
+            tex_sample(BIND_SHADOWMASK_ATLAS),
             Some(wgpu::TextureSampleType::Float { filterable: true })
         );
         // Both direction atlases stay nearest (direction lerp ≠ slerp): both are

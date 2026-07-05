@@ -4560,6 +4560,55 @@ mod tests {
     }
 
     #[test]
+    fn load_prl_ignores_shadowmask_atlas_without_lightmap_only() {
+        // Regression: ShadowmaskAtlas without its defining Lightmap must disable
+        // only the entity-to-world union term, not static-light entity receipt.
+        let direct_sh = minimal_direct_sh_volume_section();
+        let direct_sh_delta = direct_delta_section_for(
+            expected_affinity_dims(direct_sh.grid_dimensions, AFFINITY_FACTOR),
+            vec![0],
+        );
+        let shadowmask = postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection {
+            width: 2,
+            height: 1,
+            layer_count: 2,
+            channels: vec![0],
+            data: vec![255, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+        };
+        let sections = vec![
+            geometry_blob(sample_geometry()),
+            bvh_blob(sample_bvh_section()),
+            prl_format::SectionBlob {
+                section_id: SectionId::AlphaLights as u32,
+                version: 1,
+                data: sample_alpha_lights().to_bytes(),
+            },
+            direct_sh_volume_blob(direct_sh),
+            entity_shadow_lights_blob(vec![0]),
+            direct_sh_delta_blob(direct_sh_delta),
+            shadowmask_blob(shadowmask),
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+
+        let tmp = write_prl_fixture(
+            sections,
+            "postretro_test_shadowmask_atlas_without_lightmap.prl",
+        );
+        let world = load_prl(tmp.to_str().unwrap())
+            .expect("ShadowmaskAtlas without Lightmap must degrade without failing load");
+
+        assert_eq!(world.entity_shadow_lights, vec![0]);
+        assert!(world.direct_sh_delta_volumes.is_some());
+        assert!(
+            world.shadowmask_atlas.is_none(),
+            "ShadowmaskAtlas depends on Lightmap dimensions and must be ignored when Lightmap is absent"
+        );
+
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
     fn load_prl_degrades_malformed_entity_shadow_lights_to_empty() {
         // A malformed EntityShadowLights section (non-ascending indices) must warn
         // and degrade to empty — not brick the whole level load — mirroring the

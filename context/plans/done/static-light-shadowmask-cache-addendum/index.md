@@ -1,6 +1,6 @@
 # Static-Light Shadowmask Cache Addendum
 
-Addendum to `context/plans/in-progress/static-light-shadowmask-world-receipt/`.
+Addendum to `context/plans/done/static-light-shadowmask-world-receipt/`.
 
 ## Goal
 

@@ -31,19 +31,19 @@ Let compiler-selected static (baked-tier) lights cast crisp runtime shadows onto
 
 Tags name the producing task(s); every task verifies its own tags.
 
-- [ ] (T2) Compiling a fixture map marks eligible static lights and excludes: lights below the intensity-ratio threshold, lights below the falloff-range floor, and decorative spots aimed into a nearby mounting surface — each exclusion covered by a compiler test against fixtures authored in T2. The `EntityShadowLights` section round-trips through the loader, and is emitted only when a `DirectShVolume` section bakes.
-- [ ] (T3) Per-light direct SH delta bake round-trips: base direct atlas minus all selected lights' deltas matches a bake with those lights excluded, within a pinned numeric tolerance (compiler test, pre-BC6H values).
-- [ ] (T4) The promoted-set record schema is pinned by a layout/contract test: each record carries the global level-light index, the selection index (position in `EntityShadowLights` order), the pool kind and slot (spot slot, or cube slot), and weight `w ∈ [0,1]`. Tasks 5–6 and the dependent shadowmask plan consume this exact record.
-- [ ] (T4+T6) A visible entity inside an eligible static light's influence gets that light promoted (within the promoted budget and pool ranking): the entity shows crisp shadow-map shadowing from static geometry, from other entities, and from itself (manual verification on `campaign-test.prl`, plus occluder-submitted counters).
-- [ ] (T4+T5) An entity outside promotion range is lit exactly as today — direct SH atlas sample, no runtime term. With an empty or absent selection, the composed atlas is not allocated, the base atlas stays bound, and entity lighting is byte-identical to before this feature.
-- [ ] (T4) Promotion, demotion, and eviction follow the pinned weight timeline: no single-frame brightness pop on promote/demote (weights ramp; fades reversible from current `w`); eviction may briefly under-light the entity (runtime term drops with the slot while the delta subtraction fades out) but never over-lights.
-- [ ] (T4+T5) Total light energy on the entity holds across the handoff: a promoted light's runtime term replaces its subtracted SH delta at matching weight, so an unoccluded surface point does not brighten or dim beyond crispness differences (visual check with lighting isolation modes).
-- [ ] (T4) Fog scatter output is unchanged while a light is promoted (packer filter test: promoted slots are excluded from fog's slot-driven light collection).
-- [ ] (T4+T5+T6) With no entities inside any eligible light's influence: zero promoted slots, zero added shadow depth passes, direct-SH compose pass skipped (counters/log).
-- [ ] (T6) After a promoted slot's cache warms, its per-frame world-geometry depth draws AND its per-frame shadow-cull sub-region dispatches are both zero; only entity occluders re-render (counters).
-- [ ] (T4) World lighting is unchanged: lightmap bake output for existing maps is identical, and the forward world path does not evaluate promoted lights (forward bounds by the dynamic-only count; pinned by test).
-- [ ] (T1) Ranking/eligibility tests relocate to their new module and stay green; existing dynamic-light shadow tests stay green.
-- [ ] (T5) Renderer budget guard tests still pass with unchanged sampled-texture counts.
+- [x] (T2) Compiling a fixture map marks eligible static lights and excludes: lights below the intensity-ratio threshold, lights below the falloff-range floor, and decorative spots aimed into a nearby mounting surface — each exclusion covered by a compiler test against fixtures authored in T2. The `EntityShadowLights` section round-trips through the loader, and is emitted only when a `DirectShVolume` section bakes.
+- [x] (T3) Per-light direct SH delta bake round-trips: base direct atlas minus all selected lights' deltas matches a bake with those lights excluded, within a pinned numeric tolerance (compiler test, pre-BC6H values).
+- [x] (T4) The promoted-set record schema is pinned by a layout/contract test: each record carries the global level-light index, the selection index (position in `EntityShadowLights` order), the pool kind and slot (spot slot, or cube slot), and weight `w ∈ [0,1]`. Tasks 5–6 and the dependent shadowmask plan consume this exact record.
+- [x] (T4+T6) A visible entity inside an eligible static light's influence gets that light promoted (within the promoted budget and pool ranking): the entity shows crisp shadow-map shadowing from static geometry, from other entities, and from itself (manual verification on `campaign-test.prl`, plus occluder-submitted counters).
+- [x] (T4+T5) An entity outside promotion range is lit exactly as today — direct SH atlas sample, no runtime term. With an empty or absent selection, the composed atlas is not allocated, the base atlas stays bound, and entity lighting is byte-identical to before this feature.
+- [x] (T4) Promotion, demotion, and eviction follow the pinned weight timeline: no single-frame brightness pop on promote/demote (weights ramp; fades reversible from current `w`); eviction may briefly under-light the entity (runtime term drops with the slot while the delta subtraction fades out) but never over-lights.
+- [x] (T4+T5) Total light energy on the entity holds across the handoff: a promoted light's runtime term replaces its subtracted SH delta at matching weight, so an unoccluded surface point does not brighten or dim beyond crispness differences (visual check with lighting isolation modes).
+- [x] (T4) Fog scatter output is unchanged while a light is promoted (packer filter test: promoted slots are excluded from fog's slot-driven light collection).
+- [x] (T4+T5+T6) With no entities inside any eligible light's influence: zero promoted slots, zero added shadow depth passes, direct-SH compose pass skipped (counters/log).
+- [x] (T6) After a promoted slot's cache warms, its per-frame world-geometry depth draws AND its per-frame shadow-cull sub-region dispatches are both zero; only entity occluders re-render (counters).
+- [x] (T4) World lighting is unchanged: lightmap bake output for existing maps is identical, and the forward world path does not evaluate promoted lights (forward bounds by the dynamic-only count; pinned by test).
+- [x] (T1) Ranking/eligibility tests relocate to their new module and stay green; existing dynamic-light shadow tests stay green.
+- [x] (T5) Renderer budget guard tests still pass with unchanged sampled-texture counts.
 
 ## Tasks
 

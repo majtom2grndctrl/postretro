@@ -4,11 +4,11 @@
 
 Decision: **go**. Prototype is implemented behind a diagnostics mode and passed visual verification on `combat-demo.map`.
 
-Observed result: shadow-map PCF receipt is visible when `Shadowmask prototype` is enabled, and no shadow appears for a light whose intensity was intentionally too low to enter the selected/promoted set. User verification reported no blocker for continuing.
+Observed result: shadow-map PCF receipt is visible when `Visualize: shadowmask union` is enabled, and no shadow appears for a light whose intensity was intentionally too low to enter the selected/promoted set. User verification reported no blocker for continuing.
 
 ## Prototype
 
-- Shader hook: `SdfShadowMode::ShadowmaskPrototype` / diagnostics label `Shadowmask prototype`.
+- Shader hook: `SdfShadowMode::ShadowmaskUnion` / diagnostics label `Visualize: shadowmask union`.
 - Normal rendering is unchanged unless that diagnostics mode is selected.
 - The spike consumes promoted static lights from the existing `lights[light_count..total_light_count]` tail.
 - It matches each promoted `GpuLight` back to `spec_lights` by position, range, and type.
@@ -49,12 +49,12 @@ Entity present:
 
 Entity absent:
 
-- With `Shadowmask prototype` active and no enemy under the promoted light, baked soft penumbrae show no perceptible net change.
+- With `Visualize: shadowmask union` active and no enemy under the promoted light, baked soft penumbrae show no perceptible net change.
 - If the penumbra hardens or darkens, Task 1 is not green; tune the ramp-bias or record the failure mode in the plan.
 
-## Screenshots
+## Screenshot Evidence
 
-No screenshots produced by this agent.
+No screenshot artifact was produced. Owner manual verification accepted this no-screenshot state for the Task 1 spike before Task 1 remained checked.
 
 ## Verification Commands
 

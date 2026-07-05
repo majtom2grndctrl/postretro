@@ -73,21 +73,21 @@
 }
 // brush 7
 {
-( 256 296 0 ) ( 256 200 128 ) ( 256 200 0 ) concrete_pavement_036 0 0 0 1 1
-( 256 200 0 ) ( 320 200 128 ) ( 320 200 0 ) concrete_pavement_036 0 0 0 1 1
-( 256 200 0 ) ( 320 296 0 ) ( 256 296 0 ) concrete_pavement_036 0 0 0 1 1
-( 256 296 128 ) ( 320 200 128 ) ( 256 200 128 ) concrete_pavement_036 0 0 0 1 1
-( 320 296 0 ) ( 256 296 128 ) ( 256 296 0 ) concrete_pavement_036 0 0 0 1 1
-( 320 200 0 ) ( 320 296 128 ) ( 320 296 0 ) concrete_pavement_036 0 0 0 1 1
+( 256 304 0 ) ( 256 208 128 ) ( 256 208 0 ) concrete_pavement_036 0 0 0 1 1
+( 256 208 0 ) ( 320 208 128 ) ( 320 208 0 ) concrete_pavement_036 0 0 0 1 1
+( 256 208 0 ) ( 320 304 0 ) ( 256 304 0 ) concrete_pavement_036 0 0 0 1 1
+( 256 304 128 ) ( 320 208 128 ) ( 256 208 128 ) concrete_pavement_036 0 0 0 1 1
+( 320 304 0 ) ( 256 304 128 ) ( 256 304 0 ) concrete_pavement_036 0 0 0 1 1
+( 320 208 0 ) ( 320 304 128 ) ( 320 304 0 ) concrete_pavement_036 0 0 0 1 1
 }
 // brush 8
 {
-( 704 312 0 ) ( 704 216 128 ) ( 704 216 0 ) concrete_pavement_036 0 0 0 1 1
-( 704 216 0 ) ( 768 216 128 ) ( 768 216 0 ) concrete_pavement_036 0 0 0 1 1
-( 704 216 0 ) ( 768 312 0 ) ( 704 312 0 ) concrete_pavement_036 0 0 0 1 1
-( 704 312 128 ) ( 768 216 128 ) ( 704 216 128 ) concrete_pavement_036 0 0 0 1 1
-( 768 312 0 ) ( 704 312 128 ) ( 704 312 0 ) concrete_pavement_036 0 0 0 1 1
-( 768 216 0 ) ( 768 312 128 ) ( 768 312 0 ) concrete_pavement_036 0 0 0 1 1
+( 720 304 0 ) ( 720 208 128 ) ( 720 208 0 ) concrete_pavement_036 0 0 0 1 1
+( 720 208 0 ) ( 784 208 128 ) ( 784 208 0 ) concrete_pavement_036 0 0 0 1 1
+( 720 208 0 ) ( 784 304 0 ) ( 720 304 0 ) concrete_pavement_036 0 0 0 1 1
+( 720 304 128 ) ( 784 208 128 ) ( 720 208 128 ) concrete_pavement_036 0 0 0 1 1
+( 784 304 0 ) ( 720 304 128 ) ( 720 304 0 ) concrete_pavement_036 0 0 0 1 1
+( 784 208 0 ) ( 784 304 128 ) ( 784 304 0 ) concrete_pavement_036 0 0 0 1 1
 }
 }
 // entity 1
@@ -107,14 +107,14 @@
 // entity 3
 {
 "classname" "target_dummy"
-"origin" "216 240 16"
+"origin" "456 384 0"
 "angles" "0 0 0"
 "_tags" "dummy"
 }
 // entity 4
 {
 "classname" "target_dummy"
-"origin" "440 264 16"
+"origin" "456 104 0"
 "angles" "0 180 0"
 "_tags" "dummy"
 }
@@ -128,101 +128,33 @@
 // entity 6
 {
 "classname" "light_spot"
-"origin" "160 256 100"
-"light" "400"
+"origin" "288 320 100"
+"light" "300"
 "_falloff_range" "300"
 "_cone" "20"
-"_cone2" "75"
+"_cone2" "60"
 "_color" "255 203 157"
-"angles" "-90 0 0"
+"angles" "-40 90 0"
 }
 // entity 7
 {
 "classname" "light_spot"
-"origin" "384 32 100"
-"light" "400"
+"origin" "288 192 100"
+"light" "300"
 "_falloff_range" "300"
 "_cone" "20"
-"_cone2" "75"
+"_cone2" "60"
 "_color" "255 203 157"
-"angles" "-75 90 0"
+"angles" "-40 -90 0"
 }
 // entity 8
-{
-"classname" "light_spot"
-"origin" "448 480 100"
-"light" "400"
-"_falloff_range" "300"
-"_cone" "20"
-"_cone2" "75"
-"_color" "255 203 157"
-"angles" "-75 -90 0"
-}
-// entity 9
-{
-"classname" "light_spot"
-"origin" "640 32 100"
-"light" "400"
-"_falloff_range" "300"
-"_cone" "20"
-"_cone2" "75"
-"_color" "255 203 157"
-"angles" "-75 90 0"
-"style" "2"
-}
-// entity 10
-{
-"classname" "light_spot"
-"origin" "896 256 100"
-"light" "400"
-"_falloff_range" "300"
-"_cone" "20"
-"_cone2" "75"
-"_color" "255 203 157"
-"angles" "-90 0 0"
-}
-// entity 11
-{
-"classname" "light_spot"
-"origin" "256 480 100"
-"light" "400"
-"_falloff_range" "300"
-"_cone" "20"
-"_cone2" "75"
-"_color" "255 203 157"
-"angles" "-75 -90 0"
-}
-// entity 12
-{
-"classname" "light_spot"
-"origin" "768 480 100"
-"light" "400"
-"_falloff_range" "300"
-"_cone" "20"
-"_cone2" "75"
-"_color" "255 203 157"
-"_shadow_type" "static_light_map"
-"angles" "-75 -90 0"
-}
-// entity 13
 {
 "classname" "reference_enemy"
 "origin" "944 256 16"
 "angles" "0 180 0"
 "_tags" "enemy"
 }
-// entity 14
-{
-"classname" "light_spot"
-"origin" "16 80 100"
-"light" "100"
-"_falloff_range" "3000"
-"_cone" "10"
-"_cone2" "40"
-"_color" "0 60 233"
-"angles" "25 0 0"
-}
-// entity 15
+// entity 9
 {
 "classname" "light_spot"
 "origin" "1016 424 104"
@@ -232,4 +164,56 @@
 "_cone2" "40"
 "_color" "0 60 233"
 "angles" "25 180 0"
+}
+// entity 10
+{
+"classname" "fog_volume"
+"density" "0.9"
+"edge_softness" "0"
+"tint" "250 169 0"
+"glow" "1.0"
+// brush 0
+{
+( 0 528 480 ) ( 0 -16 496 ) ( 0 -16 480 ) concrete_pavement_036 0 0 0 1 1
+( -16 0 480 ) ( 1040 0 496 ) ( 1040 0 480 ) concrete_pavement_036 0 0 0 1 1
+( -16 -16 480 ) ( 1040 528 480 ) ( -16 528 480 ) concrete_pavement_036 0 0 0 1 1
+( -16 528 560 ) ( 1040 -16 560 ) ( -16 -16 560 ) concrete_pavement_036 0 0 0 1 1
+( 1040 512 480 ) ( -16 512 496 ) ( -16 512 480 ) concrete_pavement_036 0 0 0 1 1
+( 1024 -16 480 ) ( 1024 528 496 ) ( 1024 528 480 ) concrete_pavement_036 0 0 0 1 1
+}
+}
+// entity 11
+{
+"classname" "light_spot"
+"origin" "32 80 100"
+"light" "100"
+"_falloff_range" "3000"
+"_cone" "10"
+"_cone2" "60"
+"_color" "0 60 233"
+"angles" "-60 0 0"
+}
+// entity 12
+{
+"classname" "light_spot"
+"origin" "752 192 100"
+"light" "300"
+"_falloff_range" "300"
+"_cone" "20"
+"_cone2" "60"
+"_color" "255 203 157"
+"_shadow_type" "static_light_map"
+"angles" "-40 -90 0"
+}
+// entity 13
+{
+"classname" "light_spot"
+"origin" "752 320 100"
+"light" "400"
+"_falloff_range" "300"
+"_cone" "20"
+"_cone2" "60"
+"_color" "255 203 157"
+"angles" "-40 90 0"
+"style" "0"
 }

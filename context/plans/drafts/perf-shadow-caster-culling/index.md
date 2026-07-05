@@ -357,3 +357,7 @@ stands in for the `Clear(1.0)` baseline and never leaves stale depth.
   tests; do not re-narrow it.
 - **`context/plans/drafts/perf-anti-penumbra-pvs/`** — shrinks the drawable PVS. Complementary and
   independent; it does not interact with this plan now that the drawable-PVS gate is out of scope.
+- **`context/plans/drafts/perf-forward-light-cull/`** — sibling forward-shading-loop cull for the same
+  large-map dynamic-light cost. Independent (no build-order dependency); its tight drawn-cell cull is
+  contribution-only and does not touch this plan's wide eligibility gate. Its perf AC reuses the existing
+  `forward` timing pair; this plan's Task 1 brackets remain the shadow-side measurement substrate.

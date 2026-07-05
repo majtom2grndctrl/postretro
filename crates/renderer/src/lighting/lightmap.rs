@@ -3,6 +3,7 @@
 // See: context/lib/rendering_pipeline.md §4
 
 use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_BC6H, LightmapSection};
+use postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection;
 use wgpu::util::DeviceExt;
 
 /// Group 4 bindings. The layout is fixed — the fragment shader's
@@ -31,6 +32,9 @@ pub const BIND_FILTERING_SAMPLER: u32 = 4;
 /// pass) and binding 8 in the compose shader are independent numbering spaces for
 /// the same atlas.
 pub const BIND_ANIMATED_DIRECTION: u32 = 5;
+/// Static-light shadowmask atlas (Rgba8Unorm), layer-matched to the lightmap
+/// irradiance atlas. Sampled by the forward union-subtraction term.
+pub const BIND_SHADOWMASK_ATLAS: u32 = 6;
 
 /// GPU-side lightmap atlas: irradiance texture, direction texture, sampler,
 /// and the bind group that exposes them to the forward shader.
@@ -50,6 +54,10 @@ pub struct LightmapResources {
     /// elimination in release builds.
     #[allow(dead_code)]
     pub present: bool,
+    /// Whether a real ShadowmaskAtlas was uploaded (false = 1x1x1 fully-visible
+    /// placeholder). CPU-side promoted metadata also gates the shader off when
+    /// false, so the dummy texture is never a behavioral fallback.
+    pub shadowmask_present: bool,
     /// Static dominant-direction atlas texture (Rgba8Unorm, octahedral in rg).
     /// Its sole consumer — the SDF pass's static dominant-direction trace — was
     /// removed in `sdf-per-light-shadows` Task 2 (per-light static shadows now
@@ -74,6 +82,7 @@ impl LightmapResources {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         section: Option<&LightmapSection>,
+        shadowmask_section: Option<&ShadowmaskAtlasSection>,
         bind_group_layout: &wgpu::BindGroupLayout,
         animated_atlas_view: &wgpu::TextureView,
         animated_direction_view: &wgpu::TextureView,
@@ -134,6 +143,16 @@ impl LightmapResources {
                 upload_placeholder_direction(device, queue),
             ),
         };
+        let usable_shadowmask = filter_usable_shadowmask_section(
+            shadowmask_section,
+            limits.max_texture_dimension_2d,
+            limits.max_texture_array_layers,
+        );
+        let shadowmask_present = usable_shadowmask.is_some();
+        let shadowmask_tex = match usable_shadowmask {
+            Some(sec) => upload_shadowmask_texture(device, queue, sec),
+            None => upload_placeholder_shadowmask(device, queue),
+        };
 
         // The irradiance + direction atlases are `texture_2d_array` (group-4
         // bindings 0/1 declare `D2Array`), so their views must declare the same
@@ -144,6 +163,10 @@ impl LightmapResources {
             ..Default::default()
         });
         let dir_view = direction_tex.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        });
+        let shadowmask_view = shadowmask_tex.create_view(&wgpu::TextureViewDescriptor {
             dimension: Some(wgpu::TextureViewDimension::D2Array),
             ..Default::default()
         });
@@ -176,18 +199,23 @@ impl LightmapResources {
                     binding: BIND_ANIMATED_DIRECTION,
                     resource: wgpu::BindingResource::TextureView(animated_direction_view),
                 },
+                wgpu::BindGroupEntry {
+                    binding: BIND_SHADOWMASK_ATLAS,
+                    resource: wgpu::BindingResource::TextureView(&shadowmask_view),
+                },
             ],
         });
 
         Self {
             bind_group,
             present,
+            shadowmask_present,
             direction_texture: direction_tex,
         }
     }
 }
 
-pub(crate) fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 6] {
+pub(crate) fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 7] {
     // Two samplers (binding 2 nearest, binding 4 linear), split by what each
     // texture needs:
     //   - Irradiance (0) and animated atlas (3) are `Rgba16Float`, which is
@@ -261,6 +289,16 @@ pub(crate) fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 6] {
             },
             count: None,
         },
+        wgpu::BindGroupLayoutEntry {
+            binding: BIND_SHADOWMASK_ATLAS,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2Array,
+                multisampled: false,
+            },
+            count: None,
+        },
     ]
 }
 
@@ -311,6 +349,41 @@ fn filter_usable_section(
                 log::error!(
                     "[Renderer] Lightmap atlas has {} layer(s), exceeding device \
                          maxTextureArrayLayers {}; degrading to neutral placeholder for this level",
+                    s.layer_count,
+                    max_texture_array_layers,
+                );
+            }
+            fits
+        })
+}
+
+fn filter_usable_shadowmask_section(
+    section: Option<&ShadowmaskAtlasSection>,
+    max_texture_dimension_2d: u32,
+    max_texture_array_layers: u32,
+) -> Option<&ShadowmaskAtlasSection> {
+    section
+        .filter(|s| s.width > 0 && s.height > 0 && s.layer_count > 0)
+        .filter(|s| {
+            let fits = s.width <= max_texture_dimension_2d && s.height <= max_texture_dimension_2d;
+            if !fits {
+                log::error!(
+                    "[Renderer] ShadowmaskAtlas {}x{} exceeds device maxTextureDimension2D {}; \
+                         disabling entity-to-world static-light shadowmask for this level",
+                    s.width,
+                    s.height,
+                    max_texture_dimension_2d,
+                );
+            }
+            fits
+        })
+        .filter(|s| {
+            let fits = s.layer_count <= max_texture_array_layers;
+            if !fits {
+                log::error!(
+                    "[Renderer] ShadowmaskAtlas has {} layer(s), exceeding device \
+                         maxTextureArrayLayers {}; disabling entity-to-world static-light \
+                         shadowmask for this level",
                     s.layer_count,
                     max_texture_array_layers,
                 );
@@ -419,6 +492,32 @@ fn upload_direction_texture(
     )
 }
 
+fn upload_shadowmask_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    sec: &ShadowmaskAtlasSection,
+) -> wgpu::Texture {
+    device.create_texture_with_data(
+        queue,
+        &wgpu::TextureDescriptor {
+            label: Some("Shadowmask Atlas"),
+            size: wgpu::Extent3d {
+                width: sec.width,
+                height: sec.height,
+                depth_or_array_layers: sec.layer_count,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        },
+        wgpu::util::TextureDataOrder::LayerMajor,
+        &sec.data,
+    )
+}
+
 fn upload_placeholder_irradiance(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::Texture {
     // 1×1 white RGBA16Float texel (1.0, 1.0, 1.0, 1.0). f16(1.0) = 0x3c00.
     let white = 0x3c00u16;
@@ -455,6 +554,29 @@ fn upload_placeholder_direction(device: &wgpu::Device, queue: &wgpu::Queue) -> w
         queue,
         &wgpu::TextureDescriptor {
             label: Some("Lightmap Direction Placeholder"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        },
+        wgpu::util::TextureDataOrder::LayerMajor,
+        &bytes,
+    )
+}
+
+fn upload_placeholder_shadowmask(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::Texture {
+    let bytes = [255u8, 255, 255, 255];
+    device.create_texture_with_data(
+        queue,
+        &wgpu::TextureDescriptor {
+            label: Some("Shadowmask Atlas Placeholder"),
             size: wgpu::Extent3d {
                 width: 1,
                 height: 1,
@@ -655,12 +777,12 @@ mod tests {
     }
 
     // The group-4 BGL is a fixed contract with `forward.wgsl`'s `@binding`
-    // decorators. This pins the sampler split decided in Task 5: which textures
-    // are filterable, and the two sampler bindings (nearest + linear).
+    // decorators. This pins which textures are filterable, and the two sampler
+    // bindings (nearest + linear).
     #[test]
     fn bgl_entries_pin_sampler_split() {
         let entries = bind_group_layout_entries();
-        assert_eq!(entries.len(), 6, "group-4 BGL grew to 6 entries");
+        assert_eq!(entries.len(), 7, "group-4 BGL must expose seven bindings");
 
         let tex_sample = |b: u32| {
             entries
@@ -688,6 +810,10 @@ mod tests {
         );
         assert_eq!(
             tex_sample(BIND_ANIMATED_ATLAS),
+            Some(wgpu::TextureSampleType::Float { filterable: true })
+        );
+        assert_eq!(
+            tex_sample(BIND_SHADOWMASK_ATLAS),
             Some(wgpu::TextureSampleType::Float { filterable: true })
         );
         // Both direction atlases stay nearest (direction lerp ≠ slerp): both are

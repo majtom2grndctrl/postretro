@@ -44,12 +44,15 @@ pub enum SdfShadowMode {
     // is sane at edges/corners vs garbage. Diagnostic only — remove with the
     // rest of the `// TEMP DEBUG:` markers.
     VisualizeNormals = 4,
+    // Visualizes the static-light shadowmask world-receipt union subtraction
+    // magnitude. Normal mode still applies the production subtraction.
+    ShadowmaskUnion = 5,
 }
 
 impl SdfShadowMode {
     /// All variants in display order. Used by the debug UI dropdown.
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
-    pub const ALL_VARIANTS: [SdfShadowMode; 5] = [
+    pub const ALL_VARIANTS: [SdfShadowMode; 6] = [
         SdfShadowMode::On,
         SdfShadowMode::Off,
         SdfShadowMode::Visualize,
@@ -57,6 +60,7 @@ impl SdfShadowMode {
         SdfShadowMode::VisualizeDebugPaths,
         // TEMP DEBUG: SDF shadow path visualization.
         SdfShadowMode::VisualizeNormals,
+        SdfShadowMode::ShadowmaskUnion,
     ];
 
     #[allow(dead_code)]
@@ -69,6 +73,7 @@ impl SdfShadowMode {
             SdfShadowMode::VisualizeDebugPaths => "Visualize: debug paths",
             // TEMP DEBUG: SDF shadow path visualization.
             SdfShadowMode::VisualizeNormals => "Visualize: normals",
+            SdfShadowMode::ShadowmaskUnion => "Visualize: shadowmask union",
         }
     }
 }
@@ -202,10 +207,11 @@ pub struct FrameUniforms {
     /// gates the static-lightmap term (independent because the static-term
     /// multiply must skip a shadowed-mode lightmap to avoid double shadows).
     pub sdf_shadow_flags: u32,
-    /// `SdfShadowMode` debug selector (Task 6). Encoded as the enum's `u32`
-    /// repr (0=On, 1=Off, 2=Visualize). Overlays the per-term flags above:
-    /// `Off` forces both SDF multiplies to 1.0; `Visualize` replaces the
-    /// shaded color output with a grayscale R-channel view.
+    /// `SdfShadowMode` debug selector. Encoded as the enum's `u32` repr; keep
+    /// the enum variants above as the source of truth for mode ids. Overlays
+    /// the per-term flags above: `Off` forces both SDF multiplies to 1.0;
+    /// visualization modes replace the shaded color output with diagnostic
+    /// views.
     pub sdf_shadow_mode: SdfShadowMode,
     /// Dev toggle: force per-light SDF visibility to 1.0 in the forward shader.
     /// Drives the "no double-count" visual A/B — with every sdf light fully

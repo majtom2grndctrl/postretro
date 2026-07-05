@@ -392,7 +392,7 @@ pub(crate) fn forward_pipeline_sampled_texture_count(cube_array_supported: bool)
     // Groups 0 (uniform) and 2 (lighting) carry no textures, but include them so
     // adding a texture entry to either BGL is caught here automatically. Group 5's
     // count is feature-conditional: the cube-array point-shadow texture (binding 5)
-    // is present only when `cube_array_supported` (14 total with it, 13 without).
+    // is present only when `cube_array_supported` (15 total with it, 14 without).
     fragment_sampled_textures(&uniform_bind_group_layout_entries())
         + fragment_sampled_textures(&material_bind_group_layout_entries())
         + fragment_sampled_textures(&lighting_bind_group_layout_entries())

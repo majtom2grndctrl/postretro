@@ -38,6 +38,7 @@ use postretro_level_format::navmesh::NavMeshSection;
 use postretro_level_format::portals::{PortalRecord, PortalsSection};
 use postretro_level_format::sdf_atlas::SdfAtlasSection;
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
+use postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection;
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 use postretro_level_format::{
     SectionBlob, SectionId, read_container, read_section_data, write_prl,
@@ -557,6 +558,7 @@ pub fn pack_and_write_portals(
     direct_sh_volume: Option<&DirectShVolumeSection>,
     entity_shadow_lights: Option<&EntityShadowLightsSection>,
     direct_sh_delta_volumes: Option<&DirectShDeltaVolumesSection>,
+    shadowmask_atlas: Option<&ShadowmaskAtlasSection>,
     lightmap: &LightmapSection,
     chunk_light_list: &ChunkLightListSection,
     animated_light_chunks: Option<&AnimatedLightChunksSection>,
@@ -619,6 +621,10 @@ pub fn pack_and_write_portals(
         .map(|s| s.to_bytes());
     let direct_sh_delta_volumes_bytes = direct_sh_delta_volumes
         .filter(|_| has_usable_direct_sh_deltas)
+        .map(|s| s.to_bytes());
+    let shadowmask_atlas_bytes = shadowmask_atlas
+        .filter(|_| has_usable_direct_sh_deltas)
+        .filter(|s| !s.channels.is_empty())
         .map(|s| s.to_bytes());
     let lightmap_bytes = lightmap.to_bytes();
     let chunk_light_list_bytes = chunk_light_list.to_bytes();
@@ -709,6 +715,11 @@ pub fn pack_and_write_portals(
         &mut sections,
         SectionId::DirectShDeltaVolumes as u32,
         direct_sh_delta_volumes_bytes.clone(),
+    );
+    append_optional_section(
+        &mut sections,
+        SectionId::ShadowmaskAtlas as u32,
+        shadowmask_atlas_bytes.clone(),
     );
     append_optional_section(
         &mut sections,
@@ -840,6 +851,16 @@ pub fn pack_and_write_portals(
             "  DirectShDeltaVolumes: {} bytes ({} CSR entries)",
             bytes.len(),
             section.affinity_lights.len(),
+        );
+    }
+    if let (Some(section), Some(bytes)) = (shadowmask_atlas, &shadowmask_atlas_bytes) {
+        log::info!(
+            "  ShadowmaskAtlas: {} bytes ({}x{}x{}, {} selected channel entr(y/ies))",
+            bytes.len(),
+            section.width,
+            section.height,
+            section.layer_count,
+            section.channels.len(),
         );
     }
     log::info!(
@@ -1220,6 +1241,16 @@ mod tests {
         LightmapSection::placeholder()
     }
 
+    fn minimal_shadowmask_atlas() -> ShadowmaskAtlasSection {
+        ShadowmaskAtlasSection {
+            width: 1,
+            height: 1,
+            layer_count: 1,
+            channels: vec![0],
+            data: vec![255; 4],
+        }
+    }
+
     fn placeholder_chunk_light_list() -> ChunkLightListSection {
         ChunkLightListSection::placeholder()
     }
@@ -1336,6 +1367,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             &placeholder_lightmap(),
             &placeholder_chunk_light_list(),
             None,
@@ -1415,6 +1447,7 @@ mod tests {
                 direct_sh_volume,
                 entity_shadow_lights,
                 direct_sh_delta_volumes,
+                None,
                 &placeholder_lightmap(),
                 &placeholder_chunk_light_list(),
                 None,
@@ -1522,6 +1555,7 @@ mod tests {
                 direct_sh_volume,
                 entity_shadow_lights,
                 direct_sh_delta_volumes,
+                None,
                 &placeholder_lightmap(),
                 &placeholder_chunk_light_list(),
                 None,
@@ -1606,6 +1640,98 @@ mod tests {
     }
 
     #[test]
+    fn pack_write_emits_shadowmask_only_with_usable_entity_shadow_selection() {
+        fn write_with(
+            output: &Path,
+            direct_sh_volume: Option<&DirectShVolumeSection>,
+            entity_shadow_lights: Option<&EntityShadowLightsSection>,
+            direct_sh_delta_volumes: Option<&DirectShDeltaVolumesSection>,
+            shadowmask_atlas: Option<&ShadowmaskAtlasSection>,
+        ) {
+            let texture_cache_keys: HashMap<String, [u8; 32]> = HashMap::new();
+            pack_and_write_portals(
+                output,
+                &sample_geo_result(),
+                &texture_cache_keys,
+                &sample_leaves(),
+                &sample_tree(),
+                &PortalsSection {
+                    vertices: vec![],
+                    portals: vec![],
+                },
+                &HashSet::new(),
+                &sample_bvh(),
+                &[],
+                &empty_alpha_lights(),
+                &empty_light_influence(),
+                &empty_sh_volume(),
+                direct_sh_volume,
+                entity_shadow_lights,
+                direct_sh_delta_volumes,
+                shadowmask_atlas,
+                &placeholder_lightmap(),
+                &placeholder_chunk_light_list(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                &FogVolumesSection::default(),
+                None,
+                None,
+                None,
+                Some(sample_cell_draw_index_bytes()),
+            )
+            .expect("pack should succeed");
+        }
+
+        let dir = std::env::temp_dir().join("postretro_test_pack");
+        let _ = std::fs::create_dir_all(&dir);
+        let direct = minimal_direct_sh_volume();
+        let selected = EntityShadowLightsSection {
+            light_indices: vec![0],
+        };
+        let delta = minimal_direct_sh_delta_volumes();
+        let shadowmask = minimal_shadowmask_atlas();
+
+        let output_valid = dir.join("test_pack_shadowmask_valid.prl");
+        write_with(
+            &output_valid,
+            Some(&direct),
+            Some(&selected),
+            Some(&delta),
+            Some(&shadowmask),
+        );
+        let data = std::fs::read(&output_valid).expect("should read output file");
+        let mut cursor = Cursor::new(&data);
+        let meta = read_container(&mut cursor).expect("should read container");
+        assert!(
+            meta.find_section(SectionId::ShadowmaskAtlas as u32)
+                .is_some()
+        );
+
+        let output_no_delta = dir.join("test_pack_shadowmask_no_delta.prl");
+        write_with(
+            &output_no_delta,
+            Some(&direct),
+            Some(&selected),
+            None,
+            Some(&shadowmask),
+        );
+        let data = std::fs::read(&output_no_delta).expect("should read output file");
+        let mut cursor = Cursor::new(&data);
+        let meta = read_container(&mut cursor).expect("should read container");
+        assert!(
+            meta.find_section(SectionId::ShadowmaskAtlas as u32)
+                .is_none()
+        );
+
+        let _ = std::fs::remove_file(&output_valid);
+        let _ = std::fs::remove_file(&output_no_delta);
+    }
+
+    #[test]
     fn pack_write_omits_entity_shadow_sections_for_malformed_direct_delta_csr() {
         fn write_with_delta(output: &Path, delta: &DirectShDeltaVolumesSection) {
             let texture_cache_keys: HashMap<String, [u8; 32]> = HashMap::new();
@@ -1632,6 +1758,7 @@ mod tests {
                 Some(&direct),
                 Some(&selected),
                 Some(delta),
+                None,
                 &placeholder_lightmap(),
                 &placeholder_chunk_light_list(),
                 None,
@@ -1730,6 +1857,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             &placeholder_lightmap(),
             &placeholder_chunk_light_list(),
             None,
@@ -1786,6 +1914,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             &placeholder_lightmap(),
             &placeholder_chunk_light_list(),
             None,
@@ -1836,6 +1965,7 @@ mod tests {
             &alpha_lights,
             &empty_light_influence(),
             &empty_sh_volume(),
+            None,
             None,
             None,
             None,
@@ -1930,6 +2060,7 @@ mod tests {
             &alpha_lights,
             &light_influence,
             &sh_volume,
+            None,
             None,
             None,
             None,

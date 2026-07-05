@@ -37,6 +37,7 @@ struct Uniforms {
     //                   Shadow-map (enemy) shadows are unaffected.
     //   2 = Visualize — replace the final shaded color with a grayscale view
     //                   of the first per-light visibility slice (R = slot 0).
+    //   5 = Visualize shadowmask union subtraction magnitude.
     sdf_shadow_mode: u32,
     // Dev toggle (non-zero ⇒ force per-light SDF visibility to 1.0). Used by
     // the "no double-count" visual AC: with every sdf light's visibility
@@ -225,6 +226,7 @@ struct AnimationDescriptor {
 // atlas. Read through the nearest sampler at binding 2 — like the static
 // direction atlas, oct directions must not be linearly interpolated.
 @group(4) @binding(5) var animated_lm_direction: texture_2d<f32>;
+@group(4) @binding(6) var shadowmask_atlas: texture_2d_array<f32>;
 
 // Sample the irradiance atlas with hardware bilinear filtering through the
 // linear sampler at binding 4. `layer` selects the atlas array slice.
@@ -604,6 +606,207 @@ fn sdf_visibility_for_light(sel: SdfLightSelection, factor: vec4<f32>, light_idx
     return 1.0;
 }
 
+// Static-light entity-shadow receipt on world geometry. Normal mode subtracts
+// this union term from baked static direct; mode 5 visualizes the subtraction
+// magnitude so baked-vs-runtime darker-wins checks are repeatable.
+const SHADOWMASK_VISUALIZE_MODE: u32 = 5u;
+const SHADOWMASK_INVALID_INDEX_VALUE: f32 = -1.0;
+const SHADOWMASK_CHANNEL_DROPPED: f32 = 4.0;
+const SHADOWMASK_POOL_SPOT: u32 = 0u;
+const SHADOWMASK_POOL_CUBE: u32 = 1u;
+const SHADOWMASK_POOL_SPOT_VALUE: f32 = 0.0;
+const SHADOWMASK_POOL_CUBE_VALUE: f32 = 1.0;
+const SHADOWMASK_SPOT_SLOT_COUNT: u32 = 96u;
+const SHADOWMASK_CUBE_SLOT_COUNT: u32 = 6u;
+const SHADOWMASK_EPS: f32 = 1.0e-4;
+const SHADOWMASK_NDOTL_EPS: f32 = 1.0e-2;
+const SHADOWMASK_SPOT_KERNEL_RADIUS: i32 = 2;
+const SHADOWMASK_SPOT_KERNEL_TEXELS: f32 = 2.0;
+const SHADOWMASK_META_VEC4S_PER_RECORD: u32 = 2u;
+
+struct ShadowmaskDirect {
+    value: vec3<f32>,
+    valid: u32,
+};
+
+fn shadowmask_channel_value(mask: vec4<f32>, channel: u32) -> f32 {
+    switch channel {
+        case 0u: { return mask.r; }
+        case 1u: { return mask.g; }
+        case 2u: { return mask.b; }
+        case 3u: { return mask.a; }
+        default: { return 1.0; }
+    }
+}
+
+fn shadowmask_direct(
+    sl: SpecLight,
+    world_pos: vec3<f32>,
+    mesh_n: vec3<f32>,
+    bump_n: vec3<f32>,
+) -> ShadowmaskDirect {
+    var out: ShadowmaskDirect;
+    out.value = vec3<f32>(0.0);
+    out.valid = 0u;
+
+    if u32(round(sl.cone_dir_and_type.w)) == 2u {
+        return out;
+    }
+    let to_light = sl.position_and_range.xyz - world_pos;
+    let dist = length(to_light);
+    let range = sl.position_and_range.w;
+    if range <= 0.0 || dist > range {
+        return out;
+    }
+    let L = to_light / max(dist, 0.0001);
+    let n_dot_l_mesh = max(dot(mesh_n, L), 0.0);
+    let n_dot_l_bump = max(dot(bump_n, L), 0.0);
+    let atten = max(1.0 - dist / max(range, 0.001), 0.0);
+    let cone = cone_attenuation_cos(L, sl.cone_dir_and_type.xyz, sl.cone_cos.x, sl.cone_cos.y);
+    let direct_mesh = sl.color_and_pad.xyz * (atten * cone * n_dot_l_mesh);
+    if dot(direct_mesh, direct_mesh) <= SHADOWMASK_EPS * SHADOWMASK_EPS {
+        return out;
+    }
+    let bump_scale = min(n_dot_l_bump / max(n_dot_l_mesh, SHADOWMASK_NDOTL_EPS), 4.0);
+    out.value = direct_mesh * bump_scale;
+    out.valid = 1u;
+    return out;
+}
+
+fn shadowmask_sample_spot_shadow_wide(
+    slot_index: u32,
+    world_pos: vec3<f32>,
+    light_proj: mat4x4<f32>,
+) -> f32 {
+    let light_clip = light_proj * vec4<f32>(world_pos, 1.0);
+    if light_clip.w <= 0.0 {
+        return 1.0;
+    }
+    let light_ndc = light_clip.xyz / light_clip.w;
+    let uv = vec2<f32>(light_ndc.x * 0.5 + 0.5, light_ndc.y * -0.5 + 0.5);
+    if uv.x < 0.0 || uv.x > 1.0 ||
+       uv.y < 0.0 || uv.y > 1.0 ||
+       light_ndc.z < 0.0 || light_ndc.z > 1.0 {
+        return 1.0;
+    }
+
+    let texel = 1.0 / vec2<f32>(textureDimensions(spot_shadow_depth));
+    let step = texel * SHADOWMASK_SPOT_KERNEL_TEXELS;
+    var lit = 0.0;
+    var taps = 0.0;
+    for (var dy: i32 = -SHADOWMASK_SPOT_KERNEL_RADIUS; dy <= SHADOWMASK_SPOT_KERNEL_RADIUS; dy = dy + 1) {
+        for (var dx: i32 = -SHADOWMASK_SPOT_KERNEL_RADIUS; dx <= SHADOWMASK_SPOT_KERNEL_RADIUS; dx = dx + 1) {
+            let offset = vec2<f32>(f32(dx), f32(dy)) * step;
+            lit = lit + textureSampleCompare(
+                spot_shadow_depth,
+                spot_shadow_compare,
+                uv + offset,
+                i32(slot_index),
+                light_ndc.z
+            );
+            taps = taps + 1.0;
+        }
+    }
+    return lit / max(taps, 1.0);
+}
+
+fn shadowmask_shadow_visibility(pool_kind: u32, slot: u32, sl: SpecLight, world_pos: vec3<f32>) -> f32 {
+    if pool_kind == SHADOWMASK_POOL_SPOT {
+        if slot >= SHADOWMASK_SPOT_SLOT_COUNT {
+            return 1.0;
+        }
+        let light_proj = light_space_matrices.m[slot];
+        return shadowmask_sample_spot_shadow_wide(slot, world_pos, light_proj);
+    }
+    if pool_kind == SHADOWMASK_POOL_CUBE {
+        if slot >= SHADOWMASK_CUBE_SLOT_COUNT {
+            return 1.0;
+        }
+        return sample_point_shadow(slot, sl.position_and_range.xyz, world_pos, sl.position_and_range.w);
+    }
+    return 1.0;
+}
+
+fn shadowmask_union_subtraction(
+    world_pos: vec3<f32>,
+    lightmap_uv: vec2<f32>,
+    lightmap_layer: u32,
+    mesh_n: vec3<f32>,
+    bump_n: vec3<f32>,
+) -> vec3<f32> {
+    var subtraction = vec3<f32>(0.0);
+    if uniforms.total_light_count <= uniforms.light_count {
+        return subtraction;
+    }
+    let promoted_count = uniforms.total_light_count - uniforms.light_count;
+    let influence_len = arrayLength(&light_influence);
+    let spec_len = arrayLength(&spec_lights);
+    for (var p: u32 = 0u; p < promoted_count; p = p + 1u) {
+        let influence_index = uniforms.light_count + p;
+        if influence_index >= influence_len {
+            break;
+        }
+        let influence = light_influence[influence_index];
+        let inf_radius = influence.w;
+        if inf_radius <= 1.0e30 {
+            let d = world_pos - influence.xyz;
+            if dot(d, d) > inf_radius * inf_radius {
+                continue;
+            }
+        }
+
+        let meta_index = uniforms.total_light_count + p * SHADOWMASK_META_VEC4S_PER_RECORD;
+        if meta_index + 1u >= influence_len {
+            break;
+        }
+        let meta0 = light_influence[meta_index];
+        let meta1 = light_influence[meta_index + 1u];
+        let spec_idx_value = meta0.z;
+        let weight = clamp(meta0.w, 0.0, 1.0);
+        let pool_kind_value = meta1.x;
+        let slot_value = meta1.y;
+        let channel_value = meta1.z;
+
+        if weight <= 0.0 ||
+           spec_idx_value <= SHADOWMASK_INVALID_INDEX_VALUE ||
+           spec_idx_value >= f32(spec_len) ||
+           channel_value < 0.0 ||
+           channel_value >= SHADOWMASK_CHANNEL_DROPPED {
+            continue;
+        }
+        if pool_kind_value != SHADOWMASK_POOL_SPOT_VALUE && pool_kind_value != SHADOWMASK_POOL_CUBE_VALUE {
+            continue;
+        }
+        if floor(spec_idx_value) != spec_idx_value ||
+           floor(slot_value) != slot_value ||
+           floor(channel_value) != channel_value {
+            continue;
+        }
+        if (pool_kind_value == SHADOWMASK_POOL_SPOT_VALUE &&
+            (slot_value < 0.0 || slot_value >= f32(SHADOWMASK_SPOT_SLOT_COUNT))) ||
+           (pool_kind_value == SHADOWMASK_POOL_CUBE_VALUE &&
+            (slot_value < 0.0 || slot_value >= f32(SHADOWMASK_CUBE_SLOT_COUNT))) {
+            continue;
+        }
+
+        let spec_idx = u32(spec_idx_value);
+        let pool_kind = u32(pool_kind_value);
+        let slot = u32(slot_value);
+        let channel = u32(channel_value);
+        let sl = spec_lights[spec_idx];
+        let direct = shadowmask_direct(sl, world_pos, mesh_n, bump_n);
+        if direct.valid == 0u {
+            continue;
+        }
+
+        let mask = textureSample(shadowmask_atlas, lightmap_filtering_sampler, lightmap_uv, i32(lightmap_layer));
+        let baked_vis = shadowmask_channel_value(mask, channel);
+        let shadow_map_vis = shadowmask_shadow_visibility(pool_kind, slot, sl, world_pos);
+        subtraction = subtraction + direct.value * max(0.0, baked_vis - shadow_map_vis) * weight;
+    }
+    return subtraction;
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // UV footprint derivatives — computed once here in uniform control flow.
@@ -686,6 +889,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // in by the baker — sampling gives correct static direct contribution for
     // a mesh-normal surface.
     var static_direct = vec3<f32>(0.0);
+    var shadowmask_union = vec3<f32>(0.0);
     if use_lightmap {
         // Irradiance + animated atlas filter bilinear (HW linear sampler at
         // binding 4) so baked penumbra ramps read as continuous gradients under
@@ -799,6 +1003,17 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             let visibility = select(slice_for_visibility(sdf_factor, s), 1.0, sdf_force_lit);
             static_direct = static_direct + sl.color_and_pad.xyz * (n_dot_l * atten * cone * visibility);
         }
+    }
+
+    if use_lightmap {
+        shadowmask_union = shadowmask_union_subtraction(
+            in.world_position,
+            in.lightmap_uv,
+            in.lightmap_layer,
+            mesh_n,
+            N_bump,
+        );
+        static_direct = max(static_direct - shadowmask_union, vec3<f32>(0.0));
     }
 
     var total_light = vec3<f32>(uniforms.ambient_floor) + indirect + static_direct;
@@ -1050,6 +1265,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let h = vec2<i32>(clamp(floor(half_xy), vec2<f32>(0.0), h_max));
         let n = textureLoad(sdf_shadow_factor, h, 0).rgb;
         return vec4<f32>(n, base_color.a);
+    }
+    if uniforms.sdf_shadow_mode == SHADOWMASK_VISUALIZE_MODE {
+        return vec4<f32>(shadowmask_union, base_color.a);
     }
     return vec4<f32>(rgb, base_color.a);
 }

@@ -175,6 +175,110 @@ fn count_split_shader_consumers_use_expected_loop_bounds() {
 }
 
 #[test]
+fn forward_shader_shadowmask_union_uses_promoted_count_and_safe_metadata_tail() {
+    let src = include_str!("../../shaders/forward.wgsl");
+    let start = src
+        .find("fn shadowmask_union_subtraction(")
+        .expect("forward shader must declare the shadowmask union helper");
+    let helper = &src[start
+        ..src
+            .find("@fragment")
+            .expect("fragment entry follows helpers")];
+
+    assert!(
+        helper.contains("if uniforms.total_light_count <= uniforms.light_count"),
+        "no promoted lights must return before reading promoted metadata"
+    );
+    assert!(
+        helper.contains("let promoted_count = uniforms.total_light_count - uniforms.light_count;"),
+        "shadowmask loop must be bounded by promoted count"
+    );
+    assert!(
+        helper.contains("let influence_index = uniforms.light_count + p;"),
+        "influence-volume early-out must read the promoted influence before metadata"
+    );
+    assert!(
+        helper.contains(
+            "let meta_index = uniforms.total_light_count + p * SHADOWMASK_META_VEC4S_PER_RECORD;"
+        ),
+        "metadata must live after the dynamic+promoted influence prefix"
+    );
+    assert!(
+        helper.contains("if meta_index + 1u >= influence_len"),
+        "metadata reads must be bounds-guarded so stale tails are not read"
+    );
+    assert!(
+        !helper.contains("bitcast<vec4<u32>>(meta"),
+        "promoted metadata lives in a float storage tail and must be read as numeric f32 values, not raw u32 bit patterns"
+    );
+    assert!(
+        src.contains("const SHADOWMASK_INVALID_INDEX_VALUE: f32 = -1.0;")
+            && src.contains("const SHADOWMASK_CHANNEL_DROPPED: f32 = 4.0;"),
+        "shadowmask metadata sentinels must be normal numeric floats"
+    );
+    assert!(
+        helper.contains("channel_value >= SHADOWMASK_CHANNEL_DROPPED"),
+        "dropped channels must use the float-safe 4.0 sentinel and skip the union term before u32 casts"
+    );
+    let spec_guard = helper
+        .find("spec_idx_value <= SHADOWMASK_INVALID_INDEX_VALUE")
+        .expect("invalid spec indices must be rejected as float metadata");
+    let spec_cast = helper
+        .find("let spec_idx = u32(spec_idx_value);")
+        .expect("shader must consume the CPU-uploaded compact spec_lights index");
+    assert!(
+        spec_guard < spec_cast,
+        "spec index metadata must be bounds-guarded before casting to u32"
+    );
+    let channel_guard = helper
+        .find("channel_value >= SHADOWMASK_CHANNEL_DROPPED")
+        .expect("dropped channel sentinel must be checked");
+    let channel_cast = helper
+        .find("let channel = u32(channel_value);")
+        .expect("shader must cast the checked numeric channel");
+    assert!(
+        channel_guard < channel_cast,
+        "channel metadata must be sentinel/range-guarded before casting to u32"
+    );
+    assert!(
+        helper.contains("floor(spec_idx_value) != spec_idx_value")
+            && helper.contains("floor(slot_value) != slot_value")
+            && helper.contains("floor(channel_value) != channel_value"),
+        "metadata values must be integer-valued floats before u32 casts"
+    );
+    assert!(
+        helper.contains("slot_value >= f32(SHADOWMASK_SPOT_SLOT_COUNT)")
+            && helper.contains("slot_value >= f32(SHADOWMASK_CUBE_SLOT_COUNT)"),
+        "shadow pool slots must be range-guarded before indexing or sampling"
+    );
+    assert!(
+        helper.contains("let spec_idx = u32(spec_idx_value);"),
+        "shader must consume the CPU-uploaded compact spec_lights index"
+    );
+    assert!(
+        helper.contains("let weight = clamp(meta0.w, 0.0, 1.0);"),
+        "shader must use raw promoted-set w from metadata, not GpuLight color"
+    );
+}
+
+#[test]
+fn forward_shader_shadowmask_visualization_mode_is_wired() {
+    let src = include_str!("../../shaders/forward.wgsl");
+    assert!(
+        src.contains("@group(4) @binding(6) var shadowmask_atlas: texture_2d_array<f32>;"),
+        "shadowmask atlas must be one sampled texture in the lightmap group"
+    );
+    assert!(
+        src.contains("uniforms.sdf_shadow_mode == SHADOWMASK_VISUALIZE_MODE"),
+        "mode 5 must visualize the union subtraction magnitude"
+    );
+    assert!(
+        src.contains("return vec4<f32>(shadowmask_union, base_color.a);"),
+        "visualization mode should show the union term directly"
+    );
+}
+
+#[test]
 fn direct_sh_compose_debug_override_isolates_single_selection() {
     let src = include_str!("../../shaders/direct_sh_compose.wgsl");
     let selection_weight_start = src

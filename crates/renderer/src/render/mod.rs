@@ -18,6 +18,7 @@ mod sh_compose;
 #[cfg(feature = "dev-tools")]
 mod sh_diagnostics;
 mod sh_volume;
+mod shadowmask;
 mod smoke;
 mod splash_pass;
 mod ui;

@@ -66,6 +66,7 @@ impl Renderer {
             direct_sh_volume: None,
             direct_sh_delta_volumes: None,
             entity_shadow_lights: &[],
+            shadowmask_atlas: None,
             sdf_atlas: None,
             lightmap_mode: postretro_level_loader::LightmapMode::default(),
             cell_draw_index: None,
@@ -166,8 +167,10 @@ impl Renderer {
         let shadow_candidate_selection_indices = filtered_shadow_candidates.selection_indices;
         full.light_count = level_lights.len() as u32;
         full.total_light_count = full.light_count;
+        let level_light_count = level_lights.len();
+        let selected_static_count = selected_static.lights.len();
 
-        let light_record_capacity = (level_lights.len() + selected_static.lights.len()).max(1);
+        let light_record_capacity = (level_light_count + selected_static_count).max(1);
         let mut lights_data = Vec::with_capacity(light_record_capacity * GPU_LIGHT_SIZE);
         if !level_lights.is_empty() {
             lights_data.extend_from_slice(&pack_lights(&level_lights));
@@ -184,6 +187,16 @@ impl Renderer {
         full.entity_shadow_lights = selected_static.lights;
         full.entity_shadow_light_influences = selected_static.influences;
         full.entity_shadow_light_source_indices = selected_static.source_indices;
+        full.entity_shadow_spec_light_indices = shadowmask::build_selection_spec_light_indices(
+            geometry.lights,
+            geometry.entity_shadow_lights,
+        );
+        full.shadowmask_channels = geometry
+            .shadowmask_atlas
+            .map(|section| section.channels.clone())
+            .unwrap_or_default();
+        full.shadowmask_present = false;
+        full.forward_shadowmask_metadata_scratch.clear();
         full.promoted_static_states =
             vec![PromotedStaticLightState::default(); geometry.entity_shadow_lights.len()];
         full.promoted_static_records.clear();
@@ -219,11 +232,15 @@ impl Renderer {
         full.shadow_candidate_influences = shadow_candidate_influences;
         full.shadow_candidate_selection_indices = shadow_candidate_selection_indices;
 
-        let mut influence_data = Vec::with_capacity(light_record_capacity * 16);
+        let influence_record_capacity = shadowmask::influence_capacity_with_shadowmask_metadata(
+            level_light_count,
+            selected_static_count,
+        );
+        let mut influence_data = Vec::with_capacity(influence_record_capacity * 16);
         if !dynamic_influences.is_empty() {
             influence::pack_influence_into(&mut influence_data, &dynamic_influences);
         }
-        influence_data.resize(light_record_capacity * 16, 0);
+        influence_data.resize(influence_record_capacity * 16, 0);
         let influence_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Light Influence Storage Buffer"),
             contents: &influence_data,
@@ -398,10 +415,12 @@ impl Renderer {
                     device,
                     queue,
                     geometry.lightmap,
+                    geometry.shadowmask_atlas,
                     &lightmap_bgl,
                     &al.forward_view,
                     &al.direction_forward_view,
                 );
+                full.shadowmask_present = full.lightmap_resources.shadowmask_present;
                 full.animated_lightmap = al;
             }
             Err(msg) => {

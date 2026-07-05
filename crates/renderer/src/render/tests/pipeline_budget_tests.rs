@@ -50,10 +50,10 @@ fn forward_pipeline_sampled_texture_request_matches_bgl_definitions() {
     //
     // `cube_array_supported = true`: Group 5 carries 4 sampled textures — spot
     // depth array (b0), SDF shadow factor (b3), SDF scene depth (b4), and the
-    // dynamic point-light cube depth (b5). Total forward sampled textures: 14.
+    // dynamic point-light cube depth (b5). Total forward sampled textures: 15.
     //
     // `cube_array_supported = false`: binding 5 is omitted, so Group 5 carries
-    // 3 and the total is 13. The forward + fog pipelines then build from a
+    // 3 and the total is 14. The forward + fog pipelines then build from a
     // group-5 BGL WITHOUT the cube entry (the no-cube shader variants drop the
     // matching declaration), so point shadows disable cleanly with no panic.
     let per_group = |cube_array_supported: bool| {
@@ -69,30 +69,43 @@ fn forward_pipeline_sampled_texture_request_matches_bgl_definitions() {
         ]
     };
 
-    // Supported: Group 5 = 4, total = 14.
+    // Supported: Group 5 = 4, total = 15.
     let supported = per_group(true);
     assert_eq!(
         supported,
-        [0, 3, 0, 3, 4, 4],
+        [0, 3, 0, 3, 5, 4],
         "forward BGL texture inventory changed (CUBE_ARRAY supported)"
     );
     let derived_supported: u32 = supported.iter().sum();
-    assert_eq!(derived_supported, 14);
+    assert_eq!(derived_supported, 15);
     assert_eq!(
         forward_pipeline_sampled_texture_count(true),
         derived_supported
     );
 
-    // Unsupported: Group 5 = 3 (no cube entry), total = 13. The group-5 BGL
+    // Unsupported: Group 5 = 3 (no cube entry), total = 14. The group-5 BGL
     // builder must omit binding 5 — pin both the count and the absence.
     let unsupported = per_group(false);
     assert_eq!(
         unsupported,
-        [0, 3, 0, 3, 4, 3],
+        [0, 3, 0, 3, 5, 3],
         "forward BGL texture inventory changed (CUBE_ARRAY absent)"
     );
     let derived_unsupported: u32 = unsupported.iter().sum();
-    assert_eq!(derived_unsupported, 13);
+    assert_eq!(derived_unsupported, 14);
+    assert_eq!(
+        derived_supported - derived_unsupported,
+        1,
+        "cube-array support should still add exactly one sampled texture"
+    );
+    assert_eq!(
+        derived_supported, 15,
+        "ShadowmaskAtlas must raise the cube-array forward sampled-texture count to exactly 15"
+    );
+    assert_eq!(
+        derived_unsupported, 14,
+        "ShadowmaskAtlas must raise the no-cube forward sampled-texture count to exactly 14"
+    );
     assert_eq!(
         forward_pipeline_sampled_texture_count(false),
         derived_unsupported

@@ -46,7 +46,7 @@ pub(crate) fn request_renderer_device(
     // every targeted backend reports far higher (Metal/AMD = 128) — the
     // adapter pre-check below confirms the granted maximum still covers it.
     //
-    // Derived (14 when CUBE_ARRAY is supported, 13 without) from the actual
+    // Derived (15 when CUBE_ARRAY is supported, 14 without) from the actual
     // BGLs that compose the forward pipeline layout, so it can never drift from
     // the real binding count:
     //   Group 1 — material (3): diffuse, specular, normal
@@ -55,8 +55,9 @@ pub(crate) fn request_renderer_device(
     //                              the VERTEX stage; entry is VERTEX | FRAGMENT so it
     //                              counts against the fragment budget; forward/fog
     //                              carry the entry but never sample it)
-    //   Group 4 — lightmap (4): static irradiance, static dominant-direction,
-    //                           animated-contribution atlas, animated dominant-direction
+    //   Group 4 — lightmap (5): static irradiance, static dominant-direction,
+    //                           animated-contribution atlas, animated dominant-direction,
+    //                           shadowmask atlas
     //   Group 5 — shadow (4 with CUBE_ARRAY, else 3): spot-shadow depth array (binding 0),
     //                           SDF shadow factor (binding 3), scene depth (binding 4),
     //                           point-light cube-array depth (binding 5; present only when
@@ -301,11 +302,15 @@ pub(crate) fn build_lighting_bind_group(
     });
 
     // Influence volume buffer — same dummy strategy as lights.
-    let mut influence_data = Vec::with_capacity(light_record_capacity * 16);
+    let influence_record_capacity = shadowmask::influence_capacity_with_shadowmask_metadata(
+        level_lights.len(),
+        promoted_capacity,
+    );
+    let mut influence_data = Vec::with_capacity(influence_record_capacity * 16);
     if !dynamic_influences.is_empty() {
         influence::pack_influence_into(&mut influence_data, dynamic_influences);
     }
-    influence_data.resize(light_record_capacity * 16, 0);
+    influence_data.resize(influence_record_capacity * 16, 0);
     let influence_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Light Influence Storage Buffer"),
         contents: &influence_data,

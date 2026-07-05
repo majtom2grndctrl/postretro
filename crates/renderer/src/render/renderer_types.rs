@@ -344,6 +344,10 @@ pub struct LevelGeometry<'a> {
     /// Selection-order list of global level-light indices eligible for runtime
     /// entity-shadow promotion.
     pub entity_shadow_lights: &'a [u32],
+    /// Optional per-selected-light baked visibility masks for promoted
+    /// static-light entity shadows onto world surfaces.
+    pub shadowmask_atlas:
+        Option<&'a postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection>,
     /// `None` → no SDF static-occluder atlas; runtime SDF shadow pass disabled.
     /// An empty-geometry section (zero grid dims) is treated the same way.
     pub sdf_atlas: Option<&'a postretro_level_format::sdf_atlas::SdfAtlasSection>,
@@ -607,6 +611,10 @@ pub(super) struct FullRenderer {
     pub(super) entity_shadow_lights: Vec<MapLight>,
     pub(super) entity_shadow_light_influences: Vec<LightInfluence>,
     pub(super) entity_shadow_light_source_indices: Vec<usize>,
+    pub(super) entity_shadow_spec_light_indices: Vec<u32>,
+    pub(super) shadowmask_channels: Vec<u8>,
+    pub(super) shadowmask_present: bool,
+    pub(super) forward_shadowmask_metadata_scratch: Vec<u8>,
     /// Candidate set for the spot/cube shadow pools — sourced from the FULL level
     /// light set filtered by `is_dynamic`. Dynamic-tier lights
     /// (`light_dynamic`/`light_dynamic_spot`) are pool-eligible so dynamic

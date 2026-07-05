@@ -357,3 +357,12 @@ stands in for the `Clear(1.0)` baseline and never leaves stale depth.
   tests; do not re-narrow it.
 - **`context/plans/drafts/perf-anti-penumbra-pvs/`** — shrinks the drawable PVS. Complementary and
   independent; it does not interact with this plan now that the drawable-PVS gate is out of scope.
+- **`context/plans/ready/perf-forward-light-cull/`** — sibling forward-shading-loop cull for the same
+  large-map dynamic-light cost. Independent (no build-order dependency); its tight drawn-cell cull is
+  contribution-only and does not touch this plan's wide eligibility gate. Its perf AC reuses the existing
+  `forward` timing pair; this plan's Task 1 brackets remain the shadow-side measurement substrate.
+- **`context/plans/drafts/perf-promoted-static-light-load/`** — findings note: the promoted-static
+  *forward-entity* per-fragment load is bounded at ≤ 10 by the same `MAX_PROMOTED_SPOT + CUBE` budget this
+  plan caps. The only growth is the CPU selection/promotion scan over the uncapped baked
+  `EntityShadowLights` set; a top-K selection cap in `entity_shadow_select.rs` is the companion lever if
+  ever needed.

@@ -45,9 +45,27 @@ Commit the move.
 
 For each phase in the sequencing section:
 
-**Sequential:** One `worker` agent at a time. Use `model: "gpt-5.5"` with `reasoning_effort: "high"` for complex, cross-cutting, architectural, or integration-heavy tasks, and `reasoning_effort: "medium"` for bounded implementation tasks. Wait for completion before starting the next.
+**Agent sizing:** Use `model: "gpt-5.5"` for implementation agents. Start with `reasoning_effort: "medium"` for bounded tasks. Promote to `"high"` only when the task has real uncertainty or broad contracts.
 
-**Concurrent:** Spawn all independent phase `worker` agents simultaneously via multiple `spawn_agent` calls in one message. Use `model: "gpt-5.5"` and choose `reasoning_effort: "medium"` or `"high"` per task complexity.
+Use `"high"` when the task touches any of:
+- GPU contracts, shader layouts, bind groups, or renderer scheduling
+- Persistent formats, cache keys, PRL sections, or migration behavior
+- Cross-crate data flow or shared runtime contracts
+- Ambiguous acceptance criteria or design choices that must be resolved from code
+- Manual visual behavior that automated tests cannot fully prove
+
+Use `"medium"` for:
+- Localized implementation with a clear module home
+- Focused tests for an already specified behavior
+- Loader/exposure plumbing for an already defined section
+- Mechanical propagation across call sites
+- Small review fixes with low blast radius
+
+Do not use `"high"` just because a task is a build task. Use the smallest agent that can safely satisfy the task and its acceptance criteria.
+
+**Sequential:** One `worker` agent at a time. Wait for completion before starting the next.
+
+**Concurrent:** Spawn all independent phase `worker` agents simultaneously via multiple `spawn_agent` calls in one message. Choose `reasoning_effort` per task using the sizing guide above.
 
 > **Cargo under concurrency.** Run concurrent agents in isolated worktrees — separate `target/` dirs, cap 3 (see `development_guide.md`). Separate target dirs have no shared build lock, so each agent runs `cargo check` and focused tests freely. Agents sharing one `target/` must not: they serialize on cargo's build lock and churn the incremental cache. Defer their compile/test to one post-phase pass, as `/fix-review-findings` does.
 

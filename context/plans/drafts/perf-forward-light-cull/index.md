@@ -127,8 +127,14 @@ Within the chosen methodology, two integration shapes were compared (research §
   follow-on may extend the index list to them if profiling demands.
 - **Clustered forward+ / per-tile binning.** Deferred as before (`rendering_pipeline.md` §13,
   §4); this spec is its prerequisite-sized step, not its replacement.
-- **Culling promoted-static records or the static specular loop.** The promoted tail is already
-  bounded by promotion budgets (≤ 8 + 2); the specular loop is already chunk-list culled.
+- **Culling promoted-static records or the static specular loop.** The promoted-static forward tail
+  is already bounded by the shadow-pool promotion budget: `total_light_count − light_count =
+  promoted_static_records.len() ≤ MAX_PROMOTED_SPOT (8) + MAX_PROMOTED_CUBE (2) = 10`
+  (`renderer_light_slots.rs:851`, `:797/:813–824`; `renderer_types.rs:371–372`), independent of
+  map-wide static count — so it does not share this spec's growth problem and needs no cull. The
+  static specular loop is already chunk-list culled. The promoted-static population was assessed
+  separately: `context/plans/drafts/perf-promoted-static-light-load/` (bounded per-fragment; the
+  only growth is a CPU-side selection scan, outside this spec's mechanism).
 - **Influence-volume tightening** (spot-cone-shaped influences, animated-aim-aware volumes). The
   cull consumes the same load-time `LightInfluence` spheres the per-fragment early-out uses.
 - **New GPU timing infrastructure.** The forward pass is already bracketed

@@ -68,8 +68,9 @@ regardless of pause/throttle.
 - [ ] On normal exit, error, bail, and panic, the terminal is left in cooked mode on the main screen
       with no residual control state.
 - [ ] After the pipeline extraction, `fn main` no longer holds the inline stage sequence and a bake of
-      the same map produces byte-identical `.prl` output and an identical Build Summary table to
-      before the refactor.
+      the same map produces byte-identical `.prl` output and a Build Summary table with identical row
+      set, order, labels, and format (per-stage elapsed timing values naturally vary) to before
+      the refactor.
 
 ## Tasks
 
@@ -85,12 +86,17 @@ table, while `fn main` shrinks to arg parsing, cache construction, output-dir pr
 call into the orchestrator — invoked directly from `fn main` in plain mode; Task 4 moves this call onto
 a spawned worker thread in TUI mode. Keep the current `BuildProgress` spinner and `env_logger` init exactly as
 they are — this task adds NO new behavior, changes NO bake logic, and must produce byte-identical
-`.prl` output and an identical Build Summary for the same input. The extraction must expose a seam
+`.prl` output and a Build Summary with identical row set, order, labels, and format (per-stage elapsed timings
+naturally vary) for the same input. The extraction must expose a seam
 where each stage has a stable identifier and human label and where the orchestrator (not each inline
-block) decides ordering, so later tasks can attach a reporter and gate. Preserve the exact conditional
+block) decides ordering, so later tasks can attach a reporter and gate. The orchestrator must also
+expose, computable before stage execution, an ordered predicted-present descriptor list of
+`(stage_id, label, predicted_present)` — SDF predicted via `map_needs_sdf_atlas(&map_data.lights)`,
+which needs only the parsed lights — so Task 4 can render the up-front step column. Preserve the exact conditional
 structure: the SDF stage row is emitted only when `map_needs_sdf_atlas` holds, and stages that compute
 `None`/placeholder output today keep doing so. Verify by compiling a map before and after and diffing
-the output bytes and the summary text.
+the output bytes and the summary row structure (labels, order, format — not the per-stage
+elapsed timings).
 
 ### Task 2: Reporter abstraction, Governor gate, collecting logger
 
@@ -98,14 +104,16 @@ Introduce three foundations in new modules under `crates/level-compiler/src/`, t
 orchestrator to them, retiring `BuildProgress`. (1) A `Reporter` trait with methods the orchestrator
 and stages call: begin a stage (by the stable id + label from Task 1), declare a stage's total work
 units, advance progress, mark a stage finished or skipped, record a warning, and finalize the build
-with the timing summary; plus a `PlainReporter` impl reproducing today's non-TTY behavior (timestamped
+with the timing summary (the orchestrator calls skip when a stage's guard or `is_empty` check yields
+placeholder/`None` output, so AC4 renders it skipped); plus a `PlainReporter` impl reproducing today's non-TTY behavior (timestamped
 stage lines or a simple progress line) and printing an end-of-run warning tally: the total warning
 count plus the list of formatted warning records. (2) A `Governor`
 struct: a cooperative gate holding a paused flag and a live permit count, exposing `checkpoint()` (fast
 poll that parks the caller while paused, for serial loops) and an RAII `enter()` guard (parks while
 paused, then acquires one of N permits, parking callers beyond N, releasing on drop, for parallel
 work-items). Back it with a `Mutex` + `Condvar` (or equivalent std primitives — no `unsafe`); a
-setter to change the permit count must wake parked threads, and clear-pause must wake all. The rayon
+setter to change the permit count must wake parked threads, and clear-pause must wake all. Expose getters for the current permit count and paused flag
+(`permits()`/`is_paused()`) for the TUI's live readout. The rayon
 global pool is left at all cores; the Governor caps concurrent active work-items, so excess parked
 worker threads are the accepted oversubscription cost. (3) A `log::Log` backend installed via
 `log::set_boxed_logger` that replaces the `env_logger::Builder...init()` call, preserves
@@ -126,8 +134,12 @@ not alter the order-preserving `.map()/.flat_map().collect()` results — the pr
 determinism invariant (the Determinism invariant in build_pipeline.md) must hold, so do not introduce
 float reductions, `HashMap`-ordered output, or reordering. Instrument these parallel work-item sites by
 inserting a `governor.enter()` guard at the top of each closure and a counter increment per completed
-item, and set the stage total before the loop: SH probe bake in `sh_bake.rs` (`bake_probe`, total
-`layout.total_probes()`) and its warm grouped path in `sh_group.rs` (`bake_or_load_group`); direct SH
+item, and set the stage total before the loop: SH probe bake in `sh_bake.rs` — place the `governor.enter()` guard in the `into_par_iter` closure
+inside `bake_sh_volume`, NOT in `fn bake_probe` (the warm path also calls `bake_probe`, so a guard
+there would nest inside the group guard and deadlock at `-j 1`), total `layout.total_probes()`; its
+warm grouped path in `sh_group.rs` gates only at `bake_or_load_group`, and since its work-item is a
+whole group its counter must advance by that group's `probe_indices.len()` (or set the warm-path
+total to `groups.len()`) rather than reuse `total_probes()`; direct SH
 probe tiles in `direct_sh_bake.rs` (`bake_probe_tile`, total `layout.total_probes()`); the
 direct-SH-delta and delta-SH CSR sub-block bakes in `direct_sh_bake.rs` and `delta_sh_bake.rs`
 (per-`affinity_lights` entry); and the animated weight-map chunk bake in
@@ -148,7 +160,7 @@ at low permit counts (e.g. `-j 1`).
 
 Add `ratatui` + `crossterm` to `crates/level-compiler/Cargo.toml` and implement a `TuiReporter` that
 satisfies the Task 2 `Reporter` trait. Layout: a left column listing the map's planned compile steps
-(the ordered stage id/label set the orchestrator knows for this map — omit stages known absent up
+(the ordered predicted-present descriptor list the Task 1 orchestrator exposes before execution — omit stages known absent up
 front such as SDF when the map has no SDF lights, and render stages that resolve to no-ops as skipped)
 with an in-progress animation on the active step; the active step's percent complete and projected
 completion time shown at the foot of that column, computed from the Task 3 progress counter and the
@@ -160,7 +172,7 @@ that renders warnings/log records drained from the Task 2 logger sink without di
 column. Thread model: in TUI mode the bake (the Task 1 orchestrator call) runs on a spawned worker
 thread while the main thread owns the ratatui render + input loop at a fixed tick — reading key events
 (quit, pause toggle, core up/down) via crossterm and mutating the shared `Arc<Governor>` (increasing
-permits and clearing pause wake parked workers through the Task 2 setters) — with reporter and
+permits and clearing pause wake parked workers through the Task 2 `set_permits`/`set_paused` setters) — with reporter and
 progress-counter state `Arc`-shared between the render/main thread and the bake worker thread;
 rendering never blocks the bake. In plain (non-TTY) mode the bake runs directly on the main thread as
 today, with no render loop. The TUI must restore the terminal (leave raw mode / alternate screen) on
@@ -191,7 +203,9 @@ the live core slider mid-bake (including mid-lightmap pause); run it piped/non-T
 fallback and the warning tally; and, holding cache mode constant, diff `.prl` output of a
 paused/throttled `--no-cache` build against a straight (unthrottled, no-pause) `--no-cache` build of
 the same map to confirm byte-identity — never compare a warm-TUI build against a cold-`--no-cache`
-build, since that conflates warm-vs-cold caching with pause-vs-throttle.
+build, since that conflates warm-vs-cold caching with pause-vs-throttle. The scripted diff proves throttle-invariance
+(`-j 1` vs `-j N`, both `--no-cache`, plain mode); pause-invariance is by-design (counters are
+display-only, no reordering) and spot-checked in the interactive run.
 
 ## Sequencing
 

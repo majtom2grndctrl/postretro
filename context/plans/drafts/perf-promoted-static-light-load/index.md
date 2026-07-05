@@ -123,6 +123,11 @@ eligibility filter) and is a natural companion to the promoted-cap discussion in
 note's purpose is to record that the growth exists, is CPU/VRAM (not per-fragment), and has a clean
 one-file fix if a map ever provokes it.
 
+The top-K cap is the point fix. The *consolidated* fix is a shared static cell→light index
+(`context/plans/drafts/cell-light-binning/`), which would turn these class-2 scans into cheap
+per-cell gathers — but that is a streaming-era build gated on cell clustering, so prefer the top-K
+cap if this is ever provoked before streaming lands.
+
 ## Cross-reference placement
 
 If the maintainer wants a pointer from the shadow spec, add one bullet to

@@ -408,3 +408,8 @@ choice). Map authors should reach for that before either spec's machinery is ass
 - **`crates/level-compiler/src/chunk_light_list_bake.rs`** — the baked per-cell light-list
   precedent (static specular). Left as-is; see Methodology for why baking doesn't fit the dynamic
   tier.
+- **`context/plans/drafts/cell-light-binning/`** — design investigation that considered folding this
+  cull into a shared cell→light index. Conclusion: fork **(b)** — keep this spec standalone. Its
+  `visible_forward_light_indices` predicate *is* the shared bin's forward gather for one cell set, so
+  shipping it pre-builds the exact primitive the binning would later reuse (a refactor, not a rewrite).
+  The binning itself is a streaming-era build, not a dependency of this cull.

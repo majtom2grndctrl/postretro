@@ -81,7 +81,7 @@ export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
     ai: {
       detectionRange: 16,
       attackRange: 2,
-      leashRange: 20,
+      leashRange: 24,
       attackDamage: 8,
       attackCooldownMs: 1200,
       moveSpeed: 3,

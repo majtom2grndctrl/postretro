@@ -207,6 +207,16 @@ uv venv && source .venv/bin/activate && uv pip install Pillow
 python3 tools/gen_specular.py --input content/base/textures/ --recursive
 ```
 
+### Model Texture Sidecars
+
+Map compilation bakes texture sidecars for any `prop_mesh` glTF models placed in the map. If you want to prepare a model's textures without compiling a map, run:
+
+```bash
+cargo run -p xtask -- bake-model-textures <scene.gltf>
+```
+
+The helper writes `.prm` sidecars under `<workspace>/baked/materials/`. Those files are runtime-required output, but they are gitignored and safe to regenerate whenever the source model or texture changes.
+
 ---
 
 ## Map Sealing

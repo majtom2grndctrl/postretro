@@ -30,6 +30,8 @@ PRL stores a deduplicated texture name list (`TextureNames` section) plus a para
 
 **Level load.** For each `TextureCacheKeys[i]`, the engine opens `<workspace>/baked/materials/<hex>.prm`, parses it with `PrmFile::from_bytes_partial`, and uploads each present slot's mip chain directly. A zero key produces a silent placeholder. A corrupt or missing sidecar logs a `warn!` and substitutes per-slot placeholders; cleanly-parsed slots from a partially-corrupt file are used. The runtime never opens a PNG for world materials. Model materials use the same diffuse-addressed cache but consume only diffuse; specular and normal remain neutral even when a shared world bundle contains richer slots.
 
+**Model helper.** `cargo run -p xtask -- bake-model-textures <scene.gltf>` bakes glTF base-color sidecars without compiling a map. Output is `<workspace>/baked/materials/*.prm`: gitignored, regenerable, runtime-required.
+
 **UI textures.** `postretro_ui::UiTexture` (`crates/ui/src/ui_texture.rs`, package `postretro-ui`) loads PNGs directly at runtime via the splash and HUD paths. CPU-side only; no wgpu handles.
 
 ### 1.3 Sprite Animations

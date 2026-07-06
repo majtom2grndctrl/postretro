@@ -14,7 +14,7 @@
 
 Enemies only chase the host / local player; in a session, every remote client is ignored. Root
 cause is a single-target resolve in `player_position`
-(`crates/postretro/src/scripting/systems/ai.rs:245`): it returns one `Vec3`, taken from
+(`crates/postretro/src/scripting/systems/ai.rs:282`): it returns one `Vec3`, taken from
 `registry.local_player_pawn()` (the pawn **this machine** controls) and falling back to the *first*
 `iter_with_kind(ComponentKind::PlayerMovement)` entity. Both are single-target, and
 `local_player_pawn` is inherently client-side — a headless / dedicated server has none. So
@@ -40,13 +40,13 @@ chokepoint** so a future view-independent cell-visibility broad-phase (see
 - Replace `player_position`'s single-pawn resolve with a **`select_target` seam** that ranks over
   all `PlayerMovement` pawns and returns the chosen `{ entity, position }` for a querying enemy.
   v1 policy: nearest by distance.
-- Thread the chosen target through the FSM targeting input (`player_pos` consumer at `ai.rs:334`)
-  and the acquisition-gated leash (`ai.rs:205`).
+- Thread the chosen target through the FSM targeting input (`player_pos` consumer at `ai.rs:470`)
+  and the acquisition-gated leash (`ai.rs:243`).
 - Keep `local_player_pawn` for its legitimate client-side uses (camera / prediction / health owner);
   **remove it from the AI targeting path only**.
 
 ### Out of scope
-- The damage-target path (`pawn_with_health` / `damage_target`, `ai.rs:343`) — a distinct concern,
+- The damage-target path (`pawn_with_health` / `damage_target`, `ai.rs:380`) — a distinct concern,
   unchanged.
 - The exact eye-to-target LOS / cover raycast (separate E10 bullet). This seam is built to *accept*
   a visibility predicate; it does not implement one.
@@ -77,17 +77,22 @@ chokepoint** so a future view-independent cell-visibility broad-phase (see
 ## Tasks
 
 ### Task 1 — Target-selection seam over all player pawns
-`crates/postretro/src/scripting/systems/ai.rs`. Replace `player_position` (`:245`) with a
+`crates/postretro/src/scripting/systems/ai.rs`. Replace `player_position` (`:282`) with a
 `select_target(registry, from: Vec3, visible: Option<impl Fn(EntityId) -> bool>) -> Option<TargetPawn>`
 chokepoint: iterate `iter_with_kind(ComponentKind::PlayerMovement)`, optionally filter by the
-`visible` predicate, rank by distance from the querying enemy, return `{ entity, position }`. Remove
-the `local_player_pawn()` branch from this path. Update the FSM targeting consumer (`:334`) and the
-acquisition-gated leash (`:205`) to use the per-enemy chosen target. Keep the `visible` seam unused
+`visible` predicate, rank by `distance_xz` (XZ ground, matching the FSM's range metric) from the
+querying enemy, return `{ entity, position }`. Remove
+the `local_player_pawn()` branch from this path. Update the FSM targeting consumer (`:470`) and the
+acquisition-gated leash (`:243`) to use the per-enemy chosen target. `player_pos` is resolved once
+today (`:372`) and shared, so move the resolve into the per-enemy snapshot loop and carry the chosen
+target on `EnemyOutcome`; every consumer must read it — stride distance (`:476`), `evaluate_transition`
+(`:470`–`:486`), the chase `set_destination` (`:545`), and stopped-facing (`:596`). Keep the `visible` seam unused
 (pass `None`) until the LOS bullet lands — pre-emptive wiring for a planned trigger, not dead code.
 
 ### Task 2 — Tests + seam documentation
-Extend `ai_tests` with a two-pawn case (host + client at different distances → nearer chosen; assert
-the client *can* be chosen). Keep the single-pawn cases green. Doc-comment the `select_target`
+Extend `ai_tests` with a two-pawn case (host marked `local_player_pawn` and placed *farther*, client
+nearer → nearer client chosen; assert the client *can* be chosen, proving `local_player_pawn` no
+longer biases selection). Keep the single-pawn cases green. Doc-comment the `select_target`
 chokepoint as the named extension point and point it to `context/research/cell-visibility-substrate.md`.
 
 ## Decisions
@@ -98,11 +103,14 @@ chokepoint as the named extension point and point it to `context/research/cell-v
 - **Seam now, substrate later.** The chokepoint is the named plug point per the *hardcoded-but-seamed*
   principle. The cell-visibility broad-phase is built *with* its own real consumer (E15 Phase 4
   relevance / Epic 12 audio), not here — see `cell-visibility-substrate.md`.
+- **`visible` may widen bool → weight (anticipated).** v1's predicate returns `bool`; a future graded
+  cell-visibility model may widen the return to a coupling *weight* (to bias ranking by perceptual
+  proximity) — a widening of this same chokepoint, not a relocation (`cell-visibility-substrate.md`).
 
 ## Risks
 
 - **Target thrash between near-equidistant pawns.** Two players at similar range could flip-flop the
-  target per tick. Existing acquisition-gating (targets re-evaluate on think ticks only, `:205`)
+  target per tick. Existing acquisition-gating (targets re-evaluate on think ticks only, `:243`)
   already damps this; add small hysteresis only if a playtest shows thrash.
 - **Selection cost.** `iter_with_kind(PlayerMovement)` × enemies is O(enemies × players) per think
   tick — trivial at co-op scale. If enemy counts ever make it hot, the `visible`/selection seam is

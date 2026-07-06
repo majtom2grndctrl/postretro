@@ -147,6 +147,11 @@ pub struct BrainComponent {
     /// Seeded `None` at spawn and never set outside the Death state.
     #[serde(default)]
     pub death_despawn_remaining_ms: Option<f32>,
+    /// Last locomotion intent applied to animation selection. This latches the
+    /// idle/walk decision so an enemy in `Alert` switches once on stop/resume
+    /// instead of re-requesting the same animation every tick.
+    #[serde(default)]
+    pub locomotion_moving: bool,
     /// Resolved descriptor tuning the FSM reads each tick.
     pub tuning: AiTuning,
 }
@@ -160,6 +165,7 @@ impl BrainComponent {
             attack_cooldown_remaining_ms: 0.0,
             think_stride_counter: 0,
             death_despawn_remaining_ms: None,
+            locomotion_moving: false,
             tuning: AiTuning::from_descriptor(desc),
         }
     }
@@ -274,6 +280,7 @@ mod tests {
         assert_eq!(brain.attack_cooldown_remaining_ms, 0.0);
         assert_eq!(brain.think_stride_counter, 0);
         assert_eq!(brain.death_despawn_remaining_ms, None);
+        assert!(!brain.locomotion_moving);
         assert_eq!(brain.tuning.detection_range, 18.0);
         assert_eq!(brain.tuning.attack_range, 2.2);
         assert_eq!(brain.tuning.leash_range, 26.0);
@@ -313,6 +320,19 @@ mod tests {
         assert_eq!(json["kind"], "brain");
         let back: ComponentValue = serde_json::from_value(json).unwrap();
         assert_eq!(value, back);
+    }
+
+    #[test]
+    fn brain_serde_defaults_missing_locomotion_latch() {
+        use crate::registry::ComponentValue;
+        let value = ComponentValue::Brain(BrainComponent::from_descriptor(&sample_descriptor()));
+        let mut json = serde_json::to_value(&value).unwrap();
+        json.as_object_mut().unwrap().remove("locomotion_moving");
+
+        let ComponentValue::Brain(back) = serde_json::from_value(json).unwrap() else {
+            panic!("expected brain component");
+        };
+        assert!(!back.locomotion_moving);
     }
 
     #[test]

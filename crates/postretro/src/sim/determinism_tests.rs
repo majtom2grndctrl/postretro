@@ -269,6 +269,7 @@ fn spawn_enemy(registry: &mut EntityRegistry, position: Vec3) -> EntityId {
                 attack_cooldown_remaining_ms: 0.0,
                 think_stride_counter: 0,
                 death_despawn_remaining_ms: None,
+                locomotion_moving: false,
                 tuning: AiTuning {
                     detection_range: 8.0,
                     attack_range: 2.0,

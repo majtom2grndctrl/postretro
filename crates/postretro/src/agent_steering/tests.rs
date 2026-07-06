@@ -52,6 +52,37 @@ fn spawn_agent(registry: &mut EntityRegistry, x: f32, z: f32, params: &NavAgentP
     id
 }
 
+fn set_manual_path(registry: &mut EntityRegistry, id: EntityId, path: Vec<Vec3>) {
+    let destination = *path.last().expect("manual path must have a destination");
+    let mut agent = registry
+        .get_component::<AgentComponent>(id)
+        .unwrap()
+        .clone();
+    agent.destination = Some(destination);
+    agent.planned_destination = Some(destination);
+    agent.path = path;
+    agent.waypoint_cursor = 0;
+    agent.replan_cooldown_ticks = u32::MAX;
+    agent.arrived = false;
+    agent.blocked = false;
+    registry.set_component(id, agent).unwrap();
+}
+
+fn steer_speed(registry: &EntityRegistry, id: EntityId) -> f32 {
+    xz_length(
+        registry
+            .get_component::<AgentComponent>(id)
+            .unwrap()
+            .steer_velocity,
+    )
+}
+
+fn angle_between_xz(a: Vec3, b: Vec3) -> f32 {
+    let a = Vec3::new(a.x, 0.0, a.z).normalize();
+    let b = Vec3::new(b.x, 0.0, b.z).normalize();
+    a.dot(b).clamp(-1.0, 1.0).acos()
+}
+
 /// One wall description: a solid axis-aligned box (the obstacle) sitting on the
 /// floor, plus the floor's own square extent. Both the collision trimesh and the
 /// hand-built navmesh corridor are derived from this so they agree.
@@ -191,6 +222,344 @@ impl LWall {
 }
 
 #[test]
+fn agent_path_following_speed_accelerates_over_multiple_ticks() {
+    let wall = LWall::fixture();
+    let world = wall.collision_world();
+    let params = agent_params();
+    let mut registry = EntityRegistry::new();
+    let id = spawn_agent(&mut registry, 1.0, 6.0, &params);
+    let destination = Vec3::new(7.0, rest_y(&params), 6.0);
+    set_manual_path(
+        &mut registry,
+        id,
+        vec![Vec3::new(1.0, rest_y(&params), 6.0), destination],
+    );
+
+    let mut speeds = Vec::new();
+    for _ in 0..12 {
+        tick(&mut registry, &world, None, GRAVITY, DT);
+        speeds.push(steer_speed(&registry, id));
+        if speeds.last().copied().unwrap() >= 4.0 - EPS {
+            break;
+        }
+    }
+
+    assert!(
+        speeds[0] > 0.0 && speeds[0] < 4.0,
+        "first tick should ramp below move_speed, got {:?}",
+        speeds
+    );
+    for pair in speeds.windows(2) {
+        assert!(
+            pair[1] + EPS >= pair[0],
+            "steer_velocity speed should ramp monotonically, got {:?}",
+            speeds
+        );
+    }
+    assert!(
+        speeds.last().copied().unwrap() >= 4.0 - EPS,
+        "steer_velocity should converge to move_speed before arrival easing, got {:?}",
+        speeds
+    );
+}
+
+#[test]
+fn steer_velocity_ramps_independently_of_wall_clamped_collision_velocity() {
+    let wall = LWall::fixture();
+    let world = wall.collision_world();
+    let params = agent_params();
+    let mut registry = EntityRegistry::new();
+    let id = spawn_agent(&mut registry, 3.55, 2.0, &params);
+    set_manual_path(
+        &mut registry,
+        id,
+        vec![
+            Vec3::new(3.55, rest_y(&params), 2.0),
+            Vec3::new(6.0, rest_y(&params), 2.0),
+        ],
+    );
+
+    let mut steer_speeds = Vec::new();
+    let mut post_collision_speeds = Vec::new();
+    for _ in 0..10 {
+        tick(&mut registry, &world, None, GRAVITY, DT);
+        let agent = registry.get_component::<AgentComponent>(id).unwrap();
+        steer_speeds.push(xz_length(agent.steer_velocity));
+        post_collision_speeds.push(xz_length(agent.velocity));
+    }
+
+    for pair in steer_speeds.windows(2) {
+        assert!(
+            pair[1] + EPS >= pair[0],
+            "pre-collision steer_velocity should keep ramping despite wall contact: {:?}",
+            steer_speeds
+        );
+    }
+    assert!(
+        post_collision_speeds
+            .iter()
+            .zip(steer_speeds.iter())
+            .any(|(post, steer)| *steer > 1.0 && *post + 0.25 < *steer),
+        "post-collision velocity should diverge from pre-collision steer_velocity; steer={:?}, post={:?}",
+        steer_speeds,
+        post_collision_speeds
+    );
+}
+
+#[test]
+fn agent_decelerates_inside_arrival_band_before_hard_stop() {
+    let wall = LWall::fixture();
+    let world = wall.collision_world();
+    let params = agent_params();
+    let mut registry = EntityRegistry::new();
+    let id = spawn_agent(&mut registry, 1.0, 6.0, &params);
+    let destination = Vec3::new(7.0, rest_y(&params), 6.0);
+    set_manual_path(
+        &mut registry,
+        id,
+        vec![Vec3::new(1.0, rest_y(&params), 6.0), destination],
+    );
+
+    let slowdown_radius = ARRIVAL_SLOWDOWN_RADIUS_FACTOR * params.radius;
+    let mut arrival_band_speeds = Vec::new();
+    let mut last_pre_stop_speed = None;
+    for _ in 0..300 {
+        tick(&mut registry, &world, None, GRAVITY, DT);
+        let state = path_state(&registry, id).unwrap();
+        let agent = registry.get_component::<AgentComponent>(id).unwrap();
+        if agent.arrived {
+            break;
+        }
+        let speed = xz_length(agent.steer_velocity);
+        if distance_xz(state.position, destination) <= slowdown_radius {
+            arrival_band_speeds.push(speed);
+            last_pre_stop_speed = Some(speed);
+        }
+    }
+
+    assert!(
+        arrival_band_speeds.len() >= 2,
+        "arrival easing should be observable across multiple ticks, got {:?}",
+        arrival_band_speeds
+    );
+    assert!(
+        arrival_band_speeds.first().unwrap() > arrival_band_speeds.last().unwrap(),
+        "speed should decrease through the arrival band, got {:?}",
+        arrival_band_speeds
+    );
+    assert!(
+        last_pre_stop_speed.unwrap() <= 0.25 * 4.0 + EPS,
+        "last pre-stop steer speed should be a low tail, got {:?}",
+        arrival_band_speeds
+    );
+    assert!(
+        registry
+            .get_component::<AgentComponent>(id)
+            .unwrap()
+            .arrived,
+        "agent should still hard-stop at arrived"
+    );
+    assert_eq!(
+        registry
+            .get_component::<AgentComponent>(id)
+            .unwrap()
+            .steer_velocity,
+        Vec3::ZERO,
+        "arrived zeroes the integration state"
+    );
+}
+
+#[test]
+fn arrived_agent_displaced_outside_final_radius_resumes_steering() {
+    let wall = LWall::fixture();
+    let world = wall.collision_world();
+    let params = agent_params();
+    let mut registry = EntityRegistry::new();
+    let id = spawn_agent(&mut registry, 1.0, 6.0, &params);
+    let destination = Vec3::new(2.0, rest_y(&params), 6.0);
+    set_manual_path(
+        &mut registry,
+        id,
+        vec![Vec3::new(1.0, rest_y(&params), 6.0), destination],
+    );
+
+    for _ in 0..180 {
+        tick(&mut registry, &world, None, GRAVITY, DT);
+        if registry
+            .get_component::<AgentComponent>(id)
+            .unwrap()
+            .arrived
+        {
+            break;
+        }
+    }
+    assert!(
+        registry
+            .get_component::<AgentComponent>(id)
+            .unwrap()
+            .arrived,
+        "fixture should reach the destination before displacement"
+    );
+
+    let mut transform = *registry.get_component::<Transform>(id).unwrap();
+    transform.position.x = destination.x - ARRIVAL_RADIUS_FACTOR * params.radius - 0.25;
+    registry.set_component(id, transform).unwrap();
+
+    tick(&mut registry, &world, None, GRAVITY, DT);
+
+    let agent = registry.get_component::<AgentComponent>(id).unwrap();
+    assert!(
+        !agent.arrived,
+        "leaving the final radius should clear the arrived latch"
+    );
+    assert!(
+        agent.steer_velocity.x > 0.0,
+        "displaced arrived agent should steer back toward the destination, got {:?}",
+        agent.steer_velocity
+    );
+}
+
+#[test]
+fn steer_heading_rotates_by_at_most_turn_rate_each_tick() {
+    let wall = LWall::fixture();
+    let world = wall.collision_world();
+    let params = agent_params();
+    let mut registry = EntityRegistry::new();
+    let id = spawn_agent(&mut registry, 2.0, 6.0, &params);
+    set_manual_path(
+        &mut registry,
+        id,
+        vec![
+            Vec3::new(2.0, rest_y(&params), 6.0),
+            Vec3::new(2.0, rest_y(&params), 10.0),
+        ],
+    );
+    {
+        let mut agent = registry
+            .get_component::<AgentComponent>(id)
+            .unwrap()
+            .clone();
+        agent.steer_velocity = Vec3::X * agent.move_speed;
+        registry.set_component(id, agent).unwrap();
+    }
+
+    tick(&mut registry, &world, None, GRAVITY, DT);
+
+    let heading = registry
+        .get_component::<AgentComponent>(id)
+        .unwrap()
+        .steer_velocity;
+    let turned = angle_between_xz(Vec3::X, heading);
+    let max_delta = MAX_TURN_RATE * DT;
+    assert!(
+        turned <= max_delta + EPS,
+        "heading should rotate by at most max_turn_rate * dt ({max_delta}), got {turned}"
+    );
+    assert!(
+        turned > 0.5 * max_delta,
+        "fixture should engage the turn clamp, got {turned}"
+    );
+}
+
+#[test]
+fn lookahead_targets_path_ahead_and_falls_back_to_current_waypoint() {
+    let mut agent = AgentComponent::new(0.35, 1.8, 0.4, 4.0);
+    agent.path = vec![Vec3::new(2.0, 0.0, 0.0), Vec3::new(2.0, 0.0, 4.0)];
+    let position = Vec3::new(1.8, 0.0, 0.0);
+
+    let lookahead = target_point(&agent, position, 1.0).unwrap();
+    assert!(
+        (lookahead.x - 2.0).abs() <= EPS && (lookahead.z - 0.8).abs() <= EPS,
+        "lookahead should walk past the current waypoint along the path, got {lookahead:?}"
+    );
+
+    let disabled = target_point(&agent, position, 0.0).unwrap();
+    assert_eq!(disabled, agent.path[0]);
+
+    agent.path.truncate(1);
+    let unavailable = target_point(&agent, position, 1.0).unwrap();
+    assert_eq!(unavailable, agent.path[0]);
+}
+
+#[test]
+fn separation_is_added_after_smoothing_then_combined_velocity_is_clamped() {
+    let params = agent_params();
+    let mut registry = EntityRegistry::new();
+    let current_id = spawn_agent(&mut registry, 0.0, 0.0, &params);
+    let other_id = spawn_agent(&mut registry, 0.0, -0.2, &params);
+    let agent = registry
+        .get_component::<AgentComponent>(current_id)
+        .unwrap();
+    let snapshot = vec![
+        AgentSnapshot {
+            id: current_id,
+            position: Vec3::ZERO,
+            radius: agent.radius,
+        },
+        AgentSnapshot {
+            id: other_id,
+            position: Vec3::new(0.0, 0.0, -0.2),
+            radius: agent.radius,
+        },
+    ];
+
+    let steer = Vec3::X * agent.move_speed;
+    let sep = separation(&snapshot[0], agent, &snapshot);
+    let combined = steer + sep;
+    assert!(
+        xz_length(combined) > agent.move_speed,
+        "fixture must engage the clamp: steer={steer:?}, separation={sep:?}"
+    );
+
+    let clamped = clamp_xz_speed(combined, agent.move_speed);
+    assert!(
+        (xz_length(clamped) - agent.move_speed).abs() <= EPS,
+        "combined velocity should clamp to move_speed, got {clamped:?}"
+    );
+    assert_eq!(
+        registry
+            .get_component::<AgentComponent>(current_id)
+            .unwrap()
+            .steer_velocity,
+        Vec3::ZERO,
+        "direct separation calculation must not fold back into steer_velocity"
+    );
+}
+
+#[test]
+fn overlapping_agents_gain_separation_before_accel_ramp_completes() {
+    let wall = LWall::fixture();
+    let world = wall.collision_world();
+    let graph = wall.nav_graph();
+    let params = agent_params();
+
+    let mut registry = EntityRegistry::new();
+    let a = spawn_agent(&mut registry, 4.0, 6.0, &params);
+    let b = spawn_agent(&mut registry, 4.2, 6.0, &params);
+    let dest = Vec3::new(4.0, rest_y(&params), 6.0);
+    set_destination(&mut registry, a, dest);
+    set_destination(&mut registry, b, dest);
+
+    let start_gap = {
+        let pa = path_state(&registry, a).unwrap().position;
+        let pb = path_state(&registry, b).unwrap().position;
+        distance_xz(pa, pb)
+    };
+    for _ in 0..2 {
+        tick(&mut registry, &world, Some(&graph), GRAVITY, DT);
+    }
+    let end_gap = {
+        let pa = path_state(&registry, a).unwrap().position;
+        let pb = path_state(&registry, b).unwrap().position;
+        distance_xz(pa, pb)
+    };
+    assert!(
+        end_gap > start_gap + 0.01,
+        "separation should act promptly outside the accel ramp, start {start_gap}, end {end_gap}"
+    );
+}
+
+#[test]
 fn agent_steers_around_l_wall_without_penetrating_it() {
     // Start in the left strip (region 0), goal in the top strip's +X half
     // (region 1) — reachable only by routing up around the obstacle's corner. A
@@ -253,7 +622,7 @@ fn agent_reaching_destination_reports_arrived() {
     let mut registry = EntityRegistry::new();
     // Both points in region 1 (top strip), clear of the box.
     let id = spawn_agent(&mut registry, 1.0, 6.0, &params);
-    set_destination(&mut registry, id, Vec3::new(5.0, rest_y(&params), 6.0));
+    set_destination(&mut registry, id, Vec3::new(7.0, rest_y(&params), 6.0));
 
     let mut arrived = false;
     for _ in 0..600 {
@@ -263,7 +632,22 @@ fn agent_reaching_destination_reports_arrived() {
             break;
         }
     }
-    assert!(arrived, "agent in an open region should report arrived");
+    let final_state = path_state(&registry, id).unwrap();
+    let final_agent = registry.get_component::<AgentComponent>(id).unwrap();
+    assert!(
+        arrived,
+        "agent in an open region should report arrived; ended at {:?}, distance {}, steer {:?} ({}), velocity {:?} ({}), cursor {}, path_len {}, arrived {}, blocked {}",
+        final_state.position,
+        final_state.distance_to_destination,
+        final_agent.steer_velocity,
+        xz_length(final_agent.steer_velocity),
+        final_agent.velocity,
+        xz_length(final_agent.velocity),
+        final_agent.waypoint_cursor,
+        final_agent.path.len(),
+        final_agent.arrived,
+        final_agent.blocked
+    );
 }
 
 #[test]

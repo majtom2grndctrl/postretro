@@ -421,16 +421,6 @@ impl Renderer {
     }
 
     #[cfg(feature = "dev-tools")]
-    pub fn agent_overlay_enabled(&self) -> bool {
-        self.full().agent_overlay.enabled
-    }
-
-    #[cfg(feature = "dev-tools")]
-    pub fn set_agent_overlay_enabled(&mut self, enabled: bool) {
-        self.full_mut().agent_overlay.enabled = enabled;
-    }
-
-    #[cfg(feature = "dev-tools")]
     pub fn set_agent_overlay_paths_enabled(&mut self, enabled: bool) {
         self.full_mut().agent_overlay.paths = enabled;
     }

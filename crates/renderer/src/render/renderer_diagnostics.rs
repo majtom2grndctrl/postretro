@@ -327,9 +327,9 @@ impl Renderer {
 
     /// Emit agent path/corridor diagnostic debug lines: the corridor from the
     /// agent's `position` through its remaining funnel waypoints (from `cursor`),
-    /// plus a per-waypoint cross marker sized to the capsule `radius`. Gated by
-    /// the same navmesh overlay toggle (`Alt+Shift+N`) so the path draws
-    /// alongside the region/portal overlay. Must run after `clear_debug_lines`
+    /// plus a per-waypoint cross marker sized to the capsule `radius`. The
+    /// caller gates this with the agent overlay/layer flags, independent of the
+    /// navmesh region/portal overlay toggle. Must run after `clear_debug_lines`
     /// and before the frame's debug-line pass so the path shares the same
     /// per-frame debug-line lifecycle as other overlay emitters.
     ///
@@ -343,9 +343,6 @@ impl Renderer {
         cursor: usize,
         radius: f32,
     ) {
-        if !self.full().show_navmesh {
-            return;
-        }
         const COLOR_AGENT_PATH: [u8; 4] = [120, 255, 120, 255];
         const COLOR_AGENT_WAYPOINT: [u8; 4] = [255, 120, 220, 255];
 
@@ -416,6 +413,57 @@ impl Renderer {
     #[cfg(feature = "dev-tools")]
     pub fn nav_overlay_enabled(&self) -> bool {
         self.full().show_navmesh
+    }
+
+    #[cfg(feature = "dev-tools")]
+    pub fn agent_overlay_state(&self) -> AgentOverlayState {
+        self.full().agent_overlay
+    }
+
+    #[cfg(feature = "dev-tools")]
+    pub fn agent_overlay_enabled(&self) -> bool {
+        self.full().agent_overlay.enabled
+    }
+
+    #[cfg(feature = "dev-tools")]
+    pub fn set_agent_overlay_enabled(&mut self, enabled: bool) {
+        self.full_mut().agent_overlay.enabled = enabled;
+    }
+
+    #[cfg(feature = "dev-tools")]
+    pub fn set_agent_overlay_paths_enabled(&mut self, enabled: bool) {
+        self.full_mut().agent_overlay.paths = enabled;
+    }
+
+    #[cfg(feature = "dev-tools")]
+    pub fn set_agent_overlay_velocities_enabled(&mut self, enabled: bool) {
+        self.full_mut().agent_overlay.velocities = enabled;
+    }
+
+    #[cfg(feature = "dev-tools")]
+    pub fn set_agent_overlay_destinations_enabled(&mut self, enabled: bool) {
+        self.full_mut().agent_overlay.destinations = enabled;
+    }
+
+    #[cfg(feature = "dev-tools")]
+    pub fn set_agent_overlay_labels_enabled(&mut self, enabled: bool) {
+        self.full_mut().agent_overlay.labels = enabled;
+    }
+
+    /// Flip the all-agent movement overlay on/off. Bound to `Alt+Shift+A`.
+    #[cfg(feature = "dev-tools")]
+    pub fn toggle_agent_overlay(&mut self) -> bool {
+        let full = self.full_mut();
+        full.agent_overlay.enabled = !full.agent_overlay.enabled;
+        log::info!(
+            "[Renderer] Agent overlay: {}",
+            if full.agent_overlay.enabled {
+                "on"
+            } else {
+                "off"
+            },
+        );
+        full.agent_overlay.enabled
     }
 
     /// Flip the navmesh overlay on/off. Bound to `Alt+Shift+N`.

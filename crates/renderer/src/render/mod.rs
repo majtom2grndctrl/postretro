@@ -116,6 +116,8 @@ pub(crate) use renderer_geometry::{
     cast_world_vertices_to_bytes,
 };
 pub(crate) use renderer_lighting::*;
+#[cfg(feature = "dev-tools")]
+pub use renderer_types::AgentOverlayState;
 pub use renderer_types::{
     BvhOverlayBudget, BvhOverlayColorMode, BvhOverlayDepthMode, BvhOverlayState,
     CameraCullDiagnostics, CameraCullPath, CellOverlayState, ClearColor, DEFAULT_AMBIENT_FLOOR,
@@ -126,7 +128,7 @@ pub use renderer_types::{
 pub(crate) use renderer_types::{GpuTexture, POST_RETRO_ANISO_CLAMP};
 
 #[cfg(feature = "dev-tools")]
-pub use debug_ui::{DebugUi, draw_diagnostics_panel};
+pub use debug_ui::{AgentDiagnosticsRow, DebugUi, draw_diagnostics_panel};
 #[cfg(feature = "dev-tools")]
 pub use frame_timing::FrameTimingSnapshot;
 #[cfg(feature = "dev-tools")]

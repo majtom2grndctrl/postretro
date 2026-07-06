@@ -200,6 +200,29 @@ impl Default for PortalOverlayState {
     }
 }
 
+#[cfg(feature = "dev-tools")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AgentOverlayState {
+    pub enabled: bool,
+    pub paths: bool,
+    pub velocities: bool,
+    pub destinations: bool,
+    pub labels: bool,
+}
+
+#[cfg(feature = "dev-tools")]
+impl Default for AgentOverlayState {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            paths: true,
+            velocities: true,
+            destinations: true,
+            labels: true,
+        }
+    }
+}
+
 /// Which camera-cull path ran for a frame, surfaced to the Spatial diagnostics
 /// tab. Diagnostic only — never gates behavior.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -729,6 +752,8 @@ pub(super) struct FullRenderer {
     pub(super) cell_overlay: CellOverlayState,
     #[cfg(feature = "dev-tools")]
     pub(super) portal_overlay: PortalOverlayState,
+    #[cfg(feature = "dev-tools")]
+    pub(super) agent_overlay: AgentOverlayState,
     /// Navmesh overlay toggle, flipped by `Alt+Shift+N`. Read at the emit call
     /// site to decide whether to push region/portal debug lines this frame.
     #[cfg(feature = "dev-tools")]

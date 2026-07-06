@@ -1,0 +1,325 @@
+// Game: Postretro
+// Format: Standard
+// entity 0
+{
+"classname" "worldspawn"
+"initialGravity" "-9.81"
+"nav_agent_radius" "0.35"
+"nav_agent_height" "1.8"
+"nav_step_height" "0.5"
+"wad" ""
+"_tb_mod" "dev"
+"_tb_def" "external:../../../sdk/TrenchBroom/postretro.fgd"
+// brush 0 - connected floor
+{
+( -1416 1616 -16 ) ( -1416 -1016 0 ) ( -1416 -1016 -16 ) concrete_pavement_036 0 0 0 1 1
+( -1416 -1016 -16 ) ( 1616 -1016 0 ) ( 1616 -1016 -16 ) concrete_pavement_036 0 0 0 1 1
+( -1416 -1016 -16 ) ( 1616 1616 -16 ) ( -1416 1616 -16 ) concrete_pavement_036 0 0 0 1 1
+( -1416 1616 0 ) ( 1616 -1016 0 ) ( -1416 -1016 0 ) concrete_pavement_036 0 0 0 1 1
+( 1616 1616 -16 ) ( -1416 1616 0 ) ( -1416 1616 -16 ) concrete_pavement_036 0 0 0 1 1
+( 1616 -1016 -16 ) ( 1616 1616 0 ) ( 1616 1616 -16 ) concrete_pavement_036 0 0 0 1 1
+}
+// brush 1 - connected ceiling
+{
+( -1416 1616 128 ) ( -1416 -1016 144 ) ( -1416 -1016 128 ) concrete_pavement_036 0 0 0 1 1
+( -1416 -1016 128 ) ( 1616 -1016 144 ) ( 1616 -1016 128 ) concrete_pavement_036 0 0 0 1 1
+( -1416 -1016 128 ) ( 1616 1616 128 ) ( -1416 1616 128 ) concrete_pavement_036 0 0 0 1 1
+( -1416 1616 144 ) ( 1616 -1016 144 ) ( -1416 -1016 144 ) concrete_pavement_036 0 0 0 1 1
+( 1616 1616 128 ) ( -1416 1616 144 ) ( -1416 1616 128 ) concrete_pavement_036 0 0 0 1 1
+( 1616 -1016 128 ) ( 1616 1616 144 ) ( 1616 1616 128 ) concrete_pavement_036 0 0 0 1 1
+}
+// brush 2 - west outer wall
+{
+( -1416 1616 0 ) ( -1416 -1016 128 ) ( -1416 -1016 0 ) concrete_pavement_036 0 0 0 1 1
+( -1416 -1016 0 ) ( -1400 -1016 128 ) ( -1400 -1016 0 ) concrete_pavement_036 0 0 0 1 1
+( -1416 -1016 0 ) ( -1400 1616 0 ) ( -1416 1616 0 ) concrete_pavement_036 0 0 0 1 1
+( -1416 1616 128 ) ( -1400 -1016 128 ) ( -1416 -1016 128 ) concrete_pavement_036 0 0 0 1 1
+( -1400 1616 0 ) ( -1416 1616 128 ) ( -1416 1616 0 ) concrete_pavement_036 0 0 0 1 1
+( -1400 -1016 0 ) ( -1400 1616 128 ) ( -1400 1616 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// brush 3 - east outer wall
+{
+( 1600 1616 0 ) ( 1600 -1016 128 ) ( 1600 -1016 0 ) concrete_pavement_036 0 0 0 1 1
+( 1600 -1016 0 ) ( 1616 -1016 128 ) ( 1616 -1016 0 ) concrete_pavement_036 0 0 0 1 1
+( 1600 -1016 0 ) ( 1616 1616 0 ) ( 1600 1616 0 ) concrete_pavement_036 0 0 0 1 1
+( 1600 1616 128 ) ( 1616 -1016 128 ) ( 1600 -1016 128 ) concrete_pavement_036 0 0 0 1 1
+( 1616 1616 0 ) ( 1600 1616 128 ) ( 1600 1616 0 ) concrete_pavement_036 0 0 0 1 1
+( 1616 -1016 0 ) ( 1616 1616 128 ) ( 1616 1616 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// brush 4 - south outer wall
+{
+( -1416 -1000 0 ) ( -1416 -1016 128 ) ( -1416 -1016 0 ) concrete_pavement_036 0 0 0 1 1
+( -1416 -1016 0 ) ( 1616 -1016 128 ) ( 1616 -1016 0 ) concrete_pavement_036 0 0 0 1 1
+( -1416 -1016 0 ) ( 1616 -1000 0 ) ( -1416 -1000 0 ) concrete_pavement_036 0 0 0 1 1
+( -1416 -1000 128 ) ( 1616 -1016 128 ) ( -1416 -1016 128 ) concrete_pavement_036 0 0 0 1 1
+( 1616 -1000 0 ) ( -1416 -1000 128 ) ( -1416 -1000 0 ) concrete_pavement_036 0 0 0 1 1
+( 1616 -1016 0 ) ( 1616 -1000 128 ) ( 1616 -1000 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// brush 5 - north outer wall
+{
+( -1416 1616 0 ) ( -1416 1600 128 ) ( -1416 1600 0 ) concrete_pavement_036 0 0 0 1 1
+( -1416 1600 0 ) ( 1616 1600 128 ) ( 1616 1600 0 ) concrete_pavement_036 0 0 0 1 1
+( -1416 1600 0 ) ( 1616 1616 0 ) ( -1416 1616 0 ) concrete_pavement_036 0 0 0 1 1
+( -1416 1616 128 ) ( 1616 1600 128 ) ( -1416 1600 128 ) concrete_pavement_036 0 0 0 1 1
+( 1616 1616 0 ) ( -1416 1616 128 ) ( -1416 1616 0 ) concrete_pavement_036 0 0 0 1 1
+( 1616 1600 0 ) ( 1616 1616 128 ) ( 1616 1616 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// brush 6 - Pillar wedge center pillar
+{
+( -940 40 0 ) ( -940 -40 128 ) ( -940 -40 0 ) concrete_pavement_036 0 0 0 1 1
+( -940 -40 0 ) ( -860 -40 128 ) ( -860 -40 0 ) concrete_pavement_036 0 0 0 1 1
+( -940 -40 0 ) ( -860 40 0 ) ( -940 40 0 ) concrete_pavement_036 0 0 0 1 1
+( -940 40 128 ) ( -860 -40 128 ) ( -940 -40 128 ) concrete_pavement_036 0 0 0 1 1
+( -860 40 0 ) ( -940 40 128 ) ( -940 40 0 ) concrete_pavement_036 0 0 0 1 1
+( -860 -40 0 ) ( -860 40 128 ) ( -860 40 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// brush 7 - Pillar wedge left cheek
+{
+( -1060 112 0 ) ( -1060 40 128 ) ( -1060 40 0 ) concrete_pavement_036 0 0 0 1 1
+( -1060 40 0 ) ( -940 40 128 ) ( -940 40 0 ) concrete_pavement_036 0 0 0 1 1
+( -1060 40 0 ) ( -940 112 0 ) ( -1060 112 0 ) concrete_pavement_036 0 0 0 1 1
+( -1060 112 128 ) ( -940 40 128 ) ( -1060 40 128 ) concrete_pavement_036 0 0 0 1 1
+( -940 112 0 ) ( -1060 112 128 ) ( -1060 112 0 ) concrete_pavement_036 0 0 0 1 1
+( -940 40 0 ) ( -940 112 128 ) ( -940 112 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// brush 8 - Pillar wedge right cheek
+{
+( -860 -40 0 ) ( -860 -112 128 ) ( -860 -112 0 ) concrete_pavement_036 0 0 0 1 1
+( -860 -112 0 ) ( -740 -112 128 ) ( -740 -112 0 ) concrete_pavement_036 0 0 0 1 1
+( -860 -112 0 ) ( -740 -40 0 ) ( -860 -40 0 ) concrete_pavement_036 0 0 0 1 1
+( -860 -40 128 ) ( -740 -112 128 ) ( -860 -112 128 ) concrete_pavement_036 0 0 0 1 1
+( -740 -40 0 ) ( -860 -40 128 ) ( -860 -40 0 ) concrete_pavement_036 0 0 0 1 1
+( -740 -112 0 ) ( -740 -40 128 ) ( -740 -40 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// brush 9 - Pillar wedge approach rail
+{
+( -1160 160 0 ) ( -1160 -160 128 ) ( -1160 -160 0 ) concrete_pavement_036 0 0 0 1 1
+( -1160 -160 0 ) ( -1120 -160 128 ) ( -1120 -160 0 ) concrete_pavement_036 0 0 0 1 1
+( -1160 -160 0 ) ( -1120 160 0 ) ( -1160 160 0 ) concrete_pavement_036 0 0 0 1 1
+( -1160 160 128 ) ( -1120 -160 128 ) ( -1160 -160 128 ) concrete_pavement_036 0 0 0 1 1
+( -1120 160 0 ) ( -1160 160 128 ) ( -1160 160 0 ) concrete_pavement_036 0 0 0 1 1
+( -1120 -160 0 ) ( -1120 160 128 ) ( -1120 160 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// brush 10 - Corridor corner west blocker
+{
+( -80 -560 0 ) ( -80 -820 128 ) ( -80 -820 0 ) concrete_pavement_036 0 0 0 1 1
+( -80 -820 0 ) ( 0 -820 128 ) ( 0 -820 0 ) concrete_pavement_036 0 0 0 1 1
+( -80 -820 0 ) ( 0 -560 0 ) ( -80 -560 0 ) concrete_pavement_036 0 0 0 1 1
+( -80 -560 128 ) ( 0 -820 128 ) ( -80 -820 128 ) concrete_pavement_036 0 0 0 1 1
+( 0 -560 0 ) ( -80 -560 128 ) ( -80 -560 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 -820 0 ) ( 0 -560 128 ) ( 0 -560 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// brush 11 - Corridor corner middle blocker
+{
+( 120 -620 0 ) ( 120 -820 128 ) ( 120 -820 0 ) concrete_pavement_036 0 0 0 1 1
+( 120 -820 0 ) ( 200 -820 128 ) ( 200 -820 0 ) concrete_pavement_036 0 0 0 1 1
+( 120 -820 0 ) ( 200 -620 0 ) ( 120 -620 0 ) concrete_pavement_036 0 0 0 1 1
+( 120 -620 128 ) ( 200 -820 128 ) ( 120 -820 128 ) concrete_pavement_036 0 0 0 1 1
+( 200 -620 0 ) ( 120 -620 128 ) ( 120 -620 0 ) concrete_pavement_036 0 0 0 1 1
+( 200 -820 0 ) ( 200 -620 128 ) ( 200 -620 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// brush 12 - Corridor corner east blocker
+{
+( 320 -420 0 ) ( 320 -760 128 ) ( 320 -760 0 ) concrete_pavement_036 0 0 0 1 1
+( 320 -760 0 ) ( 400 -760 128 ) ( 400 -760 0 ) concrete_pavement_036 0 0 0 1 1
+( 320 -760 0 ) ( 400 -420 0 ) ( 320 -420 0 ) concrete_pavement_036 0 0 0 1 1
+( 320 -420 128 ) ( 400 -760 128 ) ( 320 -760 128 ) concrete_pavement_036 0 0 0 1 1
+( 400 -420 0 ) ( 320 -420 128 ) ( 320 -420 0 ) concrete_pavement_036 0 0 0 1 1
+( 400 -760 0 ) ( 400 -420 128 ) ( 400 -420 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// brush 13 - Corridor corner north blocker
+{
+( 80 -420 0 ) ( 80 -500 128 ) ( 80 -500 0 ) concrete_pavement_036 0 0 0 1 1
+( 80 -500 0 ) ( 360 -500 128 ) ( 360 -500 0 ) concrete_pavement_036 0 0 0 1 1
+( 80 -500 0 ) ( 360 -420 0 ) ( 80 -420 0 ) concrete_pavement_036 0 0 0 1 1
+( 80 -420 128 ) ( 360 -500 128 ) ( 80 -500 128 ) concrete_pavement_036 0 0 0 1 1
+( 360 -420 0 ) ( 80 -420 128 ) ( 80 -420 0 ) concrete_pavement_036 0 0 0 1 1
+( 360 -500 0 ) ( 360 -420 128 ) ( 360 -420 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// brush 14 - Straight run north rail
+{
+( 560 -80 0 ) ( 560 -120 64 ) ( 560 -120 0 ) concrete_pavement_036 0 0 0 1 1
+( 560 -120 0 ) ( 1440 -120 64 ) ( 1440 -120 0 ) concrete_pavement_036 0 0 0 1 1
+( 560 -120 0 ) ( 1440 -80 0 ) ( 560 -80 0 ) concrete_pavement_036 0 0 0 1 1
+( 560 -80 64 ) ( 1440 -120 64 ) ( 560 -120 64 ) concrete_pavement_036 0 0 0 1 1
+( 1440 -80 0 ) ( 560 -80 64 ) ( 560 -80 0 ) concrete_pavement_036 0 0 0 1 1
+( 1440 -120 0 ) ( 1440 -80 64 ) ( 1440 -80 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// brush 15 - Straight run south rail
+{
+( 560 120 0 ) ( 560 80 64 ) ( 560 80 0 ) concrete_pavement_036 0 0 0 1 1
+( 560 80 0 ) ( 1440 80 64 ) ( 1440 80 0 ) concrete_pavement_036 0 0 0 1 1
+( 560 80 0 ) ( 1440 120 0 ) ( 560 120 0 ) concrete_pavement_036 0 0 0 1 1
+( 560 120 64 ) ( 1440 80 64 ) ( 560 80 64 ) concrete_pavement_036 0 0 0 1 1
+( 1440 120 0 ) ( 560 120 64 ) ( 560 120 0 ) concrete_pavement_036 0 0 0 1 1
+( 1440 80 0 ) ( 1440 120 64 ) ( 1440 120 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// brush 16 - Straight run start marker
+{
+( 560 80 0 ) ( 560 -80 32 ) ( 560 -80 0 ) concrete_pavement_036 0 0 0 1 1
+( 560 -80 0 ) ( 600 -80 32 ) ( 600 -80 0 ) concrete_pavement_036 0 0 0 1 1
+( 560 -80 0 ) ( 600 80 0 ) ( 560 80 0 ) concrete_pavement_036 0 0 0 1 1
+( 560 80 32 ) ( 600 -80 32 ) ( 560 -80 32 ) concrete_pavement_036 0 0 0 1 1
+( 600 80 0 ) ( 560 80 32 ) ( 560 80 0 ) concrete_pavement_036 0 0 0 1 1
+( 600 -80 0 ) ( 600 80 32 ) ( 600 80 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// brush 17 - Straight run end marker
+{
+( 1400 80 0 ) ( 1400 -80 32 ) ( 1400 -80 0 ) concrete_pavement_036 0 0 0 1 1
+( 1400 -80 0 ) ( 1440 -80 32 ) ( 1440 -80 0 ) concrete_pavement_036 0 0 0 1 1
+( 1400 -80 0 ) ( 1440 80 0 ) ( 1400 80 0 ) concrete_pavement_036 0 0 0 1 1
+( 1400 80 32 ) ( 1440 -80 32 ) ( 1400 -80 32 ) concrete_pavement_036 0 0 0 1 1
+( 1440 80 0 ) ( 1400 80 32 ) ( 1400 80 0 ) concrete_pavement_036 0 0 0 1 1
+( 1440 -80 0 ) ( 1440 80 32 ) ( 1440 80 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// brush 18 - Narrow doorway upper jamb
+{
+( 1060 1220 0 ) ( 1060 918 128 ) ( 1060 918 0 ) concrete_pavement_036 0 0 0 1 1
+( 1060 918 0 ) ( 1120 918 128 ) ( 1120 918 0 ) concrete_pavement_036 0 0 0 1 1
+( 1060 918 0 ) ( 1120 1220 0 ) ( 1060 1220 0 ) concrete_pavement_036 0 0 0 1 1
+( 1060 1220 128 ) ( 1120 918 128 ) ( 1060 918 128 ) concrete_pavement_036 0 0 0 1 1
+( 1120 1220 0 ) ( 1060 1220 128 ) ( 1060 1220 0 ) concrete_pavement_036 0 0 0 1 1
+( 1120 918 0 ) ( 1120 1220 128 ) ( 1120 1220 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// brush 19 - Narrow doorway lower jamb
+{
+( 1060 883 0 ) ( 1060 580 128 ) ( 1060 580 0 ) concrete_pavement_036 0 0 0 1 1
+( 1060 580 0 ) ( 1120 580 128 ) ( 1120 580 0 ) concrete_pavement_036 0 0 0 1 1
+( 1060 580 0 ) ( 1120 883 0 ) ( 1060 883 0 ) concrete_pavement_036 0 0 0 1 1
+( 1060 883 128 ) ( 1120 580 128 ) ( 1060 580 128 ) concrete_pavement_036 0 0 0 1 1
+( 1120 883 0 ) ( 1060 883 128 ) ( 1060 883 0 ) concrete_pavement_036 0 0 0 1 1
+( 1120 580 0 ) ( 1120 883 128 ) ( 1120 883 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// brush 20 - Narrow doorway far reference wall
+{
+( 1260 1040 0 ) ( 1260 760 128 ) ( 1260 760 0 ) concrete_pavement_036 0 0 0 1 1
+( 1260 760 0 ) ( 1320 760 128 ) ( 1320 760 0 ) concrete_pavement_036 0 0 0 1 1
+( 1260 760 0 ) ( 1320 1040 0 ) ( 1260 1040 0 ) concrete_pavement_036 0 0 0 1 1
+( 1260 1040 128 ) ( 1320 760 128 ) ( 1260 760 128 ) concrete_pavement_036 0 0 0 1 1
+( 1320 1040 0 ) ( 1260 1040 128 ) ( 1260 1040 0 ) concrete_pavement_036 0 0 0 1 1
+( 1320 760 0 ) ( 1320 1040 128 ) ( 1320 1040 0 ) concrete_pavement_036 0 0 0 1 1
+}
+}
+// entity 1
+{
+"classname" "player_spawn"
+"origin" "0 900 24"
+"angles" "0 0 0"
+"_tags" "player"
+}
+// entity 2
+{
+"classname" "light_spot"
+"origin" "-1160 220 104"
+"angles" "-70 0 0"
+"light" "350"
+"_falloff_range" "900"
+"_cone" "25"
+"_cone2" "70"
+"_color" "255 220 180"
+"style" "0"
+}
+// entity 3
+{
+"classname" "light_spot"
+"origin" "0 -860 104"
+"angles" "-70 0 0"
+"light" "350"
+"_falloff_range" "900"
+"_cone" "25"
+"_cone2" "70"
+"_color" "255 220 180"
+"style" "0"
+}
+// entity 4
+{
+"classname" "light_spot"
+"origin" "980 0 104"
+"angles" "-70 180 0"
+"light" "350"
+"_falloff_range" "900"
+"_cone" "25"
+"_cone2" "70"
+"_color" "255 220 180"
+"style" "0"
+}
+// entity 5
+{
+"classname" "light_spot"
+"origin" "160 900 120"
+"angles" "-80 0 0"
+"light" "350"
+"_falloff_range" "900"
+"_cone" "25"
+"_cone2" "70"
+"_color" "255 220 180"
+"style" "0"
+}
+// entity 6
+{
+"classname" "light_spot"
+"origin" "1180 900 104"
+"angles" "-70 90 0"
+"light" "350"
+"_falloff_range" "900"
+"_cone" "25"
+"_cone2" "70"
+"_color" "255 220 180"
+"style" "0"
+}
+// entity 7
+{
+"classname" "reference_enemy"
+"origin" "432 900 16"
+"angles" "0 180 0"
+"_tags" "enemy"
+}
+// entity 8
+{
+"classname" "reference_enemy"
+"origin" "305 1205 16"
+"angles" "0 225 0"
+"_tags" "enemy"
+}
+// entity 9
+{
+"classname" "reference_enemy"
+"origin" "0 1332 16"
+"angles" "0 270 0"
+"_tags" "enemy"
+}
+// entity 10
+{
+"classname" "reference_enemy"
+"origin" "-305 1205 16"
+"angles" "0 315 0"
+"_tags" "enemy"
+}
+// entity 11
+{
+"classname" "reference_enemy"
+"origin" "-432 900 16"
+"angles" "0 0 0"
+"_tags" "enemy"
+}
+// entity 12
+{
+"classname" "reference_enemy"
+"origin" "-305 595 16"
+"angles" "0 45 0"
+"_tags" "enemy"
+}
+// entity 13
+{
+"classname" "reference_enemy"
+"origin" "0 468 16"
+"angles" "0 90 0"
+"_tags" "enemy"
+}
+// entity 14
+{
+"classname" "reference_enemy"
+"origin" "305 595 16"
+"angles" "0 135 0"
+"_tags" "enemy"
+}

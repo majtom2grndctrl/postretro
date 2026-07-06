@@ -306,6 +306,7 @@ impl ShProbeReadback {
     /// 8 bytes per `Rgba16Float` texel (4 halves).
     const BYTES_PER_TEXEL: u32 = 8;
 
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         device: &wgpu::Device,
         grid_dimensions: [u32; 3],
@@ -458,6 +459,7 @@ impl ShProbeReadback {
 /// z-major (`x + y*Nx + z*Nx*Ny`). Skips the per-row alignment padding and
 /// averages each probe tile's interior, mirroring `probe_average_irradiance`'s
 /// static CPU path.
+#[allow(clippy::too_many_arguments)]
 fn decode_probe_irradiance_atlas(
     bytes: &[u8],
     dims: [u32; 3],

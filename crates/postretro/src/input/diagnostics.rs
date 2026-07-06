@@ -63,6 +63,11 @@ pub enum DiagnosticAction {
     /// variant and its chord are absent.
     #[cfg(feature = "dev-tools")]
     ToggleNavOverlay,
+    /// Toggle the all-agent movement overlay (paths, velocities, destinations,
+    /// labels as layer flags allow). Bound to `Alt+Shift+A`. Feature-gated:
+    /// without `dev-tools`, this variant and its chord are absent.
+    #[cfg(feature = "dev-tools")]
+    ToggleAgentOverlay,
     /// Exercise the runtime level lifecycle by unloading the current level and
     /// loading the second dev map. Bound to `Alt+Shift+L`. Feature-gated:
     /// without `dev-tools`, this variant and its chord are absent.
@@ -199,6 +204,12 @@ pub fn default_diagnostic_chords() -> Vec<DiagnosticChord> {
         #[cfg(feature = "dev-tools")]
         DiagnosticChord {
             modifiers: Modifiers::ALT_SHIFT,
+            key: KeyCode::KeyA,
+            action: DiagnosticAction::ToggleAgentOverlay,
+        },
+        #[cfg(feature = "dev-tools")]
+        DiagnosticChord {
+            modifiers: Modifiers::ALT_SHIFT,
             key: KeyCode::KeyL,
             action: DiagnosticAction::CycleDevLevel,
         },
@@ -299,6 +310,16 @@ mod tests {
         d.handle_key(KeyCode::AltLeft, true, false);
         let action = d.handle_key(KeyCode::KeyN, true, false);
         assert_eq!(action, Some(DiagnosticAction::ToggleNavOverlay));
+    }
+
+    #[cfg(feature = "dev-tools")]
+    #[test]
+    fn alt_shift_a_fires_toggle_agent_overlay() {
+        let mut d = fresh();
+        d.handle_key(KeyCode::ShiftLeft, true, false);
+        d.handle_key(KeyCode::AltLeft, true, false);
+        let action = d.handle_key(KeyCode::KeyA, true, false);
+        assert_eq!(action, Some(DiagnosticAction::ToggleAgentOverlay));
     }
 
     #[cfg(feature = "dev-tools")]
@@ -447,7 +468,7 @@ mod tests {
 
     #[cfg(feature = "dev-tools")]
     #[test]
-    fn default_dev_tool_chord_table_has_no_spatial_entry_point() {
+    fn default_dev_tool_chord_table_stays_on_assigned_keys() {
         let mut count = 0;
         for chord in default_diagnostic_chords() {
             match chord.action {
@@ -457,6 +478,7 @@ mod tests {
                 DiagnosticAction::PlayTestSfx => assert_eq!(chord.key, KeyCode::KeyP),
                 DiagnosticAction::ToggleDebugPanel => assert_eq!(chord.key, KeyCode::Backquote),
                 DiagnosticAction::ToggleNavOverlay => assert_eq!(chord.key, KeyCode::KeyN),
+                DiagnosticAction::ToggleAgentOverlay => assert_eq!(chord.key, KeyCode::KeyA),
                 DiagnosticAction::CycleDevLevel => assert_eq!(chord.key, KeyCode::KeyL),
                 DiagnosticAction::SpawnChaseAgent => assert_eq!(chord.key, KeyCode::KeyG),
             }
@@ -464,8 +486,8 @@ mod tests {
         }
 
         assert_eq!(
-            count, 8,
-            "Spatial diagnostics must stay inside the existing diagnostics panel entry point",
+            count, 9,
+            "dev-tools diagnostics chords must stay on their assigned Alt+Shift keys",
         );
     }
 

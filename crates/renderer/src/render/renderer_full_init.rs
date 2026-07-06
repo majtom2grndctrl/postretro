@@ -610,6 +610,8 @@ pub(crate) fn build_full_renderer(
         #[cfg(feature = "dev-tools")]
         portal_overlay: PortalOverlayState::default(),
         #[cfg(feature = "dev-tools")]
+        agent_overlay: AgentOverlayState::default(),
+        #[cfg(feature = "dev-tools")]
         show_navmesh: false,
         lighting_isolation: LightingIsolation::Normal,
         dynamic_direct_isolation: DynamicDirectIsolation::Combined,

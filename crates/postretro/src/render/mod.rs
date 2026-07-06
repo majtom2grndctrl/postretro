@@ -28,5 +28,5 @@ pub use postretro_renderer::{
 #[cfg(feature = "dev-tools")]
 #[allow(unused_imports)]
 pub use postretro_renderer::{
-    DeltaVolumeMeta, FrameTimingSnapshot, MarkerMode, ShDiagnosticsState,
+    AgentDiagnosticsRow, DeltaVolumeMeta, FrameTimingSnapshot, MarkerMode, ShDiagnosticsState,
 };

@@ -50,14 +50,16 @@ pub enum DiagnosticsTab {
     Volumes,
     Performance,
     Spatial,
+    Agents,
 }
 
 impl DiagnosticsTab {
-    const ALL: [Self; 4] = [
+    const ALL: [Self; 5] = [
         Self::Lighting,
         Self::Volumes,
         Self::Performance,
         Self::Spatial,
+        Self::Agents,
     ];
 
     const fn label(self) -> &'static str {
@@ -66,8 +68,23 @@ impl DiagnosticsTab {
             Self::Volumes => "Volumes",
             Self::Performance => "Performance",
             Self::Spatial => "Spatial",
+            Self::Agents => "Agents",
         }
     }
+}
+
+/// Renderer-facing live-agent diagnostics row.
+///
+/// Kept free of game/entity component types so the renderer boundary receives
+/// only prepared display data from the engine-side diagnostics snapshot.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AgentDiagnosticsRow {
+    pub id: String,
+    pub state: Option<String>,
+    pub speed: f32,
+    pub arrived: bool,
+    pub blocked: bool,
+    pub has_path: bool,
 }
 
 /// Diagnostics-panel widget state. The panel binds these to renderer setters
@@ -203,6 +220,7 @@ pub fn draw_diagnostics_panel(
     sh_state: &mut ShDiagnosticsState,
     renderer: &mut Renderer,
     frame_timing: Option<&FrameTimingSnapshot>,
+    agent_rows: &[AgentDiagnosticsRow],
 ) {
     // Seed slider state from live renderer values on first draw so toggling
     // the panel open does not snap ambient floor / indirect scale to whatever
@@ -248,6 +266,7 @@ pub fn draw_diagnostics_panel(
             DiagnosticsTab::Volumes => draw_volumes_tab(ui, state, sh_state, renderer),
             DiagnosticsTab::Performance => draw_performance_tab(ui, frame_timing),
             DiagnosticsTab::Spatial => draw_spatial_tab(ui, state, renderer),
+            DiagnosticsTab::Agents => draw_agents_tab(ui, renderer, agent_rows),
         }
     });
 }
@@ -567,6 +586,89 @@ fn draw_performance_tab(ui: &mut egui::Ui, frame_timing: Option<&FrameTimingSnap
             _ => {
                 ui.label("GPU timing unavailable");
             }
+        });
+}
+
+fn agent_flags_label(row: &AgentDiagnosticsRow) -> String {
+    let mut flags = Vec::new();
+    if row.arrived {
+        flags.push("arrived");
+    }
+    if row.blocked {
+        flags.push("blocked");
+    }
+    if row.has_path {
+        flags.push("has-path");
+    }
+    if flags.is_empty() {
+        "none".to_string()
+    } else {
+        flags.join(", ")
+    }
+}
+
+fn draw_agents_tab(ui: &mut egui::Ui, renderer: &mut Renderer, agent_rows: &[AgentDiagnosticsRow]) {
+    egui::CollapsingHeader::new("Overlay layers")
+        .default_open(true)
+        .show(ui, |ui| {
+            let overlay = renderer.agent_overlay_state();
+
+            let mut paths = overlay.paths;
+            if ui.checkbox(&mut paths, "Paths").changed() {
+                renderer.set_agent_overlay_paths_enabled(paths);
+            }
+
+            let mut velocities = overlay.velocities;
+            if ui.checkbox(&mut velocities, "Velocities").changed() {
+                renderer.set_agent_overlay_velocities_enabled(velocities);
+            }
+
+            let mut destinations = overlay.destinations;
+            if ui.checkbox(&mut destinations, "Destinations").changed() {
+                renderer.set_agent_overlay_destinations_enabled(destinations);
+            }
+
+            let mut labels = overlay.labels;
+            if ui.checkbox(&mut labels, "Labels").changed() {
+                renderer.set_agent_overlay_labels_enabled(labels);
+            }
+
+            let mut navmesh = renderer.nav_overlay_enabled();
+            if ui
+                .checkbox(&mut navmesh, "Navmesh regions/portals")
+                .changed()
+                && navmesh != renderer.nav_overlay_enabled()
+            {
+                renderer.toggle_navmesh_overlay();
+            }
+        });
+
+    egui::CollapsingHeader::new("Live agents")
+        .default_open(true)
+        .show(ui, |ui| {
+            if agent_rows.is_empty() {
+                ui.label("No live agents");
+                return;
+            }
+
+            egui::Grid::new("agent_diagnostics_grid")
+                .num_columns(4)
+                .striped(true)
+                .show(ui, |ui| {
+                    ui.strong("ID");
+                    ui.strong("State");
+                    ui.strong("Speed");
+                    ui.strong("Flags");
+                    ui.end_row();
+
+                    for row in agent_rows {
+                        ui.label(row.id.as_str());
+                        ui.label(row.state.as_deref().unwrap_or("-"));
+                        ui.label(format!("{:.2}", row.speed));
+                        ui.label(agent_flags_label(row));
+                        ui.end_row();
+                    }
+                });
         });
 }
 
@@ -918,8 +1020,33 @@ mod tests {
                 DiagnosticsTab::Volumes,
                 DiagnosticsTab::Performance,
                 DiagnosticsTab::Spatial,
+                DiagnosticsTab::Agents,
             ],
         );
         assert_eq!(DiagnosticsTab::Spatial.label(), "Spatial");
+        assert_eq!(DiagnosticsTab::Agents.label(), "Agents");
+    }
+
+    #[test]
+    fn agent_flags_label_lists_active_flags_or_none() {
+        let idle = AgentDiagnosticsRow {
+            id: "agent-1".to_string(),
+            state: None,
+            speed: 0.0,
+            arrived: false,
+            blocked: false,
+            has_path: false,
+        };
+        let moving = AgentDiagnosticsRow {
+            id: "agent-2".to_string(),
+            state: Some("Attack".to_string()),
+            speed: 3.25,
+            arrived: true,
+            blocked: true,
+            has_path: true,
+        };
+
+        assert_eq!(agent_flags_label(&idle), "none");
+        assert_eq!(agent_flags_label(&moving), "arrived, blocked, has-path");
     }
 }

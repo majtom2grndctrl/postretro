@@ -104,6 +104,12 @@ shared edit surface beyond the file.
 **Phase 2 (sequential):** Task 2 (Rg8) — consumes Task 1's reshaped direction-encode
 path and shares the runtime direction-texture format branch.
 
+**Cross-plan:** This plan should land before `lighting-scale--lightmap-bake-incremental-flush`,
+which wraps a per-layer bake-encode-drop loop around this plan's direction-encode
+reshaping in the same `lightmap_bake.rs` path; landing this plan first means
+incremental-flush's per-layer encode simply calls the already-reshaped direction
+encoder instead of chasing a moving target.
+
 ## Acceptance criteria
 
 - [ ] At default settings on a lit fixture map, the direction blob byte count in the

@@ -184,11 +184,24 @@ surface for nearest static or mover hit and receive:
 
 Carry rides on a **generalized ground reference.** Today the player's replicated
 `is_grounded: bool` (`WirePlayerMovementState`) is a bare boolean. Widen it to a
-ground reference — `Airborne`, `World`, or `Mover(NetworkId)` — so "what am I
+ground reference — `Airborne`, `World`, or `Mover(mover_id)` — so "what am I
 standing on" is one authoritative, replicated, predicted value, not a separately
-derived carry base. The grounded/airborne distinction is preserved; `Mover(id)`
-is the new arm, and every existing `is_grounded` reader updates to the widened
-form.
+derived carry base. `mover_id` is the compile-time PRL key (a plain `u32`): the
+reference is a foundation-local handle, so `PlayerMovementComponent` (foundation)
+never names `NetworkId`, which lives up in `postretro-net`. `mover_id` is stable
+across peers — both loaded the same PRL — so the ground reference replicates
+directly, no `NetworkId` round-trip; the upper crate resolves `mover_id` to the
+local mover entity to read its delta.
+
+The grounded/airborne distinction is preserved. Two invariants constrain the
+widening:
+
+- change only the *player* grounded state — the wire `WirePlayerMovementState`
+  field, the foundation `PlayerMovementComponent` field, and their readers; the
+  AI `AgentComponent.is_grounded` is a separate field and must not change;
+- the movement scope's scripting `grounded` primitive stays a `bool`, projected
+  as `ground != Airborne`, so the primitive surface (a contract, see `index.md`)
+  does not change.
 
 The first carry policy is linear only:
 
@@ -250,10 +263,13 @@ direction/mode values reject the payload before apply.
 
 Carry replicates through the player, not a side channel. Widen
 `WirePlayerMovementState.is_grounded: bool` to a ground reference carrying
-`Airborne` / `World` / `Mover(NetworkId)` (see **Collision and Movement Carry**).
-This changes an existing replicated struct: update its serde, validation (a
-`Mover` reference to an unknown id rejects), baseline/delta, and drift tests
-alongside the `SNAPSHOT_VERSION`/wire-version bump.
+`Airborne` / `World` / `Mover(mover_id)` (see **Collision and Movement Carry**).
+The wire struct is `bitcode`, so this is a bitcode-layout change on an existing
+type: update its `bitcode` encode/decode, `all_finite`/validation (a `Mover`
+reference whose `mover_id` is not a loaded mover rejects), raw↔typed conversion,
+baseline/delta, and drift tests, alongside the `SNAPSHOT_VERSION`/wire-version
+bump. The foundation-side `PlayerMovementComponent` mirrors the widening on its
+`serde` derive.
 
 Snapshots also carry `Transform` for the mover as the reconciliation anchor.
 Local replay for a player riding a mover reads the authoritative mover-history
@@ -291,8 +307,8 @@ the host used — never a client-authored divergent path.
   visible corrections occur only at authoritative phase changes (endpoint
   reversal), not on every snapshot.
 - [ ] The player's replicated ground state distinguishes `Airborne` / `World` /
-  `Mover(id)`; a client riding a mover carries via the authoritative `Mover`
-  reference and reconciles it, not via a locally-guessed base.
+  `Mover(mover_id)`; a client riding a mover carries via the authoritative
+  `Mover` reference and reconciles it, not via a locally-guessed base.
 - [ ] No new `unsafe` is introduced.
 - [ ] No non-renderer module imports `wgpu` or creates GPU resources.
 - [ ] Existing static maps with no movers load and render unchanged.
@@ -427,13 +443,18 @@ reads that side-table.
 Implement linear carry on a generalized ground reference:
 
 - widen the player's grounded state to a ground reference — `Airborne` /
-  `World` / `Mover(NetworkId)` — on `PlayerMovementComponent` (foundation-
-  resident: `crates/foundation/src/movement/player_movement.rs`); update every
-  reader of the old `is_grounded` bool to the widened form;
+  `World` / `Mover(mover_id)`, where `mover_id` is a plain `u32` (the compile-
+  time PRL key) so the reference stays foundation-local and never names
+  `NetworkId` (which lives in `postretro-net`) — on `PlayerMovementComponent`
+  (foundation-resident: `crates/foundation/src/movement/player_movement.rs`);
+- update every reader of the *player* `is_grounded` bool to the widened form,
+  but leave the unrelated AI `AgentComponent.is_grounded` alone, and keep the
+  movement-scope `grounded` scripting primitive projecting a `bool`
+  (`ground != Airborne`) so the primitive surface does not change;
 - detect grounded contact on a mover surface and set the reference to
-  `Mover(id)`;
-- while the reference is `Mover(id)`, apply that mover's tick delta to the
-  player;
+  `Mover(mover_id)`;
+- while the reference is `Mover(mover_id)`, resolve it to the local mover and
+  apply that mover's tick delta to the player;
 - on transition off a `Mover` reference, preserve player-controlled velocity and
   add the mover velocity once; never add angular velocity (rotation is out of
   scope). This release carry is engine-internal movement-substrate logic, not a
@@ -456,11 +477,15 @@ discriminant guards. This task consumes the `GroundRef` shape defined in Task 4.
 
 Host snapshot production collects `Transform` then `KinematicMoverState` for
 registered mover entities. On each client, apply seeds the mover's predictive
-driver from the replicated phase and reconciles it in place (mapped by
-`NetworkId`); it also writes each tick's authoritative mover sample into an
-engine-owned mover-history buffer keyed by `mover_id`. Local replay for a player
-riding a mover reads those samples for the replay ticks, so the pawn replays
-against the same platform pose the host used.
+driver from the replicated phase and reconciles it in place (the mover entity is
+mapped by `NetworkId` like the pawn). Two seams here are net-new, not reuse of
+the pawn's path: (1) the mover needs its **own** predictor/reconciler instance —
+phase-seeded and input-free, distinct from the pawn's command-ring
+`ClientPrediction`; (2) the pawn's `replay` — today movement-only, reading a
+static `CollisionWorld` — must widen so a replay tick can read the mover's pose
+at that tick. Client apply writes each tick's authoritative mover sample into an
+engine-owned mover-history buffer keyed by `mover_id`; the widened replay reads
+those samples, so the pawn replays against the same platform pose the host used.
 
 Extend the in-memory prediction/reconciliation harness with a moving-platform
 scenario at the E15 latency/loss profile: assert the client-predicted platform
@@ -530,15 +555,18 @@ trigger/event plan against the actual mover API.
 - `crates/postretro/src/collision/`: moving-collider query layer beside
   `CollisionWorld`.
 - `crates/foundation/src/movement/player_movement.rs`: widen `is_grounded` to
-  the `GroundRef` (`Airborne` / `World` / `Mover`) on `PlayerMovementComponent`;
-  update its readers.
+  `GroundRef` (`Airborne` / `World` / `Mover(u32 mover_id)`) on
+  `PlayerMovementComponent`; update its player-side readers only.
+- `crates/foundation/src/movement/scope.rs`: keep the `grounded` IR primitive a
+  `bool` (`ground != Airborne`) — no primitive-surface change.
 - `crates/postretro/src/movement/substrate.rs`: consume the combined query and
   `Mover`-referenced carry.
 - `crates/postretro/src/render/`: renderer-owned mover buffers/draws.
 - `crates/net/src/wire.rs`, `crates/net/src/replication.rs`,
   `crates/postretro/src/netcode/`: mover payload + widened ground reference,
-  validation, client mover prediction/reconcile, mover-history buffer, drift
-  guards, harness.
+  validation, a new phase-seeded mover predictor/reconciler (separate from the
+  pawn's command-ring `ClientPrediction`), mover-history buffer, widened `replay`
+  that reads it, drift guards, harness.
 
 Oversized-file warning: `main.rs` is already large. Add call-site wiring only
 there; new logic belongs in focused modules.
@@ -558,7 +586,7 @@ there; new logic belongs in focused modules.
 | speed | `speed_mps: f32` | PRL `speed` finite positive (static; not replicated) | Future command surface may read only | `speed` |
 | wait | `wait_ms: f32` | PRL `wait_ms` finite non-negative (static); runtime countdown replicated as wire `wait_remaining_ms` | Future command surface may read only | `wait_ms` |
 | tags | `Vec<String>` | `_tags` split on whitespace | Future `world.query`/commands | `_tags` |
-| ground reference | `GroundRef` on `PlayerMovementComponent` (foundation): `Airborne` / `World` / `Mover(NetworkId)` | `WirePlayerMovementState.is_grounded: bool` widened to `ground` | n/a | n/a |
+| ground reference | `GroundRef` on `PlayerMovementComponent` (foundation): `Airborne` / `World` / `Mover(u32 mover_id)` — foundation-local, no `NetworkId` | `WirePlayerMovementState.is_grounded: bool` widened to `ground` (bitcode) | n/a | n/a |
 
 ## Wire Format
 
@@ -605,22 +633,27 @@ byte offset table:
   `direction ∈ {-1, 1}` and `mode ∈ {0, 1}`; out-of-range rejects before apply.
 - Bump `SNAPSHOT_VERSION` 7 → 8. The engine/net discriminant-drift guard keeps
   `ComponentKind::KinematicMover` and `COMPONENT_KIND_KINEMATIC_MOVER_STATE`
-  numeric-equal at 13; confirm 13 is free on the net side when implementing.
+  numeric-equal at 13 (verified free on the net side — existing kinds are
+  `0` / `6` / `9`).
 
 ### Net `WirePlayerMovementState` ground reference
 
 Widen the existing `is_grounded: bool` field to a `ground` reference encoding
-`Airborne` / `World` / `Mover(NetworkId)` — an enum tag plus an optional
-`NetworkId` for the `Mover` arm. This mutates an existing wire type's bitcode
-layout, so:
+`Airborne` / `World` / `Mover(mover_id)` — an enum tag plus a `u32` `mover_id`
+for the `Mover` arm (the compile-time PRL key, stable across peers; no
+`NetworkId` on the wire for this field). This mutates an existing `bitcode` wire
+type's layout, so:
 
 - bump `SNAPSHOT_VERSION` (7 → 8, shared with the mover payload) and the
   transport wire-version/`protocol_id` gate;
-- update serde, baseline/delta encoding, and the drift/round-trip tests;
-- validation rejects a `Mover` reference whose id is not a live replicated mover
-  in this snapshot;
-- update every reader of the old `is_grounded` bool to the widened form
-  (grounded == not `Airborne`).
+- update the `bitcode` encode/decode, `all_finite`/validation, raw↔typed
+  conversion, baseline/delta, and drift/round-trip tests (the foundation
+  `PlayerMovementComponent` mirrors the change on its `serde` derive);
+- validation rejects a `Mover(mover_id)` whose id is not a loaded mover;
+- update every reader of the *player* grounded bool to the widened form
+  (`grounded == ground != Airborne`); leave the unrelated AI
+  `AgentComponent.is_grounded` untouched, and keep the movement-scope `grounded`
+  scripting primitive projecting a `bool`.
 
 ## Future Scripting Seam
 

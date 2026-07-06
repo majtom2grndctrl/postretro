@@ -27,7 +27,7 @@ use glam::{Quat, Vec3};
 
 use crate::agent_steering;
 use crate::nav::distance_xz;
-use postretro_entities::components::brain::{AiTuning, BrainComponent, LogicalState};
+use postretro_entities::components::brain::{AiStateMap, AiTuning, BrainComponent, LogicalState};
 use postretro_entities::components::health::{HealthComponent, apply_damage, pawn_with_health};
 use postretro_entities::components::mesh::{
     SwitchResult, restart_animation_clip, switch_animation_state,
@@ -69,12 +69,49 @@ pub(crate) fn think_stride_for_distance(distance: f32) -> u32 {
     }
 }
 
-/// Minimum XZ speed (units/sec) the agent must exceed for "moving" facing: above
-/// it the enemy orients to its velocity (where it is going), at or below it the
-/// enemy is treated as stopped and orients to the player instead. A small epsilon
-/// so a near-stationary agent (arrived/blocked/swinging) faces the player rather
-/// than jittering toward steering noise.
-const FACING_MOVE_SPEED_EPSILON: f32 = 0.05;
+/// Minimum XZ speed (units/sec) the agent must exceed for "moving" behavior:
+/// above it the enemy orients to its velocity and `Alert` selects its walk
+/// animation; at or below it the enemy is treated as stopped and uses player
+/// facing/idle animation. A shared epsilon keeps facing and locomotion animation
+/// in agreement.
+const MOVE_SPEED_EPSILON: f32 = 0.05;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct LocomotionIntent {
+    moving: bool,
+    speed_xz_sq: f32,
+}
+
+impl LocomotionIntent {
+    const STOPPED: Self = Self {
+        moving: false,
+        speed_xz_sq: 0.0,
+    };
+
+    fn from_velocity(velocity: Vec3) -> Self {
+        let speed_xz_sq = velocity.x * velocity.x + velocity.z * velocity.z;
+        Self {
+            moving: speed_xz_sq > MOVE_SPEED_EPSILON * MOVE_SPEED_EPSILON,
+            speed_xz_sq,
+        }
+    }
+}
+
+fn animation_for_locomotion(
+    state: LogicalState,
+    intent: LocomotionIntent,
+    states: &AiStateMap,
+) -> &str {
+    if state == LogicalState::Alert && !intent.moving {
+        states.animation_for(LogicalState::Idle)
+    } else {
+        states.animation_for(state)
+    }
+}
+
+fn should_switch_animation(state_changed: bool, moving: bool, latch: bool) -> bool {
+    state_changed || moving != latch
+}
 
 /// The reference enemy mesh's VISUAL forward axis in model space. The skinned
 /// glTF characters (`content/dev/models/reference_enemy_kaykit_knight`) are
@@ -278,8 +315,8 @@ struct EnemyOutcome {
     id: EntityId,
     brain: BrainComponent,
     steering: SteeringIntent,
-    /// `true` when the logical state changed this tick — the apply pass then
-    /// requests the brain-mapped animation for the new state.
+    /// `true` when the logical state changed this tick; the apply pass uses this
+    /// with locomotion intent changes to decide whether to switch animation.
     state_changed: bool,
     /// `true` when an attack landed this tick (damage applied, event raised).
     attacked: bool,
@@ -312,7 +349,8 @@ struct EnemyOutcome {
 ///    are NOT strided.
 /// 4. On an attack (in `Attack` with the cooldown elapsed) apply the configured
 ///    damage to the player through the chokepoint and raise the attack event.
-/// 5. On a state CHANGE, request the mapped animation state.
+/// 5. On a state CHANGE or locomotion stop/resume, request the selected
+///    animation state.
 ///
 /// Death + despawn: a zero-HP enemy enters `Death` (step 2), which seeds a
 /// per-instance death-despawn countdown from `tuning.death_despawn_ms` (clamped
@@ -485,12 +523,18 @@ pub(crate) fn run_ai_tick(
     // `sweep_deaths`/particle-sim precedent).
     let mut events: Vec<&'static str> = Vec::new();
     let mut to_despawn: Vec<EntityId> = Vec::new();
-    for outcome in outcomes {
+    for mut outcome in outcomes {
         if outcome.despawn {
             to_despawn.push(outcome.id);
         }
         // Persist the brain (state + timers + stride counter).
         let _ = registry.set_component(outcome.id, outcome.brain.clone());
+
+        let path_state = agent_steering::path_state(registry, outcome.id);
+        let locomotion_intent = path_state
+            .as_ref()
+            .map(|path| LocomotionIntent::from_velocity(path.velocity))
+            .unwrap_or(LocomotionIntent::STOPPED);
 
         // Steering: chase sets the destination to the player, clear stands down,
         // hold leaves the agent untouched. `set_destination`/`clear_destination`
@@ -505,7 +549,7 @@ pub(crate) fn run_ai_tick(
                     // mis-placed spawn (off the navmesh, or behind a wall with no
                     // portal) is visible without per-tick spam. The steering tick
                     // still holds the agent in place; this only reports.
-                    if let Some(state) = agent_steering::path_state(registry, outcome.id) {
+                    if let Some(state) = path_state.as_ref() {
                         if state.blocked {
                             let key = format!("blocked:{}", outcome.id.to_raw());
                             if warned.insert(key) {
@@ -542,16 +586,15 @@ pub(crate) fn run_ai_tick(
             outcome.brain.state,
             LogicalState::Alert | LogicalState::Attack
         ) {
-            if let Some(path) = agent_steering::path_state(registry, outcome.id) {
-                let vel_xz_sq =
-                    path.velocity.x * path.velocity.x + path.velocity.z * path.velocity.z;
-                let facing = if vel_xz_sq > FACING_MOVE_SPEED_EPSILON * FACING_MOVE_SPEED_EPSILON {
-                    // Moving: face the direction of travel.
-                    yaw_rotation_toward(path.velocity)
-                } else {
-                    // Stopped but engaged: face the player (if one exists).
-                    player_pos.and_then(|p| yaw_rotation_toward(p - path.position))
-                };
+            if let Some(path) = path_state.as_ref() {
+                let facing =
+                    if locomotion_intent.speed_xz_sq > MOVE_SPEED_EPSILON * MOVE_SPEED_EPSILON {
+                        // Moving: face the direction of travel.
+                        yaw_rotation_toward(path.velocity)
+                    } else {
+                        // Stopped but engaged: face the player (if one exists).
+                        player_pos.and_then(|p| yaw_rotation_toward(p - path.position))
+                    };
                 if let Some(rotation) = facing {
                     if let Ok(mut transform) =
                         registry.get_component::<Transform>(outcome.id).cloned()
@@ -601,16 +644,22 @@ pub(crate) fn run_ai_tick(
             }
         }
 
-        // Animation: on a state change, request the brain-mapped animation name
-        // for the new state. A failed switch (`UnknownState`/`NotAnimated`)
-        // warns ONCE per distinct name and keeps the prior animation — it never
-        // aborts the tick.
-        if outcome.state_changed {
-            let name = outcome
-                .brain
-                .tuning
-                .states
-                .animation_for(outcome.brain.state);
+        // Animation: on a state change or locomotion stop/resume, request the
+        // selected animation name for the new logical/locomotion state. A failed
+        // switch (`UnknownState`/`NotAnimated`) warns ONCE per distinct name and
+        // keeps the prior animation — it never aborts the tick. The locomotion
+        // latch is still persisted after failures so unresolved clips do not
+        // re-request the same switch every tick.
+        if should_switch_animation(
+            outcome.state_changed,
+            locomotion_intent.moving,
+            outcome.brain.locomotion_moving,
+        ) {
+            let name = animation_for_locomotion(
+                outcome.brain.state,
+                locomotion_intent,
+                &outcome.brain.tuning.states,
+            );
             match switch_animation_state(registry, outcome.id, name) {
                 SwitchResult::Switched | SwitchResult::AlreadyInState => {}
                 SwitchResult::UnknownState | SwitchResult::NotAnimated => {
@@ -624,6 +673,8 @@ pub(crate) fn run_ai_tick(
                 }
             }
         }
+        outcome.brain.locomotion_moving = locomotion_intent.moving;
+        let _ = registry.set_component(outcome.id, outcome.brain.clone());
     }
 
     // Pass 4 (despawn): two-pass collect-then-despawn. The despawn ids were

@@ -1,6 +1,6 @@
 // Per-tick navigation-agent steering: refresh paths under a replan budget,
-// steer toward the current waypoint, separate from crowding neighbors, and move
-// each agent through the world via the collide-and-slide harness.
+// steer along the current path with lookahead, separate from crowding neighbors,
+// and move each agent through the world via the collide-and-slide harness.
 //
 // This is the production caller for `nav::find_path` and the agent component. It
 // owns the replan policy (per-tick budget + per-agent staleness gate), the
@@ -45,6 +45,27 @@ pub(crate) const REPLAN_STALENESS_TICKS: u32 = 30;
 /// band of the final waypoint. Derived from the capsule, not a magic constant,
 /// so a fatter agent gets a proportionally wider acceptance window.
 const ARRIVAL_RADIUS_FACTOR: f32 = 1.5;
+
+/// Arrival-slowdown radius as a multiple of the agent capsule radius. This is
+/// deliberately larger than the hard-stop radius (`ARRIVAL_RADIUS_FACTOR`) so
+/// easing happens before `arrived` zeroes the final low-speed tail.
+const ARRIVAL_SLOWDOWN_RADIUS_FACTOR: f32 = 7.0;
+
+/// Path-following acceleration/deceleration as "top-speed changes per second".
+/// A value above 1 spans multiple fixed ticks while still letting agents brake
+/// down through the short arrival band.
+const STEERING_ACCEL_PER_SPEED: f32 = 8.0;
+
+/// Maximum path-following heading rotation, in radians/sec.
+const MAX_TURN_RATE: f32 = std::f32::consts::TAU;
+
+/// Corridor lookahead as a multiple of the agent capsule radius. This exceeds
+/// the waypoint-reached radius so agents can lead a corner, but stays below the
+/// project fixtures' typical corridor segment length.
+const LOOKAHEAD_DISTANCE_RADIUS_FACTOR: f32 = 3.0;
+
+/// Shared zero-length XZ guard, matching the AI facing precedent.
+const MIN_XZ_LEN_SQ: f32 = 1e-8;
 
 /// World-space XZ distance the LIVE destination may drift from the position the
 /// current plan was built for (`planned_destination`) before [`tick`] wants a
@@ -171,6 +192,7 @@ pub(crate) fn clear_destination(registry: &mut EntityRegistry, agent: EntityId) 
     updated.planned_destination = None;
     updated.path.clear();
     updated.waypoint_cursor = 0;
+    updated.steer_velocity = Vec3::ZERO;
     updated.replan_cooldown_ticks = 0;
     updated.arrived = false;
     updated.blocked = false;
@@ -213,7 +235,7 @@ struct AgentSnapshot {
 }
 
 /// Per-tick agent steering. For every agent with a destination: refresh its path
-/// under the replan budget + staleness gate, steer toward the current waypoint,
+/// under the replan budget + staleness gate, steer toward the path/lookahead target,
 /// add the separation term, move through the world via the collide-and-slide
 /// harness, advance the waypoint cursor on arrival, and set arrived/blocked.
 ///
@@ -287,6 +309,7 @@ pub(crate) fn tick(
             // No destination: idle steering, but still run the shared capsule
             // settle path so spawned/stationary agents obey gravity and
             // ground-stick before they ever acquire aggro.
+            agent.steer_velocity = Vec3::ZERO;
             let capsule = AgentCapsule {
                 radius: agent.radius,
                 half_height: agent.half_height(),
@@ -346,9 +369,21 @@ pub(crate) fn tick(
         // stays eligible: `planned_destination` is unchanged, so the drift test
         // (or the cooldown) still fires next tick until a slot frees up.
 
-        // Compute the goal-seeking steering velocity from the current waypoint.
+        // Compute the smoothed path-following velocity from the current path target.
         let arrival_radius = ARRIVAL_RADIUS_FACTOR * agent.radius;
-        let mut desired = goal_velocity(&mut agent, position, arrival_radius);
+        let slowdown_radius = ARRIVAL_SLOWDOWN_RADIUS_FACTOR * agent.radius;
+        let goal_speed = goal_speed(&mut agent, position, arrival_radius, slowdown_radius);
+        let steer_velocity = integrated_steer_velocity(
+            &agent,
+            position,
+            goal_speed,
+            STEERING_ACCEL_PER_SPEED * agent.move_speed,
+            MAX_TURN_RATE,
+            LOOKAHEAD_DISTANCE_RADIUS_FACTOR * agent.radius,
+            dt,
+        );
+        agent.steer_velocity = steer_velocity;
+        let mut desired = steer_velocity;
 
         // Separation: sum pushes from every other agent whose capsule overlaps
         // or sits within the separation band, against the frozen snapshot.
@@ -356,13 +391,7 @@ pub(crate) fn tick(
 
         // Clamp horizontal speed to the agent's top speed so the combined
         // (goal + separation) vector never drives faster than `move_speed`.
-        let horiz = Vec3::new(desired.x, 0.0, desired.z);
-        let horiz_speed = horiz.length();
-        if horiz_speed > agent.move_speed && horiz_speed > 1e-6 {
-            let scale = agent.move_speed / horiz_speed;
-            desired.x *= scale;
-            desired.z *= scale;
-        }
+        desired = clamp_xz_speed(desired, agent.move_speed);
 
         // Move through the world.
         let capsule = AgentCapsule {
@@ -452,15 +481,18 @@ fn admit_replans(registry: &EntityRegistry, snapshot: &[AgentSnapshot]) -> Vec<E
     admitted
 }
 
-/// Goal-seeking steering velocity toward the current waypoint, advancing the
-/// cursor as the agent reaches each waypoint within `arrival_radius` (XZ). Sets
-/// `arrived` when the final waypoint is reached. Returns a velocity whose
-/// horizontal magnitude is the agent's `move_speed` (zero when there is no live
-/// path or the agent has arrived). Mutates `agent.waypoint_cursor` /
-/// `agent.arrived` in place.
-fn goal_velocity(agent: &mut AgentComponent, position: Vec3, arrival_radius: f32) -> Vec3 {
+/// Goal path-following speed for the current waypoint, advancing the cursor as
+/// the agent reaches each waypoint within `arrival_radius` (XZ). Sets `arrived`
+/// when the final waypoint is reached. Returns a scalar speed only; heading is
+/// integrated separately so turn-rate limiting acts on persisted state.
+fn goal_speed(
+    agent: &mut AgentComponent,
+    position: Vec3,
+    arrival_radius: f32,
+    slowdown_radius: f32,
+) -> f32 {
     if agent.path.is_empty() {
-        return Vec3::ZERO;
+        return 0.0;
     }
 
     // Advance the cursor past every waypoint already within the arrival radius,
@@ -479,17 +511,138 @@ fn goal_velocity(agent: &mut AgentComponent, position: Vec3, arrival_radius: f32
 
     let target = agent.path[agent.waypoint_cursor.min(agent.path.len() - 1)];
     let is_final = agent.waypoint_cursor + 1 >= agent.path.len();
-    if is_final && distance_xz(position, target) <= arrival_radius {
-        agent.arrived = true;
+    let final_distance = distance_xz(position, target);
+    if is_final {
+        if final_distance <= arrival_radius {
+            agent.arrived = true;
+            return 0.0;
+        }
+        agent.arrived = false;
+        if final_distance < slowdown_radius {
+            return agent.move_speed * (final_distance / slowdown_radius).clamp(0.0, 1.0);
+        }
+    }
+    agent.move_speed
+}
+
+/// Integrated pre-collision path-following velocity. Direction comes from the
+/// persisted `steer_velocity` heading rotated toward a lookahead/current target;
+/// magnitude steps toward `goal_speed` under the acceleration limit.
+fn integrated_steer_velocity(
+    agent: &AgentComponent,
+    position: Vec3,
+    goal_speed: f32,
+    accel: f32,
+    max_turn_rate: f32,
+    lookahead_distance: f32,
+    dt: f32,
+) -> Vec3 {
+    if agent.path.is_empty() || agent.arrived || goal_speed <= 0.0 {
         return Vec3::ZERO;
     }
 
-    let to_target = Vec3::new(target.x - position.x, 0.0, target.z - position.z);
-    let dist = to_target.length();
-    if dist <= 1e-6 {
+    let Some(target_dir) = target_direction(agent, position, lookahead_distance) else {
         return Vec3::ZERO;
+    };
+    let heading = rotated_heading(agent.steer_velocity, target_dir, max_turn_rate * dt);
+    let current_speed = xz_length(agent.steer_velocity);
+    let speed = move_toward(current_speed, goal_speed, accel * dt);
+    heading * speed
+}
+
+/// XZ direction toward the lookahead point when available, otherwise the
+/// current waypoint. `lookahead_distance == 0` disables lookahead.
+fn target_direction(
+    agent: &AgentComponent,
+    position: Vec3,
+    lookahead_distance: f32,
+) -> Option<Vec3> {
+    let target = target_point(agent, position, lookahead_distance)?;
+    let to_target = Vec3::new(target.x - position.x, 0.0, target.z - position.z);
+    if to_target.length_squared() <= MIN_XZ_LEN_SQ {
+        None
+    } else {
+        Some(to_target.normalize())
     }
-    (to_target / dist) * agent.move_speed
+}
+
+fn target_point(agent: &AgentComponent, position: Vec3, lookahead_distance: f32) -> Option<Vec3> {
+    if agent.path.is_empty() {
+        return None;
+    }
+
+    let cursor = agent.waypoint_cursor.min(agent.path.len() - 1);
+    let current = agent.path[cursor];
+    if lookahead_distance <= 0.0 {
+        return Some(current);
+    }
+
+    let mut remaining = lookahead_distance;
+    let mut from = Vec3::new(position.x, 0.0, position.z);
+    for waypoint in &agent.path[cursor..] {
+        let to = Vec3::new(waypoint.x, 0.0, waypoint.z);
+        let segment = to - from;
+        let len = segment.length();
+        if len <= 1e-6 {
+            from = to;
+            continue;
+        }
+        if remaining <= len {
+            let point = from + segment * (remaining / len);
+            return Some(Vec3::new(point.x, waypoint.y, point.z));
+        }
+        remaining -= len;
+        from = to;
+    }
+
+    // The requested lookahead lies beyond the remaining corridor; fall back to
+    // the current waypoint instead of aiming off-path.
+    Some(current)
+}
+
+fn rotated_heading(current_velocity: Vec3, target_dir: Vec3, max_delta: f32) -> Vec3 {
+    let current_len_sq =
+        current_velocity.x * current_velocity.x + current_velocity.z * current_velocity.z;
+    if current_len_sq <= MIN_XZ_LEN_SQ {
+        return Vec3::new(target_dir.x, 0.0, target_dir.z).normalize();
+    }
+
+    let current = Vec3::new(current_velocity.x, 0.0, current_velocity.z).normalize();
+    let target = Vec3::new(target_dir.x, 0.0, target_dir.z).normalize();
+    let dot = current.dot(target).clamp(-1.0, 1.0);
+    let cross_y = current.x * target.z - current.z * target.x;
+    let angle = cross_y.atan2(dot);
+    let step = angle.clamp(-max_delta, max_delta);
+    let (sin, cos) = step.sin_cos();
+    Vec3::new(
+        current.x * cos - current.z * sin,
+        0.0,
+        current.x * sin + current.z * cos,
+    )
+    .normalize()
+}
+
+fn move_toward(current: f32, target: f32, max_step: f32) -> f32 {
+    let delta = target - current;
+    if delta.abs() <= max_step {
+        target
+    } else {
+        current + delta.signum() * max_step
+    }
+}
+
+fn clamp_xz_speed(mut velocity: Vec3, max_speed: f32) -> Vec3 {
+    let speed = xz_length(velocity);
+    if speed > max_speed && speed > 1e-6 {
+        let scale = max_speed / speed;
+        velocity.x *= scale;
+        velocity.z *= scale;
+    }
+    velocity
+}
+
+fn xz_length(velocity: Vec3) -> f32 {
+    (velocity.x * velocity.x + velocity.z * velocity.z).sqrt()
 }
 
 /// Order-independent separation steering: an O(n) scan (per agent) over the

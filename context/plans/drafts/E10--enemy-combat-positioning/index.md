@@ -9,8 +9,8 @@ Enemies choose stable combat destinations around the player instead of chasing t
 ### In scope
 
 - **Candidate combat positions.** Generate deterministic candidate points around the target player in an engagement ring. Candidates are ordered from stable inputs so ties resolve identically across runs.
-- **Reachability and occupancy filters.** Reject candidates outside the navmesh, candidates with no path from the agent, and candidates whose capsule cannot occupy the static world. Reject or heavily penalize candidates already claimed by another enemy.
-- **Scored selection.** Score remaining candidates by attack-band distance, path cost, line of sight when available, flank/angle preference, separation from other agents, and hysteresis toward the current selected position.
+- **Reachability and occupancy filters.** Reject candidates outside the navmesh, candidates with no path from the agent, and candidates whose capsule cannot occupy the static world. Reject or heavily penalize candidates already claimed by another enemy, or too close to another enemy's capsule footprint.
+- **Scored selection.** Score remaining candidates by attack-band distance, path cost, line of sight when available, flank/angle preference, separation from other agents, and hysteresis toward the current selected position. Favor spacing enough to avoid multiple enemies selecting or pushing into the same occupied area.
 - **AI integration.** In `Alert` / chase behavior, set the agent destination to the selected combat position instead of the player's raw position. `Attack`, `Death`, damage timing, and animation state stay governed by the existing brain FSM.
 - **Stability.** Small player motion must not churn destinations every tick. Keep the last selected combat position while it remains valid enough.
 - **Debuggability.** Unit tests cover candidate generation, scoring, slot spreading, hysteresis, and determinism. A `dev-tools` overlay may draw candidates/scores if useful during playtest.
@@ -32,7 +32,7 @@ Enemies choose stable combat destinations around the player instead of chasing t
 - [ ] Candidate choice is stable: small player movement below the hysteresis threshold does not cause destination churn every tick.
 - [ ] Scoring is deterministic. Identical inputs produce identical selected positions and tie breaks.
 - [ ] Existing steering, stuck recovery, path-preservation, separation, and locomotion-animation tests remain green.
-- [ ] Manual check on `content/dev/maps/campaign-test`: a small wave pressures the player more naturally than raw chase-to-player, with no new wall-hugging or wedge regressions.
+- [ ] Manual check on `content/dev/maps/campaign-test`: a small wave pressures the player more naturally than raw chase-to-player, with less jerky left/right correction when enemies crowd or collide, and no new wall-hugging or wedge regressions.
 
 ## Tasks
 
@@ -42,7 +42,7 @@ Add a pure candidate generator/filter/scorer over `NavGraph`, the target player 
 
 ### Task 2: Slot Occupancy and Hysteresis
 
-Track the current selected combat position per brain or agent. Penalize candidates occupied or claimed by other enemies. Keep the current position while it remains reachable and close enough to the new optimum, so small player motion does not create destination churn.
+Track the current selected combat position per brain or agent. Penalize candidates occupied, claimed, or too near other enemies. Keep the current position while it remains reachable and close enough to the new optimum, so small player motion does not create destination churn.
 
 ### Task 3: AI Integration
 

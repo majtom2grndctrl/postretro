@@ -60,6 +60,7 @@ fn brain_with(tuning: AiTuning, state: LogicalState) -> BrainComponent {
         attack_cooldown_remaining_ms: 0.0,
         think_stride_counter: 0,
         death_despawn_remaining_ms: None,
+        locomotion_moving: false,
         tuning,
     }
 }
@@ -242,6 +243,12 @@ fn enemy_anim_entered_at(reg: &EntityRegistry, enemy: EntityId) -> Option<f64> {
         .entered_at
 }
 
+fn enemy_locomotion_moving(reg: &EntityRegistry, enemy: EntityId) -> bool {
+    reg.get_component::<BrainComponent>(enemy)
+        .unwrap()
+        .locomotion_moving
+}
+
 /// The enemy MESH's yaw-only VISUAL forward vector in the XZ plane, derived from
 /// its `Transform.rotation`. The skinned reference characters are authored facing
 /// `+Z` in model space (`MESH_FORWARD` in `ai.rs`), and the renderer applies the
@@ -261,6 +268,16 @@ fn set_agent_velocity(reg: &mut EntityRegistry, enemy: EntityId, velocity: Vec3)
     let mut agent = reg.get_component::<AgentComponent>(enemy).unwrap().clone();
     agent.velocity = velocity;
     reg.set_component(enemy, agent).unwrap();
+}
+
+fn set_enemy_animation(reg: &mut EntityRegistry, enemy: EntityId, state: &str) {
+    let mut mesh = reg.get_component::<MeshComponent>(enemy).unwrap().clone();
+    let anim = mesh.animation.as_mut().unwrap();
+    anim.current_state = state.to_string();
+    anim.entered_at = Some(1.0);
+    anim.previous_state = None;
+    anim.previous_entered_at = None;
+    reg.set_component(enemy, mesh).unwrap();
 }
 
 // ---------------------------------------------------------------------------
@@ -368,6 +385,75 @@ fn attack_range_entry_is_evaluated_even_when_acquisition_gated_off() {
         false,
     );
     assert_eq!(result.next_state, LogicalState::Attack);
+}
+
+// ---------------------------------------------------------------------------
+// Pure locomotion-animation helpers
+// ---------------------------------------------------------------------------
+
+#[test]
+fn locomotion_intent_uses_xz_speed_and_shared_epsilon() {
+    let below = LocomotionIntent::from_velocity(Vec3::new(MOVE_SPEED_EPSILON * 0.5, 99.0, 0.0));
+    assert!(!below.moving, "below epsilon is stopped");
+    assert_eq!(below.speed_xz_sq, (MOVE_SPEED_EPSILON * 0.5).powi(2));
+
+    let at_epsilon = LocomotionIntent::from_velocity(Vec3::new(MOVE_SPEED_EPSILON, 0.0, 0.0));
+    assert!(!at_epsilon.moving, "at epsilon is still stopped");
+
+    let above = LocomotionIntent::from_velocity(Vec3::new(MOVE_SPEED_EPSILON * 1.1, 0.0, 0.0));
+    assert!(above.moving, "above epsilon is moving");
+}
+
+#[test]
+fn alert_stationary_selects_idle_and_alert_moving_selects_walk() {
+    let states = tuning().states;
+    let stopped = LocomotionIntent::from_velocity(Vec3::ZERO);
+    let moving = LocomotionIntent::from_velocity(Vec3::new(MOVE_SPEED_EPSILON * 2.0, 0.0, 0.0));
+
+    assert_eq!(
+        animation_for_locomotion(LogicalState::Alert, stopped, &states),
+        "idle",
+        "stationary Alert uses the idle-mapped animation",
+    );
+    assert_eq!(
+        animation_for_locomotion(LogicalState::Alert, moving, &states),
+        "locomotion",
+        "moving Alert uses the alert/walk mapping",
+    );
+}
+
+#[test]
+fn non_alert_states_keep_their_mapped_animation_regardless_of_speed() {
+    let states = tuning().states;
+    let stopped = LocomotionIntent::from_velocity(Vec3::ZERO);
+    let moving = LocomotionIntent::from_velocity(Vec3::new(1.0, 0.0, 0.0));
+
+    assert_eq!(
+        animation_for_locomotion(LogicalState::Idle, moving, &states),
+        "idle"
+    );
+    assert_eq!(
+        animation_for_locomotion(LogicalState::Attack, stopped, &states),
+        "attack"
+    );
+    assert_eq!(
+        animation_for_locomotion(LogicalState::Attack, moving, &states),
+        "attack"
+    );
+    assert_eq!(
+        animation_for_locomotion(LogicalState::Death, moving, &states),
+        "death"
+    );
+}
+
+#[test]
+fn animation_switch_trigger_fires_on_state_or_locomotion_change_only() {
+    assert!(should_switch_animation(true, false, false));
+    assert!(should_switch_animation(true, true, false));
+    assert!(should_switch_animation(false, true, false));
+    assert!(should_switch_animation(false, false, true));
+    assert!(!should_switch_animation(false, false, false));
+    assert!(!should_switch_animation(false, true, true));
 }
 
 // ---------------------------------------------------------------------------
@@ -562,6 +648,7 @@ fn each_logical_state_switches_to_mapped_animation() {
         brain_with(tuning(), LogicalState::Idle),
         50.0,
     );
+    set_agent_velocity(&mut reg, enemy, Vec3::new(1.0, 0.0, 0.0));
     let pawn = spawn_player(&mut reg, Vec3::new(10.0, 0.0, 0.0));
 
     // idle starts as the mesh default; entering ALERT selects "locomotion".
@@ -618,6 +705,7 @@ fn unmapped_animation_warns_once_and_keeps_prior_state() {
         brain_with(t, LogicalState::Idle),
         50.0,
     );
+    set_agent_velocity(&mut reg, enemy, Vec3::new(1.0, 0.0, 0.0));
     spawn_player(&mut reg, Vec3::new(10.0, 0.0, 0.0));
 
     run_ai_tick(&mut reg, &mut warned, 0.016);
@@ -636,6 +724,114 @@ fn unmapped_animation_warns_once_and_keeps_prior_state() {
         "warn latch records the namespaced animation name",
     );
     assert_eq!(warned.len(), 1, "exactly one distinct name warned");
+}
+
+#[test]
+fn stationary_alert_selects_idle_animation_and_latches_stopped() {
+    let mut reg = EntityRegistry::new();
+    let mut warned = HashSet::new();
+
+    spawn_player(&mut reg, Vec3::new(10.0, 0.0, 0.0));
+    let mut brain = brain_with(tuning(), LogicalState::Alert);
+    brain.locomotion_moving = true;
+    let enemy = spawn_enemy(&mut reg, Vec3::ZERO, brain, 50.0);
+    set_enemy_animation(&mut reg, enemy, "locomotion");
+    set_agent_velocity(&mut reg, enemy, Vec3::ZERO);
+
+    run_ai_tick(&mut reg, &mut warned, 0.016);
+
+    assert_eq!(enemy_state(&reg, enemy), LogicalState::Alert);
+    assert_eq!(
+        enemy_animation(&reg, enemy),
+        "idle",
+        "stationary Alert uses the idle animation",
+    );
+    assert!(
+        !enemy_locomotion_moving(&reg, enemy),
+        "the stopped latch is persisted after the animation block",
+    );
+}
+
+#[test]
+fn alert_locomotion_stop_and_resume_switch_once_per_intent_change() {
+    let mut reg = EntityRegistry::new();
+    let mut warned = HashSet::new();
+
+    spawn_player(&mut reg, Vec3::new(10.0, 0.0, 0.0));
+    let mut brain = brain_with(tuning(), LogicalState::Alert);
+    brain.locomotion_moving = true;
+    let enemy = spawn_enemy(&mut reg, Vec3::ZERO, brain, 50.0);
+    set_enemy_animation(&mut reg, enemy, "locomotion");
+
+    set_agent_velocity(&mut reg, enemy, Vec3::ZERO);
+    run_ai_tick(&mut reg, &mut warned, 0.016);
+    assert_eq!(enemy_animation(&reg, enemy), "idle");
+    assert!(!enemy_locomotion_moving(&reg, enemy));
+    let stopped_entered_at = enemy_anim_entered_at(&reg, enemy);
+
+    run_ai_tick(&mut reg, &mut warned, 0.016);
+    assert_eq!(enemy_animation(&reg, enemy), "idle");
+    assert!(!enemy_locomotion_moving(&reg, enemy));
+    assert_eq!(
+        enemy_anim_entered_at(&reg, enemy),
+        stopped_entered_at,
+        "unchanged stopped intent does not re-stamp the idle switch",
+    );
+
+    set_agent_velocity(&mut reg, enemy, Vec3::new(1.0, 0.0, 0.0));
+    run_ai_tick(&mut reg, &mut warned, 0.016);
+    assert_eq!(enemy_animation(&reg, enemy), "locomotion");
+    assert!(enemy_locomotion_moving(&reg, enemy));
+    let moving_entered_at = enemy_anim_entered_at(&reg, enemy);
+
+    run_ai_tick(&mut reg, &mut warned, 0.016);
+    assert_eq!(enemy_animation(&reg, enemy), "locomotion");
+    assert!(enemy_locomotion_moving(&reg, enemy));
+    assert_eq!(
+        enemy_anim_entered_at(&reg, enemy),
+        moving_entered_at,
+        "unchanged moving intent does not re-stamp the walk switch",
+    );
+}
+
+#[test]
+fn unresolved_locomotion_switch_still_persists_latch() {
+    let mut reg = EntityRegistry::new();
+    let mut warned = HashSet::new();
+
+    let mut t = tuning();
+    t.states.alert = "missing_clip".into();
+    spawn_player(&mut reg, Vec3::new(10.0, 0.0, 0.0));
+    let enemy = spawn_enemy(
+        &mut reg,
+        Vec3::ZERO,
+        brain_with(t, LogicalState::Alert),
+        50.0,
+    );
+    set_agent_velocity(&mut reg, enemy, Vec3::new(1.0, 0.0, 0.0));
+
+    run_ai_tick(&mut reg, &mut warned, 0.016);
+    assert_eq!(
+        enemy_animation(&reg, enemy),
+        "idle",
+        "unresolved walk switch keeps the prior animation",
+    );
+    assert!(
+        enemy_locomotion_moving(&reg, enemy),
+        "moving latch persists even when the switch is unresolved",
+    );
+    assert!(warned.contains("anim:missing_clip"));
+
+    run_ai_tick(&mut reg, &mut warned, 0.016);
+    assert!(
+        enemy_locomotion_moving(&reg, enemy),
+        "unchanged moving intent remains latched on the following tick",
+    );
+    assert_eq!(
+        warned.len(),
+        1,
+        "unchanged unresolved locomotion does not add further warnings",
+    );
 }
 
 // ---------------------------------------------------------------------------

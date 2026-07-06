@@ -1,6 +1,6 @@
 # E17 - Kinematic Platform Foundation
 
-> **Status:** draft.
+> **Status:** ready — reviewed, awaiting implementation.
 >
 > **Epic:** 17 - Kinematic Geometry and Moving Platforms.
 >

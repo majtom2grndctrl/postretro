@@ -18,6 +18,10 @@ use crate::nav::NavAgentParams;
 const EPS: f32 = 1e-3;
 const DT: f32 = 1.0 / 60.0;
 const GRAVITY: f32 = -20.0;
+// The segmented concave fixture routes around finite wall ends via portals.
+// That route still produces a visible recovery displacement, but less direct
+// goal projection than the old all-floor shortcut.
+const SEGMENTED_CONCAVE_ESCAPE_DISTANCE: f32 = 0.025;
 
 /// Canonical agent params for the fixtures: 0.35 m radius, 1.8 m tall, 0.4 m
 /// step. Matches the harness's own test capsule.
@@ -221,6 +225,212 @@ impl LWall {
     }
 }
 
+/// Concave-corner recovery fixture: two vertical wall segments meet at an
+/// interior corner. The agent approaches from southwest toward northeast, so
+/// collision can consume the goal-directed motion while the fixed +90deg
+/// recovery tangent rotates it toward the open north-side escape lane.
+///
+/// The same finite wall description drives collision and navmesh: the navmesh
+/// splits the floor into rectangles on either side of those two wall segments,
+/// then adds portals only around the wall ends. That keeps the route valid
+/// around the wedge without making the whole floor one permissive region.
+struct ConcaveCorner {
+    floor_min: f32,
+    floor_max: f32,
+    corner: f32,
+    wall_end: f32,
+    height: f32,
+}
+
+impl ConcaveCorner {
+    fn fixture() -> Self {
+        Self {
+            floor_min: -2.0,
+            floor_max: 8.0,
+            corner: 2.0,
+            wall_end: 7.0,
+            height: 3.0,
+        }
+    }
+
+    fn cell(&self, world: f32) -> u32 {
+        (world - self.floor_min) as u32
+    }
+
+    fn collision_world(&self) -> CollisionWorld {
+        let mut points: Vec<Point<f32>> = Vec::new();
+        let mut tris: Vec<[u32; 3]> = Vec::new();
+
+        let base = points.len() as u32;
+        points.push(Point::new(self.floor_min, 0.0, self.floor_min));
+        points.push(Point::new(self.floor_max, 0.0, self.floor_min));
+        points.push(Point::new(self.floor_max, 0.0, self.floor_max));
+        points.push(Point::new(self.floor_min, 0.0, self.floor_max));
+        tris.push([base, base + 1, base + 2]);
+        tris.push([base, base + 2, base + 3]);
+
+        let mut push_wall = |x0: f32, z0: f32, x1: f32, z1: f32| {
+            let base = points.len() as u32;
+            points.push(Point::new(x0, 0.0, z0));
+            points.push(Point::new(x1, 0.0, z1));
+            points.push(Point::new(x1, self.height, z1));
+            points.push(Point::new(x0, self.height, z0));
+            tris.push([base, base + 1, base + 2]);
+            tris.push([base, base + 2, base + 3]);
+            tris.push([base, base + 2, base + 1]);
+            tris.push([base, base + 3, base + 2]);
+        };
+
+        // East-side wall: once beside the corner, +X motion is blocked.
+        push_wall(self.corner, self.corner, self.corner, self.wall_end);
+        // North-side wall starts at the same corner and extends east; it
+        // supplies the second corner contact while leaving the west side open
+        // for the fixed-handedness recovery slide.
+        push_wall(self.corner, self.corner, self.wall_end, self.corner);
+
+        CollisionWorld {
+            mesh: TriMesh::new(points, tris),
+            isometry: Isometry::identity(),
+        }
+    }
+
+    fn navmesh(&self) -> NavMeshSection {
+        let min = self.cell(self.floor_min);
+        let corner = self.cell(self.corner);
+        let wall_end = self.cell(self.wall_end);
+        let max = self.cell(self.floor_max);
+
+        let region = |x0, z0, x1, z1| NavRegion {
+            x0,
+            z0,
+            x1,
+            z1,
+            floor_y_min: 0.0,
+            floor_y_max: 0.25,
+        };
+
+        NavMeshSection {
+            version: NAVMESH_VERSION,
+            origin: [self.floor_min, 0.0, self.floor_min],
+            cell_size: 1.0,
+            dim_x: 64,
+            dim_z: 64,
+            agent_radius: 0.35,
+            agent_height: 1.8,
+            step_height: 0.4,
+            max_slope_deg: 45.0,
+            regions: vec![
+                // Region 0: southwest approach, before both wall segments.
+                region(min, min, corner, corner),
+                // Region 1: west lane beside the x=corner wall.
+                region(min, corner, corner, wall_end),
+                // Region 2: north lane past the x=corner wall end.
+                region(min, wall_end, max, max),
+                // Region 3: south lane beside the z=corner wall.
+                region(corner, min, max, corner),
+                // Region 4: interior target area behind the concave corner.
+                region(corner, corner, wall_end, wall_end),
+                // Region 5: east lane past the z=corner wall end.
+                region(wall_end, corner, max, wall_end),
+            ],
+            portals: vec![
+                // Open approach into the west lane. No portal crosses either
+                // wall span from z=corner..wall_end or x=corner..wall_end.
+                NavPortal {
+                    region_a: 0,
+                    region_b: 1,
+                    left: [self.floor_min, 0.0, self.corner],
+                    right: [self.corner, 0.0, self.corner],
+                },
+                // North-side route around the end of the x=corner wall.
+                NavPortal {
+                    region_a: 1,
+                    region_b: 2,
+                    left: [self.floor_min, 0.0, self.wall_end],
+                    right: [self.corner, 0.0, self.wall_end],
+                },
+                NavPortal {
+                    region_a: 2,
+                    region_b: 4,
+                    left: [self.wall_end, 0.0, self.wall_end],
+                    right: [self.corner, 0.0, self.wall_end],
+                },
+                // Alternate east-side route around the end of the z=corner wall.
+                NavPortal {
+                    region_a: 0,
+                    region_b: 3,
+                    left: [self.corner, 0.0, self.corner],
+                    right: [self.corner, 0.0, self.floor_min],
+                },
+                NavPortal {
+                    region_a: 3,
+                    region_b: 5,
+                    left: [self.wall_end, 0.0, self.corner],
+                    right: [self.floor_max, 0.0, self.corner],
+                },
+                NavPortal {
+                    region_a: 5,
+                    region_b: 4,
+                    left: [self.wall_end, 0.0, self.corner],
+                    right: [self.wall_end, 0.0, self.wall_end],
+                },
+            ],
+        }
+    }
+
+    fn nav_graph(&self) -> NavGraph {
+        NavGraph::from_section(&self.navmesh())
+    }
+}
+
+fn agent_position(registry: &EntityRegistry, id: EntityId) -> Vec3 {
+    registry.get_component::<Transform>(id).unwrap().position
+}
+
+fn goal_projected_xz_progress(start: Vec3, end: Vec3, heading: Vec3) -> f32 {
+    let heading = Vec3::new(heading.x, 0.0, heading.z);
+    if heading.length_squared() <= 0.0 {
+        return 0.0;
+    }
+    let displacement = Vec3::new(end.x - start.x, 0.0, end.z - start.z);
+    displacement.dot(heading.normalize())
+}
+
+fn run_until_stuck_threshold(
+    registry: &mut EntityRegistry,
+    id: EntityId,
+    world: &CollisionWorld,
+    max_ticks: usize,
+) {
+    for _ in 0..max_ticks {
+        let before = agent_position(registry, id);
+        tick(registry, world, None, GRAVITY, DT);
+        let agent = registry.get_component::<AgentComponent>(id).unwrap();
+        if agent.stuck_ticks >= STUCK_TICKS_THRESHOLD {
+            let after = agent_position(registry, id);
+            let progress = goal_projected_xz_progress(before, after, agent.steer_velocity);
+            assert!(
+                progress < STUCK_PROGRESS_EPSILON,
+                "threshold tick must still show near-zero goal-projected progress; got {progress}"
+            );
+            assert_eq!(
+                agent.unstick_window_remaining, 0,
+                "detection should reach threshold before recovery fires"
+            );
+            return;
+        }
+    }
+
+    let agent = registry.get_component::<AgentComponent>(id).unwrap();
+    panic!(
+        "agent did not reach stuck threshold within {max_ticks} ticks; stuck_ticks={}, pos={:?}, steer={:?}, velocity={:?}",
+        agent.stuck_ticks,
+        agent_position(registry, id),
+        agent.steer_velocity,
+        agent.velocity
+    );
+}
+
 #[test]
 fn agent_path_following_speed_accelerates_over_multiple_ticks() {
     let wall = LWall::fixture();
@@ -303,6 +513,261 @@ fn steer_velocity_ramps_independently_of_wall_clamped_collision_velocity() {
         "post-collision velocity should diverge from pre-collision steer_velocity; steer={:?}, post={:?}",
         steer_speeds,
         post_collision_speeds
+    );
+}
+
+#[test]
+fn stuck_detection_reaches_threshold_then_recovery_fires_next_tick() {
+    let corner = ConcaveCorner::fixture();
+    let world = corner.collision_world();
+    let graph = corner.nav_graph();
+    let params = agent_params();
+    let mut registry = EntityRegistry::new();
+    let id = spawn_agent(&mut registry, 1.2, 1.2, &params);
+    let destination = Vec3::new(5.0, rest_y(&params), 5.0);
+    set_manual_path(&mut registry, id, vec![destination]);
+
+    run_until_stuck_threshold(&mut registry, id, &world, 180);
+    {
+        let agent = registry.get_component::<AgentComponent>(id).unwrap();
+        assert_eq!(agent.stuck_ticks, STUCK_TICKS_THRESHOLD);
+        assert!(!agent.path.is_empty());
+        assert!(!agent.blocked);
+    }
+
+    tick(&mut registry, &world, Some(&graph), GRAVITY, DT);
+
+    let agent = registry.get_component::<AgentComponent>(id).unwrap();
+    assert_eq!(agent.stuck_ticks, 0, "recovery fire resets detector");
+    assert_eq!(
+        agent.unstick_window_remaining,
+        UNSTICK_WINDOW - 1,
+        "recovery applies one biased move on the fire tick and stores the remaining window"
+    );
+    assert_eq!(
+        agent.planned_destination, None,
+        "recovery must request a budgeted replan by clearing the plan latch"
+    );
+}
+
+#[test]
+fn recovery_window_escapes_concave_corner_with_goal_projected_progress() {
+    let corner = ConcaveCorner::fixture();
+    let world = corner.collision_world();
+    let graph = corner.nav_graph();
+    let params = agent_params();
+    let mut registry = EntityRegistry::new();
+    let id = spawn_agent(&mut registry, 1.2, 1.2, &params);
+    let destination = Vec3::new(5.0, rest_y(&params), 5.0);
+    set_manual_path(&mut registry, id, vec![destination]);
+
+    run_until_stuck_threshold(&mut registry, id, &world, 180);
+    let start = agent_position(&registry, id);
+    let goal_dir = Vec3::new(destination.x - start.x, 0.0, destination.z - start.z).normalize();
+
+    for _ in 0..UNSTICK_WINDOW {
+        tick(&mut registry, &world, Some(&graph), GRAVITY, DT);
+    }
+
+    let end = agent_position(&registry, id);
+    let displacement = Vec3::new(end.x - start.x, 0.0, end.z - start.z);
+    let progress = displacement.dot(goal_dir);
+    assert!(
+        progress > SEGMENTED_CONCAVE_ESCAPE_DISTANCE,
+        "recovery should escape the segmented concave route with goal-projected progress > {SEGMENTED_CONCAVE_ESCAPE_DISTANCE}, got {progress}; start={start:?}, end={end:?}"
+    );
+    assert!(
+        xz_length(displacement) > SEGMENTED_CONCAVE_ESCAPE_DISTANCE,
+        "recovery should produce visible displacement during the window; got displacement={displacement:?}"
+    );
+    let agent = registry.get_component::<AgentComponent>(id).unwrap();
+    assert_eq!(
+        agent.unstick_window_remaining, 0,
+        "recovery window should expire after its fixed tick budget"
+    );
+}
+
+#[test]
+fn recovery_tangent_has_fixed_positive_quarter_turn_and_degenerate_noop() {
+    let steer = Vec3::new(3.0, 0.0, 4.0);
+    let bias = recovery_tangent_bias(steer, 2.0);
+    let expected = Vec3::new(-4.0, 0.0, 3.0).normalize() * (TANGENT_BIAS * 2.0);
+    assert!(
+        bias.abs_diff_eq(expected, EPS),
+        "tangent must be fixed +90deg in XZ: got {bias:?}, expected {expected:?}"
+    );
+
+    let degenerate = recovery_tangent_bias(Vec3::ZERO, 2.0);
+    assert_eq!(degenerate, Vec3::ZERO);
+    assert!(degenerate.is_finite());
+}
+
+#[test]
+fn recovery_escape_path_is_deterministic_for_identical_inputs() {
+    fn escape_path() -> Vec<Vec3> {
+        let corner = ConcaveCorner::fixture();
+        let world = corner.collision_world();
+        let graph = corner.nav_graph();
+        let params = agent_params();
+        let mut registry = EntityRegistry::new();
+        let id = spawn_agent(&mut registry, 1.2, 1.2, &params);
+        let destination = Vec3::new(5.0, rest_y(&params), 5.0);
+        set_manual_path(&mut registry, id, vec![destination]);
+        run_until_stuck_threshold(&mut registry, id, &world, 180);
+
+        let mut positions = Vec::new();
+        for _ in 0..UNSTICK_WINDOW {
+            tick(&mut registry, &world, Some(&graph), GRAVITY, DT);
+            positions.push(agent_position(&registry, id));
+        }
+        positions
+    }
+
+    let a = escape_path();
+    let b = escape_path();
+    assert_eq!(a.len(), b.len());
+    for (index, (pa, pb)) in a.iter().zip(b.iter()).enumerate() {
+        assert!(
+            pa.abs_diff_eq(*pb, EPS),
+            "escape paths diverged at {index}: {pa:?} vs {pb:?}"
+        );
+    }
+}
+
+#[test]
+fn stuck_detection_resets_for_idle_blocked_and_arrived_gates() {
+    let wall = LWall::fixture();
+    let world = wall.collision_world();
+    let params = agent_params();
+
+    let mut idle_registry = EntityRegistry::new();
+    let idle = spawn_agent(&mut idle_registry, 1.0, 6.0, &params);
+    {
+        let mut agent = idle_registry
+            .get_component::<AgentComponent>(idle)
+            .unwrap()
+            .clone();
+        agent.stuck_ticks = 7;
+        agent.unstick_window_remaining = 3;
+        idle_registry.set_component(idle, agent).unwrap();
+    }
+    tick(&mut idle_registry, &world, None, GRAVITY, DT);
+    let agent = idle_registry.get_component::<AgentComponent>(idle).unwrap();
+    assert_eq!(
+        agent.stuck_ticks, 0,
+        "idle/no-path gate should clear detection"
+    );
+    assert_eq!(
+        agent.unstick_window_remaining, 0,
+        "idle/no-path gate should clear stale recovery windows"
+    );
+
+    let mut blocked_registry = EntityRegistry::new();
+    let blocked = spawn_agent(&mut blocked_registry, 1.0, 6.0, &params);
+    set_manual_path(
+        &mut blocked_registry,
+        blocked,
+        vec![Vec3::new(7.0, rest_y(&params), 6.0)],
+    );
+    {
+        let mut agent = blocked_registry
+            .get_component::<AgentComponent>(blocked)
+            .unwrap()
+            .clone();
+        agent.blocked = true;
+        agent.stuck_ticks = STUCK_TICKS_THRESHOLD;
+        agent.unstick_window_remaining = 3;
+        blocked_registry.set_component(blocked, agent).unwrap();
+    }
+    tick(&mut blocked_registry, &world, None, GRAVITY, DT);
+    let agent = blocked_registry
+        .get_component::<AgentComponent>(blocked)
+        .unwrap();
+    assert_eq!(
+        agent.stuck_ticks, 0,
+        "blocked/no-route gate should clear detection"
+    );
+    assert_eq!(
+        agent.unstick_window_remaining, 0,
+        "blocked/no-route gate should clear stale recovery windows"
+    );
+
+    let mut arrived_registry = EntityRegistry::new();
+    let arrived = spawn_agent(&mut arrived_registry, 1.0, 6.0, &params);
+    set_manual_path(
+        &mut arrived_registry,
+        arrived,
+        vec![Vec3::new(1.0, rest_y(&params), 6.0)],
+    );
+    {
+        let mut agent = arrived_registry
+            .get_component::<AgentComponent>(arrived)
+            .unwrap()
+            .clone();
+        agent.stuck_ticks = STUCK_TICKS_THRESHOLD;
+        agent.unstick_window_remaining = 3;
+        arrived_registry.set_component(arrived, agent).unwrap();
+    }
+    tick(&mut arrived_registry, &world, None, GRAVITY, DT);
+    let agent = arrived_registry
+        .get_component::<AgentComponent>(arrived)
+        .unwrap();
+    assert!(
+        agent.arrived,
+        "fixture should engage final-waypoint arrival"
+    );
+    assert_eq!(
+        agent.stuck_ticks, 0,
+        "near-zero final-waypoint intent should clear detection"
+    );
+    assert_eq!(
+        agent.unstick_window_remaining, 0,
+        "near-zero final-waypoint intent should clear stale recovery windows"
+    );
+}
+
+#[test]
+fn failed_same_tick_replan_suppresses_stale_recovery_threshold() {
+    let wall = LWall::fixture();
+    let world = wall.collision_world();
+    let params = agent_params();
+    let mut registry = EntityRegistry::new();
+    let id = spawn_agent(&mut registry, 1.0, 6.0, &params);
+    let destination = Vec3::new(7.0, rest_y(&params), 6.0);
+    set_manual_path(&mut registry, id, vec![destination]);
+    {
+        let mut agent = registry
+            .get_component::<AgentComponent>(id)
+            .unwrap()
+            .clone();
+        agent.stuck_ticks = STUCK_TICKS_THRESHOLD;
+        agent.planned_destination = None;
+        registry.set_component(id, agent).unwrap();
+    }
+
+    tick(&mut registry, &world, None, GRAVITY, DT);
+
+    let agent = registry.get_component::<AgentComponent>(id).unwrap();
+    assert!(
+        agent.blocked,
+        "missing nav graph should produce a no-route state"
+    );
+    assert!(
+        agent.path.is_empty(),
+        "failed replan should drop the stale path"
+    );
+    assert_eq!(
+        agent.stuck_ticks, 0,
+        "failed same-tick replan should clear stale detection"
+    );
+    assert_eq!(
+        agent.unstick_window_remaining, 0,
+        "failed same-tick replan must not seed recovery"
+    );
+    assert_eq!(
+        agent.planned_destination,
+        Some(destination),
+        "failed replan should keep the failed-plan latch for the cooldown gate"
     );
 }
 

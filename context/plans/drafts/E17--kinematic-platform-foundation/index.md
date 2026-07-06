@@ -30,7 +30,7 @@ clusters, or destruction.
 - Runtime load/spawn of mover entities with `Transform` plus a new
   engine-owned kinematic mover component.
 - Deterministic linear movement over a waypoint list. Required modes:
-  one-shot and ping-pong. Optional looping may ship if it falls out naturally.
+  one-shot and ping-pong.
 - Existing fixed frame order only: input, game logic, audio, render, present.
 - A renderer-owned draw path for kinematic brush payloads. All WGPU calls stay
   in `crates/postretro/src/render`.
@@ -66,6 +66,12 @@ Authors create a `kinematic_mover` brush entity and at least two
 `kinematic_waypoint` point entities. The mover's `path` points at the
 first waypoint's `name`; each waypoint may point at the next waypoint via
 `next`.
+
+Waypoint `origin`s are world-space. The mover's authored brush position is its
+start pose and must coincide with the first (`path`) waypoint — the compiler
+warns on mismatch. Local vertices are stored relative to the mover origin; at
+runtime `Transform.position` walks the chain (`path` -> `next` -> ...), so
+motion begins at the first waypoint and the platform never teleports on spawn.
 
 First-slice FGD keys:
 
@@ -225,8 +231,12 @@ not a client-authored divergent path.
   into a PRL with a kinematic geometry section. The mover brush is absent from
   static geometry, static BVH, static collision, portals, lightmap/SDF occluder
   bakes, and navmesh input.
+- [ ] `prl-build` rejects a `kinematic_mover` whose `path` resolves to fewer
+  than two waypoints (no zero-length path), with a diagnostic.
 - [ ] The runtime loads that PRL, spawns one mover entity with `Transform` and
-  `KinematicMover`, and drives it deterministically along the waypoint segment.
+  `KinematicMover`, and drives it deterministically along the waypoint path,
+  honoring `once` (stops at the final waypoint) and `ping_pong` (reverses at
+  each endpoint).
 - [ ] The mover renders with its authored material/texture and interpolates
   smoothly between fixed ticks.
 - [ ] A player can stand on a moving linear platform/elevator for at least 10
@@ -236,9 +246,10 @@ not a client-authored divergent path.
   side contact slides or blocks according to the existing movement substrate.
 - [ ] Leaving a moving platform applies the plan's release-velocity policy
   consistently in single-player and connected-client replay.
-- [ ] In the deterministic net harness at the E15 profile (150 ms RTT, jitter,
-  5% loss), a remote client sees the mover smoothly interpolated and a local
-  player riding it reconciles without persistent correction drift.
+- [ ] In the deterministic net harness at the E15 profile —
+  `LinkConfig { delay: 45, jitter: 60, loss_probability: 0.05 }`, ~45..105 ms
+  one-way, 5% loss — a remote client sees the mover smoothly interpolated and a
+  local player riding it reconciles without persistent correction drift.
 - [ ] No new `unsafe` is introduced.
 - [ ] No non-renderer module imports `wgpu` or creates GPU resources.
 - [ ] Existing static maps with no movers load and render unchanged.
@@ -265,7 +276,6 @@ KinematicMoverRecord {
   name: String,
   tags: Vec<String>,
   origin: [f32; 3],
-  pivot: [f32; 3],
   path: String,
   speed: f32,
   wait_ms: f32,
@@ -295,27 +305,35 @@ Compiler work:
 - collect `kinematic_waypoint` point entities from the generic entity stream or
   a dedicated route, but do not spawn them as runtime generic entities;
 - validate finite positive speed, finite non-negative waits, known mode, and
-  resolvable `path`;
+  a `path` that resolves to at least two waypoints (>=1 segment);
 - emit warnings for orphan waypoints;
 - pack the new section in `pack.rs`;
+- emit the `KinematicGeometry` section only when the map has movers;
 - add regression tests proving mover brushes do not enter static geometry.
 
 ### Task 2: Runtime loading, component, and deterministic driver
 
-Load section 43 (`KinematicGeometry`) in `prl.rs` into `LevelWorld`. Add
-`KinematicMoverComponent` and `ComponentKind::KinematicMover = 13`, update
-`ComponentKind::COUNT`, `ComponentValue`, registry storage, serde, and the
-netcode discriminant drift tests.
+Load section 43 (`KinematicGeometry`) in `crates/level-loader/src/prl.rs` into
+`LevelWorld` (an absent or empty section means no movers; mover-less maps load
+unchanged). Add `KinematicMoverComponent` in `crates/entities/src/components/`,
+and `ComponentKind::KinematicMover = 13` in `crates/entities/src/registry.rs`
+(after `Brain = 12`); update `ComponentKind::COUNT`, `ComponentValue`, registry
+storage, serde, and the netcode discriminant drift tests.
 
 At level load, spawn one entity per mover record with:
 
-- `Transform` at the record origin/pivot;
+- `Transform` at the record origin;
 - `KinematicMoverComponent` seeded from the path;
+- seed the `started` flag from `start_on_spawn`;
+- copy the record's `tags` onto the spawned entity's tag storage (movers
+  bypass classname dispatch, which normally copies `_tags`);
 - authoritative registration in `ReplicableSet` on the server/host side.
 
 Add a fixed-tick mover system that evaluates deterministic linear motion using
 tick `dt`, path segment length, speed, waits, and mode. The system must run
-before player movement collision in the game-logic stage.
+after the transform snapshot stage (`snapshot_transforms`) and before
+player-movement collision in the game-logic stage. Modes: `once` stops at the
+final waypoint; `ping_pong` reverses at each endpoint. Both are required.
 
 ### Task 3: Renderer-owned kinematic brush draw path
 
@@ -330,7 +348,17 @@ Requirements:
   transforms;
 - draw with the authored material textures;
 - keep movers out of the static world BVH/indirect buffer;
-- avoid new required adapter features and preserve the current bind-group limit.
+- avoid new required adapter features and preserve the current bind-group limit;
+- movers are stage-0-snapshotted registry entities; draw them via the existing
+  interpolated-transform accessor so between-tick smoothing reuses the
+  standard path;
+- the renderer's only two inputs are mover geometry (uploaded from the PRL
+  section at load) and per-frame interpolated transforms from the
+  snapshotted mover entities;
+- light movers via the dynamic-object lighting model (baked indirect/SH +
+  dynamic direct) -- material-only/unlit is not sufficient;
+- set `lightmap_uv`/`lightmap_layer` to zero on mover vertices (they carry no
+  static lightmap UVs);
 
 First-slice culling may be conservative: visible if the mover origin or AABB is
 inside the camera-visible leaf or a nearby visible leaf. It may draw a few
@@ -341,7 +369,10 @@ extra movers; it must not disappear while the player can see or stand on it.
 Build local-space parry trimeshes for mover colliders at load and query them at
 runtime with the mover transform. Add a query layer that returns the nearest hit
 across static world and active movers, then adapt `movement/substrate.rs` to use
-that layer without losing existing static-world behavior.
+that layer without losing existing static-world behavior. The mover system
+publishes the active mover collider set (transform, linear velocity, tick
+delta) into an engine-owned side-table each tick; the collision query layer
+reads that side-table.
 
 Implement linear carry:
 
@@ -349,7 +380,11 @@ Implement linear carry:
 - record the mover base on `PlayerMovementComponent` or a small companion
   engine-owned field;
 - apply the mover tick delta to the player while grounded on that base;
-- apply the release-velocity policy when leaving the base;
+- when leaving the base, preserve player-controlled velocity and add the
+  mover velocity only when the previous tick had a grounded mover base; never
+  add angular velocity (rotation is out of scope). This release carry is
+  engine-internal movement-substrate logic, not a `movement.md` §6
+  declarative carry-rule;
 - handle platform reversal and endpoint waits without jitter.
 
 Add unit tests for static-only behavior, moving top contact, moving side
@@ -358,15 +393,19 @@ contact, endpoint wait, reversal, and release velocity.
 ### Task 5: Network payload, client apply, and replay harness
 
 Extend `postretro-net` and `postretro` replication for
-`KinematicMoverState`. Bump `SNAPSHOT_VERSION`, update raw payload validation,
+`KinematicMoverState`. Bump `SNAPSHOT_VERSION` and the transport
+wire-version/`protocol_id` gate (a new wire type changes the bitcode layout --
+see networking.md's two-gate handshake); update raw payload validation,
 finite checks, raw-from-typed conversion, baseline/delta tests, and engine/net
 discriminant guards.
 
 Host snapshot production collects `Transform` then `KinematicMoverState` for
 registered mover entities. Client apply updates the mover component and
-presentation transform. Local replay for a player standing on a mover uses the
-authoritative mover samples for the replay ticks so corrections do not compound
-from a mismatched platform pose.
+presentation transform. Client apply also writes each tick's authoritative
+mover sample into an engine-owned mover-history buffer keyed by `mover_id`;
+reconciliation reads it during replay. Local replay for a player standing on a
+mover uses the authoritative mover samples for the replay ticks so corrections
+do not compound from a mismatched platform pose.
 
 Extend the in-memory prediction/reconciliation harness with a moving-platform
 scenario at the E15 latency/loss profile.
@@ -420,15 +459,18 @@ trigger/event plan against the actual mover API.
   `kinematic_waypoint` points instead of skipping them.
 - `crates/level-compiler/src/map_data.rs`: store kinematic mover source data.
 - `crates/level-compiler/src/pack.rs`: emit the new section.
-- `crates/postretro/src/prl.rs`: load section 43 (`KinematicGeometry`) into `LevelWorld`.
-- `crates/postretro/src/scripting/components/`: new kinematic mover component.
-- `crates/postretro/src/scripting/registry.rs`: component enum/value wiring.
+- `crates/level-loader/src/prl.rs`: load section 43 (`KinematicGeometry`) into `LevelWorld`.
+- `crates/entities/src/components/`: new `KinematicMoverComponent` (engine
+  components live here, per scripting.md §12).
+- `crates/entities/src/registry.rs`: `ComponentKind` / `COUNT` / `ComponentValue` /
+  registry-storage wiring.
 - `crates/postretro/src/sim/` or a new game-logic system: fixed-tick mover
   evaluation before player movement.
 - `crates/postretro/src/collision/`: moving-collider query layer beside
   `CollisionWorld`.
 - `crates/postretro/src/movement/substrate.rs`: consume the combined query and
-  moving-base carry.
+  moving-base carry (`PlayerMovementComponent` itself is foundation-resident:
+  `crates/foundation/src/movement/player_movement.rs`).
 - `crates/postretro/src/render/`: renderer-owned mover buffers/draws.
 - `crates/net/src/wire.rs`, `crates/net/src/replication.rs`,
   `crates/postretro/src/netcode/`: mover payload, validation, apply, drift
@@ -443,13 +485,14 @@ there; new logic belongs in focused modules.
 | --- | --- | --- | --- | --- |
 | mover entity | `KinematicMoverComponent`, `ComponentKind::KinematicMover = 13` | PRL `KinematicMoverRecord`; net `KinematicMoverState` kind 13; serde `kind = "kinematic_mover"` | Not directly queryable in this plan; becomes a `world.query` component kind in E17-B | `kinematic_mover` |
 | waypoint | `KinematicWaypointRecord` load data | PRL `KinematicWaypointRecord` | None | `kinematic_waypoint` |
+| mover id | `KinematicMoverRecord.mover_id`, component compiled-mover-id | PRL `mover_id: u32`; wire `mover_id: u32` (stable cross-peer key) | Future `world.query` handle | n/a |
 | mover name | `name: String` | `name` | Future `world.query` handle / command target | `name` |
 | path (first waypoint ref) | `path: String` | `path` | None | `path` |
 | next waypoint | `next: String` | `next` (empty means absent) | None | `next` |
-| mode | `KinematicMoveMode` | `move_mode` / wire `mode` (`once=0`, `ping_pong=1`) | Future command surface uses strings | `move_mode` |
+| mode | `KinematicMoveMode` | PRL/FGD `move_mode`; wire `mode` (`once=0`, `ping_pong=1`) | Future command surface uses strings | `move_mode` |
 | start flag | `start_on_spawn: bool` | `start_on_spawn` | None | `start_on_spawn` |
-| speed | `speed_mps: f32` | `speed` finite positive | Future command surface may read only | `speed` |
-| wait | `wait_ms: f32` | `wait_ms` finite non-negative | Future command surface may read only | `wait_ms` |
+| speed | `speed_mps: f32` | PRL `speed` finite positive (static; not replicated) | Future command surface may read only | `speed` |
+| wait | `wait_ms: f32` | PRL `wait_ms` finite non-negative (static); runtime countdown replicated as wire `wait_remaining_ms` | Future command surface may read only | `wait_ms` |
 | tags | `Vec<String>` | `_tags` split on whitespace | Future `world.query`/commands | `_tags` |
 
 ## Wire Format

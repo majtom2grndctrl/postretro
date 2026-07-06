@@ -7,3 +7,5 @@ description = "Development workflow commands for Postretro"
 license.workspace = true
 
 [dependencies]
+postretro-level-compiler = { workspace = true }
+postretro-level-format = { workspace = true, features = ["gltf-resolve"] }

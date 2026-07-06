@@ -156,6 +156,7 @@ proptest = "1"
 
 # Workspace members
 postretro-level-format = { path = "crates/level-format" }
+postretro-level-compiler = { path = "crates/level-compiler" }
 postretro-model = { path = "crates/model" }
 postretro-render-data = { path = "crates/render-data" }
 postretro-render-cpu = { path = "crates/render-cpu" }

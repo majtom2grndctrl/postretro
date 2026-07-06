@@ -1,9 +1,13 @@
 // Development workflow entry points for Postretro.
 // See: context/lib/development_guide.md
 
+use std::collections::HashSet;
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::fmt::Display;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+
+use postretro_level_format::prm::cache_filename_for_key;
 
 fn main() {
     let code = match try_main() {
@@ -33,10 +37,119 @@ fn try_main() -> Result<i32, String> {
         return run_postretro(args.collect());
     }
 
+    if command == "bake-model-textures" {
+        return bake_model_textures_command(args.collect());
+    }
+
     Err(format!(
         "unknown command `{}`\n\nRun `cargo run -p xtask -- --help` for usage.",
         command.to_string_lossy()
     ))
+}
+
+fn bake_model_textures_command(args: Vec<OsString>) -> Result<i32, String> {
+    let gltf_path = parse_bake_model_textures_args(args)?;
+    let workspace_root = workspace_root()?;
+    let gltf_path = workspace_relative_path(&gltf_path, &workspace_root);
+    let prm_root = workspace_root.join("baked").join("materials");
+    let baked = bake_model_textures_for_gltf(&gltf_path, &prm_root)?;
+
+    if baked.is_empty() {
+        println!(
+            "No filesystem base-color textures found in {}",
+            gltf_path.display()
+        );
+        return Ok(0);
+    }
+
+    for texture in baked {
+        println!(
+            "Baked {} -> {} (key {})",
+            texture.source_path.display(),
+            texture.prm_path.display(),
+            texture.key_hex
+        );
+    }
+
+    Ok(0)
+}
+
+fn parse_bake_model_textures_args(args: Vec<OsString>) -> Result<PathBuf, String> {
+    match args.as_slice() {
+        [gltf_path] => Ok(PathBuf::from(gltf_path)),
+        [] => Err("bake-model-textures requires a glTF path\n\n\
+             Usage: cargo run -p xtask -- bake-model-textures <scene.gltf>"
+            .to_string()),
+        _ => Err("bake-model-textures accepts exactly one glTF path\n\n\
+             Usage: cargo run -p xtask -- bake-model-textures <scene.gltf>"
+            .to_string()),
+    }
+}
+
+fn workspace_relative_path(path: &Path, workspace_root: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        workspace_root.join(path)
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct BakedModelTexture {
+    source_path: PathBuf,
+    key_hex: String,
+    prm_path: PathBuf,
+}
+
+fn bake_model_textures_for_gltf(
+    gltf_path: &Path,
+    prm_root: &Path,
+) -> Result<Vec<BakedModelTexture>, String> {
+    bake_model_textures_for_gltf_with(
+        gltf_path,
+        prm_root,
+        postretro_level_format::gltf_resolve::resolve_document_base_color_paths,
+        postretro_level_compiler::texture_mips::bake_diffuse_texture,
+    )
+}
+
+fn bake_model_textures_for_gltf_with<Resolve, ResolveError, Bake, BakeError>(
+    gltf_path: &Path,
+    prm_root: &Path,
+    mut resolve_base_color_paths: Resolve,
+    mut bake_diffuse: Bake,
+) -> Result<Vec<BakedModelTexture>, String>
+where
+    Resolve: FnMut(&Path) -> Result<Vec<PathBuf>, ResolveError>,
+    ResolveError: Display,
+    Bake: FnMut(&Path, &Path) -> Result<[u8; 32], BakeError>,
+    BakeError: Display,
+{
+    let texture_paths = resolve_base_color_paths(gltf_path).map_err(|error| {
+        format!(
+            "resolve model textures for {}: {error}",
+            gltf_path.display()
+        )
+    })?;
+
+    let mut seen = HashSet::new();
+    let mut baked = Vec::new();
+    for texture_path in texture_paths {
+        if !seen.insert(texture_path.clone()) {
+            continue;
+        }
+
+        let key = bake_diffuse(&texture_path, prm_root)
+            .map_err(|error| format!("bake model texture {}: {error}", texture_path.display()))?;
+        let key_hex = cache_filename_for_key(&key);
+        baked.push(BakedModelTexture {
+            source_path: texture_path,
+            prm_path: prm_root.join(format!("{key_hex}.prm")),
+            key_hex,
+        });
+    }
+
+    Ok(baked)
 }
 
 fn run_postretro(engine_args: Vec<OsString>) -> Result<i32, String> {
@@ -181,13 +294,16 @@ fn print_help() {
         "Postretro development tasks\n\n\
          USAGE:\n\
            cargo run -p xtask -- run [cargo-run flags...] -- [postretro args...]\n\
-           cargo run -p xtask -- run [postretro args...]\n\n\
+           cargo run -p xtask -- run [postretro args...]\n\
+           cargo run -p xtask -- bake-model-textures <scene.gltf>\n\n\
          COMMANDS:\n\
-           run    Build scripts-build, then run the postretro engine\n\n\
+           run                  Build scripts-build, then run the postretro engine\n\
+           bake-model-textures  Bake glTF base-color sidecars into baked/materials\n\n\
          EXAMPLES:\n\
            cargo run -p xtask -- run content/dev/maps/campaign-test.prl\n\
            cargo run -p xtask -- run --features dev-tools -- content/dev/maps/campaign-test.prl\n\
-           cargo run -p xtask -- run --release -- content/dev/maps/campaign-test.prl\n\n\
+           cargo run -p xtask -- run --release -- content/dev/maps/campaign-test.prl\n\
+           cargo run -p xtask -- bake-model-textures content/dev/models/reference_enemy_kaykit_knight/scene.gltf\n\n\
          NOTES:\n\
            Cargo flags before `--` are passed to the engine cargo run. Only\n\
            --release/-r, --profile, --target, and --target-dir are also mirrored\n\
@@ -293,6 +409,81 @@ mod tests {
                 "x86_64-unknown-linux-gnu",
             ])),
             os_args(&["--target", "--target", "x86_64-unknown-linux-gnu"])
+        );
+    }
+
+    #[test]
+    fn parse_bake_model_textures_args_accepts_exactly_one_gltf_path() {
+        assert_eq!(
+            parse_bake_model_textures_args(os_args(&[
+                "content/dev/models/reference_enemy_kaykit_knight/scene.gltf"
+            ])),
+            Ok(PathBuf::from(
+                "content/dev/models/reference_enemy_kaykit_knight/scene.gltf"
+            ))
+        );
+
+        assert!(parse_bake_model_textures_args(Vec::new()).is_err());
+        assert!(parse_bake_model_textures_args(os_args(&["one.gltf", "two.gltf"])).is_err());
+    }
+
+    #[test]
+    fn workspace_relative_path_roots_relative_paths_at_workspace() {
+        let workspace = Path::new("/workspace");
+        assert_eq!(
+            workspace_relative_path(
+                Path::new("content/dev/models/reference_enemy_kaykit_knight/scene.gltf"),
+                workspace
+            ),
+            PathBuf::from("/workspace/content/dev/models/reference_enemy_kaykit_knight/scene.gltf")
+        );
+        assert_eq!(
+            workspace_relative_path(Path::new("/tmp/model/scene.gltf"), workspace),
+            PathBuf::from("/tmp/model/scene.gltf")
+        );
+    }
+
+    #[test]
+    fn bake_model_textures_for_gltf_reports_baked_keys_and_paths() {
+        let gltf_path = PathBuf::from("content/dev/models/fixture/scene.gltf");
+        let prm_root = PathBuf::from("/workspace/baked/materials");
+        let diffuse_a = PathBuf::from("content/dev/models/fixture/a.png");
+        let diffuse_b = PathBuf::from("content/dev/models/fixture/b.png");
+
+        let baked = bake_model_textures_for_gltf_with(
+            &gltf_path,
+            &prm_root,
+            |path| {
+                assert_eq!(path, gltf_path.as_path());
+                Ok::<_, String>(vec![
+                    diffuse_a.clone(),
+                    diffuse_a.clone(),
+                    diffuse_b.clone(),
+                ])
+            },
+            |path, root| {
+                assert_eq!(root, prm_root.as_path());
+                let mut key = [0u8; 32];
+                key[31] = if path == diffuse_a.as_path() { 1 } else { 2 };
+                Ok::<_, String>(key)
+            },
+        )
+        .expect("fake bake should succeed");
+
+        assert_eq!(
+            baked,
+            vec![
+                BakedModelTexture {
+                    source_path: diffuse_a,
+                    key_hex: format!("{}01", "0".repeat(62)),
+                    prm_path: prm_root.join(format!("{}01.prm", "0".repeat(62))),
+                },
+                BakedModelTexture {
+                    source_path: diffuse_b,
+                    key_hex: format!("{}02", "0".repeat(62)),
+                    prm_path: prm_root.join(format!("{}02.prm", "0".repeat(62))),
+                },
+            ]
         );
     }
 }

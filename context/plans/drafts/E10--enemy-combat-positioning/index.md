@@ -62,7 +62,7 @@ Add unit tests for candidate reachability, slot spreading, fallback behavior, hy
 ## Rough sketch
 
 - Keep the first version deterministic and cheap: a fixed ring of candidate offsets around the player, sorted by angle/index, then filtered/scored.
-- Candidate filtering uses existing runtime surfaces: `NavGraph` for region membership and path reachability, `nav::find_path` for path cost, `CollisionWorld` capsule/ray queries for static occupancy and optional line of sight, and agent snapshots for slot occupancy.
+- Candidate filtering uses existing runtime surfaces: `NavGraph::region_at` for region membership, `nav::find_path` for path reachability (path length summed from its returned waypoints — it yields `Option<Vec<Vec3>>`, not a scalar cost), `CollisionWorld` capsule/ray queries (`cast_capsule` / `cast_ray`) for static occupancy and optional line of sight, and agent snapshots for slot occupancy.
 - Use an EQS-like shape, not a general EQS framework: generate candidates, run tests/filters, score, choose best. The data stays Rust-internal for now.
 - Score terms should be normalized and simple: attack-band error, path length, line-of-sight bonus, separation penalty, flank/angle preference, current-slot hysteresis bonus.
 - Store only the minimum stability state: selected point and maybe a validity timer. Avoid reservations that survive despawn or death; recompute from the frozen agent snapshot each tick.

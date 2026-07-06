@@ -22,9 +22,9 @@ clusters, or destruction.
 
 ### In scope
 
-- A brush entity classname `func_mover` in the FGD and compiler.
+- A brush entity classname `kinematic_mover` in the FGD and compiler.
 - Point waypoint entities for a simple path: `kinematic_waypoint`.
-- Compile-time extraction of `func_mover` brushes into a new PRL kinematic
+- Compile-time extraction of `kinematic_mover` brushes into a new PRL kinematic
   geometry section, separate from static worldspawn BSP, static BVH, static
   collision, lightmaps, SDF, portals, and navmesh.
 - Runtime load/spawn of mover entities with `Transform` plus a new
@@ -62,24 +62,24 @@ clusters, or destruction.
 
 ### Authoring
 
-Authors create a `func_mover` brush entity and at least two
-`kinematic_waypoint` point entities. The mover's `path_start` points at the
-first waypoint's `targetname`; each waypoint may point at the next waypoint via
+Authors create a `kinematic_mover` brush entity and at least two
+`kinematic_waypoint` point entities. The mover's `path` points at the
+first waypoint's `name`; each waypoint may point at the next waypoint via
 `next`.
 
 First-slice FGD keys:
 
-- `func_mover.targetname`: stable mover name.
-- `func_mover.path_start`: first waypoint targetname.
-- `func_mover.speed`: meters per second, finite and positive.
-- `func_mover.wait_ms`: optional endpoint wait in milliseconds, finite and
+- `kinematic_mover.name`: stable mover name.
+- `kinematic_mover.path`: first waypoint name.
+- `kinematic_mover.speed`: meters per second, finite and positive.
+- `kinematic_mover.wait_ms`: optional endpoint wait in milliseconds, finite and
   non-negative.
-- `func_mover.move_mode`: `once` or `ping_pong`.
-- `func_mover.start_on_spawn`: boolean, defaults true.
-- `func_mover._tags`: space-delimited script/query tags, matching existing FGD
+- `kinematic_mover.move_mode`: `once` or `ping_pong`.
+- `kinematic_mover.start_on_spawn`: boolean, defaults true.
+- `kinematic_mover._tags`: space-delimited script/query tags, matching existing FGD
   convention.
-- `kinematic_waypoint.targetname`: stable waypoint name.
-- `kinematic_waypoint.next`: optional next waypoint targetname.
+- `kinematic_waypoint.name`: stable waypoint name.
+- `kinematic_waypoint.next`: optional next waypoint name.
 
 No trigger key ships in this plan. That keeps the first platform independent of
 E18 trigger ownership and lets the platform substrate land before level-event
@@ -89,7 +89,11 @@ semantics.
 
 Add an engine-owned mover component after `ComponentKind::Brain`:
 `ComponentKind::KinematicMover = 13`. The component is not directly queryable
-by scripts in this plan.
+by scripts in this plan, but it is deliberately shaped to *become* queryable in
+E17-B: register it as a `world.query` component kind and it slots into the same
+selection path lights and fog already use (see **Future Scripting Seam**). This
+plan must not foreclose that — no per-mover state may live somewhere a future
+`WorldQueryComponent` registration could not reach.
 
 The component stores the deterministic driver state:
 
@@ -113,9 +117,9 @@ clients do not author mover motion; they apply server state.
 
 Today brush entities with brushes are excluded from generic `MapEntity`
 dispatch unless a dedicated subsystem consumes them; `fog_volume` is the
-precedent. This plan adds that dedicated subsystem for `func_mover`.
+precedent. This plan adds that dedicated subsystem for `kinematic_mover`.
 
-`func_mover` brushes must be removed from the static world path:
+`kinematic_mover` brushes must be removed from the static world path:
 
 - not in `MapData::brush_volumes`;
 - not in world `GeometrySection`;
@@ -174,8 +178,11 @@ world, no per-tick script.
 
 ### Networking
 
-The server owns mover state. A mover must be registered in `ReplicableSet` when
-spawned on the authoritative side.
+Server-authoritative from the Runtime Model up. The mover is deterministic and
+server-owned, so its state rides the same E15 snapshot / interpolation /
+reconciliation spine every replicated entity uses — replication is the design
+spine here, not a step bolted onto local motion. A mover registers in
+`ReplicableSet` when spawned on the authoritative side.
 
 Add a wire payload for mover state in `postretro-net`:
 
@@ -183,9 +190,10 @@ Add a wire payload for mover state in `postretro-net`:
   `ComponentKind::KinematicMover`.
 - `RawComponentPayload` gains a `kinematic_mover` option slot.
 - `ComponentPayload` gains `KinematicMoverState`.
-- Bump `SNAPSHOT_VERSION` and the protocol gate.
+- Bump `SNAPSHOT_VERSION` (currently 7 → 8) and the protocol gate.
 
-Wire mover fields:
+Wire mover fields (a `bitcode`-derived struct like every wire type — see
+**Wire Format** for framing and validation):
 
 ```text
 WireKinematicMoverState {
@@ -211,9 +219,9 @@ not a client-authored divergent path.
 
 ## Acceptance Criteria
 
-- [ ] `sdk/TrenchBroom/postretro.fgd` includes `func_mover` and
+- [ ] `sdk/TrenchBroom/postretro.fgd` includes `kinematic_mover` and
   `kinematic_waypoint` with the keys above.
-- [ ] `prl-build` compiles a map with one `func_mover` brush and two waypoints
+- [ ] `prl-build` compiles a map with one `kinematic_mover` brush and two waypoints
   into a PRL with a kinematic geometry section. The mover brush is absent from
   static geometry, static BVH, static collision, portals, lightmap/SDF occluder
   bakes, and navmesh input.
@@ -239,8 +247,9 @@ not a client-authored divergent path.
 
 ### Task 1: PRL format, FGD, and compiler extraction
 
-Add `kinematic_geometry` to `postretro-level-format` with section id 37, the
-next free id after `NavMesh = 36`. Add serialization tests.
+Add `kinematic_geometry` to `postretro-level-format` with
+`SectionId::KinematicGeometry = 43` — the next free id after
+`ShadowmaskAtlas = 42` (`SectionId` is `#[repr(u32)]`). Add serialization tests.
 
 Section shape:
 
@@ -253,11 +262,11 @@ KinematicGeometrySection {
 
 KinematicMoverRecord {
   mover_id: u32,
-  targetname: String,
+  name: String,
   tags: Vec<String>,
   origin: [f32; 3],
   pivot: [f32; 3],
-  path_start: String,
+  path: String,
   speed: f32,
   wait_ms: f32,
   move_mode: u8,          // once=0, ping_pong=1
@@ -268,7 +277,7 @@ KinematicMoverRecord {
 }
 
 KinematicWaypointRecord {
-  targetname: String,
+  name: String,
   next: String,           // empty string means no next waypoint
   origin: [f32; 3],
 }
@@ -281,19 +290,19 @@ lookup keeps using `TextureNames`. Use existing string encoding patterns from
 Compiler work:
 
 - add FGD definitions;
-- collect `func_mover` brush entities in `parse.rs` before the brush-entity
+- collect `kinematic_mover` brush entities in `parse.rs` before the brush-entity
   skip path;
 - collect `kinematic_waypoint` point entities from the generic entity stream or
   a dedicated route, but do not spawn them as runtime generic entities;
 - validate finite positive speed, finite non-negative waits, known mode, and
-  resolvable `path_start`;
+  resolvable `path`;
 - emit warnings for orphan waypoints;
 - pack the new section in `pack.rs`;
 - add regression tests proving mover brushes do not enter static geometry.
 
 ### Task 2: Runtime loading, component, and deterministic driver
 
-Load section 37 in `prl.rs` into `LevelWorld`. Add
+Load section 43 (`KinematicGeometry`) in `prl.rs` into `LevelWorld`. Add
 `KinematicMoverComponent` and `ComponentKind::KinematicMover = 13`, update
 `ComponentKind::COUNT`, `ComponentValue`, registry storage, serde, and the
 netcode discriminant drift tests.
@@ -405,13 +414,13 @@ trigger/event plan against the actual mover API.
 
 - `crates/level-format/src/kinematic_geometry.rs`: section structs, encoding,
   validation helpers.
-- `crates/level-format/src/lib.rs`: `SectionId::KinematicGeometry = 37`.
-- `sdk/TrenchBroom/postretro.fgd`: `func_mover`, `kinematic_waypoint`.
-- `crates/level-compiler/src/parse.rs`: collect `func_mover` brush entities and
+- `crates/level-format/src/lib.rs`: `SectionId::KinematicGeometry = 43`.
+- `sdk/TrenchBroom/postretro.fgd`: `kinematic_mover`, `kinematic_waypoint`.
+- `crates/level-compiler/src/parse.rs`: collect `kinematic_mover` brush entities and
   `kinematic_waypoint` points instead of skipping them.
 - `crates/level-compiler/src/map_data.rs`: store kinematic mover source data.
 - `crates/level-compiler/src/pack.rs`: emit the new section.
-- `crates/postretro/src/prl.rs`: load section 37 into `LevelWorld`.
+- `crates/postretro/src/prl.rs`: load section 43 (`KinematicGeometry`) into `LevelWorld`.
 - `crates/postretro/src/scripting/components/`: new kinematic mover component.
 - `crates/postretro/src/scripting/registry.rs`: component enum/value wiring.
 - `crates/postretro/src/sim/` or a new game-logic system: fixed-tick mover
@@ -432,16 +441,114 @@ there; new logic belongs in focused modules.
 
 | Name | Rust | PRL / wire / serde | TypeScript / Luau | FGD |
 | --- | --- | --- | --- | --- |
-| mover entity | `KinematicMoverComponent`, `ComponentKind::KinematicMover = 13` | PRL `KinematicMoverRecord`; net `KinematicMoverState` kind 13; serde `kind = "kinematic_mover"` | Not directly queryable in this plan | `func_mover` |
+| mover entity | `KinematicMoverComponent`, `ComponentKind::KinematicMover = 13` | PRL `KinematicMoverRecord`; net `KinematicMoverState` kind 13; serde `kind = "kinematic_mover"` | Not directly queryable in this plan; becomes a `world.query` component kind in E17-B | `kinematic_mover` |
 | waypoint | `KinematicWaypointRecord` load data | PRL `KinematicWaypointRecord` | None | `kinematic_waypoint` |
-| mover name | `targetname: String` | `targetname` | Future command target string | `targetname` |
-| path start | `path_start: String` | `path_start` | None | `path_start` |
+| mover name | `name: String` | `name` | Future `world.query` handle / command target | `name` |
+| path (first waypoint ref) | `path: String` | `path` | None | `path` |
 | next waypoint | `next: String` | `next` (empty means absent) | None | `next` |
 | mode | `KinematicMoveMode` | `move_mode` / wire `mode` (`once=0`, `ping_pong=1`) | Future command surface uses strings | `move_mode` |
 | start flag | `start_on_spawn: bool` | `start_on_spawn` | None | `start_on_spawn` |
 | speed | `speed_mps: f32` | `speed` finite positive | Future command surface may read only | `speed` |
 | wait | `wait_ms: f32` | `wait_ms` finite non-negative | Future command surface may read only | `wait_ms` |
 | tags | `Vec<String>` | `_tags` split on whitespace | Future `world.query`/commands | `_tags` |
+
+## Wire Format
+
+Two binary surfaces. Both mirror existing siblings — no new serialization
+mechanism. PRL is hand-rolled little-endian (`to_le_bytes` / `from_le_bytes`, no
+`bincode`/`byteorder`); the net wire is `bitcode`-derived. Do not mix the two.
+
+### PRL `KinematicGeometrySection` (`SectionId::KinematicGeometry = 43`)
+
+Mirror `GeometrySection` and `MapEntitySection` encoding:
+
+- Little-endian throughout. Recorded in the PRL table-of-contents like any
+  section (`SectionEntry`: `section_id: u32`, `offset: u64`, `size: u64`,
+  `version: u16`). `version` starts at 1. Body is self-contained — no offsets
+  into other sections.
+- Every list is a `u32` count immediately before its entries (`movers`,
+  `waypoints`, per-mover `vertices` / `indices` / `face_meta`, `tags`). Empty
+  list = `u32(0)`, no trailing bytes.
+- Every `String` (`name`, `path`, `next`, tag entries) is a `u32` byte-length
+  prefix + raw UTF-8, no null terminator; decode validates UTF-8. Empty string =
+  `u32(0)`. Absent `next` is the empty string, not a sentinel.
+- `start_on_spawn` is a single byte `0`/`1` (mirror `AlphaLightsSection`).
+  `move_mode` is a `u8` (`once=0`, `ping_pong=1`).
+- `vertices` and `face_meta` reuse `geometry::Vertex` (36-byte stride) and
+  `geometry::FaceMeta` unchanged, so `TextureNames` material lookup is identical
+  to static geometry.
+
+### Net `WireKinematicMoverState` (`COMPONENT_KIND_KINEMATIC_MOVER_STATE = 13`)
+
+Bitcode owns the bit-level layout — specify the struct and its validation, not a
+byte offset table:
+
+- `WireKinematicMoverState` derives `bitcode::Encode` / `Decode`; fields are the
+  block in **Networking**, in declaration order. Endianness is bitcode-internal.
+- Framing follows `RawComponentPayload`: a `component_kind: u16` discriminant
+  plus one `Option<T>` slot per component. Add a
+  `kinematic_mover: Option<WireKinematicMoverState>` slot; exactly one slot is
+  `Some` and must match `component_kind`, else `validate` rejects the payload
+  (a validation error, not a decode error). Add the typed
+  `ComponentPayload::KinematicMoverState` variant and its `.kind()` arm.
+- Add an `all_finite` check (mirror `WireTransform::all_finite` /
+  `WirePlayerMovementState::all_finite`): every `f32`
+  (`segment_elapsed_ms`, `wait_remaining_ms`, `velocity`) must be finite.
+  `direction ∈ {-1, 1}` and `mode ∈ {0, 1}`; out-of-range rejects before apply.
+- Bump `SNAPSHOT_VERSION` 7 → 8. The engine/net discriminant-drift guard keeps
+  `ComponentKind::KinematicMover` and `COMPONENT_KIND_KINEMATIC_MOVER_STATE`
+  numeric-equal at 13; confirm 13 is free on the net side when implementing.
+
+## Future Scripting Seam
+
+> **Non-normative.** Nothing in this section ships in this plan. It records the
+> intended authoring arc so the foundation's choices do not foreclose it. The
+> command API shape is settled in E17-B, not here.
+
+Two authoring tiers, one substrate. **Basic movers are pure KVP authoring** —
+place a `kinematic_mover` brush, wire a `kinematic_waypoint` chain, set
+`speed`/`move_mode`, done. No script required; the FGD is the whole interface.
+**Complex movers are scripted**, but only in the declare-not-drive sense the
+engine already enforces (`scripting.md §1`): a script *selects* movers and binds
+*closed-vocabulary commands* to level events. Rust still owns every tick — there
+is no per-tick script control, by architecture.
+
+The selection mechanism already exists and needs no new invention. `world.query`
+selects entities by component kind plus author tag today (`world.query({
+component: "light", tag: "t" })`, `postretro.fgd:132`). A future
+`kinematicMover` component kind slots into that same path — this is the
+"worldQuery to select the desired brushes" arc. The command vocabulary is E17-B:
+closed verbs (`start`, `stop`, `reverse`, `goToPathNode`) crossing the FFI as
+data, evaluated by Rust — the same shape as existing reaction primitives
+(`setEmitterRate`, `setFogDensity`) and, for motion that depends on live state,
+the Typed Command Buffer (`scripting.md §11`, whose first adopter is movement).
+
+Illustrative only — the exact handle-vs-reaction binding is E17-B's call:
+
+```ts
+// FUTURE (E17-B). Not implemented in this slice. TypeScript shown; Luau is a
+// behavioral twin. A level data script selects movers by component + tag and
+// binds a closed-vocabulary command to a named event. Rust owns tick eval.
+import { world, defineReaction } from "postretro";
+
+const bridgeLifts = world.query({ component: "kinematicMover", tag: "bridge-lift" });
+
+defineReaction("raiseBridge", () => {
+  bridgeLifts.start();            // begin authored path motion
+  bridgeLifts.goToPathNode("top");
+});
+```
+
+What this foundation must keep open (each is already in scope above, called out
+here so it is not optimized away):
+
+- `kinematic_mover._tags` reaches the PRL record and the runtime component, so a
+  future query can filter movers by author tag.
+- `ComponentKind::KinematicMover` state is shaped to register as a
+  `world.query` component kind later (see **Runtime Model**); no mover state
+  hides where a `WorldQueryComponent` registration could not reach it.
+- Tick evaluation stays deterministic and Rust-owned, so future commands remain
+  declarative rather than becoming a live-VM escape hatch.
 
 ## Open Questions
 

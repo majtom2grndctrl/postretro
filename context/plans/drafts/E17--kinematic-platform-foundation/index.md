@@ -12,7 +12,8 @@ Build the first deterministic moving-world slice: a map-authored brush platform
 or elevator compiles into runtime-transformable geometry, moves along a linear
 waypoint path, renders as dynamic world geometry, blocks and carries the player,
 and replicates enough authoritative phase for connected clients to predict and
-reconcile the platform on the pawn's prediction path.
+reconcile the platform with the same predict/reconcile mechanism the pawn uses
+— a separate phase-seeded instance, not the pawn's predictor.
 
 This is the substrate plan. It proves one moving brush payload end-to-end before
 the epic adds triggers, rotating carry, doors, dynamic portals, kinematic
@@ -35,7 +36,7 @@ renderer, and wire plumbing attach (see **Sequencing**).
   one-shot and ping-pong.
 - Existing fixed frame order only: input, game logic, audio, render, present.
 - A renderer-owned draw path for kinematic brush payloads. All WGPU calls stay
-  in `crates/postretro/src/render`.
+  in the renderer crate (`crates/renderer`).
 - Collision queries that consider both static `CollisionWorld` geometry and
   active mover colliders.
 - Player carry for linear movers: standing on a mover follows its linear delta;
@@ -47,8 +48,9 @@ renderer, and wire plumbing attach (see **Sequencing**).
   (`Airborne` / `World` / `Mover`) so carry is one authoritative, predicted
   value rather than a separately-derived base.
 - Server-authoritative, client-predicted mover state: the host owns motion; each
-  client predicts it from the replicated phase and reconciles in place, on the
-  same prediction/reconciliation path as the pawn.
+  client predicts it from the replicated phase and reconciles in place, via the
+  same prediction/reconciliation mechanism as the pawn (its own phase-seeded
+  instance).
 - A small dev map proving one platform or elevator in single-player and over the
   in-memory net harness.
 
@@ -114,7 +116,8 @@ plan must not foreclose that — no per-mover state may live somewhere a future
 The component stores the deterministic driver state:
 
 - compiled mover id;
-- path waypoint indices;
+- resolved waypoint positions (world-space, seeded at spawn — static path data);
+- speed (m/s) and endpoint wait (ms) — static path config, seeded at spawn;
 - mode;
 - segment index;
 - direction sign;
@@ -123,17 +126,25 @@ The component stores the deterministic driver state:
 - current linear velocity;
 - flags for started/completed (mover blocking/crush is E17-D — no `blocked` state this slice).
 
+The phase fields replicate; the static path data (positions, speed, wait) does
+not — every peer loads it from the same PRL. It rides on the component so the
+driver stays a pure function of component state and a future `world.query`
+registration can reach it.
+
 The mover system runs in the fixed-tick game-logic phase after
 `snapshot_transforms` and before player movement consumes collision for that
 tick. It updates each mover's `Transform` and records previous/current deltas so
 movement carry and renderer interpolation share the same tick state.
-Mover-into-player push resolves in the same window (see **Collision and
-Movement Carry**).
+Mover-into-player push resolves in that window too, owned by the movement
+substrate as the first step of the player-movement stage — no new update-order
+stage (see **Collision and Movement Carry**).
 
 The same deterministic driver runs authoritatively on the host and predictively
-on each connected client. A client seeds the driver from the replicated phase
-(`segment_index`, `direction`, `segment_elapsed_ms`, `mode`) and extrapolates
-the closed-form path forward, reconciling in place when a snapshot arrives. It
+on each connected client. A client seeds the driver from the replicated phase —
+every `WireKinematicMoverState` phase field, endpoint waits
+(`wait_remaining_ms`) and `started`/`completed` flags included — and
+extrapolates the closed-form path forward, reconciling in place when a snapshot
+arrives. It
 uses the same predict/reconcile *mechanism* as the pawn — its own phase-seeded
 instance, not the pawn's command-ring predictor — mapped by `NetworkId`, with no
 provisional client copy (`networking.md`). Motion is a pure function of
@@ -240,8 +251,9 @@ each other — path validity is the author's responsibility. Carry covers the
 grounded cases (a rising elevator lifts its rider; a horizontal platform moves a
 standing player with it). Push covers the rest: a mover face advancing into the
 player's capsule displaces the player out of penetration along the contact
-normal, in the same tick as the mover's motion, before player movement consumes
-collision — a tick never ends with the player inside a mover. Push is a
+normal, in the same tick as the mover's motion — owned by the movement
+substrate as the first step of the player-movement stage, before it consumes
+collision — so a tick never ends with the player inside a mover. Push is a
 deterministic function of mover phase and player state, so it predicts, replays,
 and reconciles exactly like carry.
 
@@ -359,8 +371,8 @@ the host used — never a client-authored divergent path.
   `Mover` reference and reconciles it, not via a locally-guessed base.
 - [ ] No new `unsafe` is introduced.
 - [ ] No non-renderer module imports `wgpu` or creates GPU resources.
-- [ ] The mover draw path requires no new adapter feature and leaves the
-  renderer's bind-group count unchanged.
+- [ ] The mover draw path requires no new adapter feature and requests no
+  additional bind-group slot (`max_bind_groups` stays 8).
 - [ ] With no active movers the combined query layer preserves static-only
   movement behavior: existing movement and substrate tests pass unchanged.
 - [ ] Existing static maps with no movers load and render unchanged.
@@ -379,11 +391,18 @@ Format, renderer, and networking attach only after the proof holds (see
 Add `KinematicMoverComponent` in `crates/entities/src/components/`, and
 `ComponentKind::KinematicMover = 13` in `crates/entities/src/registry.rs`
 (after `Brain = 12`); update `ComponentKind::COUNT`, `ComponentValue`, registry
-storage, and serde, and keep the engine/net discriminant drift guard green — the
-matching net-side constant lands in Task 6. The component stores
-{ compiled mover id, path waypoint indices, mode, segment index, direction sign,
-`segment_elapsed_ms`, `wait_remaining_ms`, current linear velocity, `started`,
-`completed` } — the driver state the wire payload mirrors.
+storage, and serde. Exhaustive matches gain arms — compiler-enforced:
+`component_kind_name` / `component_to_js` / `component_to_lua`
+(`crates/entities/src/ffi.rs`) and the engine-side `component_kind_discriminant`
+map plus its drift test (`crates/postretro/src/netcode/mod.rs`); none of these
+touch `crates/net`, and `component_kind_from_name` keeps its `_ => None` arm
+(movers are not script-queryable this plan). The matching net-side constant
+lands in Task 6. The component stores
+{ compiled mover id, resolved waypoint positions, `speed_mps`, `wait_ms`, mode,
+segment index, direction sign, `segment_elapsed_ms`, `wait_remaining_ms`,
+current linear velocity, `started`, `completed` } — the wire payload mirrors
+the phase fields; the static path data (positions, speed, wait) is seeded at
+construction and never replicated.
 
 Add a fixed-tick mover system that evaluates deterministic linear motion using
 tick `dt`, path segment length, speed, waits, and mode. The system must run
@@ -391,7 +410,8 @@ after the transform snapshot stage (`snapshot_transforms`) and before
 player-movement collision in the game-logic stage. Modes: `once` stops at the
 final waypoint; `ping_pong` reverses at each endpoint. Both are required.
 
-The driver is a pure function of {seeded phase, static waypoints, `dt`}: it runs
+The driver is a pure function of the component's {phase, static path} plus
+`dt`: it runs
 identically on the host (authoritative) and each client (predicted), so given
 the same phase seed both reproduce the same path and reconciliation is exact.
 Keep it free of wall-clock, RNG, and host-only state so client prediction cannot
@@ -439,10 +459,13 @@ Implement linear carry on a generalized ground reference:
   movement-scope `grounded` scripting primitive projecting a `bool`
   (`ground != Airborne`) so the primitive surface does not change. Removing the
   bool makes reader coverage compiler-enforced; most readers just map to
-  `grounded == ground != Airborne`, but two need judgment — `view_feel` (the
-  head-bob grounded flag) and `movement_state_to_wire` (the wire merge) — and
-  `substrate.rs` is where the value is *written*, now distinguishing mover vs
-  world floor from the new query layer. The widened field is named
+  `grounded == ground != Airborne`, but a few need judgment — `view_feel` (the
+  head-bob grounded flag), `movement_state_to_wire` (the wire merge), the
+  wire-to-component merges (`merge_wire_into_movement_state`, the reconcile
+  apply — the wire is still a bool until Task 6, so they map it to
+  `World`/`Airborne`), and `crates/scripting-core`'s movement-state refresh —
+  and `substrate.rs` is where the value is *written*, now distinguishing mover
+  vs world floor from the new query layer. The widened field is named
   `ground: GroundRef` on `PlayerMovementComponent` (matching the wire `ground`,
   so serde/round-trip line up). At the wire boundary, `movement_state_to_wire`
   keeps emitting the existing `is_grounded: bool` as `ground != Airborne` until
@@ -458,11 +481,11 @@ Implement linear carry on a generalized ground reference:
   `movement.md` §6 declarative carry-rule;
 - handle platform reversal and endpoint waits without jitter.
 
-Implement the displace-only push from **Collision and Movement Carry**: after
-mover motion and before player movement consumes collision, a mover overlapping
+Implement the displace-only push from **Collision and Movement Carry** as the
+first step of the player-movement stage in `substrate.rs`: a mover overlapping
 the player's capsule displaces the player out of penetration along the contact
-normal. An unresolved pinch (displacement blocked by static geometry) logs in
-dev builds; resolving it is E17-D.
+normal before player motion integrates. An unresolved pinch (displacement
+blocked by static geometry) logs in dev builds; resolving it is E17-D.
 
 Widen the pawn's replay path: `replay` — today movement-only, reading a static
 `&CollisionWorld` — must widen so a replay tick can read each mover's pose at
@@ -575,17 +598,18 @@ At level load, spawn one entity per mover record with:
 
 - `Transform` at the record origin;
 - `KinematicMoverComponent` seeded from the path — resolve the name-linked
-  waypoint chain (`path` -> `next` -> ...) into indices at load;
+  waypoint chain (`path` -> `next` -> ...) into world-space positions at load,
+  carried on the component with `speed_mps`/`wait_ms`;
 - seed the `started` flag from `start_on_spawn`;
 - copy the record's `tags` onto the spawned entity's tag storage (movers
-  bypass classname dispatch, which normally copies `_tags`);
-- authoritative registration in `ReplicableSet` on the server/host side.
+  bypass classname dispatch, which normally copies `_tags`).
 
 Both host and client spawn the mover entity from the PRL record at load — the
-client needs it for geometry and local prediction. Only the host registers it
-authoritative in `ReplicableSet`; Task 6 binds the host `NetworkId` to the
-client's load-spawned mover by `mover_id`, so the client never re-spawns it from
-a snapshot baseline.
+client needs it for geometry and local prediction. Do **not** register movers
+in `ReplicableSet` here: registration is Task 6, landing with the client-apply
+bind, so a mover is never on the wire before the client can route it (a
+`Transform` baseline arriving without the bind would materialize a duplicate
+entity).
 
 Feed the loaded mover collision geometry through Task 1's local-space trimesh
 path. The Task 1 driver consumes the seeded component unchanged — this task
@@ -593,9 +617,10 @@ adds no motion logic.
 
 ### Task 5: Renderer-owned kinematic brush draw path
 
-Add renderer-owned GPU resources and a draw path for kinematic brush payloads.
-The game/runtime side passes plain CPU records and per-frame draw instances
-only; it never touches WGPU. Mover geometry and the spawned mover entities come
+Add renderer-owned GPU resources and a draw path for kinematic brush payloads
+in the renderer crate (`crates/renderer/src/render/`). The game/runtime side
+(`crates/postretro`, which has no wgpu dependency) passes plain CPU records and
+per-frame draw instances only; it never touches WGPU. Mover geometry and the spawned mover entities come
 from Task 4's `LevelWorld` load of section 43; Task 5 consumes that carrier
 read-only and defines no loader of its own (hence it sequences after Task 4).
 
@@ -606,7 +631,8 @@ Requirements:
   transforms;
 - draw with the authored material textures;
 - keep movers out of the static world BVH/indirect buffer;
-- avoid new required adapter features and preserve the current bind-group limit;
+- avoid new required adapter features; request no additional bind-group slot
+  (`max_bind_groups` stays 8);
 - movers are stage-0-snapshotted registry entities driven locally (host:
   authoritative; client: predicted), so their fixed-tick transforms come from
   the driver, not the remote-interpolation buffer; draw them via the existing
@@ -638,7 +664,11 @@ discriminant guards. This task consumes the `GroundRef` shape defined in Task 2.
 `completed: bool`, `velocity: [f32; 3]` } — this exact field set and order is
 the bitcode layout.
 
-Host snapshot production collects `Transform` then `KinematicMoverState` for
+Register each load-spawned mover in the host's `ReplicableSet` (engine-side:
+`crates/postretro/src/netcode/replication.rs`, not `crates/net`) — registration
+lands here, with the client bind, so the two sides ship together and a mover is
+never on the wire without a client route. Host snapshot production collects
+`Transform` then `KinematicMoverState` for
 registered mover entities. On each client, apply **binds** the incoming mover
 `NetworkId` to the client's load-spawned local mover **by `mover_id`** (the wire
 state carries `mover_id`) — it does **not** materialize a fresh entity from the
@@ -669,7 +699,10 @@ within a small bounded tolerance and does not accumulate.
 Extend the in-memory prediction/reconciliation harness with a moving-platform
 scenario at the E15 latency/loss profile: assert the client-predicted platform
 tracks the host within a small bounded tolerance (no interpolation lag) and that
-a rider reconciles without steady-state drift or accumulating correction.
+a rider reconciles without steady-state drift or accumulating correction. The
+scenario also has the rider leave the platform mid-ride and asserts the
+release-velocity outcome matches the single-player policy (the connected-client
+half of the release AC).
 
 ### Task 7: Demo map, diagnostics, and documentation
 
@@ -762,12 +795,15 @@ forward:
   `bool` (`ground != Airborne`) — no primitive-surface change.
 - `crates/postretro/src/movement/substrate.rs`: consume the combined query,
   `Mover`-referenced carry, and mover push.
-- `crates/postretro/src/render/`: renderer-owned mover buffers/draws.
+- `crates/renderer/src/render/`: renderer-owned mover buffers/draws (the
+  wgpu-owning crate; `crates/postretro` has no wgpu dependency).
 - `crates/net/src/wire.rs`, `crates/net/src/replication.rs`,
   `crates/postretro/src/netcode/`: mover payload + widened ground reference,
   validation, a new phase-seeded mover predictor/reconciler (separate from the
   pawn's command-ring `ClientPrediction`), mover-history buffer, widened `replay`
-  that reads it, drift guards, harness.
+  that reads it, drift guards, harness (`ReplicableSet` registration is
+  engine-side in `crates/postretro/src/netcode/replication.rs`, not in
+  `crates/net`).
 
 Oversized-file warning: `main.rs` is already large. Add call-site wiring only
 there; new logic belongs in focused modules.
@@ -784,8 +820,8 @@ there; new logic belongs in focused modules.
 | next waypoint | `next: String` | `next` (empty means absent) | None | `next` |
 | mode | `KinematicMoveMode` | PRL/FGD `move_mode`; wire `mode` (`once=0`, `ping_pong=1`) | Future command surface uses strings | `move_mode` |
 | start flag | `start_on_spawn: bool` | `start_on_spawn` | None | `start_on_spawn` |
-| speed | `speed_mps: f32` | PRL `speed` finite positive (static; not replicated) | Future command surface may read only | `speed` |
-| wait | `wait_ms: f32` | PRL `wait_ms` finite non-negative (static); runtime countdown replicated as wire `wait_remaining_ms` | Future command surface may read only | `wait_ms` |
+| speed | `KinematicMoverComponent.speed_mps: f32` | PRL `speed` finite positive (static; not replicated) | Future command surface may read only | `speed` |
+| wait | `KinematicMoverComponent.wait_ms: f32` | PRL `wait_ms` finite non-negative (static); runtime countdown replicated as wire `wait_remaining_ms` | Future command surface may read only | `wait_ms` |
 | tags | `Vec<String>` | `_tags` split on whitespace | Future `world.query`/commands | `_tags` |
 | ground reference | `GroundRef` on `PlayerMovementComponent` (foundation): `Airborne` / `World` / `Mover(u32 mover_id)` — foundation-local, no `NetworkId` | `WirePlayerMovementState.is_grounded: bool` widened to `ground` (bitcode) | n/a | n/a |
 

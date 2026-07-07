@@ -63,7 +63,9 @@ pub(crate) use prediction::{
 };
 #[allow(unused_imports)]
 pub(crate) use reconcile::reconcile_local_pawn;
-pub(crate) use replication::{ReplicableSet, host_register_map_enemies, produce_owned_snapshots};
+pub(crate) use replication::{
+    ReplicableSet, host_register_loaded_movers, host_register_map_enemies, produce_owned_snapshots,
+};
 pub(crate) use wire_convert::sim_command_to_input;
 
 // The conversion/merge helpers (`wire_convert`, `movement_state`) live in their focused
@@ -87,7 +89,8 @@ use postretro_net::timesync::{
 use postretro_net::transport::{NetClient, NetServer};
 use postretro_net::wire::{
     self, ComponentPayload, EntityRecord, NetworkId, RawSnapshotMessage, SnapshotMessage,
-    ValidationError, WireError, WireMovementState, WirePlayerMovementState, WireTransform,
+    ValidationError, WireError, WireKinematicMoverState, WireMovementState,
+    WirePlayerMovementState, WireTransform,
 };
 
 use crate::movement::MovementCollisionSource;
@@ -278,6 +281,10 @@ pub(crate) enum NetEndpoint {
         /// entity). Empty until the first level install registers enemies, and on a map
         /// with no AI enemies.
         map_enemies: std::collections::HashSet<EntityId>,
+        /// PRL-loaded kinematic movers registered for outbound replication. Clients
+        /// bind these by `mover_id` to their already-loaded local mover entities
+        /// rather than spawning from the baseline.
+        loaded_movers: std::collections::HashSet<EntityId>,
         /// Task 6 Phase 2 net-demo fixture. When the demo path is active
         /// (`POSTRETRO_NET_DEMO_MOVER=1`), the host spawns one deterministic
         /// AI-less mover ([`DemoMover`]) and stores its `EntityId` here; each tick
@@ -415,6 +422,7 @@ impl NetEndpoint {
                     owners: MovementOwners::new(),
                     host_pawn: None,
                     map_enemies: std::collections::HashSet::new(),
+                    loaded_movers: std::collections::HashSet::new(),
                     demo_mover: DemoMoverState::from_env(),
                     state_slots: Box::new(state_slots::HostStateReplication::new()),
                 }))
@@ -592,7 +600,14 @@ fn payload_is_finite(payload: &ComponentPayload) -> bool {
         // dropped at the ingest boundary rather than propagated.
         ComponentPayload::PlayerMovementState(m) => player_movement_is_finite(m),
         ComponentPayload::MeshAnimationState(_) => true,
+        ComponentPayload::KinematicMoverState(m) => kinematic_mover_is_finite(m),
     }
+}
+
+fn kinematic_mover_is_finite(m: &WireKinematicMoverState) -> bool {
+    m.segment_elapsed_ms.is_finite()
+        && m.wait_remaining_ms.is_finite()
+        && m.velocity.iter().all(|c| c.is_finite())
 }
 
 /// Every f32 field of a wire movement payload is finite. Mirrors the untrusted-
@@ -2014,7 +2029,7 @@ mod tests {
                             }),
                             ComponentPayload::PlayerMovementState(WirePlayerMovementState {
                                 velocity: [0.0, 0.0, 0.0],
-                                is_grounded: true,
+                                ground: postretro_net::wire::WireGroundRef::World,
                                 air_jumps_remaining: 1,
                                 air_dashes_remaining: 1,
                                 dash_cooldown_ms: 0.0,

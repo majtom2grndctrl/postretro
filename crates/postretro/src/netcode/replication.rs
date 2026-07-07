@@ -5,10 +5,12 @@
 use std::collections::HashSet;
 
 use postretro_net::replication::EntitySnapshot;
-use postretro_net::wire::{ComponentPayload, WireMeshAnimationState};
+use postretro_net::wire::{ComponentPayload, WireKinematicMoverState, WireMeshAnimationState};
 
 use postretro_entities::components::mesh::MeshComponent;
-use postretro_entities::{ComponentKind, EntityId, EntityRegistry, Transform};
+use postretro_entities::{
+    ComponentKind, EntityId, EntityRegistry, KinematicMoverComponent, KinematicMoverMode, Transform,
+};
 use postretro_foundation::PlayerMovementComponent;
 
 use super::descriptor_class::{descriptor_entity_class, is_networked_ai_map_enemy};
@@ -168,6 +170,15 @@ fn collect_payloads(registry: &EntityRegistry, id: EntityId) -> Vec<ComponentPay
         );
         payloads.push(payload);
     }
+    if let Ok(mover) = registry.get_component::<KinematicMoverComponent>(id) {
+        let payload = ComponentPayload::KinematicMoverState(kinematic_mover_state_to_wire(mover));
+        debug_assert_eq!(
+            component_kind_discriminant(ComponentKind::KinematicMover),
+            payload.kind(),
+            "engine/wire kinematic mover discriminant diverged"
+        );
+        payloads.push(payload);
+    }
     if let Ok(mesh) = registry.get_component::<MeshComponent>(id) {
         if let Some(animation) = mesh.animation.as_ref() {
             let payload = ComponentPayload::MeshAnimationState(WireMeshAnimationState {
@@ -182,6 +193,29 @@ fn collect_payloads(registry: &EntityRegistry, id: EntityId) -> Vec<ComponentPay
         }
     }
     payloads
+}
+
+pub(crate) fn kinematic_mover_state_to_wire(
+    mover: &KinematicMoverComponent,
+) -> WireKinematicMoverState {
+    WireKinematicMoverState {
+        mover_id: mover.mover_id,
+        segment_index: mover.segment_index,
+        direction: mover.direction_sign,
+        mode: match mover.mode {
+            KinematicMoverMode::Once => 0,
+            KinematicMoverMode::PingPong => 1,
+        },
+        segment_elapsed_ms: mover.segment_elapsed_ms,
+        wait_remaining_ms: mover.wait_remaining_ms,
+        started: mover.started,
+        completed: mover.completed,
+        velocity: [
+            mover.current_linear_velocity.x,
+            mover.current_linear_velocity.y,
+            mover.current_linear_velocity.z,
+        ],
+    }
 }
 
 /// Register the host's map-placed AI enemies for outbound replication (E10 Task 4):
@@ -238,6 +272,47 @@ pub(crate) fn host_register_map_enemies(
     }
     if count > 0 {
         log::info!("[Net] host registered {count} map-placed AI enemy/enemies for replication");
+    }
+}
+
+/// Register PRL-loaded kinematic movers for outbound replication. Clients also
+/// load these movers locally from the same PRL, so the matching client apply path
+/// binds by `mover_id` instead of materializing a baseline-spawned duplicate.
+///
+/// Reload-safe and idempotent: stale mover entity ids from a prior level are
+/// unregistered and forgotten before this level's loaded movers are stamped.
+pub(crate) fn host_register_loaded_movers(
+    registry: &EntityRegistry,
+    allocator: &mut NetworkIdAllocator,
+    replicable: &mut ReplicableSet,
+    tracked: &mut HashSet<EntityId>,
+) {
+    let stale_ids: Vec<EntityId> = tracked
+        .iter()
+        .copied()
+        .filter(|&id| {
+            !registry.exists(id)
+                || !registry
+                    .has_component_kind(id, ComponentKind::KinematicMover)
+                    .unwrap_or(false)
+        })
+        .collect();
+    for stale in stale_ids {
+        tracked.remove(&stale);
+        replicable.unregister(stale);
+        allocator.forget(stale);
+    }
+
+    let mut count = 0usize;
+    for (id, _) in registry.iter_with_kind(ComponentKind::KinematicMover) {
+        allocator.stamp(id);
+        replicable.register(id);
+        if tracked.insert(id) {
+            count += 1;
+        }
+    }
+    if count > 0 {
+        log::info!("[Net] host registered {count} kinematic mover/movers for replication");
     }
 }
 

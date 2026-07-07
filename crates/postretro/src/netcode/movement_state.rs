@@ -7,7 +7,7 @@
 
 use glam::Vec3;
 
-use postretro_net::wire::{WireMovementState, WirePlayerMovementState};
+use postretro_net::wire::{WireGroundRef, WireMovementState, WirePlayerMovementState};
 
 use postretro_foundation::{GroundRef, MovementState, PlayerMovementComponent};
 
@@ -26,7 +26,7 @@ pub(crate) fn movement_state_to_wire(
             component.velocity.y,
             component.velocity.z,
         ],
-        is_grounded: component.is_grounded(),
+        ground: ground_ref_to_wire(component.ground),
         air_jumps_remaining: component.air_jumps_remaining,
         air_dashes_remaining: component.air_dashes_remaining,
         dash_cooldown_ms: component.dash_cooldown_ms,
@@ -54,11 +54,7 @@ pub(crate) fn merge_wire_into_movement_state(
     wire: &WirePlayerMovementState,
 ) {
     component.velocity = Vec3::new(wire.velocity[0], wire.velocity[1], wire.velocity[2]);
-    component.ground = if wire.is_grounded {
-        GroundRef::World
-    } else {
-        GroundRef::Airborne
-    };
+    component.ground = wire_ground_ref_to_foundation(wire.ground);
     component.air_jumps_remaining = wire.air_jumps_remaining;
     component.air_dashes_remaining = wire.air_dashes_remaining;
     component.dash_cooldown_ms = wire.dash_cooldown_ms;
@@ -99,6 +95,22 @@ fn wire_to_movement_state_enum(state: WireMovementState) -> MovementState {
             boost: Vec3::new(boost[0], boost[1], boost[2]),
         },
         WireMovementState::Crouching { eye_current } => MovementState::Crouching { eye_current },
+    }
+}
+
+fn ground_ref_to_wire(ground: GroundRef) -> WireGroundRef {
+    match ground {
+        GroundRef::Airborne => WireGroundRef::Airborne,
+        GroundRef::World => WireGroundRef::World,
+        GroundRef::Mover(mover_id) => WireGroundRef::Mover(mover_id),
+    }
+}
+
+fn wire_ground_ref_to_foundation(ground: WireGroundRef) -> GroundRef {
+    match ground {
+        WireGroundRef::Airborne => GroundRef::Airborne,
+        WireGroundRef::World => GroundRef::World,
+        WireGroundRef::Mover(mover_id) => GroundRef::Mover(mover_id),
     }
 }
 
@@ -177,7 +189,7 @@ mod tests {
     fn sample_wire_state() -> WirePlayerMovementState {
         WirePlayerMovementState {
             velocity: [1.0, -2.0, 3.5],
-            is_grounded: true,
+            ground: WireGroundRef::World,
             air_jumps_remaining: 1,
             air_dashes_remaining: 0,
             dash_cooldown_ms: 250.0,

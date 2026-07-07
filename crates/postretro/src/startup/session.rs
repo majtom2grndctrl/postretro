@@ -17,7 +17,7 @@ use crate::camera::Camera;
 use crate::frame_timing::{FrameRateMeter, FrameTiming, InterpolableState};
 use crate::input;
 use crate::startup::StartupTimings;
-use crate::{App, collision, kinematic_mover, view_feel};
+use crate::{App, collision, kinematic_mover, runtime_movers, view_feel};
 use postretro_foundation::ModThemeTokens;
 
 /// Dev-default boot map when no content root or map argument is supplied. Used by
@@ -154,6 +154,7 @@ pub(crate) fn build_session() -> Result<BootSession> {
         collision_world: collision::CollisionWorld::new(),
         kinematic_mover_colliders: Vec::new(),
         kinematic_mover_tick_states: kinematic_mover::MoverTickStateTable::default(),
+        kinematic_mover_render: runtime_movers::KinematicMoverRenderCollector::new(),
         active_wieldable: None,
         active_wieldable_descriptor: None,
         builtin_handled: None,

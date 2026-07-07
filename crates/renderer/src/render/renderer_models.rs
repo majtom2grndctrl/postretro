@@ -235,6 +235,29 @@ impl Renderer {
         self.full_mut().mesh_draws.extend_from_slice(instances);
     }
 
+    /// Upload this frame's kinematic brush mover instances. The game layer has
+    /// already performed conservative visibility collection from registry
+    /// transforms; this method only transfers plain CPU matrices into the
+    /// renderer-owned instance buffer.
+    pub fn set_kinematic_mover_draws(
+        &mut self,
+        instances: &[kinematic_brush::KinematicMoverInstance],
+    ) {
+        let Self {
+            device,
+            queue,
+            full,
+            ..
+        } = self;
+        let full = full
+            .as_mut()
+            .expect("renderer full-init must complete before full-ready paths run");
+        full.kinematic_mover_draws.clear();
+        full.kinematic_mover_draws.extend_from_slice(instances);
+        full.kinematic_brush
+            .upload_instances(device, queue, &full.kinematic_mover_draws);
+    }
+
     /// Reset per-level transient mesh-pass state at level load. `pub` forwarder
     /// over the private `mesh_pass`; called from the level-load model sweep at the
     /// model-cache install site (where each distinct model uploads). Empties the

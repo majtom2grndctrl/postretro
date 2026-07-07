@@ -433,6 +433,26 @@ pub(crate) fn build_full_renderer(
         &spot_shadow_pool.matrices_buffer,
         cube_shadow_pool.as_ref().map(|p| &p.sampling_view),
     );
+    let mut kinematic_brush = kinematic_brush::KinematicBrushPass::new(
+        device,
+        surface_format,
+        DEPTH_FORMAT,
+        &uniform_bind_group_layout,
+        &texture_bind_group_layout,
+        &sh_volume_resources.mesh_bind_group_layout,
+        cube_array_supported,
+    );
+    kinematic_brush.rebuild_light_bind_group(
+        device,
+        &lights_buffer,
+        &influence_buffer,
+        &sh_volume_resources.scripted_light_descriptors,
+        &sh_volume_resources.animation.anim_samples,
+        &spot_shadow_pool.array_view,
+        &spot_shadow_pool.compare_sampler,
+        &spot_shadow_pool.matrices_buffer,
+        cube_shadow_pool.as_ref().map(|p| &p.sampling_view),
+    );
 
     // UI quad / 9-slice + text pass — sibling to fog. Owns all UI GPU state
     // (quad pipeline, glyphon atlas/renderer, white texel). The splash phase
@@ -513,6 +533,7 @@ pub(crate) fn build_full_renderer(
         light_count,
         total_light_count: light_count,
         mesh_dynamic_time: 0.0,
+        kinematic_mover_draws: Vec::new(),
         ambient_floor,
         indirect_scale: DEFAULT_INDIRECT_SCALE,
         dynamic_direct_scale: DEFAULT_DYNAMIC_DIRECT_SCALE,
@@ -562,6 +583,7 @@ pub(crate) fn build_full_renderer(
         last_view_proj: Mat4::IDENTITY,
         spot_shadow_pool,
         cube_shadow_pool,
+        kinematic_brush,
         promoted_static_states: vec![
             PromotedStaticLightState::default();
             entity_shadow_indices.len()

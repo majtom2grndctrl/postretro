@@ -17,6 +17,7 @@ use glam::{Vec2, Vec3};
 use parry3d::math::{Isometry, Point};
 use parry3d::shape::TriMesh;
 
+use std::collections::HashSet;
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::time::Duration;
 
@@ -28,13 +29,15 @@ use postretro_net::wire::{
     WireMovementInput,
 };
 
-use super::client::ClientReplication;
+use super::client::{ClientReplication, MoverCorrection};
 use super::command_queue::{HostCommandQueues, MovementOwners, host_resolve_movement_inputs};
 use super::prediction::ClientPrediction;
 use super::reconcile::reconcile_local_pawn;
-use super::replication::{ReplicableSet, produce_owned_snapshots};
+use super::replication::{ReplicableSet, host_register_loaded_movers, produce_owned_snapshots};
 use super::wire_convert::sim_command_to_input;
 use crate::collision::CollisionWorld;
+use crate::collision::moving::{CombinedCollisionWorld, MoverCollider};
+use crate::kinematic_mover::{MoverTickStateTable, run_kinematic_mover_tick};
 use crate::movement::MovementInput;
 use crate::netcode::{NetworkIdAllocator, host_handle_client_message};
 use crate::scripting::builtins::net_descriptor::materialize_net_local_movement_component;
@@ -44,10 +47,14 @@ use postretro_entities::components::health::HealthComponent;
 use postretro_entities::provenance::{
     DescriptorComponentKind, DescriptorProvenance, DescriptorSpawnPath,
 };
-use postretro_entities::{EntityId, EntityRegistry, EntityTypeDescriptor, Transform};
+use postretro_entities::{
+    EntityId, EntityRegistry, EntityTypeDescriptor, KinematicMoverComponent, KinematicMoverMode,
+    Transform,
+};
 use postretro_foundation::{
     AirParams, BoolOrIr, CapsuleParams, DashParams, FallParams, ForgivenessParams, GroundParams,
-    HealthDescriptor, NumberOrIr, PlayerMovementComponent, PlayerMovementDescriptor, SpeedParams,
+    GroundRef, HealthDescriptor, NumberOrIr, PlayerMovementComponent, PlayerMovementDescriptor,
+    SpeedParams,
 };
 
 pub(crate) const DT: f32 = 1.0 / 60.0;
@@ -55,6 +62,8 @@ pub(crate) const GRAVITY: f32 = -20.0;
 pub(crate) const TICK_MS: VirtualMillis = 16; // ~16.667 ms; integer ms keeps the clock exact-ish
 pub(crate) const CLIENT_ID: u64 = 1;
 pub(crate) const START: Vec3 = Vec3::new(0.0, 1.21, 0.0);
+pub(crate) const MOVING_PLATFORM_ID: u32 = 77;
+pub(crate) const MOVING_PLATFORM_SPEED_MPS: f32 = 0.6;
 
 /// Host playout (jitter buffer) warmup, in host ticks: the host buffers inbound
 /// commands for this many ticks before it begins resolving them, so the buffer has
@@ -201,6 +210,23 @@ pub(crate) fn forward_command(dash_pressed: bool) -> SimCommand {
     }
 }
 
+pub(crate) fn idle_command() -> SimCommand {
+    SimCommand {
+        movement: MovementInput {
+            wish_dir: Vec2::ZERO,
+            jump_pressed: false,
+            dash_pressed: false,
+            running: false,
+            crouch_intent: false,
+            facing_yaw: 0.0,
+        },
+        fire_button: FireButtonState {
+            pressed: false,
+            active: false,
+        },
+    }
+}
+
 /// An owned `InputCommand` directly at a chosen `client_tick` — used by the
 /// scenario tests that inject duplicate / stale / malformed input at the
 /// `host_handle_client_message` drain seam without going through the conditioner.
@@ -261,6 +287,7 @@ pub(crate) struct LoopbackHarness {
     pub(crate) owners: MovementOwners,
     pub(crate) replicable: ReplicableSet,
     pub(crate) allocator: NetworkIdAllocator,
+    pub(crate) host_loaded_movers: HashSet<EntityId>,
     pub(crate) server_replication: ServerReplication,
     /// M15 Phase 3.5 host state tracker — required by `host_handle_client_message`'s
     /// signature. The movement harness drives no replicated state slots, so it stays
@@ -283,6 +310,14 @@ pub(crate) struct LoopbackHarness {
     /// The client pawn's mapped `EntityId`, set once the first baseline arms it.
     pub(crate) client_pawn: Option<EntityId>,
     pub(crate) host_pawn_network_id: NetworkId,
+    pub(crate) host_mover: Option<EntityId>,
+    pub(crate) client_mover: Option<EntityId>,
+    pub(crate) mover_network_id: Option<NetworkId>,
+    pub(crate) mover_colliders: Vec<MoverCollider>,
+    pub(crate) host_mover_states: MoverTickStateTable,
+    pub(crate) client_mover_states: MoverTickStateTable,
+    pub(crate) latest_mover_corrections: Vec<MoverCorrection>,
+    pub(crate) latest_local_corrections: Vec<f32>,
 
     // --- Bystander death-sweep guards (one per registry) ---
     pub(crate) host_bystander: EntityId,
@@ -371,6 +406,7 @@ impl LoopbackHarness {
             owners,
             replicable,
             allocator,
+            host_loaded_movers: HashSet::new(),
             server_replication,
             server_state,
             server_tick: 0,
@@ -382,6 +418,14 @@ impl LoopbackHarness {
             descriptors: entity_descriptors(),
             client_pawn: None,
             host_pawn_network_id,
+            host_mover: None,
+            client_mover: None,
+            mover_network_id: None,
+            mover_colliders: Vec::new(),
+            host_mover_states: MoverTickStateTable::default(),
+            client_mover_states: MoverTickStateTable::default(),
+            latest_mover_corrections: Vec::new(),
+            latest_local_corrections: Vec::new(),
             host_bystander,
             client_bystander,
             to_server: PacketConditioner::new(link),
@@ -394,6 +438,26 @@ impl LoopbackHarness {
         }
     }
 
+    pub(crate) fn with_moving_platform(link: LinkConfig) -> Self {
+        let mut h = Self::new(link);
+        h.world = CollisionWorld::new();
+
+        let host_mover = spawn_platform_mover(&mut h.host_registry);
+        let client_mover = spawn_platform_mover(&mut h.client_registry);
+        h.mover_colliders
+            .push(platform_collider(MOVING_PLATFORM_ID));
+        host_register_loaded_movers(
+            &h.host_registry,
+            &mut h.allocator,
+            &mut h.replicable,
+            &mut h.host_loaded_movers,
+        );
+        h.mover_network_id = Some(h.allocator.stamp(host_mover));
+        h.host_mover = Some(host_mover);
+        h.client_mover = Some(client_mover);
+        h
+    }
+
     /// CLIENT STEP: predict the local pawn one tick from `command` (the real
     /// `ClientPrediction::predict_tick` seam, writing back to the client registry),
     /// stamp the outbound `InputCommand`, encode the real `ClientMessage::Input`,
@@ -402,6 +466,9 @@ impl LoopbackHarness {
     pub(crate) fn client_predict_and_send(&mut self, command: &SimCommand) {
         let client_tick = self.prediction.next_client_tick();
         let input = sim_command_to_input(command, client_tick);
+
+        self.client_registry.snapshot_transforms();
+        run_kinematic_mover_tick(&mut self.client_registry, &mut self.client_mover_states, DT);
 
         // Drive prediction if armed (writing the predicted pose back to the registry
         // exactly as `client_predict_tick` does).
@@ -416,9 +483,14 @@ impl LoopbackHarness {
                     .unwrap()
                     .clone(),
             );
+            let combined_collision = CombinedCollisionWorld::new(
+                &self.world,
+                &self.mover_colliders,
+                &self.client_mover_states,
+            );
             if let Some((t, m)) =
                 self.prediction
-                    .predict_tick(input, prev, &self.world, GRAVITY, DT)
+                    .predict_tick(input, prev, &combined_collision, GRAVITY, DT)
             {
                 // Mirror production `client_predict_tick`: stamp previous = current for
                 // the local pawn BEFORE writing the new predicted pose, so its
@@ -484,11 +556,18 @@ impl LoopbackHarness {
         //    real commands in order and its pawn follows the client's actual path,
         //    lagging by the (prediction-compensated) playout delay.
         self.host_ticks_elapsed = self.host_ticks_elapsed.wrapping_add(1);
+        self.host_registry.snapshot_transforms();
+        run_kinematic_mover_tick(&mut self.host_registry, &mut self.host_mover_states, DT);
         if self.host_ticks_elapsed > PLAYOUT_WARMUP_TICKS {
             let pawn_inputs = host_resolve_movement_inputs(&self.owners, &mut self.command_queues);
+            let combined_collision = CombinedCollisionWorld::new(
+                &self.world,
+                &self.mover_colliders,
+                &self.host_mover_states,
+            );
             crate::sim::run_host_movement_tick(
                 &mut self.host_registry,
-                &self.world,
+                &combined_collision,
                 GRAVITY,
                 &pawn_inputs,
                 DT,
@@ -537,6 +616,8 @@ impl LoopbackHarness {
     /// to `ServerReplication::apply_ack`, advancing the per-client baseline so the
     /// next encode emits deltas — the genuine steady state).
     pub(crate) fn client_receive(&mut self) -> Vec<wire::AckMessage> {
+        self.latest_mover_corrections.clear();
+        self.latest_local_corrections.clear();
         let mut acks = Vec::new();
         for packet in self.to_client.take_ready() {
             let Ok(raw) = wire::decode::<RawSnapshotMessage>(&packet) else {
@@ -548,6 +629,8 @@ impl LoopbackHarness {
             let outcome = self
                 .client_replication
                 .apply_snapshot(&mut self.client_registry, &snapshot);
+            self.latest_mover_corrections
+                .extend(outcome.mover_corrections.iter().copied());
 
             // Arm BEFORE reconcile (load-bearing ordering). This is the REAL production
             // client path (`client_receive_and_apply`): arm prediction, then materialize
@@ -568,17 +651,37 @@ impl LoopbackHarness {
                 );
             }
             if let Some(reconcile) = outcome.local_reconcile {
-                reconcile_local_pawn(
+                let before = self
+                    .client_registry
+                    .get_component::<Transform>(reconcile.entity_id)
+                    .ok()
+                    .map(|transform| transform.position);
+                let combined_collision = CombinedCollisionWorld::new(
+                    &self.world,
+                    &self.mover_colliders,
+                    &self.client_mover_states,
+                );
+                let class = reconcile_local_pawn(
                     &mut self.client_registry,
                     &mut self.prediction,
                     reconcile.entity_id,
                     reconcile.transform,
                     reconcile.movement.as_ref(),
                     reconcile.acked_tick,
-                    &self.world,
+                    &combined_collision,
                     GRAVITY,
                     DT,
                 );
+                if class.is_some() {
+                    if let (Some(before), Ok(after)) = (
+                        before,
+                        self.client_registry
+                            .get_component::<Transform>(reconcile.entity_id),
+                    ) {
+                        self.latest_local_corrections
+                            .push((before - after.position).length());
+                    }
+                }
             }
             if let Some(ack) = outcome.ack {
                 self.client_acked_server_tick =
@@ -823,4 +926,114 @@ impl LoopbackHarness {
             .eye_height;
         Some(interpolated.position + Vec3::new(0.0, eye_height, 0.0))
     }
+
+    pub(crate) fn host_mover_position(&self) -> Option<Vec3> {
+        let id = self.host_mover?;
+        Some(
+            self.host_registry
+                .get_component::<Transform>(id)
+                .ok()?
+                .position,
+        )
+    }
+
+    pub(crate) fn client_mover_position(&self) -> Option<Vec3> {
+        let id = self.client_mover?;
+        Some(
+            self.client_registry
+                .get_component::<Transform>(id)
+                .ok()?
+                .position,
+        )
+    }
+
+    pub(crate) fn mover_position_error(&self) -> f32 {
+        match (self.host_mover_position(), self.client_mover_position()) {
+            (Some(host), Some(client)) => (host - client).length(),
+            _ => f32::INFINITY,
+        }
+    }
+
+    pub(crate) fn host_mover_velocity(&self) -> Option<Vec3> {
+        let id = self.host_mover?;
+        Some(
+            self.host_registry
+                .get_component::<KinematicMoverComponent>(id)
+                .ok()?
+                .current_linear_velocity,
+        )
+    }
+
+    pub(crate) fn host_ground(&self) -> GroundRef {
+        self.host_registry
+            .get_component::<PlayerMovementComponent>(self.host_pawn)
+            .map(|movement| movement.ground)
+            .unwrap_or(GroundRef::Airborne)
+    }
+
+    pub(crate) fn client_ground(&self) -> GroundRef {
+        let Some(pawn) = self.client_pawn else {
+            return GroundRef::Airborne;
+        };
+        self.client_registry
+            .get_component::<PlayerMovementComponent>(pawn)
+            .map(|movement| movement.ground)
+            .unwrap_or(GroundRef::Airborne)
+    }
+
+    pub(crate) fn host_velocity(&self) -> Vec3 {
+        self.host_registry
+            .get_component::<PlayerMovementComponent>(self.host_pawn)
+            .map(|movement| movement.velocity)
+            .unwrap_or(Vec3::ZERO)
+    }
+
+    pub(crate) fn client_velocity(&self) -> Vec3 {
+        let Some(pawn) = self.client_pawn else {
+            return Vec3::ZERO;
+        };
+        self.client_registry
+            .get_component::<PlayerMovementComponent>(pawn)
+            .map(|movement| movement.velocity)
+            .unwrap_or(Vec3::ZERO)
+    }
+
+    pub(crate) fn client_mover_history_samples(&self) -> usize {
+        self.client_replication
+            .mover_history_sample_count(MOVING_PLATFORM_ID)
+    }
+
+    pub(crate) fn client_loaded_mover_count(&self) -> usize {
+        self.client_registry
+            .iter_with_kind(postretro_entities::ComponentKind::KinematicMover)
+            .count()
+    }
+}
+
+fn spawn_platform_mover(registry: &mut EntityRegistry) -> EntityId {
+    let id = registry.spawn(Transform::default());
+    let mover = KinematicMoverComponent::new(
+        MOVING_PLATFORM_ID,
+        vec![Vec3::ZERO, Vec3::new(6.0, 0.0, 0.0)],
+        MOVING_PLATFORM_SPEED_MPS,
+        0.0,
+        KinematicMoverMode::PingPong,
+        true,
+    );
+    registry.set_component(id, mover).unwrap();
+    id
+}
+
+fn platform_collider(mover_id: u32) -> MoverCollider {
+    MoverCollider::from_local_triangles(
+        mover_id,
+        &[
+            Vec3::new(-1.75, 0.0, -1.75),
+            Vec3::new(1.75, 0.0, -1.75),
+            Vec3::new(1.75, 0.0, 1.75),
+            Vec3::new(-1.75, 0.0, 1.75),
+        ],
+        &[[0, 1, 2], [0, 2, 3]],
+    )
+    .unwrap()
 }

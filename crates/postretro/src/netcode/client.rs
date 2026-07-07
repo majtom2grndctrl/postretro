@@ -28,22 +28,29 @@
 //     tombstone.
 //   - Old/duplicate snapshot sequence: the whole snapshot is ignored.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use glam::Vec3;
 
 use postretro_net::wire::{
     AckMessage, BaselineRefreshRequest, COMPONENT_KIND_PLAYER_MOVEMENT_STATE, ClientMessage,
-    ComponentPayload, EntityRecord, NetworkId, SnapshotMessage, WirePlayerMovementState,
+    ComponentPayload, EntityRecord, NetworkId, SnapshotMessage, WireKinematicMoverState,
+    WirePlayerMovementState,
 };
 
 use postretro_entities::components::mesh::{
     FadeSourceKind, MeshComponent, SwitchResult, switch_animation_state,
 };
-use postretro_entities::{ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform};
+use postretro_entities::{
+    ComponentKind, ComponentValue, EntityId, EntityRegistry, KinematicMoverComponent,
+    KinematicMoverMode, Transform,
+};
 
 use super::interpolation::{PoseSource, RemoteInterpolationBuffer, TransformSample};
 use super::{payload_is_finite, wire_to_transform};
+use crate::collision::moving::{MoverPose, MoverPoseSource};
+
+const MOVER_HISTORY_LIMIT: usize = 128;
 
 /// Result of one remote interpolation sampling pass.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -78,6 +85,9 @@ pub(crate) enum IgnoredPayload {
     /// `PlayerMovementComponent` to merge it onto. The `Transform` (if present) was
     /// still applied; only the movement subset was ignored.
     MovementWithoutLocalComponent { network_id: u32 },
+    /// A mover payload referenced a PRL mover id this client did not load. This is
+    /// an engine-side validation failure because the net crate is registry-blind.
+    UnknownKinematicMover { network_id: u32, mover_id: u32 },
 }
 
 /// One pending baseline-repair entry: the entity needs a full baseline re-sent and
@@ -130,6 +140,59 @@ pub(crate) struct ClientReplication {
     /// `sample_into_registry`'s presentation writes (which would otherwise clobber the
     /// reconciled pose with a stale interpolated remote pose). `None` until armed.
     local_pawn: Option<NetworkId>,
+    /// Network ids bound to PRL-loaded local kinematic movers, with their stable
+    /// compile-time mover id. These entities are predicted/reconciled in place and
+    /// must never be remote-interpolated or materialized from a baseline.
+    mover_network_ids: HashMap<NetworkId, u32>,
+    /// Authoritative mover samples from host snapshots, keyed by stable PRL
+    /// `mover_id`. This is distinct from the live per-tick side-table; replay can
+    /// read it through the `MoverPoseSource` seam.
+    mover_history: MoverHistoryBuffer,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct MoverHistorySample {
+    pub(crate) server_tick: u32,
+    pub(crate) pose: MoverPose,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct MoverHistoryBuffer {
+    samples: HashMap<u32, VecDeque<MoverHistorySample>>,
+}
+
+impl MoverHistoryBuffer {
+    fn clear(&mut self) {
+        self.samples.clear();
+    }
+
+    fn record(&mut self, mover_id: u32, sample: MoverHistorySample) {
+        let samples = self.samples.entry(mover_id).or_default();
+        if samples
+            .back()
+            .is_some_and(|existing| existing.server_tick == sample.server_tick)
+        {
+            samples.pop_back();
+        }
+        samples.push_back(sample);
+        while samples.len() > MOVER_HISTORY_LIMIT {
+            samples.pop_front();
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn sample_count(&self, mover_id: u32) -> usize {
+        self.samples.get(&mover_id).map_or(0, VecDeque::len)
+    }
+}
+
+impl MoverPoseSource for MoverHistoryBuffer {
+    fn pose(&self, mover_id: u32) -> Option<MoverPose> {
+        self.samples
+            .get(&mover_id)
+            .and_then(|samples| samples.back())
+            .map(|sample| sample.pose)
+    }
 }
 
 /// The authoritative local-pawn record this snapshot delivered, captured for the
@@ -243,6 +306,16 @@ pub(crate) struct ApplyOutcome {
     /// descriptor lookup deliberately does NOT happen here — descriptor tables are not
     /// in scope in this descriptor-blind apply path.
     pub(crate) remote_enemies: Vec<RemoteEnemyMaterialize>,
+    /// Per-snapshot mover correction magnitudes in metres, surfaced so harnesses
+    /// can assert corrections stay bounded and non-accumulating.
+    pub(crate) mover_corrections: Vec<MoverCorrection>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct MoverCorrection {
+    pub(crate) network_id: NetworkId,
+    pub(crate) mover_id: u32,
+    pub(crate) magnitude: f32,
 }
 
 impl ClientReplication {
@@ -274,6 +347,8 @@ impl ClientReplication {
         self.pending_repairs.clear();
         self.interp = RemoteInterpolationBuffer::default();
         self.local_pawn = None;
+        self.mover_network_ids.clear();
+        self.mover_history.clear();
 
         let mut requests = Vec::with_capacity(known.len());
         for (network_id, missing_baseline_ref) in known {
@@ -499,6 +574,34 @@ impl ClientReplication {
             // Unmapped: a spawn. Requires a Transform to seed the entity; a baseline
             // without one is invalid and does not spawn.
             None => {
+                if let Some(mover_state) = first_mover_state(components) {
+                    let Some(id) = find_loaded_mover_entity(registry, mover_state.mover_id) else {
+                        log::warn!(
+                            "[Net] full baseline for {network_id:?} names unknown mover_id {}; not binding",
+                            mover_state.mover_id
+                        );
+                        outcome.ignored.push(IgnoredPayload::UnknownKinematicMover {
+                            network_id: network_id.0,
+                            mover_id: mover_state.mover_id,
+                        });
+                        return false;
+                    };
+                    self.map.insert(network_id, id);
+                    self.baselines.insert(network_id, baseline_id);
+                    self.pending_repairs.remove(&network_id);
+                    self.mover_network_ids
+                        .insert(network_id, mover_state.mover_id);
+                    self.interp.forget(network_id);
+                    self.apply_components_to(
+                        registry,
+                        network_id,
+                        server_tick,
+                        id,
+                        components,
+                        outcome,
+                    );
+                    return true;
+                }
                 let Some(spawn_transform) = first_transform(components) else {
                     log::warn!(
                         "[Net] full baseline for {network_id:?} has no Transform; not spawning"
@@ -658,6 +761,7 @@ impl ClientReplication {
         // buffered for it (a record applied before the arming snapshot seeded one).
         self.local_pawn = Some(network_id);
         self.interp.forget(network_id);
+        self.mover_network_ids.remove(&network_id);
         outcome.armed_local_pawn = Some(ArmedLocalPawn {
             network_id,
             entity_id,
@@ -773,6 +877,9 @@ impl ClientReplication {
         // after this): it may seed the spawn/baseline pose here, and then `forget`
         // drops the one interpolation sample.
         let is_local = self.local_pawn == Some(network_id);
+        let is_mover = self.mover_network_ids.contains_key(&network_id)
+            || first_mover_state(components).is_some();
+        let mover_state = first_mover_state(components);
 
         for payload in components {
             // Untrusted-wire guard: a non-finite pose/velocity is dropped before it
@@ -785,6 +892,22 @@ impl ClientReplication {
                 ComponentPayload::Transform(wire) => {
                     let transform = wire_to_transform(wire);
                     if !is_local {
+                        if is_mover {
+                            if let Ok(current) = registry.get_component::<Transform>(id) {
+                                outcome.mover_corrections.push(MoverCorrection {
+                                    network_id,
+                                    mover_id: self
+                                        .mover_network_ids
+                                        .get(&network_id)
+                                        .copied()
+                                        .or_else(|| {
+                                            first_mover_state(components).map(|m| m.mover_id)
+                                        })
+                                        .unwrap_or(0),
+                                    magnitude: (current.position - transform.position).length(),
+                                });
+                            }
+                        }
                         let value = ComponentValue::Transform(transform);
                         // The entity is live here (caller checked); the only failure mode
                         // is an unsupported kind, impossible for Transform. This seeds the
@@ -794,13 +917,27 @@ impl ClientReplication {
                     // Record the server-tick-stamped sample for the interpolation
                     // buffer — skipped for the local pawn (prediction-driven, never
                     // remote-interpolated).
-                    if !is_local {
+                    if !is_local && !is_mover {
                         self.interp.record(
                             network_id,
                             TransformSample {
                                 server_tick,
                                 transform,
                                 velocity: record_velocity,
+                            },
+                        );
+                    }
+                    if let Some(mover) = mover_state {
+                        self.mover_history.record(
+                            mover.mover_id,
+                            MoverHistorySample {
+                                server_tick,
+                                pose: MoverPose {
+                                    transform,
+                                    linear_velocity: Vec3::from_array(mover.velocity),
+                                    tick_delta: Vec3::ZERO,
+                                    tick_dt: 0.0,
+                                },
                             },
                         );
                     }
@@ -842,6 +979,11 @@ impl ClientReplication {
                             wire.current_state
                         );
                     }
+                }
+                ComponentPayload::KinematicMoverState(wire) => {
+                    apply_kinematic_mover_state(registry, id, wire);
+                    self.mover_network_ids.insert(network_id, wire.mover_id);
+                    self.interp.forget(network_id);
                 }
             }
         }
@@ -930,6 +1072,9 @@ impl ClientReplication {
             if self.local_pawn == Some(network_id) {
                 continue;
             }
+            if self.mover_network_ids.contains_key(&network_id) {
+                continue;
+            }
             let Some(pose) = self.interp.presented_pose(network_id, render_server_tick) else {
                 continue; // no samples buffered yet
             };
@@ -986,6 +1131,11 @@ impl ClientReplication {
         self.interp.sample_count(network_id)
     }
 
+    #[cfg(test)]
+    pub(crate) fn mover_history_sample_count(&self, mover_id: u32) -> usize {
+        self.mover_history.sample_count(mover_id)
+    }
+
     /// The latest accepted snapshot sequence (tests / diagnostics).
     #[cfg(test)]
     pub(crate) fn latest_sequence(&self) -> Option<u32> {
@@ -1005,11 +1155,67 @@ fn first_transform(components: &[ComponentPayload]) -> Option<Transform> {
     })
 }
 
+fn first_mover_state(components: &[ComponentPayload]) -> Option<WireKinematicMoverState> {
+    components.iter().find_map(|payload| match payload {
+        ComponentPayload::KinematicMoverState(wire) if payload_is_finite(payload) => Some(*wire),
+        _ => None,
+    })
+}
+
 fn first_mesh_animation_state(components: &[ComponentPayload]) -> Option<String> {
     components.iter().find_map(|payload| match payload {
         ComponentPayload::MeshAnimationState(wire) => Some(wire.current_state.clone()),
         _ => None,
     })
+}
+
+fn find_loaded_mover_entity(registry: &EntityRegistry, mover_id: u32) -> Option<EntityId> {
+    registry
+        .iter_with_kind(ComponentKind::KinematicMover)
+        .find_map(|(id, value)| {
+            let ComponentValue::KinematicMover(mover) = value else {
+                return None;
+            };
+            (mover.mover_id == mover_id).then_some(id)
+        })
+}
+
+fn apply_kinematic_mover_state(
+    registry: &mut EntityRegistry,
+    id: EntityId,
+    wire: &WireKinematicMoverState,
+) {
+    let Ok(mut mover) = registry
+        .get_component::<KinematicMoverComponent>(id)
+        .cloned()
+    else {
+        log::warn!(
+            "[Net] KinematicMoverState for mover_id {} applied to entity without KinematicMover",
+            wire.mover_id
+        );
+        return;
+    };
+    if mover.mover_id != wire.mover_id {
+        log::warn!(
+            "[Net] KinematicMoverState mover_id {} does not match local mover_id {}; dropping phase",
+            wire.mover_id,
+            mover.mover_id
+        );
+        return;
+    }
+    mover.segment_index = wire.segment_index;
+    mover.direction_sign = wire.direction;
+    mover.mode = match wire.mode {
+        0 => KinematicMoverMode::Once,
+        1 => KinematicMoverMode::PingPong,
+        _ => return,
+    };
+    mover.segment_elapsed_ms = wire.segment_elapsed_ms;
+    mover.wait_remaining_ms = wire.wait_remaining_ms;
+    mover.started = wire.started;
+    mover.completed = wire.completed;
+    mover.current_linear_velocity = Vec3::from_array(wire.velocity);
+    let _ = registry.set_component(id, mover);
 }
 
 pub(crate) fn apply_mesh_animation_state(
@@ -1073,7 +1279,8 @@ mod tests {
     use glam::Vec3;
     use postretro_entities::Transform;
     use postretro_net::wire::{
-        WireMeshAnimationState, WireMovementState, WirePlayerMovementState, WireTransform,
+        WireGroundRef, WireKinematicMoverState, WireMeshAnimationState, WireMovementState,
+        WirePlayerMovementState, WireTransform,
     };
 
     const EPSILON: f32 = 1e-6;
@@ -1093,7 +1300,7 @@ mod tests {
     fn movement_payload_with_velocity(velocity: [f32; 3]) -> ComponentPayload {
         ComponentPayload::PlayerMovementState(WirePlayerMovementState {
             velocity,
-            is_grounded: true,
+            ground: WireGroundRef::World,
             air_jumps_remaining: 1,
             air_dashes_remaining: 1,
             dash_cooldown_ms: 0.0,
@@ -1111,6 +1318,38 @@ mod tests {
         ComponentPayload::MeshAnimationState(WireMeshAnimationState {
             current_state: state.to_string(),
         })
+    }
+
+    fn mover_payload(mover_id: u32) -> ComponentPayload {
+        ComponentPayload::KinematicMoverState(WireKinematicMoverState {
+            mover_id,
+            segment_index: 1,
+            direction: -1,
+            mode: 1,
+            segment_elapsed_ms: 25.0,
+            wait_remaining_ms: 5.0,
+            started: true,
+            completed: false,
+            velocity: [0.5, 0.0, 0.0],
+        })
+    }
+
+    fn spawn_loaded_mover(registry: &mut EntityRegistry, mover_id: u32) -> EntityId {
+        let id = registry.spawn(Transform::default());
+        registry
+            .set_component(
+                id,
+                KinematicMoverComponent::new(
+                    mover_id,
+                    vec![Vec3::ZERO, Vec3::X],
+                    1.0,
+                    0.0,
+                    KinematicMoverMode::PingPong,
+                    true,
+                ),
+            )
+            .unwrap();
+        id
     }
 
     fn unresolved_mesh() -> MeshComponent {
@@ -1229,6 +1468,83 @@ mod tests {
             "baseline advanced"
         );
         assert_eq!(out2.ack.unwrap().entity_baselines, vec![(7, 2)]);
+    }
+
+    #[test]
+    fn mover_baseline_binds_loaded_mover_by_mover_id_without_spawning() {
+        let mut registry = EntityRegistry::new();
+        let mover_entity = spawn_loaded_mover(&mut registry, 42);
+        let mut client = ClientReplication::new();
+
+        let out = client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                0,
+                100,
+                vec![full_baseline(
+                    7,
+                    1,
+                    vec![transform_payload(3.0), mover_payload(42)],
+                )],
+            ),
+        );
+
+        assert_eq!(client.map().get(&NetworkId(7)), Some(&mover_entity));
+        assert_eq!(client.stored_baseline(NetworkId(7)), Some(1));
+        assert_eq!(out.ack.unwrap().entity_baselines, vec![(7, 1)]);
+        assert!(out.refresh_requests.is_empty());
+        assert_eq!(
+            client.sample_count(NetworkId(7)),
+            0,
+            "movers are not remote-interpolated"
+        );
+        assert_eq!(client.mover_history_sample_count(42), 1);
+        let movers: Vec<_> = registry
+            .iter_with_kind(ComponentKind::KinematicMover)
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(
+            movers,
+            vec![mover_entity],
+            "baseline did not spawn a duplicate mover"
+        );
+        assert!((entity_pos(&registry, mover_entity).x - 3.0).abs() < EPSILON);
+        let mover = registry
+            .get_component::<KinematicMoverComponent>(mover_entity)
+            .unwrap();
+        assert_eq!(mover.segment_index, 1);
+        assert_eq!(mover.direction_sign, -1);
+        assert_eq!(mover.wait_remaining_ms, 5.0);
+    }
+
+    #[test]
+    fn mover_baseline_with_unknown_mover_id_does_not_spawn() {
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+
+        let out = client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                0,
+                100,
+                vec![full_baseline(
+                    7,
+                    1,
+                    vec![transform_payload(3.0), mover_payload(99)],
+                )],
+            ),
+        );
+
+        assert!(client.map().get(&NetworkId(7)).is_none());
+        assert!(out.ack.unwrap().entity_baselines.is_empty());
+        assert!(
+            out.ignored.iter().any(|ignored| matches!(
+                ignored,
+                IgnoredPayload::UnknownKinematicMover { mover_id: 99, .. }
+            )),
+            "unknown mover id is rejected engine-side"
+        );
+        assert_eq!(registry.iter_with_kind(ComponentKind::Transform).count(), 0);
     }
 
     // --- Unknown-baseline delta: not applied, pending repair set, refresh requested,

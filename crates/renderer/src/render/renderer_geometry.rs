@@ -91,6 +91,7 @@ pub fn level_world_to_geometry<'a>(
         sdf_atlas: world.sdf_atlas.as_ref(),
         lightmap_mode: world.lightmap_mode,
         cell_draw_index: world.cell_draw_index.as_ref(),
+        kinematic_geometry: Some(&world.kinematic_geometry),
         texture_materials,
     }
 }

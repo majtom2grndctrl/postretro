@@ -386,6 +386,10 @@ pub struct LevelGeometry<'a> {
     /// non-portal visibility, out-of-range gathered cell ids, or no candidate
     /// cull pipeline.
     pub cell_draw_index: Option<&'a postretro_level_loader::CellDrawIndex>,
+    /// Runtime-loaded local-space kinematic brush mover geometry (PRL section
+    /// 43). Uploaded into a renderer-owned dynamic-object pass, never into the
+    /// static world BVH/indirect buffers.
+    pub kinematic_geometry: Option<&'a postretro_level_loader::KinematicGeometry>,
     pub texture_materials: &'a [postretro_render_data::material::Material],
 }
 
@@ -538,6 +542,9 @@ pub(super) struct FullRenderer {
     /// forward pass uses that frame. The scripted-light animated curves the mesh
     /// dynamic loop evaluates depend on this phase coherence.
     pub(super) mesh_dynamic_time: f32,
+    /// Per-frame kinematic mover instances collected by the game layer from
+    /// stage-0-snapshotted registry transforms.
+    pub(super) kinematic_mover_draws: Vec<kinematic_brush::KinematicMoverInstance>,
     pub(super) ambient_floor: f32,
     pub(super) indirect_scale: f32,
     /// DYNAMIC baked-static-direct SH scale (0..1). Debug instrument for the
@@ -667,6 +674,7 @@ pub(super) struct FullRenderer {
     /// `Some` iff `cube_array_supported`, so its presence mirrors group-5 binding
     /// 5's presence in the shared BGL.
     pub(super) cube_shadow_pool: Option<crate::lighting::cube_shadow::CubeShadowPool>,
+    pub(super) kinematic_brush: kinematic_brush::KinematicBrushPass,
     pub(super) promoted_static_states: Vec<PromotedStaticLightState>,
     pub(super) promoted_static_records: Vec<PromotedStaticLightRecord>,
     pub(super) promoted_static_weights: Vec<f32>,

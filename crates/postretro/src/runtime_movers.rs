@@ -9,13 +9,16 @@ use std::fmt;
 
 use glam::{Quat, Vec3};
 use postretro_entities::{
-    EntityId, EntityRegistry, KinematicMoverComponent, KinematicMoverMode, Transform,
+    ComponentKind, ComponentValue, EntityId, EntityRegistry, KinematicMoverComponent,
+    KinematicMoverMode, Transform,
 };
 use postretro_level_loader::{
     KinematicGeometry, LevelWorld, LoadedKinematicMover, LoadedKinematicWaypoint,
 };
+use postretro_visibility::VisibleCells;
 
 use crate::collision::moving::MoverCollider;
+use crate::render::KinematicMoverInstance;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RuntimeMoverLoadError {
@@ -52,6 +55,87 @@ pub(crate) fn build_loaded_mover_colliders(world: &LevelWorld) -> Vec<MoverColli
         .iter()
         .filter_map(build_mover_collider)
         .collect()
+}
+
+pub(crate) struct KinematicMoverRenderCollector {
+    instances: Vec<KinematicMoverInstance>,
+}
+
+impl KinematicMoverRenderCollector {
+    pub(crate) fn new() -> Self {
+        Self {
+            instances: Vec::new(),
+        }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.instances.clear();
+    }
+
+    pub(crate) fn collect(
+        &mut self,
+        registry: &EntityRegistry,
+        world: &LevelWorld,
+        visible: &VisibleCells,
+        alpha: f32,
+    ) {
+        self.instances.clear();
+
+        for (id, value) in registry.iter_with_kind(ComponentKind::KinematicMover) {
+            let ComponentValue::KinematicMover(mover) = value else {
+                continue;
+            };
+            let Ok(current) = registry.get_component::<Transform>(id) else {
+                continue;
+            };
+            let Some(loaded) = world
+                .kinematic_geometry
+                .movers
+                .iter()
+                .find(|loaded| loaded.mover_id == mover.mover_id)
+            else {
+                continue;
+            };
+
+            let local_bounds = mover_local_bounds(loaded).unwrap_or((Vec3::ZERO, Vec3::ZERO));
+            let current_model = transform_matrix(*current);
+            let (world_min, world_max) =
+                transform_aabb(local_bounds.0, local_bounds.1, current_model);
+            let origin_cell = world.locate_cell(current.position) as u32;
+            let visible_cell_bounds: Vec<(u32, Vec3, Vec3)> = match visible {
+                VisibleCells::DrawAll => Vec::new(),
+                VisibleCells::Culled(cells) => cells
+                    .iter()
+                    .filter_map(|cell| {
+                        world
+                            .cell_bounds(*cell as usize)
+                            .map(|(min, max)| (*cell, min, max))
+                    })
+                    .collect(),
+            };
+            if !mover_visible_against_cell_bounds(
+                visible,
+                origin_cell,
+                world_min,
+                world_max,
+                &visible_cell_bounds,
+            ) {
+                continue;
+            }
+
+            let interpolated = registry
+                .interpolated_transform(id, alpha)
+                .unwrap_or(*current);
+            self.instances.push(KinematicMoverInstance {
+                mover_id: mover.mover_id,
+                transform: transform_matrix(interpolated),
+            });
+        }
+    }
+
+    pub(crate) fn instances(&self) -> &[KinematicMoverInstance] {
+        &self.instances
+    }
 }
 
 fn spawn_from_geometry(
@@ -104,6 +188,76 @@ fn build_mover_collider(mover: &LoadedKinematicMover) -> Option<MoverCollider> {
         .map(|chunk| [chunk[0], chunk[1], chunk[2]])
         .collect();
     MoverCollider::from_local_triangles(mover.mover_id, &vertices, &triangles)
+}
+
+fn mover_local_bounds(mover: &LoadedKinematicMover) -> Option<(Vec3, Vec3)> {
+    let first = mover.vertices.first()?;
+    let mut min = Vec3::from(first.position);
+    let mut max = min;
+    for vertex in &mover.vertices[1..] {
+        let pos = Vec3::from(vertex.position);
+        min = min.min(pos);
+        max = max.max(pos);
+    }
+    Some((min, max))
+}
+
+fn transform_matrix(transform: Transform) -> glam::Mat4 {
+    glam::Mat4::from_scale_rotation_translation(
+        transform.scale,
+        transform.rotation,
+        transform.position,
+    )
+}
+
+fn transform_aabb(min: Vec3, max: Vec3, transform: glam::Mat4) -> (Vec3, Vec3) {
+    let corners = [
+        Vec3::new(min.x, min.y, min.z),
+        Vec3::new(max.x, min.y, min.z),
+        Vec3::new(min.x, max.y, min.z),
+        Vec3::new(max.x, max.y, min.z),
+        Vec3::new(min.x, min.y, max.z),
+        Vec3::new(max.x, min.y, max.z),
+        Vec3::new(min.x, max.y, max.z),
+        Vec3::new(max.x, max.y, max.z),
+    ];
+    let mut world_min = Vec3::splat(f32::INFINITY);
+    let mut world_max = Vec3::splat(f32::NEG_INFINITY);
+    for corner in corners {
+        let point = transform.transform_point3(corner);
+        world_min = world_min.min(point);
+        world_max = world_max.max(point);
+    }
+    (world_min, world_max)
+}
+
+fn mover_visible_against_cell_bounds(
+    visible: &VisibleCells,
+    origin_cell: u32,
+    world_min: Vec3,
+    world_max: Vec3,
+    visible_cell_bounds: &[(u32, Vec3, Vec3)],
+) -> bool {
+    match visible {
+        VisibleCells::DrawAll => true,
+        VisibleCells::Culled(cells) => {
+            if cells.contains(&origin_cell) {
+                return true;
+            }
+            visible_cell_bounds
+                .iter()
+                .any(|(_, min, max)| aabb_intersects(world_min, world_max, *min, *max))
+        }
+    }
+}
+
+fn aabb_intersects(a_min: Vec3, a_max: Vec3, b_min: Vec3, b_max: Vec3) -> bool {
+    a_min.x <= b_max.x
+        && a_max.x >= b_min.x
+        && a_min.y <= b_max.y
+        && a_max.y >= b_min.y
+        && a_min.z <= b_max.z
+        && a_max.z >= b_min.z
 }
 
 fn waypoint_index_map(
@@ -298,6 +452,52 @@ mod tests {
 
         assert_eq!(colliders.len(), 1);
         assert_eq!(colliders[0].mover_id, 7);
+    }
+
+    #[test]
+    fn mover_culling_keeps_origin_in_visible_cell() {
+        let visible = VisibleCells::Culled(vec![2]);
+        assert!(mover_visible_against_cell_bounds(
+            &visible,
+            2,
+            Vec3::new(10.0, 0.0, 0.0),
+            Vec3::new(11.0, 1.0, 1.0),
+            &[],
+        ));
+    }
+
+    #[test]
+    fn mover_culling_keeps_aabb_overlapping_visible_cell_even_when_origin_is_elsewhere() {
+        let visible = VisibleCells::Culled(vec![2]);
+        assert!(mover_visible_against_cell_bounds(
+            &visible,
+            9,
+            Vec3::new(0.5, 0.5, 0.5),
+            Vec3::new(2.0, 2.0, 2.0),
+            &[(2, Vec3::ZERO, Vec3::ONE)],
+        ));
+    }
+
+    #[test]
+    fn mover_culling_drops_non_overlapping_non_visible_mover() {
+        let visible = VisibleCells::Culled(vec![2]);
+        assert!(!mover_visible_against_cell_bounds(
+            &visible,
+            9,
+            Vec3::new(4.0, 4.0, 4.0),
+            Vec3::new(5.0, 5.0, 5.0),
+            &[(2, Vec3::ZERO, Vec3::ONE)],
+        ));
+    }
+
+    #[test]
+    fn transformed_aabb_contains_rotated_corners() {
+        let transform = glam::Mat4::from_rotation_y(std::f32::consts::FRAC_PI_2);
+        let (min, max) = transform_aabb(Vec3::ZERO, Vec3::new(2.0, 1.0, 1.0), transform);
+        assert!(min.x <= 1.0e-5);
+        assert!(min.z <= -2.0 + 1.0e-5);
+        assert!(max.x >= 1.0 - 1.0e-5);
+        assert!(max.z >= -1.0e-5);
     }
 
     #[test]

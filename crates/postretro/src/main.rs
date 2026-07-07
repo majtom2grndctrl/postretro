@@ -514,6 +514,8 @@ pub(crate) struct App {
     /// Live fixed-tick mover poses, published before player movement consumes
     /// the combined collision query.
     kinematic_mover_tick_states: kinematic_mover::MoverTickStateTable,
+    /// Render-stage CPU collector for loaded kinematic mover brush instances.
+    kinematic_mover_render: runtime_movers::KinematicMoverRenderCollector,
 
     /// Active wieldable instance equipped by the player. The companion
     /// descriptor name lets mod-init hot reload refresh authored weapon stats
@@ -2417,6 +2419,14 @@ impl ApplicationHandler for App {
                             &session.hit_zone_store,
                         );
                         renderer.set_mesh_draws(session.mesh_render.instances());
+
+                        self.kinematic_mover_render.collect(
+                            &registry,
+                            world,
+                            &visible_cells,
+                            frame_result.alpha,
+                        );
+                        renderer.set_kinematic_mover_draws(self.kinematic_mover_render.instances());
                     }
 
                     #[cfg(feature = "dev-tools")]
@@ -3981,6 +3991,7 @@ impl App {
                 tick,
                 host_pawn: _,
                 map_enemies: _,
+                loaded_movers: _,
                 demo_mover: _,
                 state_slots,
             }) => {
@@ -4166,6 +4177,7 @@ impl App {
             owners,
             host_pawn: _,
             map_enemies: _,
+            loaded_movers: _,
             demo_mover,
             state_slots,
         }) = self
@@ -4367,6 +4379,33 @@ impl App {
         };
         let registry = script_ctx.registry.borrow();
         netcode::host_register_map_enemies(&registry, allocator, replicable, map_enemies);
+    }
+
+    /// Register PRL-loaded kinematic movers for outbound replication after level
+    /// install. Host-gated and reload-safe; connected clients have already spawned
+    /// the same movers locally from PRL and bind incoming baselines by `mover_id`.
+    fn host_register_loaded_movers_after_install(&mut self) {
+        let Some(script_ctx) = self
+            .session
+            .as_ref()
+            .map(|session| session.scripting.script_ctx.clone())
+        else {
+            return;
+        };
+        let Some(netcode::NetEndpoint::Host {
+            allocator,
+            replicable,
+            loaded_movers,
+            ..
+        }) = self
+            .session
+            .as_mut()
+            .and_then(|session| session.net_endpoint.as_mut())
+        else {
+            return;
+        };
+        let registry = script_ctx.registry.borrow();
+        netcode::host_register_loaded_movers(&registry, allocator, replicable, loaded_movers);
     }
 
     /// Connected-client predicted fixed tick (M15 Phase 3 Task 3). Thin delegation

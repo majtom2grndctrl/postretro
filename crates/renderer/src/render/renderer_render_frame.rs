@@ -353,6 +353,53 @@ impl Renderer {
             }
         }
 
+        // Kinematic brush movers: local-space PRL brush payloads drawn as
+        // dynamic objects after opaque world geometry and before skinned meshes.
+        // They write depth and use the mesh dynamic-object lighting bindings
+        // (baked SH indirect/static direct + runtime dynamic direct).
+        if render_world && self.full().kinematic_brush.has_draws() {
+            {
+                let Self { queue, full, .. } = self;
+                let full = full
+                    .as_mut()
+                    .expect("renderer full-init must complete before full-ready paths run");
+                full.kinematic_brush.write_light_params(
+                    queue,
+                    full.total_light_count,
+                    full.mesh_dynamic_time,
+                    full.lighting_isolation as u32,
+                    full.ambient_floor,
+                );
+            }
+            let mut mover_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Kinematic Brush Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &scene_color,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.full().depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                ..Default::default()
+            });
+            mover_pass.set_bind_group(0, &self.full().uniform_bind_group, &[]);
+            mover_pass.set_bind_group(4, &self.full().sh_volume_resources.mesh_bind_group, &[]);
+            self.full()
+                .kinematic_brush
+                .record_draws(&mut mover_pass, &self.full().gpu_textures);
+        }
+
         // Skinned-mesh forward pass — after the opaque world forward, before
         // billboards. Its own render pass so it can WRITE depth (the forward pass
         // holds the depth attachment read-only). Loads the existing color + depth

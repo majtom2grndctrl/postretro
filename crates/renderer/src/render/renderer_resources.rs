@@ -70,6 +70,7 @@ impl Renderer {
             sdf_atlas: None,
             lightmap_mode: postretro_level_loader::LightmapMode::default(),
             cell_draw_index: None,
+            kinematic_geometry: None,
             texture_materials: &empty_materials,
         };
         self.install_level_geometry(&empty_geometry);
@@ -77,6 +78,7 @@ impl Renderer {
         self.full_mut().smoke_pass.clear_collections();
         self.full_mut().mesh_pass.release_level_resources();
         self.full_mut().mesh_draws.clear();
+        self.full_mut().kinematic_mover_draws.clear();
         self.full_mut().bone_palette_scratch.clear();
         self.full_mut().fog_cell_masks = None;
         self.full_mut().active_fog_aabbs.clear();
@@ -350,6 +352,17 @@ impl Renderer {
             &full.spot_shadow_pool.matrices_buffer,
             cube_sampling_view,
         );
+        full.kinematic_brush.rebuild_light_bind_group(
+            device,
+            &full.lights_buffer,
+            &full.influence_buffer,
+            &full.sh_volume_resources.scripted_light_descriptors,
+            &full.sh_volume_resources.animation.anim_samples,
+            &full.spot_shadow_pool.array_view,
+            &full.spot_shadow_pool.compare_sampler,
+            &full.spot_shadow_pool.matrices_buffer,
+            cube_sampling_view,
+        );
 
         full.sdf_atlas_resources = SdfAtlasResources::new(device, queue, geometry.sdf_atlas);
         full.lightmap_mode = geometry.lightmap_mode;
@@ -515,6 +528,12 @@ impl Renderer {
         full.influence_pack_scratch.clear();
         full.light_effective_brightness.clear();
         full.stored_texture_materials = geometry.texture_materials.to_vec();
+        full.kinematic_brush.install_geometry(
+            device,
+            geometry.kinematic_geometry,
+            geometry.texture_materials.len(),
+        );
+        full.kinematic_mover_draws.clear();
 
         if has_geometry {
             log::info!(

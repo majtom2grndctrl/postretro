@@ -184,8 +184,8 @@ mod tests {
     use parry3d::shape::TriMesh;
 
     use postretro_net::wire::{
-        InputCommand, NetworkId, WireFireButtonState, WireMovementInput, WireMovementState,
-        WirePlayerMovementState,
+        InputCommand, NetworkId, WireFireButtonState, WireGroundRef, WireMovementInput,
+        WireMovementState, WirePlayerMovementState,
     };
 
     use crate::netcode::movement_state::movement_state_to_wire;
@@ -309,7 +309,7 @@ mod tests {
     fn authoritative_movement() -> WirePlayerMovementState {
         let mut wire = movement_state_to_wire(&component());
         wire.velocity = [0.0, 0.0, 0.0];
-        wire.is_grounded = true;
+        wire.ground = WireGroundRef::World;
         wire.movement_state = WireMovementState::Normal;
         wire
     }

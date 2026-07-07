@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 // Convex BSP leaf-region substrate. Regions are represented as facet windings
 // plus their inward half-space planes, so splitting can clip caps without
 // re-deriving planes from polygon vertices.

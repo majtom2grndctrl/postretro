@@ -5,11 +5,15 @@
 use anyhow::{Result, bail};
 use glam::DVec3;
 
+use super::region_polytope::RegionPolytope;
 use super::types::*;
 use crate::map_data::BrushVolume;
 
 /// Classification tolerance for AABB corners against brush-derived planes.
 const PLANE_EPSILON: f64 = 0.1;
+
+/// Classification tolerance for exact region-polytope queries.
+const REGION_CLASSIFICATION_EPSILON: f64 = 1e-3;
 
 /// Slack added on every axis when deriving the world AABB from brush bounds.
 /// Keeps the splitter from producing degenerate sub-regions at the world boundary
@@ -38,8 +42,9 @@ pub fn build_bsp_from_brushes(brushes: &[BrushVolume]) -> Result<BspTree> {
     }
 
     let world_bounds = world_aabb_from_brushes(brushes);
+    let world_polytope = RegionPolytope::from_aabb(&world_bounds);
     let candidates: Vec<usize> = (0..brushes.len()).collect();
-    let inside = compute_inside_set(brushes, &candidates, &world_bounds);
+    let inside = compute_inside_set(brushes, &candidates, &world_bounds, &world_polytope);
     let ancestor_planes: Vec<(DVec3, f64)> = Vec::new();
     let leaf_planes: Vec<(DVec3, f64)> = Vec::new();
 
@@ -47,6 +52,7 @@ pub fn build_bsp_from_brushes(brushes: &[BrushVolume]) -> Result<BspTree> {
         &mut tree,
         brushes,
         &world_bounds,
+        &world_polytope,
         &candidates,
         &inside,
         &ancestor_planes,
@@ -130,20 +136,33 @@ fn classify_aabb(bounds: &Aabb, normal: DVec3, distance: f64) -> AabbSide {
 
 /// True when every brush half-space has the region fully on its back side,
 /// meaning the brush's volume contains the entire region.
-fn brush_contains_region(brush: &BrushVolume, region: &Aabb) -> bool {
+fn brush_contains_region(
+    brush: &BrushVolume,
+    _region: &Aabb,
+    region_polytope: &RegionPolytope,
+) -> bool {
     for plane in &brush.planes {
-        if classify_aabb(region, plane.normal, plane.distance) != AabbSide::Back {
+        if !region_polytope.all_vertices_behind(
+            plane.normal,
+            plane.distance,
+            REGION_CLASSIFICATION_EPSILON,
+        ) {
             return false;
         }
     }
     true
 }
 
-fn compute_inside_set(brushes: &[BrushVolume], candidates: &[usize], region: &Aabb) -> Vec<usize> {
+fn compute_inside_set(
+    brushes: &[BrushVolume],
+    candidates: &[usize],
+    region: &Aabb,
+    region_polytope: &RegionPolytope,
+) -> Vec<usize> {
     candidates
         .iter()
         .copied()
-        .filter(|&idx| brush_contains_region(&brushes[idx], region))
+        .filter(|&idx| brush_contains_region(&brushes[idx], region, region_polytope))
         .collect()
 }
 
@@ -221,7 +240,8 @@ fn planes_equivalent(a: (DVec3, f64), b: (DVec3, f64)) -> bool {
 fn select_splitter(
     brushes: &[BrushVolume],
     candidates: &[usize],
-    region: &Aabb,
+    _region: &Aabb,
+    region_polytope: &RegionPolytope,
     ancestor_planes: &[(DVec3, f64)],
 ) -> Option<(DVec3, f64)> {
     let mut best: Option<((DVec3, f64), i32)> = None;
@@ -237,7 +257,11 @@ fn select_splitter(
                 continue;
             }
 
-            if classify_aabb(region, plane.normal, plane.distance) != AabbSide::Spanning {
+            if !region_polytope.plane_spans(
+                plane.normal,
+                plane.distance,
+                REGION_CLASSIFICATION_EPSILON,
+            ) {
                 continue;
             }
 
@@ -318,6 +342,7 @@ fn build_recursive(
     tree: &mut BspTree,
     brushes: &[BrushVolume],
     region: &Aabb,
+    region_polytope: &RegionPolytope,
     candidates: &[usize],
     inside: &[usize],
     ancestor_planes: &[(DVec3, f64)],
@@ -334,19 +359,24 @@ fn build_recursive(
 
     // No candidates: region is outside all brushes — empty.
     if candidates.is_empty() {
-        return Ok(make_leaf(tree, region, false, leaf_planes));
+        return Ok(make_leaf(tree, region, region_polytope, false, leaf_planes));
     }
 
-    // All candidates contain the region: fully solid.
-    if candidates.len() == inside.len() {
-        return Ok(make_leaf(tree, region, true, leaf_planes));
+    // Any brush containing the exact region makes that region solid.
+    if !inside.is_empty() {
+        return Ok(make_leaf(tree, region, region_polytope, true, leaf_planes));
     }
 
     // Mixed candidates, no qualifying splitter: cannot separate solid from air.
     // Treat as empty (structural air gap, not an error).
-    let Some((normal, distance)) = select_splitter(brushes, candidates, region, ancestor_planes)
-    else {
-        return Ok(make_leaf(tree, region, false, leaf_planes));
+    let Some((normal, distance)) = select_splitter(
+        brushes,
+        candidates,
+        region,
+        region_polytope,
+        ancestor_planes,
+    ) else {
+        return Ok(make_leaf(tree, region, region_polytope, false, leaf_planes));
     };
 
     let (front_candidates, back_candidates) =
@@ -354,9 +384,11 @@ fn build_recursive(
 
     let front_region = tighten_region(region, normal, distance, AabbSide::Front);
     let back_region = tighten_region(region, normal, distance, AabbSide::Back);
+    let (front_polytope, back_polytope) = region_polytope.clip(normal, distance);
 
-    let front_inside = compute_inside_set(brushes, &front_candidates, &front_region);
-    let back_inside = compute_inside_set(brushes, &back_candidates, &back_region);
+    let front_inside =
+        compute_inside_set(brushes, &front_candidates, &front_region, &front_polytope);
+    let back_inside = compute_inside_set(brushes, &back_candidates, &back_region, &back_polytope);
 
     let mut child_ancestors = ancestor_planes.to_vec();
     child_ancestors.push((normal, distance));
@@ -383,6 +415,7 @@ fn build_recursive(
         tree,
         brushes,
         &front_region,
+        &front_polytope,
         &front_candidates,
         &front_inside,
         &child_ancestors,
@@ -394,6 +427,7 @@ fn build_recursive(
         tree,
         brushes,
         &back_region,
+        &back_polytope,
         &back_candidates,
         &back_inside,
         &child_ancestors,
@@ -411,17 +445,35 @@ fn build_recursive(
 fn make_leaf(
     tree: &mut BspTree,
     region: &Aabb,
+    region_polytope: &RegionPolytope,
     is_solid: bool,
     leaf_planes: &[(DVec3, f64)],
 ) -> BspChild {
     let leaf_idx = tree.leaves.len();
     tree.leaves.push(BspLeaf {
         face_indices: Vec::new(),
-        bounds: region.clone(),
+        bounds: leaf_bounds(region, region_polytope),
         is_solid,
         defining_planes: leaf_planes.to_vec(),
     });
     BspChild::Leaf(leaf_idx)
+}
+
+fn leaf_bounds(region: &Aabb, region_polytope: &RegionPolytope) -> Aabb {
+    let polytope_bounds = region_polytope.vertex_aabb();
+    if !polytope_bounds.is_valid() {
+        return region.clone();
+    }
+
+    let bounds = Aabb {
+        min: polytope_bounds.min.max(region.min),
+        max: polytope_bounds.max.min(region.max),
+    };
+    if bounds.is_valid() {
+        bounds
+    } else {
+        region.clone()
+    }
 }
 
 #[cfg(test)]
@@ -463,6 +515,72 @@ mod tests {
         }
     }
 
+    fn x_ge_z_wedge_brush(size: f64, gap: f64) -> BrushVolume {
+        let diagonal_normal = DVec3::new(-1.0, 0.0, 1.0).normalize();
+        BrushVolume {
+            planes: vec![
+                BrushPlane {
+                    normal: DVec3::X,
+                    distance: size,
+                },
+                BrushPlane {
+                    normal: DVec3::Y,
+                    distance: size,
+                },
+                BrushPlane {
+                    normal: DVec3::NEG_Y,
+                    distance: 0.0,
+                },
+                BrushPlane {
+                    normal: DVec3::NEG_Z,
+                    distance: 0.0,
+                },
+                BrushPlane {
+                    normal: diagonal_normal,
+                    distance: -gap / 2.0_f64.sqrt(),
+                },
+            ],
+            sides: Vec::new(),
+            aabb: Aabb {
+                min: DVec3::new(gap, 0.0, 0.0),
+                max: DVec3::new(size, size, size - gap),
+            },
+        }
+    }
+
+    fn x_le_z_wedge_brush(size: f64, gap: f64) -> BrushVolume {
+        let diagonal_normal = DVec3::new(1.0, 0.0, -1.0).normalize();
+        BrushVolume {
+            planes: vec![
+                BrushPlane {
+                    normal: DVec3::NEG_X,
+                    distance: 0.0,
+                },
+                BrushPlane {
+                    normal: DVec3::Y,
+                    distance: size,
+                },
+                BrushPlane {
+                    normal: DVec3::NEG_Y,
+                    distance: 0.0,
+                },
+                BrushPlane {
+                    normal: DVec3::Z,
+                    distance: size,
+                },
+                BrushPlane {
+                    normal: diagonal_normal,
+                    distance: -gap / 2.0_f64.sqrt(),
+                },
+            ],
+            sides: Vec::new(),
+            aabb: Aabb {
+                min: DVec3::new(0.0, 0.0, gap),
+                max: DVec3::new(size - gap, size, size),
+            },
+        }
+    }
+
     fn hollow_room(min: DVec3, max: DVec3, wall: f64) -> Vec<BrushVolume> {
         vec![
             // Floor
@@ -501,6 +619,16 @@ mod tests {
     fn leaf_at(tree: &BspTree, point: DVec3) -> &BspLeaf {
         let idx = find_leaf_for_point(tree, point);
         &tree.leaves[idx]
+    }
+
+    fn assert_all_leaf_bounds_valid(tree: &BspTree) {
+        for leaf in &tree.leaves {
+            assert!(
+                leaf.bounds.is_valid(),
+                "invalid leaf bounds: {:?}",
+                leaf.bounds
+            );
+        }
     }
 
     #[test]
@@ -683,6 +811,48 @@ mod tests {
             !leaf_at(&tree, gap).is_solid,
             "narrow air gap between adjacent brushes should be empty"
         );
+    }
+
+    #[test]
+    fn wedge_interiors_are_solid_for_box_split_on_x_equals_z() {
+        let brushes = vec![x_ge_z_wedge_brush(10.0, 0.0), x_le_z_wedge_brush(10.0, 0.0)];
+
+        let tree = build_bsp_from_brushes(&brushes).expect("wedge box should build");
+
+        assert!(
+            leaf_at(&tree, DVec3::new(7.0, 5.0, 3.0)).is_solid,
+            "x >= z wedge interior should be solid"
+        );
+        assert!(
+            leaf_at(&tree, DVec3::new(3.0, 5.0, 7.0)).is_solid,
+            "x <= z wedge interior should be solid"
+        );
+        assert!(
+            !leaf_at(&tree, DVec3::new(5.0, 10.5, 5.0)).is_solid,
+            "point outside both wedges should be empty"
+        );
+        assert_all_leaf_bounds_valid(&tree);
+    }
+
+    #[test]
+    fn wedge_air_gap_between_angled_brushes_stays_empty() {
+        let brushes = vec![x_ge_z_wedge_brush(10.0, 1.0), x_le_z_wedge_brush(10.0, 1.0)];
+
+        let tree = build_bsp_from_brushes(&brushes).expect("wedge gap should build");
+
+        assert!(
+            leaf_at(&tree, DVec3::new(8.0, 5.0, 3.0)).is_solid,
+            "first angled brush interior should be solid"
+        );
+        assert!(
+            leaf_at(&tree, DVec3::new(3.0, 5.0, 8.0)).is_solid,
+            "second angled brush interior should be solid"
+        );
+        assert!(
+            !leaf_at(&tree, DVec3::new(5.0, 5.0, 5.0)).is_solid,
+            "genuine diagonal air gap should stay empty"
+        );
+        assert_all_leaf_bounds_valid(&tree);
     }
 
     #[test]

@@ -32,7 +32,7 @@ use postretro_net::wire::{
 use super::client::{ClientReplication, MoverCorrection};
 use super::command_queue::{HostCommandQueues, MovementOwners, host_resolve_movement_inputs};
 use super::prediction::ClientPrediction;
-use super::reconcile::reconcile_local_pawn;
+use super::reconcile::reconcile_local_pawn_with_mover_history;
 use super::replication::{ReplicableSet, host_register_loaded_movers, produce_owned_snapshots};
 use super::wire_convert::sim_command_to_input;
 use crate::collision::CollisionWorld;
@@ -628,7 +628,12 @@ impl LoopbackHarness {
             };
             let outcome = self
                 .client_replication
-                .apply_snapshot(&mut self.client_registry, &snapshot);
+                .apply_snapshot_with_mover_target_tick(
+                    &mut self.client_registry,
+                    &snapshot,
+                    self.server_tick,
+                    DT,
+                );
             self.latest_mover_corrections
                 .extend(outcome.mover_corrections.iter().copied());
 
@@ -661,13 +666,15 @@ impl LoopbackHarness {
                     &self.mover_colliders,
                     &self.client_mover_states,
                 );
-                let class = reconcile_local_pawn(
+                let class = reconcile_local_pawn_with_mover_history(
                     &mut self.client_registry,
                     &mut self.prediction,
                     reconcile.entity_id,
                     reconcile.transform,
                     reconcile.movement.as_ref(),
                     reconcile.acked_tick,
+                    reconcile.server_tick,
+                    Some(self.client_replication.mover_history()),
                     &combined_collision,
                     GRAVITY,
                     DT,

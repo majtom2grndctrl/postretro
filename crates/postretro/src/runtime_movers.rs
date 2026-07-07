@@ -1,8 +1,7 @@
 //! Runtime consumption of PRL kinematic mover records.
 //!
 //! This module owns the load-spawn and collision-collider feed for section 43.
-//! Network registration is intentionally absent until replication client-apply
-//! can bind movers by `mover_id`.
+//! Network registration is owned by netcode/lifecycle, not this module.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -59,12 +58,18 @@ pub(crate) fn build_loaded_mover_colliders(world: &LevelWorld) -> Vec<MoverColli
 
 pub(crate) struct KinematicMoverRenderCollector {
     instances: Vec<KinematicMoverInstance>,
+    mover_bounds: HashMap<u32, (Vec3, Vec3)>,
+    mover_bounds_source: Option<MoverBoundsSource>,
+    visible_cell_bounds: Vec<(u32, Vec3, Vec3)>,
 }
 
 impl KinematicMoverRenderCollector {
     pub(crate) fn new() -> Self {
         Self {
             instances: Vec::new(),
+            mover_bounds: HashMap::new(),
+            mover_bounds_source: None,
+            visible_cell_bounds: Vec::new(),
         }
     }
 
@@ -80,6 +85,8 @@ impl KinematicMoverRenderCollector {
         alpha: f32,
     ) {
         self.instances.clear();
+        self.refresh_mover_bounds(world);
+        self.rebuild_visible_cell_bounds(world, visible);
 
         for (id, value) in registry.iter_with_kind(ComponentKind::KinematicMover) {
             let ComponentValue::KinematicMover(mover) = value else {
@@ -88,37 +95,20 @@ impl KinematicMoverRenderCollector {
             let Ok(current) = registry.get_component::<Transform>(id) else {
                 continue;
             };
-            let Some(loaded) = world
-                .kinematic_geometry
-                .movers
-                .iter()
-                .find(|loaded| loaded.mover_id == mover.mover_id)
-            else {
+            let Some(local_bounds) = self.mover_bounds.get(&mover.mover_id).copied() else {
                 continue;
             };
 
-            let local_bounds = mover_local_bounds(loaded).unwrap_or((Vec3::ZERO, Vec3::ZERO));
             let current_model = transform_matrix(*current);
             let (world_min, world_max) =
                 transform_aabb(local_bounds.0, local_bounds.1, current_model);
             let origin_cell = world.locate_cell(current.position) as u32;
-            let visible_cell_bounds: Vec<(u32, Vec3, Vec3)> = match visible {
-                VisibleCells::DrawAll => Vec::new(),
-                VisibleCells::Culled(cells) => cells
-                    .iter()
-                    .filter_map(|cell| {
-                        world
-                            .cell_bounds(*cell as usize)
-                            .map(|(min, max)| (*cell, min, max))
-                    })
-                    .collect(),
-            };
             if !mover_visible_against_cell_bounds(
                 visible,
                 origin_cell,
                 world_min,
                 world_max,
-                &visible_cell_bounds,
+                &self.visible_cell_bounds,
             ) {
                 continue;
             }
@@ -135,6 +125,52 @@ impl KinematicMoverRenderCollector {
 
     pub(crate) fn instances(&self) -> &[KinematicMoverInstance] {
         &self.instances
+    }
+
+    fn refresh_mover_bounds(&mut self, world: &LevelWorld) {
+        let source = MoverBoundsSource::from_movers(&world.kinematic_geometry.movers);
+        if self.mover_bounds_source == Some(source) {
+            return;
+        }
+
+        self.mover_bounds.clear();
+        self.mover_bounds
+            .reserve(world.kinematic_geometry.movers.len());
+        for mover in &world.kinematic_geometry.movers {
+            let bounds = mover_local_bounds(mover).unwrap_or((Vec3::ZERO, Vec3::ZERO));
+            self.mover_bounds.insert(mover.mover_id, bounds);
+        }
+        self.mover_bounds_source = Some(source);
+    }
+
+    fn rebuild_visible_cell_bounds(&mut self, world: &LevelWorld, visible: &VisibleCells) {
+        self.visible_cell_bounds.clear();
+        let VisibleCells::Culled(cells) = visible else {
+            return;
+        };
+
+        self.visible_cell_bounds.reserve(cells.len());
+        self.visible_cell_bounds
+            .extend(cells.iter().filter_map(|cell| {
+                world
+                    .cell_bounds(*cell as usize)
+                    .map(|(min, max)| (*cell, min, max))
+            }));
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MoverBoundsSource {
+    ptr: usize,
+    len: usize,
+}
+
+impl MoverBoundsSource {
+    fn from_movers(movers: &[LoadedKinematicMover]) -> Self {
+        Self {
+            ptr: movers.as_ptr() as usize,
+            len: movers.len(),
+        }
     }
 }
 

@@ -17,8 +17,8 @@ pub enum KinematicMoverMode {
 /// Live deterministic phase for one linear moving-world payload.
 ///
 /// The waypoint list, speed, wait, and mode are static path data seeded when the
-/// mover is constructed. The remaining fields are phase and can be mirrored by a
-/// future wire payload without replicating the path itself.
+/// mover is constructed. The remaining fields are phase mirrored by the wire
+/// payload without replicating the path itself.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct KinematicMoverComponent {
     pub mover_id: u32,

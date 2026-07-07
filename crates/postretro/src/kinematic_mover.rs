@@ -74,17 +74,7 @@ pub(crate) fn run_kinematic_mover_tick(
         .collect();
 
     for (entity, mut mover, mut transform) in snapshots {
-        let start_position = position_for_phase(&mover);
-        transform.position = start_position;
-        let end_position = advance_mover(&mut mover, tick_dt);
-        transform.position = end_position;
-        let tick_delta = end_position - start_position;
-        let linear_velocity = if tick_dt.is_finite() && tick_dt > 0.0 {
-            tick_delta / tick_dt
-        } else {
-            Vec3::ZERO
-        };
-        mover.current_linear_velocity = linear_velocity;
+        let pose = advance_mover_phase_one_tick(&mut mover, &mut transform, tick_dt);
 
         let _ = registry.set_component(entity, mover.clone());
         let _ = registry.set_component(entity, transform);
@@ -93,11 +83,55 @@ pub(crate) fn run_kinematic_mover_tick(
             MoverTickState {
                 entity,
                 transform,
-                linear_velocity,
-                tick_delta,
-                tick_dt,
+                linear_velocity: pose.linear_velocity,
+                tick_delta: pose.tick_delta,
+                tick_dt: pose.tick_dt,
             },
         );
+    }
+}
+
+pub(crate) fn mover_pose_for_current_phase(
+    transform: Transform,
+    mover: &KinematicMoverComponent,
+    tick_dt: f32,
+) -> MoverPose {
+    let mut transform = transform;
+    transform.position = position_for_phase(mover);
+    let linear_velocity = mover.current_linear_velocity;
+    MoverPose {
+        transform,
+        linear_velocity,
+        tick_delta: if tick_dt.is_finite() && tick_dt > 0.0 {
+            linear_velocity * tick_dt
+        } else {
+            Vec3::ZERO
+        },
+        tick_dt,
+    }
+}
+
+pub(crate) fn advance_mover_phase_one_tick(
+    mover: &mut KinematicMoverComponent,
+    transform: &mut Transform,
+    tick_dt: f32,
+) -> MoverPose {
+    let start_position = position_for_phase(mover);
+    transform.position = start_position;
+    let end_position = advance_mover(mover, tick_dt);
+    transform.position = end_position;
+    let tick_delta = end_position - start_position;
+    let linear_velocity = if tick_dt.is_finite() && tick_dt > 0.0 {
+        tick_delta / tick_dt
+    } else {
+        Vec3::ZERO
+    };
+    mover.current_linear_velocity = linear_velocity;
+    MoverPose {
+        transform: *transform,
+        linear_velocity,
+        tick_delta,
+        tick_dt,
     }
 }
 

@@ -2,6 +2,8 @@
 // plus waypoint path records.
 // See: context/lib/build_pipeline.md §PRL KinematicGeometrySection.
 
+use std::collections::HashSet;
+
 use crate::FormatError;
 use crate::geometry::{FaceMeta, Vertex};
 
@@ -80,6 +82,7 @@ impl KinematicGeometrySection {
         for mover_idx in 0..mover_count {
             movers.push(read_mover(data, &mut offset, mover_idx)?);
         }
+        validate_unique_mover_ids(&movers)?;
 
         let waypoint_count = read_count(data, &mut offset, "waypoint count")?;
         let mut waypoints = Vec::with_capacity(waypoint_count);
@@ -112,6 +115,19 @@ impl KinematicGeometrySection {
             waypoints,
         })
     }
+}
+
+fn validate_unique_mover_ids(movers: &[KinematicMoverRecord]) -> crate::Result<()> {
+    let mut mover_ids = HashSet::new();
+    for (mover_idx, mover) in movers.iter().enumerate() {
+        if !mover_ids.insert(mover.mover_id) {
+            return invalid_data(format!(
+                "kinematic geometry: duplicate mover_id {} at mover {mover_idx}",
+                mover.mover_id
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn write_mover(buf: &mut Vec<u8>, mover: &KinematicMoverRecord) {
@@ -362,6 +378,11 @@ fn validate_mover_geometry(
             indices.len()
         ));
     }
+    if vertices.is_empty() || indices.is_empty() {
+        return invalid_data(format!(
+            "kinematic geometry: mover {mover_idx} geometry must contain vertices and indices"
+        ));
+    }
     for (vertex_idx, vertex) in vertices.iter().enumerate() {
         if !vertex
             .position
@@ -610,6 +631,23 @@ mod tests {
     fn rejects_nonzero_lightmap_data() {
         let mut section = sample_section();
         section.movers[0].vertices[0].lightmap_uv = [1, 0];
+        assert!(KinematicGeometrySection::from_bytes(&section.to_bytes()).is_err());
+    }
+
+    #[test]
+    fn rejects_duplicate_mover_ids() {
+        let mut section = sample_section();
+        section.movers.push(section.movers[0].clone());
+
+        assert!(KinematicGeometrySection::from_bytes(&section.to_bytes()).is_err());
+    }
+
+    #[test]
+    fn rejects_empty_mover_geometry() {
+        let mut section = sample_section();
+        section.movers[0].vertices.clear();
+        section.movers[0].indices.clear();
+
         assert!(KinematicGeometrySection::from_bytes(&section.to_bytes()).is_err());
     }
 

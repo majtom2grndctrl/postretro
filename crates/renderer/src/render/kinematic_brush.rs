@@ -1,4 +1,5 @@
 // Renderer-owned draw path for PRL-loaded kinematic brush movers.
+// See: context/lib/rendering_pipeline.md
 
 use std::collections::HashMap;
 

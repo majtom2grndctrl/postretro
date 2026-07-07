@@ -260,7 +260,7 @@ fn parse_kinematic_mover(
         anyhow::bail!("kinematic_mover `{name}` missing required `path` waypoint name");
     }
 
-    let speed = parse_required_finite_f32(props, "speed", "kinematic_mover", &name)?;
+    let speed = parse_optional_finite_f32(props, "speed", 1.0, "kinematic_mover", &name)?;
     if speed <= 0.0 {
         anyhow::bail!("kinematic_mover `{name}` `speed` must be finite and positive, got {speed}");
     }
@@ -314,24 +314,6 @@ fn parse_kinematic_mover(
         start_on_spawn,
         brush_ids,
     })
-}
-
-fn parse_required_finite_f32(
-    props: &HashMap<String, String>,
-    key: &str,
-    classname: &str,
-    name: &str,
-) -> anyhow::Result<f32> {
-    let raw = props
-        .get(key)
-        .ok_or_else(|| anyhow::anyhow!("{classname} `{name}` missing required `{key}`"))?;
-    let parsed: f32 = raw.trim().parse().map_err(|e| {
-        anyhow::anyhow!("{classname} `{name}` `{key}` value `{raw}` is not a valid float: {e}")
-    })?;
-    if !parsed.is_finite() {
-        anyhow::bail!("{classname} `{name}` `{key}` value `{raw}` is not finite");
-    }
-    Ok(parsed)
 }
 
 fn parse_optional_finite_f32(
@@ -938,6 +920,7 @@ fn resolve_kinematic_movers(
     waypoints: &[MapKinematicWaypoint],
     scale: f64,
 ) -> anyhow::Result<Vec<MapKinematicMover>> {
+    validate_kinematic_waypoints(waypoints)?;
     let waypoint_by_name: HashMap<&str, &MapKinematicWaypoint> = waypoints
         .iter()
         .map(|waypoint| (waypoint.name.as_str(), waypoint))
@@ -992,6 +975,23 @@ fn resolve_kinematic_movers(
     Ok(movers)
 }
 
+fn validate_kinematic_waypoints(waypoints: &[MapKinematicWaypoint]) -> anyhow::Result<()> {
+    let mut names = HashSet::new();
+    for waypoint in waypoints {
+        if !waypoint.origin.is_finite() {
+            anyhow::bail!(
+                "kinematic_waypoint `{}` origin is non-finite: {:?}",
+                waypoint.name,
+                waypoint.origin
+            );
+        }
+        if !names.insert(waypoint.name.as_str()) {
+            anyhow::bail!("duplicate kinematic_waypoint name `{}`", waypoint.name);
+        }
+    }
+    Ok(())
+}
+
 fn resolve_kinematic_path(
     mover: &PendingKinematicMover,
     waypoint_by_name: &HashMap<&str, &MapKinematicWaypoint>,
@@ -1014,6 +1014,17 @@ fn resolve_kinematic_path(
                 mover.name
             );
         };
+        if let Some(previous_name) = path.last() {
+            let previous = waypoint_by_name[previous_name.as_str()];
+            if (previous.origin - waypoint.origin).length_squared() == 0.0 {
+                anyhow::bail!(
+                    "kinematic_mover `{}` path has zero-length segment between waypoints `{}` and `{}`",
+                    mover.name,
+                    previous.name,
+                    waypoint.name
+                );
+            }
+        }
         path.push(waypoint.name.clone());
         if waypoint.next.trim().is_empty() {
             break;
@@ -1936,6 +1947,16 @@ mod tests {
     }
 
     #[test]
+    fn kinematic_mover_missing_speed_uses_fgd_default() {
+        let map_text = kinematic_test_map("wp_b").replace("\"speed\" \"2.5\"\n", "");
+        let map_data =
+            parse_inline_map(&map_text).expect("missing speed should use the FGD default");
+
+        assert_eq!(map_data.kinematic_movers.len(), 1);
+        assert_eq!(map_data.kinematic_movers[0].speed, 1.0);
+    }
+
+    #[test]
     fn kinematic_mover_path_with_fewer_than_two_waypoints_rejects() {
         let err = parse_inline_map(&kinematic_test_map(""))
             .expect_err("single-waypoint mover path must reject");
@@ -1953,6 +1974,45 @@ mod tests {
         assert!(
             msg.contains("waypoint cycle") && msg.contains("wp_a"),
             "diagnostic should name the waypoint cycle, got: {err}"
+        );
+    }
+
+    #[test]
+    fn duplicate_kinematic_waypoint_names_reject() {
+        let map_text =
+            kinematic_test_map("wp_b").replace("\"name\" \"wp_b\"", "\"name\" \"wp_a\"");
+        let err = parse_inline_map(&map_text)
+            .expect_err("duplicate waypoint names must reject before PRL emission");
+
+        assert!(
+            err.to_string().contains("duplicate kinematic_waypoint name"),
+            "diagnostic should name duplicate waypoint names, got: {err}"
+        );
+    }
+
+    #[test]
+    fn non_finite_kinematic_waypoint_origin_rejects() {
+        let map_text = kinematic_test_map("wp_b")
+            .replace("\"origin\" \"0 0 64\"", "\"origin\" \"0 nan 64\"");
+        let err = parse_inline_map(&map_text)
+            .expect_err("non-finite waypoint origins must reject before PRL emission");
+
+        assert!(
+            err.to_string().contains("origin is non-finite"),
+            "diagnostic should name non-finite waypoint origin, got: {err}"
+        );
+    }
+
+    #[test]
+    fn zero_length_kinematic_path_segment_rejects() {
+        let map_text =
+            kinematic_test_map("wp_b").replace("\"origin\" \"0 0 64\"", "\"origin\" \"0 0 0\"");
+        let err = parse_inline_map(&map_text)
+            .expect_err("zero-length adjacent waypoint segments must reject");
+
+        assert!(
+            err.to_string().contains("zero-length segment"),
+            "diagnostic should name zero-length path segment, got: {err}"
         );
     }
 

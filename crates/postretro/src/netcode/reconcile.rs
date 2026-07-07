@@ -15,7 +15,9 @@
 
 use postretro_net::wire::WirePlayerMovementState;
 
+use crate::collision::moving::{CombinedCollisionWorld, MoverPose, MoverPoseSource};
 use crate::movement::MovementCollisionSource;
+use crate::netcode::client::MoverHistoryBuffer;
 use crate::netcode::movement_state::merge_wire_into_movement_state;
 use crate::netcode::prediction::replay;
 use crate::netcode::prediction::{
@@ -53,6 +55,39 @@ pub(crate) fn reconcile_local_pawn(
     authoritative_transform: Transform,
     movement: Option<&WirePlayerMovementState>,
     acked_tick: Option<u32>,
+    collision: &impl MovementCollisionSource,
+    gravity: f32,
+    dt: f32,
+) -> Option<CorrectionClass> {
+    reconcile_local_pawn_with_mover_history(
+        registry,
+        prediction,
+        entity_id,
+        authoritative_transform,
+        movement,
+        acked_tick,
+        0,
+        None,
+        collision,
+        gravity,
+        dt,
+    )
+}
+
+/// Reconcile with a server-tick-addressed mover history source for replay. The
+/// wrapper above preserves existing static/live collision callers; production client
+/// snapshot apply uses this path so carry/release during replay reads mover poses from
+/// the authoritative tick axis instead of the live post-apply mover table.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn reconcile_local_pawn_with_mover_history(
+    registry: &mut EntityRegistry,
+    prediction: &mut ClientPrediction,
+    entity_id: EntityId,
+    authoritative_transform: Transform,
+    movement: Option<&WirePlayerMovementState>,
+    acked_tick: Option<u32>,
+    authoritative_server_tick: u32,
+    mover_history: Option<&MoverHistoryBuffer>,
     collision: &impl MovementCollisionSource,
     gravity: f32,
     dt: f32,
@@ -102,13 +137,20 @@ pub(crate) fn reconcile_local_pawn(
     //    Skipped on a reset (history was cleared). Threads collision/gravity/dt through
     //    the movement-only replay so the reconciled tail matches the forward prediction.
     if !is_reset {
-        for entry in prediction.history().iter() {
+        let base_collision = collision.combined_collision();
+        for (index, entry) in prediction.history().iter().enumerate() {
             let sim = crate::netcode::wire_convert::input_command_to_sim(&entry.command);
+            let replay_collision = ReplayCollisionSource {
+                base: base_collision,
+                mover_history,
+                server_tick: authoritative_server_tick.wrapping_add(index as u32 + 1),
+                tick_dt: dt,
+            };
             let (next_transform, next_movement, _events) = replay(
                 reconciled_transform,
                 component,
                 sim.movement,
-                collision,
+                &replay_collision,
                 gravity,
                 dt,
             );
@@ -174,6 +216,27 @@ pub(crate) fn reconcile_local_pawn(
     Some(class)
 }
 
+struct ReplayCollisionSource<'a> {
+    base: CombinedCollisionWorld<'a>,
+    mover_history: Option<&'a MoverHistoryBuffer>,
+    server_tick: u32,
+    tick_dt: f32,
+}
+
+impl MoverPoseSource for ReplayCollisionSource<'_> {
+    fn pose(&self, mover_id: u32) -> Option<MoverPose> {
+        self.mover_history
+            .and_then(|history| history.pose_at_tick(mover_id, self.server_tick, self.tick_dt))
+            .or_else(|| self.base.poses.pose(mover_id))
+    }
+}
+
+impl MovementCollisionSource for ReplayCollisionSource<'_> {
+    fn combined_collision(&self) -> CombinedCollisionWorld<'_> {
+        CombinedCollisionWorld::new(self.base.static_world, self.base.movers, self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,13 +251,15 @@ mod tests {
         WireMovementState, WirePlayerMovementState,
     };
 
+    use crate::netcode::client::MoverHistorySample;
     use crate::netcode::movement_state::movement_state_to_wire;
     use crate::netcode::prediction::{
         DASH_CORRECTION_MAX_M, ORDINARY_CORRECTION_MAX_M, TELEPORT_CORRECTION_MIN_M,
     };
+    use postretro_entities::{KinematicMoverComponent, KinematicMoverMode};
     use postretro_foundation::{
         AirParams, BoolOrIr, CapsuleParams, DashParams, FallParams, ForgivenessParams,
-        GroundParams, NumberOrIr, PlayerMovementDescriptor, SpeedParams,
+        GroundParams, GroundRef, NumberOrIr, PlayerMovementDescriptor, SpeedParams,
     };
 
     const EPSILON: f32 = 1e-4;
@@ -294,6 +359,24 @@ mod tests {
                 jump_pressed: false,
                 dash_pressed,
                 running: true,
+                crouch_intent: false,
+                facing_yaw: 0.0,
+            },
+            fire_button: WireFireButtonState {
+                pressed: false,
+                active: false,
+            },
+        }
+    }
+
+    fn neutral_command(client_tick: u32) -> InputCommand {
+        InputCommand {
+            client_tick,
+            movement: WireMovementInput {
+                wish_dir: [0.0, 0.0],
+                jump_pressed: false,
+                dash_pressed: false,
+                running: false,
                 crouch_intent: false,
                 facing_yaw: 0.0,
             },
@@ -702,6 +785,81 @@ mod tests {
         assert!(
             (predicted_position(&registry, id) - baseline.position).length() < EPSILON,
             "baseline applied"
+        );
+    }
+
+    // Regression: replay used the live mover pose source for every unacked command,
+    // so mover carry during reconciliation could miss the authoritative tick delta.
+    #[test]
+    fn replay_uses_mover_history_pose_for_carry_tick() {
+        let world = floor_world();
+        let mut registry = EntityRegistry::new();
+        let mut prediction = ClientPrediction::new();
+        let id = spawn_armed_pawn(&mut registry, &mut prediction, NetworkId(6));
+
+        let mut start_component = component();
+        start_component.ground = GroundRef::Mover(42);
+        registry.set_component(id, start_component.clone()).unwrap();
+        prediction
+            .predict_tick(
+                neutral_command(5),
+                (*registry.get_component::<Transform>(id).unwrap(), start_component),
+                &world,
+                GRAVITY,
+                DT,
+            )
+            .unwrap();
+        assert_eq!(prediction.history().len(), 1);
+
+        let mut authoritative = authoritative_movement();
+        authoritative.ground = WireGroundRef::Mover(42);
+        authoritative.velocity = [0.0, 0.0, 0.0];
+
+        let mover_phase = KinematicMoverComponent::new(
+            42,
+            vec![Vec3::ZERO, Vec3::X],
+            1.0,
+            0.0,
+            KinematicMoverMode::PingPong,
+            true,
+        );
+        let mut history = MoverHistoryBuffer::default();
+        history.record(
+            42,
+            MoverHistorySample {
+                server_tick: 11,
+                pose: MoverPose {
+                    transform: Transform::default(),
+                    linear_velocity: Vec3::new(12.0, 0.0, 0.0),
+                    tick_delta: Vec3::new(0.2, 0.0, 0.0),
+                    tick_dt: DT,
+                },
+                phase: mover_phase,
+            },
+        );
+
+        reconcile_local_pawn_with_mover_history(
+            &mut registry,
+            &mut prediction,
+            id,
+            Transform {
+                position: START,
+                ..Transform::default()
+            },
+            Some(&authoritative),
+            Some(4),
+            10,
+            Some(&history),
+            &world,
+            GRAVITY,
+            DT,
+        )
+        .unwrap();
+
+        let replayed = predicted_position(&registry, id);
+        assert!(
+            (replayed.x - (START.x + 0.2)).abs() < EPSILON,
+            "replayed command consumed mover carry delta for server tick 11"
         );
     }
 

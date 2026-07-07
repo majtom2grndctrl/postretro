@@ -683,7 +683,12 @@ pub(crate) fn client_receive_and_apply(
             );
             continue;
         }
-        let mut outcome = replication.apply_snapshot(registry, &snapshot);
+        let mut outcome = replication.apply_snapshot_with_mover_target_tick(
+            registry,
+            &snapshot,
+            snapshot.server_tick,
+            tick_dt,
+        );
 
         // M15 Phase 3.5: apply this snapshot's replicated-state records. Validated as a
         // whole batch against the local schema, then committed all-or-nothing through
@@ -748,13 +753,15 @@ pub(crate) fn client_receive_and_apply(
         // offset (or snap on a teleport). The registry-touching orchestration lives in
         // `reconcile`; long-lived prediction/smoothing state lives in `prediction`.
         if let Some(local) = &outcome.local_reconcile {
-            reconcile::reconcile_local_pawn(
+            reconcile::reconcile_local_pawn_with_mover_history(
                 registry,
                 prediction,
                 local.entity_id,
                 local.transform,
                 local.movement.as_ref(),
                 local.acked_tick,
+                local.server_tick,
+                Some(replication.mover_history()),
                 collision,
                 gravity,
                 tick_dt,

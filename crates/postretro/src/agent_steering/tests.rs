@@ -772,6 +772,189 @@ fn failed_same_tick_replan_suppresses_stale_recovery_threshold() {
 }
 
 #[test]
+fn failed_forced_recovery_replan_holds_without_stale_steer_or_tangent() {
+    // Regression: a recovery-forced replan can fail from a wedged/off-navmesh
+    // position; once the path is cleared, stale steer_velocity and the fixed
+    // tangent bias must not move the blocked agent toward a global side.
+    let wall = LWall::fixture();
+    let world = wall.collision_world();
+    let params = agent_params();
+    let mut registry = EntityRegistry::new();
+    let id = spawn_agent(&mut registry, 1.0, 6.0, &params);
+    let destination = Vec3::new(7.0, rest_y(&params), 6.0);
+    set_manual_path(&mut registry, id, vec![destination]);
+    {
+        let mut agent = registry
+            .get_component::<AgentComponent>(id)
+            .unwrap()
+            .clone();
+        agent.planned_destination = None;
+        agent.unstick_window_remaining = 3;
+        agent.steer_velocity = Vec3::X * agent.move_speed;
+        registry.set_component(id, agent).unwrap();
+    }
+
+    let start = agent_position(&registry, id);
+    let result = tick(&mut registry, &world, None, GRAVITY, DT);
+    let end = agent_position(&registry, id);
+
+    let agent = registry.get_component::<AgentComponent>(id).unwrap();
+    assert_eq!(
+        result.replans, 1,
+        "planned_destination=None should still route through the budgeted replan path"
+    );
+    assert!(
+        agent.blocked,
+        "the failed query still reports blocked while recovery continues"
+    );
+    assert!(
+        agent.path.is_empty(),
+        "the failed query still drops the stale path"
+    );
+    assert_eq!(
+        agent.planned_destination, None,
+        "active recovery should keep retrying budgeted forced replans during its window"
+    );
+    assert_eq!(
+        agent.unstick_window_remaining, 2,
+        "failed forced replan should spend one recovery tick, not cancel the retry window"
+    );
+    assert_eq!(
+        agent.steer_velocity,
+        Vec3::ZERO,
+        "empty blocked path should zero steer_velocity instead of retaining the stale heading"
+    );
+    assert!(
+        distance_xz(start, end) <= EPS,
+        "failed forced replan should produce no XZ movement; start={start:?}, end={end:?}"
+    );
+}
+
+#[test]
+fn final_recovery_tick_failed_forced_replan_closes_latch_for_cooldown() {
+    // Regression: a failed recovery-forced replan on the final recovery tick
+    // left planned_destination=None, causing one more drift-driven retry after
+    // the bounded window had expired.
+    let wall = LWall::fixture();
+    let world = wall.collision_world();
+    let params = agent_params();
+    let mut registry = EntityRegistry::new();
+    let id = spawn_agent(&mut registry, 1.0, 6.0, &params);
+    let destination = Vec3::new(7.0, rest_y(&params), 6.0);
+    set_manual_path(&mut registry, id, vec![destination]);
+    {
+        let mut agent = registry
+            .get_component::<AgentComponent>(id)
+            .unwrap()
+            .clone();
+        agent.planned_destination = None;
+        agent.unstick_window_remaining = 1;
+        agent.steer_velocity = Vec3::X * agent.move_speed;
+        registry.set_component(id, agent).unwrap();
+    }
+
+    let final_recovery_result = tick(&mut registry, &world, None, GRAVITY, DT);
+
+    {
+        let agent = registry.get_component::<AgentComponent>(id).unwrap();
+        assert_eq!(
+            final_recovery_result.replans, 1,
+            "the final recovery tick should attempt its forced replan through the budget"
+        );
+        assert!(agent.blocked, "missing nav graph should mark blocked");
+        assert!(agent.path.is_empty(), "failed replan should drop the path");
+        assert_eq!(
+            agent.unstick_window_remaining, 0,
+            "the final recovery tick should spend the remaining window"
+        );
+        assert_eq!(
+            agent.planned_destination,
+            Some(destination),
+            "an expired recovery window should close the forced-replan latch"
+        );
+    }
+
+    let following_result = tick(&mut registry, &world, None, GRAVITY, DT);
+
+    let agent = registry.get_component::<AgentComponent>(id).unwrap();
+    assert_eq!(
+        following_result.replans, 0,
+        "after recovery expires, the failed-plan cooldown should block an immediate retry"
+    );
+    assert_eq!(
+        agent.planned_destination,
+        Some(destination),
+        "normal blocked lifecycle should keep the failed-plan latch closed"
+    );
+    assert_eq!(
+        agent.unstick_window_remaining, 0,
+        "the expired recovery window should stay closed"
+    );
+}
+
+#[test]
+fn just_fired_recovery_window_survives_next_tick_failed_forced_replan() {
+    // Regression: recovery fires by clearing planned_destination, then the next
+    // tick's forced replan fails; that failure must not erase the just-seeded
+    // window.
+    let wall = LWall::fixture();
+    let world = wall.collision_world();
+    let params = agent_params();
+    let mut registry = EntityRegistry::new();
+    let id = spawn_agent(&mut registry, 1.0, 6.0, &params);
+    let destination = Vec3::new(7.0, rest_y(&params), 6.0);
+    set_manual_path(&mut registry, id, vec![destination]);
+    {
+        let mut agent = registry
+            .get_component::<AgentComponent>(id)
+            .unwrap()
+            .clone();
+        agent.stuck_ticks = STUCK_TICKS_THRESHOLD;
+        registry.set_component(id, agent).unwrap();
+    }
+
+    let fire_result = tick(&mut registry, &world, None, GRAVITY, DT);
+    {
+        let agent = registry.get_component::<AgentComponent>(id).unwrap();
+        assert_eq!(
+            fire_result.replans, 0,
+            "threshold fire should only clear the replan latch; admission happens on a later tick"
+        );
+        assert_eq!(
+            agent.unstick_window_remaining,
+            UNSTICK_WINDOW - 1,
+            "fire tick should seed and spend one recovery tick"
+        );
+        assert_eq!(
+            agent.planned_destination, None,
+            "fire tick should request a budgeted forced replan"
+        );
+    }
+
+    let replan_result = tick(&mut registry, &world, None, GRAVITY, DT);
+
+    let agent = registry.get_component::<AgentComponent>(id).unwrap();
+    assert_eq!(
+        replan_result.replans, 1,
+        "the follow-up forced replan is admitted through the normal budget"
+    );
+    assert!(agent.blocked, "missing nav graph should still mark blocked");
+    assert!(
+        agent.path.is_empty(),
+        "failed forced replan should still clear the path"
+    );
+    assert_eq!(
+        agent.unstick_window_remaining,
+        UNSTICK_WINDOW - 2,
+        "failed forced replan should preserve the just-fired recovery window"
+    );
+    assert_eq!(
+        agent.planned_destination, None,
+        "just-fired recovery should remain eligible for budgeted retry while the window runs"
+    );
+}
+
+#[test]
 fn agent_decelerates_inside_arrival_band_before_hard_stop() {
     let wall = LWall::fixture();
     let world = wall.collision_world();
@@ -992,6 +1175,35 @@ fn separation_is_added_after_smoothing_then_combined_velocity_is_clamped() {
 }
 
 #[test]
+fn crowd_separation_does_not_reverse_goal_progress() {
+    // Regression: a dense pack in front of a chaser could let separation
+    // overpower the ramping goal velocity, making the agent visibly retreat
+    // away from its valid path until collision or spacing changed.
+    let wall = LWall::fixture();
+    let world = wall.collision_world();
+    let params = agent_params();
+    let mut registry = EntityRegistry::new();
+    let chaser = spawn_agent(&mut registry, 4.0, 6.0, &params);
+    set_manual_path(
+        &mut registry,
+        chaser,
+        vec![Vec3::new(6.0, rest_y(&params), 6.0)],
+    );
+    for offset in [0.15, 0.3, 0.45] {
+        spawn_agent(&mut registry, 4.0 + offset, 6.0, &params);
+    }
+
+    let start = agent_position(&registry, chaser);
+    tick(&mut registry, &world, None, GRAVITY, DT);
+    let end = agent_position(&registry, chaser);
+
+    assert!(
+        end.x >= start.x - EPS,
+        "crowd separation should not reverse eastward path progress; start={start:?}, end={end:?}"
+    );
+}
+
+#[test]
 fn overlapping_agents_gain_separation_before_accel_ramp_completes() {
     let wall = LWall::fixture();
     let world = wall.collision_world();
@@ -1179,6 +1391,69 @@ fn agent_with_no_path_reports_blocked_and_holds_position() {
         distance_xz(state.position, start_xz) < 0.1,
         "blocked agent should not walk, moved to {:?}",
         state.position
+    );
+}
+
+#[test]
+fn blocked_agent_replans_when_live_destination_becomes_directly_routable() {
+    // Regression: a failed plan can leave an alert enemy as
+    // arrived=false/has_path=false/blocked=true. If the agent later sits on the
+    // navmesh with a live target in the same region, that old blocked latch must
+    // not preserve the impossible no-path state until the stale cooldown expires.
+    let wall = LWall::fixture();
+    let world = wall.collision_world();
+    let graph = wall.nav_graph();
+    let params = agent_params();
+
+    let mut registry = EntityRegistry::new();
+    let id = spawn_agent(&mut registry, -1.0, 6.0, &params);
+    let old_destination = Vec3::new(1.0, rest_y(&params), 6.0);
+    set_destination(&mut registry, id, old_destination);
+
+    let failed = tick(&mut registry, &world, Some(&graph), GRAVITY, DT);
+    assert_eq!(failed.replans, 1, "first tick attempts the bad plan");
+    {
+        let state = path_state(&registry, id).unwrap();
+        assert!(state.blocked, "off-navmesh start should fail pathfinding");
+        assert!(!state.has_path, "failed plan should hold no path");
+    }
+
+    let mut transform = *registry.get_component::<Transform>(id).unwrap();
+    transform.position = Vec3::new(1.0, rest_y(&params), 6.0);
+    registry.set_component(id, transform).unwrap();
+    let live_destination = Vec3::new(1.25, rest_y(&params), 6.0);
+    assert!(
+        distance_xz(old_destination, live_destination) <= REPLAN_DEST_THRESHOLD,
+        "fixture must stay below the ordinary moving-target drift threshold"
+    );
+    assert_eq!(
+        graph.region_at(transform.position),
+        graph.region_at(live_destination),
+        "agent and live destination are now directly routable in one region"
+    );
+
+    set_destination(&mut registry, id, live_destination);
+    let recovered = tick(&mut registry, &world, Some(&graph), GRAVITY, DT);
+
+    assert_eq!(
+        recovered.replans, 1,
+        "directly-routable live destination should bypass the old blocked cooldown"
+    );
+    let state = path_state(&registry, id).unwrap();
+    assert!(
+        !state.blocked,
+        "successful direct replan should clear the stale blocked state"
+    );
+    assert!(
+        state.has_path,
+        "agent should hold a path to the live destination"
+    );
+    let agent = registry.get_component::<AgentComponent>(id).unwrap();
+    assert!(
+        agent
+            .planned_destination
+            .is_some_and(|planned| distance_xz(planned, live_destination) <= EPS),
+        "planned destination should now match the live destination"
     );
 }
 
@@ -1416,6 +1691,57 @@ fn drift_driven_replan_beats_staleness_refreshers_for_budget() {
     assert!(
         distance_xz(planned, old_dest) > REPLAN_DEST_THRESHOLD,
         "drift-driven agent's plan must no longer target the old destination"
+    );
+}
+
+#[test]
+fn topology_changed_destination_replans_below_euclidean_threshold() {
+    // Regression: a stopped chase target can move only a few centimeters across
+    // a nav region boundary; Euclidean drift stays below the normal threshold,
+    // but the old corridor can now be topologically stale.
+    let wall = LWall::fixture();
+    let world = wall.collision_world();
+    let graph = wall.nav_graph();
+    let params = agent_params();
+
+    let mut registry = EntityRegistry::new();
+    let id = spawn_agent(&mut registry, 1.0, 1.0, &params);
+    let old_dest = Vec3::new(3.5, rest_y(&params), 3.8);
+    let new_dest = Vec3::new(3.5, rest_y(&params), 4.1);
+    assert!(
+        distance_xz(old_dest, new_dest) <= REPLAN_DEST_THRESHOLD,
+        "fixture must stay below the Euclidean drift threshold"
+    );
+    assert_ne!(
+        graph.region_at(old_dest),
+        graph.region_at(new_dest),
+        "fixture must cross nav topology"
+    );
+
+    set_manual_path(&mut registry, id, vec![old_dest]);
+    set_destination(&mut registry, id, new_dest);
+
+    let result = tick(&mut registry, &world, Some(&graph), GRAVITY, DT);
+
+    assert_eq!(
+        result.replans, 1,
+        "topology change should be admitted promptly even below Euclidean threshold"
+    );
+    let agent = registry.get_component::<AgentComponent>(id).unwrap();
+    let planned = agent
+        .planned_destination
+        .expect("topology-driven replan should install a planned destination");
+    assert!(
+        distance_xz(planned, new_dest) <= EPS,
+        "plan should refresh to the live destination, planned {planned:?}"
+    );
+    assert!(
+        agent
+            .path
+            .last()
+            .is_some_and(|waypoint| distance_xz(*waypoint, new_dest) <= EPS),
+        "path should now terminate at the live destination: {:?}",
+        agent.path
     );
 }
 

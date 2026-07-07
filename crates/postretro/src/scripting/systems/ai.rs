@@ -28,10 +28,11 @@ use glam::{Quat, Vec3};
 use crate::agent_steering;
 use crate::nav::distance_xz;
 use postretro_entities::components::brain::{AiStateMap, AiTuning, BrainComponent, LogicalState};
-use postretro_entities::components::health::{HealthComponent, apply_damage, pawn_with_health};
+use postretro_entities::components::health::{HealthComponent, apply_damage};
 use postretro_entities::components::mesh::{
     SwitchResult, restart_animation_clip, switch_animation_state,
 };
+use postretro_entities::components::player_movement::PlayerMovementComponent;
 use postretro_entities::{ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform};
 use postretro_foundation::DamagePayload;
 
@@ -41,11 +42,12 @@ use postretro_foundation::DamagePayload;
 /// tick loop settles.
 pub(crate) const ENEMY_ATTACK_EVENT: &str = "enemyAttack";
 
-/// Think-stride bands. Target acquisition (detection/leash) is time-sliced by
-/// player distance: near enemies re-evaluate every tick, mid enemies every few
-/// ticks, distant enemies rarely. The attack-in-range/cooldown check and the
-/// zero-HP death check are NOT strided — they run every tick regardless, so a
-/// strided acquisition gap can never suppress an in-stride attack or death.
+/// Think-stride bands. Target acquisition is time-sliced by player distance:
+/// near enemies re-evaluate every tick, mid enemies every few ticks, distant
+/// enemies rarely. The cheap retained-target leash check, the
+/// attack-in-range/cooldown check, and the zero-HP death check are NOT strided —
+/// they run every tick regardless, so a strided acquisition gap can never
+/// suppress an in-stride attack, death, or leash escape.
 ///
 /// Distances are XZ ground distances (the navmesh plane); the bands are coarse
 /// by design — stride is a cost knob, not a gameplay contract.
@@ -55,6 +57,15 @@ const STRIDE_MID_DISTANCE: f32 = 30.0;
 const STRIDE_NEAR: u32 = 1;
 const STRIDE_MID: u32 = 4;
 const STRIDE_FAR: u32 = 12;
+
+/// Target switching hysteresis in world units on the XZ plane. A retained target
+/// stays sticky unless another pawn is MORE than this much closer, preventing
+/// co-op target churn when players are only slightly offset from one another.
+const TARGET_SWITCH_HYSTERESIS_DISTANCE: f32 = 1.0;
+
+fn is_meaningfully_closer(candidate_distance: f32, retained_distance: f32) -> bool {
+    candidate_distance + TARGET_SWITCH_HYSTERESIS_DISTANCE < retained_distance
+}
 
 /// The think stride (in ticks) for an enemy at `distance` (XZ) from the player:
 /// `1` near, larger as the player recedes. Pure helper so the stride policy is
@@ -280,31 +291,109 @@ pub(crate) struct TargetPawn {
     pub(crate) position: Vec3,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct TargetCandidate {
+    target: TargetPawn,
+    distance: f32,
+}
+
+fn target_candidate(
+    registry: &EntityRegistry,
+    entity: EntityId,
+    from: Vec3,
+    visible: Option<&dyn Fn(EntityId) -> bool>,
+) -> Option<TargetCandidate> {
+    if visible.is_some_and(|is_visible| !is_visible(entity)) {
+        return None;
+    }
+    registry
+        .get_component::<PlayerMovementComponent>(entity)
+        .ok()?;
+    let position = registry.get_component::<Transform>(entity).ok()?.position;
+    Some(TargetCandidate {
+        target: TargetPawn { entity, position },
+        distance: distance_xz(position, from),
+    })
+}
+
+fn nearest_target_candidate(
+    registry: &EntityRegistry,
+    from: Vec3,
+    visible: Option<&dyn Fn(EntityId) -> bool>,
+    exclude: Option<EntityId>,
+) -> Option<TargetCandidate> {
+    registry
+        .iter_with_kind(ComponentKind::PlayerMovement)
+        .filter_map(|(entity, _)| {
+            if exclude == Some(entity) {
+                return None;
+            }
+            target_candidate(registry, entity, from, visible)
+        })
+        .min_by(|a, b| a.distance.total_cmp(&b.distance))
+}
+
+fn target_distance(target: TargetPawn, from: Vec3) -> f32 {
+    distance_xz(target.position, from)
+}
+
+fn acquisition_due(brain: &BrainComponent, distance: Option<f32>) -> bool {
+    distance
+        .map(|distance| {
+            let stride = think_stride_for_distance(distance);
+            stride <= 1 || brain.think_stride_counter.wrapping_add(1) % stride == 0
+        })
+        .unwrap_or(true)
+}
+
+fn selected_target_alive(registry: &EntityRegistry, target: EntityId) -> bool {
+    registry
+        .get_component::<HealthComponent>(target)
+        .map(|health| health.current > 0.0 && health.current.is_finite())
+        .unwrap_or(false)
+}
+
 /// Select the player pawn this enemy should pursue.
 ///
 /// This is the AI targeting extension point: v1 ranks all
 /// [`ComponentKind::PlayerMovement`] pawns by nearest XZ distance from `from`.
 /// The optional predicate is the future visibility/relevance seam intended for
 /// `context/research/cell-visibility-substrate.md` (and exact LOS work) without
-/// re-threading the FSM. This targeting path intentionally does not consult
-/// the registry's local-player marker, which is client-side convenience state.
+/// re-threading the FSM. If `retained_target` is still a valid, relevant player
+/// pawn, it is preferred unless another pawn is meaningfully closer by
+/// [`TARGET_SWITCH_HYSTERESIS_DISTANCE`]. When `retained_outside_leash` is true,
+/// the retained pawn is no longer relevant for this acquisition tick and is
+/// excluded; the caller still owns any leash/range rules for replacements. This
+/// targeting path intentionally does not consult the registry's local-player
+/// marker, which is client-side convenience state.
 pub(crate) fn select_target(
     registry: &EntityRegistry,
     from: Vec3,
+    retained_target: Option<EntityId>,
+    retained_outside_leash: bool,
     visible: Option<&dyn Fn(EntityId) -> bool>,
 ) -> Option<TargetPawn> {
-    registry
-        .iter_with_kind(ComponentKind::PlayerMovement)
-        .filter_map(|(entity, _)| {
-            if visible.is_some_and(|is_visible| !is_visible(entity)) {
-                return None;
-            }
-            let position = registry.get_component::<Transform>(entity).ok()?.position;
-            let distance = distance_xz(position, from);
-            Some((distance, TargetPawn { entity, position }))
-        })
-        .min_by(|(a, _), (b, _)| a.total_cmp(b))
-        .map(|(_, target)| target)
+    let retained = retained_target
+        .filter(|_| !retained_outside_leash)
+        .and_then(|entity| target_candidate(registry, entity, from, visible));
+    let nearest = nearest_target_candidate(
+        registry,
+        from,
+        visible,
+        retained_target.filter(|_| retained_outside_leash),
+    );
+
+    match (retained, nearest) {
+        (Some(retained), Some(nearest))
+            if nearest.target.entity != retained.target.entity
+                && is_meaningfully_closer(nearest.distance, retained.distance) =>
+        {
+            Some(nearest.target)
+        }
+        (Some(retained), _) => Some(retained.target),
+        (None, Some(nearest)) => Some(nearest.target),
+        (None, None) => None,
+    }
 }
 
 /// Per-enemy snapshot captured under the immutable iterator borrow so the
@@ -355,7 +444,8 @@ struct EnemyOutcome {
 ///    think stride (distance-derived). Attack-range edges + the cooldown check
 ///    are NOT strided.
 /// 4. On an attack (in `Attack` with the cooldown elapsed) apply the configured
-///    damage to the player through the chokepoint and raise the attack event.
+///    damage to the selected target pawn through the chokepoint and raise the
+///    attack event.
 /// 5. On a state CHANGE or locomotion stop/resume, request the selected
 ///    animation state.
 ///
@@ -374,16 +464,6 @@ pub(crate) fn run_ai_tick(
     warned: &mut HashSet<String>,
     tick_dt: f32,
 ) -> Vec<&'static str> {
-    // The DAMAGE TARGET id (distinct from the position pawn): the health
-    // chokepoint addresses this id. Resolved once; `None` when the pawn carries
-    // no health (damage then no-ops, matching `apply_damage`'s contract).
-    // `player_alive` gates the attack so enemies do not keep swinging at — and
-    // spamming `enemyAttack` for — an already-dead (HP <= 0) but still-present
-    // player; the player-death/respawn flow is owned elsewhere.
-    let player_pawn = pawn_with_health(registry);
-    let damage_target: Option<EntityId> = player_pawn.as_ref().map(|(id, _)| *id);
-    let player_alive = player_pawn.map(|(_, h)| h.current > 0.0).unwrap_or(false);
-
     let dt_ms = tick_dt.max(0.0) * 1000.0;
 
     // Pass 1: snapshot every brain-bearing enemy under the immutable borrow.
@@ -407,7 +487,55 @@ pub(crate) fn run_ai_tick(
     for snap in snapshots {
         let mut brain = snap.brain;
         let prior_state = brain.state;
-        let target = select_target(registry, snap.position, None);
+        let retained_target = matches!(brain.state, LogicalState::Alert | LogicalState::Attack)
+            .then_some(brain.acquired_target)
+            .flatten();
+        let retained = retained_target
+            .and_then(|entity| target_candidate(registry, entity, snap.position, None));
+        let nearest = retained
+            .is_none()
+            .then(|| select_target(registry, snap.position, None, false, None))
+            .flatten();
+        let current_target = retained.map(|candidate| candidate.target).or(nearest);
+        let current_distance = current_target.map(|target| target_distance(target, snap.position));
+        let evaluate_acquisition = acquisition_due(&brain, current_distance);
+
+        let retained_outside_leash =
+            retained.is_some_and(|retained| retained.distance > brain.tuning.leash_range);
+        let target = if retained_outside_leash {
+            // Leash escape for the already-retained target is cheap because the
+            // retained pawn has already been read. Clear immediately instead of
+            // continuing to chase stale destinations between acquisition ticks.
+            // Replacement search still stays acquisition-strided.
+            if evaluate_acquisition {
+                select_target(
+                    registry,
+                    snap.position,
+                    retained.map(|retained| retained.target.entity),
+                    true,
+                    None,
+                )
+                .filter(|target| {
+                    target_distance(*target, snap.position) <= brain.tuning.leash_range
+                })
+            } else {
+                None
+            }
+        } else if evaluate_acquisition {
+            if let Some(retained) = retained {
+                select_target(
+                    registry,
+                    snap.position,
+                    Some(retained.target.entity),
+                    false,
+                    None,
+                )
+            } else {
+                select_target(registry, snap.position, retained_target, false, None)
+            }
+        } else {
+            current_target
+        };
 
         // (1) Cooldown ticks down every tick.
         brain.attack_cooldown_remaining_ms = (brain.attack_cooldown_remaining_ms - dt_ms).max(0.0);
@@ -430,6 +558,7 @@ pub(crate) fn run_ai_tick(
         let steering;
         if is_dead {
             brain.state = LogicalState::Death;
+            brain.acquired_target = None;
             steering = SteeringIntent::Hold;
 
             // Death despawn countdown. Seeded once on entering Death (the
@@ -477,10 +606,6 @@ pub(crate) fn run_ai_tick(
                 // band's divisor. Acquisition (detection/leash) is evaluated only
                 // on a think tick; attack-range edges + the cooldown check are
                 // not.
-                let distance = distance_xz(target.position, snap.position);
-                let stride = think_stride_for_distance(distance);
-                let evaluate_acquisition = stride <= 1 || brain.think_stride_counter % stride == 0;
-
                 let result = evaluate_transition(
                     target.position,
                     snap.position,
@@ -490,15 +615,23 @@ pub(crate) fn run_ai_tick(
                 );
                 brain.state = result.next_state;
                 steering = result.steering;
+                if matches!(brain.state, LogicalState::Alert | LogicalState::Attack)
+                    && steering == SteeringIntent::Chase
+                {
+                    brain.acquired_target = Some(target.entity);
+                } else {
+                    brain.acquired_target = None;
+                }
 
                 // (4) Attack: in `Attack` with the cooldown elapsed AND the
-                // player still alive, apply the configured damage once and arm
-                // the cooldown. Checked every tick. Gating on `player_alive`
-                // stops attack/event spam against an already-dead but
-                // still-present player.
+                // SELECTED target still alive, apply the configured damage once
+                // and arm the cooldown. Checked every tick. Gating on the
+                // selected target's Health stops attack/event spam against an
+                // already-dead but still-present pawn and prevents damaging a
+                // different co-op pawn than the one this enemy chose.
                 if brain.state == LogicalState::Attack
                     && brain.attack_cooldown_remaining_ms <= 0.0
-                    && player_alive
+                    && selected_target_alive(registry, target.entity)
                 {
                     attacked = true;
                     brain.attack_cooldown_remaining_ms = brain.tuning.attack_cooldown_ms;
@@ -506,6 +639,7 @@ pub(crate) fn run_ai_tick(
             } else {
                 // No player to target: idle and clear any stale steering.
                 brain.state = LogicalState::Idle;
+                brain.acquired_target = None;
                 steering = SteeringIntent::Clear;
             }
         }
@@ -617,13 +751,14 @@ pub(crate) fn run_ai_tick(
         }
 
         // Damage: route the configured amount through the chokepoint to the
-        // DAMAGE-TARGET id (distinct from the position pawn), and raise the
-        // attack event. `apply_damage` no-ops on a non-health / stale target.
+        // SELECTED target id, and raise the attack event. `apply_damage` no-ops
+        // on a non-health / stale target, but attacks are only marked above
+        // after confirming this selected pawn currently has live Health.
         if outcome.attacked {
-            if let Some(target) = damage_target {
+            if let Some(target) = outcome.target {
                 apply_damage(
                     registry,
-                    target,
+                    target.entity,
                     &DamagePayload {
                         amount: outcome.brain.tuning.attack_damage,
                     },

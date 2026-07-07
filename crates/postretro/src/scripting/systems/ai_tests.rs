@@ -69,6 +69,8 @@ fn brain_with(tuning: AiTuning, state: LogicalState) -> BrainComponent {
         death_despawn_remaining_ms: None,
         locomotion_moving: false,
         acquired_target: None,
+        combat_slot: None,
+        combat_slot_hold_ticks: 0,
         tuning,
     }
 }
@@ -1644,16 +1646,18 @@ fn unhealed_dead_enemy_still_despawns_on_timer() {
 }
 
 // ---------------------------------------------------------------------------
-// Regression: the integrated FSM-steering loop (run_ai_tick + agent_steering
-// ::tick, mirroring main.rs's run_agent_tick) must not freeze chasers beyond
-// the replan budget, and a stationary target must not force a replan per tick.
+// Regression: the integrated no-navigation fallback loop (run_ai_tick +
+// agent_steering::tick without combat-position selector inputs) must not freeze
+// chasers beyond the replan budget, and a stationary target must not force a
+// replan per tick.
 //
 // Bug: `set_destination` wiped the path on every call. The FSM re-issues the
-// player's position every chase tick, so with more than REPLAN_BUDGET_PER_TICK
-// chasers, the overflow chasers ended each tick with an empty path → goal_velocity
-// ZERO → permanent freeze. Fix: `set_destination` only records the target; the
-// path is (re)built solely inside `tick`'s budget-gated replan block, so a
-// budget-deferred agent keeps its stale-but-valid path and keeps moving.
+// raw target position every fallback chase tick, so with more than
+// REPLAN_BUDGET_PER_TICK chasers, the overflow chasers ended each tick with an
+// empty path → goal_velocity ZERO → permanent freeze. Fix: `set_destination`
+// only records the target; the path is (re)built solely inside `tick`'s
+// budget-gated replan block, so a budget-deferred agent keeps its
+// stale-but-valid path and keeps moving.
 // ---------------------------------------------------------------------------
 
 const STEER_DT: f32 = 1.0 / 60.0;
@@ -1734,6 +1738,322 @@ fn spawn_chaser(reg: &mut EntityRegistry, x: f32, z: f32) -> EntityId {
     spawn_enemy(reg, pos, brain_with(tuning(), LogicalState::Alert), 50.0)
 }
 
+fn enemy_combat_slot(reg: &EntityRegistry, enemy: EntityId) -> Option<Vec3> {
+    reg.get_component::<BrainComponent>(enemy)
+        .unwrap()
+        .combat_slot
+}
+
+fn assert_approx_distance(actual: f32, expected: f32, message: &str) {
+    assert!(
+        (actual - expected).abs() <= 1.0e-4,
+        "{message}: expected {expected}, got {actual}"
+    );
+}
+
+fn small_nav_graph(regions: Vec<NavRegion>) -> NavGraph {
+    NavGraph::from_section(&NavMeshSection {
+        version: NAVMESH_VERSION,
+        origin: [0.0, 0.0, 0.0],
+        cell_size: 1.0,
+        dim_x: 8,
+        dim_z: 8,
+        agent_radius: 0.35,
+        agent_height: 1.8,
+        step_height: 0.4,
+        max_slope_deg: 45.0,
+        regions,
+        portals: vec![],
+    })
+}
+
+#[test]
+fn ai_combat_positioning_assigns_distinct_slots_around_selected_target() {
+    let floor = OpenFloor::new();
+    let world = floor.collision_world();
+    let graph = floor.nav_graph();
+
+    let mut reg = EntityRegistry::new();
+    let mut warned = HashSet::new();
+    let player_pos = Vec3::new(20.0, chaser_rest_y(), 20.0);
+    spawn_player(&mut reg, player_pos);
+
+    let enemies = [
+        spawn_chaser(&mut reg, 14.0, 30.0),
+        spawn_chaser(&mut reg, 15.0, 30.5),
+        spawn_chaser(&mut reg, 16.0, 31.0),
+    ];
+
+    run_ai_tick_with_navigation(&mut reg, &mut warned, STEER_DT, Some(&graph), Some(&world));
+
+    let slots: Vec<Vec3> = enemies
+        .iter()
+        .map(|&enemy| enemy_combat_slot(&reg, enemy).expect("combat slot"))
+        .collect();
+    for (index, slot) in slots.iter().enumerate() {
+        assert!(
+            distance_xz(*slot, player_pos) >= tuning().attack_range * 0.75 - 1.0e-4,
+            "slot {index} should be on an engagement ring, got {slot:?}"
+        );
+        assert!(
+            distance_xz(*slot, player_pos) > 0.5,
+            "slot {index} must not be the target center"
+        );
+        let path = agent_steering::path_state(&reg, enemies[index]).expect("agent");
+        assert_approx_distance(
+            path.distance_to_destination,
+            distance_xz(path.position, *slot),
+            "steering destination should be the selected combat slot",
+        );
+    }
+    for (index, slot) in slots.iter().enumerate() {
+        assert!(
+            slots[..index]
+                .iter()
+                .all(|previous| distance_xz(*previous, *slot) > 0.35),
+            "slots should be distinct: {slots:?}"
+        );
+    }
+}
+
+#[test]
+fn ai_combat_positioning_near_enemy_uses_engagement_band_not_target_center() {
+    let floor = OpenFloor::new();
+    let world = floor.collision_world();
+    let graph = floor.nav_graph();
+
+    let mut reg = EntityRegistry::new();
+    let mut warned = HashSet::new();
+    let player_pos = Vec3::new(20.0, chaser_rest_y(), 20.0);
+    spawn_player(&mut reg, player_pos);
+    let enemy = spawn_chaser(&mut reg, 20.4, 20.0);
+
+    run_ai_tick_with_navigation(&mut reg, &mut warned, STEER_DT, Some(&graph), Some(&world));
+
+    let slot = enemy_combat_slot(&reg, enemy).expect("combat slot");
+    assert!(
+        distance_xz(slot, player_pos) >= tuning().attack_range * 0.75 - 1.0e-4,
+        "near enemy should steer back to the engagement band, got {slot:?}"
+    );
+    let path = agent_steering::path_state(&reg, enemy).expect("agent");
+    assert!(
+        path.distance_to_destination > distance_xz(path.position, player_pos),
+        "destination should be a band slot, not a push into the player capsule"
+    );
+}
+
+#[test]
+fn ai_combat_positioning_scarce_slots_leave_extras_on_raw_target_chase() {
+    let world = OpenFloor { extent: 4.0 }.collision_world();
+    let graph = small_nav_graph(vec![NavRegion {
+        x0: 2,
+        z0: 0,
+        x1: 3,
+        z1: 2,
+        floor_y_min: 0.0,
+        floor_y_max: 0.25,
+    }]);
+
+    let mut reg = EntityRegistry::new();
+    let mut warned = HashSet::new();
+    let player_pos = Vec3::new(1.0, chaser_rest_y(), 1.0);
+    spawn_player(&mut reg, player_pos);
+    let enemies = [
+        spawn_chaser(&mut reg, 2.2, 0.2),
+        spawn_chaser(&mut reg, 2.8, 0.2),
+    ];
+
+    run_ai_tick_with_navigation(&mut reg, &mut warned, STEER_DT, Some(&graph), Some(&world));
+
+    let slots: Vec<Option<Vec3>> = enemies
+        .iter()
+        .map(|&enemy| enemy_combat_slot(&reg, enemy))
+        .collect();
+    assert_eq!(
+        slots.iter().filter(|slot| slot.is_some()).count(),
+        1,
+        "only the single valid slot should be claimed: {slots:?}"
+    );
+    assert_eq!(
+        slots.iter().filter(|slot| slot.is_none()).count(),
+        1,
+        "the extra enemy should fall back instead of duplicating a slot"
+    );
+
+    for (&enemy, slot) in enemies.iter().zip(slots.iter()) {
+        let path = agent_steering::path_state(&reg, enemy).expect("agent");
+        let expected = slot.unwrap_or(player_pos);
+        assert_approx_distance(
+            path.distance_to_destination,
+            distance_xz(path.position, expected),
+            "scarce-slot destination",
+        );
+    }
+}
+
+#[test]
+fn ai_combat_positioning_uses_each_enemy_selected_target_position() {
+    let floor = OpenFloor::new();
+    let world = floor.collision_world();
+    let graph = floor.nav_graph();
+
+    let mut reg = EntityRegistry::new();
+    let mut warned = HashSet::new();
+    let player_a_pos = Vec3::new(8.0, chaser_rest_y(), 8.0);
+    let player_b_pos = Vec3::new(30.0, chaser_rest_y(), 30.0);
+    let player_a = spawn_player(&mut reg, player_a_pos);
+    let player_b = spawn_player(&mut reg, player_b_pos);
+    let enemy_a = spawn_chaser(&mut reg, 8.0, 16.0);
+    let enemy_b = spawn_chaser(&mut reg, 30.0, 22.0);
+
+    run_ai_tick_with_navigation(&mut reg, &mut warned, STEER_DT, Some(&graph), Some(&world));
+
+    let brain_a = reg.get_component::<BrainComponent>(enemy_a).unwrap();
+    let brain_b = reg.get_component::<BrainComponent>(enemy_b).unwrap();
+    assert_eq!(brain_a.acquired_target, Some(player_a));
+    assert_eq!(brain_b.acquired_target, Some(player_b));
+
+    let slot_a = brain_a.combat_slot.expect("slot around player A");
+    let slot_b = brain_b.combat_slot.expect("slot around player B");
+    assert!(
+        distance_xz(slot_a, player_a_pos) <= tuning().attack_range * 1.25 + 1.0e-4
+            && distance_xz(slot_a, player_b_pos) > 10.0,
+        "enemy A slot should be generated around its selected target: {slot_a:?}"
+    );
+    assert!(
+        distance_xz(slot_b, player_b_pos) <= tuning().attack_range * 1.25 + 1.0e-4
+            && distance_xz(slot_b, player_a_pos) > 10.0,
+        "enemy B slot should be generated around its selected target: {slot_b:?}"
+    );
+}
+
+#[test]
+fn ai_combat_positioning_retains_same_target_incumbent_and_decrements_hold() {
+    let floor = OpenFloor::new();
+    let world = floor.collision_world();
+    let graph = floor.nav_graph();
+
+    let mut reg = EntityRegistry::new();
+    let mut warned = HashSet::new();
+    let player_pos = Vec3::new(20.0, chaser_rest_y(), 20.0);
+    let player = spawn_player(&mut reg, player_pos);
+    let incumbent = player_pos + Vec3::new(tuning().attack_range * 1.25, 0.0, 0.0);
+    let mut brain = brain_with(tuning(), LogicalState::Alert);
+    brain.acquired_target = Some(player);
+    brain.combat_slot = Some(incumbent);
+    brain.combat_slot_hold_ticks = 3;
+    let enemy = spawn_enemy(&mut reg, player_pos, brain, 50.0);
+
+    run_ai_tick_with_navigation(&mut reg, &mut warned, STEER_DT, Some(&graph), Some(&world));
+
+    let brain = reg.get_component::<BrainComponent>(enemy).unwrap();
+    let slot = brain.combat_slot.expect("retained combat slot");
+    assert!(
+        distance_xz(slot, incumbent) <= 1.0e-4,
+        "same-target incumbent should be retained inside the switch margin"
+    );
+    assert_eq!(
+        brain.combat_slot_hold_ticks, 2,
+        "retained incumbents should spend one hold tick"
+    );
+}
+
+#[test]
+fn ai_combat_positioning_clears_stale_slot_when_selector_surfaces_are_absent() {
+    let mut reg = EntityRegistry::new();
+    let mut warned = HashSet::new();
+    let player_pos = Vec3::new(8.0, chaser_rest_y(), 8.0);
+    let player = spawn_player(&mut reg, player_pos);
+    let mut brain = brain_with(tuning(), LogicalState::Alert);
+    brain.acquired_target = Some(player);
+    brain.combat_slot = Some(player_pos + Vec3::new(tuning().attack_range, 0.0, 0.0));
+    brain.combat_slot_hold_ticks = COMBAT_SLOT_HOLD_TICKS;
+    let enemy = spawn_enemy(&mut reg, Vec3::new(8.0, chaser_rest_y(), 12.0), brain, 50.0);
+
+    run_ai_tick_with_navigation(&mut reg, &mut warned, STEER_DT, None, None);
+
+    let brain = reg.get_component::<BrainComponent>(enemy).unwrap();
+    assert_eq!(
+        brain.combat_slot, None,
+        "no-nav/no-collision fallback must not preserve stale tactical slots"
+    );
+    assert_eq!(brain.combat_slot_hold_ticks, 0);
+}
+
+#[test]
+fn ai_combat_positioning_invalidates_stale_incumbent_on_target_switch() {
+    let floor = OpenFloor::new();
+    let world = floor.collision_world();
+    let graph = floor.nav_graph();
+
+    let mut reg = EntityRegistry::new();
+    let mut warned = HashSet::new();
+    let old_player_pos = Vec3::new(40.0, chaser_rest_y(), 8.0);
+    let new_player_pos = Vec3::new(8.0, chaser_rest_y(), 8.0);
+    let old_player = spawn_player(&mut reg, old_player_pos);
+    let new_player = spawn_player(&mut reg, new_player_pos);
+    let enemy_pos = Vec3::new(8.0, chaser_rest_y(), 12.0);
+    let stale_slot = new_player_pos + Vec3::new(tuning().attack_range + 0.9, 0.0, 0.0);
+    let mut brain = brain_with(tuning(), LogicalState::Alert);
+    brain.acquired_target = Some(old_player);
+    brain.think_stride_counter =
+        think_stride_for_distance(distance_xz(old_player_pos, enemy_pos)) - 1;
+    brain.combat_slot = Some(stale_slot);
+    brain.combat_slot_hold_ticks = COMBAT_SLOT_HOLD_TICKS;
+    let enemy = spawn_enemy(&mut reg, enemy_pos, brain, 50.0);
+
+    run_ai_tick_with_navigation(&mut reg, &mut warned, STEER_DT, Some(&graph), Some(&world));
+
+    let brain = reg.get_component::<BrainComponent>(enemy).unwrap();
+    assert_eq!(brain.acquired_target, Some(new_player));
+    let slot = brain.combat_slot.expect("new-target combat slot");
+    assert!(
+        distance_xz(slot, stale_slot) > 1.0e-4,
+        "slot from the old target must not be retained as a new-target incumbent"
+    );
+    assert!(
+        distance_xz(slot, new_player_pos) <= tuning().attack_range * 1.25 + 1.0e-4,
+        "replacement slot should be generated around the newly selected target"
+    );
+    assert_eq!(
+        brain.combat_slot_hold_ticks, COMBAT_SLOT_HOLD_TICKS,
+        "newly selected replacement slots should reset the hold countdown"
+    );
+}
+
+#[test]
+fn ai_combat_positioning_ignores_inactive_stale_slot_claims() {
+    let floor = OpenFloor::new();
+    let world = floor.collision_world();
+    let graph = floor.nav_graph();
+
+    let mut reg = EntityRegistry::new();
+    let mut warned = HashSet::new();
+    let player_pos = Vec3::new(20.0, chaser_rest_y(), 20.0);
+    let player = spawn_player(&mut reg, player_pos);
+    let expected_slot = player_pos - Vec3::new(tuning().attack_range, 0.0, 0.0);
+
+    let mut inactive = brain_with(tuning(), LogicalState::Idle);
+    inactive.acquired_target = Some(player);
+    inactive.combat_slot = Some(expected_slot);
+    inactive.combat_slot_hold_ticks = COMBAT_SLOT_HOLD_TICKS;
+    spawn_enemy(
+        &mut reg,
+        Vec3::new(40.0, chaser_rest_y(), 40.0),
+        inactive,
+        50.0,
+    );
+    let active = spawn_chaser(&mut reg, 14.0, 20.0);
+
+    run_ai_tick_with_navigation(&mut reg, &mut warned, STEER_DT, Some(&graph), Some(&world));
+
+    let active_slot = enemy_combat_slot(&reg, active).expect("active combat slot");
+    assert!(
+        distance_xz(active_slot, expected_slot) <= 1.0e-4,
+        "inactive stale slot claims should not block active claimants"
+    );
+}
+
 #[test]
 fn integrated_chase_loop_keeps_all_chasers_moving_past_replan_budget() {
     // Regression: set_destination wiped the path and forced a replan every tick,
@@ -1766,8 +2086,9 @@ fn integrated_chase_loop_keeps_all_chasers_moving_past_replan_budget() {
         .map(|&id| agent_steering::path_state(&reg, id).unwrap().position)
         .collect();
 
-    // Run the integrated loop for many ticks, mirroring main.rs's run_agent_tick:
-    // FSM tick (issues set_destination to the player) then the steering tick.
+    // Run the integrated no-navigation fallback loop for many ticks: FSM tick
+    // (issues raw-target set_destination because no selector inputs are
+    // supplied) then the steering tick.
     let mut total_replans = 0u32;
     let mut path_present_ticks = 0u32;
     let ticks = 200;
@@ -1842,16 +2163,17 @@ fn move_player_to(reg: &mut EntityRegistry, pawn: EntityId, x: f32, z: f32) {
 
 #[test]
 fn integrated_chase_loop_closes_distance_for_all_chasers_when_player_moves() {
-    // Regression (the bug the stationary-player test missed): the FSM re-issues
-    // the player's position to `set_destination` EVERY chase tick. The old
-    // `set_destination` wiped each chaser's path on every call; the per-tick
-    // replan budget then only replanned REPLAN_BUDGET_PER_TICK of them, so the
-    // OVERFLOW chasers ended every tick with an empty path → goal_velocity ZERO →
-    // permanent freeze. The fix preserves the path and lets a budget-loss chaser
-    // keep following its stale-but-valid route. This test spawns MORE chasers than
-    // the budget and a player that moves ~0.12 u/tick (a real per-tick step), and
-    // asserts EVERY chaser — overflow included — keeps moving (the load-bearing
-    // `moved > 1.0` check). It FAILS pre-fix: overflow chasers freeze (~0.27 u).
+    // Regression (the bug the stationary-player test missed): without selector
+    // inputs the FSM re-issues the raw player position to `set_destination` EVERY
+    // fallback chase tick. The old `set_destination` wiped each chaser's path on
+    // every call; the per-tick replan budget then only replanned
+    // REPLAN_BUDGET_PER_TICK of them, so the OVERFLOW chasers ended every tick
+    // with an empty path → goal_velocity ZERO → permanent freeze. The fix
+    // preserves the path and lets a budget-loss chaser keep following its
+    // stale-but-valid route. This test spawns MORE chasers than the budget and a
+    // player that moves ~0.12 u/tick (a real per-tick step), and asserts EVERY
+    // chaser — overflow included — keeps moving (the load-bearing `moved > 1.0`
+    // check). It FAILS pre-fix: overflow chasers freeze (~0.27 u).
     let floor = OpenFloor::new();
     let world = floor.collision_world();
     let graph = floor.nav_graph();

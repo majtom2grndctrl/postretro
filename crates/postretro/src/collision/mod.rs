@@ -20,7 +20,9 @@
 //! See: `context/lib/entity_model.md` §7.
 
 use parry3d::math::{Isometry, Point, Vector};
-use parry3d::query::{Ray, RayCast, RayIntersection, ShapeCastHit, ShapeCastOptions, cast_shapes};
+use parry3d::query::{
+    Ray, RayCast, RayIntersection, ShapeCastHit, ShapeCastOptions, cast_shapes, intersection_test,
+};
 use parry3d::shape::{Capsule, TriMesh};
 
 use postretro_level_loader::LevelWorld;
@@ -121,6 +123,109 @@ impl Default for CollisionWorld {
 /// `SKIN_DISTANCE` away. The slide loop in `movement::tick` relies on this
 /// separation for clearance; do not duplicate the offset by pushing again.
 pub(crate) const SKIN_DISTANCE: f32 = 0.02;
+
+/// A surface counts as walkable when its contact normal points mostly upward.
+/// Mirrors the small agent harness's floor test so placement queries and agent
+/// movement agree about walls vs. floors.
+const COS_WALKABLE: f32 = 0.643;
+
+/// Small lift margin used by placement ground probes. Matches the agent harness
+/// so "within the step envelope" means the same thing for selection and motion.
+const STEP_UP_LIFT_MARGIN: f32 = 0.05;
+
+/// Capsule geometry for static placement checks. The capsule axis is world +Y,
+/// matching [`cast_capsule`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct CapsulePlacement {
+    pub(crate) radius: f32,
+    pub(crate) half_height: f32,
+    pub(crate) step_height: f32,
+}
+
+impl CapsulePlacement {
+    fn is_valid(self) -> bool {
+        self.radius.is_finite()
+            && self.radius > 0.0
+            && self.half_height.is_finite()
+            && self.half_height >= 0.0
+            && self.step_height.is_finite()
+            && self.step_height > 0.0
+    }
+
+    fn parry(self) -> Capsule {
+        Capsule::new(
+            Point::new(0.0, -self.half_height, 0.0),
+            Point::new(0.0, self.half_height, 0.0),
+            self.radius,
+        )
+    }
+
+    pub(crate) fn rest_offset(self) -> f32 {
+        self.half_height + self.radius + SKIN_DISTANCE
+    }
+}
+
+/// Static-world-only capsule placement query. Returns the grounded capsule
+/// center when a capsule near `center` can rest on walkable floor without
+/// penetrating static geometry.
+pub(crate) fn capsule_static_placement_center(
+    world: &CollisionWorld,
+    center: glam::Vec3,
+    placement: CapsulePlacement,
+) -> Option<glam::Vec3> {
+    if !center.is_finite() || !placement.is_valid() {
+        return None;
+    }
+
+    let capsule = placement.parry();
+    let center = capsule_walkable_floor_center(world, center, &capsule, placement)?;
+    let iso = Isometry::translation(center.x, center.y, center.z);
+    match intersection_test(&iso, &capsule, &world.isometry, &world.mesh) {
+        Ok(false) => Some(center),
+        Ok(true) | Err(_) => None,
+    }
+}
+
+fn capsule_walkable_floor_center(
+    world: &CollisionWorld,
+    center: glam::Vec3,
+    capsule: &Capsule,
+    placement: CapsulePlacement,
+) -> Option<glam::Vec3> {
+    let max_down = placement.step_height + STEP_UP_LIFT_MARGIN + SKIN_DISTANCE + 0.03;
+
+    if let Some(h) = cast_capsule(
+        world,
+        Point::new(center.x, center.y, center.z),
+        capsule,
+        Vector::new(0.0, -1.0, 0.0),
+        max_down,
+    ) {
+        if h.normal2.y >= COS_WALKABLE {
+            return Some(center - glam::Vec3::new(0.0, h.time_of_impact, 0.0));
+        }
+    }
+
+    let ray_max = max_down + placement.half_height + placement.radius;
+    let ray = cast_ray(
+        world,
+        Point::new(center.x, center.y, center.z),
+        Vector::new(0.0, -1.0, 0.0),
+        ray_max,
+    )?;
+
+    if ray.normal.y < COS_WALKABLE {
+        return None;
+    }
+
+    let target_gap = placement.rest_offset();
+    let drop = ray.time_of_impact - target_gap;
+    if drop > 0.0 && drop <= max_down {
+        Some(center - glam::Vec3::new(0.0, drop, 0.0))
+    } else {
+        None
+    }
+}
 
 /// Sweep a capsule through the world trimesh along `dir` up to `max_toi`
 /// distance. The capsule's isometry sits at `pos` with identity rotation —

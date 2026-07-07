@@ -12,6 +12,7 @@
 //      component, no script surface)
 //      context/lib/scripting.md §1 (scripts declare, Rust executes)
 
+use glam::Vec3;
 use serde::{Deserialize, Serialize};
 
 use crate::data_descriptors::AiDescriptor;
@@ -157,6 +158,16 @@ pub struct BrainComponent {
     /// per-think target churn. Cleared when aggro drops.
     #[serde(default)]
     pub acquired_target: Option<EntityId>,
+    /// Last accepted combat-position slot around the acquired target. Retained
+    /// on the brain so AI can apply slot hysteresis across ticks without
+    /// coupling that state to path-following movement.
+    #[serde(default)]
+    pub combat_slot: Option<Vec3>,
+    /// Remaining ticks the AI may pass `combat_slot` as a same-target incumbent.
+    /// Retained slots decrement this countdown; new slots reset it. No-selector
+    /// fallback, target loss, clear steering, and death clear both fields.
+    #[serde(default)]
+    pub combat_slot_hold_ticks: u32,
     /// Resolved descriptor tuning the FSM reads each tick.
     pub tuning: AiTuning,
 }
@@ -172,6 +183,8 @@ impl BrainComponent {
             death_despawn_remaining_ms: None,
             locomotion_moving: false,
             acquired_target: None,
+            combat_slot: None,
+            combat_slot_hold_ticks: 0,
             tuning: AiTuning::from_descriptor(desc),
         }
     }
@@ -288,6 +301,8 @@ mod tests {
         assert_eq!(brain.death_despawn_remaining_ms, None);
         assert!(!brain.locomotion_moving);
         assert_eq!(brain.acquired_target, None);
+        assert_eq!(brain.combat_slot, None);
+        assert_eq!(brain.combat_slot_hold_ticks, 0);
         assert_eq!(brain.tuning.detection_range, 18.0);
         assert_eq!(brain.tuning.attack_range, 2.2);
         assert_eq!(brain.tuning.leash_range, 26.0);
@@ -353,6 +368,23 @@ mod tests {
             panic!("expected brain component");
         };
         assert_eq!(back.acquired_target, None);
+    }
+
+    #[test]
+    fn brain_serde_defaults_missing_combat_slot_state() {
+        use crate::registry::ComponentValue;
+        let value = ComponentValue::Brain(BrainComponent::from_descriptor(&sample_descriptor()));
+        let mut json = serde_json::to_value(&value).unwrap();
+        json.as_object_mut().unwrap().remove("combat_slot");
+        json.as_object_mut()
+            .unwrap()
+            .remove("combat_slot_hold_ticks");
+
+        let ComponentValue::Brain(back) = serde_json::from_value(json).unwrap() else {
+            panic!("expected brain component");
+        };
+        assert_eq!(back.combat_slot, None);
+        assert_eq!(back.combat_slot_hold_ticks, 0);
     }
 
     #[test]

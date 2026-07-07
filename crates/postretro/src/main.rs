@@ -21,6 +21,7 @@ mod candidate_cull_mirror;
 #[cfg(test)]
 mod candidate_cull_probes;
 mod collision;
+mod combat_positioning;
 mod frame_timing;
 mod fx;
 mod health;

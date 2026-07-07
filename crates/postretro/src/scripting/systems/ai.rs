@@ -1,12 +1,12 @@
 // Engine-owned enemy FSM tick: the system half of the brain (the per-instance
 // DATA + spawn-time state-map validation live in `components/brain.rs`). Each
 // think tick selects a target pawn, evaluates the closed transition set
-// (idle/alert/attack/death), drives the steering API toward the target while
-// chasing, applies damage on the attack cooldown, and requests the mapped
-// animation state. The transition CORE is a pure function over (target position,
-// agent position, tuning, current state) so it is unit-testable without `App` or
-// a GPU; the tick wrapper layers the registry reads/writes, the zero-HP death
-// check, damage, and animation switching on top.
+// (idle/alert/attack/death), drives the steering API toward a combat slot or
+// raw target fallback while chasing, applies damage on the attack cooldown, and
+// requests the mapped animation state. The transition CORE is a pure function
+// over (target position, agent position, tuning, current state) so it is
+// unit-testable without `App` or a GPU; the tick wrapper layers the registry
+// reads/writes, the zero-HP death check, damage, and animation switching on top.
 //
 // Architectural decision (M10): an engine-owned Rust FSM with a closed
 // transition set; tuning is declarative; there is no live VM at tick. Scripts
@@ -21,12 +21,17 @@
 //      crates/postretro/src/agent_steering.rs (set_destination /
 //      clear_destination / path_state — the steering surface this tick drives)
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use glam::{Quat, Vec3};
 
 use crate::agent_steering;
-use crate::nav::distance_xz;
+use crate::collision::CollisionWorld;
+use crate::combat_positioning::{
+    CombatAgentSnapshot, CombatCandidate, CombatQuery, PATH_LENGTH_SCORE_WEIGHT,
+    select_combat_positions_batch,
+};
+use crate::nav::{NavGraph, distance_xz};
 use postretro_entities::components::brain::{AiStateMap, AiTuning, BrainComponent, LogicalState};
 use postretro_entities::components::health::{HealthComponent, apply_damage};
 use postretro_entities::components::mesh::{
@@ -62,6 +67,7 @@ const STRIDE_FAR: u32 = 12;
 /// stays sticky unless another pawn is MORE than this much closer, preventing
 /// co-op target churn when players are only slightly offset from one another.
 const TARGET_SWITCH_HYSTERESIS_DISTANCE: f32 = 1.0;
+const COMBAT_SLOT_HOLD_TICKS: u32 = 8;
 
 fn is_meaningfully_closer(candidate_distance: f32, retained_distance: f32) -> bool {
     candidate_distance + TARGET_SWITCH_HYSTERESIS_DISTANCE < retained_distance
@@ -199,8 +205,8 @@ pub(crate) fn slew_yaw(current: f32, target: f32, max_delta: f32) -> f32 {
 /// `set_destination`/`clear_destination` calls.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SteeringIntent {
-    /// Chase the selected target pawn: the wrapper sets the agent destination to
-    /// the target pawn position. Emitted in `Alert` and `Attack`.
+    /// Chase: the wrapper prefers a combat slot around the selected target and
+    /// falls back to the target position. Emitted in `Alert` and `Attack`.
     Chase,
     /// Stand down: the wrapper clears the agent destination. Emitted in `Idle`.
     Clear,
@@ -434,6 +440,7 @@ struct EnemyOutcome {
     target: Option<TargetPawn>,
     brain: BrainComponent,
     steering: SteeringIntent,
+    combat_slot: Option<Vec3>,
     /// `true` when the logical state changed this tick; the apply pass uses this
     /// with locomotion intent changes to decide whether to switch animation.
     state_changed: bool,
@@ -455,7 +462,7 @@ struct EnemyOutcome {
 /// `anim:<name>` for an animation state that fails to switch
 /// (`UnknownState`/`NotAnimated` — the prior animation is kept and the tick is
 /// never aborted) and `blocked:<id>` for a chasing enemy whose agent found no
-/// path to its selected target pawn.
+/// path to its selected destination.
 ///
 /// Ordering inside the tick, PER enemy:
 /// 1. Tick the attack cooldown down (every tick).
@@ -482,10 +489,21 @@ struct EnemyOutcome {
 /// mid-iteration. The kill was already counted ONCE at the death sweep's
 /// authoritative `death_handled` latch (`systems/health.rs`); this tick owns
 /// only the despawn, never the kill report.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn run_ai_tick(
     registry: &mut EntityRegistry,
     warned: &mut HashSet<String>,
     tick_dt: f32,
+) -> Vec<&'static str> {
+    run_ai_tick_with_navigation(registry, warned, tick_dt, None, None)
+}
+
+pub(crate) fn run_ai_tick_with_navigation(
+    registry: &mut EntityRegistry,
+    warned: &mut HashSet<String>,
+    tick_dt: f32,
+    nav_graph: Option<&NavGraph>,
+    collision_world: Option<&CollisionWorld>,
 ) -> Vec<&'static str> {
     let dt_ms = tick_dt.max(0.0) * 1000.0;
 
@@ -507,8 +525,8 @@ pub(crate) fn run_ai_tick(
 
     // Pass 2 (compute): evaluate each brain, producing the outcomes to apply.
     let mut outcomes: Vec<EnemyOutcome> = Vec::with_capacity(snapshots.len());
-    for snap in snapshots {
-        let mut brain = snap.brain;
+    for snap in &snapshots {
+        let mut brain = snap.brain.clone();
         let prior_state = brain.state;
         let retained_target = matches!(brain.state, LogicalState::Alert | LogicalState::Attack)
             .then_some(brain.acquired_target)
@@ -674,9 +692,12 @@ pub(crate) fn run_ai_tick(
             attacked,
             despawn,
             steering,
+            combat_slot: None,
             brain,
         });
     }
+
+    resolve_combat_slots(&snapshots, &mut outcomes, nav_graph, collision_world);
 
     // Pass 3 (apply): write back brains, drive steering, apply damage, switch
     // animation. Mutable borrow only; no iterator held. Death despawns are NOT
@@ -698,27 +719,30 @@ pub(crate) fn run_ai_tick(
             .map(|path| LocomotionIntent::from_velocity(path.velocity))
             .unwrap_or(LocomotionIntent::STOPPED);
 
-        // Steering: chase sets the destination to the selected target pawn,
-        // clear stands down, hold leaves the agent untouched.
+        // Steering: chase sets the destination to a selected combat slot when
+        // one is available, otherwise to the raw target position. Clear stands
+        // down; hold leaves the agent untouched.
         // `set_destination`/`clear_destination` no-op when the enemy carries no
         // agent component.
         match outcome.steering {
             SteeringIntent::Chase => {
                 if let Some(target) = outcome.target {
-                    agent_steering::set_destination(registry, outcome.id, target.position);
+                    let destination = outcome.combat_slot.unwrap_or(target.position);
+                    agent_steering::set_destination(registry, outcome.id, destination);
                     // Diagnostic read of the steering surface: a chasing enemy
-                    // whose agent cannot route to its selected target pawn (no
-                    // nav path) is `blocked`. Surface it once per enemy via the
-                    // warn latch so a mis-placed spawn (off the navmesh, or behind
-                    // a wall with no portal) is visible without per-tick spam. The
-                    // steering tick still holds the agent in place; this only
-                    // reports.
+                    // whose agent cannot route to its selected destination (a
+                    // combat slot, or the raw target fallback when no slot was
+                    // assigned) is `blocked`. Surface it once per enemy via the
+                    // warn latch so a mis-placed spawn (off the navmesh, or
+                    // behind a wall with no portal) is visible without per-tick
+                    // spam. The steering tick still holds the agent in place;
+                    // this only reports.
                     if let Some(state) = path_state.as_ref() {
                         if state.blocked {
                             let key = format!("blocked:{}", outcome.id.to_raw());
                             if warned.insert(key) {
                                 log::warn!(
-                                    "[AI] enemy {} is chasing its selected target but its agent \
+                                    "[AI] enemy {} is chasing its selected destination but its agent \
                                      found no path (blocked); holding position. Warned \
                                      once per enemy.",
                                     outcome.id
@@ -859,6 +883,108 @@ pub(crate) fn run_ai_tick(
     }
 
     events
+}
+
+fn resolve_combat_slots(
+    snapshots: &[EnemySnapshot],
+    outcomes: &mut [EnemyOutcome],
+    nav_graph: Option<&NavGraph>,
+    collision_world: Option<&CollisionWorld>,
+) {
+    for outcome in outcomes.iter_mut() {
+        outcome.combat_slot = None;
+        if outcome.steering != SteeringIntent::Chase || outcome.target.is_none() {
+            clear_combat_slot(outcome);
+        }
+    }
+
+    let (Some(nav_graph), Some(collision_world)) = (nav_graph, collision_world) else {
+        for outcome in outcomes.iter_mut() {
+            clear_combat_slot(outcome);
+        }
+        return;
+    };
+
+    if !outcomes
+        .iter()
+        .any(|outcome| outcome.steering == SteeringIntent::Chase && outcome.target.is_some())
+    {
+        return;
+    }
+
+    let other_agents: Vec<CombatAgentSnapshot> = snapshots
+        .iter()
+        .map(|snap| CombatAgentSnapshot {
+            claimant_id: snap.id.to_raw(),
+            position: snap.position,
+        })
+        .collect();
+
+    let mut queries = Vec::new();
+    for (snap, outcome) in snapshots.iter().zip(outcomes.iter()) {
+        if outcome.steering != SteeringIntent::Chase {
+            continue;
+        }
+        let Some(target) = outcome.target else {
+            continue;
+        };
+        let retained_slot = retained_combat_slot(snap, outcome);
+        queries.push(CombatQuery {
+            claimant_id: outcome.id.to_raw(),
+            agent_pos: snap.position,
+            engagement_radius: outcome.brain.tuning.attack_range,
+            target_pos: target.position,
+            combat_slot: retained_slot,
+            scan_challengers: retained_slot.is_none(),
+            other_agents: &other_agents,
+            nav_graph,
+            collision_world,
+            path_length_score_weight: PATH_LENGTH_SCORE_WEIGHT,
+        });
+    }
+
+    let assignments: HashMap<u32, Option<CombatCandidate>> =
+        select_combat_positions_batch(&queries)
+            .into_iter()
+            .map(|assignment| (assignment.claimant_id, assignment.candidate))
+            .collect();
+
+    for outcome in outcomes.iter_mut() {
+        if outcome.steering != SteeringIntent::Chase || outcome.target.is_none() {
+            clear_combat_slot(outcome);
+            continue;
+        }
+
+        match assignments.get(&outcome.id.to_raw()).copied().flatten() {
+            Some(candidate) => {
+                outcome.combat_slot = Some(candidate.position);
+                outcome.brain.combat_slot = Some(candidate.position);
+                outcome.brain.combat_slot_hold_ticks = if candidate.is_incumbent {
+                    outcome.brain.combat_slot_hold_ticks.saturating_sub(1)
+                } else {
+                    COMBAT_SLOT_HOLD_TICKS
+                };
+            }
+            None => {
+                clear_combat_slot(outcome);
+            }
+        }
+    }
+}
+
+fn clear_combat_slot(outcome: &mut EnemyOutcome) {
+    outcome.combat_slot = None;
+    outcome.brain.combat_slot = None;
+    outcome.brain.combat_slot_hold_ticks = 0;
+}
+
+fn retained_combat_slot(snap: &EnemySnapshot, outcome: &EnemyOutcome) -> Option<Vec3> {
+    let target = outcome.target?;
+    (outcome.steering == SteeringIntent::Chase
+        && snap.brain.acquired_target == Some(target.entity)
+        && snap.brain.combat_slot_hold_ticks > 0)
+        .then_some(snap.brain.combat_slot)
+        .flatten()
 }
 
 #[cfg(test)]

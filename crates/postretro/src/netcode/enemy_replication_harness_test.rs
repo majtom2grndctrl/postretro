@@ -133,6 +133,8 @@ fn brain() -> BrainComponent {
         death_despawn_remaining_ms: None,
         locomotion_moving: false,
         acquired_target: None,
+        combat_slot: None,
+        combat_slot_hold_ticks: 0,
         tuning: AiTuning {
             detection_range: 18.0,
             attack_range: 2.0,

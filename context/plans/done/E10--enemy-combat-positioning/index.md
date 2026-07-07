@@ -1,5 +1,7 @@
 # E10 — Enemy Combat Positioning
 
+> **Status:** done.
+
 ## Goal
 
 Enemies choose stable combat destinations around the player they target instead of chasing that player's exact center point. A small wave should pressure and surround the player, hold an attack band, and avoid body pileups without adding a full tactics system.
@@ -29,17 +31,17 @@ Enemies choose stable combat destinations around the player they target instead 
 
 ## Acceptance criteria
 
-- [ ] Multiple enemies chasing one player select distinct reachable combat positions and do not all path to their target's center point (runnable unit test with a hand-built navmesh and several agents; the pure selector is fed target positions directly, so it needs no `select_target` wiring).
-- [ ] An enemy near the player holds or adjusts within an engagement band instead of pushing into the player capsule (runnable FSM/positioning test; no renderer required).
-- [ ] When the target player's raw position is unreachable or already crowded, the enemy picks a reachable nearby combat position if one exists; if none exists, it falls back to the existing chase/block behavior without panicking.
-- [ ] When nav reachability accepts a candidate but static capsule occupancy rejects it, the selector skips that candidate and chooses the next valid option or falls back cleanly. Runnable unit test; no renderer required.
-- [ ] When fewer valid combat slots exist than enemies, no two enemies are forced into the same invalid/occupied slot. Extra enemies fall back to existing chase/block behavior or keep a valid incumbent slot if hysteresis allows it.
-- [ ] Slot claims are deterministic and order-independent: the same frozen enemy/target/candidate inputs produce the same accepted slots and fallbacks even when the enemies are presented to the selector in a different order; exact ties break by stable entity id. Runnable unit test; no renderer required.
-- [ ] In a multiplayer setup with enemies targeting different players, combat slots are generated around each enemy's chosen target position, not around a single global player position.
-- [ ] Candidate choice is stable against `COMBAT_SLOT_SWITCH_MARGIN`: with the deferred score-term weights held neutral so the score reduces to its metric (metres) cost, a target nudge that leaves the best challenger within `COMBAT_SLOT_SWITCH_MARGIN` of the incumbent's cost keeps the current combat slot (no destination change); a nudge that makes a challenger beat the incumbent by more than the margin switches slots. Runnable unit test asserting both directions; no renderer required.
-- [ ] Scoring is deterministic. Identical inputs produce identical selected positions and tie breaks.
-- [ ] Existing steering, stuck recovery, path-preservation, separation, and locomotion-animation tests remain green (assumes `E10--enemy-stuck-recovery` has landed — see Sequencing).
-- [ ] Manual check on `content/dev/maps/campaign-test`: a small wave pressures the player more naturally than raw chase-to-player, with less jerky left/right correction when enemies crowd or collide, and no new wall-hugging or wedge regressions.
+- [x] Multiple enemies chasing one player select distinct reachable combat positions and do not all path to their target's center point (runnable unit test with a hand-built navmesh and several agents; the pure selector is fed target positions directly, so it needs no `select_target` wiring).
+- [x] An enemy near the player holds or adjusts within an engagement band instead of pushing into the player capsule (runnable FSM/positioning test; no renderer required).
+- [x] When the target player's raw position is unreachable or already crowded, the enemy picks a reachable nearby combat position if one exists; if none exists, it falls back to the existing chase/block behavior without panicking.
+- [x] When nav reachability accepts a candidate but static capsule occupancy rejects it, the selector skips that candidate and chooses the next valid option or falls back cleanly. Runnable unit test; no renderer required.
+- [x] When fewer valid combat slots exist than enemies, no two enemies are forced into the same invalid/occupied slot. Extra enemies fall back to existing chase/block behavior or keep a valid incumbent slot if hysteresis allows it.
+- [x] Slot claims are deterministic and order-independent: the same frozen enemy/target/candidate inputs produce the same accepted slots and fallbacks even when the enemies are presented to the selector in a different order; exact ties break by stable entity id. Runnable unit test; no renderer required.
+- [x] In a multiplayer setup with enemies targeting different players, combat slots are generated around each enemy's chosen target position, not around a single global player position.
+- [x] Candidate choice is stable against `COMBAT_SLOT_SWITCH_MARGIN`: with the deferred score-term weights held neutral so the score reduces to its metric (metres) cost, a target nudge that leaves the best challenger within `COMBAT_SLOT_SWITCH_MARGIN` of the incumbent's cost keeps the current combat slot (no destination change); a nudge that makes a challenger beat the incumbent by more than the margin switches slots. Runnable unit test asserting both directions; no renderer required.
+- [x] Scoring is deterministic. Identical inputs produce identical selected positions and tie breaks.
+- [x] Existing steering, stuck recovery, path-preservation, separation, and locomotion-animation tests remain green (assumes `E10--enemy-stuck-recovery` has landed — see Sequencing).
+- [x] Manual check on `content/dev/maps/campaign-test`: a small wave pressures the player more naturally than raw chase-to-player, with less jerky left/right correction when enemies crowd or collide, and no new wall-hugging or wedge regressions.
 
 ## Tasks
 

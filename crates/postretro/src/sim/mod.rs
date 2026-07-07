@@ -64,7 +64,13 @@ pub(crate) fn simulate_tick(
     );
     let ai = {
         let mut registry = registry.borrow_mut();
-        scripting_systems::ai::run_ai_tick(&mut registry, ai_warned, tick_dt)
+        scripting_systems::ai::run_ai_tick_with_navigation(
+            &mut registry,
+            ai_warned,
+            tick_dt,
+            nav_graph,
+            Some(collision_world),
+        )
     };
 
     let post_movement_command = post_movement(&registry);

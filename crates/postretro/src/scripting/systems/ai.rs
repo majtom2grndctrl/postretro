@@ -87,6 +87,10 @@ pub(crate) fn think_stride_for_distance(distance: f32) -> u32 {
 /// in agreement.
 const MOVE_SPEED_EPSILON: f32 = 0.05;
 
+/// Maximum enemy-facing yaw rotation, in radians/sec. Higher than path steering
+/// so visual facing catches up quickly without snapping.
+pub(crate) const FACING_TURN_RATE: f32 = crate::agent_steering::MAX_TURN_RATE * 2.0;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct LocomotionIntent {
     moving: bool,
@@ -168,6 +172,25 @@ fn yaw_rotation_toward(dir: Vec3) -> Option<Quat> {
     // without touching this math.
     let yaw = dir.x.atan2(dir.z) - MESH_FORWARD.x.atan2(MESH_FORWARD.z);
     Some(Quat::from_rotation_y(yaw))
+}
+
+fn yaw_from_rotation(rotation: Quat) -> f32 {
+    let heading = rotation * MESH_FORWARD;
+    heading.x.atan2(heading.z)
+}
+
+/// Advance `current` yaw toward `target` by at most `max_delta` radians along the
+/// shortest arc. Returns `target` exactly when it is within the per-tick budget,
+/// preserving exact arrival instead of orbiting around the goal.
+pub(crate) fn slew_yaw(current: f32, target: f32, max_delta: f32) -> f32 {
+    let delta = (target - current + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU)
+        - std::f32::consts::PI;
+    let max_delta = max_delta.max(0.0);
+    if delta.abs() <= max_delta {
+        target
+    } else {
+        current + delta.signum() * max_delta
+    }
 }
 
 /// What the FSM wants the steering layer to do this tick. Decoupled from the
@@ -739,11 +762,15 @@ pub(crate) fn run_ai_tick(
                             .target
                             .and_then(|target| yaw_rotation_toward(target.position - path.position))
                     };
-                if let Some(rotation) = facing {
+                if let Some(target_rotation) = facing {
                     if let Ok(mut transform) =
                         registry.get_component::<Transform>(outcome.id).cloned()
                     {
-                        transform.rotation = rotation;
+                        let current_yaw = yaw_from_rotation(transform.rotation);
+                        let target_yaw = yaw_from_rotation(target_rotation);
+                        let slewed_yaw =
+                            slew_yaw(current_yaw, target_yaw, FACING_TURN_RATE * tick_dt);
+                        transform.rotation = Quat::from_rotation_y(slewed_yaw);
                         let _ = registry.set_component(outcome.id, transform);
                     }
                 }

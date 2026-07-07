@@ -1,6 +1,6 @@
 # E17 - Kinematic Platform Foundation
 
-> **Status:** ready — reviewed, awaiting implementation.
+> **Status:** draft — substrate-proof revision, in re-review.
 >
 > **Epic:** 17 - Kinematic Geometry and Moving Platforms.
 >
@@ -16,7 +16,9 @@ reconcile the platform on the pawn's prediction path.
 
 This is the substrate plan. It proves one moving brush payload end-to-end before
 the epic adds triggers, rotating carry, doors, dynamic portals, kinematic
-clusters, or destruction.
+clusters, or destruction. The riskiest integration — deterministic driver,
+combined collision query, carry, replay — is proven in-memory before PRL, FGD,
+renderer, and wire plumbing attach (see **Sequencing**).
 
 ## Scope
 
@@ -39,6 +41,8 @@ clusters, or destruction.
 - Player carry for linear movers: standing on a mover follows its linear delta;
   side/top collision works; leaving the mover preserves explicit movement intent
   plus the carry-release velocity policy in this plan.
+- Displace-only mover push: a mover advancing into the player displaces the
+  player out of penetration; movers never yield or stop on contact.
 - Widen the player's replicated grounded state into a ground reference
   (`Airborne` / `World` / `Mover`) so carry is one authoritative, predicted
   value rather than a separately-derived base.
@@ -51,6 +55,8 @@ clusters, or destruction.
 ### Out of scope
 
 - Rotating platforms, angular carry, and player orientation changes.
+- Crush damage, mover blocking/stopping on contact, and pinch resolution when a
+  push is blocked by static geometry (E17-D).
 - Touch/use trigger volumes and co-op trigger ownership. The first mover starts
   through `start_on_spawn`.
 - Script-driven per-tick motion. Scripts may declare future commands, but Rust
@@ -121,6 +127,8 @@ The mover system runs in the fixed-tick game-logic phase after
 `snapshot_transforms` and before player movement consumes collision for that
 tick. It updates each mover's `Transform` and records previous/current deltas so
 movement carry and renderer interpolation share the same tick state.
+Mover-into-player push resolves in the same window (see **Collision and
+Movement Carry**).
 
 The same deterministic driver runs authoritatively on the host and predictively
 on each connected client. A client seeds the driver from the replicated phase
@@ -185,6 +193,12 @@ surface for nearest static or mover hit and receive:
 - mover linear velocity and tick delta;
 - contact surface classification.
 
+The aggregator is hand-rolled by design: parry 0.17 has no scene-level query
+pipeline — `QueryPipeline` and collider sets are Rapier APIs, and Rapier stays
+out (`movement.md`). Keep the API tiny and directly tested: nearest-hit ordering
+across sources, and exact static-only degeneracy — with no active movers it
+reproduces today's `cast_capsule`/`cast_ray` results.
+
 Carry rides on a **generalized ground reference.** Today the player's replicated
 `is_grounded: bool` (`WirePlayerMovementState`) is a bare boolean. Widen it to a
 ground reference — `Airborne`, `World`, or `Mover(mover_id)` — so "what am I
@@ -219,6 +233,22 @@ The first carry policy is linear only:
 - on transition off a `Mover` reference, preserve player-controlled velocity and
   add the mover velocity once; never add angular velocity (rotation is out of
   scope).
+
+Push complements carry. Movers are unstoppable kinematics: they follow the
+authored path regardless of contact and do not collide with the static world or
+each other — path validity is the author's responsibility. Carry covers the
+grounded cases (a rising elevator lifts its rider; a horizontal platform moves a
+standing player with it). Push covers the rest: a mover face advancing into the
+player's capsule displaces the player out of penetration along the contact
+normal, in the same tick as the mover's motion, before player movement consumes
+collision — a tick never ends with the player inside a mover. Push is a
+deterministic function of mover phase and player state, so it predicts, replays,
+and reconciles exactly like carry.
+
+If the displacement is blocked by static geometry — a pinch — this slice does
+not resolve it: crush/blocking policy is E17-D. Dev maps in this slice must not
+author pinch points; the movement substrate logs an unresolved pinch in dev
+builds, and hitting one in the dev map is a stop condition (see **Sequencing**).
 
 Keep the custom-kinematic movement invariant: no rigid-body player, no Rapier
 world, no per-tick script.
@@ -307,8 +337,15 @@ the host used — never a client-authored divergent path.
   footprint across the trip); "visible jitter" is dev-map QA.
 - [ ] Player collision against the mover works from top and sides; a wall-like
   side contact slides or blocks according to the existing movement substrate.
+- [ ] A mover advancing into a stationary player displaces the player out of
+  penetration — no tunneling, no persistent overlap — verified in the
+  deterministic sim; this plan's dev maps author no pinch points, and an
+  unresolved pinch logs in dev builds.
 - [ ] Leaving a moving platform applies the plan's release-velocity policy
   consistently in single-player and connected-client replay.
+- [ ] Re-simulating a recorded ride from a mid-ride state against recorded
+  mover poses reproduces the live trajectory exactly — the deterministic-sim
+  replay proof, no networking involved.
 - [ ] In the deterministic net harness at the E15 profile —
   `LinkConfig { delay: 45, jitter: 60, loss_probability: 0.05 }`, ~45..105 ms
   one-way, 5% loss — the client's predicted mover pose tracks the host's within a
@@ -324,11 +361,129 @@ the host used — never a client-authored divergent path.
 - [ ] No non-renderer module imports `wgpu` or creates GPU resources.
 - [ ] The mover draw path requires no new adapter feature and leaves the
   renderer's bind-group count unchanged.
+- [ ] With no active movers the combined query layer preserves static-only
+  movement behavior: existing movement and substrate tests pass unchanged.
 - [ ] Existing static maps with no movers load and render unchanged.
 
 ## Tasks
 
-### Task 1: PRL format, FGD, and compiler extraction
+Tasks 1-2 are the substrate proof: the deterministic driver, the combined
+collision query, carry, push, and replay land in-memory — no PRL, no FGD, no
+renderer, no wire — with waypoints and mover geometry constructed in tests.
+They produce production code the later tasks extend, not a throwaway spike.
+Format, renderer, and networking attach only after the proof holds (see
+**Sequencing**).
+
+### Task 1: Component, deterministic driver, and moving-collider query layer
+
+Add `KinematicMoverComponent` in `crates/entities/src/components/`, and
+`ComponentKind::KinematicMover = 13` in `crates/entities/src/registry.rs`
+(after `Brain = 12`); update `ComponentKind::COUNT`, `ComponentValue`, registry
+storage, and serde, and keep the engine/net discriminant drift guard green — the
+matching net-side constant lands in Task 6. The component stores
+{ compiled mover id, path waypoint indices, mode, segment index, direction sign,
+`segment_elapsed_ms`, `wait_remaining_ms`, current linear velocity, `started`,
+`completed` } — the driver state the wire payload mirrors.
+
+Add a fixed-tick mover system that evaluates deterministic linear motion using
+tick `dt`, path segment length, speed, waits, and mode. The system must run
+after the transform snapshot stage (`snapshot_transforms`) and before
+player-movement collision in the game-logic stage. Modes: `once` stops at the
+final waypoint; `ping_pong` reverses at each endpoint. Both are required.
+
+The driver is a pure function of {seeded phase, static waypoints, `dt`}: it runs
+identically on the host (authoritative) and each client (predicted), so given
+the same phase seed both reproduce the same path and reconciliation is exact.
+Keep it free of wall-clock, RNG, and host-only state so client prediction cannot
+diverge. `wait_ms` pauses at path endpoints only — the reversal point for
+`ping_pong`, the final waypoint for `once` — not at intermediate waypoints;
+`wait_remaining_ms` counts that pause down.
+
+The mover system owns and publishes each tick's mover kinematic state (transform,
+linear velocity, tick delta) into an engine-owned side-table keyed by `mover_id`.
+The query layer below and Task 6's history buffer are downstream consumers of
+this side-table; creating it here keeps the write before its readers.
+
+Build local-space parry trimeshes for mover colliders and add a query layer that
+returns the nearest hit across static world and active movers — hit normal and
+TOI, source kind, mover id, mover linear velocity and tick delta, contact
+surface classification. It is hand-rolled by design (see **Collision and
+Movement Carry**); keep the API tiny. The layer reads the side-table and
+transforms each mover's local trimesh by its current pose, taken from a pose
+source — the live side-table by default, but swappable so Task 2's replay can
+feed a historical pose. In this task mover trimeshes come from test-constructed
+geometry; Task 4 later feeds PRL geometry through the same path.
+
+Tests, all in-memory: driver determinism (same seed, same trajectory; `once`
+stops at the final waypoint; `ping_pong` reverses; endpoint waits honored) and
+aggregator correctness — nearest-hit ordering across static and mover sources,
+TOI/normal/source-id fields, and exact static-only degeneracy: with no active
+movers the layer reproduces direct `cast_capsule`/`cast_ray` results.
+
+### Task 2: Ground reference, carry, push, and replay widening
+
+Adapt `movement/substrate.rs` to the Task 1 query layer without losing existing
+static-world behavior: with no movers active, existing movement tests must pass
+unchanged.
+
+Implement linear carry on a generalized ground reference:
+
+- widen the player's grounded state to a ground reference — name the enum
+  `GroundRef`, variants `Airborne` / `World` / `Mover(mover_id)`, where
+  `mover_id` is a plain `u32` (the compile-time PRL key) so the reference stays
+  foundation-local and never names `NetworkId` (which lives in `postretro-net`)
+  — on `PlayerMovementComponent` (foundation-resident:
+  `crates/foundation/src/movement/player_movement.rs`);
+- update every reader of the *player* `is_grounded` bool to the widened form,
+  but leave the unrelated AI `AgentComponent.is_grounded` alone, and keep the
+  movement-scope `grounded` scripting primitive projecting a `bool`
+  (`ground != Airborne`) so the primitive surface does not change. Removing the
+  bool makes reader coverage compiler-enforced; most readers just map to
+  `grounded == ground != Airborne`, but two need judgment — `view_feel` (the
+  head-bob grounded flag) and `movement_state_to_wire` (the wire merge) — and
+  `substrate.rs` is where the value is *written*, now distinguishing mover vs
+  world floor from the new query layer. The widened field is named
+  `ground: GroundRef` on `PlayerMovementComponent` (matching the wire `ground`,
+  so serde/round-trip line up). At the wire boundary, `movement_state_to_wire`
+  keeps emitting the existing `is_grounded: bool` as `ground != Airborne` until
+  Task 6 widens the wire field — this task must not emit the widened form
+  against a field that does not exist yet;
+- detect grounded contact on a mover surface and set the reference to
+  `Mover(mover_id)`;
+- while the reference is `Mover(mover_id)`, resolve it to the local mover and
+  apply that mover's tick delta to the player;
+- on transition off a `Mover` reference, preserve player-controlled velocity and
+  add the mover velocity once; never add angular velocity (rotation is out of
+  scope). This release carry is engine-internal movement-substrate logic, not a
+  `movement.md` §6 declarative carry-rule;
+- handle platform reversal and endpoint waits without jitter.
+
+Implement the displace-only push from **Collision and Movement Carry**: after
+mover motion and before player movement consumes collision, a mover overlapping
+the player's capsule displaces the player out of penetration along the contact
+normal. An unresolved pinch (displacement blocked by static geometry) logs in
+dev builds; resolving it is E17-D.
+
+Widen the pawn's replay path: `replay` — today movement-only, reading a static
+`&CollisionWorld` — must widen so a replay tick can read each mover's pose at
+that tick, driven through Task 1's pose source. The signature change fans out to
+its forward-prediction caller (`predict_tick`) and the reconcile caller. In this
+task historical poses come from a test-recorded ring; Task 6 later feeds
+authoritative snapshot samples through the same seam.
+
+Add deterministic-sim tests for static-only behavior, moving top contact, moving
+side contact, endpoint wait, reversal, release velocity, ground-reference
+transitions (`World` <-> `Mover` <-> `Airborne`), a >=10-round-trip
+standing-carry test asserting Y stays within ε of the surface and XZ within the
+platform footprint (AC 6's determinism check), push displacement (a mover
+advancing into a stationary player: no tunneling, no persistent overlap), and a
+ride replay: re-simulating from a mid-ride state against recorded mover poses
+reproduces the live trajectory exactly.
+
+This task completes the substrate proof. Check the stop conditions in
+**Sequencing** before any Phase 3 work opens.
+
+### Task 3: PRL format, FGD, and compiler extraction
 
 Add `kinematic_geometry` to `postretro-level-format` with
 `SectionId::KinematicGeometry = 43` — the next free id after
@@ -378,7 +533,7 @@ throughout; each list `u32`-count-prefixed (empty = `u32(0)`); each `String`
 Store `vertices` **origin-relative** — subtract the mover origin, which is the
 first (`path`) waypoint; the compiler warns if the authored brush position
 differs. At runtime the mover's `Transform.position` (walking the waypoint
-chain) is applied to these local verts, and Task 3 draws them under that
+chain) is applied to these local verts, and Task 5 draws them under that
 `Transform`; world-space storage would double-offset every mover.
 
 Compiler work:
@@ -410,17 +565,11 @@ Compiler work:
   asserting the mover brush is absent from `world_brush_ids` / `brush_volumes` and
   from the packed static `GeometrySection`.
 
-### Task 2: Runtime loading, component, and deterministic driver
+### Task 4: Runtime loading and spawn
 
 Load section 43 (`KinematicGeometry`) in `crates/level-loader/src/prl.rs` into
 `LevelWorld` (an absent or empty section means no movers; mover-less maps load
-unchanged). Add `KinematicMoverComponent` in `crates/entities/src/components/`,
-and `ComponentKind::KinematicMover = 13` in `crates/entities/src/registry.rs`
-(after `Brain = 12`); update `ComponentKind::COUNT`, `ComponentValue`, registry
-storage, serde, and the netcode discriminant drift tests. The component stores
-{ compiled mover id, path waypoint indices, mode, segment index, direction sign,
-`segment_elapsed_ms`, `wait_remaining_ms`, current linear velocity, `started`,
-`completed` } — the driver state the wire payload mirrors.
+unchanged).
 
 At level load, spawn one entity per mover record with:
 
@@ -434,36 +583,21 @@ At level load, spawn one entity per mover record with:
 
 Both host and client spawn the mover entity from the PRL record at load — the
 client needs it for geometry and local prediction. Only the host registers it
-authoritative in `ReplicableSet`; Task 5 binds the host `NetworkId` to the
+authoritative in `ReplicableSet`; Task 6 binds the host `NetworkId` to the
 client's load-spawned mover by `mover_id`, so the client never re-spawns it from
 a snapshot baseline.
 
-Add a fixed-tick mover system that evaluates deterministic linear motion using
-tick `dt`, path segment length, speed, waits, and mode. The system must run
-after the transform snapshot stage (`snapshot_transforms`) and before
-player-movement collision in the game-logic stage. Modes: `once` stops at the
-final waypoint; `ping_pong` reverses at each endpoint. Both are required.
+Feed the loaded mover collision geometry through Task 1's local-space trimesh
+path. The Task 1 driver consumes the seeded component unchanged — this task
+adds no motion logic.
 
-The driver is a pure function of {seeded phase, static waypoints, `dt`}: it runs
-identically on the host (authoritative) and each client (predicted), so given
-the same phase seed both reproduce the same path and reconciliation is exact.
-Keep it free of wall-clock, RNG, and host-only state so client prediction cannot
-diverge. `wait_ms` pauses at path endpoints only — the reversal point for
-`ping_pong`, the final waypoint for `once` — not at intermediate waypoints;
-`wait_remaining_ms` counts that pause down.
-
-The mover system owns and publishes each tick's mover kinematic state (transform,
-linear velocity, tick delta) into an engine-owned side-table keyed by `mover_id`.
-Task 4's collision query and Task 5's history buffer are downstream consumers of
-this side-table; creating it here keeps the write before its readers.
-
-### Task 3: Renderer-owned kinematic brush draw path
+### Task 5: Renderer-owned kinematic brush draw path
 
 Add renderer-owned GPU resources and a draw path for kinematic brush payloads.
 The game/runtime side passes plain CPU records and per-frame draw instances
 only; it never touches WGPU. Mover geometry and the spawned mover entities come
-from Task 2's `LevelWorld` load of section 43; Task 3 consumes that carrier
-read-only and defines no loader of its own (hence it sequences after Task 2).
+from Task 4's `LevelWorld` load of section 43; Task 5 consumes that carrier
+read-only and defines no loader of its own (hence it sequences after Task 4).
 
 Requirements:
 
@@ -482,64 +616,14 @@ Requirements:
   snapshotted mover entities;
 - light movers via the dynamic-object lighting model (baked indirect/SH +
   dynamic direct) -- material-only/unlit is not sufficient;
-- mover verts already carry zeroed `lightmap_uv` / `lightmap_layer` from Task 1
-  (movers skip the bake) — Task 3 consumes them and does not write verts;
+- mover verts already carry zeroed `lightmap_uv` / `lightmap_layer` from Task 3
+  (movers skip the bake) — Task 5 consumes them and does not write verts;
 
 First-slice culling may be conservative: visible if the mover origin or AABB is
 inside the camera-visible leaf or a nearby visible leaf. It may draw a few
 extra movers; it must not disappear while the player can see or stand on it.
 
-### Task 4: Moving-collider query layer and player carry
-
-Build local-space parry trimeshes for mover colliders at load and query them at
-runtime with the mover transform. Add a query layer that returns the nearest hit
-across static world and active movers, then adapt `movement/substrate.rs` to use
-that layer without losing existing static-world behavior. The collision query
-layer reads Task 2's per-tick mover-state side-table (transform, linear velocity,
-tick delta, keyed by `mover_id`) and transforms the per-mover local trimeshes by
-each mover's current transform. Build the query layer to take the per-mover pose
-from a pose source — the live side-table by default, but swappable so Task 5's
-replay can feed a historical pose.
-
-Implement linear carry on a generalized ground reference:
-
-- widen the player's grounded state to a ground reference — name the enum
-  `GroundRef`, variants `Airborne` / `World` / `Mover(mover_id)`, where
-  `mover_id` is a plain `u32` (the compile-time PRL key) so the reference stays
-  foundation-local and never names `NetworkId` (which lives in `postretro-net`)
-  — on `PlayerMovementComponent` (foundation-resident:
-  `crates/foundation/src/movement/player_movement.rs`);
-- update every reader of the *player* `is_grounded` bool to the widened form,
-  but leave the unrelated AI `AgentComponent.is_grounded` alone, and keep the
-  movement-scope `grounded` scripting primitive projecting a `bool`
-  (`ground != Airborne`) so the primitive surface does not change. Removing the
-  bool makes reader coverage compiler-enforced; most readers just map to
-  `grounded == ground != Airborne`, but two need judgment — `view_feel` (the
-  head-bob grounded flag) and `movement_state_to_wire` (the wire merge) — and
-  `substrate.rs` is where the value is *written*, now distinguishing mover vs
-  world floor from the new query layer. The widened field is named
-  `ground: GroundRef` on `PlayerMovementComponent` (matching the wire `ground`,
-  so serde/round-trip line up). At the wire boundary, `movement_state_to_wire`
-  keeps emitting the existing `is_grounded: bool` as `ground != Airborne` until
-  Task 5 widens the wire field — Task 4 must not emit the widened form against a
-  field that does not exist yet;
-- detect grounded contact on a mover surface and set the reference to
-  `Mover(mover_id)`;
-- while the reference is `Mover(mover_id)`, resolve it to the local mover and
-  apply that mover's tick delta to the player;
-- on transition off a `Mover` reference, preserve player-controlled velocity and
-  add the mover velocity once; never add angular velocity (rotation is out of
-  scope). This release carry is engine-internal movement-substrate logic, not a
-  `movement.md` §6 declarative carry-rule;
-- handle platform reversal and endpoint waits without jitter.
-
-Add unit tests for static-only behavior, moving top contact, moving side
-contact, endpoint wait, reversal, release velocity, ground-reference
-transitions (`World` <-> `Mover` <-> `Airborne`), and a >=10-round-trip
-standing-carry test asserting Y stays within ε of the surface and XZ within the
-platform footprint (AC 6's determinism check).
-
-### Task 5: Network payload, client apply, and replay harness
+### Task 6: Network payload, client apply, and replay harness
 
 Extend `postretro-net` and `postretro` replication for `KinematicMoverState`
 and the widened `WirePlayerMovementState` ground reference. Bump
@@ -547,7 +631,7 @@ and the widened `WirePlayerMovementState` ground reference. Bump
 wire type and a changed existing struct alter the bitcode layout -- see
 networking.md's two-gate handshake); update raw payload validation, finite
 checks, raw-from-typed conversion, baseline/delta tests, and engine/net
-discriminant guards. This task consumes the `GroundRef` shape defined in Task 4.
+discriminant guards. This task consumes the `GroundRef` shape defined in Task 2.
 `WireKinematicMoverState` carries { `mover_id: u32`, `segment_index: u16`,
 `direction: i8` (-1/1), `mode: u8` (once=0/ping_pong=1),
 `segment_elapsed_ms: f32`, `wait_remaining_ms: f32`, `started: bool`,
@@ -563,25 +647,21 @@ then seeds that mover's predictive driver from the replicated phase and
 reconciles it in place. Route by payload: a baseline carrying
 `KinematicMoverState` binds by `mover_id` and never materializes; movers carry
 no `entity_class` (they bypass classname dispatch), so the `KinematicMoverState`
-payload is the discriminator. Two seams here are net-new, not reuse of the
-pawn's path:
-(1) the mover needs its **own** predictor/reconciler instance — phase-seeded and
-input-free, distinct from the pawn's command-ring `ClientPrediction`; (2) the
-pawn's `replay` — today movement-only, reading a static `CollisionWorld` — must
-widen so a replay tick can read the mover's pose at that tick.
+payload is the discriminator. One seam here is net-new, not reuse of the pawn's
+path: the mover needs its **own** predictor/reconciler instance — phase-seeded
+and input-free, distinct from the pawn's command-ring `ClientPrediction`. The
+widened `replay` it relies on already landed in Task 2; this task feeds it
+authoritative data.
 
 Client apply writes each tick's authoritative mover sample into an engine-owned
-mover-history buffer keyed by `mover_id`; the widened replay reads those samples,
-so the pawn replays against the same platform pose the host used. When a replay
-tick has no authoritative mover sample (loss/jitter), fill it by advancing the
-deterministic driver from the nearest authoritative phase — the same
-prediction, not an interpolation. The moving-collider query the replay drives
-is pointed at that historical pose via Task 4's pose source. This history
-buffer (past ticks, for replay) is a **distinct** structure from Task 2's live
-per-tick mover-state side-table (current tick only); widening `replay`'s
-signature fans out to its
-forward-prediction caller (`predict_tick`) and the reconcile caller. Also update
-the `populated`-count check in `RawComponentPayload::validate` for the new slot,
+mover-history buffer keyed by `mover_id`; the widened replay reads those samples
+through Task 1's pose source, so the pawn replays against the same platform pose
+the host used. When a replay tick has no authoritative mover sample
+(loss/jitter), fill it by advancing the deterministic driver from the nearest
+authoritative phase — the same prediction, not an interpolation. This history
+buffer (past ticks, for replay) is a **distinct** structure from Task 1's live
+per-tick mover-state side-table (current tick only). Also update the
+`populated`-count check in `RawComponentPayload::validate` for the new slot,
 and have the mover reconciler surface a per-tick correction metric (analogous to
 the pawn's `CorrectionClass`) so the harness can assert the correction stays
 within a small bounded tolerance and does not accumulate.
@@ -591,7 +671,7 @@ scenario at the E15 latency/loss profile: assert the client-predicted platform
 tracks the host within a small bounded tolerance (no interpolation lag) and that
 a rider reconciles without steady-state drift or accumulating correction.
 
-### Task 6: Demo map, diagnostics, and documentation
+### Task 7: Demo map, diagnostics, and documentation
 
 Add a small dev map or extend an existing dev map with one simple elevator or
 linear platform. Add concise diagnostics:
@@ -606,37 +686,54 @@ Update context docs only where implementation changed the durable contract:
 - `context/lib/entity_model.md` for `KinematicMover` and the new fixed-tick
   mover stage in the §5 update-order table (after `snapshot_transforms`, before
   player-movement collision);
-- `context/lib/movement.md` for the generalized ground reference and moving-base
-  carry — and retract §7's "Networked movement (prediction, rollback)" non-goal,
-  now that pawn (E15) and mover prediction exist;
+- `context/lib/movement.md` for the generalized ground reference, moving-base
+  carry, and displace-only push (crush is E17-D) — and retract §7's "Networked
+  movement (prediction, rollback)" non-goal, now that pawn (E15) and mover
+  prediction exist;
 - `context/lib/rendering_pipeline.md` for the dynamic kinematic draw path;
 - `context/lib/networking.md` for the mover payload, client mover prediction, and
   the widened ground reference.
 
 ## Sequencing
 
-Phase 1 is sequential: Task 1. It establishes the wire/storage format the rest
-of the plan consumes.
+Phase 1 is sequential: Task 1. The driver, the mover-state side-table, and the
+query aggregator, proven in-memory.
 
-Phase 2 is sequential: Task 2. It loads section 43 into `LevelWorld` (the
-mover-geometry carrier) and builds the driver plus the per-tick mover-state
-side-table (transform/velocity/delta) that Tasks 3-5 consume.
+Phase 2 is sequential: Task 2. Carry, push, and replay against the proven
+driver. This completes the substrate proof — the plan's highest-risk
+integration, crossing the kinematic driver, collision-query composition, and
+prediction/replay at once. Hold Phase 3 until its suites are green and no stop
+condition has fired.
 
-Phase 3 runs Task 3 and Task 4 in parallel after Task 2 — Task 3 (renderer,
-consuming the `LevelWorld` mover geometry and snapshotted entities) and Task 4
-(collision/carry, consuming the driver and side-table) touch disjoint crates.
-Task 4 is the highest-risk movement integration step.
+Phase 3 is sequential: Task 3. It establishes the PRL/FGD format the loader
+consumes.
 
-Phase 4 is sequential: Task 5. It replicates the mover payload and the widened
-ground reference, and adds client mover prediction/reconciliation — so it must
-follow Task 4 (which defines `GroundRef` and carry) and relies on Task 2's
-driver being a pure, seedable function it can run client-side.
+Phase 4 is sequential: Task 4. Load and spawn — the first time the proven
+substrate runs against compiled content.
 
-Phase 5 is final integration: Task 6, plus any manual QA.
+Phase 5 runs Task 5 and Task 6 in parallel — renderer versus net/netcode,
+disjoint modules. Both add call-site wiring to `main.rs`; keep those additions
+small and mergeable.
+
+Phase 6 is final integration: Task 7, plus any manual QA.
 
 Do not split this plan into a wave with the trigger/event spec. The first
 platform touches too many substrate boundaries; land it alone, then draft the
 trigger/event plan against the actual mover API.
+
+### Stop conditions
+
+Any of these pauses the plan — surface it and redesign; do not layer fixes
+forward:
+
+- static-only movement behavior regresses at any phase (the Task 1/2 degeneracy
+  suites or any existing movement test);
+- ride replay drifts, or per-tick reconciliation corrections accumulate, beyond
+  tolerance (Task 2 proof or Task 6 harness);
+- a `kinematic_mover` brush appears in any static input — world geometry, BVH,
+  collision, lightmap/SDF occluders, portals, or navmesh;
+- a tick ends with the player in unresolved penetration outside the documented
+  pinch deferral.
 
 ## Rough Sketch
 
@@ -663,8 +760,8 @@ trigger/event plan against the actual mover API.
   `PlayerMovementComponent`; update its player-side readers only.
 - `crates/foundation/src/movement/scope.rs`: keep the `grounded` IR primitive a
   `bool` (`ground != Airborne`) — no primitive-surface change.
-- `crates/postretro/src/movement/substrate.rs`: consume the combined query and
-  `Mover`-referenced carry.
+- `crates/postretro/src/movement/substrate.rs`: consume the combined query,
+  `Mover`-referenced carry, and mover push.
 - `crates/postretro/src/render/`: renderer-owned mover buffers/draws.
 - `crates/net/src/wire.rs`, `crates/net/src/replication.rs`,
   `crates/postretro/src/netcode/`: mover payload + widened ground reference,

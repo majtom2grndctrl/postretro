@@ -13,9 +13,10 @@ use crate::map_data::BrushVolume;
 #[cfg(test)]
 const PLANE_EPSILON: f64 = 0.1;
 
-/// Candidate-routing tolerance. A brush routes to one side only when its AABB
-/// is strictly separated from the splitter; touching or near-plane AABBs stay
-/// on both sides so exact child regions keep their owning brush.
+/// Candidate-routing tolerance. A brush routes to one side when its AABB has
+/// meaningful extent on that side, including plane contact from that side.
+/// Near-plane-only and genuinely straddling AABBs stay on both children so
+/// exact child regions keep their owning brush.
 const CANDIDATE_ROUTING_EPSILON: f64 = 1e-6;
 
 /// Classification tolerance for exact region-polytope queries.
@@ -150,9 +151,9 @@ fn classify_aabb(bounds: &Aabb, normal: DVec3, distance: f64) -> AabbSide {
 fn classify_aabb_for_candidate_routing(bounds: &Aabb, normal: DVec3, distance: f64) -> AabbSide {
     let (min_dist, max_dist) = aabb_plane_distance_range(bounds, normal, distance);
 
-    if min_dist > CANDIDATE_ROUTING_EPSILON {
+    if min_dist >= -CANDIDATE_ROUTING_EPSILON && max_dist > CANDIDATE_ROUTING_EPSILON {
         AabbSide::Front
-    } else if max_dist < -CANDIDATE_ROUTING_EPSILON {
+    } else if max_dist <= CANDIDATE_ROUTING_EPSILON && min_dist < -CANDIDATE_ROUTING_EPSILON {
         AabbSide::Back
     } else {
         AabbSide::Spanning
@@ -192,8 +193,8 @@ fn compute_inside_set(
 }
 
 /// Split candidates across a plane. Routing is AABB-based and conservative:
-/// only strictly separated brushes are dropped from one side. Exact solidity
-/// and splitter qualification use `RegionPolytope`.
+/// near-plane and genuinely straddling AABBs stay on both sides. Exact
+/// solidity and splitter qualification use `RegionPolytope`.
 fn partition_candidates(
     brushes: &[BrushVolume],
     candidates: &[usize],
@@ -709,6 +710,61 @@ mod tests {
             max: DVec3::new(10.0, 10.0, 10.0),
         };
         assert_eq!(classify_aabb(&bounds, DVec3::X, 5.0), AabbSide::Spanning);
+    }
+
+    #[test]
+    fn classify_candidate_routing_touching_back_plane_routes_back() {
+        // Regression: a thin brush touching its outward plane must stay routed
+        // to the child region it owns, not be dropped from that child.
+        let bounds = Aabb {
+            min: DVec3::new(0.0, 0.0, 0.0),
+            max: DVec3::new(0.05, 1.0, 1.0),
+        };
+
+        assert_eq!(
+            classify_aabb_for_candidate_routing(&bounds, DVec3::X, 0.05),
+            AabbSide::Back
+        );
+    }
+
+    #[test]
+    fn classify_candidate_routing_touching_front_plane_routes_front() {
+        let bounds = Aabb {
+            min: DVec3::new(0.05, 0.0, 0.0),
+            max: DVec3::new(0.10, 1.0, 1.0),
+        };
+
+        assert_eq!(
+            classify_aabb_for_candidate_routing(&bounds, DVec3::X, 0.05),
+            AabbSide::Front
+        );
+    }
+
+    #[test]
+    fn classify_candidate_routing_near_plane_only_stays_spanning() {
+        let half_epsilon = CANDIDATE_ROUTING_EPSILON * 0.5;
+        let bounds = Aabb {
+            min: DVec3::new(-half_epsilon, 0.0, 0.0),
+            max: DVec3::new(half_epsilon, 1.0, 1.0),
+        };
+
+        assert_eq!(
+            classify_aabb_for_candidate_routing(&bounds, DVec3::X, 0.0),
+            AabbSide::Spanning
+        );
+    }
+
+    #[test]
+    fn classify_candidate_routing_genuine_straddle_stays_spanning() {
+        let bounds = Aabb {
+            min: DVec3::new(-0.05, 0.0, 0.0),
+            max: DVec3::new(0.05, 1.0, 1.0),
+        };
+
+        assert_eq!(
+            classify_aabb_for_candidate_routing(&bounds, DVec3::X, 0.0),
+            AabbSide::Spanning
+        );
     }
 
     #[test]

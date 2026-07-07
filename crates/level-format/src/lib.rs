@@ -20,6 +20,7 @@ pub mod fog_volumes;
 pub mod geometry;
 #[cfg(feature = "gltf-resolve")]
 pub mod gltf_resolve;
+pub mod kinematic_geometry;
 pub mod light_influence;
 pub mod light_tags;
 pub mod lightmap;
@@ -249,6 +250,10 @@ pub enum SectionId {
     /// overlapping selected lights into RGBA channels. See
     /// `shadowmask_atlas::ShadowmaskAtlasSection`.
     ShadowmaskAtlas = 42,
+
+    /// Origin-relative brush geometry and waypoint records for deterministic
+    /// kinematic movers. See `kinematic_geometry::KinematicGeometrySection`.
+    KinematicGeometry = 43,
 }
 
 impl SectionId {
@@ -284,6 +289,7 @@ impl SectionId {
             40 => Some(Self::EntityShadowLights),
             41 => Some(Self::DirectShDeltaVolumes),
             42 => Some(Self::ShadowmaskAtlas),
+            43 => Some(Self::KinematicGeometry),
             _ => None,
         }
     }

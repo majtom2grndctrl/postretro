@@ -30,6 +30,7 @@ use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
 use postretro_level_format::entity_shadow_lights::EntityShadowLightsSection;
 use postretro_level_format::fog_cell_masks::FogCellMasksSection;
 use postretro_level_format::fog_volumes::{FogVolumeRecord, FogVolumesSection};
+use postretro_level_format::kinematic_geometry::KinematicGeometrySection;
 use postretro_level_format::light_influence::{InfluenceRecord, LightInfluenceSection};
 use postretro_level_format::light_tags::LightTagsSection;
 use postretro_level_format::lightmap::LightmapSection;
@@ -571,6 +572,7 @@ pub fn pack_and_write_portals(
     fog_cell_masks: Option<&FogCellMasksSection>,
     sdf_atlas: Option<&SdfAtlasSection>,
     navmesh: Option<&NavMeshSection>,
+    kinematic_geometry: Option<&KinematicGeometrySection>,
     // Pre-serialized CellDrawIndex (id 37) bytes, or `None` for zero-leaf maps.
     // Already-encoded because the bake is gated on non-empty BVH leaves upstream;
     // emission is independent of portal presence.
@@ -638,6 +640,7 @@ pub fn pack_and_write_portals(
     let fog_cell_masks_bytes = fog_cell_masks.map(|s| s.to_bytes());
     let sdf_atlas_bytes = sdf_atlas.map(|s| s.to_bytes());
     let navmesh_bytes = navmesh.map(|s| s.to_bytes());
+    let kinematic_geometry_bytes = kinematic_geometry.map(|s| s.to_bytes());
 
     let mut sections = vec![
         SectionBlob {
@@ -778,6 +781,11 @@ pub fn pack_and_write_portals(
             data: bytes.clone(),
         });
     }
+    append_optional_section(
+        &mut sections,
+        SectionId::KinematicGeometry as u32,
+        kinematic_geometry_bytes.clone(),
+    );
     append_optional_section(
         &mut sections,
         SectionId::CellDrawIndex as u32,
@@ -924,6 +932,14 @@ pub fn pack_and_write_portals(
             bytes.len(),
             section.regions.len(),
             section.portals.len(),
+        );
+    }
+    if let (Some(section), Some(bytes)) = (kinematic_geometry, &kinematic_geometry_bytes) {
+        log::info!(
+            "  KinematicGeometry: {} bytes ({} movers, {} waypoints)",
+            bytes.len(),
+            section.movers.len(),
+            section.waypoints.len(),
         );
     }
 
@@ -1165,6 +1181,43 @@ mod tests {
         .to_bytes()
     }
 
+    fn minimal_kinematic_geometry_section() -> KinematicGeometrySection {
+        use postretro_level_format::kinematic_geometry::{
+            KINEMATIC_GEOMETRY_VERSION, KinematicMoverRecord, KinematicWaypointRecord,
+        };
+
+        let geometry = sample_geo_result().geometry;
+        KinematicGeometrySection {
+            version: KINEMATIC_GEOMETRY_VERSION,
+            movers: vec![KinematicMoverRecord {
+                mover_id: 0,
+                name: "lift_a".to_string(),
+                tags: vec!["platform".to_string()],
+                origin: [0.0, 0.0, 0.0],
+                path: "wp_a".to_string(),
+                speed: 1.0,
+                wait_ms: 0.0,
+                move_mode: 0,
+                start_on_spawn: true,
+                vertices: geometry.vertices,
+                indices: geometry.indices,
+                face_meta: geometry.faces,
+            }],
+            waypoints: vec![
+                KinematicWaypointRecord {
+                    name: "wp_a".to_string(),
+                    next: "wp_b".to_string(),
+                    origin: [0.0, 0.0, 0.0],
+                },
+                KinematicWaypointRecord {
+                    name: "wp_b".to_string(),
+                    next: String::new(),
+                    origin: [0.0, 1.0, 0.0],
+                },
+            ],
+        }
+    }
+
     fn empty_alpha_lights() -> AlphaLightsSection {
         AlphaLightsSection::default()
     }
@@ -1385,6 +1438,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             Some(sample_cell_draw_index_bytes()),
         )
         .expect("pack_and_write_portals should succeed");
@@ -1420,6 +1474,63 @@ mod tests {
                 .is_some()
         );
         assert!(meta.find_section(SectionId::Lightmap as u32).is_some());
+
+        let _ = std::fs::remove_file(&output);
+    }
+
+    #[test]
+    fn pack_write_emits_kinematic_geometry_section_when_present() {
+        let dir = std::env::temp_dir().join("postretro_test_pack");
+        let _ = std::fs::create_dir_all(&dir);
+        let output = dir.join("test_pack_kinematic_geometry.prl");
+
+        let geo_result = sample_geo_result();
+        let texture_cache_keys: HashMap<String, [u8; 32]> = HashMap::new();
+        let kinematic = minimal_kinematic_geometry_section();
+        pack_and_write_portals(
+            &output,
+            &geo_result,
+            &texture_cache_keys,
+            &sample_leaves(),
+            &sample_tree(),
+            &PortalsSection {
+                vertices: vec![],
+                portals: vec![],
+            },
+            &HashSet::new(),
+            &sample_bvh(),
+            &[],
+            &empty_alpha_lights(),
+            &empty_light_influence(),
+            &empty_sh_volume(),
+            None,
+            None,
+            None,
+            None,
+            &placeholder_lightmap(),
+            &placeholder_chunk_light_list(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &FogVolumesSection::default(),
+            None,
+            None,
+            None,
+            Some(&kinematic),
+            Some(sample_cell_draw_index_bytes()),
+        )
+        .expect("pack should succeed");
+
+        let data = std::fs::read(&output).expect("should read output file");
+        let mut cursor = Cursor::new(&data);
+        let meta = read_container(&mut cursor).expect("should read container");
+        assert!(
+            meta.find_section(SectionId::KinematicGeometry as u32)
+                .is_some()
+        );
 
         let _ = std::fs::remove_file(&output);
     }
@@ -1462,6 +1573,7 @@ mod tests {
                 None,
                 None,
                 &FogVolumesSection::default(),
+                None,
                 None,
                 None,
                 None,
@@ -1570,6 +1682,7 @@ mod tests {
                 None,
                 None,
                 &FogVolumesSection::default(),
+                None,
                 None,
                 None,
                 None,
@@ -1686,6 +1799,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
                 Some(sample_cell_draw_index_bytes()),
             )
             .expect("pack should succeed");
@@ -1773,6 +1887,7 @@ mod tests {
                 None,
                 None,
                 &FogVolumesSection::default(),
+                None,
                 None,
                 None,
                 None,
@@ -1876,6 +1991,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let msg = result.expect_err("non-empty BVH without CellDrawIndex must fail");
@@ -1933,6 +2049,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .expect("empty BVH may omit CellDrawIndex");
 
@@ -1983,6 +2100,7 @@ mod tests {
             None,
             None,
             &FogVolumesSection::default(),
+            None,
             None,
             None,
             None,
@@ -2078,6 +2196,7 @@ mod tests {
             None,
             None,
             &FogVolumesSection::default(),
+            None,
             None,
             None,
             None,

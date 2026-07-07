@@ -284,6 +284,37 @@
     entity_class(string) : "Registered classname to spawn" : "player"
 ]
 
+@SolidClass
+    color(220 180 60)
+    = kinematic_mover : "Kinematic moving brush"
+[
+    name(string) : "Stable mover name" : ""
+    path(string) : "First kinematic_waypoint name" : ""
+    speed(float) : "Movement speed (meters per second)" : "1.0"
+    wait_ms(float) : "Endpoint wait (milliseconds)" : "0"
+    move_mode(choices) : "Move mode" : "once" =
+    [
+        "once" : "Once"
+        "ping_pong" : "Ping Pong"
+    ]
+    start_on_spawn(choices) : "Start on spawn" : 1 =
+    [
+        0 : "Off"
+        1 : "On"
+    ]
+    _tags(string) : "Space-delimited tags for script queries" : ""
+]
+
+@PointClass
+    color(220 200 80)
+    size(-6 -6 -6, 6 6 6)
+    = kinematic_waypoint : "Kinematic mover waypoint"
+[
+    origin(origin)
+    name(string) : "Stable waypoint name" : ""
+    next(string) : "Next waypoint name" : ""
+]
+
 // Per-region volumetric fog brush.
 //
 // Geometry behaviour is auto-detected from the brush faces:

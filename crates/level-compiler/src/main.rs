@@ -20,6 +20,7 @@ pub mod fog_cell_masks;
 pub mod format;
 pub mod geometry;
 pub mod geometry_utils;
+pub mod kinematic_geometry;
 pub mod light_namespaces;
 pub mod lightmap_bake;
 pub mod lightmap_layer;
@@ -479,6 +480,11 @@ fn main() -> anyhow::Result<()> {
     progress.start_stage("Geometry extraction...");
     let stage_start = Instant::now();
     let mut geo_result = geometry::extract_geometry(&result.faces, &result.tree, &exterior_leaves);
+    let kinematic_geometry_section = kinematic_geometry::encode_kinematic_geometry_section(
+        &map_data.kinematic_movers,
+        &map_data.kinematic_waypoints,
+        &mut geo_result.texture_names,
+    );
     timings.push(("Geometry", stage_start.elapsed()));
     if args.verbose {
         let empty_leaf_count = result
@@ -1250,6 +1256,7 @@ fn main() -> anyhow::Result<()> {
         fog_cell_masks_section.as_ref(),
         sdf_atlas_section.as_ref(),
         navmesh_section.as_ref(),
+        kinematic_geometry_section.as_ref(),
         cell_draw_index_bytes,
     )?;
     timings.push(("Packing", stage_start.elapsed()));

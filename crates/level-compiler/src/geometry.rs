@@ -165,6 +165,92 @@ pub fn extract_geometry(
     }
 }
 
+/// Project kinematic mover brush sides into origin-relative PRL geometry.
+///
+/// The texture-name table is shared with static geometry, so mover faces append
+/// any mover-only materials to the existing `TextureNames` section and store
+/// those indices in their `FaceMeta`. Positions are local to `origin`; UVs are
+/// computed from authored world-space vertices so texture projection remains
+/// identical to static brush geometry. Movers skip lightmap baking, so
+/// lightmap UV/layer stay zero.
+pub fn extract_kinematic_mover_geometry(
+    sides: &[crate::map_data::BrushSide],
+    texture_names: &mut TextureNamesSection,
+    origin: DVec3,
+) -> GeometrySection {
+    let inverse_scale: f64 = 1.0 / MapFormat::IdTech2.units_to_meters();
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+    let mut face_metas = Vec::new();
+
+    for side in sides {
+        if side.vertices.len() < 3 {
+            continue;
+        }
+
+        let texture_index = texture_names
+            .names
+            .iter()
+            .position(|name| name == &side.texture)
+            .unwrap_or_else(|| {
+                texture_names.names.push(side.texture.clone());
+                texture_names.names.len() - 1
+            }) as u32;
+
+        let face = Face {
+            vertices: side.vertices.clone(),
+            normal: side.normal,
+            distance: side.distance,
+            texture: side.texture.clone(),
+            tex_projection: side.tex_projection.clone(),
+            brush_index: 0,
+        };
+        let normal_f32 = [
+            side.normal.x as f32,
+            side.normal.y as f32,
+            side.normal.z as f32,
+        ];
+        let (tangent_f32, bitangent_sign) = compute_tangent_basis(&face);
+        let base_vertex = vertices.len() as u32;
+
+        for &world_vertex in &side.vertices {
+            let local_vertex = world_vertex - origin;
+            let quake_pos = engine_to_quake(world_vertex) * inverse_scale;
+            let (u, v_coord) = compute_texel_uv(quake_pos, &face);
+            vertices.push(Vertex::new(
+                [
+                    local_vertex.x as f32,
+                    local_vertex.y as f32,
+                    local_vertex.z as f32,
+                ],
+                [u as f32, v_coord as f32],
+                normal_f32,
+                tangent_f32,
+                bitangent_sign,
+                [0.0, 0.0],
+                0,
+            ));
+        }
+
+        for i in 1..side.vertices.len().saturating_sub(1) {
+            indices.push(base_vertex);
+            indices.push(base_vertex + i as u32);
+            indices.push(base_vertex + i as u32 + 1);
+        }
+
+        face_metas.push(FaceMeta {
+            leaf_index: 0,
+            texture_index,
+        });
+    }
+
+    GeometrySection {
+        vertices,
+        indices,
+        faces: face_metas,
+    }
+}
+
 /// Convert engine-space position (Y-up) back to Quake-space (Z-up).
 ///
 /// Inverse of the `quake_to_engine` transform in parse.rs:

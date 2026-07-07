@@ -1,7 +1,7 @@
 // .map file parsing via shambler: brush classification and face extraction.
 // See: context/lib/build_pipeline.md §PRL Compilation
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -14,8 +14,9 @@ use shambler::face::{FaceWinding, face_centers, face_indices, face_vertices};
 
 use crate::format::quake_map;
 use crate::map_data::{
-    BrushPlane, BrushSide, BrushVolume, EntityInfo, EntityShadowParams, MapData, MapEntityRecord,
-    MapFogVolume, MapLight, NavParams, TextureProjection,
+    BrushPlane, BrushSide, BrushVolume, EntityInfo, EntityShadowParams, KinematicMoveMode, MapData,
+    MapEntityRecord, MapFogVolume, MapKinematicMover, MapKinematicWaypoint, MapLight, NavParams,
+    TextureProjection,
 };
 use crate::map_format::MapFormat;
 use postretro_level_format::fog_volumes::{MAX_FOG_VOLUMES, MAX_PLANES_PER_VOLUME};
@@ -76,6 +77,19 @@ fn parse_origin(s: &str) -> Option<DVec3> {
     } else {
         None
     }
+}
+
+#[derive(Debug)]
+struct PendingKinematicMover {
+    name: String,
+    tags: Vec<String>,
+    authored_origin: Option<DVec3>,
+    path: String,
+    speed: f32,
+    wait_ms: f32,
+    move_mode: KinematicMoveMode,
+    start_on_spawn: bool,
+    brush_ids: Vec<BrushId>,
 }
 
 /// Sentinel standing in for a space inside an encoded brush-face material name.
@@ -229,6 +243,116 @@ fn collect_entity_properties(geo_map: &GeoMap, entity_id: &EntityId) -> HashMap<
     out
 }
 
+fn parse_kinematic_mover(
+    props: &HashMap<String, String>,
+    authored_origin: Option<DVec3>,
+    brush_ids: Vec<BrushId>,
+) -> anyhow::Result<PendingKinematicMover> {
+    let name = props
+        .get("name")
+        .map(|value| value.trim().to_string())
+        .unwrap_or_default();
+    let path = props
+        .get("path")
+        .map(|value| value.trim().to_string())
+        .unwrap_or_default();
+    if path.is_empty() {
+        anyhow::bail!("kinematic_mover `{name}` missing required `path` waypoint name");
+    }
+
+    let speed = parse_required_finite_f32(props, "speed", "kinematic_mover", &name)?;
+    if speed <= 0.0 {
+        anyhow::bail!("kinematic_mover `{name}` `speed` must be finite and positive, got {speed}");
+    }
+
+    let wait_ms = parse_optional_finite_f32(props, "wait_ms", 0.0, "kinematic_mover", &name)?;
+    if wait_ms < 0.0 {
+        anyhow::bail!(
+            "kinematic_mover `{name}` `wait_ms` must be finite and non-negative, got {wait_ms}"
+        );
+    }
+
+    let move_mode = match props
+        .get("move_mode")
+        .map(|value| value.trim())
+        .unwrap_or("once")
+    {
+        "once" | "0" => KinematicMoveMode::Once,
+        "ping_pong" | "1" => KinematicMoveMode::PingPong,
+        other => {
+            anyhow::bail!(
+                "kinematic_mover `{name}` `move_mode` must be `once` or `ping_pong`, got `{other}`"
+            );
+        }
+    };
+
+    let start_on_spawn = match props
+        .get("start_on_spawn")
+        .map(|value| value.trim())
+        .unwrap_or("1")
+    {
+        "1" | "true" | "True" => true,
+        "0" | "false" | "False" => false,
+        other => {
+            anyhow::bail!("kinematic_mover `{name}` `start_on_spawn` must be 0/1, got `{other}`");
+        }
+    };
+
+    let tags = props
+        .get("_tags")
+        .map(|s| s.split_whitespace().map(|tag| tag.to_string()).collect())
+        .unwrap_or_default();
+
+    Ok(PendingKinematicMover {
+        name,
+        tags,
+        authored_origin,
+        path,
+        speed,
+        wait_ms,
+        move_mode,
+        start_on_spawn,
+        brush_ids,
+    })
+}
+
+fn parse_required_finite_f32(
+    props: &HashMap<String, String>,
+    key: &str,
+    classname: &str,
+    name: &str,
+) -> anyhow::Result<f32> {
+    let raw = props
+        .get(key)
+        .ok_or_else(|| anyhow::anyhow!("{classname} `{name}` missing required `{key}`"))?;
+    let parsed: f32 = raw.trim().parse().map_err(|e| {
+        anyhow::anyhow!("{classname} `{name}` `{key}` value `{raw}` is not a valid float: {e}")
+    })?;
+    if !parsed.is_finite() {
+        anyhow::bail!("{classname} `{name}` `{key}` value `{raw}` is not finite");
+    }
+    Ok(parsed)
+}
+
+fn parse_optional_finite_f32(
+    props: &HashMap<String, String>,
+    key: &str,
+    default: f32,
+    classname: &str,
+    name: &str,
+) -> anyhow::Result<f32> {
+    let Some(raw) = props.get(key) else {
+        return Ok(default);
+    };
+    let parsed: f32 = raw.trim().parse().map_err(|e| {
+        anyhow::anyhow!("{classname} `{name}` `{key}` value `{raw}` is not a valid float: {e}")
+    })?;
+    if !parsed.is_finite() {
+        anyhow::bail!("{classname} `{name}` `{key}` value `{raw}` is not finite");
+    }
+    Ok(parsed)
+}
+
 /// Read and parse a .map file, classify brushes, and extract face geometry.
 ///
 /// The `format` parameter identifies the source map format. Its `units_to_meters()`
@@ -319,6 +443,8 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     // entities only. Brush entities (those with brushes attached) are resolved
     // separately by their dedicated subsystems (e.g. `fog_volume`).
     let mut map_entities: Vec<MapEntityRecord> = Vec::new();
+    let mut pending_kinematic_movers: Vec<PendingKinematicMover> = Vec::new();
+    let mut kinematic_waypoints: Vec<MapKinematicWaypoint> = Vec::new();
     // Resolved fog volume entities (brush `fog_volume` plus point `fog_lamp`
     // and `fog_tube`). Walked alongside the entity pass; brush AABBs come from
     // brush-face vertices, point-entity AABBs from origin + radius/height.
@@ -501,6 +627,16 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
             .map(|v| !v.is_empty())
             .unwrap_or(false);
         if has_brushes {
+            if classname == "kinematic_mover" {
+                let props = collect_entity_properties(&geo_map, entity_id);
+                let brush_ids = geo_map
+                    .entity_brushes
+                    .get(entity_id)
+                    .cloned()
+                    .unwrap_or_default();
+                pending_kinematic_movers.push(parse_kinematic_mover(&props, origin, brush_ids)?);
+                continue;
+            }
             if classname == "fog_volume" {
                 if fog_volumes.len() >= MAX_FOG_VOLUMES {
                     log::warn!(
@@ -569,6 +705,30 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         };
 
         let props = collect_entity_properties(&geo_map, entity_id);
+        if classname == "kinematic_waypoint" {
+            let name = props
+                .get("name")
+                .map(|value| value.trim().to_string())
+                .unwrap_or_default();
+            if name.is_empty() {
+                anyhow::bail!(
+                    "kinematic_waypoint at ({:.3}, {:.3}, {:.3}) missing required `name`",
+                    entity_origin.x,
+                    entity_origin.y,
+                    entity_origin.z
+                );
+            }
+            let next = props
+                .get("next")
+                .map(|value| value.trim().to_string())
+                .unwrap_or_default();
+            kinematic_waypoints.push(MapKinematicWaypoint {
+                name,
+                next,
+                origin: entity_origin,
+            });
+            continue;
+        }
         let diagnostic_ref = format!(
             "{classname} @ ({:.3}, {:.3}, {:.3})",
             entity_origin.x, entity_origin.y, entity_origin.z
@@ -592,11 +752,56 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         });
     }
 
-    // Compute geometry for world brushes only
-    let geo_planes = face_planes(&geo_map.face_planes);
+    let brush_volumes = build_brush_volumes(&geo_map, &world_brush_ids, scale);
+    let total_vertex_count: usize = brush_volumes
+        .iter()
+        .flat_map(|brush| brush.sides.iter())
+        .map(|side| side.vertices.len())
+        .sum();
+    let total_side_count: usize = brush_volumes.iter().map(|brush| brush.sides.len()).sum();
 
-    // Build brush_faces subset for world brushes only
-    let world_brush_faces: BTreeMap<BrushId, Vec<shambler::face::FaceId>> = world_brush_ids
+    let kinematic_movers = resolve_kinematic_movers(
+        &geo_map,
+        pending_kinematic_movers,
+        &kinematic_waypoints,
+        scale,
+    )?;
+
+    // Stat logging
+    let total_brushes = geo_map.brushes.len();
+    let world_brush_count = world_brush_ids.len();
+    let entity_brush_count = total_brushes - world_brush_count;
+
+    log::info!("Total brushes: {total_brushes}");
+    log::info!("World brushes: {world_brush_count}");
+    log::info!("Entity brushes: {entity_brush_count}");
+    log::info!("Brush sides: {total_side_count}");
+    log::info!("Total vertices: {total_vertex_count}");
+    log::info!("Entity classnames: {}", entity_classnames.join(", "));
+    log::info!("Lights: {}", lights.len());
+    log::info!("Map entities (classname dispatch): {}", map_entities.len());
+
+    Ok(MapData {
+        brush_volumes,
+        entity_brushes: entity_brushes_summary,
+        entities,
+        lights,
+        data_script,
+        map_entities,
+        kinematic_movers,
+        kinematic_waypoints,
+        fog_volumes,
+        fog_pixel_scale,
+        initial_gravity,
+        lightmap_density,
+        nav_params,
+        entity_shadow_params,
+    })
+}
+
+fn build_brush_volumes(geo_map: &GeoMap, brush_ids: &[BrushId], scale: f64) -> Vec<BrushVolume> {
+    let geo_planes = face_planes(&geo_map.face_planes);
+    let brush_faces: BTreeMap<BrushId, Vec<shambler::face::FaceId>> = brush_ids
         .iter()
         .filter_map(|bid| {
             geo_map
@@ -605,10 +810,8 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
                 .map(|faces| (*bid, faces.clone()))
         })
         .collect();
-
-    let brush_hulls = brush_hulls(&world_brush_faces, &geo_planes);
-    let (face_verts, _face_vert_planes) =
-        face_vertices(&world_brush_faces, &geo_planes, &brush_hulls);
+    let brush_hulls = brush_hulls(&brush_faces, &geo_planes);
+    let (face_verts, _face_vert_planes) = face_vertices(&brush_faces, &geo_planes, &brush_hulls);
     let face_ctrs = face_centers(&face_verts);
     let face_idx = face_indices(
         &geo_map.face_planes,
@@ -621,15 +824,8 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         FaceWinding::Clockwise,
     );
 
-    // Extract brush volumes with their textured sides. The BSP builder
-    // consumes the bounding planes; brush-side projection consumes the
-    // textured polygons. Both come out of the same per-brush walk so the
-    // plane and side lists cannot drift apart.
-    let mut brush_volumes: Vec<BrushVolume> = Vec::new();
-    let mut total_vertex_count: usize = 0;
-    let mut total_side_count: usize = 0;
-
-    for brush_id in &world_brush_ids {
+    let mut brush_volumes = Vec::new();
+    for brush_id in brush_ids {
         let face_ids = match geo_map.brush_faces.get(brush_id) {
             Some(ids) => ids,
             None => continue,
@@ -639,10 +835,6 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
             .iter()
             .filter_map(|fid| {
                 let plane = geo_planes.get(fid)?;
-                // Normal: swizzle only — normals are direction vectors, scale must not be applied.
-                // Distance: scaled explicitly. A plane n·x = d in Quake units becomes
-                // n·x' = d * scale where x' is in meters. Scale and swizzle are independent
-                // for this scalar; the swizzle is already embedded in `normal`.
                 Some(BrushPlane {
                     normal: quake_to_engine(shambler_to_dvec3(plane.normal())),
                     distance: plane.distance() as f64 * scale,
@@ -651,13 +843,9 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
             .collect();
 
         if planes.is_empty() {
-            // No bounding planes survived — skip the brush entirely.
-            // Brush-volume BSP construction requires a non-empty plane set
-            // to define the half-space intersection that bounds the volume.
             continue;
         }
 
-        // Compute AABB from this brush's face vertices (already in engine space).
         let mut aabb = crate::partition::Aabb::empty();
         for fid in face_ids {
             if let Some(verts) = face_verts.get(fid) {
@@ -667,43 +855,27 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
             }
         }
 
-        let mut sides: Vec<BrushSide> = Vec::with_capacity(face_ids.len());
-
+        let mut sides = Vec::with_capacity(face_ids.len());
         for face_id in face_ids {
             let vertices_raw = match face_verts.get(face_id) {
                 Some(v) => v,
                 None => continue,
             };
-
-            // Skip degenerate faces
             if vertices_raw.len() < 3 {
                 continue;
             }
-
             let indices = match face_idx.get(face_id) {
                 Some(i) => i,
                 None => continue,
             };
-
-            // Reorder vertices by winding indices; swizzle axes and apply unit scale.
-            // Vertices are positions — both the axis swizzle and the meter scale apply.
             let vertices: Vec<DVec3> = indices
                 .iter()
                 .map(|&i| quake_to_engine(shambler_to_dvec3(&vertices_raw[i])) * scale)
                 .collect();
 
             let plane = &geo_planes[face_id];
-            // Normal: swizzle only — direction vector, no unit scale.
             let normal = quake_to_engine(shambler_to_dvec3(plane.normal()));
-            // Distance: scaled explicitly. A plane n·x = d in Quake units becomes
-            // n·x' = d * scale where x' is in meters.
             let distance = plane.distance() as f64 * scale;
-
-            // Look up texture name. Decode the space sentinel introduced by
-            // `encode_quoted_brush_textures` so every downstream stage — the
-            // PNG resolver and the PRL `TextureNames` section — sees the
-            // human-readable, space-containing name. A no-op for names that
-            // were never encoded.
             let texture = geo_map
                 .face_textures
                 .get(face_id)
@@ -711,11 +883,9 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
                 .map(|name| decode_brush_texture(name))
                 .unwrap_or_else(|| "unknown".to_string());
 
-            // Extract texture projection data (Quake space).
             let face_offset = geo_map.face_offsets.get(face_id).copied();
             let face_angle = geo_map.face_angles.get(face_id).copied().unwrap_or(0.0) as f64;
             let face_scale = geo_map.face_scales.get(face_id);
-
             let (scale_u, scale_v) = face_scale
                 .map(|s| (s.x as f64, s.y as f64))
                 .unwrap_or((1.0, 1.0));
@@ -740,17 +910,8 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
                         scale_v,
                     }
                 }
-                None => TextureProjection::Standard {
-                    u_offset: 0.0,
-                    v_offset: 0.0,
-                    angle: 0.0,
-                    scale_u: 1.0,
-                    scale_v: 1.0,
-                },
+                None => TextureProjection::default(),
             };
-
-            total_vertex_count += vertices.len();
-            total_side_count += 1;
 
             sides.push(BrushSide {
                 vertices,
@@ -768,34 +929,107 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         });
     }
 
-    // Stat logging
-    let total_brushes = geo_map.brushes.len();
-    let world_brush_count = world_brush_ids.len();
-    let entity_brush_count = total_brushes - world_brush_count;
+    brush_volumes
+}
 
-    log::info!("Total brushes: {total_brushes}");
-    log::info!("World brushes: {world_brush_count}");
-    log::info!("Entity brushes: {entity_brush_count}");
-    log::info!("Brush sides: {total_side_count}");
-    log::info!("Total vertices: {total_vertex_count}");
-    log::info!("Entity classnames: {}", entity_classnames.join(", "));
-    log::info!("Lights: {}", lights.len());
-    log::info!("Map entities (classname dispatch): {}", map_entities.len());
+fn resolve_kinematic_movers(
+    geo_map: &GeoMap,
+    pending_movers: Vec<PendingKinematicMover>,
+    waypoints: &[MapKinematicWaypoint],
+    scale: f64,
+) -> anyhow::Result<Vec<MapKinematicMover>> {
+    let waypoint_by_name: HashMap<&str, &MapKinematicWaypoint> = waypoints
+        .iter()
+        .map(|waypoint| (waypoint.name.as_str(), waypoint))
+        .collect();
+    let mut reached_waypoints = HashSet::new();
+    let mut movers = Vec::with_capacity(pending_movers.len());
 
-    Ok(MapData {
-        brush_volumes,
-        entity_brushes: entity_brushes_summary,
-        entities,
-        lights,
-        data_script,
-        map_entities,
-        fog_volumes,
-        fog_pixel_scale,
-        initial_gravity,
-        lightmap_density,
-        nav_params,
-        entity_shadow_params,
-    })
+    for pending in pending_movers {
+        let path = resolve_kinematic_path(&pending, &waypoint_by_name)?;
+        for waypoint_name in &path {
+            reached_waypoints.insert(waypoint_name.clone());
+        }
+        let first = waypoint_by_name[pending.path.as_str()];
+        if let Some(authored_origin) = pending.authored_origin {
+            let delta = authored_origin - first.origin;
+            if delta.length() > 0.001 {
+                log::warn!(
+                    "[Compiler] kinematic_mover `{}` authored origin {:?} differs from first waypoint `{}` at {:?}",
+                    pending.name,
+                    authored_origin,
+                    first.name,
+                    first.origin
+                );
+            }
+        }
+
+        let brush_volumes = build_brush_volumes(geo_map, &pending.brush_ids, scale);
+        movers.push(MapKinematicMover {
+            mover_id: movers.len() as u32,
+            name: pending.name,
+            tags: pending.tags,
+            origin: first.origin,
+            authored_origin: pending.authored_origin,
+            path: pending.path,
+            speed: pending.speed,
+            wait_ms: pending.wait_ms,
+            move_mode: pending.move_mode,
+            start_on_spawn: pending.start_on_spawn,
+            brush_volumes,
+        });
+    }
+
+    for waypoint in waypoints {
+        if !reached_waypoints.contains(&waypoint.name) {
+            log::warn!(
+                "[Compiler] kinematic_waypoint `{}` is not reached by any kinematic_mover path",
+                waypoint.name
+            );
+        }
+    }
+
+    Ok(movers)
+}
+
+fn resolve_kinematic_path(
+    mover: &PendingKinematicMover,
+    waypoint_by_name: &HashMap<&str, &MapKinematicWaypoint>,
+) -> anyhow::Result<Vec<String>> {
+    let mut path = Vec::new();
+    let mut current = mover.path.as_str();
+    let mut seen = HashSet::new();
+
+    loop {
+        if !seen.insert(current.to_string()) {
+            anyhow::bail!(
+                "kinematic_mover `{}` path `{}` contains waypoint cycle at `{current}`",
+                mover.name,
+                mover.path
+            );
+        }
+        let Some(waypoint) = waypoint_by_name.get(current) else {
+            anyhow::bail!(
+                "kinematic_mover `{}` path references unknown waypoint `{current}`",
+                mover.name
+            );
+        };
+        path.push(waypoint.name.clone());
+        if waypoint.next.trim().is_empty() {
+            break;
+        }
+        current = waypoint.next.as_str();
+    }
+
+    if path.len() < 2 {
+        anyhow::bail!(
+            "kinematic_mover `{}` path `{}` resolves to fewer than two waypoints",
+            mover.name,
+            mover.path
+        );
+    }
+
+    Ok(path)
 }
 
 /// True iff every face plane in `brush_ids` has a normal within `EPS` of a
@@ -1474,6 +1708,77 @@ mod tests {
             .join("content/dev/maps/campaign-test.map")
     }
 
+    fn parse_inline_map(map_text: &str) -> anyhow::Result<MapData> {
+        static NEXT_INLINE_MAP_ID: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(0);
+        let id = NEXT_INLINE_MAP_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "postretro-inline-map-{}-{id}.map",
+            std::process::id(),
+        ));
+        std::fs::write(&path, format!("{}\n", map_text.trim()))?;
+        let result = parse_map_file(&path, MapFormat::IdTech2);
+        let _ = std::fs::remove_file(&path);
+        result
+    }
+
+    fn kinematic_test_map(path_next: &str) -> String {
+        kinematic_test_map_with_nexts(path_next, "")
+    }
+
+    fn kinematic_test_map_with_nexts(path_next: &str, wp_b_next: &str) -> String {
+        format!(
+            r#"
+// entity 0
+{{
+"classname" "worldspawn"
+"initialGravity" "-9.81"
+{{
+( 256 0 -32 ) ( 257 0 -32 ) ( 256 1 -32 ) static_tex 0 0 0 1 1
+( 256 0  32 ) ( 256 1  32 ) ( 257 0  32 ) static_tex 0 0 0 1 1
+( 192 0 0 ) ( 192 1 0 ) ( 192 0 1 ) static_tex 0 0 0 1 1
+( 320 0 0 ) ( 320 0 1 ) ( 320 1 0 ) static_tex 0 0 0 1 1
+( 256 -64 0 ) ( 256 -64 1 ) ( 257 -64 0 ) static_tex 0 0 0 1 1
+( 256  64 0 ) ( 257  64 0 ) ( 256  64 1 ) static_tex 0 0 0 1 1
+}}
+}}
+// entity 1
+{{
+"classname" "kinematic_mover"
+"name" "lift_a"
+"path" "wp_a"
+"speed" "2.5"
+"wait_ms" "50"
+"move_mode" "ping_pong"
+"start_on_spawn" "1"
+"_tags" "platform arena"
+{{
+( 0 0 -16 ) ( 1 0 -16 ) ( 0 1 -16 ) mover_tex 0 0 0 1 1
+( 0 0  16 ) ( 0 1  16 ) ( 1 0  16 ) mover_tex 0 0 0 1 1
+( -32 0 0 ) ( -32 1 0 ) ( -32 0 1 ) mover_tex 0 0 0 1 1
+(  32 0 0 ) (  32 0 1 ) (  32 1 0 ) mover_tex 0 0 0 1 1
+( 0 -32 0 ) ( 0 -32 1 ) ( 1 -32 0 ) mover_tex 0 0 0 1 1
+( 0  32 0 ) ( 1  32 0 ) ( 0  32 1 ) mover_tex 0 0 0 1 1
+}}
+}}
+// entity 2
+{{
+"classname" "kinematic_waypoint"
+"name" "wp_a"
+"next" "{path_next}"
+"origin" "0 0 0"
+}}
+// entity 3
+{{
+"classname" "kinematic_waypoint"
+"name" "wp_b"
+"next" "{wp_b_next}"
+"origin" "0 0 64"
+}}
+"#
+        )
+    }
+
     #[test]
     fn parses_test_map() {
         let map_data = parse_map_file(&test_map_path(), MapFormat::IdTech2)
@@ -1566,6 +1871,88 @@ mod tests {
                 .iter()
                 .all(|e| e.classname != "worldspawn"),
             "worldspawn must not appear in map_entities",
+        );
+    }
+
+    #[test]
+    fn kinematic_mover_brush_is_absent_from_static_world_inputs_and_geometry() {
+        let map_data = parse_inline_map(&kinematic_test_map("wp_b"))
+            .expect("valid kinematic map should parse");
+
+        assert_eq!(map_data.kinematic_movers.len(), 1);
+        assert_eq!(map_data.brush_volumes.len(), 1);
+        assert!(
+            map_data
+                .brush_volumes
+                .iter()
+                .flat_map(|brush| brush.sides.iter())
+                .all(|side| side.texture != "mover_tex"),
+            "kinematic_mover brush texture leaked into static brush_volumes"
+        );
+
+        let result = crate::partition::partition(&map_data.brush_volumes)
+            .expect("static world brush should partition");
+        let static_geometry =
+            crate::geometry::extract_geometry(&result.faces, &result.tree, &HashSet::new());
+        assert!(
+            static_geometry
+                .texture_names
+                .names
+                .iter()
+                .all(|name| name != "mover_tex"),
+            "kinematic_mover brush leaked into static GeometrySection"
+        );
+    }
+
+    #[test]
+    fn kinematic_mover_with_two_waypoints_emits_kinematic_section() {
+        let map_data = parse_inline_map(&kinematic_test_map("wp_b"))
+            .expect("valid kinematic map should parse");
+        let mut texture_names =
+            postretro_level_format::texture_names::TextureNamesSection { names: Vec::new() };
+        let section = crate::kinematic_geometry::encode_kinematic_geometry_section(
+            &map_data.kinematic_movers,
+            &map_data.kinematic_waypoints,
+            &mut texture_names,
+        )
+        .expect("movers should emit kinematic geometry");
+
+        assert_eq!(section.movers.len(), 1);
+        assert_eq!(section.waypoints.len(), 2);
+        assert_eq!(section.movers[0].path, "wp_a");
+        assert_eq!(section.movers[0].tags, ["platform", "arena"]);
+        assert!(!section.movers[0].vertices.is_empty());
+        assert!(
+            section.movers[0]
+                .vertices
+                .iter()
+                .all(|vertex| vertex.lightmap_uv == [0, 0] && vertex.lightmap_layer == 0),
+            "mover vertices must not carry static lightmap data"
+        );
+        assert!(
+            texture_names.names.iter().any(|name| name == "mover_tex"),
+            "mover texture must be added to shared TextureNames"
+        );
+    }
+
+    #[test]
+    fn kinematic_mover_path_with_fewer_than_two_waypoints_rejects() {
+        let err = parse_inline_map(&kinematic_test_map(""))
+            .expect_err("single-waypoint mover path must reject");
+        assert!(
+            err.to_string().contains("fewer than two waypoints"),
+            "diagnostic should name the invalid path length, got: {err}"
+        );
+    }
+
+    #[test]
+    fn kinematic_mover_waypoint_cycle_rejects() {
+        let err = parse_inline_map(&kinematic_test_map_with_nexts("wp_b", "wp_a"))
+            .expect_err("cyclic mover path must reject");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("waypoint cycle") && msg.contains("wp_a"),
+            "diagnostic should name the waypoint cycle, got: {err}"
         );
     }
 

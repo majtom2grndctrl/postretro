@@ -2039,18 +2039,27 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         Some(data) => {
             let section = KinematicGeometrySection::from_bytes(&data)
                 .map_err(|err| section_validation_from_error("KinematicGeometry", err))?;
-            let geometry = convert_kinematic_geometry_section(section)?;
-            if !geometry.movers.is_empty() || !geometry.waypoints.is_empty() {
-                log::info!(
-                    "[PRL] KinematicGeometry: {} movers, {} waypoints",
-                    geometry.movers.len(),
-                    geometry.waypoints.len(),
-                );
-            }
-            geometry
+            convert_kinematic_geometry_section(section)?
         }
         None => KinematicGeometry::default(),
     };
+    let kinematic_vertex_count: usize = kinematic_geometry
+        .movers
+        .iter()
+        .map(|mover| mover.vertices.len())
+        .sum();
+    let kinematic_index_count: usize = kinematic_geometry
+        .movers
+        .iter()
+        .map(|mover| mover.indices.len())
+        .sum();
+    log::info!(
+        "[PRL] KinematicGeometry: {} movers, {} waypoints, {} vertices, {} indices",
+        kinematic_geometry.movers.len(),
+        kinematic_geometry.waypoints.len(),
+        kinematic_vertex_count,
+        kinematic_index_count,
+    );
 
     // Required — carries `initial_gravity` alongside fog volumes. Absence = pre-gravity PRL;
     // rejected so the engine never silently falls back to a hardcoded default.

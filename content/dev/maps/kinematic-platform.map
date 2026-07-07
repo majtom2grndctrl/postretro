@@ -1,0 +1,113 @@
+// Game: Postretro
+// Format: Standard
+// Focused kinematic platform fixture: one open room, one horizontal mover,
+// and no pinch geometry near the mover path.
+// entity 0
+{
+"classname" "worldspawn"
+"initialGravity" "-9.81"
+"wad" ""
+"_tb_mod" "dev"
+"_tb_def" "external:../../../sdk/TrenchBroom/postretro.fgd"
+// floor
+{
+( 0 512 -16 ) ( 0 0 0 ) ( 0 0 -16 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 -16 ) ( 512 0 0 ) ( 512 0 -16 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 -16 ) ( 512 512 -16 ) ( 0 512 -16 ) concrete_pavement_036 0 0 0 1 1
+( 0 512 0 ) ( 512 0 0 ) ( 0 0 0 ) concrete_pavement_036 0 0 0 1 1
+( 512 512 -16 ) ( 0 512 0 ) ( 0 512 -16 ) concrete_pavement_036 0 0 0 1 1
+( 512 0 -16 ) ( 512 512 0 ) ( 512 512 -16 ) concrete_pavement_036 0 0 0 1 1
+}
+// west wall
+{
+( -16 512 0 ) ( -16 0 160 ) ( -16 0 0 ) concrete_stone_033 0 0 0 1 1
+( -16 0 0 ) ( 0 0 160 ) ( 0 0 0 ) concrete_stone_033 0 0 0 1 1
+( -16 0 0 ) ( 0 512 0 ) ( -16 512 0 ) concrete_stone_033 0 0 0 1 1
+( -16 512 160 ) ( 0 0 160 ) ( -16 0 160 ) concrete_stone_033 0 0 0 1 1
+( 0 512 0 ) ( -16 512 160 ) ( -16 512 0 ) concrete_stone_033 0 0 0 1 1
+( 0 0 0 ) ( 0 512 160 ) ( 0 512 0 ) concrete_stone_033 0 0 0 1 1
+}
+// east wall
+{
+( 512 512 0 ) ( 512 0 160 ) ( 512 0 0 ) concrete_stone_033 0 0 0 1 1
+( 512 0 0 ) ( 528 0 160 ) ( 528 0 0 ) concrete_stone_033 0 0 0 1 1
+( 512 0 0 ) ( 528 512 0 ) ( 512 512 0 ) concrete_stone_033 0 0 0 1 1
+( 512 512 160 ) ( 528 0 160 ) ( 512 0 160 ) concrete_stone_033 0 0 0 1 1
+( 528 512 0 ) ( 512 512 160 ) ( 512 512 0 ) concrete_stone_033 0 0 0 1 1
+( 528 0 0 ) ( 528 512 160 ) ( 528 512 0 ) concrete_stone_033 0 0 0 1 1
+}
+// south wall
+{
+( 0 0 0 ) ( 0 -16 160 ) ( 0 -16 0 ) concrete_stone_033 0 0 0 1 1
+( 0 -16 0 ) ( 512 -16 160 ) ( 512 -16 0 ) concrete_stone_033 0 0 0 1 1
+( 0 -16 0 ) ( 512 0 0 ) ( 0 0 0 ) concrete_stone_033 0 0 0 1 1
+( 0 0 160 ) ( 512 -16 160 ) ( 0 -16 160 ) concrete_stone_033 0 0 0 1 1
+( 512 0 0 ) ( 0 0 160 ) ( 0 0 0 ) concrete_stone_033 0 0 0 1 1
+( 512 -16 0 ) ( 512 0 160 ) ( 512 0 0 ) concrete_stone_033 0 0 0 1 1
+}
+// north wall
+{
+( 0 528 0 ) ( 0 512 160 ) ( 0 512 0 ) concrete_stone_033 0 0 0 1 1
+( 0 512 0 ) ( 512 512 160 ) ( 512 512 0 ) concrete_stone_033 0 0 0 1 1
+( 0 512 0 ) ( 512 528 0 ) ( 0 528 0 ) concrete_stone_033 0 0 0 1 1
+( 0 528 160 ) ( 512 512 160 ) ( 0 512 160 ) concrete_stone_033 0 0 0 1 1
+( 512 528 0 ) ( 0 528 160 ) ( 0 528 0 ) concrete_stone_033 0 0 0 1 1
+( 512 512 0 ) ( 512 528 160 ) ( 512 528 0 ) concrete_stone_033 0 0 0 1 1
+}
+// ceiling
+{
+( 0 512 160 ) ( 0 0 176 ) ( 0 0 160 ) debug_ceiling_grey 0 0 0 1 1
+( 0 0 160 ) ( 512 0 176 ) ( 512 0 160 ) debug_ceiling_grey 0 0 0 1 1
+( 0 0 160 ) ( 512 512 160 ) ( 0 512 160 ) debug_ceiling_grey 0 0 0 1 1
+( 0 512 176 ) ( 512 0 176 ) ( 0 0 176 ) debug_ceiling_grey 0 0 0 1 1
+( 512 512 160 ) ( 0 512 176 ) ( 0 512 160 ) debug_ceiling_grey 0 0 0 1 1
+( 512 0 160 ) ( 512 512 176 ) ( 512 512 160 ) debug_ceiling_grey 0 0 0 1 1
+}
+}
+// entity 1
+{
+"classname" "kinematic_mover"
+"name" "dev_platform"
+"path" "platform_a"
+"speed" "1.25"
+"wait_ms" "500"
+"move_mode" "ping_pong"
+"start_on_spawn" "1"
+"_tags" "dev kinematic_platform"
+{
+( 176 288 16 ) ( 176 224 32 ) ( 176 224 16 ) "Level Eleven Games Sci-Fi Texture Pack v1/MetalPanel-01_64" 0 0 0 1 1
+( 176 224 16 ) ( 272 224 32 ) ( 272 224 16 ) "Level Eleven Games Sci-Fi Texture Pack v1/MetalPanel-01_64" 0 0 0 1 1
+( 176 224 16 ) ( 272 288 16 ) ( 176 288 16 ) "Level Eleven Games Sci-Fi Texture Pack v1/MetalPanel-01_64" 0 0 0 1 1
+( 176 288 32 ) ( 272 224 32 ) ( 176 224 32 ) "Level Eleven Games Sci-Fi Texture Pack v1/MetalPanel-01_64" 0 0 0 1 1
+( 272 288 16 ) ( 176 288 32 ) ( 176 288 16 ) "Level Eleven Games Sci-Fi Texture Pack v1/MetalPanel-01_64" 0 0 0 1 1
+( 272 224 16 ) ( 272 288 32 ) ( 272 288 16 ) "Level Eleven Games Sci-Fi Texture Pack v1/MetalPanel-01_64" 0 0 0 1 1
+}
+}
+// entity 2
+{
+"classname" "kinematic_waypoint"
+"name" "platform_a"
+"next" "platform_b"
+"origin" "224 256 24"
+}
+// entity 3
+{
+"classname" "kinematic_waypoint"
+"name" "platform_b"
+"origin" "320 256 24"
+}
+// entity 4
+{
+"classname" "player_spawn"
+"origin" "128 256 48"
+"angles" "0 0 0"
+}
+// entity 5
+{
+"classname" "light"
+"origin" "256 256 128"
+"light" "250"
+"_color" "1 1 1"
+"_falloff_range" "512"
+"style" "0"
+}

@@ -3,16 +3,13 @@
 
 use glam::DVec3;
 
-use crate::geometry_utils::{clip_polygon_to_front, split_polygon};
+use crate::geometry_utils::{clip_winding_to_half_spaces, make_base_winding, split_polygon};
 use crate::partition::{BspChild, BspTree};
 
 /// Tighter than BSP face classification (0.1). Portals are clipped against
 /// many ancestor planes in sequence, so a looser epsilon accumulates too much
 /// error. Matches ericw-tools' ON_EPSILON for winding operations.
 const PORTAL_EPSILON: f64 = 0.01;
-
-/// Initial portal winding half-extent. Covers any reasonable level geometry.
-const WINDING_HALF_EXTENT: f64 = 16384.0;
 
 /// Slivers below this area are discarded to prevent degenerate geometry
 /// from accumulating numerical precision loss during repeated clipping.
@@ -79,45 +76,14 @@ fn make_node_portal(
     plane_distance: f64,
     ancestor_planes: &[PlaneEntry],
 ) -> Option<Vec<DVec3>> {
-    let mut winding = make_base_winding(plane_normal, plane_distance);
-
-    for &(anc_normal, anc_distance) in ancestor_planes {
-        winding = clip_polygon_to_front(&winding, anc_normal, anc_distance, PORTAL_EPSILON)?;
-
-        if winding.len() < 3 || polygon_area(&winding) < MIN_PORTAL_AREA_M2 {
-            return None;
-        }
-    }
+    let winding = make_base_winding(plane_normal, plane_distance);
+    let winding = clip_winding_to_half_spaces(winding, ancestor_planes, PORTAL_EPSILON)?;
 
     if winding.len() < 3 || polygon_area(&winding) < MIN_PORTAL_AREA_M2 {
         return None;
     }
 
     Some(winding)
-}
-
-/// Large quad on the splitting plane, to be clipped down to the portal shape.
-fn make_base_winding(normal: DVec3, distance: f64) -> Vec<DVec3> {
-    // Pick a reference axis not near-parallel to the normal to form a stable basis.
-    let reference = if normal.z.abs() > 0.9 {
-        DVec3::X
-    } else {
-        DVec3::Z
-    };
-
-    let basis1 = normal.cross(reference).normalize();
-    let basis2 = normal.cross(basis1).normalize();
-
-    let center = normal * distance;
-    let half = WINDING_HALF_EXTENT;
-
-    // CCW when viewed from the front (positive normal side).
-    vec![
-        center - basis1 * half - basis2 * half,
-        center + basis1 * half - basis2 * half,
-        center + basis1 * half + basis2 * half,
-        center - basis1 * half + basis2 * half,
-    ]
 }
 
 /// Distribute a portal winding through the BSP subtrees to find the leaf pairs it connects.
@@ -400,6 +366,201 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Copy)]
+    enum WedgeHalf {
+        XLessEqualZ,
+        XGreaterEqualZ,
+    }
+
+    fn wedge_brush(min: DVec3, max: DVec3, half: WedgeHalf) -> BrushVolume {
+        use crate::map_data::{BrushSide, TextureProjection};
+
+        debug_assert!(((max.x - min.x) - (max.z - min.z)).abs() < 1e-9);
+
+        let tex = "test".to_string();
+        let projection = TextureProjection::default();
+        let diagonal = DVec3::new(1.0, 0.0, -1.0).normalize();
+        let diagonal_distance = diagonal.dot(DVec3::new(min.x, 0.0, min.z));
+
+        let (planes, sides) = match half {
+            WedgeHalf::XLessEqualZ => {
+                let planes = vec![
+                    BrushPlane {
+                        normal: DVec3::NEG_X,
+                        distance: -min.x,
+                    },
+                    BrushPlane {
+                        normal: DVec3::Y,
+                        distance: max.y,
+                    },
+                    BrushPlane {
+                        normal: DVec3::NEG_Y,
+                        distance: -min.y,
+                    },
+                    BrushPlane {
+                        normal: DVec3::Z,
+                        distance: max.z,
+                    },
+                    BrushPlane {
+                        normal: diagonal,
+                        distance: diagonal_distance,
+                    },
+                ];
+                let sides = vec![
+                    BrushSide {
+                        vertices: vec![
+                            DVec3::new(min.x, min.y, min.z),
+                            DVec3::new(min.x, min.y, max.z),
+                            DVec3::new(min.x, max.y, max.z),
+                            DVec3::new(min.x, max.y, min.z),
+                        ],
+                        normal: DVec3::NEG_X,
+                        distance: -min.x,
+                        texture: tex.clone(),
+                        tex_projection: projection.clone(),
+                    },
+                    BrushSide {
+                        vertices: vec![
+                            DVec3::new(min.x, max.y, min.z),
+                            DVec3::new(min.x, max.y, max.z),
+                            DVec3::new(max.x, max.y, max.z),
+                        ],
+                        normal: DVec3::Y,
+                        distance: max.y,
+                        texture: tex.clone(),
+                        tex_projection: projection.clone(),
+                    },
+                    BrushSide {
+                        vertices: vec![
+                            DVec3::new(min.x, min.y, min.z),
+                            DVec3::new(max.x, min.y, max.z),
+                            DVec3::new(min.x, min.y, max.z),
+                        ],
+                        normal: DVec3::NEG_Y,
+                        distance: -min.y,
+                        texture: tex.clone(),
+                        tex_projection: projection.clone(),
+                    },
+                    BrushSide {
+                        vertices: vec![
+                            DVec3::new(min.x, min.y, max.z),
+                            DVec3::new(max.x, min.y, max.z),
+                            DVec3::new(max.x, max.y, max.z),
+                            DVec3::new(min.x, max.y, max.z),
+                        ],
+                        normal: DVec3::Z,
+                        distance: max.z,
+                        texture: tex.clone(),
+                        tex_projection: projection.clone(),
+                    },
+                    BrushSide {
+                        vertices: vec![
+                            DVec3::new(min.x, min.y, min.z),
+                            DVec3::new(min.x, max.y, min.z),
+                            DVec3::new(max.x, max.y, max.z),
+                            DVec3::new(max.x, min.y, max.z),
+                        ],
+                        normal: diagonal,
+                        distance: diagonal_distance,
+                        texture: tex,
+                        tex_projection: projection,
+                    },
+                ];
+                (planes, sides)
+            }
+            WedgeHalf::XGreaterEqualZ => {
+                let normal = -diagonal;
+                let distance = -diagonal_distance;
+                let planes = vec![
+                    BrushPlane {
+                        normal: DVec3::X,
+                        distance: max.x,
+                    },
+                    BrushPlane {
+                        normal: DVec3::Y,
+                        distance: max.y,
+                    },
+                    BrushPlane {
+                        normal: DVec3::NEG_Y,
+                        distance: -min.y,
+                    },
+                    BrushPlane {
+                        normal: DVec3::NEG_Z,
+                        distance: -min.z,
+                    },
+                    BrushPlane { normal, distance },
+                ];
+                let sides = vec![
+                    BrushSide {
+                        vertices: vec![
+                            DVec3::new(max.x, min.y, min.z),
+                            DVec3::new(max.x, max.y, min.z),
+                            DVec3::new(max.x, max.y, max.z),
+                            DVec3::new(max.x, min.y, max.z),
+                        ],
+                        normal: DVec3::X,
+                        distance: max.x,
+                        texture: tex.clone(),
+                        tex_projection: projection.clone(),
+                    },
+                    BrushSide {
+                        vertices: vec![
+                            DVec3::new(min.x, max.y, min.z),
+                            DVec3::new(max.x, max.y, max.z),
+                            DVec3::new(max.x, max.y, min.z),
+                        ],
+                        normal: DVec3::Y,
+                        distance: max.y,
+                        texture: tex.clone(),
+                        tex_projection: projection.clone(),
+                    },
+                    BrushSide {
+                        vertices: vec![
+                            DVec3::new(min.x, min.y, min.z),
+                            DVec3::new(max.x, min.y, min.z),
+                            DVec3::new(max.x, min.y, max.z),
+                        ],
+                        normal: DVec3::NEG_Y,
+                        distance: -min.y,
+                        texture: tex.clone(),
+                        tex_projection: projection.clone(),
+                    },
+                    BrushSide {
+                        vertices: vec![
+                            DVec3::new(min.x, min.y, min.z),
+                            DVec3::new(min.x, max.y, min.z),
+                            DVec3::new(max.x, max.y, min.z),
+                            DVec3::new(max.x, min.y, min.z),
+                        ],
+                        normal: DVec3::NEG_Z,
+                        distance: -min.z,
+                        texture: tex.clone(),
+                        tex_projection: projection.clone(),
+                    },
+                    BrushSide {
+                        vertices: vec![
+                            DVec3::new(min.x, min.y, min.z),
+                            DVec3::new(max.x, min.y, max.z),
+                            DVec3::new(max.x, max.y, max.z),
+                            DVec3::new(min.x, max.y, min.z),
+                        ],
+                        normal,
+                        distance,
+                        texture: tex,
+                        tex_projection: projection,
+                    },
+                ];
+                (planes, sides)
+            }
+        };
+
+        BrushVolume {
+            planes,
+            sides,
+            aabb: crate::partition::Aabb { min, max },
+        }
+    }
+
     /// Hollow room from 6 wall brushes (floor, ceiling, 4 walls).
     /// Returns (faces, brush volumes). Tests that only need brushes can ignore
     /// the face list with `let (_, brushes) = ...`.
@@ -468,38 +629,6 @@ mod tests {
             assert!(
                 d.abs() < 0.05,
                 "portal vertex {i} is {d:.6} off the portal plane (limit 0.05)"
-            );
-        }
-    }
-
-    #[test]
-    fn base_winding_lies_on_plane() {
-        let normal = DVec3::Y;
-        let distance = 5.0;
-        let winding = make_base_winding(normal, distance);
-
-        assert_eq!(winding.len(), 4);
-        for v in &winding {
-            let d = v.dot(normal) - distance;
-            assert!(d.abs() < 1e-4, "winding vertex {v} not on plane (d={d})");
-        }
-    }
-
-    #[test]
-    fn base_winding_non_degenerate_for_axis_aligned_normals() {
-        for normal in [
-            DVec3::X,
-            DVec3::Y,
-            DVec3::Z,
-            DVec3::NEG_X,
-            DVec3::NEG_Y,
-            DVec3::NEG_Z,
-        ] {
-            let winding = make_base_winding(normal, 0.0);
-            let area = polygon_area(&winding);
-            assert!(
-                area > 1.0,
-                "winding for normal {normal} has area {area}, expected large"
             );
         }
     }
@@ -730,6 +859,39 @@ mod tests {
             let bl = &result.tree.leaves[portal.back_leaf];
             assert!(!fl.is_solid, "portal front_leaf should not be solid");
             assert!(!bl.is_solid, "portal back_leaf should not be solid");
+        }
+    }
+
+    #[test]
+    fn sealed_room_with_wedge_obstacle_has_no_portal_into_wedge_interior() {
+        let (_faces, mut brushes) = hollow_room(DVec3::splat(-60.0), DVec3::splat(60.0), 10.0);
+        let wedge_min = DVec3::splat(-10.0);
+        let wedge_max = DVec3::splat(10.0);
+        brushes.push(wedge_brush(wedge_min, wedge_max, WedgeHalf::XLessEqualZ));
+        brushes.push(wedge_brush(wedge_min, wedge_max, WedgeHalf::XGreaterEqualZ));
+
+        let result = partition::partition(&brushes).expect("wedge sealed room should partition");
+        let portals = generate_portals(&result.tree);
+        let wedge_leaf_a = partition::find_leaf_for_point(&result.tree, DVec3::new(-5.0, 0.0, 5.0));
+        let wedge_leaf_b = partition::find_leaf_for_point(&result.tree, DVec3::new(5.0, 0.0, -5.0));
+        let wedge_leaves: std::collections::BTreeSet<usize> =
+            [wedge_leaf_a, wedge_leaf_b].into_iter().collect();
+
+        for &leaf_idx in &wedge_leaves {
+            assert!(
+                result.tree.leaves[leaf_idx].is_solid,
+                "wedge interior point should resolve to a solid leaf"
+            );
+        }
+
+        for portal in &portals {
+            assert!(
+                !wedge_leaves.contains(&portal.front_leaf)
+                    && !wedge_leaves.contains(&portal.back_leaf),
+                "portal should not touch wedge interior leaf: front={} back={}",
+                portal.front_leaf,
+                portal.back_leaf
+            );
         }
     }
 

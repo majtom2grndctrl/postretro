@@ -13,7 +13,7 @@ Temporary in-crate test (reverted after confirmation): two grid-snapped triangul
 3. `build_recursive` (`brush_bsp.rs:341-350`) — solid verdict `candidates.len() == inside.len()` never fires for wedge interiors; splitter pool drains via ancestor dedup; "mixed candidates, no qualifying splitter → empty" fallback fires instead.
 4. `face_extract.rs` Pass 1 (`clip_side_by_tree`) keeps fragments landing in empty leaves — buried shared faces emit and render.
 
-Second defect (found during analysis, not yet reproduced in isolation): even with exact containment, the all-candidates solid rule fails when a neighboring brush's AABB overlaps the region (AABB candidate routing keeps it as a candidate; its planes don't span the region so it can't be split away). Rule must be "any brush contains region → solid" — which is also geometrically the correct definition.
+Second defect (found during analysis, later covered by candidate-routing regression tests): even with exact containment, the all-candidates solid rule fails when a neighboring brush's AABB overlaps the region, and non-conservative routing can drop an owner/touching brush from the child it fully contains. Rule must be "any brush contains region → solid" — which is geometrically correct — and candidate routing must keep near-plane-only and genuine straddles conservative.
 
 ## BSP consumer map (blast radius)
 

@@ -556,7 +556,7 @@ fn convex_contains(outer: &[DVec3], inner: &[DVec3], plane_normal: DVec3) -> boo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::map_data::{BrushPlane, BrushSide, TextureProjection};
+    use crate::map_data::{BrushPlane, BrushSide, Face, TextureProjection};
     use crate::partition::brush_bsp::build_bsp_from_brushes;
 
     fn tex_projection() -> TextureProjection {
@@ -687,8 +687,213 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Copy)]
+    enum WedgeHalf {
+        XLessEqualZ,
+        XGreaterEqualZ,
+    }
+
+    fn wedge_brush_with_sides(
+        min: DVec3,
+        max: DVec3,
+        half: WedgeHalf,
+        texture: &str,
+    ) -> BrushVolume {
+        debug_assert!(
+            ((max.x - min.x) - (max.z - min.z)).abs() < 1e-9,
+            "test wedge split assumes a square X/Z footprint"
+        );
+
+        let tex = texture.to_string();
+        let diagonal = DVec3::new(1.0, 0.0, -1.0).normalize();
+        let diagonal_distance = diagonal.dot(DVec3::new(min.x, 0.0, min.z));
+
+        let (planes, sides) = match half {
+            WedgeHalf::XLessEqualZ => {
+                let planes = vec![
+                    BrushPlane {
+                        normal: DVec3::NEG_X,
+                        distance: -min.x,
+                    },
+                    BrushPlane {
+                        normal: DVec3::Y,
+                        distance: max.y,
+                    },
+                    BrushPlane {
+                        normal: DVec3::NEG_Y,
+                        distance: -min.y,
+                    },
+                    BrushPlane {
+                        normal: DVec3::Z,
+                        distance: max.z,
+                    },
+                    BrushPlane {
+                        normal: diagonal,
+                        distance: diagonal_distance,
+                    },
+                ];
+                let sides = vec![
+                    BrushSide {
+                        vertices: vec![
+                            DVec3::new(min.x, min.y, min.z),
+                            DVec3::new(min.x, min.y, max.z),
+                            DVec3::new(min.x, max.y, max.z),
+                            DVec3::new(min.x, max.y, min.z),
+                        ],
+                        normal: DVec3::NEG_X,
+                        distance: -min.x,
+                        texture: tex.clone(),
+                        tex_projection: tex_projection(),
+                    },
+                    BrushSide {
+                        vertices: vec![
+                            DVec3::new(min.x, max.y, min.z),
+                            DVec3::new(min.x, max.y, max.z),
+                            DVec3::new(max.x, max.y, max.z),
+                        ],
+                        normal: DVec3::Y,
+                        distance: max.y,
+                        texture: tex.clone(),
+                        tex_projection: tex_projection(),
+                    },
+                    BrushSide {
+                        vertices: vec![
+                            DVec3::new(min.x, min.y, min.z),
+                            DVec3::new(max.x, min.y, max.z),
+                            DVec3::new(min.x, min.y, max.z),
+                        ],
+                        normal: DVec3::NEG_Y,
+                        distance: -min.y,
+                        texture: tex.clone(),
+                        tex_projection: tex_projection(),
+                    },
+                    BrushSide {
+                        vertices: vec![
+                            DVec3::new(min.x, min.y, max.z),
+                            DVec3::new(max.x, min.y, max.z),
+                            DVec3::new(max.x, max.y, max.z),
+                            DVec3::new(min.x, max.y, max.z),
+                        ],
+                        normal: DVec3::Z,
+                        distance: max.z,
+                        texture: tex.clone(),
+                        tex_projection: tex_projection(),
+                    },
+                    BrushSide {
+                        vertices: vec![
+                            DVec3::new(min.x, min.y, min.z),
+                            DVec3::new(min.x, max.y, min.z),
+                            DVec3::new(max.x, max.y, max.z),
+                            DVec3::new(max.x, min.y, max.z),
+                        ],
+                        normal: diagonal,
+                        distance: diagonal_distance,
+                        texture: tex,
+                        tex_projection: tex_projection(),
+                    },
+                ];
+                (planes, sides)
+            }
+            WedgeHalf::XGreaterEqualZ => {
+                let normal = -diagonal;
+                let distance = -diagonal_distance;
+                let planes = vec![
+                    BrushPlane {
+                        normal: DVec3::X,
+                        distance: max.x,
+                    },
+                    BrushPlane {
+                        normal: DVec3::Y,
+                        distance: max.y,
+                    },
+                    BrushPlane {
+                        normal: DVec3::NEG_Y,
+                        distance: -min.y,
+                    },
+                    BrushPlane {
+                        normal: DVec3::NEG_Z,
+                        distance: -min.z,
+                    },
+                    BrushPlane { normal, distance },
+                ];
+                let sides = vec![
+                    BrushSide {
+                        vertices: vec![
+                            DVec3::new(max.x, min.y, min.z),
+                            DVec3::new(max.x, max.y, min.z),
+                            DVec3::new(max.x, max.y, max.z),
+                            DVec3::new(max.x, min.y, max.z),
+                        ],
+                        normal: DVec3::X,
+                        distance: max.x,
+                        texture: tex.clone(),
+                        tex_projection: tex_projection(),
+                    },
+                    BrushSide {
+                        vertices: vec![
+                            DVec3::new(min.x, max.y, min.z),
+                            DVec3::new(max.x, max.y, max.z),
+                            DVec3::new(max.x, max.y, min.z),
+                        ],
+                        normal: DVec3::Y,
+                        distance: max.y,
+                        texture: tex.clone(),
+                        tex_projection: tex_projection(),
+                    },
+                    BrushSide {
+                        vertices: vec![
+                            DVec3::new(min.x, min.y, min.z),
+                            DVec3::new(max.x, min.y, min.z),
+                            DVec3::new(max.x, min.y, max.z),
+                        ],
+                        normal: DVec3::NEG_Y,
+                        distance: -min.y,
+                        texture: tex.clone(),
+                        tex_projection: tex_projection(),
+                    },
+                    BrushSide {
+                        vertices: vec![
+                            DVec3::new(min.x, min.y, min.z),
+                            DVec3::new(min.x, max.y, min.z),
+                            DVec3::new(max.x, max.y, min.z),
+                            DVec3::new(max.x, min.y, min.z),
+                        ],
+                        normal: DVec3::NEG_Z,
+                        distance: -min.z,
+                        texture: tex.clone(),
+                        tex_projection: tex_projection(),
+                    },
+                    BrushSide {
+                        vertices: vec![
+                            DVec3::new(min.x, min.y, min.z),
+                            DVec3::new(max.x, min.y, max.z),
+                            DVec3::new(max.x, max.y, max.z),
+                            DVec3::new(min.x, max.y, min.z),
+                        ],
+                        normal,
+                        distance,
+                        texture: tex,
+                        tex_projection: tex_projection(),
+                    },
+                ];
+                (planes, sides)
+            }
+        };
+
+        BrushVolume {
+            planes,
+            sides,
+            aabb: Aabb { min, max },
+        }
+    }
+
     fn face_count_in_leaves(tree: &BspTree) -> usize {
         tree.leaves.iter().map(|l| l.face_indices.len()).sum()
+    }
+
+    fn face_lies_on_either_orientation(face: &Face, normal: DVec3, distance: f64) -> bool {
+        planes_match_oriented(face.normal, face.distance, normal, distance)
+            || planes_match_oriented(face.normal, face.distance, -normal, -distance)
     }
 
     #[test]
@@ -839,6 +1044,95 @@ mod tests {
                 face.normal, face.distance
             );
         }
+    }
+
+    #[test]
+    fn abutting_wedge_brushes_do_not_emit_shared_boundary_face() {
+        let min = DVec3::ZERO;
+        let max = DVec3::splat(32.0);
+        let diagonal = DVec3::new(1.0, 0.0, -1.0).normalize();
+        let diagonal_distance = 0.0;
+
+        let a = wedge_brush_with_sides(min, max, WedgeHalf::XLessEqualZ, "wall");
+        let b = wedge_brush_with_sides(min, max, WedgeHalf::XGreaterEqualZ, "wall");
+
+        for brushes in [vec![a.clone(), b.clone()], vec![b, a]] {
+            let mut tree = build_bsp_from_brushes(&brushes).expect("abutting wedges should build");
+            let result = extract_faces(&mut tree, &brushes);
+
+            for face in &result.faces {
+                assert!(
+                    !face_lies_on_either_orientation(face, diagonal, diagonal_distance),
+                    "no face should lie on the shared diagonal plane (normal={:?}, distance={})",
+                    face.normal,
+                    face.distance
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn wedges_forming_cuboid_emit_only_outer_cuboid_planes() {
+        let min = DVec3::ZERO;
+        let max = DVec3::splat(32.0);
+        let brushes = vec![
+            wedge_brush_with_sides(min, max, WedgeHalf::XLessEqualZ, "wall"),
+            wedge_brush_with_sides(min, max, WedgeHalf::XGreaterEqualZ, "wall"),
+        ];
+        let mut tree = build_bsp_from_brushes(&brushes).expect("wedge cuboid should build");
+        let result = extract_faces(&mut tree, &brushes);
+
+        let mut planes = std::collections::BTreeSet::new();
+        for face in &result.faces {
+            let key = if planes_match_oriented(face.normal, face.distance, DVec3::X, max.x) {
+                "+X"
+            } else if planes_match_oriented(face.normal, face.distance, DVec3::NEG_X, -min.x) {
+                "-X"
+            } else if planes_match_oriented(face.normal, face.distance, DVec3::Y, max.y) {
+                "+Y"
+            } else if planes_match_oriented(face.normal, face.distance, DVec3::NEG_Y, -min.y) {
+                "-Y"
+            } else if planes_match_oriented(face.normal, face.distance, DVec3::Z, max.z) {
+                "+Z"
+            } else if planes_match_oriented(face.normal, face.distance, DVec3::NEG_Z, -min.z) {
+                "-Z"
+            } else {
+                panic!(
+                    "unexpected emitted plane normal={:?} distance={}",
+                    face.normal, face.distance
+                );
+            };
+            planes.insert(key);
+        }
+
+        let expected = ["+X", "-X", "+Y", "-Y", "+Z", "-Z"].into_iter().collect();
+        assert_eq!(
+            planes, expected,
+            "wedge cuboid should cover exactly the six outer planes"
+        );
+    }
+
+    #[test]
+    fn standalone_wedge_emits_five_faces() {
+        let brushes = vec![wedge_brush_with_sides(
+            DVec3::ZERO,
+            DVec3::splat(32.0),
+            WedgeHalf::XLessEqualZ,
+            "wall",
+        )];
+        let mut tree = build_bsp_from_brushes(&brushes).expect("single wedge should build");
+        let result = extract_faces(&mut tree, &brushes);
+
+        assert_eq!(
+            result.faces.len(),
+            5,
+            "standalone triangular prism should emit its five side/cap faces"
+        );
+        assert_eq!(
+            face_count_in_leaves(&tree),
+            5,
+            "each standalone wedge face should appear in one leaf"
+        );
     }
 
     #[test]

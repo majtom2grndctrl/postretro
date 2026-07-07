@@ -34,8 +34,8 @@ pub struct VisibilityResult {
 /// brush exterior faces) is culled from the packed output.
 ///
 /// Returns an empty set if the probe lands in a solid leaf (brush touches the
-/// boundary), so culling becomes a no-op and geometry is unchanged. See the
-/// exterior-leaf-culling plan for the design.
+/// boundary), so culling becomes a no-op and ambiguous boundary maps keep their
+/// geometry.
 pub fn find_exterior_leaves(tree: &BspTree, portals: &[Portal]) -> HashSet<usize> {
     if tree.leaves.is_empty() {
         return HashSet::new();
@@ -573,6 +573,201 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Copy)]
+    enum WedgeHalf {
+        XLessEqualZ,
+        XGreaterEqualZ,
+    }
+
+    fn wedge_volume(min: DVec3, max: DVec3, half: WedgeHalf) -> crate::map_data::BrushVolume {
+        use crate::map_data::{BrushPlane, BrushSide, BrushVolume, TextureProjection};
+
+        debug_assert!(((max.x - min.x) - (max.z - min.z)).abs() < 1e-9);
+
+        let tex = "test".to_string();
+        let projection = TextureProjection::default();
+        let diagonal = DVec3::new(1.0, 0.0, -1.0).normalize();
+        let diagonal_distance = diagonal.dot(DVec3::new(min.x, 0.0, min.z));
+
+        let (planes, sides) = match half {
+            WedgeHalf::XLessEqualZ => {
+                let planes = vec![
+                    BrushPlane {
+                        normal: DVec3::NEG_X,
+                        distance: -min.x,
+                    },
+                    BrushPlane {
+                        normal: DVec3::Y,
+                        distance: max.y,
+                    },
+                    BrushPlane {
+                        normal: DVec3::NEG_Y,
+                        distance: -min.y,
+                    },
+                    BrushPlane {
+                        normal: DVec3::Z,
+                        distance: max.z,
+                    },
+                    BrushPlane {
+                        normal: diagonal,
+                        distance: diagonal_distance,
+                    },
+                ];
+                let sides = vec![
+                    BrushSide {
+                        vertices: vec![
+                            DVec3::new(min.x, min.y, min.z),
+                            DVec3::new(min.x, min.y, max.z),
+                            DVec3::new(min.x, max.y, max.z),
+                            DVec3::new(min.x, max.y, min.z),
+                        ],
+                        normal: DVec3::NEG_X,
+                        distance: -min.x,
+                        texture: tex.clone(),
+                        tex_projection: projection.clone(),
+                    },
+                    BrushSide {
+                        vertices: vec![
+                            DVec3::new(min.x, max.y, min.z),
+                            DVec3::new(min.x, max.y, max.z),
+                            DVec3::new(max.x, max.y, max.z),
+                        ],
+                        normal: DVec3::Y,
+                        distance: max.y,
+                        texture: tex.clone(),
+                        tex_projection: projection.clone(),
+                    },
+                    BrushSide {
+                        vertices: vec![
+                            DVec3::new(min.x, min.y, min.z),
+                            DVec3::new(max.x, min.y, max.z),
+                            DVec3::new(min.x, min.y, max.z),
+                        ],
+                        normal: DVec3::NEG_Y,
+                        distance: -min.y,
+                        texture: tex.clone(),
+                        tex_projection: projection.clone(),
+                    },
+                    BrushSide {
+                        vertices: vec![
+                            DVec3::new(min.x, min.y, max.z),
+                            DVec3::new(max.x, min.y, max.z),
+                            DVec3::new(max.x, max.y, max.z),
+                            DVec3::new(min.x, max.y, max.z),
+                        ],
+                        normal: DVec3::Z,
+                        distance: max.z,
+                        texture: tex.clone(),
+                        tex_projection: projection.clone(),
+                    },
+                    BrushSide {
+                        vertices: vec![
+                            DVec3::new(min.x, min.y, min.z),
+                            DVec3::new(min.x, max.y, min.z),
+                            DVec3::new(max.x, max.y, max.z),
+                            DVec3::new(max.x, min.y, max.z),
+                        ],
+                        normal: diagonal,
+                        distance: diagonal_distance,
+                        texture: tex,
+                        tex_projection: projection,
+                    },
+                ];
+                (planes, sides)
+            }
+            WedgeHalf::XGreaterEqualZ => {
+                let normal = -diagonal;
+                let distance = -diagonal_distance;
+                let planes = vec![
+                    BrushPlane {
+                        normal: DVec3::X,
+                        distance: max.x,
+                    },
+                    BrushPlane {
+                        normal: DVec3::Y,
+                        distance: max.y,
+                    },
+                    BrushPlane {
+                        normal: DVec3::NEG_Y,
+                        distance: -min.y,
+                    },
+                    BrushPlane {
+                        normal: DVec3::NEG_Z,
+                        distance: -min.z,
+                    },
+                    BrushPlane { normal, distance },
+                ];
+                let sides = vec![
+                    BrushSide {
+                        vertices: vec![
+                            DVec3::new(max.x, min.y, min.z),
+                            DVec3::new(max.x, max.y, min.z),
+                            DVec3::new(max.x, max.y, max.z),
+                            DVec3::new(max.x, min.y, max.z),
+                        ],
+                        normal: DVec3::X,
+                        distance: max.x,
+                        texture: tex.clone(),
+                        tex_projection: projection.clone(),
+                    },
+                    BrushSide {
+                        vertices: vec![
+                            DVec3::new(min.x, max.y, min.z),
+                            DVec3::new(max.x, max.y, max.z),
+                            DVec3::new(max.x, max.y, min.z),
+                        ],
+                        normal: DVec3::Y,
+                        distance: max.y,
+                        texture: tex.clone(),
+                        tex_projection: projection.clone(),
+                    },
+                    BrushSide {
+                        vertices: vec![
+                            DVec3::new(min.x, min.y, min.z),
+                            DVec3::new(max.x, min.y, min.z),
+                            DVec3::new(max.x, min.y, max.z),
+                        ],
+                        normal: DVec3::NEG_Y,
+                        distance: -min.y,
+                        texture: tex.clone(),
+                        tex_projection: projection.clone(),
+                    },
+                    BrushSide {
+                        vertices: vec![
+                            DVec3::new(min.x, min.y, min.z),
+                            DVec3::new(min.x, max.y, min.z),
+                            DVec3::new(max.x, max.y, min.z),
+                            DVec3::new(max.x, min.y, min.z),
+                        ],
+                        normal: DVec3::NEG_Z,
+                        distance: -min.z,
+                        texture: tex.clone(),
+                        tex_projection: projection.clone(),
+                    },
+                    BrushSide {
+                        vertices: vec![
+                            DVec3::new(min.x, min.y, min.z),
+                            DVec3::new(max.x, min.y, max.z),
+                            DVec3::new(max.x, max.y, max.z),
+                            DVec3::new(min.x, max.y, min.z),
+                        ],
+                        normal,
+                        distance,
+                        texture: tex,
+                        tex_projection: projection,
+                    },
+                ];
+                (planes, sides)
+            }
+        };
+
+        BrushVolume {
+            planes,
+            sides,
+            aabb: Aabb { min, max },
+        }
+    }
+
     /// Build a sealed room as six wall slabs around an interior air pocket.
     /// Outer extent: -60..60 on each axis. Interior air: -50..50 on each axis.
     /// Wall thickness: 10.
@@ -608,6 +803,44 @@ mod tests {
         brushes
     }
 
+    fn sealed_box_with_wedge_ceiling() -> Vec<crate::map_data::BrushVolume> {
+        let mut brushes = Vec::new();
+        brushes.push(box_volume(
+            DVec3::new(-60.0, -60.0, -60.0),
+            DVec3::new(-50.0, 60.0, 60.0),
+        ));
+        brushes.push(box_volume(
+            DVec3::new(50.0, -60.0, -60.0),
+            DVec3::new(60.0, 60.0, 60.0),
+        ));
+        brushes.push(box_volume(
+            DVec3::new(-60.0, -60.0, -60.0),
+            DVec3::new(60.0, -50.0, 60.0),
+        ));
+        brushes.push(box_volume(
+            DVec3::new(-60.0, -60.0, -60.0),
+            DVec3::new(60.0, 60.0, -50.0),
+        ));
+        brushes.push(box_volume(
+            DVec3::new(-60.0, -60.0, 50.0),
+            DVec3::new(60.0, 60.0, 60.0),
+        ));
+
+        let ceiling_min = DVec3::new(-60.0, 50.0, -60.0);
+        let ceiling_max = DVec3::new(60.0, 60.0, 60.0);
+        brushes.push(wedge_volume(
+            ceiling_min,
+            ceiling_max,
+            WedgeHalf::XLessEqualZ,
+        ));
+        brushes.push(wedge_volume(
+            ceiling_min,
+            ceiling_max,
+            WedgeHalf::XGreaterEqualZ,
+        ));
+        brushes
+    }
+
     #[test]
     fn sealed_box_center_point_is_not_classified_exterior() {
         // Sealed-box invariant under brush-volume construction: a hand-crafted
@@ -633,6 +866,33 @@ mod tests {
             exterior.len(),
             generated_portals.len(),
         );
+    }
+
+    #[test]
+    fn sealed_box_with_wedge_ceiling_keeps_interior_leaves_interior() {
+        let brushes = sealed_box_with_wedge_ceiling();
+
+        let result = crate::partition::partition(&brushes)
+            .expect("partition should succeed on sealed box with wedge ceiling");
+        let generated_portals = crate::portals::generate_portals(&result.tree);
+        let exterior = find_exterior_leaves(&result.tree, &generated_portals);
+
+        for point in [
+            DVec3::ZERO,
+            DVec3::new(-25.0, 0.0, -25.0),
+            DVec3::new(25.0, 0.0, 25.0),
+            DVec3::new(0.0, 40.0, 0.0),
+        ] {
+            let leaf = crate::partition::find_leaf_for_point(&result.tree, point);
+            assert!(
+                !result.tree.leaves[leaf].is_solid,
+                "interior sample point {point:?} should resolve to empty room space"
+            );
+            assert!(
+                !exterior.contains(&leaf),
+                "interior sample point {point:?} leaked to exterior leaf {leaf}"
+            );
+        }
     }
 
     #[test]

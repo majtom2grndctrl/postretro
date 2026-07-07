@@ -27,6 +27,11 @@ use parry3d::shape::{Capsule, TriMesh};
 
 use postretro_level_loader::LevelWorld;
 
+// Kinematic mover colliders are built before PRL-loaded movers have runtime
+// call sites, so this module is allowed to sit unused until that wiring lands.
+#[allow(dead_code)]
+pub(crate) mod moving;
+
 /// World-space static-geometry collider. Owns a single `parry3d::TriMesh`
 /// built from the level's baked vertices and indices, plus a world-space
 /// `Isometry3<f32>` (always identity — PRL geometry is already world-space).

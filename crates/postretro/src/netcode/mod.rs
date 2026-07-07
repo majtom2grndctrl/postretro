@@ -536,6 +536,7 @@ pub(crate) fn component_kind_discriminant(kind: ComponentKind) -> u16 {
         ComponentKind::Health => 10,
         ComponentKind::Agent => 11,
         ComponentKind::Brain => 12,
+        ComponentKind::KinematicMover => 13,
     }
 }
 
@@ -1560,7 +1561,8 @@ mod tests {
                 ComponentKind::Mesh => Some(ComponentKind::Health),
                 ComponentKind::Health => Some(ComponentKind::Agent),
                 ComponentKind::Agent => Some(ComponentKind::Brain),
-                ComponentKind::Brain => None,
+                ComponentKind::Brain => Some(ComponentKind::KinematicMover),
+                ComponentKind::KinematicMover => None,
             }
         }
 

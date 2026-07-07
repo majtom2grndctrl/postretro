@@ -16,8 +16,7 @@
 
 use glam::Vec3;
 
-use crate::collision::CollisionWorld;
-use crate::movement::{MovementInput, tick as movement_tick};
+use crate::movement::{MovementCollisionSource, MovementInput, tick as movement_tick};
 use postretro_entities::{EntityId, EntityRegistry, Transform};
 use postretro_foundation::PlayerMovementComponent;
 
@@ -41,7 +40,7 @@ use postretro_foundation::PlayerMovementComponent;
 /// BEFORE AI/agent/weapon/death, matching `simulate_tick`'s movement-first order.
 pub(crate) fn run_host_movement_tick(
     registry: &mut EntityRegistry,
-    collision_world: &CollisionWorld,
+    collision: &impl MovementCollisionSource,
     gravity: f32,
     pawn_inputs: &[(EntityId, MovementInput)],
     tick_dt: f32,
@@ -66,7 +65,7 @@ pub(crate) fn run_host_movement_tick(
         let (new_pos, events) = movement_tick(
             &mut component,
             &input,
-            collision_world,
+            collision,
             gravity,
             tick_dt,
             position,
@@ -94,6 +93,7 @@ pub(crate) fn run_host_movement_tick(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::collision::CollisionWorld;
     use glam::Vec2;
     use parry3d::math::{Isometry, Point};
     use parry3d::shape::TriMesh;
@@ -221,7 +221,7 @@ mod tests {
         let driven_m = registry
             .get_component::<PlayerMovementComponent>(driven)
             .unwrap();
-        assert!(driven_m.is_grounded, "floored pawn grounded after a tick");
+        assert!(driven_m.is_grounded(), "floored pawn grounded after a tick");
 
         // The pawn NOT in the input list is untouched — the seam ignores it entirely.
         let after_untouched = registry

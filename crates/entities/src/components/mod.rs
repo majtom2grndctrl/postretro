@@ -6,6 +6,7 @@ pub mod billboard_emitter;
 pub mod brain;
 pub mod fog_volume;
 pub mod health;
+pub mod kinematic_mover;
 pub mod light;
 pub mod mesh;
 pub mod particle;

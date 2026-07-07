@@ -520,7 +520,7 @@ fn plan_movement_replace(
     // and the airborne-tick counter. Everything descriptor-derived reseeds from
     // the new descriptor.
     refreshed.velocity = live.velocity;
-    refreshed.is_grounded = live.is_grounded;
+    refreshed.ground = live.ground;
     refreshed.air_ticks = live.air_ticks;
     // Hot-reload is a descriptor swap, not a mid-game state resume: every ability
     // budget reseeds from the new descriptor rather than carrying the live (now
@@ -1065,7 +1065,7 @@ mod tests {
         let id = registry.spawn(standing_pawn_transform());
         let mut live = PlayerMovementComponent::from_descriptor(old[0].movement.as_ref().unwrap());
         live.velocity = Vec3::new(1.0, 2.0, 3.0);
-        live.is_grounded = true;
+        live.set_grounded(true);
         live.air_jumps_remaining = 1;
         live.air_ticks = 7;
         registry.set_component(id, live).unwrap();
@@ -1088,7 +1088,7 @@ mod tests {
         };
         assert_eq!(component.air.jumps, 3);
         assert_eq!(component.velocity, Vec3::new(1.0, 2.0, 3.0));
-        assert!(component.is_grounded);
+        assert!(component.is_grounded());
         // The air-jump budget reseeds from the new descriptor (was live=1), so an
         // authored jump-count change takes effect on save, not only after landing.
         assert_eq!(component.air_jumps_remaining, 3);
@@ -1106,7 +1106,7 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let id = registry.spawn(standing_pawn_transform());
         let mut live = PlayerMovementComponent::from_descriptor(old[0].movement.as_ref().unwrap());
-        live.is_grounded = true;
+        live.set_grounded(true);
         live.air_jumps_remaining = 2; // grounded, at the OLD max
         registry.set_component(id, live).unwrap();
         registry
@@ -1146,7 +1146,7 @@ mod tests {
         let id = registry.spawn(standing_pawn_transform());
         let mut live = PlayerMovementComponent::from_descriptor(old[0].movement.as_ref().unwrap());
         live.velocity = Vec3::new(1.0, 2.0, 3.0);
-        live.is_grounded = true;
+        live.set_grounded(true);
         live.air_jumps_remaining = 1;
         live.air_ticks = 7;
         live.air_dashes_remaining = 0;
@@ -1181,7 +1181,7 @@ mod tests {
         assert_eq!(component.air_jumps_remaining, 3);
         // Physics-integration state is still preserved across the refresh.
         assert_eq!(component.velocity, Vec3::new(1.0, 2.0, 3.0));
-        assert!(component.is_grounded);
+        assert!(component.is_grounded());
         assert_eq!(component.air_ticks, 7);
     }
 

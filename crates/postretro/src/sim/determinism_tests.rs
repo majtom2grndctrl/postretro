@@ -577,7 +577,7 @@ fn run_movement_tick_applies_local_command_only_to_marked_pawn() {
                 .get_component::<PlayerMovementComponent>(id)
                 .unwrap()
                 .clone();
-            movement.is_grounded = true;
+            movement.set_grounded(true);
             registry.set_component(id, movement).unwrap();
         }
         (beta, alpha)
@@ -640,7 +640,7 @@ fn run_movement_tick_no_marker_fallback_drives_first_movement_pawn_only() {
                 .get_component::<PlayerMovementComponent>(id)
                 .unwrap()
                 .clone();
-            movement.is_grounded = true;
+            movement.set_grounded(true);
             registry.set_component(id, movement).unwrap();
         }
         (first, second)
@@ -700,7 +700,7 @@ fn run_movement_tick_invalid_marker_fallback_drives_first_movement_pawn_only() {
                 .get_component::<PlayerMovementComponent>(id)
                 .unwrap()
                 .clone();
-            movement.is_grounded = true;
+            movement.set_grounded(true);
             registry.set_component(id, movement).unwrap();
         }
         (first, second)

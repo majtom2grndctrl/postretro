@@ -89,7 +89,7 @@ impl MovementScope {
         self.values = [
             IrValue::Number(horizontal_speed),
             IrValue::Number(v.y),
-            IrValue::Bool(component.is_grounded),
+            IrValue::Bool(component.is_grounded()),
             IrValue::Number(component.air_dashes_remaining as f32),
             IrValue::Number(component.dash_cooldown_ms),
             IrValue::Number(elapsed_ms),
@@ -226,7 +226,7 @@ mod tests {
         let mut component = PlayerMovementComponent::from_descriptor(&minimal_descriptor());
         // 3-4-5 triangle on the XZ plane → horizontal speed exactly 5.0.
         component.velocity = Vec3::new(3.0, 12.0, 4.0);
-        component.is_grounded = true;
+        component.set_grounded(true);
         component.air_dashes_remaining = 2;
         component.dash_cooldown_ms = 150.0;
         component

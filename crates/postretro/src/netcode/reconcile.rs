@@ -15,7 +15,7 @@
 
 use postretro_net::wire::WirePlayerMovementState;
 
-use crate::collision::CollisionWorld;
+use crate::movement::MovementCollisionSource;
 use crate::netcode::movement_state::merge_wire_into_movement_state;
 use crate::netcode::prediction::replay;
 use crate::netcode::prediction::{
@@ -53,7 +53,7 @@ pub(crate) fn reconcile_local_pawn(
     authoritative_transform: Transform,
     movement: Option<&WirePlayerMovementState>,
     acked_tick: Option<u32>,
-    collision: &CollisionWorld,
+    collision: &impl MovementCollisionSource,
     gravity: f32,
     dt: f32,
 ) -> Option<CorrectionClass> {
@@ -178,6 +178,7 @@ pub(crate) fn reconcile_local_pawn(
 mod tests {
     use super::*;
 
+    use crate::collision::CollisionWorld;
     use glam::Vec3;
     use parry3d::math::{Isometry, Point};
     use parry3d::shape::TriMesh;
@@ -384,7 +385,7 @@ mod tests {
         let reconciled = registry
             .get_component::<PlayerMovementComponent>(id)
             .unwrap();
-        assert!(reconciled.is_grounded, "reconciled pawn is grounded");
+        assert!(reconciled.is_grounded(), "reconciled pawn is grounded");
 
         // The reconciled transform replayed the 2 unacked commands from the
         // authoritative baseline: it advanced forward (-Z) from auth_transform.

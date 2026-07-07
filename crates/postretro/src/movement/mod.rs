@@ -13,7 +13,7 @@ mod substrate;
 #[allow(unused_imports)]
 pub(crate) use postretro_foundation::MovementScope;
 
-use crate::collision::CollisionWorld;
+use crate::collision::moving::CombinedCollisionWorld;
 use crate::movement::carry::CarryRule;
 use crate::movement::dispatch::dispatch_state_intent;
 use crate::movement::substrate::{advance_forgiveness, derive_jump_edges, integrate_collision};
@@ -93,16 +93,33 @@ pub(crate) struct Transition {
     pub(crate) carry: CarryRule,
 }
 
+pub(crate) trait MovementCollisionSource {
+    fn combined_collision(&self) -> CombinedCollisionWorld<'_>;
+}
+
+impl MovementCollisionSource for crate::collision::CollisionWorld {
+    fn combined_collision(&self) -> CombinedCollisionWorld<'_> {
+        CombinedCollisionWorld::static_only(self)
+    }
+}
+
+impl MovementCollisionSource for CombinedCollisionWorld<'_> {
+    fn combined_collision(&self) -> CombinedCollisionWorld<'_> {
+        *self
+    }
+}
+
 pub(crate) fn tick(
     component: &mut PlayerMovementComponent,
     input: &MovementInput,
-    collision_world: &CollisionWorld,
+    collision: &impl MovementCollisionSource,
     gravity: f32,
     dt: f32,
     position: Vec3,
 ) -> (Vec3, MovementEvents) {
     let mut events = MovementEvents::default();
-    let was_grounded = component.is_grounded;
+    let previous_ground = component.ground;
+    let collision = collision.combined_collision();
     // Mutable working position: a crouch entry/stand-up resize anchors one
     // capsule extreme and shifts the center by the helper-returned delta. The
     // intent applies that delta in-place (via `position.y += delta`) INSIDE its
@@ -131,7 +148,7 @@ pub(crate) fn tick(
         jump_edges,
         gravity,
         dt,
-        collision_world,
+        &collision,
         &mut position,
         &mut events,
     );
@@ -149,7 +166,7 @@ pub(crate) fn tick(
     // extending the window indefinitely. The guard ensures the window counts
     // from the first press and re-arms only after full expiry or consumption.
     if input.jump_pressed
-        && !was_grounded
+        && !previous_ground.is_grounded()
         && !events.jumped
         && component.jump_buffer_ms > 0.0
         && component.jump_buffer_timer_ms <= 0.0
@@ -162,10 +179,10 @@ pub(crate) fn tick(
     // intent (steps 1–6 above), not collision.
     let (current_pos, substrate) = integrate_collision(
         component,
-        collision_world,
+        &collision,
         dt,
         position,
-        was_grounded,
+        previous_ground,
         events.jumped,
     );
 
@@ -209,12 +226,17 @@ pub(crate) fn tick(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::collision::CollisionWorld;
+    use crate::collision::moving::{
+        CombinedCollisionWorld, MoverCollider, MoverPose, MoverPoseSource,
+    };
     use parry3d::math::{Isometry, Point};
     use parry3d::shape::{Capsule, TriMesh};
+    use postretro_entities::Transform;
     use postretro_foundation::{
         AirParams, BobParams, BoolOrIr, CapsuleParams, CrouchParams, DashParams, FallParams,
-        ForgivenessParams, GroundParams, NumberOrIr, PlayerMovementDescriptor, SpeedParams,
-        SwayParams, TiltParams, ViewFeelParams,
+        ForgivenessParams, GroundParams, GroundRef, NumberOrIr, PlayerMovementDescriptor,
+        SpeedParams, SwayParams, TiltParams, ViewFeelParams,
     };
     use postretro_foundation::{IrNode, IrValue};
 
@@ -411,6 +433,334 @@ mod tests {
         last
     }
 
+    #[derive(Default)]
+    struct TestMoverPoses {
+        poses: std::collections::HashMap<u32, MoverPose>,
+    }
+
+    impl TestMoverPoses {
+        fn set(&mut self, mover_id: u32, position: Vec3, velocity: Vec3, tick_delta: Vec3) {
+            self.poses.insert(
+                mover_id,
+                MoverPose {
+                    transform: Transform {
+                        position,
+                        rotation: glam::Quat::IDENTITY,
+                        scale: Vec3::ONE,
+                    },
+                    linear_velocity: velocity,
+                    tick_delta,
+                    tick_dt: DT,
+                },
+            );
+        }
+    }
+
+    impl MoverPoseSource for TestMoverPoses {
+        fn pose(&self, mover_id: u32) -> Option<MoverPose> {
+            self.poses.get(&mover_id).copied()
+        }
+    }
+
+    fn local_platform(mover_id: u32, half_extent: f32) -> MoverCollider {
+        MoverCollider::from_local_triangles(
+            mover_id,
+            &[
+                Vec3::new(-half_extent, 0.0, -half_extent),
+                Vec3::new(half_extent, 0.0, -half_extent),
+                Vec3::new(half_extent, 0.0, half_extent),
+                Vec3::new(-half_extent, 0.0, half_extent),
+            ],
+            &[[0, 1, 2], [0, 2, 3]],
+        )
+        .unwrap()
+    }
+
+    fn local_wall(mover_id: u32) -> MoverCollider {
+        MoverCollider::from_local_triangles(
+            mover_id,
+            &[
+                Vec3::new(0.0, 0.0, -2.0),
+                Vec3::new(0.0, 3.0, -2.0),
+                Vec3::new(0.0, 3.0, 2.0),
+                Vec3::new(0.0, 0.0, 2.0),
+            ],
+            &[[0, 1, 2], [0, 2, 3]],
+        )
+        .unwrap()
+    }
+
+    fn empty_world() -> CollisionWorld {
+        CollisionWorld::new()
+    }
+
+    fn tick_on_mover(
+        comp: &mut PlayerMovementComponent,
+        pos: &mut Vec3,
+        world: &CollisionWorld,
+        movers: &[MoverCollider],
+        poses: &TestMoverPoses,
+    ) -> MovementEvents {
+        let collision = CombinedCollisionWorld::new(world, movers, poses);
+        let (next, events) = tick(comp, &idle_input(), &collision, GRAVITY, DT, *pos);
+        *pos = next;
+        events
+    }
+
+    #[test]
+    fn moving_top_contact_sets_mover_ground_and_carries_player() {
+        let world = empty_world();
+        let movers = [local_platform(7, 2.0)];
+        let mut poses = TestMoverPoses::default();
+        poses.set(7, Vec3::ZERO, Vec3::ZERO, Vec3::ZERO);
+        let mut comp = PlayerMovementComponent::from_descriptor(&canonical_descriptor());
+        let mut pos = Vec3::new(0.0, 1.21, 0.0);
+
+        tick_on_mover(&mut comp, &mut pos, &world, &movers, &poses);
+        assert_eq!(comp.ground, GroundRef::Mover(7));
+        let settled_y = pos.y;
+
+        poses.set(
+            7,
+            Vec3::new(0.1, 0.0, 0.0),
+            Vec3::new(6.0, 0.0, 0.0),
+            Vec3::new(0.1, 0.0, 0.0),
+        );
+        tick_on_mover(&mut comp, &mut pos, &world, &movers, &poses);
+
+        assert_eq!(comp.ground, GroundRef::Mover(7));
+        assert!(
+            (pos.x - 0.1).abs() < POS_EPS,
+            "rider should inherit mover delta; x={}",
+            pos.x
+        );
+        assert!(
+            (pos.y - settled_y).abs() < 0.03,
+            "carry should not introduce vertical jitter; y {} -> {}",
+            settled_y,
+            pos.y
+        );
+    }
+
+    #[test]
+    fn moving_side_contact_blocks_without_persistent_overlap() {
+        let world = empty_world();
+        let movers = [local_wall(7)];
+        let mut poses = TestMoverPoses::default();
+        poses.set(7, Vec3::new(0.85, 0.0, 0.0), Vec3::ZERO, Vec3::ZERO);
+        let mut comp = PlayerMovementComponent::from_descriptor(&canonical_descriptor());
+        let mut pos = Vec3::new(0.0, 1.2, 0.0);
+        let input = MovementInput {
+            wish_dir: Vec2::new(1.0, 0.0),
+            running: true,
+            ..idle_input()
+        };
+        let collision = CombinedCollisionWorld::new(&world, &movers, &poses);
+
+        for _ in 0..20 {
+            let (next, _) = tick(&mut comp, &input, &collision, GRAVITY, DT, pos);
+            pos = next;
+        }
+
+        assert!(
+            pos.x < 0.85 - comp.capsule.radius + 0.05,
+            "mover side contact should block/slide instead of tunneling; x={}",
+            pos.x
+        );
+    }
+
+    #[test]
+    fn endpoint_wait_and_reversal_carry_are_stable() {
+        let world = empty_world();
+        let movers = [local_platform(7, 2.0)];
+        let mut poses = TestMoverPoses::default();
+        poses.set(7, Vec3::ZERO, Vec3::ZERO, Vec3::ZERO);
+        let mut comp = PlayerMovementComponent::from_descriptor(&canonical_descriptor());
+        let mut pos = Vec3::new(0.0, 1.21, 0.0);
+        tick_on_mover(&mut comp, &mut pos, &world, &movers, &poses);
+        let y = pos.y;
+
+        let samples = [
+            (Vec3::new(0.2, 0.0, 0.0), Vec3::new(0.2, 0.0, 0.0)),
+            (Vec3::new(0.2, 0.0, 0.0), Vec3::ZERO),
+            (Vec3::new(0.0, 0.0, 0.0), Vec3::new(-0.2, 0.0, 0.0)),
+        ];
+        let mut expected_x = pos.x;
+        for (platform_pos, delta) in samples {
+            poses.set(7, platform_pos, delta / DT, delta);
+            tick_on_mover(&mut comp, &mut pos, &world, &movers, &poses);
+            expected_x += delta.x;
+            assert_eq!(comp.ground, GroundRef::Mover(7));
+            assert!(
+                (pos.x - expected_x).abs() < POS_EPS,
+                "rider carry should follow wait/reversal deltas"
+            );
+            assert!(
+                (pos.y - y).abs() < 0.03,
+                "wait/reversal should not pump rider y; y={} baseline={}",
+                pos.y,
+                y
+            );
+        }
+    }
+
+    #[test]
+    fn standing_carry_stays_on_platform_for_ten_round_trips() {
+        let world = empty_world();
+        let half_extent = 1.5;
+        let movers = [local_platform(7, half_extent)];
+        let mut poses = TestMoverPoses::default();
+        poses.set(7, Vec3::ZERO, Vec3::ZERO, Vec3::ZERO);
+        let mut comp = PlayerMovementComponent::from_descriptor(&canonical_descriptor());
+        let mut pos = Vec3::new(0.0, 1.21, 0.0);
+        tick_on_mover(&mut comp, &mut pos, &world, &movers, &poses);
+        let surface_y = pos.y;
+
+        let mut platform_x = 0.0_f32;
+        let mut direction = 1.0_f32;
+        for _round_trip in 0..10 {
+            for _ in 0..40 {
+                let delta = Vec3::new(0.025 * direction, 0.0, 0.0);
+                platform_x += delta.x;
+                poses.set(7, Vec3::new(platform_x, 0.0, 0.0), delta / DT, delta);
+                tick_on_mover(&mut comp, &mut pos, &world, &movers, &poses);
+                assert_eq!(comp.ground, GroundRef::Mover(7));
+                assert!(
+                    (pos.y - surface_y).abs() < 0.03,
+                    "rider y drifted on long carry: y={} surface={}",
+                    pos.y,
+                    surface_y
+                );
+                assert!(
+                    (pos.x - platform_x).abs() <= half_extent - comp.capsule.radius,
+                    "rider left platform footprint: pos.x={} platform.x={}",
+                    pos.x,
+                    platform_x
+                );
+            }
+            direction = -direction;
+        }
+    }
+
+    #[test]
+    fn leaving_mover_adds_linear_release_velocity_once() {
+        let world = empty_world();
+        let movers = [local_platform(7, 2.0)];
+        let mut poses = TestMoverPoses::default();
+        poses.set(7, Vec3::ZERO, Vec3::ZERO, Vec3::ZERO);
+        let mut comp = PlayerMovementComponent::from_descriptor(&canonical_descriptor());
+        let mut pos = Vec3::new(0.0, 1.21, 0.0);
+        tick_on_mover(&mut comp, &mut pos, &world, &movers, &poses);
+        assert_eq!(comp.ground, GroundRef::Mover(7));
+
+        poses.set(
+            7,
+            Vec3::new(100.0, -10.0, 0.0),
+            Vec3::new(3.0, 0.0, 0.0),
+            Vec3::ZERO,
+        );
+        tick_on_mover(&mut comp, &mut pos, &world, &movers, &poses);
+        assert_eq!(comp.ground, GroundRef::Airborne);
+        assert!(
+            (comp.velocity.x - 3.0).abs() < VEL_EPS,
+            "release should add mover linear velocity once; vx={}",
+            comp.velocity.x
+        );
+
+        tick_on_mover(&mut comp, &mut pos, &world, &movers, &poses);
+        assert!(
+            (comp.velocity.x - 3.0).abs() < VEL_EPS,
+            "release velocity must not accumulate after the transition"
+        );
+    }
+
+    #[test]
+    fn ground_reference_transitions_cover_world_mover_and_airborne() {
+        let desc = canonical_descriptor();
+        let static_world = ledge_and_wall_world();
+        let (mut comp, mut pos) = settle_player(&desc);
+        run_ticks(&mut comp, &static_world, &mut pos, 5, &idle_input());
+        assert_eq!(comp.ground, GroundRef::World);
+
+        let world = empty_world();
+        let movers = [local_platform(7, 2.0)];
+        let mut poses = TestMoverPoses::default();
+        poses.set(7, Vec3::ZERO, Vec3::ZERO, Vec3::ZERO);
+        comp.ground = GroundRef::Airborne;
+        pos = Vec3::new(0.0, 1.21, 0.0);
+        tick_on_mover(&mut comp, &mut pos, &world, &movers, &poses);
+        assert_eq!(comp.ground, GroundRef::Mover(7));
+
+        poses.set(7, Vec3::new(100.0, -10.0, 0.0), Vec3::ZERO, Vec3::ZERO);
+        tick_on_mover(&mut comp, &mut pos, &world, &movers, &poses);
+        assert_eq!(comp.ground, GroundRef::Airborne);
+    }
+
+    #[test]
+    fn mover_push_displaces_player_out_of_penetration() {
+        let world = empty_world();
+        let movers = [local_platform(7, 2.0)];
+        let mut poses = TestMoverPoses::default();
+        poses.set(7, Vec3::new(0.0, 0.45, 0.0), Vec3::Y, Vec3::Y * 0.45);
+        let mut comp = PlayerMovementComponent::from_descriptor(&canonical_descriptor());
+        let mut pos = Vec3::new(0.0, 1.2, 0.0);
+
+        tick_on_mover(&mut comp, &mut pos, &world, &movers, &poses);
+
+        assert!(
+            pos.y > 1.2,
+            "overlapping rising mover should displace player upward; y={}",
+            pos.y
+        );
+        assert_eq!(comp.ground, GroundRef::Mover(7));
+    }
+
+    #[test]
+    fn recorded_mover_pose_replay_reproduces_live_ride() {
+        let world = empty_world();
+        let movers = [local_platform(7, 2.0)];
+        let mut poses = TestMoverPoses::default();
+        let mut comp = PlayerMovementComponent::from_descriptor(&canonical_descriptor());
+        let mut pos = Vec3::new(0.0, 1.21, 0.0);
+        let mut recorded = Vec::new();
+        let mut states = Vec::new();
+
+        for tick_index in 0..24 {
+            let platform_x = tick_index as f32 * 0.05;
+            let delta = if tick_index == 0 {
+                Vec3::ZERO
+            } else {
+                Vec3::new(0.05, 0.0, 0.0)
+            };
+            poses.set(7, Vec3::new(platform_x, 0.0, 0.0), delta / DT, delta);
+            recorded.push((Vec3::new(platform_x, 0.0, 0.0), delta / DT, delta));
+            states.push((pos, comp.clone()));
+            tick_on_mover(&mut comp, &mut pos, &world, &movers, &poses);
+        }
+        states.push((pos, comp.clone()));
+
+        let replay_start = 10;
+        let (mut replay_pos, mut replay_comp) = states[replay_start].clone();
+        let mut replay_poses = TestMoverPoses::default();
+        for (platform_pos, velocity, delta) in recorded.iter().skip(replay_start).copied() {
+            replay_poses.set(7, platform_pos, velocity, delta);
+            tick_on_mover(
+                &mut replay_comp,
+                &mut replay_pos,
+                &world,
+                &movers,
+                &replay_poses,
+            );
+        }
+
+        let (live_pos, live_comp) = states.last().unwrap();
+        assert!(
+            (replay_pos - *live_pos).length() < POS_EPS,
+            "replay must match live trajectory exactly enough: replay={replay_pos:?}, live={live_pos:?}"
+        );
+        assert_eq!(replay_comp.ground, live_comp.ground);
+    }
+
     #[test]
     fn player_movement_walks_jumps_steps_and_slides_wall() {
         let desc = canonical_descriptor();
@@ -504,12 +854,12 @@ mod tests {
         // Try until found or a generous upper bound.
         let mut jumped = false;
         for _ in 0..60 {
-            if comp.is_grounded {
+            if comp.is_grounded() {
                 let (next, ev) = tick(&mut comp, &jump, &world, GRAVITY, DT, pos);
                 pos = next;
                 assert!(ev.jumped, "grounded + jump_pressed should emit jumped");
                 assert!(
-                    !comp.is_grounded,
+                    !comp.is_grounded(),
                     "should be airborne immediately after jump"
                 );
                 assert!(
@@ -695,7 +1045,7 @@ mod tests {
             pos = next;
             y_samples.push(pos.y);
             if i >= 5 {
-                grounded_after_settle.push(comp.is_grounded);
+                grounded_after_settle.push(comp.is_grounded());
             }
         }
         let y_min = y_samples.iter().cloned().fold(f32::INFINITY, f32::min);
@@ -857,9 +1207,10 @@ mod tests {
         let current_pos = Vec3::new(5.0 - desc.capsule.radius - 0.05, floor_y + 0.05, 0.0);
         let horiz_vel = Vec3::new(desc.ground.speed.walk, 0.0, 0.0);
         let horiz_speed = horiz_vel.length();
+        let collision = CombinedCollisionWorld::static_only(&world);
 
         let result = step_up_lift(
-            &world,
+            &collision,
             &capsule,
             current_pos,
             horiz_vel,
@@ -895,9 +1246,10 @@ mod tests {
         let current_pos = Vec3::new(5.0 - desc.capsule.radius - 0.05, floor_y + 0.05, 0.0);
         let horiz_vel = Vec3::new(desc.ground.speed.walk, 0.0, 0.0);
         let horiz_speed = horiz_vel.length();
+        let collision = CombinedCollisionWorld::static_only(&world);
 
         let result = step_up_lift(
-            &world,
+            &collision,
             &capsule,
             current_pos,
             horiz_vel,
@@ -1483,7 +1835,7 @@ mod tests {
         };
         let mut jumped = false;
         for _ in 0..60 {
-            if comp.is_grounded {
+            if comp.is_grounded() {
                 let (next, ev) = tick(&mut comp, &run_jump, &world, GRAVITY, DT, pos);
                 pos = next;
                 assert!(ev.jumped, "grounded + jump should emit jumped");
@@ -1539,7 +1891,7 @@ mod tests {
             facing_yaw: 0.0,
         };
         for _ in 0..60 {
-            if comp.is_grounded {
+            if comp.is_grounded() {
                 let (next, ev) = tick(comp, &jump, world, GRAVITY, DT, *pos);
                 *pos = next;
                 assert!(ev.jumped, "grounded + jump_pressed should emit jumped");
@@ -1617,7 +1969,7 @@ mod tests {
             "setup: vy should have decayed under the ceiling, got {}",
             comp.velocity.y
         );
-        assert!(!comp.is_grounded, "setup: player must still be airborne");
+        assert!(!comp.is_grounded(), "setup: player must still be airborne");
 
         // Now the air-jump fires: a charge is consumed and vy relaunches to the
         // jump velocity.
@@ -1682,11 +2034,11 @@ mod tests {
         for _ in 0..120 {
             let (next, _ev) = tick(&mut comp, &idle, &world, GRAVITY, DT, pos);
             pos = next;
-            if comp.is_grounded {
+            if comp.is_grounded() {
                 break;
             }
         }
-        assert!(comp.is_grounded, "setup: player should have landed");
+        assert!(comp.is_grounded(), "setup: player should have landed");
         assert_eq!(
             comp.air_jumps_remaining, desc.air.jumps,
             "landing should restore the air-jump budget via refresh_on_landing"
@@ -1741,7 +2093,7 @@ mod tests {
         // Keep holding jump while airborne and under the ceiling: with the
         // budget at zero, no further air-jump may fire until landing.
         for _ in 0..30 {
-            if comp.is_grounded {
+            if comp.is_grounded() {
                 break;
             }
             let vy_before = comp.velocity.y;
@@ -1946,7 +2298,7 @@ mod tests {
             let (next, _ev) = tick(&mut comp, &hold, &world, GRAVITY, DT, pos);
             pos = next;
             if matches!(comp.movement_state, MovementState::Normal)
-                && comp.is_grounded
+                && comp.is_grounded()
                 && horiz_speed(&comp) <= run_cap + 0.05
             {
                 grounded_in_band = true;
@@ -1957,7 +2309,7 @@ mod tests {
             grounded_in_band,
             "held-input dash never bled back to the run cap on the ground; final speed {:.3}, grounded {}",
             horiz_speed(&comp),
-            comp.is_grounded,
+            comp.is_grounded(),
         );
         // It settles at the cap, not below — the stick is still held.
         assert!(
@@ -2386,7 +2738,7 @@ mod tests {
         world: &CollisionWorld,
     ) -> (PlayerMovementComponent, Vec3) {
         let mut comp = PlayerMovementComponent::from_descriptor(desc);
-        comp.is_grounded = false;
+        comp.set_grounded(false);
         comp.air_ticks = 10; // already settled into the airborne regime
         let mut pos = Vec3::new(0.0, 20.0, 0.0);
         // A few idle ticks let the substrate confirm airborne and build up a
@@ -2404,7 +2756,7 @@ mod tests {
         // 2 air dashes, no cooldown so the budget (not cooldown) is the gate.
         let desc = dash_descriptor(dash_params(10.0, 0.0, 0.0, 50.0, 0.0, 2, false));
         let (mut comp, mut pos) = airborne_aloft(&desc, &world);
-        assert!(!comp.is_grounded, "setup: should be airborne");
+        assert!(!comp.is_grounded(), "setup: should be airborne");
         assert_eq!(comp.air_dashes_remaining, 2, "budget starts full aloft");
 
         let air_dash = MovementInput {
@@ -2435,7 +2787,7 @@ mod tests {
             }
         }
         assert!(
-            !comp.is_grounded,
+            !comp.is_grounded(),
             "setup: still airborne for the second dash"
         );
 
@@ -2455,7 +2807,7 @@ mod tests {
             }
         }
         assert!(
-            !comp.is_grounded,
+            !comp.is_grounded(),
             "setup: still airborne for the exhausted attempt"
         );
 
@@ -2471,11 +2823,11 @@ mod tests {
         for _ in 0..180 {
             let (next, _ev) = tick(&mut comp, &idle_input(), &world, GRAVITY, DT, pos);
             pos = next;
-            if comp.is_grounded {
+            if comp.is_grounded() {
                 break;
             }
         }
-        assert!(comp.is_grounded, "setup: player should have landed");
+        assert!(comp.is_grounded(), "setup: player should have landed");
         assert_eq!(
             comp.air_dashes_remaining, 2,
             "landing should restore the air-dash budget"
@@ -2499,7 +2851,7 @@ mod tests {
         let (mut comp, pos) = airborne_aloft(&desc, &world);
         // Aloft at y=20 with no nearby floor: this tick's sweep cannot contact
         // the floor, so refresh_on_landing will not run.
-        assert!(!comp.is_grounded, "setup: airborne entering the tick");
+        assert!(!comp.is_grounded(), "setup: airborne entering the tick");
         assert_eq!(comp.air_dashes_remaining, 2, "setup: budget full aloft");
 
         let air_dash = MovementInput {
@@ -2517,7 +2869,7 @@ mod tests {
             "setup: airborne dash should have fired"
         );
         assert!(
-            !comp.is_grounded,
+            !comp.is_grounded(),
             "setup: no floor contact, so no landing-refresh this tick"
         );
         // Fails (stays at 2) if the airborne consume is skipped via a grounded
@@ -2549,7 +2901,7 @@ mod tests {
         let floor_y = desc.capsule.half_height + desc.capsule.radius;
 
         let mut comp = PlayerMovementComponent::from_descriptor(&desc);
-        comp.is_grounded = false; // last-tick flag is airborne (stale on landing)
+        comp.set_grounded(false); // last-tick flag is airborne (stale on landing)
         comp.air_ticks = 5;
         comp.air_dashes_remaining = 1; // one short of the refresh target (2)
         // A hair above the floor with a downward velocity so this single tick's
@@ -2568,7 +2920,7 @@ mod tests {
         let (_next, _ev) = tick(&mut comp, &air_dash, &world, GRAVITY, DT, pos);
 
         assert!(
-            comp.is_grounded,
+            comp.is_grounded(),
             "setup: this tick should have landed the player"
         );
         assert!(
@@ -2835,7 +3187,7 @@ mod tests {
         let desc = dash_descriptor(dash_params(10.0, 0.0, 0.0, 50.0, 0.0, 2, false));
         let (mut comp, mut pos) = settle_player(&desc);
         run_ticks(&mut comp, &world, &mut pos, 10, &idle_input());
-        assert!(comp.is_grounded, "setup: player should be grounded");
+        assert!(comp.is_grounded(), "setup: player should be grounded");
         assert_eq!(
             comp.air_dashes_remaining, 2,
             "setup: full air-dash budget before the grounded dash"
@@ -3018,7 +3370,7 @@ mod tests {
         let (mut comp, mut pos) = settle_and_run(&desc, &world, 60);
         // No jump is available and there is no ledge to walk off, so fake the
         // airborne state by clearing `is_grounded` and adding upward velocity.
-        comp.is_grounded = false;
+        comp.set_grounded(false);
         comp.velocity.y = 3.0;
         let dash_input = MovementInput {
             wish_dir: Vec2::new(0.0, -1.0),
@@ -3175,7 +3527,7 @@ mod tests {
         run_ticks(&mut comp, &world, &mut pos, 10, &idle_input());
         // Force a clean airborne state with zero horizontal velocity so the dash
         // boost is observed directly (retention 0).
-        comp.is_grounded = false;
+        comp.set_grounded(false);
         comp.velocity = Vec3::new(0.0, 2.0, 0.0);
         comp.air_dashes_remaining = 2;
         let dash_input = MovementInput {
@@ -3434,12 +3786,12 @@ mod tests {
     ) -> (PlayerMovementComponent, Vec3) {
         let (mut comp, mut pos) = settle_player(desc);
         run_ticks(&mut comp, world, &mut pos, 10, &idle_input());
-        assert!(comp.is_grounded, "test setup: player should be grounded");
+        assert!(comp.is_grounded(), "test setup: player should be grounded");
         // Teleport up out of floor range, then one idle tick drops `is_grounded`.
         pos.y += 2.0;
         run_ticks(&mut comp, world, &mut pos, 1, &idle_input());
         assert!(
-            !comp.is_grounded,
+            !comp.is_grounded(),
             "test setup: player should be airborne after leaving the ground"
         );
         assert!(
@@ -3539,7 +3891,7 @@ mod tests {
         let world = flat_floor_and_wall_world();
         let (mut comp, mut pos) = settle_player(&desc);
         run_ticks(&mut comp, &world, &mut pos, 10, &idle_input());
-        assert!(comp.is_grounded);
+        assert!(comp.is_grounded());
 
         // Grounded jump.
         let events = run_ticks(&mut comp, &world, &mut pos, 1, &jump_input());
@@ -3875,9 +4227,10 @@ mod tests {
         // Reflect the crouched size on the component (as the caller would have
         // after a resize) before probing.
         resize_capsule(&mut comp, crouched_half_height, 0.2, ResizeAnchor::Feet);
+        let blocked_collision = CombinedCollisionWorld::static_only(&blocked_world);
         let clear = standup_clearance_probe(
             &comp,
-            &blocked_world,
+            &blocked_collision,
             pos,
             crouched_half_height,
             standing_half_height,
@@ -3889,9 +4242,10 @@ mod tests {
 
         // Ceiling well above the standing head — clear to stand.
         let clear_world = floor_and_ceiling_world(crouched_top + head_rise + 1.0);
+        let clear_collision = CombinedCollisionWorld::static_only(&clear_world);
         let clear = standup_clearance_probe(
             &comp,
-            &clear_world,
+            &clear_collision,
             pos,
             crouched_half_height,
             standing_half_height,
@@ -3903,9 +4257,10 @@ mod tests {
 
         // No ceiling at all (empty world) — clear.
         let empty = CollisionWorld::new();
+        let empty_collision = CombinedCollisionWorld::static_only(&empty);
         let clear = standup_clearance_probe(
             &comp,
-            &empty,
+            &empty_collision,
             pos,
             crouched_half_height,
             standing_half_height,
@@ -4207,7 +4562,7 @@ mod tests {
         let mut comp = PlayerMovementComponent::from_descriptor(&desc);
         // Place the player clearly airborne, no floor contact this tick.
         let mut pos = Vec3::new(0.0, 10.0, 0.0);
-        comp.is_grounded = false;
+        comp.set_grounded(false);
 
         let top_before = capsule_top(&comp, pos);
         assert!(
@@ -4250,10 +4605,10 @@ mod tests {
         // gravity-only descent of the capsule top with no crouch resize.
         let mut base_comp = PlayerMovementComponent::from_descriptor(&desc);
         let mut base_pos = Vec3::new(0.0, 10.0, 0.0);
-        base_comp.is_grounded = false;
+        base_comp.set_grounded(false);
         run_ticks(&mut base_comp, &world, &mut base_pos, 2, &idle_input());
         assert!(
-            !base_comp.is_grounded,
+            !base_comp.is_grounded(),
             "baseline must stay airborne (no floor contact at y≈10)"
         );
         let baseline_top = capsule_top(&base_comp, base_pos);
@@ -4261,12 +4616,12 @@ mod tests {
         // Crouch path: same start, enter Crouching midair, then release.
         let mut comp = PlayerMovementComponent::from_descriptor(&desc);
         let mut pos = Vec3::new(0.0, 10.0, 0.0);
-        comp.is_grounded = false;
+        comp.set_grounded(false);
 
         run_ticks(&mut comp, &world, &mut pos, 1, &crouch_hold_input());
         assert!(is_crouching(&comp), "precondition: airborne crouch entry");
         assert!(
-            !comp.is_grounded,
+            !comp.is_grounded(),
             "precondition: still airborne while crouched"
         );
 

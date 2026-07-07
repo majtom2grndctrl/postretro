@@ -26,6 +26,10 @@ mod frame_timing;
 mod fx;
 mod health;
 mod input;
+// The deterministic mover substrate exists before PRL-loaded movers are wired
+// into the fixed-tick runtime.
+#[allow(dead_code)]
+mod kinematic_mover;
 mod movement;
 // The runtime nav graph is built in every build whenever a level carries a
 // baked navmesh; pathfinding consumes its query surface.
@@ -2087,7 +2091,7 @@ impl ApplicationHandler for App {
                             .ok()
                             .and_then(|component| {
                                 component.view_feel.as_ref().map(|params| {
-                                    (params.clone(), component.velocity, component.is_grounded)
+                                    (params.clone(), component.velocity, component.is_grounded())
                                 })
                             })
                     })

@@ -13,6 +13,7 @@ use crate::components::billboard_emitter::BillboardEmitterComponent;
 use crate::components::brain::BrainComponent;
 use crate::components::fog_volume::FogAnimation;
 use crate::components::health::HealthComponent;
+use crate::components::kinematic_mover::KinematicMoverComponent;
 use crate::components::light::LightComponent;
 use crate::components::mesh::MeshComponent;
 use crate::components::particle::ParticleState;
@@ -108,6 +109,10 @@ pub enum ComponentKind {
     /// `components.ai` tuning (engine-internal, like `PlayerMovement`/`Agent` —
     /// never reachable through `worldQuery`). See `components::brain`.
     Brain = 12,
+    /// Engine-owned deterministic linear mover. Not queryable by scripts in the
+    /// first kinematic-platform slice, but stored as a normal component so a
+    /// future `world.query` registration can reach the state in place.
+    KinematicMover = 13,
 }
 
 impl ComponentKind {
@@ -130,6 +135,7 @@ impl ComponentKind {
             ComponentKind::Health,
             ComponentKind::Agent,
             ComponentKind::Brain,
+            ComponentKind::KinematicMover,
         ];
         VARIANTS.len()
     };
@@ -183,6 +189,7 @@ pub enum ComponentValue {
     Health(HealthComponent),
     Agent(AgentComponent),
     Brain(BrainComponent),
+    KinematicMover(KinematicMoverComponent),
 }
 
 impl ComponentValue {
@@ -201,6 +208,7 @@ impl ComponentValue {
             ComponentValue::Health(_) => ComponentKind::Health,
             ComponentValue::Agent(_) => ComponentKind::Agent,
             ComponentValue::Brain(_) => ComponentKind::Brain,
+            ComponentValue::KinematicMover(_) => ComponentKind::KinematicMover,
         }
     }
 }
@@ -468,6 +476,21 @@ impl Component for BrainComponent {
 
     fn into_value(self) -> ComponentValue {
         ComponentValue::Brain(self)
+    }
+}
+
+impl Component for KinematicMoverComponent {
+    const KIND: ComponentKind = ComponentKind::KinematicMover;
+
+    fn from_value(value: &ComponentValue) -> Option<&Self> {
+        match value {
+            ComponentValue::KinematicMover(m) => Some(m),
+            _ => None,
+        }
+    }
+
+    fn into_value(self) -> ComponentValue {
+        ComponentValue::KinematicMover(self)
     }
 }
 

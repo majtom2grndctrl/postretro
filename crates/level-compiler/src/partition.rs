@@ -6,6 +6,7 @@
 pub(crate) mod brush_bsp;
 mod bsp;
 mod face_extract;
+pub(crate) mod region_polytope;
 mod types;
 
 pub use brush_bsp::build_bsp_from_brushes;

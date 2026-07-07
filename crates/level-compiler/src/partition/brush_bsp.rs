@@ -10,7 +10,13 @@ use super::types::*;
 use crate::map_data::BrushVolume;
 
 /// Classification tolerance for AABB corners against brush-derived planes.
+#[cfg(test)]
 const PLANE_EPSILON: f64 = 0.1;
+
+/// Candidate-routing tolerance. A brush routes to one side only when its AABB
+/// is strictly separated from the splitter; touching or near-plane AABBs stay
+/// on both sides so exact child regions keep their owning brush.
+const CANDIDATE_ROUTING_EPSILON: f64 = 1e-6;
 
 /// Classification tolerance for exact region-polytope queries.
 const REGION_CLASSIFICATION_EPSILON: f64 = 1e-3;
@@ -83,9 +89,7 @@ enum AabbSide {
     Spanning,
 }
 
-/// Classify an AABB against a plane via support-point tests — cheaper than
-/// iterating all 8 corners.
-fn classify_aabb(bounds: &Aabb, normal: DVec3, distance: f64) -> AabbSide {
+fn aabb_plane_distance_range(bounds: &Aabb, normal: DVec3, distance: f64) -> (f64, f64) {
     // max_support: corner farthest in +normal. min_support: corner farthest in -normal.
     let max_support = DVec3::new(
         if normal.x >= 0.0 {
@@ -125,9 +129,30 @@ fn classify_aabb(bounds: &Aabb, normal: DVec3, distance: f64) -> AabbSide {
     let max_dist = max_support.dot(normal) - distance;
     let min_dist = min_support.dot(normal) - distance;
 
+    (min_dist, max_dist)
+}
+
+/// Classify an AABB against a plane via support-point tests — cheaper than
+/// iterating all 8 corners.
+#[cfg(test)]
+fn classify_aabb(bounds: &Aabb, normal: DVec3, distance: f64) -> AabbSide {
+    let (min_dist, max_dist) = aabb_plane_distance_range(bounds, normal, distance);
+
     if min_dist >= -PLANE_EPSILON {
         AabbSide::Front
     } else if max_dist <= PLANE_EPSILON {
+        AabbSide::Back
+    } else {
+        AabbSide::Spanning
+    }
+}
+
+fn classify_aabb_for_candidate_routing(bounds: &Aabb, normal: DVec3, distance: f64) -> AabbSide {
+    let (min_dist, max_dist) = aabb_plane_distance_range(bounds, normal, distance);
+
+    if min_dist > CANDIDATE_ROUTING_EPSILON {
+        AabbSide::Front
+    } else if max_dist < -CANDIDATE_ROUTING_EPSILON {
         AabbSide::Back
     } else {
         AabbSide::Spanning
@@ -166,7 +191,9 @@ fn compute_inside_set(
         .collect()
 }
 
-/// Split candidates across a plane. Spanning brushes appear in both lists.
+/// Split candidates across a plane. Routing is AABB-based and conservative:
+/// only strictly separated brushes are dropped from one side. Exact solidity
+/// and splitter qualification use `RegionPolytope`.
 fn partition_candidates(
     brushes: &[BrushVolume],
     candidates: &[usize],
@@ -176,7 +203,9 @@ fn partition_candidates(
     let mut front = Vec::new();
     let mut back = Vec::new();
     for &idx in candidates {
-        match classify_aabb(&brushes[idx].aabb, plane_normal, plane_distance) {
+        let side =
+            classify_aabb_for_candidate_routing(&brushes[idx].aabb, plane_normal, plane_distance);
+        match side {
             AabbSide::Front => front.push(idx),
             AabbSide::Back => back.push(idx),
             AabbSide::Spanning => {
@@ -198,7 +227,9 @@ fn count_partition(
     let mut back = 0;
     let mut spanning = 0;
     for &idx in candidates {
-        match classify_aabb(&brushes[idx].aabb, plane_normal, plane_distance) {
+        let side =
+            classify_aabb_for_candidate_routing(&brushes[idx].aabb, plane_normal, plane_distance);
+        match side {
             AabbSide::Front => front += 1,
             AabbSide::Back => back += 1,
             AabbSide::Spanning => {
@@ -285,8 +316,8 @@ fn select_splitter(
 
 /// Shrink a region AABB to the half-space selected by `side`. Only effective
 /// for axis-aligned planes; non-axis-aligned planes return the parent bounds
-/// unchanged (conservative, but correct — all classification tests use AABB
-/// support points, not the exact half-space boundary).
+/// unchanged. Candidate routing remains conservative and AABB-based; exact
+/// solidity and splitter qualification use `RegionPolytope`.
 fn tighten_region(region: &Aabb, normal: DVec3, distance: f64, side: AabbSide) -> Aabb {
     let mut child = region.clone();
     // A unit normal aligned to an axis has exactly one component ±1, others 0.
@@ -811,6 +842,28 @@ mod tests {
             !leaf_at(&tree, gap).is_solid,
             "narrow air gap between adjacent brushes should be empty"
         );
+    }
+
+    #[test]
+    fn sub_plane_epsilon_thin_brush_interior_stays_solid() {
+        // Regression: broad AABB candidate routing dropped the owner brush from
+        // the back child when splitting on its touching +X plane.
+        let brushes = vec![box_brush(
+            DVec3::new(0.0, 0.0, 0.0),
+            DVec3::new(0.05, 1.0, 1.0),
+        )];
+
+        let tree = build_bsp_from_brushes(&brushes).expect("thin brush should build");
+
+        assert!(
+            leaf_at(&tree, DVec3::new(0.025, 0.5, 0.5)).is_solid,
+            "thin brush interior should stay solid"
+        );
+        assert!(
+            !leaf_at(&tree, DVec3::new(0.5, 0.5, 0.5)).is_solid,
+            "point outside the thin brush should be empty"
+        );
+        assert_all_leaf_bounds_valid(&tree);
     }
 
     #[test]

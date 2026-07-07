@@ -34,8 +34,8 @@ pub struct VisibilityResult {
 /// brush exterior faces) is culled from the packed output.
 ///
 /// Returns an empty set if the probe lands in a solid leaf (brush touches the
-/// boundary), so culling becomes a no-op and geometry is unchanged. See the
-/// exterior-leaf-culling plan for the design.
+/// boundary), so culling becomes a no-op and ambiguous boundary maps keep their
+/// geometry.
 pub fn find_exterior_leaves(tree: &BspTree, portals: &[Portal]) -> HashSet<usize> {
     if tree.leaves.is_empty() {
         return HashSet::new();

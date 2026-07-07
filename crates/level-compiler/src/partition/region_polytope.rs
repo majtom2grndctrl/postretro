@@ -1,7 +1,7 @@
 // Convex BSP leaf-region substrate. Regions are represented as facet windings
 // plus their inward half-space planes, so splitting can clip caps without
 // re-deriving planes from polygon vertices.
-// See: context/plans/in-progress/bsp-exact-leaf-solidity/index.md Task 2
+// See: context/lib/build_pipeline.md §PRL Compilation / Compiler pipeline
 
 use glam::DVec3;
 

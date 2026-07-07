@@ -12,10 +12,9 @@ const WINDING_HALF_EXTENT: f64 = 16384.0;
 /// of the plane (dot(v, normal) - distance > 0) and back is the negative side.
 /// Either may be `None` if the split produces a degenerate polygon (< 3 vertices).
 ///
-/// `epsilon` controls point classification tolerance. Callers use different
-/// values depending on context: BSP building uses a generous epsilon (0.1),
-/// portal clipping uses a tighter one (0.01) to avoid accumulating error
-/// across many sequential clips.
+/// `epsilon` controls point classification tolerance. Callers choose it by
+/// operation: BSP face extraction uses `0.1`, portal clipping uses `0.01`,
+/// and exact region-polytope clipping uses `1e-6`.
 pub fn split_polygon(
     vertices: &[DVec3],
     plane_normal: DVec3,

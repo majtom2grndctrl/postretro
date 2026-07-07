@@ -1,14 +1,14 @@
-// Shared `#[cfg(test)]` fixture-loading helper for the SH/lightmap determinism gates.
+// Shared `#[cfg(test)]` fixture-loading helper for compile-pipeline regression tests.
 //
 // The compiler is a BINARY crate with no `[lib]` target, so cross-module
 // integration tests cannot live in `tests/` and `use` the in-crate modules —
 // they must be co-located. This module runs the real compile pipeline
 // (parse → partition → visibility → geometry → BVH) on a `content/dev/maps/`
-// fixture and hands the products (geometry, BVH, primitives, BSP tree, exterior
-// leaves, lights) to the gate tests in `lightmap_layer.rs` and `sh_group.rs`.
+// fixture and hands the products (geometry, BVH, primitives, BSP tree, faces,
+// exterior leaves, lights) to compile-pipeline fixture tests.
 //
 // It deliberately stops before the data-script compile step: parsing a `.map`
-// only stores `data_script` as a string, so the gates need neither the
+// only stores `data_script` as a string, so tests need neither the
 // `scripts-build` sidecar nor any script compilation to obtain geometry/lights.
 //
 // See: context/lib/build_pipeline.md §Build Cache
@@ -44,9 +44,8 @@ pub const GATE_FIXTURES: &[&str] = &[
     "test_animated_weight_maps_single",
 ];
 
-/// The products of the compile pipeline a determinism gate needs. Owns the
-/// geometry/BVH/lights so a test can borrow them for both the monolithic and the
-/// per-element path.
+/// The products compile-pipeline fixture tests need. Owns the shared pipeline
+/// outputs, including partition faces for regression coverage.
 pub struct FixturePipeline {
     pub geometry: GeometryResult,
     pub bvh: Bvh<f32, 3>,
@@ -70,8 +69,8 @@ pub fn fixture_path(name: &str) -> PathBuf {
 }
 
 /// Run parse → partition → visibility → geometry → BVH on a fixture, returning
-/// the products the gates compare. Panics with a descriptive message on any
-/// pipeline failure (a gate is meaningless if the fixture cannot be loaded).
+/// shared test products. Panics with a descriptive message on any pipeline
+/// failure; fixture tests are meaningless if the fixture cannot be loaded.
 pub fn load_fixture(name: &str) -> FixturePipeline {
     let path = fixture_path(name);
     assert!(path.exists(), "fixture map missing: {}", path.display());

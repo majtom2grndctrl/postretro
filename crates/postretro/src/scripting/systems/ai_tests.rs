@@ -35,6 +35,11 @@ use postretro_scripting_core::data_descriptors::{
 
 const EPS: f32 = 1e-6;
 
+fn yaw_distance(from: f32, to: f32) -> f32 {
+    ((to - from + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI)
+        .abs()
+}
+
 /// Resolved tuning with legible ranges: detect at 18, attack at 2, leash at 26,
 /// 8 damage on a 1000ms cooldown. Animation names mirror the four logical
 /// states: idle→idle, alert→locomotion, attack→attack, death→death.
@@ -271,6 +276,17 @@ fn enemy_forward_xz(reg: &EntityRegistry, enemy: EntityId) -> Vec3 {
     Vec3::new(fwd.x, 0.0, fwd.z).normalize()
 }
 
+fn enemy_yaw(reg: &EntityRegistry, enemy: EntityId) -> f32 {
+    let rot = reg.get_component::<Transform>(enemy).unwrap().rotation;
+    yaw_from_rotation(rot)
+}
+
+fn set_enemy_yaw(reg: &mut EntityRegistry, enemy: EntityId, yaw: f32) {
+    let mut transform = *reg.get_component::<Transform>(enemy).unwrap();
+    transform.rotation = glam::Quat::from_rotation_y(yaw);
+    reg.set_component(enemy, transform).unwrap();
+}
+
 /// Force the enemy agent's live velocity (what `path_state` reports), so a facing
 /// test can stage a "moving" agent without running the steering tick.
 fn set_agent_velocity(reg: &mut EntityRegistry, enemy: EntityId, velocity: Vec3) {
@@ -397,8 +413,89 @@ fn attack_range_entry_is_evaluated_even_when_acquisition_gated_off() {
 }
 
 // ---------------------------------------------------------------------------
-// Pure locomotion-animation helpers
+// Pure facing-slew helpers
 // ---------------------------------------------------------------------------
+
+#[test]
+fn slew_yaw_large_turn_clamps_each_step_and_arrives_at_target() {
+    let mut current = 0.0_f32;
+    let target = 180.0_f32.to_radians();
+    let max_delta = 15.0_f32.to_radians();
+    let mut steps = 0;
+
+    while current.to_bits() != target.to_bits() && steps < 32 {
+        let previous = current;
+        current = slew_yaw(current, target, max_delta);
+        steps += 1;
+        assert!(
+            yaw_distance(previous, current) <= max_delta + EPS,
+            "slew advanced more than the angular budget on step {steps}: {previous} -> {current}",
+        );
+    }
+
+    assert!(
+        steps > 1,
+        "large turn should require multiple clamped steps"
+    );
+    assert_eq!(
+        current.to_bits(),
+        target.to_bits(),
+        "slew should converge to the exact target yaw"
+    );
+}
+
+#[test]
+fn slew_yaw_takes_shortest_arc_across_pi_seam() {
+    let current = (-170.0_f32).to_radians();
+    let target = 170.0_f32.to_radians();
+    let max_delta = 5.0_f32.to_radians();
+
+    let next = slew_yaw(current, target, max_delta);
+
+    assert!(
+        next < current,
+        "shortest arc from -170 deg to +170 deg should rotate through 180, not back through 0"
+    );
+    assert!(
+        (yaw_distance(current, next) - max_delta).abs() < EPS,
+        "first seam-crossing step should consume the clamped angular budget"
+    );
+}
+
+#[test]
+fn slew_yaw_returns_target_exactly_when_within_max_delta() {
+    let current = 40.0_f32.to_radians();
+    let target = 46.0_f32.to_radians();
+    let next = slew_yaw(current, target, 10.0_f32.to_radians());
+
+    assert_eq!(
+        next.to_bits(),
+        target.to_bits(),
+        "arrival within the angular budget should return the target exactly"
+    );
+}
+
+#[test]
+fn slew_yaw_sequence_is_deterministic() {
+    fn run_sequence() -> Vec<u32> {
+        let mut current = (-35.0_f32).to_radians();
+        let samples = [
+            (160.0_f32.to_radians(), 22.5_f32.to_radians()),
+            (160.0_f32.to_radians(), 22.5_f32.to_radians()),
+            ((-175.0_f32).to_radians(), 30.0_f32.to_radians()),
+            (15.0_f32.to_radians(), 12.0_f32.to_radians()),
+            (15.0_f32.to_radians(), 12.0_f32.to_radians()),
+        ];
+        let mut yaws = Vec::new();
+        for (target, max_delta) in samples {
+            current = slew_yaw(current, target, max_delta);
+            yaws.push(current.to_bits());
+        }
+        yaws
+    }
+
+    assert_eq!(run_sequence(), run_sequence());
+}
 
 #[test]
 fn locomotion_intent_uses_xz_speed_and_shared_epsilon() {
@@ -1834,8 +1931,8 @@ fn integrated_chase_loop_closes_distance_for_all_chasers_when_player_moves() {
 // ---------------------------------------------------------------------------
 // Facing: the enemy orients believably. Nothing else writes the enemy's
 // `Transform` rotation, so the AI tick owns yaw — face velocity when moving,
-// face the player when stopped-but-engaged, leave Idle facing untouched, and
-// never write a NaN yaw from a zero-length direction.
+// face the player when stopped-but-engaged, leave Idle/Death facing untouched,
+// and never write a NaN yaw from a zero-length direction.
 // ---------------------------------------------------------------------------
 
 /// Assert two normalized XZ directions point the same way (dot ≈ 1).
@@ -1844,6 +1941,34 @@ fn assert_faces(actual: Vec3, expected: Vec3, ctx: &str) {
     assert!(
         dot > 0.999,
         "{ctx}: expected facing {expected:?}, got {actual:?} (dot {dot})"
+    );
+}
+
+fn run_ticks_until_facing_converges(
+    reg: &mut EntityRegistry,
+    warned: &mut HashSet<String>,
+    enemy: EntityId,
+    expected: Vec3,
+    ctx: &str,
+) {
+    for _ in 0..16 {
+        run_ai_tick(reg, warned, 0.016);
+        if enemy_forward_xz(reg, enemy)
+            .normalize()
+            .dot(expected.normalize())
+            > 0.999
+        {
+            return;
+        }
+    }
+    assert_faces(enemy_forward_xz(reg, enemy), expected, ctx);
+}
+
+#[test]
+fn facing_turn_rate_is_at_least_steering_turn_rate() {
+    assert!(
+        FACING_TURN_RATE >= agent_steering::MAX_TURN_RATE,
+        "enemy facing must keep up with path steering"
     );
 }
 
@@ -1869,6 +1994,13 @@ fn stopped_engaged_enemy_faces_the_player() {
 
     // Player is at +X from the enemy → the enemy faces +X.
     let to_player = reg.get_component::<Transform>(player).unwrap().position - Vec3::ZERO;
+    run_ticks_until_facing_converges(
+        &mut reg,
+        &mut warned,
+        enemy,
+        to_player,
+        "stopped engaged enemy faces the player",
+    );
     assert_faces(
         enemy_forward_xz(&reg, enemy),
         to_player,
@@ -1903,6 +2035,13 @@ fn stopped_engaged_enemy_front_meets_player_not_its_back() {
     // The model's authored front (`+Z` rotated by the stored quaternion) points at
     // the player (+X): dot ≈ +1.
     let to_player = Vec3::new(1.0, 0.0, 0.0);
+    run_ticks_until_facing_converges(
+        &mut reg,
+        &mut warned,
+        enemy,
+        to_player,
+        "stopped engaged enemy front meets the player",
+    );
     let front = enemy_forward_xz(&reg, enemy);
     let dot = front.dot(to_player);
     assert!(
@@ -1924,7 +2063,39 @@ fn moving_enemy_faces_its_velocity_direction() {
     let mut reg = EntityRegistry::new();
     let mut warned = HashSet::new();
 
-    // Player inside detection (so the enemy is engaged/Alert) along +X.
+    // Player inside detection (so the enemy is engaged/Alert) along +Z.
+    spawn_player(&mut reg, Vec3::new(0.0, 0.0, 10.0));
+    let enemy = spawn_enemy(
+        &mut reg,
+        Vec3::ZERO,
+        brain_with(tuning(), LogicalState::Alert),
+        50.0,
+    );
+    // Velocity points toward +X (routing around an obstacle), NOT toward the
+    // player bee-line — the facing must follow the velocity.
+    let vel = Vec3::new(4.0, 0.0, 0.0);
+    set_agent_velocity(&mut reg, enemy, vel);
+
+    run_ai_tick(&mut reg, &mut warned, 0.016);
+    run_ticks_until_facing_converges(
+        &mut reg,
+        &mut warned,
+        enemy,
+        vel,
+        "moving enemy faces its velocity, not the player bee-line",
+    );
+    assert_faces(
+        enemy_forward_xz(&reg, enemy),
+        vel,
+        "moving enemy faces its velocity, not the player bee-line",
+    );
+}
+
+#[test]
+fn moving_alert_enemy_facing_is_rate_limited_per_tick() {
+    let mut reg = EntityRegistry::new();
+    let mut warned = HashSet::new();
+
     spawn_player(&mut reg, Vec3::new(10.0, 0.0, 0.0));
     let enemy = spawn_enemy(
         &mut reg,
@@ -1932,16 +2103,20 @@ fn moving_enemy_faces_its_velocity_direction() {
         brain_with(tuning(), LogicalState::Alert),
         50.0,
     );
-    // Velocity points toward +Z (routing around an obstacle), NOT toward the
-    // player at +X — the facing must follow the velocity.
-    let vel = Vec3::new(0.0, 0.0, 4.0);
-    set_agent_velocity(&mut reg, enemy, vel);
+    set_agent_velocity(&mut reg, enemy, Vec3::new(4.0, 0.0, 0.0));
 
+    let before = enemy_yaw(&reg, enemy);
     run_ai_tick(&mut reg, &mut warned, 0.016);
-    assert_faces(
-        enemy_forward_xz(&reg, enemy),
-        vel,
-        "moving enemy faces its velocity, not the player bee-line",
+
+    let after = enemy_yaw(&reg, enemy);
+    let target = std::f32::consts::FRAC_PI_2;
+    assert!(
+        yaw_distance(before, after) <= FACING_TURN_RATE * 0.016 + EPS,
+        "one tick must not rotate farther than the facing-rate budget"
+    );
+    assert!(
+        yaw_distance(after, target) > 0.1,
+        "one tick should slew toward the velocity heading, not snap to it"
     );
 }
 
@@ -1978,6 +2153,33 @@ fn idle_enemy_facing_is_left_unchanged() {
 }
 
 #[test]
+fn death_enemy_facing_is_left_unchanged() {
+    let mut reg = EntityRegistry::new();
+    let mut warned = HashSet::new();
+
+    spawn_player(&mut reg, Vec3::new(1.5, 0.0, 0.0));
+    let enemy = spawn_enemy(
+        &mut reg,
+        Vec3::ZERO,
+        brain_with(tuning(), LogicalState::Death),
+        0.0,
+    );
+    let spawn_rot = glam::Quat::from_rotation_y(1.2);
+    let mut transform = *reg.get_component::<Transform>(enemy).unwrap();
+    transform.rotation = spawn_rot;
+    reg.set_component(enemy, transform).unwrap();
+    set_agent_velocity(&mut reg, enemy, Vec3::new(3.0, 0.0, 0.0));
+
+    run_ai_tick(&mut reg, &mut warned, 0.016);
+    assert_eq!(enemy_state(&reg, enemy), LogicalState::Death);
+    let rot_after = reg.get_component::<Transform>(enemy).unwrap().rotation;
+    assert!(
+        rot_after.angle_between(spawn_rot) < 1e-5,
+        "a Death enemy's facing must be left unchanged (was {spawn_rot:?}, now {rot_after:?})",
+    );
+}
+
+#[test]
 fn stopped_engaged_enemy_on_top_of_player_writes_no_nan_facing() {
     // Degenerate: a stopped engaged enemy at the SAME XZ as the player → the
     // to-player direction is zero-length. The facing guard must skip the write,
@@ -1993,6 +2195,8 @@ fn stopped_engaged_enemy_on_top_of_player_writes_no_nan_facing() {
         brain_with(tuning(), LogicalState::Idle),
         50.0,
     );
+    set_enemy_yaw(&mut reg, enemy, 1.2);
+    let rot_before = reg.get_component::<Transform>(enemy).unwrap().rotation;
     set_agent_velocity(&mut reg, enemy, Vec3::ZERO);
 
     run_ai_tick(&mut reg, &mut warned, 0.016);
@@ -2001,6 +2205,10 @@ fn stopped_engaged_enemy_on_top_of_player_writes_no_nan_facing() {
     assert!(
         rot.x.is_finite() && rot.y.is_finite() && rot.z.is_finite() && rot.w.is_finite(),
         "zero-length facing direction must not write a NaN rotation (got {rot:?})",
+    );
+    assert!(
+        rot.angle_between(rot_before) < 1e-5,
+        "zero-length facing direction must leave the existing rotation unchanged",
     );
 }
 

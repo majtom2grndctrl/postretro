@@ -52,7 +52,7 @@ const ARRIVAL_SLOWDOWN_RADIUS_FACTOR: f32 = 7.0;
 const STEERING_ACCEL_PER_SPEED: f32 = 8.0;
 
 /// Maximum path-following heading rotation, in radians/sec.
-const MAX_TURN_RATE: f32 = std::f32::consts::TAU;
+pub(crate) const MAX_TURN_RATE: f32 = std::f32::consts::TAU;
 
 /// Corridor lookahead as a multiple of the agent capsule radius. This exceeds
 /// the waypoint-reached radius so agents can lead a corner, but stays below the

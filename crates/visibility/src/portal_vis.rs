@@ -18,6 +18,31 @@ const CLIP_EPSILON: f32 = 1e-4;
 // real map trips the guard; the visible set is conservative, not incorrect.
 const MAX_PORTAL_CHAIN_DEPTH: usize = 256;
 
+// Dense detail-brush partitions can create highly cyclic portal graphs where
+// the number of distinct portal chains is far larger than the number of cells.
+// Keep the per-frame CPU walk bounded; the visibility layer falls back to
+// per-cell AABB frustum culling when this trips.
+const MAX_PORTAL_WALK_STEPS: u32 = 20_000;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct PortalTraversalStats {
+    pub considered: u32,
+    pub accepted: u32,
+    pub rejected_solid: u32,
+    pub rejected_clipped: u32,
+    pub rejected_narrow: u32,
+    pub rejected_invalid: u32,
+    pub rejected_path_cycle: u32,
+    pub rejected_depth_limit: u32,
+    pub step_limit_hit: bool,
+}
+
+#[derive(Debug)]
+pub(crate) struct PortalTraversalResult {
+    pub visible: Vec<bool>,
+    pub stats: PortalTraversalStats,
+}
+
 // `trace` is `Some(String)` only when capture is armed; event sites check this
 // before every write so the hot path allocates nothing when diagnostics are off.
 struct DfsState<'a> {
@@ -26,14 +51,8 @@ struct DfsState<'a> {
     trace: Option<String>,
     visible: Vec<bool>,
     cell_count: usize,
-    considered: u32,
-    accepted: u32,
-    rejected_solid: u32,
-    rejected_clipped: u32,
-    rejected_narrow: u32,
-    rejected_invalid: u32,
-    rejected_path_cycle: u32,
-    rejected_depth_limit: u32,
+    stats: PortalTraversalStats,
+    step_limit: u32,
     depth_limit_warned: bool,
     camera_cell: usize,
 }
@@ -56,8 +75,42 @@ pub fn portal_traverse(
     world: &LevelWorld,
     capture: bool,
 ) -> Vec<bool> {
-    let (visible, trace) =
-        portal_traverse_inner(camera_position, camera_cell, frustum, world, capture);
+    portal_traverse_detailed(camera_position, camera_cell, frustum, world, capture).visible
+}
+
+pub(crate) fn portal_traverse_detailed(
+    camera_position: Vec3,
+    camera_cell: usize,
+    frustum: &Frustum,
+    world: &LevelWorld,
+    capture: bool,
+) -> PortalTraversalResult {
+    portal_traverse_with_step_limit(
+        camera_position,
+        camera_cell,
+        frustum,
+        world,
+        capture,
+        MAX_PORTAL_WALK_STEPS,
+    )
+}
+
+fn portal_traverse_with_step_limit(
+    camera_position: Vec3,
+    camera_cell: usize,
+    frustum: &Frustum,
+    world: &LevelWorld,
+    capture: bool,
+    step_limit: u32,
+) -> PortalTraversalResult {
+    let (visible, trace) = portal_traverse_inner(
+        camera_position,
+        camera_cell,
+        frustum,
+        world,
+        capture,
+        step_limit,
+    );
     // One `log::info!` call: one timestamp/target prefix per traced frame
     // instead of one per event.
     if let Some(buf) = trace {
@@ -74,9 +127,11 @@ fn portal_traverse_inner(
     frustum: &Frustum,
     world: &LevelWorld,
     capture: bool,
-) -> (Vec<bool>, Option<String>) {
+    step_limit: u32,
+) -> (PortalTraversalResult, Option<String>) {
     let cell_count = world.cell_count();
     let visible = vec![false; cell_count];
+    let stats = PortalTraversalStats::default();
 
     let mut trace = if capture {
         Some(String::with_capacity(512))
@@ -94,7 +149,7 @@ fn portal_traverse_inner(
                 camera_position.x, camera_position.y, camera_position.z, camera_cell, cell_count,
             );
         }
-        return (visible, trace);
+        return (PortalTraversalResult { visible, stats }, trace);
     }
 
     // `solid` is omitted from the header — solid cells short-circuit in
@@ -127,14 +182,8 @@ fn portal_traverse_inner(
         trace,
         visible,
         cell_count,
-        considered: 0,
-        accepted: 0,
-        rejected_solid: 0,
-        rejected_clipped: 0,
-        rejected_narrow: 0,
-        rejected_invalid: 0,
-        rejected_path_cycle: 0,
-        rejected_depth_limit: 0,
+        stats,
+        step_limit,
         depth_limit_warned: false,
         camera_cell,
     };
@@ -172,7 +221,7 @@ fn portal_traverse_inner(
         let _ = write!(
             buf,
             "  = reach={} cons={} acc={} rej[",
-            reach_count, state.considered, state.accepted,
+            reach_count, state.stats.considered, state.stats.accepted,
         );
         let mut first = true;
         let mut emit = |buf: &mut String, name: &str, count: u32| {
@@ -187,16 +236,23 @@ fn portal_traverse_inner(
         };
         // Same order as the event-site reason codes: clip, narrow, solid,
         // cycle, depth, invalid.
-        emit(buf, "clip", state.rejected_clipped);
-        emit(buf, "narrow", state.rejected_narrow);
-        emit(buf, "solid", state.rejected_solid);
-        emit(buf, "cycle", state.rejected_path_cycle);
-        emit(buf, "depth", state.rejected_depth_limit);
-        emit(buf, "invalid", state.rejected_invalid);
+        emit(buf, "clip", state.stats.rejected_clipped);
+        emit(buf, "narrow", state.stats.rejected_narrow);
+        emit(buf, "solid", state.stats.rejected_solid);
+        emit(buf, "cycle", state.stats.rejected_path_cycle);
+        emit(buf, "depth", state.stats.rejected_depth_limit);
+        emit(buf, "limit", u32::from(state.stats.step_limit_hit));
+        emit(buf, "invalid", state.stats.rejected_invalid);
         let _ = writeln!(buf, "]");
     }
 
-    (state.visible, state.trace)
+    (
+        PortalTraversalResult {
+            visible: state.visible,
+            stats: state.stats,
+        },
+        state.trace,
+    )
 }
 
 // Recursive per-chain DFS. Mirrors id Tech 4's `FloodViewThroughArea_r`
@@ -212,14 +268,26 @@ fn flood(
     // Every chain that reaches this cell contributes to the visible union.
     state.visible[cell] = true;
 
+    if state.stats.step_limit_hit {
+        return;
+    }
+
+    if state.stats.considered >= state.step_limit {
+        state.stats.step_limit_hit = true;
+        if let Some(buf) = state.trace.as_mut() {
+            let _ = writeln!(buf, "  rej cell={} limit steps={}", cell, state.step_limit,);
+        }
+        return;
+    }
+
     if path.len() >= MAX_PORTAL_CHAIN_DEPTH {
-        state.rejected_depth_limit += 1;
+        state.stats.rejected_depth_limit += 1;
         if !state.depth_limit_warned {
             state.depth_limit_warned = true;
-            // Real warning, independent of capture: visible-set conservatism
-            // past this point is a correctness signal worth seeing even when
-            // the diagnostic chord is off. Stays a separate emission.
-            log::warn!(
+            // Keep this verbose-only: a problematic portal graph can hit the
+            // limit every frame, and the caller already chooses a conservative
+            // visibility fallback.
+            log::debug!(
                 target: "postretro::portal_trace",
                 "[portal_trace] chain depth limit reached (MAX_PORTAL_CHAIN_DEPTH={}) \
                  camera_cell={} truncated_at_cell={} — visible set conservative \
@@ -229,7 +297,7 @@ fn flood(
                 cell,
             );
         }
-        // The `log::warn!` fires once per walk; the trace line fires every
+        // The `log::debug!` fires once per walk; the trace line fires every
         // time the limit is hit so the event appears inline in the capture.
         if let Some(buf) = state.trace.as_mut() {
             let _ = writeln!(buf, "  rej cell={} depth", cell);
@@ -242,8 +310,16 @@ fn flood(
     // Index rather than iterate: re-borrowing `state.world` each step avoids
     // holding a long-lived borrow across the recursive call (`state` is `&mut`).
     for i in 0..outbound_len {
+        if state.stats.considered >= state.step_limit {
+            state.stats.step_limit_hit = true;
+            if let Some(buf) = state.trace.as_mut() {
+                let _ = writeln!(buf, "  rej cell={} limit steps={}", cell, state.step_limit,);
+            }
+            return;
+        }
+
         let Some(portal_idx) = state.world.cell_portal_index(cell, i) else {
-            state.rejected_invalid += 1;
+            state.stats.rejected_invalid += 1;
             continue;
         };
         let portal = &state.world.portals[portal_idx];
@@ -254,21 +330,21 @@ fn flood(
             portal.front_cell
         };
 
-        state.considered += 1;
+        state.stats.considered += 1;
 
         if neighbor >= state.cell_count {
-            state.rejected_invalid += 1;
+            state.stats.rejected_invalid += 1;
             continue;
         }
 
         // Linear scan beats HashSet hashing at typical chain depths (5–10).
         if path.contains(&portal_idx) {
-            state.rejected_path_cycle += 1;
+            state.stats.rejected_path_cycle += 1;
             continue;
         }
 
         if state.world.cell_is_solid(neighbor) {
-            state.rejected_solid += 1;
+            state.stats.rejected_solid += 1;
             // For `solid` rejects the clip hasn't run yet, so the "clipped
             // verts" half of the v=c/p pair isn't meaningful. Print only the
             // portal vertex count.
@@ -315,7 +391,7 @@ fn flood(
         };
 
         if clipped_len < 3 {
-            state.rejected_clipped += 1;
+            state.stats.rejected_clipped += 1;
             if let Some(buf) = state.trace.as_mut() {
                 let _ = writeln!(
                     buf,
@@ -330,7 +406,7 @@ fn flood(
         }
 
         let Some(narrowed) = narrowed_opt else {
-            state.rejected_narrow += 1;
+            state.stats.rejected_narrow += 1;
             if let Some(buf) = state.trace.as_mut() {
                 let _ = writeln!(
                     buf,
@@ -344,7 +420,7 @@ fn flood(
             continue;
         };
 
-        state.accepted += 1;
+        state.stats.accepted += 1;
         if let Some(buf) = state.trace.as_mut() {
             let _ = writeln!(buf, "  acc {}->{} v={}", cell, neighbor, clipped_len);
         }
@@ -835,6 +911,29 @@ mod tests {
         assert!(visible[0], "camera cell A should be visible");
         assert!(visible[1], "cell B should be visible through portal 0");
         assert!(visible[2], "cell C should be visible through portals 0+1");
+    }
+
+    #[test]
+    fn portal_traverse_reports_step_limit_before_unbounded_walk() {
+        let world = three_cell_chain();
+        let camera_pos = Vec3::new(16.0, 32.0, 32.0);
+        let frustum = make_camera_frustum(camera_pos, Vec3::X);
+
+        let result = portal_traverse_with_step_limit(camera_pos, 0, &frustum, &world, false, 0);
+
+        assert!(
+            result.stats.step_limit_hit,
+            "zero step budget should trip the traversal fuse"
+        );
+        assert_eq!(
+            result.stats.considered, 0,
+            "no portal should be considered after the budget trips"
+        );
+        assert!(result.visible[0], "camera cell remains visible");
+        assert!(
+            !result.visible[1],
+            "walk stops before entering neighbor cells"
+        );
     }
 
     #[test]
@@ -1942,7 +2041,8 @@ mod tests {
         let world = three_cell_chain();
         let camera_pos = Vec3::new(16.0, 32.0, 32.0);
         let frustum = make_camera_frustum(camera_pos, Vec3::X);
-        let (_visible, trace) = portal_traverse_inner(camera_pos, 0, &frustum, &world, true);
+        let (_visible, trace) =
+            portal_traverse_inner(camera_pos, 0, &frustum, &world, true, MAX_PORTAL_WALK_STEPS);
         let buf = trace.expect("capture: true should produce a trace buffer");
 
         // Header fields — these are the per-frame camera-cell diagnostics

@@ -263,7 +263,7 @@ fn resolve_kinematic_waypoint_chain(
         ));
     }
 
-    let mut positions = Vec::new();
+    let mut positions: Vec<Vec3> = Vec::new();
     let mut seen = HashSet::new();
     let mut current = path;
     loop {

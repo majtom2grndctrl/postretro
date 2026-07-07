@@ -61,6 +61,7 @@ pub(crate) use prediction::{
     CorrectionClass, DASH_CORRECTION_MAX_M, ORDINARY_CORRECTION_MAX_M, TELEPORT_CORRECTION_MIN_M,
     classify_correction,
 };
+#[cfg(test)]
 #[allow(unused_imports)]
 pub(crate) use reconcile::reconcile_local_pawn;
 pub(crate) use replication::{
@@ -666,6 +667,7 @@ pub(crate) fn client_receive_and_apply(
     gravity: f32,
     tick_dt: f32,
     frame_dt: Duration,
+    mover_target_tick: Option<u32>,
 ) -> bool {
     let mut materialized_remote_enemy_presentation = false;
     for bytes in client.drain_snapshots() {
@@ -683,10 +685,13 @@ pub(crate) fn client_receive_and_apply(
             );
             continue;
         }
+        let target_tick = mover_target_tick
+            .unwrap_or(snapshot.server_tick)
+            .max(snapshot.server_tick);
         let mut outcome = replication.apply_snapshot_with_mover_target_tick(
             registry,
             &snapshot,
-            snapshot.server_tick,
+            target_tick,
             tick_dt,
         );
 

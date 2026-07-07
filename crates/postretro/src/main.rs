@@ -4120,6 +4120,9 @@ impl App {
                     &self.kinematic_mover_colliders,
                     &self.kinematic_mover_tick_states,
                 );
+                let mover_target_tick = time_sync
+                    .estimated_server_tick()
+                    .map(|tick| tick.floor().clamp(0.0, f64::from(u32::MAX)) as u32);
                 let materialized_remote_enemy_presentation = netcode::client_receive_and_apply(
                     &mut registry,
                     &mut slot_table,
@@ -4133,6 +4136,7 @@ impl App {
                     gravity,
                     crate::frame_timing::TICK_DURATION.as_secs_f32(),
                     dt,
+                    mover_target_tick,
                 );
                 if materialized_remote_enemy_presentation {
                     // `mesh_clip_tables` is a disjoint field of the same `session`

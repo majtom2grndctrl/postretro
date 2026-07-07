@@ -52,6 +52,7 @@ use crate::collision::moving::{MoverPose, MoverPoseSource};
 use crate::kinematic_mover::{advance_mover_phase_one_tick, mover_pose_for_current_phase};
 
 const MOVER_HISTORY_LIMIT: usize = 128;
+#[cfg(test)]
 const DEFAULT_MOVER_TICK_DT: f32 = 1.0 / 60.0;
 
 /// Result of one remote interpolation sampling pass.
@@ -420,6 +421,7 @@ impl ClientReplication {
     /// otherwise walks the records in order, mutating the registry through the
     /// game-logic-owned primitives, and returns the ack + refresh requests + ignored
     /// diagnostics this snapshot produced.
+    #[cfg(test)]
     pub(crate) fn apply_snapshot(
         &mut self,
         registry: &mut EntityRegistry,
@@ -925,6 +927,7 @@ impl ClientReplication {
     /// local `PlayerMovementComponent`; otherwise it is ignored with a typed
     /// diagnostic (Phase 2's dumb mover is Transform-only). Its `velocity` is still
     /// captured for the interpolation buffer's bounded extrapolation on starvation.
+    #[allow(clippy::too_many_arguments)]
     fn apply_components_to(
         &mut self,
         registry: &mut EntityRegistry,
@@ -1343,7 +1346,10 @@ fn validate_kinematic_mover_state_binding(
     bound_mover_id: Option<u32>,
     wire: &WireKinematicMoverState,
 ) -> Option<KinematicMoverComponent> {
-    let Ok(mover) = registry.get_component::<KinematicMoverComponent>(id).cloned() else {
+    let Ok(mover) = registry
+        .get_component::<KinematicMoverComponent>(id)
+        .cloned()
+    else {
         log::warn!(
             "[Net] KinematicMoverState for mover_id {} applied to entity without KinematicMover",
             wire.mover_id

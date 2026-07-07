@@ -48,6 +48,7 @@ use postretro_foundation::PlayerMovementComponent;
 ///    seed a decaying presentation offset for a smoothed correction; for a teleport,
 ///    clear history + offset and stamp the registry transform prev == current.
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(crate) fn reconcile_local_pawn(
     registry: &mut EntityRegistry,
     prediction: &mut ClientPrediction,
@@ -803,7 +804,10 @@ mod tests {
         prediction
             .predict_tick(
                 neutral_command(5),
-                (*registry.get_component::<Transform>(id).unwrap(), start_component),
+                (
+                    *registry.get_component::<Transform>(id).unwrap(),
+                    start_component,
+                ),
                 &world,
                 GRAVITY,
                 DT,

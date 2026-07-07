@@ -996,7 +996,7 @@ fn resolve_kinematic_path(
     mover: &PendingKinematicMover,
     waypoint_by_name: &HashMap<&str, &MapKinematicWaypoint>,
 ) -> anyhow::Result<Vec<String>> {
-    let mut path = Vec::new();
+    let mut path: Vec<String> = Vec::new();
     let mut current = mover.path.as_str();
     let mut seen = HashSet::new();
 
@@ -1979,21 +1979,21 @@ mod tests {
 
     #[test]
     fn duplicate_kinematic_waypoint_names_reject() {
-        let map_text =
-            kinematic_test_map("wp_b").replace("\"name\" \"wp_b\"", "\"name\" \"wp_a\"");
+        let map_text = kinematic_test_map("wp_b").replace("\"name\" \"wp_b\"", "\"name\" \"wp_a\"");
         let err = parse_inline_map(&map_text)
             .expect_err("duplicate waypoint names must reject before PRL emission");
 
         assert!(
-            err.to_string().contains("duplicate kinematic_waypoint name"),
+            err.to_string()
+                .contains("duplicate kinematic_waypoint name"),
             "diagnostic should name duplicate waypoint names, got: {err}"
         );
     }
 
     #[test]
     fn non_finite_kinematic_waypoint_origin_rejects() {
-        let map_text = kinematic_test_map("wp_b")
-            .replace("\"origin\" \"0 0 64\"", "\"origin\" \"0 nan 64\"");
+        let map_text =
+            kinematic_test_map("wp_b").replace("\"origin\" \"0 0 64\"", "\"origin\" \"0 nan 64\"");
         let err = parse_inline_map(&map_text)
             .expect_err("non-finite waypoint origins must reject before PRL emission");
 

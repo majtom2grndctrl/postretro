@@ -1,0 +1,26 @@
+// Game: Generic
+// Format: Standard
+// Tiny regression fixture: two triangular-prism brushes form one cuboid split
+// along the qx=qy diagonal. Parsed into engine space, that shared internal
+// plane is x=z with normal (1, 0, -1) / sqrt(2).
+{
+"classname" "worldspawn"
+"initialGravity" "-9.81"
+"wad" ""
+// wedge A: qx <= qy
+{
+( 0 0 0 ) ( 0 128 0 ) ( 0 0 128 ) debug_wall_grey 0 0 0 1 1
+( 0 128 0 ) ( 128 128 0 ) ( 0 128 128 ) debug_wall_grey 0 0 0 1 1
+( 0 0 0 ) ( 128 128 0 ) ( 0 128 0 ) debug_floor_grey 0 0 0 1 1
+( 0 0 128 ) ( 0 128 128 ) ( 128 128 128 ) debug_ceiling_grey 0 0 0 1 1
+( 0 0 0 ) ( 0 0 128 ) ( 128 128 0 ) debug_wall_grey 0 0 0 1 1
+}
+// wedge B: qx >= qy
+{
+( 128 0 0 ) ( 128 0 128 ) ( 128 128 0 ) debug_wall_grey 0 0 0 1 1
+( 0 0 0 ) ( 0 0 128 ) ( 128 0 0 ) debug_wall_grey 0 0 0 1 1
+( 0 0 0 ) ( 128 0 0 ) ( 128 128 0 ) debug_floor_grey 0 0 0 1 1
+( 0 0 128 ) ( 128 128 128 ) ( 128 0 128 ) debug_ceiling_grey 0 0 0 1 1
+( 0 0 0 ) ( 128 128 0 ) ( 0 0 128 ) debug_wall_grey 0 0 0 1 1
+}
+}

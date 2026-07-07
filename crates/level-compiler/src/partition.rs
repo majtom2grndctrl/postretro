@@ -352,6 +352,55 @@ mod tests {
         assert!(empty_count >= 1, "should have at least 1 empty leaf");
     }
 
+    #[test]
+    fn partition_with_wedge_fixture_culls_internal_plane_and_bounds_faces() {
+        const FACE_CLIP_EPSILON: f64 = 0.1;
+
+        let fx = crate::fixture_pipeline::load_fixture("wedge-shared-plane");
+        let internal_normal = DVec3::new(1.0, 0.0, -1.0).normalize();
+        let internal_distance = 0.0;
+
+        for face in &fx.faces {
+            let same_orientation = (face.normal - internal_normal).length_squared() < 1e-8
+                && (face.distance - internal_distance).abs() < 1e-4;
+            let opposite_orientation = (face.normal + internal_normal).length_squared() < 1e-8
+                && (face.distance + internal_distance).abs() < 1e-4;
+            assert!(
+                !same_orientation && !opposite_orientation,
+                "wedge fixture emitted a face on the shared internal plane: normal={:?} distance={}",
+                face.normal,
+                face.distance
+            );
+        }
+
+        for (leaf_idx, leaf) in fx.tree.leaves.iter().enumerate() {
+            assert!(
+                leaf.bounds.is_valid(),
+                "leaf {leaf_idx} has invalid bounds: min={:?} max={:?}",
+                leaf.bounds.min,
+                leaf.bounds.max
+            );
+
+            for &face_idx in &leaf.face_indices {
+                let face = &fx.faces[face_idx];
+                for &vertex in &face.vertices {
+                    assert!(
+                        vertex.x >= leaf.bounds.min.x - FACE_CLIP_EPSILON
+                            && vertex.x <= leaf.bounds.max.x + FACE_CLIP_EPSILON
+                            && vertex.y >= leaf.bounds.min.y - FACE_CLIP_EPSILON
+                            && vertex.y <= leaf.bounds.max.y + FACE_CLIP_EPSILON
+                            && vertex.z >= leaf.bounds.min.z - FACE_CLIP_EPSILON
+                            && vertex.z <= leaf.bounds.max.z + FACE_CLIP_EPSILON,
+                        "leaf {leaf_idx} bounds min={:?} max={:?} do not contain face {face_idx} vertex {:?}",
+                        leaf.bounds.min,
+                        leaf.bounds.max,
+                        vertex
+                    );
+                }
+            }
+        }
+    }
+
     /// Two box rooms connected by a corridor. Partition should produce both
     /// solid and empty leaves, and the face extraction should emit geometry
     /// bounding the air spaces.

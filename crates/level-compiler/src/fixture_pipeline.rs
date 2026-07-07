@@ -22,7 +22,7 @@ use bvh::bvh::Bvh;
 
 use crate::bvh_build::{BvhPrimitive, build_bvh};
 use crate::geometry::{GeometryResult, extract_geometry};
-use crate::map_data::MapLight;
+use crate::map_data::{Face, MapLight};
 use crate::map_format::MapFormat;
 use crate::partition::BspTree;
 use crate::{parse, partition, portals, visibility};
@@ -52,6 +52,7 @@ pub struct FixturePipeline {
     pub bvh: Bvh<f32, 3>,
     pub primitives: Vec<BvhPrimitive>,
     pub tree: BspTree,
+    pub faces: Vec<Face>,
     pub exterior_leaves: HashSet<usize>,
     pub lights: Vec<MapLight>,
 }
@@ -93,6 +94,7 @@ pub fn load_fixture(name: &str) -> FixturePipeline {
         bvh,
         primitives,
         tree: result.tree,
+        faces: result.faces,
         exterior_leaves,
         lights: map_data.lights,
     }

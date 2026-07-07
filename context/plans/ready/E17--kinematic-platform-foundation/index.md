@@ -1,6 +1,6 @@
 # E17 - Kinematic Platform Foundation
 
-> **Status:** draft — substrate-proof revision, in re-review.
+> **Status:** ready — substrate-proof revision reviewed (structural + implementability), awaiting implementation.
 >
 > **Epic:** 17 - Kinematic Geometry and Moving Platforms.
 >
@@ -328,7 +328,8 @@ the host used — never a client-authored divergent path.
 ## Acceptance Criteria
 
 - [ ] `sdk/TrenchBroom/postretro.fgd` includes `kinematic_mover` and
-  `kinematic_waypoint` with the keys above.
+  `kinematic_waypoint` with the keys above (inspection gate — no automated FGD
+  test exists).
 - [ ] `prl-build` compiles a map with one `kinematic_mover` brush and two waypoints
   into a PRL with a kinematic geometry section. The mover brush is absent from
   static geometry, static BVH, static collision, portals, lightmap/SDF occluder
@@ -341,7 +342,8 @@ the host used — never a client-authored divergent path.
   the waypoint path, honoring `once` (stops at the final waypoint) and
   `ping_pong` (reverses at each endpoint).
 - [ ] The mover renders with its authored material/texture and interpolates
-  smoothly between fixed ticks.
+  between fixed ticks via the existing interpolated-transform accessor;
+  perceived smoothness is dev-map QA.
 - [ ] A player can stand on a moving linear platform/elevator for at least 10
   round trips in the dev map without visible jitter, falling through, accumulating
   vertical drift, or sliding off while providing no movement input — checked in
@@ -359,8 +361,9 @@ the host used — never a client-authored divergent path.
   mover poses reproduces the live trajectory exactly — the deterministic-sim
   replay proof, no networking involved.
 - [ ] In the deterministic net harness at the E15 profile —
-  `LinkConfig { delay: 45, jitter: 60, loss_probability: 0.05 }`, ~45..105 ms
-  one-way, 5% loss — the client's predicted mover pose tracks the host's within a
+  `LinkConfig { delay: 45, jitter: 60, loss_probability: 0.05 }` plus a fixed
+  harness `seed`, ~45..105 ms one-way, 5% loss — the client's predicted mover
+  pose tracks the host's within a
   small bounded tolerance at every tick (the same phase-seeded deterministic
   driver, re-anchored each snapshot — no interpolation lag), the mover
   reconciler's per-tick correction stays within that tolerance and does not
@@ -369,12 +372,14 @@ the host used — never a client-authored divergent path.
 - [ ] The player's replicated ground state distinguishes `Airborne` / `World` /
   `Mover(mover_id)`; a client riding a mover carries via the authoritative
   `Mover` reference and reconciles it, not via a locally-guessed base.
-- [ ] No new `unsafe` is introduced.
-- [ ] No non-renderer module imports `wgpu` or creates GPU resources.
+- [ ] No new `unsafe` is introduced (review/grep gate).
+- [ ] No non-renderer module imports `wgpu` or creates GPU resources
+  (review/grep gate; crate boundaries enforce it today).
 - [ ] The mover draw path requires no new adapter feature and requests no
   additional bind-group slot (`max_bind_groups` stays 8).
 - [ ] With no active movers the combined query layer preserves static-only
-  movement behavior: existing movement and substrate tests pass unchanged.
+  movement behavior: existing movement and substrate tests pass with assertions
+  unchanged (call sites may thread the new query parameter).
 - [ ] Existing static maps with no movers load and render unchanged.
 
 ## Tasks
@@ -392,8 +397,9 @@ Add `KinematicMoverComponent` in `crates/entities/src/components/`, and
 `ComponentKind::KinematicMover = 13` in `crates/entities/src/registry.rs`
 (after `Brain = 12`); update `ComponentKind::COUNT`, `ComponentValue`, registry
 storage, and serde. Exhaustive matches gain arms — compiler-enforced:
-`component_kind_name` / `component_to_js` / `component_to_lua`
-(`crates/entities/src/ffi.rs`) and the engine-side `component_kind_discriminant`
+`component_kind_name` and the `ComponentValue` JS/Lua conversion impls
+(`crates/entities/src/ffi.rs`), `ComponentValue::kind()`
+(`crates/entities/src/registry.rs`), and the engine-side `component_kind_discriminant`
 map plus its drift test (`crates/postretro/src/netcode/mod.rs`); none of these
 touch `crates/net`, and `component_kind_from_name` keeps its `_ => None` arm
 (movers are not script-queryable this plan). The matching net-side constant
@@ -489,9 +495,13 @@ blocked by static geometry) logs in dev builds; resolving it is E17-D.
 
 Widen the pawn's replay path: `replay` — today movement-only, reading a static
 `&CollisionWorld` — must widen so a replay tick can read each mover's pose at
-that tick, driven through Task 1's pose source. The signature change fans out to
-its forward-prediction caller (`predict_tick`) and the reconcile caller. In this
-task historical poses come from a test-recorded ring; Task 6 later feeds
+that tick, driven through Task 1's pose source. The widening reaches the
+collide-and-slide core (`movement::tick` / `integrate_collision`), so the
+signature change fans out past `predict_tick` and the reconcile caller to every
+`movement::tick` call site — `sim::simulate_tick`, `sim::host_movement`,
+`netcode::client_predict_tick`, `client_receive_and_apply` — each passing the
+live pose source, which with no movers loaded degenerates to static-only. In
+this task historical poses come from a test-recorded ring; Task 6 later feeds
 authoritative snapshot samples through the same seam.
 
 Add deterministic-sim tests for static-only behavior, moving top contact, moving
@@ -510,9 +520,10 @@ This task completes the substrate proof. Check the stop conditions in
 
 Add `kinematic_geometry` to `postretro-level-format` with
 `SectionId::KinematicGeometry = 43` — the next free id after
-`ShadowmaskAtlas = 42` (`SectionId` is `#[repr(u32)]`; also extend the
-hand-written `SectionId::from_u32` match, which is not compiler-enforced — miss
-it and the loader silently skips section 43, so movers vanish with no error).
+`ShadowmaskAtlas = 42` (`SectionId` is `#[repr(u32)]`). Also extend the
+hand-written `SectionId::from_u32` match: the loader reads sections by explicit
+`SectionId` constant, so the new variant is the load-bearing piece, but
+`from_u32` feeds the format round-trip tests and must not lag the enum.
 Add serialization tests.
 
 Section shape:
@@ -590,9 +601,10 @@ Compiler work:
 
 ### Task 4: Runtime loading and spawn
 
-Load section 43 (`KinematicGeometry`) in `crates/level-loader/src/prl.rs` into
-`LevelWorld` (an absent or empty section means no movers; mover-less maps load
-unchanged).
+Load section 43 (`KinematicGeometry`) into `LevelWorld` — the struct lives in
+`crates/level-loader/src/prl.rs`; the section-read/population path is
+`crates/level-loader/src/prl_loader.rs` (an absent or empty section means no
+movers; mover-less maps load unchanged).
 
 At level load, spawn one entity per mover record with:
 
@@ -612,8 +624,16 @@ bind, so a mover is never on the wire before the client can route it (a
 entity).
 
 Feed the loaded mover collision geometry through Task 1's local-space trimesh
-path. The Task 1 driver consumes the seeded component unchanged — this task
-adds no motion logic.
+path.
+
+This task also owns the runtime wiring that makes loaded movers live: invoke
+Task 1's fixed-tick mover system from the game-logic tick (`simulate_tick` —
+after `snapshot_transforms`, before player movement), and point the live
+player-movement stage's combined query at the loaded mover set via Task 1's
+pose source. Call-site wiring only in `main.rs`; logic in focused modules. The
+Task 1 driver itself is consumed unchanged — this task adds wiring, not motion
+logic. The runtime-drive AC and tick-to-tick mover motion depend on this
+wiring.
 
 ### Task 5: Renderer-owned kinematic brush draw path
 
@@ -669,7 +689,9 @@ Register each load-spawned mover in the host's `ReplicableSet` (engine-side:
 lands here, with the client bind, so the two sides ship together and a mover is
 never on the wire without a client route. Host snapshot production collects
 `Transform` then `KinematicMoverState` for
-registered mover entities. On each client, apply **binds** the incoming mover
+registered mover entities. On each client, apply (`ClientReplication`'s
+snapshot-apply path in `crates/postretro/src/netcode/client.rs`) **binds** the
+incoming mover
 `NetworkId` to the client's load-spawned local mover **by `mover_id`** (the wire
 state carries `mover_id`) — it does **not** materialize a fresh entity from the
 baseline, which would double-spawn (an AC requires exactly one mover entity). It

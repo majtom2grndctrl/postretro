@@ -24,8 +24,9 @@ use postretro_foundation::NavAgentParams;
 ///
 /// The capsule geometry (`radius`, `height`, `step_height`) is fixed at attach
 /// time from the baked agent parameters and never mutated by the steering tick;
-/// `velocity`, `steer_velocity`, `is_grounded`, the path/cursor, and
-/// `destination` are the live fields the steering system writes each tick.
+/// `velocity`, `steer_velocity`, stuck-recovery counters, `is_grounded`, the
+/// path/cursor, and `destination` are the live fields the steering system
+/// writes each tick.
 ///
 /// `radius`/`height` are the *total* capsule dimensions. The parry `Capsule`
 /// the collide-and-slide harness builds takes a HALF-HEIGHT (center to one
@@ -57,6 +58,17 @@ pub struct AgentComponent {
     /// collision and neighbor-response jitter.
     #[serde(default)]
     pub steer_velocity: Vec3,
+    /// Consecutive ticks where the agent intended to move along a valid path
+    /// but collision resolution produced too little goal-projected progress.
+    /// The steering system resets this on real progress, idle/no-route/arrival
+    /// gates, and recovery fire.
+    #[serde(default)]
+    pub stuck_ticks: u32,
+    /// Remaining ticks in the bounded tangent-slide recovery window. While
+    /// nonzero, stuck detection is suspended and steering adds a deterministic
+    /// lateral bias before collision resolution.
+    #[serde(default)]
+    pub unstick_window_remaining: u32,
     /// Grounded flag resolved by the harness's ground-stick down-cast. `true`
     /// when the agent's capsule rests on a walkable floor.
     pub is_grounded: bool,
@@ -115,6 +127,8 @@ impl AgentComponent {
             move_speed,
             velocity: Vec3::ZERO,
             steer_velocity: Vec3::ZERO,
+            stuck_ticks: 0,
+            unstick_window_remaining: 0,
             is_grounded: false,
             path: Vec::new(),
             waypoint_cursor: 0,
@@ -196,6 +210,8 @@ mod tests {
         assert_eq!(agent.move_speed, 5.0);
         assert_eq!(agent.velocity, Vec3::ZERO);
         assert_eq!(agent.steer_velocity, Vec3::ZERO);
+        assert_eq!(agent.stuck_ticks, 0);
+        assert_eq!(agent.unstick_window_remaining, 0);
         assert!(!agent.is_grounded);
         assert!(agent.path.is_empty());
         assert_eq!(agent.waypoint_cursor, 0);
@@ -207,17 +223,23 @@ mod tests {
     }
 
     #[test]
-    fn agent_serde_defaults_missing_steer_velocity() {
+    fn agent_serde_defaults_missing_back_compat_fields() {
         use crate::registry::ComponentValue;
 
         let value = ComponentValue::Agent(AgentComponent::new(0.3, 1.6, 0.35, 5.0));
         let mut json = serde_json::to_value(&value).unwrap();
         json.as_object_mut().unwrap().remove("steer_velocity");
+        json.as_object_mut().unwrap().remove("stuck_ticks");
+        json.as_object_mut()
+            .unwrap()
+            .remove("unstick_window_remaining");
 
         let ComponentValue::Agent(back) = serde_json::from_value(json).unwrap() else {
             panic!("expected agent component");
         };
         assert_eq!(back.steer_velocity, Vec3::ZERO);
+        assert_eq!(back.stuck_ticks, 0);
+        assert_eq!(back.unstick_window_remaining, 0);
     }
 
     #[test]

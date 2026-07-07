@@ -76,6 +76,9 @@ pub enum VisibilityPath {
     /// Fallback: portal data missing from the level file. All drawable cells
     /// are submitted, subject to AABB frustum culling.
     NoPortalsFallback,
+    /// Fallback: portal traversal hit its per-frame CPU step budget. Drawable
+    /// cells are submitted through bounded AABB frustum culling for this frame.
+    PortalStepLimitFallback { considered: u32, accepted: u32 },
 }
 
 impl VisibilityStats {
@@ -259,6 +262,7 @@ enum CellVisPath {
     SolidCell,
     ExteriorCell,
     Portal,
+    PortalStepLimit { considered: u32, accepted: u32 },
     NoPortals,
 }
 
@@ -359,13 +363,37 @@ fn determine_visible_cell_set(
         // keeps every narrowed frustum a strict subset of the camera frustum,
         // so the reachability bitset is also the final visibility set — no
         // per-cell AABB cull needed on this path.
-        let portal_visible = portal_vis::portal_traverse(
+        let portal_result = portal_vis::portal_traverse_detailed(
             camera_position,
             camera_cell_idx,
             &frustum,
             world,
             capture_portal_walk,
         );
+
+        if portal_result.stats.step_limit_hit {
+            log::debug!(
+                "[Visibility] path=PortalStepLimitFallback cell={}, considered={}, accepted={}; \
+                 using per-cell AABB culling for this frame",
+                camera_cell_idx,
+                portal_result.stats.considered,
+                portal_result.stats.accepted,
+            );
+            let visible = visible_cells_frustum_all(&world.cells, &frustum);
+            return CellVisResult {
+                cells: Some(visible),
+                fog_reachable: Vec::new(),
+                camera_cell: camera_cell_idx as u32,
+                total_faces,
+                path: CellVisPath::PortalStepLimit {
+                    considered: portal_result.stats.considered,
+                    accepted: portal_result.stats.accepted,
+                },
+                frustum,
+            };
+        }
+
+        let portal_visible = portal_result.visible;
 
         let cells: Vec<usize> = world
             .cells
@@ -433,18 +461,41 @@ fn build_visibility_stats(
         CellVisPath::Portal => VisibilityPath::PrlPortal {
             walk_reach: visible_cells.len() as u32,
         },
+        CellVisPath::PortalStepLimit {
+            considered,
+            accepted,
+        } => VisibilityPath::PortalStepLimitFallback {
+            considered,
+            accepted,
+        },
         CellVisPath::NoPortals => VisibilityPath::NoPortalsFallback,
         CellVisPath::EmptyWorld => VisibilityPath::EmptyWorldFallback,
     };
 
-    if matches!(result.path, CellVisPath::Portal) {
-        log::trace!(
-            "[Visibility] path=PrlPortal cell={}, walk_reach={}, drawn_faces={}, total_faces={}",
-            result.camera_cell,
-            visible_cells.len(),
-            drawn_faces,
-            result.total_faces,
-        );
+    match result.path {
+        CellVisPath::Portal => {
+            log::trace!(
+                "[Visibility] path=PrlPortal cell={}, walk_reach={}, drawn_faces={}, total_faces={}",
+                result.camera_cell,
+                visible_cells.len(),
+                drawn_faces,
+                result.total_faces,
+            );
+        }
+        CellVisPath::PortalStepLimit {
+            considered,
+            accepted,
+        } => {
+            log::trace!(
+                "[Visibility] path=PortalStepLimitFallback cell={}, considered={}, accepted={}, drawn_faces={}, total_faces={}",
+                result.camera_cell,
+                considered,
+                accepted,
+                drawn_faces,
+                result.total_faces,
+            );
+        }
+        _ => {}
     }
 
     VisibilityStats {

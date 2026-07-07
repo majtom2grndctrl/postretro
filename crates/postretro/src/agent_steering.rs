@@ -67,6 +67,26 @@ const LOOKAHEAD_DISTANCE_RADIUS_FACTOR: f32 = 3.0;
 /// Shared zero-length XZ guard, matching the AI facing precedent.
 const MIN_XZ_LEN_SQ: f32 = 1e-8;
 
+/// Consecutive no-progress intent ticks before the steering system starts a
+/// bounded tangent-slide recovery window.
+const STUCK_TICKS_THRESHOLD: u32 = 20;
+
+/// Number of ticks to keep the deterministic lateral recovery bias active.
+const UNSTICK_WINDOW: u32 = 10;
+
+/// Minimum requested path-following speed that counts as "the agent intends to
+/// move." Speeds below this are arrival/idle tails, not stuck evidence.
+const STUCK_INTENT_SPEED_EPSILON: f32 = 0.05;
+
+/// Per-tick goal-projected displacement below this counts as no useful
+/// progress. This is a distance, intentionally distinct from the intent-speed
+/// gate above.
+const STUCK_PROGRESS_EPSILON: f32 = 0.005;
+
+/// Weight of the +90deg XZ tangent relative to the retained goal component
+/// during recovery.
+const TANGENT_BIAS: f32 = 1.0;
+
 /// World-space XZ distance the LIVE destination may drift from the position the
 /// current plan was built for (`planned_destination`) before [`tick`] wants a
 /// fresh path. The comparison is CUMULATIVE drift-from-the-plan, never a
@@ -193,6 +213,8 @@ pub(crate) fn clear_destination(registry: &mut EntityRegistry, agent: EntityId) 
     updated.path.clear();
     updated.waypoint_cursor = 0;
     updated.steer_velocity = Vec3::ZERO;
+    updated.stuck_ticks = 0;
+    updated.unstick_window_remaining = 0;
     updated.replan_cooldown_ticks = 0;
     updated.arrived = false;
     updated.blocked = false;
@@ -310,6 +332,8 @@ pub(crate) fn tick(
             // settle path so spawned/stationary agents obey gravity and
             // ground-stick before they ever acquire aggro.
             agent.steer_velocity = Vec3::ZERO;
+            agent.stuck_ticks = 0;
+            agent.unstick_window_remaining = 0;
             let capsule = AgentCapsule {
                 radius: agent.radius,
                 half_height: agent.half_height(),
@@ -385,6 +409,23 @@ pub(crate) fn tick(
         agent.steer_velocity = steer_velocity;
         let mut desired = steer_velocity;
 
+        let has_recovery_intent = has_stuck_recovery_intent(&agent, goal_speed, steer_velocity);
+        if has_recovery_intent {
+            if agent.unstick_window_remaining == 0 && agent.stuck_ticks >= STUCK_TICKS_THRESHOLD {
+                agent.planned_destination = None;
+                agent.unstick_window_remaining = UNSTICK_WINDOW;
+                agent.stuck_ticks = 0;
+            }
+        } else {
+            agent.stuck_ticks = 0;
+            agent.unstick_window_remaining = 0;
+        }
+        let recovery_active_this_tick = agent.unstick_window_remaining > 0;
+        if recovery_active_this_tick {
+            desired += recovery_tangent_bias(steer_velocity, agent.move_speed);
+            agent.unstick_window_remaining = agent.unstick_window_remaining.saturating_sub(1);
+        }
+
         // Separation: sum pushes from every other agent whose capsule overlaps
         // or sits within the separation band, against the frozen snapshot.
         desired += separation(current, &agent, &snapshot);
@@ -411,6 +452,14 @@ pub(crate) fn tick(
 
         agent.velocity = result.velocity;
         agent.is_grounded = result.grounded;
+        update_stuck_ticks(
+            &mut agent,
+            position,
+            result.position,
+            steer_velocity,
+            goal_speed,
+            recovery_active_this_tick,
+        );
 
         // Write back the resolved position and the updated agent state.
         if let Ok(transform) = registry.get_component::<Transform>(current.id) {
@@ -639,6 +688,56 @@ fn clamp_xz_speed(mut velocity: Vec3, max_speed: f32) -> Vec3 {
         velocity.z *= scale;
     }
     velocity
+}
+
+fn recovery_tangent_bias(steer_velocity: Vec3, move_speed: f32) -> Vec3 {
+    let tangent = Vec3::new(-steer_velocity.z, 0.0, steer_velocity.x);
+    if tangent.length_squared() <= MIN_XZ_LEN_SQ {
+        Vec3::ZERO
+    } else {
+        tangent.normalize() * (TANGENT_BIAS * move_speed)
+    }
+}
+
+fn update_stuck_ticks(
+    agent: &mut AgentComponent,
+    start_position: Vec3,
+    resolved_position: Vec3,
+    steer_velocity: Vec3,
+    goal_speed: f32,
+    recovery_active_this_tick: bool,
+) {
+    if recovery_active_this_tick {
+        return;
+    }
+    if !has_stuck_recovery_intent(agent, goal_speed, steer_velocity) {
+        agent.stuck_ticks = 0;
+        return;
+    }
+
+    let goal_dir = Vec3::new(steer_velocity.x, 0.0, steer_velocity.z).normalize();
+    let displacement = Vec3::new(
+        resolved_position.x - start_position.x,
+        0.0,
+        resolved_position.z - start_position.z,
+    );
+    let progress = displacement.dot(goal_dir);
+    if progress < STUCK_PROGRESS_EPSILON {
+        agent.stuck_ticks = agent.stuck_ticks.saturating_add(1);
+    } else {
+        agent.stuck_ticks = 0;
+    }
+}
+
+fn has_stuck_recovery_intent(
+    agent: &AgentComponent,
+    goal_speed: f32,
+    steer_velocity: Vec3,
+) -> bool {
+    !agent.path.is_empty()
+        && !agent.blocked
+        && goal_speed > STUCK_INTENT_SPEED_EPSILON
+        && steer_velocity.length_squared() > MIN_XZ_LEN_SQ
 }
 
 fn xz_length(velocity: Vec3) -> f32 {

@@ -1,9 +1,9 @@
 // Engine-owned enemy FSM tick: the system half of the brain (the per-instance
 // DATA + spawn-time state-map validation live in `components/brain.rs`). Each
-// think tick locates the player pawn, evaluates the closed transition set
-// (idle/alert/attack/death), drives the steering API toward the player while
+// think tick selects a target pawn, evaluates the closed transition set
+// (idle/alert/attack/death), drives the steering API toward the target while
 // chasing, applies damage on the attack cooldown, and requests the mapped
-// animation state. The transition CORE is a pure function over (player position,
+// animation state. The transition CORE is a pure function over (target position,
 // agent position, tuning, current state) so it is unit-testable without `App` or
 // a GPU; the tick wrapper layers the registry reads/writes, the zero-HP death
 // check, damage, and animation switching on top.
@@ -165,8 +165,8 @@ fn yaw_rotation_toward(dir: Vec3) -> Option<Quat> {
 /// `set_destination`/`clear_destination` calls.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SteeringIntent {
-    /// Chase the player: the wrapper sets the agent destination to the player's
-    /// position. Emitted in `Alert` and `Attack`.
+    /// Chase the selected target pawn: the wrapper sets the agent destination to
+    /// the target pawn position. Emitted in `Alert` and `Attack`.
     Chase,
     /// Stand down: the wrapper clears the agent destination. Emitted in `Idle`.
     Clear,
@@ -274,31 +274,37 @@ pub(crate) fn evaluate_transition(
     }
 }
 
-/// Locate the local player pawn's position via its `Transform`. Registry marker
-/// first, then first `PlayerMovement` entity. See also `local_movement_pawn`
-/// (sim/mod.rs) and `followed_player_pawn` (main.rs). This is the FSM's targeting
-/// input, distinct from the damage target (`pawn_with_health`): targeted by
-/// position, damaged through the health chokepoint.
-fn player_position(registry: &EntityRegistry) -> Option<Vec3> {
-    if let Some(pawn) = registry.local_player_pawn() {
-        if matches!(
-            registry.has_component_kind(pawn, ComponentKind::PlayerMovement),
-            Ok(true)
-        ) {
-            return registry
-                .get_component::<Transform>(pawn)
-                .ok()
-                .map(|t| t.position);
-        }
-    }
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct TargetPawn {
+    pub(crate) entity: EntityId,
+    pub(crate) position: Vec3,
+}
 
-    let (pawn, _) = registry
-        .iter_with_kind(ComponentKind::PlayerMovement)
-        .next()?;
+/// Select the player pawn this enemy should pursue.
+///
+/// This is the AI targeting extension point: v1 ranks all
+/// [`ComponentKind::PlayerMovement`] pawns by nearest XZ distance from `from`.
+/// The optional predicate is the future visibility/relevance seam intended for
+/// `context/research/cell-visibility-substrate.md` (and exact LOS work) without
+/// re-threading the FSM. This targeting path intentionally does not consult
+/// the registry's local-player marker, which is client-side convenience state.
+pub(crate) fn select_target(
+    registry: &EntityRegistry,
+    from: Vec3,
+    visible: Option<&dyn Fn(EntityId) -> bool>,
+) -> Option<TargetPawn> {
     registry
-        .get_component::<Transform>(pawn)
-        .ok()
-        .map(|t| t.position)
+        .iter_with_kind(ComponentKind::PlayerMovement)
+        .filter_map(|(entity, _)| {
+            if visible.is_some_and(|is_visible| !is_visible(entity)) {
+                return None;
+            }
+            let position = registry.get_component::<Transform>(entity).ok()?.position;
+            let distance = distance_xz(position, from);
+            Some((distance, TargetPawn { entity, position }))
+        })
+        .min_by(|(a, _), (b, _)| a.total_cmp(b))
+        .map(|(_, target)| target)
 }
 
 /// Per-enemy snapshot captured under the immutable iterator borrow so the
@@ -313,6 +319,7 @@ struct EnemySnapshot {
 /// a second pass under `&mut registry`.
 struct EnemyOutcome {
     id: EntityId,
+    target: Option<TargetPawn>,
     brain: BrainComponent,
     steering: SteeringIntent,
     /// `true` when the logical state changed this tick; the apply pass uses this
@@ -336,7 +343,7 @@ struct EnemyOutcome {
 /// `anim:<name>` for an animation state that fails to switch
 /// (`UnknownState`/`NotAnimated` — the prior animation is kept and the tick is
 /// never aborted) and `blocked:<id>` for a chasing enemy whose agent found no
-/// path to the player.
+/// path to its selected target pawn.
 ///
 /// Ordering inside the tick, PER enemy:
 /// 1. Tick the attack cooldown down (every tick).
@@ -367,10 +374,6 @@ pub(crate) fn run_ai_tick(
     warned: &mut HashSet<String>,
     tick_dt: f32,
 ) -> Vec<&'static str> {
-    // The player POSITION (targeting). Absent pawn ⇒ no targets to evaluate;
-    // every enemy still ticks its cooldown and resolves death.
-    let player_pos = player_position(registry);
-
     // The DAMAGE TARGET id (distinct from the position pawn): the health
     // chokepoint addresses this id. Resolved once; `None` when the pawn carries
     // no health (damage then no-ops, matching `apply_damage`'s contract).
@@ -404,6 +407,7 @@ pub(crate) fn run_ai_tick(
     for snap in snapshots {
         let mut brain = snap.brain;
         let prior_state = brain.state;
+        let target = select_target(registry, snap.position, None);
 
         // (1) Cooldown ticks down every tick.
         brain.attack_cooldown_remaining_ms = (brain.attack_cooldown_remaining_ms - dt_ms).max(0.0);
@@ -467,18 +471,18 @@ pub(crate) fn run_ai_tick(
                 brain.death_despawn_remaining_ms = None;
             }
 
-            if let Some(player_pos) = player_pos {
+            if let Some(target) = target {
                 // The think stride is derived from the CURRENT player distance;
                 // the gate fires when the per-enemy counter aligns with the
                 // band's divisor. Acquisition (detection/leash) is evaluated only
                 // on a think tick; attack-range edges + the cooldown check are
                 // not.
-                let distance = distance_xz(player_pos, snap.position);
+                let distance = distance_xz(target.position, snap.position);
                 let stride = think_stride_for_distance(distance);
                 let evaluate_acquisition = stride <= 1 || brain.think_stride_counter % stride == 0;
 
                 let result = evaluate_transition(
-                    player_pos,
+                    target.position,
                     snap.position,
                     &brain.tuning,
                     brain.state,
@@ -508,6 +512,7 @@ pub(crate) fn run_ai_tick(
 
         outcomes.push(EnemyOutcome {
             id: snap.id,
+            target,
             state_changed: brain.state != prior_state,
             attacked,
             despawn,
@@ -536,25 +541,27 @@ pub(crate) fn run_ai_tick(
             .map(|path| LocomotionIntent::from_velocity(path.velocity))
             .unwrap_or(LocomotionIntent::STOPPED);
 
-        // Steering: chase sets the destination to the player, clear stands down,
-        // hold leaves the agent untouched. `set_destination`/`clear_destination`
-        // no-op when the enemy carries no agent component.
+        // Steering: chase sets the destination to the selected target pawn,
+        // clear stands down, hold leaves the agent untouched.
+        // `set_destination`/`clear_destination` no-op when the enemy carries no
+        // agent component.
         match outcome.steering {
             SteeringIntent::Chase => {
-                if let Some(player_pos) = player_pos {
-                    agent_steering::set_destination(registry, outcome.id, player_pos);
+                if let Some(target) = outcome.target {
+                    agent_steering::set_destination(registry, outcome.id, target.position);
                     // Diagnostic read of the steering surface: a chasing enemy
-                    // whose agent cannot route to the player (no nav path) is
-                    // `blocked`. Surface it once per enemy via the warn latch so a
-                    // mis-placed spawn (off the navmesh, or behind a wall with no
-                    // portal) is visible without per-tick spam. The steering tick
-                    // still holds the agent in place; this only reports.
+                    // whose agent cannot route to its selected target pawn (no
+                    // nav path) is `blocked`. Surface it once per enemy via the
+                    // warn latch so a mis-placed spawn (off the navmesh, or behind
+                    // a wall with no portal) is visible without per-tick spam. The
+                    // steering tick still holds the agent in place; this only
+                    // reports.
                     if let Some(state) = path_state.as_ref() {
                         if state.blocked {
                             let key = format!("blocked:{}", outcome.id.to_raw());
                             if warned.insert(key) {
                                 log::warn!(
-                                    "[AI] enemy {} is chasing the player but its agent \
+                                    "[AI] enemy {} is chasing its selected target but its agent \
                                      found no path (blocked); holding position. Warned \
                                      once per enemy.",
                                     outcome.id
@@ -572,13 +579,13 @@ pub(crate) fn run_ai_tick(
 
         // Facing (yaw-only): nothing else writes the enemy's `Transform` rotation,
         // so without this the model keeps its spawn heading and moonwalks toward
-        // the player. Orient it believably each tick it is engaged:
+        // its selected target. Orient it believably each tick it is engaged:
         //   - Moving (XZ speed above the epsilon): face the velocity direction, so
         //     it faces where it is going even when routing around obstacles. The
         //     velocity is read from `path_state` (last tick's resolved velocity) —
         //     a one-tick lag on facing that is imperceptible.
         //   - Stopped but engaged (`Alert`/`Attack` with near-zero XZ speed —
-        //     arrived/blocked/swinging): face the player.
+        //     arrived/blocked/swinging): face this enemy's selected target.
         //   - `Idle` (no target) and `Death`: leave facing untouched.
         // Yaw only (model stays upright); a zero-length direction yields `None` and
         // writes nothing (never a NaN yaw).
@@ -592,8 +599,11 @@ pub(crate) fn run_ai_tick(
                         // Moving: face the direction of travel.
                         yaw_rotation_toward(path.velocity)
                     } else {
-                        // Stopped but engaged: face the player (if one exists).
-                        player_pos.and_then(|p| yaw_rotation_toward(p - path.position))
+                        // Stopped but engaged: face this enemy's selected target
+                        // (if one exists).
+                        outcome
+                            .target
+                            .and_then(|target| yaw_rotation_toward(target.position - path.position))
                     };
                 if let Some(rotation) = facing {
                     if let Ok(mut transform) =

@@ -2687,6 +2687,7 @@ impl ApplicationHandler for App {
                     VisibilityPath::EmptyWorldFallback => "empty",
                     VisibilityPath::SolidCellFallback => "solid-cell",
                     VisibilityPath::ExteriorCellFallback => "exterior",
+                    VisibilityPath::PortalStepLimitFallback { .. } => "portal-step-limit",
                 };
                 let walk_reach_col = match stats.walk_reach() {
                     Some(walk) => format!(" walk:{walk}"),

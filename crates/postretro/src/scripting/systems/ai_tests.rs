@@ -33,6 +33,8 @@ use postretro_scripting_core::data_descriptors::{
 // Fixtures
 // ---------------------------------------------------------------------------
 
+const EPS: f32 = 1e-6;
+
 /// Resolved tuning with legible ranges: detect at 18, attack at 2, leash at 26,
 /// 8 damage on a 1000ms cooldown. Animation names mirror the four logical
 /// states: idle→idle, alert→locomotion, attack→attack, death→death.
@@ -456,6 +458,33 @@ fn animation_switch_trigger_fires_on_state_or_locomotion_change_only() {
     assert!(!should_switch_animation(false, true, true));
 }
 
+#[test]
+fn select_target_returns_single_player_pawn() {
+    let mut reg = EntityRegistry::new();
+    let pawn = spawn_player(&mut reg, Vec3::new(5.0, 0.0, 0.0));
+
+    let target = select_target(&reg, Vec3::ZERO, None).expect("player target");
+
+    assert_eq!(target.entity, pawn);
+    assert!(target.position.abs_diff_eq(Vec3::new(5.0, 0.0, 0.0), EPS));
+}
+
+#[test]
+fn select_target_chooses_nearer_remote_pawn_over_marked_local_pawn() {
+    let mut reg = EntityRegistry::new();
+    let local = spawn_player(&mut reg, Vec3::new(20.0, 0.0, 0.0));
+    let remote = spawn_player(&mut reg, Vec3::new(3.0, 0.0, 0.0));
+    reg.mark_local_player_pawn(local).unwrap();
+
+    let target = select_target(&reg, Vec3::ZERO, None).expect("player target");
+
+    assert_eq!(
+        target.entity, remote,
+        "nearest PlayerMovement pawn should win even when it is not local_player_pawn",
+    );
+    assert!(target.position.abs_diff_eq(Vec3::new(3.0, 0.0, 0.0), EPS));
+}
+
 // ---------------------------------------------------------------------------
 // Acceptance: detection sets destination, leash clears it (via path_state)
 // ---------------------------------------------------------------------------
@@ -571,7 +600,7 @@ fn attack_does_not_damage_remote_health_when_marked_local_pawn_lacks_health() {
 
     assert!(
         events.is_empty(),
-        "enemy should target the marked pawn's position but not attack a different pawn's health"
+        "enemy should target the nearest pawn's position but not attack a different pawn's health"
     );
     assert_eq!(
         player_hp(&reg, remote),

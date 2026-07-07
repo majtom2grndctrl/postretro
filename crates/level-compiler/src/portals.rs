@@ -3,16 +3,13 @@
 
 use glam::DVec3;
 
-use crate::geometry_utils::{clip_polygon_to_front, split_polygon};
+use crate::geometry_utils::{clip_winding_to_half_spaces, make_base_winding, split_polygon};
 use crate::partition::{BspChild, BspTree};
 
 /// Tighter than BSP face classification (0.1). Portals are clipped against
 /// many ancestor planes in sequence, so a looser epsilon accumulates too much
 /// error. Matches ericw-tools' ON_EPSILON for winding operations.
 const PORTAL_EPSILON: f64 = 0.01;
-
-/// Initial portal winding half-extent. Covers any reasonable level geometry.
-const WINDING_HALF_EXTENT: f64 = 16384.0;
 
 /// Slivers below this area are discarded to prevent degenerate geometry
 /// from accumulating numerical precision loss during repeated clipping.
@@ -79,45 +76,14 @@ fn make_node_portal(
     plane_distance: f64,
     ancestor_planes: &[PlaneEntry],
 ) -> Option<Vec<DVec3>> {
-    let mut winding = make_base_winding(plane_normal, plane_distance);
-
-    for &(anc_normal, anc_distance) in ancestor_planes {
-        winding = clip_polygon_to_front(&winding, anc_normal, anc_distance, PORTAL_EPSILON)?;
-
-        if winding.len() < 3 || polygon_area(&winding) < MIN_PORTAL_AREA_M2 {
-            return None;
-        }
-    }
+    let winding = make_base_winding(plane_normal, plane_distance);
+    let winding = clip_winding_to_half_spaces(winding, ancestor_planes, PORTAL_EPSILON)?;
 
     if winding.len() < 3 || polygon_area(&winding) < MIN_PORTAL_AREA_M2 {
         return None;
     }
 
     Some(winding)
-}
-
-/// Large quad on the splitting plane, to be clipped down to the portal shape.
-fn make_base_winding(normal: DVec3, distance: f64) -> Vec<DVec3> {
-    // Pick a reference axis not near-parallel to the normal to form a stable basis.
-    let reference = if normal.z.abs() > 0.9 {
-        DVec3::X
-    } else {
-        DVec3::Z
-    };
-
-    let basis1 = normal.cross(reference).normalize();
-    let basis2 = normal.cross(basis1).normalize();
-
-    let center = normal * distance;
-    let half = WINDING_HALF_EXTENT;
-
-    // CCW when viewed from the front (positive normal side).
-    vec![
-        center - basis1 * half - basis2 * half,
-        center + basis1 * half - basis2 * half,
-        center + basis1 * half + basis2 * half,
-        center - basis1 * half + basis2 * half,
-    ]
 }
 
 /// Distribute a portal winding through the BSP subtrees to find the leaf pairs it connects.
@@ -468,38 +434,6 @@ mod tests {
             assert!(
                 d.abs() < 0.05,
                 "portal vertex {i} is {d:.6} off the portal plane (limit 0.05)"
-            );
-        }
-    }
-
-    #[test]
-    fn base_winding_lies_on_plane() {
-        let normal = DVec3::Y;
-        let distance = 5.0;
-        let winding = make_base_winding(normal, distance);
-
-        assert_eq!(winding.len(), 4);
-        for v in &winding {
-            let d = v.dot(normal) - distance;
-            assert!(d.abs() < 1e-4, "winding vertex {v} not on plane (d={d})");
-        }
-    }
-
-    #[test]
-    fn base_winding_non_degenerate_for_axis_aligned_normals() {
-        for normal in [
-            DVec3::X,
-            DVec3::Y,
-            DVec3::Z,
-            DVec3::NEG_X,
-            DVec3::NEG_Y,
-            DVec3::NEG_Z,
-        ] {
-            let winding = make_base_winding(normal, 0.0);
-            let area = polygon_area(&winding);
-            assert!(
-                area > 1.0,
-                "winding for normal {normal} has area {area}, expected large"
             );
         }
     }

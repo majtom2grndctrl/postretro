@@ -27,6 +27,10 @@ use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::fog_volumes::FogVolumeRecord;
 #[cfg(feature = "load-prl")]
+use postretro_level_format::geometry::Vertex as PrlVertex;
+#[cfg(feature = "load-prl")]
+use postretro_level_format::kinematic_geometry::{KinematicMoverRecord, KinematicWaypointRecord};
+#[cfg(feature = "load-prl")]
 use postretro_level_format::lightmap::LightmapSection;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::map_entity::MapEntityRecord;
@@ -341,6 +345,69 @@ pub enum LightmapMode {
 #[cfg(feature = "load-prl")]
 pub type CellDrawIndex = CellDrawIndexSection;
 
+#[cfg(feature = "load-prl")]
+#[derive(Debug, Clone, Default)]
+pub struct KinematicGeometry {
+    pub movers: Vec<LoadedKinematicMover>,
+    pub waypoints: Vec<LoadedKinematicWaypoint>,
+}
+
+#[cfg(feature = "load-prl")]
+#[derive(Debug, Clone, PartialEq)]
+pub struct LoadedKinematicMover {
+    pub mover_id: u32,
+    pub name: String,
+    pub tags: Vec<String>,
+    pub origin: Vec3,
+    pub path: String,
+    pub speed_mps: f32,
+    pub wait_ms: f32,
+    pub move_mode: u8,
+    pub start_on_spawn: bool,
+    pub vertices: Vec<PrlVertex>,
+    pub indices: Vec<u32>,
+    pub face_meta: Vec<postretro_level_format::geometry::FaceMeta>,
+}
+
+#[cfg(feature = "load-prl")]
+#[derive(Debug, Clone, PartialEq)]
+pub struct LoadedKinematicWaypoint {
+    pub name: String,
+    pub next: String,
+    pub origin: Vec3,
+}
+
+#[cfg(feature = "load-prl")]
+impl From<KinematicMoverRecord> for LoadedKinematicMover {
+    fn from(record: KinematicMoverRecord) -> Self {
+        Self {
+            mover_id: record.mover_id,
+            name: record.name,
+            tags: record.tags,
+            origin: Vec3::from(record.origin),
+            path: record.path,
+            speed_mps: record.speed,
+            wait_ms: record.wait_ms,
+            move_mode: record.move_mode,
+            start_on_spawn: record.start_on_spawn,
+            vertices: record.vertices,
+            indices: record.indices,
+            face_meta: record.face_meta,
+        }
+    }
+}
+
+#[cfg(feature = "load-prl")]
+impl From<KinematicWaypointRecord> for LoadedKinematicWaypoint {
+    fn from(record: KinematicWaypointRecord) -> Self {
+        Self {
+            name: record.name,
+            next: record.next,
+            origin: Vec3::from(record.origin),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct LevelWorld {
     #[cfg(feature = "load-prl")]
@@ -434,6 +501,10 @@ pub struct LevelWorld {
     /// Dispatch entry point converts to `scripting::map_entity::MapEntity`.
     #[cfg(feature = "load-prl")]
     pub map_entities: Vec<MapEntityRecord>,
+    /// Runtime-loaded kinematic brush mover records (PRL section 43). Empty
+    /// when the section is absent or contains no movers.
+    #[cfg(feature = "load-prl")]
+    pub kinematic_geometry: KinematicGeometry,
     /// Empty when section absent or no `fog_volume` brushes authored.
     #[cfg(feature = "load-prl")]
     pub fog_volumes: Vec<FogVolumeRecord>,
@@ -546,6 +617,8 @@ impl LevelWorld {
             data_script: None,
             #[cfg(feature = "load-prl")]
             map_entities: Vec::new(),
+            #[cfg(feature = "load-prl")]
+            kinematic_geometry: KinematicGeometry::default(),
             #[cfg(feature = "load-prl")]
             fog_volumes: Vec::new(),
             #[cfg(feature = "load-prl")]
@@ -1347,6 +1420,7 @@ mod tests {
             shadowmask_atlas: None,
             data_script: None,
             map_entities: Vec::new(),
+            kinematic_geometry: KinematicGeometry::default(),
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
             initial_gravity: -9.81,
@@ -1437,6 +1511,7 @@ mod tests {
             shadowmask_atlas: None,
             data_script: None,
             map_entities: Vec::new(),
+            kinematic_geometry: KinematicGeometry::default(),
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
             initial_gravity: -9.81,
@@ -1481,6 +1556,7 @@ mod tests {
             shadowmask_atlas: None,
             data_script: None,
             map_entities: Vec::new(),
+            kinematic_geometry: KinematicGeometry::default(),
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
             initial_gravity: -9.81,
@@ -4062,6 +4138,164 @@ mod tests {
         let world = load_prl(tmp.to_str().unwrap()).expect("should load");
         assert!(world.lights.is_empty());
 
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    fn kinematic_section_blob(
+        section: postretro_level_format::kinematic_geometry::KinematicGeometrySection,
+    ) -> prl_format::SectionBlob {
+        prl_format::SectionBlob {
+            section_id: SectionId::KinematicGeometry as u32,
+            version: 1,
+            data: section.to_bytes(),
+        }
+    }
+
+    fn sample_kinematic_section()
+    -> postretro_level_format::kinematic_geometry::KinematicGeometrySection {
+        use postretro_level_format::geometry::FaceMeta as PrlFaceMeta;
+        use postretro_level_format::kinematic_geometry::{
+            KINEMATIC_GEOMETRY_VERSION, KinematicGeometrySection, KinematicMoverRecord,
+            KinematicWaypointRecord,
+        };
+
+        KinematicGeometrySection {
+            version: KINEMATIC_GEOMETRY_VERSION,
+            movers: vec![KinematicMoverRecord {
+                mover_id: 7,
+                name: "lift".to_string(),
+                tags: vec!["platform".to_string()],
+                origin: [1.0, 2.0, 3.0],
+                path: "a".to_string(),
+                speed: 2.0,
+                wait_ms: 125.0,
+                move_mode: 1,
+                start_on_spawn: true,
+                vertices: vec![sample_vertex(0.0), sample_vertex(1.0), sample_vertex(2.0)],
+                indices: vec![0, 1, 2],
+                face_meta: vec![PrlFaceMeta {
+                    leaf_index: 0,
+                    texture_index: 0,
+                }],
+            }],
+            waypoints: vec![
+                KinematicWaypointRecord {
+                    name: "a".to_string(),
+                    next: "b".to_string(),
+                    origin: [1.0, 2.0, 3.0],
+                },
+                KinematicWaypointRecord {
+                    name: "b".to_string(),
+                    next: String::new(),
+                    origin: [3.0, 2.0, 3.0],
+                },
+            ],
+        }
+    }
+
+    fn minimal_sections_with_kinematic(
+        section: Option<postretro_level_format::kinematic_geometry::KinematicGeometrySection>,
+    ) -> Vec<prl_format::SectionBlob> {
+        let mut sections = vec![
+            prl_format::SectionBlob {
+                section_id: SectionId::Geometry as u32,
+                version: 1,
+                data: sample_geometry().to_bytes(),
+            },
+            prl_format::SectionBlob {
+                section_id: SectionId::Bvh as u32,
+                version: 1,
+                data: sample_bvh_section().to_bytes(),
+            },
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+        if let Some(section) = section {
+            sections.push(kinematic_section_blob(section));
+        }
+        sections
+    }
+
+    #[test]
+    fn load_prl_absent_kinematic_geometry_section_yields_no_movers() {
+        let tmp = write_prl_fixture(
+            minimal_sections_with_kinematic(None),
+            "postretro_test_kinematic_absent.prl",
+        );
+        let world = load_prl(tmp.to_str().unwrap()).expect("should load without movers");
+
+        assert!(world.kinematic_geometry.movers.is_empty());
+        assert!(world.kinematic_geometry.waypoints.is_empty());
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_empty_kinematic_geometry_section_yields_no_movers() {
+        let tmp = write_prl_fixture(
+            minimal_sections_with_kinematic(Some(Default::default())),
+            "postretro_test_kinematic_empty.prl",
+        );
+        let world = load_prl(tmp.to_str().unwrap()).expect("empty mover section should load");
+
+        assert!(world.kinematic_geometry.movers.is_empty());
+        assert!(world.kinematic_geometry.waypoints.is_empty());
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_reads_kinematic_geometry_mover_and_waypoints() {
+        let tmp = write_prl_fixture(
+            minimal_sections_with_kinematic(Some(sample_kinematic_section())),
+            "postretro_test_kinematic_one_mover.prl",
+        );
+        let world = load_prl(tmp.to_str().unwrap()).expect("kinematic mover should load");
+
+        assert_eq!(world.kinematic_geometry.movers.len(), 1);
+        assert_eq!(world.kinematic_geometry.waypoints.len(), 2);
+        let mover = &world.kinematic_geometry.movers[0];
+        assert_eq!(mover.mover_id, 7);
+        assert_eq!(mover.name, "lift");
+        assert_eq!(mover.tags, vec!["platform".to_string()]);
+        assert_eq!(mover.origin, Vec3::new(1.0, 2.0, 3.0));
+        assert_eq!(mover.path, "a");
+        assert_eq!(mover.vertices.len(), 3);
+        assert_eq!(mover.indices, vec![0, 1, 2]);
+        assert_eq!(world.kinematic_geometry.waypoints[0].next, "b");
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_rejects_invalid_kinematic_waypoint_chains() {
+        let mut unknown = sample_kinematic_section();
+        unknown.waypoints[0].next = "missing".to_string();
+        let tmp = write_prl_fixture(
+            minimal_sections_with_kinematic(Some(unknown)),
+            "postretro_test_kinematic_unknown_next.prl",
+        );
+        let err = load_prl(tmp.to_str().unwrap()).unwrap_err().to_string();
+        assert!(err.contains("KinematicGeometry"));
+        assert!(err.contains("unknown waypoint"));
+        std::fs::remove_file(&tmp).ok();
+
+        let mut cycle = sample_kinematic_section();
+        cycle.waypoints[1].next = "a".to_string();
+        let tmp = write_prl_fixture(
+            minimal_sections_with_kinematic(Some(cycle)),
+            "postretro_test_kinematic_cycle.prl",
+        );
+        let err = load_prl(tmp.to_str().unwrap()).unwrap_err().to_string();
+        assert!(err.contains("cycles"));
+        std::fs::remove_file(&tmp).ok();
+
+        let mut short = sample_kinematic_section();
+        short.waypoints.truncate(1);
+        short.waypoints[0].next.clear();
+        let tmp = write_prl_fixture(
+            minimal_sections_with_kinematic(Some(short)),
+            "postretro_test_kinematic_short.prl",
+        );
+        let err = load_prl(tmp.to_str().unwrap()).unwrap_err().to_string();
+        assert!(err.contains("at least 2 required"));
         std::fs::remove_file(&tmp).ok();
     }
 

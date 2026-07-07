@@ -90,7 +90,7 @@ use postretro_net::wire::{
     ValidationError, WireError, WireMovementState, WirePlayerMovementState, WireTransform,
 };
 
-use crate::collision::CollisionWorld;
+use crate::movement::MovementCollisionSource;
 use crate::sim::SimCommand;
 
 /// Default listen port for `--host` when no port is supplied.
@@ -647,7 +647,7 @@ pub(crate) fn client_receive_and_apply(
     prediction: &mut ClientPrediction,
     descriptors: &[EntityTypeDescriptor],
     agent_params: Option<NavAgentParams>,
-    collision: &CollisionWorld,
+    collision: &impl MovementCollisionSource,
     gravity: f32,
     tick_dt: f32,
     frame_dt: Duration,
@@ -791,7 +791,7 @@ pub(crate) fn client_predict_tick(
     client: &mut NetClient,
     prediction: &mut ClientPrediction,
     command: &SimCommand,
-    collision: &CollisionWorld,
+    collision: &impl MovementCollisionSource,
     gravity: f32,
     tick_dt: f32,
 ) -> bool {

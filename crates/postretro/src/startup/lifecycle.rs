@@ -84,6 +84,8 @@ impl App {
             session.fog_volume_bridge.clear();
         }
         self.collision_world.clear();
+        self.kinematic_mover_colliders.clear();
+        self.kinematic_mover_tick_states.clear();
         self.active_wieldable = None;
         self.active_wieldable_descriptor = None;
     }
@@ -653,6 +655,22 @@ impl App {
         // Populate before the first game tick so movement collision is ready.
         if let Some(world) = self.level.as_ref() {
             self.collision_world.populate_from_level(world);
+            self.kinematic_mover_colliders =
+                crate::runtime_movers::build_loaded_mover_colliders(world);
+            if !world.kinematic_geometry.movers.is_empty() {
+                let mut registry = script_ctx.registry.borrow_mut();
+                match crate::runtime_movers::spawn_loaded_kinematic_movers(&mut registry, world) {
+                    Ok(spawned) => {
+                        log::info!(
+                            "[Loader] spawned {} kinematic mover entity/entities",
+                            spawned.len()
+                        );
+                    }
+                    Err(err) => {
+                        log::warn!("[Loader] failed to spawn kinematic movers: {err}");
+                    }
+                }
+            }
         }
         self.level_timings.record("bridges_populated");
 
@@ -1121,7 +1139,7 @@ mod tests {
     use crate::input::InputFocus;
     use crate::scripting;
     use crate::scripting::primitives::register_all;
-    use crate::{collision, input, options, scripting_systems, view_feel};
+    use crate::{input, options, scripting_systems, view_feel};
     use postretro_entities::{
         CrossingCondition, CrossingDescriptor, EntityTypeDescriptor, NamedReaction,
         PrimitiveDescriptor, ProgressDescriptor, ReactionDescriptor,
@@ -1245,7 +1263,9 @@ mod tests {
             pending_exit_to_desktop: false,
             ui_focused_id: None,
             particle_live_counts: std::collections::HashMap::new(),
-            collision_world: collision::CollisionWorld::new(),
+            collision_world: crate::collision::CollisionWorld::new(),
+            kinematic_mover_colliders: Vec::new(),
+            kinematic_mover_tick_states: crate::kinematic_mover::MoverTickStateTable::default(),
             active_wieldable: None,
             active_wieldable_descriptor: None,
             boot_state: BootState::Running,
@@ -1516,6 +1536,7 @@ mod tests {
             shadowmask_atlas: None,
             data_script: None,
             map_entities: Vec::new(),
+            kinematic_geometry: postretro_level_loader::KinematicGeometry::default(),
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
             initial_gravity: -9.8,

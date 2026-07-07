@@ -12,6 +12,8 @@ use proptest::prelude::*;
 
 use super::{SimCommand, TickEvents, simulate_tick};
 use crate::collision::CollisionWorld;
+use crate::collision::moving::MoverCollider;
+use crate::kinematic_mover::MoverTickStateTable;
 use crate::movement::MovementInput;
 use crate::scripting_systems::hit_zones::HitZoneStore;
 use crate::weapon::FireButtonState;
@@ -122,6 +124,8 @@ struct SimHarness {
     active_wieldable: EntityId,
     progress: ProgressTracker,
     ai_warned: HashSet<String>,
+    mover_colliders: Vec<MoverCollider>,
+    mover_states: MoverTickStateTable,
     role_ids: Vec<(Role, EntityId)>,
     selected_player: EntityId,
     enemy: EntityId,
@@ -161,6 +165,8 @@ impl SimHarness {
             active_wieldable,
             progress: ProgressTracker::new(),
             ai_warned: HashSet::new(),
+            mover_colliders: Vec::new(),
+            mover_states: MoverTickStateTable::default(),
             role_ids,
             selected_player,
             enemy,
@@ -179,6 +185,9 @@ impl SimHarness {
             0.0,
             &mut self.progress,
             &mut self.ai_warned,
+            &self.mover_colliders,
+            &mut self.mover_states,
+            &[],
             &sim_command,
             |_| command.to_post_movement_command(),
             DT,
@@ -760,6 +769,8 @@ fn simulate_tick_uses_sim_command_fire_button_with_callback_aim() {
     let hit_zones = HitZoneStore::new();
     let mut progress = ProgressTracker::new();
     let mut ai_warned = HashSet::new();
+    let mover_colliders = Vec::new();
+    let mut mover_states = MoverTickStateTable::default();
     let command = SimCommand {
         movement: MovementInput {
             wish_dir: Vec2::ZERO,
@@ -785,6 +796,9 @@ fn simulate_tick_uses_sim_command_fire_button_with_callback_aim() {
         0.0,
         &mut progress,
         &mut ai_warned,
+        &mover_colliders,
+        &mut mover_states,
+        &[],
         &command,
         |_| super::PostMovementCommand {
             aim_origin: Vec3::new(0.0, 2.0, -20.0),
@@ -822,6 +836,8 @@ fn simulate_tick_normalizes_callback_aim_direction_before_weapon_fire() {
     let hit_zones = HitZoneStore::new();
     let mut progress = ProgressTracker::new();
     let mut ai_warned = HashSet::new();
+    let mover_colliders = Vec::new();
+    let mut mover_states = MoverTickStateTable::default();
     let command = SimCommand {
         movement: MovementInput {
             wish_dir: Vec2::ZERO,
@@ -847,6 +863,9 @@ fn simulate_tick_normalizes_callback_aim_direction_before_weapon_fire() {
         0.0,
         &mut progress,
         &mut ai_warned,
+        &mover_colliders,
+        &mut mover_states,
+        &[],
         &command,
         |_| super::PostMovementCommand {
             aim_origin: Vec3::new(0.0, 2.0, 0.0),
@@ -890,6 +909,8 @@ fn simulate_tick_noops_weapon_fire_for_invalid_callback_aim_direction() {
     let hit_zones = HitZoneStore::new();
     let mut progress = ProgressTracker::new();
     let mut ai_warned = HashSet::new();
+    let mover_colliders = Vec::new();
+    let mut mover_states = MoverTickStateTable::default();
     let command = SimCommand {
         movement: MovementInput {
             wish_dir: Vec2::ZERO,
@@ -915,6 +936,9 @@ fn simulate_tick_noops_weapon_fire_for_invalid_callback_aim_direction() {
         0.0,
         &mut progress,
         &mut ai_warned,
+        &mover_colliders,
+        &mut mover_states,
+        &[],
         &command,
         |_| super::PostMovementCommand {
             aim_origin: Vec3::new(0.0, 2.0, 0.0),
@@ -963,6 +987,8 @@ fn simulate_tick_noops_weapon_fire_for_non_finite_callback_aim_origin() {
     let hit_zones = HitZoneStore::new();
     let mut progress = ProgressTracker::new();
     let mut ai_warned = HashSet::new();
+    let mover_colliders = Vec::new();
+    let mut mover_states = MoverTickStateTable::default();
     let command = SimCommand {
         movement: MovementInput {
             wish_dir: Vec2::ZERO,
@@ -988,6 +1014,9 @@ fn simulate_tick_noops_weapon_fire_for_non_finite_callback_aim_origin() {
         0.0,
         &mut progress,
         &mut ai_warned,
+        &mover_colliders,
+        &mut mover_states,
+        &[],
         &command,
         |_| super::PostMovementCommand {
             aim_origin: Vec3::new(f32::NAN, 2.0, 0.0),

@@ -11,6 +11,9 @@ pub use prl::{
     PortalData, ShadowType,
 };
 #[cfg(feature = "load-prl")]
-pub use prl::{CellDrawIndex, FaceMeta, LightmapMode, PrlLoadError};
+pub use prl::{
+    CellDrawIndex, FaceMeta, KinematicGeometry, LightmapMode, LoadedKinematicMover,
+    LoadedKinematicWaypoint, PrlLoadError,
+};
 #[cfg(feature = "load-prl")]
 pub use prl_loader::load_prl;

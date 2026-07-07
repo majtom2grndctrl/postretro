@@ -153,8 +153,12 @@ pub(crate) fn agent_overlay_diagnostics_rows(
         .collect()
 }
 
-fn agent_overlay_destination(agent: &AgentOverlayGeometry) -> Option<Vec3> {
-    agent.planned_destination.or(agent.destination)
+fn agent_overlay_live_destination(agent: &AgentOverlayGeometry) -> Option<Vec3> {
+    agent.destination
+}
+
+fn agent_overlay_planned_destination(agent: &AgentOverlayGeometry) -> Option<Vec3> {
+    agent.planned_destination
 }
 
 fn agent_marker_segments(center: Vec3, radius: f32) -> [(Vec3, Vec3); 3] {
@@ -212,7 +216,8 @@ pub(crate) fn emit_agent_overlay_geometry(
     agents: &[AgentOverlayGeometry],
 ) {
     const COLOR_AGENT_VELOCITY: [u8; 4] = [80, 180, 255, 255];
-    const COLOR_AGENT_DESTINATION: [u8; 4] = [255, 210, 80, 255];
+    const COLOR_AGENT_LIVE_DESTINATION: [u8; 4] = [255, 210, 80, 255];
+    const COLOR_AGENT_PLANNED_DESTINATION: [u8; 4] = [185, 130, 255, 255];
 
     let state = renderer.agent_overlay_state();
     if !state.enabled {
@@ -237,9 +242,16 @@ pub(crate) fn emit_agent_overlay_geometry(
             );
         }
         if state.destinations {
-            if let Some(destination) = agent_overlay_destination(agent) {
+            if let Some(planned_destination) = agent_overlay_planned_destination(agent) {
+                if Some(planned_destination) != agent_overlay_live_destination(agent) {
+                    for (start, end) in agent_marker_segments(planned_destination, agent.radius) {
+                        renderer.push_debug_line(start, end, COLOR_AGENT_PLANNED_DESTINATION);
+                    }
+                }
+            }
+            if let Some(destination) = agent_overlay_live_destination(agent) {
                 for (start, end) in agent_marker_segments(destination, agent.radius) {
-                    renderer.push_debug_line(start, end, COLOR_AGENT_DESTINATION);
+                    renderer.push_debug_line(start, end, COLOR_AGENT_LIVE_DESTINATION);
                 }
             }
         }
@@ -315,8 +327,12 @@ mod tests {
         assert_vec3_near(sampled.path[1], Vec3::new(3.0, 2.0, 4.0));
         assert_eq!(sampled.waypoint_cursor, 1);
         assert_vec3_near(sampled.velocity, Vec3::new(0.5, 0.0, 0.25));
-        let destination = agent_overlay_destination(sampled).expect("planned destination wins");
-        assert_vec3_near(destination, Vec3::new(3.5, 2.0, 4.5));
+        let live_destination =
+            agent_overlay_live_destination(sampled).expect("live destination is recorded");
+        assert_vec3_near(live_destination, Vec3::new(4.0, 2.0, 5.0));
+        let planned_destination = agent_overlay_planned_destination(sampled)
+            .expect("planned destination is recorded separately");
+        assert_vec3_near(planned_destination, Vec3::new(3.5, 2.0, 4.5));
         assert!((sampled.radius - 0.35).abs() <= 0.000_001);
 
         let label = &labels[0];

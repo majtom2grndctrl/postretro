@@ -152,6 +152,11 @@ pub struct BrainComponent {
     /// instead of re-requesting the same animation every tick.
     #[serde(default)]
     pub locomotion_moving: bool,
+    /// Currently acquired player pawn. This is retained only while the FSM is
+    /// engaged (`Alert`/`Attack`) so near-equidistant co-op players do not cause
+    /// per-think target churn. Cleared when aggro drops.
+    #[serde(default)]
+    pub acquired_target: Option<EntityId>,
     /// Resolved descriptor tuning the FSM reads each tick.
     pub tuning: AiTuning,
 }
@@ -166,6 +171,7 @@ impl BrainComponent {
             think_stride_counter: 0,
             death_despawn_remaining_ms: None,
             locomotion_moving: false,
+            acquired_target: None,
             tuning: AiTuning::from_descriptor(desc),
         }
     }
@@ -281,6 +287,7 @@ mod tests {
         assert_eq!(brain.think_stride_counter, 0);
         assert_eq!(brain.death_despawn_remaining_ms, None);
         assert!(!brain.locomotion_moving);
+        assert_eq!(brain.acquired_target, None);
         assert_eq!(brain.tuning.detection_range, 18.0);
         assert_eq!(brain.tuning.attack_range, 2.2);
         assert_eq!(brain.tuning.leash_range, 26.0);
@@ -333,6 +340,19 @@ mod tests {
             panic!("expected brain component");
         };
         assert!(!back.locomotion_moving);
+    }
+
+    #[test]
+    fn brain_serde_defaults_missing_acquired_target() {
+        use crate::registry::ComponentValue;
+        let value = ComponentValue::Brain(BrainComponent::from_descriptor(&sample_descriptor()));
+        let mut json = serde_json::to_value(&value).unwrap();
+        json.as_object_mut().unwrap().remove("acquired_target");
+
+        let ComponentValue::Brain(back) = serde_json::from_value(json).unwrap() else {
+            panic!("expected brain component");
+        };
+        assert_eq!(back.acquired_target, None);
     }
 
     #[test]

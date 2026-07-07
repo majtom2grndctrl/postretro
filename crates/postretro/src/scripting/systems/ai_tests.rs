@@ -63,6 +63,7 @@ fn brain_with(tuning: AiTuning, state: LogicalState) -> BrainComponent {
         think_stride_counter: 0,
         death_despawn_remaining_ms: None,
         locomotion_moving: false,
+        acquired_target: None,
         tuning,
     }
 }
@@ -249,6 +250,12 @@ fn enemy_locomotion_moving(reg: &EntityRegistry, enemy: EntityId) -> bool {
     reg.get_component::<BrainComponent>(enemy)
         .unwrap()
         .locomotion_moving
+}
+
+fn enemy_acquired_target(reg: &EntityRegistry, enemy: EntityId) -> Option<EntityId> {
+    reg.get_component::<BrainComponent>(enemy)
+        .unwrap()
+        .acquired_target
 }
 
 /// The enemy MESH's yaw-only VISUAL forward vector in the XZ plane, derived from
@@ -463,7 +470,7 @@ fn select_target_returns_single_player_pawn() {
     let mut reg = EntityRegistry::new();
     let pawn = spawn_player(&mut reg, Vec3::new(5.0, 0.0, 0.0));
 
-    let target = select_target(&reg, Vec3::ZERO, None).expect("player target");
+    let target = select_target(&reg, Vec3::ZERO, None, false, None).expect("player target");
 
     assert_eq!(target.entity, pawn);
     assert!(target.position.abs_diff_eq(Vec3::new(5.0, 0.0, 0.0), EPS));
@@ -476,13 +483,78 @@ fn select_target_chooses_nearer_remote_pawn_over_marked_local_pawn() {
     let remote = spawn_player(&mut reg, Vec3::new(3.0, 0.0, 0.0));
     reg.mark_local_player_pawn(local).unwrap();
 
-    let target = select_target(&reg, Vec3::ZERO, None).expect("player target");
+    let target = select_target(&reg, Vec3::ZERO, None, false, None).expect("player target");
 
     assert_eq!(
         target.entity, remote,
         "nearest PlayerMovement pawn should win even when it is not local_player_pawn",
     );
     assert!(target.position.abs_diff_eq(Vec3::new(3.0, 0.0, 0.0), EPS));
+}
+
+#[test]
+fn select_target_keeps_retained_target_when_other_pawn_is_only_slightly_nearer() {
+    let mut reg = EntityRegistry::new();
+    let retained = spawn_player(&mut reg, Vec3::new(10.0, 0.0, 0.0));
+    let slightly_nearer = spawn_player(&mut reg, Vec3::new(9.5, 0.0, 0.0));
+
+    let target =
+        select_target(&reg, Vec3::ZERO, Some(retained), false, None).expect("player target");
+
+    assert_eq!(
+        target.entity, retained,
+        "sticky target hysteresis keeps the retained pawn unless another is > \
+         {TARGET_SWITCH_HYSTERESIS_DISTANCE} unit closer",
+    );
+    assert_ne!(target.entity, slightly_nearer);
+}
+
+#[test]
+fn select_target_switches_when_other_pawn_is_meaningfully_closer() {
+    let mut reg = EntityRegistry::new();
+    let retained = spawn_player(&mut reg, Vec3::new(10.0, 0.0, 0.0));
+    let closer = spawn_player(&mut reg, Vec3::new(8.5, 0.0, 0.0));
+
+    let target =
+        select_target(&reg, Vec3::ZERO, Some(retained), false, None).expect("player target");
+
+    assert_eq!(
+        target.entity, closer,
+        "a pawn more than the hysteresis distance closer should steal aggro",
+    );
+}
+
+#[test]
+fn select_target_replaces_retained_target_when_retained_is_no_longer_player_pawn() {
+    let mut reg = EntityRegistry::new();
+    let retained = spawn_player(&mut reg, Vec3::new(5.0, 0.0, 0.0));
+    let replacement = spawn_player(&mut reg, Vec3::new(9.0, 0.0, 0.0));
+    reg.remove_component::<PlayerMovementComponent>(retained)
+        .unwrap();
+
+    let target =
+        select_target(&reg, Vec3::ZERO, Some(retained), false, None).expect("player target");
+
+    assert_eq!(
+        target.entity, replacement,
+        "a retained id without PlayerMovement is invalid and cannot stay sticky",
+    );
+}
+
+#[test]
+fn select_target_excludes_retained_target_when_leash_expires_on_acquisition_tick() {
+    let mut reg = EntityRegistry::new();
+    let retained = spawn_player(&mut reg, Vec3::new(30.0, 0.0, 0.0));
+    let replacement = spawn_player(&mut reg, Vec3::new(12.0, 0.0, 0.0));
+
+    let target =
+        select_target(&reg, Vec3::ZERO, Some(retained), true, None).expect("player target");
+
+    assert_eq!(
+        target.entity, replacement,
+        "once acquisition evaluates the retained pawn outside leash, another \
+         valid pawn may be selected even without hysteresis superiority",
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -512,6 +584,11 @@ fn detection_sets_agent_destination_and_leash_clears_it() {
     let pawn = spawn_player(&mut reg, Vec3::new(5.0, 0.0, 0.0));
     run_ai_tick(&mut reg, &mut warned, 0.016);
     assert_eq!(enemy_state(&reg, enemy), LogicalState::Alert);
+    assert_eq!(
+        enemy_acquired_target(&reg, enemy),
+        Some(pawn),
+        "detection persists the acquired target identity",
+    );
     assert!(
         agent_steering::path_state(&reg, enemy)
             .expect("agent present")
@@ -526,11 +603,170 @@ fn detection_sets_agent_destination_and_leash_clears_it() {
     reg.set_component(pawn, t).unwrap();
     run_ai_tick(&mut reg, &mut warned, 0.016);
     assert_eq!(enemy_state(&reg, enemy), LogicalState::Idle);
+    assert_eq!(
+        enemy_acquired_target(&reg, enemy),
+        None,
+        "leash drop clears the retained target identity",
+    );
     assert!(
         !agent_steering::path_state(&reg, enemy)
             .expect("agent present")
             .has_destination,
         "leaving leash must clear the destination",
+    );
+}
+
+#[test]
+fn retained_target_is_consumed_for_chase_when_other_pawn_is_only_slightly_nearer() {
+    let mut reg = EntityRegistry::new();
+    let mut warned = HashSet::new();
+
+    let retained = spawn_player(&mut reg, Vec3::new(10.0, 0.0, 0.0));
+    spawn_player(&mut reg, Vec3::new(9.5, 0.0, 0.0));
+    let mut brain = brain_with(tuning(), LogicalState::Alert);
+    brain.acquired_target = Some(retained);
+    let enemy = spawn_enemy(&mut reg, Vec3::ZERO, brain, 50.0);
+
+    run_ai_tick(&mut reg, &mut warned, 0.016);
+
+    assert_eq!(
+        enemy_acquired_target(&reg, enemy),
+        Some(retained),
+        "the retained target identity stays persisted while engaged",
+    );
+    assert_eq!(enemy_state(&reg, enemy), LogicalState::Alert);
+    let path = agent_steering::path_state(&reg, enemy).expect("agent present");
+    assert!(path.has_destination, "engaged target sets steering");
+    assert!(
+        (path.distance_to_destination - 10.0).abs() < EPS,
+        "steering should consume the retained pawn position, not the slightly \
+         nearer candidate (distance was {})",
+        path.distance_to_destination,
+    );
+}
+
+#[test]
+fn off_stride_retained_target_does_not_switch_to_meaningfully_closer_pawn() {
+    let mut reg = EntityRegistry::new();
+    let mut warned = HashSet::new();
+
+    let retained = spawn_player(&mut reg, Vec3::new(35.0, 0.0, 0.0));
+    let closer = spawn_player(&mut reg, Vec3::new(1.0, 0.0, 0.0));
+    let mut t = tuning();
+    t.leash_range = 60.0;
+    let mut brain = brain_with(t, LogicalState::Alert);
+    brain.acquired_target = Some(retained);
+    let enemy = spawn_enemy(&mut reg, Vec3::ZERO, brain, 50.0);
+
+    run_ai_tick(&mut reg, &mut warned, 0.016);
+
+    assert_eq!(
+        enemy_acquired_target(&reg, enemy),
+        Some(retained),
+        "off-stride engaged enemies must consume the retained target instead of reranking",
+    );
+    assert_ne!(enemy_acquired_target(&reg, enemy), Some(closer));
+    let path = agent_steering::path_state(&reg, enemy).expect("agent present");
+    assert!(
+        path.has_destination,
+        "retained target keeps steering active"
+    );
+    assert!(
+        (path.distance_to_destination - 35.0).abs() < EPS,
+        "steering should keep chasing the retained pawn on a non-acquisition tick"
+    );
+}
+
+#[test]
+fn idle_brain_ignores_stale_retained_target_when_acquiring() {
+    let mut reg = EntityRegistry::new();
+    let mut warned = HashSet::new();
+
+    let stale_far = spawn_player(&mut reg, Vec3::new(25.0, 0.0, 0.0));
+    let near = spawn_player(&mut reg, Vec3::new(5.0, 0.0, 0.0));
+    let mut brain = brain_with(tuning(), LogicalState::Idle);
+    brain.acquired_target = Some(stale_far);
+    let enemy = spawn_enemy(&mut reg, Vec3::ZERO, brain, 50.0);
+
+    run_ai_tick(&mut reg, &mut warned, 0.016);
+
+    assert_eq!(enemy_state(&reg, enemy), LogicalState::Alert);
+    assert_eq!(
+        enemy_acquired_target(&reg, enemy),
+        Some(near),
+        "idle acquisition should rank fresh targets instead of honoring stale retained state",
+    );
+}
+
+#[test]
+fn retained_target_outside_leash_drops_instead_of_switching_to_out_of_leash_replacement() {
+    let mut reg = EntityRegistry::new();
+    let mut warned = HashSet::new();
+
+    let retained = spawn_player(&mut reg, Vec3::new(20.0, 0.0, 0.0));
+    let replacement = spawn_player(&mut reg, Vec3::new(35.0, 0.0, 0.0));
+    let mut t = tuning();
+    t.leash_range = 10.0;
+    t.detection_range = 40.0;
+    let mut brain = brain_with(t, LogicalState::Alert);
+    brain.acquired_target = Some(retained);
+    brain.think_stride_counter = 3; // 20 units is mid band: 4 % 4 == acquisition tick.
+    let enemy = spawn_enemy(&mut reg, Vec3::ZERO, brain, 50.0);
+    agent_steering::set_destination(&mut reg, enemy, Vec3::new(20.0, 0.0, 0.0));
+
+    run_ai_tick(&mut reg, &mut warned, 0.016);
+
+    assert_eq!(
+        enemy_state(&reg, enemy),
+        LogicalState::Idle,
+        "an acquisition tick that invalidates leash should drop aggro when no replacement is in leash"
+    );
+    assert_eq!(
+        enemy_acquired_target(&reg, enemy),
+        None,
+        "out-of-leash replacement must not be persisted as the new target"
+    );
+    assert_ne!(enemy_acquired_target(&reg, enemy), Some(replacement));
+    assert!(
+        !agent_steering::path_state(&reg, enemy)
+            .expect("agent present")
+            .has_destination,
+        "dropping aggro clears stale steering"
+    );
+}
+
+#[test]
+fn retained_target_outside_leash_clears_stale_destination_off_stride() {
+    let mut reg = EntityRegistry::new();
+    let mut warned = HashSet::new();
+
+    let retained = spawn_player(&mut reg, Vec3::new(35.0, 0.0, 0.0));
+    let mut t = tuning();
+    t.leash_range = 10.0;
+    t.detection_range = 40.0;
+    let mut brain = brain_with(t, LogicalState::Alert);
+    brain.acquired_target = Some(retained);
+    brain.think_stride_counter = 0; // 35 units is far band: 1 % 12 is off-stride.
+    let enemy = spawn_enemy(&mut reg, Vec3::ZERO, brain, 50.0);
+    agent_steering::set_destination(&mut reg, enemy, Vec3::new(-20.0, 0.0, 0.0));
+
+    run_ai_tick(&mut reg, &mut warned, 0.016);
+
+    assert_eq!(
+        enemy_state(&reg, enemy),
+        LogicalState::Idle,
+        "leash escape should stand down immediately, not wait for target acquisition stride"
+    );
+    assert_eq!(
+        enemy_acquired_target(&reg, enemy),
+        None,
+        "leash escape clears the retained target identity immediately"
+    );
+    assert!(
+        !agent_steering::path_state(&reg, enemy)
+            .expect("agent present")
+            .has_destination,
+        "leash escape must clear stale steering destinations even off-stride"
     );
 }
 
@@ -606,6 +842,73 @@ fn attack_does_not_damage_remote_health_when_marked_local_pawn_lacks_health() {
         player_hp(&reg, remote),
         100.0,
         "remote pawn health must not be used as fallback damage target"
+    );
+}
+
+#[test]
+fn attack_damages_selected_remote_target_not_marked_local_pawn() {
+    let mut reg = EntityRegistry::new();
+    let mut warned = HashSet::new();
+
+    let local = spawn_player(&mut reg, Vec3::new(100.0, 0.0, 0.0));
+    let remote = spawn_player(&mut reg, Vec3::new(1.0, 0.0, 0.0));
+    reg.mark_local_player_pawn(local).unwrap();
+    spawn_enemy(
+        &mut reg,
+        Vec3::ZERO,
+        brain_with(tuning(), LogicalState::Idle),
+        50.0,
+    );
+
+    let events = run_ai_tick(&mut reg, &mut warned, 0.1);
+
+    assert_eq!(
+        events,
+        vec![ENEMY_ATTACK_EVENT],
+        "the selected remote pawn is alive and in attack range"
+    );
+    assert_eq!(
+        player_hp(&reg, remote),
+        92.0,
+        "damage lands on the selected remote pawn"
+    );
+    assert_eq!(
+        player_hp(&reg, local),
+        100.0,
+        "marked/local pawn health must not receive another pawn's attack"
+    );
+}
+
+#[test]
+fn selected_dead_target_suppresses_attack_even_when_other_pawn_is_alive() {
+    let mut reg = EntityRegistry::new();
+    let mut warned = HashSet::new();
+
+    let selected_dead = spawn_player(&mut reg, Vec3::new(1.0, 0.0, 0.0));
+    set_hp(&mut reg, selected_dead, 0.0);
+    let other_alive = spawn_player(&mut reg, Vec3::new(1.5, 0.0, 0.0));
+    spawn_enemy(
+        &mut reg,
+        Vec3::ZERO,
+        brain_with(tuning(), LogicalState::Idle),
+        50.0,
+    );
+
+    let events = run_ai_tick(&mut reg, &mut warned, 0.1);
+
+    assert!(
+        events.is_empty(),
+        "attack/event generation is gated by the selected target's live Health"
+    );
+    assert_eq!(
+        player_hp(&reg, selected_dead),
+        0.0,
+        "dead selected target remains at zero HP"
+    );
+    assert_eq!(
+        player_hp(&reg, other_alive),
+        100.0,
+        "another live pawn must not be damaged for the selected dead target"
     );
 }
 
@@ -693,18 +996,12 @@ fn each_logical_state_switches_to_mapped_animation() {
     assert_eq!(enemy_state(&reg, enemy), LogicalState::Attack);
     assert_eq!(enemy_animation(&reg, enemy), "attack");
 
-    // Player leaves to beyond leash. From ATTACK the FSM steps back through
-    // ALERT (leaving attack range) and then to IDLE (leaving leash on the next
-    // think tick). First tick: ATTACK → ALERT ("locomotion").
+    // Player leaves to beyond leash. Retained-target leash escape is evaluated
+    // every tick, so ATTACK stands down directly to IDLE instead of spending an
+    // intermediate ALERT tick chasing a stale destination.
     let mut t = *reg.get_component::<Transform>(pawn).unwrap();
     t.position = Vec3::new(30.0, 0.0, 0.0);
     reg.set_component(pawn, t).unwrap();
-    run_ai_tick(&mut reg, &mut warned, 0.016);
-    assert_eq!(enemy_state(&reg, enemy), LogicalState::Alert);
-    assert_eq!(enemy_animation(&reg, enemy), "locomotion");
-
-    // Second tick: ALERT → IDLE (player outside leash, acquisition evaluated)
-    // selects "idle".
     run_ai_tick(&mut reg, &mut warned, 0.016);
     assert_eq!(enemy_state(&reg, enemy), LogicalState::Idle);
     assert_eq!(enemy_animation(&reg, enemy), "idle");
@@ -985,6 +1282,11 @@ fn no_player_pawn_leaves_enemy_idle_and_clears_steering() {
     let events = run_ai_tick(&mut reg, &mut warned, 0.016);
     assert!(events.is_empty());
     assert_eq!(enemy_state(&reg, enemy), LogicalState::Idle);
+    assert_eq!(
+        enemy_acquired_target(&reg, enemy),
+        None,
+        "no target clears any retained target identity",
+    );
     assert!(
         !agent_steering::path_state(&reg, enemy)
             .expect("agent present")

@@ -15,14 +15,9 @@ use glam::Vec3;
 
 use crate::agent::{AgentCapsule, collide_and_slide};
 use crate::collision::CollisionWorld;
-use crate::nav::{NavGraph, distance_xz};
+use crate::nav::{NavGraph, distance_xz, find_path};
 use postretro_entities::components::agent::AgentComponent;
 use postretro_entities::{ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform};
-
-// Re-export the one-shot path query as part of the steering module's surface, so
-// a caller that wants a path without owning an agent imports it from here rather
-// than reaching into `nav` directly.
-pub(crate) use crate::nav::find_path;
 
 /// Maximum number of agents that may recompute a path in a single tick. Bounds
 /// the per-frame pathfinding cost regardless of how many agents simultaneously
@@ -307,7 +302,7 @@ pub(crate) fn tick(
     // will, so the two passes agree on each agent's drift/staleness verdict.
     // Admitted ids are collected in slot order; total admissions stay ≤
     // REPLAN_BUDGET_PER_TICK.
-    let admitted = admit_replans(registry, &snapshot);
+    let admitted = admit_replans(registry, &snapshot, nav_graph);
 
     let mut replans = 0u32;
 
@@ -326,7 +321,6 @@ pub(crate) fn tick(
 
         // Tick down the staleness cooldown regardless of what happens below.
         agent.replan_cooldown_ticks = agent.replan_cooldown_ticks.saturating_sub(1);
-
         let Some(destination) = agent.destination else {
             // No destination: idle steering, but still run the shared capsule
             // settle path so spawned/stationary agents obey gravity and
@@ -363,6 +357,9 @@ pub(crate) fn tick(
         // admission pass above (drift-driven before staleness-only, capped at the
         // budget) — the ONLY place the path is (re)built. An agent that WANTED a
         // replan but lost the prioritized race is simply not in `admitted`.
+        let forced_replan_during_recovery =
+            agent.unstick_window_remaining > 0 && agent.planned_destination.is_none();
+        let mut failed_forced_replan_during_recovery = false;
         if admitted.contains(&current.id) {
             // Admitted: rebuild the path now.
             replans += 1;
@@ -383,6 +380,16 @@ pub(crate) fn tick(
                     agent.path.clear();
                     agent.waypoint_cursor = 0;
                     agent.blocked = true;
+                    if forced_replan_during_recovery {
+                        // A recovery-forced replan can transiently fail while
+                        // the capsule is wedged or just off the navmesh. Keep
+                        // the forced-replan latch open for the bounded recovery
+                        // window so later ticks still retry through the normal
+                        // budget instead of converting the wedge to a held
+                        // blocked state immediately.
+                        agent.planned_destination = None;
+                        failed_forced_replan_during_recovery = true;
+                    }
                 }
             }
         }
@@ -406,6 +413,9 @@ pub(crate) fn tick(
             LOOKAHEAD_DISTANCE_RADIUS_FACTOR * agent.radius,
             dt,
         );
+        let preserve_forced_replan_recovery = forced_replan_during_recovery
+            && agent.unstick_window_remaining > 0
+            && (failed_forced_replan_during_recovery || agent.path.is_empty() || agent.blocked);
         agent.steer_velocity = steer_velocity;
         let mut desired = steer_velocity;
 
@@ -416,19 +426,29 @@ pub(crate) fn tick(
                 agent.unstick_window_remaining = UNSTICK_WINDOW;
                 agent.stuck_ticks = 0;
             }
-        } else {
+        } else if !preserve_forced_replan_recovery {
             agent.stuck_ticks = 0;
             agent.unstick_window_remaining = 0;
         }
         let recovery_active_this_tick = agent.unstick_window_remaining > 0;
         if recovery_active_this_tick {
-            desired += recovery_tangent_bias(steer_velocity, agent.move_speed);
+            if has_recovery_intent {
+                desired += recovery_tangent_bias(steer_velocity, agent.move_speed);
+            }
             agent.unstick_window_remaining = agent.unstick_window_remaining.saturating_sub(1);
+            if failed_forced_replan_during_recovery && agent.unstick_window_remaining == 0 {
+                agent.planned_destination = Some(destination);
+            }
         }
 
         // Separation: sum pushes from every other agent whose capsule overlaps
-        // or sits within the separation band, against the frozen snapshot.
-        desired += separation(current, &agent, &snapshot);
+        // or sits within the separation band, against the frozen snapshot. When
+        // path-following intent exists, keep separation lateral/forward relative
+        // to that intent so crowding cannot masquerade as a retreat.
+        desired += separation_preserving_goal_progress(
+            steer_velocity,
+            separation(current, &agent, &snapshot),
+        );
 
         // Clamp horizontal speed to the agent's top speed so the combined
         // (goal + separation) vector never drives faster than `move_speed`.
@@ -480,10 +500,13 @@ pub(crate) fn tick(
 /// A wants-replan agent is DRIFT-driven when it has no plan yet
 /// (`planned_destination` is `None`) OR its live destination has drifted more
 /// than [`REPLAN_DEST_THRESHOLD`] (XZ) from the position the current plan was
-/// built for — the target genuinely moved (or was never planned). It is
-/// STALENESS-only when it qualifies ONLY because the cooldown elapsed
-/// (`replan_cooldown_ticks == 0` after this tick's decrement) while drift ≤ the
-/// threshold — a refresh of an essentially-unchanged plan.
+/// built for OR, when a nav graph is available, the live destination resolves to
+/// different nav topology than the planned destination OR a previously-blocked
+/// empty plan is now directly routable from the agent's current region to the
+/// live destination region. It is STALENESS-only when it qualifies ONLY because
+/// the cooldown elapsed (`replan_cooldown_ticks == 0` after this tick's
+/// decrement) while drift/topology/direct-routable recovery stayed unchanged —
+/// a refresh of an essentially-unchanged plan.
 ///
 /// Two passes over the snapshot: first admit drift-driven agents up to the
 /// budget, then admit staleness-only agents with whatever budget remains. A
@@ -491,7 +514,11 @@ pub(crate) fn tick(
 /// arrived agent whose destination then moved is drift-driven and re-acquires
 /// promptly. Total admissions stay ≤ [`REPLAN_BUDGET_PER_TICK`]. Reads live
 /// components only — no component writes happen here.
-fn admit_replans(registry: &EntityRegistry, snapshot: &[AgentSnapshot]) -> Vec<EntityId> {
+fn admit_replans(
+    registry: &EntityRegistry,
+    snapshot: &[AgentSnapshot],
+    nav_graph: Option<&NavGraph>,
+) -> Vec<EntityId> {
     // Classify each snapshot agent once: drift-driven, staleness-only, or not
     // wanting a replan at all. The cooldown is decremented exactly as the apply
     // loop will, so both passes see the same verdict.
@@ -506,9 +533,15 @@ fn admit_replans(registry: &EntityRegistry, snapshot: &[AgentSnapshot]) -> Vec<E
             continue;
         };
 
-        let drifted = agent
-            .planned_destination
-            .is_none_or(|planned| distance_xz(planned, destination) > REPLAN_DEST_THRESHOLD);
+        let drifted = agent.planned_destination.is_none_or(|planned| {
+            distance_xz(planned, destination) > REPLAN_DEST_THRESHOLD
+                || destination_topology_changed(nav_graph, planned, destination)
+        }) || blocked_destination_now_directly_routable(
+            nav_graph,
+            agent,
+            current.position,
+            destination,
+        );
         // The apply loop decrements before the `== 0` test, so a cooldown of 1
         // (or 0) this tick reaches 0 after the decrement and counts as stale.
         let cooldown_elapsed = agent.replan_cooldown_ticks.saturating_sub(1) == 0;
@@ -528,6 +561,42 @@ fn admit_replans(registry: &EntityRegistry, snapshot: &[AgentSnapshot]) -> Vec<E
     let remaining = budget - admitted.len();
     admitted.extend(staleness_only.into_iter().take(remaining));
     admitted
+}
+
+fn destination_topology_changed(
+    nav_graph: Option<&NavGraph>,
+    planned: Vec3,
+    destination: Vec3,
+) -> bool {
+    let Some(graph) = nav_graph else {
+        return false;
+    };
+
+    match (graph.region_at(planned), graph.region_at(destination)) {
+        (Some(planned_region), Some(destination_region)) => planned_region != destination_region,
+        (Some(_), None) | (None, Some(_)) => true,
+        (None, None) => false,
+    }
+}
+
+fn blocked_destination_now_directly_routable(
+    nav_graph: Option<&NavGraph>,
+    agent: &AgentComponent,
+    position: Vec3,
+    destination: Vec3,
+) -> bool {
+    if !agent.blocked || !agent.path.is_empty() {
+        return false;
+    }
+
+    let Some(graph) = nav_graph else {
+        return false;
+    };
+
+    match (graph.region_at(position), graph.region_at(destination)) {
+        (Some(position_region), Some(destination_region)) => position_region == destination_region,
+        _ => false,
+    }
 }
 
 /// Goal path-following speed for the current waypoint, advancing the cursor as
@@ -793,6 +862,22 @@ fn separation(current: &AgentSnapshot, agent: &AgentComponent, snapshot: &[Agent
         return Vec3::ZERO;
     }
     push.normalize() * (agent.move_speed * SEPARATION_STRENGTH)
+}
+
+fn separation_preserving_goal_progress(steer_velocity: Vec3, separation: Vec3) -> Vec3 {
+    if steer_velocity.length_squared() <= MIN_XZ_LEN_SQ
+        || separation.length_squared() <= MIN_XZ_LEN_SQ
+    {
+        return separation;
+    }
+
+    let goal_dir = Vec3::new(steer_velocity.x, 0.0, steer_velocity.z).normalize();
+    let backward = separation.dot(goal_dir);
+    if backward < 0.0 {
+        separation - goal_dir * backward
+    } else {
+        separation
+    }
 }
 
 #[cfg(test)]

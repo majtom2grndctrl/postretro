@@ -18,50 +18,41 @@
 }
 // brush 1
 {
-( -1416 1616 352 ) ( -1416 -1016 368 ) ( -1416 -1016 352 ) concrete_pavement_036 0 0 0 1 1
-( -1416 -1016 352 ) ( 1616 -1016 368 ) ( 1616 -1016 352 ) concrete_pavement_036 0 0 0 1 1
-( -1416 -1016 352 ) ( 1616 1616 352 ) ( -1416 1616 352 ) concrete_pavement_036 0 0 0 1 1
-( -1416 1616 368 ) ( 1616 -1016 368 ) ( -1416 -1016 368 ) concrete_pavement_036 0 0 0 1 1
-( 1616 1616 352 ) ( -1416 1616 368 ) ( -1416 1616 352 ) concrete_pavement_036 0 0 0 1 1
-( 1616 -1016 352 ) ( 1616 1616 368 ) ( 1616 1616 352 ) concrete_pavement_036 0 0 0 1 1
-}
-// brush 2
-{
 ( -1416 1616 0 ) ( -1416 -1016 128 ) ( -1416 -1016 0 ) concrete_pavement_036 0 0 0 1 1
 ( -1416 -1016 0 ) ( -1400 -1016 128 ) ( -1400 -1016 0 ) concrete_pavement_036 0 0 0 1 1
 ( -1416 -1016 0 ) ( -1400 1616 0 ) ( -1416 1616 0 ) concrete_pavement_036 0 0 0 1 1
-( -1416 1616 352 ) ( -1400 -1016 352 ) ( -1416 -1016 352 ) concrete_pavement_036 0 0 0 1 1
+( -1416 1616 912 ) ( -1400 -1016 912 ) ( -1416 -1016 912 ) concrete_pavement_036 0 0 0 1 1
 ( -1400 1616 0 ) ( -1416 1616 128 ) ( -1416 1616 0 ) concrete_pavement_036 0 0 0 1 1
 ( -1400 -1016 0 ) ( -1400 1616 128 ) ( -1400 1616 0 ) concrete_pavement_036 0 0 0 1 1
 }
-// brush 3
+// brush 2
 {
 ( 1600 1616 0 ) ( 1600 -1016 128 ) ( 1600 -1016 0 ) concrete_pavement_036 0 0 0 1 1
 ( 1600 -1016 0 ) ( 1616 -1016 128 ) ( 1616 -1016 0 ) concrete_pavement_036 0 0 0 1 1
 ( 1600 -1016 0 ) ( 1616 1616 0 ) ( 1600 1616 0 ) concrete_pavement_036 0 0 0 1 1
-( 1600 1616 352 ) ( 1616 -1016 352 ) ( 1600 -1016 352 ) concrete_pavement_036 0 0 0 1 1
+( 1600 1616 912 ) ( 1616 -1016 912 ) ( 1600 -1016 912 ) concrete_pavement_036 0 0 0 1 1
 ( 1616 1616 0 ) ( 1600 1616 128 ) ( 1600 1616 0 ) concrete_pavement_036 0 0 0 1 1
 ( 1616 -1016 0 ) ( 1616 1616 128 ) ( 1616 1616 0 ) concrete_pavement_036 0 0 0 1 1
 }
-// brush 4
+// brush 3
 {
 ( -1416 -1000 0 ) ( -1416 -1016 128 ) ( -1416 -1016 0 ) concrete_pavement_036 0 0 0 1 1
 ( -1416 -1016 0 ) ( 1616 -1016 128 ) ( 1616 -1016 0 ) concrete_pavement_036 0 0 0 1 1
 ( -1416 -1016 0 ) ( 1616 -1000 0 ) ( -1416 -1000 0 ) concrete_pavement_036 0 0 0 1 1
-( -1416 -1000 352 ) ( 1616 -1016 352 ) ( -1416 -1016 352 ) concrete_pavement_036 0 0 0 1 1
+( -1416 -1000 912 ) ( 1616 -1016 912 ) ( -1416 -1016 912 ) concrete_pavement_036 0 0 0 1 1
 ( 1616 -1000 0 ) ( -1416 -1000 128 ) ( -1416 -1000 0 ) concrete_pavement_036 0 0 0 1 1
 ( 1616 -1016 0 ) ( 1616 -1000 128 ) ( 1616 -1000 0 ) concrete_pavement_036 0 0 0 1 1
 }
-// brush 5
+// brush 4
 {
 ( -1416 1616 0 ) ( -1416 1600 128 ) ( -1416 1600 0 ) concrete_pavement_036 0 0 0 1 1
 ( -1416 1600 0 ) ( 1616 1600 128 ) ( 1616 1600 0 ) concrete_pavement_036 0 0 0 1 1
 ( -1416 1600 0 ) ( 1616 1616 0 ) ( -1416 1616 0 ) concrete_pavement_036 0 0 0 1 1
-( -1416 1616 352 ) ( 1616 1600 352 ) ( -1416 1600 352 ) concrete_pavement_036 0 0 0 1 1
+( -1416 1616 912 ) ( 1616 1600 912 ) ( -1416 1600 912 ) concrete_pavement_036 0 0 0 1 1
 ( 1616 1616 0 ) ( -1416 1616 128 ) ( -1416 1616 0 ) concrete_pavement_036 0 0 0 1 1
 ( 1616 1600 0 ) ( 1616 1616 128 ) ( 1616 1616 0 ) concrete_pavement_036 0 0 0 1 1
 }
-// brush 6
+// brush 5
 {
 ( -940 40 0 ) ( -940 -40 128 ) ( -940 -40 0 ) concrete_pavement_036 0 0 0 1 1
 ( -940 -40 0 ) ( -860 -40 128 ) ( -860 -40 0 ) concrete_pavement_036 0 0 0 1 1
@@ -70,7 +61,7 @@
 ( -860 40 0 ) ( -940 40 128 ) ( -940 40 0 ) concrete_pavement_036 0 0 0 1 1
 ( -860 -40 0 ) ( -860 40 128 ) ( -860 40 0 ) concrete_pavement_036 0 0 0 1 1
 }
-// brush 7
+// brush 6
 {
 ( -1060 112 0 ) ( -1060 40 128 ) ( -1060 40 0 ) concrete_pavement_036 0 0 0 1 1
 ( -1060 40 0 ) ( -940 40 128 ) ( -940 40 0 ) concrete_pavement_036 0 0 0 1 1
@@ -79,7 +70,7 @@
 ( -940 112 0 ) ( -1060 112 128 ) ( -1060 112 0 ) concrete_pavement_036 0 0 0 1 1
 ( -940 40 0 ) ( -940 112 128 ) ( -940 112 0 ) concrete_pavement_036 0 0 0 1 1
 }
-// brush 8
+// brush 7
 {
 ( -860 -40 0 ) ( -860 -112 128 ) ( -860 -112 0 ) concrete_pavement_036 0 0 0 1 1
 ( -860 -112 0 ) ( -740 -112 128 ) ( -740 -112 0 ) concrete_pavement_036 0 0 0 1 1
@@ -88,7 +79,7 @@
 ( -740 -40 0 ) ( -860 -40 128 ) ( -860 -40 0 ) concrete_pavement_036 0 0 0 1 1
 ( -740 -112 0 ) ( -740 -40 128 ) ( -740 -40 0 ) concrete_pavement_036 0 0 0 1 1
 }
-// brush 9
+// brush 8
 {
 ( -1160 160 0 ) ( -1160 -160 128 ) ( -1160 -160 0 ) concrete_pavement_036 0 0 0 1 1
 ( -1160 -160 0 ) ( -1120 -160 128 ) ( -1120 -160 0 ) concrete_pavement_036 0 0 0 1 1
@@ -97,7 +88,7 @@
 ( -1120 160 0 ) ( -1160 160 128 ) ( -1160 160 0 ) concrete_pavement_036 0 0 0 1 1
 ( -1120 -160 0 ) ( -1120 160 128 ) ( -1120 160 0 ) concrete_pavement_036 0 0 0 1 1
 }
-// brush 10
+// brush 9
 {
 ( -80 -560 0 ) ( -80 -820 128 ) ( -80 -820 0 ) concrete_pavement_036 0 0 0 1 1
 ( -80 -820 0 ) ( 0 -820 128 ) ( 0 -820 0 ) concrete_pavement_036 0 0 0 1 1
@@ -106,7 +97,7 @@
 ( 0 -560 0 ) ( -80 -560 128 ) ( -80 -560 0 ) concrete_pavement_036 0 0 0 1 1
 ( 0 -820 0 ) ( 0 -560 128 ) ( 0 -560 0 ) concrete_pavement_036 0 0 0 1 1
 }
-// brush 11
+// brush 10
 {
 ( 120 -620 0 ) ( 120 -820 128 ) ( 120 -820 0 ) concrete_pavement_036 0 0 0 1 1
 ( 120 -820 0 ) ( 200 -820 128 ) ( 200 -820 0 ) concrete_pavement_036 0 0 0 1 1
@@ -115,25 +106,25 @@
 ( 200 -620 0 ) ( 120 -620 128 ) ( 120 -620 0 ) concrete_pavement_036 0 0 0 1 1
 ( 200 -820 0 ) ( 200 -620 128 ) ( 200 -620 0 ) concrete_pavement_036 0 0 0 1 1
 }
+// brush 11
+{
+( 320 -416 208 ) ( 320 -768 208 ) ( 320 -768 0 ) concrete_pavement_036 -0.18181801 0 0 1.0352942 1
+( 320 -768 208 ) ( 400 -768 208 ) ( 400 -768 0 ) concrete_pavement_036 0 0 0 1 1
+( 400 -768 0 ) ( 400 -416 0 ) ( 320 -416 0 ) concrete_pavement_036 0 0.18181801 0 1 1.0352942
+( 320 -416 208 ) ( 400 -416 208 ) ( 400 -768 208 ) concrete_pavement_036 0 0.18181801 0 1 1.0352942
+( 400 -416 0 ) ( 400 -416 208 ) ( 320 -416 208 ) concrete_pavement_036 0 0 0 1 1
+( 400 -768 208 ) ( 400 -416 208 ) ( 400 -416 0 ) concrete_pavement_036 -0.18181801 0 0 1.0352942 1
+}
 // brush 12
 {
-( 320 -420 0 ) ( 320 -760 128 ) ( 320 -760 0 ) concrete_pavement_036 0 0 0 1 1
-( 320 -760 0 ) ( 400 -760 128 ) ( 400 -760 0 ) concrete_pavement_036 0 0 0 1 1
-( 320 -760 0 ) ( 400 -420 0 ) ( 320 -420 0 ) concrete_pavement_036 0 0 0 1 1
-( 320 -420 208 ) ( 400 -760 208 ) ( 320 -760 208 ) concrete_pavement_036 0 0 0 1 1
-( 400 -420 0 ) ( 320 -420 128 ) ( 320 -420 0 ) concrete_pavement_036 0 0 0 1 1
-( 400 -760 0 ) ( 400 -420 128 ) ( 400 -420 0 ) concrete_pavement_036 0 0 0 1 1
+( 32 -416 208 ) ( 32 -496 208 ) ( 32 -496 0 ) concrete_pavement_036 0 0 0 1 1
+( 32 -496 208 ) ( 320 -496 208 ) ( 320 -496 0 ) concrete_pavement_036 0.8888855 0 0 1.0285715 1
+( 320 -496 0 ) ( 320 -416 0 ) ( 32 -416 0 ) concrete_pavement_036 0.8888855 0 0 1.0285715 1
+( 32 -416 208 ) ( 320 -416 208 ) ( 320 -496 208 ) concrete_pavement_036 0.8888855 0 0 1.0285715 1
+( 320 -416 0 ) ( 320 -416 208 ) ( 32 -416 208 ) concrete_pavement_036 0.8888855 0 0 1.0285715 1
+( 320 -496 208 ) ( 320 -416 208 ) ( 320 -416 0 ) concrete_pavement_036 0 0 0 1 1
 }
 // brush 13
-{
-( 48 -420 0 ) ( 48 -500 128 ) ( 48 -500 0 ) concrete_pavement_036 0 0 0 1 1
-( 48 -500 0 ) ( 328 -500 128 ) ( 328 -500 0 ) concrete_pavement_036 0 0 0 1 1
-( 48 -500 0 ) ( 328 -420 0 ) ( 48 -420 0 ) concrete_pavement_036 0 0 0 1 1
-( 48 -420 208 ) ( 328 -500 208 ) ( 48 -500 208 ) concrete_pavement_036 0 0 0 1 1
-( 328 -420 0 ) ( 48 -420 128 ) ( 48 -420 0 ) concrete_pavement_036 0 0 0 1 1
-( 328 -500 0 ) ( 328 -420 128 ) ( 328 -420 0 ) concrete_pavement_036 0 0 0 1 1
-}
-// brush 14
 {
 ( 560 -80 0 ) ( 560 -120 64 ) ( 560 -120 0 ) concrete_pavement_036 0 0 0 1 1
 ( 560 -120 0 ) ( 1440 -120 64 ) ( 1440 -120 0 ) concrete_pavement_036 0 0 0 1 1
@@ -142,7 +133,7 @@
 ( 1440 -80 0 ) ( 560 -80 64 ) ( 560 -80 0 ) concrete_pavement_036 0 0 0 1 1
 ( 1440 -120 0 ) ( 1440 -80 64 ) ( 1440 -80 0 ) concrete_pavement_036 0 0 0 1 1
 }
-// brush 15
+// brush 14
 {
 ( 560 120 0 ) ( 560 80 64 ) ( 560 80 0 ) concrete_pavement_036 0 0 0 1 1
 ( 560 80 0 ) ( 1440 80 64 ) ( 1440 80 0 ) concrete_pavement_036 0 0 0 1 1
@@ -151,16 +142,16 @@
 ( 1440 120 0 ) ( 560 120 64 ) ( 560 120 0 ) concrete_pavement_036 0 0 0 1 1
 ( 1440 80 0 ) ( 1440 120 64 ) ( 1440 120 0 ) concrete_pavement_036 0 0 0 1 1
 }
-// brush 16
+// brush 15
 {
-( 560 80 0 ) ( 560 -80 32 ) ( 560 -80 0 ) concrete_pavement_036 0 0 0 1 1
-( 560 -80 0 ) ( 600 -80 32 ) ( 600 -80 0 ) concrete_pavement_036 0 0 0 1 1
-( 560 -80 0 ) ( 600 80 0 ) ( 560 80 0 ) concrete_pavement_036 0 0 0 1 1
-( 560 80 32 ) ( 600 -80 32 ) ( 560 -80 32 ) concrete_pavement_036 0 0 0 1 1
-( 600 80 0 ) ( 560 80 32 ) ( 560 80 0 ) concrete_pavement_036 0 0 0 1 1
-( 600 -80 0 ) ( 600 80 32 ) ( 600 80 0 ) concrete_pavement_036 0 0 0 1 1
+( 560 80 0 ) ( 560 -80 32 ) ( 560 -80 0 ) "Level Eleven Games Sci-Fi Texture Pack v1/Grid-002_Base-004" 0 0 0 1 1
+( 560 -80 0 ) ( 600 -80 32 ) ( 600 -80 0 ) "Level Eleven Games Sci-Fi Texture Pack v1/Grid-002_Base-004" 0 0 0 1 1
+( 560 -80 0 ) ( 600 80 0 ) ( 560 80 0 ) "Level Eleven Games Sci-Fi Texture Pack v1/Grid-002_Base-004" 0 0 0 1 1
+( 560 80 32 ) ( 600 -80 32 ) ( 560 -80 32 ) "Level Eleven Games Sci-Fi Texture Pack v1/Grid-002_Base-004" 0 0 0 1 1
+( 600 80 0 ) ( 560 80 32 ) ( 560 80 0 ) "Level Eleven Games Sci-Fi Texture Pack v1/Grid-002_Base-004" 0 0 0 1 1
+( 600 -80 0 ) ( 600 80 32 ) ( 600 80 0 ) "Level Eleven Games Sci-Fi Texture Pack v1/Grid-002_Base-004" 0 0 0 1 1
 }
-// brush 17
+// brush 16
 {
 ( 1400 80 0 ) ( 1400 -80 32 ) ( 1400 -80 0 ) concrete_pavement_036 0 0 0 1 1
 ( 1400 -80 0 ) ( 1440 -80 32 ) ( 1440 -80 0 ) concrete_pavement_036 0 0 0 1 1
@@ -169,7 +160,7 @@
 ( 1440 80 0 ) ( 1400 80 32 ) ( 1400 80 0 ) concrete_pavement_036 0 0 0 1 1
 ( 1440 -80 0 ) ( 1440 80 32 ) ( 1440 80 0 ) concrete_pavement_036 0 0 0 1 1
 }
-// brush 18
+// brush 17
 {
 ( 1060 1220 0 ) ( 1060 918 128 ) ( 1060 918 0 ) concrete_pavement_036 0 0 0 1 1
 ( 1060 918 0 ) ( 1120 918 128 ) ( 1120 918 0 ) concrete_pavement_036 0 0 0 1 1
@@ -178,7 +169,7 @@
 ( 1120 1220 0 ) ( 1060 1220 128 ) ( 1060 1220 0 ) concrete_pavement_036 0 0 0 1 1
 ( 1120 918 0 ) ( 1120 1220 128 ) ( 1120 1220 0 ) concrete_pavement_036 0 0 0 1 1
 }
-// brush 19
+// brush 18
 {
 ( 1060 883 0 ) ( 1060 580 128 ) ( 1060 580 0 ) concrete_pavement_036 0 0 0 1 1
 ( 1060 580 0 ) ( 1120 580 128 ) ( 1120 580 0 ) concrete_pavement_036 0 0 0 1 1
@@ -187,7 +178,7 @@
 ( 1120 883 0 ) ( 1060 883 128 ) ( 1060 883 0 ) concrete_pavement_036 0 0 0 1 1
 ( 1120 580 0 ) ( 1120 883 128 ) ( 1120 883 0 ) concrete_pavement_036 0 0 0 1 1
 }
-// brush 20
+// brush 19
 {
 ( 1260 1040 0 ) ( 1260 760 128 ) ( 1260 760 0 ) concrete_pavement_036 0 0 0 1 1
 ( 1260 760 0 ) ( 1320 760 128 ) ( 1320 760 0 ) concrete_pavement_036 0 0 0 1 1
@@ -196,12 +187,109 @@
 ( 1320 1040 0 ) ( 1260 1040 128 ) ( 1260 1040 0 ) concrete_pavement_036 0 0 0 1 1
 ( 1320 760 0 ) ( 1320 1040 128 ) ( 1320 1040 0 ) concrete_pavement_036 0 0 0 1 1
 }
+// brush 20
+{
+( -1416 1616 896 ) ( -1416 -1016 912 ) ( -1416 -1016 896 ) concrete_pavement_036 0 0 0 1 1
+( -1416 -1016 896 ) ( 1616 -1016 912 ) ( 1616 -1016 896 ) concrete_pavement_036 0 0 0 1 1
+( -1416 -1016 848 ) ( 1616 1616 848 ) ( -1416 1616 848 ) concrete_pavement_036 0 0 0 1 1
+( -1416 1616 912 ) ( 1616 -1016 912 ) ( -1416 -1016 912 ) concrete_pavement_036 0 0 0 1 1
+( 1616 1616 896 ) ( -1416 1616 912 ) ( -1416 1616 896 ) concrete_pavement_036 0 0 0 1 1
+( 1616 -1016 896 ) ( 1616 1616 912 ) ( 1616 1616 896 ) concrete_pavement_036 0 0 0 1 1
+}
+// brush 21
+{
+( -336 240 368 ) ( -512 432 448 ) ( -512 432 496 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 -32 0 1 1
+( -512 432 496 ) ( -336 432 496 ) ( -336 240 496 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 63.99997 32 0 1 1
+( -336 240 368 ) ( -336 432 448 ) ( -512 432 448 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 63.99997 32 0 1 1
+( -336 432 448 ) ( -336 432 496 ) ( -512 432 496 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -46.608765 0 1 0.82142866
+( -336 240 496 ) ( -336 432 496 ) ( -336 432 448 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 -32 0 1 1
+}
+// brush 22
+{
+( -512 432 496 ) ( -512 240 496 ) ( -512 240 368 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -32 179.99998 1 -1
+( -512 240 496 ) ( -336 240 496 ) ( -336 240 368 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -32 180.00002 1 -1
+( -512 432 496 ) ( -336 240 496 ) ( -512 240 496 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -32 179.99998 1 1
+( -512 240 368 ) ( -336 240 368 ) ( -512 432 448 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -32 179.99998 1 1
+( -336 240 368 ) ( -336 240 496 ) ( -512 432 496 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -32 179.99998 1 -1
+}
+// brush 23
+{
+( -512 240 368 ) ( -688 432 368 ) ( -688 432 496 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 -32 0 1 1
+( -688 432 496 ) ( -512 432 496 ) ( -512 240 496 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 32 0 1 1
+( -512 432 448 ) ( -512 432 496 ) ( -688 432 496 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 -32 0 1 1
+( -512 240 368 ) ( -512 432 448 ) ( -688 432 368 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 32 0 1 1
+( -512 240 496 ) ( -512 432 496 ) ( -512 432 448 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 -32 0 1 1
+}
+// brush 24
+{
+( -688 624 496 ) ( -688 432 496 ) ( -688 432 368 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -32 179.99998 1 -1
+( -688 432 496 ) ( -512 432 496 ) ( -512 432 448 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 -32 180.00002 1 -1
+( -688 624 496 ) ( -512 432 496 ) ( -688 432 496 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 -32 179.99998 1 1
+( -688 432 368 ) ( -512 432 448 ) ( -688 624 368 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 -32 179.99998 1 1
+( -512 432 448 ) ( -512 432 496 ) ( -688 624 496 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -32 179.99998 1 -1
+}
+// brush 25
+{
+( -512 432 448 ) ( -688 624 368 ) ( -688 624 496 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 -32 0 1 1
+( -688 624 496 ) ( -512 624 496 ) ( -512 432 496 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 32 0 1 1
+( -512 624 448 ) ( -512 624 496 ) ( -688 624 496 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 -32 0 1 1
+( -512 432 448 ) ( -512 624 448 ) ( -688 624 368 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 32 0 1 1
+( -512 432 496 ) ( -512 624 496 ) ( -512 624 448 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 -46.608765 0 1 0.82142866
+}
+// brush 26
+{
+( -688 816 496 ) ( -688 624 496 ) ( -688 624 368 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -32 179.99998 1 -1
+( -688 624 496 ) ( -512 624 496 ) ( -512 624 448 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 -32 180.00002 1 -1
+( -688 816 496 ) ( -512 624 496 ) ( -688 624 496 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 -32 179.99998 1 1
+( -688 624 368 ) ( -512 624 448 ) ( -688 816 368 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 -32 179.99998 1 1
+( -688 816 496 ) ( -688 816 368 ) ( -512 624 448 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -32 179.99998 1 -1
+}
+// brush 27
+{
+( -512 624 448 ) ( -688 816 368 ) ( -688 816 496 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 -32 0 1 1
+( -512 624 448 ) ( -512 816 368 ) ( -688 816 368 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 32 0 1 1
+( -688 816 496 ) ( -512 816 496 ) ( -512 624 496 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 32 0 1 1
+( -512 816 368 ) ( -512 816 496 ) ( -688 816 496 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 -32 0 1 1
+( -512 624 496 ) ( -512 816 496 ) ( -512 816 368 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 -32 0 1 1
+}
+// brush 28
+{
+( -512 816 496 ) ( -512 624 496 ) ( -512 624 448 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -32 179.99998 1 -1
+( -512 624 496 ) ( -336 624 496 ) ( -336 624 448 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -46.608765 180.00002 1 -0.82142866
+( -512 624 448 ) ( -336 624 448 ) ( -512 816 368 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -32 179.99998 1 1
+( -512 816 496 ) ( -336 624 496 ) ( -512 624 496 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -32 179.99998 1 1
+( -336 624 448 ) ( -336 624 496 ) ( -512 816 496 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -32 179.99998 1 -1
+}
+// brush 29
+{
+( -336 624 448 ) ( -512 816 368 ) ( -512 816 496 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 -32 0 1 1
+( -336 624 448 ) ( -336 816 368 ) ( -512 816 368 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 63.99997 32 0 1 1
+( -512 816 496 ) ( -336 816 496 ) ( -336 624 496 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 63.99997 32 0 1 1
+( -336 816 368 ) ( -336 816 496 ) ( -512 816 496 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -32 0 1 1
+( -336 624 496 ) ( -336 816 496 ) ( -336 816 368 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 -32 0 1 1
+}
+// brush 30
+{
+( -336 432 448 ) ( -512 624 448 ) ( -512 624 496 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 -46.608765 0 1 0.82142866
+( -336 432 448 ) ( -336 624 448 ) ( -512 624 448 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 63.99997 32 0 1 1
+( -512 624 496 ) ( -336 624 496 ) ( -336 432 496 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 63.99997 32 0 1 1
+( -336 624 448 ) ( -336 624 496 ) ( -512 624 496 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -46.608765 0 1 0.82142866
+( -336 432 496 ) ( -336 624 496 ) ( -336 624 448 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 -46.608765 0 1 0.82142866
+}
+// brush 31
+{
+( -512 624 496 ) ( -512 432 496 ) ( -512 432 448 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -46.608765 179.99998 1 -0.82142866
+( -512 432 496 ) ( -336 432 496 ) ( -336 432 448 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -46.608765 180.00002 1 -0.82142866
+( -512 432 448 ) ( -336 432 448 ) ( -512 624 448 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -32 179.99998 1 1
+( -512 624 496 ) ( -336 432 496 ) ( -512 432 496 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -32 179.99998 1 1
+( -336 432 448 ) ( -336 432 496 ) ( -512 624 496 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -46.608765 179.99998 1 -0.82142866
+}
 }
 // entity 1
 {
 "classname" "player_spawn"
-"origin" "0 900 24"
-"angles" "0 0 0"
+"origin" "0 900 48"
+"angles" "0 0 90"
 "_tags" "player"
 }
 // entity 2
@@ -209,8 +297,8 @@
 "classname" "light_spot"
 "origin" "-1160 220 264"
 "angles" "-70 0 0"
-"light" "350"
-"_falloff_range" "350"
+"light" "400"
+"_falloff_range" "450"
 "_cone" "25"
 "_cone2" "70"
 "_color" "255 220 180"
@@ -221,8 +309,8 @@
 "classname" "light_spot"
 "origin" "0 -860 264"
 "angles" "-70 0 0"
-"light" "350"
-"_falloff_range" "350"
+"light" "400"
+"_falloff_range" "450"
 "_cone" "25"
 "_cone2" "70"
 "_color" "255 220 180"
@@ -233,8 +321,8 @@
 "classname" "light_spot"
 "origin" "980 0 264"
 "angles" "-70 180 0"
-"light" "350"
-"_falloff_range" "350"
+"light" "400"
+"_falloff_range" "450"
 "_cone" "25"
 "_cone2" "70"
 "_color" "255 220 180"
@@ -245,8 +333,8 @@
 "classname" "light_spot"
 "origin" "160 852 264"
 "angles" "-80 0 0"
-"light" "350"
-"_falloff_range" "350"
+"light" "400"
+"_falloff_range" "450"
 "_cone" "25"
 "_cone2" "75"
 "_color" "255 220 180"
@@ -257,8 +345,8 @@
 "classname" "light_spot"
 "origin" "1180 900 264"
 "angles" "-70 90 0"
-"light" "350"
-"_falloff_range" "350"
+"light" "400"
+"_falloff_range" "450"
 "_cone" "25"
 "_cone2" "70"
 "_color" "255 220 180"
@@ -461,7 +549,7 @@
 {
 "classname" "light"
 "origin" "952 1144 232"
-"light" "025"
+"light" "010"
 "_falloff_range" "1200"
 "delay" "0"
 "style" "0"
@@ -471,7 +559,7 @@
 {
 "classname" "light"
 "origin" "-824 1096 232"
-"light" "025"
+"light" "010"
 "_falloff_range" "1200"
 "delay" "0"
 "style" "0"
@@ -481,7 +569,7 @@
 {
 "classname" "light"
 "origin" "-680 -424 232"
-"light" "025"
+"light" "010"
 "_falloff_range" "1200"
 "delay" "0"
 "style" "0"
@@ -491,9 +579,1778 @@
 {
 "classname" "light"
 "origin" "840 -440 232"
-"light" "025"
+"light" "010"
 "_falloff_range" "1200"
 "delay" "0"
 "style" "0"
 "_tb_group" "3"
+}
+// entity 32
+{
+"classname" "func_group"
+"_tb_type" "_tb_group"
+"_tb_name" "cave_ceiling"
+"_tb_id" "4"
+"_tb_linked_group_id" "{f72032fd-9f0c-4958-b42a-1194305a459f}"
+"_tb_transformation" "1 0 0 -672 0 1 0 3584 0 0 1 16656 0 0 0 1"
+// brush 0
+{
+( 1232 1024 17408 ) ( 1056 1216 17408 ) ( 1056 1216 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 1232 1216 17312 ) ( 1056 1024 17312 ) ( 1232 1024 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 48 0 1 1
+( 1232 1216 17760 ) ( 1056 1024 17760 ) ( 1056 1216 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 48 0 1 1
+( 1232 1216 17408 ) ( 1056 1216 17312 ) ( 1232 1216 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 16 0 1 1
+( 1232 1216 17408 ) ( 1232 1024 17312 ) ( 1232 1024 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 1
+{
+( 1056 1024 17408 ) ( 1056 1216 17312 ) ( 1056 1216 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 1056 1024 17408 ) ( 1232 1024 17312 ) ( 1056 1024 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 16 180.00002 1 -1
+( 1056 1024 17312 ) ( 1232 1216 17312 ) ( 1056 1216 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( 1056 1024 17760 ) ( 1232 1216 17760 ) ( 1232 1024 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( 1056 1216 17408 ) ( 1232 1024 17408 ) ( 1232 1024 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 2
+{
+( 1056 1024 17408 ) ( 880 1216 17408 ) ( 880 1216 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 1056 1216 17312 ) ( 880 1024 17312 ) ( 1056 1024 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 48 0 1 1
+( 1056 1216 17760 ) ( 880 1024 17760 ) ( 880 1216 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 48 0 1 1
+( 1056 1216 17408 ) ( 880 1216 17312 ) ( 1056 1216 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 1056 1216 17408 ) ( 1056 1024 17312 ) ( 1056 1024 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 3
+{
+( 880 1216 17760 ) ( 880 1024 17760 ) ( 880 1024 17392 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 880 1024 17392 ) ( 1056 1024 17312 ) ( 880 1216 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 -48 179.99998 1 1
+( 880 1024 17760 ) ( 1056 1024 17760 ) ( 1056 1024 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 180.00002 1 -1
+( 880 1216 17760 ) ( 1056 1024 17760 ) ( 880 1024 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 -48 179.99998 1 1
+( 1056 1024 17312 ) ( 1056 1024 17760 ) ( 880 1216 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 4
+{
+( 704 1216 17760 ) ( 704 1024 17760 ) ( 704 1024 17392 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 704 1024 17760 ) ( 880 1024 17760 ) ( 880 1024 17392 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 36.867188 180.00002 1 -0.82142866
+( 704 1024 17392 ) ( 880 1024 17392 ) ( 704 1216 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( 704 1216 17760 ) ( 880 1024 17760 ) ( 704 1024 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( 880 1024 17392 ) ( 880 1024 17760 ) ( 704 1216 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 5
+{
+( 704 1024 17392 ) ( 528 1216 17312 ) ( 528 1216 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 704 1024 17392 ) ( 704 1216 17312 ) ( 528 1216 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -16 48 0 1 1
+( 528 1216 17760 ) ( 704 1216 17760 ) ( 704 1024 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -16 48 0 1 1
+( 704 1216 17312 ) ( 704 1216 17760 ) ( 528 1216 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -16 16 0 1 1
+( 704 1024 17760 ) ( 704 1216 17760 ) ( 704 1216 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 6
+{
+( 528 1216 17760 ) ( 528 1024 17760 ) ( 528 1024 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 528 1024 17760 ) ( 704 1024 17760 ) ( 704 1024 17392 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 16 16 180.00002 1 -1
+( 528 1216 17760 ) ( 704 1024 17760 ) ( 528 1024 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 16 -48 179.99998 1 1
+( 528 1024 17312 ) ( 704 1024 17392 ) ( 528 1216 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 16 -48 179.99998 1 1
+( 704 1024 17392 ) ( 704 1024 17760 ) ( 528 1216 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 7
+{
+( 528 1024 17408 ) ( 352 1216 17408 ) ( 352 1216 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 528 1216 17312 ) ( 352 1024 17312 ) ( 528 1024 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 48 0 1 1
+( 528 1216 17760 ) ( 352 1024 17760 ) ( 352 1216 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 48 0 1 1
+( 528 1216 17408 ) ( 352 1216 17312 ) ( 528 1216 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 16 0 1 1
+( 528 1216 17408 ) ( 528 1024 17312 ) ( 528 1024 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 8
+{
+( 352 1216 17760 ) ( 352 1024 17760 ) ( 352 1024 17424 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 352 1024 17424 ) ( 528 1024 17312 ) ( 352 1216 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( 352 1024 17760 ) ( 528 1024 17760 ) ( 528 1024 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 16 180.00002 1 -1
+( 352 1216 17760 ) ( 528 1024 17760 ) ( 352 1024 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( 528 1024 17312 ) ( 528 1024 17760 ) ( 352 1216 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 9
+{
+( 352 1024 17424 ) ( 176 1216 17312 ) ( 176 1216 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 352 1024 17424 ) ( 352 1216 17312 ) ( 176 1216 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48.000015 48 0 1 1
+( 176 1216 17760 ) ( 352 1216 17760 ) ( 352 1024 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48.000015 48 0 1 1
+( 352 1216 17312 ) ( 352 1216 17760 ) ( 176 1216 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 352 1024 17760 ) ( 352 1216 17760 ) ( 352 1216 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 10
+{
+( 176 1216 17760 ) ( 176 1024 17760 ) ( 176 1024 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 176 1024 17760 ) ( 352 1024 17760 ) ( 352 1024 17424 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 180.00002 1 -1
+( 176 1216 17760 ) ( 352 1024 17760 ) ( 176 1024 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 -48 179.99998 1 1
+( 176 1024 17312 ) ( 352 1024 17424 ) ( 176 1216 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 -48 179.99998 1 1
+( 352 1024 17424 ) ( 352 1024 17760 ) ( 176 1216 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 11
+{
+( 176 1024 17408 ) ( 0 1216 17408 ) ( 0 1216 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 176 1216 17312 ) ( 0 1024 17312 ) ( 176 1024 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( 176 1216 17760 ) ( 0 1024 17760 ) ( 0 1216 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( 176 1216 17408 ) ( 0 1216 17312 ) ( 176 1216 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 16 0 1 1
+( 176 1216 17408 ) ( 176 1024 17312 ) ( 176 1024 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 12
+{
+( 0 1024 17408 ) ( 0 1216 17312 ) ( 0 1216 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 0 1024 17408 ) ( 176 1024 17312 ) ( 0 1024 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 16 180.00002 1 -1
+( 0 1024 17312 ) ( 176 1216 17312 ) ( 0 1216 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( 0 1024 17760 ) ( 176 1216 17760 ) ( 176 1024 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( 0 1216 17408 ) ( 176 1024 17408 ) ( 176 1024 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 13
+{
+( 0 1024 17408 ) ( -176 1216 17408 ) ( -176 1216 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 0 1216 17312 ) ( -176 1024 17312 ) ( 0 1024 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -15.999996 48 0 1 1
+( 0 1216 17760 ) ( -176 1024 17760 ) ( -176 1216 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -15.999996 48 0 1 1
+( 0 1216 17408 ) ( -176 1216 17312 ) ( 0 1216 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -16 16 0 1 1
+( 0 1216 17408 ) ( 0 1024 17312 ) ( 0 1024 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 14
+{
+( -176 1024 17408 ) ( -176 1216 17312 ) ( -176 1216 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( -176 1024 17408 ) ( 0 1024 17312 ) ( -176 1024 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 16 16 180.00002 1 -1
+( -176 1024 17312 ) ( 0 1216 17312 ) ( -176 1216 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 15.999992 -48 179.99998 1 1
+( -176 1024 17760 ) ( 0 1216 17760 ) ( 0 1024 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 15.999992 -48 179.99998 1 1
+( -176 1216 17408 ) ( 0 1024 17408 ) ( 0 1024 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 15
+{
+( -176 1024 17408 ) ( -352 1216 17408 ) ( -352 1216 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( -176 1216 17312 ) ( -352 1024 17312 ) ( -176 1024 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -31.999985 48 0 1 1
+( -176 1216 17760 ) ( -352 1024 17760 ) ( -352 1216 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -31.999985 48 0 1 1
+( -176 1216 17408 ) ( -352 1216 17312 ) ( -176 1216 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 16 0 1 1
+( -176 1216 17408 ) ( -176 1024 17312 ) ( -176 1024 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 16
+{
+( -528 1024 17408 ) ( -704 1216 17408 ) ( -704 1216 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( -528 1216 17312 ) ( -704 1024 17312 ) ( -528 1024 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( -528 1216 17760 ) ( -704 1024 17760 ) ( -704 1216 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( -528 1216 17408 ) ( -704 1216 17312 ) ( -528 1216 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 16 0 1 1
+( -528 1216 17408 ) ( -528 1024 17312 ) ( -528 1024 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 17
+{
+( -528 1024 17408 ) ( -528 1216 17312 ) ( -528 1216 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( -528 1024 17408 ) ( -352 1024 17312 ) ( -528 1024 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 180.00002 1 -1
+( -528 1024 17312 ) ( -352 1216 17312 ) ( -528 1216 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 47.99997 -48 179.99998 1 1
+( -528 1024 17760 ) ( -352 1216 17760 ) ( -352 1024 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 47.99997 -48 179.99998 1 1
+( -528 1216 17408 ) ( -352 1024 17408 ) ( -352 1024 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 18
+{
+( -352 1024 17408 ) ( -528 1216 17408 ) ( -528 1216 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( -352 1216 17312 ) ( -528 1024 17312 ) ( -352 1024 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 48 0 1 1
+( -352 1216 17760 ) ( -528 1024 17760 ) ( -528 1216 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 48 0 1 1
+( -352 1216 17408 ) ( -528 1216 17312 ) ( -352 1216 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( -352 1216 17408 ) ( -352 1024 17312 ) ( -352 1024 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 19
+{
+( -352 1024 17408 ) ( -352 1216 17312 ) ( -352 1216 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( -352 1024 17408 ) ( -176 1024 17312 ) ( -352 1024 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 16 180.00002 1 -1
+( -352 1024 17312 ) ( -176 1216 17312 ) ( -352 1216 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( -352 1024 17760 ) ( -176 1216 17760 ) ( -176 1024 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( -352 1216 17408 ) ( -176 1024 17408 ) ( -176 1024 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 20
+{
+( -704 1024 17408 ) ( -704 1216 17312 ) ( -704 1216 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( -704 1024 17408 ) ( -528 1024 17312 ) ( -704 1024 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 16 180.00002 1 -1
+( -704 1024 17312 ) ( -528 1216 17312 ) ( -704 1216 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( -704 1024 17760 ) ( -528 1216 17760 ) ( -528 1024 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( -704 1216 17408 ) ( -528 1024 17408 ) ( -528 1024 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 21
+{
+( -704 832 17408 ) ( -704 1024 17312 ) ( -704 1024 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( -704 832 17408 ) ( -528 832 17312 ) ( -704 832 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 16 180.00002 1 -1
+( -704 832 17312 ) ( -528 1024 17312 ) ( -704 1024 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( -704 832 17760 ) ( -528 1024 17760 ) ( -528 832 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( -704 1024 17408 ) ( -528 832 17408 ) ( -528 832 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 22
+{
+( -528 832 17408 ) ( -704 1024 17408 ) ( -704 1024 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( -528 1024 17312 ) ( -704 832 17312 ) ( -528 832 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( -528 1024 17760 ) ( -704 832 17760 ) ( -704 1024 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( -528 1024 17408 ) ( -704 1024 17312 ) ( -528 1024 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 16 0 1 1
+( -528 1024 17408 ) ( -528 832 17312 ) ( -528 832 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 23
+{
+( -528 832 17408 ) ( -528 1024 17312 ) ( -528 1024 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( -528 832 17408 ) ( -352 832 17312 ) ( -528 832 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 180.00002 1 -1
+( -528 832 17312 ) ( -352 1024 17312 ) ( -528 1024 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 47.99997 -48 179.99998 1 1
+( -528 832 17760 ) ( -352 1024 17760 ) ( -352 832 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 47.99997 -48 179.99998 1 1
+( -528 1024 17408 ) ( -352 832 17408 ) ( -352 832 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 24
+{
+( -352 832 17408 ) ( -528 1024 17408 ) ( -528 1024 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( -352 1024 17312 ) ( -528 832 17312 ) ( -352 832 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 48 0 1 1
+( -352 1024 17760 ) ( -528 832 17760 ) ( -528 1024 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 48 0 1 1
+( -352 1024 17408 ) ( -528 1024 17312 ) ( -352 1024 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( -352 1024 17408 ) ( -352 832 17312 ) ( -352 832 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 25
+{
+( -352 832 17408 ) ( -352 1024 17312 ) ( -352 1024 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( -352 832 17408 ) ( -176 832 17312 ) ( -352 832 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 16 180.00002 1 -1
+( -352 832 17312 ) ( -176 1024 17312 ) ( -352 1024 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( -352 832 17760 ) ( -176 1024 17760 ) ( -176 832 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( -352 1024 17408 ) ( -176 832 17408 ) ( -176 832 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 26
+{
+( -176 832 17408 ) ( -176 1024 17312 ) ( -176 1024 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( -176 832 17408 ) ( 0 832 17312 ) ( -176 832 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 16 16 180.00002 1 -1
+( -176 832 17312 ) ( 0 1024 17312 ) ( -176 1024 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 15.999992 -48 179.99998 1 1
+( -176 832 17760 ) ( 0 1024 17760 ) ( 0 832 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 15.999992 -48 179.99998 1 1
+( -176 1024 17408 ) ( 0 832 17408 ) ( 0 832 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 27
+{
+( 176 640 17408 ) ( 0 832 17408 ) ( 0 832 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 176 832 17312 ) ( 0 640 17312 ) ( 176 640 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( 176 832 17760 ) ( 0 640 17760 ) ( 0 832 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( 176 832 17408 ) ( 0 832 17312 ) ( 176 832 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 16 0 1 1
+( 176 832 17408 ) ( 176 640 17312 ) ( 176 640 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 28
+{
+( 176 640 17408 ) ( 176 832 17312 ) ( 176 832 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 176 640 17408 ) ( 352 640 17312 ) ( 176 640 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 180.00002 1 -1
+( 176 640 17312 ) ( 352 832 17312 ) ( 176 832 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 -48 179.99998 1 1
+( 176 640 17760 ) ( 352 832 17760 ) ( 352 640 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 -48 179.99998 1 1
+( 176 832 17408 ) ( 352 640 17408 ) ( 352 640 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 29
+{
+( 352 640 17408 ) ( 176 832 17408 ) ( 176 832 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 352 832 17312 ) ( 176 640 17312 ) ( 352 640 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48.000015 48 0 1 1
+( 352 832 17760 ) ( 176 640 17760 ) ( 176 832 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48.000015 48 0 1 1
+( 352 832 17408 ) ( 176 832 17312 ) ( 352 832 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 352 832 17408 ) ( 352 640 17312 ) ( 352 640 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 30
+{
+( 528 640 17424 ) ( 352 832 17312 ) ( 352 832 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 528 640 17424 ) ( 528 832 17312 ) ( 352 832 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 48 0 1 1
+( 352 832 17760 ) ( 528 832 17760 ) ( 528 640 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 48 0 1 1
+( 528 832 17312 ) ( 528 832 17760 ) ( 352 832 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 16 0 1 1
+( 528 640 17760 ) ( 528 832 17760 ) ( 528 832 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 31
+{
+( 352 1024 17760 ) ( 352 832 17760 ) ( 352 832 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 352 832 17760 ) ( 528 832 17760 ) ( 528 832 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 16 180.00002 1 -1
+( 352 1024 17760 ) ( 528 832 17760 ) ( 352 832 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( 352 832 17312 ) ( 528 832 17312 ) ( 352 1024 17424 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( 528 832 17312 ) ( 528 832 17760 ) ( 352 1024 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 32
+{
+( 528 832 17312 ) ( 352 1024 17424 ) ( 352 1024 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 528 832 17312 ) ( 528 1024 17312 ) ( 352 1024 17424 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 48 0 1 1
+( 352 1024 17760 ) ( 528 1024 17760 ) ( 528 832 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 48 0 1 1
+( 528 1024 17312 ) ( 528 1024 17760 ) ( 352 1024 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 16 0 1 1
+( 528 832 17760 ) ( 528 1024 17760 ) ( 528 1024 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 33
+{
+( 528 832 17408 ) ( 528 1024 17312 ) ( 528 1024 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 528 832 17408 ) ( 704 832 17312 ) ( 528 832 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 16 16 180.00002 1 -1
+( 528 832 17312 ) ( 704 1024 17312 ) ( 528 1024 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 16 -48 179.99998 1 1
+( 528 832 17760 ) ( 704 1024 17760 ) ( 704 832 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 16 -48 179.99998 1 1
+( 528 1024 17408 ) ( 704 832 17408 ) ( 704 832 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 34
+{
+( 704 1024 17760 ) ( 704 832 17760 ) ( 704 832 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 704 832 17760 ) ( 880 832 17760 ) ( 880 832 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 16 180.00002 1 -1
+( 704 1024 17760 ) ( 880 832 17760 ) ( 704 832 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( 704 832 17312 ) ( 880 832 17312 ) ( 704 1024 17392 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( 880 832 17312 ) ( 880 832 17760 ) ( 704 1024 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 35
+{
+( 880 832 17312 ) ( 704 1024 17392 ) ( 704 1024 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 704 1024 17760 ) ( 880 1024 17760 ) ( 880 832 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( 880 832 17312 ) ( 880 1024 17392 ) ( 704 1024 17392 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( 880 1024 17392 ) ( 880 1024 17760 ) ( 704 1024 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 36.867188 0 1 0.82142866
+( 880 832 17760 ) ( 880 1024 17760 ) ( 880 1024 17392 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 36
+{
+( 880 1024 17760 ) ( 880 832 17760 ) ( 880 832 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 880 832 17760 ) ( 1056 832 17760 ) ( 1056 832 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 180.00002 1 -1
+( 880 1024 17760 ) ( 1056 832 17760 ) ( 880 832 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 -48 179.99998 1 1
+( 880 832 17312 ) ( 1056 832 17312 ) ( 880 1024 17392 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 -48 179.99998 1 1
+( 1056 832 17312 ) ( 1056 832 17760 ) ( 880 1024 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 37
+{
+( 1056 832 17408 ) ( 1056 1024 17312 ) ( 1056 1024 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 1056 832 17408 ) ( 1232 832 17312 ) ( 1056 832 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 16 180.00002 1 -1
+( 1056 832 17312 ) ( 1232 1024 17312 ) ( 1056 1024 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( 1056 832 17760 ) ( 1232 1024 17760 ) ( 1232 832 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( 1056 1024 17408 ) ( 1232 832 17408 ) ( 1232 832 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 38
+{
+( 1232 832 17408 ) ( 1056 1024 17408 ) ( 1056 1024 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 1232 1024 17312 ) ( 1056 832 17312 ) ( 1232 832 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 48 0 1 1
+( 1232 1024 17760 ) ( 1056 832 17760 ) ( 1056 1024 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 48 0 1 1
+( 1232 1024 17408 ) ( 1056 1024 17312 ) ( 1232 1024 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 16 0 1 1
+( 1232 1024 17408 ) ( 1232 832 17312 ) ( 1232 832 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 39
+{
+( 1056 832 17312 ) ( 880 1024 17392 ) ( 880 1024 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 1056 832 17312 ) ( 1056 1024 17312 ) ( 880 1024 17392 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 48 0 1 1
+( 880 1024 17760 ) ( 1056 1024 17760 ) ( 1056 832 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 48 0 1 1
+( 1056 1024 17312 ) ( 1056 1024 17760 ) ( 880 1024 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 1056 832 17760 ) ( 1056 1024 17760 ) ( 1056 1024 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 40
+{
+( 880 1024 17392 ) ( 704 1216 17312 ) ( 704 1216 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 880 1024 17392 ) ( 880 1216 17312 ) ( 704 1216 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( 704 1216 17760 ) ( 880 1216 17760 ) ( 880 1024 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( 880 1216 17312 ) ( 880 1216 17760 ) ( 704 1216 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 16 0 1 1
+( 880 1024 17760 ) ( 880 1216 17760 ) ( 880 1216 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 41
+{
+( 704 832 17312 ) ( 528 1024 17312 ) ( 528 1024 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 528 1024 17760 ) ( 704 1024 17760 ) ( 704 832 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -16 48 0 1 1
+( 704 1024 17392 ) ( 704 1024 17760 ) ( 528 1024 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -16 16 0 1 1
+( 704 832 17312 ) ( 704 1024 17392 ) ( 528 1024 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -16 48 0 1 1
+( 704 832 17760 ) ( 704 1024 17760 ) ( 704 1024 17392 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 42
+{
+( 352 832 17312 ) ( 176 1024 17312 ) ( 176 1024 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 176 1024 17760 ) ( 352 1024 17760 ) ( 352 832 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48.000015 48 0 1 1
+( 352 1024 17424 ) ( 352 1024 17760 ) ( 176 1024 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 352 832 17312 ) ( 352 1024 17424 ) ( 176 1024 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48.000015 48 0 1 1
+( 352 832 17760 ) ( 352 1024 17760 ) ( 352 1024 17424 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 43
+{
+( 176 832 17408 ) ( 176 1024 17312 ) ( 176 1024 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 176 832 17408 ) ( 352 832 17312 ) ( 176 832 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 180.00002 1 -1
+( 176 832 17312 ) ( 352 1024 17312 ) ( 176 1024 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 -48 179.99998 1 1
+( 176 832 17760 ) ( 352 1024 17760 ) ( 352 832 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 -48 179.99998 1 1
+( 176 1024 17408 ) ( 352 832 17408 ) ( 352 832 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 44
+{
+( 176 832 17408 ) ( 0 1024 17408 ) ( 0 1024 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 176 1024 17312 ) ( 0 832 17312 ) ( 176 832 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( 176 1024 17760 ) ( 0 832 17760 ) ( 0 1024 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( 176 1024 17408 ) ( 0 1024 17312 ) ( 176 1024 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 16 0 1 1
+( 176 1024 17408 ) ( 176 832 17312 ) ( 176 832 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 45
+{
+( 0 832 17408 ) ( 0 1024 17312 ) ( 0 1024 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 0 832 17408 ) ( 176 832 17312 ) ( 0 832 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 16 180.00002 1 -1
+( 0 832 17312 ) ( 176 1024 17312 ) ( 0 1024 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( 0 832 17760 ) ( 176 1024 17760 ) ( 176 832 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( 0 1024 17408 ) ( 176 832 17408 ) ( 176 832 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 46
+{
+( 0 832 17408 ) ( -176 1024 17408 ) ( -176 1024 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 0 1024 17312 ) ( -176 832 17312 ) ( 0 832 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -15.999996 48 0 1 1
+( 0 1024 17760 ) ( -176 832 17760 ) ( -176 1024 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -15.999996 48 0 1 1
+( 0 1024 17408 ) ( -176 1024 17312 ) ( 0 1024 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -16 16 0 1 1
+( 0 1024 17408 ) ( 0 832 17312 ) ( 0 832 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 47
+{
+( -176 832 17408 ) ( -352 1024 17408 ) ( -352 1024 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( -176 1024 17312 ) ( -352 832 17312 ) ( -176 832 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -31.999985 48 0 1 1
+( -176 1024 17760 ) ( -352 832 17760 ) ( -352 1024 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -31.999985 48 0 1 1
+( -176 1024 17408 ) ( -352 1024 17312 ) ( -176 1024 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 16 0 1 1
+( -176 1024 17408 ) ( -176 832 17312 ) ( -176 832 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 48
+{
+( -176 640 17408 ) ( -352 832 17408 ) ( -352 832 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( -176 832 17312 ) ( -352 640 17312 ) ( -176 640 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -31.999985 48 0 1 1
+( -176 832 17760 ) ( -352 640 17760 ) ( -352 832 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -31.999985 48 0 1 1
+( -176 832 17408 ) ( -352 832 17312 ) ( -176 832 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 16 0 1 1
+( -176 832 17408 ) ( -176 640 17312 ) ( -176 640 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 49
+{
+( -176 640 17408 ) ( -176 832 17312 ) ( -176 832 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( -176 640 17408 ) ( 0 640 17312 ) ( -176 640 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 16 16 180.00002 1 -1
+( -176 640 17312 ) ( 0 832 17312 ) ( -176 832 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 15.999992 -48 179.99998 1 1
+( -176 640 17760 ) ( 0 832 17760 ) ( 0 640 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 15.999992 -48 179.99998 1 1
+( -176 832 17408 ) ( 0 640 17408 ) ( 0 640 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 50
+{
+( 0 640 17408 ) ( -176 832 17408 ) ( -176 832 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 0 832 17312 ) ( -176 640 17312 ) ( 0 640 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -15.999996 48 0 1 1
+( 0 832 17760 ) ( -176 640 17760 ) ( -176 832 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -15.999996 48 0 1 1
+( 0 832 17408 ) ( -176 832 17312 ) ( 0 832 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -16 16 0 1 1
+( 0 832 17408 ) ( 0 640 17312 ) ( 0 640 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 51
+{
+( 0 640 17408 ) ( 0 832 17312 ) ( 0 832 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 0 640 17408 ) ( 176 640 17312 ) ( 0 640 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 16 180.00002 1 -1
+( 0 640 17312 ) ( 176 832 17312 ) ( 0 832 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( 0 640 17760 ) ( 176 832 17760 ) ( 176 640 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( 0 832 17408 ) ( 176 640 17408 ) ( 176 640 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 52
+{
+( 352 832 17760 ) ( 352 640 17760 ) ( 352 640 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 352 640 17760 ) ( 528 640 17760 ) ( 528 640 17424 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 16 180.00002 1 -1
+( 352 832 17760 ) ( 528 640 17760 ) ( 352 640 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( 352 640 17312 ) ( 528 640 17424 ) ( 352 832 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( 528 640 17424 ) ( 528 640 17760 ) ( 352 832 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 53
+{
+( 528 832 17760 ) ( 528 640 17760 ) ( 528 640 17424 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 528 640 17760 ) ( 704 640 17760 ) ( 704 640 17424 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 16 47.996094 180.00002 1 -0.7500001
+( 528 640 17424 ) ( 704 640 17424 ) ( 528 832 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 16 -48 179.99998 1 1
+( 528 832 17760 ) ( 704 640 17760 ) ( 528 640 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 16 -48 179.99998 1 1
+( 528 832 17760 ) ( 528 832 17312 ) ( 704 640 17424 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 54
+{
+( 704 640 17424 ) ( 528 832 17312 ) ( 528 832 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 704 640 17424 ) ( 704 832 17312 ) ( 528 832 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -16 48 0 1 1
+( 528 832 17760 ) ( 704 832 17760 ) ( 704 640 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -16 48 0 1 1
+( 704 832 17312 ) ( 704 832 17760 ) ( 528 832 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -16 16 0 1 1
+( 704 640 17760 ) ( 704 832 17760 ) ( 704 832 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 55
+{
+( 704 832 17760 ) ( 704 640 17760 ) ( 704 640 17424 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 704 640 17760 ) ( 880 640 17760 ) ( 880 640 17424 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 47.996094 180.00002 1 -0.7500001
+( 704 640 17424 ) ( 880 640 17424 ) ( 704 832 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( 704 832 17760 ) ( 880 640 17760 ) ( 704 640 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( 880 640 17424 ) ( 880 640 17760 ) ( 704 832 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 56
+{
+( 880 640 17424 ) ( 704 832 17312 ) ( 704 832 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 880 640 17424 ) ( 880 832 17312 ) ( 704 832 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( 704 832 17760 ) ( 880 832 17760 ) ( 880 640 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( 880 832 17312 ) ( 880 832 17760 ) ( 704 832 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 16 0 1 1
+( 880 640 17760 ) ( 880 832 17760 ) ( 880 832 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 57
+{
+( 880 832 17760 ) ( 880 640 17760 ) ( 880 640 17424 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 880 640 17424 ) ( 1056 640 17312 ) ( 880 832 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 -48 179.99998 1 1
+( 880 640 17760 ) ( 1056 640 17760 ) ( 1056 640 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 180.00002 1 -1
+( 880 832 17760 ) ( 1056 640 17760 ) ( 880 640 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 -48 179.99998 1 1
+( 880 832 17760 ) ( 880 832 17312 ) ( 1056 640 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 58
+{
+( 1056 640 17408 ) ( 880 832 17408 ) ( 880 832 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 1056 832 17312 ) ( 880 640 17312 ) ( 1056 640 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 48 0 1 1
+( 1056 832 17760 ) ( 880 640 17760 ) ( 880 832 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 48 0 1 1
+( 1056 832 17408 ) ( 880 832 17312 ) ( 1056 832 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 1056 832 17408 ) ( 1056 640 17312 ) ( 1056 640 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 59
+{
+( 1056 640 17408 ) ( 1056 832 17312 ) ( 1056 832 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 1056 640 17408 ) ( 1232 640 17312 ) ( 1056 640 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 16 180.00002 1 -1
+( 1056 640 17312 ) ( 1232 832 17312 ) ( 1056 832 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( 1056 640 17760 ) ( 1232 832 17760 ) ( 1232 640 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( 1056 832 17408 ) ( 1232 640 17408 ) ( 1232 640 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 60
+{
+( 1232 640 17408 ) ( 1056 832 17408 ) ( 1056 832 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 1232 832 17312 ) ( 1056 640 17312 ) ( 1232 640 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 48 0 1 1
+( 1232 832 17760 ) ( 1056 640 17760 ) ( 1056 832 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 48 0 1 1
+( 1232 832 17408 ) ( 1056 832 17312 ) ( 1232 832 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 16 0 1 1
+( 1232 832 17408 ) ( 1232 640 17312 ) ( 1232 640 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 61
+{
+( -352 640 17408 ) ( -528 832 17408 ) ( -528 832 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( -352 832 17312 ) ( -528 640 17312 ) ( -352 640 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 48 0 1 1
+( -352 832 17760 ) ( -528 640 17760 ) ( -528 832 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 48 0 1 1
+( -352 832 17408 ) ( -528 832 17312 ) ( -352 832 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( -352 832 17408 ) ( -352 640 17312 ) ( -352 640 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 62
+{
+( -528 640 17408 ) ( -528 832 17312 ) ( -528 832 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( -528 640 17408 ) ( -352 640 17312 ) ( -528 640 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 180.00002 1 -1
+( -528 640 17312 ) ( -352 832 17312 ) ( -528 832 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 47.99997 -48 179.99998 1 1
+( -528 640 17760 ) ( -352 832 17760 ) ( -352 640 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 47.99997 -48 179.99998 1 1
+( -528 832 17408 ) ( -352 640 17408 ) ( -352 640 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 63
+{
+( -528 640 17408 ) ( -704 832 17408 ) ( -704 832 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( -528 832 17312 ) ( -704 640 17312 ) ( -528 640 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( -528 832 17760 ) ( -704 640 17760 ) ( -704 832 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( -528 832 17408 ) ( -704 832 17312 ) ( -528 832 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 16 0 1 1
+( -528 832 17408 ) ( -528 640 17312 ) ( -528 640 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 64
+{
+( -704 640 17408 ) ( -704 832 17312 ) ( -704 832 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( -704 640 17408 ) ( -528 640 17312 ) ( -704 640 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 16 180.00002 1 -1
+( -704 640 17312 ) ( -528 832 17312 ) ( -704 832 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( -704 640 17760 ) ( -528 832 17760 ) ( -528 640 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( -704 832 17408 ) ( -528 640 17408 ) ( -528 640 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 65
+{
+( -352 640 17408 ) ( -352 832 17312 ) ( -352 832 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( -352 640 17408 ) ( -176 640 17312 ) ( -352 640 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 16 180.00002 1 -1
+( -352 640 17312 ) ( -176 832 17312 ) ( -352 832 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( -352 640 17760 ) ( -176 832 17760 ) ( -176 640 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( -352 832 17408 ) ( -176 640 17408 ) ( -176 640 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 66
+{
+( 880 448 17312 ) ( 704 640 17424 ) ( 704 640 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 704 640 17760 ) ( 880 640 17760 ) ( 880 448 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( 880 448 17312 ) ( 880 640 17424 ) ( 704 640 17424 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( 880 640 17424 ) ( 880 640 17760 ) ( 704 640 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 47.996094 0 1 0.7500001
+( 880 448 17760 ) ( 880 640 17760 ) ( 880 640 17424 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 67
+{
+( 1056 448 17312 ) ( 880 640 17424 ) ( 880 640 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 1056 448 17312 ) ( 1056 640 17312 ) ( 880 640 17424 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 48 0 1 1
+( 880 640 17760 ) ( 1056 640 17760 ) ( 1056 448 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 48 0 1 1
+( 1056 640 17312 ) ( 1056 640 17760 ) ( 880 640 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 1056 448 17760 ) ( 1056 640 17760 ) ( 1056 640 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 68
+{
+( 1232 448 17408 ) ( 1056 640 17408 ) ( 1056 640 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 1232 640 17312 ) ( 1056 448 17312 ) ( 1232 448 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 48 0 1 1
+( 1232 640 17760 ) ( 1056 448 17760 ) ( 1056 640 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 48 0 1 1
+( 1232 640 17408 ) ( 1056 640 17312 ) ( 1232 640 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 16 0 1 1
+( 1232 640 17408 ) ( 1232 448 17312 ) ( 1232 448 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 69
+{
+( 1056 448 17408 ) ( 1056 640 17312 ) ( 1056 640 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 1056 448 17408 ) ( 1232 448 17312 ) ( 1056 448 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 16 180.00002 1 -1
+( 1056 448 17312 ) ( 1232 640 17312 ) ( 1056 640 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( 1056 448 17760 ) ( 1232 640 17760 ) ( 1232 448 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( 1056 640 17408 ) ( 1232 448 17408 ) ( 1232 448 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 70
+{
+( 880 640 17760 ) ( 880 448 17760 ) ( 880 448 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 880 448 17760 ) ( 1056 448 17760 ) ( 1056 448 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 180.00002 1 -1
+( 880 640 17760 ) ( 1056 448 17760 ) ( 880 448 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 -48 179.99998 1 1
+( 880 448 17312 ) ( 1056 448 17312 ) ( 880 640 17424 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 -48 179.99998 1 1
+( 1056 448 17312 ) ( 1056 448 17760 ) ( 880 640 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 71
+{
+( 704 448 17312 ) ( 528 640 17424 ) ( 528 640 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 528 640 17760 ) ( 704 640 17760 ) ( 704 448 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -16 48 0 1 1
+( 704 448 17312 ) ( 704 640 17424 ) ( 528 640 17424 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -16 48 0 1 1
+( 704 640 17424 ) ( 704 640 17760 ) ( 528 640 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -16 47.996094 0 1 0.7500001
+( 704 448 17760 ) ( 704 640 17760 ) ( 704 640 17424 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 72
+{
+( 176 448 17408 ) ( 0 640 17408 ) ( 0 640 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 176 640 17312 ) ( 0 448 17312 ) ( 176 448 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( 176 640 17808 ) ( 0 448 17808 ) ( 0 640 17808 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( 176 640 17408 ) ( 0 640 17312 ) ( 176 640 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 16 0 1 1
+( 176 640 17408 ) ( 176 448 17312 ) ( 176 448 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 73
+{
+( 0 448 17408 ) ( -176 640 17408 ) ( -176 640 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 0 640 17312 ) ( -176 448 17312 ) ( 0 448 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -15.999996 48 0 1 1
+( 0 640 17760 ) ( -176 448 17760 ) ( -176 640 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -15.999996 48 0 1 1
+( 0 640 17408 ) ( -176 640 17312 ) ( 0 640 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -16 16 0 1 1
+( 0 640 17408 ) ( 0 448 17312 ) ( 0 448 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 74
+{
+( -176 448 17408 ) ( -176 640 17312 ) ( -176 640 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( -176 448 17408 ) ( 0 448 17312 ) ( -176 448 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 16 16 180.00002 1 -1
+( -176 448 17312 ) ( 0 640 17312 ) ( -176 640 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 15.999992 -48 179.99998 1 1
+( -176 448 17760 ) ( 0 640 17760 ) ( 0 448 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 15.999992 -48 179.99998 1 1
+( -176 640 17408 ) ( 0 448 17408 ) ( 0 448 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 75
+{
+( -176 448 17408 ) ( -352 640 17408 ) ( -352 640 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( -176 640 17312 ) ( -352 448 17312 ) ( -176 448 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -31.999985 48 0 1 1
+( -176 640 17760 ) ( -352 448 17760 ) ( -352 640 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -31.999985 48 0 1 1
+( -176 640 17408 ) ( -352 640 17312 ) ( -176 640 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 16 0 1 1
+( -176 640 17408 ) ( -176 448 17312 ) ( -176 448 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 76
+{
+( -352 448 17408 ) ( -352 640 17312 ) ( -352 640 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( -352 448 17408 ) ( -176 448 17312 ) ( -352 448 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 16 180.00002 1 -1
+( -352 448 17312 ) ( -176 640 17312 ) ( -352 640 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( -352 448 17760 ) ( -176 640 17760 ) ( -176 448 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( -352 640 17408 ) ( -176 448 17408 ) ( -176 448 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 77
+{
+( -352 448 17408 ) ( -528 640 17408 ) ( -528 640 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( -352 640 17312 ) ( -528 448 17312 ) ( -352 448 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 48 0 1 1
+( -352 640 17760 ) ( -528 448 17760 ) ( -528 640 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 48 0 1 1
+( -352 640 17408 ) ( -528 640 17312 ) ( -352 640 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( -352 640 17408 ) ( -352 448 17312 ) ( -352 448 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 78
+{
+( -528 448 17408 ) ( -528 640 17312 ) ( -528 640 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( -528 448 17408 ) ( -352 448 17312 ) ( -528 448 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 180.00002 1 -1
+( -528 448 17312 ) ( -352 640 17312 ) ( -528 640 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 47.99997 -48 179.99998 1 1
+( -528 448 17760 ) ( -352 640 17760 ) ( -352 448 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 47.99997 -48 179.99998 1 1
+( -528 640 17408 ) ( -352 448 17408 ) ( -352 448 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 79
+{
+( -528 448 17408 ) ( -704 640 17408 ) ( -704 640 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( -528 640 17312 ) ( -704 448 17312 ) ( -528 448 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( -528 640 17760 ) ( -704 448 17760 ) ( -704 640 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( -528 640 17408 ) ( -704 640 17312 ) ( -528 640 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 16 0 1 1
+( -528 640 17408 ) ( -528 448 17312 ) ( -528 448 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 80
+{
+( -704 448 17408 ) ( -704 640 17312 ) ( -704 640 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( -704 448 17408 ) ( -528 448 17312 ) ( -704 448 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 16 180.00002 1 -1
+( -704 448 17312 ) ( -528 640 17312 ) ( -704 640 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( -704 448 17760 ) ( -528 640 17760 ) ( -528 448 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( -704 640 17408 ) ( -528 448 17408 ) ( -528 448 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 81
+{
+( -704 256 17408 ) ( -704 448 17312 ) ( -704 448 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( -704 256 17408 ) ( -528 256 17312 ) ( -704 256 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 16 180.00002 1 -1
+( -704 256 17312 ) ( -528 448 17312 ) ( -704 448 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( -704 256 17760 ) ( -528 448 17760 ) ( -528 256 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( -704 448 17408 ) ( -528 256 17408 ) ( -528 256 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 82
+{
+( 0 448 17408 ) ( 0 640 17312 ) ( 0 640 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 0 448 17408 ) ( 176 448 17312 ) ( 0 448 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 16 180.00002 1 -1
+( 0 448 17312 ) ( 176 640 17312 ) ( 0 640 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( 0 448 17760 ) ( 176 640 17760 ) ( 176 448 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( 0 640 17408 ) ( 176 448 17408 ) ( 176 448 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 83
+{
+( 176 448 17408 ) ( 176 640 17312 ) ( 176 640 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 176 448 17408 ) ( 352 448 17312 ) ( 176 448 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 180.00002 1 -1
+( 176 448 17312 ) ( 352 640 17312 ) ( 176 640 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 -48 179.99998 1 1
+( 176 448 17760 ) ( 352 640 17760 ) ( 352 448 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 -48 179.99998 1 1
+( 176 640 17408 ) ( 352 448 17408 ) ( 352 448 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 84
+{
+( 352 448 17408 ) ( 352 640 17312 ) ( 352 640 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 352 448 17408 ) ( 528 448 17312 ) ( 352 448 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 16 180.00002 1 -1
+( 352 448 17312 ) ( 528 640 17312 ) ( 352 640 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( 352 448 17760 ) ( 528 640 17760 ) ( 528 448 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( 352 640 17408 ) ( 528 448 17408 ) ( 528 448 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 85
+{
+( 528 640 17760 ) ( 528 448 17760 ) ( 528 448 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 528 448 17760 ) ( 704 448 17760 ) ( 704 448 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 16 16 180.00002 1 -1
+( 528 640 17760 ) ( 704 448 17760 ) ( 528 448 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 16 -48 179.99998 1 1
+( 528 448 17312 ) ( 704 448 17312 ) ( 528 640 17424 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 16 -48 179.99998 1 1
+( 704 448 17312 ) ( 704 448 17760 ) ( 528 640 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 86
+{
+( 704 640 17760 ) ( 704 448 17760 ) ( 704 448 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 704 448 17760 ) ( 880 448 17760 ) ( 880 448 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 16 180.00002 1 -1
+( 704 640 17760 ) ( 880 448 17760 ) ( 704 448 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( 704 448 17312 ) ( 880 448 17312 ) ( 704 640 17424 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( 880 448 17312 ) ( 880 448 17760 ) ( 704 640 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 87
+{
+( 1232 256 17408 ) ( 1056 448 17408 ) ( 1056 448 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 1232 448 17312 ) ( 1056 256 17312 ) ( 1232 256 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 48 0 1 1
+( 1232 448 17760 ) ( 1056 256 17760 ) ( 1056 448 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 48 0 1 1
+( 1232 448 17408 ) ( 1056 448 17312 ) ( 1232 448 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 16 0 1 1
+( 1232 448 17408 ) ( 1232 256 17312 ) ( 1232 256 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 88
+{
+( 1056 256 17408 ) ( 1056 448 17312 ) ( 1056 448 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 1056 256 17408 ) ( 1232 256 17312 ) ( 1056 256 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 16 180.00002 1 -1
+( 1056 256 17312 ) ( 1232 448 17312 ) ( 1056 448 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( 1056 256 17760 ) ( 1232 448 17760 ) ( 1232 256 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( 1056 448 17408 ) ( 1232 256 17408 ) ( 1232 256 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 89
+{
+( 1056 256 17408 ) ( 880 448 17408 ) ( 880 448 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 1056 448 17312 ) ( 880 256 17312 ) ( 1056 256 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 48 0 1 1
+( 1056 448 17760 ) ( 880 256 17760 ) ( 880 448 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 48 0 1 1
+( 1056 448 17408 ) ( 880 448 17312 ) ( 1056 448 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 1056 448 17408 ) ( 1056 256 17312 ) ( 1056 256 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 90
+{
+( 880 448 17760 ) ( 880 256 17760 ) ( 880 256 17392 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 880 256 17392 ) ( 1056 256 17312 ) ( 880 448 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 -48 179.99998 1 1
+( 880 256 17760 ) ( 1056 256 17760 ) ( 1056 256 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 180.00002 1 -1
+( 880 448 17760 ) ( 1056 256 17760 ) ( 880 256 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 -48 179.99998 1 1
+( 880 448 17760 ) ( 880 448 17312 ) ( 1056 256 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 91
+{
+( 880 256 17392 ) ( 704 448 17312 ) ( 704 448 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 880 256 17392 ) ( 880 448 17312 ) ( 704 448 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( 704 448 17760 ) ( 880 448 17760 ) ( 880 256 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( 880 448 17312 ) ( 880 448 17760 ) ( 704 448 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 16 0 1 1
+( 880 256 17760 ) ( 880 448 17760 ) ( 880 448 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 92
+{
+( 704 448 17760 ) ( 704 256 17760 ) ( 704 256 17392 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 704 256 17760 ) ( 880 256 17760 ) ( 880 256 17392 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 36.867188 180.00002 1 -0.82142866
+( 704 256 17392 ) ( 880 256 17392 ) ( 704 448 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( 704 448 17760 ) ( 880 256 17760 ) ( 704 256 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( 880 256 17392 ) ( 880 256 17760 ) ( 704 448 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 93
+{
+( 704 256 17392 ) ( 528 448 17312 ) ( 528 448 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 704 256 17392 ) ( 704 448 17312 ) ( 528 448 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -16 48 0 1 1
+( 528 448 17760 ) ( 704 448 17760 ) ( 704 256 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -16 48 0 1 1
+( 704 448 17312 ) ( 704 448 17760 ) ( 528 448 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -16 16 0 1 1
+( 704 256 17760 ) ( 704 448 17760 ) ( 704 448 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 94
+{
+( 528 448 17760 ) ( 528 256 17760 ) ( 528 256 17392 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 528 256 17760 ) ( 704 256 17760 ) ( 704 256 17392 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 16 36.867188 180.00002 1 -0.82142866
+( 528 256 17392 ) ( 704 256 17392 ) ( 528 448 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 16 -48 179.99998 1 1
+( 528 448 17760 ) ( 704 256 17760 ) ( 528 256 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 16 -48 179.99998 1 1
+( 704 256 17392 ) ( 704 256 17760 ) ( 528 448 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 95
+{
+( 352 448 17760 ) ( 352 256 17760 ) ( 352 256 17392 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 352 256 17760 ) ( 528 256 17760 ) ( 528 256 17392 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 36.867188 180.00002 1 -0.82142866
+( 352 256 17392 ) ( 528 256 17392 ) ( 352 448 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( 352 448 17760 ) ( 528 256 17760 ) ( 352 256 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( 528 256 17392 ) ( 528 256 17760 ) ( 352 448 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 96
+{
+( 352 256 17392 ) ( 176 448 17312 ) ( 176 448 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 352 256 17392 ) ( 352 448 17312 ) ( 176 448 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48.000015 48 0 1 1
+( 176 448 17760 ) ( 352 448 17760 ) ( 352 256 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48.000015 48 0 1 1
+( 352 448 17312 ) ( 352 448 17760 ) ( 176 448 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 352 256 17760 ) ( 352 448 17760 ) ( 352 448 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 97
+{
+( 176 256 17408 ) ( 0 448 17408 ) ( 0 448 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 176 448 17312 ) ( 0 256 17312 ) ( 176 256 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( 176 448 17760 ) ( 0 256 17760 ) ( 0 448 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( 176 448 17408 ) ( 0 448 17312 ) ( 176 448 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 16 0 1 1
+( 176 448 17408 ) ( 176 256 17312 ) ( 176 256 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 98
+{
+( 0 256 17408 ) ( 0 448 17312 ) ( 0 448 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 0 256 17408 ) ( 176 256 17312 ) ( 0 256 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 16 180.00002 1 -1
+( 0 256 17312 ) ( 176 448 17312 ) ( 0 448 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( 0 256 17760 ) ( 176 448 17760 ) ( 176 256 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( 0 448 17408 ) ( 176 256 17408 ) ( 176 256 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 99
+{
+( 0 256 17408 ) ( -176 448 17408 ) ( -176 448 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 0 448 17312 ) ( -176 256 17312 ) ( 0 256 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -15.999996 48 0 1 1
+( 0 448 17760 ) ( -176 256 17760 ) ( -176 448 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -15.999996 48 0 1 1
+( 0 448 17408 ) ( -176 448 17312 ) ( 0 448 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -16 16 0 1 1
+( 0 448 17408 ) ( 0 256 17312 ) ( 0 256 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 100
+{
+( -176 256 17408 ) ( -176 448 17312 ) ( -176 448 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( -176 256 17408 ) ( 0 256 17312 ) ( -176 256 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 16 16 180.00002 1 -1
+( -176 256 17312 ) ( 0 448 17312 ) ( -176 448 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 15.999992 -48 179.99998 1 1
+( -176 256 17760 ) ( 0 448 17760 ) ( 0 256 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 15.999992 -48 179.99998 1 1
+( -176 448 17408 ) ( 0 256 17408 ) ( 0 256 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 101
+{
+( -176 256 17408 ) ( -352 448 17408 ) ( -352 448 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( -176 448 17312 ) ( -352 256 17312 ) ( -176 256 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -31.999985 48 0 1 1
+( -176 448 17760 ) ( -352 256 17760 ) ( -352 448 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -31.999985 48 0 1 1
+( -176 448 17408 ) ( -352 448 17312 ) ( -176 448 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 16 0 1 1
+( -176 448 17408 ) ( -176 256 17312 ) ( -176 256 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 102
+{
+( -352 256 17408 ) ( -352 448 17312 ) ( -352 448 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( -352 256 17408 ) ( -176 256 17312 ) ( -352 256 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 16 180.00002 1 -1
+( -352 256 17312 ) ( -176 448 17312 ) ( -352 448 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( -352 256 17760 ) ( -176 448 17760 ) ( -176 256 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( -352 448 17408 ) ( -176 256 17408 ) ( -176 256 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 103
+{
+( -352 256 17408 ) ( -528 448 17408 ) ( -528 448 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( -352 448 17312 ) ( -528 256 17312 ) ( -352 256 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 48 0 1 1
+( -352 448 17760 ) ( -528 256 17760 ) ( -528 448 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 48 0 1 1
+( -352 448 17408 ) ( -528 448 17312 ) ( -352 448 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( -352 448 17408 ) ( -352 256 17312 ) ( -352 256 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 104
+{
+( -528 256 17408 ) ( -528 448 17312 ) ( -528 448 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( -528 256 17408 ) ( -352 256 17312 ) ( -528 256 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 180.00002 1 -1
+( -528 256 17312 ) ( -352 448 17312 ) ( -528 448 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 47.99997 -48 179.99998 1 1
+( -528 256 17760 ) ( -352 448 17760 ) ( -352 256 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 47.99997 -48 179.99998 1 1
+( -528 448 17408 ) ( -352 256 17408 ) ( -352 256 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 105
+{
+( -528 256 17408 ) ( -704 448 17408 ) ( -704 448 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( -528 448 17312 ) ( -704 256 17312 ) ( -528 256 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( -528 448 17760 ) ( -704 256 17760 ) ( -704 448 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( -528 448 17408 ) ( -704 448 17312 ) ( -528 448 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 16 0 1 1
+( -528 448 17408 ) ( -528 256 17312 ) ( -528 256 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 106
+{
+( -704 64 17408 ) ( -704 256 17312 ) ( -704 256 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( -704 64 17408 ) ( -528 64 17312 ) ( -704 64 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 16 180.00002 1 -1
+( -704 64 17312 ) ( -528 256 17312 ) ( -704 256 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( -704 64 17760 ) ( -528 256 17760 ) ( -528 64 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( -704 256 17408 ) ( -528 64 17408 ) ( -528 64 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 107
+{
+( -704 -128 17408 ) ( -704 64 17312 ) ( -704 64 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( -704 -128 17408 ) ( -528 -128 17312 ) ( -704 -128 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 16 180.00002 1 -1
+( -704 -128 17312 ) ( -528 64 17312 ) ( -704 64 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( -704 -128 17760 ) ( -528 64 17760 ) ( -528 -128 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( -704 64 17408 ) ( -528 -128 17408 ) ( -528 -128 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 108
+{
+( -528 64 17408 ) ( -704 256 17408 ) ( -704 256 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( -528 256 17312 ) ( -704 64 17312 ) ( -528 64 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( -528 256 17760 ) ( -704 64 17760 ) ( -704 256 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( -528 256 17408 ) ( -704 256 17312 ) ( -528 256 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 16 0 1 1
+( -528 256 17408 ) ( -528 64 17312 ) ( -528 64 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 109
+{
+( -528 64 17408 ) ( -528 256 17312 ) ( -528 256 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( -528 64 17408 ) ( -352 64 17312 ) ( -528 64 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 180.00002 1 -1
+( -528 64 17312 ) ( -352 256 17312 ) ( -528 256 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 47.99997 -48 179.99998 1 1
+( -528 64 17760 ) ( -352 256 17760 ) ( -352 64 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 47.99997 -48 179.99998 1 1
+( -528 256 17408 ) ( -352 64 17408 ) ( -352 64 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 110
+{
+( -352 64 17408 ) ( -528 256 17408 ) ( -528 256 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( -352 256 17312 ) ( -528 64 17312 ) ( -352 64 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 48 0 1 1
+( -352 256 17760 ) ( -528 64 17760 ) ( -528 256 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 48 0 1 1
+( -352 256 17408 ) ( -528 256 17312 ) ( -352 256 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( -352 256 17408 ) ( -352 64 17312 ) ( -352 64 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 111
+{
+( -352 64 17408 ) ( -352 256 17312 ) ( -352 256 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( -352 64 17408 ) ( -176 64 17312 ) ( -352 64 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 16 180.00002 1 -1
+( -352 64 17312 ) ( -176 256 17312 ) ( -352 256 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( -352 64 17760 ) ( -176 256 17760 ) ( -176 64 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( -352 256 17408 ) ( -176 64 17408 ) ( -176 64 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 112
+{
+( -176 64 17408 ) ( -352 256 17408 ) ( -352 256 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( -176 256 17312 ) ( -352 64 17312 ) ( -176 64 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -31.999985 48 0 1 1
+( -176 256 17760 ) ( -352 64 17760 ) ( -352 256 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -31.999985 48 0 1 1
+( -176 256 17408 ) ( -352 256 17312 ) ( -176 256 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 16 0 1 1
+( -176 256 17408 ) ( -176 64 17312 ) ( -176 64 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 113
+{
+( -176 64 17408 ) ( -176 256 17312 ) ( -176 256 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( -176 64 17408 ) ( 0 64 17312 ) ( -176 64 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 16 16 180.00002 1 -1
+( -176 64 17312 ) ( 0 256 17312 ) ( -176 256 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 15.999992 -48 179.99998 1 1
+( -176 64 17760 ) ( 0 256 17760 ) ( 0 64 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 15.999992 -48 179.99998 1 1
+( -176 256 17408 ) ( 0 64 17408 ) ( 0 64 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 114
+{
+( 0 64 17408 ) ( -176 256 17408 ) ( -176 256 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 0 256 17312 ) ( -176 64 17312 ) ( 0 64 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -15.999996 48 0 1 1
+( 0 256 17760 ) ( -176 64 17760 ) ( -176 256 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -15.999996 48 0 1 1
+( 0 256 17408 ) ( -176 256 17312 ) ( 0 256 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -16 16 0 1 1
+( 0 256 17408 ) ( 0 64 17312 ) ( 0 64 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 115
+{
+( 0 64 17408 ) ( 0 256 17312 ) ( 0 256 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 0 64 17408 ) ( 176 64 17312 ) ( 0 64 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 16 180.00002 1 -1
+( 0 64 17312 ) ( 176 256 17312 ) ( 0 256 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( 0 64 17760 ) ( 176 256 17760 ) ( 176 64 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( 0 256 17408 ) ( 176 64 17408 ) ( 176 64 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 116
+{
+( 176 256 17760 ) ( 176 64 17760 ) ( 176 64 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 176 64 17760 ) ( 352 64 17760 ) ( 352 64 17392 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 180.00002 1 -1
+( 176 256 17760 ) ( 352 64 17760 ) ( 176 64 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 -48 179.99998 1 1
+( 176 64 17312 ) ( 352 64 17392 ) ( 176 256 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 -48 179.99998 1 1
+( 352 64 17392 ) ( 352 64 17760 ) ( 176 256 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 117
+{
+( 352 256 17760 ) ( 352 64 17760 ) ( 352 64 17392 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 36.867188 179.99998 1 -0.82142866
+( 352 64 17760 ) ( 528 64 17760 ) ( 528 64 17392 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 36.867188 180.00002 1 -0.82142866
+( 352 64 17392 ) ( 528 64 17392 ) ( 352 256 17392 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( 352 256 17760 ) ( 528 64 17760 ) ( 352 64 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( 352 256 17760 ) ( 352 256 17392 ) ( 528 64 17392 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 36.867188 179.99998 1 -0.82142866
+}
+// brush 118
+{
+( 704 -128 17312 ) ( 528 64 17392 ) ( 528 64 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 528 64 17760 ) ( 704 64 17760 ) ( 704 -128 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -16 48 0 1 1
+( 704 -128 17312 ) ( 704 64 17392 ) ( 528 64 17392 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -16 48 0 1 1
+( 704 64 17392 ) ( 704 64 17760 ) ( 528 64 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -16 36.867188 0 1 0.82142866
+( 704 -128 17760 ) ( 704 64 17760 ) ( 704 64 17392 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 119
+{
+( 880 -128 17312 ) ( 704 64 17392 ) ( 704 64 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 704 64 17760 ) ( 880 64 17760 ) ( 880 -128 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( 880 -128 17312 ) ( 880 64 17392 ) ( 704 64 17392 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( 880 64 17392 ) ( 880 64 17760 ) ( 704 64 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 36.867188 0 1 0.82142866
+( 880 -128 17760 ) ( 880 64 17760 ) ( 880 64 17392 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 120
+{
+( 1056 -128 17312 ) ( 880 64 17392 ) ( 880 64 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 1056 -128 17312 ) ( 1056 64 17312 ) ( 880 64 17392 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 48 0 1 1
+( 880 64 17760 ) ( 1056 64 17760 ) ( 1056 -128 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 48 0 1 1
+( 1056 64 17312 ) ( 1056 64 17760 ) ( 880 64 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 1056 -128 17760 ) ( 1056 64 17760 ) ( 1056 64 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 121
+{
+( 1232 -128 17408 ) ( 1056 64 17408 ) ( 1056 64 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 1232 64 17312 ) ( 1056 -128 17312 ) ( 1232 -128 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 48 0 1 1
+( 1232 64 17760 ) ( 1056 -128 17760 ) ( 1056 64 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 48 0 1 1
+( 1232 64 17408 ) ( 1056 64 17312 ) ( 1232 64 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 16 0 1 1
+( 1232 64 17408 ) ( 1232 -128 17312 ) ( 1232 -128 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 122
+{
+( 1056 64 17408 ) ( 1056 256 17312 ) ( 1056 256 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 1056 64 17408 ) ( 1232 64 17312 ) ( 1056 64 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 16 180.00002 1 -1
+( 1056 64 17312 ) ( 1232 256 17312 ) ( 1056 256 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( 1056 64 17760 ) ( 1232 256 17760 ) ( 1232 64 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( 1056 256 17408 ) ( 1232 64 17408 ) ( 1232 64 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 123
+{
+( 1056 64 17312 ) ( 880 256 17392 ) ( 880 256 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 1056 64 17312 ) ( 1056 256 17312 ) ( 880 256 17392 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 48 0 1 1
+( 880 256 17760 ) ( 1056 256 17760 ) ( 1056 64 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 48 0 1 1
+( 1056 256 17312 ) ( 1056 256 17760 ) ( 880 256 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 1056 64 17760 ) ( 1056 256 17760 ) ( 1056 256 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 124
+{
+( 880 256 17760 ) ( 880 64 17760 ) ( 880 64 17392 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 36.867188 179.99998 1 -0.82142866
+( 880 64 17392 ) ( 1056 64 17312 ) ( 880 256 17392 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 -48 179.99998 1 1
+( 880 64 17760 ) ( 1056 64 17760 ) ( 1056 64 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 180.00002 1 -1
+( 880 256 17760 ) ( 1056 64 17760 ) ( 880 64 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 -48 179.99998 1 1
+( 880 256 17760 ) ( 880 256 17392 ) ( 1056 64 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 125
+{
+( 880 64 17392 ) ( 704 256 17392 ) ( 704 256 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 36.867188 0 1 0.82142866
+( 880 64 17392 ) ( 880 256 17392 ) ( 704 256 17392 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( 704 256 17760 ) ( 880 256 17760 ) ( 880 64 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( 880 256 17392 ) ( 880 256 17760 ) ( 704 256 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 36.867188 0 1 0.82142866
+( 880 64 17760 ) ( 880 256 17760 ) ( 880 256 17392 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 36.867188 0 1 0.82142866
+}
+// brush 126
+{
+( 704 256 17760 ) ( 704 64 17760 ) ( 704 64 17392 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 36.867188 179.99998 1 -0.82142866
+( 704 64 17760 ) ( 880 64 17760 ) ( 880 64 17392 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 36.867188 180.00002 1 -0.82142866
+( 704 64 17392 ) ( 880 64 17392 ) ( 704 256 17392 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( 704 256 17760 ) ( 880 64 17760 ) ( 704 64 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( 880 64 17392 ) ( 880 64 17760 ) ( 704 256 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 36.867188 179.99998 1 -0.82142866
+}
+// brush 127
+{
+( 704 64 17392 ) ( 528 256 17392 ) ( 528 256 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 36.867188 0 1 0.82142866
+( 704 64 17392 ) ( 704 256 17392 ) ( 528 256 17392 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -16 48 0 1 1
+( 528 256 17760 ) ( 704 256 17760 ) ( 704 64 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -16 48 0 1 1
+( 704 256 17392 ) ( 704 256 17760 ) ( 528 256 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -16 36.867188 0 1 0.82142866
+( 704 64 17760 ) ( 704 256 17760 ) ( 704 256 17392 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 36.867188 0 1 0.82142866
+}
+// brush 128
+{
+( 176 448 17760 ) ( 176 256 17760 ) ( 176 256 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 176 256 17760 ) ( 352 256 17760 ) ( 352 256 17392 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 180.00002 1 -1
+( 176 448 17760 ) ( 352 256 17760 ) ( 176 256 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 -48 179.99998 1 1
+( 176 256 17312 ) ( 352 256 17392 ) ( 176 448 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 -48 179.99998 1 1
+( 352 256 17392 ) ( 352 256 17760 ) ( 176 448 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 129
+{
+( 0 -128 17408 ) ( -176 64 17408 ) ( -176 64 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 0 64 17312 ) ( -176 -128 17312 ) ( 0 -128 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -15.999996 48 0 1 1
+( 0 64 17760 ) ( -176 -128 17760 ) ( -176 64 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -15.999996 48 0 1 1
+( 0 64 17408 ) ( -176 64 17312 ) ( 0 64 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -16 16 0 1 1
+( 0 64 17408 ) ( 0 -128 17312 ) ( 0 -128 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 130
+{
+( 176 -128 17408 ) ( 0 64 17408 ) ( 0 64 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 176 64 17312 ) ( 0 -128 17312 ) ( 176 -128 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( 176 64 17760 ) ( 0 -128 17760 ) ( 0 64 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( 176 64 17408 ) ( 0 64 17312 ) ( 176 64 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 16 0 1 1
+( 176 64 17408 ) ( 176 -128 17312 ) ( 176 -128 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 131
+{
+( 352 -128 17312 ) ( 176 64 17312 ) ( 176 64 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 176 64 17760 ) ( 352 64 17760 ) ( 352 -128 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48.000015 48 0 1 1
+( 352 64 17392 ) ( 352 64 17760 ) ( 176 64 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 352 -128 17312 ) ( 352 64 17392 ) ( 176 64 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48.000015 48 0 1 1
+( 352 -128 17760 ) ( 352 64 17760 ) ( 352 64 17392 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 132
+{
+( 352 64 17760 ) ( 352 -128 17760 ) ( 352 -128 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 352 -128 17760 ) ( 528 -128 17760 ) ( 528 -128 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 16 180.00002 1 -1
+( 352 64 17760 ) ( 528 -128 17760 ) ( 352 -128 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( 352 -128 17312 ) ( 528 -128 17312 ) ( 352 64 17392 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( 352 64 17760 ) ( 352 64 17392 ) ( 528 -128 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 133
+{
+( 528 64 17760 ) ( 528 -128 17760 ) ( 528 -128 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 528 -128 17760 ) ( 704 -128 17760 ) ( 704 -128 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 16 16 180.00002 1 -1
+( 528 64 17760 ) ( 704 -128 17760 ) ( 528 -128 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 16 -48 179.99998 1 1
+( 528 -128 17312 ) ( 704 -128 17312 ) ( 528 64 17392 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 16 -48 179.99998 1 1
+( 528 64 17760 ) ( 528 64 17392 ) ( 704 -128 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 134
+{
+( 704 64 17760 ) ( 704 -128 17760 ) ( 704 -128 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 704 -128 17760 ) ( 880 -128 17760 ) ( 880 -128 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 16 180.00002 1 -1
+( 704 64 17760 ) ( 880 -128 17760 ) ( 704 -128 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( 704 -128 17312 ) ( 880 -128 17312 ) ( 704 64 17392 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( 880 -128 17312 ) ( 880 -128 17760 ) ( 704 64 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 135
+{
+( 880 64 17760 ) ( 880 -128 17760 ) ( 880 -128 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 880 -128 17760 ) ( 1056 -128 17760 ) ( 1056 -128 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 180.00002 1 -1
+( 880 64 17760 ) ( 1056 -128 17760 ) ( 880 -128 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 -48 179.99998 1 1
+( 880 -128 17312 ) ( 1056 -128 17312 ) ( 880 64 17392 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 -48 179.99998 1 1
+( 880 64 17760 ) ( 880 64 17392 ) ( 1056 -128 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 136
+{
+( 1056 -128 17408 ) ( 1056 64 17312 ) ( 1056 64 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 1056 -128 17408 ) ( 1232 -128 17312 ) ( 1056 -128 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 16 180.00002 1 -1
+( 1056 -128 17312 ) ( 1232 64 17312 ) ( 1056 64 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( 1056 -128 17760 ) ( 1232 64 17760 ) ( 1232 -128 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( 1056 64 17408 ) ( 1232 -128 17408 ) ( 1232 -128 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 137
+{
+( 528 -128 17312 ) ( 352 64 17392 ) ( 352 64 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 352 64 17760 ) ( 528 64 17760 ) ( 528 -128 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 48 0 1 1
+( 528 -128 17312 ) ( 528 64 17392 ) ( 352 64 17392 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 48 0 1 1
+( 528 64 17392 ) ( 528 64 17760 ) ( 352 64 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 36.867188 0 1 0.82142866
+( 528 -128 17760 ) ( 528 64 17760 ) ( 528 64 17392 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 138
+{
+( -528 -128 17408 ) ( -704 64 17408 ) ( -704 64 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( -528 64 17312 ) ( -704 -128 17312 ) ( -528 -128 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( -528 64 17760 ) ( -704 -128 17760 ) ( -704 64 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( -528 64 17408 ) ( -704 64 17312 ) ( -528 64 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 16 0 1 1
+( -528 64 17408 ) ( -528 -128 17312 ) ( -528 -128 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 139
+{
+( -704 -320 17408 ) ( -704 -128 17312 ) ( -704 -128 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( -704 -320 17408 ) ( -528 -320 17312 ) ( -704 -320 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 16 180.00002 1 -1
+( -704 -320 17312 ) ( -528 -128 17312 ) ( -704 -128 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( -704 -320 17760 ) ( -528 -128 17760 ) ( -528 -320 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( -704 -128 17408 ) ( -528 -320 17408 ) ( -528 -320 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 140
+{
+( -352 -128 17408 ) ( -528 64 17408 ) ( -528 64 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( -352 64 17312 ) ( -528 -128 17312 ) ( -352 -128 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 48 0 1 1
+( -352 64 17760 ) ( -528 -128 17760 ) ( -528 64 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 48 0 1 1
+( -352 64 17408 ) ( -528 64 17312 ) ( -352 64 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( -352 64 17408 ) ( -352 -128 17312 ) ( -352 -128 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 141
+{
+( -176 -128 17408 ) ( -352 64 17408 ) ( -352 64 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( -176 64 17312 ) ( -352 -128 17312 ) ( -176 -128 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -31.999985 48 0 1 1
+( -176 64 17760 ) ( -352 -128 17760 ) ( -352 64 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -31.999985 48 0 1 1
+( -176 64 17408 ) ( -352 64 17312 ) ( -176 64 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 16 0 1 1
+( -176 64 17408 ) ( -176 -128 17312 ) ( -176 -128 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 142
+{
+( -176 -128 17408 ) ( -176 64 17312 ) ( -176 64 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( -176 -128 17408 ) ( 0 -128 17312 ) ( -176 -128 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 16 16 180.00002 1 -1
+( -176 -128 17312 ) ( 0 64 17312 ) ( -176 64 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 15.999992 -48 179.99998 1 1
+( -176 -128 17760 ) ( 0 64 17760 ) ( 0 -128 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 15.999992 -48 179.99998 1 1
+( -176 64 17408 ) ( 0 -128 17408 ) ( 0 -128 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 143
+{
+( 0 -128 17408 ) ( 0 64 17312 ) ( 0 64 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 0 -128 17408 ) ( 176 -128 17312 ) ( 0 -128 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 16 180.00002 1 -1
+( 0 -128 17312 ) ( 176 64 17312 ) ( 0 64 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( 0 -128 17760 ) ( 176 64 17760 ) ( 176 -128 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( 0 64 17408 ) ( 176 -128 17408 ) ( 176 -128 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 144
+{
+( 176 -128 17408 ) ( 176 64 17312 ) ( 176 64 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 176 -128 17408 ) ( 352 -128 17312 ) ( 176 -128 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 180.00002 1 -1
+( 176 -128 17312 ) ( 352 64 17312 ) ( 176 64 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 -48 179.99998 1 1
+( 176 -128 17760 ) ( 352 64 17760 ) ( 352 -128 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 -48 179.99998 1 1
+( 176 64 17408 ) ( 352 -128 17408 ) ( 352 -128 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 145
+{
+( 1232 -320 17408 ) ( 1056 -128 17408 ) ( 1056 -128 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 1232 -128 17312 ) ( 1056 -320 17312 ) ( 1232 -320 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 48 0 1 1
+( 1232 -128 17760 ) ( 1056 -320 17760 ) ( 1056 -128 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 48 0 1 1
+( 1232 -128 17408 ) ( 1056 -128 17312 ) ( 1232 -128 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 16 0 1 1
+( 1232 -128 17408 ) ( 1232 -320 17312 ) ( 1232 -320 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 146
+{
+( 1056 -320 17408 ) ( 880 -128 17408 ) ( 880 -128 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 1056 -128 17312 ) ( 880 -320 17312 ) ( 1056 -320 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 48 0 1 1
+( 1056 -128 17760 ) ( 880 -320 17760 ) ( 880 -128 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 48 0 1 1
+( 1056 -128 17408 ) ( 880 -128 17312 ) ( 1056 -128 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 1056 -128 17408 ) ( 1056 -320 17312 ) ( 1056 -320 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 147
+{
+( 880 -320 17408 ) ( 704 -128 17408 ) ( 704 -128 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 880 -128 17312 ) ( 704 -320 17312 ) ( 880 -320 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( 880 -128 17760 ) ( 704 -320 17760 ) ( 704 -128 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( 880 -128 17408 ) ( 704 -128 17312 ) ( 880 -128 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 16 0 1 1
+( 880 -128 17408 ) ( 880 -320 17312 ) ( 880 -320 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 148
+{
+( 528 -320 17408 ) ( 528 -128 17312 ) ( 528 -128 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 528 -320 17408 ) ( 704 -320 17312 ) ( 528 -320 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 16 16 180.00002 1 -1
+( 528 -320 17312 ) ( 704 -128 17312 ) ( 528 -128 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 16 -48 179.99998 1 1
+( 528 -320 17760 ) ( 704 -128 17760 ) ( 704 -320 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 16 -48 179.99998 1 1
+( 528 -128 17408 ) ( 704 -320 17408 ) ( 704 -320 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 149
+{
+( 352 -320 17408 ) ( 352 -128 17312 ) ( 352 -128 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 352 -320 17408 ) ( 528 -320 17312 ) ( 352 -320 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 16 180.00002 1 -1
+( 352 -320 17312 ) ( 528 -128 17312 ) ( 352 -128 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( 352 -320 17760 ) ( 528 -128 17760 ) ( 528 -320 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( 352 -128 17408 ) ( 528 -320 17408 ) ( 528 -320 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 150
+{
+( 352 -320 17408 ) ( 176 -128 17408 ) ( 176 -128 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 352 -128 17312 ) ( 176 -320 17312 ) ( 352 -320 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48.000015 48 0 1 1
+( 352 -128 17760 ) ( 176 -320 17760 ) ( 176 -128 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48.000015 48 0 1 1
+( 352 -128 17408 ) ( 176 -128 17312 ) ( 352 -128 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 352 -128 17408 ) ( 352 -320 17312 ) ( 352 -320 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 151
+{
+( 176 -320 17408 ) ( 176 -128 17312 ) ( 176 -128 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 176 -320 17408 ) ( 352 -320 17312 ) ( 176 -320 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 180.00002 1 -1
+( 176 -320 17312 ) ( 352 -128 17312 ) ( 176 -128 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 -48 179.99998 1 1
+( 176 -320 17760 ) ( 352 -128 17760 ) ( 352 -320 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 -48 179.99998 1 1
+( 176 -128 17408 ) ( 352 -320 17408 ) ( 352 -320 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 152
+{
+( 176 -320 17408 ) ( 0 -128 17408 ) ( 0 -128 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 176 -128 17312 ) ( 0 -320 17312 ) ( 176 -320 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( 176 -128 17760 ) ( 0 -320 17760 ) ( 0 -128 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( 176 -128 17408 ) ( 0 -128 17312 ) ( 176 -128 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 16 0 1 1
+( 176 -128 17408 ) ( 176 -320 17312 ) ( 176 -320 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 153
+{
+( 0 -320 17408 ) ( 0 -128 17312 ) ( 0 -128 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 0 -320 17408 ) ( 176 -320 17312 ) ( 0 -320 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 16 180.00002 1 -1
+( 0 -320 17312 ) ( 176 -128 17312 ) ( 0 -128 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( 0 -320 17760 ) ( 176 -128 17760 ) ( 176 -320 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( 0 -128 17408 ) ( 176 -320 17408 ) ( 176 -320 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 154
+{
+( 0 -320 17408 ) ( -176 -128 17408 ) ( -176 -128 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 0 -128 17312 ) ( -176 -320 17312 ) ( 0 -320 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -15.999996 48 0 1 1
+( 0 -128 17760 ) ( -176 -320 17760 ) ( -176 -128 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -15.999996 48 0 1 1
+( 0 -128 17408 ) ( -176 -128 17312 ) ( 0 -128 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -16 16 0 1 1
+( 0 -128 17408 ) ( 0 -320 17312 ) ( 0 -320 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 155
+{
+( -176 -320 17408 ) ( -352 -128 17408 ) ( -352 -128 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( -176 -128 17312 ) ( -352 -320 17312 ) ( -176 -320 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -31.999985 48 0 1 1
+( -176 -128 17760 ) ( -352 -320 17760 ) ( -352 -128 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -31.999985 48 0 1 1
+( -176 -128 17408 ) ( -352 -128 17312 ) ( -176 -128 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 16 0 1 1
+( -176 -128 17408 ) ( -176 -320 17312 ) ( -176 -320 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 156
+{
+( -352 -320 17408 ) ( -352 -128 17312 ) ( -352 -128 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( -352 -320 17408 ) ( -176 -320 17312 ) ( -352 -320 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 16 180.00002 1 -1
+( -352 -320 17312 ) ( -176 -128 17312 ) ( -352 -128 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( -352 -320 17760 ) ( -176 -128 17760 ) ( -176 -320 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( -352 -128 17408 ) ( -176 -320 17408 ) ( -176 -320 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 157
+{
+( -352 -320 17408 ) ( -528 -128 17408 ) ( -528 -128 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( -352 -128 17312 ) ( -528 -320 17312 ) ( -352 -320 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 48 0 1 1
+( -352 -128 17760 ) ( -528 -320 17760 ) ( -528 -128 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 48 0 1 1
+( -352 -128 17408 ) ( -528 -128 17312 ) ( -352 -128 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( -352 -128 17408 ) ( -352 -320 17312 ) ( -352 -320 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 158
+{
+( -528 -320 17408 ) ( -528 -128 17312 ) ( -528 -128 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( -528 -320 17408 ) ( -352 -320 17312 ) ( -528 -320 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 180.00002 1 -1
+( -528 -320 17312 ) ( -352 -128 17312 ) ( -528 -128 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 47.99997 -48 179.99998 1 1
+( -528 -320 17760 ) ( -352 -128 17760 ) ( -352 -320 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 47.99997 -48 179.99998 1 1
+( -528 -128 17408 ) ( -352 -320 17408 ) ( -352 -320 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 159
+{
+( -528 -320 17408 ) ( -704 -128 17408 ) ( -704 -128 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( -528 -128 17312 ) ( -704 -320 17312 ) ( -528 -320 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( -528 -128 17760 ) ( -704 -320 17760 ) ( -704 -128 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( -528 -128 17408 ) ( -704 -128 17312 ) ( -528 -128 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 16 0 1 1
+( -528 -128 17408 ) ( -528 -320 17312 ) ( -528 -320 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 160
+{
+( -704 -512 17408 ) ( -704 -320 17312 ) ( -704 -320 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( -704 -512 17408 ) ( -528 -512 17312 ) ( -704 -512 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 16 180.00002 1 -1
+( -704 -512 17312 ) ( -528 -320 17312 ) ( -704 -320 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( -704 -512 17760 ) ( -528 -320 17760 ) ( -528 -512 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( -704 -320 17408 ) ( -528 -512 17408 ) ( -528 -512 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 161
+{
+( -528 -512 17408 ) ( -704 -320 17408 ) ( -704 -320 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( -528 -320 17312 ) ( -704 -512 17312 ) ( -528 -512 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( -528 -320 17760 ) ( -704 -512 17760 ) ( -704 -320 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( -528 -320 17408 ) ( -704 -320 17312 ) ( -528 -320 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 16 0 1 1
+( -528 -320 17408 ) ( -528 -512 17312 ) ( -528 -512 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 162
+{
+( -528 -512 17408 ) ( -528 -320 17312 ) ( -528 -320 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( -528 -512 17408 ) ( -352 -512 17312 ) ( -528 -512 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 180.00002 1 -1
+( -528 -512 17312 ) ( -352 -320 17312 ) ( -528 -320 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 47.99997 -48 179.99998 1 1
+( -528 -512 17760 ) ( -352 -320 17760 ) ( -352 -512 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 47.99997 -48 179.99998 1 1
+( -528 -320 17408 ) ( -352 -512 17408 ) ( -352 -512 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 163
+{
+( -352 -512 17408 ) ( -528 -320 17408 ) ( -528 -320 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( -352 -320 17312 ) ( -528 -512 17312 ) ( -352 -512 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 48 0 1 1
+( -352 -320 17760 ) ( -528 -512 17760 ) ( -528 -320 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 48 0 1 1
+( -352 -320 17408 ) ( -528 -320 17312 ) ( -352 -320 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( -352 -320 17408 ) ( -352 -512 17312 ) ( -352 -512 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 164
+{
+( -352 -512 17408 ) ( -352 -320 17312 ) ( -352 -320 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( -352 -512 17408 ) ( -176 -512 17312 ) ( -352 -512 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 16 180.00002 1 -1
+( -352 -512 17312 ) ( -176 -320 17312 ) ( -352 -320 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( -352 -512 17760 ) ( -176 -320 17760 ) ( -176 -512 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( -352 -320 17408 ) ( -176 -512 17408 ) ( -176 -512 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 165
+{
+( -176 -512 17408 ) ( -352 -320 17408 ) ( -352 -320 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( -176 -320 17312 ) ( -352 -512 17312 ) ( -176 -512 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -31.999985 48 0 1 1
+( -176 -320 17760 ) ( -352 -512 17760 ) ( -352 -320 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -31.999985 48 0 1 1
+( -176 -320 17408 ) ( -352 -320 17312 ) ( -176 -320 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 16 0 1 1
+( -176 -320 17408 ) ( -176 -512 17312 ) ( -176 -512 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 166
+{
+( -176 -512 17408 ) ( -176 -320 17312 ) ( -176 -320 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( -176 -512 17408 ) ( 0 -512 17312 ) ( -176 -512 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 16 16 180.00002 1 -1
+( -176 -512 17312 ) ( 0 -320 17312 ) ( -176 -320 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 15.999992 -48 179.99998 1 1
+( -176 -512 17760 ) ( 0 -320 17760 ) ( 0 -512 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 15.999992 -48 179.99998 1 1
+( -176 -320 17408 ) ( 0 -512 17408 ) ( 0 -512 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 167
+{
+( 0 -512 17408 ) ( -176 -320 17408 ) ( -176 -320 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 0 -320 17312 ) ( -176 -512 17312 ) ( 0 -512 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -15.999996 48 0 1 1
+( 0 -320 17760 ) ( -176 -512 17760 ) ( -176 -320 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -15.999996 48 0 1 1
+( 0 -320 17408 ) ( -176 -320 17312 ) ( 0 -320 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -16 16 0 1 1
+( 0 -320 17408 ) ( 0 -512 17312 ) ( 0 -512 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 168
+{
+( 0 -512 17408 ) ( 0 -320 17312 ) ( 0 -320 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 0 -512 17408 ) ( 176 -512 17312 ) ( 0 -512 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 16 180.00002 1 -1
+( 0 -512 17312 ) ( 176 -320 17312 ) ( 0 -320 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( 0 -512 17760 ) ( 176 -320 17760 ) ( 176 -512 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( 0 -320 17408 ) ( 176 -512 17408 ) ( 176 -512 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 169
+{
+( 176 -512 17408 ) ( 0 -320 17408 ) ( 0 -320 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 176 -320 17312 ) ( 0 -512 17312 ) ( 176 -512 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( 176 -320 17760 ) ( 0 -512 17760 ) ( 0 -320 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( 176 -320 17408 ) ( 0 -320 17312 ) ( 176 -320 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 16 0 1 1
+( 176 -320 17408 ) ( 176 -512 17312 ) ( 176 -512 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 170
+{
+( 176 -512 17408 ) ( 176 -320 17312 ) ( 176 -320 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 176 -512 17408 ) ( 352 -512 17312 ) ( 176 -512 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 180.00002 1 -1
+( 176 -512 17312 ) ( 352 -320 17312 ) ( 176 -320 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 -48 179.99998 1 1
+( 176 -512 17760 ) ( 352 -320 17760 ) ( 352 -512 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 -48 179.99998 1 1
+( 176 -320 17408 ) ( 352 -512 17408 ) ( 352 -512 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 171
+{
+( 352 -512 17408 ) ( 176 -320 17408 ) ( 176 -320 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 352 -320 17312 ) ( 176 -512 17312 ) ( 352 -512 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48.000015 48 0 1 1
+( 352 -320 17760 ) ( 176 -512 17760 ) ( 176 -320 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48.000015 48 0 1 1
+( 352 -320 17408 ) ( 176 -320 17312 ) ( 352 -320 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 352 -320 17408 ) ( 352 -512 17312 ) ( 352 -512 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 172
+{
+( 352 -512 17408 ) ( 352 -320 17312 ) ( 352 -320 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 352 -512 17408 ) ( 528 -512 17312 ) ( 352 -512 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 16 180.00002 1 -1
+( 352 -512 17312 ) ( 528 -320 17312 ) ( 352 -320 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( 352 -512 17760 ) ( 528 -320 17760 ) ( 528 -512 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( 352 -320 17408 ) ( 528 -512 17408 ) ( 528 -512 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 173
+{
+( 528 -512 17408 ) ( 352 -320 17408 ) ( 352 -320 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 528 -320 17312 ) ( 352 -512 17312 ) ( 528 -512 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 48 0 1 1
+( 528 -320 17760 ) ( 352 -512 17760 ) ( 352 -320 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 48 0 1 1
+( 528 -320 17408 ) ( 352 -320 17312 ) ( 528 -320 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 16 0 1 1
+( 528 -320 17408 ) ( 528 -512 17312 ) ( 528 -512 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 174
+{
+( 528 -512 17408 ) ( 528 -320 17312 ) ( 528 -320 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 528 -512 17408 ) ( 704 -512 17312 ) ( 528 -512 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 16 16 180.00002 1 -1
+( 528 -512 17248 ) ( 704 -320 17248 ) ( 528 -320 17248 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 16 -48 179.99998 1 1
+( 528 -512 17760 ) ( 704 -320 17760 ) ( 704 -512 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 16 -48 179.99998 1 1
+( 528 -320 17408 ) ( 704 -512 17408 ) ( 704 -512 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 175
+{
+( 704 -512 17408 ) ( 704 -320 17312 ) ( 704 -320 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 704 -512 17408 ) ( 880 -512 17312 ) ( 704 -512 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 16 180.00002 1 -1
+( 704 -512 17312 ) ( 880 -320 17312 ) ( 704 -320 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( 704 -512 17760 ) ( 880 -320 17760 ) ( 880 -512 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( 704 -320 17408 ) ( 880 -512 17408 ) ( 880 -512 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 176
+{
+( 880 -512 17408 ) ( 704 -320 17408 ) ( 704 -320 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 880 -320 17312 ) ( 704 -512 17312 ) ( 880 -512 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( 880 -320 17760 ) ( 704 -512 17760 ) ( 704 -320 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( 880 -320 17408 ) ( 704 -320 17312 ) ( 880 -320 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 16 0 1 1
+( 880 -320 17408 ) ( 880 -512 17312 ) ( 880 -512 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 177
+{
+( 1056 -512 17408 ) ( 880 -320 17408 ) ( 880 -320 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 1056 -320 17312 ) ( 880 -512 17312 ) ( 1056 -512 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 48 0 1 1
+( 1056 -320 17760 ) ( 880 -512 17760 ) ( 880 -320 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 48 0 1 1
+( 1056 -320 17408 ) ( 880 -320 17312 ) ( 1056 -320 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 1056 -320 17408 ) ( 1056 -512 17312 ) ( 1056 -512 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 178
+{
+( 1056 -512 17408 ) ( 1056 -320 17312 ) ( 1056 -320 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 1056 -512 17408 ) ( 1232 -512 17312 ) ( 1056 -512 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 16 180.00002 1 -1
+( 1056 -512 17312 ) ( 1232 -320 17312 ) ( 1056 -320 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( 1056 -512 17760 ) ( 1232 -320 17760 ) ( 1232 -512 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( 1056 -320 17408 ) ( 1232 -512 17408 ) ( 1232 -512 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 179
+{
+( 1232 -512 17408 ) ( 1056 -320 17408 ) ( 1056 -320 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 1232 -320 17312 ) ( 1056 -512 17312 ) ( 1232 -512 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 48 0 1 1
+( 1232 -320 17760 ) ( 1056 -512 17760 ) ( 1056 -320 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 48 0 1 1
+( 1232 -320 17408 ) ( 1056 -320 17312 ) ( 1232 -320 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 16 0 1 1
+( 1232 -320 17408 ) ( 1232 -512 17312 ) ( 1232 -512 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 180
+{
+( 1232 -704 17408 ) ( 1056 -512 17408 ) ( 1056 -512 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 1232 -512 17312 ) ( 1056 -704 17312 ) ( 1232 -704 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 48 0 1 1
+( 1232 -512 17760 ) ( 1056 -704 17760 ) ( 1056 -512 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 48 0 1 1
+( 1232 -512 17408 ) ( 1056 -512 17312 ) ( 1232 -512 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 16 0 1 1
+( 1232 -512 17408 ) ( 1232 -704 17312 ) ( 1232 -704 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 181
+{
+( 1056 -704 17408 ) ( 880 -512 17408 ) ( 880 -512 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 1056 -512 17312 ) ( 880 -704 17312 ) ( 1056 -704 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 48 0 1 1
+( 1056 -512 17760 ) ( 880 -704 17760 ) ( 880 -512 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 48 0 1 1
+( 1056 -512 17408 ) ( 880 -512 17312 ) ( 1056 -512 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 1056 -512 17408 ) ( 1056 -704 17312 ) ( 1056 -704 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 182
+{
+( 880 -704 17408 ) ( 704 -512 17408 ) ( 704 -512 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 880 -512 17312 ) ( 704 -704 17312 ) ( 880 -704 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( 880 -512 17760 ) ( 704 -704 17760 ) ( 704 -512 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( 880 -512 17408 ) ( 704 -512 17312 ) ( 880 -512 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 16 0 1 1
+( 880 -512 17408 ) ( 880 -704 17312 ) ( 880 -704 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 183
+{
+( 704 -704 17408 ) ( 704 -512 17312 ) ( 704 -512 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 704 -704 17408 ) ( 880 -704 17312 ) ( 704 -704 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 16 180.00002 1 -1
+( 704 -704 17312 ) ( 880 -512 17312 ) ( 704 -512 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( 704 -704 17760 ) ( 880 -512 17760 ) ( 880 -704 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( 704 -512 17408 ) ( 880 -704 17408 ) ( 880 -704 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 184
+{
+( 704 -704 17408 ) ( 528 -512 17408 ) ( 528 -512 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 704 -512 17312 ) ( 528 -704 17312 ) ( 704 -704 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -16 48 0 1 1
+( 704 -512 17760 ) ( 528 -704 17760 ) ( 528 -512 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -16 48 0 1 1
+( 704 -512 17408 ) ( 528 -512 17312 ) ( 704 -512 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -16 16 0 1 1
+( 704 -512 17408 ) ( 704 -704 17312 ) ( 704 -704 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 185
+{
+( 528 -704 17408 ) ( 528 -512 17312 ) ( 528 -512 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 528 -704 17408 ) ( 704 -704 17312 ) ( 528 -704 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 16 16 180.00002 1 -1
+( 528 -704 17312 ) ( 704 -512 17312 ) ( 528 -512 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 16 -48 179.99998 1 1
+( 528 -704 17760 ) ( 704 -512 17760 ) ( 704 -704 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 16 -48 179.99998 1 1
+( 528 -512 17408 ) ( 704 -704 17408 ) ( 704 -704 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 186
+{
+( 528 -704 17408 ) ( 352 -512 17408 ) ( 352 -512 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 528 -512 17312 ) ( 352 -704 17312 ) ( 528 -704 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 48 0 1 1
+( 528 -512 17760 ) ( 352 -704 17760 ) ( 352 -512 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 48 0 1 1
+( 528 -512 17408 ) ( 352 -512 17312 ) ( 528 -512 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 16 0 1 1
+( 528 -512 17408 ) ( 528 -704 17312 ) ( 528 -704 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 187
+{
+( 352 -704 17408 ) ( 176 -512 17408 ) ( 176 -512 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 352 -512 17312 ) ( 176 -704 17312 ) ( 352 -704 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48.000015 48 0 1 1
+( 352 -512 17760 ) ( 176 -704 17760 ) ( 176 -512 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48.000015 48 0 1 1
+( 352 -512 17408 ) ( 176 -512 17312 ) ( 352 -512 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 352 -512 17408 ) ( 352 -704 17312 ) ( 352 -704 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 188
+{
+( 176 -704 17408 ) ( 0 -512 17408 ) ( 0 -512 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 176 -512 17312 ) ( 0 -704 17312 ) ( 176 -704 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( 176 -512 17760 ) ( 0 -704 17760 ) ( 0 -512 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( 176 -512 17408 ) ( 0 -512 17312 ) ( 176 -512 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 16 0 1 1
+( 176 -512 17408 ) ( 176 -704 17312 ) ( 176 -704 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 189
+{
+( 0 -704 17408 ) ( -176 -512 17408 ) ( -176 -512 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 0 -512 17312 ) ( -176 -704 17312 ) ( 0 -704 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -15.999996 48 0 1 1
+( 0 -512 17760 ) ( -176 -704 17760 ) ( -176 -512 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -15.999996 48 0 1 1
+( 0 -512 17408 ) ( -176 -512 17312 ) ( 0 -512 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -16 16 0 1 1
+( 0 -512 17408 ) ( 0 -704 17312 ) ( 0 -704 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 190
+{
+( -704 -704 17408 ) ( -704 -512 17312 ) ( -704 -512 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( -704 -704 17408 ) ( -528 -704 17312 ) ( -704 -704 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 16 180.00002 1 -1
+( -704 -704 17312 ) ( -528 -512 17312 ) ( -704 -512 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( -704 -704 17760 ) ( -528 -512 17760 ) ( -528 -704 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( -704 -512 17408 ) ( -528 -704 17408 ) ( -528 -704 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 191
+{
+( -528 -704 17408 ) ( -704 -512 17408 ) ( -704 -512 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( -528 -512 17312 ) ( -704 -704 17312 ) ( -528 -704 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( -528 -512 17760 ) ( -704 -704 17760 ) ( -704 -512 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( -528 -512 17408 ) ( -704 -512 17312 ) ( -528 -512 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 16 0 1 1
+( -528 -512 17408 ) ( -528 -704 17312 ) ( -528 -704 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 192
+{
+( -528 -704 17408 ) ( -528 -512 17312 ) ( -528 -512 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( -528 -704 17408 ) ( -352 -704 17312 ) ( -528 -704 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 180.00002 1 -1
+( -528 -704 17312 ) ( -352 -512 17312 ) ( -528 -512 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 47.99997 -48 179.99998 1 1
+( -528 -704 17760 ) ( -352 -512 17760 ) ( -352 -704 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 47.99997 -48 179.99998 1 1
+( -528 -512 17408 ) ( -352 -704 17408 ) ( -352 -704 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 193
+{
+( -352 -704 17408 ) ( -528 -512 17408 ) ( -528 -512 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( -352 -512 17312 ) ( -528 -704 17312 ) ( -352 -704 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 48 0 1 1
+( -352 -512 17760 ) ( -528 -704 17760 ) ( -528 -512 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 48 0 1 1
+( -352 -512 17408 ) ( -528 -512 17312 ) ( -352 -512 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( -352 -512 17408 ) ( -352 -704 17312 ) ( -352 -704 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 194
+{
+( -352 -704 17408 ) ( -352 -512 17312 ) ( -352 -512 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( -352 -704 17408 ) ( -176 -704 17312 ) ( -352 -704 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 16 180.00002 1 -1
+( -352 -704 17312 ) ( -176 -512 17312 ) ( -352 -512 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( -352 -704 17760 ) ( -176 -512 17760 ) ( -176 -704 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( -352 -512 17408 ) ( -176 -704 17408 ) ( -176 -704 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 195
+{
+( -176 -704 17408 ) ( -352 -512 17408 ) ( -352 -512 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( -176 -512 17312 ) ( -352 -704 17312 ) ( -176 -704 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -31.999985 48 0 1 1
+( -176 -512 17760 ) ( -352 -704 17760 ) ( -352 -512 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -31.999985 48 0 1 1
+( -176 -512 17408 ) ( -352 -512 17312 ) ( -176 -512 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 16 0 1 1
+( -176 -512 17408 ) ( -176 -704 17312 ) ( -176 -704 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 196
+{
+( -176 -704 17408 ) ( -176 -512 17312 ) ( -176 -512 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( -176 -704 17408 ) ( 0 -704 17312 ) ( -176 -704 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 16 16 180.00002 1 -1
+( -176 -704 17312 ) ( 0 -512 17312 ) ( -176 -512 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 15.999992 -48 179.99998 1 1
+( -176 -704 17760 ) ( 0 -512 17760 ) ( 0 -704 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 15.999992 -48 179.99998 1 1
+( -176 -512 17408 ) ( 0 -704 17408 ) ( 0 -704 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 197
+{
+( 0 -704 17408 ) ( 0 -512 17312 ) ( 0 -512 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 0 -704 17408 ) ( 176 -704 17312 ) ( 0 -704 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 16 180.00002 1 -1
+( 0 -704 17312 ) ( 176 -512 17312 ) ( 0 -512 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( 0 -704 17760 ) ( 176 -512 17760 ) ( 176 -704 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( 0 -512 17408 ) ( 176 -704 17408 ) ( 176 -704 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 198
+{
+( 352 -704 17408 ) ( 352 -512 17312 ) ( 352 -512 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 352 -704 17408 ) ( 528 -704 17312 ) ( 352 -704 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 16 180.00002 1 -1
+( 352 -704 17312 ) ( 528 -512 17312 ) ( 352 -512 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( 352 -704 17760 ) ( 528 -512 17760 ) ( 528 -704 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( 352 -512 17408 ) ( 528 -704 17408 ) ( 528 -704 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 199
+{
+( 880 -704 17408 ) ( 880 -512 17312 ) ( 880 -512 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 880 -704 17408 ) ( 1056 -704 17312 ) ( 880 -704 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 180.00002 1 -1
+( 880 -704 17312 ) ( 1056 -512 17312 ) ( 880 -512 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 -48 179.99998 1 1
+( 880 -704 17760 ) ( 1056 -512 17760 ) ( 1056 -704 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 -48 179.99998 1 1
+( 880 -512 17408 ) ( 1056 -704 17408 ) ( 1056 -704 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 200
+{
+( 1056 -704 17408 ) ( 1056 -512 17312 ) ( 1056 -512 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 1056 -704 17408 ) ( 1232 -704 17312 ) ( 1056 -704 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 16 180.00002 1 -1
+( 1056 -704 17312 ) ( 1232 -512 17312 ) ( 1056 -512 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( 1056 -704 17760 ) ( 1232 -512 17760 ) ( 1232 -704 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( 1056 -512 17408 ) ( 1232 -704 17408 ) ( 1232 -704 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 201
+{
+( 528 256 17392 ) ( 352 448 17312 ) ( 352 448 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 528 256 17392 ) ( 528 448 17312 ) ( 352 448 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 48 0 1 1
+( 352 448 17760 ) ( 528 448 17760 ) ( 528 256 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 48 0 1 1
+( 528 448 17312 ) ( 528 448 17760 ) ( 352 448 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 16 0 1 1
+( 528 256 17760 ) ( 528 448 17760 ) ( 528 448 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 202
+{
+( -352 -128 17408 ) ( -352 64 17312 ) ( -352 64 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( -352 -128 17408 ) ( -176 -128 17312 ) ( -352 -128 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 16 180.00002 1 -1
+( -352 -128 17312 ) ( -176 64 17312 ) ( -352 64 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( -352 -128 17760 ) ( -176 64 17760 ) ( -176 -128 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( -352 64 17408 ) ( -176 -128 17408 ) ( -176 -128 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 203
+{
+( 176 -704 17408 ) ( 176 -512 17312 ) ( 176 -512 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 176 -704 17408 ) ( 352 -704 17312 ) ( 176 -704 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 180.00002 1 -1
+( 176 -704 17312 ) ( 352 -512 17312 ) ( 176 -512 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 -48 179.99998 1 1
+( 176 -704 17760 ) ( 352 -512 17760 ) ( 352 -704 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 -48 179.99998 1 1
+( 176 -512 17408 ) ( 352 -704 17408 ) ( 352 -704 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 204
+{
+( 352 64 17392 ) ( 176 256 17312 ) ( 176 256 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 176 256 17760 ) ( 352 256 17760 ) ( 352 64 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48.000015 48 0 1 1
+( 352 256 17392 ) ( 352 256 17760 ) ( 176 256 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 352 64 17392 ) ( 352 256 17392 ) ( 176 256 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48.000015 48 0 1 1
+( 352 64 17760 ) ( 352 256 17760 ) ( 352 256 17392 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 36.867188 0 1 0.82142866
+}
+// brush 205
+{
+( 528 256 17760 ) ( 528 64 17760 ) ( 528 64 17392 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 36.867188 179.99998 1 -0.82142866
+( 528 64 17760 ) ( 704 64 17760 ) ( 704 64 17392 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 16 36.867188 180.00002 1 -0.82142866
+( 528 64 17392 ) ( 704 64 17392 ) ( 528 256 17392 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 16 -48 179.99998 1 1
+( 528 256 17760 ) ( 704 64 17760 ) ( 528 64 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 16 -48 179.99998 1 1
+( 528 256 17760 ) ( 528 256 17392 ) ( 704 64 17392 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 36.867188 179.99998 1 -0.82142866
+}
+// brush 206
+{
+( 528 64 17392 ) ( 352 256 17392 ) ( 352 256 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 36.867188 0 1 0.82142866
+( 528 64 17392 ) ( 528 256 17392 ) ( 352 256 17392 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 48 0 1 1
+( 352 256 17760 ) ( 528 256 17760 ) ( 528 64 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 48 0 1 1
+( 528 256 17392 ) ( 528 256 17760 ) ( 352 256 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 36.867188 0 1 0.82142866
+( 528 64 17760 ) ( 528 256 17760 ) ( 528 256 17392 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 36.867188 0 1 0.82142866
+}
+// brush 207
+{
+( 176 64 17408 ) ( 0 256 17408 ) ( 0 256 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 176 256 17312 ) ( 0 64 17312 ) ( 176 64 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( 176 256 17760 ) ( 0 64 17760 ) ( 0 256 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 48 0 1 1
+( 176 256 17408 ) ( 0 256 17312 ) ( 176 256 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 16 0 1 1
+( 176 256 17408 ) ( 176 64 17312 ) ( 176 64 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 208
+{
+( 528 448 17312 ) ( 352 640 17312 ) ( 352 640 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 352 640 17760 ) ( 528 640 17760 ) ( 528 448 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 48 0 1 1
+( 528 640 17424 ) ( 528 640 17760 ) ( 352 640 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 16 0 1 1
+( 528 448 17312 ) ( 528 640 17424 ) ( 352 640 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 48 0 1 1
+( 528 448 17760 ) ( 528 640 17760 ) ( 528 640 17424 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 209
+{
+( 704 -320 17408 ) ( 528 -128 17408 ) ( 528 -128 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 704 -128 17312 ) ( 528 -320 17312 ) ( 704 -320 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -16 48 0 1 1
+( 704 -128 17760 ) ( 528 -320 17760 ) ( 528 -128 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -16 48 0 1 1
+( 704 -128 17408 ) ( 528 -128 17312 ) ( 704 -128 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -16 16 0 1 1
+( 704 -128 17408 ) ( 704 -320 17312 ) ( 704 -320 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 210
+{
+( 1232 64 17408 ) ( 1056 256 17408 ) ( 1056 256 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 1232 256 17312 ) ( 1056 64 17312 ) ( 1232 64 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 48 0 1 1
+( 1232 256 17760 ) ( 1056 64 17760 ) ( 1056 256 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 48 0 1 1
+( 1232 256 17408 ) ( 1056 256 17312 ) ( 1232 256 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 16 0 1 1
+( 1232 256 17408 ) ( 1232 64 17312 ) ( 1232 64 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 211
+{
+( 880 -320 17408 ) ( 880 -128 17312 ) ( 880 -128 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 880 -320 17408 ) ( 1056 -320 17312 ) ( 880 -320 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 180.00002 1 -1
+( 880 -320 17312 ) ( 1056 -128 17312 ) ( 880 -128 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 -48 179.99998 1 1
+( 880 -320 17760 ) ( 1056 -128 17760 ) ( 1056 -320 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 -48 179.99998 1 1
+( 880 -128 17408 ) ( 1056 -320 17408 ) ( 1056 -320 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 212
+{
+( 528 -320 17408 ) ( 352 -128 17408 ) ( 352 -128 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 528 -128 17312 ) ( 352 -320 17312 ) ( 528 -320 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 48 0 1 1
+( 528 -128 17760 ) ( 352 -320 17760 ) ( 352 -128 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 48 0 1 1
+( 528 -128 17408 ) ( 352 -128 17312 ) ( 528 -128 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -32 16 0 1 1
+( 528 -128 17408 ) ( 528 -320 17312 ) ( 528 -320 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 213
+{
+( 704 -320 17408 ) ( 704 -128 17312 ) ( 704 -128 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 704 -320 17408 ) ( 880 -320 17312 ) ( 704 -320 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 16 180.00002 1 -1
+( 704 -320 17312 ) ( 880 -128 17312 ) ( 704 -128 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( 704 -320 17760 ) ( 880 -128 17760 ) ( 880 -320 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 0 -48 179.99998 1 1
+( 704 -128 17408 ) ( 880 -320 17408 ) ( 880 -320 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 214
+{
+( 1056 -320 17408 ) ( 1056 -128 17312 ) ( 1056 -128 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 1056 -320 17408 ) ( 1232 -320 17312 ) ( 1056 -320 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 16 180.00002 1 -1
+( 1056 -320 17312 ) ( 1232 -128 17312 ) ( 1056 -128 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( 1056 -320 17760 ) ( 1232 -128 17760 ) ( 1232 -320 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 32 -48 179.99998 1 1
+( 1056 -128 17408 ) ( 1232 -320 17408 ) ( 1232 -320 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 215
+{
+( 880 -512 17408 ) ( 880 -320 17312 ) ( 880 -320 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( 880 -512 17408 ) ( 1056 -512 17312 ) ( 880 -512 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 180.00002 1 -1
+( 880 -512 17312 ) ( 1056 -320 17312 ) ( 880 -320 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 -48 179.99998 1 1
+( 880 -512 17760 ) ( 1056 -320 17760 ) ( 1056 -512 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 -48 179.99998 1 1
+( 880 -320 17408 ) ( 1056 -512 17408 ) ( 1056 -512 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 216
+{
+( 704 -512 17408 ) ( 528 -320 17408 ) ( 528 -320 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 704 -320 17312 ) ( 528 -512 17312 ) ( 704 -512 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -16 48 0 1 1
+( 704 -320 17760 ) ( 528 -512 17760 ) ( 528 -320 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -16 48 0 1 1
+( 704 -320 17408 ) ( 528 -320 17312 ) ( 704 -320 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -16 16 0 1 1
+( 704 -320 17408 ) ( 704 -512 17312 ) ( 704 -512 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 217
+{
+( 352 448 17408 ) ( 176 640 17408 ) ( 176 640 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 352 640 17312 ) ( 176 448 17312 ) ( 352 448 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48.000015 48 0 1 1
+( 352 640 17760 ) ( 176 448 17760 ) ( 176 640 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48.000015 48 0 1 1
+( 352 640 17408 ) ( 176 640 17312 ) ( 352 640 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+( 352 640 17408 ) ( 352 448 17312 ) ( 352 448 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" -48 16 0 1 1
+}
+// brush 218
+{
+( -176 -320 17408 ) ( -176 -128 17312 ) ( -176 -128 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( -176 -320 17408 ) ( 0 -320 17312 ) ( -176 -320 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 16 16 180.00002 1 -1
+( -176 -320 17312 ) ( 0 -128 17312 ) ( -176 -128 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 15.999992 -48 179.99998 1 1
+( -176 -320 17760 ) ( 0 -128 17760 ) ( 0 -320 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 15.999992 -48 179.99998 1 1
+( -176 -128 17408 ) ( 0 -320 17408 ) ( 0 -320 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
+// brush 219
+{
+( -528 -128 17408 ) ( -528 64 17312 ) ( -528 64 17408 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+( -528 -128 17408 ) ( -352 -128 17312 ) ( -528 -128 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 180.00002 1 -1
+( -528 -128 17312 ) ( -352 64 17312 ) ( -528 64 17312 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 47.99997 -48 179.99998 1 1
+( -528 -128 17760 ) ( -352 64 17760 ) ( -352 -128 17760 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 47.99997 -48 179.99998 1 1
+( -528 64 17408 ) ( -352 -128 17408 ) ( -352 -128 17536 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004-Trims" 48 16 179.99998 1 -1
+}
 }

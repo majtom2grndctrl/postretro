@@ -53,6 +53,28 @@ impl ContributorLedgerRecord {
     }
 }
 
+/// Attribution facts that travel beside a [`DamagePayload`] at the health
+/// chokepoint. The payload remains foundation-owned and amount-focused; entity
+/// identity stays here in `postretro-entities`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DamageContext {
+    pub source_id: String,
+    pub attacker: Option<EntityId>,
+    pub weapon: Option<EntityId>,
+    pub zone: Option<String>,
+}
+
+impl DamageContext {
+    pub fn unattributed() -> Self {
+        Self {
+            source_id: String::new(),
+            attacker: None,
+            weapon: None,
+            zone: None,
+        }
+    }
+}
+
 /// Exact per-source contributor facts retained by a health component.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ContributorLedgerEntry {
@@ -302,6 +324,11 @@ pub fn pawn_with_health(registry: &EntityRegistry) -> Option<(EntityId, HealthCo
         .map(|health| (pawn, health.clone()))
 }
 
+/// Compatibility shim for producers not yet migrated to contextual damage.
+pub fn apply_damage(registry: &mut EntityRegistry, id: EntityId, payload: &DamagePayload) {
+    apply_damage_with_context(registry, id, payload, DamageContext::unattributed());
+}
+
 /// The damage chokepoint every producer routes through. Subtracts the payload's
 /// `amount` from the entity's current HP, flooring at zero. No-ops (returns
 /// without error) when the entity carries no `Health` component or no longer
@@ -309,12 +336,24 @@ pub fn pawn_with_health(registry: &EntityRegistry) -> Option<(EntityId, HealthCo
 ///
 /// Damage arrives only as a [`DamagePayload`] (never a bare scalar); spatial
 /// info rides beside the payload, never inside it.
-pub fn apply_damage(registry: &mut EntityRegistry, id: EntityId, payload: &DamagePayload) {
+pub fn apply_damage_with_context(
+    registry: &mut EntityRegistry,
+    id: EntityId,
+    payload: &DamagePayload,
+    context: DamageContext,
+) {
     let Ok(health) = registry.get_component::<HealthComponent>(id) else {
         return;
     };
     let mut updated = health.clone();
     updated.current = (updated.current - payload.amount).max(0.0);
+    if !updated.death_handled && payload.amount.is_finite() && payload.amount > 0.0 {
+        let mut record = ContributorLedgerRecord::new(context.source_id, payload.amount);
+        record.zone = context.zone;
+        record.attacker = context.attacker;
+        record.weapon = context.weapon;
+        updated.record_contributor_damage(record);
+    }
     // `set_component` only fails on a stale id, which `get_component` already
     // ruled out above.
     let _ = registry.set_component(id, updated);
@@ -411,6 +450,86 @@ mod tests {
             0.0,
             "HP never goes negative"
         );
+    }
+
+    #[test]
+    fn apply_damage_with_context_records_unclamped_post_mitigation_damage() {
+        let mut reg = EntityRegistry::new();
+        let target = reg.spawn(Transform::default());
+        let attacker = EntityId::from_raw(11);
+        let weapon = EntityId::from_raw(12);
+        reg.set_component(target, HealthComponent::from_descriptor(&descriptor(100.0)))
+            .unwrap();
+
+        apply_damage_with_context(
+            &mut reg,
+            target,
+            &DamagePayload { amount: 25.0 },
+            DamageContext {
+                source_id: "weapon.plasma".to_string(),
+                attacker: Some(attacker),
+                weapon: Some(weapon),
+                zone: Some("torso".to_string()),
+            },
+        );
+        apply_damage_with_context(
+            &mut reg,
+            target,
+            &DamagePayload { amount: 90.0 },
+            DamageContext {
+                source_id: "weapon.plasma".to_string(),
+                attacker: Some(attacker),
+                weapon: Some(weapon),
+                zone: Some("head".to_string()),
+            },
+        );
+
+        let health = reg.get_component::<HealthComponent>(target).unwrap();
+        assert_eq!(health.current, 0.0);
+        let entries = health.contributor_ledger.entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].source_id, "weapon.plasma");
+        assert_eq!(
+            entries[0].accumulated_damage, 115.0,
+            "ledger records the full payload amount that reached the chokepoint"
+        );
+        assert_eq!(entries[0].hit_count, 2);
+        assert_eq!(entries[0].last_hit_damage, 90.0);
+        assert_eq!(entries[0].last_hit_zone.as_deref(), Some("head"));
+        assert_eq!(entries[0].last_attacker, Some(attacker));
+        assert_eq!(entries[0].last_weapon, Some(weapon));
+    }
+
+    #[test]
+    fn apply_damage_with_context_does_not_record_after_death_latch() {
+        let mut reg = EntityRegistry::new();
+        let target = reg.spawn(Transform::default());
+        let mut component = HealthComponent::from_descriptor(&descriptor(100.0));
+        component.death_handled = true;
+        reg.set_component(target, component).unwrap();
+
+        apply_damage_with_context(
+            &mut reg,
+            target,
+            &DamagePayload { amount: 25.0 },
+            DamageContext {
+                source_id: "weapon.plasma".to_string(),
+                attacker: None,
+                weapon: None,
+                zone: None,
+            },
+        );
+
+        let health = reg.get_component::<HealthComponent>(target).unwrap();
+        assert_eq!(
+            health.current, 75.0,
+            "HP mutation still follows the chokepoint"
+        );
+        assert!(
+            health.contributor_ledger.entries().is_empty(),
+            "latched deaths must not accumulate later contributors"
+        );
+        assert!(health.contributor_ledger.overflow().is_none());
     }
 
     #[test]

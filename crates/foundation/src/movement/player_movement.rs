@@ -22,6 +22,22 @@ use crate::data_descriptors::{
 use crate::ir::{BakedIr, BindError, BoundProgram, CURRENT_IR_VERSION, IrNode, bind};
 use crate::movement::MovementScope;
 
+/// Live player ground reference. `Mover` stores the compile-time PRL mover id,
+/// not a network id, so the foundation component stays net-agnostic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum GroundRef {
+    #[default]
+    Airborne,
+    World,
+    Mover(u32),
+}
+
+impl GroundRef {
+    pub fn is_grounded(self) -> bool {
+        !matches!(self, Self::Airborne)
+    }
+}
+
 /// Bound dash value expressions, one slot per expression-capable
 /// [`DashParams`] field. A slot is `Some` exactly when the corresponding field
 /// is authored as an expression ([`NumberOrIr::Ir`] / [`BoolOrIr::Ir`]); a
@@ -147,7 +163,7 @@ pub enum MovementState {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PlayerMovementComponent {
     pub capsule: CapsuleParams,
-    pub ground: GroundParams,
+    pub ground_params: GroundParams,
     pub air: AirParams,
     pub fall: FallParams,
     /// Cosine of `ground.max_slope` (degrees → radians → cos), precomputed at
@@ -185,7 +201,7 @@ pub struct PlayerMovementComponent {
     /// Configured STANDING eye-height — the reference the eye interpolates back
     /// to when standing. Seeded from `desc.capsule.eye_height`, never mutated.
     pub standing_eye_height: f32,
-    pub is_grounded: bool,
+    pub ground: GroundRef,
     pub velocity: Vec3,
     pub air_jumps_remaining: u32,
     /// Air-dash charges left before landing. Seeded from `dash.air_dashes` at
@@ -290,7 +306,7 @@ impl PlayerMovementComponent {
         let forgiveness = desc.forgiveness.unwrap_or(ForgivenessParams::DEFAULT);
         Self {
             capsule: desc.capsule.clone(),
-            ground: desc.ground.clone(),
+            ground_params: desc.ground.clone(),
             air: desc.air.clone(),
             fall: desc.fall.clone(),
             dash,
@@ -305,7 +321,7 @@ impl PlayerMovementComponent {
             standing_half_height: desc.capsule.half_height,
             standing_eye_height: desc.capsule.eye_height,
             cos_walkable,
-            is_grounded: false,
+            ground: GroundRef::Airborne,
             velocity: Vec3::ZERO,
             air_jumps_remaining,
             air_dashes_remaining,
@@ -344,6 +360,18 @@ impl PlayerMovementComponent {
         // edge derivation, not here.
         self.jump_spent = false;
         self.coyote_timer_ms = 0.0;
+    }
+
+    pub fn is_grounded(&self) -> bool {
+        self.ground.is_grounded()
+    }
+
+    pub fn set_grounded(&mut self, grounded: bool) {
+        self.ground = if grounded {
+            GroundRef::World
+        } else {
+            GroundRef::Airborne
+        };
     }
 }
 

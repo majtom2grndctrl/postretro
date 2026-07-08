@@ -370,6 +370,7 @@ mod tests {
                     }),
                     player_movement: None,
                     mesh_animation_state: None,
+                    kinematic_mover: None,
                 }],
             }],
             state_schema_fingerprint: [0u8; 32],

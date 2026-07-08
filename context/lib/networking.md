@@ -43,7 +43,7 @@ The wire codec is **bitcode**, pinned to an exact version. bitcode owns endianne
 1. **Never persist bitcode bytes.** The format is not a storage format. It exists only between two live, version-matched peers.
 2. **Every connection is gated on the handshake** before any bitcode payload is decoded (see *Handshake* below). A version-mismatched peer is refused before a single message is interpreted.
 
-**No serde-internally-tagged enum crosses the wire.** The engine's `ComponentValue` is a `#[serde(tag = "kind")]` enum, which bitcode cannot round-trip (`DeserializeAnyNotSupported`). So replication does not send engine types: it sends dedicated **wire-mirror** types that derive bitcode's native `Encode`/`Decode`. The component payload carries an explicit `u16` discriminant **numeric-equal to the engine `ComponentKind`**. Current entity payloads cover `Transform`, `PlayerMovementState`, and `MeshAnimationState`. `MeshAnimationState` carries only current state name; descriptor mesh data stays local. The engine↔wire conversion lives in `crate::netcode`; the mirror types know nothing about glam component order or serde tags.
+**No serde-internally-tagged enum crosses the wire.** The engine's `ComponentValue` is a `#[serde(tag = "kind")]` enum, which bitcode cannot round-trip (`DeserializeAnyNotSupported`). So replication does not send engine types: it sends dedicated **wire-mirror** types that derive bitcode's native `Encode`/`Decode`. The component payload carries an explicit `u16` discriminant **numeric-equal to the engine `ComponentKind`**. Current entity payloads cover `Transform`, `PlayerMovementState`, `MeshAnimationState`, and `KinematicMoverState`. `MeshAnimationState` carries only current state name; descriptor mesh data stays local. The engine↔wire conversion lives in `crate::netcode`; the mirror types know nothing about glam component order or serde tags.
 
 This discriminant equality is a load-bearing contract across the crate boundary: the net side and the engine side independently assert it (drift-guard tests on both sides), because a divergence silently mis-tags components on the wire. New payload variants are added in engine `ComponentKind` numeric order.
 
@@ -72,7 +72,11 @@ The net crate emits typed snapshots and **never mutates the registry.** All regi
 
 `NetworkId` is the network-stable identity assigned by the host; the host owns an `EntityId→NetworkId` allocator (monotonic, never recycled, stable for an entity's lifetime) and the client owns the inverse `NetworkId→EntityId` map. Stable ids keep the client's mapping coherent across snapshots. This is the network projection of the entity-model ownership rule (`entity_model.md` §6): game logic owns entities; replication is just another reader (host) and a controlled writer (client).
 
-Current component payloads are `Transform`, `PlayerMovementState`, and `MeshAnimationState`, added in `ComponentKind` numeric order. `MeshAnimationState` carries the current animation state name; descriptor mesh data stays local. Two distinct metadata validity gates apply:
+Current component payloads are `Transform`, `PlayerMovementState`, `MeshAnimationState`, and `KinematicMoverState`, added in `ComponentKind` numeric order. `MeshAnimationState` carries the current animation state name; descriptor mesh data stays local. `KinematicMoverState` carries phase only: `mover_id`, segment index, direction, mode, elapsed/wait milliseconds, started/completed flags, and velocity. Static path data stays in PRL `KinematicGeometry`.
+
+Player movement grounding is a widened ground reference (`Airborne`, `World`, or `Mover(mover_id)`) rather than a bare boolean. The net crate validates only the enum shape and finite numeric fields; resolving a mover id to a loaded local mover is engine-owned client apply.
+
+Two distinct metadata validity gates apply:
 
 - **Movement-authority metadata** (`local_player`, `last_processed_client_tick`): valid only on records carrying `PlayerMovementState`. No other record type may carry these fields.
 - **Descriptor `entity_class`**: valid on any non-despawn entity record (`FullBaseline` or `Delta`) that carries at least one finite `Transform` payload — it no longer requires `PlayerMovementState`. On despawn records, `entity_class` (and all metadata) remains invalid.
@@ -194,6 +198,8 @@ Epic 15 Phase 3 is the active contract: authoritative client-server co-op, entit
 Phase 1/2 plans are historical. Do not read their old full-snapshot, no-despawn, or single-component limits as current behavior.
 
 Replicable-set policy is gameplay-authoritative first. Player pawns, AI/enemies, movers, and other networked gameplay objects go on the wire. Deterministic client-local or baked data — particles, sprite visuals, lights, fog volumes, and shared `.prl` map data — stays off the wire unless gameplay authority requires otherwise.
+
+Mover prediction is phase-seeded and separate from the pawn command-ring predictor. The host replicates authoritative mover phase; clients re-run the deterministic mover driver from that phase and reconcile in place, mapped by `NetworkId`. There is no provisional client-created mover copy.
 
 **Connected-client AI-enemy spawn suppression.** A connected client does not spawn local authoritative copies of map-placed AI enemies. Those enemies are host-authoritative: the client receives them solely as host snapshots. Client-side materialization attaches only the descriptor's mesh presentation; `Brain`, `Agent`, `Health`, and `Weapon` components are never attached on the client for a remote enemy. Remote enemies are presentation-only — they carry no local simulation state.
 

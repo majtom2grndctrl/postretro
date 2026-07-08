@@ -8,6 +8,7 @@ mod debug_ui;
 mod direct_sh_compose;
 mod fog_pass;
 mod frame_timing;
+mod kinematic_brush;
 mod loaded_texture;
 mod mesh_pass;
 mod promoted_depth_cache;
@@ -108,6 +109,7 @@ pub(crate) use postretro_render_cpu::mesh_instances;
 
 // Re-export the moved free items so they stay reachable at their original
 // `render::*` paths (external callers and sibling render modules depend on these).
+pub use kinematic_brush::KinematicMoverInstance;
 pub(crate) use material_plan::*;
 pub(crate) use pipeline_layout::*;
 pub use renderer_geometry::level_world_to_geometry;

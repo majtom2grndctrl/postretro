@@ -3,7 +3,7 @@
 
 use glam::{Vec2, Vec3};
 
-use crate::collision::CollisionWorld;
+use crate::collision::moving::CombinedCollisionWorld;
 use crate::movement::carry::CarryRule;
 use crate::movement::dispatch::{stand_up_resize, stand_up_transition};
 use crate::movement::substrate::{
@@ -52,7 +52,7 @@ const OVERSPEED_BLEED_MARGIN: f32 = 1.002;
 /// the behavior-unchanged locomotion.
 ///
 /// Operates on `component.velocity`, reading the grounded flag carried from the
-/// previous tick (`component.is_grounded`). Steps 2/3 may clear `is_grounded`
+/// previous tick (`component.is_grounded()`). Steps 2/3 may clear `is_grounded`
 /// when a jump launches; that clear is part of the intent (a jump is no longer
 /// grounded) and the substrate reads the post-intent flag.
 ///
@@ -77,7 +77,7 @@ pub(super) fn normal_intent(
     events: &mut MovementEvents,
 ) -> Option<Transition> {
     // 1. Gravity (airborne only).
-    if !component.is_grounded {
+    if !component.is_grounded() {
         component.velocity.y += gravity * dt;
         let terminal = component.fall.terminal_velocity;
         if component.velocity.y < -terminal {
@@ -91,7 +91,7 @@ pub(super) fn normal_intent(
     // a grounded jump. Sets `jump_spent` so coyote cannot re-arm this stretch.
     if jump_edges.grounded {
         component.velocity.y = component.air.jump_velocity;
-        component.is_grounded = false;
+        component.set_grounded(false);
         component.jump_spent = true;
         events.jumped = true;
     }
@@ -115,18 +115,18 @@ pub(super) fn normal_intent(
     // the run speed; the same value caps airborne horizontal speed so a
     // sprint-then-jump arc doesn't instantly decelerate mid-air.
     let ground_speed = if input.running {
-        component.ground.speed.run
+        component.ground_params.speed.run
     } else {
-        component.ground.speed.walk
+        component.ground_params.speed.walk
     };
     let input_dir_3d = wish_dir_from_input(input.wish_dir, input.facing_yaw);
-    if component.is_grounded {
+    if component.is_grounded() {
         if input_dir_3d.length_squared() > 0.0 {
             pm_accelerate(
                 &mut component.velocity,
                 input_dir_3d,
                 ground_speed,
-                component.ground.accel,
+                component.ground_params.accel,
                 dt,
             );
         }
@@ -174,7 +174,7 @@ pub(super) fn normal_intent(
     // the input-held branch is a no-op there; it exists so post-dash over-speed
     // decays even while the stick is held, and a dash hands back into the steady
     // band cleanly after the `DASH_MAX_MS` guard.
-    if component.is_grounded && input.wish_dir.length_squared() < 0.001 {
+    if component.is_grounded() && input.wish_dir.length_squared() < 0.001 {
         let horiz = Vec2::new(component.velocity.x, component.velocity.z);
         let h_speed = horiz.length();
         if h_speed > 0.0 {
@@ -184,7 +184,7 @@ pub(super) fn normal_intent(
             component.velocity.x *= scale;
             component.velocity.z *= scale;
         }
-    } else if component.is_grounded {
+    } else if component.is_grounded() {
         // Input held: `pm_accelerate` governs motion up to the run cap but cannot
         // remove speed already above it, and the stop-friction above is
         // no-input-only. Bleed only the *over-speed* above the cap back toward it
@@ -228,7 +228,7 @@ pub(super) fn normal_intent(
         if let Some(crouch) = component.crouch.as_ref() {
             let target_half_height = crouch.half_height;
             let target_eye_height = crouch.eye_height;
-            let anchor = if component.is_grounded {
+            let anchor = if component.is_grounded() {
                 ResizeAnchor::Feet
             } else {
                 ResizeAnchor::Head
@@ -321,7 +321,7 @@ pub(super) fn try_enter_dash(
     if component.dash_cooldown_ms > 0.0 {
         return None;
     }
-    if !component.is_grounded {
+    if !component.is_grounded() {
         // Airborne dash additionally requires (and consumes) one air-dash charge.
         if component.air_dashes_remaining == 0 {
             return None;
@@ -496,7 +496,7 @@ pub(super) fn dash_intent(
     };
 
     // Gravity runs normally (FPS-shaped: the dash does not suspend it).
-    if !component.is_grounded {
+    if !component.is_grounded() {
         component.velocity.y += gravity * dt;
         let terminal = component.fall.terminal_velocity;
         if component.velocity.y < -terminal {
@@ -505,9 +505,9 @@ pub(super) fn dash_intent(
     }
 
     let ground_speed = if input.running {
-        component.ground.speed.run
+        component.ground_params.speed.run
     } else {
-        component.ground.speed.walk
+        component.ground_params.speed.walk
     };
 
     // Input steering, scaled by `steer_control`. At 0 the term is omitted
@@ -516,8 +516,8 @@ pub(super) fn dash_intent(
     // not feed the tracked boost layer.
     let input_dir_3d = wish_dir_from_input(input.wish_dir, input.facing_yaw);
     if steer_control > 0.0 && input_dir_3d.length_squared() > 0.0 {
-        let context_accel = if component.is_grounded {
-            component.ground.accel
+        let context_accel = if component.is_grounded() {
+            component.ground_params.accel
         } else {
             component.air.accel
         };
@@ -576,7 +576,7 @@ pub(super) fn dash_intent(
         // stop-friction is no-input-only (because `pm_accelerate` caps grounded
         // speed), but the boost is deliberately above that cap, so a held stick
         // must not freeze it. Airborne, fold into `Normal`'s contextual cap.
-        if component.is_grounded {
+        if component.is_grounded() {
             let bspeed = Vec2::new(boost.x, boost.z).length();
             if bspeed > 0.0 {
                 let drop = bspeed * GROUND_STOP_FRICTION * dt;
@@ -661,7 +661,7 @@ pub(super) fn crouching_intent(
     jump_edges: JumpEdges,
     gravity: f32,
     dt: f32,
-    collision_world: &CollisionWorld,
+    collision: &CombinedCollisionWorld<'_>,
     position: &mut Vec3,
     events: &mut MovementEvents,
     eye_current: &mut f32,
@@ -676,14 +676,14 @@ pub(super) fn crouching_intent(
     // clears `is_grounded` before the stand-up resize runs, so reading the flag
     // at the call site would wrongly pick `Head` and drive the launching feet into
     // the floor — hence the snapshot here.
-    let stand_up_anchor = if component.is_grounded {
+    let stand_up_anchor = if component.is_grounded() {
         ResizeAnchor::Feet
     } else {
         ResizeAnchor::Head
     };
 
     // 1. Gravity (airborne only) — identical to `Normal`.
-    if !component.is_grounded {
+    if !component.is_grounded() {
         component.velocity.y += gravity * dt;
         let terminal = component.fall.terminal_velocity;
         if component.velocity.y < -terminal {
@@ -698,7 +698,7 @@ pub(super) fn crouching_intent(
     let mut jumped_this_tick = false;
     if jump_edges.grounded {
         component.velocity.y = component.air.jump_velocity;
-        component.is_grounded = false;
+        component.set_grounded(false);
         component.jump_spent = true;
         events.jumped = true;
         jumped_this_tick = true;
@@ -713,15 +713,15 @@ pub(super) fn crouching_intent(
     // 3. Locomotion: ground vs air branch, mirroring `Normal` steps 4/5 but with
     // the crouch speed tier as the target (and airborne cap). Crouch is
     // omnidirectional like walk/run — the tier just sits below them.
-    let ground_speed = component.ground.speed.crouch;
+    let ground_speed = component.ground_params.speed.crouch;
     let input_dir_3d = wish_dir_from_input(input.wish_dir, input.facing_yaw);
-    if component.is_grounded {
+    if component.is_grounded() {
         if input_dir_3d.length_squared() > 0.0 {
             pm_accelerate(
                 &mut component.velocity,
                 input_dir_3d,
                 ground_speed,
-                component.ground.accel,
+                component.ground_params.accel,
                 dt,
             );
         }
@@ -760,7 +760,7 @@ pub(super) fn crouching_intent(
     // 4. Ground friction — same contextual decay as `Normal` step 6, using the
     // crouch tier as the cap so a crouched player bleeds to a stop / back to the
     // crouch cap rather than the run cap.
-    if component.is_grounded && input.wish_dir.length_squared() < 0.001 {
+    if component.is_grounded() && input.wish_dir.length_squared() < 0.001 {
         let horiz = Vec2::new(component.velocity.x, component.velocity.z);
         let h_speed = horiz.length();
         if h_speed > 0.0 {
@@ -770,7 +770,7 @@ pub(super) fn crouching_intent(
             component.velocity.x *= scale;
             component.velocity.z *= scale;
         }
-    } else if component.is_grounded {
+    } else if component.is_grounded() {
         let h_speed = Vec2::new(component.velocity.x, component.velocity.z).length();
         if h_speed > ground_speed * OVERSPEED_BLEED_MARGIN {
             let drop = (h_speed - ground_speed) * GROUND_STOP_FRICTION * dt;
@@ -810,7 +810,7 @@ pub(super) fn crouching_intent(
     if jumped_this_tick && input.crouch_intent {
         if standup_clearance_probe(
             component,
-            collision_world,
+            collision,
             *position,
             crouched_half_height,
             standing_half_height,
@@ -829,7 +829,7 @@ pub(super) fn crouching_intent(
     if !input.crouch_intent
         && standup_clearance_probe(
             component,
-            collision_world,
+            collision,
             *position,
             crouched_half_height,
             standing_half_height,
@@ -859,7 +859,7 @@ fn apply_normal_horizontal_decay(
     ground_speed: f32,
     dt: f32,
 ) {
-    if component.is_grounded {
+    if component.is_grounded() {
         if input.wish_dir.length_squared() < 0.001 {
             let h_speed = Vec2::new(velocity.x, velocity.z).length();
             if h_speed > 0.0 {

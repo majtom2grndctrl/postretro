@@ -3,7 +3,7 @@
 
 use glam::Vec3;
 
-use crate::collision::CollisionWorld;
+use crate::collision::moving::CombinedCollisionWorld;
 use crate::movement::carry::{CarryRule, apply_boost, apply_horizontal};
 use crate::movement::intents::{crouching_intent, dash_intent, normal_intent};
 use crate::movement::substrate::{JumpEdges, ResizeAnchor, resize_capsule};
@@ -120,7 +120,7 @@ pub(super) fn dispatch_state_intent(
     jump_edges: JumpEdges,
     gravity: f32,
     dt: f32,
-    collision_world: &CollisionWorld,
+    collision: &CombinedCollisionWorld<'_>,
     position: &mut Vec3,
     events: &mut MovementEvents,
 ) -> Option<MovementState> {
@@ -141,7 +141,7 @@ pub(super) fn dispatch_state_intent(
             jump_edges,
             gravity,
             dt,
-            collision_world,
+            collision,
             position,
             events,
             eye_current,

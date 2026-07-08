@@ -7,9 +7,9 @@
 
 use glam::Vec3;
 
-use postretro_net::wire::{WireMovementState, WirePlayerMovementState};
+use postretro_net::wire::{WireGroundRef, WireMovementState, WirePlayerMovementState};
 
-use postretro_foundation::{MovementState, PlayerMovementComponent};
+use postretro_foundation::{GroundRef, MovementState, PlayerMovementComponent};
 
 /// Extract the mutable tick subset of a `PlayerMovementComponent` into its wire
 /// mirror. Only the fields that change tick-to-tick cross the wire; descriptor
@@ -26,7 +26,7 @@ pub(crate) fn movement_state_to_wire(
             component.velocity.y,
             component.velocity.z,
         ],
-        is_grounded: component.is_grounded,
+        ground: ground_ref_to_wire(component.ground),
         air_jumps_remaining: component.air_jumps_remaining,
         air_dashes_remaining: component.air_dashes_remaining,
         dash_cooldown_ms: component.dash_cooldown_ms,
@@ -49,12 +49,17 @@ pub(crate) fn movement_state_to_wire(
 /// `cos_walkable`, the forgiveness *windows* (`coyote_ms`/`jump_buffer_ms`), and
 /// the derived `dash_programs`. A reconcile/apply path materializes the component
 /// from the local descriptor first, then merges authoritative tick state in here.
-pub(crate) fn merge_wire_into_movement_state(
+pub(crate) fn merge_wire_into_movement_state_checked(
     component: &mut PlayerMovementComponent,
     wire: &WirePlayerMovementState,
-) {
+    ground_mover_known: impl Fn(u32) -> bool,
+) -> bool {
+    let Some(ground) = wire_ground_ref_to_foundation_checked(wire.ground, ground_mover_known)
+    else {
+        return false;
+    };
     component.velocity = Vec3::new(wire.velocity[0], wire.velocity[1], wire.velocity[2]);
-    component.is_grounded = wire.is_grounded;
+    component.ground = ground;
     component.air_jumps_remaining = wire.air_jumps_remaining;
     component.air_dashes_remaining = wire.air_dashes_remaining;
     component.dash_cooldown_ms = wire.dash_cooldown_ms;
@@ -68,6 +73,7 @@ pub(crate) fn merge_wire_into_movement_state(
     // deliberately not touched.
     component.capsule.half_height = wire.capsule_half_height;
     component.capsule.eye_height = wire.capsule_eye_height;
+    true
 }
 
 /// Map the engine `MovementState` to its wire mirror. Exhaustive (no `_` arm) so
@@ -95,6 +101,28 @@ fn wire_to_movement_state_enum(state: WireMovementState) -> MovementState {
             boost: Vec3::new(boost[0], boost[1], boost[2]),
         },
         WireMovementState::Crouching { eye_current } => MovementState::Crouching { eye_current },
+    }
+}
+
+fn ground_ref_to_wire(ground: GroundRef) -> WireGroundRef {
+    match ground {
+        GroundRef::Airborne => WireGroundRef::Airborne,
+        GroundRef::World => WireGroundRef::World,
+        GroundRef::Mover(mover_id) => WireGroundRef::Mover(mover_id),
+    }
+}
+
+fn wire_ground_ref_to_foundation_checked(
+    ground: WireGroundRef,
+    ground_mover_known: impl Fn(u32) -> bool,
+) -> Option<GroundRef> {
+    match ground {
+        WireGroundRef::Airborne => Some(GroundRef::Airborne),
+        WireGroundRef::World => Some(GroundRef::World),
+        WireGroundRef::Mover(mover_id) if ground_mover_known(mover_id) => {
+            Some(GroundRef::Mover(mover_id))
+        }
+        WireGroundRef::Mover(_) => None,
     }
 }
 
@@ -173,7 +201,7 @@ mod tests {
     fn sample_wire_state() -> WirePlayerMovementState {
         WirePlayerMovementState {
             velocity: [1.0, -2.0, 3.5],
-            is_grounded: true,
+            ground: WireGroundRef::World,
             air_jumps_remaining: 1,
             air_dashes_remaining: 0,
             dash_cooldown_ms: 250.0,
@@ -196,7 +224,7 @@ mod tests {
         // Drive the mutable subset to non-default values, then extract and merge
         // back into a fresh component and confirm the subset survives.
         component.velocity = Vec3::new(2.0, -0.5, 9.0);
-        component.is_grounded = false;
+        component.set_grounded(false);
         component.air_jumps_remaining = 1;
         component.air_dashes_remaining = 1;
         component.dash_cooldown_ms = 400.0;
@@ -210,10 +238,14 @@ mod tests {
 
         let wire = movement_state_to_wire(&component);
         let mut rebuilt = PlayerMovementComponent::from_descriptor(&rich_descriptor());
-        merge_wire_into_movement_state(&mut rebuilt, &wire);
+        assert!(merge_wire_into_movement_state_checked(
+            &mut rebuilt,
+            &wire,
+            |_| true
+        ));
 
         assert!((rebuilt.velocity - component.velocity).length() < EPSILON);
-        assert_eq!(rebuilt.is_grounded, component.is_grounded);
+        assert_eq!(rebuilt.is_grounded(), component.is_grounded());
         assert_eq!(rebuilt.air_jumps_remaining, component.air_jumps_remaining);
         assert_eq!(rebuilt.air_dashes_remaining, component.air_dashes_remaining);
         assert!((rebuilt.dash_cooldown_ms - component.dash_cooldown_ms).abs() < EPSILON);
@@ -231,7 +263,7 @@ mod tests {
         let mut component = PlayerMovementComponent::from_descriptor(&rich_descriptor());
 
         // Snapshot the descriptor-owned (non-mutable) fields before the merge.
-        let ground = component.ground.clone();
+        let ground = component.ground_params.clone();
         let air = component.air.clone();
         let fall = component.fall.clone();
         let dash = component.dash.clone();
@@ -246,11 +278,15 @@ mod tests {
         let jump_buffer_ms = component.jump_buffer_ms;
 
         let wire = sample_wire_state();
-        merge_wire_into_movement_state(&mut component, &wire);
+        assert!(merge_wire_into_movement_state_checked(
+            &mut component,
+            &wire,
+            |_| true
+        ));
 
         // Mutable subset updated from the wire payload.
         assert!((component.velocity - Vec3::new(1.0, -2.0, 3.5)).length() < EPSILON);
-        assert!(component.is_grounded);
+        assert!(component.is_grounded());
         assert_eq!(component.air_jumps_remaining, 1);
         assert_eq!(component.air_dashes_remaining, 0);
         assert!((component.dash_cooldown_ms - 250.0).abs() < EPSILON);
@@ -269,7 +305,7 @@ mod tests {
         assert!((component.capsule.eye_height - 0.25).abs() < EPSILON);
 
         // Descriptor-owned fields untouched by the merge.
-        assert_eq!(component.ground, ground);
+        assert_eq!(component.ground_params, ground);
         assert_eq!(component.air, air);
         assert_eq!(component.fall, fall);
         assert_eq!(component.dash, dash);
@@ -285,6 +321,23 @@ mod tests {
         // The standing reference dimensions are NOT the live capsule the wire wrote.
         assert!((component.standing_half_height - 0.8).abs() < EPSILON);
         assert!((component.standing_eye_height - 0.5).abs() < EPSILON);
+    }
+
+    #[test]
+    fn checked_merge_rejects_unknown_ground_mover_without_mutating_component() {
+        let mut component = PlayerMovementComponent::from_descriptor(&rich_descriptor());
+        component.ground = GroundRef::World;
+        let before = component.clone();
+        let mut wire = sample_wire_state();
+        wire.ground = WireGroundRef::Mover(99);
+
+        let applied = merge_wire_into_movement_state_checked(&mut component, &wire, |mover_id| {
+            mover_id == 42
+        });
+
+        assert!(!applied);
+        assert_eq!(component.ground, before.ground);
+        assert!((component.velocity - before.velocity).length() < EPSILON);
     }
 
     /// Per-variant `MovementState` round-trip (Normal/Dash/Crouching) through the

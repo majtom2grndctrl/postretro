@@ -235,6 +235,29 @@ impl Renderer {
         self.full_mut().mesh_draws.extend_from_slice(instances);
     }
 
+    /// Upload this frame's kinematic brush mover instances. The game layer has
+    /// already performed conservative visibility collection from registry
+    /// transforms; this method only transfers plain CPU matrices into the
+    /// renderer-owned instance buffer.
+    pub fn set_kinematic_mover_draws(
+        &mut self,
+        instances: &[kinematic_brush::KinematicMoverInstance],
+    ) {
+        let Self {
+            device,
+            queue,
+            full,
+            ..
+        } = self;
+        let full = full
+            .as_mut()
+            .expect("renderer full-init must complete before full-ready paths run");
+        full.kinematic_mover_draws.clear();
+        full.kinematic_mover_draws.extend_from_slice(instances);
+        full.kinematic_brush
+            .upload_instances(device, queue, &full.kinematic_mover_draws);
+    }
+
     /// Reset per-level transient mesh-pass state at level load. `pub` forwarder
     /// over the private `mesh_pass`; called from the level-load model sweep at the
     /// model-cache install site (where each distinct model uploads). Empties the
@@ -307,39 +330,243 @@ impl Renderer {
             .collect()
     }
 
-    /// Normalize texel-space UVs on every BVH-leaf-bound vertex to `[0,1]`
-    /// using the diffuse-texture dimensions just installed by
+    /// Normalize texel-space UVs on static world and kinematic mover vertices
+    /// to `[0,1]` using the diffuse-texture dimensions just installed by
     /// `install_textures`. Runs on the main thread between `install_textures`
     /// and `install_level_geometry`. Reads `texture.width()`/`height()` off
     /// the wgpu textures owned by `self.loaded_textures` so the dimensions
     /// always match the actual upload.
     pub fn normalize_world_uvs(&self, world: &mut postretro_level_loader::LevelWorld) {
-        let mut normalized = vec![false; world.vertices.len()];
-        for leaf in &world.bvh.leaves {
-            let tex_idx = leaf.material_bucket_id as usize;
-            let tex = match self.full().loaded_textures.get(tex_idx) {
-                Some(t) => t,
-                None => continue,
-            };
-            let w = tex.diffuse_texture.width();
-            let h = tex.diffuse_texture.height();
-            if w == 0 || h == 0 {
-                continue;
-            }
-            let start = leaf.index_offset as usize;
-            let count = leaf.index_count as usize;
-            for i in start..start + count {
-                if let Some(&idx) = world.indices.get(i) {
-                    let vi = idx as usize;
-                    if vi < normalized.len() && !normalized[vi] {
-                        if let Some(vert) = world.vertices.get_mut(vi) {
-                            vert.base_uv[0] /= w as f32;
-                            vert.base_uv[1] /= h as f32;
-                            normalized[vi] = true;
-                        }
+        let texture_dimensions = loaded_texture_dimensions(&self.full().loaded_textures);
+        normalize_static_world_uvs(
+            &mut world.vertices,
+            &world.indices,
+            &world.bvh.leaves,
+            &texture_dimensions,
+        );
+        normalize_kinematic_mover_uvs(&mut world.kinematic_geometry.movers, &texture_dimensions);
+    }
+}
+
+fn loaded_texture_dimensions(textures: &[LoadedTexture]) -> Vec<[u32; 2]> {
+    textures
+        .iter()
+        .map(|tex| [tex.diffuse_texture.width(), tex.diffuse_texture.height()])
+        .collect()
+}
+
+fn texture_dimensions_for_index(
+    texture_dimensions: &[[u32; 2]],
+    texture_index: u32,
+) -> Option<(f32, f32)> {
+    let dimensions = texture_dimensions.get(texture_index as usize)?;
+    let [width, height] = *dimensions;
+    if width == 0 || height == 0 {
+        return None;
+    }
+    Some((width as f32, height as f32))
+}
+
+fn normalize_static_world_uvs(
+    vertices: &mut [postretro_render_data::geometry::WorldVertex],
+    indices: &[u32],
+    leaves: &[postretro_render_data::geometry::BvhLeaf],
+    texture_dimensions: &[[u32; 2]],
+) {
+    let mut normalized = vec![false; vertices.len()];
+    for leaf in leaves {
+        let Some((width, height)) =
+            texture_dimensions_for_index(texture_dimensions, leaf.material_bucket_id)
+        else {
+            continue;
+        };
+        let start = leaf.index_offset as usize;
+        let end = start.saturating_add(leaf.index_count as usize);
+        for i in start..end {
+            if let Some(&idx) = indices.get(i) {
+                let vertex_index = idx as usize;
+                if vertex_index < normalized.len() && !normalized[vertex_index] {
+                    if let Some(vertex) = vertices.get_mut(vertex_index) {
+                        vertex.base_uv[0] /= width;
+                        vertex.base_uv[1] /= height;
+                        normalized[vertex_index] = true;
                     }
                 }
             }
         }
+    }
+}
+
+fn normalize_kinematic_mover_uvs(
+    movers: &mut [postretro_level_loader::LoadedKinematicMover],
+    texture_dimensions: &[[u32; 2]],
+) {
+    for mover in movers {
+        let mut normalized = vec![false; mover.vertices.len()];
+        let mut offset = 0usize;
+        for face in &mover.face_meta {
+            if offset + 2 >= mover.indices.len() {
+                break;
+            }
+            let face_base = mover.indices[offset];
+            let start = offset;
+            while offset + 2 < mover.indices.len() && mover.indices[offset] == face_base {
+                offset += 3;
+            }
+            normalize_kinematic_face_uvs(
+                &mut mover.vertices,
+                &mover.indices[start..offset],
+                face.texture_index,
+                texture_dimensions,
+                &mut normalized,
+            );
+        }
+    }
+}
+
+fn normalize_kinematic_face_uvs(
+    vertices: &mut [postretro_level_format::geometry::Vertex],
+    indices: &[u32],
+    texture_index: u32,
+    texture_dimensions: &[[u32; 2]],
+    normalized: &mut [bool],
+) {
+    let Some((width, height)) = texture_dimensions_for_index(texture_dimensions, texture_index)
+    else {
+        return;
+    };
+    for &index in indices {
+        let vertex_index = index as usize;
+        if vertex_index < normalized.len() && !normalized[vertex_index] {
+            if let Some(vertex) = vertices.get_mut(vertex_index) {
+                vertex.uv[0] /= width;
+                vertex.uv[1] /= height;
+                normalized[vertex_index] = true;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use glam::Vec3;
+    use postretro_level_format::geometry::{FaceMeta, Vertex};
+    use postretro_render_data::geometry::{BvhLeaf, WorldVertex};
+
+    fn world_vertex(base_uv: [f32; 2]) -> WorldVertex {
+        WorldVertex {
+            position: [0.0, 0.0, 0.0],
+            base_uv,
+            normal_oct: [0, 0],
+            tangent_packed: [0, 0],
+            lightmap_uv: [0, 0],
+            lightmap_layer: 0,
+        }
+    }
+
+    fn kinematic_vertex(uv: [f32; 2]) -> Vertex {
+        Vertex::new(
+            [0.0, 0.0, 0.0],
+            uv,
+            [0.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            true,
+            [0.0, 0.0],
+            0,
+        )
+    }
+
+    fn loaded_mover(
+        vertices: Vec<Vertex>,
+        indices: Vec<u32>,
+        face_meta: Vec<FaceMeta>,
+    ) -> postretro_level_loader::LoadedKinematicMover {
+        postretro_level_loader::LoadedKinematicMover {
+            mover_id: 7,
+            name: "lift".to_string(),
+            tags: Vec::new(),
+            origin: Vec3::ZERO,
+            path: "a".to_string(),
+            speed_mps: 1.0,
+            wait_ms: 0.0,
+            move_mode: 0,
+            start_on_spawn: true,
+            vertices,
+            indices,
+            face_meta,
+        }
+    }
+
+    fn assert_uv_approx(actual: [f32; 2], expected: [f32; 2]) {
+        const EPSILON: f32 = 0.000_001;
+        assert!(
+            (actual[0] - expected[0]).abs() <= EPSILON
+                && (actual[1] - expected[1]).abs() <= EPSILON,
+            "actual={actual:?} expected={expected:?}",
+        );
+    }
+
+    #[test]
+    fn static_world_uvs_normalize_once_per_bvh_vertex() {
+        let mut vertices = vec![
+            world_vertex([64.0, 16.0]),
+            world_vertex([32.0, 32.0]),
+            world_vertex([16.0, 8.0]),
+        ];
+        let indices = vec![0, 1, 2, 0, 2, 1];
+        let leaves = vec![BvhLeaf {
+            aabb_min: [0.0, 0.0, 0.0],
+            material_bucket_id: 0,
+            aabb_max: [1.0, 1.0, 1.0],
+            index_offset: 0,
+            index_count: 6,
+            cell_id: 0,
+            chunk_range_start: 0,
+            chunk_range_count: 0,
+        }];
+
+        normalize_static_world_uvs(&mut vertices, &indices, &leaves, &[[64, 32]]);
+
+        assert_uv_approx(vertices[0].base_uv, [1.0, 0.5]);
+        assert_uv_approx(vertices[1].base_uv, [0.5, 1.0]);
+        assert_uv_approx(vertices[2].base_uv, [0.25, 0.25]);
+    }
+
+    #[test]
+    fn kinematic_mover_uvs_normalize_by_face_texture_dimensions() {
+        let mut movers = vec![loaded_mover(
+            vec![
+                kinematic_vertex([64.0, 32.0]),
+                kinematic_vertex([32.0, 16.0]),
+                kinematic_vertex([128.0, 64.0]),
+                kinematic_vertex([16.0, 8.0]),
+                kinematic_vertex([128.0, 64.0]),
+                kinematic_vertex([64.0, 32.0]),
+                kinematic_vertex([32.0, 16.0]),
+            ],
+            vec![0, 1, 2, 0, 2, 3, 4, 5, 6],
+            vec![
+                FaceMeta {
+                    leaf_index: 0,
+                    texture_index: 1,
+                },
+                FaceMeta {
+                    leaf_index: 0,
+                    texture_index: 2,
+                },
+            ],
+        )];
+
+        normalize_kinematic_mover_uvs(&mut movers, &[[32, 16], [128, 64], [256, 128]]);
+
+        let vertices = &movers[0].vertices;
+        assert_uv_approx(vertices[0].uv, [0.5, 0.5]);
+        assert_uv_approx(vertices[1].uv, [0.25, 0.25]);
+        assert_uv_approx(vertices[2].uv, [1.0, 1.0]);
+        assert_uv_approx(vertices[3].uv, [0.125, 0.125]);
+        assert_uv_approx(vertices[4].uv, [0.5, 0.5]);
+        assert_uv_approx(vertices[5].uv, [0.25, 0.25]);
+        assert_uv_approx(vertices[6].uv, [0.125, 0.125]);
     }
 }

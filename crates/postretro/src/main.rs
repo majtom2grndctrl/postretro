@@ -26,19 +26,21 @@ mod frame_timing;
 mod fx;
 mod health;
 mod input;
+mod kinematic_mover;
 mod movement;
 // The runtime nav graph is built in every build whenever a level carries a
 // baked navmesh; pathfinding consumes its query surface.
 mod nav;
-// Engine-side netcode glue (M15 Phase 3): role selection, the optional endpoint
-// held by `App`, the game-logic-owned serialize/apply steps, and client-side
-// prediction and reconciliation. The ONLY engine code that touches the registry
-// on behalf of replication. See `context/lib/entity_model.md` §6.
+// Engine-side netcode glue: role selection, the optional endpoint held by `App`,
+// game-logic-owned serialize/apply, interpolation, prediction, and reconciliation.
+// The ONLY engine code that touches the registry on behalf of replication.
+// See `context/lib/entity_model.md` §6.
 mod netcode;
 mod options;
 mod weapon;
 
 mod render;
+mod runtime_movers;
 mod scripting;
 // Live session-lifetime container: all session-lifetime state (scripting core,
 // audio, net endpoint, input/UI/modal group, and their bridges and registries),
@@ -507,6 +509,13 @@ pub(crate) struct App {
     /// World-space static-geometry collider built from PRL static geometry.
     /// See: context/lib/entity_model.md §7
     collision_world: collision::CollisionWorld,
+    /// Local-space collider payloads for PRL-loaded kinematic movers.
+    kinematic_mover_colliders: Vec<collision::moving::MoverCollider>,
+    /// Live fixed-tick mover poses, published before player movement consumes
+    /// the combined collision query.
+    kinematic_mover_tick_states: kinematic_mover::MoverTickStateTable,
+    /// Render-stage CPU collector for loaded kinematic mover brush instances.
+    kinematic_mover_render: runtime_movers::KinematicMoverRenderCollector,
 
     /// Active wieldable instance equipped by the player. The companion
     /// descriptor name lets mod-init hot reload refresh authored weapon stats
@@ -1760,6 +1769,7 @@ impl ApplicationHandler for App {
                         // pawn; frame timing pushes the predicted camera pose. Task 5
                         // adds reconciliation/smoothing on top of this seam.
                         if self.is_connected_client() {
+                            self.client_predict_loaded_movers_tick(tick_dt);
                             self.client_predict_movement_tick(&command, tick_dt);
                             // Tick-rate camera follow tracks the PRESENTED local pose:
                             // the gameplay-authoritative (snapped) registry pose plus the
@@ -1806,12 +1816,10 @@ impl ApplicationHandler for App {
                             continue;
                         }
 
-                        // Host: advance remote (owned) pawns through the authoritative
-                        // multi-pawn movement seam first (Task 4), then the shared
-                        // `simulate_tick` runs the host's own pawn movement + AI /
-                        // weapon / death. Remote movement never uses local_movement_pawn.
-                        let remote_movement_events = self.host_drive_remote_movement(tick_dt);
-                        pending_movement_events.extend(remote_movement_events);
+                        // Host: resolve remote (owned) pawn inputs up front, then the
+                        // shared `simulate_tick` runs loaded movers and every player
+                        // movement consumer against the same combined collision query.
+                        let remote_pawn_inputs = self.host_resolve_remote_movement_inputs();
 
                         // Borrow the two session-owned `simulate_tick` inputs
                         // (hit-zone store, progress tracker) and the boot-owned
@@ -1834,6 +1842,9 @@ impl ApplicationHandler for App {
                             frame_anim_time,
                             progress_tracker,
                             &mut self.ai_warned,
+                            &self.kinematic_mover_colliders,
+                            &mut self.kinematic_mover_tick_states,
+                            &remote_pawn_inputs,
                             &command,
                             |registry| {
                                 // Camera follows the selected local pawn before
@@ -1866,6 +1877,7 @@ impl ApplicationHandler for App {
 
                         self.frame_timing
                             .push_state(InterpolableState::new(self.camera.position));
+                        self.host_advance_fixed_sim_tick();
                     }
                 }
 
@@ -2087,7 +2099,7 @@ impl ApplicationHandler for App {
                             .ok()
                             .and_then(|component| {
                                 component.view_feel.as_ref().map(|params| {
-                                    (params.clone(), component.velocity, component.is_grounded)
+                                    (params.clone(), component.velocity, component.is_grounded())
                                 })
                             })
                     })
@@ -2408,6 +2420,14 @@ impl ApplicationHandler for App {
                             &session.hit_zone_store,
                         );
                         renderer.set_mesh_draws(session.mesh_render.instances());
+
+                        self.kinematic_mover_render.collect(
+                            &registry,
+                            world,
+                            &visible_cells,
+                            frame_result.alpha,
+                        );
+                        renderer.set_kinematic_mover_draws(self.kinematic_mover_render.instances());
                     }
 
                     #[cfg(feature = "dev-tools")]
@@ -3972,6 +3992,7 @@ impl App {
                 tick,
                 host_pawn: _,
                 map_enemies: _,
+                loaded_movers: _,
                 demo_mover: _,
                 state_slots,
             }) => {
@@ -4095,6 +4116,14 @@ impl App {
                 // disjoint RefCells; both borrows coexist for the duration of the apply.
                 let mut registry = script_ctx.registry.borrow_mut();
                 let mut slot_table = script_ctx.slot_table.borrow_mut();
+                let combined_collision = collision::moving::CombinedCollisionWorld::new(
+                    collision_world,
+                    &self.kinematic_mover_colliders,
+                    &self.kinematic_mover_tick_states,
+                );
+                let mover_target_tick = time_sync
+                    .estimated_server_tick()
+                    .map(|tick| tick.floor().clamp(0.0, f64::from(u32::MAX)) as u32);
                 let materialized_remote_enemy_presentation = netcode::client_receive_and_apply(
                     &mut registry,
                     &mut slot_table,
@@ -4104,10 +4133,11 @@ impl App {
                     prediction,
                     &net_descriptors,
                     host_agent_params,
-                    collision_world,
+                    &combined_collision,
                     gravity,
                     crate::frame_timing::TICK_DURATION.as_secs_f32(),
                     dt,
+                    mover_target_tick,
                 );
                 if materialized_remote_enemy_presentation {
                     // `mesh_clip_tables` is a disjoint field of the same `session`
@@ -4152,6 +4182,7 @@ impl App {
             owners,
             host_pawn: _,
             map_enemies: _,
+            loaded_movers: _,
             demo_mover,
             state_slots,
         }) = self
@@ -4194,9 +4225,6 @@ impl App {
                 *tick,
             );
         }
-        // Advance the monotonic server tick after this tick's ingest+send so a
-        // late-joining client never sees a stalled clock.
-        *tick = tick.wrapping_add(1);
     }
 
     /// Client remote-interpolation sampling step (M15 Phase 2 Task 6). Thin delegation
@@ -4253,27 +4281,14 @@ impl App {
         )
     }
 
-    /// Host authoritative movement pre-pass (M15 Phase 3 Task 4). Resolves one
-    /// command per OWNED (remote) pawn through the deterministic gap policy, routes
-    /// each through the `EntityId -> client_id` map, and advances those pawns through
-    /// the multi-pawn movement seam — BEFORE the frame's `simulate_tick` runs AI /
-    /// weapon / death. Remote authoritative movement never goes through
-    /// `local_movement_pawn`: every owned pawn is named explicitly here. The host's
-    /// OWN player pawn (if any) is still driven by `simulate_tick`'s movement stage
-    /// from locally-sampled input; folding it into this explicit list alongside the
-    /// host's sampled command is the remaining integration seam (it requires the host
-    /// to own a queue/owner entry for itself). No-op for single-player and the client.
-    ///
-    /// Returns the aggregated remote movement events for the caller to fold into the
-    /// frame's pending movement-event drain.
-    fn host_drive_remote_movement(&mut self, tick_dt: f32) -> Vec<&'static str> {
-        let Some(script_ctx) = self
-            .session
-            .as_ref()
-            .map(|session| session.scripting.script_ctx.clone())
-        else {
-            return Vec::new();
-        };
+    /// Host authoritative remote-pawn input resolution (M15 Phase 3 Task 4).
+    /// Resolves one command per OWNED remote pawn through the deterministic gap
+    /// policy. The actual movement runs inside `simulate_tick`, after loaded
+    /// movers publish their tick poses, so every pawn consumes one combined
+    /// collision query for the tick.
+    fn host_resolve_remote_movement_inputs(
+        &mut self,
+    ) -> Vec<(postretro_entities::EntityId, movement::MovementInput)> {
         let Some(netcode::NetEndpoint::Host {
             command_queues,
             owners,
@@ -4285,18 +4300,22 @@ impl App {
         else {
             return Vec::new();
         };
-        let pawn_inputs = netcode::host_resolve_movement_inputs(owners, command_queues);
-        if pawn_inputs.is_empty() {
-            return Vec::new();
-        }
-        let mut registry = script_ctx.registry.borrow_mut();
-        sim::run_host_movement_tick(
-            &mut registry,
-            &self.collision_world,
-            script_ctx.gravity.get(),
-            &pawn_inputs,
-            tick_dt,
-        )
+        netcode::host_resolve_movement_inputs(owners, command_queues)
+    }
+
+    /// Advance the listen host's authoritative fixed-simulation tick after one
+    /// completed fixed tick. Snapshot stamps and time-sync echoes read this value, so
+    /// mover replay deltas are measured in simulation ticks rather than render/network
+    /// frames.
+    fn host_advance_fixed_sim_tick(&mut self) {
+        let Some(netcode::NetEndpoint::Host { tick, .. }) = self
+            .session
+            .as_mut()
+            .and_then(|session| session.net_endpoint.as_mut())
+        else {
+            return;
+        };
+        *tick = tick.wrapping_add(1);
     }
 
     /// Register the listen host's OWN player pawn for outbound replication after a
@@ -4379,6 +4398,33 @@ impl App {
         netcode::host_register_map_enemies(&registry, allocator, replicable, map_enemies);
     }
 
+    /// Register PRL-loaded kinematic movers for outbound replication after level
+    /// install. Host-gated and reload-safe; connected clients have already spawned
+    /// the same movers locally from PRL and bind incoming baselines by `mover_id`.
+    fn host_register_loaded_movers_after_install(&mut self) {
+        let Some(script_ctx) = self
+            .session
+            .as_ref()
+            .map(|session| session.scripting.script_ctx.clone())
+        else {
+            return;
+        };
+        let Some(netcode::NetEndpoint::Host {
+            allocator,
+            replicable,
+            loaded_movers,
+            ..
+        }) = self
+            .session
+            .as_mut()
+            .and_then(|session| session.net_endpoint.as_mut())
+        else {
+            return;
+        };
+        let registry = script_ctx.registry.borrow();
+        netcode::host_register_loaded_movers(&registry, allocator, replicable, loaded_movers);
+    }
+
     /// Connected-client predicted fixed tick (M15 Phase 3 Task 3). Thin delegation
     /// to `crate::netcode`: sends one `ClientMessage::Input` for `command`, then
     /// advances the local pawn through the movement-only replay helper and writes the
@@ -4405,15 +4451,43 @@ impl App {
         };
         let gravity = script_ctx.gravity.get();
         let mut registry = script_ctx.registry.borrow_mut();
+        let combined_collision = collision::moving::CombinedCollisionWorld::new(
+            &self.collision_world,
+            &self.kinematic_mover_colliders,
+            &self.kinematic_mover_tick_states,
+        );
         netcode::client_predict_tick(
             &mut registry,
             client,
             prediction,
             command,
-            &self.collision_world,
+            &combined_collision,
             gravity,
             tick_dt,
         )
+    }
+
+    fn client_predict_loaded_movers_tick(&mut self, tick_dt: f32) {
+        let Some(script_ctx) = self
+            .session
+            .as_ref()
+            .map(|session| session.scripting.script_ctx.clone())
+        else {
+            return;
+        };
+        let mut registry = script_ctx.registry.borrow_mut();
+        let mover_entities: Vec<_> = registry
+            .iter_with_kind(postretro_entities::ComponentKind::KinematicMover)
+            .map(|(id, _)| id)
+            .collect();
+        for entity in mover_entities {
+            registry.snapshot_transform(entity);
+        }
+        kinematic_mover::run_kinematic_mover_tick(
+            &mut registry,
+            &mut self.kinematic_mover_tick_states,
+            tick_dt,
+        );
     }
 
     /// Accumulate one frame onto the animation clock: `prev + dt × scale`.
@@ -5094,6 +5168,9 @@ mod tests {
         let hit_zones = scripting_systems::hit_zones::HitZoneStore::new();
         let mut progress = ProgressTracker::new();
         let mut ai_warned = HashSet::new();
+        let mover_colliders = Vec::new();
+        let mut mover_states = kinematic_mover::MoverTickStateTable::default();
+        let remote_inputs = Vec::new();
         let command = sim::SimCommand {
             movement: movement::MovementInput {
                 wish_dir: glam::Vec2::ZERO,
@@ -5121,6 +5198,9 @@ mod tests {
                 0.0,
                 &mut progress,
                 &mut ai_warned,
+                &mover_colliders,
+                &mut mover_states,
+                &remote_inputs,
                 &command,
                 |registry| {
                     follow_camera_to_local_pawn(&mut camera, &registry.borrow(), Vec3::ZERO);
@@ -5372,6 +5452,9 @@ mod tests {
         let hit_zones = scripting_systems::hit_zones::HitZoneStore::new();
         let mut progress = ProgressTracker::new();
         let mut ai_warned = HashSet::new();
+        let mover_colliders = Vec::new();
+        let mut mover_states = kinematic_mover::MoverTickStateTable::default();
+        let remote_inputs = Vec::new();
         let command = sim::SimCommand {
             movement: movement::MovementInput {
                 wish_dir: glam::Vec2::ZERO,
@@ -5398,6 +5481,9 @@ mod tests {
             0.0,
             &mut progress,
             &mut ai_warned,
+            &mover_colliders,
+            &mut mover_states,
+            &remote_inputs,
             &command,
             |registry| {
                 follow_camera_to_local_pawn(&mut camera, &registry.borrow(), Vec3::ZERO);

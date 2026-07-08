@@ -10,6 +10,8 @@ use glam::Vec3;
 
 use crate::agent_steering;
 use crate::collision::CollisionWorld;
+use crate::collision::moving::{CombinedCollisionWorld, MoverCollider};
+use crate::kinematic_mover::{self, MoverTickStateTable};
 use crate::movement::MovementInput;
 use crate::nav::NavGraph;
 use crate::scripting_systems;
@@ -49,19 +51,39 @@ pub(crate) fn simulate_tick(
     anim_time: f64,
     progress_tracker: &mut ProgressTracker,
     ai_warned: &mut HashSet<String>,
+    mover_colliders: &[MoverCollider],
+    mover_tick_states: &mut MoverTickStateTable,
+    remote_pawn_inputs: &[(EntityId, MovementInput)],
     command: &SimCommand,
     mut post_movement: impl FnMut(&Rc<RefCell<EntityRegistry>>) -> PostMovementCommand,
     tick_dt: f32,
 ) -> TickEvents {
     registry.borrow_mut().snapshot_transforms();
 
-    let movement = run_movement_tick(
+    {
+        let mut registry = registry.borrow_mut();
+        kinematic_mover::run_kinematic_mover_tick(&mut registry, mover_tick_states, tick_dt);
+    }
+
+    let combined_collision =
+        CombinedCollisionWorld::new(collision_world, mover_colliders, mover_tick_states);
+    let mut movement = {
+        let mut registry = registry.borrow_mut();
+        host_movement::run_host_movement_tick(
+            &mut registry,
+            &combined_collision,
+            gravity,
+            remote_pawn_inputs,
+            tick_dt,
+        )
+    };
+    movement.extend(run_movement_tick(
         &registry,
-        collision_world,
+        &combined_collision,
         gravity,
         &command.movement,
         tick_dt,
-    );
+    ));
     let ai = {
         let mut registry = registry.borrow_mut();
         scripting_systems::ai::run_ai_tick_with_navigation(
@@ -103,6 +125,7 @@ pub(crate) fn simulate_tick(
 
 mod host_movement;
 
+#[cfg(test)]
 pub(crate) use host_movement::run_host_movement_tick;
 
 #[cfg(test)]
@@ -120,7 +143,7 @@ pub(crate) mod predict_reconcile;
 /// only, never the authoritative-host resolver.
 fn run_movement_tick(
     registry: &Rc<RefCell<EntityRegistry>>,
-    collision_world: &CollisionWorld,
+    collision: &impl crate::movement::MovementCollisionSource,
     gravity: f32,
     input: &MovementInput,
     tick_dt: f32,
@@ -135,13 +158,7 @@ fn run_movement_tick(
 
     let pawn_inputs = [(id, input.clone())];
     let mut registry = registry.borrow_mut();
-    host_movement::run_host_movement_tick(
-        &mut registry,
-        collision_world,
-        gravity,
-        &pawn_inputs,
-        tick_dt,
-    )
+    host_movement::run_host_movement_tick(&mut registry, collision, gravity, &pawn_inputs, tick_dt)
 }
 
 /// Resolve the local movement pawn: registry marker first, then first

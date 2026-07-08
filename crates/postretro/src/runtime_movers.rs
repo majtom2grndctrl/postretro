@@ -1,0 +1,588 @@
+//! Runtime consumption of PRL kinematic mover records.
+//!
+//! This module owns the load-spawn and collision-collider feed for section 43.
+//! Network registration is owned by netcode/lifecycle, not this module.
+
+use std::collections::{HashMap, HashSet};
+use std::fmt;
+
+use glam::{Quat, Vec3};
+use postretro_entities::{
+    ComponentKind, ComponentValue, EntityId, EntityRegistry, KinematicMoverComponent,
+    KinematicMoverMode, Transform,
+};
+use postretro_level_loader::{
+    KinematicGeometry, LevelWorld, LoadedKinematicMover, LoadedKinematicWaypoint,
+};
+use postretro_visibility::VisibleCells;
+
+use crate::collision::moving::MoverCollider;
+use crate::render::KinematicMoverInstance;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RuntimeMoverLoadError {
+    message: String,
+}
+
+impl RuntimeMoverLoadError {
+    fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl fmt::Display for RuntimeMoverLoadError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for RuntimeMoverLoadError {}
+
+pub(crate) fn spawn_loaded_kinematic_movers(
+    registry: &mut EntityRegistry,
+    world: &LevelWorld,
+) -> Result<Vec<EntityId>, RuntimeMoverLoadError> {
+    spawn_from_geometry(registry, &world.kinematic_geometry)
+}
+
+pub(crate) fn build_loaded_mover_colliders(world: &LevelWorld) -> Vec<MoverCollider> {
+    world
+        .kinematic_geometry
+        .movers
+        .iter()
+        .filter_map(build_mover_collider)
+        .collect()
+}
+
+pub(crate) struct KinematicMoverRenderCollector {
+    instances: Vec<KinematicMoverInstance>,
+    mover_bounds: HashMap<u32, (Vec3, Vec3)>,
+    mover_bounds_source: Option<MoverBoundsSource>,
+    visible_cell_bounds: Vec<(u32, Vec3, Vec3)>,
+}
+
+impl KinematicMoverRenderCollector {
+    pub(crate) fn new() -> Self {
+        Self {
+            instances: Vec::new(),
+            mover_bounds: HashMap::new(),
+            mover_bounds_source: None,
+            visible_cell_bounds: Vec::new(),
+        }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.instances.clear();
+        self.mover_bounds.clear();
+        self.mover_bounds_source = None;
+        self.visible_cell_bounds.clear();
+    }
+
+    pub(crate) fn collect(
+        &mut self,
+        registry: &EntityRegistry,
+        world: &LevelWorld,
+        visible: &VisibleCells,
+        alpha: f32,
+    ) {
+        self.instances.clear();
+        self.refresh_mover_bounds(world);
+        self.rebuild_visible_cell_bounds(world, visible);
+
+        for (id, value) in registry.iter_with_kind(ComponentKind::KinematicMover) {
+            let ComponentValue::KinematicMover(mover) = value else {
+                continue;
+            };
+            let Ok(current) = registry.get_component::<Transform>(id) else {
+                continue;
+            };
+            let Some(local_bounds) = self.mover_bounds.get(&mover.mover_id).copied() else {
+                continue;
+            };
+
+            let current_model = transform_matrix(*current);
+            let (world_min, world_max) =
+                transform_aabb(local_bounds.0, local_bounds.1, current_model);
+            let origin_cell = world.locate_cell(current.position) as u32;
+            if !mover_visible_against_cell_bounds(
+                visible,
+                origin_cell,
+                world_min,
+                world_max,
+                &self.visible_cell_bounds,
+            ) {
+                continue;
+            }
+
+            let interpolated = registry
+                .interpolated_transform(id, alpha)
+                .unwrap_or(*current);
+            self.instances.push(KinematicMoverInstance {
+                mover_id: mover.mover_id,
+                transform: transform_matrix(interpolated),
+            });
+        }
+    }
+
+    pub(crate) fn instances(&self) -> &[KinematicMoverInstance] {
+        &self.instances
+    }
+
+    fn refresh_mover_bounds(&mut self, world: &LevelWorld) {
+        let source = MoverBoundsSource::from_movers(&world.kinematic_geometry.movers);
+        if self.mover_bounds_source == Some(source) {
+            return;
+        }
+
+        self.mover_bounds.clear();
+        self.mover_bounds
+            .reserve(world.kinematic_geometry.movers.len());
+        for mover in &world.kinematic_geometry.movers {
+            let bounds = mover_local_bounds(mover).unwrap_or((Vec3::ZERO, Vec3::ZERO));
+            self.mover_bounds.insert(mover.mover_id, bounds);
+        }
+        self.mover_bounds_source = Some(source);
+    }
+
+    fn rebuild_visible_cell_bounds(&mut self, world: &LevelWorld, visible: &VisibleCells) {
+        self.visible_cell_bounds.clear();
+        let VisibleCells::Culled(cells) = visible else {
+            return;
+        };
+
+        self.visible_cell_bounds.reserve(cells.len());
+        self.visible_cell_bounds
+            .extend(cells.iter().filter_map(|cell| {
+                world
+                    .cell_bounds(*cell as usize)
+                    .map(|(min, max)| (*cell, min, max))
+            }));
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MoverBoundsSource {
+    ptr: usize,
+    len: usize,
+}
+
+impl MoverBoundsSource {
+    fn from_movers(movers: &[LoadedKinematicMover]) -> Self {
+        Self {
+            ptr: movers.as_ptr() as usize,
+            len: movers.len(),
+        }
+    }
+}
+
+fn spawn_from_geometry(
+    registry: &mut EntityRegistry,
+    geometry: &KinematicGeometry,
+) -> Result<Vec<EntityId>, RuntimeMoverLoadError> {
+    let waypoint_indices = waypoint_index_map(&geometry.waypoints)?;
+    let mut spawned = Vec::with_capacity(geometry.movers.len());
+
+    for mover in &geometry.movers {
+        let waypoints = resolve_waypoint_chain(mover, &geometry.waypoints, &waypoint_indices)?;
+        let mode = mover_mode(mover)?;
+        let transform = Transform {
+            position: mover.origin,
+            rotation: Quat::IDENTITY,
+            scale: Vec3::ONE,
+        };
+        let Some(entity) = registry.try_spawn(transform, &mover.tags) else {
+            return Err(RuntimeMoverLoadError::new(format!(
+                "entity registry exhausted while spawning mover {} (`{}`)",
+                mover.mover_id, mover.name
+            )));
+        };
+        let component = KinematicMoverComponent::new(
+            mover.mover_id,
+            waypoints,
+            mover.speed_mps,
+            mover.wait_ms,
+            mode,
+            mover.start_on_spawn,
+        );
+        registry
+            .set_component(entity, component)
+            .map_err(|err| RuntimeMoverLoadError::new(err.to_string()))?;
+        spawned.push(entity);
+    }
+
+    Ok(spawned)
+}
+
+fn build_mover_collider(mover: &LoadedKinematicMover) -> Option<MoverCollider> {
+    let vertices: Vec<Vec3> = mover
+        .vertices
+        .iter()
+        .map(|vertex| Vec3::from(vertex.position))
+        .collect();
+    let triangles: Vec<[u32; 3]> = mover
+        .indices
+        .chunks_exact(3)
+        .map(|chunk| [chunk[0], chunk[1], chunk[2]])
+        .collect();
+    MoverCollider::from_local_triangles(mover.mover_id, &vertices, &triangles)
+}
+
+fn mover_local_bounds(mover: &LoadedKinematicMover) -> Option<(Vec3, Vec3)> {
+    let first = mover.vertices.first()?;
+    let mut min = Vec3::from(first.position);
+    let mut max = min;
+    for vertex in &mover.vertices[1..] {
+        let pos = Vec3::from(vertex.position);
+        min = min.min(pos);
+        max = max.max(pos);
+    }
+    Some((min, max))
+}
+
+fn transform_matrix(transform: Transform) -> glam::Mat4 {
+    glam::Mat4::from_scale_rotation_translation(
+        transform.scale,
+        transform.rotation,
+        transform.position,
+    )
+}
+
+fn transform_aabb(min: Vec3, max: Vec3, transform: glam::Mat4) -> (Vec3, Vec3) {
+    let corners = [
+        Vec3::new(min.x, min.y, min.z),
+        Vec3::new(max.x, min.y, min.z),
+        Vec3::new(min.x, max.y, min.z),
+        Vec3::new(max.x, max.y, min.z),
+        Vec3::new(min.x, min.y, max.z),
+        Vec3::new(max.x, min.y, max.z),
+        Vec3::new(min.x, max.y, max.z),
+        Vec3::new(max.x, max.y, max.z),
+    ];
+    let mut world_min = Vec3::splat(f32::INFINITY);
+    let mut world_max = Vec3::splat(f32::NEG_INFINITY);
+    for corner in corners {
+        let point = transform.transform_point3(corner);
+        world_min = world_min.min(point);
+        world_max = world_max.max(point);
+    }
+    (world_min, world_max)
+}
+
+fn mover_visible_against_cell_bounds(
+    visible: &VisibleCells,
+    origin_cell: u32,
+    world_min: Vec3,
+    world_max: Vec3,
+    visible_cell_bounds: &[(u32, Vec3, Vec3)],
+) -> bool {
+    match visible {
+        VisibleCells::DrawAll => true,
+        VisibleCells::Culled(cells) => {
+            if cells.contains(&origin_cell) {
+                return true;
+            }
+            visible_cell_bounds
+                .iter()
+                .any(|(_, min, max)| aabb_intersects(world_min, world_max, *min, *max))
+        }
+    }
+}
+
+fn aabb_intersects(a_min: Vec3, a_max: Vec3, b_min: Vec3, b_max: Vec3) -> bool {
+    a_min.x <= b_max.x
+        && a_max.x >= b_min.x
+        && a_min.y <= b_max.y
+        && a_max.y >= b_min.y
+        && a_min.z <= b_max.z
+        && a_max.z >= b_min.z
+}
+
+fn waypoint_index_map(
+    waypoints: &[LoadedKinematicWaypoint],
+) -> Result<HashMap<&str, usize>, RuntimeMoverLoadError> {
+    let mut indices = HashMap::with_capacity(waypoints.len());
+    for (index, waypoint) in waypoints.iter().enumerate() {
+        if indices.insert(waypoint.name.as_str(), index).is_some() {
+            return Err(RuntimeMoverLoadError::new(format!(
+                "duplicate waypoint name `{}`",
+                waypoint.name
+            )));
+        }
+    }
+    Ok(indices)
+}
+
+fn resolve_waypoint_chain(
+    mover: &LoadedKinematicMover,
+    waypoints: &[LoadedKinematicWaypoint],
+    waypoint_indices: &HashMap<&str, usize>,
+) -> Result<Vec<Vec3>, RuntimeMoverLoadError> {
+    if mover.path.is_empty() {
+        return Err(RuntimeMoverLoadError::new(format!(
+            "mover {} (`{}`) has an empty path",
+            mover.mover_id, mover.name
+        )));
+    }
+
+    let mut resolved = Vec::new();
+    let mut seen = HashSet::new();
+    let mut current = mover.path.as_str();
+    loop {
+        if !seen.insert(current.to_string()) {
+            return Err(RuntimeMoverLoadError::new(format!(
+                "mover {} (`{}`) waypoint chain cycles at `{current}`",
+                mover.mover_id, mover.name
+            )));
+        }
+        let Some(&index) = waypoint_indices.get(current) else {
+            return Err(RuntimeMoverLoadError::new(format!(
+                "mover {} (`{}`) references unknown waypoint `{current}`",
+                mover.mover_id, mover.name
+            )));
+        };
+        let waypoint = &waypoints[index];
+        resolved.push(waypoint.origin);
+        if waypoint.next.is_empty() {
+            break;
+        }
+        current = waypoint.next.as_str();
+    }
+
+    if resolved.len() < 2 {
+        return Err(RuntimeMoverLoadError::new(format!(
+            "mover {} (`{}`) path `{}` resolves to {} waypoint(s); at least 2 required",
+            mover.mover_id,
+            mover.name,
+            mover.path,
+            resolved.len()
+        )));
+    }
+
+    Ok(resolved)
+}
+
+fn mover_mode(mover: &LoadedKinematicMover) -> Result<KinematicMoverMode, RuntimeMoverLoadError> {
+    match mover.move_mode {
+        0 => Ok(KinematicMoverMode::Once),
+        1 => Ok(KinematicMoverMode::PingPong),
+        other => Err(RuntimeMoverLoadError::new(format!(
+            "mover {} (`{}`) has invalid move_mode {other}",
+            mover.mover_id, mover.name
+        ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use postretro_entities::ComponentKind;
+    use postretro_level_format::geometry::Vertex;
+    use postretro_level_loader::{LoadedKinematicMover, LoadedKinematicWaypoint};
+
+    fn vertex(position: [f32; 3]) -> Vertex {
+        Vertex::new(
+            position,
+            [0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            true,
+            [0.0, 0.0],
+            0,
+        )
+    }
+
+    fn mover(mode: u8) -> LoadedKinematicMover {
+        LoadedKinematicMover {
+            mover_id: 7,
+            name: "lift".to_string(),
+            tags: vec!["platform".to_string(), "arena".to_string()],
+            origin: Vec3::new(1.0, 2.0, 3.0),
+            path: "a".to_string(),
+            speed_mps: 2.0,
+            wait_ms: 125.0,
+            move_mode: mode,
+            start_on_spawn: true,
+            vertices: vec![
+                vertex([0.0, 0.0, 0.0]),
+                vertex([1.0, 0.0, 0.0]),
+                vertex([0.0, 1.0, 0.0]),
+            ],
+            indices: vec![0, 1, 2],
+            face_meta: Vec::new(),
+        }
+    }
+
+    fn geometry(mode: u8) -> KinematicGeometry {
+        KinematicGeometry {
+            movers: vec![mover(mode)],
+            waypoints: vec![
+                LoadedKinematicWaypoint {
+                    name: "a".to_string(),
+                    next: "b".to_string(),
+                    origin: Vec3::new(1.0, 2.0, 3.0),
+                },
+                LoadedKinematicWaypoint {
+                    name: "b".to_string(),
+                    next: String::new(),
+                    origin: Vec3::new(3.0, 2.0, 3.0),
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn spawn_loaded_movers_creates_transform_component_tags_and_resolved_waypoints() {
+        let mut registry = EntityRegistry::new();
+        let spawned = spawn_from_geometry(&mut registry, &geometry(1)).unwrap();
+
+        assert_eq!(spawned.len(), 1);
+        let id = spawned[0];
+        let transform = registry.get_component::<Transform>(id).unwrap();
+        assert_eq!(transform.position, Vec3::new(1.0, 2.0, 3.0));
+        assert_eq!(
+            registry.get_tags(id).unwrap(),
+            &["platform".to_string(), "arena".to_string()]
+        );
+
+        let mover = registry
+            .get_component::<KinematicMoverComponent>(id)
+            .unwrap();
+        assert_eq!(mover.mover_id, 7);
+        assert_eq!(mover.mode, KinematicMoverMode::PingPong);
+        assert_eq!(
+            mover.waypoints,
+            vec![Vec3::new(1.0, 2.0, 3.0), Vec3::new(3.0, 2.0, 3.0)]
+        );
+        assert_eq!(mover.speed_mps, 2.0);
+        assert_eq!(mover.wait_ms, 125.0);
+        assert!(mover.started);
+        assert!(matches!(
+            registry.has_component_kind(id, ComponentKind::KinematicMover),
+            Ok(true)
+        ));
+    }
+
+    #[test]
+    fn invalid_waypoint_chain_is_rejected_consistently() {
+        let mut bad = geometry(0);
+        bad.waypoints[0].next = "missing".to_string();
+        assert!(spawn_from_geometry(&mut EntityRegistry::new(), &bad).is_err());
+
+        let mut cycle = geometry(0);
+        cycle.waypoints[1].next = "a".to_string();
+        assert!(spawn_from_geometry(&mut EntityRegistry::new(), &cycle).is_err());
+
+        let mut short = geometry(0);
+        short.waypoints.truncate(1);
+        short.waypoints[0].next.clear();
+        assert!(spawn_from_geometry(&mut EntityRegistry::new(), &short).is_err());
+    }
+
+    #[test]
+    fn loaded_mover_collision_geometry_builds_through_mover_collider() {
+        let geometry = geometry(0);
+        let colliders: Vec<_> = geometry
+            .movers
+            .iter()
+            .filter_map(build_mover_collider)
+            .collect();
+
+        assert_eq!(colliders.len(), 1);
+        assert_eq!(colliders[0].mover_id, 7);
+    }
+
+    #[test]
+    fn render_collector_clear_invalidates_level_cache_state() {
+        let mut collector = KinematicMoverRenderCollector::new();
+        collector.instances.push(KinematicMoverInstance {
+            mover_id: 7,
+            transform: glam::Mat4::IDENTITY,
+        });
+        collector.mover_bounds.insert(7, (Vec3::ZERO, Vec3::ONE));
+        collector.mover_bounds_source = Some(MoverBoundsSource { ptr: 1, len: 1 });
+        collector
+            .visible_cell_bounds
+            .push((2, Vec3::ZERO, Vec3::ONE));
+
+        collector.clear();
+
+        assert!(collector.instances.is_empty());
+        assert!(collector.mover_bounds.is_empty());
+        assert_eq!(collector.mover_bounds_source, None);
+        assert!(collector.visible_cell_bounds.is_empty());
+    }
+
+    #[test]
+    fn mover_culling_keeps_origin_in_visible_cell() {
+        let visible = VisibleCells::Culled(vec![2]);
+        assert!(mover_visible_against_cell_bounds(
+            &visible,
+            2,
+            Vec3::new(10.0, 0.0, 0.0),
+            Vec3::new(11.0, 1.0, 1.0),
+            &[],
+        ));
+    }
+
+    #[test]
+    fn mover_culling_keeps_aabb_overlapping_visible_cell_even_when_origin_is_elsewhere() {
+        let visible = VisibleCells::Culled(vec![2]);
+        assert!(mover_visible_against_cell_bounds(
+            &visible,
+            9,
+            Vec3::new(0.5, 0.5, 0.5),
+            Vec3::new(2.0, 2.0, 2.0),
+            &[(2, Vec3::ZERO, Vec3::ONE)],
+        ));
+    }
+
+    #[test]
+    fn mover_culling_drops_non_overlapping_non_visible_mover() {
+        let visible = VisibleCells::Culled(vec![2]);
+        assert!(!mover_visible_against_cell_bounds(
+            &visible,
+            9,
+            Vec3::new(4.0, 4.0, 4.0),
+            Vec3::new(5.0, 5.0, 5.0),
+            &[(2, Vec3::ZERO, Vec3::ONE)],
+        ));
+    }
+
+    #[test]
+    fn transformed_aabb_contains_rotated_corners() {
+        let transform = glam::Mat4::from_rotation_y(std::f32::consts::FRAC_PI_2);
+        let (min, max) = transform_aabb(Vec3::ZERO, Vec3::new(2.0, 1.0, 1.0), transform);
+        assert!(min.x <= 1.0e-5);
+        assert!(min.z <= -2.0 + 1.0e-5);
+        assert!(max.x >= 1.0 - 1.0e-5);
+        assert!(max.z >= -1.0e-5);
+    }
+
+    #[test]
+    fn fixed_tick_advances_loaded_once_and_ping_pong_movers() {
+        for (mode, expected_after_first, expected_after_second, completed) in [
+            (0, Vec3::new(2.0, 2.0, 3.0), Vec3::new(3.0, 2.0, 3.0), true),
+            (1, Vec3::new(2.0, 2.0, 3.0), Vec3::new(3.0, 2.0, 3.0), false),
+        ] {
+            let mut registry = EntityRegistry::new();
+            let mut geometry = geometry(mode);
+            geometry.movers[0].wait_ms = 0.0;
+            let spawned = spawn_from_geometry(&mut registry, &geometry).unwrap();
+            let mut table = crate::kinematic_mover::MoverTickStateTable::default();
+
+            crate::kinematic_mover::run_kinematic_mover_tick(&mut registry, &mut table, 0.5);
+            let transform = registry.get_component::<Transform>(spawned[0]).unwrap();
+            assert!((transform.position - expected_after_first).length() <= 1.0e-5);
+
+            crate::kinematic_mover::run_kinematic_mover_tick(&mut registry, &mut table, 0.5);
+            let transform = registry.get_component::<Transform>(spawned[0]).unwrap();
+            let mover = registry
+                .get_component::<KinematicMoverComponent>(spawned[0])
+                .unwrap();
+            assert!((transform.position - expected_after_second).length() <= 1.0e-5);
+            assert_eq!(mover.completed, completed);
+        }
+    }
+}

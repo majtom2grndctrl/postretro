@@ -21,10 +21,10 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::wire::{
-    COMPONENT_KIND_MESH_ANIMATION_STATE, COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
-    COMPONENT_KIND_TRANSFORM, ComponentPayload, EntityRecord, RECORD_KIND_DELTA,
-    RECORD_KIND_DESPAWN, RECORD_KIND_FULL_BASELINE, RawComponentPayload, RawEntityRecord,
-    RawSnapshotMessage, SNAPSHOT_VERSION,
+    COMPONENT_KIND_KINEMATIC_MOVER_STATE, COMPONENT_KIND_MESH_ANIMATION_STATE,
+    COMPONENT_KIND_PLAYER_MOVEMENT_STATE, COMPONENT_KIND_TRANSFORM, ComponentPayload, EntityRecord,
+    RECORD_KIND_DELTA, RECORD_KIND_DESPAWN, RECORD_KIND_FULL_BASELINE, RawComponentPayload,
+    RawEntityRecord, RawSnapshotMessage, SNAPSHOT_VERSION,
 };
 
 /// One replicable entity's owned, post-tick component state, keyed by its stable
@@ -629,6 +629,7 @@ impl MovementAuthority {
             ComponentPayload::Transform(t) => t.all_finite(),
             ComponentPayload::PlayerMovementState(_) => false,
             ComponentPayload::MeshAnimationState(_) => false,
+            ComponentPayload::KinematicMoverState(_) => false,
         });
 
         // `entity_class` is valid on any finite-Transform record; movement metadata is
@@ -665,18 +666,28 @@ fn raw_from_payload(payload: &ComponentPayload) -> RawComponentPayload {
             transform: Some(*t),
             player_movement: None,
             mesh_animation_state: None,
+            kinematic_mover: None,
         },
         ComponentPayload::PlayerMovementState(m) => RawComponentPayload {
             component_kind: COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
             transform: None,
             player_movement: Some(*m),
             mesh_animation_state: None,
+            kinematic_mover: None,
         },
         ComponentPayload::MeshAnimationState(m) => RawComponentPayload {
             component_kind: COMPONENT_KIND_MESH_ANIMATION_STATE,
             transform: None,
             player_movement: None,
             mesh_animation_state: Some(m.clone()),
+            kinematic_mover: None,
+        },
+        ComponentPayload::KinematicMoverState(m) => RawComponentPayload {
+            component_kind: COMPONENT_KIND_KINEMATIC_MOVER_STATE,
+            transform: None,
+            player_movement: None,
+            mesh_animation_state: None,
+            kinematic_mover: Some(*m),
         },
     }
 }
@@ -696,7 +707,7 @@ pub fn typed_records(snapshot: &RawSnapshotMessage) -> Vec<EntityRecord> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wire::{WireMovementState, WirePlayerMovementState, WireTransform};
+    use crate::wire::{WireGroundRef, WireMovementState, WirePlayerMovementState, WireTransform};
 
     const CLIENT_A: u64 = 1;
     const CLIENT_B: u64 = 2;
@@ -712,7 +723,7 @@ mod tests {
     fn movement(velocity_x: f32) -> ComponentPayload {
         ComponentPayload::PlayerMovementState(WirePlayerMovementState {
             velocity: [velocity_x, 0.0, 0.0],
-            is_grounded: true,
+            ground: WireGroundRef::World,
             air_jumps_remaining: 1,
             air_dashes_remaining: 1,
             dash_cooldown_ms: 0.0,

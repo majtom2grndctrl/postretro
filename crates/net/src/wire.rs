@@ -54,7 +54,11 @@ pub struct NetworkId(pub u32);
 /// Bumped to 7 in E10 follow-up: `RawComponentPayload` gained a mesh-animation
 /// state slot so host-authoritative AI can replicate its current descriptor
 /// animation state without sending the full mesh descriptor.
-pub const SNAPSHOT_VERSION: u16 = 7;
+///
+/// Bumped to 8 for the moving-world replication slice: `RawComponentPayload`
+/// gained the kinematic-mover-state slot and `WirePlayerMovementState` widened
+/// its grounded bool to a ground reference.
+pub const SNAPSHOT_VERSION: u16 = 8;
 
 /// `record_kind` discriminant for a full-baseline (spawn / join / refresh) record.
 pub const RECORD_KIND_FULL_BASELINE: u16 = 0;
@@ -72,6 +76,9 @@ pub const COMPONENT_KIND_PLAYER_MOVEMENT_STATE: u16 = 6;
 /// `component_kind` discriminant for a mesh-animation-state payload. Numeric-equal
 /// to the engine `ComponentKind::Mesh as u16` (Phase 2 = 9).
 pub const COMPONENT_KIND_MESH_ANIMATION_STATE: u16 = 9;
+/// `component_kind` discriminant for a kinematic-mover-state payload.
+/// Numeric-equal to the engine `ComponentKind::KinematicMover as u16`.
+pub const COMPONENT_KIND_KINEMATIC_MOVER_STATE: u16 = 13;
 
 /// Wire mirror of the engine `Transform`. Phase 2 replicates `position`,
 /// `rotation`, and `scale`.
@@ -115,6 +122,16 @@ pub enum WireMovementState {
     Crouching { eye_current: f32 },
 }
 
+/// Wire mirror of the player's generalized ground reference. `Mover` carries the
+/// compile-time PRL mover id, not a `NetworkId`, so the value is stable across
+/// peers that loaded the same map.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+pub enum WireGroundRef {
+    Airborne,
+    World,
+    Mover(u32),
+}
+
 /// Wire mirror of the *mutable tick subset* of the engine `PlayerMovementComponent`.
 ///
 /// Deliberately **not** a copy of the component struct: descriptor-immutable
@@ -126,7 +143,7 @@ pub enum WireMovementState {
 #[derive(Debug, Clone, Copy, PartialEq, Encode, Decode)]
 pub struct WirePlayerMovementState {
     pub velocity: [f32; 3],
-    pub is_grounded: bool,
+    pub ground: WireGroundRef,
     pub air_jumps_remaining: u32,
     pub air_dashes_remaining: u32,
     pub dash_cooldown_ms: f32,
@@ -174,6 +191,36 @@ impl WirePlayerMovementState {
     }
 }
 
+/// Wire mirror of a kinematic mover's replicated deterministic phase. Static
+/// path data stays local on each peer through PRL load; these fields are the
+/// authoritative phase seed clients predict from and reconcile against.
+#[derive(Debug, Clone, Copy, PartialEq, Encode, Decode)]
+pub struct WireKinematicMoverState {
+    pub mover_id: u32,
+    pub segment_index: u16,
+    pub direction: i8,
+    pub mode: u8,
+    pub segment_elapsed_ms: f32,
+    pub wait_remaining_ms: f32,
+    pub started: bool,
+    pub completed: bool,
+    pub velocity: [f32; 3],
+}
+
+impl WireKinematicMoverState {
+    #[must_use]
+    fn all_finite(&self) -> bool {
+        self.segment_elapsed_ms.is_finite()
+            && self.wait_remaining_ms.is_finite()
+            && self.velocity.iter().all(|c| c.is_finite())
+    }
+
+    #[must_use]
+    fn has_valid_phase_tags(&self) -> bool {
+        matches!(self.direction, -1 | 1) && matches!(self.mode, 0 | 1)
+    }
+}
+
 /// Wire mirror of the mutable mesh-animation state. Descriptor-owned data
 /// (model handle, state table, clips, fade policy) stays local on each peer; this
 /// carries only the authoritative current state name.
@@ -202,6 +249,7 @@ pub struct RawComponentPayload {
     pub transform: Option<WireTransform>,
     pub player_movement: Option<WirePlayerMovementState>,
     pub mesh_animation_state: Option<WireMeshAnimationState>,
+    pub kinematic_mover: Option<WireKinematicMoverState>,
 }
 
 /// Raw per-entity lifecycle record. `record_kind` selects which logical record
@@ -292,6 +340,7 @@ pub enum ComponentPayload {
     Transform(WireTransform),
     PlayerMovementState(WirePlayerMovementState),
     MeshAnimationState(WireMeshAnimationState),
+    KinematicMoverState(WireKinematicMoverState),
 }
 
 impl ComponentPayload {
@@ -304,6 +353,7 @@ impl ComponentPayload {
             ComponentPayload::Transform(_) => COMPONENT_KIND_TRANSFORM,
             ComponentPayload::PlayerMovementState(_) => COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
             ComponentPayload::MeshAnimationState(_) => COMPONENT_KIND_MESH_ANIMATION_STATE,
+            ComponentPayload::KinematicMoverState(_) => COMPONENT_KIND_KINEMATIC_MOVER_STATE,
         }
     }
 }
@@ -428,6 +478,11 @@ pub enum ValidationError {
     /// rotation, or scale. Rejected before typed apply so no non-finite pose reaches
     /// the registry — and so a non-finite `Transform` cannot back an `entity_class`.
     NonFiniteTransform,
+    /// A `KinematicMoverState` payload carried a non-finite phase float.
+    NonFiniteKinematicMoverState,
+    /// A `KinematicMoverState` payload carried an invalid `direction` or `mode`
+    /// tag. Loaded-mover existence is intentionally not checked in this crate.
+    InvalidKinematicMoverState,
 }
 
 impl std::fmt::Display for ValidationError {
@@ -483,6 +538,15 @@ impl std::fmt::Display for ValidationError {
             ValidationError::NonFiniteTransform => {
                 write!(f, "non-finite float in a Transform payload")
             }
+            ValidationError::NonFiniteKinematicMoverState => {
+                write!(f, "non-finite float in a KinematicMoverState payload")
+            }
+            ValidationError::InvalidKinematicMoverState => {
+                write!(
+                    f,
+                    "invalid direction or mode in a KinematicMoverState payload"
+                )
+            }
         }
     }
 }
@@ -500,7 +564,8 @@ impl RawComponentPayload {
         // mismatch regardless of the named kind (it makes the envelope ambiguous).
         let populated = usize::from(self.transform.is_some())
             + usize::from(self.player_movement.is_some())
-            + usize::from(self.mesh_animation_state.is_some());
+            + usize::from(self.mesh_animation_state.is_some())
+            + usize::from(self.kinematic_mover.is_some());
 
         match self.component_kind {
             COMPONENT_KIND_TRANSFORM => match self.transform {
@@ -535,6 +600,23 @@ impl RawComponentPayload {
             },
             COMPONENT_KIND_MESH_ANIMATION_STATE => match &self.mesh_animation_state {
                 Some(m) if populated == 1 => Ok(ComponentPayload::MeshAnimationState(m.clone())),
+                Some(_) => Err(ValidationError::MismatchedComponentPayload(
+                    self.component_kind,
+                )),
+                None => Err(ValidationError::MissingComponentPayload(
+                    self.component_kind,
+                )),
+            },
+            COMPONENT_KIND_KINEMATIC_MOVER_STATE => match self.kinematic_mover {
+                Some(m) if populated == 1 => {
+                    if !m.all_finite() {
+                        Err(ValidationError::NonFiniteKinematicMoverState)
+                    } else if !m.has_valid_phase_tags() {
+                        Err(ValidationError::InvalidKinematicMoverState)
+                    } else {
+                        Ok(ComponentPayload::KinematicMoverState(m))
+                    }
+                }
                 Some(_) => Err(ValidationError::MismatchedComponentPayload(
                     self.component_kind,
                 )),
@@ -682,6 +764,7 @@ impl RawEntityRecord {
                 ComponentPayload::Transform(t) => t.all_finite(),
                 ComponentPayload::PlayerMovementState(_) => false,
                 ComponentPayload::MeshAnimationState(_) => false,
+                ComponentPayload::KinematicMoverState(_) => false,
             });
             if !carries_finite_transform {
                 return Err(ValidationError::EntityClassWithoutTransform);
@@ -926,7 +1009,7 @@ mod tests {
     fn sample_movement() -> WirePlayerMovementState {
         WirePlayerMovementState {
             velocity: [0.0, 3.5, -1.0],
-            is_grounded: false,
+            ground: WireGroundRef::Airborne,
             air_jumps_remaining: 1,
             air_dashes_remaining: 2,
             dash_cooldown_ms: 120.0,
@@ -949,6 +1032,7 @@ mod tests {
             transform: Some(sample_transform()),
             player_movement: None,
             mesh_animation_state: None,
+            kinematic_mover: None,
         }
     }
 
@@ -958,6 +1042,7 @@ mod tests {
             transform: None,
             player_movement: Some(sample_movement()),
             mesh_animation_state: None,
+            kinematic_mover: None,
         }
     }
 
@@ -969,6 +1054,31 @@ mod tests {
             mesh_animation_state: Some(WireMeshAnimationState {
                 current_state: state.to_string(),
             }),
+            kinematic_mover: None,
+        }
+    }
+
+    fn sample_mover_state() -> WireKinematicMoverState {
+        WireKinematicMoverState {
+            mover_id: 42,
+            segment_index: 1,
+            direction: -1,
+            mode: 1,
+            segment_elapsed_ms: 125.0,
+            wait_remaining_ms: 0.0,
+            started: true,
+            completed: false,
+            velocity: [1.0, 0.0, -0.5],
+        }
+    }
+
+    fn raw_mover_payload() -> RawComponentPayload {
+        RawComponentPayload {
+            component_kind: COMPONENT_KIND_KINEMATIC_MOVER_STATE,
+            transform: None,
+            player_movement: None,
+            mesh_animation_state: None,
+            kinematic_mover: Some(sample_mover_state()),
         }
     }
 
@@ -1430,6 +1540,7 @@ mod tests {
                     transform: Some(sample_transform()),
                     player_movement: None,
                     mesh_animation_state: None,
+                    kinematic_mover: None,
                 }],
             )],
             state_schema_fingerprint: [0u8; 32],
@@ -1450,6 +1561,7 @@ mod tests {
             transform: None, // kind says Transform but slot is empty
             player_movement: None,
             mesh_animation_state: None,
+            kinematic_mover: None,
         };
         assert_eq!(
             payload.validate(),
@@ -1467,6 +1579,7 @@ mod tests {
             transform: Some(sample_transform()),
             player_movement: Some(sample_movement()),
             mesh_animation_state: None,
+            kinematic_mover: None,
         };
         assert_eq!(
             payload.validate(),
@@ -1486,6 +1599,7 @@ mod tests {
             transform: Some(sample_transform()),
             player_movement: None,
             mesh_animation_state: None,
+            kinematic_mover: None,
         };
         assert_eq!(
             payload.validate(),
@@ -1554,12 +1668,14 @@ mod tests {
             ComponentPayload::MeshAnimationState(WireMeshAnimationState {
                 current_state: "idle".to_string(),
             }),
+            ComponentPayload::KinematicMoverState(sample_mover_state()),
         ];
         for payload in cases {
             let expected = match payload {
                 ComponentPayload::Transform(_) => 0,
                 ComponentPayload::PlayerMovementState(_) => 6,
                 ComponentPayload::MeshAnimationState(_) => 9,
+                ComponentPayload::KinematicMoverState(_) => 13,
             };
             assert_eq!(payload.kind(), expected);
         }
@@ -2030,6 +2146,7 @@ mod tests {
                 transform: None,
                 player_movement: Some(movement),
                 mesh_animation_state: None,
+                kinematic_mover: None,
             };
             assert_eq!(
                 payload.validate(),
@@ -2053,11 +2170,68 @@ mod tests {
             transform: None,
             player_movement: Some(movement),
             mesh_animation_state: None,
+            kinematic_mover: None,
         };
         assert_eq!(
             payload.validate(),
             Err(ValidationError::NonFiniteMovementState)
         );
+    }
+
+    // --- KinematicMoverState validation ---
+
+    #[test]
+    fn kinematic_mover_payload_validates_to_typed_payload() {
+        assert_eq!(
+            raw_mover_payload().validate(),
+            Ok(ComponentPayload::KinematicMoverState(sample_mover_state()))
+        );
+    }
+
+    #[test]
+    fn non_finite_kinematic_mover_state_rejects() {
+        for mutate in [
+            |m: &mut WireKinematicMoverState| m.segment_elapsed_ms = f32::NAN,
+            |m: &mut WireKinematicMoverState| m.wait_remaining_ms = f32::INFINITY,
+            |m: &mut WireKinematicMoverState| m.velocity[2] = f32::NEG_INFINITY,
+        ] {
+            let mut mover = sample_mover_state();
+            mutate(&mut mover);
+            let payload = RawComponentPayload {
+                component_kind: COMPONENT_KIND_KINEMATIC_MOVER_STATE,
+                transform: None,
+                player_movement: None,
+                mesh_animation_state: None,
+                kinematic_mover: Some(mover),
+            };
+            assert_eq!(
+                payload.validate(),
+                Err(ValidationError::NonFiniteKinematicMoverState)
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_kinematic_mover_direction_or_mode_rejects() {
+        for mutate in [
+            |m: &mut WireKinematicMoverState| m.direction = 0,
+            |m: &mut WireKinematicMoverState| m.direction = 2,
+            |m: &mut WireKinematicMoverState| m.mode = 2,
+        ] {
+            let mut mover = sample_mover_state();
+            mutate(&mut mover);
+            let payload = RawComponentPayload {
+                component_kind: COMPONENT_KIND_KINEMATIC_MOVER_STATE,
+                transform: None,
+                player_movement: None,
+                mesh_animation_state: None,
+                kinematic_mover: Some(mover),
+            };
+            assert_eq!(
+                payload.validate(),
+                Err(ValidationError::InvalidKinematicMoverState)
+            );
+        }
     }
 
     // --- Non-finite Transform rejection (E10) ---
@@ -2080,6 +2254,7 @@ mod tests {
                 transform: Some(transform),
                 player_movement: None,
                 mesh_animation_state: None,
+                kinematic_mover: None,
             };
             assert_eq!(payload.validate(), Err(ValidationError::NonFiniteTransform));
         }
@@ -2104,6 +2279,7 @@ mod tests {
                 transform: Some(bad_transform),
                 player_movement: None,
                 mesh_animation_state: None,
+                kinematic_mover: None,
             }],
         );
         assert_eq!(record.validate(), Err(ValidationError::NonFiniteTransform));
@@ -2129,6 +2305,7 @@ mod tests {
                 transform: Some(bad_transform),
                 player_movement: None,
                 mesh_animation_state: None,
+                kinematic_mover: None,
             }],
         );
         record.has_entity_class = true;
@@ -2176,18 +2353,28 @@ mod tests {
                 transform: Some(*t),
                 player_movement: None,
                 mesh_animation_state: None,
+                kinematic_mover: None,
             },
             ComponentPayload::PlayerMovementState(m) => RawComponentPayload {
                 component_kind: COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
                 transform: None,
                 player_movement: Some(*m),
                 mesh_animation_state: None,
+                kinematic_mover: None,
             },
             ComponentPayload::MeshAnimationState(m) => RawComponentPayload {
                 component_kind: COMPONENT_KIND_MESH_ANIMATION_STATE,
                 transform: None,
                 player_movement: None,
                 mesh_animation_state: Some(m.clone()),
+                kinematic_mover: None,
+            },
+            ComponentPayload::KinematicMoverState(m) => RawComponentPayload {
+                component_kind: COMPONENT_KIND_KINEMATIC_MOVER_STATE,
+                transform: None,
+                player_movement: None,
+                mesh_animation_state: None,
+                kinematic_mover: Some(*m),
             },
         }
     }

@@ -1,7 +1,7 @@
-// Engine-side netcode glue for M15 Phase 3: role selection, the `NetworkId <-> EntityId`
-// maps, the connection-slot lifecycle, the game-logic-owned host delta serialize and
-// client apply/interpolation steps, and client-side prediction and reconciliation
-// (the sole engine code that mutates the registry for replication).
+// Engine-side netcode glue: role selection, `NetworkId <-> EntityId` maps,
+// connection-slot lifecycle, game-logic-owned host serialize/client apply,
+// interpolation, prediction, and reconciliation. This is the sole engine code
+// that mutates the registry for replication.
 // See: context/lib/networking.md
 
 mod client;
@@ -61,9 +61,12 @@ pub(crate) use prediction::{
     CorrectionClass, DASH_CORRECTION_MAX_M, ORDINARY_CORRECTION_MAX_M, TELEPORT_CORRECTION_MIN_M,
     classify_correction,
 };
+#[cfg(test)]
 #[allow(unused_imports)]
 pub(crate) use reconcile::reconcile_local_pawn;
-pub(crate) use replication::{ReplicableSet, host_register_map_enemies, produce_owned_snapshots};
+pub(crate) use replication::{
+    ReplicableSet, host_register_loaded_movers, host_register_map_enemies, produce_owned_snapshots,
+};
 pub(crate) use wire_convert::sim_command_to_input;
 
 // The conversion/merge helpers (`wire_convert`, `movement_state`) live in their focused
@@ -87,10 +90,11 @@ use postretro_net::timesync::{
 use postretro_net::transport::{NetClient, NetServer};
 use postretro_net::wire::{
     self, ComponentPayload, EntityRecord, NetworkId, RawSnapshotMessage, SnapshotMessage,
-    ValidationError, WireError, WireMovementState, WirePlayerMovementState, WireTransform,
+    ValidationError, WireError, WireKinematicMoverState, WireMovementState,
+    WirePlayerMovementState, WireTransform,
 };
 
-use crate::collision::CollisionWorld;
+use crate::movement::MovementCollisionSource;
 use crate::sim::SimCommand;
 
 /// Default listen port for `--host` when no port is supplied.
@@ -231,7 +235,8 @@ pub(crate) enum NetEndpoint {
     Host {
         server: Box<NetServer>,
         allocator: NetworkIdAllocator,
-        /// Monotonic server tick stamp written into each snapshot.
+        /// Monotonic fixed-simulation tick stamp written into each snapshot.
+        /// Advanced once per completed host fixed tick, not once per network send.
         tick: u32,
         /// Phase 2 per-client replication tracker (acked baselines, deltas,
         /// tombstones, refresh queue), keyed by `NetworkId`. Registry-blind: fed
@@ -278,6 +283,10 @@ pub(crate) enum NetEndpoint {
         /// entity). Empty until the first level install registers enemies, and on a map
         /// with no AI enemies.
         map_enemies: std::collections::HashSet<EntityId>,
+        /// PRL-loaded kinematic movers registered for outbound replication. Clients
+        /// bind these by `mover_id` to their already-loaded local mover entities
+        /// rather than spawning from the baseline.
+        loaded_movers: std::collections::HashSet<EntityId>,
         /// Task 6 Phase 2 net-demo fixture. When the demo path is active
         /// (`POSTRETRO_NET_DEMO_MOVER=1`), the host spawns one deterministic
         /// AI-less mover ([`DemoMover`]) and stores its `EntityId` here; each tick
@@ -415,6 +424,7 @@ impl NetEndpoint {
                     owners: MovementOwners::new(),
                     host_pawn: None,
                     map_enemies: std::collections::HashSet::new(),
+                    loaded_movers: std::collections::HashSet::new(),
                     demo_mover: DemoMoverState::from_env(),
                     state_slots: Box::new(state_slots::HostStateReplication::new()),
                 }))
@@ -536,6 +546,7 @@ pub(crate) fn component_kind_discriminant(kind: ComponentKind) -> u16 {
         ComponentKind::Health => 10,
         ComponentKind::Agent => 11,
         ComponentKind::Brain => 12,
+        ComponentKind::KinematicMover => 13,
     }
 }
 
@@ -591,7 +602,14 @@ fn payload_is_finite(payload: &ComponentPayload) -> bool {
         // dropped at the ingest boundary rather than propagated.
         ComponentPayload::PlayerMovementState(m) => player_movement_is_finite(m),
         ComponentPayload::MeshAnimationState(_) => true,
+        ComponentPayload::KinematicMoverState(m) => kinematic_mover_is_finite(m),
     }
+}
+
+fn kinematic_mover_is_finite(m: &WireKinematicMoverState) -> bool {
+    m.segment_elapsed_ms.is_finite()
+        && m.wait_remaining_ms.is_finite()
+        && m.velocity.iter().all(|c| c.is_finite())
 }
 
 /// Every f32 field of a wire movement payload is finite. Mirrors the untrusted-
@@ -646,10 +664,11 @@ pub(crate) fn client_receive_and_apply(
     prediction: &mut ClientPrediction,
     descriptors: &[EntityTypeDescriptor],
     agent_params: Option<NavAgentParams>,
-    collision: &CollisionWorld,
+    collision: &impl MovementCollisionSource,
     gravity: f32,
     tick_dt: f32,
     frame_dt: Duration,
+    mover_target_tick: Option<u32>,
 ) -> bool {
     let mut materialized_remote_enemy_presentation = false;
     for bytes in client.drain_snapshots() {
@@ -667,7 +686,15 @@ pub(crate) fn client_receive_and_apply(
             );
             continue;
         }
-        let mut outcome = replication.apply_snapshot(registry, &snapshot);
+        let target_tick = mover_target_tick
+            .unwrap_or(snapshot.server_tick)
+            .max(snapshot.server_tick);
+        let mut outcome = replication.apply_snapshot_with_mover_target_tick(
+            registry,
+            &snapshot,
+            target_tick,
+            tick_dt,
+        );
 
         // M15 Phase 3.5: apply this snapshot's replicated-state records. Validated as a
         // whole batch against the local schema, then committed all-or-nothing through
@@ -732,13 +759,15 @@ pub(crate) fn client_receive_and_apply(
         // offset (or snap on a teleport). The registry-touching orchestration lives in
         // `reconcile`; long-lived prediction/smoothing state lives in `prediction`.
         if let Some(local) = &outcome.local_reconcile {
-            reconcile::reconcile_local_pawn(
+            reconcile::reconcile_local_pawn_with_mover_history(
                 registry,
                 prediction,
                 local.entity_id,
                 local.transform,
                 local.movement.as_ref(),
                 local.acked_tick,
+                local.server_tick,
+                Some(replication.mover_history()),
                 collision,
                 gravity,
                 tick_dt,
@@ -790,7 +819,7 @@ pub(crate) fn client_predict_tick(
     client: &mut NetClient,
     prediction: &mut ClientPrediction,
     command: &SimCommand,
-    collision: &CollisionWorld,
+    collision: &impl MovementCollisionSource,
     gravity: f32,
     tick_dt: f32,
 ) -> bool {
@@ -994,10 +1023,8 @@ pub(crate) fn host_drive_demo_mover(
 /// the 30 Hz cadence) encodes + sends a per-client delta snapshot to every accepted
 /// client.
 ///
-/// `tick` is the monotonic server tick stamp; it is advanced by the caller. A
-/// snapshot is encoded only when `tick % SNAPSHOT_TICK_INTERVAL == 0`, but the
-/// tracker ingests every tick so an entity that changes and reverts within the
-/// interval is still detected on the boundary it is sampled.
+/// `tick` is the monotonic fixed-simulation tick stamp. A snapshot is encoded only
+/// when `tick % SNAPSHOT_TICK_INTERVAL == 0`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn host_replicate(
     registry: &EntityRegistry,
@@ -1560,7 +1587,8 @@ mod tests {
                 ComponentKind::Mesh => Some(ComponentKind::Health),
                 ComponentKind::Health => Some(ComponentKind::Agent),
                 ComponentKind::Agent => Some(ComponentKind::Brain),
-                ComponentKind::Brain => None,
+                ComponentKind::Brain => Some(ComponentKind::KinematicMover),
+                ComponentKind::KinematicMover => None,
             }
         }
 
@@ -2012,7 +2040,7 @@ mod tests {
                             }),
                             ComponentPayload::PlayerMovementState(WirePlayerMovementState {
                                 velocity: [0.0, 0.0, 0.0],
-                                is_grounded: true,
+                                ground: postretro_net::wire::WireGroundRef::World,
                                 air_jumps_remaining: 1,
                                 air_dashes_remaining: 1,
                                 dash_cooldown_ms: 0.0,

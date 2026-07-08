@@ -11,6 +11,8 @@ use parry3d::shape::TriMesh;
 
 use super::{SimCommand, simulate_tick};
 use crate::collision::CollisionWorld;
+use crate::collision::moving::MoverCollider;
+use crate::kinematic_mover::MoverTickStateTable;
 use crate::movement::MovementInput;
 use crate::scripting_systems::hit_zones::HitZoneStore;
 use crate::weapon::FireButtonState;
@@ -127,6 +129,8 @@ struct SimHarness {
     active_wieldable: EntityId,
     progress: ProgressTracker,
     ai_warned: HashSet<String>,
+    mover_colliders: Vec<MoverCollider>,
+    mover_states: MoverTickStateTable,
     role_ids: Vec<(Role, EntityId)>,
     force_post_tick_rounding: bool,
 }
@@ -151,6 +155,8 @@ impl SimHarness {
             active_wieldable,
             progress: ProgressTracker::new(),
             ai_warned: HashSet::new(),
+            mover_colliders: Vec::new(),
+            mover_states: MoverTickStateTable::default(),
             role_ids,
             force_post_tick_rounding,
         }
@@ -168,6 +174,9 @@ impl SimHarness {
             0.0,
             &mut self.progress,
             &mut self.ai_warned,
+            &self.mover_colliders,
+            &mut self.mover_states,
+            &[],
             &sim_command,
             |_| command.to_post_movement_command(),
             DT,

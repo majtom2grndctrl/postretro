@@ -19,10 +19,10 @@ pub mod debug_ui {
 pub use postretro_renderer::{
     BvhOverlayBudget, BvhOverlayColorMode, BvhOverlayDepthMode, BvhOverlayState,
     CameraCullDiagnostics, CameraCullPath, CellOverlayState, ClearColor, DEFAULT_AMBIENT_FLOOR,
-    DEFAULT_DYNAMIC_DIRECT_SCALE, DEFAULT_INDIRECT_SCALE, DynamicDirectIsolation, LevelGeometry,
-    LightingIsolation, LocatorDiagnostics, PortalOverlayState, PresentHandle, Renderer,
-    SdfShadowMode, SpatialCellSetDiagnostics, SpatialDiagnostics, WorldWireframeMode,
-    level_world_to_geometry,
+    DEFAULT_DYNAMIC_DIRECT_SCALE, DEFAULT_INDIRECT_SCALE, DynamicDirectIsolation,
+    KinematicMoverInstance, LevelGeometry, LightingIsolation, LocatorDiagnostics,
+    PortalOverlayState, PresentHandle, Renderer, SdfShadowMode, SpatialCellSetDiagnostics,
+    SpatialDiagnostics, WorldWireframeMode, level_world_to_geometry,
 };
 
 #[cfg(feature = "dev-tools")]

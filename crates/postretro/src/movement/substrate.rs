@@ -5,9 +5,14 @@ use glam::{Vec2, Vec3};
 use parry3d::math::{Point, Vector};
 use parry3d::shape::Capsule;
 
-use crate::collision::{CollisionWorld, SKIN_DISTANCE, cast_capsule, cast_ray};
+use crate::collision::moving::{
+    CollisionSource, CombinedCastHit, CombinedCollisionWorld, cast_capsule_combined,
+    cast_ray_combined, deepest_mover_push_penetration,
+    deepest_mover_push_penetration_excluding_swept,
+};
+use crate::collision::{SKIN_DISTANCE, cast_capsule};
 use crate::movement::SubstrateResult;
-use postretro_foundation::PlayerMovementComponent;
+use postretro_foundation::{GroundRef, PlayerMovementComponent};
 
 /// Separation nudge along the contact normal applied when parry reports a
 /// TOI=0 hit during the slide loop. `SKIN_DISTANCE` (the sweep's
@@ -81,7 +86,7 @@ pub(super) fn wish_dir_from_input(input: Vec2, facing_yaw: f32) -> Vec3 {
 // with one production caller and no reuse.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn step_up_lift(
-    collision_world: &CollisionWorld,
+    collision: &CombinedCollisionWorld<'_>,
     capsule: &Capsule,
     current_pos: Vec3,
     horiz_vel: Vec3,
@@ -96,19 +101,19 @@ pub(super) fn step_up_lift(
     }
     let dir = horiz_vel / horiz_speed;
     let probe_dist = (horiz_speed * remaining_dt).max(step_height + radius);
-    let probe = cast_capsule(
-        collision_world,
+    let probe = cast_capsule_query(
+        collision,
         Point::new(current_pos.x, current_pos.y, current_pos.z),
         capsule,
         Vector::new(dir.x, dir.y, dir.z),
         probe_dist,
     )?;
-    if !(probe.time_of_impact < probe_dist && probe.normal2.y.abs() < cos_walkable) {
+    if !(probe.time_of_impact < probe_dist && probe.normal.y.abs() < cos_walkable) {
         return None;
     }
     let lifted = current_pos + Vec3::new(0.0, step_height + STEP_UP_LIFT_MARGIN, 0.0);
-    let lifted_probe = cast_capsule(
-        collision_world,
+    let lifted_probe = cast_capsule_query(
+        collision,
         Point::new(lifted.x, lifted.y, lifted.z),
         capsule,
         Vector::new(dir.x, dir.y, dir.z),
@@ -131,15 +136,15 @@ pub(super) fn step_up_lift(
     // motion).
     let forward_offset = (probe.time_of_impact + radius + SKIN_DISTANCE).min(radius + step_height);
     let sample = lifted + dir * forward_offset;
-    let down_probe = cast_capsule(
-        collision_world,
+    let down_probe = cast_capsule_query(
+        collision,
         Point::new(sample.x, sample.y, sample.z),
         capsule,
         Vector::new(0.0, -1.0, 0.0),
         step_height + 0.1,
     );
     let lifted_lands_on_walkable = match down_probe {
-        Some(h) => h.normal2.y >= cos_walkable,
+        Some(h) => h.normal.y >= cos_walkable,
         None => false,
     };
     if lifted_lands_on_walkable {
@@ -169,10 +174,10 @@ pub(super) fn step_up_lift(
 /// tick; `jumped` is whether step 2/3 launched a jump this tick.
 pub(super) fn integrate_collision(
     component: &mut PlayerMovementComponent,
-    collision_world: &CollisionWorld,
+    collision: &CombinedCollisionWorld<'_>,
     dt: f32,
     position: Vec3,
-    was_grounded: bool,
+    previous_ground: GroundRef,
     jumped: bool,
 ) -> (Vec3, SubstrateResult) {
     // 7. Move + collide. Iterative sweep-and-slide against the world trimesh.
@@ -182,19 +187,22 @@ pub(super) fn integrate_collision(
         component.capsule.radius,
     );
 
-    let mut current_pos = position;
+    let mut current_pos = apply_mover_carry(position, previous_ground, collision);
+    current_pos =
+        displace_from_movers(component, previous_ground, collision, &capsule, current_pos);
     let mut remaining_dt = dt;
     let mut hit_floor_this_tick = false;
+    let mut ground_ref_this_tick = GroundRef::Airborne;
 
     // Step-up probe before the main loop: lift only commits when a wall-like
     // obstacle is in front AND a walkable surface sits beneath the lifted
     // position. Pure walls skip the lift to avoid intra-tick camera jitter.
     let horiz_vel = Vec3::new(component.velocity.x, 0.0, component.velocity.z);
     let horiz_speed = horiz_vel.length();
-    let step_height = component.ground.step_height;
-    if component.is_grounded {
+    let step_height = component.ground_params.step_height;
+    if component.is_grounded() {
         if let Some(lifted) = step_up_lift(
-            collision_world,
+            collision,
             &capsule,
             current_pos,
             horiz_vel,
@@ -208,7 +216,7 @@ pub(super) fn integrate_collision(
         }
     }
 
-    if component.is_grounded && component.velocity.y.abs() < 1e-3 {
+    if component.is_grounded() && component.velocity.y.abs() < 1e-3 {
         component.velocity.y = 0.0;
     }
 
@@ -242,8 +250,8 @@ pub(super) fn integrate_collision(
         if max_toi * max_toi < SLIDE_REMAINING_EPSILON_SQ {
             break;
         }
-        let hit = cast_capsule(
-            collision_world,
+        let hit = cast_capsule_query(
+            collision,
             Point::new(current_pos.x, current_pos.y, current_pos.z),
             &capsule,
             Vector::new(dir.x, dir.y, dir.z),
@@ -262,10 +270,11 @@ pub(super) fn integrate_collision(
                     remaining_dt
                 };
 
-                let normal = Vec3::new(h.normal2.x, h.normal2.y, h.normal2.z);
+                let normal = h.normal;
                 let consumed;
                 if normal.y >= component.cos_walkable {
                     hit_floor_this_tick = true;
+                    ground_ref_this_tick = ground_ref_from_hit(h);
                     current_pos += dir * toi;
                     // Project velocity tangent to the surface FIRST, then
                     // enforce velocity.y = 0 as a hard rail. Zeroing y
@@ -384,7 +393,7 @@ pub(super) fn integrate_collision(
     // Wall slide can project a small +vy when the capsule corners the edge of a
     // riser; clamp here so the ground-stick guard below still fires and prevents
     // the corner contact from latching the player above the floor.
-    if was_grounded && !jumped && component.velocity.y > 0.0 {
+    if previous_ground.is_grounded() && !jumped && component.velocity.y > 0.0 {
         component.velocity.y = 0.0;
     }
 
@@ -398,13 +407,13 @@ pub(super) fn integrate_collision(
     // `velocity.y <= 1e-3` rather than `<= 0`: the slide loop's per-iteration
     // velocity projection can leave a sub-millimetre positive y from
     // floating-point round-off even when the player is plainly grounded.
-    if (was_grounded || floor_push_fired) && component.velocity.y <= 1.0e-3 {
-        let step_height = component.ground.step_height;
+    if (previous_ground.is_grounded() || floor_push_fired) && component.velocity.y <= 1.0e-3 {
+        let step_height = component.ground_params.step_height;
         if step_height > 0.0 {
             // covers step_height + STEP_UP_LIFT_MARGIN + SKIN_DISTANCE + headroom
             let max_down = step_height + STEP_UP_LIFT_MARGIN + SKIN_DISTANCE + 0.03;
-            let down_hit = cast_capsule(
-                collision_world,
+            let down_hit = cast_capsule_query(
+                collision,
                 Point::new(current_pos.x, current_pos.y, current_pos.z),
                 &capsule,
                 Vector::new(0.0, -1.0, 0.0),
@@ -412,10 +421,11 @@ pub(super) fn integrate_collision(
             );
             let mut snapped = false;
             if let Some(h) = down_hit {
-                let n = Vec3::new(h.normal2.x, h.normal2.y, h.normal2.z);
+                let n = h.normal;
                 if n.y >= component.cos_walkable {
                     current_pos.y -= h.time_of_impact;
                     hit_floor_this_tick = true;
+                    ground_ref_this_tick = ground_ref_from_hit(h);
                     snapped = true;
                 }
             }
@@ -429,8 +439,8 @@ pub(super) fn integrate_collision(
                 let half_height = component.capsule.half_height;
                 let radius = component.capsule.radius;
                 let ray_max = max_down + half_height + radius;
-                let ray_hit = cast_ray(
-                    collision_world,
+                let ray_hit = cast_ray_query(
+                    collision,
                     Point::new(current_pos.x, current_pos.y, current_pos.z),
                     Vector::new(0.0, -1.0, 0.0),
                     ray_max,
@@ -449,6 +459,7 @@ pub(super) fn integrate_collision(
                         if drop > 0.0 && drop <= max_down {
                             current_pos.y -= drop;
                             hit_floor_this_tick = true;
+                            ground_ref_this_tick = ground_ref_from_hit(h);
                         }
                     }
                 }
@@ -461,12 +472,13 @@ pub(super) fn integrate_collision(
     // ability-budget refresh is the tick's responsibility, driven by
     // `SubstrateResult::hit_floor`.
     if hit_floor_this_tick {
-        component.is_grounded = true;
-    } else if was_grounded && !jumped {
+        component.ground = ground_ref_this_tick;
+    } else if previous_ground.is_grounded() && !jumped {
         // Stayed on / left the ground organically — only clear the flag when
         // no floor contact this tick. The jump branch already cleared it.
-        component.is_grounded = false;
+        component.ground = GroundRef::Airborne;
     }
+    apply_mover_release_velocity(component, previous_ground, collision);
 
     // Air-tick hysteresis. The step-up probe lifts the capsule only at genuine
     // walkable steps (pure walls skip the lift), but cornering events or the
@@ -475,13 +487,13 @@ pub(super) fn integrate_collision(
     // suppresses those blips while still firing for real jumps and falls
     // (tens of ticks airborne).
     let prev_air_ticks = component.air_ticks;
-    if component.is_grounded {
+    if component.is_grounded() {
         component.air_ticks = 0;
     } else {
         component.air_ticks = component.air_ticks.saturating_add(1);
     }
 
-    let landed = !was_grounded && component.is_grounded && prev_air_ticks >= 3;
+    let landed = !previous_ground.is_grounded() && component.is_grounded() && prev_air_ticks >= 3;
 
     (
         current_pos,
@@ -490,6 +502,127 @@ pub(super) fn integrate_collision(
             landed,
         },
     )
+}
+
+fn cast_capsule_query(
+    collision: &CombinedCollisionWorld<'_>,
+    pos: Point<f32>,
+    capsule: &Capsule,
+    dir: Vector<f32>,
+    max_toi: f32,
+) -> Option<CombinedCastHit> {
+    cast_capsule_combined(
+        collision.static_world,
+        collision.movers,
+        collision.poses,
+        pos,
+        capsule,
+        dir,
+        max_toi,
+    )
+}
+
+fn cast_ray_query(
+    collision: &CombinedCollisionWorld<'_>,
+    origin: Point<f32>,
+    dir: Vector<f32>,
+    max_toi: f32,
+) -> Option<CombinedCastHit> {
+    cast_ray_combined(
+        collision.static_world,
+        collision.movers,
+        collision.poses,
+        origin,
+        dir,
+        max_toi,
+    )
+}
+
+fn ground_ref_from_hit(hit: CombinedCastHit) -> GroundRef {
+    match hit.source {
+        CollisionSource::Static => GroundRef::World,
+        CollisionSource::Mover(mover_id) => GroundRef::Mover(mover_id),
+    }
+}
+
+fn apply_mover_carry(
+    position: Vec3,
+    previous_ground: GroundRef,
+    collision: &CombinedCollisionWorld<'_>,
+) -> Vec3 {
+    let GroundRef::Mover(mover_id) = previous_ground else {
+        return position;
+    };
+    collision
+        .poses
+        .pose(mover_id)
+        .map_or(position, |pose| position + pose.tick_delta)
+}
+
+fn apply_mover_release_velocity(
+    component: &mut PlayerMovementComponent,
+    previous_ground: GroundRef,
+    collision: &CombinedCollisionWorld<'_>,
+) {
+    let GroundRef::Mover(mover_id) = previous_ground else {
+        return;
+    };
+    if component.ground == GroundRef::Mover(mover_id) {
+        return;
+    }
+    if let Some(pose) = collision.poses.pose(mover_id) {
+        component.velocity += pose.linear_velocity;
+    }
+}
+
+fn displace_from_movers(
+    _component: &PlayerMovementComponent,
+    previous_ground: GroundRef,
+    collision: &CombinedCollisionWorld<'_>,
+    capsule: &Capsule,
+    position: Vec3,
+) -> Vec3 {
+    if collision.movers.is_empty() {
+        return position;
+    }
+    let pos = Point::new(position.x, position.y, position.z);
+    let penetration = match previous_ground {
+        GroundRef::Mover(mover_id) => deepest_mover_push_penetration_excluding_swept(
+            collision.movers,
+            collision.poses,
+            pos,
+            capsule,
+            mover_id,
+        ),
+        GroundRef::Airborne | GroundRef::World => {
+            deepest_mover_push_penetration(collision.movers, collision.poses, pos, capsule)
+        }
+    };
+    let Some(penetration) = penetration else {
+        return position;
+    };
+    let candidate = position + penetration.normal * penetration.depth;
+    let blocked = cast_capsule(
+        collision.static_world,
+        Point::new(position.x, position.y, position.z),
+        capsule,
+        Vector::new(
+            penetration.normal.x,
+            penetration.normal.y,
+            penetration.normal.z,
+        ),
+        penetration.depth,
+    )
+    .is_some();
+    if blocked {
+        #[cfg(debug_assertions)]
+        log::warn!(
+            "[Movement] mover {} push was blocked by static geometry; pinch/crush resolution is deferred",
+            penetration.mover_id
+        );
+        return position;
+    }
+    candidate
 }
 
 /// Which extreme of the capsule stays geometrically fixed when the capsule is
@@ -577,7 +710,7 @@ pub(super) fn resize_capsule(
 // `movement--slide` reuses it later.
 pub(super) fn standup_clearance_probe(
     component: &PlayerMovementComponent,
-    collision_world: &CollisionWorld,
+    collision: &CombinedCollisionWorld<'_>,
     position: Vec3,
     crouched_half_height: f32,
     standing_half_height: f32,
@@ -595,8 +728,8 @@ pub(super) fn standup_clearance_probe(
         Point::new(0.0, crouched_half_height, 0.0),
         component.capsule.radius,
     );
-    let hit = cast_capsule(
-        collision_world,
+    let hit = cast_capsule_query(
+        collision,
         Point::new(position.x, position.y, position.z),
         &capsule,
         Vector::new(0.0, 1.0, 0.0),
@@ -657,7 +790,7 @@ pub(super) fn derive_jump_edges(
     component: &PlayerMovementComponent,
     jump_pressed: bool,
 ) -> JumpEdges {
-    let grounded = component.is_grounded;
+    let grounded = component.is_grounded();
 
     // A grounded jump from a fresh press: either truly grounded, or within the
     // coyote window after leaving the ground with no prior jump spent. When
@@ -686,14 +819,14 @@ pub(super) fn derive_jump_edges(
 }
 
 /// Advance the forgiveness timers for the NEXT tick, after the substrate has
-/// resolved collision (so `component.is_grounded` reflects this tick's outcome).
+/// resolved collision (so `component.is_grounded()` reflects this tick's outcome).
 /// Coyote accumulates airborne ms; reset to 0 each grounded tick here and at the
 /// landing-refresh point (`refresh_on_landing`). The jump buffer counts down
 /// while airborne and DROPS SILENTLY when it expires before landing. Windows
 /// stay in ms, advanced off `dt * 1000` like the dash cooldown.
 pub(super) fn advance_forgiveness(component: &mut PlayerMovementComponent, dt: f32) {
     let dt_ms = dt * 1000.0;
-    if component.is_grounded {
+    if component.is_grounded() {
         // Grounded: coyote timer is held at 0 (also reset by the landing-refresh
         // point). A pending buffer is left for the next tick's grounded edge to
         // consume — it is NOT counted down or dropped while grounded.

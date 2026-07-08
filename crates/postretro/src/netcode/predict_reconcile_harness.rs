@@ -1,9 +1,7 @@
-// M15 Phase 3 Task 6: integrated, production-adjacent prediction/reconciliation
-// tests plus the headline deterministic latency gate. Every test drives the REAL
-// Task 1-5 seams through `LoopbackHarness` (see the sibling
-// `predict_reconcile_harness_test_fixtures`) — the prototype `sim::predict_reconcile`
-// type is never instantiated; only its scenario *shape* and expected timelines are
-// promoted here.
+// Integrated, production-adjacent prediction/reconciliation tests plus the headline
+// deterministic latency gate. Every test drives the real production seams through
+// `LoopbackHarness` (see the sibling `predict_reconcile_harness_test_fixtures`);
+// the prototype `sim::predict_reconcile` type is never instantiated.
 // See: context/lib/networking.md · context/lib/testing_guide.md
 //
 // Replay-purity guard: the production replay path (`prediction::replay`) is
@@ -21,7 +19,8 @@ use postretro_net::harness::LinkConfig;
 use postretro_net::wire::ClientMessage;
 
 use super::predict_reconcile_harness_test_fixtures::{
-    CLIENT_ID, DT, GRAVITY, LoopbackHarness, forward_command, input_at,
+    CLIENT_ID, DT, GRAVITY, LoopbackHarness, MOVING_PLATFORM_ID, MOVING_PLATFORM_SPEED_MPS,
+    forward_command, idle_command, input_at,
 };
 use super::prediction::{ORDINARY_CORRECTION_MAX_M, TELEPORT_CORRECTION_MIN_M};
 use super::reconcile::reconcile_local_pawn;
@@ -29,7 +28,7 @@ use crate::movement::MovementInput;
 use crate::netcode::host_handle_client_message;
 use crate::sim::SimCommand;
 use postretro_entities::Transform;
-use postretro_foundation::PlayerMovementComponent;
+use postretro_foundation::{GroundRef, PlayerMovementComponent};
 
 /// The mandated automated harness profile (Task 6 §B), applied in BOTH directions:
 /// 45 ms base + up to 60 ms jitter (a 45..105 ms one-way range, ≈150 ms mean RTT),
@@ -645,6 +644,138 @@ fn local_pawn_interpolated_render_eye_is_coherent_each_tick() {
     assert!(h.bystanders_alive());
 }
 
+#[test]
+fn moving_platform_reconciles_under_mandated_profile_without_accumulating_drift() {
+    let mut h = LoopbackHarness::with_moving_platform(mandated_link());
+    const MOVER_TOLERANCE_M: f32 = 0.16;
+    const RIDER_TOLERANCE_M: f32 = 0.35;
+    const RELEASE_VELOCITY_TOLERANCE_MPS: f32 = 0.08;
+
+    let mut mover_errors = Vec::new();
+    let mut mover_corrections = Vec::new();
+    let mut riding_rider_errors = Vec::new();
+    let mut rider_corrections = Vec::new();
+
+    for _ in 0..150 {
+        h.step(&idle_command());
+        if h.client_pawn.is_none() {
+            continue;
+        }
+
+        let mover_error = h.mover_position_error();
+        assert!(
+            mover_error <= MOVER_TOLERANCE_M,
+            "client-predicted mover must track host without interpolation lag; error={mover_error:.4}"
+        );
+        mover_errors.push(mover_error);
+        mover_corrections.extend(h.latest_mover_corrections.iter().map(|c| c.magnitude));
+        riding_rider_errors.push(h.position_error());
+        rider_corrections.extend(h.latest_local_corrections.iter().copied());
+    }
+
+    assert_eq!(
+        h.client_loaded_mover_count(),
+        1,
+        "mover baseline binds the pre-loaded mover instead of spawning a duplicate"
+    );
+    assert!(
+        h.client_mover_history_samples() > 0,
+        "client apply must feed authoritative mover samples into mover history"
+    );
+    assert_eq!(h.host_ground(), GroundRef::Mover(MOVING_PLATFORM_ID));
+    assert_eq!(h.client_ground(), GroundRef::Mover(MOVING_PLATFORM_ID));
+    assert!(
+        riding_rider_errors
+            .iter()
+            .all(|error| *error <= RIDER_TOLERANCE_M),
+        "rider should reconcile in place while standing on the platform; errors={riding_rider_errors:?}"
+    );
+
+    let mut release_velocity = None;
+    let mut previous_ground = h.host_ground();
+    for _ in 0..90 {
+        h.step(&forward_command(false));
+        if h.client_pawn.is_some() {
+            let mover_error = h.mover_position_error();
+            assert!(
+                mover_error <= MOVER_TOLERANCE_M,
+                "client-predicted mover must stay bounded through rider release; error={mover_error:.4}"
+            );
+            mover_errors.push(mover_error);
+            mover_corrections.extend(h.latest_mover_corrections.iter().map(|c| c.magnitude));
+            rider_corrections.extend(h.latest_local_corrections.iter().copied());
+        }
+
+        let ground = h.host_ground();
+        if matches!(previous_ground, GroundRef::Mover(MOVING_PLATFORM_ID))
+            && ground == GroundRef::Airborne
+        {
+            let host_velocity = h.host_velocity();
+            let mover_velocity = h.host_mover_velocity().expect("host mover velocity");
+            release_velocity = Some((host_velocity, mover_velocity));
+            break;
+        }
+        previous_ground = ground;
+    }
+
+    let (host_release_velocity, mover_velocity) =
+        release_velocity.expect("rider should leave the platform mid-ride");
+    assert!(
+        (host_release_velocity.x - mover_velocity.x).abs() <= RELEASE_VELOCITY_TOLERANCE_MPS,
+        "release should add the mover's single-player linear velocity once; host vx={:.4}, mover vx={:.4}",
+        host_release_velocity.x,
+        mover_velocity.x
+    );
+    assert!(
+        (host_release_velocity.x - MOVING_PLATFORM_SPEED_MPS).abs()
+            <= RELEASE_VELOCITY_TOLERANCE_MPS,
+        "release velocity should match the seeded platform speed; vx={:.4}",
+        host_release_velocity.x
+    );
+
+    for _ in 0..80 {
+        h.step(&forward_command(false));
+        if h.client_pawn.is_none() {
+            continue;
+        }
+        mover_errors.push(h.mover_position_error());
+        mover_corrections.extend(h.latest_mover_corrections.iter().map(|c| c.magnitude));
+        rider_corrections.extend(h.latest_local_corrections.iter().copied());
+    }
+
+    assert!(
+        mover_corrections
+            .iter()
+            .all(|magnitude| *magnitude <= MOVER_TOLERANCE_M),
+        "mover reconciler corrections must stay bounded; corrections={mover_corrections:?}"
+    );
+    assert!(
+        rider_corrections
+            .iter()
+            .all(|magnitude| *magnitude <= RIDER_TOLERANCE_M),
+        "rider reconcile corrections must stay bounded; corrections={rider_corrections:?}"
+    );
+    assert_non_accumulating("mover error", &mover_errors, MOVER_TOLERANCE_M * 0.5);
+    assert_non_accumulating(
+        "mover correction",
+        &mover_corrections,
+        MOVER_TOLERANCE_M * 0.5,
+    );
+    assert_non_accumulating(
+        "riding rider error",
+        &riding_rider_errors,
+        RIDER_TOLERANCE_M * 0.5,
+    );
+
+    let client_vx = h.client_velocity().x;
+    assert!(
+        (client_vx - host_release_velocity.x).abs() <= RIDER_TOLERANCE_M,
+        "client rider should reconcile to host release velocity; client vx={client_vx:.4}, host vx={:.4}",
+        host_release_velocity.x
+    );
+    assert!(h.bystanders_alive());
+}
+
 // ---------------------------------------------------------------------------
 // Section B — Headline deterministic latency gate
 // ---------------------------------------------------------------------------
@@ -866,6 +997,21 @@ fn scripted_command(tick: u32) -> SimCommand {
 // ---------------------------------------------------------------------------
 // Local helpers
 // ---------------------------------------------------------------------------
+
+fn assert_non_accumulating(label: &str, samples: &[f32], tolerance: f32) {
+    assert!(
+        samples.len() >= 8,
+        "{label}: expected enough samples to check accumulation, got {}",
+        samples.len()
+    );
+    let midpoint = samples.len() / 2;
+    let first = samples[..midpoint].iter().sum::<f32>() / midpoint as f32;
+    let second = samples[midpoint..].iter().sum::<f32>() / (samples.len() - midpoint) as f32;
+    assert!(
+        second <= first + tolerance,
+        "{label}: second-half mean accumulated beyond tolerance; first={first:.5}, second={second:.5}, tolerance={tolerance:.5}"
+    );
+}
 
 /// Drain `h` to the explicit drain condition, sending no new input. Caps iterations.
 fn drain(h: &mut LoopbackHarness) {

@@ -19,8 +19,7 @@ use glam::Vec3;
 
 use postretro_net::wire::{InputCommand, NetworkId};
 
-use crate::collision::CollisionWorld;
-use crate::movement::{self, MovementEvents, MovementInput};
+use crate::movement::{self, MovementCollisionSource, MovementEvents, MovementInput};
 use crate::netcode::wire_convert::input_command_to_sim;
 use postretro_entities::{EntityId, Transform};
 use postretro_foundation::{MovementState, PlayerMovementComponent};
@@ -279,7 +278,7 @@ impl ClientPrediction {
         &mut self,
         command: InputCommand,
         prev: (Transform, PlayerMovementComponent),
-        collision: &CollisionWorld,
+        collision: &impl MovementCollisionSource,
         gravity: f32,
         dt: f32,
     ) -> Option<(Transform, PlayerMovementComponent)> {
@@ -428,7 +427,7 @@ pub(crate) fn replay(
     transform: Transform,
     mut movement: PlayerMovementComponent,
     input: MovementInput,
-    collision: &CollisionWorld,
+    collision: &impl MovementCollisionSource,
     gravity: f32,
     dt: f32,
 ) -> (Transform, PlayerMovementComponent, MovementEvents) {
@@ -449,6 +448,7 @@ pub(crate) fn replay(
 mod tests {
     use super::*;
 
+    use crate::collision::CollisionWorld;
     use glam::{Vec2, Vec3};
     use parry3d::math::{Isometry, Point};
     use parry3d::shape::TriMesh;
@@ -588,7 +588,7 @@ mod tests {
         // component carries live tick state (grounded), proving the pair round-tripped
         // through movement::tick rather than being echoed back unchanged.
         assert!(
-            movement.is_grounded,
+            movement.is_grounded(),
             "a floored pawn is grounded after a tick"
         );
     }

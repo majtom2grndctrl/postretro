@@ -171,6 +171,7 @@ fn component_kind_name(k: ComponentKind) -> &'static str {
         ComponentKind::Health => "health",
         ComponentKind::Agent => "agent",
         ComponentKind::Brain => "brain",
+        ComponentKind::KinematicMover => "kinematic_mover",
     }
 }
 
@@ -241,6 +242,10 @@ impl<'js> FromJs<'js> for ComponentValue {
             "weapon" => Err(rquickjs::Exception::throw_type(
                 ctx,
                 "weapon is descriptor-owned; setComponent is not supported (update the weapon descriptor instead)",
+            )),
+            "kinematic_mover" => Err(rquickjs::Exception::throw_type(
+                ctx,
+                "KinematicMover component is engine-managed and not exposed to scripts",
             )),
             "fog_volume" => fog_from_js(ctx, &o),
             other => Err(rquickjs::Exception::throw_type(
@@ -328,6 +333,10 @@ impl<'js> IntoJs<'js> for ComponentValue {
                 ctx,
                 "Brain component is engine-managed and not exposed to scripts",
             )),
+            ComponentValue::KinematicMover(_) => Err(rquickjs::Exception::throw_type(
+                ctx,
+                "KinematicMover component is engine-managed and not exposed to scripts",
+            )),
         }
     }
 }
@@ -388,6 +397,10 @@ impl FromLua for ComponentValue {
             ),
             "weapon" => Err(mlua::Error::RuntimeError(
                 "weapon is descriptor-owned; setComponent is not supported (update the weapon descriptor instead)".to_string(),
+            )),
+            "kinematic_mover" => Err(mlua::Error::RuntimeError(
+                "KinematicMover component is engine-managed and not exposed to scripts"
+                    .to_string(),
             )),
             "fog_volume" => fog_from_lua(t),
             other => Err(mlua::Error::RuntimeError(format!(
@@ -456,6 +469,9 @@ impl IntoLua for ComponentValue {
             )),
             ComponentValue::Brain(_) => Err(mlua::Error::RuntimeError(
                 "Brain component is engine-managed and not exposed to scripts".to_string(),
+            )),
+            ComponentValue::KinematicMover(_) => Err(mlua::Error::RuntimeError(
+                "KinematicMover component is engine-managed and not exposed to scripts".to_string(),
             )),
         }
     }

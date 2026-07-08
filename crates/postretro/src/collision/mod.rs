@@ -1,5 +1,5 @@
 //! Collision world — world-space `parry3d` trimesh built from PRL static
-//! geometry, plus the free-function query surface used by player movement.
+//! geometry, plus combined static/mover query helpers used by movement.
 //!
 //! # Capsule axis convention
 //!
@@ -26,6 +26,8 @@ use parry3d::query::{
 use parry3d::shape::{Capsule, TriMesh};
 
 use postretro_level_loader::LevelWorld;
+
+pub(crate) mod moving;
 
 /// World-space static-geometry collider. Owns a single `parry3d::TriMesh`
 /// built from the level's baked vertices and indices, plus a world-space

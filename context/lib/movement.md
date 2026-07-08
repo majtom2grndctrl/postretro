@@ -86,9 +86,15 @@ Two policies cut across every state and define the modern feel. Both are foundat
 - **Momentum conservation.** The biggest modern-feel differentiator — slide→jump keeps slide speed, wall-run→jump launches off the wall vector — and the transition seam's spine; four later states depend on it. Set the velocity-carry policy at the transition layer before `movement--slide`. Deciding it inside slide bakes in slide-shaped logic that wall-run and vault then refactor. **Decided** (`movement--cross-cutting-policies`): velocity carry is owned by the dispatch point that applies the transition, never inside a state intent. A transition's `carry` composes a horizontal-rule and a boost-rule (the base+boost velocity model) over §2's closed vocabulary; wall-relative rules (`projectOntoWallPlane`, `reflect`) land with `movement--wall-run`. Carried momentum above the run cap survives into the air only while the player gives no air-steer input or `air.bunny_hop` is set — otherwise `Normal`'s airborne cap re-clamps it; states that hand off above the cap (dash, slide-jump) depend on this.
 - **Input forgiveness.** Coyote time (jump grace after leaving a ledge), jump buffering (jump pressed just before landing fires on contact). Foundation-level — shapes edge-input derivation, which every state reads. Settle the edge-input model up front, not after five states consume those edges. **Decided** (`movement--cross-cutting-policies`): coyote and jump-buffer windows are descriptor-tuned, derived once per tick into edges that intents consume in place of raw button bits.
 
+### Moving bases
+
+Player grounded state is a `GroundRef`: `Airborne`, `World`, or `Mover(mover_id)`. Scripting-facing `grounded` stays a bool projection (`ground != Airborne`), and AI agent grounding remains separate.
+
+The movement query surface combines static world collision with active mover colliders. When the player stands on `Mover(id)`, the substrate applies that mover's linear tick delta so carry is predicted and reconciled with the pawn. Leaving a mover preserves player-controlled velocity and adds the mover velocity once. Movers are unstoppable kinematics in this slice: they displace the player out of overlap, but do not stop or yield. Crush/pinch policy is deferred; dev maps must avoid pinch points.
+
 ## 7. Non-goals
 
 - Rigid-body dynamics for the player (forces, mass, restitution, constraint solving).
 - Per-tick script-authored movement (imperative callbacks). The author surface is declarative.
 - Map-overridable movement tuning — movement physics is descriptor-owned, never FGD KVPs (`entity_model.md` §4).
-- Networked movement (prediction, rollback).
+- Rollback or deterministic lockstep. Pawn and mover prediction/reconciliation are in scope for authoritative co-op, but not rollback.

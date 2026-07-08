@@ -84,6 +84,9 @@ impl App {
             session.fog_volume_bridge.clear();
         }
         self.collision_world.clear();
+        self.kinematic_mover_colliders.clear();
+        self.kinematic_mover_tick_states.clear();
+        self.kinematic_mover_render.clear();
         self.active_wieldable = None;
         self.active_wieldable_descriptor = None;
     }
@@ -560,56 +563,63 @@ impl App {
                 .collect()
         };
 
-        let renderer = match self.renderer.as_mut() {
-            Some(r) => r,
-            None => {
-                log::error!("[Engine] install_level_payload called with no renderer");
-                self.level = Some(world);
-                return;
-            }
-        };
+        let (level_lights, fgd_sample_float_count) = {
+            let renderer = match self.renderer.as_mut() {
+                Some(r) => r,
+                None => {
+                    log::error!("[Engine] install_level_payload called with no renderer");
+                    self.level = Some(world);
+                    return;
+                }
+            };
 
-        // 1. Textures first — uploaded from the .prm sidecars; their slot
-        //    dimensions feed the UV normalize pass.
-        renderer.install_textures(
-            &world.texture_names,
-            &world.texture_cache_keys,
-            &prm_cache_root,
-            &texture_materials,
-        );
-        self.level_timings.record("texture_upload");
+            // 1. Textures first — uploaded from the .prm sidecars; their slot
+            //    dimensions feed the UV normalize pass.
+            renderer.install_textures(
+                &world.texture_names,
+                &world.texture_cache_keys,
+                &prm_cache_root,
+                &texture_materials,
+            );
+            self.level_timings.record("texture_upload");
 
-        // 2. UV normalize using freshly-uploaded diffuse-texture dimensions.
-        //    Texel-space UVs on the worker side; converted to `[0,1]` here so
-        //    install_level_geometry uploads the final values.
-        renderer.normalize_world_uvs(&mut world);
-        self.level_timings.record("uv_normalize");
+            // 2. UV normalize using freshly-uploaded diffuse-texture dimensions.
+            //    Texel-space UVs on the worker side; converted to `[0,1]` here so
+            //    install_level_geometry uploads the final values.
+            renderer.normalize_world_uvs(&mut world);
+            self.level_timings.record("uv_normalize");
 
-        // 3. Now geometry: vertex_buffer + index_buffer upload to GPU.
-        let geometry = render::level_world_to_geometry(&world, &texture_materials);
-        renderer.install_level_geometry(&geometry);
-        self.level_timings.record("geometry_upload");
+            // 3. Now geometry: vertex_buffer + index_buffer upload to GPU.
+            let geometry = render::level_world_to_geometry(&world, &texture_materials);
+            renderer.install_level_geometry(&geometry);
+            self.level_timings.record("geometry_upload");
 
-        // Reseed the SH diagnostic per-light visibility bitmap to match the
-        // freshly-installed level's animated-light count. Reset `seeded` so the
-        // panel re-pulls defaults on the next open. `debug_ui` is session-owned;
-        // read the renderer's delta count (disjoint `self.renderer` borrow) first.
-        #[cfg(feature = "dev-tools")]
-        {
-            let delta_count = renderer.sh_delta_volumes().len();
-            if let Some(debug_ui) = self
-                .session
-                .as_mut()
-                .and_then(|session| session.debug_ui.as_mut())
+            // Reseed the SH diagnostic per-light visibility bitmap to match the
+            // freshly-installed level's animated-light count. Reset `seeded` so the
+            // panel re-pulls defaults on the next open. `debug_ui` is session-owned;
+            // read the renderer's delta count (disjoint `self.renderer` borrow) first.
+            #[cfg(feature = "dev-tools")]
             {
-                debug_ui.sh_diagnostics_state.per_light_visible.clear();
-                debug_ui
-                    .sh_diagnostics_state
-                    .per_light_visible
-                    .resize(delta_count, false);
-                debug_ui.sh_diagnostics_state.seeded = false;
+                let delta_count = renderer.sh_delta_volumes().len();
+                if let Some(debug_ui) = self
+                    .session
+                    .as_mut()
+                    .and_then(|session| session.debug_ui.as_mut())
+                {
+                    debug_ui.sh_diagnostics_state.per_light_visible.clear();
+                    debug_ui
+                        .sh_diagnostics_state
+                        .per_light_visible
+                        .resize(delta_count, false);
+                    debug_ui.sh_diagnostics_state.seeded = false;
+                }
             }
-        }
+
+            (
+                renderer.level_lights().to_vec(),
+                (renderer.scripted_sample_byte_offset() / 4) as u32,
+            )
+        };
 
         // Build the runtime navigation graph once, from the baked navmesh
         // section. `None` when the map has no navmesh bake.
@@ -626,8 +636,6 @@ impl App {
         // `EntityId`s the bridge's dirty tracker keys off for the level's
         // lifetime.
         {
-            let level_lights = renderer.level_lights().to_vec();
-            let fgd_sample_float_count = (renderer.scripted_sample_byte_offset() / 4) as u32;
             let mut registry = script_ctx.registry.borrow_mut();
             self.session
                 .as_mut()
@@ -646,6 +654,10 @@ impl App {
                 .expect("session installed before level install")
                 .fog_volume_bridge
                 .populate_from_level(&mut registry, &world.fog_volumes);
+            let renderer = self
+                .renderer
+                .as_mut()
+                .expect("renderer installed before level install");
             renderer.set_fog_pixel_scale(world.fog_pixel_scale);
             renderer.install_fog_cell_masks_for_level(world.fog_cell_masks.clone());
         }
@@ -653,6 +665,22 @@ impl App {
         // Populate before the first game tick so movement collision is ready.
         if let Some(world) = self.level.as_ref() {
             self.collision_world.populate_from_level(world);
+            self.kinematic_mover_colliders =
+                crate::runtime_movers::build_loaded_mover_colliders(world);
+            if !world.kinematic_geometry.movers.is_empty() {
+                let mut registry = script_ctx.registry.borrow_mut();
+                match crate::runtime_movers::spawn_loaded_kinematic_movers(&mut registry, world) {
+                    Ok(spawned) => {
+                        log::info!(
+                            "[Loader] spawned {} kinematic mover entity/entities",
+                            spawned.len()
+                        );
+                    }
+                    Err(err) => {
+                        log::warn!("[Loader] failed to spawn kinematic movers: {err}");
+                    }
+                }
+            }
         }
         self.level_timings.record("bridges_populated");
 
@@ -742,6 +770,10 @@ impl App {
                                 height: 1,
                             }]
                         });
+                let renderer = self
+                    .renderer
+                    .as_mut()
+                    .expect("renderer installed before level install");
                 renderer.register_smoke_collection(&collection, &frames, 0.3, c.lifetime);
                 particle_render.register_sprite(&collection);
             }
@@ -931,6 +963,7 @@ impl App {
             // the first borrow-free point after the dispatch — it takes its own registry
             // borrow internally.
             self.host_register_map_enemies_after_install();
+            self.host_register_loaded_movers_after_install();
 
             self.active_wieldable = active_wieldable;
             self.active_wieldable_descriptor = active_wieldable_descriptor;
@@ -1121,7 +1154,7 @@ mod tests {
     use crate::input::InputFocus;
     use crate::scripting;
     use crate::scripting::primitives::register_all;
-    use crate::{collision, input, options, scripting_systems, view_feel};
+    use crate::{input, options, scripting_systems, view_feel};
     use postretro_entities::{
         CrossingCondition, CrossingDescriptor, EntityTypeDescriptor, NamedReaction,
         PrimitiveDescriptor, ProgressDescriptor, ReactionDescriptor,
@@ -1245,7 +1278,10 @@ mod tests {
             pending_exit_to_desktop: false,
             ui_focused_id: None,
             particle_live_counts: std::collections::HashMap::new(),
-            collision_world: collision::CollisionWorld::new(),
+            collision_world: crate::collision::CollisionWorld::new(),
+            kinematic_mover_colliders: Vec::new(),
+            kinematic_mover_tick_states: crate::kinematic_mover::MoverTickStateTable::default(),
+            kinematic_mover_render: crate::runtime_movers::KinematicMoverRenderCollector::new(),
             active_wieldable: None,
             active_wieldable_descriptor: None,
             boot_state: BootState::Running,
@@ -1516,6 +1552,7 @@ mod tests {
             shadowmask_atlas: None,
             data_script: None,
             map_entities: Vec::new(),
+            kinematic_geometry: postretro_level_loader::KinematicGeometry::default(),
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
             initial_gravity: -9.8,

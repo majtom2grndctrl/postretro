@@ -1,7 +1,7 @@
 // PRL section decoding and cross-validation for runtime level data.
 // See: context/lib/build_pipeline.md §PRL Compilation
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use glam::Vec3;
@@ -24,6 +24,9 @@ use postretro_level_format::entity_shadow_lights::EntityShadowLightsSection;
 use postretro_level_format::fog_cell_masks::FogCellMasksSection;
 use postretro_level_format::fog_volumes::{FogVolumeRecord, FogVolumesSection, MAX_FOG_VOLUMES};
 use postretro_level_format::geometry::{GeometrySection, NO_TEXTURE};
+use postretro_level_format::kinematic_geometry::{
+    KINEMATIC_WAYPOINT_MIN_SEGMENT_LENGTH, KinematicGeometrySection,
+};
 use postretro_level_format::light_influence::LightInfluenceSection;
 use postretro_level_format::light_tags::LightTagsSection;
 use postretro_level_format::lightmap::LightmapSection;
@@ -45,6 +48,7 @@ use super::{
     CellData, CellDrawIndex, CellLocatorChild, CellLocatorNodeData, FaceMeta, FalloffModel,
     LevelWorld, LightType, LightmapMode, MapLight, PortalData, PrlLoadError, ShadowType,
 };
+use crate::prl::{KinematicGeometry, LoadedKinematicWaypoint};
 
 fn derive_material_with_warning(
     texture_name: &str,
@@ -158,6 +162,155 @@ pub(crate) fn convert_cells_section(section: CellsSection) -> (Vec<CellData>, Ve
         })
         .collect();
     (cells, section.portal_refs)
+}
+
+pub(crate) fn convert_kinematic_geometry_section(
+    section: KinematicGeometrySection,
+) -> Result<KinematicGeometry, PrlLoadError> {
+    let geometry = KinematicGeometry {
+        movers: section.movers.into_iter().map(Into::into).collect(),
+        waypoints: section.waypoints.into_iter().map(Into::into).collect(),
+    };
+    validate_kinematic_geometry(&geometry)?;
+    Ok(geometry)
+}
+
+fn validate_kinematic_geometry(geometry: &KinematicGeometry) -> Result<(), PrlLoadError> {
+    let mut waypoints: HashMap<&str, usize> = HashMap::new();
+    for (index, waypoint) in geometry.waypoints.iter().enumerate() {
+        if waypoint.name.is_empty() {
+            return Err(section_validation(
+                "KinematicGeometry",
+                format!("waypoint {index} has an empty name"),
+            ));
+        }
+        if !waypoint.origin.is_finite() {
+            return Err(section_validation(
+                "KinematicGeometry",
+                format!(
+                    "waypoint `{}` has non-finite origin {:?}",
+                    waypoint.name, waypoint.origin
+                ),
+            ));
+        }
+        if waypoints.insert(waypoint.name.as_str(), index).is_some() {
+            return Err(section_validation(
+                "KinematicGeometry",
+                format!("duplicate waypoint name `{}`", waypoint.name),
+            ));
+        }
+    }
+
+    let mut mover_ids = HashSet::new();
+    for mover in &geometry.movers {
+        if !mover_ids.insert(mover.mover_id) {
+            return Err(section_validation(
+                "KinematicGeometry",
+                format!("duplicate mover_id {}", mover.mover_id),
+            ));
+        }
+        if mover.vertices.is_empty() || mover.indices.is_empty() {
+            return Err(section_validation(
+                "KinematicGeometry",
+                format!(
+                    "mover {} (`{}`) geometry must contain vertices and indices",
+                    mover.mover_id, mover.name
+                ),
+            ));
+        }
+        if !mover.origin.is_finite() {
+            return Err(section_validation(
+                "KinematicGeometry",
+                format!(
+                    "mover {} (`{}`) has non-finite origin {:?}",
+                    mover.mover_id, mover.name, mover.origin
+                ),
+            ));
+        }
+        let resolved = resolve_kinematic_waypoint_chain(
+            mover.mover_id,
+            &mover.name,
+            &mover.path,
+            &geometry.waypoints,
+            &waypoints,
+        )?;
+        if resolved.len() < 2 {
+            return Err(section_validation(
+                "KinematicGeometry",
+                format!(
+                    "mover {} (`{}`) path `{}` resolves to {} waypoint(s); at least 2 required",
+                    mover.mover_id,
+                    mover.name,
+                    mover.path,
+                    resolved.len()
+                ),
+            ));
+        }
+        if (mover.origin - resolved[0]).length() > KINEMATIC_WAYPOINT_MIN_SEGMENT_LENGTH {
+            return Err(section_validation(
+                "KinematicGeometry",
+                format!(
+                    "mover {} (`{}`) origin {:?} must match first waypoint `{}` at {:?}",
+                    mover.mover_id, mover.name, mover.origin, mover.path, resolved[0]
+                ),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn resolve_kinematic_waypoint_chain(
+    mover_id: u32,
+    mover_name: &str,
+    path: &str,
+    waypoints: &[LoadedKinematicWaypoint],
+    waypoint_indices: &HashMap<&str, usize>,
+) -> Result<Vec<Vec3>, PrlLoadError> {
+    if path.is_empty() {
+        return Err(section_validation(
+            "KinematicGeometry",
+            format!("mover {mover_id} (`{mover_name}`) has an empty path"),
+        ));
+    }
+
+    let mut positions: Vec<Vec3> = Vec::new();
+    let mut seen = HashSet::new();
+    let mut current = path;
+    loop {
+        if !seen.insert(current.to_string()) {
+            return Err(section_validation(
+                "KinematicGeometry",
+                format!("mover {mover_id} (`{mover_name}`) waypoint chain cycles at `{current}`"),
+            ));
+        }
+        let Some(&index) = waypoint_indices.get(current) else {
+            return Err(section_validation(
+                "KinematicGeometry",
+                format!(
+                    "mover {mover_id} (`{mover_name}`) references unknown waypoint `{current}`"
+                ),
+            ));
+        };
+        let waypoint = &waypoints[index];
+        if let Some(previous) = positions.last() {
+            if (*previous - waypoint.origin).length() <= KINEMATIC_WAYPOINT_MIN_SEGMENT_LENGTH {
+                return Err(section_validation(
+                    "KinematicGeometry",
+                    format!(
+                        "mover {mover_id} (`{mover_name}`) path has zero-length segment ending at waypoint `{}`",
+                        waypoint.name
+                    ),
+                ));
+            }
+        }
+        positions.push(waypoint.origin);
+        if waypoint.next.is_empty() {
+            break;
+        }
+        current = waypoint.next.as_str();
+    }
+    Ok(positions)
 }
 
 pub(crate) fn convert_cell_locator_section(
@@ -1915,6 +2068,37 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
             None => Vec::new(),
         };
 
+    // Optional — absent or empty means the level has no kinematic movers.
+    let kinematic_geometry: KinematicGeometry = match prl_format::read_section_data(
+        &mut cursor,
+        &meta,
+        SectionId::KinematicGeometry as u32,
+    )? {
+        Some(data) => {
+            let section = KinematicGeometrySection::from_bytes(&data)
+                .map_err(|err| section_validation_from_error("KinematicGeometry", err))?;
+            convert_kinematic_geometry_section(section)?
+        }
+        None => KinematicGeometry::default(),
+    };
+    let kinematic_vertex_count: usize = kinematic_geometry
+        .movers
+        .iter()
+        .map(|mover| mover.vertices.len())
+        .sum();
+    let kinematic_index_count: usize = kinematic_geometry
+        .movers
+        .iter()
+        .map(|mover| mover.indices.len())
+        .sum();
+    log::info!(
+        "[PRL] KinematicGeometry: {} movers, {} waypoints, {} vertices, {} indices",
+        kinematic_geometry.movers.len(),
+        kinematic_geometry.waypoints.len(),
+        kinematic_vertex_count,
+        kinematic_index_count,
+    );
+
     // Required — carries `initial_gravity` alongside fog volumes. Absence = pre-gravity PRL;
     // rejected so the engine never silently falls back to a hardcoded default.
     let (fog_volumes, fog_pixel_scale, initial_gravity): (Vec<FogVolumeRecord>, u32, f32) =
@@ -2117,6 +2301,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         shadowmask_atlas,
         data_script,
         map_entities,
+        kinematic_geometry,
         fog_volumes,
         fog_pixel_scale,
         initial_gravity,
@@ -2129,6 +2314,10 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use postretro_level_format::geometry::{FaceMeta as PrlFaceMeta, Vertex as PrlVertex};
+    use postretro_level_format::kinematic_geometry::{
+        KINEMATIC_GEOMETRY_VERSION, KinematicMoverRecord, KinematicWaypointRecord,
+    };
 
     fn matching_direct_and_base_sh() -> (DirectShVolumeSection, OctahedralShVolumeSection) {
         let mut direct = DirectShVolumeSection::placeholder();
@@ -2187,6 +2376,125 @@ mod tests {
             cell_index: ALPHA_LIGHT_LEAF_UNASSIGNED,
             shadow_type: ShadowType::StaticLightMap,
         }
+    }
+
+    fn sample_kinematic_vertex(position: [f32; 3]) -> PrlVertex {
+        PrlVertex::new(
+            position,
+            [0.25, 0.5],
+            [0.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            true,
+            [0.0, 0.0],
+            0,
+        )
+    }
+
+    fn sample_kinematic_section() -> KinematicGeometrySection {
+        KinematicGeometrySection {
+            version: KINEMATIC_GEOMETRY_VERSION,
+            movers: vec![KinematicMoverRecord {
+                mover_id: 7,
+                name: "lift".to_string(),
+                tags: vec!["platform".to_string()],
+                origin: [1.0, 2.0, 3.0],
+                path: "a".to_string(),
+                speed: 2.0,
+                wait_ms: 125.0,
+                move_mode: 1,
+                start_on_spawn: true,
+                vertices: vec![
+                    sample_kinematic_vertex([0.0, 0.0, 0.0]),
+                    sample_kinematic_vertex([1.0, 0.0, 0.0]),
+                    sample_kinematic_vertex([0.0, 1.0, 0.0]),
+                ],
+                indices: vec![0, 1, 2],
+                face_meta: vec![PrlFaceMeta {
+                    leaf_index: 0,
+                    texture_index: 0,
+                }],
+            }],
+            waypoints: vec![
+                KinematicWaypointRecord {
+                    name: "a".to_string(),
+                    next: "b".to_string(),
+                    origin: [1.0, 2.0, 3.0],
+                },
+                KinematicWaypointRecord {
+                    name: "b".to_string(),
+                    next: String::new(),
+                    origin: [3.0, 2.0, 3.0],
+                },
+            ],
+        }
+    }
+
+    fn assert_kinematic_validation_message(err: PrlLoadError, expected: &str) {
+        match err {
+            PrlLoadError::SectionValidation { section, message } => {
+                assert_eq!(section, "KinematicGeometry");
+                assert!(
+                    message.contains(expected),
+                    "expected validation message to contain `{expected}`, got `{message}`"
+                );
+            }
+            other => panic!("unexpected validation error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn kinematic_geometry_rejects_duplicate_mover_ids() {
+        let mut section = sample_kinematic_section();
+        section.movers.push(section.movers[0].clone());
+
+        let err = convert_kinematic_geometry_section(section).unwrap_err();
+
+        assert_kinematic_validation_message(err, "duplicate mover_id");
+    }
+
+    #[test]
+    fn kinematic_geometry_rejects_empty_mover_geometry() {
+        let mut section = sample_kinematic_section();
+        section.movers[0].vertices.clear();
+        section.movers[0].indices.clear();
+
+        let err = convert_kinematic_geometry_section(section).unwrap_err();
+
+        assert_kinematic_validation_message(err, "geometry must contain vertices and indices");
+    }
+
+    #[test]
+    fn kinematic_geometry_rejects_zero_length_waypoint_segments() {
+        let mut section = sample_kinematic_section();
+        section.waypoints[1].origin = section.waypoints[0].origin;
+
+        let err = convert_kinematic_geometry_section(section).unwrap_err();
+
+        assert_kinematic_validation_message(err, "zero-length segment");
+    }
+
+    #[test]
+    fn kinematic_geometry_rejects_near_zero_waypoint_segments() {
+        let mut section = sample_kinematic_section();
+        section.waypoints[1].origin = [
+            section.waypoints[0].origin[0] + KINEMATIC_WAYPOINT_MIN_SEGMENT_LENGTH * 0.5,
+            section.waypoints[0].origin[1],
+            section.waypoints[0].origin[2],
+        ];
+
+        let err = convert_kinematic_geometry_section(section).unwrap_err();
+
+        assert_kinematic_validation_message(err, "zero-length segment");
+    }
+
+    #[test]
+    fn kinematic_geometry_rejects_mover_origin_that_differs_from_first_waypoint() {
+        let mut section = sample_kinematic_section();
+        section.movers[0].origin[0] += KINEMATIC_WAYPOINT_MIN_SEGMENT_LENGTH * 2.0;
+
+        let err = convert_kinematic_geometry_section(section).unwrap_err();
+
+        assert_kinematic_validation_message(err, "must match first waypoint");
     }
 
     #[test]

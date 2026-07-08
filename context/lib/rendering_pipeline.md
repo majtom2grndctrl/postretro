@@ -41,6 +41,8 @@ Portal traversal is the sole visibility path.
 
 Loader parses PRL via the `postretro-level-format` crate. Uploads the global vertex/index buffer and BVH arrays to GPU storage buffers. Matches PNG textures by name (checkerboard placeholder for missing albedo, neutral normal for missing normal map). Renderer performs all GPU uploads and returns opaque handles — raw PRL types never cross into renderer code.
 
+Kinematic brush movers load from PRL `KinematicGeometry` as a renderer-owned dynamic geometry path. Their vertices/indices are uploaded separately from the static world BVH/indirect path; game logic supplies per-frame mover instances and interpolated transforms.
+
 ---
 
 ## 4. Lighting
@@ -174,6 +176,8 @@ One `multi_draw_indexed_indirect` call per material bucket. Depth loaded from th
 - Output: `albedo × (static_direct + indirect_sh + Σ dynamic_direct)`.
 
 Depth testing and back-face culling are permanent from this pass forward.
+
+Kinematic brush movers draw through a dedicated dynamic world-geometry pass after opaque world geometry. The pass reuses renderer-owned material/light resources where compatible, but never inserts mover geometry into the static BVH or static indirect draw buffers.
 
 ### 7.4 Billboard Sprite Pass
 

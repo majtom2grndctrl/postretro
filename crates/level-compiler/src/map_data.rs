@@ -129,6 +129,48 @@ pub struct MapEntityRecord {
     pub tags: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KinematicMoveMode {
+    Once,
+    PingPong,
+}
+
+impl KinematicMoveMode {
+    pub fn to_wire(self) -> u8 {
+        match self {
+            Self::Once => 0,
+            Self::PingPong => 1,
+        }
+    }
+}
+
+/// Brush-entity mover extracted from authored `kinematic_mover` entities.
+///
+/// `origin` is resolved after waypoint validation to the first waypoint in the
+/// path. `authored_origin` is the optional brush-entity origin KVP, retained
+/// only for diagnostics.
+#[derive(Debug, Clone)]
+pub struct MapKinematicMover {
+    pub mover_id: u32,
+    pub name: String,
+    pub tags: Vec<String>,
+    pub origin: DVec3,
+    pub authored_origin: Option<DVec3>,
+    pub path: String,
+    pub speed: f32,
+    pub wait_ms: f32,
+    pub move_mode: KinematicMoveMode,
+    pub start_on_spawn: bool,
+    pub brush_volumes: Vec<BrushVolume>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MapKinematicWaypoint {
+    pub name: String,
+    pub next: String,
+    pub origin: DVec3,
+}
+
 /// Light shape. Governs which fields of `MapLight` are meaningful.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LightType {
@@ -467,6 +509,12 @@ pub struct MapData {
     /// into `fog_volumes` during parsing rather than emitted here. See the
     /// MapEntity PRL section in `context/lib/build_pipeline.md`.
     pub map_entities: Vec<MapEntityRecord>,
+    /// Kinematic brush movers and point waypoints for the PRL
+    /// `KinematicGeometry` section. These are compiler-owned special entities:
+    /// movers are brush entities and waypoints are point entities, and neither
+    /// flows through generic runtime classname dispatch.
+    pub kinematic_movers: Vec<MapKinematicMover>,
+    pub kinematic_waypoints: Vec<MapKinematicWaypoint>,
     /// Per-region volumetric fog volumes resolved from `fog_volume` brush
     /// entities and `fog_lamp` / `fog_tube` point entities. AABBs are in engine
     /// space (Y-up, meters). See `context/lib/build_pipeline.md`.

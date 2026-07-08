@@ -33,12 +33,13 @@ for kill credit, damage buckets, and last-hit attribution.
 - Weapon hitscan damage stamps the weapon's effective credit source.
 - `applyDamage` reaction damage stamps an environmental/script source id.
 - Enemy AI attack damage stamps an enemy-attack source id.
-- A bounded per-target contributor ledger stored with the target's health state
-  or an adjacent health-owned side table.
-- Contributor recording happens only inside the damage chokepoint; lifecycle
-  clearing happens in the death sweep and player-reset paths.
-- Death sweep snapshots ledger facts before despawn or death latch, then clears
-  ledger state for despawned and player-death/reset cases.
+- A bounded per-target contributor ledger stored directly in the target's
+  `HealthComponent`.
+- Contributor recording happens only inside the damage chokepoint. Clearing is
+  automatic: entity despawn drops the component, and level reload rebuilds the
+  registry.
+- Death sweep snapshots ledger facts before the despawn or death latch; clearing
+  then follows automatically from the despawn (component drop).
 - Tests cover descriptor parsing, SDK type generation, weapon damage, reaction
   damage, enemy damage, bounded contributors, death-sweep snapshot, and ledger
   clearing.
@@ -80,8 +81,10 @@ for kill credit, damage buckets, and last-hit attribution.
   damage accountable through an overflow bucket or equivalent reduced entry.
 - [ ] A death sweep report contains a snapshot of the killed target's ledger
   facts before the target is despawned or death-latched.
-- [ ] Ledger state is cleared when a target is despawned for death or when a
-  player reset lifecycle explicitly starts a fresh health life.
+- [ ] Ledger state is gone once the target despawns (component drop) or the
+  level reloads. In-place respawn or checkpoint reset — same `HealthComponent`,
+  HP restored — is deferred to a future respawn spec; the engine ships no such
+  path today.
 - [ ] No new combat reward, score, XP, damage-number, or grant behavior runs as
   part of this plan.
 - [ ] No new `unsafe` is introduced.
@@ -98,9 +101,11 @@ preserving and should move tests with the logic where practical.
 ### Task 2: Descriptor and effective source id
 
 Add `creditSource` to `WeaponDescriptor` and `WeaponComponent`, preserving live
-cooldown/trigger state on hot reload. Validate it as a non-empty stable
-identifier. Parse it through both descriptor runtimes, add it to typedef
-registration, and update generated SDK fixtures.
+cooldown/trigger state on hot reload. Validate it as a non-empty ASCII
+identifier matching `[A-Za-z0-9_.:-]`, max 64 bytes — a charset that stays safe
+later as a categorical predicate value and a per-key store-slot segment. Parse
+it through both descriptor runtimes, add it to typedef registration, and update
+generated SDK fixtures.
 
 The spawn path must know the descriptor's canonical equip name to provide the
 default. If the current materialization path only hands `WeaponDescriptor` to
@@ -126,13 +131,24 @@ producer-side warn/no-op behavior.
 
 ### Task 4: Health-owned bounded ledger
 
-Add a contributor ledger owned by the health subsystem. It may live inside
-`HealthComponent` or in a health-owned side table if that keeps component
-serialization cleaner.
+Add a contributor ledger stored directly in `HealthComponent`. The engine has
+no component save/load and replication is state-slot-schema-based, so transient
+combat history costs nothing there; in-component storage also clears the ledger
+automatically on component drop.
 
 Ledger entry facts for this slice: source id, accumulated post-mitigation
 damage, hit count, last-hit damage, last-hit zone when known, last attacker id
-when known, and last weapon id when known.
+when known, and last weapon id when known. The source id is the durable
+attribution key; the attacker and weapon `EntityId`s are best-effort convenience
+and may be stale by kill time (entities despawn — callers must not hold ids
+across destruction). Downstream categorical facts, such as last-hit weapon
+identity, derive from the stable source id, not the `EntityId`.
+
+Also record a per-target `first_damage_tick`, set once on the first contribution
+and distinct from the per-source entry facts, so downstream `timeToKill`
+(first-damage-to-death) is computable. Recording it requires the chokepoint to
+have the current game tick, supplied as a chokepoint parameter or on the damage
+context.
 
 Pin a small capacity constant. When capacity is exceeded, collapse excess
 distinct sources into a deterministic overflow entry or evict by a deterministic
@@ -148,22 +164,25 @@ script source such as `script.applyDamage`. Enemy AI uses a fixed source such as
 `enemy.attack` plus attacker id from the brain entity.
 
 Keep zone-multiplier scaling at the weapon damage site before the payload
-reaches the chokepoint, so the ledger records the amount that actually changed
-HP.
+reaches the chokepoint, so the ledger records the post-mitigation payload the
+chokepoint receives. That amount is unclamped: an overkill blow records the full
+post-mitigation payload, not the remaining HP.
 
 ### Task 6: Death-report snapshot and clearing
 
 Extend `DeathReport` (currently `killed_tags: Vec<Vec<String>>` plus
 `player_died: bool` — no `EntityId` crosses the sweep boundary) with a parallel
-ledger-snapshot structure for killed entities and player deaths. The sweep must
+ledger-snapshot structure for killed entities and player deaths, carrying the
+per-source entry facts plus the target's `first_damage_tick`. The sweep must
 capture ledger facts before the pass-2 despawn/latch writes, since the entity
 ids and components are gone once the sweep returns. The progress tracker still
 receives tags as today; later combat-event specs consume the new snapshots.
 
-Clear ledger state when the entity leaves the world or resets to a fresh health
-life. Brain enemies keep their ledger after the death latch only long enough for
-the death report snapshot; they must not re-report or keep accumulating damage
-while waiting for animation despawn.
+Brain enemies keep their ledger through the death latch only until the snapshot
+is captured; the `death_handled` gate from Task 3 stops further accumulation,
+and they must not re-report while waiting for animation despawn. Despawn then
+drops the component and its ledger. In-place respawn reset is deferred to a
+future respawn spec.
 
 ### Task 7: Tests and docs
 
@@ -257,13 +276,8 @@ Split-before-extend:
 
 ## Open questions
 
-- Exact identifier validation for `creditSource`: conservative recommendation is
-  non-empty ASCII `[A-Za-z0-9_.:-]`, max 64 bytes. This is enough for
-  `weapon.pistol`, `fire`, and `enemy.attack` while staying easy to serialize
-  later.
-- Whether the ledger lives directly on `HealthComponent` or in a health-owned
-  side table. Direct storage is simpler; side table may be cleaner if component
-  serialization should not grow with transient combat history.
-- Whether `applyDamage` should gain an optional authored source id later. This
-  plan deliberately does not add it; the reaction records a fixed script source
-  until combat-handler policy needs finer granularity.
+- `applyDamage` will not gain an optional authored source id here. Attribution
+  is modder-owned in the long run, so an authored source eventually exists — but
+  it lands with the combat-handler authoring API, which this plan lists out of
+  scope. Until then the fixed `script.applyDamage` is a deliberate placeholder,
+  not the endpoint.

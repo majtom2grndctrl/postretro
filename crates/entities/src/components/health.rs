@@ -65,9 +65,9 @@ pub struct DamageContext {
 }
 
 impl DamageContext {
-    pub fn unattributed() -> Self {
+    pub fn new(source_id: impl Into<String>) -> Self {
         Self {
-            source_id: String::new(),
+            source_id: source_id.into(),
             attacker: None,
             weapon: None,
             zone: None,
@@ -324,11 +324,6 @@ pub fn pawn_with_health(registry: &EntityRegistry) -> Option<(EntityId, HealthCo
         .map(|health| (pawn, health.clone()))
 }
 
-/// Compatibility shim for producers not yet migrated to contextual damage.
-pub fn apply_damage(registry: &mut EntityRegistry, id: EntityId, payload: &DamagePayload) {
-    apply_damage_with_context(registry, id, payload, DamageContext::unattributed());
-}
-
 /// The damage chokepoint every producer routes through. Subtracts the payload's
 /// `amount` from the entity's current HP, flooring at zero. No-ops (returns
 /// without error) when the entity carries no `Health` component or no longer
@@ -428,7 +423,12 @@ mod tests {
         reg.set_component(id, HealthComponent::from_descriptor(&descriptor(100.0)))
             .unwrap();
 
-        apply_damage(&mut reg, id, &DamagePayload { amount: 25.0 });
+        apply_damage_with_context(
+            &mut reg,
+            id,
+            &DamagePayload { amount: 25.0 },
+            DamageContext::new("test.health"),
+        );
 
         assert_eq!(
             reg.get_component::<HealthComponent>(id).unwrap().current,
@@ -443,7 +443,12 @@ mod tests {
         reg.set_component(id, HealthComponent::from_descriptor(&descriptor(10.0)))
             .unwrap();
 
-        apply_damage(&mut reg, id, &DamagePayload { amount: 999.0 });
+        apply_damage_with_context(
+            &mut reg,
+            id,
+            &DamagePayload { amount: 999.0 },
+            DamageContext::new("test.health"),
+        );
 
         assert_eq!(
             reg.get_component::<HealthComponent>(id).unwrap().current,
@@ -562,8 +567,8 @@ mod tests {
     #[test]
     fn zone_multiplier_scales_payload_amount() {
         // Mirrors the damage-site computation: a listed tag scales the payload,
-        // an unlisted tag and an absent zone both apply 1.0. `apply_damage`
-        // itself stays amount-only (the scaling happens at the fire site).
+        // an unlisted tag and an absent zone both apply 1.0. The chokepoint
+        // stays amount-only (the scaling happens at the fire site).
         let mut desc = descriptor(100.0);
         desc.zone_multipliers.insert("head".to_string(), 1.5);
         let component = HealthComponent::from_descriptor(&desc);
@@ -584,7 +589,12 @@ mod tests {
         let id = reg.spawn(Transform::default());
 
         // No Health component attached: must not error or panic.
-        apply_damage(&mut reg, id, &DamagePayload { amount: 25.0 });
+        apply_damage_with_context(
+            &mut reg,
+            id,
+            &DamagePayload { amount: 25.0 },
+            DamageContext::new("test.health"),
+        );
 
         assert!(reg.get_component::<HealthComponent>(id).is_err());
     }

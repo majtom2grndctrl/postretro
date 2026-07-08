@@ -17,7 +17,10 @@ use crate::nav::NavGraph;
 use crate::scripting_systems;
 use crate::scripting_systems::hit_zones::HitZoneStore;
 use crate::weapon::{self, FireButtonState, WeaponFireCommand};
-use postretro_entities::components::health::apply_damage;
+use postretro_entities::components::health::{
+    DamageContext, HealthComponent, apply_damage_with_context,
+};
+use postretro_entities::components::weapon::{UNKNOWN_WEAPON_CREDIT_SOURCE, WeaponComponent};
 use postretro_entities::{ComponentKind, EntityId, EntityRegistry};
 use postretro_scripting_core::reaction_dispatch::ProgressTracker;
 
@@ -239,28 +242,63 @@ fn run_weapon_fire_tick(
     );
     if let Some(impact) = events.impact.as_ref() {
         weapon::spawn_impact_effect_at(&mut registry, impact.point, impact.normal);
-        if let (Some(target), weapon::ActivationOutcome::Hit(payload)) =
-            (impact.target, impact.outcome)
-        {
-            let multiplier = impact
-                .zone
-                .as_deref()
-                .and_then(|tag| {
-                    registry
-                        .get_component::<postretro_entities::components::health::HealthComponent>(
-                            target,
-                        )
-                        .ok()
-                        .and_then(|health| health.zone_multipliers.get(tag).copied())
-                })
-                .unwrap_or(1.0);
-            let scaled = weapon::DamagePayload {
-                amount: payload.amount * multiplier,
-            };
-            apply_damage(&mut registry, target, &scaled);
-        }
+        apply_weapon_impact_damage(&mut registry, active_wieldable, impact);
     }
     events.event_names()
+}
+
+fn apply_weapon_impact_damage(
+    registry: &mut EntityRegistry,
+    active_wieldable: Option<EntityId>,
+    impact: &weapon::WeaponImpact,
+) {
+    let (Some(target), weapon::ActivationOutcome::Hit(payload)) = (impact.target, impact.outcome)
+    else {
+        return;
+    };
+    let Some(weapon_id) = active_wieldable else {
+        log::warn!("[Weapon] hitscan impact had no active wieldable; dropping damage");
+        return;
+    };
+    let Ok(component) = registry.get_component::<WeaponComponent>(weapon_id) else {
+        log::warn!("[Weapon] active wieldable {weapon_id} has no WeaponComponent; dropping damage");
+        return;
+    };
+
+    let effective = component.effective();
+    let source_id = if effective.credit_source.is_empty() {
+        log::warn!(
+            "[Weapon] active wieldable {weapon_id} resolved an empty credit source; using {UNKNOWN_WEAPON_CREDIT_SOURCE}"
+        );
+        UNKNOWN_WEAPON_CREDIT_SOURCE.to_string()
+    } else {
+        effective.credit_source
+    };
+    let attacker = local_movement_pawn(registry);
+    let multiplier = impact
+        .zone
+        .as_deref()
+        .and_then(|tag| {
+            registry
+                .get_component::<HealthComponent>(target)
+                .ok()
+                .and_then(|health| health.zone_multipliers.get(tag).copied())
+        })
+        .unwrap_or(1.0);
+    let scaled = weapon::DamagePayload {
+        amount: payload.amount * multiplier,
+    };
+    apply_damage_with_context(
+        registry,
+        target,
+        &scaled,
+        DamageContext {
+            source_id,
+            attacker,
+            weapon: Some(weapon_id),
+            zone: impact.zone.clone(),
+        },
+    );
 }
 
 fn run_death_sweep(
@@ -280,4 +318,65 @@ fn run_death_sweep(
         events.push(scripting_systems::health::PLAYER_DIED_EVENT.to_string());
     }
     events
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use postretro_entities::Transform;
+    use postretro_foundation::{FireMode, ResolutionMode, WeaponDescriptor};
+
+    fn weapon_component(credit_source: &str) -> WeaponComponent {
+        WeaponComponent::from_descriptor(&WeaponDescriptor {
+            damage: 10.0,
+            range: 100.0,
+            cooldown_ms: 100.0,
+            fire_mode: FireMode::Semi,
+            resolution: ResolutionMode::Hitscan,
+            credit_source: Some(credit_source.to_string()),
+        })
+    }
+
+    #[test]
+    fn weapon_impact_damage_records_effective_source_weapon_zone_and_scaled_payload() {
+        let mut registry = EntityRegistry::new();
+        let weapon_id = registry.spawn(Transform::default());
+        registry
+            .set_component(weapon_id, weapon_component("weapon.test.rifle"))
+            .unwrap();
+
+        let target = registry.spawn(Transform::default());
+        let mut health = HealthComponent {
+            max: 100.0,
+            current: 100.0,
+            hitbox: None,
+            death_handled: false,
+            zone_multipliers: Default::default(),
+            contributor_ledger: Default::default(),
+        };
+        health.zone_multipliers.insert("head".to_string(), 2.5);
+        registry.set_component(target, health).unwrap();
+
+        let impact = weapon::WeaponImpact {
+            point: Vec3::ZERO,
+            normal: Vec3::Y,
+            target: Some(target),
+            zone: Some("head".to_string()),
+            outcome: weapon::ActivationOutcome::Hit(weapon::DamagePayload { amount: 10.0 }),
+        };
+
+        apply_weapon_impact_damage(&mut registry, Some(weapon_id), &impact);
+
+        let health = registry.get_component::<HealthComponent>(target).unwrap();
+        assert_eq!(health.current, 75.0);
+        let entries = health.contributor_ledger.entries();
+        assert_eq!(entries.len(), 1);
+        let entry = &entries[0];
+        assert_eq!(entry.source_id, "weapon.test.rifle");
+        assert_eq!(entry.accumulated_damage, 25.0);
+        assert_eq!(entry.last_hit_damage, 25.0);
+        assert_eq!(entry.last_hit_zone.as_deref(), Some("head"));
+        assert_eq!(entry.last_weapon, Some(weapon_id));
+        assert_eq!(entry.last_attacker, None);
+    }
 }

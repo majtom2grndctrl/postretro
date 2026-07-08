@@ -15,7 +15,7 @@
 // See: context/lib/entity_model.md §2 (engine components), §5 (fixed-tick game
 //      logic), §7 (collision)
 //      context/lib/scripting.md §1 (scripts declare, Rust executes),
-//      §10.5 (the damage chokepoint — all damage routes through `apply_damage`)
+//      §10.5 (the contextual damage chokepoint)
 //      crates/postretro/src/scripting/components/brain.rs (BrainComponent /
 //      LogicalState / AiTuning — the FSM data this tick drives)
 //      crates/postretro/src/agent_steering.rs (set_destination /
@@ -33,7 +33,9 @@ use crate::combat_positioning::{
 };
 use crate::nav::{NavGraph, distance_xz};
 use postretro_entities::components::brain::{AiStateMap, AiTuning, BrainComponent, LogicalState};
-use postretro_entities::components::health::{HealthComponent, apply_damage};
+use postretro_entities::components::health::{
+    DamageContext, HealthComponent, apply_damage_with_context,
+};
 use postretro_entities::components::mesh::{
     SwitchResult, restart_animation_clip, switch_animation_state,
 };
@@ -46,6 +48,7 @@ use postretro_foundation::DamagePayload;
 /// names it raised and the app drains them through `fire_named_event` after the
 /// tick loop settles.
 pub(crate) const ENEMY_ATTACK_EVENT: &str = "enemyAttack";
+const ENEMY_ATTACK_SOURCE_ID: &str = "enemy.attack";
 
 /// Think-stride bands. Target acquisition is time-sliced by player distance:
 /// near enemies re-evaluate every tick, mid enemies every few ticks, distant
@@ -802,16 +805,22 @@ pub(crate) fn run_ai_tick_with_navigation(
         }
 
         // Damage: route the configured amount through the chokepoint to the
-        // SELECTED target id, and raise the attack event. `apply_damage` no-ops
+        // SELECTED target id, and raise the attack event. The chokepoint no-ops
         // on a non-health / stale target, but attacks are only marked above
         // after confirming this selected pawn currently has live Health.
         if outcome.attacked {
             if let Some(target) = outcome.target {
-                apply_damage(
+                apply_damage_with_context(
                     registry,
                     target.entity,
                     &DamagePayload {
                         amount: outcome.brain.tuning.attack_damage,
+                    },
+                    DamageContext {
+                        source_id: ENEMY_ATTACK_SOURCE_ID.to_string(),
+                        attacker: Some(outcome.id),
+                        weapon: None,
+                        zone: None,
                     },
                 );
             }

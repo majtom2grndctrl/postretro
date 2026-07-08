@@ -1,16 +1,20 @@
 // `applyDamage` reaction primitive: route a fixed damage amount through the
-// `apply_damage` health chokepoint for every entity matching the reaction's
+// contextual health chokepoint for every entity matching the reaction's
 // tag. The player-side damage stand-in and the only non-weapon damage producer
 // in M10; death is resolved by the next death-sweep pass, never here.
 // See: context/lib/scripting.md §10 (Reaction Primitives)
 
 use serde::{Deserialize, Serialize};
 
-use postretro_entities::components::health::{HealthComponent, apply_damage};
+use postretro_entities::components::health::{
+    DamageContext, HealthComponent, apply_damage_with_context,
+};
 use postretro_entities::{EntityId, EntityRegistry};
 use postretro_foundation::DamagePayload;
 
 use postretro_scripting_core::reaction_registry::{ReactionError, ReactionPrimitiveRegistry};
+
+const APPLY_DAMAGE_SOURCE_ID: &str = "script.applyDamage";
 
 pub(crate) fn register_health_reaction_primitives(registry: &mut ReactionPrimitiveRegistry) {
     registry.register("applyDamage", |reg, targets, args| {
@@ -27,7 +31,7 @@ pub(crate) struct ApplyDamageArgs {
     pub(crate) amount: f32,
 }
 
-/// Apply `args.amount` of damage to every target via the `apply_damage`
+/// Apply `args.amount` of damage to every target via the contextual damage
 /// chokepoint.
 ///
 /// Per-dispatch / per-target behavior:
@@ -67,7 +71,12 @@ pub(crate) fn dispatch(
             log::warn!("[Scripting] applyDamage: entity {id} has no HealthComponent; skipping");
             continue;
         }
-        apply_damage(registry, id, &payload);
+        apply_damage_with_context(
+            registry,
+            id,
+            &payload,
+            DamageContext::new(APPLY_DAMAGE_SOURCE_ID),
+        );
     }
 
     Ok(())
@@ -110,6 +119,26 @@ mod tests {
         dispatch(&mut reg, &[a, b], &ApplyDamageArgs { amount: 25.0 }).unwrap();
         assert_eq!(hp(&reg, a), 75.0);
         assert_eq!(hp(&reg, b), 25.0);
+    }
+
+    #[test]
+    fn apply_damage_reaction_records_script_source_and_aggregates() {
+        let mut reg = EntityRegistry::new();
+        let target = spawn_health(&mut reg, 100.0);
+
+        dispatch(&mut reg, &[target], &ApplyDamageArgs { amount: 10.0 }).unwrap();
+        dispatch(&mut reg, &[target], &ApplyDamageArgs { amount: 15.0 }).unwrap();
+
+        let health = reg.get_component::<HealthComponent>(target).unwrap();
+        let entries = health.contributor_ledger.entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].source_id, APPLY_DAMAGE_SOURCE_ID);
+        assert_eq!(entries[0].accumulated_damage, 25.0);
+        assert_eq!(entries[0].hit_count, 2);
+        assert_eq!(entries[0].last_hit_damage, 15.0);
+        assert_eq!(entries[0].last_hit_zone, None);
+        assert_eq!(entries[0].last_attacker, None);
+        assert_eq!(entries[0].last_weapon, None);
     }
 
     #[test]

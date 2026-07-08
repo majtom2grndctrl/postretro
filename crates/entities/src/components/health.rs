@@ -29,9 +29,8 @@ pub struct Hitbox {
 
 /// Facts supplied to [`HealthComponent::record_contributor_damage`].
 ///
-/// This is intentionally narrower than the future damage chokepoint context:
-/// it only describes the already-mitigated hit that should be recorded in the
-/// target-owned contributor ledger.
+/// This is intentionally narrower than [`DamageContext`]: it describes only
+/// the already-mitigated hit recorded in the target-owned contributor ledger.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ContributorLedgerRecord {
     pub source_id: String,

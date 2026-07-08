@@ -1,6 +1,6 @@
 # E16 - Source ID Ledger
 
-> **Status:** ready - reviewed, awaiting implementation.
+> **Status:** in progress - implementation underway.
 >
 > **Epic:** 16 - Combat.
 >

@@ -94,8 +94,8 @@ pub(crate) fn sweep_deaths(registry: &mut EntityRegistry) -> DeathReport {
         let ComponentValue::Health(health) = value else {
             continue;
         };
-        // `<= 0.0`, not `== 0.0`: `apply_damage` floors HP at exactly `0.0` (the
-        // sole damage chokepoint), so today HP never goes negative or non-finite.
+        // `<= 0.0`, not `== 0.0`: the contextual damage chokepoint floors HP at
+        // exactly `0.0`, so today HP never goes negative or non-finite.
         // The guard defends against a future direct write that could: a negative
         // OR a NaN `current` (`NaN <= 0.0` is false, which would otherwise leave a
         // corrupt entity immortal). The AI tick's death check (`ai.rs`) uses the

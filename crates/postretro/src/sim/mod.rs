@@ -288,6 +288,13 @@ fn apply_weapon_impact_damage(
     let scaled = weapon::DamagePayload {
         amount: payload.amount * multiplier,
     };
+    if !scaled.amount.is_finite() {
+        log::warn!(
+            "[Weapon] scaled damage amount {} is non-finite; dropping damage",
+            scaled.amount
+        );
+        return;
+    }
     apply_damage_with_context(
         registry,
         target,
@@ -378,5 +385,41 @@ mod tests {
         assert_eq!(entry.last_hit_zone.as_deref(), Some("head"));
         assert_eq!(entry.last_weapon, Some(weapon_id));
         assert_eq!(entry.last_attacker, None);
+    }
+
+    #[test]
+    fn weapon_impact_damage_skips_non_finite_scaled_payload() {
+        let mut registry = EntityRegistry::new();
+        let weapon_id = registry.spawn(Transform::default());
+        registry
+            .set_component(weapon_id, weapon_component("weapon.test.rifle"))
+            .unwrap();
+
+        let target = registry.spawn(Transform::default());
+        let mut health = HealthComponent {
+            max: 100.0,
+            current: 100.0,
+            hitbox: None,
+            death_handled: false,
+            zone_multipliers: Default::default(),
+            contributor_ledger: Default::default(),
+        };
+        health.zone_multipliers.insert("over".to_string(), 2.0);
+        registry.set_component(target, health).unwrap();
+
+        let impact = weapon::WeaponImpact {
+            point: Vec3::ZERO,
+            normal: Vec3::Y,
+            target: Some(target),
+            zone: Some("over".to_string()),
+            outcome: weapon::ActivationOutcome::Hit(weapon::DamagePayload { amount: f32::MAX }),
+        };
+
+        apply_weapon_impact_damage(&mut registry, Some(weapon_id), &impact);
+
+        let health = registry.get_component::<HealthComponent>(target).unwrap();
+        assert_eq!(health.current, 100.0);
+        assert!(health.contributor_ledger.entries().is_empty());
+        assert!(health.contributor_ledger.overflow().is_none());
     }
 }

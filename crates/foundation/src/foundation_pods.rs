@@ -2,8 +2,8 @@
 // See: context/lib/scripting.md §12 (Crate Architecture)
 
 /// A unit of damage applied to an entity's `Health` component through
-/// `apply_damage`. Consumers must not assume it stays amount-only — damage
-/// types, resistances, and falloff are future fields.
+/// the contextual damage chokepoint. Payload stays amount-focused; entity
+/// attribution travels beside it in higher layers.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DamagePayload {
     pub amount: f32,

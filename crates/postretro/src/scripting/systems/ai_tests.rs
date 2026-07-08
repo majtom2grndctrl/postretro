@@ -165,6 +165,7 @@ fn spawn_player(reg: &mut EntityRegistry, pos: Vec3) -> EntityId {
             hitbox: None,
             death_handled: false,
             zone_multipliers: std::collections::HashMap::new(),
+            contributor_ledger: Default::default(),
         },
     )
     .unwrap();
@@ -201,6 +202,7 @@ fn spawn_enemy(
             hitbox: None,
             death_handled: false,
             zone_multipliers: std::collections::HashMap::new(),
+            contributor_ledger: Default::default(),
         },
     )
     .unwrap();
@@ -1047,6 +1049,7 @@ fn no_attack_or_event_when_player_already_dead() {
             hitbox: None,
             death_handled: false,
             zone_multipliers: std::collections::HashMap::new(),
+            contributor_ledger: Default::default(),
         },
     )
     .unwrap();

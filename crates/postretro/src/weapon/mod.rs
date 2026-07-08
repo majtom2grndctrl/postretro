@@ -377,6 +377,7 @@ mod tests {
                     }),
                     death_handled: false,
                     zone_multipliers: std::collections::HashMap::new(),
+                    contributor_ledger: Default::default(),
                 },
             )
             .expect("health component should attach");
@@ -882,6 +883,7 @@ mod tests {
                     hitbox: None,
                     death_handled: false,
                     zone_multipliers: std::collections::HashMap::new(),
+                    contributor_ledger: Default::default(),
                 },
             )
             .unwrap();

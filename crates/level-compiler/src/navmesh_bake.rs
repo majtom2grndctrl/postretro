@@ -507,29 +507,22 @@ fn decompose_regions(grid: &WalkGrid) -> Vec<NavRegion> {
         // Grow the x-run from the seed: include the next column only while it
         // carries an unclaimed span within step of the run's previous height.
         let mut prev_h = seed.floor_y;
+        let mut row_heights = vec![seed.floor_y];
         let mut x1 = seed.x + 1;
         while x1 < dim_x {
             match unclaimed_span_within_step(grid, &claimed, x1, seed.z, prev_h, step) {
                 Some(h) => {
                     prev_h = h;
+                    row_heights.push(h);
                     x1 += 1;
                 }
                 None => break,
             }
         }
 
-        // The seed-row span heights, recomputed by the same left-to-right
-        // chaining the x-grow used (each column references its left neighbor's
-        // height) so a climbing x-run carries the right reference per column.
-        let mut row_heights: Vec<f32> = Vec::with_capacity((x1 - seed.x) as usize);
-        let mut chain_h = seed.floor_y;
-        for x in seed.x..x1 {
-            chain_h = span_height_at(grid, x, seed.z, chain_h, step).expect("seed-row span exists");
-            row_heights.push(chain_h);
-        }
-
         // Grow z: accept the next row only if every column in [seed.x, x1)
         // carries an unclaimed span within step of the cell directly below.
+        let mut accepted_rows = vec![row_heights.clone()];
         let mut z1 = seed.z + 1;
         while z1 < dim_z {
             let Some(next_heights) =
@@ -538,20 +531,20 @@ fn decompose_regions(grid: &WalkGrid) -> Vec<NavRegion> {
                 break;
             };
             row_heights = next_heights;
+            accepted_rows.push(row_heights.clone());
             z1 += 1;
         }
 
-        // Claim every span in the rectangle and accumulate floor extent. Each
-        // column references the seed-row height first, then chains downward in z
-        // — the same reference the grow phase accepted the rectangle under.
+        // Claim every span in the rectangle and accumulate floor extent. Use
+        // the exact per-row heights accepted during growth: a locally level
+        // run can accumulate more total float drift than LEVEL_EPS over many
+        // rows, so re-looking-up the seed row from the final row can fail even
+        // though every adjacent row pair is a valid same-level merge.
         let mut fmin = f32::INFINITY;
         let mut fmax = f32::NEG_INFINITY;
-        let mut ref_below = row_heights.clone();
-        for z in seed.z..z1 {
+        for (row, z) in (seed.z..z1).enumerate() {
             for (col, x) in (seed.x..x1).enumerate() {
-                let h =
-                    span_height_at(grid, x, z, ref_below[col], step).expect("claimed span exists");
-                ref_below[col] = h;
+                let h = accepted_rows[row][col];
                 claimed[grid.idx(x, z)].push(h);
                 fmin = fmin.min(h);
                 fmax = fmax.max(h);
@@ -885,6 +878,30 @@ mod tests {
         assert_eq!(r.z1, 8);
         assert!((r.floor_y_min - 0.0).abs() < 1.0e-4);
         assert!((r.floor_y_max - 0.0).abs() < 1.0e-4);
+    }
+
+    #[test]
+    fn region_claim_uses_locally_accepted_row_heights() {
+        // Regression: z-growth accepts a rectangle by comparing each row to the
+        // row directly below. A long run can accumulate more total float drift
+        // than LEVEL_EPS, so claiming from the final row back to the seed row
+        // used to miss the seed span and panic with "claimed span exists".
+        let heights: Vec<Vec<f32>> = (0..8).map(|z| vec![z as f32 * 0.0006]).collect();
+        let grid = WalkGrid {
+            origin: Vec3::ZERO,
+            cell_size: 0.25,
+            dim_x: 1,
+            dim_z: heights.len() as u32,
+            cells: heights,
+        };
+
+        let regions = decompose_regions(&grid);
+
+        assert_eq!(regions.len(), 1);
+        let region = regions[0];
+        assert_eq!((region.x0, region.z0, region.x1, region.z1), (0, 0, 1, 8));
+        assert!((region.floor_y_min - 0.0).abs() < 1.0e-4);
+        assert!((region.floor_y_max - 0.0042).abs() < 1.0e-4);
     }
 
     #[test]

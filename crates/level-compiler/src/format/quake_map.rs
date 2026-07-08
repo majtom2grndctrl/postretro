@@ -41,6 +41,14 @@ pub fn is_light_classname(classname: &str) -> bool {
     LIGHT_CLASSNAMES.contains(&classname)
 }
 
+/// TrenchBroom writes editor groups as `func_group` brush entities. In the
+/// Quake-family adapter these are authoring containers, not runtime entities:
+/// their brushes should participate in the static world exactly as if they had
+/// remained under `worldspawn`.
+pub fn is_editor_group_classname(classname: &str) -> bool {
+    classname == "func_group"
+}
+
 #[derive(Debug, Error)]
 pub enum TranslateError {
     #[error("unknown light classname: {0}")]

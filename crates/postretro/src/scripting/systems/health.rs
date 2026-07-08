@@ -124,7 +124,7 @@ pub(crate) fn sweep_deaths(registry: &mut EntityRegistry) -> DeathReport {
             if health.death_handled {
                 continue;
             }
-            let ledger = ContributorLedgerSnapshot::from_health(&health);
+            let ledger = ContributorLedgerSnapshot::from_health(health);
             let mut updated = health.clone();
             updated.death_handled = true;
             let _ = registry.set_component(id, updated);
@@ -149,7 +149,7 @@ pub(crate) fn sweep_deaths(registry: &mut EntityRegistry) -> DeathReport {
                 // counts down to despawn. Do not re-count or re-despawn.
                 continue;
             }
-            let ledger = ContributorLedgerSnapshot::from_health(&health);
+            let ledger = ContributorLedgerSnapshot::from_health(health);
             let mut updated = health.clone();
             updated.death_handled = true;
             let _ = registry.set_component(id, updated);
@@ -170,7 +170,7 @@ pub(crate) fn sweep_deaths(registry: &mut EntityRegistry) -> DeathReport {
         let ledger = registry
             .get_component::<HealthComponent>(id)
             .ok()
-            .map(|health| ContributorLedgerSnapshot::from_health(&health))
+            .map(ContributorLedgerSnapshot::from_health)
             .unwrap_or_default();
         let tags = registry
             .get_tags(id)
@@ -189,7 +189,7 @@ mod tests {
     use super::*;
     use postretro_entities::components::brain::attach_brain;
     use postretro_entities::components::health::{
-        apply_damage_with_context, ContributorLedgerRecord, DamageContext,
+        ContributorLedgerRecord, DamageContext, apply_damage_with_context,
     };
     use postretro_entities::components::player_movement::PlayerMovementComponent;
     use postretro_entities::registry::Transform;
@@ -503,10 +503,12 @@ mod tests {
             1,
             "death-latched brain must not accumulate later damage"
         );
-        assert!(latched_health
-            .contributor_ledger
-            .recorded_damage_by_source("script.after-latch")
-            .is_none());
+        assert!(
+            latched_health
+                .contributor_ledger
+                .recorded_damage_by_source("script.after-latch")
+                .is_none()
+        );
 
         // The enemy persists at zero HP (awaiting the AI tick's despawn). A
         // later sweep must NOT re-count or re-report the kill (latch holds).

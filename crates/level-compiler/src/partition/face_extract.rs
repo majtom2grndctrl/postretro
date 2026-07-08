@@ -496,7 +496,11 @@ fn monotone_chain_hull(points: &[(f64, f64)]) -> Vec<(f64, f64)> {
         a.0.0
             .partial_cmp(&b.0.0)
             .unwrap_or(std::cmp::Ordering::Equal)
-            .then(a.0.1.partial_cmp(&b.0.1).unwrap_or(std::cmp::Ordering::Equal))
+            .then(
+                a.0.1
+                    .partial_cmp(&b.0.1)
+                    .unwrap_or(std::cmp::Ordering::Equal),
+            )
     });
     pts.dedup_by(|a, b| a.0 == b.0);
 

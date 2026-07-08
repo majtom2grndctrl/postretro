@@ -14,7 +14,7 @@
 
 Record mod-authored combat attribution at the damage chokepoint. Every damage
 application carries a stable source id, and each damaged target keeps a bounded
-contributor ledger until death or reset.
+contributor ledger until it despawns or the level reloads.
 
 This ships no reward policy. It gives later combat-event specs reliable facts
 for kill credit, damage buckets, and last-hit attribution.
@@ -56,6 +56,9 @@ for kill credit, damage buckets, and last-hit attribution.
 - Persisting combat ledgers across save/load.
 - Replicating ledgers to clients. The server/host owns combat damage; later
   combat-event specs decide which derived facts replicate or surface.
+- A first-contribution timestamp for downstream `timeToKill` — deferred to the
+  `onKill` spec, which threads a clock and consumes it; the in-memory ledger
+  makes it cheap to add then.
 
 ## Acceptance criteria
 
@@ -74,6 +77,8 @@ for kill credit, damage buckets, and last-hit attribution.
   entry rather than looking like weapon damage.
 - [ ] Enemy AI attack damage records an enemy-attack contributor entry and still
   damages the player through the existing health path.
+- [ ] Damage applied to a target after it is death-latched
+  (`HealthComponent::death_handled`) is not recorded into the ledger.
 - [ ] Repeated damage from the same source aggregates into one ledger entry with
   accumulated damage and last-hit metadata.
 - [ ] More distinct source ids than the configured ledger capacity cannot grow
@@ -144,12 +149,6 @@ and may be stale by kill time (entities despawn — callers must not hold ids
 across destruction). Downstream categorical facts, such as last-hit weapon
 identity, derive from the stable source id, not the `EntityId`.
 
-Also record a per-target `first_damage_tick`, set once on the first contribution
-and distinct from the per-source entry facts, so downstream `timeToKill`
-(first-damage-to-death) is computable. Recording it requires the chokepoint to
-have the current game tick, supplied as a chokepoint parameter or on the damage
-context.
-
 Pin a small capacity constant. When capacity is exceeded, collapse excess
 distinct sources into a deterministic overflow entry or evict by a deterministic
 rule while preserving total recorded damage. The overflow design should not
@@ -171,12 +170,14 @@ post-mitigation payload, not the remaining HP.
 ### Task 6: Death-report snapshot and clearing
 
 Extend `DeathReport` (currently `killed_tags: Vec<Vec<String>>` plus
-`player_died: bool` — no `EntityId` crosses the sweep boundary) with a parallel
-ledger-snapshot structure for killed entities and player deaths, carrying the
-per-source entry facts plus the target's `first_damage_tick`. The sweep must
-capture ledger facts before the pass-2 despawn/latch writes, since the entity
-ids and components are gone once the sweep returns. The progress tracker still
-receives tags as today; later combat-event specs consume the new snapshots.
+`player_died: bool` — no `EntityId` crosses the sweep boundary) with two new
+fields: a `killed_contributor_ledgers: Vec<ContributorLedgerSnapshot>`,
+index-aligned with `killed_tags`, and a `player_contributor_ledger:
+Option<ContributorLedgerSnapshot>`, parallel to `player_died`, each carrying
+the per-source entry facts. The sweep must capture ledger facts before the
+pass-2 despawn/latch writes, since the entity ids and components are gone once
+the sweep returns. The progress tracker still receives tags as today; later
+combat-event specs consume the new snapshots.
 
 Brain enemies keep their ledger through the death latch only until the snapshot
 is captured; the `death_handled` gate from Task 3 stops further accumulation,

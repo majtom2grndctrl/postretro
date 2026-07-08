@@ -99,14 +99,7 @@ for kill credit, damage buckets, and last-hit attribution.
 
 ## Tasks
 
-### Task 1: Split weapon firing attribution out of `weapon/mod.rs`
-
-Move damage-attribution helpers and impact-to-damage scaling out of the
-998-line `weapon/mod.rs` into a smaller module before extending the weapon
-path. Keep public `weapon` module exports stable. The split is behavior
-preserving and should move tests with the logic where practical.
-
-### Task 2: Descriptor and effective source id
+### Task 1: Descriptor and effective source id
 
 Add `creditSource` to `WeaponDescriptor` and `WeaponComponent`, preserving live
 cooldown/trigger state on hot reload. Validate it as a non-empty ASCII
@@ -142,7 +135,7 @@ producers read the effective source id, not a raw component field.
 updating every `WeaponDescriptor` struct literal, production and tests;
 consider adding a constructor or `Default` impl to bound the churn.
 
-### Task 3: Damage context and chokepoint recording
+### Task 2: Damage context and chokepoint recording
 
 Introduce `DamageContext` in the `postretro-entities` crate, next to
 `apply_damage` — it references `EntityId`, so the §12 partition rule keeps it
@@ -153,7 +146,7 @@ Add a context-taking chokepoint entry (e.g. `apply_damage_with_context`) and
 keep the existing `apply_damage` as a thin shim that forwards an
 unattributed/empty context, so every current production caller (`sim/mod.rs`,
 `health/reactions.rs`, `scripting/systems/ai.rs`) and test caller keeps
-compiling at this phase boundary. Task 5 migrates the production producers to
+compiling at this phase boundary. Task 4 migrates the production producers to
 the context-taking entry with real contexts; the shim is removed once the last
 producer has migrated.
 
@@ -165,7 +158,7 @@ further contributions.
 Entities without health still ignore damage. Invalid amounts keep the current
 producer-side warn/no-op behavior.
 
-### Task 4: Health-owned bounded ledger
+### Task 3: Health-owned bounded ledger
 
 Add a contributor ledger stored directly in `HealthComponent`. The engine has
 no component save/load and replication is state-slot-schema-based, so transient
@@ -185,14 +178,14 @@ literal and destructuring pattern across the crate, plus the `from_descriptor`
 initializer; consider initializing the ledger via a default to bound the churn.
 
 Expose the recording entry point that encapsulates capacity and overflow;
-Task 3's chokepoint calls it under its gate and does not reimplement insertion.
+Task 2's chokepoint calls it under its gate and does not reimplement insertion.
 Pin a small capacity constant. Retained source ids stay exact — never mutate
 one retained source id into another. When capacity is exceeded, overflow
 collapses into a separate reduced entry that preserves total recorded damage.
 The overflow design should not make a later `damageBy(source)` fact lie for
 retained source ids.
 
-### Task 5: Wire all damage producers
+### Task 4: Wire all damage producers
 
 Weapon hitscan, `applyDamage`, and enemy AI attacks must build explicit
 contexts. `WeaponImpact` carries only `target` and `zone` — weapon hitscan
@@ -212,7 +205,7 @@ reaches the chokepoint, so the ledger records the post-mitigation payload the
 chokepoint receives. That amount is unclamped: an overkill blow records the full
 post-mitigation payload, not the remaining HP.
 
-### Task 6: Death-report snapshot and clearing
+### Task 5: Death-report snapshot and clearing
 
 Extend `DeathReport` (currently `killed_tags: Vec<Vec<String>>` plus
 `player_died: bool` — no `EntityId` crosses the sweep boundary) with two new
@@ -220,24 +213,24 @@ fields: a `killed_contributor_ledgers: Vec<ContributorLedgerSnapshot>`,
 index-aligned with `killed_tags`, and a `player_contributor_ledger:
 Option<ContributorLedgerSnapshot>`, parallel to `player_died`, each carrying
 the per-source entry facts. `ContributorLedgerSnapshot` is a plain clone of the
-per-source ledger entry facts from Task 4, not a distinct reduced type. The
+per-source ledger entry facts from Task 3, not a distinct reduced type. The
 sweep must capture ledger facts before the
 pass-2 despawn/latch writes, since the entity ids and components are gone once
 the sweep returns. The progress tracker still receives tags as today; later
 combat-event specs consume the new snapshots.
 
 Brain enemies keep their ledger through the death latch only until the snapshot
-is captured; the `death_handled` gate from Task 3 stops further accumulation,
+is captured; the `death_handled` gate from Task 2 stops further accumulation,
 and they must not re-report while waiting for animation despawn. Despawn then
 drops the component and its ledger. In-place respawn reset is deferred to a
 future respawn spec.
 
-### Task 7: Tests and docs
+### Task 6: Tests and docs
 
 Add focused Rust tests for descriptor parsing, effective source defaults,
 chokepoint ledger aggregation, bounded capacity, producer contexts, death-report
 snapshots, and clearing. Confirm generated SDK type snapshots are current —
-Task 2 already regenerates the fixtures, since the Phase-2 `cargo test` drift
+Task 1 already regenerates the fixtures, since the Phase-1 `cargo test` drift
 check requires it. `docs/scripting-reference.md` has no
 `components.weapon` section yet (only `components.health`); create the weapon
 descriptor surface section, mirroring `## components.health`, then add the
@@ -245,17 +238,16 @@ descriptor surface section, mirroring `## components.health`, then add the
 
 ## Sequencing
 
-**Phase 1 (sequential):** Task 1 - split before extending the oversized weapon
-module.
-**Phase 2 (sequential):** Task 2, then Task 4 - both edit shared struct-literal
-call sites (`weapon/mod.rs`, `sim/determinism_tests.rs`), so they run in
-sequence to avoid collisions.
-**Phase 3 (sequential):** Task 3 - consumes the ledger owner and defines the
+**Phase 1 (sequential):** Task 1, then Task 3 - descriptor/default source and
+the health ledger both edit shared struct-literal call sites, so they run in
+sequence.
+**Phase 2 (sequential):** Task 2 - consumes the ledger owner and defines the
 extended chokepoint.
-**Phase 4 (sequential):** Task 5 - rewires all producers to the new chokepoint.
-**Phase 5 (sequential):** Task 6 - consumes recorded ledger data in the death
+**Phase 3 (sequential):** Task 4 - rewires all producers to the new chokepoint.
+**Phase 4 (sequential):** Task 5 - consumes recorded ledger data in the death
 sweep.
-**Phase 6 (sequential):** Task 7 - verifies and documents the completed surface.
+**Phase 5 (sequential):** Task 6 - verifies and documents the completed
+surface.
 
 ## Rough sketch
 
@@ -307,10 +299,10 @@ Capacity policy: use a named constant, keep retained source ids exact, and store
 overflow as a separate reduced entry. Do not mutate one retained source id into
 another.
 
-Split-before-extend:
+File-size notes:
 
-- `weapon/mod.rs` is 998 lines and this plan adds attribution to its hot path.
-  Split first.
+- `weapon/mod.rs` is ~277 production lines (the remaining ~720 are tests), and
+  this plan does not extend its production code, so no split is needed.
 - `main.rs` is ~6,946 lines, but this plan should avoid extending it directly.
   The relevant simulation seams already live in `sim/mod.rs`.
 - `scripting/primitives/mod.rs` is 799 lines. If adding the single

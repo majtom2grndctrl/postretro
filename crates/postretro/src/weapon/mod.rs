@@ -65,8 +65,8 @@ pub(crate) struct WeaponImpact {
     /// hitbox rather than world geometry. `None` for a world-only hit or when
     /// no targetable entity lies along the ray within range. Spatial targeting
     /// rides here, beside the payload — never inside [`DamagePayload`]. The sim
-    /// weapon stage consumes this to route `apply_damage` before the death
-    /// sweep handles zero-HP entities.
+    /// weapon stage consumes this to route `apply_damage_with_context` before
+    /// the death sweep handles zero-HP entities.
     pub(crate) target: Option<EntityId>,
     /// The authored skeletal hit-zone tag the shot landed on (e.g. "head"),
     /// surfaced for an entity hit that struck a bone-posed capsule. `None` for a
@@ -314,6 +314,7 @@ mod tests {
             cooldown_ms,
             fire_mode,
             resolution: ResolutionMode::Hitscan,
+            credit_source: None,
         })
     }
 
@@ -376,6 +377,7 @@ mod tests {
                     }),
                     death_handled: false,
                     zone_multipliers: std::collections::HashMap::new(),
+                    contributor_ledger: Default::default(),
                 },
             )
             .expect("health component should attach");
@@ -881,6 +883,7 @@ mod tests {
                     hitbox: None,
                     death_handled: false,
                     zone_multipliers: std::collections::HashMap::new(),
+                    contributor_ledger: Default::default(),
                 },
             )
             .unwrap();

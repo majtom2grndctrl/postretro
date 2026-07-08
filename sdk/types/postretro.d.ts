@@ -197,6 +197,8 @@ declare module "postretro" {
     fireMode: FireMode;
     /** Shot resolution mode. Currently supports hitscan only. */
     resolution: ResolutionMode;
+    /** Optional combat attribution source id for this weapon. Must be non-empty ASCII, at most 64 bytes, and use only [A-Za-z0-9_.:-]. Omit to use the resolved canonical weapon name at spawn. */
+    creditSource?: string;
   };
 
   /** One world-aligned AABB hitbox. Carrying one makes the entity hitscan-targetable. `halfExtents` is the box half-size on each axis; `offset` shifts the box center from the entity's transform position. */

@@ -570,8 +570,8 @@ pub(crate) fn nearest_entity_hit(
 
         // Zero-HP entities are pending-despawn this tick (the death sweep runs
         // after weapon fire); skip them so a corpse cannot absorb a shot and
-        // block the wall behind it for one frame. `current` is floored at exactly
-        // 0.0 by the apply_damage chokepoint — exact equality is sound.
+        // block the wall behind it for one frame. The contextual damage
+        // chokepoint floors `current` at exactly 0.0, so exact equality is sound.
         if *current == 0.0 {
             continue;
         }
@@ -1858,6 +1858,7 @@ mod tests {
                 hitbox: None,
                 death_handled: false,
                 zone_multipliers: std::collections::HashMap::new(),
+                contributor_ledger: Default::default(),
             },
         )
         .unwrap();
@@ -1900,6 +1901,7 @@ mod tests {
                 hitbox: None,
                 death_handled: false,
                 zone_multipliers: std::collections::HashMap::new(),
+                contributor_ledger: Default::default(),
             },
         )
         .unwrap();
@@ -1925,6 +1927,7 @@ mod tests {
                 }),
                 death_handled: false,
                 zone_multipliers: std::collections::HashMap::new(),
+                contributor_ledger: Default::default(),
             },
         )
         .unwrap();
@@ -2022,6 +2025,7 @@ mod tests {
                 hitbox: None,
                 death_handled: false,
                 zone_multipliers: std::collections::HashMap::new(),
+                contributor_ledger: Default::default(),
             },
         )
         .unwrap();
@@ -2100,6 +2104,7 @@ mod tests {
                 hitbox: None,
                 death_handled: false,
                 zone_multipliers: std::collections::HashMap::new(),
+                contributor_ledger: Default::default(),
             },
         )
         .unwrap();
@@ -2167,6 +2172,7 @@ mod tests {
                 hitbox: None,
                 death_handled: false,
                 zone_multipliers: std::collections::HashMap::new(),
+                contributor_ledger: Default::default(),
             },
         )
         .unwrap();
@@ -2254,6 +2260,7 @@ mod tests {
                 }),
                 death_handled: false,
                 zone_multipliers: std::collections::HashMap::new(),
+                contributor_ledger: Default::default(),
             },
         )
         .unwrap();
@@ -2362,6 +2369,7 @@ mod tests {
                 hitbox: None,
                 death_handled: false,
                 zone_multipliers: std::collections::HashMap::new(),
+                contributor_ledger: Default::default(),
             },
         )
         .unwrap();
@@ -2414,6 +2422,7 @@ mod tests {
                 }),
                 death_handled: false,
                 zone_multipliers: std::collections::HashMap::new(),
+                contributor_ledger: Default::default(),
             },
         )
         .unwrap();
@@ -2462,6 +2471,7 @@ mod tests {
                 }),
                 death_handled: false,
                 zone_multipliers: std::collections::HashMap::new(),
+                contributor_ledger: Default::default(),
             },
         )
         .unwrap();
@@ -2506,6 +2516,7 @@ mod tests {
                 }),
                 death_handled: false,
                 zone_multipliers: std::collections::HashMap::new(),
+                contributor_ledger: Default::default(),
             },
         )
         .unwrap();
@@ -2554,6 +2565,7 @@ mod tests {
                 }),
                 death_handled: false,
                 zone_multipliers: std::collections::HashMap::new(),
+                contributor_ledger: Default::default(),
             },
         )
         .unwrap();
@@ -2625,6 +2637,7 @@ mod tests {
                 hitbox: None,
                 death_handled: false,
                 zone_multipliers: std::collections::HashMap::new(),
+                contributor_ledger: Default::default(),
             },
         )
         .unwrap();
@@ -2733,6 +2746,7 @@ mod tests {
                 hitbox: None,
                 death_handled: false,
                 zone_multipliers: std::collections::HashMap::new(),
+                contributor_ledger: Default::default(),
             },
         )
         .unwrap();
@@ -2878,6 +2892,7 @@ mod tests {
                 }),
                 death_handled: false,
                 zone_multipliers: std::collections::HashMap::new(),
+                contributor_ledger: Default::default(),
             },
         )
         .unwrap();

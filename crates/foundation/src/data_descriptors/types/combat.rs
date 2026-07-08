@@ -32,6 +32,8 @@ pub struct WeaponDescriptor {
     pub cooldown_ms: f32,
     pub fire_mode: FireMode,
     pub resolution: ResolutionMode,
+    #[serde(default, rename = "creditSource")]
+    pub credit_source: Option<String>,
 }
 
 impl WeaponDescriptor {
@@ -60,8 +62,38 @@ impl WeaponDescriptor {
                 ),
             });
         }
+        if let Some(credit_source) = self.credit_source.as_deref() {
+            validate_credit_source(credit_source)?;
+        }
         Ok(self)
     }
+}
+
+fn validate_credit_source(value: &str) -> Result<(), DescriptorError> {
+    if value.is_empty() {
+        return Err(DescriptorError::InvalidShape {
+            reason: "`components.weapon.creditSource` must be a non-empty ASCII identifier"
+                .to_string(),
+        });
+    }
+    if value.len() > 64 {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!(
+                "`components.weapon.creditSource` must be at most 64 bytes, got {}",
+                value.len()
+            ),
+        });
+    }
+    if !value
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b':' | b'-'))
+    {
+        return Err(DescriptorError::InvalidShape {
+            reason: "`components.weapon.creditSource` must match [A-Za-z0-9_.:-] and be ASCII"
+                .to_string(),
+        });
+    }
+    Ok(())
 }
 
 /// Authored health component preset attached to an entity type descriptor.
@@ -223,5 +255,50 @@ impl AiDescriptor {
             }
         }
         Ok(self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn weapon_descriptor(credit_source: Option<&str>) -> WeaponDescriptor {
+        WeaponDescriptor {
+            damage: 10.0,
+            range: 64.0,
+            cooldown_ms: 180.0,
+            fire_mode: FireMode::Semi,
+            resolution: ResolutionMode::Hitscan,
+            credit_source: credit_source.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn weapon_credit_source_accepts_allowed_ascii_identifier_and_omission() {
+        let valid = "Alpha_09.source:primary-alt";
+
+        let parsed = weapon_descriptor(Some(valid)).validate().unwrap();
+        assert_eq!(parsed.credit_source.as_deref(), Some(valid));
+
+        let omitted = weapon_descriptor(None).validate().unwrap();
+        assert_eq!(omitted.credit_source, None);
+    }
+
+    #[test]
+    fn weapon_credit_source_rejects_empty_overlength_and_disallowed_bytes() {
+        for invalid in ["", "bad source", "rocket/primary", "plasma.\u{00e9}"] {
+            let err = weapon_descriptor(Some(invalid)).validate().unwrap_err();
+            assert!(
+                err.to_string().contains("creditSource"),
+                "unexpected error for {invalid:?}: {err}"
+            );
+        }
+
+        let too_long = "a".repeat(65);
+        let err = weapon_descriptor(Some(&too_long)).validate().unwrap_err();
+        assert!(
+            err.to_string().contains("64 bytes"),
+            "unexpected overlength error: {err}"
+        );
     }
 }

@@ -165,6 +165,7 @@ fn spawn_player(reg: &mut EntityRegistry, pos: Vec3) -> EntityId {
             hitbox: None,
             death_handled: false,
             zone_multipliers: std::collections::HashMap::new(),
+            contributor_ledger: Default::default(),
         },
     )
     .unwrap();
@@ -201,6 +202,7 @@ fn spawn_enemy(
             hitbox: None,
             death_handled: false,
             zone_multipliers: std::collections::HashMap::new(),
+            contributor_ledger: Default::default(),
         },
     )
     .unwrap();
@@ -881,7 +883,7 @@ fn attack_applies_configured_damage_once_per_cooldown() {
     // Player inside attack range (1 unit). Enemy idle → detection puts it in
     // attack this tick (already in attack range), cooldown ready → one hit.
     let pawn = spawn_player(&mut reg, Vec3::new(1.0, 0.0, 0.0));
-    let _enemy = spawn_enemy(
+    let enemy = spawn_enemy(
         &mut reg,
         Vec3::ZERO,
         brain_with(tuning(), LogicalState::Idle),
@@ -895,6 +897,18 @@ fn attack_applies_configured_damage_once_per_cooldown() {
     let events = run_ai_tick(&mut reg, &mut warned, dt);
     assert_eq!(events, vec![ENEMY_ATTACK_EVENT]);
     assert_eq!(player_hp(&reg, pawn), 92.0, "one hit lands");
+    {
+        let health = reg.get_component::<HealthComponent>(pawn).unwrap();
+        let entries = health.contributor_ledger.entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].source_id, "enemy.attack");
+        assert_eq!(entries[0].accumulated_damage, 8.0);
+        assert_eq!(entries[0].hit_count, 1);
+        assert_eq!(entries[0].last_hit_damage, 8.0);
+        assert_eq!(entries[0].last_attacker, Some(enemy));
+        assert_eq!(entries[0].last_weapon, None);
+        assert_eq!(entries[0].last_hit_zone, None);
+    }
 
     // Next ticks: still in attack range but cooldown not elapsed → no further
     // damage. Each tick subtracts 100ms first; from the armed 1000ms it takes 10
@@ -914,6 +928,16 @@ fn attack_applies_configured_damage_once_per_cooldown() {
         "attack resumes after cooldown"
     );
     assert_eq!(player_hp(&reg, pawn), 84.0, "second hit lands once");
+    {
+        let health = reg.get_component::<HealthComponent>(pawn).unwrap();
+        let entries = health.contributor_ledger.entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].source_id, "enemy.attack");
+        assert_eq!(entries[0].accumulated_damage, 16.0);
+        assert_eq!(entries[0].hit_count, 2);
+        assert_eq!(entries[0].last_hit_damage, 8.0);
+        assert_eq!(entries[0].last_attacker, Some(enemy));
+    }
 }
 
 #[test]
@@ -1047,6 +1071,7 @@ fn no_attack_or_event_when_player_already_dead() {
             hitbox: None,
             death_handled: false,
             zone_multipliers: std::collections::HashMap::new(),
+            contributor_ledger: Default::default(),
         },
     )
     .unwrap();

@@ -259,6 +259,7 @@ fn spawn_player(registry: &mut EntityRegistry, position: Vec3) -> EntityId {
                 }),
                 death_handled: false,
                 zone_multipliers: Default::default(),
+                contributor_ledger: Default::default(),
             },
         )
         .expect("player health component should attach");
@@ -312,6 +313,7 @@ fn spawn_enemy(registry: &mut EntityRegistry, position: Vec3) -> EntityId {
                 }),
                 death_handled: false,
                 zone_multipliers: Default::default(),
+                contributor_ledger: Default::default(),
             },
         )
         .expect("enemy health component should attach");
@@ -335,6 +337,7 @@ fn spawn_target(registry: &mut EntityRegistry, position: Vec3) -> EntityId {
                 }),
                 death_handled: false,
                 zone_multipliers: Default::default(),
+                contributor_ledger: Default::default(),
             },
         )
         .expect("target health component should attach");
@@ -352,6 +355,7 @@ fn spawn_weapon(registry: &mut EntityRegistry) -> EntityId {
                 cooldown_ms: 80.0,
                 fire_mode: FireMode::Semi,
                 resolution: ResolutionMode::Hitscan,
+                credit_source: None,
             }),
         )
         .expect("weapon component should attach");

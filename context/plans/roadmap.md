@@ -214,7 +214,7 @@ Design intent lives in `context/research/weapon-model.md` (wieldables/weapons) a
 
 The on-hit / on-kill substrate (`combat-events.md`): the engine emits structured combat **facts** on every damage application and death; mods own the **policy** (XP, score, kill credit, resource economy, damage numbers). Builds on the shipped `applyDamage` chokepoint, the death sweep, and the Epic 14 IR evaluator. Damage-type facts (`element`, `brokeShield`) and the projectile aggregation window are gated on later milestones and land as follow-on specs.
 
-- [ ] **source-id ledger** — a modder-controlled source id stamped at `applyDamage`, plus a bounded per-target contributor ledger. The hard-to-reverse data shape — front-loaded.
+- [x] **source-id ledger** — a modder-controlled source id stamped at `applyDamage`, plus a bounded per-target contributor ledger. The hard-to-reverse data shape — front-loaded. Shipped: `context/plans/done/E16--source-id-ledger/`.
 - [ ] **`onKill` moment** — fires once per confirmed death from the death sweep (covering DoT, environmental, and deferred-despawn deaths); `playerDied` is the degenerate player-target case.
 - [ ] **`onImpact` + `onDamage` moments** — per-impact singular facts plus the per-attack aggregate reduction (sums, counts, per-bucket).
 - [ ] **`CombatScope` IR adopter** — a behavior-IR binding scope over the event's facts and the mod store; reuses the Epic 14 evaluator (a new scope, not a new evaluator).

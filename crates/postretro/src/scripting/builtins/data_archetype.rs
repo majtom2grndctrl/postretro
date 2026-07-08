@@ -479,7 +479,10 @@ fn attach_descriptor_components(
 
     if attach_weapon {
         if let Some(weapon_desc) = descriptor.weapon.as_ref() {
-            let component = WeaponComponent::from_descriptor(weapon_desc);
+            let component = WeaponComponent::from_descriptor_with_canonical(
+                weapon_desc,
+                descriptor.canonical_name.as_deref(),
+            );
             let _ = registry.set_component(id, component);
             owned_components.insert(DescriptorComponentKind::Weapon);
         }
@@ -1702,6 +1705,7 @@ mod tests {
                 cooldown_ms: 180.0,
                 fire_mode: FireMode::Semi,
                 resolution: ResolutionMode::Hitscan,
+                credit_source: None,
             }),
             mesh: None,
             health: None,
@@ -1955,6 +1959,7 @@ mod tests {
         );
         let weapon = reg.get_component::<WeaponComponent>(weapon_id).unwrap();
         assert_eq!(weapon.damage, 12.0);
+        assert_eq!(weapon.effective().credit_source, "reference_pistol");
         assert_eq!(live_count(&reg), 2, "player plus sibling weapon entity");
     }
 

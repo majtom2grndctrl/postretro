@@ -437,6 +437,7 @@ mod tests {
                 hitbox: None,
                 death_handled: false,
                 zone_multipliers: Default::default(),
+                contributor_ledger: Default::default(),
             },
         );
         let _ = registry.set_component(id, MeshComponent::stateless("barrel".into()));

@@ -244,6 +244,10 @@ fn collect_entity_properties(geo_map: &GeoMap, entity_id: &EntityId) -> HashMap<
     out
 }
 
+fn is_runtime_map_entity_key(key: &str) -> bool {
+    !quake_map::RESERVED_MAP_ENTITY_KEYS.contains(&key) && !key.starts_with("_tb_")
+}
+
 fn parse_kinematic_mover(
     props: &HashMap<String, String>,
     authored_origin: Option<DVec3>,
@@ -408,7 +412,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     });
 
     // Classify brushes: world vs entity
-    let world_brush_ids: Vec<BrushId> = geo_map
+    let mut world_brush_ids: Vec<BrushId> = geo_map
         .entity_brushes
         .get(&worldspawn_id)
         .cloned()
@@ -601,22 +605,23 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
             continue;
         }
 
-        // Brush entities (e.g. fog_volume, env_reverb_zone) are resolved
-        // separately by their dedicated subsystems and do not flow through the
-        // generic classname dispatch path.
-        let has_brushes = geo_map
+        let brush_ids = geo_map
             .entity_brushes
             .get(entity_id)
-            .map(|v| !v.is_empty())
-            .unwrap_or(false);
+            .cloned()
+            .unwrap_or_default();
+
+        if quake_map::is_editor_group_classname(&classname) {
+            world_brush_ids.extend(brush_ids);
+            continue;
+        }
+
+        // Semantic brush entities are resolved by dedicated compiler/runtime
+        // paths. Editor groups are already flattened into static world brushes.
+        let has_brushes = !brush_ids.is_empty();
         if has_brushes {
             if classname == "kinematic_mover" {
                 let props = collect_entity_properties(&geo_map, entity_id);
-                let brush_ids = geo_map
-                    .entity_brushes
-                    .get(entity_id)
-                    .cloned()
-                    .unwrap_or_default();
                 pending_kinematic_movers.push(parse_kinematic_mover(&props, origin, brush_ids)?);
                 continue;
             }
@@ -628,11 +633,6 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
                     continue;
                 }
                 let props = collect_entity_properties(&geo_map, entity_id);
-                let brush_ids = geo_map
-                    .entity_brushes
-                    .get(entity_id)
-                    .cloned()
-                    .unwrap_or_default();
                 if is_axis_aligned_brush_set(&geo_map, &brush_ids) {
                     let volume =
                         resolve_fog_ellipsoid(&geo_map, &brush_ids, &props, scale, &classname)?;
@@ -723,7 +723,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
             .unwrap_or_default();
         let key_values: Vec<(String, String)> = props
             .into_iter()
-            .filter(|(k, _)| !quake_map::RESERVED_MAP_ENTITY_KEYS.contains(&k.as_str()))
+            .filter(|(k, _)| is_runtime_map_entity_key(k))
             .collect();
 
         map_entities.push(MapEntityRecord {
@@ -1793,6 +1793,85 @@ mod tests {
         )
     }
 
+    fn grouped_brush_test_map() -> &'static str {
+        r#"
+// entity 0
+{
+"classname" "worldspawn"
+"initialGravity" "-9.81"
+{
+( 256 0 -32 ) ( 257 0 -32 ) ( 256 1 -32 ) static_tex 0 0 0 1 1
+( 256 0  32 ) ( 256 1  32 ) ( 257 0  32 ) static_tex 0 0 0 1 1
+( 192 0 0 ) ( 192 1 0 ) ( 192 0 1 ) static_tex 0 0 0 1 1
+( 320 0 0 ) ( 320 0 1 ) ( 320 1 0 ) static_tex 0 0 0 1 1
+( 256 -64 0 ) ( 256 -64 1 ) ( 257 -64 0 ) static_tex 0 0 0 1 1
+( 256  64 0 ) ( 257  64 0 ) ( 256  64 1 ) static_tex 0 0 0 1 1
+}
+}
+// entity 1
+{
+"classname" "func_group"
+"_tb_type" "_tb_group"
+"_tb_name" "grouped_static_brush"
+"_tb_id" "1"
+{
+( 384 0 -32 ) ( 385 0 -32 ) ( 384 1 -32 ) group_tex 0 0 0 1 1
+( 384 0  32 ) ( 384 1  32 ) ( 385 0  32 ) group_tex 0 0 0 1 1
+( 320 0 0 ) ( 320 1 0 ) ( 320 0 1 ) group_tex 0 0 0 1 1
+( 448 0 0 ) ( 448 0 1 ) ( 448 1 0 ) group_tex 0 0 0 1 1
+( 384 -64 0 ) ( 384 -64 1 ) ( 385 -64 0 ) group_tex 0 0 0 1 1
+( 384  64 0 ) ( 385  64 0 ) ( 384  64 1 ) group_tex 0 0 0 1 1
+}
+}
+"#
+    }
+
+    fn empty_editor_group_test_map() -> &'static str {
+        r#"
+// entity 0
+{
+"classname" "worldspawn"
+"initialGravity" "-9.81"
+{
+( 256 0 -32 ) ( 257 0 -32 ) ( 256 1 -32 ) static_tex 0 0 0 1 1
+( 256 0  32 ) ( 256 1  32 ) ( 257 0  32 ) static_tex 0 0 0 1 1
+( 192 0 0 ) ( 192 1 0 ) ( 192 0 1 ) static_tex 0 0 0 1 1
+( 320 0 0 ) ( 320 0 1 ) ( 320 1 0 ) static_tex 0 0 0 1 1
+( 256 -64 0 ) ( 256 -64 1 ) ( 257 -64 0 ) static_tex 0 0 0 1 1
+( 256  64 0 ) ( 257  64 0 ) ( 256  64 1 ) static_tex 0 0 0 1 1
+}
+}
+// entity 1
+{
+"classname" "func_group"
+"origin" "64 0 0"
+"_tb_type" "_tb_group"
+"_tb_name" "empty_marker"
+"_tb_id" "2"
+}
+"#
+    }
+
+    fn point_entity_with_trenchbroom_metadata_map() -> &'static str {
+        r#"
+// entity 0
+{
+"classname" "worldspawn"
+"initialGravity" "-9.81"
+}
+// entity 1
+{
+"classname" "prop_mesh"
+"origin" "0 0 0"
+"model" "models/crate.glb"
+"_tb_group" "1"
+"_tb_name" "crate prop"
+"_tb_id" "3"
+"_tb_type" "_tb_entity"
+}
+"#
+    }
+
     #[test]
     fn parses_test_map() {
         let map_data = parse_map_file(&test_map_path(), MapFormat::IdTech2)
@@ -1915,6 +1994,83 @@ mod tests {
                 .iter()
                 .all(|name| name != "mover_tex"),
             "kinematic_mover brush leaked into static GeometrySection"
+        );
+    }
+
+    #[test]
+    fn trenchbroom_func_group_brushes_are_flattened_into_static_world() {
+        // Regression: TrenchBroom editor groups are saved as `func_group`
+        // brush entities; treating every brush entity as non-static made
+        // grouped brushes disappear from the runtime.
+        let map_data =
+            parse_inline_map(grouped_brush_test_map()).expect("grouped brush map should parse");
+
+        assert_eq!(
+            map_data.brush_volumes.len(),
+            2,
+            "worldspawn and editor-group brushes should both feed static BSP inputs"
+        );
+        assert!(
+            map_data
+                .brush_volumes
+                .iter()
+                .flat_map(|brush| brush.sides.iter())
+                .any(|side| side.texture == "group_tex"),
+            "grouped brush texture should survive in static brush_volumes"
+        );
+        assert!(
+            map_data
+                .map_entities
+                .iter()
+                .all(|entity| entity.classname != "func_group"),
+            "editor group marker must not become a runtime classname-dispatch entity"
+        );
+    }
+
+    #[test]
+    fn empty_trenchbroom_func_group_is_not_a_runtime_entity() {
+        // Regression: empty editor-group markers with an origin used to flow
+        // into generic runtime entity records.
+        let map_data = parse_inline_map(empty_editor_group_test_map())
+            .expect("empty editor group map should parse");
+
+        assert_eq!(
+            map_data.brush_volumes.len(),
+            1,
+            "empty editor group should not add static brushes"
+        );
+        assert!(
+            map_data
+                .map_entities
+                .iter()
+                .all(|entity| entity.classname != "func_group"),
+            "empty editor group marker must not become a runtime classname-dispatch entity"
+        );
+    }
+
+    #[test]
+    fn map_entity_key_values_strip_trenchbroom_metadata() {
+        let map_data = parse_inline_map(point_entity_with_trenchbroom_metadata_map())
+            .expect("point entity with editor metadata should parse");
+        let entity = map_data
+            .map_entities
+            .iter()
+            .find(|entity| entity.classname == "prop_mesh")
+            .expect("prop_mesh should become a runtime map entity");
+
+        assert!(
+            entity
+                .key_values
+                .iter()
+                .any(|(key, value)| { key == "model" && value == "models/crate.glb" }),
+            "game-authored KVPs should remain available to runtime dispatch"
+        );
+        assert!(
+            entity
+                .key_values
+                .iter()
+                .all(|(key, _)| !key.starts_with("_tb_")),
+            "TrenchBroom editor metadata must not leak into runtime KVPs"
         );
     }
 

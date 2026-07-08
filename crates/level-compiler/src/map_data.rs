@@ -487,11 +487,13 @@ fn sample_catmull_rom_at<T: Lerp>(keyframes: &[(f32, T)], t_ms: f32) -> T {
 /// Parsed and classified .map data for downstream compiler stages.
 #[derive(Debug)]
 pub struct MapData {
-    /// Convex brush volumes from worldspawn brushes. BSP partition, face
-    /// extraction, and portal stages all consume this representation.
+    /// Convex static brush volumes from worldspawn brushes plus flattened
+    /// editor groups. BSP partition, face extraction, and portal stages all
+    /// consume this representation.
     pub brush_volumes: Vec<BrushVolume>,
-    /// Brush count per non-worldspawn entity. Diagnostic only; entity brushes
-    /// do not flow into worldspawn BSP construction.
+    /// Brush count per non-worldspawn entity. Diagnostic only; editor-group
+    /// brushes are flattened into static brush volumes, while semantic brush
+    /// entities are resolved by their owning subsystems.
     pub entity_brushes: Vec<(String, usize)>,
     pub entities: Vec<EntityInfo>,
     pub lights: Vec<MapLight>,

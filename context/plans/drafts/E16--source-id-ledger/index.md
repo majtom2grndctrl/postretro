@@ -35,7 +35,8 @@ for kill credit, damage buckets, and last-hit attribution.
 - Enemy AI attack damage stamps an enemy-attack source id.
 - A bounded per-target contributor ledger stored with the target's health state
   or an adjacent health-owned side table.
-- Ledger updates happen only inside the damage chokepoint.
+- Contributor recording happens only inside the damage chokepoint; lifecycle
+  clearing happens in the death sweep and player-reset paths.
 - Death sweep snapshots ledger facts before despawn or death latch, then clears
   ledger state for despawned and player-death/reset cases.
 - Tests cover descriptor parsing, SDK type generation, weapon damage, reaction
@@ -58,10 +59,13 @@ for kill credit, damage buckets, and last-hit attribution.
 ## Acceptance criteria
 
 - [ ] Authors can set `components.weapon.creditSource` in TypeScript and Luau.
-  Missing `creditSource` yields a stable default, and invalid values fail
-  descriptor validation.
+  Missing `creditSource` yields a stable default; an invalid value is rejected
+  through the existing weapon-descriptor `validate()` path (as other invalid
+  weapon fields are today), identically in both runtimes.
 - [ ] Generated TypeScript and Luau SDK types include `creditSource` on
   `WeaponDescriptor` with the same camelCase spelling.
+- [ ] Adding `creditSource` preserves live cooldown/trigger state across hot
+  reload (through the existing `refresh_from_descriptor` path).
 - [ ] Hitscan weapon damage records a contributor entry on the struck target
   using the weapon's effective source id. Hit-zone multiplier behavior stays
   unchanged.
@@ -87,7 +91,7 @@ for kill credit, damage buckets, and last-hit attribution.
 ### Task 1: Split weapon firing attribution out of `weapon/mod.rs`
 
 Move damage-attribution helpers and impact-to-damage scaling out of the
-997-line `weapon/mod.rs` into a smaller module before extending the weapon
+998-line `weapon/mod.rs` into a smaller module before extending the weapon
 path. Keep public `weapon` module exports stable. The split is behavior
 preserving and should move tests with the logic where practical.
 
@@ -106,13 +110,17 @@ an entity id or display name.
 
 ### Task 3: Damage context and chokepoint recording
 
-Introduce a damage context type beside `DamagePayload`. Route every producer
-through an extended health chokepoint that receives both payload and context.
-Keep a compatibility helper only if useful for tests; production damage sites
-must pass an explicit context.
+Introduce a damage context type (see the crate-placement note in Rough sketch).
+Extend the health chokepoint to receive both payload and context, and add a
+test-only compatibility helper if useful. This task changes the chokepoint
+signature only; rewiring each producer call site to build an explicit context
+is Task 5.
 
 The chokepoint mutates HP exactly as today, then records into the target's
-ledger when the target has health and the damage amount is positive and finite.
+ledger when the target has health, is not already death-latched
+(`HealthComponent::death_handled`), and the damage amount is positive and
+finite. The latch gate stops a latched player or brain enemy from accumulating
+further contributions.
 Entities without health still ignore damage. Invalid amounts keep the current
 producer-side warn/no-op behavior.
 
@@ -145,9 +153,11 @@ HP.
 
 ### Task 6: Death-report snapshot and clearing
 
-Extend `DeathReport` with ledger snapshots parallel to killed entities and
-player deaths. The sweep captures ledger facts before despawning plain
-non-players and before latching brain/player deaths. The progress tracker still
+Extend `DeathReport` (currently `killed_tags: Vec<Vec<String>>` plus
+`player_died: bool` — no `EntityId` crosses the sweep boundary) with a parallel
+ledger-snapshot structure for killed entities and player deaths. The sweep must
+capture ledger facts before the pass-2 despawn/latch writes, since the entity
+ids and components are gone once the sweep returns. The progress tracker still
 receives tags as today; later combat-event specs consume the new snapshots.
 
 Clear ledger state when the entity leaves the world or resets to a fresh health
@@ -159,9 +169,10 @@ while waiting for animation despawn.
 
 Add focused Rust tests for descriptor parsing, effective source defaults,
 chokepoint ledger aggregation, bounded capacity, producer contexts, death-report
-snapshots, and clearing. Update SDK type snapshots. Add a short
-`docs/scripting-reference.md` note for `creditSource` under the weapon
-descriptor surface.
+snapshots, and clearing. Update SDK type snapshots. `docs/scripting-reference.md` has no
+`components.weapon` section yet (only `components.health`); create the weapon
+descriptor surface section, mirroring `## components.health`, then add the
+`creditSource` note there.
 
 ## Sequencing
 
@@ -178,18 +189,23 @@ sweep.
 
 ## Rough sketch
 
-Grounded identifiers: `DamagePayload` in `weapon/damage.rs`;
-`ActivationOutcome::Hit(DamagePayload)` and `WeaponImpact` in `weapon/mod.rs`;
-`WeaponComponent::effective()` returning `EffectiveStats`; `WeaponDescriptor`
-in `scripting/data_descriptors/types/combat.rs`; descriptor parsers in
-`scripting/data_descriptors/js/entity.rs` and
-`scripting/data_descriptors/lua/entity.rs`; the SDK type registry in
-`scripting/primitives/mod.rs`; the health chokepoint
-`scripting/components/health.rs::apply_damage`; death sweep
+Grounded identifiers: `DamagePayload` in
+`crates/foundation/src/foundation_pods.rs` (re-exported through
+`weapon/damage.rs`); `ActivationOutcome::Hit(DamagePayload)` and `WeaponImpact`
+(carrying `target: Option<EntityId>` and `zone: Option<String>`) in
+`weapon/mod.rs`; `WeaponComponent::effective()` returning `EffectiveStats` in
+`crates/entities/src/components/weapon.rs`; `WeaponDescriptor` in
+`crates/foundation/src/data_descriptors/types/combat.rs`; descriptor parsers in
+`crates/scripting-core/src/data_descriptors/js/entity.rs` and
+`crates/scripting-core/src/data_descriptors/lua/entity.rs`; the SDK type
+registry in `scripting/primitives/mod.rs`; the health chokepoint
+`crates/entities/src/components/health.rs::apply_damage`; death sweep
 `scripting/systems/health.rs::sweep_deaths`; sim weapon damage in
 `sim/mod.rs::run_weapon_fire_tick`; enemy AI damage in
-`scripting/systems/ai.rs::run_ai_tick`; and the `applyDamage` reaction in
-`scripting/reactions/apply_damage.rs`.
+`scripting/systems/ai.rs::run_ai_tick` (the real `apply_damage` call site is
+`run_ai_tick_with_navigation`); and the `applyDamage` reaction handler in
+`crates/postretro/src/health/reactions.rs` (aliased as
+`scripting::reactions::apply_damage`).
 
 Proposed shape:
 
@@ -205,12 +221,17 @@ pub(crate) struct DamageContext {
 
 `DamagePayload` can stay amount-only. The context travels beside it, matching
 the existing spatial split where `WeaponImpact` carries target/zone beside the
-payload.
+payload. Because `DamageContext` references `EntityId`, it lives in
+`postretro-entities` (next to `apply_damage`), not in `postretro-foundation`
+where the amount-only `DamagePayload` POD sits — the §12 partition rule keeps
+`EntityId`-referencing types in the entities crate.
 
 Default source policy: authored `creditSource` wins; otherwise use the
 canonical name used to equip or spawn the weapon instance. If that name is not
 available, use a fixed fallback such as `weapon.unknown` and warn once in debug
-builds.
+builds. The engine-derived default (canonical name, or the `weapon.unknown`
+fallback) is engine-provided and is not re-validated against the author
+`creditSource` charset.
 
 Capacity policy: use a named constant, keep retained source ids exact, and store
 overflow as a separate reduced entry. Do not mutate one retained source id into
@@ -218,9 +239,9 @@ another.
 
 Split-before-extend:
 
-- `weapon/mod.rs` is 997 lines and this plan adds attribution to its hot path.
+- `weapon/mod.rs` is 998 lines and this plan adds attribution to its hot path.
   Split first.
-- `main.rs` is 6,717 lines, but this plan should avoid extending it directly.
+- `main.rs` is ~6,946 lines, but this plan should avoid extending it directly.
   The relevant simulation seams already live in `sim/mod.rs`.
 - `scripting/primitives/mod.rs` is 799 lines. If adding the single
   `creditSource` field pushes it past the threshold, keep the change local.

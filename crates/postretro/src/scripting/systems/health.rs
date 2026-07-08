@@ -15,7 +15,9 @@
 //
 // See: context/lib/entity_model.md §3 (Destruction)
 
-use postretro_entities::components::health::HealthComponent;
+use postretro_entities::components::health::{
+    ContributorLedgerEntry, ContributorLedgerOverflow, HealthComponent,
+};
 use postretro_entities::registry::{ComponentKind, ComponentValue, EntityId, EntityRegistry};
 
 /// Event name fired once when the player pawn's HP reaches zero. Latched by
@@ -37,9 +39,34 @@ pub(crate) struct DeathReport {
     /// the AI tick despawns it later) so the kill is counted by the progress
     /// tracker exactly once. Empty when no non-player died.
     pub(crate) killed_tags: Vec<Vec<String>>,
+    /// Contributor ledgers captured for the same killed entities as
+    /// `killed_tags`. Index-aligned: `killed_contributor_ledgers[i]` describes
+    /// the entity whose tags are in `killed_tags[i]`.
+    pub(crate) killed_contributor_ledgers: Vec<ContributorLedgerSnapshot>,
     /// Set once on the tick the player pawn first reaches zero HP. The
     /// `death_handled` latch guarantees later sweeps leave this `false`.
     pub(crate) player_died: bool,
+    /// Contributor ledger captured when the player death latch flips. Present
+    /// exactly when `player_died` is true.
+    pub(crate) player_contributor_ledger: Option<ContributorLedgerSnapshot>,
+}
+
+/// Owned clone of a target's contributor ledger at the instant death is
+/// reported. This is fact data only; later combat-event/reward policy consumes
+/// it outside this sweep.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct ContributorLedgerSnapshot {
+    pub(crate) entries: Vec<ContributorLedgerEntry>,
+    pub(crate) overflow: Option<ContributorLedgerOverflow>,
+}
+
+impl ContributorLedgerSnapshot {
+    fn from_health(health: &HealthComponent) -> Self {
+        Self {
+            entries: health.contributor_ledger.entries().to_vec(),
+            overflow: health.contributor_ledger.overflow().cloned(),
+        }
+    }
 }
 
 /// Resolve every entity at zero HP. Two-pass like `particle_sim`: collect the
@@ -97,10 +124,12 @@ pub(crate) fn sweep_deaths(registry: &mut EntityRegistry) -> DeathReport {
             if health.death_handled {
                 continue;
             }
+            let ledger = ContributorLedgerSnapshot::from_health(&health);
             let mut updated = health.clone();
             updated.death_handled = true;
             let _ = registry.set_component(id, updated);
             report.player_died = true;
+            report.player_contributor_ledger = Some(ledger);
             continue;
         }
 
@@ -120,6 +149,7 @@ pub(crate) fn sweep_deaths(registry: &mut EntityRegistry) -> DeathReport {
                 // counts down to despawn. Do not re-count or re-despawn.
                 continue;
             }
+            let ledger = ContributorLedgerSnapshot::from_health(&health);
             let mut updated = health.clone();
             updated.death_handled = true;
             let _ = registry.set_component(id, updated);
@@ -131,17 +161,24 @@ pub(crate) fn sweep_deaths(registry: &mut EntityRegistry) -> DeathReport {
                 .map(|t| t.to_vec())
                 .unwrap_or_default();
             report.killed_tags.push(tags);
+            report.killed_contributor_ledgers.push(ledger);
             continue;
         }
 
-        // Plain non-player: capture tags before despawn clears them. Stale-id
-        // reads default to no tags rather than aborting the sweep.
+        // Plain non-player: capture tags and ledger before despawn clears them.
+        // Stale-id reads default to no tags/ledger rather than aborting the sweep.
+        let ledger = registry
+            .get_component::<HealthComponent>(id)
+            .ok()
+            .map(|health| ContributorLedgerSnapshot::from_health(&health))
+            .unwrap_or_default();
         let tags = registry
             .get_tags(id)
             .map(|t| t.to_vec())
             .unwrap_or_default();
         let _ = registry.despawn(id);
         report.killed_tags.push(tags);
+        report.killed_contributor_ledgers.push(ledger);
     }
 
     report
@@ -151,8 +188,12 @@ pub(crate) fn sweep_deaths(registry: &mut EntityRegistry) -> DeathReport {
 mod tests {
     use super::*;
     use postretro_entities::components::brain::attach_brain;
+    use postretro_entities::components::health::{
+        apply_damage_with_context, ContributorLedgerRecord, DamageContext,
+    };
     use postretro_entities::components::player_movement::PlayerMovementComponent;
     use postretro_entities::registry::Transform;
+    use postretro_foundation::DamagePayload;
     use postretro_scripting_core::data_descriptors::{
         AiDescriptor, AiStateNames, AirParams, CapsuleParams, FallParams, GroundParams,
         HealthDescriptor, PlayerMovementDescriptor, SpeedParams,
@@ -213,6 +254,20 @@ mod tests {
         id
     }
 
+    fn record_contributor(
+        registry: &mut EntityRegistry,
+        id: EntityId,
+        source_id: &str,
+        damage: f32,
+    ) {
+        let mut health = registry
+            .get_component::<HealthComponent>(id)
+            .expect("health component should exist")
+            .clone();
+        health.record_contributor_damage(ContributorLedgerRecord::new(source_id, damage));
+        registry.set_component(id, health).unwrap();
+    }
+
     /// Attach a PlayerMovement component, marking the entity as the player pawn
     /// for the sweep's purposes. The sweep branches only on the component's
     /// *presence* (`entity_model.md`: "a player by virtue of carrying
@@ -263,15 +318,35 @@ mod tests {
     fn nonplayer_at_zero_is_despawned_and_tags_reported() {
         let mut reg = EntityRegistry::new();
         let id = spawn_health_entity(&mut reg, 50.0, 0.0, &["reactorMonster", "wave1"]);
+        record_contributor(&mut reg, id, "weapon.test", 50.0);
 
         let report = sweep_deaths(&mut reg);
 
         assert!(!reg.exists(id), "dead non-player must be despawned");
+        assert!(
+            reg.get_component::<HealthComponent>(id).is_err(),
+            "despawn drops the health component and its live contributor ledger"
+        );
         assert_eq!(
             report.killed_tags,
             vec![vec!["reactorMonster".to_string(), "wave1".to_string()]]
         );
+        assert_eq!(
+            report.killed_contributor_ledgers.len(),
+            report.killed_tags.len(),
+            "killed ledger snapshots must be index-aligned with killed tags"
+        );
+        assert_eq!(report.killed_contributor_ledgers[0].entries.len(), 1);
+        assert_eq!(
+            report.killed_contributor_ledgers[0].entries[0].source_id,
+            "weapon.test"
+        );
+        assert_eq!(
+            report.killed_contributor_ledgers[0].entries[0].accumulated_damage,
+            50.0
+        );
         assert!(!report.player_died);
+        assert!(report.player_contributor_ledger.is_none());
     }
 
     #[test]
@@ -289,6 +364,7 @@ mod tests {
     fn player_at_zero_is_not_despawned_and_reports_player_died_once() {
         let mut reg = EntityRegistry::new();
         let id = spawn_health_entity(&mut reg, 100.0, 0.0, &[]);
+        record_contributor(&mut reg, id, "enemy.attack", 100.0);
         make_player(&mut reg, id);
 
         let first = sweep_deaths(&mut reg);
@@ -298,6 +374,21 @@ mod tests {
             first.killed_tags.is_empty(),
             "the player is not a kill — no tags reported"
         );
+        assert!(
+            first.killed_contributor_ledgers.is_empty(),
+            "the player is not a kill — no killed ledger reported"
+        );
+        assert!(
+            first.player_contributor_ledger.is_some(),
+            "player death report captures the player's contributor ledger"
+        );
+        let player_ledger = first
+            .player_contributor_ledger
+            .as_ref()
+            .expect("player contributor ledger");
+        assert_eq!(player_ledger.entries.len(), 1);
+        assert_eq!(player_ledger.entries[0].source_id, "enemy.attack");
+        assert_eq!(player_ledger.entries[0].accumulated_damage, 100.0);
         assert!(
             reg.get_component::<HealthComponent>(id)
                 .unwrap()
@@ -320,6 +411,8 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let a = spawn_health_entity(&mut reg, 10.0, 0.0, &["a"]);
         let b = spawn_health_entity(&mut reg, 10.0, 0.0, &["b"]);
+        record_contributor(&mut reg, a, "source.a", 10.0);
+        record_contributor(&mut reg, b, "source.b", 10.0);
         // A survivor to prove the sweep is selective.
         let alive = spawn_health_entity(&mut reg, 10.0, 5.0, &["c"]);
 
@@ -330,8 +423,25 @@ mod tests {
         assert!(reg.exists(alive));
         assert!(!report.player_died);
         assert_eq!(report.killed_tags.len(), 2, "both dead entities reported");
+        assert_eq!(
+            report.killed_contributor_ledgers.len(),
+            report.killed_tags.len(),
+            "each killed tag set has an index-aligned ledger snapshot"
+        );
         assert!(report.killed_tags.contains(&vec!["a".to_string()]));
         assert!(report.killed_tags.contains(&vec!["b".to_string()]));
+        for (tags, ledger) in report
+            .killed_tags
+            .iter()
+            .zip(report.killed_contributor_ledgers.iter())
+        {
+            let entry = ledger.entries.first().expect("ledger entry");
+            match tags.as_slice() {
+                [tag] if tag == "a" => assert_eq!(entry.source_id, "source.a"),
+                [tag] if tag == "b" => assert_eq!(entry.source_id, "source.b"),
+                _ => panic!("unexpected killed tags: {tags:?}"),
+            }
+        }
     }
 
     #[test]
@@ -343,15 +453,19 @@ mod tests {
 
         assert!(!reg.exists(id));
         assert_eq!(report.killed_tags, vec![Vec::<String>::new()]);
+        assert_eq!(report.killed_contributor_ledgers.len(), 1);
+        assert!(report.killed_contributor_ledgers[0].entries.is_empty());
+        assert!(report.killed_contributor_ledgers[0].overflow.is_none());
     }
 
     #[test]
-    fn brain_at_zero_latches_reports_kill_once_and_is_not_despawned() {
+    fn brain_at_zero_latches_reports_kill_once_and_stops_late_ledger_recording() {
         // A brain-bearing enemy at zero HP is the single authoritative kill
         // latch: latched and tags reported ONCE (so progress counts it), but
         // NOT despawned — the AI tick owns the despawn.
         let mut reg = EntityRegistry::new();
         let id = spawn_health_entity(&mut reg, 30.0, 0.0, &["grunt", "wave1"]);
+        record_contributor(&mut reg, id, "weapon.before-latch", 30.0);
         make_brain(&mut reg, id);
 
         let first = sweep_deaths(&mut reg);
@@ -364,6 +478,11 @@ mod tests {
             vec![vec!["grunt".to_string(), "wave1".to_string()]],
             "the kill's tags flow to the progress tracker exactly once"
         );
+        assert_eq!(first.killed_contributor_ledgers.len(), 1);
+        assert_eq!(
+            first.killed_contributor_ledgers[0].entries[0].source_id,
+            "weapon.before-latch"
+        );
         assert!(!first.player_died);
         assert!(
             reg.get_component::<HealthComponent>(id)
@@ -371,6 +490,23 @@ mod tests {
                 .death_handled,
             "the death_handled latch must be set after reporting"
         );
+
+        apply_damage_with_context(
+            &mut reg,
+            id,
+            &DamagePayload { amount: 5.0 },
+            DamageContext::new("script.after-latch"),
+        );
+        let latched_health = reg.get_component::<HealthComponent>(id).unwrap();
+        assert_eq!(
+            latched_health.contributor_ledger.entries().len(),
+            1,
+            "death-latched brain must not accumulate later damage"
+        );
+        assert!(latched_health
+            .contributor_ledger
+            .recorded_damage_by_source("script.after-latch")
+            .is_none());
 
         // The enemy persists at zero HP (awaiting the AI tick's despawn). A
         // later sweep must NOT re-count or re-report the kill (latch holds).

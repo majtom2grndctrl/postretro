@@ -217,6 +217,7 @@ The on-hit / on-kill substrate (`combat-events.md`): the engine emits structured
 - [x] **source-id ledger** — a modder-controlled source id stamped at `applyDamage`, plus a bounded per-target contributor ledger. The hard-to-reverse data shape — front-loaded. Shipped: `context/plans/done/E16--source-id-ledger/`.
 - [ ] **`onKill` moment** — fires once per confirmed death from the death sweep (covering DoT, environmental, and deferred-despawn deaths); `playerDied` is the degenerate player-target case.
 - [ ] **`onImpact` + `onDamage` moments** — per-impact singular facts plus the per-attack aggregate reduction (sums, counts, per-bucket).
+- [ ] **combat presentation substrate** — a passive, capped presentation layer for combat-adjacent UI: floating damage numbers, current damaged-enemy health/shield bars, and pickup prompts. Reuses UI theme/text/draw-list machinery without modal stack, focus, hit testing, or input dispatch; game logic publishes readonly presentation facts, and renderer-local display state handles projection, lifetimes, and animation. Authored templates/styles stay flexible, but runtime instances stay pooled and bounded.
 - [ ] **`CombatScope` IR adopter** — a behavior-IR binding scope over the event's facts and the mod store; reuses the Epic 14 evaluator (a new scope, not a new evaluator).
 - [ ] **resource-grant chokepoint + dev-mod reference** — a blessed engine path that *adds* to health/ammo/armor (the inverse of `applyDamage`), plus a reference XP/score/damage-number policy a mod replaces wholesale.
 

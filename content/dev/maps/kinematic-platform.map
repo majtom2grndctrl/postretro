@@ -1,7 +1,5 @@
 // Game: Postretro
 // Format: Standard
-// Focused kinematic platform fixture: one open room, one horizontal mover,
-// and no pinch geometry near the mover path.
 // entity 0
 {
 "classname" "worldspawn"
@@ -9,92 +7,93 @@
 "wad" ""
 "_tb_mod" "dev"
 "_tb_def" "external:../../../sdk/TrenchBroom/postretro.fgd"
-// floor
+// brush 0
 {
 ( 0 512 -16 ) ( 0 0 0 ) ( 0 0 -16 ) concrete_pavement_036 0 0 0 1 1
-( 0 0 -16 ) ( 512 0 0 ) ( 512 0 -16 ) concrete_pavement_036 0 0 0 1 1
+( 0 -416 -16 ) ( 512 -416 0 ) ( 512 -416 -16 ) concrete_pavement_036 0 0 0 1 1
 ( 0 0 -16 ) ( 512 512 -16 ) ( 0 512 -16 ) concrete_pavement_036 0 0 0 1 1
 ( 0 512 0 ) ( 512 0 0 ) ( 0 0 0 ) concrete_pavement_036 0 0 0 1 1
-( 512 512 -16 ) ( 0 512 0 ) ( 0 512 -16 ) concrete_pavement_036 0 0 0 1 1
-( 512 0 -16 ) ( 512 512 0 ) ( 512 512 -16 ) concrete_pavement_036 0 0 0 1 1
+( 512 432 -16 ) ( 0 432 0 ) ( 0 432 -16 ) concrete_pavement_036 0 0 0 1 1
+( 3440 0 -16 ) ( 3440 512 0 ) ( 3440 512 -16 ) concrete_pavement_036 0 0 0 1 1
 }
-// west wall
+// brush 1
 {
 ( -16 512 0 ) ( -16 0 160 ) ( -16 0 0 ) concrete_stone_033 0 0 0 1 1
-( -16 0 0 ) ( 0 0 160 ) ( 0 0 0 ) concrete_stone_033 0 0 0 1 1
+( -16 -416 0 ) ( 0 -416 160 ) ( 0 -416 0 ) concrete_stone_033 0 0 0 1 1
 ( -16 0 0 ) ( 0 512 0 ) ( -16 512 0 ) concrete_stone_033 0 0 0 1 1
-( -16 512 160 ) ( 0 0 160 ) ( -16 0 160 ) concrete_stone_033 0 0 0 1 1
-( 0 512 0 ) ( -16 512 160 ) ( -16 512 0 ) concrete_stone_033 0 0 0 1 1
+( -16 512 256 ) ( 0 0 256 ) ( -16 0 256 ) concrete_stone_033 0 0 0 1 1
+( 0 432 0 ) ( -16 432 160 ) ( -16 432 0 ) concrete_stone_033 0 0 0 1 1
 ( 0 0 0 ) ( 0 512 160 ) ( 0 512 0 ) concrete_stone_033 0 0 0 1 1
 }
-// east wall
+// brush 2
 {
-( 512 512 0 ) ( 512 0 160 ) ( 512 0 0 ) concrete_stone_033 0 0 0 1 1
-( 512 0 0 ) ( 528 0 160 ) ( 528 0 0 ) concrete_stone_033 0 0 0 1 1
-( 512 0 0 ) ( 528 512 0 ) ( 512 512 0 ) concrete_stone_033 0 0 0 1 1
-( 512 512 160 ) ( 528 0 160 ) ( 512 0 160 ) concrete_stone_033 0 0 0 1 1
-( 528 512 0 ) ( 512 512 160 ) ( 512 512 0 ) concrete_stone_033 0 0 0 1 1
-( 528 0 0 ) ( 528 512 160 ) ( 528 512 0 ) concrete_stone_033 0 0 0 1 1
+( 3440 512 0 ) ( 3440 0 160 ) ( 3440 0 0 ) concrete_stone_033 0 0 0 1 1
+( 3440 -416 0 ) ( 3456 -416 160 ) ( 3456 -416 0 ) concrete_stone_033 0 0 0 1 1
+( 3440 0 0 ) ( 3456 512 0 ) ( 3440 512 0 ) concrete_stone_033 0 0 0 1 1
+( 3440 512 256 ) ( 3456 0 256 ) ( 3440 0 256 ) concrete_stone_033 0 0 0 1 1
+( 3456 432 0 ) ( 3440 432 160 ) ( 3440 432 0 ) concrete_stone_033 0 0 0 1 1
+( 3456 0 0 ) ( 3456 512 160 ) ( 3456 512 0 ) concrete_stone_033 0 0 0 1 1
 }
-// south wall
+// brush 3
 {
-( 0 0 0 ) ( 0 -16 160 ) ( 0 -16 0 ) concrete_stone_033 0 0 0 1 1
-( 0 -16 0 ) ( 512 -16 160 ) ( 512 -16 0 ) concrete_stone_033 0 0 0 1 1
-( 0 -16 0 ) ( 512 0 0 ) ( 0 0 0 ) concrete_stone_033 0 0 0 1 1
-( 0 0 160 ) ( 512 -16 160 ) ( 0 -16 160 ) concrete_stone_033 0 0 0 1 1
-( 512 0 0 ) ( 0 0 160 ) ( 0 0 0 ) concrete_stone_033 0 0 0 1 1
-( 512 -16 0 ) ( 512 0 160 ) ( 512 0 0 ) concrete_stone_033 0 0 0 1 1
+( 0 -416 0 ) ( 0 -432 160 ) ( 0 -432 0 ) concrete_stone_033 0 0 0 1 1
+( 0 -432 0 ) ( 512 -432 160 ) ( 512 -432 0 ) concrete_stone_033 0 0 0 1 1
+( 0 -432 0 ) ( 512 -416 0 ) ( 0 -416 0 ) concrete_stone_033 0 0 0 1 1
+( 0 -416 256 ) ( 512 -432 256 ) ( 0 -432 256 ) concrete_stone_033 0 0 0 1 1
+( 512 -416 0 ) ( 0 -416 160 ) ( 0 -416 0 ) concrete_stone_033 0 0 0 1 1
+( 3440 -432 0 ) ( 3440 -416 160 ) ( 3440 -416 0 ) concrete_stone_033 0 0 0 1 1
 }
-// north wall
+// brush 4
 {
-( 0 528 0 ) ( 0 512 160 ) ( 0 512 0 ) concrete_stone_033 0 0 0 1 1
-( 0 512 0 ) ( 512 512 160 ) ( 512 512 0 ) concrete_stone_033 0 0 0 1 1
-( 0 512 0 ) ( 512 528 0 ) ( 0 528 0 ) concrete_stone_033 0 0 0 1 1
-( 0 528 160 ) ( 512 512 160 ) ( 0 512 160 ) concrete_stone_033 0 0 0 1 1
-( 512 528 0 ) ( 0 528 160 ) ( 0 528 0 ) concrete_stone_033 0 0 0 1 1
-( 512 512 0 ) ( 512 528 160 ) ( 512 528 0 ) concrete_stone_033 0 0 0 1 1
+( 0 448 0 ) ( 0 432 160 ) ( 0 432 0 ) concrete_stone_033 0 0 0 1 1
+( 0 432 0 ) ( 512 432 160 ) ( 512 432 0 ) concrete_stone_033 0 0 0 1 1
+( 0 432 0 ) ( 512 448 0 ) ( 0 448 0 ) concrete_stone_033 0 0 0 1 1
+( 0 448 256 ) ( 512 432 256 ) ( 0 432 256 ) concrete_stone_033 0 0 0 1 1
+( 512 448 0 ) ( 0 448 160 ) ( 0 448 0 ) concrete_stone_033 0 0 0 1 1
+( 3440 432 0 ) ( 3440 448 160 ) ( 3440 448 0 ) concrete_stone_033 0 0 0 1 1
 }
-// ceiling
+// brush 5
 {
-( 0 512 160 ) ( 0 0 176 ) ( 0 0 160 ) debug_ceiling_grey 0 0 0 1 1
-( 0 0 160 ) ( 512 0 176 ) ( 512 0 160 ) debug_ceiling_grey 0 0 0 1 1
-( 0 0 160 ) ( 512 512 160 ) ( 0 512 160 ) debug_ceiling_grey 0 0 0 1 1
-( 0 512 176 ) ( 512 0 176 ) ( 0 0 176 ) debug_ceiling_grey 0 0 0 1 1
-( 512 512 160 ) ( 0 512 176 ) ( 0 512 160 ) debug_ceiling_grey 0 0 0 1 1
-( 512 0 160 ) ( 512 512 176 ) ( 512 512 160 ) debug_ceiling_grey 0 0 0 1 1
+( 0 512 256 ) ( 0 0 272 ) ( 0 0 256 ) debug_ceiling_grey 0 0 0 1 1
+( 0 -416 256 ) ( 512 -416 272 ) ( 512 -416 256 ) debug_ceiling_grey 0 0 0 1 1
+( 0 0 256 ) ( 512 512 256 ) ( 0 512 256 ) debug_ceiling_grey 0 0 0 1 1
+( 0 512 272 ) ( 512 0 272 ) ( 0 0 272 ) debug_ceiling_grey 0 0 0 1 1
+( 512 432 256 ) ( 0 432 272 ) ( 0 432 256 ) debug_ceiling_grey 0 0 0 1 1
+( 3440 0 256 ) ( 3440 512 272 ) ( 3440 512 256 ) debug_ceiling_grey 0 0 0 1 1
 }
 }
 // entity 1
 {
 "classname" "kinematic_mover"
 "name" "dev_platform"
-"path" "platform_a"
-"speed" "1.25"
-"wait_ms" "500"
+"path" "platform_a_start"
+"speed" "15"
+"wait_ms" "750"
 "move_mode" "ping_pong"
 "start_on_spawn" "1"
 "_tags" "dev kinematic_platform"
+// brush 0
 {
-( 176 288 16 ) ( 176 224 32 ) ( 176 224 16 ) "Level Eleven Games Sci-Fi Texture Pack v1/MetalPanel-01_64" 0 0 0 1 1
-( 176 224 16 ) ( 272 224 32 ) ( 272 224 16 ) "Level Eleven Games Sci-Fi Texture Pack v1/MetalPanel-01_64" 0 0 0 1 1
-( 176 224 16 ) ( 272 288 16 ) ( 176 288 16 ) "Level Eleven Games Sci-Fi Texture Pack v1/MetalPanel-01_64" 0 0 0 1 1
-( 176 288 32 ) ( 272 224 32 ) ( 176 224 32 ) "Level Eleven Games Sci-Fi Texture Pack v1/MetalPanel-01_64" 0 0 0 1 1
-( 272 288 16 ) ( 176 288 32 ) ( 176 288 16 ) "Level Eleven Games Sci-Fi Texture Pack v1/MetalPanel-01_64" 0 0 0 1 1
-( 272 224 16 ) ( 272 288 32 ) ( 272 288 16 ) "Level Eleven Games Sci-Fi Texture Pack v1/MetalPanel-01_64" 0 0 0 1 1
+( 176 320 16 ) ( 176 256 32 ) ( 176 256 16 ) 50-free-textures/concrete_stone_022 -32 0 0 1 1
+( 176 192 16 ) ( 272 192 32 ) ( 272 192 16 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 176 256 16 ) ( 272 320 16 ) ( 176 320 16 ) 50-free-textures/concrete_stone_022 0 32 0 1 1
+( 176 320 32 ) ( 272 256 32 ) ( 176 256 32 ) 50-free-textures/concrete_stone_022 0 32 0 1 1
+( 272 320 16 ) ( 176 320 32 ) ( 176 320 16 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 400 256 16 ) ( 400 320 32 ) ( 400 320 16 ) 50-free-textures/concrete_stone_022 -32 0 0 1 1
 }
 }
 // entity 2
 {
 "classname" "kinematic_waypoint"
-"name" "platform_a"
-"next" "platform_b"
+"name" "platform_a_start"
+"next" "platform_a_end"
 "origin" "224 256 24"
 }
 // entity 3
 {
 "classname" "kinematic_waypoint"
-"name" "platform_b"
-"origin" "320 256 24"
+"name" "platform_a_end"
+"origin" "3152 256 24"
 }
 // entity 4
 {
@@ -106,8 +105,158 @@
 {
 "classname" "light"
 "origin" "256 256 128"
-"light" "250"
-"_color" "1 1 1"
-"_falloff_range" "512"
+"light" "325"
+"_color" "253 252 255"
+"_falloff_range" "250"
+"style" "0"
+}
+// entity 6
+{
+"classname" "light"
+"origin" "720 256 128"
+"light" "325"
+"_color" "253 252 255"
+"_falloff_range" "250"
+"style" "0"
+}
+// entity 7
+{
+"classname" "kinematic_mover"
+"name" "dev_platform"
+"path" "platform_b_start"
+"speed" "15"
+"wait_ms" "750"
+"move_mode" "ping_pong"
+"start_on_spawn" "1"
+"_tags" "dev kinematic_platform"
+// brush 0
+{
+( 176 -176 16 ) ( 176 -240 32 ) ( 176 -240 16 ) 50-free-textures/concrete_stone_022 464 0 0 1 1
+( 176 -304 16 ) ( 272 -304 32 ) ( 272 -304 16 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 176 -240 16 ) ( 272 -176 16 ) ( 176 -176 16 ) 50-free-textures/concrete_stone_022 0 -464 0 1 1
+( 176 -176 32 ) ( 272 -240 32 ) ( 176 -240 32 ) 50-free-textures/concrete_stone_022 0 -464 0 1 1
+( 272 -176 16 ) ( 176 -176 32 ) ( 176 -176 16 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 400 -240 16 ) ( 400 -176 32 ) ( 400 -176 16 ) 50-free-textures/concrete_stone_022 464 0 0 1 1
+}
+}
+// entity 8
+{
+"classname" "kinematic_waypoint"
+"name" "platform_b_start"
+"next" "platform_b_end"
+"origin" "224 -240 24"
+}
+// entity 9
+{
+"classname" "kinematic_waypoint"
+"name" "platform_b_end"
+"origin" "3152 -240 24"
+}
+// entity 10
+{
+"classname" "light"
+"origin" "264 -248 128"
+"light" "325"
+"_color" "253 252 255"
+"_falloff_range" "250"
+"style" "0"
+}
+// entity 11
+{
+"classname" "light"
+"origin" "728 -248 128"
+"light" "325"
+"_color" "253 252 255"
+"_falloff_range" "250"
+"style" "0"
+}
+// entity 12
+{
+"classname" "light"
+"origin" "1672 -248 128"
+"light" "325"
+"_color" "253 252 255"
+"_falloff_range" "250"
+"style" "0"
+}
+// entity 13
+{
+"classname" "light"
+"origin" "1208 -248 128"
+"light" "325"
+"_color" "253 252 255"
+"_falloff_range" "250"
+"style" "0"
+}
+// entity 14
+{
+"classname" "light"
+"origin" "1200 256 128"
+"light" "325"
+"_color" "253 252 255"
+"_falloff_range" "250"
+"style" "0"
+}
+// entity 15
+{
+"classname" "light"
+"origin" "1664 256 128"
+"light" "325"
+"_color" "253 252 255"
+"_falloff_range" "250"
+"style" "0"
+}
+// entity 16
+{
+"classname" "light"
+"origin" "3096 -248 128"
+"light" "325"
+"_color" "253 252 255"
+"_falloff_range" "250"
+"style" "0"
+}
+// entity 17
+{
+"classname" "light"
+"origin" "3088 256 128"
+"light" "325"
+"_color" "253 252 255"
+"_falloff_range" "250"
+"style" "0"
+}
+// entity 18
+{
+"classname" "light"
+"origin" "2144 256 128"
+"light" "325"
+"_color" "253 252 255"
+"_falloff_range" "250"
+"style" "0"
+}
+// entity 19
+{
+"classname" "light"
+"origin" "2608 256 128"
+"light" "325"
+"_color" "253 252 255"
+"_falloff_range" "250"
+"style" "0"
+}
+// entity 20
+{
+"classname" "light"
+"origin" "2616 -248 128"
+"light" "325"
+"_color" "253 252 255"
+"_falloff_range" "250"
+"style" "0"
+}
+// entity 21
+{
+"classname" "light"
+"origin" "2152 -248 128"
+"light" "325"
+"_color" "253 252 255"
+"_falloff_range" "250"
 "style" "0"
 }

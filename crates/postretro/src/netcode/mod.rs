@@ -1,7 +1,7 @@
-// Engine-side netcode glue for M15 Phase 3: role selection, the `NetworkId <-> EntityId`
-// maps, the connection-slot lifecycle, the game-logic-owned host delta serialize and
-// client apply/interpolation steps, and client-side prediction and reconciliation
-// (the sole engine code that mutates the registry for replication).
+// Engine-side netcode glue: role selection, `NetworkId <-> EntityId` maps,
+// connection-slot lifecycle, game-logic-owned host serialize/client apply,
+// interpolation, prediction, and reconciliation. This is the sole engine code
+// that mutates the registry for replication.
 // See: context/lib/networking.md
 
 mod client;
@@ -235,7 +235,8 @@ pub(crate) enum NetEndpoint {
     Host {
         server: Box<NetServer>,
         allocator: NetworkIdAllocator,
-        /// Monotonic server tick stamp written into each snapshot.
+        /// Monotonic fixed-simulation tick stamp written into each snapshot.
+        /// Advanced once per completed host fixed tick, not once per network send.
         tick: u32,
         /// Phase 2 per-client replication tracker (acked baselines, deltas,
         /// tombstones, refresh queue), keyed by `NetworkId`. Registry-blind: fed
@@ -1022,10 +1023,8 @@ pub(crate) fn host_drive_demo_mover(
 /// the 30 Hz cadence) encodes + sends a per-client delta snapshot to every accepted
 /// client.
 ///
-/// `tick` is the monotonic server tick stamp; it is advanced by the caller. A
-/// snapshot is encoded only when `tick % SNAPSHOT_TICK_INTERVAL == 0`, but the
-/// tracker ingests every tick so an entity that changes and reverts within the
-/// interval is still detected on the boundary it is sampled.
+/// `tick` is the monotonic fixed-simulation tick stamp. A snapshot is encoded only
+/// when `tick % SNAPSHOT_TICK_INTERVAL == 0`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn host_replicate(
     registry: &EntityRegistry,

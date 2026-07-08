@@ -1,8 +1,8 @@
-// Test-support scaffolding for the M15 Phase 3 Task 6 integrated prediction/
-// reconciliation harness. Builds the shared world/descriptor fixtures and the
-// `LoopbackHarness` that drives the REAL Task 1-5 seams end to end (client predict +
-// send -> conditioner -> host sanitize/queue/resolve/tick/snapshot -> conditioner ->
-// client reconcile/smooth) over the dev-only in-memory `PacketConditioner`.
+// Test-support scaffolding for the integrated prediction/reconciliation harness.
+// Builds the shared world/descriptor fixtures and the `LoopbackHarness` that drives
+// the real production seams end to end (client predict + send -> conditioner ->
+// host sanitize/queue/resolve/tick/snapshot -> conditioner -> client reconcile/smooth)
+// over the dev-only in-memory `PacketConditioner`.
 // See: context/lib/networking.md · context/lib/testing_guide.md §4
 //
 // This is test infrastructure only (`#[cfg(test)]`), not production runtime state.

@@ -716,6 +716,28 @@ mod tests {
     }
 
     #[test]
+    fn fast_mover_push_displaces_player_when_final_pose_does_not_overlap() {
+        let world = empty_world();
+        let movers = [local_wall(7)];
+        let mut poses = TestMoverPoses::default();
+        poses.set(
+            7,
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(120.0, 0.0, 0.0),
+            Vec3::new(2.0, 0.0, 0.0),
+        );
+        let mut comp = PlayerMovementComponent::from_descriptor(&canonical_descriptor());
+        let mut pos = Vec3::new(0.0, 1.2, 0.0);
+
+        tick_on_mover(&mut comp, &mut pos, &world, &movers, &poses);
+
+        assert!(
+            pos.x > 1.35,
+            "fast mover crossing should push player to the far side; pos={pos:?}"
+        );
+    }
+
+    #[test]
     fn recorded_mover_pose_replay_reproduces_live_ride() {
         let world = empty_world();
         let movers = [local_platform(7, 2.0)];

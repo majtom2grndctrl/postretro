@@ -8,6 +8,7 @@ use crate::FormatError;
 use crate::geometry::{FaceMeta, Vertex};
 
 pub const KINEMATIC_GEOMETRY_VERSION: u16 = 1;
+pub const KINEMATIC_WAYPOINT_MIN_SEGMENT_LENGTH: f32 = f32::EPSILON;
 const MOVE_MODE_ONCE: u8 = 0;
 const MOVE_MODE_PING_PONG: u8 = 1;
 

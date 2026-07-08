@@ -75,6 +75,9 @@ impl KinematicMoverRenderCollector {
 
     pub(crate) fn clear(&mut self) {
         self.instances.clear();
+        self.mover_bounds.clear();
+        self.mover_bounds_source = None;
+        self.visible_cell_bounds.clear();
     }
 
     pub(crate) fn collect(
@@ -488,6 +491,27 @@ mod tests {
 
         assert_eq!(colliders.len(), 1);
         assert_eq!(colliders[0].mover_id, 7);
+    }
+
+    #[test]
+    fn render_collector_clear_invalidates_level_cache_state() {
+        let mut collector = KinematicMoverRenderCollector::new();
+        collector.instances.push(KinematicMoverInstance {
+            mover_id: 7,
+            transform: glam::Mat4::IDENTITY,
+        });
+        collector.mover_bounds.insert(7, (Vec3::ZERO, Vec3::ONE));
+        collector.mover_bounds_source = Some(MoverBoundsSource { ptr: 1, len: 1 });
+        collector
+            .visible_cell_bounds
+            .push((2, Vec3::ZERO, Vec3::ONE));
+
+        collector.clear();
+
+        assert!(collector.instances.is_empty());
+        assert!(collector.mover_bounds.is_empty());
+        assert_eq!(collector.mover_bounds_source, None);
+        assert!(collector.visible_cell_bounds.is_empty());
     }
 
     #[test]

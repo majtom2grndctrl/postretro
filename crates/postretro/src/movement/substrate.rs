@@ -7,7 +7,8 @@ use parry3d::shape::Capsule;
 
 use crate::collision::moving::{
     CollisionSource, CombinedCastHit, CombinedCollisionWorld, cast_capsule_combined,
-    cast_ray_combined, deepest_mover_penetration,
+    cast_ray_combined, deepest_mover_push_penetration,
+    deepest_mover_push_penetration_excluding_swept,
 };
 use crate::collision::{SKIN_DISTANCE, cast_capsule};
 use crate::movement::SubstrateResult;
@@ -187,7 +188,8 @@ pub(super) fn integrate_collision(
     );
 
     let mut current_pos = apply_mover_carry(position, previous_ground, collision);
-    current_pos = displace_from_movers(component, collision, &capsule, current_pos);
+    current_pos =
+        displace_from_movers(component, previous_ground, collision, &capsule, current_pos);
     let mut remaining_dt = dt;
     let mut hit_floor_this_tick = false;
     let mut ground_ref_this_tick = GroundRef::Airborne;
@@ -575,6 +577,7 @@ fn apply_mover_release_velocity(
 
 fn displace_from_movers(
     _component: &PlayerMovementComponent,
+    previous_ground: GroundRef,
     collision: &CombinedCollisionWorld<'_>,
     capsule: &Capsule,
     position: Vec3,
@@ -582,12 +585,20 @@ fn displace_from_movers(
     if collision.movers.is_empty() {
         return position;
     }
-    let Some(penetration) = deepest_mover_penetration(
-        collision.movers,
-        collision.poses,
-        Point::new(position.x, position.y, position.z),
-        capsule,
-    ) else {
+    let pos = Point::new(position.x, position.y, position.z);
+    let penetration = match previous_ground {
+        GroundRef::Mover(mover_id) => deepest_mover_push_penetration_excluding_swept(
+            collision.movers,
+            collision.poses,
+            pos,
+            capsule,
+            mover_id,
+        ),
+        GroundRef::Airborne | GroundRef::World => {
+            deepest_mover_push_penetration(collision.movers, collision.poses, pos, capsule)
+        }
+    };
+    let Some(penetration) = penetration else {
         return position;
     };
     let candidate = position + penetration.normal * penetration.depth;

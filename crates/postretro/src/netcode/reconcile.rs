@@ -18,7 +18,7 @@ use postretro_net::wire::WirePlayerMovementState;
 use crate::collision::moving::{CombinedCollisionWorld, MoverPose, MoverPoseSource};
 use crate::movement::MovementCollisionSource;
 use crate::netcode::client::MoverHistoryBuffer;
-use crate::netcode::movement_state::merge_wire_into_movement_state;
+use crate::netcode::movement_state::merge_wire_into_movement_state_checked;
 use crate::netcode::prediction::replay;
 use crate::netcode::prediction::{
     ArmedPawn, ClientPrediction, CorrectionClass, classify_correction,
@@ -35,7 +35,7 @@ use postretro_foundation::PlayerMovementComponent;
 ///
 /// Steps (the AC contract):
 /// 1. **Merge** the `PlayerMovementState` subset onto the EXISTING descriptor-derived
-///    component via [`merge_wire_into_movement_state`] — never reconstructs one.
+///    component via [`merge_wire_into_movement_state_checked`] — never reconstructs one.
 /// 2. **Restore** the authoritative `Transform`.
 /// 3. **Prune** command history through `acked_tick` ([`ClientPrediction::prune_through_ack`]).
 ///    Special case: `acked_tick == None` after prediction has started is an
@@ -117,7 +117,16 @@ pub(crate) fn reconcile_local_pawn_with_mover_history(
 
     // 1. Merge the authoritative movement subset onto the existing component.
     if let Some(wire) = movement {
-        merge_wire_into_movement_state(&mut component, wire);
+        let base_collision = collision.combined_collision();
+        if !merge_wire_into_movement_state_checked(&mut component, wire, |mover_id| {
+            mover_history
+                .and_then(|history| history.pose(mover_id))
+                .is_some()
+                || base_collision.poses.pose(mover_id).is_some()
+        }) {
+            log::warn!("[Net] skipping local reconcile with unknown ground mover reference");
+            return None;
+        }
     }
 
     // 2. Restore from the authoritative transform.
@@ -865,6 +874,42 @@ mod tests {
             (replayed.x - (START.x + 0.2)).abs() < EPSILON,
             "replayed command consumed mover carry delta for server tick 11"
         );
+    }
+
+    #[test]
+    fn reconcile_rejects_unknown_ground_mover_reference() {
+        let world = floor_world();
+        let mut registry = EntityRegistry::new();
+        let mut prediction = ClientPrediction::new();
+        let id = spawn_armed_pawn(&mut registry, &mut prediction, NetworkId(7));
+
+        let before = registry
+            .get_component::<PlayerMovementComponent>(id)
+            .unwrap()
+            .clone();
+        let mut authoritative = authoritative_movement();
+        authoritative.ground = WireGroundRef::Mover(99);
+
+        let class = reconcile_local_pawn(
+            &mut registry,
+            &mut prediction,
+            id,
+            Transform {
+                position: START + Vec3::X,
+                ..Transform::default()
+            },
+            Some(&authoritative),
+            Some(0),
+            &world,
+            GRAVITY,
+            DT,
+        );
+
+        assert_eq!(class, None);
+        let after = registry
+            .get_component::<PlayerMovementComponent>(id)
+            .unwrap();
+        assert_eq!(after.ground, before.ground);
     }
 
     // Regression: a reconcile that landed while the command tail was still unacked

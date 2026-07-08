@@ -24,7 +24,9 @@ use postretro_level_format::entity_shadow_lights::EntityShadowLightsSection;
 use postretro_level_format::fog_cell_masks::FogCellMasksSection;
 use postretro_level_format::fog_volumes::{FogVolumeRecord, FogVolumesSection, MAX_FOG_VOLUMES};
 use postretro_level_format::geometry::{GeometrySection, NO_TEXTURE};
-use postretro_level_format::kinematic_geometry::KinematicGeometrySection;
+use postretro_level_format::kinematic_geometry::{
+    KINEMATIC_WAYPOINT_MIN_SEGMENT_LENGTH, KinematicGeometrySection,
+};
 use postretro_level_format::light_influence::LightInfluenceSection;
 use postretro_level_format::light_tags::LightTagsSection;
 use postretro_level_format::lightmap::LightmapSection;
@@ -244,6 +246,15 @@ fn validate_kinematic_geometry(geometry: &KinematicGeometry) -> Result<(), PrlLo
                 ),
             ));
         }
+        if (mover.origin - resolved[0]).length() > KINEMATIC_WAYPOINT_MIN_SEGMENT_LENGTH {
+            return Err(section_validation(
+                "KinematicGeometry",
+                format!(
+                    "mover {} (`{}`) origin {:?} must match first waypoint `{}` at {:?}",
+                    mover.mover_id, mover.name, mover.origin, mover.path, resolved[0]
+                ),
+            ));
+        }
     }
 
     Ok(())
@@ -283,7 +294,7 @@ fn resolve_kinematic_waypoint_chain(
         };
         let waypoint = &waypoints[index];
         if let Some(previous) = positions.last() {
-            if (*previous - waypoint.origin).length_squared() == 0.0 {
+            if (*previous - waypoint.origin).length() <= KINEMATIC_WAYPOINT_MIN_SEGMENT_LENGTH {
                 return Err(section_validation(
                     "KinematicGeometry",
                     format!(
@@ -2460,6 +2471,30 @@ mod tests {
         let err = convert_kinematic_geometry_section(section).unwrap_err();
 
         assert_kinematic_validation_message(err, "zero-length segment");
+    }
+
+    #[test]
+    fn kinematic_geometry_rejects_near_zero_waypoint_segments() {
+        let mut section = sample_kinematic_section();
+        section.waypoints[1].origin = [
+            section.waypoints[0].origin[0] + KINEMATIC_WAYPOINT_MIN_SEGMENT_LENGTH * 0.5,
+            section.waypoints[0].origin[1],
+            section.waypoints[0].origin[2],
+        ];
+
+        let err = convert_kinematic_geometry_section(section).unwrap_err();
+
+        assert_kinematic_validation_message(err, "zero-length segment");
+    }
+
+    #[test]
+    fn kinematic_geometry_rejects_mover_origin_that_differs_from_first_waypoint() {
+        let mut section = sample_kinematic_section();
+        section.movers[0].origin[0] += KINEMATIC_WAYPOINT_MIN_SEGMENT_LENGTH * 2.0;
+
+        let err = convert_kinematic_geometry_section(section).unwrap_err();
+
+        assert_kinematic_validation_message(err, "must match first waypoint");
     }
 
     #[test]

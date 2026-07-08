@@ -673,6 +673,120 @@ mod tests {
     use super::*;
     use postretro_level_format::geometry::{FaceMeta, Vertex};
 
+    const POST_RETRO_SAMPLING_CALLS: &[&str] = &[
+        "textureDimensions",
+        "floor",
+        "max",
+        "fwidth",
+        "clamp",
+        "textureSampleGrad",
+    ];
+
+    fn extract_wgsl_fn<'a>(source: &'a str, name: &str) -> &'a str {
+        let needle = format!("fn {name}");
+        let start = source
+            .find(&needle)
+            .unwrap_or_else(|| panic!("shader should declare fn {name}"));
+        let body_start = source[start..]
+            .find('{')
+            .map(|offset| start + offset)
+            .unwrap_or_else(|| panic!("fn {name} should have a body"));
+        let mut depth = 0i32;
+        for (offset, ch) in source[body_start..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return &source[start..body_start + offset + 1];
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("fn {name} should close its body");
+    }
+
+    fn wgsl_call_fingerprint(source: &str, keep: &[&str]) -> Vec<String> {
+        let source = strip_wgsl_comments(source);
+        let mut calls = Vec::new();
+        for (start, ident) in wgsl_identifiers(&source) {
+            let after_ident = &source[start + ident.len()..];
+            if !after_ident.trim_start().starts_with('(') {
+                continue;
+            }
+            if keep.contains(&ident) {
+                calls.push(ident.to_owned());
+            }
+        }
+        calls
+    }
+
+    fn strip_wgsl_comments(source: &str) -> String {
+        let mut stripped = String::with_capacity(source.len());
+        let mut chars = source.chars().peekable();
+        while let Some(ch) = chars.next() {
+            if ch != '/' {
+                stripped.push(ch);
+                continue;
+            }
+            match chars.peek() {
+                Some('/') => {
+                    chars.next();
+                    for comment_ch in chars.by_ref() {
+                        if comment_ch == '\n' {
+                            stripped.push('\n');
+                            break;
+                        }
+                    }
+                }
+                Some('*') => {
+                    chars.next();
+                    let mut prev = '\0';
+                    for comment_ch in chars.by_ref() {
+                        if comment_ch == '\n' {
+                            stripped.push('\n');
+                        }
+                        if prev == '*' && comment_ch == '/' {
+                            break;
+                        }
+                        prev = comment_ch;
+                    }
+                }
+                _ => stripped.push(ch),
+            }
+        }
+        stripped
+    }
+
+    fn wgsl_identifiers(source: &str) -> Vec<(usize, &str)> {
+        let mut idents = Vec::new();
+        let mut iter = source.char_indices().peekable();
+        while let Some((start, ch)) = iter.next() {
+            if !is_wgsl_ident_start(ch) {
+                continue;
+            }
+            let mut end = start + ch.len_utf8();
+            while let Some(&(next, next_ch)) = iter.peek() {
+                if !is_wgsl_ident_continue(next_ch) {
+                    break;
+                }
+                iter.next();
+                end = next + next_ch.len_utf8();
+            }
+            idents.push((start, &source[start..end]));
+        }
+        idents
+    }
+
+    fn is_wgsl_ident_start(ch: char) -> bool {
+        ch == '_' || ch.is_ascii_alphabetic()
+    }
+
+    fn is_wgsl_ident_continue(ch: char) -> bool {
+        ch == '_' || ch.is_ascii_alphanumeric()
+    }
+
     fn vertex(lightmap_uv: [f32; 2], lightmap_layer: u16) -> Vertex {
         Vertex::new(
             [1.0, 2.0, 3.0],
@@ -692,6 +806,49 @@ mod tests {
         assert_eq!(packed.base_uv, [4.0, 5.0]);
         assert_eq!(packed.lightmap_uv, [0, 0]);
         assert_eq!(packed.lightmap_layer, 0);
+    }
+
+    #[test]
+    fn kinematic_brush_shader_matches_forward_post_retro_sampling() {
+        let forward = include_str!("../shaders/forward.wgsl");
+        let kinematic = include_str!("../shaders/kinematic_brush.wgsl");
+
+        assert_eq!(
+            wgsl_call_fingerprint(
+                extract_wgsl_fn(kinematic, "sample_post_retro"),
+                POST_RETRO_SAMPLING_CALLS,
+            ),
+            wgsl_call_fingerprint(
+                extract_wgsl_fn(forward, "sample_post_retro"),
+                POST_RETRO_SAMPLING_CALLS,
+            ),
+            "kinematic brush movers must keep the same Post Retro sampling operations as static world geometry",
+        );
+
+        let fs_calls = wgsl_call_fingerprint(
+            extract_wgsl_fn(kinematic, "fs_main"),
+            &["dpdx", "dpdy", "sample_post_retro", "textureSample"],
+        );
+        let ddx_index = fs_calls
+            .iter()
+            .position(|call| call == "dpdx")
+            .expect("kinematic brush fragment shader must compute a UV ddx");
+        let ddy_index = fs_calls
+            .iter()
+            .position(|call| call == "dpdy")
+            .expect("kinematic brush fragment shader must compute a UV ddy");
+        let sample_index = fs_calls
+            .iter()
+            .position(|call| call == "sample_post_retro")
+            .expect("kinematic brush base texture must sample through the Post Retro helper");
+        assert!(
+            ddx_index < sample_index && ddy_index < sample_index,
+            "kinematic brush fragment shader must compute UV derivatives before sampling",
+        );
+        assert!(
+            !fs_calls.iter().any(|call| call == "textureSample"),
+            "kinematic brush fragment shader must not bypass the Post Retro helper",
+        );
     }
 
     #[test]

@@ -15,6 +15,8 @@ use parry3d::shape::{Capsule, TriMesh};
 use super::{COS_WALKABLE, CollisionWorld, SKIN_DISTANCE, cast_capsule, cast_ray};
 use postretro_entities::Transform;
 
+const HIT_TOI_TIE_EPSILON: f32 = 1.0e-5;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CollisionSource {
     Static,
@@ -224,16 +226,118 @@ pub(crate) fn deepest_mover_penetration(
     deepest
 }
 
+pub(crate) fn deepest_mover_push_penetration(
+    movers: &[MoverCollider],
+    poses: &(impl MoverPoseSource + ?Sized),
+    pos: Point<f32>,
+    capsule: &Capsule,
+) -> Option<MoverPenetration> {
+    deepest_mover_push_penetration_inner(movers, poses, pos, capsule, None)
+}
+
+pub(crate) fn deepest_mover_push_penetration_excluding_swept(
+    movers: &[MoverCollider],
+    poses: &(impl MoverPoseSource + ?Sized),
+    pos: Point<f32>,
+    capsule: &Capsule,
+    excluded_mover_id: u32,
+) -> Option<MoverPenetration> {
+    deepest_mover_push_penetration_inner(movers, poses, pos, capsule, Some(excluded_mover_id))
+}
+
+fn deepest_mover_push_penetration_inner(
+    movers: &[MoverCollider],
+    poses: &(impl MoverPoseSource + ?Sized),
+    pos: Point<f32>,
+    capsule: &Capsule,
+    excluded_swept_mover_id: Option<u32>,
+) -> Option<MoverPenetration> {
+    let capsule_iso = Isometry::translation(pos.x, pos.y, pos.z);
+    let mut deepest = deepest_mover_penetration(movers, poses, pos, capsule);
+
+    for mover in movers {
+        if excluded_swept_mover_id == Some(mover.mover_id) {
+            continue;
+        }
+        let Some(pose) = poses.pose(mover.mover_id) else {
+            continue;
+        };
+        let delta = pose.tick_delta;
+        if !delta.is_finite() || delta.length_squared() <= f32::EPSILON * f32::EPSILON {
+            continue;
+        }
+        let mut previous_transform = pose.transform;
+        previous_transform.position -= delta;
+        let previous_iso = transform_isometry(previous_transform);
+        let options = ShapeCastOptions {
+            max_time_of_impact: 1.0,
+            target_distance: SKIN_DISTANCE,
+            stop_at_penetration: false,
+            ..Default::default()
+        };
+        let Ok(Some(hit)) = cast_shapes(
+            &previous_iso,
+            &Vector::new(delta.x, delta.y, delta.z),
+            &mover.local_mesh,
+            &capsule_iso,
+            &Vector::zeros(),
+            capsule,
+            options,
+        ) else {
+            continue;
+        };
+        if !hit.time_of_impact.is_finite() || hit.time_of_impact < 0.0 || hit.time_of_impact > 1.0 {
+            continue;
+        }
+        let normal = swept_push_normal(*hit.transform1_by(&previous_iso).normal1, delta);
+        let remaining = (1.0 - hit.time_of_impact).max(0.0);
+        let mut depth = delta.dot(normal).max(0.0) * remaining + SKIN_DISTANCE;
+        if depth <= SKIN_DISTANCE {
+            depth = delta.length() * remaining + SKIN_DISTANCE;
+        }
+        if !normal.is_finite() || normal.length_squared() <= 0.0 || !depth.is_finite() {
+            continue;
+        }
+        if deepest.as_ref().is_none_or(|current| depth > current.depth) {
+            deepest = Some(MoverPenetration {
+                mover_id: mover.mover_id,
+                normal,
+                depth,
+            });
+        }
+    }
+
+    deepest
+}
+
 fn choose_nearest(nearest: &mut Option<CombinedCastHit>, candidate: Option<CombinedCastHit>) {
     let Some(candidate) = candidate else {
         return;
     };
     if nearest
         .as_ref()
-        .is_none_or(|current| candidate.time_of_impact < current.time_of_impact)
+        .is_none_or(|current| should_replace_hit(current, &candidate))
     {
         *nearest = Some(candidate);
     }
+}
+
+fn should_replace_hit(current: &CombinedCastHit, candidate: &CombinedCastHit) -> bool {
+    if candidate.time_of_impact < current.time_of_impact - HIT_TOI_TIE_EPSILON {
+        return true;
+    }
+    if (candidate.time_of_impact - current.time_of_impact).abs() <= HIT_TOI_TIE_EPSILON {
+        return hit_tie_prefers(candidate, current);
+    }
+    false
+}
+
+fn hit_tie_prefers(candidate: &CombinedCastHit, current: &CombinedCastHit) -> bool {
+    let candidate_mover_floor = matches!(candidate.source, CollisionSource::Mover(_))
+        && candidate.classification == ContactClassification::Floor;
+    let current_mover_floor = matches!(current.source, CollisionSource::Mover(_))
+        && current.classification == ContactClassification::Floor;
+    candidate_mover_floor && !current_mover_floor
 }
 
 fn static_shape_hit(hit: ShapeCastHit) -> CombinedCastHit {
@@ -325,6 +429,17 @@ fn transform_isometry(transform: Transform) -> Isometry<f32> {
     )
 }
 
+fn swept_push_normal(normal: Vector<f32>, delta: Vec3) -> Vec3 {
+    let mut normal = Vec3::new(normal.x, normal.y, normal.z);
+    if !normal.is_finite() || normal.length_squared() <= 1.0e-8 {
+        normal = delta.normalize_or_zero();
+    }
+    if normal.dot(delta) < 0.0 {
+        normal = -normal;
+    }
+    normal.normalize_or_zero()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -383,6 +498,20 @@ mod tests {
                 Vec3::new(1.0, 0.0, -1.0),
                 Vec3::new(1.0, 0.0, 1.0),
                 Vec3::new(-1.0, 0.0, 1.0),
+            ],
+            &[[0, 1, 2], [0, 2, 3]],
+        )
+        .unwrap()
+    }
+
+    fn local_wall_collider(mover_id: u32) -> MoverCollider {
+        MoverCollider::from_local_triangles(
+            mover_id,
+            &[
+                Vec3::new(0.0, 0.0, -1.0),
+                Vec3::new(0.0, 2.0, -1.0),
+                Vec3::new(0.0, 2.0, 1.0),
+                Vec3::new(0.0, 0.0, 1.0),
             ],
             &[[0, 1, 2], [0, 2, 3]],
         )
@@ -465,6 +594,29 @@ mod tests {
     }
 
     #[test]
+    fn combined_query_prefers_equal_toi_mover_floor_over_static_floor() {
+        let world = floor_world(3.0);
+        let movers = [local_floor_collider(42)];
+        let mut poses = TestPoseSource::default();
+        poses.insert(42, Vec3::new(0.0, 3.0, 0.0), Vec3::ZERO, Vec3::ZERO);
+        let capsule = test_capsule();
+
+        let hit = cast_capsule_combined(
+            &world,
+            &movers,
+            &poses,
+            Point::new(0.0, 5.0, 0.0),
+            &capsule,
+            Vector::new(0.0, -1.0, 0.0),
+            10.0,
+        )
+        .unwrap();
+
+        assert_eq!(hit.source, CollisionSource::Mover(42));
+        assert_eq!(hit.classification, ContactClassification::Floor);
+    }
+
+    #[test]
     fn combined_query_keeps_static_when_static_is_nearest() {
         let world = floor_world(0.0);
         let movers = [local_floor_collider(42)];
@@ -485,5 +637,34 @@ mod tests {
         assert_eq!(hit.mover_id, None);
         assert_eq!(hit.mover_linear_velocity, Vec3::ZERO);
         assert_eq!(hit.mover_tick_delta, Vec3::ZERO);
+    }
+
+    #[test]
+    fn swept_mover_push_detects_thin_mover_crossing_capsule() {
+        let movers = [local_wall_collider(42)];
+        let mut poses = TestPoseSource::default();
+        poses.insert(
+            42,
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(20.0, 0.0, 0.0),
+            Vec3::new(2.0, 0.0, 0.0),
+        );
+        let capsule = test_capsule();
+
+        let penetration =
+            deepest_mover_push_penetration(&movers, &poses, Point::new(0.0, 1.0, 0.0), &capsule)
+                .expect("swept mover should detect crossing");
+
+        assert_eq!(penetration.mover_id, 42);
+        assert!(
+            penetration.normal.x > 0.9,
+            "push normal should follow mover travel, got {:?}",
+            penetration.normal
+        );
+        assert!(
+            penetration.depth > 1.0,
+            "crossing mover should push by the remaining sweep, got {}",
+            penetration.depth
+        );
     }
 }

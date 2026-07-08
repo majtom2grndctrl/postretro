@@ -10,6 +10,7 @@ use postretro_entities::{
     ComponentKind, ComponentValue, EntityId, EntityRegistry, KinematicMoverComponent,
     KinematicMoverMode, Transform,
 };
+use postretro_level_format::kinematic_geometry::KINEMATIC_WAYPOINT_MIN_SEGMENT_LENGTH;
 
 use crate::collision::moving::{MoverPose, MoverPoseSource};
 
@@ -175,12 +176,12 @@ fn advance_mover(mover: &mut KinematicMoverComponent, tick_dt: f32) -> Vec3 {
         let to = mover.waypoints[to_index];
         let segment = to - from;
         let length = segment.length();
-        if length <= f32::EPSILON {
+        if !length.is_finite() || length <= KINEMATIC_WAYPOINT_MIN_SEGMENT_LENGTH {
             mover.segment_elapsed_ms = 0.0;
             mover.segment_index = to_index as u16;
             position = to;
-            handle_arrival_at_waypoint(mover);
-            continue;
+            mover.completed = true;
+            break;
         }
 
         let duration_ms = (length / mover.speed_mps) * 1000.0;
@@ -260,7 +261,10 @@ fn position_for_phase(mover: &KinematicMoverComponent) -> Vec3 {
     let from = mover.waypoints[from_index];
     let to = mover.waypoints[to_index];
     let length = (to - from).length();
-    if !length.is_finite() || length <= f32::EPSILON || mover.speed_mps <= 0.0 {
+    if !length.is_finite()
+        || length <= KINEMATIC_WAYPOINT_MIN_SEGMENT_LENGTH
+        || mover.speed_mps <= 0.0
+    {
         return from;
     }
     let duration_ms = (length / mover.speed_mps) * 1000.0;
@@ -373,5 +377,36 @@ mod tests {
         let (mover, transform, _) = tick_component(mover, transform, 0.5);
         assert_eq!(mover.direction_sign, -1);
         assert!((transform.position - Vec3::new(1.75, 0.0, 0.0)).length() < EPS);
+    }
+
+    #[test]
+    fn near_zero_ping_pong_segment_completes_without_spinning() {
+        let mover = KinematicMoverComponent::new(
+            7,
+            vec![
+                Vec3::ZERO,
+                Vec3::new(KINEMATIC_WAYPOINT_MIN_SEGMENT_LENGTH * 0.5, 0.0, 0.0),
+            ],
+            1.0,
+            0.0,
+            KinematicMoverMode::PingPong,
+            true,
+        );
+
+        let (mover, transform, table) = tick_component(mover, transform_at(Vec3::ZERO), 1.0);
+
+        assert!(mover.completed);
+        assert_eq!(mover.segment_index, 1);
+        assert!(
+            transform.position.length() <= KINEMATIC_WAYPOINT_MIN_SEGMENT_LENGTH,
+            "degenerate mover should stop at the bad segment endpoint, got {:?}",
+            transform.position
+        );
+        let state = table.get(7).expect("mover state should publish");
+        assert!(
+            state.tick_delta.length() <= KINEMATIC_WAYPOINT_MIN_SEGMENT_LENGTH,
+            "degenerate mover should not accumulate tick delta, got {:?}",
+            state.tick_delta
+        );
     }
 }

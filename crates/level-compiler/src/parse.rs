@@ -20,6 +20,7 @@ use crate::map_data::{
 };
 use crate::map_format::MapFormat;
 use postretro_level_format::fog_volumes::{MAX_FOG_VOLUMES, MAX_PLANES_PER_VOLUME};
+use postretro_level_format::kinematic_geometry::KINEMATIC_WAYPOINT_MIN_SEGMENT_LENGTH;
 
 /// Convert a shambler nalgebra Vector3 to glam DVec3.
 ///
@@ -1016,7 +1017,9 @@ fn resolve_kinematic_path(
         };
         if let Some(previous_name) = path.last() {
             let previous = waypoint_by_name[previous_name.as_str()];
-            if (previous.origin - waypoint.origin).length_squared() == 0.0 {
+            if (previous.origin - waypoint.origin).length()
+                <= KINEMATIC_WAYPOINT_MIN_SEGMENT_LENGTH as f64
+            {
                 anyhow::bail!(
                     "kinematic_mover `{}` path has zero-length segment between waypoints `{}` and `{}`",
                     mover.name,
@@ -2013,6 +2016,19 @@ mod tests {
         assert!(
             err.to_string().contains("zero-length segment"),
             "diagnostic should name zero-length path segment, got: {err}"
+        );
+    }
+
+    #[test]
+    fn near_zero_kinematic_path_segment_rejects() {
+        let map_text = kinematic_test_map("wp_b")
+            .replace("\"origin\" \"0 0 64\"", "\"origin\" \"0 0 0.000001\"");
+        let err = parse_inline_map(&map_text)
+            .expect_err("near-zero adjacent waypoint segments must reject");
+
+        assert!(
+            err.to_string().contains("zero-length segment"),
+            "diagnostic should name near-zero path segment, got: {err}"
         );
     }
 

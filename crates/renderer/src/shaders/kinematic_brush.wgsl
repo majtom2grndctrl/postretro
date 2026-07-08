@@ -1,6 +1,5 @@
-// Kinematic brush mover pass: local brush geometry instanced by mover transform.
-// Mirrors the dynamic-object lighting model used by skinned meshes, without
-// skinning or animation palette reads.
+// Renderer-owned kinematic brush mover pass.
+// See: context/lib/rendering_pipeline.md §7.3
 
 struct CameraUniforms {
     view_proj: mat4x4<f32>,
@@ -242,9 +241,32 @@ fn accumulate_dynamic_direct(world_pos: vec3<f32>, n: vec3<f32>, use_dynamic: bo
     return total;
 }
 
+// Post Retro sample. Reconstructs the texel grid in UV space, antialiases only
+// the seam between texels, then samples through the hardware-anisotropic
+// material sampler. Matches forward.wgsl so static world and kinematic brush
+// movers share the same texture-filtering look.
+fn sample_post_retro(tex: texture_2d<f32>, samp: sampler, uv: vec2<f32>,
+                     ddx: vec2<f32>, ddy: vec2<f32>) -> vec4<f32> {
+    let dims = vec2<f32>(textureDimensions(tex, 0));
+    let uv_tex = uv * dims;
+    let seam = floor(uv_tex + 0.5);
+    // Floor the seam-width divisor: a constant-UV fragment (edge-on face,
+    // degenerate UV chart, vanishing derivatives) gives fwidth == 0, and
+    // clamp() does not reliably sanitize the resulting NaN/Inf in WGSL.
+    let seam_width = max(fwidth(uv_tex), vec2<f32>(1.0e-6));
+    let aa = clamp((uv_tex - seam) / seam_width, vec2(-0.5), vec2(0.5));
+    let uv_recon = (seam + aa) / dims;
+    return textureSampleGrad(tex, samp, uv_recon, ddx, ddy);
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let base_color = textureSample(base_texture, aniso_sampler, in.uv);
+    // UV footprint derivatives are computed once in uniform control flow and
+    // handed to textureSampleGrad explicitly, matching the world forward pass.
+    let ddx = dpdx(in.uv);
+    let ddy = dpdy(in.uv);
+
+    let base_color = sample_post_retro(base_texture, aniso_sampler, in.uv, ddx, ddy);
     let n = normalize(in.world_normal);
     let indirect = sample_sh_indirect(in.world_position, n, n);
     var direct = vec3<f32>(0.0);

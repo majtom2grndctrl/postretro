@@ -1,6 +1,6 @@
 # E17 - Kinematic Platform Foundation
 
-> **Status:** ready — substrate-proof revision reviewed (structural + implementability), awaiting implementation.
+> **Status:** done — shipped as the E17 kinematic platform foundation.
 >
 > **Epic:** 17 - Kinematic Geometry and Moving Platforms.
 >

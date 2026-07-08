@@ -1,9 +1,7 @@
-// M15 Phase 3 Task 6: integrated, production-adjacent prediction/reconciliation
-// tests plus the headline deterministic latency gate. Every test drives the REAL
-// Task 1-5 seams through `LoopbackHarness` (see the sibling
-// `predict_reconcile_harness_test_fixtures`) — the prototype `sim::predict_reconcile`
-// type is never instantiated; only its scenario *shape* and expected timelines are
-// promoted here.
+// Integrated, production-adjacent prediction/reconciliation tests plus the headline
+// deterministic latency gate. Every test drives the real production seams through
+// `LoopbackHarness` (see the sibling `predict_reconcile_harness_test_fixtures`);
+// the prototype `sim::predict_reconcile` type is never instantiated.
 // See: context/lib/networking.md · context/lib/testing_guide.md
 //
 // Replay-purity guard: the production replay path (`prediction::replay`) is

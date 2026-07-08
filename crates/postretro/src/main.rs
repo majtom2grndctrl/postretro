@@ -31,10 +31,10 @@ mod movement;
 // The runtime nav graph is built in every build whenever a level carries a
 // baked navmesh; pathfinding consumes its query surface.
 mod nav;
-// Engine-side netcode glue (M15 Phase 3): role selection, the optional endpoint
-// held by `App`, the game-logic-owned serialize/apply steps, and client-side
-// prediction and reconciliation. The ONLY engine code that touches the registry
-// on behalf of replication. See `context/lib/entity_model.md` §6.
+// Engine-side netcode glue: role selection, the optional endpoint held by `App`,
+// game-logic-owned serialize/apply, interpolation, prediction, and reconciliation.
+// The ONLY engine code that touches the registry on behalf of replication.
+// See `context/lib/entity_model.md` §6.
 mod netcode;
 mod options;
 mod weapon;
@@ -1877,6 +1877,7 @@ impl ApplicationHandler for App {
 
                         self.frame_timing
                             .push_state(InterpolableState::new(self.camera.position));
+                        self.host_advance_fixed_sim_tick();
                     }
                 }
 
@@ -4224,9 +4225,6 @@ impl App {
                 *tick,
             );
         }
-        // Advance the monotonic server tick after this tick's ingest+send so a
-        // late-joining client never sees a stalled clock.
-        *tick = tick.wrapping_add(1);
     }
 
     /// Client remote-interpolation sampling step (M15 Phase 2 Task 6). Thin delegation
@@ -4303,6 +4301,21 @@ impl App {
             return Vec::new();
         };
         netcode::host_resolve_movement_inputs(owners, command_queues)
+    }
+
+    /// Advance the listen host's authoritative fixed-simulation tick after one
+    /// completed fixed tick. Snapshot stamps and time-sync echoes read this value, so
+    /// mover replay deltas are measured in simulation ticks rather than render/network
+    /// frames.
+    fn host_advance_fixed_sim_tick(&mut self) {
+        let Some(netcode::NetEndpoint::Host { tick, .. }) = self
+            .session
+            .as_mut()
+            .and_then(|session| session.net_endpoint.as_mut())
+        else {
+            return;
+        };
+        *tick = tick.wrapping_add(1);
     }
 
     /// Register the listen host's OWN player pawn for outbound replication after a

@@ -314,6 +314,7 @@ mod tests {
             cooldown_ms,
             fire_mode,
             resolution: ResolutionMode::Hitscan,
+            credit_source: None,
         })
     }
 

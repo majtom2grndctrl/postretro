@@ -254,6 +254,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("fireRateMs", "f32", "Minimum interval between shots in milliseconds. Must be finite and > 0.")
         .field("fireMode", "FireMode", "Semi or automatic input gate.")
         .field("resolution", "ResolutionMode", "Shot resolution mode. Currently supports hitscan only.")
+        .field("creditSource?", "String", "Optional combat attribution source id for this weapon. Must be non-empty ASCII, at most 64 bytes, and use only [A-Za-z0-9_.:-]. Omit to use the resolved canonical weapon name at spawn.")
         .finish();
     registry
         .register_type("HitboxDescriptor")

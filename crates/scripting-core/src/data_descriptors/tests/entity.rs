@@ -97,7 +97,8 @@ fn js_entity_descriptor_with_default_weapon_and_weapon_component_deserializes() 
                 range: 64.0,
                 fireRateMs: 180.0,
                 fireMode: "semi",
-                resolution: "hitscan"
+                resolution: "hitscan",
+                creditSource: "player.reference-pistol:primary"
             }
         }
     })"#;
@@ -109,6 +110,51 @@ fn js_entity_descriptor_with_default_weapon_and_weapon_component_deserializes() 
     assert_eq!(weapon.cooldown_ms, 180.0);
     assert_eq!(weapon.fire_mode, FireMode::Semi);
     assert_eq!(weapon.resolution, ResolutionMode::Hitscan);
+    assert_eq!(
+        weapon.credit_source.as_deref(),
+        Some("player.reference-pistol:primary")
+    );
+}
+
+#[test]
+fn js_weapon_descriptor_without_credit_source_parses_as_none() {
+    let src = r#"({
+        canonicalName: "reference_pistol",
+        components: {
+            weapon: {
+                damage: 12.0,
+                range: 64.0,
+                fireRateMs: 180.0,
+                fireMode: "semi",
+                resolution: "hitscan"
+            }
+        }
+    })"#;
+    let d = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
+    let weapon = d.weapon.expect("weapon present");
+    assert_eq!(weapon.credit_source, None);
+}
+
+#[test]
+fn js_weapon_descriptor_rejects_invalid_credit_source() {
+    let src = r#"({
+        canonicalName: "reference_pistol",
+        components: {
+            weapon: {
+                damage: 12.0,
+                range: 64.0,
+                fireRateMs: 180.0,
+                fireMode: "semi",
+                resolution: "hitscan",
+                creditSource: "bad source"
+            }
+        }
+    })"#;
+    let err = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap_err());
+    assert!(
+        err.to_string().contains("creditSource"),
+        "unexpected error: {err}"
+    );
 }
 
 #[test]
@@ -178,6 +224,7 @@ fn lua_entity_descriptor_with_default_weapon_and_weapon_component_deserializes()
                 fireRateMs = 180.0,
                 fireMode = "auto",
                 resolution = "hitscan",
+                creditSource = "player.reference-pistol:alt",
             }
         }
     }"#;
@@ -188,4 +235,49 @@ fn lua_entity_descriptor_with_default_weapon_and_weapon_component_deserializes()
     assert_eq!(weapon.cooldown_ms, 180.0);
     assert_eq!(weapon.fire_mode, FireMode::Auto);
     assert_eq!(weapon.resolution, ResolutionMode::Hitscan);
+    assert_eq!(
+        weapon.credit_source.as_deref(),
+        Some("player.reference-pistol:alt")
+    );
+}
+
+#[test]
+fn lua_weapon_descriptor_without_credit_source_parses_as_none() {
+    let src = r#"return {
+        canonicalName = "reference_pistol",
+        components = {
+            weapon = {
+                damage = 12.0,
+                range = 64.0,
+                fireRateMs = 180.0,
+                fireMode = "auto",
+                resolution = "hitscan",
+            }
+        }
+    }"#;
+    let d = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap());
+    let weapon = d.weapon.expect("weapon present");
+    assert_eq!(weapon.credit_source, None);
+}
+
+#[test]
+fn lua_weapon_descriptor_rejects_invalid_credit_source() {
+    let src = r#"return {
+        canonicalName = "reference_pistol",
+        components = {
+            weapon = {
+                damage = 12.0,
+                range = 64.0,
+                fireRateMs = 180.0,
+                fireMode = "auto",
+                resolution = "hitscan",
+                creditSource = "rocket/primary",
+            }
+        }
+    }"#;
+    let err = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap_err());
+    assert!(
+        err.to_string().contains("creditSource"),
+        "unexpected error: {err}"
+    );
 }

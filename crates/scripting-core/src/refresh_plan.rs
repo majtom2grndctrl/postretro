@@ -783,6 +783,7 @@ mod tests {
                 cooldown_ms: 250.0,
                 fire_mode: FireMode::Semi,
                 resolution: ResolutionMode::Hitscan,
+                credit_source: None,
             }),
             mesh: None,
             health: None,
@@ -982,7 +983,10 @@ mod tests {
         let new = vec![weapon_descriptor("pistol", 25.0)];
         let mut registry = EntityRegistry::new();
         let id = registry.spawn(Transform::default());
-        let mut weapon = WeaponComponent::from_descriptor(old[0].weapon.as_ref().unwrap());
+        let mut weapon = WeaponComponent::from_descriptor_with_canonical(
+            old[0].weapon.as_ref().unwrap(),
+            old[0].canonical_name.as_deref(),
+        );
         weapon.cooldown_remaining_ms = 42.0;
         weapon.shoot_press_consumed = true;
         registry.set_component(id, weapon).unwrap();
@@ -1004,6 +1008,7 @@ mod tests {
         assert_eq!(component.damage, 25.0);
         assert_eq!(component.cooldown_remaining_ms, 42.0);
         assert!(component.shoot_press_consumed);
+        assert_eq!(component.credit_source, "pistol");
     }
 
     #[test]

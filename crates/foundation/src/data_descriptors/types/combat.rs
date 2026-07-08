@@ -32,6 +32,8 @@ pub struct WeaponDescriptor {
     pub cooldown_ms: f32,
     pub fire_mode: FireMode,
     pub resolution: ResolutionMode,
+    #[serde(default, rename = "creditSource")]
+    pub credit_source: Option<String>,
 }
 
 impl WeaponDescriptor {
@@ -60,8 +62,38 @@ impl WeaponDescriptor {
                 ),
             });
         }
+        if let Some(credit_source) = self.credit_source.as_deref() {
+            validate_credit_source(credit_source)?;
+        }
         Ok(self)
     }
+}
+
+fn validate_credit_source(value: &str) -> Result<(), DescriptorError> {
+    if value.is_empty() {
+        return Err(DescriptorError::InvalidShape {
+            reason: "`components.weapon.creditSource` must be a non-empty ASCII identifier"
+                .to_string(),
+        });
+    }
+    if value.len() > 64 {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!(
+                "`components.weapon.creditSource` must be at most 64 bytes, got {}",
+                value.len()
+            ),
+        });
+    }
+    if !value
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b':' | b'-'))
+    {
+        return Err(DescriptorError::InvalidShape {
+            reason: "`components.weapon.creditSource` must match [A-Za-z0-9_.:-] and be ASCII"
+                .to_string(),
+        });
+    }
+    Ok(())
 }
 
 /// Authored health component preset attached to an entity type descriptor.

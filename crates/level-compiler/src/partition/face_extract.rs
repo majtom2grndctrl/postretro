@@ -472,44 +472,66 @@ fn hull_union_into(hull: &mut Vec<DVec3>, fragment: &[DVec3], side_normal: DVec3
 }
 
 /// Andrew's monotone chain, O(n log n). CCW from lowest-leftmost; no repeated start point.
+///
+/// Robustness: the input points come from clipping a large brush side and carry
+/// floating-point noise (~1e-13 at metre scale), so points that are geometrically
+/// collinear — e.g. the shared edge of two abutting floor fragments — differ by
+/// that noise. Monotone chain anchors its hull on the sort-order extremes, and an
+/// anchor is never subject to the turn test, so a noise-perturbed interior edge
+/// point can become a false anchor and evict the true corner (dropping a whole
+/// triangle of world geometry). To defeat this, all ordering and orientation
+/// decisions run off a **quantized** copy of each coordinate — a fixed grid far
+/// below any real feature but far above FP noise — while the original, un-rounded
+/// points are emitted so vertex positions stay exact.
 fn monotone_chain_hull(points: &[(f64, f64)]) -> Vec<(f64, f64)> {
-    const POINT_EPSILON: f64 = 1e-9;
+    // 0.1 µm grid: ~6 orders above f64 noise at metre scale, ~5 below the finest
+    // real geometry (inch-scale maps), so it only collapses coincident points.
+    const QUANTUM: f64 = 1e-7;
+    let q = |v: f64| (v / QUANTUM).round() * QUANTUM;
 
-    let mut pts: Vec<(f64, f64)> = points.to_vec();
+    // (quantized key, original point). Decisions read `.0`; output emits `.1`.
+    let mut pts: Vec<((f64, f64), (f64, f64))> =
+        points.iter().map(|&p| ((q(p.0), q(p.1)), p)).collect();
     pts.sort_by(|a, b| {
-        a.0.partial_cmp(&b.0)
+        a.0.0
+            .partial_cmp(&b.0.0)
             .unwrap_or(std::cmp::Ordering::Equal)
-            .then(a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .then(a.0.1.partial_cmp(&b.0.1).unwrap_or(std::cmp::Ordering::Equal))
     });
-    pts.dedup_by(|a, b| (a.0 - b.0).abs() < POINT_EPSILON && (a.1 - b.1).abs() < POINT_EPSILON);
+    pts.dedup_by(|a, b| a.0 == b.0);
 
     if pts.len() < 3 {
-        return pts;
+        return pts.iter().map(|x| x.1).collect();
     }
 
+    // Orientation on quantized keys: exactly-collinear points cross to 0 and are
+    // popped (minimal hull preserved); genuine corners survive.
     let cross = |o: (f64, f64), a: (f64, f64), b: (f64, f64)| -> f64 {
         (a.0 - o.0) * (b.1 - o.1) - (a.1 - o.1) * (b.0 - o.0)
     };
 
-    let mut lower: Vec<(f64, f64)> = Vec::new();
+    let mut lower: Vec<((f64, f64), (f64, f64))> = Vec::new();
     for &p in pts.iter() {
         while lower.len() >= 2
-            && cross(lower[lower.len() - 2], lower[lower.len() - 1], p) <= POINT_EPSILON
+            && cross(lower[lower.len() - 2].0, lower[lower.len() - 1].0, p.0) <= 0.0
         {
             lower.pop();
         }
         lower.push(p);
     }
 
-    let mut upper: Vec<(f64, f64)> = Vec::new();
+    let mut upper: Vec<((f64, f64), (f64, f64))> = Vec::new();
     for &p in pts.iter().rev() {
         while upper.len() >= 2
-            && cross(upper[upper.len() - 2], upper[upper.len() - 1], p) <= POINT_EPSILON
+            && cross(upper[upper.len() - 2].0, upper[upper.len() - 1].0, p.0) <= 0.0
         {
             upper.pop();
         }
         upper.push(p);
     }
+
+    let mut lower: Vec<(f64, f64)> = lower.into_iter().map(|x| x.1).collect();
+    let mut upper: Vec<(f64, f64)> = upper.into_iter().map(|x| x.1).collect();
 
     lower.pop();
     upper.pop();
@@ -908,6 +930,37 @@ mod tests {
         ];
         let hull = monotone_chain_hull(&pts);
         assert_eq!(hull.len(), 4, "hull of a square has 4 extreme points");
+    }
+
+    #[test]
+    fn hull_union_keeps_extreme_corner_under_fp_noise() {
+        // Regression: clipping a large floor brush side yields fragments whose
+        // shared edges carry f64 noise (~1e-14), making geometrically collinear
+        // points slightly non-collinear. A noise-sensitive hull anchored the
+        // chain on a false extreme and evicted the true +X/+Z corner, cutting a
+        // triangular hole in the floor you could fall through. The hull must
+        // still recover that corner. Coordinates are the real values captured
+        // from `movement-feel.map`.
+        let mut hull = vec![
+            DVec3::new(-4.064, 0.0, 35.559999999999995),
+            DVec3::new(25.4, 0.0, 0.0),
+            DVec3::new(25.4, 0.0, -40.64000000000001),
+            DVec3::new(-26.416, 0.0, -40.64000000000001),
+            DVec3::new(-40.64, 0.0, -40.63999999999999),
+            DVec3::new(-40.64, 0.0, 35.55999999999999),
+        ];
+        let fragment = vec![
+            DVec3::new(25.4, 0.0, 2.0319999999999965),
+            DVec3::new(4.064, 0.0, 2.032),
+            DVec3::new(4.064, 0.0, 35.56),
+            DVec3::new(25.4, 0.0, 35.559999999999995),
+        ];
+        hull_union_into(&mut hull, &fragment, DVec3::new(-0.0, 1.0, -0.0));
+        assert!(
+            hull.iter()
+                .any(|v| (v.x - 25.4).abs() < 0.1 && (v.z - 35.56).abs() < 0.1),
+            "hull dropped the extreme +X/+Z corner (25.4, *, 35.56): {hull:?}"
+        );
     }
 
     #[test]

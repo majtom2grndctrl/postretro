@@ -69,7 +69,10 @@ for kill credit, damage buckets, and last-hit attribution.
 - [ ] Generated TypeScript and Luau SDK types include `creditSource` on
   `WeaponDescriptor` with the same camelCase spelling.
 - [ ] Adding `creditSource` preserves live cooldown/trigger state across hot
-  reload (through the existing `refresh_from_descriptor` path).
+  reload (through the existing `refresh_from_descriptor` path). A
+  canonical-defaulted `creditSource` also survives hot reload — an
+  implementation that regresses it to `weapon.unknown` on reload fails this
+  criterion.
 - [ ] Hitscan weapon damage records a contributor entry on the struck target
   using the weapon's effective source id. Hit-zone multiplier behavior stays
   unchanged.
@@ -91,8 +94,8 @@ for kill credit, damage buckets, and last-hit attribution.
   HP restored — is deferred to a future respawn spec; the engine ships no such
   path today.
 - [ ] No new combat reward, score, XP, damage-number, or grant behavior runs as
-  part of this plan.
-- [ ] No new `unsafe` is introduced.
+  part of this plan (review/grep gate, not a runnable assertion).
+- [ ] No new `unsafe` is introduced (review/grep gate, not a runnable assertion).
 
 ## Tasks
 
@@ -112,19 +115,47 @@ later as a categorical predicate value and a per-key store-slot segment. Parse
 it through both descriptor runtimes, add it to typedef registration, and update
 generated SDK fixtures.
 
+Default policy: authored `creditSource` wins when present; otherwise the
+resolved canonical equip/spawn name; otherwise the literal `weapon.unknown`
+(warn once in debug builds). The default resolves at spawn/materialization — a
+missing field parses to `None`, and the spawn path fills the default. The
+engine-derived default is engine-provided and is not re-validated against the
+`creditSource` charset.
+
 The spawn path must know the descriptor's canonical equip name to provide the
 default. If the current materialization path only hands `WeaponDescriptor` to
 `WeaponComponent::from_descriptor`, add a small constructor input or spawn-time
 wrapper that supplies the resolved canonical name. Do not infer the default from
 an entity id or display name.
 
+Hot reload must not regress a canonical-defaulted source: `refresh_from_descriptor`
+receives only `&WeaponDescriptor`, so when an authored `creditSource` is absent
+on reload, refresh must retain the previously-resolved `credit_source` (or
+thread the canonical name into the refresh path) rather than falling back to
+`weapon.unknown`.
+
+`credit_source` surfaces through `WeaponComponent::effective()` / `EffectiveStats`
+(matching the Boundary inventory's `EffectiveStats::credit_source`), so
+producers read the effective source id, not a raw component field.
+
+`WeaponDescriptor` is not `Default`, so adding `credit_source` requires
+updating every `WeaponDescriptor` struct literal, production and tests;
+consider adding a constructor or `Default` impl to bound the churn.
+
 ### Task 3: Damage context and chokepoint recording
 
-Introduce a damage context type (see the crate-placement note in Rough sketch).
-Extend the health chokepoint to receive both payload and context, and add a
-test-only compatibility helper if useful. This task changes the chokepoint
-signature only; rewiring each producer call site to build an explicit context
-is Task 5.
+Introduce `DamageContext` in the `postretro-entities` crate, next to
+`apply_damage` — it references `EntityId`, so the §12 partition rule keeps it
+out of `postretro-foundation`. Fields: `source_id`, `attacker: Option<EntityId>`,
+`weapon: Option<EntityId>`, `zone: Option<String>`.
+
+Add a context-taking chokepoint entry (e.g. `apply_damage_with_context`) and
+keep the existing `apply_damage` as a thin shim that forwards an
+unattributed/empty context, so every current production caller (`sim/mod.rs`,
+`health/reactions.rs`, `scripting/systems/ai.rs`) and test caller keeps
+compiling at this phase boundary. Task 5 migrates the production producers to
+the context-taking entry with real contexts; the shim is removed once the last
+producer has migrated.
 
 The chokepoint mutates HP exactly as today, then records into the target's
 ledger when the target has health, is not already death-latched
@@ -149,18 +180,32 @@ and may be stale by kill time (entities despawn — callers must not hold ids
 across destruction). Downstream categorical facts, such as last-hit weapon
 identity, derive from the stable source id, not the `EntityId`.
 
-Pin a small capacity constant. When capacity is exceeded, collapse excess
-distinct sources into a deterministic overflow entry or evict by a deterministic
-rule while preserving total recorded damage. The overflow design should not
-make a later `damageBy(source)` fact lie for retained source ids.
+Adding a field to `HealthComponent` requires updating every exhaustive struct
+literal and destructuring pattern across the crate, plus the `from_descriptor`
+initializer; consider initializing the ledger via a default to bound the churn.
+
+Expose the recording entry point that encapsulates capacity and overflow;
+Task 3's chokepoint calls it under its gate and does not reimplement insertion.
+Pin a small capacity constant. Retained source ids stay exact — never mutate
+one retained source id into another. When capacity is exceeded, overflow
+collapses into a separate reduced entry that preserves total recorded damage.
+The overflow design should not make a later `damageBy(source)` fact lie for
+retained source ids.
 
 ### Task 5: Wire all damage producers
 
 Weapon hitscan, `applyDamage`, and enemy AI attacks must build explicit
-contexts. Weapon hitscan uses the effective source id, weapon entity id, target
-entity id, and hit-zone tag from `WeaponImpact`. `applyDamage` uses a fixed
-script source such as `script.applyDamage`. Enemy AI uses a fixed source such as
-`enemy.attack` plus attacker id from the brain entity.
+contexts. `WeaponImpact` carries only `target` and `zone` — weapon hitscan
+takes its source id from the active wieldable's `WeaponComponent` (via
+`effective()`), the weapon entity id from that same active wieldable entity,
+and only target and hit-zone tag from `WeaponImpact`. `applyDamage` uses a
+fixed script source such as `script.applyDamage`. Enemy AI uses a fixed source
+such as `enemy.attack` plus attacker id from the brain entity.
+
+The three apply sites: weapon damage in `sim/mod.rs::run_weapon_fire_tick`, the
+`applyDamage` reaction in `health/reactions.rs`, and enemy AI in
+`scripting/systems/ai.rs` (via `run_ai_tick_with_navigation`; the attacker id
+is the brain entity / `outcome.id`).
 
 Keep zone-multiplier scaling at the weapon damage site before the payload
 reaches the chokepoint, so the ledger records the post-mitigation payload the
@@ -174,7 +219,9 @@ Extend `DeathReport` (currently `killed_tags: Vec<Vec<String>>` plus
 fields: a `killed_contributor_ledgers: Vec<ContributorLedgerSnapshot>`,
 index-aligned with `killed_tags`, and a `player_contributor_ledger:
 Option<ContributorLedgerSnapshot>`, parallel to `player_died`, each carrying
-the per-source entry facts. The sweep must capture ledger facts before the
+the per-source entry facts. `ContributorLedgerSnapshot` is a plain clone of the
+per-source ledger entry facts from Task 4, not a distinct reduced type. The
+sweep must capture ledger facts before the
 pass-2 despawn/latch writes, since the entity ids and components are gone once
 the sweep returns. The progress tracker still receives tags as today; later
 combat-event specs consume the new snapshots.
@@ -189,7 +236,9 @@ future respawn spec.
 
 Add focused Rust tests for descriptor parsing, effective source defaults,
 chokepoint ledger aggregation, bounded capacity, producer contexts, death-report
-snapshots, and clearing. Update SDK type snapshots. `docs/scripting-reference.md` has no
+snapshots, and clearing. Confirm generated SDK type snapshots are current —
+Task 2 already regenerates the fixtures, since the Phase-2 `cargo test` drift
+check requires it. `docs/scripting-reference.md` has no
 `components.weapon` section yet (only `components.health`); create the weapon
 descriptor surface section, mirroring `## components.health`, then add the
 `creditSource` note there.
@@ -198,8 +247,9 @@ descriptor surface section, mirroring `## components.health`, then add the
 
 **Phase 1 (sequential):** Task 1 - split before extending the oversized weapon
 module.
-**Phase 2 (concurrent):** Task 2, Task 4 - descriptor/default source and health
-ledger model do not depend on each other.
+**Phase 2 (sequential):** Task 2, then Task 4 - both edit shared struct-literal
+call sites (`weapon/mod.rs`, `sim/determinism_tests.rs`), so they run in
+sequence to avoid collisions.
 **Phase 3 (sequential):** Task 3 - consumes the ledger owner and defines the
 extended chokepoint.
 **Phase 4 (sequential):** Task 5 - rewires all producers to the new chokepoint.

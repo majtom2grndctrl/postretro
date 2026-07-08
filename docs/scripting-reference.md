@@ -142,6 +142,39 @@ archetype, an entity carrying `components.health` is placed by `canonicalName` â
 
 ---
 
+## `components.weapon`
+
+Attach a `weapon` block to an entity descriptor to define a weapon archetype.
+Weapon descriptors are equipped by name, not placed directly as map pickups in
+this surface.
+
+```typescript
+defineEntity({
+  canonicalName: "reference_pistol",
+  components: {
+    weapon: {
+      damage: 12,
+      range: 64,
+      fireRateMs: 180,
+      fireMode: "semi",
+      resolution: "hitscan",
+      creditSource: "player.reference-pistol:primary",
+    },
+  },
+});
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `damage` | `number` | Base damage payload per resolved shot. Must be finite and `>= 0.0`. |
+| `range` | `number` | Maximum hitscan distance in meters. Must be finite and `> 0.0`. |
+| `fireRateMs` | `number` | Minimum interval between shots in milliseconds. Must be finite and `> 0.0`. |
+| `fireMode` | `"semi" \| "auto"` | Semi-automatic or automatic input gate. |
+| `resolution` | `"hitscan"` | Shot resolution mode. Hitscan is the supported mode today. |
+| `creditSource` | `string` (optional) | Combat attribution source id for damage caused by this weapon. Must be non-empty ASCII, at most 64 bytes, and use only `A-Z`, `a-z`, `0-9`, `_`, `.`, `:`, or `-`. If omitted, the engine uses the resolved canonical weapon name; if no canonical name is available, it uses a stable engine fallback. |
+
+---
+
 ## Runtime values
 
 Most descriptor fields are plain literals â€” you write a number, the engine reads

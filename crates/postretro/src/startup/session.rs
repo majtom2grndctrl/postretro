@@ -157,6 +157,8 @@ pub(crate) fn build_session() -> Result<BootSession> {
         kinematic_mover_render: runtime_movers::KinematicMoverRenderCollector::new(),
         active_wieldable: None,
         active_wieldable_descriptor: None,
+        client_weapon_state: None,
+        client_fire_resolutions: Vec::new(),
         builtin_handled: None,
         pending_spawn_points: None,
         host_spawn_points: Vec::new(),

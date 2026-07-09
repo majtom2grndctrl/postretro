@@ -3,6 +3,7 @@
 
 use glam::Vec3;
 use parry3d::math::{Point, Vector};
+use postretro_entities::EntityTypeDescriptor;
 use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::registry::{EntityId, EntityRegistry};
 use postretro_foundation::{FireMode, ResolutionMode};
@@ -49,6 +50,73 @@ pub(crate) struct WeaponFireCommand {
     pub(crate) aim_origin: Vec3,
     pub(crate) aim_direction: Vec3,
     pub(crate) can_fire: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ClientWeaponState {
+    pub(crate) pawn: EntityId,
+    pub(crate) cooldown_remaining_ms: f32,
+    pub(crate) cooldown_ms: f32,
+    pub(crate) fire_mode: FireMode,
+    pub(crate) resolution: ResolutionMode,
+    pub(crate) range: f32,
+    shoot_press_consumed: bool,
+}
+
+impl ClientWeaponState {
+    pub(crate) fn from_local_pawn_descriptor(
+        pawn: EntityId,
+        entity_class: &str,
+        descriptors: &[EntityTypeDescriptor],
+    ) -> Option<Self> {
+        let Some(pawn_descriptor) = find_descriptor(descriptors, entity_class) else {
+            log::warn!(
+                "[Net] local pawn entity_class `{entity_class}` not registered; client weapon \
+                 prediction stays inert for this pawn"
+            );
+            return None;
+        };
+        let Some(default_weapon) = pawn_descriptor.default_weapon.as_deref() else {
+            return None;
+        };
+        let Some(weapon_descriptor) = find_descriptor(descriptors, default_weapon) else {
+            log::warn!(
+                "[Net] local pawn defaultWeapon `{default_weapon}` not registered; client weapon \
+                 prediction stays inert for this pawn"
+            );
+            return None;
+        };
+        let Some(weapon) = weapon_descriptor.weapon.as_ref() else {
+            log::warn!(
+                "[Net] local pawn defaultWeapon `{default_weapon}` has no weapon component; \
+                 client weapon prediction stays inert for this pawn"
+            );
+            return None;
+        };
+
+        Some(Self {
+            pawn,
+            cooldown_remaining_ms: 0.0,
+            cooldown_ms: weapon.cooldown_ms,
+            fire_mode: weapon.fire_mode,
+            resolution: weapon.resolution,
+            range: weapon.range,
+            shoot_press_consumed: false,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct LocalHitRecord {
+    pub(crate) target: EntityId,
+    pub(crate) point: Vec3,
+    pub(crate) zone: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ClientFireResolution {
+    pub(crate) client_tick: u32,
+    pub(crate) hits: Vec<LocalHitRecord>,
 }
 
 // Not `Copy`: `zone: Option<String>` carries a heap-backed tag for skeletal
@@ -252,6 +320,106 @@ fn fire_hitscan(
     events
 }
 
+#[allow(clippy::too_many_arguments)] // mirrors the host/single-player hitscan inputs.
+pub(crate) fn resolve_client_fire(
+    state: &mut ClientWeaponState,
+    button: FireButtonState,
+    aim_origin: Vec3,
+    aim_direction: Vec3,
+    client_tick: u32,
+    collision_world: &CollisionWorld,
+    registry: &EntityRegistry,
+    hit_zone_store: &HitZoneStore,
+    anim_time: f64,
+    frame_dt: f32,
+) -> Option<ClientFireResolution> {
+    let dt_ms = (frame_dt.max(0.0)) * 1000.0;
+    state.cooldown_remaining_ms = (state.cooldown_remaining_ms - dt_ms).max(0.0);
+
+    let wants_fire = match state.fire_mode {
+        FireMode::Semi => button.pressed && !state.shoot_press_consumed,
+        FireMode::Auto => button.active,
+    };
+    if state.fire_mode == FireMode::Semi && button.pressed {
+        state.shoot_press_consumed = true;
+    } else if !button.active {
+        state.shoot_press_consumed = false;
+    }
+
+    if !wants_fire || state.cooldown_remaining_ms > 0.0 {
+        return None;
+    }
+
+    state.cooldown_remaining_ms = state.cooldown_ms;
+    let hits = resolve_client_hitscan(
+        aim_origin,
+        aim_direction,
+        collision_world,
+        registry,
+        hit_zone_store,
+        anim_time,
+        state.range,
+        state.resolution,
+    );
+    Some(ClientFireResolution { client_tick, hits })
+}
+
+fn resolve_client_hitscan(
+    origin: Vec3,
+    direction: Vec3,
+    collision_world: &CollisionWorld,
+    registry: &EntityRegistry,
+    hit_zone_store: &HitZoneStore,
+    anim_time: f64,
+    range: f32,
+    resolution: ResolutionMode,
+) -> Vec<LocalHitRecord> {
+    match resolution {
+        ResolutionMode::Hitscan => {
+            let world_toi = cast_ray(
+                collision_world,
+                Point::new(origin.x, origin.y, origin.z),
+                Vector::new(direction.x, direction.y, direction.z),
+                range,
+            )
+            .map(|hit| hit.time_of_impact);
+
+            let entity_hit = nearest_entity_hit(
+                registry,
+                hit_zone_store,
+                anim_time,
+                origin,
+                direction,
+                range,
+            );
+            match (world_toi, entity_hit) {
+                (Some(world_toi), Some(entity)) if entity.toi < world_toi => {
+                    vec![local_hit_record(entity)]
+                }
+                (None, Some(entity)) => vec![local_hit_record(entity)],
+                _ => Vec::new(),
+            }
+        }
+    }
+}
+
+fn local_hit_record(entity: EntityRayHit) -> LocalHitRecord {
+    LocalHitRecord {
+        target: entity.target,
+        point: entity.point,
+        zone: entity.zone,
+    }
+}
+
+fn find_descriptor<'a>(
+    descriptors: &'a [EntityTypeDescriptor],
+    name: &str,
+) -> Option<&'a EntityTypeDescriptor> {
+    descriptors
+        .iter()
+        .find(|desc| desc.canonical_name.as_deref() == Some(name))
+}
+
 /// A resolved world-geometry point along the fire ray. `toi` is the ray
 /// parameter (distance, since `direction` is unit length) used to pick the
 /// nearest of world vs. entity. Entity hits are resolved by the hit-zone
@@ -283,6 +451,7 @@ mod tests {
     use parry3d::shape::TriMesh;
     use postretro_entities::components::health::{HealthComponent, Hitbox};
     use postretro_entities::registry::{ComponentKind, Transform};
+    use postretro_entities::{EntityTypeDescriptor, MeshDescriptor};
     use postretro_foundation::WeaponDescriptor;
     use winit::event::MouseButton;
 
@@ -316,6 +485,44 @@ mod tests {
             resolution: ResolutionMode::Hitscan,
             credit_source: None,
         })
+    }
+
+    fn weapon_descriptor(fire_mode: FireMode, cooldown_ms: f32) -> WeaponDescriptor {
+        WeaponDescriptor {
+            damage: 25.0,
+            range: 10.0,
+            cooldown_ms,
+            fire_mode,
+            resolution: ResolutionMode::Hitscan,
+            credit_source: None,
+        }
+    }
+
+    fn descriptor_table(default_weapon: Option<&str>) -> Vec<EntityTypeDescriptor> {
+        vec![
+            EntityTypeDescriptor {
+                canonical_name: Some("player".to_string()),
+                default_weapon: default_weapon.map(str::to_string),
+                light: None,
+                emitter: None,
+                movement: None,
+                weapon: None,
+                mesh: None,
+                health: None,
+                ai: None,
+            },
+            EntityTypeDescriptor {
+                canonical_name: Some("pistol".to_string()),
+                default_weapon: None,
+                light: None,
+                emitter: None,
+                movement: None,
+                weapon: Some(weapon_descriptor(FireMode::Semi, 100.0)),
+                mesh: None::<MeshDescriptor>,
+                health: None,
+                ai: None,
+            },
+        ]
     }
 
     /// Run a weapon `tick` with an EMPTY hit-zone store and a zero animation
@@ -408,6 +615,97 @@ mod tests {
             mesh: TriMesh::new(points, triangles),
             isometry: Isometry::identity(),
         }
+    }
+
+    #[test]
+    fn client_weapon_state_seeds_from_local_pawn_default_weapon() {
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        let state = ClientWeaponState::from_local_pawn_descriptor(
+            pawn,
+            "player",
+            &descriptor_table(Some("pistol")),
+        )
+        .expect("player default weapon resolves");
+
+        assert_eq!(state.pawn, pawn);
+        assert_eq!(state.cooldown_remaining_ms, 0.0);
+        assert_eq!(state.cooldown_ms, 100.0);
+        assert_eq!(state.fire_mode, FireMode::Semi);
+        assert_eq!(state.resolution, ResolutionMode::Hitscan);
+        assert_eq!(state.range, 10.0);
+    }
+
+    #[test]
+    fn client_weapon_state_none_for_weaponless_pawn() {
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+
+        assert!(
+            ClientWeaponState::from_local_pawn_descriptor(pawn, "player", &descriptor_table(None))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn client_fire_path_gates_held_trigger_while_cooling() {
+        let mut registry = EntityRegistry::new();
+        let target = spawn_hitbox_entity(
+            &mut registry,
+            Vec3::new(0.0, 0.0, -5.0),
+            Vec3::splat(0.5),
+            Vec3::ZERO,
+        );
+        let pawn = registry.spawn(Transform::default());
+        let mut state = ClientWeaponState {
+            pawn,
+            cooldown_remaining_ms: 0.0,
+            cooldown_ms: 100.0,
+            fire_mode: FireMode::Auto,
+            resolution: ResolutionMode::Hitscan,
+            range: 10.0,
+            shoot_press_consumed: false,
+        };
+        let world = CollisionWorld::new();
+        let store = HitZoneStore::new();
+        let button = FireButtonState {
+            pressed: true,
+            active: true,
+        };
+
+        let first = resolve_client_fire(
+            &mut state,
+            button,
+            Vec3::ZERO,
+            Vec3::NEG_Z,
+            7,
+            &world,
+            &registry,
+            &store,
+            0.0,
+            0.0,
+        )
+        .expect("first fire passes");
+        assert_eq!(first.client_tick, 7);
+        assert_eq!(first.hits.len(), 1);
+        assert_eq!(first.hits[0].target, target);
+
+        let blocked = resolve_client_fire(
+            &mut state,
+            FireButtonState {
+                pressed: false,
+                active: true,
+            },
+            Vec3::ZERO,
+            Vec3::NEG_Z,
+            8,
+            &world,
+            &registry,
+            &store,
+            0.0,
+            0.016,
+        );
+        assert!(blocked.is_none());
     }
 
     #[test]

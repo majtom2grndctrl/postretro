@@ -522,6 +522,11 @@ pub(crate) struct App {
     /// while preserving per-instance cooldown.
     active_wieldable: Option<postretro_entities::EntityId>,
     active_wieldable_descriptor: Option<String>,
+    /// Connected-client local weapon gate for the host-owned local pawn. The client
+    /// owns no local `Weapon` component; this descriptor-seeded carrier is read-only
+    /// with respect to world state and feeds local hit resolution only.
+    client_weapon_state: Option<weapon::ClientWeaponState>,
+    client_fire_resolutions: Vec<weapon::ClientFireResolution>,
 
     /// Boot state machine: drives the splash → first-level-frame transition.
     /// Subsumes the previous `level_load_fired` one-shot flag.
@@ -1895,6 +1900,11 @@ impl ApplicationHandler for App {
                 // render stage reads entities, so the renderer stays read-only.
                 // No-op for single-player and the host.
                 self.net_sample_remote_interpolation(frame_dt);
+                self.run_client_fire_path_post_loop(
+                    gameplay_snapshot.as_ref(),
+                    frame_dt,
+                    frame_anim_time,
+                );
 
                 // Drain collected post-tick events after all ticks complete so
                 // reactions observe the final state of every entity.
@@ -3979,6 +3989,7 @@ impl App {
             self.host_spawn_points = host_spawn_points;
             return;
         };
+        let mut armed_local_pawn = None;
         match session.net_endpoint.as_mut() {
             None => {}
             Some(netcode::NetEndpoint::Host {
@@ -3989,6 +4000,7 @@ impl App {
                 slot_pawns,
                 command_queues,
                 owners,
+                weapon_owners,
                 tick,
                 host_pawn: _,
                 map_enemies: _,
@@ -4046,6 +4058,7 @@ impl App {
                                                 slot_pawns,
                                                 command_queues,
                                                 owners,
+                                                weapon_owners,
                                                 *client_id,
                                                 &host_spawn_points,
                                                 &net_descriptors,
@@ -4068,6 +4081,7 @@ impl App {
                                 slot_pawns,
                                 command_queues,
                                 owners,
+                                weapon_owners,
                                 &poll.lifecycle,
                             );
                         }
@@ -4124,7 +4138,7 @@ impl App {
                 let mover_target_tick = time_sync
                     .estimated_server_tick()
                     .map(|tick| tick.floor().clamp(0.0, f64::from(u32::MAX)) as u32);
-                let materialized_remote_enemy_presentation = netcode::client_receive_and_apply(
+                let apply_outcome = netcode::client_receive_and_apply(
                     &mut registry,
                     &mut slot_table,
                     client,
@@ -4139,7 +4153,8 @@ impl App {
                     dt,
                     mover_target_tick,
                 );
-                if materialized_remote_enemy_presentation {
+                armed_local_pawn = apply_outcome.armed_local_pawn;
+                if apply_outcome.materialized_remote_enemy_presentation {
                     // `mesh_clip_tables` is a disjoint field of the same `session`
                     // bound for the `net_endpoint` match above.
                     resolve_mesh_entity_clips(&mut registry, &session.mesh_clip_tables);
@@ -4154,6 +4169,81 @@ impl App {
         // Restore the spawn-point cache taken before the endpoint borrow. The host
         // needs it on every future accept; `mem::take` only borrowed it for this call.
         self.host_spawn_points = host_spawn_points;
+        if let Some(armed) = armed_local_pawn {
+            self.seed_client_weapon_state(
+                armed.entity_id,
+                armed.entity_class.as_deref().unwrap_or("player"),
+                &net_descriptors,
+            );
+        }
+    }
+
+    fn seed_client_weapon_state(
+        &mut self,
+        pawn: postretro_entities::EntityId,
+        entity_class: &str,
+        descriptors: &[postretro_entities::EntityTypeDescriptor],
+    ) {
+        if self
+            .client_weapon_state
+            .as_ref()
+            .is_some_and(|state| state.pawn == pawn)
+        {
+            return;
+        }
+        self.client_weapon_state =
+            weapon::ClientWeaponState::from_local_pawn_descriptor(pawn, entity_class, descriptors);
+        self.client_fire_resolutions.clear();
+    }
+
+    fn run_client_fire_path_post_loop(
+        &mut self,
+        snapshot: Option<&input::ActionSnapshot>,
+        frame_dt: f32,
+        frame_anim_time: f64,
+    ) {
+        self.client_fire_resolutions.clear();
+        if !self.is_connected_client() {
+            return;
+        }
+        let Some(snapshot) = snapshot else {
+            return;
+        };
+        let Some(client_tick) = netcode::client_latest_sent_command_tick(
+            self.session
+                .as_ref()
+                .and_then(|session| session.net_endpoint.as_ref()),
+        ) else {
+            return;
+        };
+        let Some(state) = self.client_weapon_state.as_mut() else {
+            return;
+        };
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+
+        let shoot = snapshot.button(Action::Shoot);
+        let button = weapon::FireButtonState {
+            pressed: matches!(shoot, ButtonState::Pressed),
+            active: shoot.is_active(),
+        };
+        let (aim_origin, aim_direction) = self.camera.aim_ray();
+        let registry = session.scripting.script_ctx.registry.borrow();
+        if let Some(resolution) = weapon::resolve_client_fire(
+            state,
+            button,
+            aim_origin,
+            aim_direction,
+            client_tick,
+            &self.collision_world,
+            &registry,
+            &session.hit_zone_store,
+            frame_anim_time,
+            frame_dt,
+        ) {
+            self.client_fire_resolutions.push(resolution);
+        }
     }
 
     /// Host Phase 2 replication step. Thin delegation to `crate::netcode`. Ingests
@@ -4180,6 +4270,7 @@ impl App {
             slot_pawns: _,
             command_queues,
             owners,
+            weapon_owners: _,
             host_pawn: _,
             map_enemies: _,
             loaded_movers: _,

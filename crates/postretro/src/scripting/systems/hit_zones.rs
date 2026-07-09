@@ -2,7 +2,7 @@
 // weapon-agnostic entity ray hits against authored AABBs or trustworthy capsules.
 // See: context/lib/entity_model.md §7 · context/lib/rendering_pipeline.md §9
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -13,9 +13,7 @@ use parry3d::shape::{Ball, Capsule};
 
 use postretro_entities::components::health::{HealthComponent, Hitbox};
 use postretro_entities::components::mesh::{MeshAnimation, MeshComponent};
-use postretro_entities::registry::{
-    ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform,
-};
+use postretro_entities::registry::{ComponentKind, EntityId, EntityRegistry, Transform};
 use postretro_model::ModelHandle;
 use postretro_model::anim::{
     BlendSource, LocalTrs, Loop, capture_blend, sample_blended_world, sample_clip_looped_world,
@@ -560,25 +558,25 @@ pub(crate) fn nearest_entity_hit(
 
     let mut nearest: Option<EntityRayHit> = None;
 
-    for (id, value) in registry.iter_with_kind(ComponentKind::Health) {
-        let ComponentValue::Health(HealthComponent {
-            current, hitbox, ..
-        }) = value
-        else {
+    for id in hittable_candidate_ids(registry) {
+        let Ok(transform) = registry.get_component::<Transform>(id) else {
             continue;
         };
+        let health = registry.get_component::<HealthComponent>(id).ok();
 
         // Zero-HP entities are pending-despawn this tick (the death sweep runs
         // after weapon fire); skip them so a corpse cannot absorb a shot and
         // block the wall behind it for one frame. The contextual damage
         // chokepoint floors `current` at exactly 0.0, so exact equality is sound.
-        if *current == 0.0 {
+        //
+        // This gate is Health-branch-only: mesh-only remote enemies are locally
+        // hittable for feel but remain non-damageable because they carry no
+        // Health.
+        if health.is_some_and(|health| health.current == 0.0) {
             continue;
         }
 
-        let Ok(transform) = registry.get_component::<Transform>(id) else {
-            continue;
-        };
+        let hitbox = health.and_then(|health| health.hitbox.as_ref());
 
         // Prefer the zone-bearing path when the entity's model carries tagged
         // joints; otherwise fall back to the authored AABB. A no-tag model (or a
@@ -628,7 +626,7 @@ pub(crate) fn nearest_entity_hit(
                         direction,
                         transform,
                         zoned.origin_offset,
-                        hitbox.as_ref(),
+                        hitbox,
                         zoned.zones,
                         range,
                         id,
@@ -637,9 +635,9 @@ pub(crate) fn nearest_entity_hit(
             }
             // No zone-bearing model: the authored AABB is both broad and narrow
             // phase. Health without a hitbox is not targetable.
-            None => hitbox
-                .as_ref()
-                .and_then(|hitbox| aabb_hit(origin, direction, transform, hitbox, range, id)),
+            None => {
+                hitbox.and_then(|hitbox| aabb_hit(origin, direction, transform, hitbox, range, id))
+            }
         };
 
         if let Some(hit) = hit {
@@ -650,6 +648,24 @@ pub(crate) fn nearest_entity_hit(
     }
 
     nearest
+}
+
+fn hittable_candidate_ids(registry: &EntityRegistry) -> Vec<EntityId> {
+    let mut visited = HashSet::new();
+    let mut ids = Vec::new();
+
+    for (id, _) in registry.iter_with_kind(ComponentKind::Health) {
+        if visited.insert(id) {
+            ids.push(id);
+        }
+    }
+    for (id, _) in registry.iter_with_kind(ComponentKind::Mesh) {
+        if visited.insert(id) {
+            ids.push(id);
+        }
+    }
+
+    ids
 }
 
 struct ZoneBearingEntry<'a> {
@@ -1932,6 +1948,151 @@ mod tests {
         )
         .unwrap();
         id
+    }
+
+    fn spawn_mesh_only_entity(reg: &mut EntityRegistry, model: &str, position: Vec3) -> EntityId {
+        let id = reg.spawn(Transform {
+            position,
+            ..Transform::default()
+        });
+        reg.set_component(id, MeshComponent::stateless(model.to_string()))
+            .unwrap();
+        id
+    }
+
+    #[test]
+    fn hittable_candidates_union_health_and_mesh_without_duplicates() {
+        let mut reg = EntityRegistry::new();
+        let health_only = spawn_aabb_entity(&mut reg, Vec3::ZERO, Vec3::splat(0.5));
+        let mesh_only = spawn_mesh_only_entity(&mut reg, "mob", Vec3::ZERO);
+        let both = spawn_zone_entity(&mut reg, "mob", Vec3::ZERO);
+
+        let candidates = hittable_candidate_ids(&reg);
+
+        assert_eq!(
+            candidates.len(),
+            3,
+            "Health+Mesh entity should be visited once, not once per component kind"
+        );
+        assert!(
+            candidates.contains(&health_only),
+            "Health-bearing entity is a candidate"
+        );
+        assert!(
+            candidates.contains(&mesh_only),
+            "Mesh-bearing entity is a candidate"
+        );
+        assert!(
+            candidates.contains(&both),
+            "Health+Mesh entity is still a candidate"
+        );
+    }
+
+    #[test]
+    fn mesh_only_zone_entity_is_locally_hittable_without_health() {
+        let mut reg = EntityRegistry::new();
+        let store = store_with("mob", swinging_limb_model());
+        let id = spawn_mesh_only_entity(&mut reg, "mob", Vec3::ZERO);
+
+        let hit = nearest_entity_hit(
+            &reg,
+            &store,
+            1.0,
+            Vec3::new(5.0, 0.0, 10.0),
+            Vec3::new(0.0, 0.0, -1.0),
+            100.0,
+        )
+        .expect("Mesh-only remote enemy should hit through its zone-bearing model");
+
+        assert_eq!(hit.target, id);
+        assert_eq!(hit.zone.as_deref(), Some("hand"));
+    }
+
+    #[test]
+    fn zero_hp_health_mesh_entity_is_not_revisited_as_mesh_candidate() {
+        let mut reg = EntityRegistry::new();
+        let store = store_with("mob", swinging_limb_model());
+        let id = spawn_zone_entity(&mut reg, "mob", Vec3::ZERO);
+        let mut health = reg.get_component::<HealthComponent>(id).unwrap().clone();
+        health.current = 0.0;
+        reg.set_component(id, health).unwrap();
+
+        let hit = nearest_entity_hit(
+            &reg,
+            &store,
+            1.0,
+            Vec3::new(5.0, 0.0, 10.0),
+            Vec3::new(0.0, 0.0, -1.0),
+            100.0,
+        );
+
+        assert!(
+            hit.is_none(),
+            "zero-HP Health+Mesh entities keep the Health corpse skip and are not hit again via Mesh"
+        );
+    }
+
+    #[test]
+    fn mesh_only_unavailable_pose_falls_back_to_derived_bound() {
+        use postretro_entities::components::mesh::{
+            AnimationState, FadeSourceKind, InterruptPolicy, InterruptedOutgoing, MeshAnimation,
+        };
+
+        fn state(clip: &str, crossfade_ms: f32, clip_index: usize) -> AnimationState {
+            AnimationState {
+                clip: clip.into(),
+                looping: true,
+                crossfade_ms,
+                interrupt: InterruptPolicy::Smooth,
+                clip_index: Some(clip_index),
+            }
+        }
+
+        let mut reg = EntityRegistry::new();
+        let store = store_with("smooth", smooth_interrupt_model());
+
+        let mut states = HashMap::new();
+        states.insert("A".to_string(), state("idle", 0.0, 0));
+        states.insert("B".to_string(), state("walk", 200.0, 1));
+        states.insert("C".to_string(), state("run", 100.0, 2));
+        let mut anim = MeshAnimation::new(states, "A".into());
+
+        let t2 = 1.1_f64;
+        anim.current_state = "C".into();
+        anim.previous_state = Some("B".into());
+        anim.previous_entered_at = Some(1.0);
+        anim.entered_at = Some(t2);
+        anim.fade_source = FadeSourceKind::Snapshot;
+        anim.interrupted_outgoing = Some(InterruptedOutgoing::Snapshot {
+            tag: 1.0_f64.to_bits(),
+        });
+
+        let id = reg.spawn(Transform::default());
+        reg.set_component(
+            id,
+            MeshComponent {
+                model: "smooth".into(),
+                animation: Some(anim),
+                origin_offset: Vec3::ZERO,
+            },
+        )
+        .unwrap();
+
+        let hit = nearest_entity_hit(
+            &reg,
+            &store,
+            t2,
+            Vec3::new(0.0, 0.0, 10.0),
+            Vec3::new(0.0, 0.0, -1.0),
+            100.0,
+        )
+        .expect("Mesh-only unavailable pose should degrade to the model derived bound");
+
+        assert_eq!(hit.target, id);
+        assert_eq!(
+            hit.zone, None,
+            "the reach-bound degrade carries no zone tag"
+        );
     }
 
     /// AC: shooting a zone-bearing entity registers a hit only where the POSED

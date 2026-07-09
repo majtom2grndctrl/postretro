@@ -196,6 +196,10 @@ pub(crate) struct ClientPrediction {
     /// so the correction is continuous on screen without lying to the simulation.
     /// Owned here, never on `App`/`main.rs` — the source-layout gate.
     presentation_offset: Vec3,
+    /// Whether at least one command-frame tick has been allocated on this connection.
+    /// Needed because `next_client_tick == 0` is both the initial state and the
+    /// post-wrap state; the latest sampled command is `next - 1` only after a send.
+    sent_any_command: bool,
 }
 
 impl ClientPrediction {
@@ -241,7 +245,13 @@ impl ClientPrediction {
     pub(crate) fn next_client_tick(&mut self) -> u32 {
         let tick = self.next_client_tick;
         self.next_client_tick = self.next_client_tick.wrapping_add(1);
+        self.sent_any_command = true;
         tick
+    }
+
+    pub(crate) fn latest_sent_client_tick(&self) -> Option<u32> {
+        self.sent_any_command
+            .then_some(self.next_client_tick.wrapping_sub(1))
     }
 
     /// Whether prediction is armed and may drive the local pawn this frame. Before

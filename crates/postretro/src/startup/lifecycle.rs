@@ -89,6 +89,8 @@ impl App {
         self.kinematic_mover_render.clear();
         self.active_wieldable = None;
         self.active_wieldable_descriptor = None;
+        self.client_weapon_state = None;
+        self.client_fire_resolutions.clear();
     }
 
     /// Unload the active level without dropping renderer/window ownership.
@@ -1284,6 +1286,8 @@ mod tests {
             kinematic_mover_render: crate::runtime_movers::KinematicMoverRenderCollector::new(),
             active_wieldable: None,
             active_wieldable_descriptor: None,
+            client_weapon_state: None,
+            client_fire_resolutions: Vec::new(),
             boot_state: BootState::Running,
             splash_frame: 0,
             pending_level_log: false,

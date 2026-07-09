@@ -76,6 +76,36 @@ impl MovementOwners {
     }
 }
 
+/// Host-side active-weapon owner map: `pawn EntityId -> active weapon EntityId`.
+/// Remote client pawns own their active weapon through this host-only table; enemy
+/// health and weapon state remain registry-owned and host-authoritative.
+#[derive(Debug, Default)]
+pub(crate) struct WeaponOwners {
+    weapons: HashMap<EntityId, EntityId>,
+}
+
+impl WeaponOwners {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record `weapon` as the active weapon for `pawn`.
+    pub(crate) fn set(&mut self, pawn: EntityId, weapon: EntityId) {
+        self.weapons.insert(pawn, weapon);
+    }
+
+    /// The active weapon for `pawn`, if one was materialized.
+    #[allow(dead_code)]
+    pub(crate) fn weapon_of(&self, pawn: EntityId) -> Option<EntityId> {
+        self.weapons.get(&pawn).copied()
+    }
+
+    /// Forget a pawn's active weapon (on slot close / despawn). Idempotent.
+    pub(crate) fn remove_pawn(&mut self, pawn: EntityId) {
+        self.weapons.remove(&pawn);
+    }
+}
+
 /// Hold the last resolved command for at most this many missing ticks before
 /// synthesizing neutral input. Deterministic gap policy (Task 4 §C): a short hold
 /// rides out a single dropped/late packet; a longer gap falls back to neutral so a

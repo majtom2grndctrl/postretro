@@ -47,7 +47,9 @@ mod state_slot_loss_harness_test;
 mod enemy_replication_harness_test;
 
 pub(crate) use client::ClientReplication;
-pub(crate) use command_queue::{HostCommandQueues, MovementOwners, host_resolve_movement_inputs};
+pub(crate) use command_queue::{
+    HostCommandQueues, MovementOwners, WeaponOwners, host_resolve_movement_inputs,
+};
 // `ResolvedCommand` / `ResolutionSource` are produced by the command queue and consumed
 // via the submodule path only; not re-exported here.
 pub(crate) use interpolation::{DemoMover, InterpolationDelayState};
@@ -259,6 +261,10 @@ pub(crate) enum NetEndpoint {
         /// Stamps `owner_client_id` + the resolved cursor onto each owned pawn's
         /// snapshot so the net crate can derive per-recipient `local_player`.
         owners: MovementOwners,
+        /// E16 host active-weapon owner map: remote pawn `EntityId -> active weapon
+        /// EntityId`. Later host-authoritative fire/cooldown/hit ingest resolves a
+        /// client's pawn to its weapon here; weaponless pawns have no entry.
+        weapon_owners: WeaponOwners,
         /// The listen host's OWN player pawn, registered for OUTBOUND replication
         /// only (M15 Phase 3, issue 3b). The host pawn is driven LOCALLY by
         /// `simulate_tick`/`local_movement_pawn` exactly as in single-player — it is
@@ -327,6 +333,18 @@ pub(crate) enum NetEndpoint {
         /// the UI read snapshot is built.
         state_slots: Box<state_slots::ClientStateApply>,
     },
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct ClientApplyFrameOutcome {
+    pub(crate) materialized_remote_enemy_presentation: bool,
+    pub(crate) armed_local_pawn: Option<ClientArmedLocalPawn>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ClientArmedLocalPawn {
+    pub(crate) entity_id: EntityId,
+    pub(crate) entity_class: Option<String>,
 }
 
 /// The production monotonic clock: the engine's `Instant` frame clock exposed as
@@ -422,6 +440,7 @@ impl NetEndpoint {
                     slot_pawns: SlotPawns::new(),
                     command_queues: HostCommandQueues::new(),
                     owners: MovementOwners::new(),
+                    weapon_owners: WeaponOwners::new(),
                     host_pawn: None,
                     map_enemies: std::collections::HashSet::new(),
                     loaded_movers: std::collections::HashSet::new(),
@@ -669,8 +688,8 @@ pub(crate) fn client_receive_and_apply(
     tick_dt: f32,
     frame_dt: Duration,
     mover_target_tick: Option<u32>,
-) -> bool {
-    let mut materialized_remote_enemy_presentation = false;
+) -> ClientApplyFrameOutcome {
+    let mut frame_outcome = ClientApplyFrameOutcome::default();
     for bytes in client.drain_snapshots() {
         let snapshot = match decode_snapshot(&bytes) {
             Ok(snapshot) => snapshot,
@@ -730,6 +749,10 @@ pub(crate) fn client_receive_and_apply(
         if let Some(armed) = &outcome.armed_local_pawn {
             prediction.arm(armed.network_id, armed.entity_id);
             remote_materialize::materialize_armed_local_pawn(armed, descriptors, registry);
+            frame_outcome.armed_local_pawn = Some(ClientArmedLocalPawn {
+                entity_id: armed.entity_id,
+                entity_class: armed.entity_class.clone(),
+            });
         }
         // E10 Task 6: each non-local baseline that just spawned a descriptor-class-bearing
         // entity gets its remote-enemy presentation materialized here, where the descriptor
@@ -750,7 +773,7 @@ pub(crate) fn client_receive_and_apply(
                     client::apply_mesh_animation_state(registry, remote.entity_id, state, true);
                 }
             }
-            materialized_remote_enemy_presentation |= materialized;
+            frame_outcome.materialized_remote_enemy_presentation |= materialized;
         }
         // M15 Phase 3 Task 5: reconcile the local predicted pawn against the
         // authoritative record this snapshot delivered — merge the movement subset,
@@ -786,7 +809,7 @@ pub(crate) fn client_receive_and_apply(
         let buffer = wire::encode(&wire::ClientMessage::BaselineRefresh(req));
         client.send_input(buffer);
     }
-    materialized_remote_enemy_presentation
+    frame_outcome
 }
 
 fn snapshot_requires_descriptor_table(snapshot: &SnapshotMessage) -> bool {
@@ -883,6 +906,13 @@ pub(crate) fn client_local_presentation_offset(endpoint: Option<&NetEndpoint>) -
     match endpoint {
         Some(NetEndpoint::Client { prediction, .. }) => prediction.presentation_offset(),
         _ => Vec3::ZERO,
+    }
+}
+
+pub(crate) fn client_latest_sent_command_tick(endpoint: Option<&NetEndpoint>) -> Option<u32> {
+    match endpoint {
+        Some(NetEndpoint::Client { prediction, .. }) => prediction.latest_sent_client_tick(),
+        _ => None,
     }
 }
 
@@ -1134,6 +1164,7 @@ pub(crate) fn host_handle_accept_descriptor(
     slot_pawns: &mut SlotPawns,
     command_queues: &mut HostCommandQueues,
     owners: &mut MovementOwners,
+    weapon_owners: &mut WeaponOwners,
     client_id: u64,
     spawn_points: &[crate::scripting::map_entity::MapEntity],
     descriptors: &[EntityTypeDescriptor],
@@ -1161,11 +1192,14 @@ pub(crate) fn host_handle_accept_descriptor(
         },
     );
 
-    if let Some((pawn, _net_id)) = spawned {
+    if let Some((pawn, _net_id, active_weapon)) = spawned {
         // Record the owner mapping (pawn -> client_id) so snapshot production can stamp
         // `owner_client_id` and the resolved cursor. The client's command queue is
         // created lazily on its first ingested command.
         owners.set(pawn, client_id);
+        if let Some(weapon) = active_weapon {
+            weapon_owners.set(pawn, weapon);
+        }
         let _ = command_queues;
     }
 }
@@ -1229,6 +1263,7 @@ pub(crate) fn host_handle_lifecycle(
     slot_pawns: &mut SlotPawns,
     command_queues: &mut HostCommandQueues,
     owners: &mut MovementOwners,
+    weapon_owners: &mut WeaponOwners,
     lifecycle: &[postretro_net::slots::SlotEvent],
 ) {
     use postretro_net::slots::SlotEvent;
@@ -1247,6 +1282,7 @@ pub(crate) fn host_handle_lifecycle(
                 state_slots.remove_client(*client_id);
                 if let Some(pawn) = despawned {
                     owners.remove_pawn(pawn);
+                    weapon_owners.remove_pawn(pawn);
                 }
             }
             // Accepts never reach lifecycle (the transport discards `SlotEvent::Accepted`

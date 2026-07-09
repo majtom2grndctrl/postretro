@@ -38,9 +38,9 @@ pawn's weapon; the transfer semantics are the ammo spec's.
 
 ### In scope
 
-- **Full aim on the wire.** Add the firing client's aim (pitch beside `facing_yaw`,
-  or the aim vector) to `SimCommand` and the wire `InputCommand`, so the host
-  reconstructs the exact `aim_direction` the client aimed — not a yaw-only
+- **Full aim on the wire.** Add the firing client's aim as a `pitch: f32` scalar beside
+  `facing_yaw` (NOT a normalized aim vector) to `SimCommand` and the wire `InputCommand`,
+  so the host reconstructs the exact `aim_direction` the client aimed — not a yaw-only
   horizontal approximation.
 - Generalize the host per-pawn command-apply path so fire and reload resolve to each
   owned pawn's weapon host-authoritatively, mirroring the movement path.
@@ -56,8 +56,8 @@ pawn's weapon; the transfer semantics are the ammo spec's.
   `WIRE_VERSION` bump.** It introduces a `reload` intent on `SimCommand` + the wire
   `InputCommand`, threaded through `wire_convert` and the command queue. The ammo spec
   consumes `SimCommand.reload` locally and does NOT own the wire change or the bump.
-- Per-pawn aim for a remote pawn: eye origin from the pawn transform + standing eye
-  height; aim direction from the wire pitch + yaw. The listen host's own pawn keeps its
+- Per-pawn aim for a remote pawn: eye origin from the pawn transform +
+  `PlayerMovementComponent::standing_eye_height`; aim direction from the wire pitch + yaw. The listen host's own pawn keeps its
   camera-driven fire/aim path, appended alongside the resolved remote pawns.
 
 ### Out of scope (non-goals)
@@ -85,13 +85,16 @@ pawn's weapon; the transfer semantics are the ammo spec's.
   yaw-only horizontal shot would hit. The listen host's own pawn firing is unaffected.
 - [ ] The firing client predicts its own shot locally and reconciles to the host's
   authoritative resolution through the movement command-log / ack / replay loop; a
-  mispredicted shot converges to the authoritative outcome with no host rewind.
-  Movement's `replay` stays weapon-free (signature/grep gate).
+  mispredicted shot converges to the authoritative outcome — measured against the
+  replicated owner weapon cooldown — with no host rewind. Movement's `replay` stays
+  weapon-free (signature/grep gate).
 - [ ] Two owned pawns firing on the same tick each resolve against their OWN weapon
   (per-pawn cooldown, per-pawn credit source) - no cross-talk.
 - [ ] A pawn whose owner sends no fire does not fire; the neutral/held gap policy
   synthesizes a released fire button, so a disconnected client's weapon does not
-  auto-fire on held stale intent.
+  auto-fire on held stale intent. This no-auto-fire guarantee refers to the post-hold
+  neutral synthesis; the brief `INPUT_HOLD_TICKS` hold window intentionally replays the
+  last held fire before synthesizing neutral — expected, not a contradiction.
 - [ ] The host maps every owned remote pawn to its active weapon at slot accept. A
   pawn whose descriptor declares no weapon maps to none and never fires host-side
   (logged once, not an error).
@@ -112,26 +115,51 @@ pawn's weapon; the transfer semantics are the ammo spec's.
 ### Task 1: Wire command fields - reload, aim, and the version bump
 
 Add `reload: bool` and the client's aim to `SimCommand` (`sim/mod.rs`) and the wire
-`InputCommand` (`crates/net/src/wire.rs`). For aim, add the pitch the wire lacks — a
-`pitch` scalar beside `WireMovementInput.facing_yaw`, or a normalized aim vector; the
-constraint is that the host must reconstruct the exact `aim_direction`
-`weapon_fire_command` builds for the local pawn from `camera.aim_ray()`. Thread both
+`InputCommand` (`crates/net/src/wire.rs`). For aim, add the `pitch: f32`
+scalar the wire lacks (NOT a normalized aim vector); the constraint is that the host
+must reconstruct the exact `aim_direction` the client aimed. `weapon_fire_command`
+builds `aim_origin`/`aim_direction` from its `post_movement: PostMovementCommand`
+argument — filled from `camera.aim_ray()` via `build_post_movement_command` (`main.rs`,
+~line 791) — not from a direct `camera.aim_ray()` call. The host per-pawn path
+constructs the equivalent aim (origin + direction) for a remote pawn from the wire
+pitch + yaw and the pawn transform. `pitch` lives in `WireMovementInput` beside the
+existing `facing_yaw` (look data — yaw — already rides there), and on the engine side
+beside the yaw in the movement input sub-struct `SimCommand.movement` holds — NOT a
+top-level `SimCommand`/`InputCommand` field. This does not make `replay` weapon-aware:
+`replay` stays weapon-free because it never runs the weapon tick, not because look
+fields are absent (yaw already rides in that struct). Thread both
 through `sim_command_to_input` / `input_command_to_sim` (`netcode/wire_convert.rs`)
 and default them in `neutral_sim_command` (`command_queue.rs`). Extend
 `sanitize_input_command`: reject a non-finite pitch and constrain pitch to its valid
 look range (mirror the camera pitch clamp); `reload` is a `bool`, so it needs no new
-validation. Bump `WIRE_VERSION` (`crates/net/src/transport.rs`, 6 -> 7) and update
-both layout drift guards. Local input sampling (`main.rs`, where `fire_button` is
+validation. The wire `reload` bit is a LEVEL (held) state sampled from the reload
+action's current pressed state in `main.rs`, mirroring `fire_button`; the gap policy
+treats it like every other button (AC7 stays as written). Bump `WIRE_VERSION`
+(`crates/net/src/transport.rs`, 6 -> 7) and update both layout drift guards — the
+net-side and engine-side `WIRE_VERSION`/layout drift-guard tests that independently
+assert wire layout equality, per the two-gate handshake contract. Local input sampling (`main.rs`, where `fire_button` is
 built from the action snapshot) fills `reload` from the reload action and the aim
-from the camera; wire the reload action if absent.
+from the camera; the reload action already exists (`Action::Reload`, bound in
+`input/defaults.rs`) — sample its state, no new binding needed.
 
 ### Task 2: Pawn -> active-weapon map, populated at accept
 
 Return the sibling weapon `EntityId` from `spawn_net_slot_pawn`
-(`scripting/builtins/net_descriptor.rs`) instead of discarding it. Add a host-owned
-`pawn -> weapon` map beside `MovementOwners` (`command_queue.rs`), set in the same
-accept path that calls `owners.set(pawn, client_id)` (`netcode/mod.rs`) and cleared
-on slot close alongside `owners.remove_pawn`. A pawn with no weapon records no entry.
+(`scripting/builtins/net_descriptor.rs`) instead of discarding it. `spawn_net_slot_pawn`
+is not called directly from `netcode/mod.rs` — it runs in `lifecycle.rs` (~line 184),
+whose accept function returns `(EntityId, NetworkId)` up to the
+`owners.set(pawn, client_id)` site (`netcode/mod.rs:1168`). BOTH `spawn_net_slot_pawn`'s
+return AND the `lifecycle.rs` accept-path return tuple must widen to carry the
+`Option<EntityId>` weapon id, so it reaches the `owners.set` site where the map is
+written. Add a host-owned
+`pawn -> weapon` map as a field on the same struct that owns `MovementOwners`
+(`command_queue.rs`), constructed alongside it at every construction site — the owning
+struct's field initializer, the `lifecycle.rs` accept/close paths, and the test
+fixtures. Set it in the same accept path that calls `owners.set(pawn, client_id)`
+(`netcode/mod.rs`) and clear it on slot close beside `owners.remove_pawn`. A pawn with
+no weapon records no entry. Changing `spawn_net_slot_pawn`'s return type breaks its
+existing test callers (in the `net_descriptor.rs` tests and the
+`predict_reconcile_harness` fixtures) — update them.
 
 ### Task 3: Generalize the host per-pawn command resolve
 
@@ -139,7 +167,12 @@ Widen `host_resolve_movement_inputs` (movement-only, `command_queue.rs:355`) to 
 the full resolved `SimCommand` per owned pawn (a `(EntityId, SimCommand)` list) so
 `fire_button`, aim, and `reload` survive alongside `movement`. Gap policy, catch-up,
 and cursor logic are unchanged; only the projection out of `ResolvedCommand.command`
-widens from `.movement` to the whole command.
+widens from `.movement` to the whole command. Widening the return from
+`Vec<(EntityId, MovementInput)>` to `Vec<(EntityId, SimCommand)>` breaks its consumer
+on the `simulate_tick` call path — update that consumer to read `.movement` /
+`.fire_button` / `.reload` / pitch off the widened per-pawn command. After widening,
+`host_resolve_movement_inputs` no longer returns movement-only data; rename it to
+reflect the widened return (e.g. `host_resolve_pawn_commands`).
 
 ### Task 4: Host per-pawn combat apply in the sim
 
@@ -147,11 +180,14 @@ Generalize `simulate_tick`'s weapon stage (`sim/mod.rs`) from one `active_wielda
 + one `command` to a per-pawn apply, mirroring how movement iterates
 `remote_pawn_inputs` then appends the local pawn. Per owned pawn: resolve its weapon
 via the Task 2 map, derive aim (eye origin from the pawn transform +
-`PlayerMovementComponent` standing eye height, aim direction from the wire pitch +
-yaw), build a `WeaponFireCommand`, and run `weapon::tick_resolved` for that weapon.
+`PlayerMovementComponent::standing_eye_height`
+(`crates/foundation/src/movement/player_movement.rs:203`), aim direction from the wire
+pitch + yaw), build a `WeaponFireCommand`, and run `weapon::tick_resolved` for that
+weapon.
 `tick_resolved` already takes an arbitrary `active_wieldable`, so it is reused per
-pawn unchanged. The listen host's own pawn keeps the camera-driven aim path, appended
-last.
+pawn unchanged. A resolved owned pawn that maps to no weapon logs once via a per-pawn
+de-dup latch (not per-tick spam) and never fires host-side (AC5). The listen host's own
+pawn keeps the camera-driven aim path, appended last.
 
 ### Task 5: Per-pawn reload delivery seam
 
@@ -172,9 +208,14 @@ weapon tick keyed to the sent command — WITHOUT running weapons inside movemen
 Reconcile the authoritative fire outcome the host resolved, carried in the snapshot,
 through the same prune-through-ack + merge-authoritative-subset path
 `reconcile_local_pawn` uses for movement, so a mispredicted shot converges to the
-host's resolution without rewind. The replicated ammo/magazine subset the client
-reconciles against is the ammo spec's per-pawn projection; for the resourceless slice
-the reconciled fact is the shot / weapon cooldown.
+host's resolution without rewind. For the resourceless slice the
+reconciled fact is the firing pawn's own weapon cooldown, which is NOT replicated today
+— only enemy `attack_cooldown_remaining_ms` is replicated, not player weapon cooldown.
+Add a host-side step here: replicate the firing pawn's own weapon cooldown as an
+owner-private snapshot fact, scoped to the owner the way movement authority metadata is,
+so the client has an authoritative value to reconcile its predicted cooldown against.
+Ammo later layers magazine/reserve as additional reconciled facts via its own per-pawn
+projection; this spec adds only the resourceless cooldown fact.
 
 ### Task 7: Tests
 
@@ -242,7 +283,7 @@ aim are the new wire fields.
 | Name | Rust | Wire / serde | JS / TS | Luau | FGD KVP |
 | --- | --- | --- | --- | --- | --- |
 | Reload intent | `SimCommand::reload` | `InputCommand.reload` (bitcode `bool`); `WIRE_VERSION` 6->7 | n/a | n/a | n/a |
-| Client aim | `SimCommand` aim (pitch beside `facing_yaw`, or aim vector) | `InputCommand` pitch/aim field; part of the 6->7 bump | n/a | n/a | n/a |
+| Client aim | `pitch: f32` beside `facing_yaw` in the movement input sub-struct `SimCommand.movement` holds | `WireMovementInput.pitch` (`f32`); part of the 6->7 bump | n/a | n/a | n/a |
 | Pawn->weapon map | new host map beside `MovementOwners` | n/a (engine-side; registry-blind net crate never sees `EntityId`) | n/a | n/a | n/a |
 | Remote fire application | per-pawn `WeaponFireCommand` via `weapon::tick_resolved` | consumes `InputCommand.fire_button` + aim | n/a | n/a | n/a |
 | Fire predict/reconcile | local predicted weapon tick; reconcile via `reconcile_local_pawn` loop | authoritative outcome via snapshot | n/a | n/a | n/a |
@@ -252,14 +293,17 @@ aim are the new wire fields.
 - **Reload-field ownership (confirmed consistent).** This spec owns `reload` on
   `SimCommand` + wire `InputCommand` and the single `WIRE_VERSION` bump; ammo's Task 5
   already defers the field and bump here and consumes `SimCommand.reload` locally, so
-  exactly one bump lands. One sampling detail to keep aligned: ammo Task 5 samples
-  reload as a rising edge (`ButtonState::Pressed`) so a held R does not re-attempt each
-  tick; this spec's gap policy synthesizes neutral on loss — compatible, but keep the
-  rising-edge sample the single source.
-- **Aim representation.** Pitch scalar beside `facing_yaw` (cheapest, mirrors the
-  existing field) versus a normalized aim vector. Implementer's choice under the
-  constraint that the host reconstruct the client's exact `aim_direction`; the pitch
-  scalar is the recommended default.
+  exactly one bump lands. Sampling split: this spec owns the LEVEL bit on the wire —
+  the reload action's held state sampled in `main.rs`, mirroring `fire_button`.
+  Rising-edge detection (so a held R reloads only once) is the CONSUMER's job in the
+  ammo spec, operating on the replicated `SimCommand.reload` level bit — it is NOT a
+  one-tick pulse sampled via `ButtonState::Pressed` at the input layer. This spec owns
+  the level bit on the wire; the ammo spec owns the edge detection at consumption.
+- **Aim representation (decided).** The aim wire field is a `pitch: f32` scalar beside
+  `facing_yaw` (NOT a normalized aim vector) — `sanitize_input_command`'s pitch clamp,
+  AC6's pitch look-range constraint, and the wire layout all assume a scalar. The host
+  reconstructs the client's exact `aim_direction` from that pitch, the wire yaw, and the
+  pawn transform.
 - **Reload before ammo exists.** Task 5 delivers the reload intent to the mapped
   weapon but defines no transfer (no ammo yet). The AC proves delivery, not effect —
   the intended split, with the ammo spec filling the body.

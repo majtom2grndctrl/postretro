@@ -75,6 +75,13 @@ impl ActionSnapshot {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn with_button_state(action: Action, state: ButtonState) -> Self {
+        let mut snapshot = Self::neutral();
+        snapshot.button_states.insert(action, state);
+        snapshot
+    }
+
     /// Query the button state for an action. Returns Inactive if unbound.
     pub fn button(&self, action: Action) -> ButtonState {
         self.button_states
@@ -116,6 +123,10 @@ impl GameplayInputLatch {
 
     pub fn clear(&mut self) {
         self.pressed_buttons.clear();
+    }
+
+    pub fn clear_pressed(&mut self, action: Action) {
+        self.pressed_buttons.remove(&action);
     }
 
     pub fn snapshot_for_ticks(

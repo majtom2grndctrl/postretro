@@ -254,6 +254,14 @@ impl ClientPrediction {
             .then_some(self.next_client_tick.wrapping_sub(1))
     }
 
+    pub(crate) fn latest_sent_fire_press_tick(&self) -> Option<u32> {
+        self.history
+            .iter()
+            .rev()
+            .find(|entry| entry.command.fire_button.pressed)
+            .map(|entry| entry.client_tick)
+    }
+
     /// Whether prediction is armed and may drive the local pawn this frame. Before
     /// arming the client may still SEND input commands to the host, but it must not
     /// spawn or advance a provisional local pawn. Test-only; no production caller
@@ -567,6 +575,32 @@ mod tests {
             },
             reload: false,
         }
+    }
+
+    #[test]
+    fn latest_sent_fire_press_tick_keeps_multi_tick_frame_edge_tick() {
+        let world = floor_world();
+        let mut prediction = ClientPrediction::new();
+        prediction.arm(NetworkId(1), EntityId::from_raw(0));
+        let mut first = forward_command(41, false);
+        first.fire_button = WireFireButtonState {
+            pressed: true,
+            active: true,
+        };
+        let mut second = forward_command(42, false);
+        second.fire_button = WireFireButtonState {
+            pressed: false,
+            active: true,
+        };
+        let start = (start_transform(), component());
+        let next = prediction
+            .predict_tick(first, start, &world, 0.0, 1.0 / 60.0)
+            .expect("first tick predicts");
+        prediction
+            .predict_tick(second, next, &world, 0.0, 1.0 / 60.0)
+            .expect("second tick predicts");
+
+        assert_eq!(prediction.latest_sent_fire_press_tick(), Some(41));
     }
 
     // --- Replay helper purity: it advances a Transform+movement pair through

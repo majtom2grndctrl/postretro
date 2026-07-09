@@ -2,7 +2,7 @@
 // weapon-agnostic entity ray hits against authored AABBs or trustworthy capsules.
 // See: context/lib/entity_model.md §7 · context/lib/rendering_pipeline.md §9
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -479,8 +479,8 @@ fn max_abs_component(value: Vec3) -> f32 {
 //
 // A standalone, weapon-agnostic ray query: given ANY origin / direction / range
 // it walks every TARGETABLE entity and returns the nearest hit. "Targetable"
-// widens entity_model.md §7's old "hitbox present" rule to: health AND (an
-// authored AABB hitbox OR a zone-bearing skinned model). The weapon's hitscan
+// widens entity_model.md §7's old "hitbox present" rule to the union of
+// Health-bearing entities and zone-bearing skinned meshes. The weapon's hitscan
 // delegates here; so can any future system (no weapon/camera type in the
 // signature). nalgebra never leaves this section — it is converted to/from glam
 // at the `parry3d` boundary.
@@ -512,10 +512,10 @@ pub(crate) struct EntityRayHit {
 /// `range`, or `None` when no targetable entity lies on the ray.
 ///
 /// Standalone and weapon-agnostic: callable with any `origin` / `direction`
-/// (assumed unit length) / `range`. Targetable = health AND (an authored AABB
-/// hitbox OR a skinned model whose hit-zone entry has a trustworthy derived
-/// bound). Degraded or untrustworthy zone entries use the authored AABB path
-/// instead. For each:
+/// (assumed unit length) / `range`. Targetable = Health-bearing entities OR
+/// Mesh-bearing entities with a skinned model whose hit-zone entry has a
+/// trustworthy derived bound. Degraded or untrustworthy zone entries use the
+/// authored AABB path when the entity has Health. For each:
 /// - **AABB-only** (health + hitbox, no zone-bearing model): broad phase is the
 ///   authored AABB; narrow phase is the same AABB via [`ray_aabb_slab`].
 /// - **Precise zone path** (health + trustworthy model bound): broad phase is the
@@ -558,9 +558,9 @@ pub(crate) fn nearest_entity_hit(
 
     let mut nearest: Option<EntityRayHit> = None;
 
-    for id in hittable_candidate_ids(registry) {
+    for_each_hittable_candidate(registry, |id| {
         let Ok(transform) = registry.get_component::<Transform>(id) else {
-            continue;
+            return;
         };
         let health = registry.get_component::<HealthComponent>(id).ok();
 
@@ -573,7 +573,7 @@ pub(crate) fn nearest_entity_hit(
         // hittable for feel but remain non-damageable because they carry no
         // Health.
         if health.is_some_and(|health| health.current == 0.0) {
-            continue;
+            return;
         }
 
         let hitbox = health.and_then(|health| health.hitbox.as_ref());
@@ -645,27 +645,20 @@ pub(crate) fn nearest_entity_hit(
                 nearest = Some(hit);
             }
         }
-    }
+    });
 
     nearest
 }
 
-fn hittable_candidate_ids(registry: &EntityRegistry) -> Vec<EntityId> {
-    let mut visited = HashSet::new();
-    let mut ids = Vec::new();
-
+fn for_each_hittable_candidate(registry: &EntityRegistry, mut visit: impl FnMut(EntityId)) {
     for (id, _) in registry.iter_with_kind(ComponentKind::Health) {
-        if visited.insert(id) {
-            ids.push(id);
-        }
+        visit(id);
     }
     for (id, _) in registry.iter_with_kind(ComponentKind::Mesh) {
-        if visited.insert(id) {
-            ids.push(id);
+        if registry.get_component::<HealthComponent>(id).is_err() {
+            visit(id);
         }
     }
-
-    ids
 }
 
 struct ZoneBearingEntry<'a> {
@@ -1967,7 +1960,8 @@ mod tests {
         let mesh_only = spawn_mesh_only_entity(&mut reg, "mob", Vec3::ZERO);
         let both = spawn_zone_entity(&mut reg, "mob", Vec3::ZERO);
 
-        let candidates = hittable_candidate_ids(&reg);
+        let mut candidates = Vec::new();
+        for_each_hittable_candidate(&reg, |id| candidates.push(id));
 
         assert_eq!(
             candidates.len(),

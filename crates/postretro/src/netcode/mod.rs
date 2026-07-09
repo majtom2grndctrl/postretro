@@ -4,6 +4,8 @@
 // that mutates the registry for replication.
 // See: context/lib/networking.md
 
+use std::collections::VecDeque;
+
 mod client;
 mod command_queue;
 mod descriptor_class;
@@ -275,6 +277,11 @@ pub(crate) enum NetEndpoint {
         /// declaration. Keyed by deterministic `ShotId`; Task 6 validates ownership
         /// and retires entries from this store.
         open_shots: OpenAuthorizedShots,
+        /// E16 client HIT declarations received before the matching fixed-sim FIRE
+        /// authorization has opened its shot. Flushed after host weapon simulation
+        /// records authorized shots, so same-frame Input(FIRE)+HitDeclaration can
+        /// settle in order without losing owner-private verdict scoping.
+        pending_hit_declarations: PendingHitDeclarations,
         /// De-dup latch for weaponless remote pawns that try to fire. Missing weapons
         /// are a normal descriptor state, so this logs once per pawn rather than as an
         /// error every tick.
@@ -353,6 +360,7 @@ pub(crate) enum NetEndpoint {
 pub(crate) struct ClientApplyFrameOutcome {
     pub(crate) materialized_remote_enemy_presentation: bool,
     pub(crate) armed_local_pawn: Option<ClientArmedLocalPawn>,
+    pub(crate) owner_private_weapon_cooldown_fresh: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -456,6 +464,7 @@ impl NetEndpoint {
                     owners: MovementOwners::new(),
                     weapon_owners: WeaponOwners::new(),
                     open_shots: OpenAuthorizedShots::new(),
+                    pending_hit_declarations: PendingHitDeclarations::new(),
                     weaponless_fire_logged: std::collections::HashSet::new(),
                     host_pawn: None,
                     map_enemies: std::collections::HashSet::new(),
@@ -539,9 +548,12 @@ impl ShotId {
         Self(raw)
     }
 
-    #[allow(dead_code)]
     pub(crate) fn raw(self) -> u64 {
         self.0
+    }
+
+    fn client_tick(self) -> u32 {
+        self.0 as u32
     }
 }
 
@@ -585,12 +597,10 @@ impl OpenAuthorizedShots {
         );
     }
 
-    #[allow(dead_code)]
     pub(crate) fn get(&self, shot_id: ShotId) -> Option<OpenAuthorizedShot> {
         self.shots.get(&shot_id).copied()
     }
 
-    #[allow(dead_code)]
     pub(crate) fn retire(&mut self, shot_id: ShotId) -> Option<OpenAuthorizedShot> {
         self.shots.remove(&shot_id)
     }
@@ -598,6 +608,53 @@ impl OpenAuthorizedShots {
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.shots.len()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PendingHitDeclaration {
+    pub(crate) client_id: u64,
+    pub(crate) declaration: wire::HitDeclaration,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct PendingHitDeclarations {
+    declarations: VecDeque<PendingHitDeclaration>,
+}
+
+impl PendingHitDeclarations {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    pub(crate) fn push(&mut self, client_id: u64, declaration: wire::HitDeclaration) {
+        self.declarations.push_back(PendingHitDeclaration {
+            client_id,
+            declaration,
+        });
+    }
+
+    fn drain_ready(
+        &mut self,
+        command_queues: &HostCommandQueues,
+        open_shots: &OpenAuthorizedShots,
+    ) -> Vec<PendingHitDeclaration> {
+        let mut ready = Vec::new();
+        let mut waiting = VecDeque::new();
+        while let Some(pending) = self.declarations.pop_front() {
+            let shot_id = ShotId::from_raw(pending.declaration.shot_id);
+            let shot_open = open_shots.get(shot_id).is_some();
+            let resolved_past_shot = command_queues
+                .resolved_cursor(pending.client_id)
+                .is_some_and(|cursor| prediction::client_tick_le(shot_id.client_tick(), cursor));
+            if shot_open || resolved_past_shot {
+                ready.push(pending);
+            } else {
+                waiting.push_back(pending);
+            }
+        }
+        self.declarations = waiting;
+        ready
     }
 }
 
@@ -636,14 +693,12 @@ impl NetworkIdAllocator {
 
     /// Resolve a host-side `EntityId` to its stable `NetworkId`, if it has been
     /// stamped.
-    #[allow(dead_code)]
     pub(crate) fn network_id_for_entity(&self, id: EntityId) -> Option<NetworkId> {
         self.map.get(&id).copied()
     }
 
     /// Resolve a declared wire `NetworkId` back to the current host entity, if the
     /// mapping is still live.
-    #[allow(dead_code)]
     pub(crate) fn entity_for_network_id(&self, net_id: NetworkId) -> Option<EntityId> {
         self.reverse.get(&net_id).copied()
     }
@@ -847,6 +902,10 @@ pub(crate) fn client_receive_and_apply(
                 &snapshot.state_schema_fingerprint,
                 &snapshot.state_records,
             );
+            frame_outcome.owner_private_weapon_cooldown_fresh |= state_outcome
+                .fresh_slots
+                .iter()
+                .any(|name| name == "player.weaponCooldownMs");
             if let Some(ack) = outcome.ack.as_mut() {
                 ack.slot_baselines = state_outcome.slot_baselines;
             }
@@ -1029,6 +1088,29 @@ pub(crate) fn client_latest_sent_command_tick(endpoint: Option<&NetEndpoint>) ->
         Some(NetEndpoint::Client { prediction, .. }) => prediction.latest_sent_client_tick(),
         _ => None,
     }
+}
+
+pub(crate) fn client_latest_sent_fire_press_tick(endpoint: Option<&NetEndpoint>) -> Option<u32> {
+    match endpoint {
+        Some(NetEndpoint::Client { prediction, .. }) => prediction.latest_sent_fire_press_tick(),
+        _ => None,
+    }
+}
+
+pub(crate) fn client_send_input_command(
+    endpoint: Option<&mut NetEndpoint>,
+    command: &SimCommand,
+) -> Option<u32> {
+    let Some(NetEndpoint::Client {
+        client, prediction, ..
+    }) = endpoint
+    else {
+        return None;
+    };
+    let client_tick = prediction.next_client_tick();
+    let input = sim_command_to_input(command, client_tick);
+    client.send_input(wire::encode(&wire::ClientMessage::Input(input)));
+    Some(client_tick)
 }
 
 pub(crate) fn client_local_pawn_network_id(endpoint: Option<&NetEndpoint>) -> Option<NetworkId> {
@@ -1486,12 +1568,7 @@ pub(crate) fn host_handle_client_messages(
     replication: &mut ServerReplication,
     state_slots: &mut state_slots::HostStateReplication,
     command_queues: &mut HostCommandQueues,
-    registry: &mut EntityRegistry,
-    collision_world: &CollisionWorld,
-    allocator: &NetworkIdAllocator,
-    owners: &MovementOwners,
-    weapon_owners: &WeaponOwners,
-    open_shots: &mut OpenAuthorizedShots,
+    pending_hit_declarations: &mut PendingHitDeclarations,
     client_id: u64,
     server_tick: u32,
     server_now_us: u64,
@@ -1504,17 +1581,13 @@ pub(crate) fn host_handle_client_messages(
                 continue;
             }
         };
-        host_handle_client_message_with_hit_ingest(
+        host_handle_client_message_inner(
             server,
             replication,
             state_slots,
             command_queues,
-            registry,
-            collision_world,
-            allocator,
-            owners,
-            weapon_owners,
-            open_shots,
+            None,
+            Some(&mut *pending_hit_declarations),
             client_id,
             server_tick,
             server_now_us,
@@ -1546,6 +1619,7 @@ pub(crate) fn host_handle_client_message(
         state_slots,
         command_queues,
         None,
+        None,
         client_id,
         server_tick,
         server_now_us,
@@ -1562,42 +1636,45 @@ struct HostHitIngestContext<'a> {
     open_shots: &'a mut OpenAuthorizedShots,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct HitDeclarationResult {
+    fire_accepted: bool,
+    hit_accepted: bool,
+}
+
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn host_handle_client_message_with_hit_ingest(
+pub(crate) fn host_flush_pending_hit_declarations(
     server: &mut NetServer,
-    replication: &mut ServerReplication,
-    state_slots: &mut state_slots::HostStateReplication,
-    command_queues: &mut HostCommandQueues,
     registry: &mut EntityRegistry,
     collision_world: &CollisionWorld,
     allocator: &NetworkIdAllocator,
     owners: &MovementOwners,
     weapon_owners: &WeaponOwners,
+    command_queues: &HostCommandQueues,
     open_shots: &mut OpenAuthorizedShots,
-    client_id: u64,
-    server_tick: u32,
-    server_now_us: u64,
-    msg: wire::ClientMessage,
+    pending_hit_declarations: &mut PendingHitDeclarations,
 ) {
-    let hit_context = HostHitIngestContext {
-        registry,
-        collision_world,
-        allocator,
-        owners,
-        weapon_owners,
-        open_shots,
-    };
-    host_handle_client_message_inner(
-        server,
-        replication,
-        state_slots,
-        command_queues,
-        Some(hit_context),
-        client_id,
-        server_tick,
-        server_now_us,
-        msg,
-    );
+    for pending in pending_hit_declarations.drain_ready(command_queues, open_shots) {
+        let result = ingest_hit_declaration(
+            HostHitIngestContext {
+                registry: &mut *registry,
+                collision_world,
+                allocator,
+                owners,
+                weapon_owners,
+                open_shots: &mut *open_shots,
+            },
+            pending.client_id,
+            &pending.declaration,
+        );
+        send_shot_verdict(
+            server,
+            pending.client_id,
+            pending.declaration.shot_id,
+            result.fire_accepted,
+            result.hit_accepted,
+        );
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1607,6 +1684,7 @@ fn host_handle_client_message_inner(
     state_slots: &mut state_slots::HostStateReplication,
     command_queues: &mut HostCommandQueues,
     hit_context: Option<HostHitIngestContext<'_>>,
+    pending_hit_declarations: Option<&mut PendingHitDeclarations>,
     client_id: u64,
     server_tick: u32,
     server_now_us: u64,
@@ -1644,10 +1722,20 @@ fn host_handle_client_message_inner(
             command_queues.ingest(client_id, &input);
         }
         wire::ClientMessage::HitDeclaration(declaration) => {
-            let accept = hit_context
-                .map(|context| ingest_hit_declaration(context, client_id, &declaration))
-                .unwrap_or(false);
-            send_shot_verdict(server, client_id, declaration.shot_id, accept);
+            if let Some(pending) = pending_hit_declarations {
+                pending.push(client_id, declaration);
+            } else {
+                let result = hit_context
+                    .map(|context| ingest_hit_declaration(context, client_id, &declaration))
+                    .unwrap_or_default();
+                send_shot_verdict(
+                    server,
+                    client_id,
+                    declaration.shot_id,
+                    result.fire_accepted,
+                    result.hit_accepted,
+                );
+            }
         }
         // M15 Phase 3.5: a client missing a replicated state-slot baseline. The state
         // tracker schedules a full baseline for that slot in the client's next snapshot.
@@ -1658,12 +1746,22 @@ fn host_handle_client_message_inner(
     }
 }
 
-fn send_shot_verdict(server: &mut NetServer, client_id: u64, shot_id: u64, accept: bool) {
+fn send_shot_verdict(
+    server: &mut NetServer,
+    client_id: u64,
+    shot_id: u64,
+    accept: bool,
+    hit_accepted: bool,
+) {
     server.send_input(
         client_id,
         wire::encode(&wire::ServerMessage::ShotVerdicts(
             wire::ShotVerdictsMessage {
-                verdicts: vec![wire::ShotVerdict { shot_id, accept }],
+                verdicts: vec![wire::ShotVerdict {
+                    shot_id,
+                    accept,
+                    hit_accepted,
+                }],
             },
         )),
     );
@@ -1673,45 +1771,41 @@ fn ingest_hit_declaration(
     context: HostHitIngestContext<'_>,
     client_id: u64,
     declaration: &wire::HitDeclaration,
-) -> bool {
+) -> HitDeclarationResult {
     let shot_id = ShotId::from_raw(declaration.shot_id);
     let Some(open) = context.open_shots.get(shot_id) else {
-        return false;
+        return HitDeclarationResult::default();
     };
     if open.owner_client_id != client_id
         || context.owners.owner_of(open.shot.pawn) != Some(client_id)
     {
-        return false;
+        return HitDeclarationResult::default();
     }
 
     // Once the declaration binds to this client's still-open authorized FIRE,
     // consume it even if every record below fails validation. That keeps a client
     // from retrying the same authorized shot until a declaration happens to land.
     let Some(open) = context.open_shots.retire(shot_id) else {
-        return false;
+        return HitDeclarationResult::default();
     };
     let Some(weapon_id) = context.weapon_owners.weapon_of(open.shot.pawn) else {
-        return false;
+        return HitDeclarationResult::default();
     };
     let Ok(weapon_component) = context.registry.get_component::<WeaponComponent>(weapon_id) else {
-        return false;
+        return HitDeclarationResult::default();
     };
     let effective = weapon_component.effective();
     let pellet_count = effective_pellet_count(weapon_component);
     if pellet_count == 0 {
-        return declaration.records.is_empty();
+        return HitDeclarationResult {
+            fire_accepted: true,
+            hit_accepted: false,
+        };
     }
 
-    if declaration.records.is_empty() {
-        return true;
-    }
-
-    let mut accepted = 0usize;
-    for record in &declaration.records {
-        if accepted >= pellet_count {
-            break;
-        }
-        if apply_valid_hit_record(
+    let mut hit_accepted = false;
+    for record in declaration.records.iter().take(pellet_count) {
+        hit_accepted |= apply_valid_hit_record(
             context.registry,
             context.collision_world,
             context.allocator,
@@ -1720,12 +1814,13 @@ fn ingest_hit_declaration(
             effective.damage,
             effective.range,
             record,
-        ) {
-            accepted += 1;
-        }
+        );
     }
 
-    accepted > 0
+    HitDeclarationResult {
+        fire_accepted: true,
+        hit_accepted,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2149,7 +2244,11 @@ mod tests {
             }
         }
 
-        fn ingest(&mut self, client_id: u64, declaration: &wire::HitDeclaration) -> bool {
+        fn ingest_result(
+            &mut self,
+            client_id: u64,
+            declaration: &wire::HitDeclaration,
+        ) -> HitDeclarationResult {
             ingest_hit_declaration(
                 HostHitIngestContext {
                     registry: &mut self.registry,
@@ -2162,6 +2261,10 @@ mod tests {
                 client_id,
                 declaration,
             )
+        }
+
+        fn ingest(&mut self, client_id: u64, declaration: &wire::HitDeclaration) -> bool {
+            self.ingest_result(client_id, declaration).hit_accepted
         }
 
         fn target_health(&self) -> HealthComponent {
@@ -2200,12 +2303,47 @@ mod tests {
     }
 
     #[test]
+    fn pending_hit_declaration_succeeds_after_same_frame_fire_authorization_opens_shot() {
+        let mut fixture = HitIngestFixture::new(CollisionWorld::new());
+        let declaration = fixture.declaration(vec![fixture.record(Vec3::new(4.0, 0.5, 0.0), None)]);
+        fixture.open_shots.retire(fixture.shot_id);
+        let mut pending = PendingHitDeclarations::new();
+        pending.push(7, declaration.clone());
+
+        assert!(
+            pending
+                .drain_ready(&HostCommandQueues::new(), &fixture.open_shots)
+                .is_empty(),
+            "before FIRE authorization the declaration remains queued"
+        );
+        fixture.open_shots.record(
+            AuthorizedShot {
+                shot_id: fixture.shot_id,
+                pawn: fixture.pawn,
+                fire_tick: 100,
+            },
+            7,
+        );
+        let ready = pending.drain_ready(&HostCommandQueues::new(), &fixture.open_shots);
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].client_id, 7);
+
+        let result = fixture.ingest_result(ready[0].client_id, &ready[0].declaration);
+        assert!(result.fire_accepted);
+        assert!(result.hit_accepted);
+        assert_eq!(fixture.target_health().current, 90.0);
+    }
+
+    #[test]
     fn hit_declaration_without_open_shot_rejects_without_damage() {
         let mut fixture = HitIngestFixture::new(CollisionWorld::new());
         fixture.open_shots.retire(fixture.shot_id);
         let declaration = fixture.declaration(vec![fixture.record(Vec3::new(4.0, 0.5, 0.0), None)]);
 
-        assert!(!fixture.ingest(7, &declaration));
+        assert_eq!(
+            fixture.ingest_result(7, &declaration),
+            HitDeclarationResult::default()
+        );
         assert_eq!(fixture.target_health().current, 100.0);
     }
 
@@ -2214,9 +2352,14 @@ mod tests {
         let mut fixture = HitIngestFixture::new(CollisionWorld::new());
         let declaration = fixture.declaration(vec![fixture.record(Vec3::new(4.0, 0.5, 0.0), None)]);
 
-        assert!(fixture.ingest(7, &declaration));
+        let result = fixture.ingest_result(7, &declaration);
+        assert!(result.fire_accepted);
+        assert!(result.hit_accepted);
         assert_eq!(fixture.target_health().current, 90.0);
-        assert!(!fixture.ingest(7, &declaration));
+        assert_eq!(
+            fixture.ingest_result(7, &declaration),
+            HitDeclarationResult::default()
+        );
         let health = fixture.target_health();
         assert_eq!(health.current, 90.0);
         let entry = health.contributor_ledger.entries().first().unwrap();
@@ -2229,7 +2372,10 @@ mod tests {
         let mut fixture = HitIngestFixture::new(CollisionWorld::new());
         let declaration = fixture.declaration(vec![fixture.record(Vec3::new(4.0, 0.5, 0.0), None)]);
 
-        assert!(!fixture.ingest(8, &declaration));
+        assert_eq!(
+            fixture.ingest_result(8, &declaration),
+            HitDeclarationResult::default()
+        );
         assert_eq!(fixture.target_health().current, 100.0);
         assert!(fixture.open_shots.get(fixture.shot_id).is_some());
     }
@@ -2239,7 +2385,9 @@ mod tests {
         let mut fixture = HitIngestFixture::new(wall_at_x(1.0));
         let declaration = fixture.declaration(vec![fixture.record(Vec3::new(4.0, 0.5, 0.0), None)]);
 
-        assert!(!fixture.ingest(7, &declaration));
+        let result = fixture.ingest_result(7, &declaration);
+        assert!(result.fire_accepted);
+        assert!(!result.hit_accepted);
         assert_eq!(fixture.target_health().current, 100.0);
         assert!(fixture.open_shots.get(fixture.shot_id).is_none());
     }
@@ -2249,7 +2397,9 @@ mod tests {
         let mut behind_wall = HitIngestFixture::new(wall_at_x(1.0));
         let blocked =
             behind_wall.declaration(vec![behind_wall.record(Vec3::new(4.0, 0.5, 0.0), None)]);
-        assert!(!behind_wall.ingest(7, &blocked));
+        let result = behind_wall.ingest_result(7, &blocked);
+        assert!(result.fire_accepted);
+        assert!(!result.hit_accepted);
         assert_eq!(behind_wall.target_health().current, 100.0);
 
         let mut live_pose_mismatch = HitIngestFixture::new(CollisionWorld::new());
@@ -2266,7 +2416,9 @@ mod tests {
         let declared_past_pose = live_pose_mismatch.declaration(vec![
             live_pose_mismatch.record(Vec3::new(4.0, 0.5, 0.0), None),
         ]);
-        assert!(live_pose_mismatch.ingest(7, &declared_past_pose));
+        let result = live_pose_mismatch.ingest_result(7, &declared_past_pose);
+        assert!(result.fire_accepted);
+        assert!(result.hit_accepted);
         assert_eq!(live_pose_mismatch.target_health().current, 90.0);
     }
 
@@ -2276,7 +2428,9 @@ mod tests {
         let declaration =
             fixture.declaration(vec![fixture.record(Vec3::new(13.0, 0.5, 0.0), None)]);
 
-        assert!(!fixture.ingest(7, &declaration));
+        let result = fixture.ingest_result(7, &declaration);
+        assert!(result.fire_accepted);
+        assert!(!result.hit_accepted);
         assert_eq!(fixture.target_health().current, 100.0);
     }
 
@@ -2311,7 +2465,9 @@ mod tests {
             },
         ]);
 
-        assert!(fixture.ingest(7, &declaration));
+        let result = fixture.ingest_result(7, &declaration);
+        assert!(result.fire_accepted);
+        assert!(result.hit_accepted);
         assert_eq!(fixture.target_health().current, 90.0);
         assert_eq!(
             fixture
@@ -2320,6 +2476,28 @@ mod tests {
                 .unwrap()
                 .current,
             100.0
+        );
+    }
+
+    #[test]
+    fn hit_declaration_pellet_clamp_counts_declared_invalid_records() {
+        let mut fixture = HitIngestFixture::new(CollisionWorld::new());
+        let declaration = fixture.declaration(vec![
+            wire::HitRecord {
+                target: 999_999,
+                point: Vec3::new(4.0, 0.5, 0.0).to_array(),
+                zone: None,
+            },
+            fixture.record(Vec3::new(4.0, 0.5, 0.0), None),
+        ]);
+
+        let result = fixture.ingest_result(7, &declaration);
+        assert!(result.fire_accepted);
+        assert!(!result.hit_accepted);
+        assert_eq!(
+            fixture.target_health().current,
+            100.0,
+            "the valid second record is beyond the single declared pellet slot"
         );
     }
 

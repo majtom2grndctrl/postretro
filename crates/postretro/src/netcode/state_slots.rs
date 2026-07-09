@@ -531,6 +531,7 @@ const STATE_REFRESH_REASON_UNKNOWN_BASELINE: u8 = 0;
 pub(crate) struct StateApplyOutcome {
     pub(crate) slot_baselines: Vec<(u16, u32)>,
     pub(crate) refresh_requests: Vec<StateBaselineRefreshRequest>,
+    pub(crate) fresh_slots: Vec<String>,
 }
 
 /// Client-side replicated-state apply: owns the deterministic schema (built lazily
@@ -672,6 +673,9 @@ impl ClientStateApply {
                 );
                 return StateApplyOutcome::default();
             }
+            outcome
+                .fresh_slots
+                .extend(writes.iter().map(|(name, _)| name.clone()));
         }
 
         // Applied: advance held baselines and ack them.

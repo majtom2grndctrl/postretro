@@ -58,6 +58,10 @@ pub struct NetworkId(pub u32);
 /// Bumped to 8 for the moving-world replication slice: `RawComponentPayload`
 /// gained the kinematic-mover-state slot and `WirePlayerMovementState` widened
 /// its grounded bool to a ground reference.
+///
+/// E16 client-authoritative combat did not bump this: shot verdicts ride
+/// `ServerMessage::ShotVerdicts` on the reliable input channel, not
+/// `RawSnapshotMessage`.
 pub const SNAPSHOT_VERSION: u16 = 8;
 
 /// `record_kind` discriminant for a full-baseline (spawn / join / refresh) record.
@@ -823,7 +827,7 @@ pub struct WireFireButtonState {
 }
 
 /// Input-command envelope: the client's per-tick intent, mirroring the engine
-/// `SimCommand` (movement + fire button). Round-tripped in Phase 1; applied to
+/// `SimCommand` (movement + fire button + reload). Round-tripped in Phase 1; applied to
 /// gameplay in Phase 2; reconciled against in Phase 3.
 ///
 /// `client_tick` is the client's monotonic command-frame number, stamped first so
@@ -942,11 +946,11 @@ pub struct StateBaselineRefreshRequest {
 
 /// Discriminated client -> server envelope for the reliable-ordered
 /// `Channel::Input`, which multiplexes several message kinds (the input stream,
-/// replication acks, baseline-refresh requests, and — Task 5 — time-sync). bitcode
-/// tags the enum, so the server decodes one `ClientMessage` and matches on the
-/// variant rather than guessing the type of an untagged payload. A new kind (e.g.
-/// `TimeSync`) is added as a variant **appended** to preserve the discriminant
-/// order of existing variants.
+/// replication acks, entity/state baseline-refresh requests, time-sync, and
+/// client-declared hit results). bitcode tags the enum, so the server decodes one
+/// `ClientMessage` and matches on the variant rather than guessing the type of an
+/// untagged payload. New kinds are added as **appended** variants to preserve the
+/// discriminant order of existing variants.
 #[derive(Debug, Clone, PartialEq, Encode, Decode)]
 pub enum ClientMessage {
     /// Per-tick input intent (round-tripped in Phase 1; applied in Phase 2/3).
@@ -972,7 +976,13 @@ pub enum ClientMessage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
 pub struct ShotVerdict {
     pub shot_id: u64,
+    /// Whether the host authorized the FIRE that minted this shot. `false` means no
+    /// host-authorized shot existed, so clients roll back muzzle/cooldown.
     pub accept: bool,
+    /// Whether at least one declared HIT record validated and applied. This is
+    /// separate from FIRE authorization so an authorized miss does not look like a
+    /// rejected fire.
+    pub hit_accepted: bool,
 }
 
 /// Owner-scoped per-shot accept/reject verdicts. Empty lists are valid: they let
@@ -1348,10 +1358,12 @@ mod tests {
                 ShotVerdict {
                     shot_id: 10,
                     accept: true,
+                    hit_accepted: true,
                 },
                 ShotVerdict {
                     shot_id: 11,
                     accept: false,
+                    hit_accepted: false,
                 },
             ],
         });
@@ -1466,6 +1478,7 @@ mod tests {
                 verdicts: vec![ShotVerdict {
                     shot_id: 8,
                     accept: true,
+                    hit_accepted: true,
                 }],
             }),
         ];

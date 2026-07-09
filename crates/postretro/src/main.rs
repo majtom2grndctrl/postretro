@@ -816,6 +816,28 @@ fn client_weapon_cooldown_from_slot_table(
     }
 }
 
+fn reconcile_client_weapon_cooldown_from_slot_table(
+    state: &mut weapon::ClientWeaponState,
+    slot_table: &postretro_entities::SlotTable,
+    cooldown_fresh_this_frame: bool,
+) -> bool {
+    if !cooldown_fresh_this_frame {
+        return false;
+    }
+    let Some(cooldown_ms) = client_weapon_cooldown_from_slot_table(slot_table) else {
+        return false;
+    };
+    weapon::ClientPredictedShots::reconcile_cooldown(state, cooldown_ms);
+    true
+}
+
+fn client_fire_snapshot_for_post_loop<'a>(
+    fixed_tick_snapshot: Option<&'a input::ActionSnapshot>,
+    zero_tick_snapshot: Option<&'a input::ActionSnapshot>,
+) -> Option<&'a input::ActionSnapshot> {
+    fixed_tick_snapshot.or(zero_tick_snapshot)
+}
+
 fn has_player_pawn(registry: &postretro_entities::EntityRegistry) -> bool {
     use postretro_entities::ComponentKind;
 
@@ -1646,7 +1668,7 @@ impl ApplicationHandler for App {
                 // Capturing UI still drains raw input to prevent stale deltas from
                 // replaying later, but the consumed look is neutral so player aim
                 // cannot move while a modal owns input.
-                let gameplay_snapshot = {
+                let (gameplay_snapshot, zero_tick_fire_snapshot) = {
                     let session = self.session.as_mut().expect("running session installed");
                     let drained_look = session.input_system.drain_look_inputs();
                     let look = if ui_captures_gameplay {
@@ -1661,11 +1683,13 @@ impl ApplicationHandler for App {
                         ticks,
                         ui_captures_gameplay,
                     );
+                    let zero_tick_fire_snapshot =
+                        (!ui_captures_gameplay && ticks == 0).then_some(frame_snapshot);
                     // Apply look rotation once at render rate, not once per tick —
                     // so zero-tick frames still consume accumulated mouse motion.
                     self.camera
                         .rotate(look.yaw_delta(frame_dt), look.pitch_delta(frame_dt));
-                    gameplay_snapshot
+                    (gameplay_snapshot, zero_tick_fire_snapshot)
                 };
 
                 // The script tranche lives on `Session` (built post-first-pixel).
@@ -1893,6 +1917,7 @@ impl ApplicationHandler for App {
                             tick_dt,
                         );
                         self.host_record_authorized_shots(&tick_events.authorized_shots);
+                        self.host_flush_pending_hit_declarations();
                         pending_movement_events.extend(tick_events.movement);
                         pending_ai_events.extend(tick_events.ai);
                         pending_weapon_events.extend(tick_events.weapon);
@@ -1920,6 +1945,7 @@ impl ApplicationHandler for App {
                 self.net_sample_remote_interpolation(frame_dt);
                 self.run_client_fire_path_post_loop(
                     gameplay_snapshot.as_ref(),
+                    zero_tick_fire_snapshot.as_ref(),
                     frame_dt,
                     frame_anim_time,
                 );
@@ -4019,7 +4045,8 @@ impl App {
                 command_queues,
                 owners,
                 weapon_owners,
-                open_shots,
+                open_shots: _,
+                pending_hit_declarations,
                 weaponless_fire_logged: _,
                 tick,
                 host_pawn: _,
@@ -4116,19 +4143,13 @@ impl App {
                 let server_tick = *tick;
                 let server_now_us = u64::from(server_tick) * netcode::SERVER_TICK_MICROS;
                 let accepted_clients = server.accepted_clients();
-                let mut registry = script_ctx.registry.borrow_mut();
                 for client_id in accepted_clients {
                     netcode::host_handle_client_messages(
                         server,
                         replication,
                         state_slots,
                         command_queues,
-                        &mut registry,
-                        collision_world,
-                        allocator,
-                        owners,
-                        weapon_owners,
-                        open_shots,
+                        pending_hit_declarations,
                         client_id,
                         server_tick,
                         server_now_us,
@@ -4157,6 +4178,7 @@ impl App {
                             state,
                             verdict.shot_id,
                             verdict.accept,
+                            verdict.hit_accepted,
                         );
                     }
                 }
@@ -4191,11 +4213,14 @@ impl App {
                     dt,
                     mover_target_tick,
                 );
-                if let (Some(state), Some(cooldown_ms)) = (
-                    self.client_weapon_state.as_mut(),
-                    client_weapon_cooldown_from_slot_table(&slot_table),
-                ) {
-                    weapon::ClientPredictedShots::reconcile_cooldown(state, cooldown_ms);
+                if apply_outcome.owner_private_weapon_cooldown_fresh {
+                    if let Some(state) = self.client_weapon_state.as_mut() {
+                        let _ = reconcile_client_weapon_cooldown_from_slot_table(
+                            state,
+                            &slot_table,
+                            true,
+                        );
+                    }
                 }
                 armed_local_pawn = apply_outcome.armed_local_pawn;
                 if apply_outcome.materialized_remote_enemy_presentation {
@@ -4244,6 +4269,7 @@ impl App {
     fn run_client_fire_path_post_loop(
         &mut self,
         snapshot: Option<&input::ActionSnapshot>,
+        zero_tick_snapshot: Option<&input::ActionSnapshot>,
         frame_dt: f32,
         frame_anim_time: f64,
     ) {
@@ -4251,14 +4277,8 @@ impl App {
         if !self.is_connected_client() {
             return;
         }
-        let Some(snapshot) = snapshot else {
-            return;
-        };
-        let Some(client_tick) = netcode::client_latest_sent_command_tick(
-            self.session
-                .as_ref()
-                .and_then(|session| session.net_endpoint.as_ref()),
-        ) else {
+        let Some(snapshot) = client_fire_snapshot_for_post_loop(snapshot, zero_tick_snapshot)
+        else {
             return;
         };
         let Some(local_pawn_network_id) = netcode::client_local_pawn_network_id(
@@ -4268,17 +4288,49 @@ impl App {
         ) else {
             return;
         };
-        let Some(state) = self.client_weapon_state.as_mut() else {
-            return;
-        };
-        let Some(session) = self.session.as_ref() else {
-            return;
-        };
 
         let shoot = snapshot.button(Action::Shoot);
         let button = weapon::FireButtonState {
             pressed: matches!(shoot, ButtonState::Pressed),
             active: shoot.is_active(),
+        };
+        let zero_tick_fire_command = zero_tick_snapshot
+            .filter(|_| button.pressed)
+            .map(|snapshot| build_sim_command(snapshot, &self.camera, false, false, true));
+        let client_tick = if let Some(command) = zero_tick_fire_command.as_ref() {
+            let tick = netcode::client_send_input_command(
+                self.session
+                    .as_mut()
+                    .and_then(|session| session.net_endpoint.as_mut()),
+                command,
+            );
+            if tick.is_some() {
+                if let Some(session) = self.session.as_mut() {
+                    session.gameplay_input_latch.clear_pressed(Action::Shoot);
+                }
+            }
+            tick
+        } else if button.pressed {
+            netcode::client_latest_sent_fire_press_tick(
+                self.session
+                    .as_ref()
+                    .and_then(|session| session.net_endpoint.as_ref()),
+            )
+        } else {
+            netcode::client_latest_sent_command_tick(
+                self.session
+                    .as_ref()
+                    .and_then(|session| session.net_endpoint.as_ref()),
+            )
+        };
+        let Some(client_tick) = client_tick else {
+            return;
+        };
+        let Some(state) = self.client_weapon_state.as_mut() else {
+            return;
+        };
+        let Some(session) = self.session.as_ref() else {
+            return;
         };
         let (aim_origin, aim_direction) = self.camera.aim_ray();
         let cooldown_before_ms = state.cooldown_remaining_ms;
@@ -4343,6 +4395,7 @@ impl App {
             owners,
             weapon_owners,
             open_shots: _,
+            pending_hit_declarations: _,
             weaponless_fire_logged: _,
             host_pawn: _,
             map_enemies: _,
@@ -4538,6 +4591,45 @@ impl App {
         for shot in shots {
             open_shots.record(shot.shot, shot.owner_client_id);
         }
+    }
+
+    fn host_flush_pending_hit_declarations(&mut self) {
+        let Some(script_ctx) = self
+            .session
+            .as_ref()
+            .map(|session| session.scripting.script_ctx.clone())
+        else {
+            return;
+        };
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        let Some(netcode::NetEndpoint::Host {
+            server,
+            allocator,
+            command_queues,
+            owners,
+            weapon_owners,
+            open_shots,
+            pending_hit_declarations,
+            ..
+        }) = session.net_endpoint.as_mut()
+        else {
+            return;
+        };
+
+        let mut registry = script_ctx.registry.borrow_mut();
+        netcode::host_flush_pending_hit_declarations(
+            server,
+            &mut registry,
+            &self.collision_world,
+            allocator,
+            owners,
+            weapon_owners,
+            command_queues,
+            open_shots,
+            pending_hit_declarations,
+        );
     }
 
     /// Advance the listen host's authoritative fixed-simulation tick after one
@@ -5107,6 +5199,57 @@ mod tests {
         // The lifecycle gate still suppresses the save before commit/restore.
         assert!(!should_save_persisted_state(false, false));
         assert!(!should_save_persisted_state(false, true));
+    }
+
+    #[test]
+    fn stale_weapon_cooldown_slot_does_not_overwrite_local_decay() {
+        let mut table = postretro_entities::SlotTable::new();
+        table
+            .get_mut("player.weaponCooldownMs")
+            .expect("default player weapon cooldown slot exists")
+            .value = Some(postretro_entities::SlotValue::Number(100.0));
+        let mut state = weapon::ClientWeaponState {
+            pawn: postretro_entities::EntityId::from_raw(1),
+            cooldown_remaining_ms: 72.0,
+            cooldown_ms: 100.0,
+            fire_mode: postretro_foundation::FireMode::Semi,
+            resolution: postretro_foundation::ResolutionMode::Hitscan,
+            range: 10.0,
+            shoot_press_consumed: false,
+        };
+
+        assert!(!reconcile_client_weapon_cooldown_from_slot_table(
+            &mut state, &table, false
+        ));
+        assert_eq!(
+            state.cooldown_remaining_ms, 72.0,
+            "stale slot value must not reset locally-decayed cooldown"
+        );
+
+        assert!(reconcile_client_weapon_cooldown_from_slot_table(
+            &mut state, &table, true
+        ));
+        assert_eq!(state.cooldown_remaining_ms, 100.0);
+    }
+
+    #[test]
+    fn zero_tick_frame_shoot_press_reaches_post_loop_client_fire_snapshot() {
+        let mut latch = input::GameplayInputLatch::new();
+        let zero_tick_snapshot =
+            input::ActionSnapshot::with_button_state(Action::Shoot, ButtonState::Pressed);
+
+        let fixed_tick_snapshot = latch.snapshot_for_ticks(&zero_tick_snapshot, 0);
+        assert!(
+            fixed_tick_snapshot.is_none(),
+            "fixed gameplay intentionally waits for a later tick"
+        );
+        let selected = client_fire_snapshot_for_post_loop(
+            fixed_tick_snapshot.as_ref(),
+            Some(&zero_tick_snapshot),
+        )
+        .expect("post-loop client fire still sees the render-frame click");
+
+        assert_eq!(selected.button(Action::Shoot), ButtonState::Pressed);
     }
 
     fn minimal_player_descriptor() -> PlayerMovementDescriptor {

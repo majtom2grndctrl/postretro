@@ -1,4 +1,5 @@
-// Weapon fire tick (`tick_resolved`) and hitscan resolution; owns `WeaponFireCommand` and `FireButtonState`.
+// Weapon fire tick (`tick_resolved`), hitscan/local hit resolution, and client fire prediction.
+// Owns fire commands, local hit records, and predicted-shot reconciliation state.
 // See: context/lib/entity_model.md §5, §7
 
 use std::collections::HashMap;
@@ -62,7 +63,7 @@ pub(crate) struct ClientWeaponState {
     pub(crate) fire_mode: FireMode,
     pub(crate) resolution: ResolutionMode,
     pub(crate) range: f32,
-    shoot_press_consumed: bool,
+    pub(crate) shoot_press_consumed: bool,
 }
 
 impl ClientWeaponState {
@@ -185,11 +186,13 @@ impl ClientPredictedShots {
         &mut self,
         state: &mut ClientWeaponState,
         shot_id: u64,
-        accepted: bool,
+        fire_accepted: bool,
+        hit_accepted: bool,
     ) -> Option<&PredictedShotRecord> {
         let record = self.shots.get_mut(&shot_id)?;
-        if accepted {
+        if fire_accepted {
             record.status = PredictedShotStatus::Accepted;
+            record.hitmarker_visible &= hit_accepted;
             return Some(record);
         }
 
@@ -1583,12 +1586,38 @@ mod tests {
         predicted.predict(0xA, &resolution, 0.0, 100.0);
 
         predicted
-            .apply_verdict(&mut state, 0xA, true)
+            .apply_verdict(&mut state, 0xA, true, true)
             .expect("verdict should match a predicted shot");
 
         let record = predicted.get(0xA).expect("shot remains observable");
         assert!(record.muzzle_fx_visible);
         assert!(record.hitmarker_visible);
+        assert_eq!(record.status, PredictedShotStatus::Accepted);
+        assert!(approx_eq(state.cooldown_remaining_ms, 100.0));
+    }
+
+    #[test]
+    fn shot_verdict_authorized_miss_keeps_fire_state_and_retracts_hitmarker() {
+        let resolution = ClientFireResolution {
+            client_tick: 9,
+            hits: vec![LocalHitRecord {
+                target: EntityId::from_raw(2),
+                point: Vec3::ZERO,
+                zone: None,
+            }],
+        };
+        let mut state = client_weapon_state();
+        state.cooldown_remaining_ms = 100.0;
+        let mut predicted = ClientPredictedShots::new();
+        predicted.predict(0xA, &resolution, 25.0, 100.0);
+
+        predicted
+            .apply_verdict(&mut state, 0xA, true, false)
+            .expect("verdict should match a predicted shot");
+
+        let record = predicted.get(0xA).expect("shot remains observable");
+        assert!(record.muzzle_fx_visible);
+        assert!(!record.hitmarker_visible);
         assert_eq!(record.status, PredictedShotStatus::Accepted);
         assert!(approx_eq(state.cooldown_remaining_ms, 100.0));
     }
@@ -1609,7 +1638,7 @@ mod tests {
         predicted.predict(0xA, &resolution, 25.0, 100.0);
 
         predicted
-            .apply_verdict(&mut state, 0xA, false)
+            .apply_verdict(&mut state, 0xA, false, false)
             .expect("verdict should match a predicted shot");
 
         let record = predicted.get(0xA).expect("shot remains observable");

@@ -49,7 +49,7 @@ pub const PROTOCOL_ID: u32 = 0x_5052_4C34; // "PRL4" — E16 adds hit declaratio
 /// type changes (added field, reordered enum, bumped bitcode major). Carried as
 /// `ProtocolVersion::wire_version` and folded into the transport-level
 /// `protocol_id` so a wire-incompatible peer is refused at the netcode layer.
-pub const WIRE_VERSION: u32 = 7; // E16 reload field + new message byte layouts
+pub const WIRE_VERSION: u32 = 8; // E16 shot verdict separates FIRE accept from HIT accept
 
 /// Transport-level gate fed to renet_netcode as the netcode `protocol_id: u64`.
 /// Packs both hand-bumped consts so the encrypted handshake itself fails for any
@@ -732,8 +732,8 @@ mod tests {
             "E16 message-vocabulary changes require the PRL4 app protocol id"
         );
         assert_eq!(
-            WIRE_VERSION, 7,
-            "E16 reload/hit/verdict layouts require wire version 7"
+            WIRE_VERSION, 8,
+            "E16 shot verdict layout requires wire version 8"
         );
         assert_ne!(
             transport_protocol_id(),

@@ -482,22 +482,17 @@ Grounded seams (current source):
 - `collision/mod.rs::cast_ray:279` — the STATIC-only world ray for Check 3;
   `collision/moving.rs::cast_ray_combined:163` is entity-inclusive — do NOT use it for world-LOS.
 
-Proposed shapes (`// Proposed design`, remove after implementation):
+Implemented contract notes:
 
-```rust
-// Proposed design — engine side.
-struct ShotId(u64);   // pawn NetworkId (u32) packed high | command client_tick (u32) packed low — identical on both peers by construction
-struct AuthorizedShot { shot_id: ShotId, pawn: EntityId, fire_tick: u32 }   // still-open until a hit-declaration retires it
-// `AuthorizedShot.pawn` is a host-local EntityId used to resolve weapon/credit — NOT an input to the id.
-// New carriers on the `NetEndpoint::Host` variant, beside `owners: MovementOwners`:
-//   weapon_owners: WeaponOwners                        // pawn -> active-weapon (Task 5)
-//   open_shots: HashMap<ShotId, (AuthorizedShot, /* owning */ client_id: u64)>  // Task 4 records; Task 6 matches + retires
-struct LocalHitRecord { target: EntityId, point: Vec3, zone: Option<String> }  // client-produced; the client EntityId -> NetworkId reverse map (Task 3) turns each into the wire HitRecord
-
-// Proposed design — wire side (bitcode Encode/Decode), appended to ClientMessage.
-struct HitDeclaration { shot_id: u64, records: Vec<HitRecord> }             // length-prefixed; empty list = a shot that hit nothing
-struct HitRecord { target: u32 /* NetworkId */, point: [f32; 3], zone: Option<String> /* bone-tag; unknown/None => base multiplier */ }
-```
+- `shot_id` packs pawn `NetworkId` in the high 32 bits and command `client_tick` in the low
+  32 bits. Both peers can derive the same id for a predicted fire.
+- `AuthorizedShot.pawn` is the host-local attacker used for weapon lookup and damage credit.
+  It is not an input to the id.
+- Open authorized shots live host-side until a hit declaration binds to and retires them.
+  Retirement happens even when every declared hit record is rejected, so a client cannot retry
+  one authorized shot until geometry happens to pass.
+- Client local hit records name engine entities; the client reverse map converts each target to
+  `NetworkId` for the wire declaration. Host ingest resolves `NetworkId` back to a live entity.
 
 ## Boundary inventory
 

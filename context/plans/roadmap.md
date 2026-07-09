@@ -225,7 +225,7 @@ The on-hit / on-kill substrate (`combat-events.md`): the engine emits structured
 
 ### Weapon Systems
 
-Grow the single shipped hitscan weapon into the durable wieldable model (`weapon-model.md`): per-instance state, resources, loadout, augments, and richer activations. The first spec banks the combat-events source-id seam.
+Grow the single shipped hitscan weapon into the durable wieldable model (`weapon-model.md`): per-instance state, resources, loadout, augments, and richer activations. The first spec banks the combat-events source-id seam. Co-op-correct ammo/reload depends on the pulled-forward `E16 — Host Combat Command Application` spec (Resolution Modes).
 
 - [ ] **ammo resource** — the resource tagged-union's ammo variant: a pooled-by-type reserve on the inventory, a per-instance magazine, atomic reload.
 - [ ] **heat + cell resources** — the other two union variants plus the per-tick resource update (heat dissipates, cells regen — independent of fire).
@@ -242,9 +242,9 @@ Grow the single shipped hitscan weapon into the durable wieldable model (`weapon
 
 ### Resolution Modes
 
-New ways an activation resolves — each a sibling under `ActivationOutcome` — and the milestone that owns combat interaction **authority**. The first spec establishes server-authoritative fire; each later mode carries its own authority.
+New ways an activation resolves — each a sibling under `ActivationOutcome` — and the milestone that owns combat interaction **authority**. The first spec establishes server-authoritative fire; each later mode carries its own authority. **Non-goal:** server rewind / favor-the-shooter lag compensation — the engine predicts and reconciles, it does not rewind (`context/lib/index.md` §4).
 
-- [ ] **server-authoritative fire + hit confirmation** — the favor-the-shooter history window and hit confirmation the later modes inherit (the authority seam; depends on Epic 15).
+- [ ] **server-authoritative fire + hit confirmation** — the host applies each client's fire/reload to their own pawn; the client predicts and reconciles the result, same as movement (the authority seam the later modes inherit; depends on Epic 15). Realized by `E16 — Host Combat Command Application` (`context/plans/drafts/`), pulled forward as a prerequisite for co-op-correct Weapon Systems ammo/reload.
 - [ ] **projectile** — a new engine-owned travel/collision sim plus ownership/prediction networking; fills `ActivationOutcome::Spawned`. Reopens the combat-events projectile aggregation window (a follow-on Feedback spec).
 - [ ] **melee** — a short-range shape-sweep query (a non-ray query family shared with AoE), exposed both as a resolution mode and as a universal quick-melee activation, with a lunge (a combat↔movement impulse).
 - [ ] **AoE / splash** — a radial volume query emitting a damage payload per target with distance falloff (the rocket-launcher case).

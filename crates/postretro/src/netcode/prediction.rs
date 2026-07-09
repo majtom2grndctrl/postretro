@@ -196,10 +196,6 @@ pub(crate) struct ClientPrediction {
     /// so the correction is continuous on screen without lying to the simulation.
     /// Owned here, never on `App`/`main.rs` — the source-layout gate.
     presentation_offset: Vec3,
-    /// Whether at least one command-frame tick has been allocated on this connection.
-    /// Needed because `next_client_tick == 0` is both the initial state and the
-    /// post-wrap state; the latest sampled command is `next - 1` only after a send.
-    sent_any_command: bool,
 }
 
 impl ClientPrediction {
@@ -245,21 +241,11 @@ impl ClientPrediction {
     pub(crate) fn next_client_tick(&mut self) -> u32 {
         let tick = self.next_client_tick;
         self.next_client_tick = self.next_client_tick.wrapping_add(1);
-        self.sent_any_command = true;
         tick
     }
 
-    pub(crate) fn latest_sent_client_tick(&self) -> Option<u32> {
-        self.sent_any_command
-            .then_some(self.next_client_tick.wrapping_sub(1))
-    }
-
-    pub(crate) fn latest_sent_fire_press_tick(&self) -> Option<u32> {
-        self.history
-            .iter()
-            .rev()
-            .find(|entry| entry.command.fire_button.pressed)
-            .map(|entry| entry.client_tick)
+    pub(crate) fn peek_next_client_tick(&self) -> u32 {
+        self.next_client_tick
     }
 
     /// Whether prediction is armed and may drive the local pawn this frame. Before
@@ -578,29 +564,19 @@ mod tests {
     }
 
     #[test]
-    fn latest_sent_fire_press_tick_keeps_multi_tick_frame_edge_tick() {
-        let world = floor_world();
+    fn peek_next_client_tick_does_not_allocate_or_depend_on_history() {
         let mut prediction = ClientPrediction::new();
-        prediction.arm(NetworkId(1), EntityId::from_raw(0));
-        let mut first = forward_command(41, false);
-        first.fire_button = WireFireButtonState {
-            pressed: true,
-            active: true,
-        };
-        let mut second = forward_command(42, false);
-        second.fire_button = WireFireButtonState {
-            pressed: false,
-            active: true,
-        };
-        let start = (start_transform(), component());
-        let next = prediction
-            .predict_tick(first, start, &world, 0.0, 1.0 / 60.0)
-            .expect("first tick predicts");
-        prediction
-            .predict_tick(second, next, &world, 0.0, 1.0 / 60.0)
-            .expect("second tick predicts");
+        assert_eq!(prediction.peek_next_client_tick(), 0);
 
-        assert_eq!(prediction.latest_sent_fire_press_tick(), Some(41));
+        assert_eq!(prediction.next_client_tick(), 0);
+        assert_eq!(prediction.peek_next_client_tick(), 1);
+
+        prediction.clear_history();
+        assert_eq!(
+            prediction.peek_next_client_tick(),
+            1,
+            "current-frame tick selection must not depend on retained history"
+        );
     }
 
     // --- Replay helper purity: it advances a Transform+movement pair through

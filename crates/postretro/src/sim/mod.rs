@@ -1,6 +1,6 @@
 // Headless fixed-tick game-state advance seam.
 // See: context/lib/entity_model.md §5
-// See: context/plans/in-progress/M15--p0-headless-sim-seam/index.md  (command shapes, four-bucket event return, host-callback protocol)
+// See: context/lib/networking.md
 
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -55,7 +55,7 @@ pub(crate) struct ReloadDelivery {
     pub(crate) weapon: EntityId,
 }
 
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, PartialEq)]
 pub(crate) struct TickEvents {
     pub(crate) movement: Vec<&'static str>,
     pub(crate) ai: Vec<&'static str>,
@@ -282,11 +282,20 @@ fn run_remote_weapon_commands(
         let Some(shot_id) = remote.shot_id else {
             continue;
         };
+        let Ok(weapon_component) = registry.get_component::<WeaponComponent>(weapon) else {
+            continue;
+        };
+        let effective = weapon_component.effective();
         authorized.push(OpenAuthorizedShot {
             shot: AuthorizedShot {
                 shot_id,
                 pawn: remote.pawn,
+                weapon,
                 fire_tick: remote.fire_tick,
+                damage: effective.damage,
+                range: effective.range,
+                pellet_count: 1,
+                credit_source: effective.credit_source,
             },
             owner_client_id: remote.owner_client_id,
         });
@@ -341,8 +350,7 @@ pub(crate) fn apply_weapon_impact_damage(
     attacker: Option<EntityId>,
     impact: &weapon::WeaponImpact,
 ) {
-    let (Some(target), weapon::ActivationOutcome::Hit(payload)) = (impact.target, impact.outcome)
-    else {
+    let (Some(_), weapon::ActivationOutcome::Hit(payload)) = (impact.target, impact.outcome) else {
         return;
     };
     let Some(weapon_id) = active_wieldable else {
@@ -355,13 +363,52 @@ pub(crate) fn apply_weapon_impact_damage(
     };
 
     let effective = component.effective();
-    let source_id = if effective.credit_source.is_empty() {
+    apply_weapon_impact_damage_with_source(
+        registry,
+        weapon_id,
+        attacker,
+        impact,
+        effective.credit_source,
+        payload.amount,
+    );
+}
+
+pub(crate) fn apply_authorized_weapon_impact_damage(
+    registry: &mut EntityRegistry,
+    weapon_id: EntityId,
+    attacker: Option<EntityId>,
+    impact: &weapon::WeaponImpact,
+    credit_source: String,
+    damage_amount: f32,
+) {
+    apply_weapon_impact_damage_with_source(
+        registry,
+        weapon_id,
+        attacker,
+        impact,
+        credit_source,
+        damage_amount,
+    );
+}
+
+fn apply_weapon_impact_damage_with_source(
+    registry: &mut EntityRegistry,
+    weapon_id: EntityId,
+    attacker: Option<EntityId>,
+    impact: &weapon::WeaponImpact,
+    credit_source: String,
+    damage_amount: f32,
+) {
+    let (Some(target), weapon::ActivationOutcome::Hit(_)) = (impact.target, impact.outcome) else {
+        return;
+    };
+    let source_id = if credit_source.is_empty() {
         log::warn!(
             "[Weapon] active wieldable {weapon_id} resolved an empty credit source; using {UNKNOWN_WEAPON_CREDIT_SOURCE}"
         );
         UNKNOWN_WEAPON_CREDIT_SOURCE.to_string()
     } else {
-        effective.credit_source
+        credit_source
     };
     let multiplier = impact
         .zone
@@ -374,7 +421,7 @@ pub(crate) fn apply_weapon_impact_damage(
         })
         .unwrap_or(1.0);
     let scaled = weapon::DamagePayload {
-        amount: payload.amount * multiplier,
+        amount: damage_amount * multiplier,
     };
     if !scaled.amount.is_finite() {
         log::warn!(
@@ -396,7 +443,7 @@ pub(crate) fn apply_weapon_impact_damage(
     );
 }
 
-fn run_death_sweep(
+pub(crate) fn run_death_sweep(
     registry: &Rc<RefCell<EntityRegistry>>,
     progress_tracker: &mut ProgressTracker,
 ) -> Vec<String> {
@@ -731,5 +778,61 @@ mod tests {
         assert_eq!(health.current, 100.0);
         assert!(health.contributor_ledger.entries().is_empty());
         assert!(health.contributor_ledger.overflow().is_none());
+    }
+
+    #[test]
+    fn authorized_remote_hit_damage_can_run_death_sweep_in_same_host_tick() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (weapon_id, attacker, target) = {
+            let mut registry = registry.borrow_mut();
+            let weapon_id = registry.spawn(Transform::default());
+            let attacker = registry.spawn(Transform::default());
+            let target = registry.spawn(Transform::default());
+            registry
+                .set_component(
+                    target,
+                    HealthComponent {
+                        max: 10.0,
+                        current: 10.0,
+                        hitbox: None,
+                        death_handled: false,
+                        zone_multipliers: Default::default(),
+                        contributor_ledger: Default::default(),
+                    },
+                )
+                .unwrap();
+            (weapon_id, attacker, target)
+        };
+        let impact = weapon::WeaponImpact {
+            point: Vec3::ZERO,
+            normal: Vec3::Y,
+            target: Some(target),
+            zone: None,
+            outcome: weapon::ActivationOutcome::Hit(weapon::DamagePayload { amount: 10.0 }),
+        };
+        {
+            let mut registry = registry.borrow_mut();
+            apply_authorized_weapon_impact_damage(
+                &mut registry,
+                weapon_id,
+                Some(attacker),
+                &impact,
+                "weapon.test.remote".to_string(),
+                10.0,
+            );
+            assert!(
+                registry.exists(target),
+                "damage alone leaves death handling for the sweep hook"
+            );
+        }
+
+        let mut progress = ProgressTracker::new();
+        let death_events = run_death_sweep(&registry, &mut progress);
+
+        assert!(death_events.is_empty());
+        assert!(
+            !registry.borrow().exists(target),
+            "the narrow post-HIT sweep removes the zero-HP target before snapshots settle"
+        );
     }
 }

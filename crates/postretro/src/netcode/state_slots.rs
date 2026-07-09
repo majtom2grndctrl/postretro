@@ -439,11 +439,12 @@ fn shared_source_value(slot_table: &SlotTable, name: &str) -> Option<WireSlotVal
     slot_value_to_wire(value)
 }
 
-/// The per-owner source value for an owner-private slot. Descriptor-fed health slots
-/// (`player.health` / `player.maxHealth`) read the owning pawn's live
-/// `HealthComponent` directly — the descriptor projection path, per-owner. Any other
-/// owner-private slot falls back to the slot table's current value keyed to this owner
-/// (a single global value replicated privately). `None` when no source value exists.
+/// The per-owner source value for an owner-private slot. Descriptor-fed player slots
+/// read from owner-specific component state: `player.health` / `player.maxHealth`
+/// from the owning pawn's live `HealthComponent`, and `player.weaponCooldownMs`
+/// through `WeaponOwners` to the sibling `WeaponComponent`. Any other owner-private
+/// slot falls back to the slot table's current value keyed to this owner (a single
+/// global value replicated privately). `None` when no source value exists.
 fn owner_private_source_value(
     slot_table: &SlotTable,
     registry: &EntityRegistry,
@@ -837,7 +838,7 @@ mod tests {
     }
 
     #[test]
-    fn default_table_has_only_player_health_slots() {
+    fn default_table_has_player_owner_private_slots() {
         // The default table's schema is exactly the owner-private engine player
         // facts.
         let table = SlotTable::new();

@@ -1,8 +1,7 @@
-// Host-side authoritative command queues and the deterministic input-gap policy
-// (M15 Phase 3 Task 4). Per-client queues hold sanitized inbound `InputCommand`s
-// keyed by client id; the per-pawn resolved cursor (`last_processed_client_tick`)
-// drives a hold-then-neutral gap policy so a missing command tick never stalls the
-// authoritative movement seam.
+// Host-side authoritative command queues and the deterministic input-gap policy.
+// Per-client queues hold sanitized inbound full remote commands keyed by client
+// id; the per-pawn resolved cursor (`last_processed_client_tick`) drives a
+// hold-then-neutral gap policy so a missing command tick never stalls locomotion.
 //
 // Bounded playout buffer + depth-keyed catch-up: the resolved cursor consumes one
 // command per 60 Hz tick, the same rate the client produces them. Without catch-up,
@@ -352,7 +351,7 @@ impl HostCommandQueues {
             match &state.last_resolved {
                 Some(prev) => {
                     state.held_ticks += 1;
-                    (input_command_to_sim(prev), ResolutionSource::Held)
+                    (held_gap_sim_command(prev), ResolutionSource::Held)
                 }
                 // No previous command to hold (cursor advanced via neutral only):
                 // neutral immediately.
@@ -454,6 +453,15 @@ fn neutral_sim_command() -> SimCommand {
     }
 }
 
+fn held_gap_sim_command(prev: &InputCommand) -> SimCommand {
+    let mut sim = input_command_to_sim(prev);
+    sim.fire_button = crate::weapon::FireButtonState {
+        pressed: false,
+        active: false,
+    };
+    sim
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -542,6 +550,29 @@ mod tests {
         assert!(
             !neutral.command.reload,
             "neutral fallback clears reload intent"
+        );
+    }
+
+    #[test]
+    fn held_gap_command_preserves_locomotion_but_clears_fire_authorization() {
+        let mut queues = HostCommandQueues::new();
+        let mut cmd = command(0, 1.0);
+        cmd.fire_button = WireFireButtonState {
+            pressed: true,
+            active: true,
+        };
+        assert!(queues.ingest(CLIENT, &cmd));
+
+        let real = queues.resolve_tick(CLIENT).expect("real command resolves");
+        assert_eq!(real.source, ResolutionSource::Real);
+        assert!(real.command.fire_button.active);
+
+        let held = queues.resolve_tick(CLIENT).expect("held command resolves");
+        assert_eq!(held.source, ResolutionSource::Held);
+        assert!((held.command.movement.wish_dir.y - 1.0).abs() < EPSILON);
+        assert!(
+            !held.command.fire_button.pressed && !held.command.fire_button.active,
+            "gap-filled movement hold must not synthesize remote FIRE"
         );
     }
 

@@ -24,9 +24,10 @@ use postretro_scripting_core::data_descriptors::EntityTypeDescriptor;
 /// - it does NOT assign a global `active_wieldable` (the host does not wield a
 ///   remote client's weapon).
 ///
-/// The pawn's `defaultWeapon` still materializes a sibling weapon instance when the
-/// descriptor declares one (so the remote pawn is armed and replicates a weapon),
-/// but that weapon is never promoted to the host's active wieldable.
+/// The pawn's `defaultWeapon` still materializes a host-side sibling weapon
+/// instance when the descriptor declares one, so active-weapon resolution has the
+/// same shape as the player-start path. It does not replicate a weapon payload,
+/// and that weapon is never promoted to the host's active wieldable.
 ///
 /// Provenance is stamped [`DescriptorSpawnPath::NetworkSlot`] so these pawns are
 /// distinguishable from map-start single-player spawns. The per-placement KVP bag is

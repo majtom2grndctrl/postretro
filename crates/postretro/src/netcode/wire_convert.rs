@@ -14,8 +14,8 @@ use crate::weapon::FireButtonState;
 /// Convert a `SimCommand` plus the issuing client's command-frame tick into the
 /// wire `InputCommand`. `wish_dir` mirrors the engine `Vec2` (`x = right,
 /// y = forward`) into the wire's `[right, forward]` array; the buttons and
-/// `facing_yaw` carry through verbatim, and `FireButtonState` rides along
-/// faithfully (Phase 5 consumes it — Phase 3 only round-trips it).
+/// `facing_yaw` carry through verbatim, and fire/reload intent are preserved
+/// for downstream simulation.
 pub(crate) fn sim_command_to_input(cmd: &SimCommand, client_tick: u32) -> InputCommand {
     InputCommand {
         client_tick,

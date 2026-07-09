@@ -1,5 +1,5 @@
 // Connection-slot lifecycle glue: slot -> remote-pawn mapping and the accept/close
-// cleanup path that spawns and despawns slot-owned inert pawns.
+// cleanup path that spawns and despawns slot-owned network pawns.
 // See: context/lib/networking.md · entity_model.md §6
 //
 // M15 Phase 2 Task 4. `postretro-net` (`slots.rs`) models the connection slot state
@@ -8,7 +8,7 @@
 // the slot -> remote-pawn `EntityId`/`NetworkId` mapping and runs the registry
 // mutation through the game-logic-owned apply path.
 //
-// On accept: spawn (or register) one slot-owned inert player pawn, stamp it with a
+// On accept: spawn (or register) one slot-owned network pawn, stamp it with a
 // fresh session-monotonic `NetworkId` via the existing allocator, and add it to the
 // Phase 2 `ReplicableSet` so it replicates like any other authoritative object.
 //
@@ -34,7 +34,7 @@ use crate::scripting::map_entity::MapEntity;
 
 use super::{NetworkIdAllocator, ReplicableSet};
 
-/// The host-side slot -> remote-pawn map. One slot-owned inert pawn per accepted
+/// The host-side slot -> remote-pawn map. One slot-owned pawn per accepted
 /// client, keyed by the renet `ClientId` (`u64`). Owned by the `Host` endpoint
 /// variant alongside the allocator and replicable set.
 ///
@@ -99,6 +99,10 @@ impl SlotPawns {
     #[allow(dead_code)]
     pub(crate) fn pawn_for(&self, client_id: u64) -> Option<EntityId> {
         self.pawns.get(&client_id).copied()
+    }
+
+    pub(crate) fn remove_client(&mut self, client_id: u64) -> Option<EntityId> {
+        self.pawns.remove(&client_id)
     }
 
     /// Number of live slot pawns. Test-only assertion helper.
@@ -730,6 +734,9 @@ mod tests {
         let mut command_queues = crate::netcode::HostCommandQueues::new();
         let mut owners = crate::netcode::MovementOwners::new();
         let mut weapon_owners = crate::netcode::WeaponOwners::new();
+        let mut open_shots = crate::netcode::OpenAuthorizedShots::new();
+        let mut pending_hit_declarations = crate::netcode::PendingHitDeclarations::new();
+        let mut weaponless_fire_logged = std::collections::HashSet::new();
         let descriptors = [
             player_with_default_weapon("reference_pistol"),
             weapon_descriptor("reference_pistol"),
@@ -744,6 +751,9 @@ mod tests {
             &mut command_queues,
             &mut owners,
             &mut weapon_owners,
+            &mut open_shots,
+            &mut pending_hit_declarations,
+            &mut weaponless_fire_logged,
             CLIENT_A,
             &spawn_points,
             &descriptors,
@@ -756,6 +766,33 @@ mod tests {
         let weapon = weapon_owners
             .weapon_of(pawn)
             .expect("descriptor accept maps pawn to spawned active weapon");
+        let pawn_net = allocator
+            .network_id_for_entity(pawn)
+            .expect("accepted pawn is stamped");
+        let weapon_net = allocator.stamp(weapon);
+        replicable.register(weapon);
+        let shot_id = crate::netcode::ShotId::from_parts(pawn_net, 5);
+        open_shots.record(
+            crate::netcode::AuthorizedShot {
+                shot_id,
+                pawn,
+                weapon,
+                fire_tick: 1,
+                damage: 10.0,
+                range: 64.0,
+                pellet_count: 1,
+                credit_source: "weapon.test.lifecycle".to_string(),
+            },
+            CLIENT_A,
+        );
+        pending_hit_declarations.push(
+            CLIENT_A,
+            postretro_net::wire::HitDeclaration {
+                shot_id: shot_id.raw(),
+                records: Vec::new(),
+            },
+        );
+        weaponless_fire_logged.insert(pawn);
         assert_eq!(
             owners.owner_of(pawn),
             Some(CLIENT_A),
@@ -776,6 +813,9 @@ mod tests {
             &mut command_queues,
             &mut owners,
             &mut weapon_owners,
+            &mut open_shots,
+            &mut pending_hit_declarations,
+            &mut weaponless_fire_logged,
             &[postretro_net::slots::SlotEvent::Closed {
                 client_id: CLIENT_A,
                 cause: postretro_net::slots::CloseCause::Disconnect,
@@ -792,6 +832,126 @@ mod tests {
             None,
             "slot close clears active-weapon ownership"
         );
+        assert!(
+            !registry.exists(weapon),
+            "slot close despawns the descriptor-spawned sibling weapon"
+        );
+        assert!(
+            !allocator.maps_entity(pawn)
+                && !allocator.maps_network_id(pawn_net)
+                && !allocator.maps_entity(weapon)
+                && !allocator.maps_network_id(weapon_net),
+            "slot close clears allocator forward and reverse mappings"
+        );
+        assert!(!replicable.contains(pawn));
+        assert!(!replicable.contains(weapon));
+        assert_eq!(open_shots.len(), 0);
+        assert_eq!(pending_hit_declarations.len(), 0);
+        assert!(
+            !weaponless_fire_logged.contains(&pawn),
+            "slot close clears weaponless-fire latch"
+        );
+    }
+
+    #[test]
+    fn descriptor_stale_replacement_cleans_old_weapon_and_combat_state() {
+        let mut registry = EntityRegistry::new();
+        let mut slot_pawns = SlotPawns::new();
+        let mut allocator = NetworkIdAllocator::new();
+        let mut replicable = ReplicableSet::new();
+        let mut command_queues = crate::netcode::HostCommandQueues::new();
+        let mut owners = crate::netcode::MovementOwners::new();
+        let mut weapon_owners = crate::netcode::WeaponOwners::new();
+        let mut open_shots = crate::netcode::OpenAuthorizedShots::new();
+        let mut pending_hit_declarations = crate::netcode::PendingHitDeclarations::new();
+        let mut weaponless_fire_logged = std::collections::HashSet::new();
+        let descriptors = [
+            player_with_default_weapon("reference_pistol"),
+            weapon_descriptor("reference_pistol"),
+        ];
+        let spawn_points = [synthetic_placement()];
+
+        crate::netcode::host_handle_accept_descriptor(
+            &mut registry,
+            &mut allocator,
+            &mut replicable,
+            &mut slot_pawns,
+            &mut command_queues,
+            &mut owners,
+            &mut weapon_owners,
+            &mut open_shots,
+            &mut pending_hit_declarations,
+            &mut weaponless_fire_logged,
+            CLIENT_A,
+            &spawn_points,
+            &descriptors,
+            None,
+        );
+        let old_pawn = slot_pawns.pawn_for(CLIENT_A).expect("first pawn");
+        let old_weapon = weapon_owners.weapon_of(old_pawn).expect("first weapon");
+        let old_pawn_net = allocator.network_id_for_entity(old_pawn).unwrap();
+        let old_weapon_net = allocator.stamp(old_weapon);
+        replicable.register(old_weapon);
+        let shot_id = crate::netcode::ShotId::from_parts(old_pawn_net, 9);
+        open_shots.record(
+            crate::netcode::AuthorizedShot {
+                shot_id,
+                pawn: old_pawn,
+                weapon: old_weapon,
+                fire_tick: 2,
+                damage: 10.0,
+                range: 64.0,
+                pellet_count: 1,
+                credit_source: "weapon.test.lifecycle".to_string(),
+            },
+            CLIENT_A,
+        );
+        pending_hit_declarations.push(
+            CLIENT_A,
+            postretro_net::wire::HitDeclaration {
+                shot_id: shot_id.raw(),
+                records: Vec::new(),
+            },
+        );
+        weaponless_fire_logged.insert(old_pawn);
+
+        registry
+            .despawn(old_pawn)
+            .expect("test simulates stale externally-despawned slot pawn");
+        crate::netcode::host_handle_accept_descriptor(
+            &mut registry,
+            &mut allocator,
+            &mut replicable,
+            &mut slot_pawns,
+            &mut command_queues,
+            &mut owners,
+            &mut weapon_owners,
+            &mut open_shots,
+            &mut pending_hit_declarations,
+            &mut weaponless_fire_logged,
+            CLIENT_A,
+            &spawn_points,
+            &descriptors,
+            None,
+        );
+
+        let replacement = slot_pawns
+            .pawn_for(CLIENT_A)
+            .expect("replacement pawn spawned");
+        assert_ne!(replacement, old_pawn);
+        assert!(registry.exists(replacement));
+        assert!(!registry.exists(old_weapon));
+        assert_eq!(owners.owner_of(old_pawn), None);
+        assert_eq!(weapon_owners.weapon_of(old_pawn), None);
+        assert!(!allocator.maps_entity(old_pawn));
+        assert!(!allocator.maps_network_id(old_pawn_net));
+        assert!(!allocator.maps_entity(old_weapon));
+        assert!(!allocator.maps_network_id(old_weapon_net));
+        assert!(!replicable.contains(old_pawn));
+        assert!(!replicable.contains(old_weapon));
+        assert_eq!(open_shots.len(), 0);
+        assert_eq!(pending_hit_declarations.len(), 0);
+        assert!(!weaponless_fire_logged.contains(&old_pawn));
     }
 
     // The deterministic slot->placement assignment is stable across reconnect: the

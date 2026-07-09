@@ -91,6 +91,7 @@ impl App {
         self.active_wieldable_descriptor = None;
         self.client_weapon_state = None;
         self.client_fire_resolutions.clear();
+        self.client_predicted_shots.clear();
     }
 
     /// Unload the active level without dropping renderer/window ownership.
@@ -103,7 +104,7 @@ impl App {
     /// | level sounds, sprite collections, `emitter_bridge`, `mesh_render`, `mesh_clip_tables`, `hit_zone_store` | entity-type registry (`data_registry.entities`), mod map catalog (`data_registry.maps`) |
     /// | `data_registry` reactions + crossings, presentation cells | persisted-state save path |
     /// | level-scope UI trees (`modal_stack` `ScopeTier::Level`) | |
-    /// | progress tracker, active wieldable, camera pose | |
+    /// | progress tracker, active wieldable, client weapon prediction state, camera pose | |
     pub(crate) fn unload_level(&mut self) {
         // `net_endpoint` and `audio` are session-owned; reset/release them through
         // the session borrow.

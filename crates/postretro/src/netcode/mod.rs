@@ -85,7 +85,6 @@ use glam::{Quat, Vec3};
 use parry3d::math::{Point, Vector};
 
 use postretro_entities::components::health::HealthComponent;
-use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::{
     ComponentKind, ComponentValue, EntityId, EntityRegistry, EntityTypeDescriptor, SlotTable,
     Transform,
@@ -558,20 +557,22 @@ impl ShotId {
 }
 
 const HIT_RANGE_TOLERANCE: f32 = 1.25;
-const DEFAULT_HIT_PELLET_COUNT: usize = 1;
+const MAX_OPEN_SHOT_AGE_TICKS: u32 = 180;
+const MAX_PENDING_HIT_DECLARATIONS_PER_CLIENT: usize = 64;
 
-fn effective_pellet_count(_weapon: &WeaponComponent) -> usize {
-    DEFAULT_HIT_PELLET_COUNT
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct AuthorizedShot {
     pub(crate) shot_id: ShotId,
     pub(crate) pawn: EntityId,
+    pub(crate) weapon: EntityId,
     pub(crate) fire_tick: u32,
+    pub(crate) damage: f32,
+    pub(crate) range: f32,
+    pub(crate) pellet_count: usize,
+    pub(crate) credit_source: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct OpenAuthorizedShot {
     pub(crate) shot: AuthorizedShot,
     pub(crate) owner_client_id: u64,
@@ -598,11 +599,26 @@ impl OpenAuthorizedShots {
     }
 
     pub(crate) fn get(&self, shot_id: ShotId) -> Option<OpenAuthorizedShot> {
-        self.shots.get(&shot_id).copied()
+        self.shots.get(&shot_id).cloned()
     }
 
     pub(crate) fn retire(&mut self, shot_id: ShotId) -> Option<OpenAuthorizedShot> {
         self.shots.remove(&shot_id)
+    }
+
+    pub(crate) fn remove_client(&mut self, client_id: u64) {
+        self.shots
+            .retain(|_, shot| shot.owner_client_id != client_id);
+    }
+
+    pub(crate) fn remove_pawn(&mut self, pawn: EntityId) {
+        self.shots.retain(|_, shot| shot.shot.pawn != pawn);
+    }
+
+    pub(crate) fn prune_stale(&mut self, current_tick: u32) {
+        self.shots.retain(|_, shot| {
+            current_tick.wrapping_sub(shot.shot.fire_tick) <= MAX_OPEN_SHOT_AGE_TICKS
+        });
     }
 
     #[cfg(test)]
@@ -628,9 +644,37 @@ impl PendingHitDeclarations {
     }
 
     pub(crate) fn push(&mut self, client_id: u64, declaration: wire::HitDeclaration) {
+        let retained_for_client = self
+            .declarations
+            .iter()
+            .filter(|pending| pending.client_id == client_id)
+            .count();
+        if retained_for_client >= MAX_PENDING_HIT_DECLARATIONS_PER_CLIENT
+            && let Some(index) = self
+                .declarations
+                .iter()
+                .position(|pending| pending.client_id == client_id)
+        {
+            self.declarations.remove(index);
+        }
         self.declarations.push_back(PendingHitDeclaration {
             client_id,
             declaration,
+        });
+    }
+
+    pub(crate) fn remove_client(&mut self, client_id: u64) {
+        self.declarations
+            .retain(|pending| pending.client_id != client_id);
+    }
+
+    pub(crate) fn remove_pawn_shots(&mut self, allocator: &NetworkIdAllocator, pawn: EntityId) {
+        let Some(pawn_net) = allocator.network_id_for_entity(pawn) else {
+            return;
+        };
+        self.declarations.retain(|pending| {
+            let shot_id = ShotId::from_raw(pending.declaration.shot_id);
+            (shot_id.raw() >> 32) as u32 != pawn_net.0
         });
     }
 
@@ -655,6 +699,11 @@ impl PendingHitDeclarations {
         }
         self.declarations = waiting;
         ready
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.declarations.len()
     }
 }
 
@@ -999,8 +1048,8 @@ fn snapshot_requires_descriptor_table(snapshot: &SnapshotMessage) -> bool {
 /// monotonic `client_tick`) on the reliable `Channel::Input`, then — once
 /// prediction is armed — advances the local pawn through the movement-only replay
 /// helper and writes the predicted `Transform` + `PlayerMovementComponent` back to
-/// the registry. Returns `true` if it drove the local pawn this tick, `false` if it
-/// only sent input (prediction not yet armed, or the armed pawn is missing).
+/// the registry. Returns the sent `client_tick` even when prediction is not yet
+/// armed, so the caller can bind current-frame client fire to the command it sent.
 ///
 /// This is the connected-client substitute for the local movement stage of
 /// `sim::simulate_tick`: it advances ONLY the local pawn's movement (no AI, weapons,
@@ -1019,7 +1068,7 @@ pub(crate) fn client_predict_tick(
     collision: &impl MovementCollisionSource,
     gravity: f32,
     tick_dt: f32,
-) -> bool {
+) -> u32 {
     // 1. Send exactly one Input command for this predicted tick, stamped with the
     //    next monotonic client_tick. Sent even before the baseline arms prediction
     //    so the host's command stream starts immediately on connect.
@@ -1029,7 +1078,7 @@ pub(crate) fn client_predict_tick(
 
     // 2. Before the local baseline arms prediction, drive no provisional pawn.
     let Some(armed) = prediction.armed() else {
-        return false;
+        return client_tick;
     };
 
     // 3. Read the armed pawn's current applied state (seeded from the authoritative
@@ -1040,7 +1089,7 @@ pub(crate) fn client_predict_tick(
         registry.get_component::<PlayerMovementComponent>(armed.entity_id),
     ) {
         (Ok(transform), Ok(movement)) => (*transform, movement.clone()),
-        _ => return false,
+        _ => return client_tick,
     };
 
     // 4. Advance the local pawn one predicted tick through the movement-only helper
@@ -1048,7 +1097,7 @@ pub(crate) fn client_predict_tick(
     let Some((transform, movement)) =
         prediction.predict_tick(input, prev, collision, gravity, tick_dt)
     else {
-        return false;
+        return client_tick;
     };
 
     // 5. Stamp previous = current for the local pawn BEFORE writing the new predicted
@@ -1066,7 +1115,7 @@ pub(crate) fn client_predict_tick(
     //    authoritative snapshot.
     let _ = registry.set_component(armed.entity_id, transform);
     let _ = registry.set_component(armed.entity_id, movement);
-    true
+    client_tick
 }
 
 /// The local-pawn presentation offset (M15 Phase 3 Task 5): the decaying correction
@@ -1083,16 +1132,9 @@ pub(crate) fn client_local_presentation_offset(endpoint: Option<&NetEndpoint>) -
     }
 }
 
-pub(crate) fn client_latest_sent_command_tick(endpoint: Option<&NetEndpoint>) -> Option<u32> {
+pub(crate) fn client_peek_next_command_tick(endpoint: Option<&NetEndpoint>) -> Option<u32> {
     match endpoint {
-        Some(NetEndpoint::Client { prediction, .. }) => prediction.latest_sent_client_tick(),
-        _ => None,
-    }
-}
-
-pub(crate) fn client_latest_sent_fire_press_tick(endpoint: Option<&NetEndpoint>) -> Option<u32> {
-    match endpoint {
-        Some(NetEndpoint::Client { prediction, .. }) => prediction.latest_sent_fire_press_tick(),
+        Some(NetEndpoint::Client { prediction, .. }) => Some(prediction.peek_next_client_tick()),
         _ => None,
     }
 }
@@ -1414,11 +1456,28 @@ pub(crate) fn host_handle_accept_descriptor(
     command_queues: &mut HostCommandQueues,
     owners: &mut MovementOwners,
     weapon_owners: &mut WeaponOwners,
+    open_shots: &mut OpenAuthorizedShots,
+    pending_hit_declarations: &mut PendingHitDeclarations,
+    weaponless_fire_logged: &mut std::collections::HashSet<EntityId>,
     client_id: u64,
     spawn_points: &[crate::scripting::map_entity::MapEntity],
     descriptors: &[EntityTypeDescriptor],
     agent_params: Option<NavAgentParams>,
 ) {
+    cleanup_stale_slot_replacement(
+        registry,
+        allocator,
+        replicable,
+        slot_pawns,
+        command_queues,
+        owners,
+        weapon_owners,
+        open_shots,
+        pending_hit_declarations,
+        weaponless_fire_logged,
+        client_id,
+    );
+
     // Deterministic, auditable slot -> placement assignment recorded BEFORE the spawn.
     let Some(idx) = slot_pawns.assign_placement(client_id, spawn_points.len()) else {
         log::warn!(
@@ -1515,12 +1574,19 @@ pub(crate) fn host_handle_lifecycle(
     command_queues: &mut HostCommandQueues,
     owners: &mut MovementOwners,
     weapon_owners: &mut WeaponOwners,
+    open_shots: &mut OpenAuthorizedShots,
+    pending_hit_declarations: &mut PendingHitDeclarations,
+    weaponless_fire_logged: &mut std::collections::HashSet<EntityId>,
     lifecycle: &[postretro_net::slots::SlotEvent],
 ) {
     use postretro_net::slots::SlotEvent;
     for event in lifecycle {
         match event {
             SlotEvent::Closed { client_id, .. } => {
+                let previous_pawn = slot_pawns.pawn_for(*client_id);
+                if let Some(pawn) = previous_pawn {
+                    pending_hit_declarations.remove_pawn_shots(allocator, pawn);
+                }
                 let despawned = on_slot_closed(
                     registry,
                     slot_pawns,
@@ -1538,8 +1604,31 @@ pub(crate) fn host_handle_lifecycle(
                 // its owner-private slot values so none leak past the connection.
                 state_slots.remove_client(*client_id);
                 if let Some(pawn) = despawned {
-                    owners.remove_pawn(pawn);
-                    weapon_owners.remove_pawn(pawn);
+                    cleanup_remote_pawn_owned_state(
+                        registry,
+                        allocator,
+                        replicable,
+                        owners,
+                        weapon_owners,
+                        open_shots,
+                        pending_hit_declarations,
+                        weaponless_fire_logged,
+                        *client_id,
+                        pawn,
+                    );
+                } else if let Some(pawn) = previous_pawn {
+                    cleanup_remote_pawn_owned_state(
+                        registry,
+                        allocator,
+                        replicable,
+                        owners,
+                        weapon_owners,
+                        open_shots,
+                        pending_hit_declarations,
+                        weaponless_fire_logged,
+                        *client_id,
+                        pawn,
+                    );
                 }
             }
             // Accepts never reach lifecycle (the transport discards `SlotEvent::Accepted`
@@ -1549,6 +1638,74 @@ pub(crate) fn host_handle_lifecycle(
             SlotEvent::Accepted { .. } => {}
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cleanup_stale_slot_replacement(
+    registry: &mut EntityRegistry,
+    allocator: &mut NetworkIdAllocator,
+    replicable: &mut ReplicableSet,
+    slot_pawns: &mut SlotPawns,
+    command_queues: &mut HostCommandQueues,
+    owners: &mut MovementOwners,
+    weapon_owners: &mut WeaponOwners,
+    open_shots: &mut OpenAuthorizedShots,
+    pending_hit_declarations: &mut PendingHitDeclarations,
+    weaponless_fire_logged: &mut std::collections::HashSet<EntityId>,
+    client_id: u64,
+) {
+    let Some(pawn) = slot_pawns.pawn_for(client_id) else {
+        return;
+    };
+    if registry.exists(pawn) {
+        return;
+    }
+
+    let _ = slot_pawns.remove_client(client_id);
+    command_queues.remove_client(client_id);
+    cleanup_remote_pawn_owned_state(
+        registry,
+        allocator,
+        replicable,
+        owners,
+        weapon_owners,
+        open_shots,
+        pending_hit_declarations,
+        weaponless_fire_logged,
+        client_id,
+        pawn,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cleanup_remote_pawn_owned_state(
+    registry: &mut EntityRegistry,
+    allocator: &mut NetworkIdAllocator,
+    replicable: &mut ReplicableSet,
+    owners: &mut MovementOwners,
+    weapon_owners: &mut WeaponOwners,
+    open_shots: &mut OpenAuthorizedShots,
+    pending_hit_declarations: &mut PendingHitDeclarations,
+    weaponless_fire_logged: &mut std::collections::HashSet<EntityId>,
+    client_id: u64,
+    pawn: EntityId,
+) {
+    let weapon = weapon_owners.weapon_of(pawn);
+    pending_hit_declarations.remove_client(client_id);
+    pending_hit_declarations.remove_pawn_shots(allocator, pawn);
+    open_shots.remove_client(client_id);
+    open_shots.remove_pawn(pawn);
+    weaponless_fire_logged.remove(&pawn);
+    owners.remove_pawn(pawn);
+    weapon_owners.remove_pawn(pawn);
+    replicable.unregister(pawn);
+    allocator.forget(pawn);
+    if let Some(weapon) = weapon {
+        replicable.unregister(weapon);
+        allocator.forget(weapon);
+        let _ = registry.despawn(weapon);
+    }
+    let _ = registry.despawn(pawn);
 }
 
 /// Drain and apply one accepted client's reliable `Channel::Input` messages on the
@@ -1632,7 +1789,6 @@ struct HostHitIngestContext<'a> {
     collision_world: &'a CollisionWorld,
     allocator: &'a NetworkIdAllocator,
     owners: &'a MovementOwners,
-    weapon_owners: &'a WeaponOwners,
     open_shots: &'a mut OpenAuthorizedShots,
 }
 
@@ -1649,11 +1805,14 @@ pub(crate) fn host_flush_pending_hit_declarations(
     collision_world: &CollisionWorld,
     allocator: &NetworkIdAllocator,
     owners: &MovementOwners,
-    weapon_owners: &WeaponOwners,
+    _weapon_owners: &WeaponOwners,
     command_queues: &HostCommandQueues,
     open_shots: &mut OpenAuthorizedShots,
     pending_hit_declarations: &mut PendingHitDeclarations,
-) {
+    current_tick: u32,
+) -> bool {
+    open_shots.prune_stale(current_tick);
+    let mut accepted_any_hit = false;
     for pending in pending_hit_declarations.drain_ready(command_queues, open_shots) {
         let result = ingest_hit_declaration(
             HostHitIngestContext {
@@ -1661,7 +1820,6 @@ pub(crate) fn host_flush_pending_hit_declarations(
                 collision_world,
                 allocator,
                 owners,
-                weapon_owners,
                 open_shots: &mut *open_shots,
             },
             pending.client_id,
@@ -1674,7 +1832,9 @@ pub(crate) fn host_flush_pending_hit_declarations(
             result.fire_accepted,
             result.hit_accepted,
         );
+        accepted_any_hit |= result.hit_accepted;
     }
+    accepted_any_hit
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1788,14 +1948,7 @@ fn ingest_hit_declaration(
     let Some(open) = context.open_shots.retire(shot_id) else {
         return HitDeclarationResult::default();
     };
-    let Some(weapon_id) = context.weapon_owners.weapon_of(open.shot.pawn) else {
-        return HitDeclarationResult::default();
-    };
-    let Ok(weapon_component) = context.registry.get_component::<WeaponComponent>(weapon_id) else {
-        return HitDeclarationResult::default();
-    };
-    let effective = weapon_component.effective();
-    let pellet_count = effective_pellet_count(weapon_component);
+    let pellet_count = open.shot.pellet_count;
     if pellet_count == 0 {
         return HitDeclarationResult {
             fire_accepted: true,
@@ -1810,9 +1963,10 @@ fn ingest_hit_declaration(
             context.collision_world,
             context.allocator,
             open.shot.pawn,
-            weapon_id,
-            effective.damage,
-            effective.range,
+            open.shot.weapon,
+            open.shot.damage,
+            open.shot.range,
+            open.shot.credit_source.clone(),
             record,
         );
     }
@@ -1832,6 +1986,7 @@ fn apply_valid_hit_record(
     weapon_id: EntityId,
     damage: f32,
     range: f32,
+    credit_source: String,
     record: &wire::HitRecord,
 ) -> bool {
     let Some(target) = allocator.entity_for_network_id(NetworkId(record.target)) else {
@@ -1866,7 +2021,14 @@ fn apply_valid_hit_record(
         zone: record.zone.clone(),
         outcome: ActivationOutcome::Hit(weapon::DamagePayload { amount: damage }),
     };
-    crate::sim::apply_weapon_impact_damage(registry, Some(weapon_id), Some(attacker), &impact);
+    crate::sim::apply_authorized_weapon_impact_damage(
+        registry,
+        weapon_id,
+        Some(attacker),
+        &impact,
+        credit_source,
+        damage,
+    );
     true
 }
 
@@ -2089,6 +2251,26 @@ mod tests {
         })
     }
 
+    fn authorized_test_shot(
+        shot_id: ShotId,
+        pawn: EntityId,
+        weapon: EntityId,
+        fire_tick: u32,
+        damage: f32,
+        range: f32,
+    ) -> AuthorizedShot {
+        AuthorizedShot {
+            shot_id,
+            pawn,
+            weapon,
+            fire_tick,
+            damage,
+            range,
+            pellet_count: 1,
+            credit_source: "weapon.test.net".to_string(),
+        }
+    }
+
     #[test]
     fn shot_id_packs_pawn_network_id_and_client_tick() {
         let raw = shot_id_raw(NetworkId(0xABCD_EF01), 0x1234_5678);
@@ -2206,11 +2388,7 @@ mod tests {
             weapon_owners.set(pawn, weapon);
             let mut open_shots = OpenAuthorizedShots::new();
             open_shots.record(
-                AuthorizedShot {
-                    shot_id,
-                    pawn,
-                    fire_tick: 99,
-                },
+                authorized_test_shot(shot_id, pawn, weapon, 99, 10.0, 10.0),
                 7,
             );
 
@@ -2255,7 +2433,6 @@ mod tests {
                     collision_world: &self.collision_world,
                     allocator: &self.allocator,
                     owners: &self.owners,
-                    weapon_owners: &self.weapon_owners,
                     open_shots: &mut self.open_shots,
                 },
                 client_id,
@@ -2279,27 +2456,129 @@ mod tests {
     fn open_authorized_shots_store_records_and_retires_by_shot_id() {
         let mut registry = EntityRegistry::new();
         let pawn = registry.spawn(Transform::default());
+        let weapon = registry.spawn(Transform::default());
         let shot_id = ShotId::from_parts(NetworkId(0xABCD_EF01), 0x1234_5678);
         assert_eq!(shot_id.raw(), 0xABCD_EF01_1234_5678);
 
         let mut shots = OpenAuthorizedShots::new();
         shots.record(
-            AuthorizedShot {
-                shot_id,
-                pawn,
-                fire_tick: 99,
-            },
+            authorized_test_shot(shot_id, pawn, weapon, 99, 10.0, 10.0),
             7,
         );
 
         let open = shots.get(shot_id).expect("shot should be open");
         assert_eq!(open.owner_client_id, 7);
         assert_eq!(open.shot.pawn, pawn);
+        assert_eq!(open.shot.weapon, weapon);
+        assert_eq!(open.shot.damage, 10.0);
+        assert_eq!(open.shot.range, 10.0);
+        assert_eq!(open.shot.pellet_count, 1);
         assert_eq!(open.shot.fire_tick, 99);
         assert_eq!(shots.len(), 1);
         assert_eq!(shots.retire(shot_id), Some(open));
         assert!(shots.get(shot_id).is_none());
         assert_eq!(shots.len(), 0);
+    }
+
+    #[test]
+    fn open_authorized_shots_prune_stale_and_remove_client_or_pawn_state() {
+        let mut registry = EntityRegistry::new();
+        let pawn_a = registry.spawn(Transform::default());
+        let pawn_b = registry.spawn(Transform::default());
+        let weapon = registry.spawn(Transform::default());
+        let stale = ShotId::from_parts(NetworkId(10), 19);
+        let newest_retained = ShotId::from_parts(NetworkId(10), 20);
+        let other_client = ShotId::from_parts(NetworkId(11), 21);
+        let mut shots = OpenAuthorizedShots::new();
+        shots.record(
+            authorized_test_shot(stale, pawn_a, weapon, 19, 10.0, 10.0),
+            7,
+        );
+        shots.record(
+            authorized_test_shot(newest_retained, pawn_a, weapon, 20, 10.0, 10.0),
+            7,
+        );
+        shots.record(
+            authorized_test_shot(other_client, pawn_b, weapon, 200, 10.0, 10.0),
+            8,
+        );
+
+        shots.prune_stale(200);
+        assert!(shots.get(stale).is_none());
+        assert!(shots.get(newest_retained).is_some());
+        assert!(shots.get(other_client).is_some());
+
+        shots.remove_pawn(pawn_a);
+        assert!(shots.get(newest_retained).is_none());
+        assert!(shots.get(other_client).is_some());
+
+        shots.remove_client(8);
+        assert_eq!(shots.len(), 0);
+    }
+
+    #[test]
+    fn pending_hit_declarations_are_bounded_per_client_and_cleanable() {
+        let mut pending = PendingHitDeclarations::new();
+        for tick in 0..=MAX_PENDING_HIT_DECLARATIONS_PER_CLIENT {
+            pending.push(
+                7,
+                wire::HitDeclaration {
+                    shot_id: ShotId::from_parts(NetworkId(4), tick as u32).raw(),
+                    records: Vec::new(),
+                },
+            );
+        }
+        pending.push(
+            8,
+            wire::HitDeclaration {
+                shot_id: ShotId::from_parts(NetworkId(5), 1).raw(),
+                records: Vec::new(),
+            },
+        );
+
+        assert_eq!(pending.len(), MAX_PENDING_HIT_DECLARATIONS_PER_CLIENT + 1);
+        assert_eq!(
+            pending
+                .declarations
+                .iter()
+                .filter(|declaration| declaration.client_id == 7)
+                .count(),
+            MAX_PENDING_HIT_DECLARATIONS_PER_CLIENT
+        );
+        assert!(
+            pending
+                .declarations
+                .iter()
+                .all(|declaration| declaration.declaration.shot_id
+                    != ShotId::from_parts(NetworkId(4), 0).raw()),
+            "the oldest declaration for the overflowing client is dropped"
+        );
+
+        let mut allocator = NetworkIdAllocator::new();
+        let pawn = EntityId::from_raw(99);
+        allocator.stamp(pawn);
+        pending.push(
+            9,
+            wire::HitDeclaration {
+                shot_id: ShotId::from_parts(NetworkId(0), 777).raw(),
+                records: Vec::new(),
+            },
+        );
+        pending.remove_pawn_shots(&allocator, pawn);
+        assert!(
+            pending
+                .declarations
+                .iter()
+                .all(|declaration| declaration.declaration.shot_id
+                    != ShotId::from_parts(NetworkId(0), 777).raw())
+        );
+        pending.remove_client(7);
+        assert!(
+            pending
+                .declarations
+                .iter()
+                .all(|declaration| declaration.client_id != 7)
+        );
     }
 
     #[test]
@@ -2317,11 +2596,14 @@ mod tests {
             "before FIRE authorization the declaration remains queued"
         );
         fixture.open_shots.record(
-            AuthorizedShot {
-                shot_id: fixture.shot_id,
-                pawn: fixture.pawn,
-                fire_tick: 100,
-            },
+            authorized_test_shot(
+                fixture.shot_id,
+                fixture.pawn,
+                fixture.weapon,
+                100,
+                10.0,
+                10.0,
+            ),
             7,
         );
         let ready = pending.drain_ready(&HostCommandQueues::new(), &fixture.open_shots);
@@ -2365,6 +2647,35 @@ mod tests {
         let entry = health.contributor_ledger.entries().first().unwrap();
         assert_eq!(entry.last_attacker, Some(fixture.pawn));
         assert_eq!(entry.last_weapon, Some(fixture.weapon));
+    }
+
+    #[test]
+    fn hit_declaration_uses_authorization_time_weapon_facts_after_switch_and_despawn() {
+        let mut fixture = HitIngestFixture::new(CollisionWorld::new());
+        let original_weapon = fixture.weapon;
+        let switched_weapon = fixture.registry.spawn(Transform::default());
+        fixture
+            .registry
+            .set_component(switched_weapon, test_weapon(90.0, 100.0))
+            .unwrap();
+        fixture.weapon_owners.set(fixture.pawn, switched_weapon);
+        fixture
+            .registry
+            .despawn(original_weapon)
+            .expect("authorized-time weapon can despawn before HIT arrives");
+        let declaration = fixture.declaration(vec![fixture.record(Vec3::new(4.0, 0.5, 0.0), None)]);
+
+        let result = fixture.ingest_result(7, &declaration);
+        assert!(result.fire_accepted);
+        assert!(result.hit_accepted);
+        let health = fixture.target_health();
+        assert_eq!(
+            health.current, 90.0,
+            "HIT applies the 10 damage captured when FIRE was authorized, not the switched weapon's damage"
+        );
+        let entry = health.contributor_ledger.entries().first().unwrap();
+        assert_eq!(entry.last_weapon, Some(original_weapon));
+        assert_eq!(entry.source_id, "weapon.test.net");
     }
 
     #[test]

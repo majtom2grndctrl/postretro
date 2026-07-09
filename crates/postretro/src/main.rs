@@ -796,6 +796,44 @@ fn build_sim_command(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ClientFrameFireCommand {
+    client_tick: u32,
+    button: weapon::FireButtonState,
+    elapsed_ms: f32,
+}
+
+fn client_fire_ticks_for_post_loop(
+    commands: &[ClientFrameFireCommand],
+    state: &weapon::ClientWeaponState,
+) -> Vec<u32> {
+    let mut selected = Vec::new();
+    let mut cooldown_ms = state.cooldown_remaining_ms.max(0.0);
+    let mut previous_elapsed_ms = 0.0;
+
+    for command in commands {
+        let elapsed_delta_ms = (command.elapsed_ms - previous_elapsed_ms).max(0.0);
+        cooldown_ms = (cooldown_ms - elapsed_delta_ms).max(0.0);
+        previous_elapsed_ms = command.elapsed_ms;
+
+        let wants_fire = match state.fire_mode {
+            postretro_foundation::FireMode::Semi => {
+                command.button.pressed && !state.shoot_press_consumed
+            }
+            postretro_foundation::FireMode::Auto => command.button.active,
+        };
+        if wants_fire && cooldown_ms <= 0.0 {
+            selected.push(command.client_tick);
+            cooldown_ms = state.cooldown_ms;
+            if state.fire_mode == postretro_foundation::FireMode::Semi {
+                break;
+            }
+        }
+    }
+
+    selected
+}
+
 fn build_post_movement_command(camera: &Camera) -> sim::PostMovementCommand {
     let (aim_origin, aim_direction) = camera.aim_ray();
     sim::PostMovementCommand {
@@ -1726,6 +1764,7 @@ impl ApplicationHandler for App {
                 let mut pending_movement_events: Vec<&'static str> = Vec::new();
                 let mut pending_ai_events: Vec<&'static str> = Vec::new();
                 let mut pending_weapon_events: Vec<&'static str> = Vec::new();
+                let mut sent_client_fire_commands: Vec<ClientFrameFireCommand> = Vec::new();
                 // Death-event names accumulate here and drain through the
                 // sequence-aware dispatcher (a separate sibling loop below), so a
                 // `progress` reaction naming a sequence resolves — unlike the
@@ -1814,7 +1853,15 @@ impl ApplicationHandler for App {
                         // adds reconciliation/smoothing on top of this seam.
                         if self.is_connected_client() {
                             self.client_predict_loaded_movers_tick(tick_dt);
-                            self.client_predict_movement_tick(&command, tick_dt);
+                            if let Some(client_tick) =
+                                self.client_predict_movement_tick(&command, tick_dt)
+                            {
+                                sent_client_fire_commands.push(ClientFrameFireCommand {
+                                    client_tick,
+                                    button: command.fire_button,
+                                    elapsed_ms: (tick_index + 1) as f32 * tick_dt * 1000.0,
+                                });
+                            }
                             // Tick-rate camera follow tracks the PRESENTED local pose:
                             // the gameplay-authoritative (snapped) registry pose plus the
                             // decaying presentation offset. Folding the offset in HERE —
@@ -1917,7 +1964,9 @@ impl ApplicationHandler for App {
                             tick_dt,
                         );
                         self.host_record_authorized_shots(&tick_events.authorized_shots);
-                        self.host_flush_pending_hit_declarations();
+                        if self.host_flush_pending_hit_declarations() {
+                            pending_death_events.extend(self.host_run_remote_hit_death_sweep());
+                        }
                         pending_movement_events.extend(tick_events.movement);
                         pending_ai_events.extend(tick_events.ai);
                         pending_weapon_events.extend(tick_events.weapon);
@@ -1946,6 +1995,7 @@ impl ApplicationHandler for App {
                 self.run_client_fire_path_post_loop(
                     gameplay_snapshot.as_ref(),
                     zero_tick_fire_snapshot.as_ref(),
+                    &sent_client_fire_commands,
                     frame_dt,
                     frame_anim_time,
                 );
@@ -4045,9 +4095,9 @@ impl App {
                 command_queues,
                 owners,
                 weapon_owners,
-                open_shots: _,
+                open_shots,
                 pending_hit_declarations,
-                weaponless_fire_logged: _,
+                weaponless_fire_logged,
                 tick,
                 host_pawn: _,
                 map_enemies: _,
@@ -4106,6 +4156,9 @@ impl App {
                                                 command_queues,
                                                 owners,
                                                 weapon_owners,
+                                                open_shots,
+                                                pending_hit_declarations,
+                                                weaponless_fire_logged,
                                                 *client_id,
                                                 &host_spawn_points,
                                                 &net_descriptors,
@@ -4130,6 +4183,9 @@ impl App {
                                 command_queues,
                                 owners,
                                 weapon_owners,
+                                open_shots,
+                                pending_hit_declarations,
+                                weaponless_fire_logged,
                                 &poll.lifecycle,
                             );
                         }
@@ -4270,6 +4326,7 @@ impl App {
         &mut self,
         snapshot: Option<&input::ActionSnapshot>,
         zero_tick_snapshot: Option<&input::ActionSnapshot>,
+        sent_fire_commands: &[ClientFrameFireCommand],
         frame_dt: f32,
         frame_anim_time: f64,
     ) {
@@ -4297,36 +4354,32 @@ impl App {
         let zero_tick_fire_command = zero_tick_snapshot
             .filter(|_| button.pressed)
             .map(|snapshot| build_sim_command(snapshot, &self.camera, false, false, true));
-        let client_tick = if let Some(command) = zero_tick_fire_command.as_ref() {
-            let tick = netcode::client_send_input_command(
-                self.session
-                    .as_mut()
-                    .and_then(|session| session.net_endpoint.as_mut()),
-                command,
-            );
-            if tick.is_some() {
+        let Some(state) = self.client_weapon_state.as_mut() else {
+            if zero_tick_fire_command.is_some() {
                 if let Some(session) = self.session.as_mut() {
                     session.gameplay_input_latch.clear_pressed(Action::Shoot);
                 }
             }
-            tick
-        } else if button.pressed {
-            netcode::client_latest_sent_fire_press_tick(
-                self.session
-                    .as_ref()
-                    .and_then(|session| session.net_endpoint.as_ref()),
-            )
-        } else {
-            netcode::client_latest_sent_command_tick(
-                self.session
-                    .as_ref()
-                    .and_then(|session| session.net_endpoint.as_ref()),
-            )
-        };
-        let Some(client_tick) = client_tick else {
             return;
         };
-        let Some(state) = self.client_weapon_state.as_mut() else {
+        let client_ticks = if zero_tick_fire_command.is_some() {
+            netcode::client_peek_next_command_tick(
+                self.session
+                    .as_ref()
+                    .and_then(|session| session.net_endpoint.as_ref()),
+            )
+            .into_iter()
+            .collect::<Vec<_>>()
+        } else {
+            client_fire_ticks_for_post_loop(sent_fire_commands, state)
+        };
+        let Some(&client_tick) = client_ticks.first() else {
+            let _ = weapon::advance_client_fire_state(state, button, frame_dt);
+            if zero_tick_fire_command.is_some() {
+                if let Some(session) = self.session.as_mut() {
+                    session.gameplay_input_latch.clear_pressed(Action::Shoot);
+                }
+            }
             return;
         };
         let Some(session) = self.session.as_ref() else {
@@ -4334,6 +4387,7 @@ impl App {
         };
         let (aim_origin, aim_direction) = self.camera.aim_ray();
         let cooldown_before_ms = state.cooldown_remaining_ms;
+        let cooldown_authority_generation = state.cooldown_authority_generation;
         let resolution = {
             let registry = session.scripting.script_ctx.registry.borrow();
             weapon::resolve_client_fire(
@@ -4350,6 +4404,20 @@ impl App {
             )
         };
         if let Some(resolution) = resolution {
+            if let Some(command) = zero_tick_fire_command.as_ref() {
+                let sent_tick = netcode::client_send_input_command(
+                    self.session
+                        .as_mut()
+                        .and_then(|session| session.net_endpoint.as_mut()),
+                    command,
+                );
+                if sent_tick != Some(resolution.client_tick) {
+                    return;
+                }
+                if let Some(session) = self.session.as_mut() {
+                    session.gameplay_input_latch.clear_pressed(Action::Shoot);
+                }
+            }
             let cooldown_after_ms = state.cooldown_remaining_ms;
             let shot_id = netcode::shot_id_raw(local_pawn_network_id, resolution.client_tick);
             self.client_predicted_shots.predict(
@@ -4357,6 +4425,7 @@ impl App {
                 &resolution,
                 cooldown_before_ms,
                 cooldown_after_ms,
+                cooldown_authority_generation,
             );
             let _ = netcode::client_send_hit_declaration(
                 self.session
@@ -4365,7 +4434,21 @@ impl App {
                 shot_id,
                 &resolution.hits,
             );
+            for client_tick in client_ticks.iter().copied().skip(1) {
+                let shot_id = netcode::shot_id_raw(local_pawn_network_id, client_tick);
+                let _ = netcode::client_send_hit_declaration(
+                    self.session
+                        .as_mut()
+                        .and_then(|session| session.net_endpoint.as_mut()),
+                    shot_id,
+                    &[],
+                );
+            }
             self.client_fire_resolutions.push(resolution);
+        } else if zero_tick_fire_command.is_some() {
+            if let Some(session) = self.session.as_mut() {
+                session.gameplay_input_latch.clear_pressed(Action::Shoot);
+            }
         }
     }
 
@@ -4589,24 +4672,25 @@ impl App {
             return;
         };
         for shot in shots {
-            open_shots.record(shot.shot, shot.owner_client_id);
+            open_shots.record(shot.shot.clone(), shot.owner_client_id);
         }
     }
 
-    fn host_flush_pending_hit_declarations(&mut self) {
+    fn host_flush_pending_hit_declarations(&mut self) -> bool {
         let Some(script_ctx) = self
             .session
             .as_ref()
             .map(|session| session.scripting.script_ctx.clone())
         else {
-            return;
+            return false;
         };
         let Some(session) = self.session.as_mut() else {
-            return;
+            return false;
         };
         let Some(netcode::NetEndpoint::Host {
             server,
             allocator,
+            tick,
             command_queues,
             owners,
             weapon_owners,
@@ -4615,7 +4699,7 @@ impl App {
             ..
         }) = session.net_endpoint.as_mut()
         else {
-            return;
+            return false;
         };
 
         let mut registry = script_ctx.registry.borrow_mut();
@@ -4629,7 +4713,16 @@ impl App {
             command_queues,
             open_shots,
             pending_hit_declarations,
-        );
+            *tick,
+        )
+    }
+
+    fn host_run_remote_hit_death_sweep(&mut self) -> Vec<String> {
+        let Some(session) = self.session.as_mut() else {
+            return Vec::new();
+        };
+        let registry = session.scripting.script_ctx.registry.clone();
+        sim::run_death_sweep(&registry, &mut session.progress_tracker)
     }
 
     /// Advance the listen host's authoritative fixed-simulation tick after one
@@ -4757,18 +4850,19 @@ impl App {
     /// Connected-client predicted fixed tick (M15 Phase 3 Task 3). Thin delegation
     /// to `crate::netcode`: sends one `ClientMessage::Input` for `command`, then
     /// advances the local pawn through the movement-only replay helper and writes the
-    /// predicted state back to the registry. Returns `true` if it drove the local
-    /// pawn (prediction armed), `false` if it only sent input (pre-baseline). The
+    /// predicted state back to the registry. Returns the sent `client_tick`; `None`
+    /// means this process was not a connected client at the call site. The
     /// caller skips `simulate_tick`'s local gameplay movement when this path runs —
     /// AI / weapons / death stay host-authoritative and arrive via snapshots.
-    fn client_predict_movement_tick(&mut self, command: &sim::SimCommand, tick_dt: f32) -> bool {
-        let Some(script_ctx) = self
+    fn client_predict_movement_tick(
+        &mut self,
+        command: &sim::SimCommand,
+        tick_dt: f32,
+    ) -> Option<u32> {
+        let script_ctx = self
             .session
             .as_ref()
-            .map(|session| session.scripting.script_ctx.clone())
-        else {
-            return false;
-        };
+            .map(|session| session.scripting.script_ctx.clone())?;
         let Some(netcode::NetEndpoint::Client {
             client, prediction, ..
         }) = self
@@ -4776,7 +4870,7 @@ impl App {
             .as_mut()
             .and_then(|session| session.net_endpoint.as_mut())
         else {
-            return false;
+            return None;
         };
         let gravity = script_ctx.gravity.get();
         let mut registry = script_ctx.registry.borrow_mut();
@@ -4785,7 +4879,7 @@ impl App {
             &self.kinematic_mover_colliders,
             &self.kinematic_mover_tick_states,
         );
-        netcode::client_predict_tick(
+        Some(netcode::client_predict_tick(
             &mut registry,
             client,
             prediction,
@@ -4793,7 +4887,7 @@ impl App {
             &combined_collision,
             gravity,
             tick_dt,
-        )
+        ))
     }
 
     fn client_predict_loaded_movers_tick(&mut self, tick_dt: f32) {
@@ -5212,6 +5306,7 @@ mod tests {
             pawn: postretro_entities::EntityId::from_raw(1),
             cooldown_remaining_ms: 72.0,
             cooldown_ms: 100.0,
+            cooldown_authority_generation: 0,
             fire_mode: postretro_foundation::FireMode::Semi,
             resolution: postretro_foundation::ResolutionMode::Hitscan,
             range: 10.0,
@@ -5250,6 +5345,85 @@ mod tests {
         .expect("post-loop client fire still sees the render-frame click");
 
         assert_eq!(selected.button(Action::Shoot), ButtonState::Pressed);
+    }
+
+    fn client_fire_selection_state(
+        fire_mode: postretro_foundation::FireMode,
+        cooldown_remaining_ms: f32,
+        cooldown_ms: f32,
+    ) -> weapon::ClientWeaponState {
+        weapon::ClientWeaponState {
+            pawn: postretro_entities::EntityId::from_raw(1),
+            cooldown_remaining_ms,
+            cooldown_ms,
+            cooldown_authority_generation: 0,
+            fire_mode,
+            resolution: postretro_foundation::ResolutionMode::Hitscan,
+            range: 10.0,
+            shoot_press_consumed: false,
+        }
+    }
+
+    #[test]
+    fn client_fire_tick_selection_keeps_press_independent_of_pruned_history() {
+        let state = client_fire_selection_state(postretro_foundation::FireMode::Semi, 0.0, 100.0);
+        let commands = [
+            ClientFrameFireCommand {
+                client_tick: 41,
+                button: weapon::FireButtonState {
+                    pressed: true,
+                    active: true,
+                },
+                elapsed_ms: 16.0,
+            },
+            ClientFrameFireCommand {
+                client_tick: 42,
+                button: weapon::FireButtonState {
+                    pressed: false,
+                    active: true,
+                },
+                elapsed_ms: 32.0,
+            },
+        ];
+
+        assert_eq!(client_fire_ticks_for_post_loop(&commands, &state), vec![41]);
+    }
+
+    #[test]
+    fn held_auto_fire_tick_selection_accounts_for_hitch_cooldown_windows() {
+        let state = client_fire_selection_state(postretro_foundation::FireMode::Auto, 0.0, 20.0);
+        let commands = [
+            ClientFrameFireCommand {
+                client_tick: 7,
+                button: weapon::FireButtonState {
+                    pressed: true,
+                    active: true,
+                },
+                elapsed_ms: 16.0,
+            },
+            ClientFrameFireCommand {
+                client_tick: 8,
+                button: weapon::FireButtonState {
+                    pressed: false,
+                    active: true,
+                },
+                elapsed_ms: 32.0,
+            },
+            ClientFrameFireCommand {
+                client_tick: 9,
+                button: weapon::FireButtonState {
+                    pressed: false,
+                    active: true,
+                },
+                elapsed_ms: 48.0,
+            },
+        ];
+
+        assert_eq!(
+            client_fire_ticks_for_post_loop(&commands, &state),
+            vec![7, 9],
+            "the first tick owns the rendered HIT; later eligible auto shots get miss declarations"
+        );
     }
 
     fn minimal_player_descriptor() -> PlayerMovementDescriptor {

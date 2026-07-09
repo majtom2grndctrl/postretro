@@ -440,11 +440,12 @@ impl NetServer {
         out
     }
 
-    /// Send a buffer to a client on the reliable-ordered `Channel::Input`. Used
-    /// for `ServerMessage` owner-private facts and time-sync echoes, independently
-    /// of snapshots. Unlike `send_snapshot`, this is not gated on acceptance:
-    /// time-sync may flow to a connected client before it has passed the app
-    /// handshake (the echo carries no entity state).
+    /// Send a buffer to a client on the reliable-ordered `Channel::Input`.
+    /// Unlike `send_snapshot`, this raw channel send is not gated on app
+    /// acceptance: time-sync may flow to a connected client before it has passed
+    /// the app handshake (the echo carries no entity state). Callers that send
+    /// owner-private app facts, such as `ServerMessage::ShotVerdicts`, must gate
+    /// delivery to the owning accepted client.
     pub fn send_input(&mut self, client_id: ClientId, payload: Vec<u8>) {
         self.server.send_message(client_id, Channel::Input, payload);
     }

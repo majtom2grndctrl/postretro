@@ -1,5 +1,5 @@
 // Forced-rounding spike for measuring seam divergence.
-// See: context/plans/in-progress/M15--p0-headless-sim-seam/index.md
+// See: context/lib/entity_model.md §5
 
 use std::cell::RefCell;
 use std::collections::HashSet;

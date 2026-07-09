@@ -479,11 +479,11 @@ fn max_abs_component(value: Vec3) -> f32 {
 //
 // A standalone, weapon-agnostic ray query: given ANY origin / direction / range
 // it walks every TARGETABLE entity and returns the nearest hit. "Targetable"
-// widens entity_model.md §7's old "hitbox present" rule to the union of
-// Health-bearing entities and zone-bearing skinned meshes. The weapon's hitscan
-// delegates here; so can any future system (no weapon/camera type in the
-// signature). nalgebra never leaves this section — it is converted to/from glam
-// at the `parry3d` boundary.
+// walks the union of Health-bearing damage targets and Mesh-only presentation
+// targets with zone-bearing skinned models. The weapon's hitscan delegates here;
+// so can any future system (no weapon/camera type in the signature). nalgebra
+// never leaves this section — it is converted to/from glam at the `parry3d`
+// boundary.
 // ---------------------------------------------------------------------------
 
 /// One resolved entity hit along a ray. `toi` is the ray parameter (distance,
@@ -516,13 +516,15 @@ pub(crate) struct EntityRayHit {
 /// Mesh-bearing entities with a skinned model whose hit-zone entry has a
 /// trustworthy derived bound. Degraded or untrustworthy zone entries use the
 /// authored AABB path when the entity has Health. For each:
-/// - **AABB-only** (health + hitbox, no zone-bearing model): broad phase is the
-///   authored AABB; narrow phase is the same AABB via [`ray_aabb_slab`].
-/// - **Precise zone path** (health + trustworthy model bound): broad phase is the
-///   model's derived bound (model-local, transformed to a world-axis-aligned
-///   enclosure by the entity's full model transform); narrow phase poses the
-///   skeleton at the entity's current animation time and ray-tests one capsule per
-///   tagged joint. A no-tag or load-degraded model keeps AABB behavior. When the
+/// - **AABB-only** (Health + hitbox, no zone-bearing model): broad phase is the
+///   authored AABB; narrow phase is the same AABB via [`ray_aabb_slab`]. Health
+///   without a hitbox and without a zone-bearing model is not targetable.
+/// - **Precise zone path** (Health or Mesh-only + trustworthy model bound): broad
+///   phase is the model's derived bound (model-local, transformed to a
+///   world-axis-aligned enclosure by the entity's full model transform); narrow
+///   phase poses the skeleton at the entity's current animation time and
+///   ray-tests one capsule per tagged joint. A no-tag or load-degraded
+///   Health-bearing model keeps AABB behavior. When the
 ///   capsule result is NOT authoritative — the pose is UNAVAILABLE (a chained
 ///   smooth-interrupt snapshot needing renderer-only data) or the zone set is a
 ///   degenerate static-identity ball whose miss is untrustworthy — a precise-path
@@ -790,8 +792,9 @@ fn nearest_zone_hit(
 ) -> ZoneResolve {
     // Model→world uses the same full transform layout the renderer packs for the
     // instance buffer: scale, rotation, and translation with the mesh origin
-    // offset folded into translation. This is the game-tick transform, not the
-    // renderer's sub-tick interpolated transform.
+    // offset folded into translation. The query reads the entity's current
+    // registry Transform; on connected clients this may already be the sampled
+    // presentation pose written before render.
     let Some(model_to_world) = model_matrix(transform, origin_offset) else {
         return ZoneResolve::Unavailable;
     };

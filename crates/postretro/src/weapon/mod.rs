@@ -60,6 +60,7 @@ pub(crate) struct ClientWeaponState {
     pub(crate) pawn: EntityId,
     pub(crate) cooldown_remaining_ms: f32,
     pub(crate) cooldown_ms: f32,
+    pub(crate) cooldown_authority_generation: u64,
     pub(crate) fire_mode: FireMode,
     pub(crate) resolution: ResolutionMode,
     pub(crate) range: f32,
@@ -99,6 +100,7 @@ impl ClientWeaponState {
             pawn,
             cooldown_remaining_ms: 0.0,
             cooldown_ms: weapon.cooldown_ms,
+            cooldown_authority_generation: 0,
             fire_mode: weapon.fire_mode,
             resolution: weapon.resolution,
             range: weapon.range,
@@ -133,6 +135,7 @@ pub(crate) struct PredictedShotRecord {
     pub(crate) client_tick: u32,
     pub(crate) cooldown_before_ms: f32,
     pub(crate) cooldown_after_ms: f32,
+    pub(crate) cooldown_authority_generation: u64,
     pub(crate) muzzle_fx_visible: bool,
     pub(crate) hitmarker_visible: bool,
     pub(crate) status: PredictedShotStatus,
@@ -158,6 +161,7 @@ impl ClientPredictedShots {
         resolution: &ClientFireResolution,
         cooldown_before_ms: f32,
         cooldown_after_ms: f32,
+        cooldown_authority_generation: u64,
     ) {
         self.shots.insert(
             shot_id,
@@ -166,6 +170,7 @@ impl ClientPredictedShots {
                 client_tick: resolution.client_tick,
                 cooldown_before_ms,
                 cooldown_after_ms,
+                cooldown_authority_generation,
                 muzzle_fx_visible: true,
                 hitmarker_visible: !resolution.hits.is_empty(),
                 status: PredictedShotStatus::Pending,
@@ -179,6 +184,8 @@ impl ClientPredictedShots {
     ) {
         if authoritative_cooldown_ms.is_finite() {
             state.cooldown_remaining_ms = authoritative_cooldown_ms.max(0.0);
+            state.cooldown_authority_generation =
+                state.cooldown_authority_generation.wrapping_add(1);
         }
     }
 
@@ -190,13 +197,18 @@ impl ClientPredictedShots {
         hit_accepted: bool,
     ) -> Option<&PredictedShotRecord> {
         let record = self.shots.get_mut(&shot_id)?;
+        if record.status != PredictedShotStatus::Pending {
+            return Some(record);
+        }
         if fire_accepted {
             record.status = PredictedShotStatus::Accepted;
             record.hitmarker_visible &= hit_accepted;
             return Some(record);
         }
 
-        state.cooldown_remaining_ms = record.cooldown_before_ms.max(0.0);
+        if state.cooldown_authority_generation == record.cooldown_authority_generation {
+            state.cooldown_remaining_ms = record.cooldown_before_ms.max(0.0);
+        }
         record.muzzle_fx_visible = false;
         record.hitmarker_visible = false;
         record.status = PredictedShotStatus::Rejected;
@@ -464,20 +476,7 @@ pub(crate) fn resolve_client_fire(
     anim_time: f64,
     frame_dt: f32,
 ) -> Option<ClientFireResolution> {
-    let dt_ms = (frame_dt.max(0.0)) * 1000.0;
-    state.cooldown_remaining_ms = (state.cooldown_remaining_ms - dt_ms).max(0.0);
-
-    let wants_fire = match state.fire_mode {
-        FireMode::Semi => button.pressed && !state.shoot_press_consumed,
-        FireMode::Auto => button.active,
-    };
-    if state.fire_mode == FireMode::Semi && button.pressed {
-        state.shoot_press_consumed = true;
-    } else if !button.active {
-        state.shoot_press_consumed = false;
-    }
-
-    if !wants_fire || state.cooldown_remaining_ms > 0.0 {
+    if !advance_client_fire_state(state, button, frame_dt) {
         return None;
     }
 
@@ -493,6 +492,30 @@ pub(crate) fn resolve_client_fire(
         state.resolution,
     );
     Some(ClientFireResolution { client_tick, hits })
+}
+
+pub(crate) fn advance_client_fire_state(
+    state: &mut ClientWeaponState,
+    button: FireButtonState,
+    frame_dt: f32,
+) -> bool {
+    let dt_ms = (frame_dt.max(0.0)) * 1000.0;
+    state.cooldown_remaining_ms = (state.cooldown_remaining_ms - dt_ms).max(0.0);
+
+    let wants_fire = match state.fire_mode {
+        FireMode::Semi => button.pressed && !state.shoot_press_consumed,
+        FireMode::Auto => button.active,
+    };
+    if state.fire_mode == FireMode::Semi && button.pressed {
+        state.shoot_press_consumed = true;
+    } else if !button.active {
+        state.shoot_press_consumed = false;
+    }
+
+    if !wants_fire || state.cooldown_remaining_ms > 0.0 {
+        return false;
+    }
+    true
 }
 
 #[allow(clippy::too_many_arguments)] // mirrors the local fire query inputs without a throwaway struct.
@@ -793,6 +816,7 @@ mod tests {
             pawn,
             cooldown_remaining_ms: 0.0,
             cooldown_ms: 100.0,
+            cooldown_authority_generation: 0,
             fire_mode: FireMode::Auto,
             resolution: ResolutionMode::Hitscan,
             range: 10.0,
@@ -1373,6 +1397,7 @@ mod tests {
             pawn,
             cooldown_remaining_ms: 0.0,
             cooldown_ms: 100.0,
+            cooldown_authority_generation: 0,
             fire_mode: FireMode::Semi,
             resolution: ResolutionMode::Hitscan,
             range: 10.0,
@@ -1541,6 +1566,7 @@ mod tests {
             pawn: EntityId::from_raw(1),
             cooldown_remaining_ms: 0.0,
             cooldown_ms: 100.0,
+            cooldown_authority_generation: 0,
             fire_mode: FireMode::Semi,
             resolution: ResolutionMode::Hitscan,
             range: 10.0,
@@ -1561,7 +1587,7 @@ mod tests {
         };
         let mut predicted = ClientPredictedShots::new();
 
-        predicted.predict(0xA, &resolution, 0.0, 100.0);
+        predicted.predict(0xA, &resolution, 0.0, 100.0, 0);
 
         let record = predicted.get(0xA).expect("shot should be recorded");
         assert_eq!(record.client_tick, 9);
@@ -1583,7 +1609,13 @@ mod tests {
         let mut state = client_weapon_state();
         state.cooldown_remaining_ms = 100.0;
         let mut predicted = ClientPredictedShots::new();
-        predicted.predict(0xA, &resolution, 0.0, 100.0);
+        predicted.predict(
+            0xA,
+            &resolution,
+            0.0,
+            100.0,
+            state.cooldown_authority_generation,
+        );
 
         predicted
             .apply_verdict(&mut state, 0xA, true, true)
@@ -1609,7 +1641,13 @@ mod tests {
         let mut state = client_weapon_state();
         state.cooldown_remaining_ms = 100.0;
         let mut predicted = ClientPredictedShots::new();
-        predicted.predict(0xA, &resolution, 25.0, 100.0);
+        predicted.predict(
+            0xA,
+            &resolution,
+            25.0,
+            100.0,
+            state.cooldown_authority_generation,
+        );
 
         predicted
             .apply_verdict(&mut state, 0xA, true, false)
@@ -1635,7 +1673,13 @@ mod tests {
         let mut state = client_weapon_state();
         state.cooldown_remaining_ms = 100.0;
         let mut predicted = ClientPredictedShots::new();
-        predicted.predict(0xA, &resolution, 25.0, 100.0);
+        predicted.predict(
+            0xA,
+            &resolution,
+            25.0,
+            100.0,
+            state.cooldown_authority_generation,
+        );
 
         predicted
             .apply_verdict(&mut state, 0xA, false, false)
@@ -1649,6 +1693,77 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_or_late_reject_does_not_undo_accepted_predicted_shot() {
+        let resolution = ClientFireResolution {
+            client_tick: 9,
+            hits: vec![LocalHitRecord {
+                target: EntityId::from_raw(2),
+                point: Vec3::ZERO,
+                zone: None,
+            }],
+        };
+        let mut state = client_weapon_state();
+        state.cooldown_remaining_ms = 100.0;
+        let mut predicted = ClientPredictedShots::new();
+        predicted.predict(
+            0xA,
+            &resolution,
+            25.0,
+            100.0,
+            state.cooldown_authority_generation,
+        );
+
+        predicted
+            .apply_verdict(&mut state, 0xA, true, true)
+            .expect("accept should match");
+        predicted
+            .apply_verdict(&mut state, 0xA, false, false)
+            .expect("late reject should be idempotent");
+
+        let record = predicted.get(0xA).expect("shot remains observable");
+        assert_eq!(record.status, PredictedShotStatus::Accepted);
+        assert!(record.muzzle_fx_visible);
+        assert!(record.hitmarker_visible);
+        assert!(approx_eq(state.cooldown_remaining_ms, 100.0));
+    }
+
+    #[test]
+    fn stale_reject_does_not_overwrite_fresh_authoritative_cooldown() {
+        let resolution = ClientFireResolution {
+            client_tick: 9,
+            hits: vec![LocalHitRecord {
+                target: EntityId::from_raw(2),
+                point: Vec3::ZERO,
+                zone: None,
+            }],
+        };
+        let mut state = client_weapon_state();
+        state.cooldown_remaining_ms = 100.0;
+        let mut predicted = ClientPredictedShots::new();
+        predicted.predict(
+            0xA,
+            &resolution,
+            25.0,
+            100.0,
+            state.cooldown_authority_generation,
+        );
+
+        ClientPredictedShots::reconcile_cooldown(&mut state, 12.0);
+        predicted
+            .apply_verdict(&mut state, 0xA, false, false)
+            .expect("reject should match");
+
+        let record = predicted.get(0xA).expect("shot remains observable");
+        assert_eq!(record.status, PredictedShotStatus::Rejected);
+        assert!(!record.muzzle_fx_visible);
+        assert!(!record.hitmarker_visible);
+        assert!(
+            approx_eq(state.cooldown_remaining_ms, 12.0),
+            "fresh owner-private cooldown must win over stale rollback"
+        );
+    }
+
+    #[test]
     fn owner_private_cooldown_reconciles_client_weapon_state() {
         let mut state = client_weapon_state();
         state.cooldown_remaining_ms = 100.0;
@@ -1656,5 +1771,6 @@ mod tests {
         ClientPredictedShots::reconcile_cooldown(&mut state, 42.0);
 
         assert!(approx_eq(state.cooldown_remaining_ms, 42.0));
+        assert_eq!(state.cooldown_authority_generation, 1);
     }
 }

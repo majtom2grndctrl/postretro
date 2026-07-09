@@ -54,9 +54,7 @@ pub struct EngineStateCatalogEntry<'a> {
     pub range: Option<NumericRange>,
     pub persist: bool,
     pub capability: EngineStateCapability,
-    /// Replication scope for this engine slot (M15 Phase 3.5). Defaults to `None`
-    /// for every existing slot in this phase; Task 4 flips `player.health` /
-    /// `player.maxHealth` to `OwnerPrivatePlayer`.
+    /// Replication visibility for this engine slot.
     pub network: ReplicationScope,
 }
 

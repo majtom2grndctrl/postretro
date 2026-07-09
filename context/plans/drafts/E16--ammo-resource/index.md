@@ -261,41 +261,28 @@ resourceless weapon skips the gate entirely. Reserve is not touched here.
 
 ### Task 5: Reload as atomic transfer
 
-Thread a reload intent from `Action::Reload` (already bound in
-`input/defaults.rs`) as a new field on `SimCommand`
-(`crates/postretro/src/sim/mod.rs`), built by `build_sim_command` (`main.rs`)
-beside the existing `fire_button`. Reload is not an aim/fire concern, so it
-skips the `weapon_fire_command` → `WeaponFireCommand` hop entirely: it is read
-straight off `SimCommand` in `sim/mod.rs` beside `run_weapon_fire_tick`, where
-`local_movement_pawn` already resolves the pawn (which owns `AmmoReserve`).
-Query `available(type)`, then atomically `take(type, min(capacity - magazine,
-available))` and add the returned rounds to the magazine — never index the pool
-directly. The `take` is the atomic step. A full magazine or empty pool is a
-distinct blocked outcome (a dedicated event name), not a partial/silent transfer.
-Reload does not interrupt cooldown and is not a per-shell state machine (out of
-scope). The reload button reads as a rising edge (`ButtonState::Pressed`), not
-level (`is_active`), matching the dash precedent (`input.md`) — a held R does
-not re-attempt reload every tick. The new field means every `SimCommand`
-struct literal needs updating: `neutral_sim_command`
-(`netcode/command_queue.rs`), the `input_command_to_sim` /
-`sim_command_to_input` conversions (`netcode/wire_convert.rs`), and the
-prediction/determinism test fixtures.
+The prerequisite **E16 — Host Combat Command Application** introduces the
+`reload` field on `SimCommand` — sampled from `Action::Reload` (already bound in
+`input/defaults.rs`) as a rising edge (`ButtonState::Pressed`, per the dash
+precedent in `input.md`, so a held R does not re-attempt every tick), carried on
+the wire `InputCommand` with the single `WIRE_VERSION` bump, and defaulted in
+`neutral_sim_command`. This spec does **not** re-add that field or bump the wire.
 
-Reload rides the existing command frame, not a new transport, but it is not
-free: the fire button already crosses the wire as `fire_button:
-WireFireButtonState` on the wire `InputCommand`, rebuilt into `SimCommand` by
-`input_command_to_sim`, serialized back by `sim_command_to_input`
-(`crates/postretro/src/netcode/wire_convert.rs`), and defaulted by
-`neutral_sim_command` (`crates/postretro/src/netcode/command_queue.rs`). Reload
-adds one more field to that same wire `InputCommand`, mirroring `fire_button` —
-edit all three sites (`input_command_to_sim`, `sim_command_to_input`,
-`neutral_sim_command`) plus the wire type itself. Adding a field to a wire type
-is a wire-format change and requires a wire-version bump per the two-gate
-handshake (`networking.md`) — the input must be co-op-ready. The host
-authoritatively performs the reserve→magazine transfer for its own local
-pawn; predicting and reconciling that transfer for the local player is built
-here. Applying a remote client's reload command to their pawn host-side is
-**E16 — Host Combat Command Application**'s seam, not built in this spec.
+This spec consumes it. In `sim/mod.rs` beside `run_weapon_fire_tick`, where
+`local_movement_pawn` resolves the local pawn (which owns `AmmoReserve`), read
+the resolved `SimCommand.reload`: when set, query `available(type)` then
+atomically `take(type, min(capacity - magazine, available))` and add the
+returned rounds to the magazine — never index the pool directly. The `take` is
+the atomic step. A full magazine or empty pool is a distinct blocked outcome (a
+dedicated event name), not a partial/silent transfer. Reload does not interrupt
+cooldown and is not a per-shell state machine (out of scope). Reload skips the
+`weapon_fire_command` → `WeaponFireCommand` hop entirely — that command is
+aim/fire only.
+
+This wires the transfer for the local/host player's own pawn. Applying a remote
+client's reload to their pawn host-side is the prerequisite's per-pawn delivery
+seam (its Task 5), which routes the reload intent to the mapped weapon and calls
+this spec's transfer.
 
 ### Task 6: HUD slots, publisher, readout, docs, tests
 
@@ -371,10 +358,11 @@ descriptor parsers `entity_descriptor_from_js` / `entity_descriptor_from_lua` in
 `crates/postretro/src/scripting/primitives/mod.rs`; equip-at-spawn in
 `crates/postretro/src/scripting/builtins/data_archetype.rs`
 (`spawn_from_player_starts`) and `.../net_descriptor.rs`
-(`spawn_net_slot_pawn`); the fire/reload command build in
-`crates/postretro/src/main.rs` (`build_sim_command`, `fire_button`) and
+(`spawn_net_slot_pawn`); the fire command build in
+`crates/postretro/src/main.rs` (`build_sim_command`, `fire_button`); `reload`
+arrives on `SimCommand` from the prerequisite spec and is consumed in
 `crates/postretro/src/sim/mod.rs` (`weapon_fire_command`, `run_weapon_fire_tick`,
-`local_movement_pawn`); `Action::Reload` in `crates/postretro/src/input/{types.rs,defaults.rs}`;
+`local_movement_pawn`, `SimCommand.reload`);
 the wire `SimCommand` literal sites: `neutral_sim_command` and
 `host_resolve_movement_inputs` in `crates/postretro/src/netcode/command_queue.rs`,
 and `input_command_to_sim` / `sim_command_to_input` in

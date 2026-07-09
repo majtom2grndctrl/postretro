@@ -7,7 +7,8 @@
 > **Milestone:** Resolution Modes.
 >
 > **Prerequisite for `E16 — Ammo Resource`:** that spec consumes the FIRE path,
-> the per-pawn weapon map, and the named reload-delivery seam this spec builds.
+> the per-pawn `WeaponOwners` map, and the named reload-delivery seam
+> `deliver_reload_to_weapon` this spec builds.
 >
 > **Supersedes** the earlier `E16 — Host Combat Command Application`
 > (host-authoritative-fire) draft: same milestone, reshaped authority model.
@@ -44,16 +45,17 @@ is trusted from the client and sanity-checked.
   hit records `{target NetworkId, point, zone}`, arriving on the fire tick or a
   later tick (projectile-ready).
 - **Host fire application per pawn:** validate fire-legitimacy, advance cooldown,
-  consume ammo, mint/record the authorized `shot_id` — no ray cast. Reload rides
-  the same per-pawn seam.
+  mint/record the authorized `shot_id` — no ray cast. Ammo consumption is a named
+  seam the ammo spec fills (parallel to the reload seam); reload rides the same
+  per-pawn seam.
 - **Host hit-declaration ingest, four-check validation, and damage application**
-  crediting the declaring client's pawn.
+  crediting the authorized shot's pawn (`AuthorizedShot.pawn`).
 - **Owner-private reconcile facts:** per-shot accept/reject and the firing pawn's
   own weapon cooldown, scoped to the owning client the way movement-authority
   metadata is.
 - **`reload` on the command frame**, delivered to the mapped pawn's weapon through
   a named seam the ammo spec fills.
-- **A host pawn -> active-weapon map** and **both `NetworkId <-> EntityId` reverse
+- **A host pawn -> active-weapon map (`WeaponOwners`)** and **both `NetworkId <-> EntityId` reverse
   maps** (client `EntityId -> NetworkId` to build the declaration; host
   `NetworkId -> EntityId` to resolve the target).
 - **One atomic wire-contract bump** of BOTH version constants.
@@ -96,23 +98,24 @@ is trusted from the client and sanity-checked.
 - [ ] Both version constants are bumped in one change — the message-vocabulary
   constant and the byte-layout constant — and BOTH handshake gates assert the new
   values; a peer built before this change is refused at the handshake.
-- [ ] A remote client's fire advances THAT pawn's own weapon cooldown and consumes
-  its ammo host-side with no ray cast, and records an authorized shot for that pawn.
-  Two owned pawns firing on the same tick each affect only their own weapon — no
-  cross-talk.
+- [ ] A remote client's fire advances THAT pawn's own weapon cooldown host-side with
+  no ray cast, and records an authorized shot for that pawn. Two owned pawns firing on
+  the same tick each affect only their own weapon — no cross-talk.
 - [ ] A remote client's reload reaches its own pawn's mapped weapon through the
   named delivery seam, and no other pawn's weapon.
 - [ ] Every owned remote pawn is mapped to its active weapon at slot accept and
   unmapped at slot close. A pawn whose descriptor declares no weapon maps to none,
   never fires host-side, and is logged once (not an error).
-- [ ] The host applies damage from a validated declaration crediting the declaring
-  client's pawn as attacker, reusing the existing zone-multiplier, credit-source,
-  contributor-ledger, and death-sweep path. A pitched or zone-tagged hit credits and
-  scales correctly.
-- [ ] **`shot_id` binding (security).** A fire the host REJECTED (cooling weapon or
-  empty magazine) yields NO accepted hit and NO damage, even when the client sends a
-  geometrically plausible declaration — because the declaration's `shot_id` matches
-  no host-authorized open shot. One authorized fire accepts at most one declaration.
+- [ ] The host applies damage from a validated declaration crediting the authorized
+  shot's pawn (`AuthorizedShot.pawn`) as attacker, reusing the existing zone-multiplier,
+  credit-source, contributor-ledger, and death-sweep path. A pitched or zone-tagged hit
+  credits and scales correctly.
+- [ ] **`shot_id` binding (security).** A fire the host REJECTED (cooling weapon)
+  yields NO accepted hit and NO damage, even when the client sends a geometrically
+  plausible declaration — because the declaration's `shot_id` matches no host-authorized
+  open shot owned by the declaring connection. One authorized fire accepts at most one
+  declaration. The same `shot_id` binding is exactly what makes empty-magazine rejection
+  work for free once the ammo spec lands.
 - [ ] **World-LOS, not live pose.** A declaration whose point sits behind a static
   wall (a wall nearer than the declared point along the attacker's eye ray) is
   rejected. A legitimate shot at a moving enemy is NOT rejected — validation runs
@@ -148,10 +151,12 @@ and, per entity, prefers the zone-bearing skeletal capsules and otherwise falls 
 to the authored `hitbox` AABB; an entity with no `Health` is never even considered.
 Host-materialized remote enemies carry a mesh and a hit-zone store entry (uploaded to
 the client `HitZoneStore` at level load) but NO `Health` and NO `hitbox` component, so
-they are currently unhittable by the local query. Widen the iteration basis so an
-entity that has a zone-bearing model in the store (its derived reach bound is a valid
-coarse fallback when no `hitbox` is present) is a candidate, in addition to today's
-Health-bearing entities. Do NOT make these entities damageable: they still have no
+they are currently unhittable by the local query. Widen the iteration basis to the UNION
+of `Health`-bearing entities and entities carrying a `MeshComponent`
+(`ComponentKind::Mesh`) — the mesh's `model` is the key into the `HitZoneStore`, so a
+`Mesh`-bearing entity with a zone-bearing store entry is a candidate even with no
+`Health`, deriving its coarse reach bound from the store entry when no `hitbox` is
+present. Do NOT make these entities damageable: they still have no
 `Health`, so the damage chokepoint no-ops on them by construction. Preserve the
 existing zero-HP skip for Health-bearing entities. The query stays a pure read used by
 single-player, listen-host, and client alike. AC: single-player and host hit behavior
@@ -167,15 +172,24 @@ as a small helper the frame loop calls (mirroring `client_predict_movement_tick`
 grow the frame loop inline). The client's own pawn has no local `Weapon` component today
 (only host pawns and the host's `active_wieldable` do), so first establish the minimal
 client-side weapon state this path needs: at least the cooldown timer and fire-mode
-gating for the client's own weapon, seeded from the client pawn's descriptor at
-materialization. Each fire tick: build the aim ray from the client camera
+gating for the client's own weapon. No weapon payload crosses the wire (remote
+materialization attaches mesh only, and `Weapon` is never wire-replicated): the client
+resolves its OWN pawn's descriptor locally from the replicated `entity_class` (descriptors
+are client-local content data, shared by both peers) and reads cooldown timing + fire-mode
+from it to seed this minimal client-side weapon state. Each fire tick: build the aim ray from the client camera
 (`aim_ray()` gives origin + full-pitch direction); gate on the client-side weapon state
 (off cooldown, fire-mode satisfied — magazine gating arrives with the ammo spec); and,
 when the gate passes, run the shared local hit query (Task 1) against the client
-collision world and the client `HitZoneStore` at the hoisted animation clock, so the ray
-tests the SAME rendered (interpolated) pose the player sees. Produce a locally-resolved
-hit (0..N target/point/zone records for the pellet-ready shape; one record for a single
-hitscan ray). This task produces the local resolution; Task 3 gives it a wire, Task 7
+collision world and the client `HitZoneStore` at the hoisted per-frame animation clock —
+`frame_anim_time` (the game-layer `anim_time` the render stage poses skeletons at, the
+same clock `simulate_tick` threads into the weapon tick on host/single-player). The
+interpolated Transform placement is already written into the registry by
+`sample_into_registry` at `render_server_tick` before this runs, so posing the capsules at
+`frame_anim_time` makes the ray test the SAME rendered (interpolated) pose the player sees.
+Produce a locally-resolved hit as `LocalHitRecord { target: EntityId, point: Vec3, zone:
+Option<String> }` values (0..N for the pellet-ready shape; one for a single hitscan ray);
+Task 3's client `EntityId -> NetworkId` reverse map converts each `LocalHitRecord` into the
+wire `HitRecord`. This task produces the local resolution; Task 3 gives it a wire, Task 7
 predicts and reconciles it. AC: the client resolves a hit against a remote enemy at the
 rendered pose, and only fires when its own weapon state permits.
 
@@ -189,13 +203,17 @@ and needs no new sanitize rule (a `bool` has no invalid state). (2) Add the NEW 
 hit-declaration message as an appended variant of the client->server message enum
 (reliable Input channel): `shot_id` plus a length-prefixed list of 0..N hit records, each
 `{target: NetworkId, point: [f32;3], zone: <optional tag>}`, host-clamped on ingest to the
-weapon's effective pellet count. It is standalone (not folded into `InputCommand`) so it
+weapon's effective pellet count — 1 for current single-ray weapons (the weapon type carries
+no pellet-count field today; pellet spreads are out of scope, so the count is a weapon
+property the pellet spec adds, defaulting to 1 here, and the clamp generalizes then). It is
+standalone (not folded into `InputCommand`) so it
 can arrive on a later tick than the fire. (3) Add the two owner-private server->client
 facts the firing client reconciles against, each by its kind: the firing pawn's own weapon
 COOLDOWN as an `OwnerPrivatePlayer` state slot with a per-pawn projection mirroring the
 health projection — the same state-slot carrier the ammo spec extends with magazine/reserve
-(player weapon cooldown is not replicated today, only enemy attack cooldown is) — and the
-per-shot ACCEPT/REJECT verdict as a reconciliation ack scoped to the owning client the way
+(no cooldown of either kind is replicated today — enemies replicate `Transform` only;
+`BrainComponent.attack_cooldown_remaining_ms` stays host-local) — and the per-shot
+ACCEPT/REJECT verdict as a reconciliation ack scoped to the owning client the way
 movement-authority metadata (`last_processed_client_tick`) is scoped per record, keyed by
 `shot_id`. (4) Add BOTH reverse maps: the client `EntityId -> NetworkId` (to name
 a locally-hit remote enemy on the wire) and the host `NetworkId -> EntityId` (to resolve a
@@ -205,7 +223,10 @@ and sanitize paths, and default it in `neutral_sim_command`. Bump the message-VO
 constant (a new message family — mirrors the current "adds the state-slot message family"
 bump) AND the byte-LAYOUT constant (added fields change bitcode layout), and note in one
 line which axis each answers. Update BOTH drift-guard sides (net crate and engine) and
-assert BOTH handshake gates. AC: reload, the declaration, the cooldown slot, the
+assert BOTH handshake gates: Gate 1 is the transport `protocol_id` (u64) that PACKS both
+build constants (`transport_protocol_id() = (PROTOCOL_ID << 32) | WIRE_VERSION`); Gate 2 is
+the app-level `ProtocolVersion` carrying the same two values in the first reliable Control
+message. Bumping either build constant changes both gates. AC: reload, the declaration, the cooldown slot, the
 per-shot ack, and both reverse maps round-trip; both constants bump; both gates assert; a
 pre-change peer is refused.
 
@@ -216,26 +237,32 @@ reaches its own weapon. Today the host keeps only `.movement` per pawn and drops
 `fire_button`; widen the per-pawn resolve to carry the whole resolved command
 (`fire_button`, `reload`) alongside `movement`, then in the sim's weapon stage apply fire
 PER PAWN — mirroring how movement iterates the resolved remote pawns then appends the
-listen host's own pawn. For each owned pawn: resolve its weapon via the pawn -> weapon map
+listen host's own pawn. For each owned pawn: resolve its weapon via `WeaponOwners`
 (Task 5), run the weapon-state half of the resolved weapon tick — validate fire-legitimacy
-(off cooldown; has ammo once the ammo spec lands), advance cooldown, consume ammo, and
-mint and record an authorized `shot_id` derived from `(pawn, fire-tick)` so both sides
-compute it identically — but perform **no ray cast** (the client owns HIT). Record the
-authorized shot per pawn as a still-open shot the hit-ingest path (Task 6) matches and
-retires. A resolved owned pawn that maps to no weapon logs once via a per-pawn de-dup latch
-and never fires. Fold in the **reload-delivery seam** here: route each pawn's resolved
-`reload` to that pawn's mapped weapon as a single named call site (name it clearly — the
-ammo spec fills the body BY NAME, not by task number), keeping it one seam so the ammo spec
-adds no plumbing. The listen host's own pawn keeps its camera-driven fire path, appended
-last. AC: a remote pawn's fire advances only its own cooldown/ammo and records an
+(off cooldown; has ammo once the ammo spec lands), advance cooldown, and mint and record an
+authorized `shot_id` — but NOT consume ammo: ammo read/consume is the named ammo seam's job,
+not this spec's; cooldown advance and the shot record are this spec's. Perform **no ray
+cast** (the client owns HIT). Pin the id: `shot_id` is a `ShotId(u64)` = the pawn's
+`NetworkId` (u32) packed high `|` the resolved command's `client_tick` (u32) packed low,
+computed identically on both peers by construction (`AuthorizedShot.pawn` is a host-local
+`EntityId` used to resolve weapon/credit — NOT an input to the id). Record the authorized
+shot per pawn as a still-open shot the hit-ingest path (Task 6) matches and retires. A
+resolved owned pawn that maps to no weapon logs once via a per-pawn de-dup latch and never
+fires. Fold in the **reload-delivery seam** here: route each pawn's resolved `reload` to
+that pawn's mapped weapon as a single named call site, `deliver_reload_to_weapon(pawn,
+weapon, reload)` — the ammo spec fills the body BY NAME — keeping it one seam so the ammo
+spec adds no plumbing. The listen host's own pawn keeps its camera-driven fire path,
+appended last. AC: a remote pawn's fire advances only its own cooldown and records an
 authorized shot, with no ray cast; two pawns are independent; reload reaches the correct
 weapon.
 
 ### Task 5: Pawn -> active-weapon map (host)
 
-Add a host-owned `pawn -> active-weapon` map, mirroring `MovementOwners`, as a field on
-the same struct that owns `MovementOwners`, constructed alongside it at every construction
-site (the owning struct's initializer, the accept/close paths, and the test fixtures).
+Add a host-owned `pawn -> active-weapon` map, `WeaponOwners`, mirroring `MovementOwners`, as
+a field on the same `NetEndpoint::Host` enum variant that owns `MovementOwners`, constructed
+alongside it. Its sole constructor is the `Host` initializer (beside
+`owners: MovementOwners::new()`) plus the test fixtures; the accept/close paths take and
+mutate a threaded `&mut WeaponOwners` — they are MUTATION sites, not construction sites.
 `spawn_net_slot_pawn` today spawns the pawn's sibling `defaultWeapon` instance and DISCARDS
 its `EntityId`; return it instead (as `Option<EntityId>`). The accept intermediary
 (`on_slot_accepted`, which calls `spawn_net_slot_pawn`) currently returns `(pawn, net_id)`

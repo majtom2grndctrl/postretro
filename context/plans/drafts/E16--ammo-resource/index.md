@@ -47,7 +47,7 @@ resource-grant chokepoint (inverse of `applyDamage`) as a clean seam a later
   empty magazine blocks the activation and surfaces it (a dry-fire event +
   `ActivationOutcome::Empty`), consuming no ammo and dealing no damage.
 - Reload (`Action::Reload`, already bound) as an atomic transfer of
-  `min(capacity - magazine, reserve[type])` from the pawn reserve pool into the
+  `min(capacity - magazine, available(type))` from the pawn reserve pool into the
   magazine; blocked when the magazine is full or the reserve is empty, surfaced
   distinctly.
 - Live `player.ammo` (magazine) and `player.ammoReserve` (active weapon's pool)
@@ -171,6 +171,14 @@ descriptor's starting `reserve`, and let the weapon materialize a full magazine
 (`scripting/builtins/net_descriptor.rs`) so a remote pawn is armed consistently,
 without promoting its weapon to the host's active wieldable.
 
+`AmmoReserve` exposes a small interface with its backing map private: a query
+`available(type) -> u32` (rounds on hand for a type) and an atomic consume
+`take(type, n) -> u32` (removes up to `n`, returns the amount actually removed).
+All reserve access — the reload transfer (Task 5) and the HUD publisher (Task 6)
+— goes through this interface, never direct map indexing. That makes the later
+switching+inventory relocation and any inventory-backed storage a single-seam
+change: swap the backing store, callers unchanged.
+
 **Seeding rationale (the judgment call).** World pickups are out of scope, so a
 test map has no other ammo source. Descriptor-seeded starting reserve at spawn is
 grounded in the one path that already reads the weapon descriptor *and* knows the
@@ -198,9 +206,10 @@ through `build_sim_command` → `SimCommand` → `weapon_fire_command` →
 beside the existing fire button. Reload needs both the weapon and the pawn
 reserve, so run it in `sim/mod.rs` beside `run_weapon_fire_tick`, where
 `local_movement_pawn` already resolves the pawn (which owns `AmmoReserve`).
-Transfer `min(capacity - magazine, reserve[type])` from the pool into the
-magazine atomically. A full magazine or empty pool is a distinct blocked outcome
-(a dedicated event name), not a partial/silent transfer. Reload does not
+Query `available(type)`, then atomically `take(type, min(capacity - magazine,
+available))` and add the returned rounds to the magazine — never index the pool
+directly. The `take` is the atomic step. A full magazine or empty pool is a
+distinct blocked outcome (a dedicated event name), not a partial/silent transfer. Reload does not
 interrupt cooldown and is not a per-shell state machine (out of scope).
 
 Reload intent rides the command frame like fire, so it replicates through the
@@ -214,8 +223,8 @@ Add `player.ammo` and `player.ammoReserve` to `BUILTIN_ENGINE_STATE`
 `OwnerPrivatePlayer` network scope (mirroring `player.health`, so co-op
 replication is free per M15 Phase 3.5). Extend/mirror `PlayerHudStatePublisher`
 (`scripting/systems/ui_proxy.rs`) to read the active wieldable's live magazine →
-`player.ammo` and the pawn reserve pool for that weapon's ammo type →
-`player.ammoReserve`; the publisher needs the active-wieldable id, which the
+`player.ammo` and the pawn reserve's `available(type)` for that weapon's ammo
+type → `player.ammoReserve`; the publisher needs the active-wieldable id, which the
 `main.rs` call site (`self.active_wieldable`, near the `player_hud_state.tick_for_role`
 call) supplies. Restore an ammo readout in `content/dev/scripts/hud.ts` bound to
 `getGameState().player.ammo` / `player.ammoReserve`. Seed the reference pistol
@@ -291,12 +300,20 @@ separate pawn-owned component:
 ```rust
 // Proposed design (entities crate — pawn-owned inventory precursor).
 pub struct AmmoReserve {
-    pools: HashMap<String, u32>,  // ammo type -> rounds; switching+inventory relocates this
+    pools: HashMap<String, u32>,  // private; ammo type -> rounds
+}
+
+impl AmmoReserve {
+    // The relocation seam: an inventory-backed store implements these two
+    // unchanged, so switching+inventory swaps the backing store, callers as-is.
+    pub fn available(&self, ammo_type: &str) -> u32 { /* rounds on hand */ }
+    pub fn take(&mut self, ammo_type: &str, n: u32) -> u32 { /* remove ≤ n, return taken */ }
 }
 ```
 
-Reload transfers `min(capacity - magazine, reserve[type])` atomically. Firing
-decrements `magazine` by the effective `cost_per_shot`; an empty magazine yields
+Reload queries `available(type)`, then atomically `take`s
+`min(capacity - magazine, available)` into the magazine. Firing decrements
+`magazine` by the effective `cost_per_shot`; an empty magazine yields
 `ActivationOutcome::Empty` and a dry-fire event, never a silent no-op.
 
 ## Boundary inventory
@@ -321,16 +338,41 @@ decrements `magazine` by the effective `cost_per_shot`; an empty magazine yields
   restored HUD readout, rather than swapping a static value. The intent
   (settled decision: feed a real ammo slot) is unchanged; only the framing
   differs.
-- **Ammo `type` is a free-form ASCII identifier now.** The long-term model wants
-  a generated `AmmoType` union, but no declared-ammo-type registry exists. A
-  string keyed pool ships the pooling contract; promoting to a generated union
-  waits for a type registry (likely the switching+inventory or a dedicated ammo
-  catalog spec). The `[A-Za-z0-9_.:-]` charset keeps it safe as a future union
-  member and store-key segment.
+- **Ammo `type` stays a free-form charset-validated identifier.** It matches the
+  already-shipped `creditSource` precedent — same `[A-Za-z0-9_.:-]` charset, same
+  modder-owned-key role; two sibling contracts in one milestone should not
+  disagree on how a modder names a category. The generated `AmmoType` union is
+  *not* an ammo/inventory concern: it belongs to a future cross-cutting
+  "declare-your-categoricals → codegen" capability spanning ammo type, credit
+  source, damage type, and status effects — decide it once, there, not here.
+  String→union is a compatible tightening (the union is generated from the
+  declared values), so it is not a hard-to-reverse shape; deferring is correct.
 - **Reserve lives on the pawn as an inventory precursor.** Pooling by ammo type
-  is honored, but the durable home is the inventory (`weapon-model.md` §6),
-  which is out of scope here. The switching+inventory spec relocates the pool off
-  the pawn; nothing downstream should assume the pawn is its permanent owner.
+  is honored, but the durable home is the inventory (`weapon-model.md` §6), out
+  of scope here. The `available`/`take` interface (Task 3) is what makes pawn
+  ownership safe: it keeps the switching+inventory relocation localized to one
+  seam *and* keeps the immersive-sim inventory-backed-storage use case open.
+  Nothing downstream indexes the pool directly, so nothing assumes the pawn is
+  its permanent owner.
 - **`reloadStyle` is omitted, not defaulted.** Atomic magazine reload is the only
   style; the per-shell reload spec introduces the classifier as a resource-block
   field. Adding it now would imply a state machine this spec does not build.
+- **Forward compatibility — the reserve's two open use cases.**
+  - The `u32` count is a near-term stand-in for inventory-backed storage. An
+    inventory that tracks ammo as space-occupying items backs the same
+    `available`/`take` interface without touching callers. Per-round unique state
+    (per-bullet durability, mixed-ammo magazines) is the only thing the count
+    forecloses — additive later by replacing the count with a stack at
+    inventory-relocation time; no near-term case needs it.
+  - "Takes up space" (weight/volume capacity) is a write-side concern enforced
+    when ammo *enters* the reserve — the deferred grant/pickup chokepoint — not
+    here. This spec ships no grant and no cap, so it prejudges no capacity.
+  - Borderlands-style pooled-by-type ammo is directly expressible today via the
+    `type` string plus `costPerShot`; a per-type carry cap is a future additive
+    field, not a shape change.
+- **`WeaponResource` is one resource kind per weapon.** The single tagged union
+  means a weapon that consumes ammo *and* builds heat (or ammo + cell)
+  simultaneously is not expressible — the genuinely hard-to-reverse bet, and it
+  traces to the `weapon-model.md` "resource is one-of" tagged-union decision, not
+  this spec. It is orthogonal to the pooled-ammo and inventory use cases; both
+  are single-resource.

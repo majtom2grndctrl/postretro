@@ -190,9 +190,14 @@ hit-declaration message as an appended variant of the client->server message enu
 (reliable Input channel): `shot_id` plus a length-prefixed list of 0..N hit records, each
 `{target: NetworkId, point: [f32;3], zone: <optional tag>}`, host-clamped on ingest to the
 weapon's effective pellet count. It is standalone (not folded into `InputCommand`) so it
-can arrive on a later tick than the fire. (3) Add the owner-private per-shot accept/reject
-fact server->client, scoped to the owning client the way movement-authority metadata is
-scoped per record. (4) Add BOTH reverse maps: the client `EntityId -> NetworkId` (to name
+can arrive on a later tick than the fire. (3) Add the two owner-private server->client
+facts the firing client reconciles against, each by its kind: the firing pawn's own weapon
+COOLDOWN as an `OwnerPrivatePlayer` state slot with a per-pawn projection mirroring the
+health projection — the same state-slot carrier the ammo spec extends with magazine/reserve
+(player weapon cooldown is not replicated today, only enemy attack cooldown is) — and the
+per-shot ACCEPT/REJECT verdict as a reconciliation ack scoped to the owning client the way
+movement-authority metadata (`last_processed_client_tick`) is scoped per record, keyed by
+`shot_id`. (4) Add BOTH reverse maps: the client `EntityId -> NetworkId` (to name
 a locally-hit remote enemy on the wire) and the host `NetworkId -> EntityId` (to resolve a
 declared target to a live entity), each maintained beside its existing forward map and
 kept in lockstep on spawn/despawn. Thread the new command field through the wire-convert
@@ -200,9 +205,9 @@ and sanitize paths, and default it in `neutral_sim_command`. Bump the message-VO
 constant (a new message family — mirrors the current "adds the state-slot message family"
 bump) AND the byte-LAYOUT constant (added fields change bitcode layout), and note in one
 line which axis each answers. Update BOTH drift-guard sides (net crate and engine) and
-assert BOTH handshake gates. AC: reload, the declaration, the per-shot ack, and both
-reverse maps round-trip; both constants bump; both gates assert; a pre-change peer is
-refused.
+assert BOTH handshake gates. AC: reload, the declaration, the cooldown slot, the
+per-shot ack, and both reverse maps round-trip; both constants bump; both gates assert; a
+pre-change peer is refused.
 
 ### Task 4: Host fire application per pawn
 
@@ -279,7 +284,7 @@ muzzle FX, and show a hitmarker for a locally-resolved hit — a local weapon ti
 the sent command, NEVER run inside movement's `replay` (which must stay weapon-free; its
 registry-blind signature is the guard). Reconcile: the firing pawn's own weapon cooldown is
 not replicated today (only enemy attack cooldown is), so consume the owner-private
-authoritative cooldown fact (Task 3) to reconcile the predicted cooldown, and consume the
+authoritative cooldown slot (Task 3) to reconcile the predicted cooldown, and consume the
 owner-private per-shot accept/reject to confirm or retract the hitmarker. On a rejected fire
 (host refused: cooling / empty), roll back the client's local FX, cooldown, and hitmarker.
 State explicitly: enemy health is NEVER predicted — there is no enemy-HP rollback, only
@@ -444,11 +449,12 @@ byte-layout change, so the layout constant bumps.
 - **Two-constant bump, one per axis.** New message vocabulary bumps the app-protocol constant;
   added fields / new message layout bump the wire-version constant. Both drift guards updated,
   both handshake gates asserted, so a pre-change peer is refused at the handshake.
-
-## Open questions
-
-- **Owner-private fact carrier.** The per-shot ack and the owner weapon-cooldown fact are
-  specified as owner-scoped server->client facts mirroring movement-authority metadata; the
-  exact carrier (owner-scoped record metadata vs. a dedicated owner-private state slot) is an
-  implementation choice, constrained only to be owner-private and to ride the existing
-  snapshot/authority delivery. The ammo spec extends the same carrier with magazine/reserve.
+- **Owner-private reconciliation facts map to two carriers by kind, following the movement
+  pattern this spec mirrors.** Continuous weapon STATE the client reconciles — the firing
+  pawn's own cooldown, and (in the ammo spec) magazine/reserve — is an `OwnerPrivatePlayer`
+  state slot with a per-pawn projection, exactly as `player.health`; this is the carrier the
+  ammo spec extends. The per-shot ACCEPT/REJECT verdict is a reconciliation ack, so it rides
+  owner-scoped authority metadata alongside movement's `last_processed_client_tick`, keyed by
+  `shot_id`. Cooldown is to the replicated `Transform` as the shot verdict is to
+  `last_processed_client_tick`. The verdict's exact encoding (per-shot list vs. a resolved
+  high-water mark plus a reject set) is routine implementation latitude.

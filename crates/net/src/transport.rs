@@ -43,13 +43,13 @@ fn close_cause_from(reason: DisconnectReason) -> CloseCause {
 /// compatibility of the message *vocabulary* (a new control message, a changed
 /// channel layout). Carried as `ProtocolVersion::app_protocol_id` and folded into
 /// the transport-level `protocol_id`.
-pub const PROTOCOL_ID: u32 = 0x_5052_4C33; // "PRL3" — Phase 3.5 adds the state-slot message family
+pub const PROTOCOL_ID: u32 = 0x_5052_4C34; // "PRL4" — E16 adds hit declarations + owner-private shot verdicts
 
 /// Wire-format version. Hand-bumped whenever the bitcode byte layout of any wire
 /// type changes (added field, reordered enum, bumped bitcode major). Carried as
 /// `ProtocolVersion::wire_version` and folded into the transport-level
 /// `protocol_id` so a wire-incompatible peer is refused at the netcode layer.
-pub const WIRE_VERSION: u32 = 6;
+pub const WIRE_VERSION: u32 = 7; // E16 reload field + new message byte layouts
 
 /// Transport-level gate fed to renet_netcode as the netcode `protocol_id: u64`.
 /// Packs both hand-bumped consts so the encrypted handshake itself fails for any
@@ -441,10 +441,10 @@ impl NetServer {
     }
 
     /// Send a buffer to a client on the reliable-ordered `Channel::Input`. Used
-    /// for the Task 5 time-sync echo, which rides the input channel back to the
-    /// client independently of snapshots. Unlike `send_snapshot`, this is not
-    /// gated on acceptance: time-sync may flow to a connected client before it has
-    /// passed the app handshake (the echo carries no entity state).
+    /// for `ServerMessage` owner-private facts and time-sync echoes, independently
+    /// of snapshots. Unlike `send_snapshot`, this is not gated on acceptance:
+    /// time-sync may flow to a connected client before it has passed the app
+    /// handshake (the echo carries no entity state).
     pub fn send_input(&mut self, client_id: ClientId, payload: Vec<u8>) {
         self.server.send_message(client_id, Channel::Input, payload);
     }
@@ -595,14 +595,13 @@ impl NetClient {
 
     /// Send a buffer over the reliable-ordered input channel. Carries
     /// `ClientMessage` variants: input commands, acks, baseline-refresh requests,
-    /// and time-sync probes (`ClientMessage::TimeSync`).
+    /// hit declarations, and time-sync probes (`ClientMessage::TimeSync`).
     pub fn send_input(&mut self, input: Vec<u8>) {
         self.client.send_message(Channel::Input, input);
     }
 
     /// Drain input-channel buffers received this frame (reliable-ordered). The
-    /// server sends time-sync echoes here; decode each buffer as a
-    /// `TimeSyncEcho`.
+    /// server sends `ServerMessage` envelopes here.
     pub fn drain_input(&mut self) -> Vec<Vec<u8>> {
         let mut out = Vec::new();
         while let Some(bytes) = self.client.receive_message(Channel::Input) {

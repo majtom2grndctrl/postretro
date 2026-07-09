@@ -72,6 +72,7 @@ impl RecordedCommand {
                 pressed: self.fire_pressed,
                 active: self.fire_active,
             },
+            reload: false,
         }
     }
 

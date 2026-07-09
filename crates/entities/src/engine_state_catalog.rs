@@ -375,6 +375,21 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         network: ReplicationScope::OwnerPrivatePlayer,
     },
     EngineStateCatalogEntry {
+        wire_name: "player.weaponCooldownMs",
+        sdk_path: &["player", "weaponCooldownMs"],
+        value_type: EngineStateValueType::Number,
+        default: EngineStateDefault::None,
+        range: Some(NumericRange {
+            min: 0.0,
+            max: f32::INFINITY,
+        }),
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        // E16 Task 3: owner-private authoritative weapon cooldown for the
+        // client's own pawn, projected via the host pawn -> weapon map.
+        network: ReplicationScope::OwnerPrivatePlayer,
+    },
+    EngineStateCatalogEntry {
         wire_name: "screen.flash",
         sdk_path: &["screen", "flash"],
         value_type: EngineStateValueType::Array,
@@ -596,6 +611,7 @@ mod tests {
                 "input.mode",
                 "player.health",
                 "player.maxHealth",
+                "player.weaponCooldownMs",
                 "screen.flash",
                 "screen.shake",
                 "screen.vignette",
@@ -628,17 +644,40 @@ mod tests {
             player_max_health.capability,
             EngineStateCapability::Readonly
         );
+
+        let weapon_cooldown = entries
+            .iter()
+            .find(|entry| entry.wire_name == "player.weaponCooldownMs")
+            .unwrap();
+        assert_eq!(
+            weapon_cooldown.sdk_path,
+            &["player", "weaponCooldownMs"]
+        );
+        assert_eq!(weapon_cooldown.value_type, EngineStateValueType::Number);
+        assert_eq!(weapon_cooldown.default, EngineStateDefault::None);
+        assert_eq!(
+            weapon_cooldown.range,
+            Some(NumericRange {
+                min: 0.0,
+                max: f32::INFINITY,
+            })
+        );
+        assert_eq!(weapon_cooldown.capability, EngineStateCapability::Readonly);
     }
 
     #[test]
-    fn player_health_slots_are_owner_private_replicated() {
-        // M15 Phase 3.5 Task 4: the two engine player slots replicate owner-private
-        // (server sends each only to the owning client); every other built-in slot
-        // stays local-only (`None`).
+    fn player_owner_private_slots_are_replicated() {
+        // Server-authoritative player facts replicate owner-private (server sends
+        // each only to the owning client); every other built-in slot stays
+        // local-only (`None`).
         let catalog = engine_state_catalog().unwrap();
         let entries = catalog.entries();
 
-        for wire_name in ["player.health", "player.maxHealth"] {
+        for wire_name in [
+            "player.health",
+            "player.maxHealth",
+            "player.weaponCooldownMs",
+        ] {
             let entry = entries
                 .iter()
                 .find(|entry| entry.wire_name == wire_name)
@@ -651,11 +690,17 @@ mod tests {
         }
 
         for entry in entries {
-            if entry.wire_name != "player.health" && entry.wire_name != "player.maxHealth" {
+            if ![
+                "player.health",
+                "player.maxHealth",
+                "player.weaponCooldownMs",
+            ]
+            .contains(&entry.wire_name)
+            {
                 assert_eq!(
                     entry.network,
                     ReplicationScope::None,
-                    "{} must stay local-only in Phase 3.5",
+                    "{} must stay local-only",
                     entry.wire_name
                 );
             }

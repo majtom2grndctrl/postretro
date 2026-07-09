@@ -508,6 +508,7 @@ fn now() -> Duration {
 pub(crate) struct NetworkIdAllocator {
     next: u32,
     map: HashMap<EntityId, NetworkId>,
+    reverse: HashMap<NetworkId, EntityId>,
 }
 
 impl NetworkIdAllocator {
@@ -515,6 +516,7 @@ impl NetworkIdAllocator {
         Self {
             next: 0,
             map: HashMap::new(),
+            reverse: HashMap::new(),
         }
     }
 
@@ -527,6 +529,7 @@ impl NetworkIdAllocator {
         let net_id = NetworkId(self.next);
         self.next += 1;
         self.map.insert(id, net_id);
+        self.reverse.insert(net_id, id);
         net_id
     }
 
@@ -536,13 +539,35 @@ impl NetworkIdAllocator {
     /// not touch `next`: NetworkIds stay monotonic and are never recycled — only
     /// the stale mapping entry is pruned.
     pub(crate) fn forget(&mut self, id: EntityId) {
-        self.map.remove(&id);
+        if let Some(net_id) = self.map.remove(&id) {
+            self.reverse.remove(&net_id);
+        }
+    }
+
+    /// Resolve a host-side `EntityId` to its stable `NetworkId`, if it has been
+    /// stamped.
+    #[allow(dead_code)]
+    pub(crate) fn network_id_for_entity(&self, id: EntityId) -> Option<NetworkId> {
+        self.map.get(&id).copied()
+    }
+
+    /// Resolve a declared wire `NetworkId` back to the current host entity, if the
+    /// mapping is still live.
+    #[allow(dead_code)]
+    pub(crate) fn entity_for_network_id(&self, net_id: NetworkId) -> Option<EntityId> {
+        self.reverse.get(&net_id).copied()
     }
 
     /// Test-only: is an `EntityId -> NetworkId` mapping currently retained?
     #[cfg(test)]
     pub(crate) fn maps_entity(&self, id: EntityId) -> bool {
         self.map.contains_key(&id)
+    }
+
+    /// Test-only: is a `NetworkId -> EntityId` mapping currently retained?
+    #[cfg(test)]
+    pub(crate) fn maps_network_id(&self, net_id: NetworkId) -> bool {
+        self.reverse.contains_key(&net_id)
     }
 }
 
@@ -1065,6 +1090,7 @@ pub(crate) fn host_replicate(
     state_slots: &mut state_slots::HostStateReplication,
     replicable: &ReplicableSet,
     owners: &MovementOwners,
+    weapon_owners: &WeaponOwners,
     command_queues: &HostCommandQueues,
     tick: u32,
 ) {
@@ -1090,7 +1116,7 @@ pub(crate) fn host_replicate(
     // the scan is frame-wide (every replicated slot, every owned pawn), so running it
     // per client would repeat it O(clients) times. Each client's `produce_for_client`
     // below only reads the now-ingested per-client view.
-    state_slots.ingest_frame(slot_table, registry, owners);
+    state_slots.ingest_frame(slot_table, registry, owners, weapon_owners);
     // One sequence shared across all clients in this 30 Hz batch — and shared with the
     // state tracker's `produce_for_client` so one ack describes one server frame.
     let sequence = replication.begin_batch();
@@ -1234,6 +1260,7 @@ pub(crate) fn host_register_own_pawn(
     if let Some(previous) = *host_pawn {
         if previous != pawn {
             replicable.unregister(previous);
+            allocator.forget(previous);
         }
     }
     // Stamp the stable session-monotonic NetworkId and register for replication,
@@ -1257,6 +1284,7 @@ pub(crate) fn host_register_own_pawn(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn host_handle_lifecycle(
     registry: &mut EntityRegistry,
+    allocator: &mut NetworkIdAllocator,
     replicable: &mut ReplicableSet,
     replication: &mut ServerReplication,
     state_slots: &mut state_slots::HostStateReplication,
@@ -1271,7 +1299,14 @@ pub(crate) fn host_handle_lifecycle(
         match event {
             SlotEvent::Closed { client_id, .. } => {
                 let despawned =
-                    on_slot_closed(registry, slot_pawns, replicable, replication, *client_id);
+                    on_slot_closed(
+                        registry,
+                        slot_pawns,
+                        allocator,
+                        replicable,
+                        replication,
+                        *client_id,
+                    );
                 // M15 Phase 3: drop the closed client's command queue and the pawn's
                 // owner mapping so its stale authority metadata never rides a later
                 // snapshot. The slot's placement assignment is intentionally retained
@@ -1372,7 +1407,7 @@ pub(crate) fn host_handle_client_message(
         // send/receive times and folds the server tick into its estimate.
         wire::ClientMessage::TimeSync(req) => {
             let echo = req.echo(server_tick, server_now_us);
-            server.send_input(client_id, wire::encode(&echo));
+            server.send_input(client_id, wire::encode(&wire::ServerMessage::TimeSync(echo)));
         }
         // M15 Phase 3 Task 4: sanitize + queue the input command for this client.
         // `ingest` rejects non-finite commands, drops stale/duplicate ones, and never
@@ -1380,6 +1415,9 @@ pub(crate) fn host_handle_client_message(
         wire::ClientMessage::Input(input) => {
             command_queues.ingest(client_id, &input);
         }
+        // E16 Task 3: carrier only. Later tasks validate the shot id, resolve
+        // targets, and apply damage.
+        wire::ClientMessage::HitDeclaration(_declaration) => {}
         // M15 Phase 3.5: a client missing a replicated state-slot baseline. The state
         // tracker schedules a full baseline for that slot in the client's next snapshot.
         // Keyed by `StateSlotId` (distinct from the entity `BaselineRefresh`).
@@ -1418,12 +1456,15 @@ pub(crate) fn client_drive_time_sync(
     }
     let recv_us = time_sync.clock.now_micros();
     for bytes in echoes {
-        match wire::decode::<postretro_net::timesync::TimeSyncEcho>(&bytes) {
-            Ok(echo) => {
+        match wire::decode::<wire::ServerMessage>(&bytes) {
+            Ok(wire::ServerMessage::TimeSync(echo)) => {
                 time_sync.estimator.ingest_echo(&echo, recv_us);
             }
+            Ok(wire::ServerMessage::ShotVerdicts(_)) => {
+                // E16 Task 3 adds the owner-private carrier; Task 7 consumes it.
+            }
             Err(err) => {
-                log::warn!("[Net] dropping undecodable time-sync echo: {err}");
+                log::warn!("[Net] dropping undecodable server input message: {err}");
             }
         }
     }
@@ -1719,6 +1760,16 @@ mod tests {
         // It has an allocated NetworkId and replicates: produce_owned_snapshots emits
         // exactly the one pawn, keyed by its allocated NetworkId.
         let expected_net_id = allocator.stamp(pawn);
+        assert_eq!(
+            allocator.network_id_for_entity(pawn),
+            Some(expected_net_id),
+            "host can name the pawn on the wire"
+        );
+        assert_eq!(
+            allocator.entity_for_network_id(expected_net_id),
+            Some(pawn),
+            "host can resolve a declared target NetworkId"
+        );
         let owned = produce_owned_snapshots(
             &registry,
             &replicable,
@@ -1731,6 +1782,10 @@ mod tests {
             owned[0].network_id, expected_net_id.0,
             "the replicated pawn carries its allocated NetworkId"
         );
+
+        allocator.forget(pawn);
+        assert_eq!(allocator.network_id_for_entity(pawn), None);
+        assert_eq!(allocator.entity_for_network_id(expected_net_id), None);
     }
 
     // Regression: `client_drive_time_sync` once emitted a probe without recording

@@ -376,6 +376,7 @@ mod tests {
                 pressed: false,
                 active: false,
             },
+            reload: false,
         }
     }
 
@@ -394,6 +395,7 @@ mod tests {
                 pressed: false,
                 active: false,
             },
+            reload: false,
         }
     }
 

@@ -31,6 +31,7 @@ pub(crate) fn sim_command_to_input(cmd: &SimCommand, client_tick: u32) -> InputC
             pressed: cmd.fire_button.pressed,
             active: cmd.fire_button.active,
         },
+        reload: cmd.reload,
     }
 }
 
@@ -57,6 +58,7 @@ pub(crate) fn input_command_to_sim(input: &InputCommand) -> SimCommand {
             pressed: input.fire_button.pressed,
             active: input.fire_button.active,
         },
+        reload: input.reload,
     }
 }
 
@@ -112,6 +114,7 @@ mod tests {
                 pressed: true,
                 active: false,
             },
+            reload: true,
         }
     }
 
@@ -125,6 +128,7 @@ mod tests {
         assert!((a.movement.facing_yaw - b.movement.facing_yaw).abs() < EPSILON);
         assert_eq!(a.fire_button.pressed, b.fire_button.pressed);
         assert_eq!(a.fire_button.active, b.fire_button.active);
+        assert_eq!(a.reload, b.reload);
     }
 
     #[test]
@@ -184,5 +188,6 @@ mod tests {
         // facing_yaw is intentionally unconstrained: a finite value passes through
         // unchanged, with no wrapping.
         assert!((sanitized.movement.facing_yaw - cmd.movement.facing_yaw).abs() < EPSILON);
+        assert_eq!(sanitized.reload, cmd.reload);
     }
 }

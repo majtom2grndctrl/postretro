@@ -262,9 +262,10 @@ fn write_len_prefixed_str(hasher: &mut blake3::Hasher, value: &str) {
 use postretro_net::state_replication::ServerStateReplication;
 use postretro_net::state_slots::{RawStateSlotRecord, WireSlotValue};
 
-use crate::netcode::command_queue::MovementOwners;
+use crate::netcode::command_queue::{MovementOwners, WeaponOwners};
 use postretro_entities::EntityId;
 use postretro_entities::components::health::HealthComponent;
+use postretro_entities::components::weapon::WeaponComponent;
 
 /// Host-side replicated-state production: owns the deterministic replicated-slot
 /// schema (built once, lazily, from the live `SlotTable` after mod stores commit)
@@ -381,6 +382,7 @@ impl HostStateReplication {
         slot_table: &SlotTable,
         registry: &EntityRegistry,
         owners: &MovementOwners,
+        weapon_owners: &WeaponOwners,
     ) {
         // Snapshot the schema entries we need (id, name, scope) so the schema borrow is
         // released before the `&mut self.tracker` calls below.
@@ -407,7 +409,13 @@ impl HostStateReplication {
                 ReplicationScope::OwnerPrivatePlayer => {
                     for (pawn, client_id) in owners.iter() {
                         if let Some(value) =
-                            owner_private_source_value(slot_table, registry, &name, pawn)
+                            owner_private_source_value(
+                                slot_table,
+                                registry,
+                                &name,
+                                pawn,
+                                weapon_owners,
+                            )
                         {
                             self.tracker.ingest_owner_private(slot_id, client_id, value);
                         }
@@ -443,8 +451,12 @@ fn owner_private_source_value(
     registry: &EntityRegistry,
     name: &str,
     pawn: EntityId,
+    weapon_owners: &WeaponOwners,
 ) -> Option<WireSlotValue> {
     if let Some(value) = descriptor_health_for_pawn(registry, name, pawn) {
+        return slot_value_to_wire(&value);
+    }
+    if let Some(value) = descriptor_weapon_cooldown_for_pawn(registry, name, pawn, weapon_owners) {
         return slot_value_to_wire(&value);
     }
     let record = slot_table.get(name)?;
@@ -479,6 +491,23 @@ fn descriptor_health_for_pawn(
 enum HealthField {
     Current,
     Max,
+}
+
+/// Read the owner-private active weapon cooldown for `pawn`. The value is not on
+/// the pawn: net-slot pawn materialization creates a sibling weapon entity, and
+/// E16's host-only [`WeaponOwners`] map ties them together.
+fn descriptor_weapon_cooldown_for_pawn(
+    registry: &EntityRegistry,
+    name: &str,
+    pawn: EntityId,
+    weapon_owners: &WeaponOwners,
+) -> Option<SlotValue> {
+    if name != "player.weaponCooldownMs" {
+        return None;
+    }
+    let weapon = weapon_owners.weapon_of(pawn)?;
+    let component = registry.get_component::<WeaponComponent>(weapon).ok()?;
+    Some(SlotValue::Number(component.cooldown_remaining_ms))
 }
 
 // ---------------------------------------------------------------------------
@@ -754,9 +783,7 @@ mod tests {
     }
 
     /// A table with two replicated mod slots under one namespace plus the default
-    /// engine slots. After the Task 4 flip the engine `player.health` /
-    /// `player.maxHealth` slots are also replicated (owner-private), so the schema
-    /// carries those two engine slots alongside the two mod slots.
+    /// owner-private engine player slots.
     fn table_with_replicated() -> SlotTable {
         let mut table = SlotTable::new();
         table
@@ -785,7 +812,8 @@ mod tests {
                 "net.alpha",
                 "net.bravo",
                 "player.health",
-                "player.maxHealth"
+                "player.maxHealth",
+                "player.weaponCooldownMs",
             ]
         );
         assert_eq!(schema.entries()[0].slot_id, StateSlotId(0));
@@ -808,13 +836,19 @@ mod tests {
 
     #[test]
     fn default_table_has_only_player_health_slots() {
-        // The Task 4 catalog flip makes `player.health` / `player.maxHealth`
-        // owner-private; every other built-in slot stays `None`. So the default
-        // table's schema is exactly these two engine player slots.
+        // The default table's schema is exactly the owner-private engine player
+        // facts.
         let table = SlotTable::new();
         let schema = ReplicatedSlotSchema::build(&table);
         let names: Vec<&str> = schema.entries().iter().map(|e| e.name.as_str()).collect();
-        assert_eq!(names, vec!["player.health", "player.maxHealth"]);
+        assert_eq!(
+            names,
+            vec![
+                "player.health",
+                "player.maxHealth",
+                "player.weaponCooldownMs"
+            ]
+        );
         assert!(!schema.to_net_schema().is_empty());
     }
 
@@ -865,8 +899,8 @@ mod tests {
         let schema = ReplicatedSlotSchema::build(&table);
         let net = schema.to_net_schema();
         assert_eq!(net.fingerprint(), schema.fingerprint());
-        // Two mod slots plus the two owner-private engine player slots (Task 4 flip).
-        assert_eq!(net.len(), 4);
+        // Two mod slots plus the owner-private engine player slots.
+        assert_eq!(net.len(), 5);
         let alpha = net
             .descriptor(StateSlotId(0))
             .expect("alpha descriptor exists");
@@ -928,6 +962,11 @@ mod tests {
         table.get_mut("player.health").unwrap().schema.network = ReplicationScope::None;
         table.get_mut("player.maxHealth").unwrap().schema.network = ReplicationScope::None;
         table
+            .get_mut("player.weaponCooldownMs")
+            .unwrap()
+            .schema
+            .network = ReplicationScope::None;
+        table
             .insert_namespace(
                 "net",
                 vec![
@@ -939,9 +978,9 @@ mod tests {
         table
     }
 
-    /// A slot table whose `player.health` / `player.maxHealth` slots are owner-private
-    /// replicated. The Task 4 catalog flip already sets this scope, so a plain
-    /// `SlotTable::new()` carries it; both peers build this identically.
+    /// A slot table whose player owner-private slots are replicated. The catalog
+    /// sets this scope, so a plain `SlotTable::new()` carries it; both peers build
+    /// this identically.
     fn player_health_replicated_table() -> SlotTable {
         let table = SlotTable::new();
         debug_assert_eq!(
@@ -973,6 +1012,35 @@ mod tests {
         (registry, owners, pawn)
     }
 
+    fn registry_with_owned_weapon_cooldown(
+        client_id: u64,
+        cooldown_remaining_ms: f32,
+    ) -> (EntityRegistry, MovementOwners, WeaponOwners, EntityId, EntityId) {
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        let weapon = registry.spawn(Transform::default());
+        registry
+            .set_component(
+                weapon,
+                WeaponComponent {
+                    damage: 10.0,
+                    range: 100.0,
+                    cooldown_ms: 250.0,
+                    fire_mode: postretro_entities::data_descriptors::FireMode::Semi,
+                    resolution: postretro_entities::data_descriptors::ResolutionMode::Hitscan,
+                    cooldown_remaining_ms,
+                    shoot_press_consumed: false,
+                    credit_source: "weapon.test".to_string(),
+                },
+            )
+            .unwrap();
+        let mut owners = MovementOwners::new();
+        owners.set(pawn, client_id);
+        let mut weapon_owners = WeaponOwners::new();
+        weapon_owners.set(pawn, weapon);
+        (registry, owners, weapon_owners, pawn, weapon)
+    }
+
     // A shared slot and an owner-private slot round-trip from host production into the
     // client slot table through the real produce/apply glue, sharing one wire schema.
     #[test]
@@ -988,7 +1056,7 @@ mod tests {
         let mut host = HostStateReplication::new();
         host.register_client(CLIENT_A);
         let fingerprint = host.fingerprint(&host_table);
-        host.ingest_frame(&host_table, &registry, &owners);
+        host.ingest_frame(&host_table, &registry, &owners, &WeaponOwners::new());
         let records = host
             .produce_for_client(CLIENT_A, 0)
             .expect("registered client produces records");
@@ -1032,7 +1100,7 @@ mod tests {
         let mut host = HostStateReplication::new();
         host.register_client(CLIENT_A);
         let fingerprint = host.fingerprint(&host_table);
-        host.ingest_frame(&host_table, &registry, &owners);
+        host.ingest_frame(&host_table, &registry, &owners, &WeaponOwners::new());
         let records = host
             .produce_for_client(CLIENT_A, 0)
             .expect("registered client produces records");
@@ -1056,6 +1124,46 @@ mod tests {
         );
     }
 
+    #[test]
+    fn weapon_cooldown_projects_through_owned_weapon_map() {
+        let host_table = player_health_replicated_table();
+        let (registry, owners, weapon_owners, _pawn, _weapon) =
+            registry_with_owned_weapon_cooldown(CLIENT_A, 123.0);
+
+        let mut host = HostStateReplication::new();
+        host.register_client(CLIENT_A);
+        let fingerprint = host.fingerprint(&host_table);
+        host.ingest_frame(&host_table, &registry, &owners, &weapon_owners);
+        let records = host
+            .produce_for_client(CLIENT_A, 0)
+            .expect("registered client produces records");
+
+        let schema = ReplicatedSlotSchema::build(&host_table);
+        let cooldown_id = schema
+            .id_for("player.weaponCooldownMs")
+            .expect("cooldown id");
+        assert!(
+            records.iter().any(|record| record.slot_id == cooldown_id.0),
+            "cooldown record is produced from pawn -> weapon projection"
+        );
+
+        let mut client_table = player_health_replicated_table();
+        let mut client = ClientStateApply::new();
+        let outcome = client.apply_snapshot_state(&mut client_table, 0, &fingerprint, &records);
+        assert!(
+            outcome
+                .slot_baselines
+                .iter()
+                .any(|(slot_id, _)| *slot_id == cooldown_id.0),
+            "cooldown record is acked"
+        );
+        assert_eq!(
+            client_table.get("player.weaponCooldownMs").unwrap().value,
+            Some(SlotValue::Number(123.0)),
+            "mapped sibling weapon cooldown reached the owner-private slot"
+        );
+    }
+
     // Client apply validates ALL records before mutating any slot: a fingerprint
     // mismatch rejects the whole batch and leaves every slot unchanged.
     #[test]
@@ -1067,7 +1175,7 @@ mod tests {
         let mut host = HostStateReplication::new();
         host.register_client(CLIENT_A);
         let _real_fingerprint = host.fingerprint(&host_table);
-        host.ingest_frame(&host_table, &registry, &owners);
+        host.ingest_frame(&host_table, &registry, &owners, &WeaponOwners::new());
         let records = host.produce_for_client(CLIENT_A, 0).expect("records");
 
         // The client holds a prior value the apply must NOT overwrite.
@@ -1169,7 +1277,7 @@ mod tests {
         host.register_client(CLIENT_B);
         let fingerprint = host.fingerprint(&host_table);
 
-        host.ingest_frame(&host_table, &registry, &owners);
+        host.ingest_frame(&host_table, &registry, &owners, &WeaponOwners::new());
         let records_a = host.produce_for_client(CLIENT_A, 0).unwrap();
         let records_b = host.produce_for_client(CLIENT_B, 0).unwrap();
 
@@ -1256,7 +1364,7 @@ mod tests {
 
         // Ingest the frame's shared value once; both clients (and the late joiner) read
         // the same ingested view.
-        host.ingest_frame(&host_table, &registry, &owners);
+        host.ingest_frame(&host_table, &registry, &owners, &WeaponOwners::new());
 
         // Both originally-accepted clients receive the shared value on the first frame.
         for client in [CLIENT_A, CLIENT_B] {
@@ -1353,7 +1461,7 @@ mod tests {
         let mut host = HostStateReplication::new();
         host.register_client(CLIENT_A);
         let fingerprint = host.fingerprint(&host_table);
-        host.ingest_frame(&host_table, &registry, &owners);
+        host.ingest_frame(&host_table, &registry, &owners, &WeaponOwners::new());
         let records = host
             .produce_for_client(CLIENT_A, 0)
             .expect("registered client produces records");
@@ -1404,7 +1512,7 @@ mod tests {
         let mut host = HostStateReplication::new();
         host.register_client(CLIENT_A);
         let _real_fingerprint = host.fingerprint(&host_table);
-        host.ingest_frame(&host_table, &registry, &owners);
+        host.ingest_frame(&host_table, &registry, &owners, &WeaponOwners::new());
         let records = host.produce_for_client(CLIENT_A, 0).expect("records");
 
         let mut client_table = shared_and_private_table();
@@ -1459,7 +1567,7 @@ mod tests {
         let mut host = HostStateReplication::new();
         host.register_client(CLIENT_A);
         let fingerprint = host.fingerprint(&host_table);
-        host.ingest_frame(&host_table, &registry, &owners);
+        host.ingest_frame(&host_table, &registry, &owners, &WeaponOwners::new());
         let records = host
             .produce_for_client(CLIENT_A, 0)
             .expect("registered client produces records");
@@ -1511,7 +1619,7 @@ mod tests {
 
         // Frame 1: the host produces the first FullBaseline — but it is LOST (the
         // client never applies it, so it holds no baseline for net.objective).
-        host.ingest_frame(&host_table, &registry, &owners);
+        host.ingest_frame(&host_table, &registry, &owners, &WeaponOwners::new());
         let _lost = host
             .produce_for_client(CLIENT_A, 0)
             .expect("first frame records");
@@ -1523,7 +1631,7 @@ mod tests {
         let baseline_one = {
             // Re-produce frame 1 to learn its baseline id, ack it on the server so the
             // server will send a delta next, but the CLIENT never saw it.
-            host.ingest_frame(&host_table, &registry, &owners);
+            host.ingest_frame(&host_table, &registry, &owners, &WeaponOwners::new());
             let records = host
                 .produce_for_client(CLIENT_A, 1)
                 .expect("frame 1 reproduced");
@@ -1537,7 +1645,7 @@ mod tests {
 
         // Now the value changes: the server emits a DELTA referencing baseline_one.
         host_table.get_mut("net.objective").unwrap().value = Some(SlotValue::Number(4.0));
-        host.ingest_frame(&host_table, &registry, &owners);
+        host.ingest_frame(&host_table, &registry, &owners, &WeaponOwners::new());
         let delta_records = host.produce_for_client(CLIENT_A, 2).expect("delta frame");
         assert!(
             delta_records
@@ -1571,7 +1679,7 @@ mod tests {
         // Server handles the refresh and schedules a FullBaseline for that slot.
         let req = &outcome.refresh_requests[0];
         host.request_refresh(CLIENT_A, req.slot_id, req.missing_baseline_ref);
-        host.ingest_frame(&host_table, &registry, &owners);
+        host.ingest_frame(&host_table, &registry, &owners, &WeaponOwners::new());
         let repair_records = host.produce_for_client(CLIENT_A, 3).expect("repair frame");
         assert!(
             repair_records

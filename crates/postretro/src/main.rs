@@ -773,6 +773,7 @@ fn build_sim_command(
     let jump_pressed = snapshot.button(Action::Jump).is_active();
     let sprint = snapshot.button(Action::Sprint).is_active();
     let shoot = snapshot.button(Action::Shoot);
+    let reload = snapshot.button(Action::Reload);
 
     sim::SimCommand {
         movement: movement::MovementInput {
@@ -790,6 +791,7 @@ fn build_sim_command(
             pressed: shoot_pressed,
             active: shoot.is_active(),
         },
+        reload: reload.is_active(),
     }
 }
 
@@ -4075,6 +4077,7 @@ impl App {
                             // above is the sole accept seam.
                             netcode::host_handle_lifecycle(
                                 &mut registry,
+                                allocator,
                                 replicable,
                                 replication,
                                 state_slots,
@@ -4270,7 +4273,7 @@ impl App {
             slot_pawns: _,
             command_queues,
             owners,
-            weapon_owners: _,
+            weapon_owners,
             host_pawn: _,
             map_enemies: _,
             loaded_movers: _,
@@ -4312,6 +4315,7 @@ impl App {
                 state_slots,
                 replicable,
                 owners,
+                weapon_owners,
                 command_queues,
                 *tick,
             );
@@ -5275,6 +5279,7 @@ mod tests {
                 pressed: false,
                 active: false,
             },
+            reload: false,
         };
 
         let mut pushed_states = Vec::new();
@@ -5508,6 +5513,27 @@ mod tests {
     }
 
     #[test]
+    fn sim_command_samples_reload_as_held_level_bit() {
+        let mut input_system = InputSystem::new(default_bindings());
+        input_system.set_physical_input(
+            input::PhysicalInput::Key(winit::keyboard::KeyCode::KeyR),
+            true,
+        );
+        let snapshot = input_system.snapshot();
+        assert_eq!(snapshot.button(Action::Reload), ButtonState::Pressed);
+
+        let camera = Camera::new(Vec3::ZERO, 0.0, 0.0);
+        let commands: Vec<sim::SimCommand> = (0..2)
+            .map(|_| build_sim_command(&snapshot, &camera, false, false, false))
+            .collect();
+
+        assert!(
+            commands.iter().all(|command| command.reload),
+            "reload is a level signal and remains true across catch-up ticks while held"
+        );
+    }
+
+    #[test]
     fn simulate_tick_resolves_weapon_aim_after_movement_camera_follow() {
         use std::cell::RefCell;
         use std::collections::HashSet;
@@ -5559,6 +5585,7 @@ mod tests {
                 pressed: true,
                 active: true,
             },
+            reload: false,
         };
         let mut resolved_aim_origin = None;
 

@@ -214,6 +214,7 @@ pub(crate) fn on_slot_accepted(
 pub(crate) fn on_slot_closed(
     registry: &mut EntityRegistry,
     slot_pawns: &mut SlotPawns,
+    allocator: &mut NetworkIdAllocator,
     replicable: &mut ReplicableSet,
     replication: &mut ServerReplication,
     client_id: u64,
@@ -229,6 +230,7 @@ pub(crate) fn on_slot_closed(
     // unregistering first keeps the invariant "replicable set never names a
     // despawned id" true at every yield point.)
     replicable.unregister(pawn);
+    allocator.forget(pawn);
     // `despawn` errors only on a stale id; the pawn may already be gone if game logic
     // despawned it. Either way the post-state is "gone", so the error is swallowed.
     let _ = registry.despawn(pawn);
@@ -391,6 +393,7 @@ mod tests {
         let despawned = on_slot_closed(
             &mut registry,
             &mut slot_pawns,
+            &mut allocator,
             &mut replicable,
             &mut replication,
             CLIENT_A,
@@ -402,6 +405,10 @@ mod tests {
             "pawn A left the replicable set"
         );
         assert_eq!(slot_pawns.pawn_for(CLIENT_A), None, "slot A freed");
+        assert!(
+            !allocator.maps_entity(pawn_a) && !allocator.maps_network_id(net_a),
+            "allocator forward and reverse maps forget the despawned pawn"
+        );
         assert_eq!(slot_pawns.len(), 1, "only slot B remains");
 
         // Next tick: pawn A is absent from produce_owned_snapshots, so the tracker
@@ -447,6 +454,7 @@ mod tests {
         on_slot_closed(
             &mut registry,
             &mut slot_pawns,
+            &mut allocator,
             &mut replicable,
             &mut replication,
             CLIENT_A,
@@ -479,12 +487,14 @@ mod tests {
     fn close_without_pawn_is_noop() {
         let mut registry = EntityRegistry::new();
         let mut slot_pawns = SlotPawns::new();
+        let mut allocator = NetworkIdAllocator::new();
         let mut replicable = ReplicableSet::new();
         let mut replication = ServerReplication::new();
 
         let despawned = on_slot_closed(
             &mut registry,
             &mut slot_pawns,
+            &mut allocator,
             &mut replicable,
             &mut replication,
             CLIENT_A,
@@ -758,6 +768,7 @@ mod tests {
 
         crate::netcode::host_handle_lifecycle(
             &mut registry,
+            &mut allocator,
             &mut replicable,
             &mut replication,
             &mut state_slots,

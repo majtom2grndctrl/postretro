@@ -565,6 +565,7 @@ mod tests {
                 pressed: false,
                 active: false,
             },
+            reload: false,
         }
     }
 

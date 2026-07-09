@@ -837,6 +837,26 @@ pub struct InputCommand {
     pub client_tick: u32,
     pub movement: WireMovementInput,
     pub fire_button: WireFireButtonState,
+    pub reload: bool,
+}
+
+/// One client-declared hit record for a host-authorized shot. `target` is a
+/// `NetworkId` (`u32`) because the net crate is registry-blind; the engine maps it
+/// to an `EntityId` on ingest.
+#[derive(Debug, Clone, PartialEq, Encode, Decode)]
+pub struct HitRecord {
+    pub target: u32,
+    pub point: [f32; 3],
+    pub zone: Option<String>,
+}
+
+/// Standalone client -> server hit declaration. It intentionally does not ride
+/// [`InputCommand`]: a resolved hit may arrive later than the FIRE command that
+/// authorized `shot_id` (projectile-ready shape).
+#[derive(Debug, Clone, PartialEq, Encode, Decode)]
+pub struct HitDeclaration {
+    pub shot_id: u64,
+    pub records: Vec<HitRecord>,
 }
 
 /// Client -> server acknowledgement of replication progress, carried on the
@@ -943,6 +963,32 @@ pub enum ClientMessage {
     /// 3.5). Appended last to preserve the discriminant order of the variants
     /// above. Keyed by `StateSlotId`, distinct from `BaselineRefresh`'s `NetworkId`.
     StateBaselineRefresh(StateBaselineRefreshRequest),
+    /// Client-authoritative hit results for a host-authorized shot. Appended last
+    /// to preserve all existing discriminants.
+    HitDeclaration(HitDeclaration),
+}
+
+/// One owner-private server verdict for a client-predicted shot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+pub struct ShotVerdict {
+    pub shot_id: u64,
+    pub accept: bool,
+}
+
+/// Owner-scoped per-shot accept/reject verdicts. Empty lists are valid: they let
+/// the server send a tick carrier even when no shot settled.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct ShotVerdictsMessage {
+    pub verdicts: Vec<ShotVerdict>,
+}
+
+/// Server -> client reliable input-channel envelope. This wraps time-sync echoes
+/// and future owner-private facts so clients can decode one tagged message family
+/// from `Channel::Input`.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub enum ServerMessage {
+    TimeSync(crate::timesync::TimeSyncEcho),
+    ShotVerdicts(ShotVerdictsMessage),
 }
 
 /// Handshake message. Every connection is gated on a matching `ProtocolVersion`
@@ -1142,6 +1188,7 @@ mod tests {
                 pressed: true,
                 active: false,
             },
+            reload: true,
         }
     }
 
@@ -1253,6 +1300,65 @@ mod tests {
     }
 
     #[test]
+    fn hit_declaration_round_trips_empty_and_multiple_records() {
+        let empty = HitDeclaration {
+            shot_id: 9,
+            records: Vec::new(),
+        };
+        assert!(round_trips(&empty));
+
+        let declaration = HitDeclaration {
+            shot_id: 0xABCD_EF01_2345_6789,
+            records: vec![
+                HitRecord {
+                    target: 17,
+                    point: [1.0, 2.5, -3.0],
+                    zone: Some("head".to_string()),
+                },
+                HitRecord {
+                    target: 22,
+                    point: [0.0, 0.0, 0.0],
+                    zone: None,
+                },
+            ],
+        };
+        assert!(round_trips(&declaration));
+        let msg = ClientMessage::HitDeclaration(declaration.clone());
+        assert!(round_trips(&msg));
+        let bytes = encode(&msg);
+        let decoded: ClientMessage = decode(&bytes).expect("client message decodes");
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn hit_declaration_decode_failure_is_typed_error() {
+        let err = decode::<ClientMessage>(&[0xFF, 0x00]).expect_err("garbage rejects");
+        assert!(matches!(err, WireError::Decode(_)));
+    }
+
+    #[test]
+    fn shot_verdicts_server_message_round_trips_empty_and_multiple() {
+        let empty = ServerMessage::ShotVerdicts(ShotVerdictsMessage {
+            verdicts: Vec::new(),
+        });
+        assert!(round_trips(&empty));
+
+        let verdicts = ServerMessage::ShotVerdicts(ShotVerdictsMessage {
+            verdicts: vec![
+                ShotVerdict {
+                    shot_id: 10,
+                    accept: true,
+                },
+                ShotVerdict {
+                    shot_id: 11,
+                    accept: false,
+                },
+            ],
+        });
+        assert!(round_trips(&verdicts));
+    }
+
+    #[test]
     fn handshake_round_trips() {
         let handshake = ProtocolVersion {
             app_protocol_id: 0xCAFE_BABE,
@@ -1331,6 +1437,36 @@ mod tests {
                 slot_id: 1,
                 missing_baseline_ref: 2,
                 reason: 0,
+            }),
+            ClientMessage::HitDeclaration(HitDeclaration {
+                shot_id: 99,
+                records: vec![HitRecord {
+                    target: 4,
+                    point: [1.0, 2.0, 3.0],
+                    zone: Some("torso".to_string()),
+                }],
+            }),
+        ];
+        for msg in variants {
+            assert!(round_trips(&msg));
+        }
+    }
+
+    #[test]
+    fn server_message_variants_round_trip() {
+        let variants = [
+            ServerMessage::TimeSync(crate::timesync::TimeSyncEcho {
+                sample_id: 1,
+                client_send_tick: 2,
+                client_send_time_us: 3,
+                server_tick: 4,
+                server_echo_time_us: 5,
+            }),
+            ServerMessage::ShotVerdicts(ShotVerdictsMessage {
+                verdicts: vec![ShotVerdict {
+                    shot_id: 8,
+                    accept: true,
+                }],
             }),
         ];
         for msg in variants {
@@ -1778,6 +1914,7 @@ mod tests {
         let bytes = encode(&cmd);
         let decoded: InputCommand = decode(&bytes).expect("input command decodes");
         assert_eq!(decoded.client_tick, 9_001);
+        assert!(decoded.reload);
         assert_eq!(decoded, cmd);
     }
 

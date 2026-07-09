@@ -28,6 +28,7 @@ use postretro_scripting_core::reaction_dispatch::ProgressTracker;
 pub(crate) struct SimCommand {
     pub(crate) movement: MovementInput,
     pub(crate) fire_button: FireButtonState,
+    pub(crate) reload: bool,
 }
 
 pub(crate) struct PostMovementCommand {

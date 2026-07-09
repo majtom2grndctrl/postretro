@@ -991,6 +991,7 @@ fn scripted_command(tick: u32) -> SimCommand {
             pressed: false,
             active: false,
         },
+        reload: false,
     }
 }
 

@@ -420,6 +420,7 @@ fn neutral_sim_command() -> SimCommand {
             pressed: false,
             active: false,
         },
+        reload: false,
     }
 }
 
@@ -448,6 +449,7 @@ mod tests {
                 pressed: false,
                 active: false,
             },
+            reload: false,
         }
     }
 
@@ -484,6 +486,31 @@ mod tests {
         let resolved = queues.resolve_tick(CLIENT).expect("a command resolves");
         assert!((resolved.command.movement.wish_dir.x - (-1.0)).abs() < EPSILON);
         assert!((resolved.command.movement.wish_dir.y - 1.0).abs() < EPSILON);
+    }
+
+    #[test]
+    fn reload_survives_sanitize_hold_and_neutral_fallback() {
+        let mut queues = HostCommandQueues::new();
+        let mut cmd = command(0, 1.0);
+        cmd.reload = true;
+        assert!(queues.ingest(CLIENT, &cmd));
+
+        let real = queues.resolve_tick(CLIENT).expect("real command resolves");
+        assert_eq!(real.source, ResolutionSource::Real);
+        assert!(real.command.reload, "real command preserves reload");
+
+        for _ in 0..INPUT_HOLD_TICKS {
+            let held = queues.resolve_tick(CLIENT).expect("held command resolves");
+            assert_eq!(held.source, ResolutionSource::Held);
+            assert!(held.command.reload, "held command preserves reload");
+        }
+
+        let neutral = queues.resolve_tick(CLIENT).expect("neutral command resolves");
+        assert_eq!(neutral.source, ResolutionSource::Neutral);
+        assert!(
+            !neutral.command.reload,
+            "neutral fallback clears reload intent"
+        );
     }
 
     // An exact duplicate tick collapses to one queued command; a stale command at or

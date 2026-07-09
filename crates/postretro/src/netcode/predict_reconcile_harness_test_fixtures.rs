@@ -207,6 +207,7 @@ pub(crate) fn forward_command(dash_pressed: bool) -> SimCommand {
             pressed: false,
             active: false,
         },
+        reload: false,
     }
 }
 
@@ -224,6 +225,7 @@ pub(crate) fn idle_command() -> SimCommand {
             pressed: false,
             active: false,
         },
+        reload: false,
     }
 }
 
@@ -245,6 +247,7 @@ pub(crate) fn input_at(client_tick: u32, wish_forward: f32) -> InputCommand {
             pressed: false,
             active: false,
         },
+        reload: false,
     }
 }
 

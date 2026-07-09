@@ -445,7 +445,11 @@ mod tests {
     #[test]
     fn new_registers_engine_player_namespace() {
         let table = SlotTable::new();
-        for name in ["player.health", "player.maxHealth"] {
+        for name in [
+            "player.health",
+            "player.maxHealth",
+            "player.weaponCooldownMs",
+        ] {
             let slot = table.get(name).expect("engine slot should exist");
             assert_eq!(slot.schema.slot_type, SlotType::Number);
             assert_eq!(slot.schema.ownership, SlotOwnership::Engine);
@@ -465,6 +469,14 @@ mod tests {
                 max: f32::INFINITY,
             }),
             "max health carries static finite-number validation",
+        );
+        assert_eq!(
+            table.get("player.weaponCooldownMs").unwrap().schema.range,
+            Some(NumericRange {
+                min: 0.0,
+                max: f32::INFINITY,
+            }),
+            "weapon cooldown carries a non-negative millisecond range",
         );
         assert!(
             table.get("player.ammo").is_none(),

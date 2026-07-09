@@ -61,6 +61,7 @@ impl PrototypeCommand {
                 pressed: false,
                 active: false,
             },
+            reload: false,
         }
     }
 

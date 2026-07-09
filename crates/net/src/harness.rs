@@ -627,8 +627,8 @@ mod tests {
 
         // In-flight echoes carry their scheduled client-arrival microsecond so the
         // estimator records the receive time on the client's own clock. The relay
-        // delivers raw `TimeSyncEcho` bytes; we tag each with the master-ms arrival
-        // so we can compute the client receive microsecond at ingest.
+        // delivers `ServerMessage::TimeSync` bytes; we tag each with the master-ms
+        // arrival so we can compute the client receive microsecond at ingest.
         // (The conditioner works in ms; we translate to client microseconds.)
 
         let mut successful_samples: u32 = 0;
@@ -669,14 +669,16 @@ mod tests {
                 {
                     let server_tick = true_server_tick(virtual_ms) as u32;
                     let echo = req.echo(server_tick, virtual_ms * 1000);
-                    to_client.enqueue(wire::encode(&echo));
+                    to_client.enqueue(wire::encode(&wire::ServerMessage::TimeSync(echo)));
                 }
             }
 
             // 4. Client: deliver any due echoes, record the receive time on the
             //    client's own clock, fold into the estimator.
             for packet in to_client.take_ready() {
-                if let Ok(echo) = wire::decode::<crate::timesync::TimeSyncEcho>(&packet) {
+                if let Ok(wire::ServerMessage::TimeSync(echo)) =
+                    wire::decode::<wire::ServerMessage>(&packet)
+                {
                     let recv_us = client_now_us(virtual_ms);
                     if estimator.ingest_echo(&echo, recv_us) {
                         successful_samples += 1;

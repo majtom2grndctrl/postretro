@@ -91,6 +91,7 @@ impl RecordedCommand {
                 pressed: self.fire_pressed,
                 active: self.fire_active,
             },
+            reload: false,
         }
     }
 
@@ -788,6 +789,7 @@ fn simulate_tick_uses_sim_command_fire_button_with_callback_aim() {
             pressed: false,
             active: false,
         },
+        reload: false,
     };
 
     let events = simulate_tick(
@@ -855,6 +857,7 @@ fn simulate_tick_normalizes_callback_aim_direction_before_weapon_fire() {
             pressed: true,
             active: true,
         },
+        reload: false,
     };
 
     let events = simulate_tick(
@@ -928,6 +931,7 @@ fn simulate_tick_noops_weapon_fire_for_invalid_callback_aim_direction() {
             pressed: true,
             active: true,
         },
+        reload: false,
     };
 
     let events = simulate_tick(
@@ -1006,6 +1010,7 @@ fn simulate_tick_noops_weapon_fire_for_non_finite_callback_aim_origin() {
             pressed: true,
             active: true,
         },
+        reload: false,
     };
 
     let events = simulate_tick(

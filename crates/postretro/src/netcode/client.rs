@@ -117,6 +117,9 @@ pub(crate) struct ClientReplication {
     /// `NetworkId -> EntityId` for every entity this client has spawned from a full
     /// baseline and not yet despawned.
     map: HashMap<NetworkId, EntityId>,
+    /// Reverse of `map`, maintained in lockstep so client-local hit records can name
+    /// their target on the wire.
+    reverse_map: HashMap<EntityId, NetworkId>,
     /// `NetworkId -> stored baseline_id`. The baseline the client currently holds for
     /// each mapped entity; a `Delta`'s `baseline_ref` must match this to apply, and a
     /// successful apply advances it. Kept in lockstep with `map`.
@@ -381,6 +384,7 @@ impl ClientReplication {
             .collect();
 
         self.map.clear();
+        self.reverse_map.clear();
         self.baselines.clear();
         self.pending_repairs.clear();
         self.interp = RemoteInterpolationBuffer::default();
@@ -407,6 +411,19 @@ impl ClientReplication {
     #[cfg(test)]
     pub(crate) fn map(&self) -> &HashMap<NetworkId, EntityId> {
         &self.map
+    }
+
+    /// Resolve a client-local entity to the host-assigned `NetworkId`, if this
+    /// entity is currently mapped by replication.
+    #[allow(dead_code)]
+    pub(crate) fn network_id_for_entity(&self, entity_id: EntityId) -> Option<NetworkId> {
+        self.reverse_map.get(&entity_id).copied()
+    }
+
+    /// Resolve a replicated `NetworkId` to the current client-local entity.
+    #[allow(dead_code)]
+    pub(crate) fn entity_for_network_id(&self, network_id: NetworkId) -> Option<EntityId> {
+        self.map.get(&network_id).copied()
     }
 
     /// Entity ids that should be drawn as remote debug markers. The local predicted
@@ -626,7 +643,7 @@ impl ClientReplication {
             // Drop the stale mapping, mark pending, and request a refresh. Leave all
             // other registry state untouched. Not acked.
             Some(_) => {
-                self.map.remove(&network_id);
+                self.remove_mapping(network_id);
                 self.baselines.remove(&network_id);
                 self.queue_repair(
                     &mut outcome.refresh_requests,
@@ -652,7 +669,7 @@ impl ClientReplication {
                         });
                         return false;
                     };
-                    self.map.insert(network_id, id);
+                    self.insert_mapping(network_id, id);
                     self.baselines.insert(network_id, baseline_id);
                     self.pending_repairs.remove(&network_id);
                     self.mover_network_ids
@@ -668,7 +685,7 @@ impl ClientReplication {
                         components,
                         outcome,
                     ) {
-                        self.map.remove(&network_id);
+                        self.remove_mapping(network_id);
                         self.baselines.remove(&network_id);
                         self.mover_network_ids.remove(&network_id);
                         return false;
@@ -682,7 +699,7 @@ impl ClientReplication {
                     return false;
                 };
                 let id = registry.spawn(spawn_transform);
-                self.map.insert(network_id, id);
+                self.insert_mapping(network_id, id);
                 self.baselines.insert(network_id, baseline_id);
                 self.pending_repairs.remove(&network_id);
                 // Apply the remaining (non-Transform) payloads onto the fresh entity.
@@ -697,7 +714,7 @@ impl ClientReplication {
                     outcome,
                 ) {
                     let _ = registry.despawn(id);
-                    self.map.remove(&network_id);
+                    self.remove_mapping(network_id);
                     self.baselines.remove(&network_id);
                     return false;
                 }
@@ -917,6 +934,7 @@ impl ClientReplication {
     /// id errors, which we swallow).
     fn apply_despawn(&mut self, registry: &mut EntityRegistry, network_id: NetworkId) {
         if let Some(id) = self.map.remove(&network_id) {
+            self.reverse_map.remove(&id);
             // `despawn` errors on a stale id; the entity may already be gone. Either
             // way the post-state is "despawned", so the error is ignored.
             let _ = registry.despawn(id);
@@ -934,6 +952,21 @@ impl ClientReplication {
         if self.local_pawn == Some(network_id) {
             self.local_pawn = None;
         }
+    }
+
+    fn insert_mapping(&mut self, network_id: NetworkId, entity_id: EntityId) {
+        if let Some(previous_entity) = self.map.insert(network_id, entity_id) {
+            self.reverse_map.remove(&previous_entity);
+        }
+        if let Some(previous_network) = self.reverse_map.insert(entity_id, network_id) {
+            self.map.remove(&previous_network);
+        }
+    }
+
+    fn remove_mapping(&mut self, network_id: NetworkId) -> Option<EntityId> {
+        let entity_id = self.map.remove(&network_id)?;
+        self.reverse_map.remove(&entity_id);
+        Some(entity_id)
     }
 
     /// Apply each component payload onto `id`. A `Transform` is written through
@@ -2237,6 +2270,46 @@ mod tests {
             ),
         );
         assert_eq!(out2.ack.unwrap().despawn_tombstones, vec![(7, 4)]);
+    }
+
+    #[test]
+    fn reverse_entity_network_map_tracks_spawn_and_despawn() {
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                0,
+                1,
+                vec![full_baseline(7, 1, vec![transform_payload(0.0)])],
+            ),
+        );
+        let id = *client.map().get(&NetworkId(7)).unwrap();
+        assert_eq!(
+            client.network_id_for_entity(id),
+            Some(NetworkId(7)),
+            "client can name a mapped target on the wire"
+        );
+        assert_eq!(
+            client.entity_for_network_id(NetworkId(7)),
+            Some(id),
+            "forward accessor resolves the mapped entity"
+        );
+
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                1,
+                2,
+                vec![EntityRecord::Despawn {
+                    network_id: 7,
+                    tombstone_id: 4,
+                    reason: 0,
+                }],
+            ),
+        );
+        assert_eq!(client.network_id_for_entity(id), None);
+        assert_eq!(client.entity_for_network_id(NetworkId(7)), None);
     }
 
     // --- Unmapped full baseline WITHOUT a Transform does not spawn. ---

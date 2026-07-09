@@ -6,6 +6,12 @@
 >
 > **Milestone:** Weapon Systems.
 >
+> **Depends on:** **E16 — Host Combat Command Application** — this spec's
+> co-op-correct behavior needs that seam, the one that lets the host apply a
+> remote client's per-pawn combat inputs (fire and reload) beyond today's
+> movement-only `host_resolve_movement_inputs`
+> (`crates/postretro/src/netcode/command_queue.rs:365`).
+>
 > **Fits first:** front-loads the hard-to-reverse resource tagged-union
 > discriminant and the magazine/reserve/reload contract. Later `heat` / `cell`
 > land as sibling variants and the discriminant is expensive to change
@@ -53,10 +59,13 @@ resource-grant chokepoint (inverse of `applyDamage`) as a clean seam a later
 - Live `player.ammo` (magazine) and `player.ammoReserve` (active weapon's pool)
   engine-owned HUD slots, a publisher mirroring `PlayerHudStatePublisher`, and a
   restored ammo readout in the dev HUD.
+- A per-owner ammo projection (`player.ammo` / `player.ammoReserve`) for co-op
+  remote-client pawns, mirroring the health projection. Single-player and the
+  host's own pawn already get correct values from the publisher alone.
 - Tests: descriptor parse/validate both runtimes, SDK type generation, magazine
   seed + hot-reload preservation, reserve seed, fire consumption, empty-magazine
   block, atomic reload, unlimited-fire back-compat, HUD publish, net-slot pawn
-  arming + host-side reload.
+  arming + host-side reserve seeding, per-owner ammo projection.
 
 ### Out of scope
 
@@ -78,6 +87,10 @@ Each is its own later roadmap bullet; the shape only accommodates them.
   by any event here.
 - A generated `AmmoType` union backed by a declared-ammo-type registry — the
   type validates as a free-form ASCII identifier now (see open questions).
+- Host-side application of a remote client's fire/reload commands to their own
+  pawn — that command-application seam belongs to the prerequisite spec **E16
+  — Host Combat Command Application**. This spec seeds the reserve (Task 3)
+  and projects it per-owner (Task 7); it does not apply the remote command.
 
 ## Acceptance criteria
 
@@ -115,8 +128,11 @@ Each is its own later roadmap bullet; the shape only accommodates them.
 - [ ] `player.ammo` reflects the active wieldable's live magazine and
   `player.ammoReserve` reflects its ammo type's reserve pool, republished each
   frame; both are readonly engine-owned slots the dev HUD reads through
-  `getGameState().player`. Owner-private replication is schema-driven (no netcode
-  change per Epic 15 Phase 3). With the active weapon's `resource: None`
+  `getGameState().player`. This is correct for single-player and for the
+  host's own pawn via the publisher. Correct per-owner values for a co-op
+  remote client's pawn need the separate per-pawn projection (Task 7) — an
+  `OwnerPrivatePlayer` slot declaration alone does not make per-owner values
+  correct (see Task 7's own AC). With the active weapon's `resource: None`
   (effective ammo `None`) or no active wieldable (no pawn / fly-camera), the
   publisher skips the write, matching how the health publisher handles the
   no-pawn case — the slots keep their last value rather than publishing a
@@ -126,8 +142,14 @@ Each is its own later roadmap bullet; the shape only accommodates them.
 - [ ] No heat/cell variant, per-shell reload, pickup, or inventory is built
   (review/grep gate). No new `unsafe` (review/grep gate).
 - [ ] A net-slot pawn materializes host-side with its descriptor-seeded reserve
-  and a full magazine (Task 3 seeding), and a reload command routed to that
-  pawn transfers rounds against its host-side reserve, same as a local pawn's.
+  and a full magazine (Task 3 seeding). Ammo's deliverable for that pawn is the
+  seeded reserve plus the per-owner projection (Task 7) that surfaces it to
+  its owner; once **E16 — Host Combat Command Application** applies a remote
+  client's reload to their pawn, that transfer draws against this same
+  host-side reserve. Applying the remote reload command itself is the
+  prerequisite spec's job, not built here.
+- [ ] A co-op remote client observes their own pawn's `player.ammo` /
+  `player.ammoReserve`, not the host's, via the per-pawn projection (Task 7).
 
 ## Tasks
 
@@ -149,10 +171,12 @@ descriptor partition rule (`scripting.md`).
 
 Parsing is free once the field is serde — `entity_descriptor_from_js` /
 `entity_descriptor_from_lua` deserialize `WeaponDescriptor` via `serde_json`.
-Register SDK types in `scripting/primitives/mod.rs`: a `register_tagged_union("WeaponResource")`
-with the `ammo` variant → `AmmoResource` type (mirroring the `ComponentValue`
-tagged-union registration), and a `resource?` field on the `WeaponDescriptor`
-registration. Regenerate committed SDK fixtures.
+Register SDK types in `scripting/primitives/mod.rs`, in order: first
+`register_type("AmmoResource")` with its `type`/`magazine`/`costPerShot`/
+`reserve` fields, then `register_tagged_union("WeaponResource")` with the
+`ammo` variant pointing at that now-registered `AmmoResource` type (mirroring
+the `ComponentValue` tagged-union registration), and a `resource?` field on the
+`WeaponDescriptor` registration. Regenerate committed SDK fixtures.
 
 `WeaponDescriptor` is not `Default`, so adding `resource` requires updating every
 `WeaponDescriptor` struct literal (production + tests); `Option` keeps existing
@@ -184,22 +208,24 @@ across the crate.
 ### Task 3: Pawn reserve pool + spawn seeding
 
 Add an engine-owned reserve component (`AmmoReserve`, entities crate) pooling
-rounds by ammo type (`type → u32`). It references no `EntityId`. Seed at
-equip-at-spawn, in `attach_descriptor_components`
-(`crates/postretro/src/scripting/builtins/data_archetype.rs:480-488`) — the
-weapon-attach block, reached via `spawn_descriptor_instance` — where the pawn
-`id` and `weapon_desc` are both already in scope: attach/credit the pawn's
-`AmmoReserve` for the weapon's ammo type by the descriptor's starting
-`reserve`, and let the weapon materialize a full magazine (Task 2). That one
-site serves both spawn paths — the local `spawn_from_player_starts` path and
-the net-slot path (`net_descriptor.rs`'s `spawn_net_slot_pawn` funnels through
-the same `spawn_descriptor_instance`) — so there is nothing to seed
-separately for net-slot pawns; seeding here covers both. Net-slot seeding
-still matters under Option A: the host authoritatively simulates every pawn's
-fire/reload, so a net-slot (remote-player) pawn needs its reserve seeded
-host-side for its owner's authoritative reload to have a pool to draw from.
-The net path's only distinct concern remains spawning but never promoting the
-weapon to the host's active wieldable.
+rounds by ammo type (`type → u32`). It references no `EntityId`. The pawn and
+its active wieldable are separate entities: inside `attach_descriptor_components`
+only the single spawned entity's `id` is in scope, and for the weapon spawn
+that `id` is the weapon entity, not the pawn — a pawn-owned `AmmoReserve`
+cannot be seeded there. Seed where pawn `id`, weapon `id`, and the weapon
+descriptor all coexist: in `spawn_from_player_starts`
+(`crates/postretro/src/scripting/builtins/data_archetype.rs:654`), at the
+default-weapon spawn that resolves `weapon_id` (~:744) — attach/credit the
+pawn's `AmmoReserve` for the weapon's ammo type by the descriptor's starting
+`reserve`, and let the weapon materialize a full magazine (Task 2). The
+net-slot path seeds at the analogous site in `net_descriptor.rs`'s
+`spawn_net_slot_pawn` (~:104), where the same three values coexist for the
+host-authoritative remote pawn. A net-slot pawn needs its reserve seeded
+host-side so its owner has a pool to draw from once reload reaches it —
+applying that owner's reload command host-side is not built here; see Task 7
+and **E16 — Host Combat Command Application**. The net path's only distinct
+concern remains spawning the sibling weapon instance but never promoting it
+to the host's active wieldable.
 
 `AmmoReserve` exposes a small interface with its backing map private: a query
 `available(type) -> u32` (rounds on hand for a type) and an atomic consume
@@ -220,21 +246,27 @@ of scope.
 
 In `weapon::tick_resolved` (`crates/postretro/src/weapon/mod.rs`), after the
 cooldown gate passes and the weapon wants to fire: if the effective stats carry
-an ammo resource and `magazine < cost_per_shot`, block — resolve no shot, consume
-no ammo, and surface the block as a distinct dry-fire event in `WeaponFireEvents`
-plus an `ActivationOutcome::Empty` (a new variant beside `Hit`/`Effect`/`Spawned`),
-so audio/HUD can react. Otherwise decrement `magazine` by `cost_per_shot` (mirror
-how the cooldown is set on fire) and resolve exactly as today. A fired round is
-spent on a miss or overkill. A resourceless weapon skips the gate entirely.
-Reserve is not touched here.
+an ammo resource and `magazine < cost_per_shot`, block — resolve no shot,
+consume no ammo, and surface the block as `ActivationOutcome::Empty` (a new
+variant beside `Hit`/`Effect`/`Spawned`). `ActivationOutcome` alone does not
+reach the caller: it rides inside `WeaponImpact`, which requires a
+`point`/`normal` a dry fire has neither, and `WeaponFireEvents`
+(`activate`/`impact`, reported by `event_names()`) has no field for it. Add a
+carrier `event_names()` reports — a `dry_fire: bool` field, or broadening to
+`outcome: Option<ActivationOutcome>` — so the dry-fire block actually reaches
+the caller's event drain and audio/HUD can react. Otherwise decrement
+`magazine` by `cost_per_shot` (mirror how the cooldown is set on fire) and
+resolve exactly as today. A fired round is spent on a miss or overkill. A
+resourceless weapon skips the gate entirely. Reserve is not touched here.
 
 ### Task 5: Reload as atomic transfer
 
-Thread a reload intent from `Action::Reload` (already bound in `input/defaults.rs`)
-through `build_sim_command` → `SimCommand` → `weapon_fire_command` →
-`WeaponFireCommand` (`crates/postretro/src/{main.rs,sim/mod.rs,weapon/mod.rs}`),
-beside the existing fire button. Reload needs both the weapon and the pawn
-reserve, so run it in `sim/mod.rs` beside `run_weapon_fire_tick`, where
+Thread a reload intent from `Action::Reload` (already bound in
+`input/defaults.rs`) as a new field on `SimCommand`
+(`crates/postretro/src/sim/mod.rs`), built by `build_sim_command` (`main.rs`)
+beside the existing `fire_button`. Reload is not an aim/fire concern, so it
+skips the `weapon_fire_command` → `WeaponFireCommand` hop entirely: it is read
+straight off `SimCommand` in `sim/mod.rs` beside `run_weapon_fire_tick`, where
 `local_movement_pawn` already resolves the pawn (which owns `AmmoReserve`).
 Query `available(type)`, then atomically `take(type, min(capacity - magazine,
 available))` and add the returned rounds to the magazine — never index the pool
@@ -243,7 +275,11 @@ distinct blocked outcome (a dedicated event name), not a partial/silent transfer
 Reload does not interrupt cooldown and is not a per-shell state machine (out of
 scope). The reload button reads as a rising edge (`ButtonState::Pressed`), not
 level (`is_active`), matching the dash precedent (`input.md`) — a held R does
-not re-attempt reload every tick.
+not re-attempt reload every tick. The new field means every `SimCommand`
+struct literal needs updating: `neutral_sim_command`
+(`netcode/command_queue.rs`), the `input_command_to_sim` /
+`sim_command_to_input` conversions (`netcode/wire_convert.rs`), and the
+prediction/determinism test fixtures.
 
 Reload rides the existing command frame, not a new transport, but it is not
 free: the fire button already crosses the wire as `fire_button:
@@ -255,16 +291,24 @@ adds one more field to that same wire `InputCommand`, mirroring `fire_button` �
 edit all three sites (`input_command_to_sim`, `sim_command_to_input`,
 `neutral_sim_command`) plus the wire type itself. Adding a field to a wire type
 is a wire-format change and requires a wire-version bump per the two-gate
-handshake (`networking.md`). The host authoritatively performs the
-reserve→magazine transfer; the client predicts the transfer locally and
-reconciles from the owner-private magazine/reserve state.
+handshake (`networking.md`) — the input must be co-op-ready. The host
+authoritatively performs the reserve→magazine transfer for its own local
+pawn; predicting and reconciling that transfer for the local player is built
+here. Applying a remote client's reload command to their pawn host-side is
+**E16 — Host Combat Command Application**'s seam, not built in this spec.
 
 ### Task 6: HUD slots, publisher, readout, docs, tests
 
 Add `player.ammo` and `player.ammoReserve` to `BUILTIN_ENGINE_STATE`
 (`crates/entities/src/engine_state_catalog.rs`): readonly Number,
-`OwnerPrivatePlayer` network scope (mirroring `player.health`, so co-op
-replication is free per Epic 15 Phase 3). Extend/mirror `PlayerHudStatePublisher`
+`OwnerPrivatePlayer` network scope, matching `player.health`'s slot
+declaration. Single-player / host-pawn correctness follows from the publisher
+below; co-op per-owner correctness needs the projection in Task 7. Adding
+these two `OwnerPrivatePlayer` slots breaks two existing tests in
+`engine_state_catalog.rs`'s test module — update both:
+`built_in_catalog_preserves_wire_names_and_capabilities` (a hard-coded
+wire-name vector) and `player_health_slots_are_owner_private_replicated`
+(asserts every non-health slot is `None`). Extend/mirror `PlayerHudStatePublisher`
 (`scripting/systems/ui_proxy.rs`) to read the active wieldable's live magazine →
 `player.ammo` and the pawn reserve's `available(type)` for that weapon's ammo
 type → `player.ammoReserve`; the publisher needs the active-wieldable id, which the
@@ -280,6 +324,24 @@ absence (`scripting/typedef/tests/committed.rs` — `readonly ammo:` /
 `docs/scripting-reference.md` with the resource block. Add the Rust tests listed
 in Scope.
 
+### Task 7: Per-owner ammo projection (co-op)
+
+Single-player and the host's own pawn get correct ammo from the Task 6
+publisher alone. A co-op remote client does not: `player.ammo` /
+`player.ammoReserve` are `OwnerPrivatePlayer` slots, but without a per-pawn
+source they fall back to the slot table's single global value
+(`owner_private_source_value`,
+`crates/postretro/src/netcode/state_slots.rs:441-452`) — every owner would see
+the host's ammo. Add an ammo-specific per-pawn projection alongside
+`descriptor_health_for_pawn`
+(`crates/postretro/src/netcode/state_slots.rs:460`): for `player.ammo` /
+`player.ammoReserve`, read the given pawn's active-weapon live magazine and
+that pawn's `AmmoReserve` for its ammo type, mirroring how
+`descriptor_health_for_pawn` reads `HealthComponent` per-owner. This is
+ammo's own projection over state already seeded by Task 3 — it is not the
+host-apply seam that lets a remote client's fire/reload commands run against
+their own pawn; that seam is **E16 — Host Combat Command Application**.
+
 ## Sequencing
 
 **Phase 1 (sequential):** Task 1 → Task 2 → Task 3 — descriptor union, component
@@ -291,6 +353,8 @@ chokepoint.
 and the pawn reserve.
 **Phase 4 (sequential):** Task 6 — publishes the HUD slots and documents/tests
 the completed surface.
+**Phase 5 (sequential):** Task 7 — adds the co-op per-pawn ammo projection
+over the reserve seeded in Task 3.
 
 ## Rough sketch
 
@@ -306,17 +370,23 @@ descriptor parsers `entity_descriptor_from_js` / `entity_descriptor_from_lua` in
 (`register_tagged_union`, `register_enum`, `WeaponDescriptor` fields) in
 `crates/postretro/src/scripting/primitives/mod.rs`; equip-at-spawn in
 `crates/postretro/src/scripting/builtins/data_archetype.rs`
-(`spawn_from_player_starts`, `attach_descriptor_components`) and
-`.../net_descriptor.rs`; the fire/reload command build in
+(`spawn_from_player_starts`) and `.../net_descriptor.rs`
+(`spawn_net_slot_pawn`); the fire/reload command build in
 `crates/postretro/src/main.rs` (`build_sim_command`, `fire_button`) and
 `crates/postretro/src/sim/mod.rs` (`weapon_fire_command`, `run_weapon_fire_tick`,
 `local_movement_pawn`); `Action::Reload` in `crates/postretro/src/input/{types.rs,defaults.rs}`;
-the HUD catalog in `crates/entities/src/engine_state_catalog.rs` (`BUILTIN_ENGINE_STATE`,
+the wire `SimCommand` literal sites: `neutral_sim_command` and
+`host_resolve_movement_inputs` in `crates/postretro/src/netcode/command_queue.rs`,
+and `input_command_to_sim` / `sim_command_to_input` in
+`crates/postretro/src/netcode/wire_convert.rs`; the HUD catalog in
+`crates/entities/src/engine_state_catalog.rs` (`BUILTIN_ENGINE_STATE`,
 `player.health` precedent, `ReplicationScope::OwnerPrivatePlayer`) and slot table
 in `crates/entities/src/slot_table.rs`; the HUD publisher
 `PlayerHudStatePublisher` in `crates/postretro/src/scripting/systems/ui_proxy.rs`
 and its call site near `main.rs` `player_hud_state.tick_for_role`; the dev HUD
-`content/dev/scripts/hud.ts` reading `getGameState().player`.
+`content/dev/scripts/hud.ts` reading `getGameState().player`; the per-owner
+replication seam `owner_private_source_value` / `descriptor_health_for_pawn` in
+`crates/postretro/src/netcode/state_slots.rs`.
 
 Proposed shape:
 

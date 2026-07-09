@@ -723,6 +723,36 @@ mod tests {
     }
 
     #[test]
+    fn e16_version_constants_refuse_pre_change_peer_on_both_gates() {
+        const PRE_E16_PROTOCOL_ID: u32 = 0x_5052_4C33; // "PRL3"
+        const PRE_E16_WIRE_VERSION: u32 = 6;
+
+        assert_eq!(
+            PROTOCOL_ID, 0x_5052_4C34,
+            "E16 message-vocabulary changes require the PRL4 app protocol id"
+        );
+        assert_eq!(
+            WIRE_VERSION, 7,
+            "E16 reload/hit/verdict layouts require wire version 7"
+        );
+        assert_ne!(
+            transport_protocol_id(),
+            ((PRE_E16_PROTOCOL_ID as u64) << 32) | (PRE_E16_WIRE_VERSION as u64),
+            "gate 1 rejects a pre-E16 transport protocol id before app decode"
+        );
+
+        let expected = protocol_version();
+        let pre_e16 = ProtocolVersion {
+            app_protocol_id: PRE_E16_PROTOCOL_ID,
+            wire_version: PRE_E16_WIRE_VERSION,
+        };
+        let err = validate_handshake(expected, pre_e16)
+            .expect_err("gate 2 rejects the pre-E16 app ProtocolVersion");
+        assert_eq!(err.expected, expected);
+        assert_eq!(err.received, pre_e16);
+    }
+
+    #[test]
     fn channel_ids_are_distinct_and_ordered() {
         assert_eq!(u8::from(Channel::Control), 0);
         assert_eq!(u8::from(Channel::Snapshot), 1);

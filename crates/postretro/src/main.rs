@@ -4486,31 +4486,45 @@ impl App {
         resolved
             .iter()
             .map(|resolved| {
-                let weapon = weapon_owners.weapon_of(resolved.pawn);
-                let wants_fire =
-                    resolved.command.fire_button.pressed || resolved.command.fire_button.active;
-                if weapon.is_none() && wants_fire && weaponless_fire_logged.insert(resolved.pawn) {
-                    log::info!(
-                        "[Net] owned pawn {} has no active weapon; ignoring remote fire",
-                        resolved.pawn
-                    );
-                }
-                let shot_id = allocator
-                    .network_id_for_entity(resolved.pawn)
-                    .map(|network_id| {
-                        netcode::ShotId::from_parts(network_id, resolved.client_tick)
-                    });
-                sim::RemotePawnCommand {
-                    pawn: resolved.pawn,
-                    owner_client_id: resolved.client_id,
-                    weapon,
-                    shot_id,
-                    fire_tick: *tick,
-                    client_tick: resolved.client_tick,
-                    command: resolved.command.clone(),
-                }
+                Self::prepare_remote_pawn_command(
+                    allocator,
+                    weapon_owners,
+                    weaponless_fire_logged,
+                    *tick,
+                    resolved,
+                )
             })
             .collect()
+    }
+
+    fn prepare_remote_pawn_command(
+        allocator: &netcode::NetworkIdAllocator,
+        weapon_owners: &netcode::WeaponOwners,
+        weaponless_fire_logged: &mut std::collections::HashSet<postretro_entities::EntityId>,
+        fire_tick: u32,
+        resolved: &netcode::ResolvedPawnCommand,
+    ) -> sim::RemotePawnCommand {
+        let weapon = weapon_owners.weapon_of(resolved.pawn);
+        let wants_fire =
+            resolved.command.fire_button.pressed || resolved.command.fire_button.active;
+        if weapon.is_none() && wants_fire && weaponless_fire_logged.insert(resolved.pawn) {
+            log::info!(
+                "[Net] owned pawn {} has no active weapon; ignoring remote fire",
+                resolved.pawn
+            );
+        }
+        let shot_id = allocator
+            .network_id_for_entity(resolved.pawn)
+            .map(|network_id| netcode::ShotId::from_parts(network_id, resolved.client_tick));
+        sim::RemotePawnCommand {
+            pawn: resolved.pawn,
+            owner_client_id: resolved.client_id,
+            weapon,
+            shot_id,
+            fire_tick,
+            client_tick: resolved.client_tick,
+            command: resolved.command.clone(),
+        }
     }
 
     fn host_record_authorized_shots(&mut self, shots: &[netcode::OpenAuthorizedShot]) {
@@ -5658,6 +5672,75 @@ mod tests {
         assert!(
             commands.iter().all(|command| command.reload),
             "reload is a level signal and remains true across catch-up ticks while held"
+        );
+    }
+
+    #[test]
+    fn weaponless_remote_fire_logs_once_as_info_and_stays_unarmed() {
+        let pawn = postretro_entities::EntityId::from_raw(17);
+        let mut allocator = netcode::NetworkIdAllocator::new();
+        allocator.stamp(pawn);
+        let weapon_owners = netcode::WeaponOwners::new();
+        let mut weaponless_fire_logged = std::collections::HashSet::new();
+        let mut owners = netcode::MovementOwners::new();
+        owners.set(pawn, 7);
+        let mut queues = netcode::HostCommandQueues::new();
+        queues.ingest(
+            7,
+            &postretro_net::wire::InputCommand {
+                client_tick: 33,
+                movement: postretro_net::wire::WireMovementInput {
+                    wish_dir: [0.0, 0.0],
+                    jump_pressed: false,
+                    dash_pressed: false,
+                    running: false,
+                    crouch_intent: false,
+                    facing_yaw: 0.0,
+                },
+                fire_button: postretro_net::wire::WireFireButtonState {
+                    pressed: true,
+                    active: true,
+                },
+                reload: false,
+            },
+        );
+        let resolved = netcode::host_resolve_remote_commands(&owners, &mut queues);
+        let resolved = resolved.first().expect("weaponless fire command resolves");
+
+        let captured = crate::scripting::reactions::log_capture::capture(|| {
+            let first = App::prepare_remote_pawn_command(
+                &allocator,
+                &weapon_owners,
+                &mut weaponless_fire_logged,
+                99,
+                resolved,
+            );
+            let second = App::prepare_remote_pawn_command(
+                &allocator,
+                &weapon_owners,
+                &mut weaponless_fire_logged,
+                100,
+                resolved,
+            );
+            assert_eq!(first.weapon, None);
+            assert_eq!(second.weapon, None);
+        });
+
+        let weaponless_logs: Vec<_> = captured
+            .iter()
+            .filter(|(_, message)| message.contains("has no active weapon"))
+            .collect();
+        assert_eq!(
+            weaponless_logs.len(),
+            1,
+            "the same weaponless pawn logs its ignored fire once"
+        );
+        assert_eq!(weaponless_logs[0].0, log::Level::Info);
+        assert!(
+            captured
+                .iter()
+                .all(|(level, _)| *level != log::Level::Error),
+            "weaponless remote fire is informational, not an error"
         );
     }
 

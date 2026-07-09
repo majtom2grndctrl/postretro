@@ -1344,6 +1344,90 @@ mod tests {
         id
     }
 
+    /// Spawn the client-side presentation shape of a remote enemy: mesh only, no
+    /// local Health, so local hits can produce hitmarker/FX but cannot apply damage.
+    fn spawn_mesh_only_zone_entity(
+        registry: &mut EntityRegistry,
+        model: &str,
+        position: Vec3,
+    ) -> EntityId {
+        let id = registry.spawn(Transform {
+            position,
+            ..Transform::default()
+        });
+        registry
+            .set_component(id, MeshComponent::stateless(model.to_string()))
+            .unwrap();
+        id
+    }
+
+    #[test]
+    fn client_fire_resolves_remote_enemy_at_presentation_pose_without_health() {
+        let mut registry = EntityRegistry::new();
+        let store = head_zone_store("mob", 0.5);
+        let target = spawn_mesh_only_zone_entity(&mut registry, "mob", Vec3::new(5.0, 0.0, -4.0));
+        let pawn = registry.spawn(Transform::default());
+        let mut state = ClientWeaponState {
+            pawn,
+            cooldown_remaining_ms: 0.0,
+            cooldown_ms: 100.0,
+            fire_mode: FireMode::Semi,
+            resolution: ResolutionMode::Hitscan,
+            range: 10.0,
+            shoot_press_consumed: false,
+        };
+
+        // Remote interpolation has already sampled the network buffer and written the
+        // rendered pose into the registry before the client fire path runs. The host's
+        // present pose would be off the ray; the presentation pose is directly ahead.
+        let rendered_pose = Transform {
+            position: Vec3::new(0.0, 0.0, -4.0),
+            ..Transform::default()
+        };
+        registry
+            .set_presentation_transform(target, rendered_pose)
+            .expect("remote interpolation writes the rendered pose");
+        assert_vec3_approx(
+            registry
+                .interpolated_transform(target, 0.5)
+                .unwrap()
+                .position,
+            rendered_pose.position,
+        );
+        assert_eq!(
+            registry.has_component_kind(target, ComponentKind::Health),
+            Ok(false),
+            "remote client enemies carry no local Health before firing"
+        );
+
+        let resolution = resolve_client_fire(
+            &mut state,
+            FireButtonState {
+                pressed: true,
+                active: true,
+            },
+            Vec3::ZERO,
+            Vec3::NEG_Z,
+            77,
+            &CollisionWorld::new(),
+            &registry,
+            &store,
+            0.0,
+            0.0,
+        )
+        .expect("off-cooldown client fire resolves");
+
+        assert_eq!(resolution.client_tick, 77);
+        assert_eq!(resolution.hits.len(), 1);
+        assert_eq!(resolution.hits[0].target, target);
+        assert_eq!(resolution.hits[0].zone.as_deref(), Some("head"));
+        assert_eq!(
+            registry.has_component_kind(target, ComponentKind::Health),
+            Ok(false),
+            "local hit detection must not attach or mutate client-side Health"
+        );
+    }
+
     /// A zone hit through the full weapon path surfaces its zone tag on the
     /// impact (the zone-multiplier damage routing site reads `impact.zone`; here we only surface it).
     #[test]

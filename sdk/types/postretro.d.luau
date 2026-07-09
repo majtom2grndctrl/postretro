@@ -599,6 +599,7 @@ export type GameStateRefs = {
   player: {
     health: ReadonlyStateRef<number>,
     maxHealth: ReadonlyStateRef<number>,
+    weaponCooldownMs: ReadonlyStateRef<number>,
   },
   screen: {
     flash: ReadonlyStateRef<{number}>,

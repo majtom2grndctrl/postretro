@@ -1,6 +1,6 @@
 # E16 - Client-Authoritative Combat
 
-> **Status:** draft.
+> **Status:** ready (reviewed — draft-spec + implementability lenses).
 >
 > **Epic:** 16 - Combat.
 >
@@ -558,6 +558,21 @@ byte-layout change, so the layout constant bumps.
   the world it actually renders, and the host sanity-checks it. This is what makes hitscan
   consistent with future pellet spreads and projectiles: all three are "declare resolved
   hits against the rendered world," differing only in ray count and arrival timing.
+- **Client fire runs POST-LOOP, once per frame — it is predict-and-detect, not deterministic
+  sim. Do NOT move it in-loop.** The client fire + local-hit path runs after the catch-up tick
+  loop, after remote-interpolation sampling, at the render/anim stage — deliberately NOT
+  mirroring `client_predict_movement_tick`'s in-loop placement. Three load-bearing reasons:
+  (1) it reads the interpolated Transforms `sample_into_registry` has already written — the
+  same data the renderer draws — so "what you see is what you shoot" holds by construction,
+  with no second copy of the interpolation math to drift out of agreement with the picture;
+  (2) `frame_anim_time`, the skeletal clock the ray poses capsules at, is a render-stage value
+  that only exists post-loop; (3) firing is a per-frame, cooldown-gated intent, so once per
+  frame is the correct granularity — firing per catch-up tick would over-fire on a hitchy
+  frame. Movement predicts per fixed tick because it must stay deterministic with the host
+  sim; the client fire path carries no such requirement, because FIRE authority is host-side
+  and per-tick (Task 4) and the client only predicts for feel and detects HIT — reconciliation
+  corrects any predict/authority mismatch. Keying the predicted shot to the frame's latest
+  sampled `client_tick` keeps Task 7 reconciliation intact.
 - **`shot_id` binds HIT-accept to FIRE-authorization (one-way).** The host authorizes shots
   on the FIRE path and accepts at most one declaration per authorized shot. Because
   fire-rate and ammo are the integrity surface, damage MUST check against an authorized fire;

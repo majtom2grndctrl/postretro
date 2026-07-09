@@ -196,4 +196,12 @@ Five architectural invariants govern the engine:
 
 ## License
 
-MIT
+Postretro is licensed under the [PolyForm Noncommercial License 1.0.0](./LICENSE)
+— **free for any noncommercial use** (personal, hobby, research, education, and
+qualifying nonprofit/government use).
+
+**Commercial use requires a separate commercial license** — see
+[LICENSE-COMMERCIAL.md](./LICENSE-COMMERCIAL.md).
+
+Third-party dependencies remain under their own open-source licenses; see
+[THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md).

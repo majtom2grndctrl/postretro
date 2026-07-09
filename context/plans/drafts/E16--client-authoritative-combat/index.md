@@ -268,9 +268,9 @@ its `EntityId`; return it instead (as `Option<EntityId>`). The accept intermedia
 (`on_slot_accepted`, which calls `spawn_net_slot_pawn`) currently returns `(pawn, net_id)`
 up to the `owners.set(pawn, client_id)` site; widen BOTH `spawn_net_slot_pawn`'s return AND
 that accept-path tuple to carry the `Option<EntityId>` weapon id, so it reaches the
-`owners.set` site where the new map is written in the same accept path. A pawn with no
-weapon records no entry. Clear the map entry on slot close beside the movement-owner
-removal. This map is needed for fire-legitimacy validation, credit source, cooldown, and
+`owners.set` site where the `WeaponOwners` entry is written in the same accept path. A pawn
+with no weapon records no entry. Clear the `WeaponOwners` entry on slot close beside the
+movement-owner removal. This map is needed for fire-legitimacy validation, credit source, cooldown, and
 hit-declaration attacker resolution. Changing `spawn_net_slot_pawn`'s return type breaks its
 test callers (in the descriptor tests and the predict/reconcile harness fixtures) — update
 them. AC: every owned pawn maps to its weapon at accept and unmaps at close; a weaponless
@@ -281,39 +281,56 @@ pawn maps to none.
 Ingest the standalone hit-declaration, run the four-check validation IN THIS EXACT ORDER,
 then apply damage. **Check 1 (first, load-bearing): `shot_id` binds to a host-authorized
 fire.** Reject any declaration whose `shot_id` has no matching still-open authorized shot
-recorded for that pawn on the FIRE path (Task 4), and retire the shot on accept so one
-authorized fire accepts at most one declaration (and at most `pellet_count` hit records).
-This is the security spine: without it a client whose predicted fire the host rejected
-(cooling / empty) could collect unbounded free damage — HIT-accept depends on
+recorded on the FIRE path (Task 4), OR whose matched `AuthorizedShot.pawn` is not owned by
+the DECLARING connection — `shot_id` derives from guessable inputs (pawn `NetworkId` +
+`client_tick`), so a `shot_id` that resolves to another client's authorized shot is
+rejected; ownership is checked, not assumed. Retire the shot on accept so one authorized
+fire accepts at most one declaration (and at most `pellet_count` hit records). This is the
+security spine: without it a client whose predicted fire the host rejected (cooling now;
+empty once ammo lands) could collect unbounded free damage — HIT-accept depends on
 FIRE-authorization, a one-way dependency. **Check 2:** each record's target resolves via the
 host `NetworkId -> EntityId` reverse map (Task 3) and is alive (`Health.current > 0`); a
 declaration naming a just-despawned enemy simply misses the lookup and drops (NetworkId is
 never recycled). **Check 3: world-geometry line-of-sight ONLY** — cast a ray against STATIC
-world geometry from the attacker eye (pawn transform + `standing_eye_height`) toward the
-declared point, and reject if a wall is nearer than the declared point; do NOT re-check LOS
-against the live enemy pose (the client aimed at the interpolated past pose; the host is in
-the present, so a live-pose recheck would false-reject legitimate shots on moving enemies).
+world geometry from the attacker eye (pawn transform position + the `standing_eye_height`
+field of `PlayerMovementComponent`, read not called) toward the declared point, and reject
+if a wall is nearer than the declared point; do NOT re-check LOS against the live enemy pose
+(the client aimed at the interpolated past pose; the host is in the present, so a live-pose
+recheck would false-reject legitimate shots on moving enemies). This host eye reconstruction
+is the same basis the client camera origin follows (pawn position + eye height), and because
+Check 3 rejects only on a nearer STATIC wall, sub-cm origin differences cannot move a wall
+across the ray — no origin tolerance beyond the range tolerance (Check 4) is needed.
 Dynamic-occluder LOS is intentionally not validated. **Check 4:** generous range tolerance
-(attacker->point distance vs the weapon's effective range times a tolerance factor).
-Fire-legitimacy (cooldown / ammo) is NOT re-checked here — it lives on the FIRE path. Then
-apply damage: refactor `apply_weapon_impact_damage` to take the ATTACKER as a parameter (it
-currently hard-codes the attacker via `local_movement_pawn`; the weapon is already a
-parameter) so the declaring client's pawn is the attacker, and reuse its zone-multiplier,
-credit-source, contributor-ledger, and death-sweep path unchanged. Emit the owner-private
+(attacker->point distance vs the weapon's `range` — `WeaponDescriptor.range`, materialized
+into the runtime `WeaponComponent` — times a named `HIT_RANGE_TOLERANCE` constant, a
+generous factor, e.g. 1.25, not an unnamed factor). Fire-legitimacy (cooldown / ammo) is NOT
+re-checked here — it lives on the FIRE path. Then apply damage: refactor
+`apply_weapon_impact_damage` to take the ATTACKER as a parameter (it currently hard-codes the
+attacker via `local_movement_pawn`; the weapon is already a parameter) so the authorized
+shot's pawn (`AuthorizedShot.pawn`) is the attacker, and reuse its zone-multiplier,
+credit-source, contributor-ledger, and death-sweep path unchanged. The declared `zone` is the
+struck bone's hit-zone tag — an `Option<String>` sourced from the client `HitZoneStore` zone
+tags, the same tag the host's `HealthComponent.zone_multipliers` key on — and an unknown or
+absent zone applies the base multiplier (1.0), matching the existing `unwrap_or(1.0)`. Emit the owner-private
 per-shot accept/reject fact (Task 3) back to the declaring client. AC: a validated
-declaration applies damage crediting the declaring pawn; the `shot_id`-binding, world-LOS,
-pellet-clamp, and double-application invariants hold.
+declaration applies damage crediting the authorized shot's pawn (`AuthorizedShot.pawn`); the
+`shot_id`-binding, world-LOS, pellet-clamp, and double-application invariants hold.
 
 ### Task 7: Client predict + reject-rollback
 
 Predict the local shot when the client fires: advance the client-side weapon cooldown, play
 muzzle FX, and show a hitmarker for a locally-resolved hit — a local weapon tick keyed to
 the sent command, NEVER run inside movement's `replay` (which must stay weapon-free; its
-registry-blind signature is the guard). Reconcile: the firing pawn's own weapon cooldown is
-not replicated today (only enemy attack cooldown is), so consume the owner-private
-authoritative cooldown slot (Task 3) to reconcile the predicted cooldown, and consume the
-owner-private per-shot accept/reject to confirm or retract the hitmarker. On a rejected fire
-(host refused: cooling / empty), roll back the client's local FX, cooldown, and hitmarker.
+registry-blind signature is the guard). Store each predicted shot — its hitmarker, muzzle
+FX, and cooldown effect — keyed by the locally-computed `shot_id` (identical to the host's by
+construction, Task 4), so an incoming ack correlates to the right predicted shot by matching
+its `shot_id`. Reconcile: no cooldown of either kind is replicated today — enemies replicate
+`Transform` only; `BrainComponent.attack_cooldown_remaining_ms` stays host-local — so consume
+the owner-private authoritative cooldown slot (Task 3) to reconcile the predicted cooldown,
+and consume the owner-private per-shot accept/reject (matched by `shot_id`) to confirm or
+retract the hitmarker. On a rejected fire
+(host refused: cooling now; empty once ammo lands), roll back the client's local FX,
+cooldown, and hitmarker.
 State explicitly: enemy health is NEVER predicted — there is no enemy-HP rollback, only
 local FX / cooldown / hitmarker rollback; enemy HP and death arrive by replication. Ammo
 later layers magazine/reserve as additional reconciled owner-private facts via its own
@@ -326,8 +343,9 @@ predicts enemy HP; replay stays weapon-free.
 Reuse the `command_queue.rs` / `wire_convert.rs` / `predict_reconcile_harness.rs` patterns.
 Cover: the client resolves a hit against a remote enemy at the rendered (interpolated) pose;
 a hit-declaration round-trips and applies damage host-side; a fire the host rejected
-(cooling / empty) yields NO accepted hit even with a geometrically plausible declaration (the
-`shot_id`-binding security test); a declaration with more records than `pellet_count` applies
+(cooling weapon; empty-magazine rejection inherits the same binding once ammo lands) yields
+NO accepted hit even with a geometrically plausible declaration (the `shot_id`-binding
+security test); a declaration with more records than `pellet_count` applies
 damage for at most that many; a pitched / zone-tagged hit credits and scales correctly;
 world-LOS rejects a through-wall declaration while a moving-enemy legitimate shot is NOT
 false-rejected; two pawns fire independently against their own weapons; both version
@@ -368,8 +386,8 @@ Grounded seams (current source):
   `apply_weapon_impact_damage` hard-codes the attacker via `local_movement_pawn:277` — Task 6
   parameterizes it (the weapon is already a param).
 - `netcode/command_queue.rs`: `host_resolve_movement_inputs:355` keeps only `.movement` —
-  widen to the whole command; `MovementOwners:48` is the map to mirror for the pawn->weapon
-  map; `neutral_sim_command:376` gains `reload: false`.
+  widen to the whole command; `MovementOwners:48` is the map to mirror for the new
+  `WeaponOwners` pawn->weapon map; `neutral_sim_command:376` gains `reload: false`.
 - `netcode/lifecycle.rs`: `on_slot_accepted:148` calls `spawn_net_slot_pawn:184` and returns
   `(pawn, net_id)`; widen to carry the weapon id to `owners.set` (`netcode/mod.rs:1168`).
   `scripting/builtins/net_descriptor.rs:37` spawns and discards the sibling weapon id.
@@ -381,19 +399,23 @@ Grounded seams (current source):
   `replay:426` stays weapon-free. `netcode/reconcile.rs`: the prune-through-ack + merge loop
   is the model (production entry `reconcile_local_pawn_with_mover_history`; `reconcile_local_pawn`
   is `#[cfg(test)]`).
-- `camera.rs::aim_ray:139` (origin + full-pitch direction, client-local);
-  `player_movement.rs::standing_eye_height:203` (host attacker eye).
+- `camera.rs::aim_ray:139` — a method (origin + full-pitch direction, client-local);
+  `PlayerMovementComponent.standing_eye_height:203` — a `pub f32` FIELD in
+  `player_movement.rs`, read as `component.standing_eye_height` (host attacker eye), never
+  called.
 
 Proposed shapes (`// Proposed design`, remove after implementation):
 
 ```rust
 // Proposed design — engine side.
+struct ShotId(u64);   // pawn NetworkId (u32) packed high | command client_tick (u32) packed low — identical on both peers by construction
 struct AuthorizedShot { shot_id: ShotId, pawn: EntityId, fire_tick: u32 }   // still-open until a hit-declaration retires it
-// ShotId derived from (pawn NetworkId, fire client_tick) — both sides compute it identically.
+// `AuthorizedShot.pawn` is a host-local EntityId used to resolve weapon/credit — NOT an input to the id.
+struct LocalHitRecord { target: EntityId, point: Vec3, zone: Option<String> }  // client-produced; the client EntityId -> NetworkId reverse map (Task 3) turns each into the wire HitRecord
 
 // Proposed design — wire side (bitcode Encode/Decode), appended to ClientMessage.
 struct HitDeclaration { shot_id: u64, records: Vec<HitRecord> }             // length-prefixed; empty list = a shot that hit nothing
-struct HitRecord { target: u32 /* NetworkId */, point: [f32; 3], zone: Option<String> }
+struct HitRecord { target: u32 /* NetworkId */, point: [f32; 3], zone: Option<String> /* bone-tag; unknown/None => base multiplier */ }
 ```
 
 ## Boundary inventory
@@ -403,13 +425,13 @@ struct HitRecord { target: u32 /* NetworkId */, point: [f32; 3], zone: Option<St
 | Reload intent | `SimCommand::reload: bool` | `InputCommand.reload` (bitcode `bool`); part of the byte-layout bump | n/a | n/a | n/a |
 | Aim / pitch | client camera `aim_ray()` (full pitch) | **does NOT cross the wire** — the client casts locally; the declared `point` carries the spatial payload | n/a | n/a | n/a |
 | Hit declaration | new engine `HitDeclaration` + `HitRecord` | appended `ClientMessage` variant; `shot_id: u64`, length-prefixed `Vec<HitRecord>` | n/a | n/a | n/a |
-| Hit record fields | `target: EntityId` (resolved), `point: Vec3`, `zone: Option<String>` | `target: u32` (NetworkId), `point: [f32;3]`, `zone: Option<String>` | n/a | n/a | n/a |
-| shot_id | `ShotId` from `(pawn NetworkId, fire client_tick)` | `u64` on the declaration; recomputed host-side, not trusted blindly | n/a | n/a | n/a |
+| Hit record fields | `LocalHitRecord { target: EntityId, point: Vec3, zone: Option<String> }` (bone-tag from the client `HitZoneStore`; unknown/None => base multiplier) | `target: u32` (NetworkId), `point: [f32;3]`, `zone: Option<String>` | n/a | n/a | n/a |
+| shot_id | `ShotId(u64)` — pawn `NetworkId` (u32) packed high, `client_tick` (u32) packed low | `u64` on the declaration; recomputed host-side from the same two values, not trusted blindly | n/a | n/a | n/a |
 | Per-shot ack | owner-private accept/reject fact | server->client, owner-scoped like movement-authority metadata; part of the vocabulary bump | n/a | n/a | n/a |
 | Owner weapon cooldown | firing pawn's `cooldown_remaining_ms` | owner-private reconcile fact (server->client), owner-scoped | n/a | n/a | n/a |
 | Client `EntityId -> NetworkId` | new reverse map beside `ClientReplication.map` | n/a (engine-side; net crate never sees `EntityId`) | n/a | n/a | n/a |
 | Host `NetworkId -> EntityId` | new reverse map beside `NetworkIdAllocator` | n/a (engine-side) | n/a | n/a | n/a |
-| Pawn -> weapon map | new host map beside `MovementOwners` | n/a (engine-side) | n/a | n/a | n/a |
+| Pawn -> weapon map (`WeaponOwners`) | new host map beside `MovementOwners` | n/a (engine-side) | n/a | n/a | n/a |
 
 ## Wire format
 
@@ -454,8 +476,9 @@ byte-layout change, so the layout constant bumps.
 - **`shot_id` binds HIT-accept to FIRE-authorization (one-way).** The host authorizes shots
   on the FIRE path and accepts at most one declaration per authorized shot. Because
   fire-rate and ammo are the integrity surface, damage MUST check against an authorized fire;
-  a rejected fire (cooling / empty) can produce a plausible declaration but no authorized
-  shot, so it applies no damage. This is checked FIRST and is the security spine.
+  a rejected fire (cooling now; empty once ammo lands) can produce a plausible declaration
+  but no authorized shot, so it applies no damage. This is checked FIRST and is the security
+  spine.
 - **World-LOS only, never live-enemy-pose LOS.** The client aims at the interpolated (past)
   enemy pose; the host is in the present. Re-checking LOS against the live pose would
   false-reject legitimate shots on moving enemies — silently rebuilding the staleness miss

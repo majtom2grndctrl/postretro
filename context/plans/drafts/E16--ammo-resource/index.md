@@ -6,7 +6,7 @@
 >
 > **Milestone:** Weapon Systems.
 >
-> **Depends on:** **E16 — Host Combat Command Application** — this spec's
+> **Depends on:** **E16 — Client-Authoritative Combat** — this spec's
 > co-op-correct behavior needs that seam, the one that lets the host apply a
 > remote client's per-pawn combat inputs (fire and reload) beyond today's
 > movement-only `host_resolve_movement_inputs`
@@ -89,7 +89,7 @@ Each is its own later roadmap bullet; the shape only accommodates them.
   type validates as a free-form ASCII identifier now (see design decisions below).
 - Host-side application of a remote client's fire/reload commands to their own
   pawn — that command-application seam belongs to the prerequisite spec **E16
-  — Host Combat Command Application**. This spec seeds the reserve (Task 3)
+  — Client-Authoritative Combat**. This spec seeds the reserve (Task 3)
   and projects it per-owner (Task 7); it does not apply the remote command.
 
 ## Acceptance criteria
@@ -144,7 +144,7 @@ Each is its own later roadmap bullet; the shape only accommodates them.
 - [ ] A net-slot pawn materializes host-side with its descriptor-seeded reserve
   and a full magazine (Task 3 seeding). Ammo's deliverable for that pawn is the
   seeded reserve plus the per-owner projection (Task 7) that surfaces it to
-  its owner; once **E16 — Host Combat Command Application** applies a remote
+  its owner; once **E16 — Client-Authoritative Combat** applies a remote
   client's reload to their pawn, that transfer draws against this same
   host-side reserve. Applying the remote reload command itself is the
   prerequisite spec's job, not built here.
@@ -223,7 +223,7 @@ net-slot path seeds at the analogous site in `net_descriptor.rs`'s
 host-authoritative remote pawn. A net-slot pawn needs its reserve seeded
 host-side so its owner has a pool to draw from once reload reaches it —
 applying that owner's reload command host-side is not built here; see Task 7
-and **E16 — Host Combat Command Application**. The net path's only distinct
+and **E16 — Client-Authoritative Combat**. The net path's only distinct
 concern remains spawning the sibling weapon instance but never promoting it
 to the host's active wieldable.
 
@@ -261,7 +261,7 @@ resourceless weapon skips the gate entirely. Reserve is not touched here.
 
 ### Task 5: Reload as atomic transfer
 
-The prerequisite **E16 — Host Combat Command Application** introduces the
+The prerequisite **E16 — Client-Authoritative Combat** introduces the
 `reload` field on `SimCommand` — sampled from `Action::Reload` (already bound in
 `input/defaults.rs`) as a rising edge (`ButtonState::Pressed`, per the dash
 precedent in `input.md`, so a held R does not re-attempt every tick), carried on
@@ -280,9 +280,9 @@ cooldown and is not a per-shell state machine (out of scope). Reload skips the
 aim/fire only.
 
 This wires the transfer for the local/host player's own pawn. Applying a remote
-client's reload to their pawn host-side is the prerequisite's per-pawn delivery
-seam (its Task 5), which routes the reload intent to the mapped weapon and calls
-this spec's transfer.
+client's reload to their pawn host-side is the prerequisite's named per-pawn
+delivery seam `deliver_reload_to_weapon`, which routes the reload intent to the
+mapped weapon and calls this spec's transfer.
 
 ### Task 6: HUD slots, publisher, readout, docs, tests
 
@@ -327,7 +327,7 @@ that pawn's `AmmoReserve` for its ammo type, mirroring how
 `descriptor_health_for_pawn` reads `HealthComponent` per-owner. This is
 ammo's own projection over state already seeded by Task 3 — it is not the
 host-apply seam that lets a remote client's fire/reload commands run against
-their own pawn; that seam is **E16 — Host Combat Command Application**.
+their own pawn; that seam is **E16 — Client-Authoritative Combat**.
 
 ## Sequencing
 

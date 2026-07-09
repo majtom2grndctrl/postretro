@@ -55,7 +55,8 @@ resource-grant chokepoint (inverse of `applyDamage`) as a clean seam a later
   restored ammo readout in the dev HUD.
 - Tests: descriptor parse/validate both runtimes, SDK type generation, magazine
   seed + hot-reload preservation, reserve seed, fire consumption, empty-magazine
-  block, atomic reload, unlimited-fire back-compat, HUD publish.
+  block, atomic reload, unlimited-fire back-compat, HUD publish, net-slot pawn
+  arming + host-side reload.
 
 ### Out of scope
 
@@ -81,10 +82,13 @@ Each is its own later roadmap bullet; the shape only accommodates them.
 ## Acceptance criteria
 
 - [ ] Authors can set `components.weapon.resource` (an `ammo`-kind block) in
-  TypeScript and Luau. An invalid block (unknown `kind`, empty/overlong/illegal
-  `type`, non-finite or negative numeric) is rejected through the existing
-  `WeaponDescriptor::validate()` path, identically in both runtimes. An absent
-  `resource` parses to `None`.
+  TypeScript and Luau. An absent `resource` parses to `None`. Rejection happens
+  at two layers: (a) serde-deserialize rejections — unknown `kind`, or a
+  wrong-type or negative value for any `u32` field — fail before
+  `WeaponDescriptor::validate()` runs; (b) `validate()` rejections —
+  empty/overlong/illegal `type` (charset), `magazine < 1`, `cost_per_shot < 1`.
+  Both layers reject identically across the QuickJS and Luau runtimes, which
+  are behavioral twins for descriptor parsing (`scripting.md` §1).
 - [ ] Generated TypeScript and Luau SDK types include the `resource` tagged union
   on `WeaponDescriptor` with an `ammo` variant carrying `type`, `magazine`,
   `costPerShot`, `reserve`, all camelCase, identical in both runtimes.
@@ -97,9 +101,10 @@ Each is its own later roadmap bullet; the shape only accommodates them.
   as today (hit-zone multiplier, ledger attribution, impact FX unchanged). The
   reserve is untouched by firing.
 - [ ] With magazine `< costPerShot` the trigger blocks: no shot resolves, no ammo
-  is consumed, no damage is applied, and the block is observable (a dry-fire
-  event name reaches the caller's event drain / `ActivationOutcome::Empty`) — not
-  a silent no-op. Cooldown-blocked shots stay silent as today.
+  is consumed, no damage is applied, and the block is observable — both a
+  dry-fire event name reaching the caller's event drain AND
+  `ActivationOutcome::Empty`, not a silent no-op. Cooldown-blocked shots stay
+  silent as today.
 - [ ] Reload transfers `min(capacity - magazine, available(type))` rounds from the
   pawn reserve pool into the magazine in one step. Reload with a full magazine or
   an empty reserve pool is a distinct blocked outcome, not a partial or silent
@@ -111,11 +116,18 @@ Each is its own later roadmap bullet; the shape only accommodates them.
   `player.ammoReserve` reflects its ammo type's reserve pool, republished each
   frame; both are readonly engine-owned slots the dev HUD reads through
   `getGameState().player`. Owner-private replication is schema-driven (no netcode
-  change per M15 Phase 3.5).
+  change per Epic 15 Phase 3). With the active weapon's `resource: None`
+  (effective ammo `None`) or no active wieldable (no pawn / fly-camera), the
+  publisher skips the write, matching how the health publisher handles the
+  no-pawn case — the slots keep their last value rather than publishing a
+  stale 0.
 - [ ] No ammo-grant, `onKill`, or resource-grant behavior runs as part of this
   plan (review/grep gate).
 - [ ] No heat/cell variant, per-shell reload, pickup, or inventory is built
   (review/grep gate). No new `unsafe` (review/grep gate).
+- [ ] A net-slot pawn materializes host-side with its descriptor-seeded reserve
+  and a full magazine (Task 3 seeding), and a reload command routed to that
+  pawn transfers rounds against its host-side reserve, same as a local pawn's.
 
 ## Tasks
 
@@ -125,8 +137,11 @@ Add `resource: Option<WeaponResource>` to `WeaponDescriptor` (`crates/foundation
 `WeaponResource` is a serde-tagged (`#[serde(tag = "kind", rename_all = "camelCase")]`)
 enum with one variant, `Ammo(AmmoResource)`; the tag reserves `heat`/`cell` for
 siblings. `AmmoResource` carries `ammo_type` (wire `type`), `magazine` (u32
-capacity), `cost_per_shot` (u32, wire `costPerShot`, default 1), and `reserve`
-(u32 starting pool). Validate in `WeaponDescriptor::validate()`: `type` an ASCII
+capacity), `cost_per_shot` (u32, wire `costPerShot`, `#[serde(default =
+"default_cost_per_shot")]` — a `fn default_cost_per_shot() -> u32 { 1 }`
+defined in `combat.rs`, matching the `default_credit_source` convention
+(`weapon.rs`)), and `reserve` (u32 starting pool). Validate in
+`WeaponDescriptor::validate()`: `type` an ASCII
 identifier matching the existing `credit_source` charset (`[A-Za-z0-9_.:-]`, ≤64
 bytes, non-empty), `magazine ≥ 1`, `cost_per_shot ≥ 1`, `reserve` any u32. The
 POD references no `EntityId`, so it stays in `postretro-foundation` per the
@@ -145,31 +160,46 @@ literals a one-field addition (`resource: None`).
 
 ### Task 2: Magazine state + effective() extension
 
-Add `magazine: u32` live state to `WeaponComponent` (`crates/entities/src/components/weapon.rs`),
-initialized to the descriptor's `magazine` capacity in `from_descriptor` (0 /
-absent when `resource: None`). Surface the augmentable numbers through
-`effective()` / `EffectiveStats`: capacity, per-shot cost, and the ammo type —
-producers read the effective values, not raw component fields, exactly as
-`credit_source` does today. Represent "no ammo resource" as an `Option` on the
-effective stats so a resourceless weapon skips gating.
+`effective(&self)` takes no descriptor
+(`crates/entities/src/components/weapon.rs:63`), so — exactly as `damage` /
+`range` / `credit_source` are stored — `WeaponComponent` must also store the
+raw ammo tuning to return it from `effective()`, not just the live magazine.
+Add to `WeaponComponent`: a stored ammo tuning `Option<{ ammo_type, capacity,
+cost_per_shot }>` (absent when `resource: None`) plus the live `magazine: u32`.
+`from_descriptor` initializes both from the descriptor's `AmmoResource` (0 /
+absent for either when `resource: None`), with the magazine materializing at
+full capacity. Surface the augmentable numbers through `effective()` /
+`EffectiveStats`: capacity, per-shot cost, and the ammo type — producers read
+the effective values, not raw component fields, exactly as `credit_source`
+does today. Represent "no ammo resource" as an `Option` on the effective stats
+so a resourceless weapon skips gating.
 
-`refresh_from_descriptor` refreshes capacity/cost/type (authored tuning) but must
-retain the live `magazine` count — it is per-instance state like
-`cooldown_remaining_ms`, not authored tuning. Adding a field to `WeaponComponent`
-and `EffectiveStats` requires updating their struct literals across the crate.
+`refresh_from_descriptor` overwrites the stored tuning (type/capacity/cost)
+from the descriptor but must retain the live `magazine` count — it is
+per-instance state like `cooldown_remaining_ms`, not authored tuning. Adding
+the tuning `Option` and the `magazine` field to `WeaponComponent`, and the
+mirrored fields to `EffectiveStats`, requires updating their struct literals
+across the crate.
 
 ### Task 3: Pawn reserve pool + spawn seeding
 
 Add an engine-owned reserve component (`AmmoReserve`, entities crate) pooling
 rounds by ammo type (`type → u32`). It references no `EntityId`. Seed at
-equip-at-spawn: the `player_spawn` path in `scripting/builtins/data_archetype.rs`
-(`spawn_from_player_starts`) already resolves the pawn id and the weapon
-descriptor and calls `WeaponComponent::from_descriptor_with_canonical`; there,
-attach/credit the pawn's `AmmoReserve` for the weapon's ammo type by the
-descriptor's starting `reserve`, and let the weapon materialize a full magazine
-(Task 2). Mirror the same in the net-slot pawn path
-(`scripting/builtins/net_descriptor.rs`) so a remote pawn is armed consistently,
-without promoting its weapon to the host's active wieldable.
+equip-at-spawn, in `attach_descriptor_components`
+(`crates/postretro/src/scripting/builtins/data_archetype.rs:480-488`) — the
+weapon-attach block, reached via `spawn_descriptor_instance` — where the pawn
+`id` and `weapon_desc` are both already in scope: attach/credit the pawn's
+`AmmoReserve` for the weapon's ammo type by the descriptor's starting
+`reserve`, and let the weapon materialize a full magazine (Task 2). That one
+site serves both spawn paths — the local `spawn_from_player_starts` path and
+the net-slot path (`net_descriptor.rs`'s `spawn_net_slot_pawn` funnels through
+the same `spawn_descriptor_instance`) — so there is nothing to seed
+separately for net-slot pawns; seeding here covers both. Net-slot seeding
+still matters under Option A: the host authoritatively simulates every pawn's
+fire/reload, so a net-slot (remote-player) pawn needs its reserve seeded
+host-side for its owner's authoritative reload to have a pool to draw from.
+The net path's only distinct concern remains spawning but never promoting the
+weapon to the host's active wieldable.
 
 `AmmoReserve` exposes a small interface with its backing map private: a query
 `available(type) -> u32` (rounds on hand for a type) and an atomic consume
@@ -211,23 +241,37 @@ available))` and add the returned rounds to the magazine — never index the poo
 directly. The `take` is the atomic step. A full magazine or empty pool is a
 distinct blocked outcome (a dedicated event name), not a partial/silent transfer.
 Reload does not interrupt cooldown and is not a per-shell state machine (out of
-scope).
+scope). The reload button reads as a rising edge (`ButtonState::Pressed`), not
+level (`is_active`), matching the dash precedent (`input.md`) — a held R does
+not re-attempt reload every tick.
 
-Reload intent rides the command frame like fire, so it replicates through the
-existing M15 command-frame path; hit/authority networking stays a Resolution
-Modes concern.
+Reload rides the existing command frame, not a new transport, but it is not
+free: the fire button already crosses the wire as `fire_button:
+WireFireButtonState` on the wire `InputCommand`, rebuilt into `SimCommand` by
+`input_command_to_sim`, serialized back by `sim_command_to_input`
+(`crates/postretro/src/netcode/wire_convert.rs`), and defaulted by
+`neutral_sim_command` (`crates/postretro/src/netcode/command_queue.rs`). Reload
+adds one more field to that same wire `InputCommand`, mirroring `fire_button` —
+edit all three sites (`input_command_to_sim`, `sim_command_to_input`,
+`neutral_sim_command`) plus the wire type itself. Adding a field to a wire type
+is a wire-format change and requires a wire-version bump per the two-gate
+handshake (`networking.md`). The host authoritatively performs the
+reserve→magazine transfer; the client predicts the transfer locally and
+reconciles from the owner-private magazine/reserve state.
 
 ### Task 6: HUD slots, publisher, readout, docs, tests
 
 Add `player.ammo` and `player.ammoReserve` to `BUILTIN_ENGINE_STATE`
 (`crates/entities/src/engine_state_catalog.rs`): readonly Number,
 `OwnerPrivatePlayer` network scope (mirroring `player.health`, so co-op
-replication is free per M15 Phase 3.5). Extend/mirror `PlayerHudStatePublisher`
+replication is free per Epic 15 Phase 3). Extend/mirror `PlayerHudStatePublisher`
 (`scripting/systems/ui_proxy.rs`) to read the active wieldable's live magazine →
 `player.ammo` and the pawn reserve's `available(type)` for that weapon's ammo
 type → `player.ammoReserve`; the publisher needs the active-wieldable id, which the
 `main.rs` call site (`self.active_wieldable`, near the `player_hud_state.tick_for_role`
-call) supplies. Restore an ammo readout in `content/dev/scripts/hud.ts` bound to
+call) supplies. With `resource: None` or no active wieldable (no pawn /
+fly-camera), skip the write, matching the health publisher's no-pawn handling.
+Restore an ammo readout in `content/dev/scripts/hud.ts` bound to
 `getGameState().player.ammo` / `player.ammoReserve`. Seed the reference pistol
 (`content/dev/scripts/reference-pistol.ts`) with an `ammo` resource so the loop
 is demoable. Update the committed SDK snapshot tests that currently assert ammo's
@@ -261,8 +305,9 @@ descriptor parsers `entity_descriptor_from_js` / `entity_descriptor_from_lua` in
 `crates/scripting-core/src/data_descriptors/{js,lua}/entity.rs`; SDK registry
 (`register_tagged_union`, `register_enum`, `WeaponDescriptor` fields) in
 `crates/postretro/src/scripting/primitives/mod.rs`; equip-at-spawn in
-`crates/postretro/src/scripting/builtins/data_archetype.rs` (`spawn_from_player_starts`,
-`attach_weapon`) and `.../net_descriptor.rs`; the fire/reload command build in
+`crates/postretro/src/scripting/builtins/data_archetype.rs`
+(`spawn_from_player_starts`, `attach_descriptor_components`) and
+`.../net_descriptor.rs`; the fire/reload command build in
 `crates/postretro/src/main.rs` (`build_sim_command`, `fire_button`) and
 `crates/postretro/src/sim/mod.rs` (`weapon_fire_command`, `run_weapon_fire_tick`,
 `local_movement_pawn`); `Action::Reload` in `crates/postretro/src/input/{types.rs,defaults.rs}`;
@@ -287,16 +332,17 @@ pub struct AmmoResource {
     #[serde(rename = "type")]
     pub ammo_type: String,   // reserve-pool key; validated as the credit_source charset
     pub magazine: u32,       // full-magazine capacity (an augmentable stat via effective())
-    #[serde(default = "one")]
+    #[serde(default = "default_cost_per_shot")]
     pub cost_per_shot: u32,  // rounds per activation (augmentable via effective())
     pub reserve: u32,        // starting reserve pooled by ammo type, seeded at spawn
 }
 ```
 
-`WeaponComponent` gains `magazine: u32` (live per-instance state, preserved on
-hot reload). `EffectiveStats` gains the ammo capacity/cost/type behind the
-`effective()` accessor — an `Option`, absent = unlimited-fire. The reserve is a
-separate pawn-owned component:
+`WeaponComponent` gains a stored ammo tuning `Option<{ ammo_type, capacity,
+cost_per_shot }>` (authored, refreshed on hot reload) plus `magazine: u32`
+(live per-instance state, preserved on hot reload). `EffectiveStats` gains the
+ammo capacity/cost/type behind the `effective()` accessor — an `Option`,
+absent = unlimited-fire. The reserve is a separate pawn-owned component:
 
 ```rust
 // Proposed design (entities crate — pawn-owned inventory precursor).
@@ -326,6 +372,7 @@ Reload queries `available(type)`, then atomically `take`s
 | Magazine capacity | `AmmoResource::magazine`, `EffectiveStats` capacity | `"magazine"` | `resource.magazine` | same | n/a |
 | Cost per shot | `AmmoResource::cost_per_shot`, `EffectiveStats` cost | `"costPerShot"` | `resource.costPerShot` | same | n/a |
 | Starting reserve | `AmmoResource::reserve` | `"reserve"` | `resource.reserve` | same | n/a |
+| Stored ammo tuning (component) | `WeaponComponent` ammo tuning `Option` (`ammo_type`/`capacity`/`cost_per_shot`), refreshed by `refresh_from_descriptor` | n/a | n/a | n/a | n/a |
 | Live magazine (HUD) | `player.ammo` slot ← `WeaponComponent::magazine` | `player.ammo` | `getGameState().player.ammo` | same | n/a |
 | Reserve pool (HUD) | `player.ammoReserve` slot ← `AmmoReserve` | `player.ammoReserve` | `getGameState().player.ammoReserve` | same | n/a |
 

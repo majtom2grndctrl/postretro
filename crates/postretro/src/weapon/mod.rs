@@ -78,9 +78,7 @@ impl ClientWeaponState {
             );
             return None;
         };
-        let Some(default_weapon) = pawn_descriptor.default_weapon.as_deref() else {
-            return None;
-        };
+        let default_weapon = pawn_descriptor.default_weapon.as_deref()?;
         let Some(weapon_descriptor) = find_descriptor(descriptors, default_weapon) else {
             log::warn!(
                 "[Net] local pawn defaultWeapon `{default_weapon}` not registered; client weapon \
@@ -494,6 +492,7 @@ pub(crate) fn resolve_client_fire(
     Some(ClientFireResolution { client_tick, hits })
 }
 
+#[allow(clippy::too_many_arguments)] // mirrors the local fire query inputs without a throwaway struct.
 fn resolve_client_hitscan(
     origin: Vec3,
     direction: Vec3,

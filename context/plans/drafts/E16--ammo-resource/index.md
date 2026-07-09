@@ -100,7 +100,7 @@ Each is its own later roadmap bullet; the shape only accommodates them.
   is consumed, no damage is applied, and the block is observable (a dry-fire
   event name reaches the caller's event drain / `ActivationOutcome::Empty`) — not
   a silent no-op. Cooldown-blocked shots stay silent as today.
-- [ ] Reload transfers `min(capacity - magazine, reserve[type])` rounds from the
+- [ ] Reload transfers `min(capacity - magazine, available(type))` rounds from the
   pawn reserve pool into the magazine in one step. Reload with a full magazine or
   an empty reserve pool is a distinct blocked outcome, not a partial or silent
   transfer.
@@ -209,8 +209,9 @@ reserve, so run it in `sim/mod.rs` beside `run_weapon_fire_tick`, where
 Query `available(type)`, then atomically `take(type, min(capacity - magazine,
 available))` and add the returned rounds to the magazine — never index the pool
 directly. The `take` is the atomic step. A full magazine or empty pool is a
-distinct blocked outcome (a dedicated event name), not a partial/silent transfer. Reload does not
-interrupt cooldown and is not a per-shell state machine (out of scope).
+distinct blocked outcome (a dedicated event name), not a partial/silent transfer.
+Reload does not interrupt cooldown and is not a per-shell state machine (out of
+scope).
 
 Reload intent rides the command frame like fire, so it replicates through the
 existing M15 command-frame path; hit/authority networking stays a Resolution

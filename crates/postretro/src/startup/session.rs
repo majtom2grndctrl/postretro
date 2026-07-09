@@ -159,6 +159,7 @@ pub(crate) fn build_session() -> Result<BootSession> {
         active_wieldable_descriptor: None,
         client_weapon_state: None,
         client_fire_resolutions: Vec::new(),
+        client_predicted_shots: crate::weapon::ClientPredictedShots::new(),
         builtin_handled: None,
         pending_spawn_points: None,
         host_spawn_points: Vec::new(),

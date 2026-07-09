@@ -1,6 +1,8 @@
 // Weapon fire tick (`tick_resolved`) and hitscan resolution; owns `WeaponFireCommand` and `FireButtonState`.
 // See: context/lib/entity_model.md §5, §7
 
+use std::collections::HashMap;
+
 use glam::Vec3;
 use parry3d::math::{Point, Vector};
 use postretro_entities::EntityTypeDescriptor;
@@ -117,6 +119,93 @@ pub(crate) struct LocalHitRecord {
 pub(crate) struct ClientFireResolution {
     pub(crate) client_tick: u32,
     pub(crate) hits: Vec<LocalHitRecord>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PredictedShotStatus {
+    Pending,
+    Accepted,
+    Rejected,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PredictedShotRecord {
+    pub(crate) shot_id: u64,
+    pub(crate) client_tick: u32,
+    pub(crate) cooldown_before_ms: f32,
+    pub(crate) cooldown_after_ms: f32,
+    pub(crate) muzzle_fx_visible: bool,
+    pub(crate) hitmarker_visible: bool,
+    pub(crate) status: PredictedShotStatus,
+}
+
+#[derive(Debug, Default, Clone, PartialEq)]
+pub(crate) struct ClientPredictedShots {
+    shots: HashMap<u64, PredictedShotRecord>,
+}
+
+impl ClientPredictedShots {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.shots.clear();
+    }
+
+    pub(crate) fn predict(
+        &mut self,
+        shot_id: u64,
+        resolution: &ClientFireResolution,
+        cooldown_before_ms: f32,
+        cooldown_after_ms: f32,
+    ) {
+        self.shots.insert(
+            shot_id,
+            PredictedShotRecord {
+                shot_id,
+                client_tick: resolution.client_tick,
+                cooldown_before_ms,
+                cooldown_after_ms,
+                muzzle_fx_visible: true,
+                hitmarker_visible: !resolution.hits.is_empty(),
+                status: PredictedShotStatus::Pending,
+            },
+        );
+    }
+
+    pub(crate) fn reconcile_cooldown(
+        state: &mut ClientWeaponState,
+        authoritative_cooldown_ms: f32,
+    ) {
+        if authoritative_cooldown_ms.is_finite() {
+            state.cooldown_remaining_ms = authoritative_cooldown_ms.max(0.0);
+        }
+    }
+
+    pub(crate) fn apply_verdict(
+        &mut self,
+        state: &mut ClientWeaponState,
+        shot_id: u64,
+        accepted: bool,
+    ) -> Option<&PredictedShotRecord> {
+        let record = self.shots.get_mut(&shot_id)?;
+        if accepted {
+            record.status = PredictedShotStatus::Accepted;
+            return Some(record);
+        }
+
+        state.cooldown_remaining_ms = record.cooldown_before_ms.max(0.0);
+        record.muzzle_fx_visible = false;
+        record.hitmarker_visible = false;
+        record.status = PredictedShotStatus::Rejected;
+        Some(record)
+    }
+
+    #[cfg(test)]
+    fn get(&self, shot_id: u64) -> Option<&PredictedShotRecord> {
+        self.shots.get(&shot_id)
+    }
 }
 
 // Not `Copy`: `zone: Option<String>` carries a heap-backed tag for skeletal
@@ -1359,5 +1448,101 @@ mod tests {
         assert_eq!(direct.zone, impact.zone, "same zone tag");
         assert_vec3_approx(direct.point, impact.point);
         assert_eq!(direct.target, target);
+    }
+
+    fn client_weapon_state() -> ClientWeaponState {
+        ClientWeaponState {
+            pawn: EntityId::from_raw(1),
+            cooldown_remaining_ms: 0.0,
+            cooldown_ms: 100.0,
+            fire_mode: FireMode::Semi,
+            resolution: ResolutionMode::Hitscan,
+            range: 10.0,
+            shoot_press_consumed: false,
+        }
+    }
+
+    #[test]
+    fn predicted_shot_records_local_presentation_markers() {
+        let target = EntityId::from_raw(2);
+        let resolution = ClientFireResolution {
+            client_tick: 9,
+            hits: vec![LocalHitRecord {
+                target,
+                point: Vec3::new(1.0, 2.0, 3.0),
+                zone: Some("head".to_string()),
+            }],
+        };
+        let mut predicted = ClientPredictedShots::new();
+
+        predicted.predict(0xA, &resolution, 0.0, 100.0);
+
+        let record = predicted.get(0xA).expect("shot should be recorded");
+        assert_eq!(record.client_tick, 9);
+        assert!(record.muzzle_fx_visible);
+        assert!(record.hitmarker_visible);
+        assert_eq!(record.status, PredictedShotStatus::Pending);
+    }
+
+    #[test]
+    fn shot_verdict_accept_confirms_predicted_markers() {
+        let resolution = ClientFireResolution {
+            client_tick: 9,
+            hits: vec![LocalHitRecord {
+                target: EntityId::from_raw(2),
+                point: Vec3::ZERO,
+                zone: None,
+            }],
+        };
+        let mut state = client_weapon_state();
+        state.cooldown_remaining_ms = 100.0;
+        let mut predicted = ClientPredictedShots::new();
+        predicted.predict(0xA, &resolution, 0.0, 100.0);
+
+        predicted
+            .apply_verdict(&mut state, 0xA, true)
+            .expect("verdict should match a predicted shot");
+
+        let record = predicted.get(0xA).expect("shot remains observable");
+        assert!(record.muzzle_fx_visible);
+        assert!(record.hitmarker_visible);
+        assert_eq!(record.status, PredictedShotStatus::Accepted);
+        assert!(approx_eq(state.cooldown_remaining_ms, 100.0));
+    }
+
+    #[test]
+    fn shot_verdict_reject_rolls_back_local_presentation_and_cooldown() {
+        let resolution = ClientFireResolution {
+            client_tick: 9,
+            hits: vec![LocalHitRecord {
+                target: EntityId::from_raw(2),
+                point: Vec3::ZERO,
+                zone: None,
+            }],
+        };
+        let mut state = client_weapon_state();
+        state.cooldown_remaining_ms = 100.0;
+        let mut predicted = ClientPredictedShots::new();
+        predicted.predict(0xA, &resolution, 25.0, 100.0);
+
+        predicted
+            .apply_verdict(&mut state, 0xA, false)
+            .expect("verdict should match a predicted shot");
+
+        let record = predicted.get(0xA).expect("shot remains observable");
+        assert!(!record.muzzle_fx_visible);
+        assert!(!record.hitmarker_visible);
+        assert_eq!(record.status, PredictedShotStatus::Rejected);
+        assert!(approx_eq(state.cooldown_remaining_ms, 25.0));
+    }
+
+    #[test]
+    fn owner_private_cooldown_reconciles_client_weapon_state() {
+        let mut state = client_weapon_state();
+        state.cooldown_remaining_ms = 100.0;
+
+        ClientPredictedShots::reconcile_cooldown(&mut state, 42.0);
+
+        assert!(approx_eq(state.cooldown_remaining_ms, 42.0));
     }
 }

@@ -420,6 +420,12 @@ impl ClientReplication {
         self.reverse_map.get(&entity_id).copied()
     }
 
+    /// The host-assigned id of this client's owned pawn, once the `local_player`
+    /// baseline has armed prediction.
+    pub(crate) fn local_pawn_network_id(&self) -> Option<NetworkId> {
+        self.local_pawn
+    }
+
     /// Resolve a replicated `NetworkId` to the current client-local entity.
     #[allow(dead_code)]
     pub(crate) fn entity_for_network_id(&self, network_id: NetworkId) -> Option<EntityId> {

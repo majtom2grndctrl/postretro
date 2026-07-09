@@ -1031,6 +1031,57 @@ pub(crate) fn client_latest_sent_command_tick(endpoint: Option<&NetEndpoint>) ->
     }
 }
 
+pub(crate) fn client_local_pawn_network_id(endpoint: Option<&NetEndpoint>) -> Option<NetworkId> {
+    match endpoint {
+        Some(NetEndpoint::Client { replication, .. }) => replication.local_pawn_network_id(),
+        _ => None,
+    }
+}
+
+pub(crate) fn shot_id_raw(pawn: NetworkId, client_tick: u32) -> u64 {
+    ShotId::from_parts(pawn, client_tick).raw()
+}
+
+pub(crate) fn client_send_hit_declaration(
+    endpoint: Option<&mut NetEndpoint>,
+    shot_id: u64,
+    hits: &[weapon::LocalHitRecord],
+) -> Option<usize> {
+    let Some(NetEndpoint::Client {
+        client,
+        replication,
+        ..
+    }) = endpoint
+    else {
+        return None;
+    };
+
+    let records = local_hits_to_wire_records(hits, |entity_id| {
+        replication.network_id_for_entity(entity_id)
+    });
+    let record_count = records.len();
+    client.send_input(wire::encode(&wire::ClientMessage::HitDeclaration(
+        wire::HitDeclaration { shot_id, records },
+    )));
+    Some(record_count)
+}
+
+fn local_hits_to_wire_records(
+    hits: &[weapon::LocalHitRecord],
+    mut resolve: impl FnMut(EntityId) -> Option<NetworkId>,
+) -> Vec<wire::HitRecord> {
+    hits.iter()
+        .filter_map(|hit| {
+            let target = resolve(hit.target)?;
+            Some(wire::HitRecord {
+                target: target.0,
+                point: hit.point.to_array(),
+                zone: hit.zone.clone(),
+            })
+        })
+        .collect()
+}
+
 /// Decay the local-pawn presentation offset after the current presented fixed-tick
 /// camera pose has been pushed. The render stage interpolates those presented poses
 /// directly, so the offset is baked into the frame-timing endpoints exactly once. A
@@ -1768,7 +1819,7 @@ pub(crate) fn client_drive_time_sync(
     client: &mut NetClient,
     time_sync: &mut ClientTimeSync,
     client_tick: u32,
-) {
+) -> Vec<wire::ShotVerdict> {
     // 1. Emit a probe if the 5 Hz cadence is due. `maybe_send_probe` records the
     //    issued sample id with the estimator so the matching echo passes the
     //    provenance guard (forgetting that would freeze the clock estimate).
@@ -1781,22 +1832,24 @@ pub(crate) fn client_drive_time_sync(
     //    the same monotonic clock, so RTT is purely client-local.
     let echoes = client.drain_input();
     if echoes.is_empty() {
-        return;
+        return Vec::new();
     }
     let recv_us = time_sync.clock.now_micros();
+    let mut verdicts = Vec::new();
     for bytes in echoes {
         match wire::decode::<wire::ServerMessage>(&bytes) {
             Ok(wire::ServerMessage::TimeSync(echo)) => {
                 time_sync.estimator.ingest_echo(&echo, recv_us);
             }
-            Ok(wire::ServerMessage::ShotVerdicts(_)) => {
-                // E16 Task 3 adds the owner-private carrier; Task 7 consumes it.
+            Ok(wire::ServerMessage::ShotVerdicts(message)) => {
+                verdicts.extend(message.verdicts);
             }
             Err(err) => {
                 log::warn!("[Net] dropping undecodable server input message: {err}");
             }
         }
     }
+    verdicts
 }
 
 /// Failure decoding a wire snapshot into a [`Snapshot`]: a corrupt buffer (bitcode
@@ -1939,6 +1992,45 @@ mod tests {
             resolution: ResolutionMode::Hitscan,
             credit_source: Some("weapon.test.net".to_string()),
         })
+    }
+
+    #[test]
+    fn shot_id_packs_pawn_network_id_and_client_tick() {
+        let raw = shot_id_raw(NetworkId(0xABCD_EF01), 0x1234_5678);
+        assert_eq!(raw, 0xABCD_EF01_1234_5678);
+    }
+
+    #[test]
+    fn local_hit_wire_conversion_drops_unnamed_targets_and_keeps_empty_valid() {
+        let named = EntityId::from_raw(1);
+        let unnamed = EntityId::from_raw(2);
+        let records = local_hits_to_wire_records(
+            &[
+                weapon::LocalHitRecord {
+                    target: named,
+                    point: Vec3::new(1.0, 2.0, 3.0),
+                    zone: Some("head".to_string()),
+                },
+                weapon::LocalHitRecord {
+                    target: unnamed,
+                    point: Vec3::new(4.0, 5.0, 6.0),
+                    zone: None,
+                },
+            ],
+            |entity_id| (entity_id == named).then_some(NetworkId(77)),
+        );
+
+        assert_eq!(
+            records,
+            vec![wire::HitRecord {
+                target: 77,
+                point: [1.0, 2.0, 3.0],
+                zone: Some("head".to_string()),
+            }]
+        );
+
+        let empty = local_hits_to_wire_records(&[], |_| Some(NetworkId(1)));
+        assert!(empty.is_empty(), "empty declarations remain valid misses");
     }
 
     fn movement_component_with_eye_height(eye_height: f32) -> PlayerMovementComponent {

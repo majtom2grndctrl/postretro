@@ -527,6 +527,7 @@ pub(crate) struct App {
     /// with respect to world state and feeds local hit resolution only.
     client_weapon_state: Option<weapon::ClientWeaponState>,
     client_fire_resolutions: Vec<weapon::ClientFireResolution>,
+    client_predicted_shots: weapon::ClientPredictedShots,
 
     /// Boot state machine: drives the splash → first-level-frame transition.
     /// Subsumes the previous `level_load_fired` one-shot flag.
@@ -800,6 +801,18 @@ fn build_post_movement_command(camera: &Camera) -> sim::PostMovementCommand {
     sim::PostMovementCommand {
         aim_origin,
         aim_direction,
+    }
+}
+
+fn client_weapon_cooldown_from_slot_table(
+    slot_table: &postretro_entities::SlotTable,
+) -> Option<f32> {
+    match slot_table
+        .get("player.weaponCooldownMs")
+        .and_then(|record| record.value.as_ref())
+    {
+        Some(postretro_entities::SlotValue::Number(value)) => Some(*value),
+        _ => None,
     }
 }
 
@@ -4137,7 +4150,16 @@ impl App {
                 // local sim tick is the engine frame counter; the estimator reads
                 // its own monotonic clock for send/receive microseconds.
                 let client_tick = script_ctx.frame.get() as u32;
-                netcode::client_drive_time_sync(client, time_sync, client_tick);
+                let shot_verdicts = netcode::client_drive_time_sync(client, time_sync, client_tick);
+                if let Some(state) = self.client_weapon_state.as_mut() {
+                    for verdict in shot_verdicts {
+                        let _ = self.client_predicted_shots.apply_verdict(
+                            state,
+                            verdict.shot_id,
+                            verdict.accept,
+                        );
+                    }
+                }
                 // Decode + apply every snapshot received this frame through the
                 // Phase 2 client state machine, arm prediction off any `local_player`
                 // baseline, apply replicated state-slot records through the store-write
@@ -4169,6 +4191,12 @@ impl App {
                     dt,
                     mover_target_tick,
                 );
+                if let (Some(state), Some(cooldown_ms)) = (
+                    self.client_weapon_state.as_mut(),
+                    client_weapon_cooldown_from_slot_table(&slot_table),
+                ) {
+                    weapon::ClientPredictedShots::reconcile_cooldown(state, cooldown_ms);
+                }
                 armed_local_pawn = apply_outcome.armed_local_pawn;
                 if apply_outcome.materialized_remote_enemy_presentation {
                     // `mesh_clip_tables` is a disjoint field of the same `session`
@@ -4210,6 +4238,7 @@ impl App {
         self.client_weapon_state =
             weapon::ClientWeaponState::from_local_pawn_descriptor(pawn, entity_class, descriptors);
         self.client_fire_resolutions.clear();
+        self.client_predicted_shots.clear();
     }
 
     fn run_client_fire_path_post_loop(
@@ -4232,6 +4261,13 @@ impl App {
         ) else {
             return;
         };
+        let Some(local_pawn_network_id) = netcode::client_local_pawn_network_id(
+            self.session
+                .as_ref()
+                .and_then(|session| session.net_endpoint.as_ref()),
+        ) else {
+            return;
+        };
         let Some(state) = self.client_weapon_state.as_mut() else {
             return;
         };
@@ -4245,19 +4281,38 @@ impl App {
             active: shoot.is_active(),
         };
         let (aim_origin, aim_direction) = self.camera.aim_ray();
-        let registry = session.scripting.script_ctx.registry.borrow();
-        if let Some(resolution) = weapon::resolve_client_fire(
-            state,
-            button,
-            aim_origin,
-            aim_direction,
-            client_tick,
-            &self.collision_world,
-            &registry,
-            &session.hit_zone_store,
-            frame_anim_time,
-            frame_dt,
-        ) {
+        let cooldown_before_ms = state.cooldown_remaining_ms;
+        let resolution = {
+            let registry = session.scripting.script_ctx.registry.borrow();
+            weapon::resolve_client_fire(
+                state,
+                button,
+                aim_origin,
+                aim_direction,
+                client_tick,
+                &self.collision_world,
+                &registry,
+                &session.hit_zone_store,
+                frame_anim_time,
+                frame_dt,
+            )
+        };
+        if let Some(resolution) = resolution {
+            let cooldown_after_ms = state.cooldown_remaining_ms;
+            let shot_id = netcode::shot_id_raw(local_pawn_network_id, resolution.client_tick);
+            self.client_predicted_shots.predict(
+                shot_id,
+                &resolution,
+                cooldown_before_ms,
+                cooldown_after_ms,
+            );
+            let _ = netcode::client_send_hit_declaration(
+                self.session
+                    .as_mut()
+                    .and_then(|session| session.net_endpoint.as_mut()),
+                shot_id,
+                &resolution.hits,
+            );
             self.client_fire_resolutions.push(resolution);
         }
     }

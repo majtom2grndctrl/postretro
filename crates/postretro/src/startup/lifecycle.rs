@@ -1288,6 +1288,7 @@ mod tests {
             active_wieldable_descriptor: None,
             client_weapon_state: None,
             client_fire_resolutions: Vec::new(),
+            client_predicted_shots: crate::weapon::ClientPredictedShots::new(),
             boot_state: BootState::Running,
             splash_frame: 0,
             pending_level_log: false,

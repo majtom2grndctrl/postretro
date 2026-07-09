@@ -27,6 +27,8 @@ The panel is **lens-based**, not subject-based. A lens is a way of reviewing, no
 
 **Grouping rule.** Depth lenses need sustained attention on one thing; an agent juggling two satisfices and does both shallowly. So: **one agent per depth lens; one agent for the whole breadth cluster.** Never pair a depth lens with anything else.
 
+**Global agent budget (hard cap).** The per-slice counts in step 4 are local; left unbounded they scale linearly with diff size (a ~5k-line diff → ~5 slices → ~16 agents; a 10k diff → 30+). Cap the WHOLE invocation at **12 agents total** across all slices plus the seam pass — not 12 per slice. If triage would exceed 12, do not silently fan out: (a) widen slices so there are fewer of them, (b) drop the lowest-value lenses (a slice's second tracer before another slice's sole hygiene agent), or (c) surface the tradeoff and let the user approve a larger fleet before launching. On very large diffs prefer a two-phase pass — depth + seam first, breadth only where depth surfaced risk — over launching everything at once. Reasoning level compounds cost: at high/extra reasoning every agent burns far more, so a large fleet multiplies token spend fast — lean toward the low end of the cap there.
+
 ## Scope detection
 
 Determine review target from first argument (same rules as `/code-review`):
@@ -83,6 +85,8 @@ Size each slice's panel from its triage:
 ### 5. Spawn all agents in parallel
 
 Launch a slice's agents in a single message. Slices and the seam pass can run concurrently — triage is done, so nothing blocks. No `isolation: "worktree"` needed — reviewers read code and report findings, they don't write files.
+
+**Reviewers must be read-only.** Dispatch every reviewer with a subagent type that has NO `Agent`/`Task` spawn tool (e.g. `Explore`) — a reviewer needs only Read/Grep/Bash/Glob to read code and report findings. This is load-bearing, not a style preference: a reviewer handed the spawn tool (as `general-purpose` grants) can recursively fan out into its own sub-panel, silently multiplying the fleet several-fold and blowing the token budget past the cap above. **Never dispatch reviewers as `general-purpose`.** The coordinator keeps the `Agent` tool (it does the spawning); the reviewers must not.
 
 - **Each depth agent:** the shared preamble (below), then its lens prompt, then the specific flow or surface from triage. The lens governs — depth agents do not run the general code-review checklist; that is the breadth pass's job. Specified model (default: opus).
 - **Hygiene + drift agent (always Sonnet):** full content of `.claude/skills/code-review/SKILL.md` (the breadth checklist), then the hygiene+drift prompt (below).

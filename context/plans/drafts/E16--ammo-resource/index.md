@@ -86,7 +86,7 @@ Each is its own later roadmap bullet; the shape only accommodates them.
   dispatch. Named as consumers of the grant seam; not built. No ammo is granted
   by any event here.
 - A generated `AmmoType` union backed by a declared-ammo-type registry — the
-  type validates as a free-form ASCII identifier now (see open questions).
+  type validates as a free-form ASCII identifier now (see design decisions below).
 - Host-side application of a remote client's fire/reload commands to their own
   pawn — that command-application seam belongs to the prerequisite spec **E16
   — Host Combat Command Application**. This spec seeds the reserve (Task 3)
@@ -434,51 +434,50 @@ Reload queries `available(type)`, then atomically `take`s
 | Live magazine (HUD) | `player.ammo` slot ← `WeaponComponent::magazine` | `player.ammo` | `getGameState().player.ammo` | same | n/a |
 | Reserve pool (HUD) | `player.ammoReserve` slot ← `AmmoReserve` | `player.ammoReserve` | `getGameState().player.ammoReserve` | same | n/a |
 
-## Open questions
+## Design decisions & rationale
 
-- **`player.ammo` is added fresh, not "retired from a static proxy."** The
-  Epic 13 game-state SDK cleanup already deleted the fake ammo HUD entirely —
-  there is no live `player.ammo` slot, and the committed SDK snapshot + demo
-  tests actively assert its absence. This spec therefore *introduces* the
-  engine-owned `player.ammo` / `player.ammoReserve` slots, a publisher, and a
-  restored HUD readout, rather than swapping a static value. The intent
-  (settled decision: feed a real ammo slot) is unchanged; only the framing
-  differs.
+- **`player.ammo` is added fresh, not retired from a static proxy.** The Epic 13
+  game-state SDK cleanup deleted the fake ammo HUD entirely — no live
+  `player.ammo` slot survives, and the committed SDK snapshot + demo tests assert
+  its absence. This spec *introduces* the engine-owned `player.ammo` /
+  `player.ammoReserve` slots, a publisher, and a restored readout — it does not
+  swap a static value. The decision (feed a real ammo slot) is unchanged; only
+  the framing is corrected.
 - **Ammo `type` stays a free-form charset-validated identifier.** It matches the
-  already-shipped `creditSource` precedent — same `[A-Za-z0-9_.:-]` charset, same
+  shipped `creditSource` precedent — same `[A-Za-z0-9_.:-]` charset, same
   modder-owned-key role; two sibling contracts in one milestone should not
-  disagree on how a modder names a category. The generated `AmmoType` union is
-  *not* an ammo/inventory concern: it belongs to a future cross-cutting
-  "declare-your-categoricals → codegen" capability spanning ammo type, credit
-  source, damage type, and status effects — decide it once, there, not here.
-  String→union is a compatible tightening (the union is generated from the
-  declared values), so it is not a hard-to-reverse shape; deferring is correct.
+  disagree on how a modder names a category. A generated `AmmoType` union is not
+  an ammo/inventory concern: it belongs to a future cross-cutting
+  "declare-your-categoricals → codegen" spec spanning ammo type, credit source,
+  damage type, and status effects — decided once, there. String→union is a
+  compatible tightening — the union is generated from the declared values — so
+  the shape is not hard to reverse and deferral is safe.
 - **Reserve lives on the pawn as an inventory precursor.** Pooling by ammo type
-  is honored, but the durable home is the inventory (`weapon-model.md` §6), out
-  of scope here. The `available`/`take` interface (Task 3) is what makes pawn
-  ownership safe: it keeps the switching+inventory relocation localized to one
-  seam *and* keeps the immersive-sim inventory-backed-storage use case open.
-  Nothing downstream indexes the pool directly, so nothing assumes the pawn is
-  its permanent owner.
+  is honored; the durable home is the inventory (`weapon-model.md` §6), out of
+  scope here. The `available`/`take` interface (Task 3) makes pawn ownership
+  safe — it localizes the later switching+inventory relocation to one seam and
+  keeps the immersive-sim inventory-backed-storage use case open. Nothing
+  downstream indexes the pool directly, so nothing assumes the pawn is its
+  permanent owner.
 - **`reloadStyle` is omitted, not defaulted.** Atomic magazine reload is the only
   style; the per-shell reload spec introduces the classifier as a resource-block
   field. Adding it now would imply a state machine this spec does not build.
-- **Forward compatibility — the reserve's two open use cases.**
+- **The reserve keeps two use cases open.**
   - The `u32` count is a near-term stand-in for inventory-backed storage. An
-    inventory that tracks ammo as space-occupying items backs the same
+    inventory tracking ammo as space-occupying items backs the same
     `available`/`take` interface without touching callers. Per-round unique state
     (per-bullet durability, mixed-ammo magazines) is the only thing the count
     forecloses — additive later by replacing the count with a stack at
-    inventory-relocation time; no near-term case needs it.
+    relocation time; no near-term case needs it.
   - "Takes up space" (weight/volume capacity) is a write-side concern enforced
     when ammo *enters* the reserve — the deferred grant/pickup chokepoint — not
     here. This spec ships no grant and no cap, so it prejudges no capacity.
   - Borderlands-style pooled-by-type ammo is directly expressible today via the
     `type` string plus `costPerShot`; a per-type carry cap is a future additive
     field, not a shape change.
-- **`WeaponResource` is one resource kind per weapon.** The single tagged union
+- **One resource kind per weapon.** The single `WeaponResource` tagged union
   means a weapon that consumes ammo *and* builds heat (or ammo + cell)
-  simultaneously is not expressible — the genuinely hard-to-reverse bet, and it
-  traces to the `weapon-model.md` "resource is one-of" tagged-union decision, not
-  this spec. It is orthogonal to the pooled-ammo and inventory use cases; both
-  are single-resource.
+  simultaneously is not expressible — the one genuinely hard-to-reverse bet. It
+  traces to the `weapon-model.md` "resource is one-of" decision, not this spec,
+  and is orthogonal to the pooled-ammo and inventory use cases; both are
+  single-resource.

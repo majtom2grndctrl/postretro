@@ -237,6 +237,19 @@ pub(crate) struct ResolvedCommand {
     pub(crate) source: ResolutionSource,
 }
 
+/// A resolved host command bound to one remote-owned pawn for this fixed tick.
+/// Movement consumes `command.movement`; host FIRE/reload consumes the same command's
+/// weapon intent later in the sim weapon stage.
+#[derive(Debug, Clone)]
+pub(crate) struct ResolvedPawnCommand {
+    pub(crate) pawn: EntityId,
+    pub(crate) client_id: u64,
+    pub(crate) command: SimCommand,
+    pub(crate) client_tick: u32,
+    #[allow(dead_code)]
+    pub(crate) source: ResolutionSource,
+}
+
 /// How a fixed tick's command was resolved by the gap policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ResolutionSource {
@@ -382,20 +395,37 @@ impl HostCommandQueues {
 /// the host's substitute for `local_movement_pawn`: every authoritative pawn is named
 /// explicitly, including the listen host's own pawn (which the caller appends
 /// separately with its locally-sampled input).
-pub(crate) fn host_resolve_movement_inputs(
+pub(crate) fn host_resolve_remote_commands(
     owners: &MovementOwners,
     command_queues: &mut HostCommandQueues,
-) -> Vec<(EntityId, crate::movement::MovementInput)> {
-    let mut pairs = Vec::new();
+) -> Vec<ResolvedPawnCommand> {
+    let mut commands = Vec::new();
     // Snapshot the owner pairs first so the mutable queue borrow does not alias the
     // owners borrow.
     let owner_pairs: Vec<(EntityId, u64)> = owners.iter().collect();
     for (pawn, client_id) in owner_pairs {
         if let Some(resolved) = command_queues.resolve_tick(client_id) {
-            pairs.push((pawn, resolved.command.movement));
+            commands.push(ResolvedPawnCommand {
+                pawn,
+                client_id,
+                command: resolved.command,
+                client_tick: resolved.client_tick,
+                source: resolved.source,
+            });
         }
     }
-    pairs
+    commands
+}
+
+#[cfg(test)]
+pub(crate) fn host_resolve_movement_inputs(
+    owners: &MovementOwners,
+    command_queues: &mut HostCommandQueues,
+) -> Vec<(EntityId, crate::movement::MovementInput)> {
+    host_resolve_remote_commands(owners, command_queues)
+        .into_iter()
+        .map(|resolved| (resolved.pawn, resolved.command.movement))
+        .collect()
 }
 
 /// A neutral (no-intent) sim command: no wish direction, no buttons, facing held at
@@ -511,6 +541,33 @@ mod tests {
             !neutral.command.reload,
             "neutral fallback clears reload intent"
         );
+    }
+
+    #[test]
+    fn host_resolve_remote_commands_preserves_full_sim_command_per_pawn() {
+        let mut queues = HostCommandQueues::new();
+        let mut owners = MovementOwners::new();
+        let pawn = EntityId::from_raw(2);
+        owners.set(pawn, CLIENT);
+
+        let mut cmd = command(0, 0.75);
+        cmd.fire_button = WireFireButtonState {
+            pressed: true,
+            active: true,
+        };
+        cmd.reload = true;
+        assert!(queues.ingest(CLIENT, &cmd));
+
+        let resolved = host_resolve_remote_commands(&owners, &mut queues);
+
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].pawn, pawn);
+        assert_eq!(resolved[0].client_id, CLIENT);
+        assert_eq!(resolved[0].client_tick, 0);
+        assert!(resolved[0].command.fire_button.pressed);
+        assert!(resolved[0].command.fire_button.active);
+        assert!(resolved[0].command.reload);
+        assert!((resolved[0].command.movement.wish_dir.y - 0.75).abs() < EPSILON);
     }
 
     // An exact duplicate tick collapses to one queued command; a stale command at or

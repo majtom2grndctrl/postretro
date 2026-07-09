@@ -163,6 +163,12 @@ impl WeaponFireEvents {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WeaponFireAuthorization {
+    Accepted,
+    Rejected,
+}
+
 #[allow(clippy::too_many_arguments)] // weapon fire genuinely needs all of these inputs.
 #[cfg(test)]
 pub(crate) fn tick(
@@ -216,22 +222,9 @@ pub(crate) fn tick_resolved(
     };
     let mut weapon = existing.clone();
 
-    let dt_ms = (tick_dt.max(0.0)) * 1000.0;
-    weapon.cooldown_remaining_ms = (weapon.cooldown_remaining_ms - dt_ms).max(0.0);
-
     let stats = weapon.effective();
-    let wants_fire = match stats.fire_mode {
-        FireMode::Semi => command.button.pressed && !weapon.shoot_press_consumed,
-        FireMode::Auto => command.button.active,
-    };
-    if stats.fire_mode == FireMode::Semi && command.button.pressed {
-        weapon.shoot_press_consumed = true;
-    } else if !command.button.active {
-        weapon.shoot_press_consumed = false;
-    }
-
-    let events = if command.can_fire && wants_fire && weapon.cooldown_remaining_ms <= 0.0 {
-        weapon.cooldown_remaining_ms = stats.cooldown_ms;
+    let fire = apply_weapon_fire_state(&mut weapon, command, tick_dt);
+    let events = if fire == WeaponFireAuthorization::Accepted {
         fire_hitscan(
             command.aim_origin,
             command.aim_direction,
@@ -249,6 +242,54 @@ pub(crate) fn tick_resolved(
 
     let _ = registry.set_component(weapon_id, weapon);
     events
+}
+
+pub(crate) fn tick_state_only(
+    registry: &mut EntityRegistry,
+    active_wieldable: Option<EntityId>,
+    command: &WeaponFireCommand,
+    tick_dt: f32,
+) -> WeaponFireAuthorization {
+    let Some(weapon_id) = active_wieldable else {
+        return WeaponFireAuthorization::Rejected;
+    };
+
+    let Ok(existing) = registry.get_component::<WeaponComponent>(weapon_id) else {
+        return WeaponFireAuthorization::Rejected;
+    };
+    let mut weapon = existing.clone();
+    let result = apply_weapon_fire_state(&mut weapon, command, tick_dt);
+    let _ = registry.set_component(weapon_id, weapon);
+    result
+}
+
+fn apply_weapon_fire_state(
+    weapon: &mut WeaponComponent,
+    command: &WeaponFireCommand,
+    tick_dt: f32,
+) -> WeaponFireAuthorization {
+    let dt_ms = (tick_dt.max(0.0)) * 1000.0;
+    weapon.cooldown_remaining_ms = (weapon.cooldown_remaining_ms - dt_ms).max(0.0);
+
+    let stats = weapon.effective();
+    let wants_fire = match stats.fire_mode {
+        FireMode::Semi => command.button.pressed && !weapon.shoot_press_consumed,
+        FireMode::Auto => command.button.active,
+    };
+    if stats.fire_mode == FireMode::Semi && command.button.pressed {
+        weapon.shoot_press_consumed = true;
+    } else if !command.button.active {
+        weapon.shoot_press_consumed = false;
+    }
+
+    if command.can_fire && wants_fire && weapon.cooldown_remaining_ms <= 0.0 {
+        // Ammo validation/consumption belongs to the E16 ammo seam; this state half
+        // owns cooldown/fire-mode legitimacy only.
+        weapon.cooldown_remaining_ms = stats.cooldown_ms;
+        WeaponFireAuthorization::Accepted
+    } else {
+        WeaponFireAuthorization::Rejected
+    }
 }
 
 #[allow(clippy::too_many_arguments)] // weapon fire genuinely needs all of these inputs.
@@ -854,6 +895,29 @@ mod tests {
 
         assert_eq!(events.event_names(), vec!["activate"]);
         assert!(events.impact.is_none());
+        let weapon = registry
+            .get_component::<WeaponComponent>(weapon_id)
+            .expect("weapon component should still exist");
+        assert!(approx_eq(weapon.cooldown_remaining_ms, 100.0));
+    }
+
+    #[test]
+    fn state_only_fire_advances_cooldown_without_hitscan_events() {
+        let mut registry = EntityRegistry::new();
+        let weapon_id = spawn_weapon(&mut registry, weapon_component(FireMode::Semi, 100.0));
+        let command = WeaponFireCommand {
+            button: FireButtonState {
+                pressed: true,
+                active: true,
+            },
+            aim_origin: Vec3::ZERO,
+            aim_direction: Vec3::NEG_Z,
+            can_fire: true,
+        };
+
+        let result = tick_state_only(&mut registry, Some(weapon_id), &command, 1.0 / 60.0);
+
+        assert_eq!(result, WeaponFireAuthorization::Accepted);
         let weapon = registry
             .get_component::<WeaponComponent>(weapon_id)
             .expect("weapon component should still exist");

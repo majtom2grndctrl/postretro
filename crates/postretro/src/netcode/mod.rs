@@ -48,7 +48,8 @@ mod enemy_replication_harness_test;
 
 pub(crate) use client::ClientReplication;
 pub(crate) use command_queue::{
-    HostCommandQueues, MovementOwners, WeaponOwners, host_resolve_movement_inputs,
+    HostCommandQueues, MovementOwners, ResolvedPawnCommand, WeaponOwners,
+    host_resolve_remote_commands,
 };
 // `ResolvedCommand` / `ResolutionSource` are produced by the command queue and consumed
 // via the submodule path only; not re-exported here.
@@ -265,6 +266,14 @@ pub(crate) enum NetEndpoint {
         /// EntityId`. Later host-authoritative fire/cooldown/hit ingest resolves a
         /// client's pawn to its weapon here; weaponless pawns have no entry.
         weapon_owners: WeaponOwners,
+        /// E16 host-authorized shots that are still open for a future client HIT
+        /// declaration. Keyed by deterministic `ShotId`; Task 6 validates ownership
+        /// and retires entries from this store.
+        open_shots: OpenAuthorizedShots,
+        /// De-dup latch for weaponless remote pawns that try to fire. Missing weapons
+        /// are a normal descriptor state, so this logs once per pawn rather than as an
+        /// error every tick.
+        weaponless_fire_logged: std::collections::HashSet<EntityId>,
         /// The listen host's OWN player pawn, registered for OUTBOUND replication
         /// only (M15 Phase 3, issue 3b). The host pawn is driven LOCALLY by
         /// `simulate_tick`/`local_movement_pawn` exactly as in single-player — it is
@@ -441,6 +450,8 @@ impl NetEndpoint {
                     command_queues: HostCommandQueues::new(),
                     owners: MovementOwners::new(),
                     weapon_owners: WeaponOwners::new(),
+                    open_shots: OpenAuthorizedShots::new(),
+                    weaponless_fire_logged: std::collections::HashSet::new(),
                     host_pawn: None,
                     map_enemies: std::collections::HashSet::new(),
                     loaded_movers: std::collections::HashSet::new(),
@@ -509,6 +520,69 @@ pub(crate) struct NetworkIdAllocator {
     next: u32,
     map: HashMap<EntityId, NetworkId>,
     reverse: HashMap<NetworkId, EntityId>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct ShotId(u64);
+
+impl ShotId {
+    pub(crate) fn from_parts(pawn: NetworkId, client_tick: u32) -> Self {
+        Self((u64::from(pawn.0) << 32) | u64::from(client_tick))
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn raw(self) -> u64 {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct AuthorizedShot {
+    pub(crate) shot_id: ShotId,
+    pub(crate) pawn: EntityId,
+    pub(crate) fire_tick: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct OpenAuthorizedShot {
+    pub(crate) shot: AuthorizedShot,
+    pub(crate) owner_client_id: u64,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct OpenAuthorizedShots {
+    shots: HashMap<ShotId, OpenAuthorizedShot>,
+}
+
+impl OpenAuthorizedShots {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    pub(crate) fn record(&mut self, shot: AuthorizedShot, owner_client_id: u64) {
+        self.shots.insert(
+            shot.shot_id,
+            OpenAuthorizedShot {
+                shot,
+                owner_client_id,
+            },
+        );
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn get(&self, shot_id: ShotId) -> Option<OpenAuthorizedShot> {
+        self.shots.get(&shot_id).copied()
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn retire(&mut self, shot_id: ShotId) -> Option<OpenAuthorizedShot> {
+        self.shots.remove(&shot_id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.shots.len()
+    }
 }
 
 impl NetworkIdAllocator {
@@ -1595,6 +1669,33 @@ mod tests {
             state_schema_fingerprint: [0u8; 32],
             state_records: Vec::new(),
         }
+    }
+
+    #[test]
+    fn open_authorized_shots_store_records_and_retires_by_shot_id() {
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        let shot_id = ShotId::from_parts(NetworkId(0xABCD_EF01), 0x1234_5678);
+        assert_eq!(shot_id.raw(), 0xABCD_EF01_1234_5678);
+
+        let mut shots = OpenAuthorizedShots::new();
+        shots.record(
+            AuthorizedShot {
+                shot_id,
+                pawn,
+                fire_tick: 99,
+            },
+            7,
+        );
+
+        let open = shots.get(shot_id).expect("shot should be open");
+        assert_eq!(open.owner_client_id, 7);
+        assert_eq!(open.shot.pawn, pawn);
+        assert_eq!(open.shot.fire_tick, 99);
+        assert_eq!(shots.len(), 1);
+        assert_eq!(shots.retire(shot_id), Some(open));
+        assert!(shots.get(shot_id).is_none());
+        assert_eq!(shots.len(), 0);
     }
 
     // Regression: connected-client level unload can leave the transport connected

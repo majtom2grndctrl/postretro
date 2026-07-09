@@ -1826,7 +1826,9 @@ impl ApplicationHandler for App {
                         // Host: resolve remote (owned) pawn inputs up front, then the
                         // shared `simulate_tick` runs loaded movers and every player
                         // movement consumer against the same combined collision query.
-                        let remote_pawn_inputs = self.host_resolve_remote_movement_inputs();
+                        let resolved_remote_commands = self.host_resolve_remote_commands();
+                        let remote_pawn_commands =
+                            self.host_prepare_remote_pawn_commands(&resolved_remote_commands);
 
                         // Borrow the two session-owned `simulate_tick` inputs
                         // (hit-zone store, progress tracker) and the boot-owned
@@ -1851,7 +1853,7 @@ impl ApplicationHandler for App {
                             &mut self.ai_warned,
                             &self.kinematic_mover_colliders,
                             &mut self.kinematic_mover_tick_states,
-                            &remote_pawn_inputs,
+                            &remote_pawn_commands,
                             &command,
                             |registry| {
                                 // Camera follows the selected local pawn before
@@ -1877,6 +1879,7 @@ impl ApplicationHandler for App {
                             },
                             tick_dt,
                         );
+                        self.host_record_authorized_shots(&tick_events.authorized_shots);
                         pending_movement_events.extend(tick_events.movement);
                         pending_ai_events.extend(tick_events.ai);
                         pending_weapon_events.extend(tick_events.weapon);
@@ -4003,6 +4006,8 @@ impl App {
                 command_queues,
                 owners,
                 weapon_owners,
+                open_shots: _,
+                weaponless_fire_logged: _,
                 tick,
                 host_pawn: _,
                 map_enemies: _,
@@ -4274,6 +4279,8 @@ impl App {
             command_queues,
             owners,
             weapon_owners,
+            open_shots: _,
+            weaponless_fire_logged: _,
             host_pawn: _,
             map_enemies: _,
             loaded_movers: _,
@@ -4376,14 +4383,11 @@ impl App {
         )
     }
 
-    /// Host authoritative remote-pawn input resolution (M15 Phase 3 Task 4).
-    /// Resolves one command per OWNED remote pawn through the deterministic gap
-    /// policy. The actual movement runs inside `simulate_tick`, after loaded
-    /// movers publish their tick poses, so every pawn consumes one combined
-    /// collision query for the tick.
-    fn host_resolve_remote_movement_inputs(
-        &mut self,
-    ) -> Vec<(postretro_entities::EntityId, movement::MovementInput)> {
+    /// Host authoritative remote-pawn command resolution. Resolves one full command
+    /// per OWNED remote pawn through the deterministic gap policy. Movement consumes
+    /// only the movement subset; host FIRE/reload consumes the same resolved command
+    /// later in the sim weapon stage.
+    fn host_resolve_remote_commands(&mut self) -> Vec<netcode::ResolvedPawnCommand> {
         let Some(netcode::NetEndpoint::Host {
             command_queues,
             owners,
@@ -4395,7 +4399,71 @@ impl App {
         else {
             return Vec::new();
         };
-        netcode::host_resolve_movement_inputs(owners, command_queues)
+        netcode::host_resolve_remote_commands(owners, command_queues)
+    }
+
+    fn host_prepare_remote_pawn_commands(
+        &mut self,
+        resolved: &[netcode::ResolvedPawnCommand],
+    ) -> Vec<sim::RemotePawnCommand> {
+        let Some(netcode::NetEndpoint::Host {
+            allocator,
+            weapon_owners,
+            weaponless_fire_logged,
+            tick,
+            ..
+        }) = self
+            .session
+            .as_mut()
+            .and_then(|session| session.net_endpoint.as_mut())
+        else {
+            return Vec::new();
+        };
+
+        resolved
+            .iter()
+            .map(|resolved| {
+                let weapon = weapon_owners.weapon_of(resolved.pawn);
+                let wants_fire =
+                    resolved.command.fire_button.pressed || resolved.command.fire_button.active;
+                if weapon.is_none()
+                    && wants_fire
+                    && weaponless_fire_logged.insert(resolved.pawn)
+                {
+                    log::info!(
+                        "[Net] owned pawn {} has no active weapon; ignoring remote fire",
+                        resolved.pawn
+                    );
+                }
+                let shot_id = allocator
+                    .network_id_for_entity(resolved.pawn)
+                    .map(|network_id| {
+                        netcode::ShotId::from_parts(network_id, resolved.client_tick)
+                    });
+                sim::RemotePawnCommand {
+                    pawn: resolved.pawn,
+                    owner_client_id: resolved.client_id,
+                    weapon,
+                    shot_id,
+                    fire_tick: *tick,
+                    client_tick: resolved.client_tick,
+                    command: resolved.command.clone(),
+                }
+            })
+            .collect()
+    }
+
+    fn host_record_authorized_shots(&mut self, shots: &[netcode::OpenAuthorizedShot]) {
+        let Some(netcode::NetEndpoint::Host { open_shots, .. }) = self
+            .session
+            .as_mut()
+            .and_then(|session| session.net_endpoint.as_mut())
+        else {
+            return;
+        };
+        for shot in shots {
+            open_shots.record(shot.shot, shot.owner_client_id);
+        }
     }
 
     /// Advance the listen host's authoritative fixed-simulation tick after one

@@ -16,7 +16,10 @@ use crate::movement::MovementInput;
 use crate::nav::NavGraph;
 use crate::scripting_systems;
 use crate::scripting_systems::hit_zones::HitZoneStore;
-use crate::weapon::{self, FireButtonState, WeaponFireCommand};
+use crate::netcode::{AuthorizedShot, OpenAuthorizedShot, ShotId};
+use crate::weapon::{
+    self, FireButtonState, WeaponFireAuthorization, WeaponFireCommand,
+};
 use postretro_entities::components::health::{
     DamageContext, HealthComponent, apply_damage_with_context,
 };
@@ -36,12 +39,32 @@ pub(crate) struct PostMovementCommand {
     pub(crate) aim_direction: Vec3,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct RemotePawnCommand {
+    pub(crate) pawn: EntityId,
+    pub(crate) owner_client_id: u64,
+    pub(crate) weapon: Option<EntityId>,
+    pub(crate) shot_id: Option<ShotId>,
+    pub(crate) fire_tick: u32,
+    #[allow(dead_code)]
+    pub(crate) client_tick: u32,
+    pub(crate) command: SimCommand,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ReloadDelivery {
+    pub(crate) pawn: EntityId,
+    pub(crate) weapon: EntityId,
+}
+
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct TickEvents {
     pub(crate) movement: Vec<&'static str>,
     pub(crate) ai: Vec<&'static str>,
     pub(crate) weapon: Vec<&'static str>,
     pub(crate) death: Vec<String>,
+    pub(crate) authorized_shots: Vec<OpenAuthorizedShot>,
+    pub(crate) reload_deliveries: Vec<ReloadDelivery>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -57,7 +80,7 @@ pub(crate) fn simulate_tick(
     ai_warned: &mut HashSet<String>,
     mover_colliders: &[MoverCollider],
     mover_tick_states: &mut MoverTickStateTable,
-    remote_pawn_inputs: &[(EntityId, MovementInput)],
+    remote_pawn_commands: &[RemotePawnCommand],
     command: &SimCommand,
     mut post_movement: impl FnMut(&Rc<RefCell<EntityRegistry>>) -> PostMovementCommand,
     tick_dt: f32,
@@ -69,6 +92,11 @@ pub(crate) fn simulate_tick(
         kinematic_mover::run_kinematic_mover_tick(&mut registry, mover_tick_states, tick_dt);
     }
 
+    let remote_pawn_inputs: Vec<(EntityId, MovementInput)> = remote_pawn_commands
+        .iter()
+        .map(|remote| (remote.pawn, remote.command.movement.clone()))
+        .collect();
+
     let combined_collision =
         CombinedCollisionWorld::new(collision_world, mover_colliders, mover_tick_states);
     let mut movement = {
@@ -77,7 +105,7 @@ pub(crate) fn simulate_tick(
             &mut registry,
             &combined_collision,
             gravity,
-            remote_pawn_inputs,
+            &remote_pawn_inputs,
             tick_dt,
         )
     };
@@ -107,6 +135,8 @@ pub(crate) fn simulate_tick(
         let _ = agent_steering::tick(&mut registry, collision_world, nav_graph, gravity, tick_dt);
     }
 
+    let (authorized_shots, reload_deliveries) =
+        run_remote_weapon_commands(&registry, remote_pawn_commands, tick_dt);
     let weapon_fire = weapon_fire_command(command.fire_button, post_movement_command);
     let weapon = run_weapon_fire_tick(
         &registry,
@@ -124,6 +154,8 @@ pub(crate) fn simulate_tick(
         ai,
         weapon,
         death,
+        authorized_shots,
+        reload_deliveries,
     }
 }
 
@@ -219,6 +251,62 @@ fn normalize_aim_direction(direction: Vec3) -> Option<Vec3> {
         return None;
     }
     Some(direction / length_squared.sqrt())
+}
+
+fn run_remote_weapon_commands(
+    registry: &Rc<RefCell<EntityRegistry>>,
+    remote_pawn_commands: &[RemotePawnCommand],
+    tick_dt: f32,
+) -> (Vec<OpenAuthorizedShot>, Vec<ReloadDelivery>) {
+    let mut registry = registry.borrow_mut();
+    let mut authorized = Vec::new();
+    let mut reload_deliveries = Vec::new();
+
+    for remote in remote_pawn_commands {
+        let Some(weapon) = remote.weapon else {
+            continue;
+        };
+        if let Some(delivery) = deliver_reload_to_weapon(remote.pawn, weapon, remote.command.reload)
+        {
+            reload_deliveries.push(delivery);
+        }
+
+        let command = WeaponFireCommand {
+            button: remote.command.fire_button,
+            aim_origin: Vec3::ZERO,
+            aim_direction: Vec3::Z,
+            can_fire: remote.shot_id.is_some(),
+        };
+        let result = weapon::tick_state_only(&mut registry, Some(weapon), &command, tick_dt);
+        if result != WeaponFireAuthorization::Accepted {
+            continue;
+        }
+        let Some(shot_id) = remote.shot_id else {
+            continue;
+        };
+        authorized.push(OpenAuthorizedShot {
+            shot: AuthorizedShot {
+                shot_id,
+                pawn: remote.pawn,
+                fire_tick: remote.fire_tick,
+            },
+            owner_client_id: remote.owner_client_id,
+        });
+    }
+
+    (authorized, reload_deliveries)
+}
+
+fn deliver_reload_to_weapon(
+    pawn: EntityId,
+    weapon: EntityId,
+    reload: bool,
+) -> Option<ReloadDelivery> {
+    if reload {
+        Some(ReloadDelivery { pawn, weapon })
+    } else {
+        None
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -331,8 +419,15 @@ fn run_death_sweep(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::collision::CollisionWorld;
+    use crate::kinematic_mover::MoverTickStateTable;
+    use crate::scripting_systems::hit_zones::HitZoneStore;
+    use crate::weapon::FireButtonState;
+    use glam::Vec2;
     use postretro_entities::Transform;
     use postretro_foundation::{FireMode, ResolutionMode, WeaponDescriptor};
+    use postretro_net::wire::NetworkId;
+    use std::collections::HashSet;
 
     fn weapon_component(credit_source: &str) -> WeaponComponent {
         WeaponComponent::from_descriptor(&WeaponDescriptor {
@@ -343,6 +438,220 @@ mod tests {
             resolution: ResolutionMode::Hitscan,
             credit_source: Some(credit_source.to_string()),
         })
+    }
+
+    fn zero_movement() -> MovementInput {
+        MovementInput {
+            wish_dir: Vec2::ZERO,
+            jump_pressed: false,
+            dash_pressed: false,
+            running: false,
+            crouch_intent: false,
+            facing_yaw: 0.0,
+        }
+    }
+
+    fn sim_command(fire: bool, reload: bool) -> SimCommand {
+        SimCommand {
+            movement: zero_movement(),
+            fire_button: FireButtonState {
+                pressed: fire,
+                active: fire,
+            },
+            reload,
+        }
+    }
+
+    fn remote_command(
+        pawn: EntityId,
+        weapon: Option<EntityId>,
+        network_id: u32,
+        client_tick: u32,
+        fire: bool,
+        reload: bool,
+    ) -> RemotePawnCommand {
+        RemotePawnCommand {
+            pawn,
+            owner_client_id: 7,
+            weapon,
+            shot_id: Some(ShotId::from_parts(NetworkId(network_id), client_tick)),
+            fire_tick: 33,
+            client_tick,
+            command: sim_command(fire, reload),
+        }
+    }
+
+    fn run_remote_only_tick(
+        registry: Rc<RefCell<EntityRegistry>>,
+        remote: &[RemotePawnCommand],
+    ) -> TickEvents {
+        let world = CollisionWorld::new();
+        let hit_zones = HitZoneStore::new();
+        let mut progress = ProgressTracker::new();
+        let mut ai_warned = HashSet::new();
+        let mover_colliders = Vec::new();
+        let mut mover_states = MoverTickStateTable::default();
+        simulate_tick(
+            registry,
+            &world,
+            &hit_zones,
+            None,
+            -9.81,
+            None,
+            0.0,
+            &mut progress,
+            &mut ai_warned,
+            &mover_colliders,
+            &mut mover_states,
+            remote,
+            &sim_command(false, false),
+            |_| PostMovementCommand {
+                aim_origin: Vec3::ZERO,
+                aim_direction: Vec3::NEG_Z,
+            },
+            1.0 / 60.0,
+        )
+    }
+
+    #[test]
+    fn remote_fire_authorizes_shot_and_does_not_damage_by_raycast() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (pawn, weapon, target) = {
+            let mut registry = registry.borrow_mut();
+            let pawn = registry.spawn(Transform::default());
+            let weapon = registry.spawn(Transform::default());
+            registry
+                .set_component(weapon, weapon_component("weapon.test.remote"))
+                .unwrap();
+            let target = registry.spawn(Transform::default());
+            registry
+                .set_component(
+                    target,
+                    HealthComponent {
+                        max: 100.0,
+                        current: 100.0,
+                        hitbox: None,
+                        death_handled: false,
+                        zone_multipliers: Default::default(),
+                        contributor_ledger: Default::default(),
+                    },
+                )
+                .unwrap();
+            (pawn, weapon, target)
+        };
+
+        let shot_id = ShotId::from_parts(NetworkId(42), 9);
+        let events = run_remote_only_tick(
+            registry.clone(),
+            &[remote_command(pawn, Some(weapon), 42, 9, true, false)],
+        );
+
+        assert_eq!(events.authorized_shots.len(), 1);
+        assert_eq!(events.authorized_shots[0].shot.shot_id, shot_id);
+        assert_eq!(events.authorized_shots[0].shot.pawn, pawn);
+        assert_eq!(events.authorized_shots[0].shot.fire_tick, 33);
+        assert_eq!(events.authorized_shots[0].owner_client_id, 7);
+        let registry = registry.borrow();
+        let weapon_state = registry.get_component::<WeaponComponent>(weapon).unwrap();
+        assert_eq!(weapon_state.cooldown_remaining_ms, 100.0);
+        let health = registry.get_component::<HealthComponent>(target).unwrap();
+        assert_eq!(health.current, 100.0);
+    }
+
+    #[test]
+    fn remote_fire_for_two_pawns_updates_only_their_mapped_weapons() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (pawn_a, weapon_a, pawn_b, weapon_b, idle_weapon) = {
+            let mut registry = registry.borrow_mut();
+            let pawn_a = registry.spawn(Transform::default());
+            let weapon_a = registry.spawn(Transform::default());
+            registry
+                .set_component(weapon_a, weapon_component("weapon.test.a"))
+                .unwrap();
+            let pawn_b = registry.spawn(Transform::default());
+            let weapon_b = registry.spawn(Transform::default());
+            registry
+                .set_component(weapon_b, weapon_component("weapon.test.b"))
+                .unwrap();
+            let idle_weapon = registry.spawn(Transform::default());
+            registry
+                .set_component(idle_weapon, weapon_component("weapon.test.idle"))
+                .unwrap();
+            (pawn_a, weapon_a, pawn_b, weapon_b, idle_weapon)
+        };
+
+        let events = run_remote_only_tick(
+            registry.clone(),
+            &[
+                remote_command(pawn_a, Some(weapon_a), 10, 5, true, false),
+                remote_command(pawn_b, Some(weapon_b), 11, 5, true, false),
+            ],
+        );
+
+        assert_eq!(events.authorized_shots.len(), 2);
+        assert_eq!(events.authorized_shots[0].shot.pawn, pawn_a);
+        assert_eq!(events.authorized_shots[1].shot.pawn, pawn_b);
+        assert_ne!(
+            events.authorized_shots[0].shot.shot_id,
+            events.authorized_shots[1].shot.shot_id
+        );
+        let registry = registry.borrow();
+        assert_eq!(
+            registry
+                .get_component::<WeaponComponent>(weapon_a)
+                .unwrap()
+                .cooldown_remaining_ms,
+            100.0
+        );
+        assert_eq!(
+            registry
+                .get_component::<WeaponComponent>(weapon_b)
+                .unwrap()
+                .cooldown_remaining_ms,
+            100.0
+        );
+        assert_eq!(
+            registry
+                .get_component::<WeaponComponent>(idle_weapon)
+                .unwrap()
+                .cooldown_remaining_ms,
+            0.0
+        );
+    }
+
+    #[test]
+    fn remote_reload_delivery_routes_to_mapped_weapon_only() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (pawn_a, weapon_a, pawn_b, weapon_b) = {
+            let mut registry = registry.borrow_mut();
+            let pawn_a = registry.spawn(Transform::default());
+            let weapon_a = registry.spawn(Transform::default());
+            registry
+                .set_component(weapon_a, weapon_component("weapon.test.a"))
+                .unwrap();
+            let pawn_b = registry.spawn(Transform::default());
+            let weapon_b = registry.spawn(Transform::default());
+            registry
+                .set_component(weapon_b, weapon_component("weapon.test.b"))
+                .unwrap();
+            (pawn_a, weapon_a, pawn_b, weapon_b)
+        };
+
+        let events = run_remote_only_tick(
+            registry,
+            &[
+                remote_command(pawn_a, Some(weapon_a), 10, 5, false, true),
+                remote_command(pawn_b, Some(weapon_b), 11, 5, false, false),
+            ],
+        );
+
+        assert_eq!(
+            events.reload_deliveries,
+            vec![ReloadDelivery {
+                pawn: pawn_a,
+                weapon: weapon_a
+            }]
+        );
     }
 
     #[test]

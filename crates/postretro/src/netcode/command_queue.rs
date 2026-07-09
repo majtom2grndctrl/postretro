@@ -535,7 +535,9 @@ mod tests {
             assert!(held.command.reload, "held command preserves reload");
         }
 
-        let neutral = queues.resolve_tick(CLIENT).expect("neutral command resolves");
+        let neutral = queues
+            .resolve_tick(CLIENT)
+            .expect("neutral command resolves");
         assert_eq!(neutral.source, ResolutionSource::Neutral);
         assert!(
             !neutral.command.reload,

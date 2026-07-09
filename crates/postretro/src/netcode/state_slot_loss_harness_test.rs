@@ -202,13 +202,12 @@ impl StateSlotHarness {
 
         // Host: ingest this frame's authoritative values once, then produce this
         // client's records and wrap them in the real envelope.
-        self.host
-            .ingest_frame(
-                &self.host_table,
-                &self.registry,
-                &self.owners,
-                &self.weapon_owners,
-            );
+        self.host.ingest_frame(
+            &self.host_table,
+            &self.registry,
+            &self.owners,
+            &self.weapon_owners,
+        );
         if let Some(records) = self.host.produce_for_client(self.client_id, seq) {
             let snapshot = snapshot_with_state(seq, self.fingerprint, records);
             self.to_client.enqueue(wire::encode(&snapshot));

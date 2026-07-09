@@ -408,15 +408,13 @@ impl HostStateReplication {
                 }
                 ReplicationScope::OwnerPrivatePlayer => {
                     for (pawn, client_id) in owners.iter() {
-                        if let Some(value) =
-                            owner_private_source_value(
-                                slot_table,
-                                registry,
-                                &name,
-                                pawn,
-                                weapon_owners,
-                            )
-                        {
+                        if let Some(value) = owner_private_source_value(
+                            slot_table,
+                            registry,
+                            &name,
+                            pawn,
+                            weapon_owners,
+                        ) {
                             self.tracker.ingest_owner_private(slot_id, client_id, value);
                         }
                     }
@@ -1015,7 +1013,13 @@ mod tests {
     fn registry_with_owned_weapon_cooldown(
         client_id: u64,
         cooldown_remaining_ms: f32,
-    ) -> (EntityRegistry, MovementOwners, WeaponOwners, EntityId, EntityId) {
+    ) -> (
+        EntityRegistry,
+        MovementOwners,
+        WeaponOwners,
+        EntityId,
+        EntityId,
+    ) {
         let mut registry = EntityRegistry::new();
         let pawn = registry.spawn(Transform::default());
         let weapon = registry.spawn(Transform::default());

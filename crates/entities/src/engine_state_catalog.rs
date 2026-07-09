@@ -649,10 +649,7 @@ mod tests {
             .iter()
             .find(|entry| entry.wire_name == "player.weaponCooldownMs")
             .unwrap();
-        assert_eq!(
-            weapon_cooldown.sdk_path,
-            &["player", "weaponCooldownMs"]
-        );
+        assert_eq!(weapon_cooldown.sdk_path, &["player", "weaponCooldownMs"]);
         assert_eq!(weapon_cooldown.value_type, EngineStateValueType::Number);
         assert_eq!(weapon_cooldown.default, EngineStateDefault::None);
         assert_eq!(

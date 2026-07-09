@@ -4006,7 +4006,7 @@ impl App {
                 command_queues,
                 owners,
                 weapon_owners,
-                open_shots: _,
+                open_shots,
                 weaponless_fire_logged: _,
                 tick,
                 host_pawn: _,
@@ -4102,12 +4102,20 @@ impl App {
                 // microseconds are telemetry only, derived from the monotonic tick.
                 let server_tick = *tick;
                 let server_now_us = u64::from(server_tick) * netcode::SERVER_TICK_MICROS;
-                for client_id in server.accepted_clients() {
+                let accepted_clients = server.accepted_clients();
+                let mut registry = script_ctx.registry.borrow_mut();
+                for client_id in accepted_clients {
                     netcode::host_handle_client_messages(
                         server,
                         replication,
                         state_slots,
                         command_queues,
+                        &mut registry,
+                        collision_world,
+                        allocator,
+                        owners,
+                        weapon_owners,
+                        open_shots,
                         client_id,
                         server_tick,
                         server_now_us,
@@ -4426,10 +4434,7 @@ impl App {
                 let weapon = weapon_owners.weapon_of(resolved.pawn);
                 let wants_fire =
                     resolved.command.fire_button.pressed || resolved.command.fire_button.active;
-                if weapon.is_none()
-                    && wants_fire
-                    && weaponless_fire_logged.insert(resolved.pawn)
-                {
+                if weapon.is_none() && wants_fire && weaponless_fire_logged.insert(resolved.pawn) {
                     log::info!(
                         "[Net] owned pawn {} has no active weapon; ignoring remote fire",
                         resolved.pawn

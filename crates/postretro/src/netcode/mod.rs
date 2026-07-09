@@ -80,7 +80,10 @@ use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use glam::{Quat, Vec3};
+use parry3d::math::{Point, Vector};
 
+use postretro_entities::components::health::HealthComponent;
+use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::{
     ComponentKind, ComponentValue, EntityId, EntityRegistry, EntityTypeDescriptor, SlotTable,
     Transform,
@@ -97,8 +100,10 @@ use postretro_net::wire::{
     WirePlayerMovementState, WireTransform,
 };
 
+use crate::collision::{self, CollisionWorld};
 use crate::movement::MovementCollisionSource;
 use crate::sim::SimCommand;
+use crate::weapon::{self, ActivationOutcome, WeaponImpact};
 
 /// Default listen port for `--host` when no port is supplied.
 pub(crate) const DEFAULT_HOST_PORT: u16 = 27015;
@@ -530,10 +535,21 @@ impl ShotId {
         Self((u64::from(pawn.0) << 32) | u64::from(client_tick))
     }
 
+    pub(crate) fn from_raw(raw: u64) -> Self {
+        Self(raw)
+    }
+
     #[allow(dead_code)]
     pub(crate) fn raw(self) -> u64 {
         self.0
     }
+}
+
+const HIT_RANGE_TOLERANCE: f32 = 1.25;
+const DEFAULT_HIT_PELLET_COUNT: usize = 1;
+
+fn effective_pellet_count(_weapon: &WeaponComponent) -> usize {
+    DEFAULT_HIT_PELLET_COUNT
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1372,15 +1388,14 @@ pub(crate) fn host_handle_lifecycle(
     for event in lifecycle {
         match event {
             SlotEvent::Closed { client_id, .. } => {
-                let despawned =
-                    on_slot_closed(
-                        registry,
-                        slot_pawns,
-                        allocator,
-                        replicable,
-                        replication,
-                        *client_id,
-                    );
+                let despawned = on_slot_closed(
+                    registry,
+                    slot_pawns,
+                    allocator,
+                    replicable,
+                    replication,
+                    *client_id,
+                );
                 // M15 Phase 3: drop the closed client's command queue and the pawn's
                 // owner mapping so its stale authority metadata never rides a later
                 // snapshot. The slot's placement assignment is intentionally retained
@@ -1420,6 +1435,12 @@ pub(crate) fn host_handle_client_messages(
     replication: &mut ServerReplication,
     state_slots: &mut state_slots::HostStateReplication,
     command_queues: &mut HostCommandQueues,
+    registry: &mut EntityRegistry,
+    collision_world: &CollisionWorld,
+    allocator: &NetworkIdAllocator,
+    owners: &MovementOwners,
+    weapon_owners: &WeaponOwners,
+    open_shots: &mut OpenAuthorizedShots,
     client_id: u64,
     server_tick: u32,
     server_now_us: u64,
@@ -1432,11 +1453,17 @@ pub(crate) fn host_handle_client_messages(
                 continue;
             }
         };
-        host_handle_client_message(
+        host_handle_client_message_with_hit_ingest(
             server,
             replication,
             state_slots,
             command_queues,
+            registry,
+            collision_world,
+            allocator,
+            owners,
+            weapon_owners,
+            open_shots,
             client_id,
             server_tick,
             server_now_us,
@@ -1451,11 +1478,84 @@ pub(crate) fn host_handle_client_messages(
 /// transport producing duplicates. An invalid `Input` (non-finite) is dropped at
 /// intake and mutates no queue or registry state.
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(crate) fn host_handle_client_message(
     server: &mut NetServer,
     replication: &mut ServerReplication,
     state_slots: &mut state_slots::HostStateReplication,
     command_queues: &mut HostCommandQueues,
+    client_id: u64,
+    server_tick: u32,
+    server_now_us: u64,
+    msg: wire::ClientMessage,
+) {
+    host_handle_client_message_inner(
+        server,
+        replication,
+        state_slots,
+        command_queues,
+        None,
+        client_id,
+        server_tick,
+        server_now_us,
+        msg,
+    );
+}
+
+struct HostHitIngestContext<'a> {
+    registry: &'a mut EntityRegistry,
+    collision_world: &'a CollisionWorld,
+    allocator: &'a NetworkIdAllocator,
+    owners: &'a MovementOwners,
+    weapon_owners: &'a WeaponOwners,
+    open_shots: &'a mut OpenAuthorizedShots,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn host_handle_client_message_with_hit_ingest(
+    server: &mut NetServer,
+    replication: &mut ServerReplication,
+    state_slots: &mut state_slots::HostStateReplication,
+    command_queues: &mut HostCommandQueues,
+    registry: &mut EntityRegistry,
+    collision_world: &CollisionWorld,
+    allocator: &NetworkIdAllocator,
+    owners: &MovementOwners,
+    weapon_owners: &WeaponOwners,
+    open_shots: &mut OpenAuthorizedShots,
+    client_id: u64,
+    server_tick: u32,
+    server_now_us: u64,
+    msg: wire::ClientMessage,
+) {
+    let hit_context = HostHitIngestContext {
+        registry,
+        collision_world,
+        allocator,
+        owners,
+        weapon_owners,
+        open_shots,
+    };
+    host_handle_client_message_inner(
+        server,
+        replication,
+        state_slots,
+        command_queues,
+        Some(hit_context),
+        client_id,
+        server_tick,
+        server_now_us,
+        msg,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn host_handle_client_message_inner(
+    server: &mut NetServer,
+    replication: &mut ServerReplication,
+    state_slots: &mut state_slots::HostStateReplication,
+    command_queues: &mut HostCommandQueues,
+    hit_context: Option<HostHitIngestContext<'_>>,
     client_id: u64,
     server_tick: u32,
     server_now_us: u64,
@@ -1481,7 +1581,10 @@ pub(crate) fn host_handle_client_message(
         // send/receive times and folds the server tick into its estimate.
         wire::ClientMessage::TimeSync(req) => {
             let echo = req.echo(server_tick, server_now_us);
-            server.send_input(client_id, wire::encode(&wire::ServerMessage::TimeSync(echo)));
+            server.send_input(
+                client_id,
+                wire::encode(&wire::ServerMessage::TimeSync(echo)),
+            );
         }
         // M15 Phase 3 Task 4: sanitize + queue the input command for this client.
         // `ingest` rejects non-finite commands, drops stale/duplicate ones, and never
@@ -1489,9 +1592,12 @@ pub(crate) fn host_handle_client_message(
         wire::ClientMessage::Input(input) => {
             command_queues.ingest(client_id, &input);
         }
-        // E16 Task 3: carrier only. Later tasks validate the shot id, resolve
-        // targets, and apply damage.
-        wire::ClientMessage::HitDeclaration(_declaration) => {}
+        wire::ClientMessage::HitDeclaration(declaration) => {
+            let accept = hit_context
+                .map(|context| ingest_hit_declaration(context, client_id, &declaration))
+                .unwrap_or(false);
+            send_shot_verdict(server, client_id, declaration.shot_id, accept);
+        }
         // M15 Phase 3.5: a client missing a replicated state-slot baseline. The state
         // tracker schedules a full baseline for that slot in the client's next snapshot.
         // Keyed by `StateSlotId` (distinct from the entity `BaselineRefresh`).
@@ -1499,6 +1605,155 @@ pub(crate) fn host_handle_client_message(
             state_slots.request_refresh(client_id, req.slot_id, req.missing_baseline_ref);
         }
     }
+}
+
+fn send_shot_verdict(server: &mut NetServer, client_id: u64, shot_id: u64, accept: bool) {
+    server.send_input(
+        client_id,
+        wire::encode(&wire::ServerMessage::ShotVerdicts(
+            wire::ShotVerdictsMessage {
+                verdicts: vec![wire::ShotVerdict { shot_id, accept }],
+            },
+        )),
+    );
+}
+
+fn ingest_hit_declaration(
+    context: HostHitIngestContext<'_>,
+    client_id: u64,
+    declaration: &wire::HitDeclaration,
+) -> bool {
+    let shot_id = ShotId::from_raw(declaration.shot_id);
+    let Some(open) = context.open_shots.get(shot_id) else {
+        return false;
+    };
+    if open.owner_client_id != client_id
+        || context.owners.owner_of(open.shot.pawn) != Some(client_id)
+    {
+        return false;
+    }
+
+    // Once the declaration binds to this client's still-open authorized FIRE,
+    // consume it even if every record below fails validation. That keeps a client
+    // from retrying the same authorized shot until a declaration happens to land.
+    let Some(open) = context.open_shots.retire(shot_id) else {
+        return false;
+    };
+    let Some(weapon_id) = context.weapon_owners.weapon_of(open.shot.pawn) else {
+        return false;
+    };
+    let Ok(weapon_component) = context.registry.get_component::<WeaponComponent>(weapon_id) else {
+        return false;
+    };
+    let effective = weapon_component.effective();
+    let pellet_count = effective_pellet_count(weapon_component);
+    if pellet_count == 0 {
+        return declaration.records.is_empty();
+    }
+
+    if declaration.records.is_empty() {
+        return true;
+    }
+
+    let mut accepted = 0usize;
+    for record in &declaration.records {
+        if accepted >= pellet_count {
+            break;
+        }
+        if apply_valid_hit_record(
+            context.registry,
+            context.collision_world,
+            context.allocator,
+            open.shot.pawn,
+            weapon_id,
+            effective.damage,
+            effective.range,
+            record,
+        ) {
+            accepted += 1;
+        }
+    }
+
+    accepted > 0
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_valid_hit_record(
+    registry: &mut EntityRegistry,
+    collision_world: &CollisionWorld,
+    allocator: &NetworkIdAllocator,
+    attacker: EntityId,
+    weapon_id: EntityId,
+    damage: f32,
+    range: f32,
+    record: &wire::HitRecord,
+) -> bool {
+    let Some(target) = allocator.entity_for_network_id(NetworkId(record.target)) else {
+        return false;
+    };
+    let Ok(health) = registry.get_component::<HealthComponent>(target) else {
+        return false;
+    };
+    if health.current <= 0.0 {
+        return false;
+    }
+    let point = Vec3::from_array(record.point);
+    if !point.is_finite() {
+        return false;
+    }
+    if !has_static_world_los(registry, collision_world, attacker, point) {
+        return false;
+    }
+    let Some(eye) = attacker_eye(registry, attacker) else {
+        return false;
+    };
+    let distance = eye.distance(point);
+    let max_range = range * HIT_RANGE_TOLERANCE;
+    if !max_range.is_finite() || distance > max_range {
+        return false;
+    }
+
+    let impact = WeaponImpact {
+        point,
+        normal: Vec3::ZERO,
+        target: Some(target),
+        zone: record.zone.clone(),
+        outcome: ActivationOutcome::Hit(weapon::DamagePayload { amount: damage }),
+    };
+    crate::sim::apply_weapon_impact_damage(registry, Some(weapon_id), Some(attacker), &impact);
+    true
+}
+
+fn has_static_world_los(
+    registry: &EntityRegistry,
+    collision_world: &CollisionWorld,
+    attacker: EntityId,
+    point: Vec3,
+) -> bool {
+    let Some(eye) = attacker_eye(registry, attacker) else {
+        return false;
+    };
+    let to_point = point - eye;
+    let distance = to_point.length();
+    if !distance.is_finite() || distance <= 1.0e-5 {
+        return false;
+    }
+    let dir = to_point / distance;
+    let hit = collision::cast_ray(
+        collision_world,
+        Point::new(eye.x, eye.y, eye.z),
+        Vector::new(dir.x, dir.y, dir.z),
+        distance,
+    );
+    !matches!(hit, Some(hit) if hit.time_of_impact < distance - 1.0e-4)
+}
+
+fn attacker_eye(registry: &EntityRegistry, attacker: EntityId) -> Option<Vec3> {
+    let transform = registry.get_component::<Transform>(attacker).ok()?;
+    let movement = registry
+        .get_component::<PlayerMovementComponent>(attacker)
+        .ok()?;
+    Some(transform.position + Vec3::new(0.0, movement.capsule.eye_height, 0.0))
 }
 
 /// Drive one frame of the client time-sync exchange: emit a 5 Hz probe (stamped
@@ -1638,6 +1893,10 @@ pub(crate) fn remote_entity_positions(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use parry3d::math::{Isometry, Point};
+    use parry3d::shape::TriMesh;
+    use postretro_entities::components::weapon::WeaponComponent;
+    use postretro_foundation::{FireMode, ResolutionMode, WeaponDescriptor};
 
     // Float epsilon for transform round-trips (testing_guide §Floating-point:
     // approximate comparison for computed/converted floats).
@@ -1671,6 +1930,156 @@ mod tests {
         }
     }
 
+    fn test_weapon(damage: f32, range: f32) -> WeaponComponent {
+        WeaponComponent::from_descriptor(&WeaponDescriptor {
+            damage,
+            range,
+            cooldown_ms: 100.0,
+            fire_mode: FireMode::Semi,
+            resolution: ResolutionMode::Hitscan,
+            credit_source: Some("weapon.test.net".to_string()),
+        })
+    }
+
+    fn movement_component_with_eye_height(eye_height: f32) -> PlayerMovementComponent {
+        let mut descriptor = host_player_descriptor()
+            .movement
+            .expect("test player descriptor has movement");
+        descriptor.capsule.eye_height = eye_height;
+        PlayerMovementComponent::from_descriptor(&descriptor)
+    }
+
+    fn wall_at_x(x: f32) -> CollisionWorld {
+        let points = vec![
+            Point::new(x, -1.0, -1.0),
+            Point::new(x, 1.0, -1.0),
+            Point::new(x, 1.0, 1.0),
+            Point::new(x, -1.0, 1.0),
+        ];
+        let triangles = vec![[0u32, 1, 2], [0, 2, 3]];
+        CollisionWorld {
+            mesh: TriMesh::new(points, triangles),
+            isometry: Isometry::identity(),
+        }
+    }
+
+    struct HitIngestFixture {
+        registry: EntityRegistry,
+        allocator: NetworkIdAllocator,
+        owners: MovementOwners,
+        weapon_owners: WeaponOwners,
+        open_shots: OpenAuthorizedShots,
+        collision_world: CollisionWorld,
+        pawn: EntityId,
+        weapon: EntityId,
+        target: EntityId,
+        target_net: NetworkId,
+        shot_id: ShotId,
+    }
+
+    impl HitIngestFixture {
+        fn new(collision_world: CollisionWorld) -> Self {
+            let mut registry = EntityRegistry::new();
+            let pawn = registry.spawn(Transform {
+                position: Vec3::ZERO,
+                ..Transform::default()
+            });
+            registry
+                .set_component(pawn, movement_component_with_eye_height(0.5))
+                .unwrap();
+            let weapon = registry.spawn(Transform::default());
+            registry
+                .set_component(weapon, test_weapon(10.0, 10.0))
+                .unwrap();
+            let target = registry.spawn(Transform {
+                position: Vec3::new(4.0, 0.0, 0.0),
+                ..Transform::default()
+            });
+            registry
+                .set_component(
+                    target,
+                    HealthComponent {
+                        max: 100.0,
+                        current: 100.0,
+                        hitbox: None,
+                        death_handled: false,
+                        zone_multipliers: Default::default(),
+                        contributor_ledger: Default::default(),
+                    },
+                )
+                .unwrap();
+
+            let mut allocator = NetworkIdAllocator::new();
+            let pawn_net = allocator.stamp(pawn);
+            let target_net = allocator.stamp(target);
+            let shot_id = ShotId::from_parts(pawn_net, 11);
+            let mut owners = MovementOwners::new();
+            owners.set(pawn, 7);
+            let mut weapon_owners = WeaponOwners::new();
+            weapon_owners.set(pawn, weapon);
+            let mut open_shots = OpenAuthorizedShots::new();
+            open_shots.record(
+                AuthorizedShot {
+                    shot_id,
+                    pawn,
+                    fire_tick: 99,
+                },
+                7,
+            );
+
+            Self {
+                registry,
+                allocator,
+                owners,
+                weapon_owners,
+                open_shots,
+                collision_world,
+                pawn,
+                weapon,
+                target,
+                target_net,
+                shot_id,
+            }
+        }
+
+        fn declaration(&self, records: Vec<wire::HitRecord>) -> wire::HitDeclaration {
+            wire::HitDeclaration {
+                shot_id: self.shot_id.raw(),
+                records,
+            }
+        }
+
+        fn record(&self, point: Vec3, zone: Option<&str>) -> wire::HitRecord {
+            wire::HitRecord {
+                target: self.target_net.0,
+                point: point.to_array(),
+                zone: zone.map(str::to_string),
+            }
+        }
+
+        fn ingest(&mut self, client_id: u64, declaration: &wire::HitDeclaration) -> bool {
+            ingest_hit_declaration(
+                HostHitIngestContext {
+                    registry: &mut self.registry,
+                    collision_world: &self.collision_world,
+                    allocator: &self.allocator,
+                    owners: &self.owners,
+                    weapon_owners: &self.weapon_owners,
+                    open_shots: &mut self.open_shots,
+                },
+                client_id,
+                declaration,
+            )
+        }
+
+        fn target_health(&self) -> HealthComponent {
+            self.registry
+                .get_component::<HealthComponent>(self.target)
+                .unwrap()
+                .clone()
+        }
+    }
+
     #[test]
     fn open_authorized_shots_store_records_and_retires_by_shot_id() {
         let mut registry = EntityRegistry::new();
@@ -1696,6 +2105,151 @@ mod tests {
         assert_eq!(shots.retire(shot_id), Some(open));
         assert!(shots.get(shot_id).is_none());
         assert_eq!(shots.len(), 0);
+    }
+
+    #[test]
+    fn hit_declaration_without_open_shot_rejects_without_damage() {
+        let mut fixture = HitIngestFixture::new(CollisionWorld::new());
+        fixture.open_shots.retire(fixture.shot_id);
+        let declaration = fixture.declaration(vec![fixture.record(Vec3::new(4.0, 0.5, 0.0), None)]);
+
+        assert!(!fixture.ingest(7, &declaration));
+        assert_eq!(fixture.target_health().current, 100.0);
+    }
+
+    #[test]
+    fn hit_declaration_consumes_authorized_shot_once_and_credits_attacker() {
+        let mut fixture = HitIngestFixture::new(CollisionWorld::new());
+        let declaration = fixture.declaration(vec![fixture.record(Vec3::new(4.0, 0.5, 0.0), None)]);
+
+        assert!(fixture.ingest(7, &declaration));
+        assert_eq!(fixture.target_health().current, 90.0);
+        assert!(!fixture.ingest(7, &declaration));
+        let health = fixture.target_health();
+        assert_eq!(health.current, 90.0);
+        let entry = health.contributor_ledger.entries().first().unwrap();
+        assert_eq!(entry.last_attacker, Some(fixture.pawn));
+        assert_eq!(entry.last_weapon, Some(fixture.weapon));
+    }
+
+    #[test]
+    fn hit_declaration_with_wrong_owner_rejects_without_retiring_other_client_shot() {
+        let mut fixture = HitIngestFixture::new(CollisionWorld::new());
+        let declaration = fixture.declaration(vec![fixture.record(Vec3::new(4.0, 0.5, 0.0), None)]);
+
+        assert!(!fixture.ingest(8, &declaration));
+        assert_eq!(fixture.target_health().current, 100.0);
+        assert!(fixture.open_shots.get(fixture.shot_id).is_some());
+    }
+
+    #[test]
+    fn hit_declaration_retires_bound_shot_even_when_records_fail_validation() {
+        let mut fixture = HitIngestFixture::new(wall_at_x(1.0));
+        let declaration = fixture.declaration(vec![fixture.record(Vec3::new(4.0, 0.5, 0.0), None)]);
+
+        assert!(!fixture.ingest(7, &declaration));
+        assert_eq!(fixture.target_health().current, 100.0);
+        assert!(fixture.open_shots.get(fixture.shot_id).is_none());
+    }
+
+    #[test]
+    fn hit_declaration_static_wall_rejects_but_host_pose_mismatch_does_not() {
+        let mut behind_wall = HitIngestFixture::new(wall_at_x(1.0));
+        let blocked =
+            behind_wall.declaration(vec![behind_wall.record(Vec3::new(4.0, 0.5, 0.0), None)]);
+        assert!(!behind_wall.ingest(7, &blocked));
+        assert_eq!(behind_wall.target_health().current, 100.0);
+
+        let mut live_pose_mismatch = HitIngestFixture::new(CollisionWorld::new());
+        live_pose_mismatch
+            .registry
+            .set_component(
+                live_pose_mismatch.target,
+                Transform {
+                    position: Vec3::new(-20.0, 0.0, 0.0),
+                    ..Transform::default()
+                },
+            )
+            .unwrap();
+        let declared_past_pose = live_pose_mismatch.declaration(vec![
+            live_pose_mismatch.record(Vec3::new(4.0, 0.5, 0.0), None),
+        ]);
+        assert!(live_pose_mismatch.ingest(7, &declared_past_pose));
+        assert_eq!(live_pose_mismatch.target_health().current, 90.0);
+    }
+
+    #[test]
+    fn hit_declaration_rejects_records_beyond_tolerated_range() {
+        let mut fixture = HitIngestFixture::new(CollisionWorld::new());
+        let declaration =
+            fixture.declaration(vec![fixture.record(Vec3::new(13.0, 0.5, 0.0), None)]);
+
+        assert!(!fixture.ingest(7, &declaration));
+        assert_eq!(fixture.target_health().current, 100.0);
+    }
+
+    #[test]
+    fn hit_declaration_clamps_accepted_records_to_default_pellet_count() {
+        let mut fixture = HitIngestFixture::new(CollisionWorld::new());
+        let second_target = fixture.registry.spawn(Transform {
+            position: Vec3::new(5.0, 0.0, 0.0),
+            ..Transform::default()
+        });
+        fixture
+            .registry
+            .set_component(
+                second_target,
+                HealthComponent {
+                    max: 100.0,
+                    current: 100.0,
+                    hitbox: None,
+                    death_handled: false,
+                    zone_multipliers: Default::default(),
+                    contributor_ledger: Default::default(),
+                },
+            )
+            .unwrap();
+        let second_net = fixture.allocator.stamp(second_target);
+        let declaration = fixture.declaration(vec![
+            fixture.record(Vec3::new(4.0, 0.5, 0.0), None),
+            wire::HitRecord {
+                target: second_net.0,
+                point: Vec3::new(5.0, 0.5, 0.0).to_array(),
+                zone: None,
+            },
+        ]);
+
+        assert!(fixture.ingest(7, &declaration));
+        assert_eq!(fixture.target_health().current, 90.0);
+        assert_eq!(
+            fixture
+                .registry
+                .get_component::<HealthComponent>(second_target)
+                .unwrap()
+                .current,
+            100.0
+        );
+    }
+
+    #[test]
+    fn hit_declaration_zone_scales_damage_and_keeps_pitched_geometry() {
+        let mut fixture = HitIngestFixture::new(CollisionWorld::new());
+        let mut health = fixture.target_health();
+        health.zone_multipliers.insert("head".to_string(), 2.5);
+        fixture
+            .registry
+            .set_component(fixture.target, health)
+            .unwrap();
+        let declaration =
+            fixture.declaration(vec![fixture.record(Vec3::new(4.0, 1.5, 0.0), Some("head"))]);
+
+        assert!(fixture.ingest(7, &declaration));
+        let health = fixture.target_health();
+        assert_eq!(health.current, 75.0);
+        let entry = health.contributor_ledger.entries().first().unwrap();
+        assert_eq!(entry.last_hit_damage, 25.0);
+        assert_eq!(entry.last_hit_zone.as_deref(), Some("head"));
+        assert_eq!(entry.last_attacker, Some(fixture.pawn));
     }
 
     // Regression: connected-client level unload can leave the transport connected

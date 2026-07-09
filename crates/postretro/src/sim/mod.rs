@@ -14,12 +14,10 @@ use crate::collision::moving::{CombinedCollisionWorld, MoverCollider};
 use crate::kinematic_mover::{self, MoverTickStateTable};
 use crate::movement::MovementInput;
 use crate::nav::NavGraph;
+use crate::netcode::{AuthorizedShot, OpenAuthorizedShot, ShotId};
 use crate::scripting_systems;
 use crate::scripting_systems::hit_zones::HitZoneStore;
-use crate::netcode::{AuthorizedShot, OpenAuthorizedShot, ShotId};
-use crate::weapon::{
-    self, FireButtonState, WeaponFireAuthorization, WeaponFireCommand,
-};
+use crate::weapon::{self, FireButtonState, WeaponFireAuthorization, WeaponFireCommand};
 use postretro_entities::components::health::{
     DamageContext, HealthComponent, apply_damage_with_context,
 };
@@ -331,14 +329,16 @@ fn run_weapon_fire_tick(
     );
     if let Some(impact) = events.impact.as_ref() {
         weapon::spawn_impact_effect_at(&mut registry, impact.point, impact.normal);
-        apply_weapon_impact_damage(&mut registry, active_wieldable, impact);
+        let attacker = local_movement_pawn(&registry);
+        apply_weapon_impact_damage(&mut registry, active_wieldable, attacker, impact);
     }
     events.event_names()
 }
 
-fn apply_weapon_impact_damage(
+pub(crate) fn apply_weapon_impact_damage(
     registry: &mut EntityRegistry,
     active_wieldable: Option<EntityId>,
+    attacker: Option<EntityId>,
     impact: &weapon::WeaponImpact,
 ) {
     let (Some(target), weapon::ActivationOutcome::Hit(payload)) = (impact.target, impact.outcome)
@@ -363,7 +363,6 @@ fn apply_weapon_impact_damage(
     } else {
         effective.credit_source
     };
-    let attacker = local_movement_pawn(registry);
     let multiplier = impact
         .zone
         .as_deref()
@@ -682,7 +681,8 @@ mod tests {
             outcome: weapon::ActivationOutcome::Hit(weapon::DamagePayload { amount: 10.0 }),
         };
 
-        apply_weapon_impact_damage(&mut registry, Some(weapon_id), &impact);
+        let attacker = Some(registry.spawn(Transform::default()));
+        apply_weapon_impact_damage(&mut registry, Some(weapon_id), attacker, &impact);
 
         let health = registry.get_component::<HealthComponent>(target).unwrap();
         assert_eq!(health.current, 75.0);
@@ -694,7 +694,7 @@ mod tests {
         assert_eq!(entry.last_hit_damage, 25.0);
         assert_eq!(entry.last_hit_zone.as_deref(), Some("head"));
         assert_eq!(entry.last_weapon, Some(weapon_id));
-        assert_eq!(entry.last_attacker, None);
+        assert_eq!(entry.last_attacker, attacker);
     }
 
     #[test]
@@ -725,7 +725,7 @@ mod tests {
             outcome: weapon::ActivationOutcome::Hit(weapon::DamagePayload { amount: f32::MAX }),
         };
 
-        apply_weapon_impact_damage(&mut registry, Some(weapon_id), &impact);
+        apply_weapon_impact_damage(&mut registry, Some(weapon_id), None, &impact);
 
         let health = registry.get_component::<HealthComponent>(target).unwrap();
         assert_eq!(health.current, 100.0);

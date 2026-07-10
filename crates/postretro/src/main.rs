@@ -2088,6 +2088,11 @@ impl ApplicationHandler for App {
                         .scripting
                         .player_hud_state
                         .tick_for_role(is_connected_client);
+                    #[cfg(feature = "dev-tools")]
+                    session
+                        .scripting
+                        .dev_reload_progress
+                        .tick(gameplay_snapshot.as_ref(), frame_dt);
                 }
                 // Flash-decay state writes the engine-owned `screen.flash`
                 // surface at the same game-logic stage as the HUD publisher, so

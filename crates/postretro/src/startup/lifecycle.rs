@@ -1240,6 +1240,11 @@ mod tests {
                     player_hud_state: scripting_systems::ui_proxy::PlayerHudStatePublisher::new(
                         script_ctx.clone(),
                     ),
+                    #[cfg(feature = "dev-tools")]
+                    dev_reload_progress:
+                        scripting_systems::reload_progress::DevReloadProgressDriver::new(
+                            script_ctx.clone(),
+                        ),
                     flash_decay: scripting_systems::flash_decay::FlashDecay::new(
                         script_ctx.clone(),
                     ),

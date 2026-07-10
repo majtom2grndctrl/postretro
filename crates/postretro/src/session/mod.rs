@@ -219,6 +219,12 @@ pub(crate) struct ScriptingCore {
     /// See: context/lib/scripting.md §5 for the store contract.
     pub(crate) player_hud_state: scripting_systems::ui_proxy::PlayerHudStatePublisher,
 
+    /// Dev-only demonstrator for the `player.reloadProgress` HUD slot. This is
+    /// deliberately absent from production builds until reload gameplay owns the
+    /// slot's real producer.
+    #[cfg(feature = "dev-tools")]
+    pub(crate) dev_reload_progress: scripting_systems::reload_progress::DevReloadProgressDriver,
+
     /// App-side flash-decay state for the engine-owned `screen.flash` surface.
     /// See: context/lib/ui.md §3.
     pub(crate) flash_decay: scripting_systems::flash_decay::FlashDecay,
@@ -369,6 +375,9 @@ impl Session {
         // All clones in the script tranche are distributed here.
         let player_hud_state =
             scripting_systems::ui_proxy::PlayerHudStatePublisher::new(script_ctx.clone());
+        #[cfg(feature = "dev-tools")]
+        let dev_reload_progress =
+            scripting_systems::reload_progress::DevReloadProgressDriver::new(script_ctx.clone());
         let flash_decay = scripting_systems::flash_decay::FlashDecay::new(script_ctx.clone());
         let vignette_decay =
             scripting_systems::vignette_decay::VignetteDecay::new(script_ctx.clone());
@@ -382,6 +391,8 @@ impl Session {
             reaction_registry,
             system_registry,
             player_hud_state,
+            #[cfg(feature = "dev-tools")]
+            dev_reload_progress,
             flash_decay,
             vignette_decay,
             shake_decay,

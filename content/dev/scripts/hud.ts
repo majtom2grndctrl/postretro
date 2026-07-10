@@ -99,3 +99,18 @@ export const reticle = defineUiTree({
     Text({ content: "+", font: font.mono }),
   ),
 });
+
+const reloadMeter = Bar({
+  bind: bindState(player.reloadProgress, {
+    tween: { durationMs: 90.0, easing: "easeOut" },
+  }),
+  max: 1.0,
+  fill: color.ok,
+  background: color.hud.health.background,
+});
+
+export const reloadMeterTree = defineUiTree({
+  name: "hud.reloadMeter",
+  alwaysOn: true,
+  tree: Tree({ anchor: "center", offset: [80.0, 0.0] }, reloadMeter),
+});

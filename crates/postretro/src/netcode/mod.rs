@@ -269,8 +269,9 @@ pub(crate) enum NetEndpoint {
         /// snapshot so the net crate can derive per-recipient `local_player`.
         owners: MovementOwners,
         /// E16 host active-weapon owner map: remote pawn `EntityId -> active weapon
-        /// EntityId`. Later host-authoritative fire/cooldown/hit ingest resolves a
-        /// client's pawn to its weapon here; weaponless pawns have no entry.
+        /// EntityId`. Host-authoritative fire, the owner-private cooldown projection,
+        /// and hit-declaration ingest resolve a client's pawn to its weapon here;
+        /// weaponless pawns have no entry.
         weapon_owners: WeaponOwners,
         /// E16 host-authorized shots that are still open for a future client HIT
         /// declaration. Keyed by deterministic `ShotId`; Task 6 validates ownership
@@ -1692,7 +1693,6 @@ fn cleanup_remote_pawn_owned_state(
 ) {
     let weapon = weapon_owners.weapon_of(pawn);
     pending_hit_declarations.remove_client(client_id);
-    pending_hit_declarations.remove_pawn_shots(allocator, pawn);
     open_shots.remove_client(client_id);
     open_shots.remove_pawn(pawn);
     weaponless_fire_logged.remove(&pawn);
@@ -1743,7 +1743,6 @@ pub(crate) fn host_handle_client_messages(
             replication,
             state_slots,
             command_queues,
-            None,
             Some(&mut *pending_hit_declarations),
             client_id,
             server_tick,
@@ -1776,7 +1775,6 @@ pub(crate) fn host_handle_client_message(
         state_slots,
         command_queues,
         None,
-        None,
         client_id,
         server_tick,
         server_now_us,
@@ -1805,7 +1803,6 @@ pub(crate) fn host_flush_pending_hit_declarations(
     collision_world: &CollisionWorld,
     allocator: &NetworkIdAllocator,
     owners: &MovementOwners,
-    _weapon_owners: &WeaponOwners,
     command_queues: &HostCommandQueues,
     open_shots: &mut OpenAuthorizedShots,
     pending_hit_declarations: &mut PendingHitDeclarations,
@@ -1843,7 +1840,6 @@ fn host_handle_client_message_inner(
     replication: &mut ServerReplication,
     state_slots: &mut state_slots::HostStateReplication,
     command_queues: &mut HostCommandQueues,
-    hit_context: Option<HostHitIngestContext<'_>>,
     pending_hit_declarations: Option<&mut PendingHitDeclarations>,
     client_id: u64,
     server_tick: u32,
@@ -1884,17 +1880,6 @@ fn host_handle_client_message_inner(
         wire::ClientMessage::HitDeclaration(declaration) => {
             if let Some(pending) = pending_hit_declarations {
                 pending.push(client_id, declaration);
-            } else {
-                let result = hit_context
-                    .map(|context| ingest_hit_declaration(context, client_id, &declaration))
-                    .unwrap_or_default();
-                send_shot_verdict(
-                    server,
-                    client_id,
-                    declaration.shot_id,
-                    result.fire_accepted,
-                    result.hit_accepted,
-                );
             }
         }
         // M15 Phase 3.5: a client missing a replicated state-slot baseline. The state
@@ -1945,9 +1930,9 @@ fn ingest_hit_declaration(
     // Once the declaration binds to this client's still-open authorized FIRE,
     // consume it even if every record below fails validation. That keeps a client
     // from retrying the same authorized shot until a declaration happens to land.
-    let Some(open) = context.open_shots.retire(shot_id) else {
-        return HitDeclarationResult::default();
-    };
+    // The peek above already confirmed the entry; nothing mutates the store between,
+    // so retire for its removal side effect and reuse the peeked shot.
+    context.open_shots.retire(shot_id);
     let pellet_count = open.shot.pellet_count;
     if pellet_count == 0 {
         return HitDeclarationResult {
@@ -2002,12 +1987,14 @@ fn apply_valid_hit_record(
     if !point.is_finite() {
         return false;
     }
-    if !has_static_world_los(registry, collision_world, attacker, point) {
-        return false;
-    }
+    // Reconstruct the attacker eye once and reuse it for both the static-world LOS
+    // check and the range check below.
     let Some(eye) = attacker_eye(registry, attacker) else {
         return false;
     };
+    if !has_static_world_los(collision_world, eye, point) {
+        return false;
+    }
     let distance = eye.distance(point);
     let max_range = range * HIT_RANGE_TOLERANCE;
     if !max_range.is_finite() || distance > max_range {
@@ -2032,15 +2019,7 @@ fn apply_valid_hit_record(
     true
 }
 
-fn has_static_world_los(
-    registry: &EntityRegistry,
-    collision_world: &CollisionWorld,
-    attacker: EntityId,
-    point: Vec3,
-) -> bool {
-    let Some(eye) = attacker_eye(registry, attacker) else {
-        return false;
-    };
+fn has_static_world_los(collision_world: &CollisionWorld, eye: Vec3, point: Vec3) -> bool {
     let to_point = point - eye;
     let distance = to_point.length();
     if !distance.is_finite() || distance <= 1.0e-5 {

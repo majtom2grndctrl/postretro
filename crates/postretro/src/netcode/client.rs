@@ -652,7 +652,6 @@ impl ClientReplication {
                 }
                 self.maybe_surface_remote_enemy_materialize(
                     registry,
-                    network_id,
                     existing,
                     local_player,
                     entity_class,
@@ -815,7 +814,6 @@ impl ClientReplication {
         }
         self.maybe_surface_remote_enemy_materialize(
             registry,
-            network_id,
             id,
             local_player,
             entity_class,
@@ -833,7 +831,6 @@ impl ClientReplication {
     fn maybe_surface_remote_enemy_materialize(
         &self,
         registry: &EntityRegistry,
-        network_id: NetworkId,
         entity_id: EntityId,
         local_player: bool,
         entity_class: Option<&str>,
@@ -844,6 +841,12 @@ impl ClientReplication {
             return;
         }
         let Some(class) = entity_class else {
+            return;
+        };
+        // Callers only reach this after a record has applied, which means the
+        // bidirectional mapping is live. Reading the NetworkId back from that
+        // invariant avoids passing a duplicated identity through this helper.
+        let Some(&network_id) = self.reverse_map.get(&entity_id) else {
             return;
         };
         if registry

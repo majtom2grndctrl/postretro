@@ -186,15 +186,19 @@ encoding; emit only when the map has triggers.
 - [ ] A `use` trigger fires only when a player capsule overlaps the volume **and** a Use
   rising edge occurs the same tick; capsule overlap alone does not fire it.
 - [ ] Every touch and use activation reaches command dispatch only through
-  `evaluate_trigger_activation`; a test asserts it is the sole call path (no second
-  firing route), and that the gate receives the activator id.
+  `evaluate_trigger_activation`. A `#[cfg(test)]` activation counter, incremented only
+  inside `evaluate_trigger_activation`, equals the total number of fires observed across
+  both touch and use activations (the runnable form of "sole call path"), and the gate
+  receives the activator id.
 - [ ] The four mover commands produce the **Command Semantics** phase effects,
   verified deterministically: `start` resumes from current phase and no-ops when
   completed; `stop` freezes without losing mid-segment progress; `reverse` retraces from
   the exact current position with no teleport; `goToPathNode(name)` moves to the named
-  waypoint and holds; an unknown node name warns and no-ops.
-- [ ] A command targeting a tag applies to every tagged `KinematicMover` and skips
-  tagged non-mover entities with a warning.
+  waypoint and holds; an unknown node name is a no-op — `target_segment` and phase stay
+  unchanged (the asserted metric); the `log::warn!` is review-only, not a harness assertion.
+- [ ] A command targeting a tag applies to every tagged `KinematicMover` (its phase
+  mutates) and leaves tagged non-mover entities untouched (the asserted metric); the skip
+  `log::warn!` is review-only, not a harness assertion.
 - [ ] Script path: `world.query({ component: "kinematic_mover", tag })` returns mover
   handles; `handle.start()` / `.stop()` / `.reverse()` / `.goToPathNode(node)` build
   reaction descriptors that, when the named reaction fires, apply the verb to the tagged
@@ -206,8 +210,14 @@ encoding; emit only when the map has triggers.
   jitter: 60, loss_probability: 0.05 }` + fixed seed): only the host evaluates triggers;
   a client never fires one; a host trigger firing (including a `goToPathNode` that sets
   `target_segment`) replicates and the client's predicted mover reconciles to the new
-  motion within the same bounded tolerance A established, with no accumulating drift; a
-  client's Use press reaches the host via `use_pressed` and fires a use trigger there.
+  motion within `MOVER_TOLERANCE_M` (the bound A established), with no accumulating drift
+  (`assert_non_accumulating`); a client's Use press reaches the host via `use_pressed` and
+  fires a use trigger there. This requires `LoopbackHarness::host_tick` to invoke the Task 3
+  trigger system each host tick (it calls `run_kinematic_mover_tick` directly, not
+  `simulate_tick`, so the system is not run otherwise), a host-side trigger loaded in the
+  harness setup targeting the mover, and `step()`/`SimCommand` injecting a per-player Use
+  edge that becomes `use_pressed` on the client→host path; reuse the fixtures'
+  `mover_position_error` readout.
 - [ ] `SNAPSHOT_VERSION` is bumped 8 → 9 and the protocol gate bumped; wire drift/round-
   trip guards pass; a peer on the old version is refused at the handshake.
 - [ ] No trigger state crosses the wire this slice (grep/review gate — no
@@ -223,18 +233,49 @@ yet. Define `MoverCommand { Start, Stop, Reverse, GoToPathNode(String) }` and
 `apply_mover_command(mover: &mut KinematicMoverComponent, cmd: &MoverCommand)` in the
 mover crate/module (beside `crates/entities/src/components/kinematic_mover.rs` for the
 type; the applier co-locates with the driver in `crates/postretro/src/kinematic_mover.rs`).
-Implement the **Command Semantics** table exactly — pure phase mutation, no wall-clock,
-no RNG. Extend `KinematicMoverComponent` with `target_segment: Option<u16>` (phase) and
+Implement these four verbs exactly — pure phase mutation of the deterministic driver phase
+(`segment_index`, `direction_sign`, `segment_elapsed_ms`, `wait_remaining_ms`,
+`current_linear_velocity`, `started`, `completed`, `target_segment`), no wall-clock, no
+RNG; each verb is total and idempotent-safe:
+
+| Verb | Effect on phase | Edge cases |
+|---|---|---|
+| `start` | `started = true`; `wait_remaining_ms = 0` (cancels a pending endpoint wait so motion resumes immediately). Resumes from current `segment_index`/`segment_elapsed_ms` in the current direction. | No-op if `completed` (a finished `once` mover has no remaining path — use `reverse`). No-op if already moving. |
+| `stop` | `started = false`; `current_linear_velocity = ZERO`. Freezes at the current pose and phase; `segment_elapsed_ms` preserved so a later `start` resumes mid-segment. | No-op if already stopped. |
+| `reverse` | Flips `direction_sign`; re-anchors within the current segment so the mover retraces from its **exact current position** toward the previous waypoint (`segment_elapsed_ms = segment_duration − segment_elapsed_ms`). Sets `started = true`, `completed = false`, `wait_remaining_ms = 0`. | No teleport — the position is continuous across the reversal. `once`/`ping_pong` endpoint rules then apply in the new direction. |
+| `go_to_path_node(node)` | Resolves `node` (a `kinematic_waypoint` name) to a segment index on the target mover; sets `target_segment` to it, points `direction_sign` toward it, sets `started = true`, clears `completed`. The driver advances toward `target_segment` and holds on arrival (endpoint-wait then idle, like a `once` endpoint), clearing `target_segment`. | No-op + `log::warn!` if the name is not in the mover's chain. No-op if already at the node. `target_segment` supersedes `once`/`ping_pong` endpoint reversal until reached. |
+
+The applier skips non-`KinematicMover` targets with a rate-limited warning (mirrors
+`applyDamage` skipping non-`Health`). `MoverCommand` derives `Serialize, Deserialize,
+Clone, PartialEq` — matching `KinematicMoverMode`'s serde-derive pattern in
+`crates/entities/src/components/kinematic_mover.rs` (which also derives `Copy, Eq`; the
+`GoToPathNode(String)` payload precludes those two here) — because Task 2 embeds it in the
+serde `TriggerVolumeComponent` (AC 4 round-trip) and the PRL record.
+
+Extend `KinematicMoverComponent` with `target_segment: Option<u16>` (phase) and
 `waypoint_names: Vec<String>` (static, seeded at construction alongside `waypoints`; not
-replicated). Extend the deterministic driver — the single-tick integrator
-`advance_mover_phase_one_tick` (invoked each tick by the driver entry point
-`run_kinematic_mover_tick`; `advance_mover` is a private inner helper, not itself the
-extension point) — so that when `target_segment` is `Some`, the mover advances toward it
-and holds on arrival (endpoint wait then idle), clearing `target_segment`;
-`target_segment` supersedes `once`/`ping_pong` endpoint reversal until reached.
-`go_to_path_node` resolves the node name against
+replicated). Extend the deterministic driver so that when `target_segment` is `Some`, the
+mover advances toward it and holds on arrival (endpoint wait then idle), clearing
+`target_segment`; `target_segment` supersedes `once`/`ping_pong` endpoint reversal until
+reached. The `target_segment` handling is woven into the segment-stepping and
+arrival/reversal helpers `advance_mover` / `handle_arrival_at_waypoint`
+(`crates/postretro/src/kinematic_mover.rs` ~lines 139–243), where segments advance and
+endpoints reverse — that is where the move-and-hold logic lives. The per-tick entry point
+`run_kinematic_mover_tick` calls the single-tick integrator `advance_mover_phase_one_tick`,
+which in turn calls `advance_mover` and computes velocity; those two names identify the
+tick entry vs the private helper only — they do **not** mean the new logic belongs in
+`advance_mover_phase_one_tick`. `go_to_path_node` resolves the node name against
 `waypoint_names` to an index; unknown names warn and no-op. The driver stays a pure
 function of {phase, static path, dt} so host and client reproduce it identically.
+
+Adding `waypoint_names` means `KinematicMoverComponent::new`
+(`crates/entities/src/components/kinematic_mover.rs` ~line 39; current args `mover_id`,
+`waypoints`, `speed_mps`, `wait_ms`, `mode`, `started`) gains a names argument; update all
+call sites (loader and test fixtures). Thread the names from the KinematicGeometry PRL load
+site — `spawn_from_geometry` in `crates/postretro/src/runtime_movers.rs` (~line 201) already
+holds them: `geometry.waypoints` are `LoadedKinematicWaypoint` with a `.name`, currently
+dropped when `resolve_waypoint_chain` collapses the chain to `Vec<Vec3>`; carry the resolved
+names alongside the positions into `new`.
 
 Tests, all in-memory: each verb's phase effect (start/stop/reverse idempotence and edge
 cases; reverse continuity — position before and after reversal is equal within ε and the
@@ -250,16 +291,34 @@ current last variant `KinematicMover = 13`), and a
 `ComponentValue`, registry storage, serde, the `component_kind_name` reverse map
 (`crates/entities/src/ffi.rs`), and the `component_kind_discriminant` map + drift test
 (`crates/postretro/src/netcode/mod.rs`) — **no** net-side constant (kind 14 is not
-replicated this slice, like `Light`). `component_kind_from_name` keeps both
-`trigger_volume` and `kinematic_mover` unmapped (neither is script-attachable;
-`kinematic_mover` remains query-only, per Task 4). The component carries static config
+replicated this slice, like `Light`). `component_kind_from_name` simply has no
+`trigger_volume`/`kinematic_mover` arm (both stay unmapped there — neither is
+script-attachable; `kinematic_mover` remains query-only, per Task 4); the actual hard
+rejection of `kinematic_mover` is an explicit arm in the FromJs/FromLua `setComponent`
+match (`crates/entities/src/ffi.rs` ~lines 246 and 401), which must stay. The component
+carries static config
 { `activation`, `target_tag`, `command: MoverCommand`, `fire_mode`, `rearm_ms`,
 `enabled_on_spawn` } and mutable state { `armed`, `latched`, `rearm_remaining_ms` };
 `armed` seeds from `enabled_on_spawn`.
 
-Add `SectionId::TriggerVolumes = 44` to `postretro-level-format` (+ the hand-written
-`from_u32` arm) and `TriggerVolumeRecord` with the encoding pinned in **Wire Format**;
-serialization tests. Add the FGD `@SolidClass = trigger_volume` (choices for
+Add `SectionId::TriggerVolumes = 44` to `postretro-level-format` and a
+`TriggerVolumeRecord`. Encoding (little-endian throughout, recorded in the PRL
+table-of-contents like any section; `version` starts at 1; body self-contained; mirror
+`KinematicGeometrySection` / `MapEntitySection`; emit only when the map has triggers):
+
+- `SectionId::TriggerVolumes = 44` — next free id after `KinematicGeometry = 43`; extend
+  the hand-written `SectionId::from_u32` match with the new arm.
+- Each list is a `u32` count before its entries (`triggers`, and per-trigger `tags`);
+  empty = `u32(0)`.
+- Each `String` (`name`, `target_tag`, `command_arg`, tag entries) is a `u32` byte-length
+  prefix + raw UTF-8, no terminator; empty = `u32(0)`; absent `command_arg` = empty string.
+- `activation`, `command`, `fire_mode` are each a `u8`; `enabled_on_spawn` a single
+  `0`/`1` byte (mirror `AlphaLightsSection` / `KinematicGeometrySection`).
+- `aabb_min`/`aabb_max` are `[f32; 3]` each; `rearm_ms` an `f32`.
+
+Field order: `TriggerVolumeRecord { name, tags, aabb_min, aabb_max, activation, target_tag,
+command, command_arg, fire_mode, rearm_ms, enabled_on_spawn }`. Serialization tests. Add
+the FGD `@SolidClass = trigger_volume` (choices for
 `activation`/`command`/`fire_mode`/`enabled_on_spawn`). Compiler: collect
 `trigger_volume` brush entities in `parse.rs` before the brush-entity skip path, compute
 their AABB (fog_volume precedent — AABB only, **not** the mover's textured projection),
@@ -267,12 +326,13 @@ source `tags` from `_tags`, validate `command`/`command_arg`/`rearm_ms`, and pac
 section in `pack.rs`, emitting it only when the map has triggers. Assert the trigger
 brush is absent from `world_brush_ids` / `brush_volumes` and the static `GeometrySection`.
 
-Load section 44 into `LevelWorld` (`crates/level-loader/src/prl.rs` /
-`prl_loader.rs`; absent/empty = no triggers). At level load, spawn one entity per record
-with a `Transform`, the `TriggerVolumeComponent` (seeded), the record's `tags`, and a
-runtime AABB in a trigger side-table keyed by `EntityId` (mirror `FogVolumeBridge`). Both
-host and client spawn triggers locally; triggers are **not** registered in
-`ReplicableSet`.
+Load section 44 into `LevelWorld` (`SectionId` dispatch during load is owned by
+`crates/level-loader/src/prl_loader.rs`; absent/empty = no triggers). At level load, spawn
+one entity per record with a `Transform`, the `TriggerVolumeComponent` (seeded), the
+record's `tags`, and a runtime AABB in a trigger side-table named `TriggerVolumeBridge`,
+keyed by `EntityId` (mirror `FogVolumeBridge`; Task 3 reads trigger AABBs from
+`TriggerVolumeBridge`). Both host and client spawn triggers locally; triggers are **not**
+registered in `ReplicableSet`.
 
 ### Task 3: Host-authoritative trigger system and single firing gate
 
@@ -280,19 +340,41 @@ Add a fixed-tick trigger system that runs after player movement settles (a new
 update-order stage after Player movement tick, before AI brain tick — see
 entity_model.md §5). Each tick, for each trigger, the system computes activation against
 authoritative player state: `touch` = a player capsule's rising-edge entry into the
-trigger AABB (track prior-overlap per (trigger, player) pair, so each player's rising
-edge is detected independently — required for correct co-op behavior with multiple
-players); `use` = capsule overlap plus a Use rising edge for that player.
-Single-player and, in co-op, the host's own local player read `Action::Use` directly;
-for every remote player the host reads the replicated per-player `use_pressed`
-(Task 5). On activation, call
-the sole gate `evaluate_trigger_activation(&TriggerVolumeComponent, activator: PlayerId)
--> Fire | Suppress`, which this slice decides on armed/latched/rearm only and logs the
-discarded activator in dev builds. On `Fire`: resolve `target_tag` to entities
+trigger AABB (read from Task 2's `TriggerVolumeBridge` side-table, keyed by `EntityId`;
+track prior-overlap per (trigger, player) pair, so each player's rising edge is detected
+independently — required for correct co-op behavior with multiple players); `use` =
+capsule overlap plus a Use rising edge for that player.
+
+Consume each player's Use edge through an explicit per-player seam — a map keyed by
+`PlayerId` (see gate signature below) holding the current Use rising-edge state per
+player — never a direct single-player `Action::Use` read inlined into the trigger logic.
+In this phase (Phase 3) only the local player's `Action::Use` edge is wired into that map;
+Task 5 (Phase 4) later fills remote-player entries from the replicated per-player
+`use_pressed`. This keeps Task 3 from hard-coding a single-player read that Task 5 would
+have to refactor: single-player and the host's own local player supply their edge locally,
+every remote player's edge arrives via `use_pressed`, but the trigger system reads only the
+`PlayerId`-keyed map either way.
+
+On activation, call the sole gate
+`evaluate_trigger_activation(&TriggerVolumeComponent, activator: PlayerId) -> Fire |
+Suppress`, which this slice decides on armed/latched/rearm only and logs the discarded
+activator in dev builds. Introduce `PlayerId` here as a thin alias/newtype over the
+existing per-client input key: the host already keys remote client input by `client_id:
+u64` (`HostCommandQueues.clients` in `crates/postretro/src/netcode/command_queue.rs`, with
+`PawnOwnerMap` mapping pawn `EntityId → client_id`); single-player's only identity is
+`registry.local_player_pawn()` (an `EntityId`), which maps onto a `PlayerId` too. Do **not**
+invent a heavyweight new identity system — real ownership is E18; this only names the seam.
+The **same** `PlayerId` is the key for (a) the per-(trigger, player) overlap tracking above,
+(b) the per-player Use seam map, and (c) Task 5's per-player `use_pressed` map — one type,
+shared across Task 3 and Task 5. On `Fire`: resolve `target_tag` to entities
 (`query_by_component_and_tag`), call Task 1's `apply_mover_command` on each
 `KinematicMover` target, then update trigger state — `latched = true` for `once`,
 `rearm_remaining_ms = rearm_ms` for `multiple`. Count down `rearm_remaining_ms` each tick.
-Enforce that both activation paths funnel through the one gate (no direct dispatch).
+Enforce that both activation paths funnel through the one gate (no direct dispatch). For a
+runnable single-call-path assertion, add a `#[cfg(test)]` activation counter incremented
+only inside `evaluate_trigger_activation`; a test asserts it equals the total number of
+fires observed across both touch and use activations — making "sole call path" and "gate
+receives the activator id" runnable assertions rather than code-review claims.
 
 Trigger firing and command application are server-authoritative: on a client the trigger
 system and applier are inert; mover phase changes arrive via replication. Wire the system
@@ -300,7 +382,8 @@ into `simulate_tick` (call-site only in `main.rs`/`sim`; logic in a focused modu
 
 Tests (deterministic sim): touch rising-edge fire; `once` fires once; `multiple` rearm
 gating; `enabled_on_spawn = 0` suppression; use requires overlap + press edge; the
-single-gate assertion; end-to-end trigger → mover command → observed motion.
+single-gate assertion (via the `#[cfg(test)]` activation counter); end-to-end trigger →
+mover command → observed motion.
 
 ### Task 4: Script authoring path — world.query mover kind, handle, reaction primitives
 
@@ -308,12 +391,16 @@ Register `kinematic_mover` as a `world.query` component kind: add the
 `WorldQueryComponent` enum variant (`crates/lighting/src/script_primitives.rs`, snake
 literal `kinematic_mover` matching `fog_volume`), a `QueryFilter::KinematicMover { tag }`
 arm and `collect_kinematic_mover_handles_json` in `crates/postretro/src/scripting/entity_world_primitives.rs`,
-and a `MoverEntity` handle type (id, position, tags). Query-ability and attach-ability
-are separate mechanisms: this registration makes `kinematic_mover` readable via
-`world.query`, but `component_kind_from_name`'s existing hard rejection of
-`kinematic_mover` in the FromJs/FromLua `setComponent` paths (`crates/entities/src/ffi.rs`)
-must stay in place — scripts may read mover handles but must not be able to spawn/attach
-a raw `KinematicMover` component. Add
+and a `MoverEntity` handle type (id, position, tags). Registering the `world.query` kind
+also means extending `parse_query_filter` and the `WORLD_QUERY_DOC` literal list
+(`crates/postretro/src/scripting/entity_world_primitives.rs` ~lines 72 and 88), not just
+adding the enum variant. Query-ability and attach-ability are separate mechanisms: this
+registration makes `kinematic_mover` readable via `world.query`, but the existing hard
+rejection of `kinematic_mover` — an explicit arm in the FromJs/FromLua `setComponent`
+match (`crates/entities/src/ffi.rs` ~lines 246 and 401), **not** in
+`component_kind_from_name` (which simply has no `kinematic_mover` arm) — must stay in
+place, so scripts may read mover handles but must not be able to spawn/attach a raw
+`KinematicMover` component. Add
 `sdk/lib/entities/movers.{ts,luau}` — a `MoverEntityHandle` wrapper whose `start()`,
 `stop()`, `reverse()`, and `goToPathNode(node)` build reaction step descriptors (the
 `SequenceStep { id, primitive, args }` shape lights/fog use), delegated to from
@@ -334,17 +421,40 @@ Extend `postretro-net` and `postretro` replication per **Wire Format**: add
 `target_segment: Option<u16>` to `WireKinematicMoverState` and `use_pressed: bool` to
 `WireMovementInput`, updating `bitcode` encode/decode, raw↔typed conversion,
 baseline/delta, `InputCommand` round-trip, and drift/round-trip tests. Bump
-`SNAPSHOT_VERSION` 8 → 9 and the protocol gate. Host snapshot production already collects
-`KinematicMoverState` for registered movers — `target_segment` rides along. Client apply
-seeds the predictive mover driver from the replicated phase including `target_segment`, so
-a `goToPathNode` hold reconciles rather than overshoots. Host input handling reads
-`use_pressed` per client into the per-player use edge the trigger system (Task 3)
-consumes for remote players. No trigger-state wire payload is added (E18 seam).
+`SNAPSHOT_VERSION` 8 → 9 and the transport protocol gate — `WIRE_VERSION` (currently `8`)
+in `crates/net/src/transport.rs` (~line 52), which `transport_protocol_id()` folds into the
+handshake id. Host snapshot production already collects `KinematicMoverState` for registered
+movers — `target_segment` rides along. Client apply seeds the predictive mover driver from
+the replicated phase including `target_segment`, so a `goToPathNode` hold reconciles rather
+than overshoots.
+
+Add the client-side source for the use bit: `SimCommand` (`crates/postretro/src/sim/mod.rs`
+~line 29, currently `movement`/`fire_button`/`reload`) and `MovementInput`
+(`crates/postretro/src/movement/mod.rs` ~line 35, currently no use field) each gain a
+`use_pressed: bool`, populated from `Action::Use` in the input layer;
+`sim_command_to_input` and `input_command_to_sim`
+(`crates/postretro/src/netcode/wire_convert.rs`, lines 19 and 47) map it onto/from
+`WireMovementInput.use_pressed` (`crates/net/src/wire.rs:813`) alongside the other movement
+fields. Host input handling then reads `use_pressed` per client into the per-player Use seam
+map keyed by `PlayerId` — the same type Task 3 introduces, one type shared by Task 3's
+per-(trigger, player) overlap tracking and this per-player `use_pressed` map — that the
+trigger system (Task 3) consumes for remote players. No trigger-state wire payload is added
+(E18 seam).
 
 Extend the in-memory prediction/reconciliation harness with a trigger scenario at the E15
-profile: the host fires a trigger (`start` and a `goToPathNode`), and assert the client's
-predicted mover tracks the host within bounded tolerance with no accumulating correction,
-and that a client-issued Use press fires a use trigger on the host.
+profile. `LoopbackHarness::host_tick`
+(`crates/postretro/src/netcode/predict_reconcile_harness_test_fixtures.rs` ~line 525) is
+hand-rolled and calls `run_kinematic_mover_tick` directly, **not** `simulate_tick`, so it
+will not run Task 3's trigger system automatically. Therefore: (a) `host_tick` must invoke
+the Task 3 trigger system each host tick; (b) the harness setup loads a host-side
+`trigger_volume` targeting the mover; (c) `step()` / `SimCommand` can inject a per-player
+Use edge that becomes `use_pressed` on the client→host path; (d) reuse the existing readouts
+`mover_position_error` (in that fixtures file, ~line 960) and `MOVER_TOLERANCE_M` /
+`assert_non_accumulating` (in the sibling `crates/postretro/src/netcode/predict_reconcile_harness.rs`,
+~lines 650 and 1002) for the tolerance / no-drift assertions. The host fires a trigger
+(`start` and a `goToPathNode`); assert the client's predicted mover tracks the host within
+`MOVER_TOLERANCE_M` with no accumulating correction (`assert_non_accumulating`), and that a
+client-issued Use press fires a use trigger on the host.
 
 ### Task 6: Demo map, diagnostics, and documentation
 

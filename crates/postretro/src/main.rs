@@ -36,6 +36,11 @@ mod nav;
 // The ONLY engine code that touches the registry on behalf of replication.
 // See `context/lib/entity_model.md` §6.
 mod netcode;
+// Headless batch-mode observability vocabulary: runspec, entity dump, and
+// deterministic JSON output. Feature-gated; consumed by the headless driver.
+// See: context/plans/in-progress/agentic-observability
+#[cfg(feature = "observability")]
+mod observability;
 mod options;
 mod weapon;
 

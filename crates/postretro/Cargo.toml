@@ -90,6 +90,10 @@ dev-tools = [
     "postretro-net/dev-tools",
     "postretro-renderer/dev-tools",
 ]
+# Headless batch mode for AI-agent and content-CI use. Gates modules only —
+# no optional deps, no egui, independent of dev-tools.
+# See: context/plans/in-progress/agentic-observability
+observability = []
 
 [build-dependencies]
 postretro-script-compiler = { path = "../script-compiler" }

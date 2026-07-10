@@ -144,6 +144,7 @@ Plans ship in this sequence:
 - In-world viewport UI (research §19).
 - Localization runtime (research §19).
 - Screen-reader a11y (research §19, §20).
+- **Radial / ring / arc UI primitive.** The widget vocabulary is axis-aligned quads + text only — no ring, arc, or state-driven widget size (`crates/ui/src/output.rs` `UiInstance`; shader `crates/renderer/src/shaders/ui_quad.wgsl`). A crosshair-anchored spread ring, cooldown arc, or charge ring needs a radial-fill primitive: a new descriptor variant, collector support, and a shader path beyond `ui_quad.wgsl`. Cross-cutting UI-layer work, reusable across features; the Weapon Feel crosshair spread-ring widget consumes it. Linear crosshair meters (reload) reuse the existing `Bar` and do **not** need this.
 - **UI compositor fidelity + image asset pipeline.** Exact source-over ordering between translucent quads/images and glyphon text needs a deliberate compositor design; the current single glyphon render call cannot perfectly interleave text with translucent UI geometry. UI image widgets also need an authored asset registration path so production trees receive texture sizes and bind groups through the renderer-owned registry.
 
 The spine A → B → C is sequential. Then D → (E ‖ F): D before E (token dependency), F concurrent with E, with the F/D layout-module merge-coordination noted. TW (value tweening) joins this band, dependent only on C and concurrent with D/E/F. TE (text entry) trails E + F as the wave's integration consumer. G1 converges D + E + F. Then G2 (reactive selection/visibility + a11y/type-safety) lands on G1, before BIS consumes its primitives. BIS and SE follow (SE needs compositor coordination with Epic 9/10; SE is independent of G2 and may ship in parallel). The deferred set stays detail-on-open.
@@ -268,7 +269,7 @@ Grow `DamagePayload` from amount-only into the full taxonomy, and add layered an
 
 The feel layer on top of working combat — tuning axes the SDK exposes, not new systems.
 
-- [ ] **spread / recoil / accuracy** — per-weapon accuracy stats and recoil patterns (a Borderlands stat axis; new fields behind the `effective()` seam).
+- [ ] **spread / recoil / accuracy** — per-weapon accuracy stats and recoil patterns (a Borderlands stat axis; new fields behind the `effective()` seam). Surfaces a `player.spread` HUD slot (published like the other `player.*` slots) and a crosshair spread-ring widget — a ring around the reticle that grows with sustained-fire spread — consuming the Epic 13 radial/ring UI primitive.
 - [ ] **ADS** — an aim-down-sights view/FOV transition plus an accuracy modifier (the `adsSpeed` stat already exists).
 - [ ] **scope rendering** — zoom / picture-in-picture optic rendering (renderer work).
 - [ ] **aim assist** — autoaim / aim-assist on the input/aim layer (controller support; ties to the Epic 13 gamepad surface).

@@ -327,6 +327,6 @@ tests — `simulate_tick_normalizes_callback_aim_direction_before_weapon_fire`,
 `sim/determinism_tests.rs:1125`, proves firing with callback aim), and Tasks 1–2 are
 explicitly shared substrate with Epic 15 Phase 4.
 
-At promotion: add a line to the roadmap's Epic 15 Phase 4 entry stating the dedicated-
-server entry point consumes this plan's world-install and headless-session functions —
+Promoted with fixes from two review passes (structural + implementability). Roadmap line added to the roadmap's Epic 15 Phase 4 entry stating the dedicated-
+at promotion: Epic 15 Phase 4 consumes this plan's seams —
 one headless substrate, two entry points.

@@ -968,7 +968,7 @@ pub(crate) fn client_receive_and_apply(
         // with the marked local pawn AND materializes its descriptor-backed presentation.
         // Arm and materialize BEFORE reconcile so the just-armed pawn reconciles on its
         // arming snapshot too; the materialization call-site glue lives in
-        // `remote_materialize` (the focused seam Task 6 extends to remote enemies).
+        // `remote_materialize` (the focused seam also materializes remote enemies).
         if let Some(armed) = &outcome.armed_local_pawn {
             prediction.arm(armed.network_id, armed.entity_id);
             remote_materialize::materialize_armed_local_pawn(armed, descriptors, registry);
@@ -977,8 +977,8 @@ pub(crate) fn client_receive_and_apply(
                 entity_class: armed.entity_class.clone(),
             });
         }
-        // E10 Task 6: each non-local baseline that just spawned a descriptor-class-bearing
-        // entity gets its remote-enemy presentation materialized here, where the descriptor
+        // Each non-local baseline that just spawned a descriptor-class-bearing entity gets
+        // its remote-enemy presentation materialized here, where the descriptor
         // table is in scope (the net-facing apply is descriptor-blind). The helper attaches
         // ONLY the descriptor's mesh — no Brain/Agent/Health/Weapon/PlayerMovement — and is
         // idempotent + unknown-class-tolerant (leaves the entity transform-only, never
@@ -1229,7 +1229,7 @@ pub(crate) fn client_decay_local_correction(endpoint: Option<&mut NetEndpoint>) 
 }
 
 /// Sample every remote entity's interpolation buffer and write the resulting poses
-/// through the registry's remote-presentation helper (Task 6). Game-logic-owned:
+/// through the registry's remote-presentation helper. Game-logic-owned:
 /// called once per frame, **after** `client_receive_and_apply` (which fills the
 /// buffers) and **before** the render collectors read entities, so the renderer stays
 /// read-only over the registry.

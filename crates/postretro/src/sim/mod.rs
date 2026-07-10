@@ -192,10 +192,27 @@ fn update_brain_animation_playback_rates(registry: &mut EntityRegistry, anim_tim
         .collect();
 
     for (id, walk_state, raw_ratio) in rate_inputs {
+        let should_rebase = registry
+            .get_component::<MeshComponent>(id)
+            .ok()
+            .and_then(|mesh| mesh.animation.as_ref())
+            .is_some_and(|animation| {
+                let rate_input = if animation.current_state == walk_state {
+                    raw_ratio
+                } else {
+                    1.0
+                };
+                animation.playback_rate_needs_update(rate_input)
+            });
+        if !should_rebase {
+            continue;
+        }
+
+        // The read-only predicate above centralizes clamping and the epsilon
+        // policy, so clone/write only the components whose timeline will rebase.
         let Ok(mut mesh) = registry.get_component::<MeshComponent>(id).cloned() else {
             continue;
         };
-        let previous_mesh = mesh.clone();
         let Some(animation) = mesh.animation.as_mut() else {
             continue;
         };
@@ -206,12 +223,7 @@ fn update_brain_animation_playback_rates(registry: &mut EntityRegistry, anim_tim
             1.0
         };
         animation.update_playback_rate(rate_input, anim_time);
-
-        // `update_playback_rate` has an epsilon guard. Avoid turning its no-op
-        // path into a registry write by only replacing a changed component.
-        if mesh != previous_mesh {
-            let _ = registry.set_component(id, mesh);
-        }
+        let _ = registry.set_component(id, mesh);
     }
 }
 

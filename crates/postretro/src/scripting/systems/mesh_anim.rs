@@ -349,19 +349,22 @@ fn build_capture(
     };
 
     // OUT: the stashed outgoing source of the interrupted fade, sampled at t2.
-    // A clip leg advances on its own timeline; a prior-snapshot reference carries
+    // A clip leg advances on its own rebased timeline (or its preserved entry
+    // stamp while a rebase origin is pending); a prior-snapshot reference carries
     // the incoming as its fallback so a culled prior capture degrades to IN.
     let outgoing = match anim.interrupted_outgoing.as_ref() {
         Some(InterruptedOutgoing::Clip {
             state,
+            entered_at,
             rebase_time,
             rebase_elapsed,
             rate,
-            ..
         }) => {
             let out_state = anim.states.get(state)?;
-            let elapsed =
-                rebase_time.map_or(0.0, |time| *rebase_elapsed + (t2 - time) * f64::from(*rate));
+            let elapsed = rebase_time.map_or_else(
+                || (t2 - *entered_at) * f64::from(*rate),
+                |time| *rebase_elapsed + (t2 - time) * f64::from(*rate),
+            );
             FadeSource::Clip(clip_sample(out_state, elapsed, phase)?)
         }
         Some(InterruptedOutgoing::Snapshot { tag }) => FadeSource::Snapshot {
@@ -686,8 +689,8 @@ mod tests {
             state: "A".into(),
             entered_at: 0.0,
             rate: 0.5,
-            rebase_time: Some(0.0),
-            rebase_elapsed: 0.0,
+            rebase_time: Some(0.8),
+            rebase_elapsed: 0.6,
         });
 
         let capture = animate_entity(&anim, t2, 0.0)
@@ -698,7 +701,49 @@ mod tests {
         let FadeSource::Clip(outgoing) = capture.outgoing else {
             panic!("carried outgoing clip expected");
         };
-        assert!((outgoing.time - 0.55).abs() < EPS);
+        assert!(
+            (outgoing.time - 0.75).abs() < EPS,
+            "carried rebased elapsed adds to, rather than multiplies, the post-rebase advance"
+        );
+    }
+
+    #[test]
+    fn smooth_interrupt_capture_uses_entry_stamp_when_carried_rebase_is_pending() {
+        let t2 = 1.1_f64;
+        let mut anim = anim_with(
+            &[
+                ("A", state("idle", true, 0.0, Some(0))),
+                ("B", state("walk", true, 200.0, Some(1))),
+                ("C", state("run", true, 100.0, Some(2))),
+            ],
+            "C",
+            Some(t2),
+        );
+        anim.rebase_time = Some(t2);
+        anim.previous_state = Some("B".into());
+        anim.previous_entered_at = Some(1.0);
+        anim.previous_rate = 0.5;
+        anim.previous_rebase_time = Some(1.0);
+        anim.fade_source = FadeSourceKind::Snapshot;
+        anim.interrupted_outgoing = Some(InterruptedOutgoing::Clip {
+            state: "A".into(),
+            entered_at: 0.4,
+            rate: 0.5,
+            rebase_time: None,
+            rebase_elapsed: 9.0,
+        });
+
+        let capture = animate_entity(&anim, t2, 0.0)
+            .unwrap()
+            .capture
+            .expect("smooth interrupt emits capture");
+        let FadeSource::Clip(outgoing) = capture.outgoing else {
+            panic!("carried outgoing clip expected");
+        };
+        assert!(
+            (outgoing.time - 0.35).abs() < EPS,
+            "pending rebase carries the entry-stamp-relative scaled elapsed, not frame zero"
+        );
     }
 
     #[test]

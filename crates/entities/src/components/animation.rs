@@ -104,12 +104,13 @@ pub type AnimStamp = Option<f64>;
 /// pose the entity showed at the interrupt instant: `blend(OUT, IN, w)`.
 ///
 /// Runtime-only: set at switch time and cleared once the new fade resolves. Never
-/// persisted (mirrors how `entered_at`/`fade_source` carry no durable meaning).
+/// persisted because it is meaningful only while reconstructing that one capture.
 #[derive(Debug, Clone, PartialEq)]
 pub enum InterruptedOutgoing {
     /// The interrupted fade blended out of a clip: its state name and the entry
-    /// stamp that clip advanced on. Sampled at the interrupt instant on its own
-    /// timeline to reproduce the leg.
+    /// stamp used when its rebase origin is still pending. Sampled at the
+    /// interrupt instant on its own rebased timeline, falling back to that
+    /// entry-stamp-relative scaled elapsed to reproduce the leg.
     Clip {
         state: String,
         entered_at: f64,
@@ -218,12 +219,8 @@ impl MeshAnimation {
     /// Pending entries have no clock origin yet: retain the new rate but accrue
     /// nothing, so they still sample as just-entered until resolution.
     pub fn update_playback_rate(&mut self, raw_ratio: f32, now: f64) {
-        let rate = if raw_ratio.is_finite() {
-            raw_ratio.clamp(RATE_MIN, RATE_MAX)
-        } else {
-            default_playback_rate()
-        };
-        if (rate - self.rate).abs() <= RATE_CHANGE_EPSILON {
+        let rate = Self::normalized_playback_rate(raw_ratio);
+        if !self.playback_rate_needs_update(raw_ratio) {
             return;
         }
 
@@ -232,6 +229,24 @@ impl MeshAnimation {
             self.rebase_time = Some(now);
         }
         self.rate = rate;
+    }
+
+    /// Normalize a locomotion speed ratio through the one shared rate policy.
+    /// Non-finite input rests at the authored playback rate instead of carrying
+    /// an invalid value into animation sampling.
+    pub fn normalized_playback_rate(raw_ratio: f32) -> f32 {
+        if raw_ratio.is_finite() {
+            raw_ratio.clamp(RATE_MIN, RATE_MAX)
+        } else {
+            default_playback_rate()
+        }
+    }
+
+    /// Whether applying `raw_ratio` would rebase this animation timeline.
+    /// Producers use this read-only predicate to avoid cloning and writing an
+    /// unchanged `MeshComponent` on steady-state simulation and client frames.
+    pub fn playback_rate_needs_update(&self, raw_ratio: f32) -> bool {
+        (Self::normalized_playback_rate(raw_ratio) - self.rate).abs() > RATE_CHANGE_EPSILON
     }
 
     /// Evaluate the current state's rebased clip-local elapsed time at the
@@ -321,10 +336,12 @@ impl MeshAnimation {
     /// Whether the per-frame resolve pass must act on this entity. Steady-state
     /// entities (entry stamp resolved, no recorded fade) are skipped — touching
     /// them would clone, no-op mutate, and rewrite the component every frame.
-    /// Work is due for exactly three reasons:
+    /// Work is due for exactly four reasons:
     /// - a pending current entry stamp to fill (`entered_at == None`);
+    /// - a missing current rebase origin to recover from its entry stamp;
     /// - an active fade whose previous stamp is still pending (carry/fill it);
-    /// - an active fade that has reached weight 1.0 and must be cleared.
+    /// - an active fade whose previous rebase origin is missing or that has
+    ///   reached weight 1.0 and must be cleared.
     fn resolve_pass_has_work(&self, now: f64) -> bool {
         self.entered_at.is_none()
             || self.rebase_time.is_none()
@@ -586,13 +603,16 @@ pub fn restart_animation_clip(
 /// Runs in the render-frame collection sub-stage, immediately before the mesh
 /// collector, with a mutable registry.
 ///
-/// Three jobs, on exactly the entities that need them (steady-state entities are
+/// Four jobs, on exactly the entities that need them (steady-state entities are
 /// skipped — see [`MeshAnimation::resolve_pass_has_work`] — so the hot path does
 /// not clone and rewrite untouched components every frame):
 /// - A pending `entered_at` (`None`) is filled with `now`.
 /// - A pending `previous_entered_at` accompanying an active fade is filled too
 ///   (a switch out of a freshly-entered state where the previous stamp could not
 ///   be carried).
+/// - Runtime-only rebase origins skipped by direct component serde are restored
+///   from their preserved entry stamps, retaining the live unscaled phase on the
+///   first resolve instead of restarting it at `now`.
 /// - A fade that has reached weight 1.0 (window measured from the current
 ///   state's `crossfadeMs`) is cleared back to steady state, so the next
 ///   `switch_animation_state` does not mistake a finished fade for an in-flight
@@ -631,13 +651,23 @@ pub fn resolve_pending_animation_stamps(registry: &mut EntityRegistry, now: f64)
             anim.entered_at = Some(now);
         }
         if anim.rebase_time.is_none() {
-            anim.rebase_time = Some(now);
+            // Direct component serde deliberately drops the runtime rebase
+            // triple but retains `entered_at`. Anchor the rebuilt timeline to
+            // that preserved entry stamp so its first resolve keeps the phase
+            // it was already showing; a genuinely pending entry was just
+            // stamped above and therefore correctly begins at `now`.
+            anim.rebase_time = anim.entered_at;
+            anim.rebase_elapsed = 0.0;
         }
         if anim.previous_state.is_some() && anim.previous_entered_at.is_none() {
             anim.previous_entered_at = Some(now);
         }
         if anim.previous_state.is_some() && anim.previous_rebase_time.is_none() {
-            anim.previous_rebase_time = Some(now);
+            // Mirror the current-side serde recovery for an outgoing fade leg.
+            // `previous_entered_at` is either the carried live stamp or the
+            // pending fallback filled just above.
+            anim.previous_rebase_time = anim.previous_entered_at;
+            anim.previous_rebase_elapsed = 0.0;
         }
         // Clear a fade that has reached weight 1.0. Re-checked after filling the
         // current stamp above, so a fade entered with a pending stamp is
@@ -824,6 +854,42 @@ mod tests {
         assert_eq!(back.previous_rate, 1.0);
         assert_eq!(back.rebase_time, None);
         assert_eq!(back.previous_rebase_time, None);
+    }
+
+    #[test]
+    fn serde_rebase_recovery_preserves_current_and_previous_entry_phase() {
+        // Component serde intentionally omits runtime triples, but it retains
+        // the authored/live entry stamps. The first resolve must rebuild each
+        // missing origin from its own stamp, not from the resolve instant.
+        let mut value = MeshComponent::animated("decraniated".into(), two_state_animation());
+        let anim = value.animation.as_mut().unwrap();
+        anim.states.get_mut("attack").unwrap().crossfade_ms = 20_000.0;
+        anim.current_state = "attack".into();
+        anim.entered_at = Some(4.0);
+        anim.previous_state = Some("idle".into());
+        anim.previous_entered_at = Some(2.0);
+        anim.rebase_time = Some(4.0);
+        anim.rebase_elapsed = 7.0;
+        anim.previous_rebase_time = Some(2.0);
+        anim.previous_rebase_elapsed = 9.0;
+
+        let restored: MeshComponent =
+            serde_json::from_value(serde_json::to_value(value).unwrap()).unwrap();
+        let mut registry = EntityRegistry::new();
+        let id = registry.spawn(Transform::default());
+        registry.set_component(id, restored).unwrap();
+
+        resolve_pending_animation_stamps(&mut registry, 10.0);
+        let anim = registry
+            .get_component::<MeshComponent>(id)
+            .unwrap()
+            .animation
+            .as_ref()
+            .unwrap();
+        assert_eq!(anim.rebase_time, Some(4.0));
+        assert_eq!(anim.previous_rebase_time, Some(2.0));
+        assert!((anim.scaled_elapsed(10.0) - 6.0).abs() < 1.0e-9);
+        assert!((anim.previous_scaled_elapsed(10.0) - 8.0).abs() < 1.0e-9);
     }
 
     #[test]

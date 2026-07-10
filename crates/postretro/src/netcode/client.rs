@@ -1342,25 +1342,41 @@ impl ClientReplication {
         let Some(reference) = self.remote_enemy_walk_playback.get(&network_id) else {
             return;
         };
+        let raw_ratio = registry
+            .get_component::<MeshComponent>(entity_id)
+            .ok()
+            .and_then(|mesh| mesh.animation.as_ref())
+            .map(|animation| {
+                if animation.current_state == reference.walk_state && reference.move_speed > 0.0 {
+                    speed_xz / reference.move_speed
+                } else {
+                    1.0
+                }
+            });
+        let Some(raw_ratio) = raw_ratio else {
+            return;
+        };
+
+        let needs_rebase = registry
+            .get_component::<MeshComponent>(entity_id)
+            .ok()
+            .and_then(|mesh| mesh.animation.as_ref())
+            .is_some_and(|animation| animation.playback_rate_needs_update(raw_ratio));
+        if !needs_rebase {
+            return;
+        }
+
+        // The animation predicate owns clamping and epsilon comparison. Keep
+        // the normal remote-presentation path allocation-free by cloning only
+        // when that predicate says a rebase write is necessary.
         let Ok(mut mesh) = registry.get_component::<MeshComponent>(entity_id).cloned() else {
             return;
         };
-        let previous_mesh = mesh.clone();
         let Some(animation) = mesh.animation.as_mut() else {
             return;
         };
-        let raw_ratio =
-            if animation.current_state == reference.walk_state && reference.move_speed > 0.0 {
-                speed_xz / reference.move_speed
-            } else {
-                1.0
-            };
         animation.update_playback_rate(raw_ratio, frame_anim_time);
-        // The animation helper's epsilon guard avoids rebasing on every frame.
-        // Preserve that win by leaving the registry component untouched on a no-op.
-        if mesh != previous_mesh {
-            let _ = registry.set_component(entity_id, mesh);
-        }
+        let _ = registry.set_component(entity_id, mesh);
     }
 
     /// Whether `network_id` is awaiting a baseline refresh (tests / diagnostics).

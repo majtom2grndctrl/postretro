@@ -137,7 +137,7 @@ pub(crate) enum SlotPawnSource<'a> {
     },
 }
 
-/// React to a slot being accepted: create the slot-owned inert pawn, stamp it with a
+/// React to a slot being accepted: create the slot-owned pawn, stamp it with a
 /// fresh session-monotonic `NetworkId`, add it to the replicable set, and record the
 /// slot mapping. Returns the pawn `EntityId`, its assigned `NetworkId`, and the
 /// optional active weapon spawned beside it.

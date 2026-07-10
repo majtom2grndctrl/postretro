@@ -95,11 +95,15 @@ is trusted from the client and sanity-checked.
   accept/reject fact round-trips to the owning client only. The client can name any
   targeted remote enemy on the wire, and the host can resolve any declared target
   back to a live entity.
-- [ ] The version constants are bumped in one change — the message-vocabulary
-  constant and the byte-layout constant, plus `SNAPSHOT_VERSION` where the per-shot ack rides
-  the snapshot record — and BOTH handshake gates assert the new build-constant values; a peer
-  built before this change is refused at the handshake. (`SNAPSHOT_VERSION` is validated
-  per-snapshot, not at the handshake.)
+- [ ] The version constants are bumped to match what shipped — the message-vocabulary
+  constant (`PROTOCOL_ID`, PRL3 -> PRL4) and the byte-layout constant (`WIRE_VERSION`,
+  6 -> 8, in two steps: 6 -> 7 for the new messages, then 7 -> 8 when review added
+  `hit_accepted` to `ShotVerdict`, a second independent layout change) — and BOTH handshake
+  gates assert the new build-constant values; a peer built before this change is refused at
+  the handshake. `SNAPSHOT_VERSION` stays unbumped at 8: the per-shot ack rides
+  `ServerMessage::ShotVerdicts` on the reliable Input channel, not the snapshot record, so no
+  snapshot-layout change occurs. (`SNAPSHOT_VERSION` is validated per-snapshot, not at the
+  handshake.)
 - [ ] A remote client's fire advances THAT pawn's own weapon cooldown host-side with
   no ray cast, and records an authorized shot for that pawn. Two owned pawns firing on
   the same tick each affect only their own weapon — no cross-talk.
@@ -134,10 +138,14 @@ is trusted from the client and sanity-checked.
   client has no enemy-HP rollback. (The never-predicted / no-enemy-HP-rollback portion is a
   structural/review gate, backed by the `remote_materialize` no-`Health` assertion — distinct
   from the runnable damage tests above.)
-- [ ] The firing client predicts local cooldown, muzzle FX, and a hitmarker on fire,
-  and reconciles cooldown against the owner-private authoritative fact and the
-  hitmarker against the per-shot accept/reject. A rejected fire rolls back the
-  client's local FX, cooldown, and hitmarker. The movement reconciliation replay
+- [ ] The firing client predicts and reconciles cooldown, muzzle-FX, and hitmarker STATE
+  on fire: cooldown reconciles against the owner-private authoritative fact, and the
+  muzzle-FX/hitmarker state reconciles against the per-shot accept/reject. Predicted muzzle
+  FX is played through the existing fire-event mechanism. The hitmarker is state only for
+  this spec — no hitmarker/HUD renderer exists in the engine yet, so putting a hitmarker
+  on screen is a downstream HUD/UI task; this spec delivers the predicted, reconciled,
+  rollback-capable state it will consume. A rejected fire rolls back the client's local
+  muzzle-FX state, cooldown, and hitmarker state. The movement reconciliation replay
   path stays weapon-free — no weapon tick runs inside it (a compile/grep gate: the `replay`
   path's registry-blind signature enforces it).
 - [ ] The deterministic test harness exercises: a client resolving a hit against a
@@ -264,6 +272,11 @@ length-prefixed list, so adding a slot changes no snapshot byte layout; it only 
 content-derived `state_schema_fingerprint` (blake3 over the slot schema), which both peers
 recompute in lockstep (no hand bump). So the atomic change bumps up to three constants:
 `PROTOCOL_ID`, `WIRE_VERSION`, and — where the ack rides the snapshot — `SNAPSHOT_VERSION`.
+As shipped: the per-shot ack rides `ServerMessage::ShotVerdicts` on the reliable Input
+channel, not the snapshot record, so `SNAPSHOT_VERSION` did not bump (stays 8) and only the
+two build constants moved — `PROTOCOL_ID` (PRL3 -> PRL4) once, for the new message family,
+and `WIRE_VERSION` twice (6 -> 7 for the new messages, 7 -> 8 when a later review added
+`hit_accepted` to `ShotVerdict`, a second independent bitcode-layout change).
 AC: reload, the declaration, the cooldown slot, the per-shot ack, and both reverse maps
 round-trip; all applicable version constants bump (both build constants always;
 `SNAPSHOT_VERSION` when the ack rides the snapshot); both handshake gates assert; a pre-change
@@ -467,9 +480,11 @@ Grounded seams (current source):
   `InputCommand:836` (add `reload`); `WireMovementInput.facing_yaw:815` stays yaw-only — no
   pitch is added (the client casts locally; the declared point crosses instead).
   `crates/net/src/transport.rs`: `PROTOCOL_ID:46`, `WIRE_VERSION:52` — bump both. `wire.rs`
-  `SNAPSHOT_VERSION:61` (u16, per-snapshot gate, not a handshake gate) bumps too where the
+  `SNAPSHOT_VERSION:61` (u16, per-snapshot gate, not a handshake gate) bumps only where the
   per-shot ack rides the snapshot record; a new state slot alone only shifts the auto-derived
-  `state_schema_fingerprint`.
+  `state_schema_fingerprint`. As shipped, the ack rides `ServerMessage::ShotVerdicts` on the
+  Input channel instead, so `SNAPSHOT_VERSION` stayed at 8 (unbumped); `WIRE_VERSION` bumped
+  6 -> 7 -> 8, the second step landing when review added `ShotVerdict.hit_accepted`.
 - `netcode/prediction.rs`: `PredictedTick.command:147` already retains the full command;
   `replay:426` stays weapon-free. `netcode/reconcile.rs`: the prune-through-ack + merge loop
   is the model (production entry `reconcile_local_pawn_with_mover_history`; `reconcile_local_pawn`
@@ -541,9 +556,9 @@ byte-layout change, so the layout constant bumps.
 
 | Constant | Axis | Why it bumps here |
 | --- | --- | --- |
-| `PROTOCOL_ID` | message VOCABULARY | new hit-declaration message family + owner-private per-shot ack |
-| `WIRE_VERSION` (6 -> 7) | byte LAYOUT | `reload` field + the new messages' own bitcode layout |
-| `SNAPSHOT_VERSION` (8 -> 9) | snapshot LAYOUT (per-snapshot gate, not a handshake gate) | bumps IF the per-shot ack rides the snapshot as owner-scoped record metadata (parallel to `last_processed_client_tick`); a new state slot alone does NOT bump it — only shifts the auto-derived `state_schema_fingerprint`, recomputed in lockstep |
+| `PROTOCOL_ID` (PRL3 -> PRL4) | message VOCABULARY | new hit-declaration message family + owner-private per-shot ack |
+| `WIRE_VERSION` (6 -> 8) | byte LAYOUT | shipped in two steps: 6 -> 7 for `reload` + the new messages' own bitcode layout, then 7 -> 8 when review added `hit_accepted` to `ShotVerdict` — a second, independent layout change |
+| `SNAPSHOT_VERSION` (unbumped — stays 8) | snapshot LAYOUT (per-snapshot gate, not a handshake gate) | the per-shot ack rides `ServerMessage::ShotVerdicts` on the reliable Input channel, not `RawSnapshotMessage`, so no snapshot-layout change occurs; this axis bumps only if a future change puts owner-scoped record metadata on the snapshot itself (parallel to `last_processed_client_tick`) — a new state slot alone does NOT bump it either, it only shifts the auto-derived `state_schema_fingerprint`, recomputed in lockstep |
 
 ## Design decisions & rationale
 

@@ -1,8 +1,8 @@
 // Engine-side replicated state-slot schema: builds the deterministic
 // `StateSlotId` map and 32-byte fingerprint from the slot table's replicated
 // slots, lowers them to `postretro-net` wire descriptors, and projects
-// descriptor-defined gameplay values (HealthComponent) into named replicated
-// slots. Owns the host production loop (`HostStateReplication`) and the client
+// descriptor-defined gameplay values (HealthComponent, WeaponComponent) into named
+// replicated slots. Owns the host production loop (`HostStateReplication`) and the client
 // apply path (`ClientStateApply`). The net crate is registry-blind and
 // script-blind; this module owns the only mapping between `SlotTable` dotted
 // names and wire `StateSlotId`s.

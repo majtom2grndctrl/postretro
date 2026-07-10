@@ -191,6 +191,84 @@ All tick comparisons (stale-drop, duplicate-collapse, fast-forward cursor reseat
 the wrap-aware serial-number predicate (`client_tick_le`), correct across the u32
 `client_tick` wrap.
 
+## Combat authority: FIRE vs HIT
+
+Client-authoritative combat splits weapon fire into two independently-owned halves, both
+riding the prediction/reconciliation contract above — no server rewind, no
+lag-compensation history window (see *Non-goals*).
+
+**FIRE is host-authoritative, client-predicted.** Cooldown and ammo — how often and how
+many shots — are the damage-integrity surface. The host validates fire legitimacy,
+advances cooldown, and mints an authorized shot; it never casts a ray. The firing client
+predicts its own cooldown locally and reconciles against an owner-private cooldown fact,
+the same pattern movement prediction uses.
+
+**HIT is client-authoritative declaration.** The client casts its own ray against the
+world it renders and declares the result; the host validates cheaply and applies damage.
+This is sound only because co-op PvE is a trust-with-cheap-validation model — PvP is a
+non-goal. Declaring hits against the rendered world is also what keeps hitscan, pellet
+spreads, and future projectiles the same shape: they differ only in ray count and arrival
+timing, not in authority model.
+
+### `shot_id`: the security spine
+
+A `shot_id` binds a hit declaration to a specific host-authorized fire. The host mints and
+records an open authorized shot on the FIRE path, keyed by `shot_id` and owned by the
+firing connection. A declaration is accepted only when its `shot_id` matches a still-open
+shot owned by the declaring client — ownership is checked, not assumed, because `shot_id`
+derives from public inputs (pawn network id + tick) and is therefore guessable. Accepting
+a declaration retires its shot, so one authorized fire accepts at most one declaration. A
+fire the host rejected (cooling, or later, out of ammo) mints no authorized shot, so no
+declaration can bind to it — free damage is structurally unreachable, not merely
+discouraged by a check. This binding is validated first, before any geometry check.
+
+### World-LOS-only validation
+
+The host validates a declared hit point against **static world geometry only** — never
+against the live pose of the target enemy, and never against other dynamic occluders. The
+client aims at the interpolated (past) enemy pose it renders; the host is in the present.
+Re-checking LOS against the live pose would false-reject legitimate shots on moving
+enemies — the same staleness problem lag-compensating rewind exists to paper over, which
+this design avoids outright by not needing rewind at all. The attacker eye origin for
+validation is the live, crouch-aware eye height, never the standing reference — a
+standing-eye ray would false-reject a legitimate crouched shot near cover.
+
+### Ownership and identity maps
+
+- **`WeaponOwners`** (`crate::netcode`): host-only pawn -> active-weapon map, mirroring
+  `MovementOwners`. A connected client's pawn carries no host-visible local weapon
+  simulation; the host resolves fire legitimacy, credit, and cooldown for a remote pawn
+  through this map. A pawn whose descriptor names no weapon has no entry and never fires
+  host-side.
+- **`NetworkId <-> EntityId` reverse maps, one per peer role.** The client keeps
+  `EntityId -> NetworkId` (to name a locally-hit remote enemy on the wire); the host keeps
+  `NetworkId -> EntityId` (to resolve a declared target back to a live entity). Both are
+  maintained beside their existing forward maps and kept in lockstep on spawn/despawn.
+  `NetworkId` is never recycled, so a declaration naming a just-despawned target simply
+  misses the lookup instead of resolving to the wrong entity.
+
+### Message family
+
+- **`HitDeclaration`** (client -> server, reliable Input channel): a `shot_id` plus 0..N
+  hit records. Standalone rather than folded into the input command, because a hit can
+  arrive on a later tick than its fire (projectile-ready). An empty record list is valid —
+  it declares a shot that hit nothing.
+- **`ShotVerdict`** (server -> client, owner-private): the per-shot accept/reject fact,
+  scoped to the declaring client only and never broadcast. A separate owner-private state
+  slot carries the firing pawn's own weapon cooldown, following the same per-owner
+  projection pattern as `player.health`. The firing client reconciles its predicted fire
+  and hitmarker state against these two facts.
+
+### Version gates
+
+Combat's message and field additions ride the existing two-gate handshake (see *Two-gate
+handshake* above): a new message variant bumps the app-protocol (vocabulary) constant, and
+any changed message layout — including a later, independent field addition to an
+already-shipped message — bumps the wire-version (layout) constant again, independently of
+any vocabulary change. `SNAPSHOT_VERSION` is untouched by anything that rides
+`ClientMessage`/`ServerMessage` on the Input channel; it bumps only when a change lands on
+the snapshot record itself.
+
 ## Phase boundaries
 
 Epic 15 Phase 3 is the active contract: authoritative client-server co-op, entity baseline/delta/despawn replication, state-slot replication, snapshot interpolation, client input streaming, prediction, and reconciliation.

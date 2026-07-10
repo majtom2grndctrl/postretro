@@ -1998,6 +1998,7 @@ impl ApplicationHandler for App {
                     &sent_client_fire_commands,
                     frame_dt,
                     frame_anim_time,
+                    &mut pending_weapon_events,
                 );
 
                 // Drain collected post-tick events after all ticks complete so
@@ -4329,6 +4330,7 @@ impl App {
         sent_fire_commands: &[ClientFrameFireCommand],
         frame_dt: f32,
         frame_anim_time: f64,
+        pending_weapon_events: &mut Vec<&'static str>,
     ) {
         self.client_fire_resolutions.clear();
         if !self.is_connected_client() {
@@ -4427,6 +4429,11 @@ impl App {
                 cooldown_after_ms,
                 cooldown_authority_generation,
             );
+            // Predict the muzzle FX on a gated local fire, mirroring the host/
+            // single-player weapon-activation ("activate") event. It drains with the
+            // batch at the shared `fire_named_event` site; a host reject rolls this
+            // shot's `muzzle_fx_visible` state back in reconcile.
+            pending_weapon_events.push("activate");
             let _ = netcode::client_send_hit_declaration(
                 self.session
                     .as_mut()
@@ -4434,6 +4441,10 @@ impl App {
                 shot_id,
                 &resolution.hits,
             );
+            // Only the first tick casts a ray (once per frame, at the rendered pose);
+            // each later tick in a multi-tick frame still authorized a host shot, so
+            // send an empty declaration per remaining tick to retire it and keep
+            // shot_id accounting balanced with the host without extra ray casts.
             for client_tick in client_ticks.iter().copied().skip(1) {
                 let shot_id = netcode::shot_id_raw(local_pawn_network_id, client_tick);
                 let _ = netcode::client_send_hit_declaration(
@@ -4693,7 +4704,6 @@ impl App {
             tick,
             command_queues,
             owners,
-            weapon_owners,
             open_shots,
             pending_hit_declarations,
             ..
@@ -4709,7 +4719,6 @@ impl App {
             &self.collision_world,
             allocator,
             owners,
-            weapon_owners,
             command_queues,
             open_shots,
             pending_hit_declarations,

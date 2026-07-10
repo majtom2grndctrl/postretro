@@ -1238,7 +1238,9 @@ pub(crate) fn client_decay_local_correction(endpoint: Option<&mut NetEndpoint>) 
 /// the baseline delay; recent held-newest starvation temporarily adds headroom.
 /// Before the time-sync estimator has folded its first echo (`estimated_server_tick`
 /// is `None`), there is no trustworthy clock to render against, so the buffers are
-/// left unsampled and remote entities stay at their last-applied snapshot pose.
+/// left unsampled and remote entities stay at their last-applied snapshot pose. Their
+/// walk rate still derives from that held pose's zero XZ speed; no server tick is
+/// invented before the estimator initializes.
 ///
 /// The mutable registry borrow is threaded in by the caller (`main.rs`), so this
 /// module never reaches into `App`.
@@ -1256,8 +1258,10 @@ pub(crate) fn client_sample_interpolation(
     frame_dt_secs: f64,
     frame_anim_time: f64,
 ) {
-    // No estimate yet: render at the last-applied pose until the clock initializes.
+    // No estimate yet: retain the last-applied pose until the clock initializes,
+    // while deriving walk playback from that held (zero-speed) presentation.
     let Some(estimated_tick) = time_sync.estimated_server_tick() else {
+        replication.apply_held_remote_enemy_walk_playback_rates(registry, frame_anim_time);
         return;
     };
     // Jitter is available whenever the estimate is; default to 0 defensively.
@@ -3064,6 +3068,92 @@ mod tests {
         assert!(
             time_sync.estimated_server_tick().is_some(),
             "the estimator initializes after a recorded probe's echo is folded in"
+        );
+    }
+
+    #[test]
+    fn pre_sync_interpolation_uses_held_remote_walk_rate() {
+        use postretro_entities::components::mesh::{
+            AnimationState, DEFAULT_CROSSFADE_MS, InterruptPolicy, MeshAnimation, MeshComponent,
+            RATE_MIN, resolve_pending_animation_stamps,
+        };
+        use std::collections::HashMap;
+
+        let mut registry = EntityRegistry::new();
+        let mut replication = ClientReplication::new();
+        replication.apply_snapshot(
+            &mut registry,
+            &SnapshotMessage {
+                sequence: 0,
+                server_tick: 100,
+                records: vec![EntityRecord::FullBaseline {
+                    network_id: 7,
+                    baseline_id: 1,
+                    last_processed_client_tick: None,
+                    local_player: false,
+                    entity_class: None,
+                    components: vec![ComponentPayload::Transform(WireTransform {
+                        position: [4.0, 0.0, 0.0],
+                        rotation: [0.0, 0.0, 0.0, 1.0],
+                        scale: [1.0, 1.0, 1.0],
+                    })],
+                }],
+                state_schema_fingerprint: [0; 32],
+                state_records: Vec::new(),
+            },
+        );
+        let id = *replication
+            .map()
+            .get(&NetworkId(7))
+            .expect("remote baseline is mapped");
+        let mut states = HashMap::new();
+        states.insert(
+            "locomotion".to_string(),
+            AnimationState {
+                clip: "Locomotion".to_string(),
+                looping: true,
+                crossfade_ms: DEFAULT_CROSSFADE_MS,
+                interrupt: InterruptPolicy::Smooth,
+                clip_index: None,
+            },
+        );
+        registry
+            .set_component(
+                id,
+                MeshComponent::animated(
+                    "models/remote_enemy/scene.gltf".to_string(),
+                    MeshAnimation::new(states, "locomotion".to_string()),
+                ),
+            )
+            .unwrap();
+        resolve_pending_animation_stamps(&mut registry, 0.0);
+        replication
+            .cache_remote_enemy_walk_playback(NetworkId(7), Some((60.0, "locomotion".to_string())));
+
+        let time_sync = ClientTimeSync::new();
+        let mut delay = InterpolationDelayState::new();
+        client_sample_interpolation(
+            &mut registry,
+            &mut replication,
+            &time_sync,
+            &mut delay,
+            1.0 / 60.0,
+            1.0,
+        );
+
+        let animation = registry
+            .get_component::<MeshComponent>(id)
+            .unwrap()
+            .animation
+            .as_ref()
+            .unwrap();
+        assert!(
+            (animation.rate - RATE_MIN).abs() < EPSILON,
+            "without an estimated server tick, the held displayed pose has zero speed"
+        );
+        assert!(
+            (registry.interpolated_transform(id, 1.0).unwrap().position.x - 4.0).abs() < EPSILON,
+            "pre-sync sampling must not invent a render tick or move the held baseline pose"
         );
     }
 

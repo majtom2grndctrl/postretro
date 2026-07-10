@@ -932,7 +932,8 @@ mod tests {
     fn extrapolates_with_velocity_then_holds_at_cutoff() {
         let mut buf = RemoteInterpolationBuffer::new();
         let id = NetworkId(1);
-        // Newest sample at tick 100, x=0, moving +1 m/s along x.
+        // Newest sample at tick 100, x=0, moving horizontally at 5 m/s. The
+        // vertical component must not affect displayed ground-plane speed.
         let moving = TransformSample {
             server_tick: 100,
             transform: Transform {
@@ -940,7 +941,7 @@ mod tests {
                 rotation: Quat::IDENTITY,
                 scale: Vec3::ONE,
             },
-            velocity: Some(Vec3::new(1.0, 0.0, 0.0)),
+            velocity: Some(Vec3::new(3.0, 10.0, 4.0)),
         };
         // A prior sample so the buffer is not single-sample (does not change the
         // starvation branch, but mirrors real traffic).
@@ -954,19 +955,27 @@ mod tests {
         // overshoot of 5.9 ticks = 98_335 us < 100_000 -> extrapolate.
         let within = buf.presented_pose(id, 105.9).expect("starved");
         assert_eq!(within.source, PoseSource::Extrapolated);
-        // dt = 5.9 ticks × 16_667 us = 98_335 us = 0.098335 s -> x ≈ 0.098335.
-        let expected_x = 5.9 * DEFAULT_MICROS_PER_TICK as f32 / 1_000_000.0;
+        // dt = 5.9 ticks × 16_667 us = 98_335 us = 0.098335 s. The x component
+        // advances at 3 m/s; horizontal speed is sqrt(3² + 4²) = 5 m/s.
+        let elapsed_secs = 5.9 * DEFAULT_MICROS_PER_TICK as f32 / 1_000_000.0;
+        let expected_x = 3.0 * elapsed_secs;
         assert!(
             (within.transform.position.x - expected_x).abs() < POS_EPS,
             "extrapolated x {} != {}",
             within.transform.position.x,
             expected_x
         );
+        assert!(
+            (within.speed_xz - 5.0).abs() < POS_EPS,
+            "extrapolated horizontal speed {} != 5",
+            within.speed_xz
+        );
 
         // Past the 100 ms window: hold the newest pose (x stays at 0, no extrapolation).
         let beyond = buf.presented_pose(id, 110.0).expect("starved");
         assert_eq!(beyond.source, PoseSource::HeldNewest);
         assert!((beyond.transform.position.x - 0.0).abs() < POS_EPS);
+        assert_eq!(beyond.speed_xz, 0.0);
     }
 
     #[test]

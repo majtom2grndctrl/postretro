@@ -38,9 +38,7 @@ use postretro_net::wire::{
     WireKinematicMoverState, WirePlayerMovementState,
 };
 
-use postretro_entities::components::mesh::{
-    FadeSourceKind, MeshComponent, SwitchResult, switch_animation_state,
-};
+use postretro_entities::components::mesh::{MeshComponent, SwitchResult, switch_animation_state};
 use postretro_entities::{
     ComponentKind, ComponentValue, EntityId, EntityRegistry, KinematicMoverComponent,
     KinematicMoverMode, Transform,
@@ -1304,6 +1302,31 @@ impl ClientReplication {
         stats
     }
 
+    /// Apply held-pose walk playback before time sync can name a render tick.
+    /// The baseline pose already visible in the registry is frozen until the
+    /// estimator initializes, so its displayed XZ speed is zero.
+    pub(crate) fn apply_held_remote_enemy_walk_playback_rates(
+        &self,
+        registry: &mut EntityRegistry,
+        frame_anim_time: f64,
+    ) {
+        for (&network_id, &entity_id) in &self.map {
+            if !registry.exists(entity_id)
+                || self.local_pawn == Some(network_id)
+                || self.mover_network_ids.contains_key(&network_id)
+            {
+                continue;
+            }
+            self.update_remote_enemy_walk_playback_rate(
+                registry,
+                network_id,
+                entity_id,
+                0.0,
+                frame_anim_time,
+            );
+        }
+    }
+
     /// Record (or clear) the immutable descriptor data used to derive a remote
     /// enemy's walk playback rate. Called by descriptor-aware receive glue, while
     /// all per-frame registry writes remain in [`Self::sample_into_registry`].
@@ -1366,9 +1389,10 @@ impl ClientReplication {
             return;
         }
 
-        // The animation predicate owns clamping and epsilon comparison. Keep
-        // the normal remote-presentation path allocation-free by cloning only
-        // when that predicate says a rebase write is necessary.
+        // `sample_into_registry` intentionally allocates its mapped-id vector
+        // before this helper to split the map and registry borrows. This helper
+        // itself clones the mesh only when the animation predicate says a rebase
+        // write is necessary.
         let Ok(mut mesh) = registry.get_component::<MeshComponent>(entity_id).cloned() else {
             return;
         };
@@ -1647,15 +1671,9 @@ pub(crate) fn apply_mesh_animation_state(
     let Some(animation) = mesh.animation.as_mut() else {
         return false;
     };
-    if !animation.states.contains_key(state) {
+    if !animation.stage_unresolved_state(state) {
         return false;
     }
-    animation.current_state = state.to_string();
-    animation.entered_at = None;
-    animation.previous_state = None;
-    animation.previous_entered_at = None;
-    animation.fade_source = FadeSourceKind::Clip;
-    animation.interrupted_outgoing = None;
     registry.set_component(id, mesh).is_ok()
 }
 
@@ -3614,6 +3632,59 @@ mod tests {
             mesh.animation.as_ref().unwrap().current_state,
             "attack",
             "declared unresolved mesh-animation deltas are staged by name"
+        );
+    }
+
+    #[test]
+    fn unresolved_wire_state_entry_resets_prior_walk_playback_timeline() {
+        let mut registry = EntityRegistry::new();
+        let id = registry.spawn(Transform::default());
+        let mut mesh = unresolved_mesh();
+        let animation = mesh.animation.as_mut().expect("animated mesh");
+        animation.states.get_mut("locomotion").unwrap().clip_index = Some(0);
+        animation.current_state = "locomotion".into();
+        animation.entered_at = Some(0.0);
+        animation.rebase_time = Some(0.0);
+        animation.update_playback_rate(0.5, 0.0);
+        registry.set_component(id, mesh).expect("attach mesh");
+
+        assert!(apply_mesh_animation_state(
+            &mut registry,
+            id,
+            "attack",
+            true
+        ));
+        let staged = registry
+            .get_component::<MeshComponent>(id)
+            .expect("mesh")
+            .animation
+            .as_ref()
+            .expect("animation");
+        assert_eq!(staged.current_state, "attack");
+        assert!((staged.rate - 1.0).abs() < EPSILON);
+        assert_eq!(staged.rebase_time, None);
+        assert_eq!(staged.rebase_elapsed, 0.0);
+
+        let mut resolved = registry.get_component::<MeshComponent>(id).unwrap().clone();
+        resolved
+            .animation
+            .as_mut()
+            .unwrap()
+            .states
+            .get_mut("attack")
+            .unwrap()
+            .clip_index = Some(1);
+        registry.set_component(id, resolved).unwrap();
+        resolve_pending_animation_stamps(&mut registry, 4.0);
+        let animation = registry
+            .get_component::<MeshComponent>(id)
+            .expect("mesh")
+            .animation
+            .as_ref()
+            .expect("animation");
+        assert!(
+            (animation.scaled_elapsed(5.0) - 1.0).abs() < f64::EPSILON,
+            "later clip resolution samples the newly entered state at its authored rate"
         );
     }
 

@@ -160,7 +160,7 @@ pub struct MeshAnimation {
     #[serde(skip, default = "default_playback_rate")]
     pub rate: f32,
     /// Animation-clock origin for the current state's rebased timeline. `None`
-    /// is pending and samples as just-entered until the stamp resolver fills it.
+    /// with no entry stamp is pending; otherwise serde recovery uses `entered_at`.
     #[serde(skip, default)]
     pub rebase_time: AnimStamp,
     /// Accumulated current-state elapsed time at `rebase_time`.
@@ -250,8 +250,8 @@ impl MeshAnimation {
     }
 
     /// Evaluate the current state's rebased clip-local elapsed time at the
-    /// animation clock instant used by the renderer. Pending entries mirror the
-    /// pending entry-stamp fallback and read as just-entered.
+    /// animation clock instant used by the renderer. Missing origins use the
+    /// entry stamp when available; genuinely pending entries read as zero.
     pub fn scaled_elapsed(&self, anim_time: f64) -> f64 {
         self.rebase_time.map_or_else(
             || {
@@ -296,6 +296,26 @@ impl MeshAnimation {
         self.previous_rate = self.rate;
         self.previous_rebase_time = self.rebase_time;
         self.previous_rebase_elapsed = self.rebase_elapsed;
+    }
+
+    /// Stage a declared state whose clip has not resolved yet. Network replication
+    /// can receive this state before level-load clip resolution completes; it must
+    /// take the same incoming-timeline reset as every other state entry so an old
+    /// locomotion rebase cannot leak into the later-resolved clip.
+    pub fn stage_unresolved_state(&mut self, target: &str) -> bool {
+        if !self.states.contains_key(target) || self.is_state_usable(target) {
+            return false;
+        }
+
+        self.current_state = target.to_string();
+        self.entered_at = None;
+        self.previous_state = None;
+        self.previous_entered_at = None;
+        self.clear_previous_playback_time();
+        self.fade_source = FadeSourceKind::Clip;
+        self.interrupted_outgoing = None;
+        self.reset_incoming_playback_time();
+        true
     }
 
     /// A state is usable for switching only when it is declared *and* its clip

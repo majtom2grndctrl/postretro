@@ -167,47 +167,44 @@ pub(crate) fn simulate_tick(
 /// is a pre-steering, squared-speed read from the prior tick, while this path
 /// must match the motion the steering system actually produced.
 fn update_brain_animation_playback_rates(registry: &mut EntityRegistry, anim_time: f64) {
-    let rate_inputs: Vec<(EntityId, String, f32)> = registry
-        .iter_with_kind(ComponentKind::Brain)
-        .filter_map(|(id, _)| {
-            let brain = registry.get_component::<BrainComponent>(id).ok()?;
-            let agent = registry.get_component::<AgentComponent>(id).ok()?;
-            let path_state = agent_steering::path_state(registry, id)?;
-            let speed_xz = Vec3::new(path_state.velocity.x, 0.0, path_state.velocity.z).length();
-            let raw_ratio = if agent.move_speed > 0.0 {
-                speed_xz / agent.move_speed
-            } else {
-                1.0
-            };
-            Some((
-                id,
-                brain
-                    .tuning
-                    .states
-                    .animation_for(LogicalState::Alert)
-                    .to_owned(),
-                raw_ratio,
-            ))
-        })
-        .collect();
+    let mut rebases = Vec::new();
 
-    for (id, walk_state, raw_ratio) in rate_inputs {
-        let should_rebase = registry
+    for (id, _) in registry.iter_with_kind(ComponentKind::Brain) {
+        let Ok(brain) = registry.get_component::<BrainComponent>(id) else {
+            continue;
+        };
+        let Ok(agent) = registry.get_component::<AgentComponent>(id) else {
+            continue;
+        };
+        let Some(path_state) = agent_steering::path_state(registry, id) else {
+            continue;
+        };
+        let speed_xz = Vec3::new(path_state.velocity.x, 0.0, path_state.velocity.z).length();
+        let raw_ratio = if agent.move_speed > 0.0 {
+            speed_xz / agent.move_speed
+        } else {
+            1.0
+        };
+
+        let Some(animation) = registry
             .get_component::<MeshComponent>(id)
             .ok()
             .and_then(|mesh| mesh.animation.as_ref())
-            .is_some_and(|animation| {
-                let rate_input = if animation.current_state == walk_state {
-                    raw_ratio
-                } else {
-                    1.0
-                };
-                animation.playback_rate_needs_update(rate_input)
-            });
-        if !should_rebase {
+        else {
             continue;
+        };
+        let rate_input =
+            if animation.current_state == brain.tuning.states.animation_for(LogicalState::Alert) {
+                raw_ratio
+            } else {
+                1.0
+            };
+        if animation.playback_rate_needs_update(rate_input) {
+            rebases.push((id, rate_input));
         }
+    }
 
+    for (id, rate_input) in rebases {
         // The read-only predicate above centralizes clamping and the epsilon
         // policy, so clone/write only the components whose timeline will rebase.
         let Ok(mut mesh) = registry.get_component::<MeshComponent>(id).cloned() else {
@@ -217,11 +214,6 @@ fn update_brain_animation_playback_rates(registry: &mut EntityRegistry, anim_tim
             continue;
         };
 
-        let rate_input = if animation.current_state == walk_state {
-            raw_ratio
-        } else {
-            1.0
-        };
         animation.update_playback_rate(rate_input, anim_time);
         let _ = registry.set_component(id, mesh);
     }

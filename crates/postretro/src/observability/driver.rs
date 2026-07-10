@@ -85,6 +85,9 @@ fn run_headless_inner(runspec_arg: Option<&str>) -> Result<String> {
     // Resolve the component filter up front so a bad `dump.component` value fails
     // before the expensive load/tick work rather than after it.
     let _ = runspec.dump.resolve_component()?;
+    // A command authored at a tick the run never reaches is a silent no-op —
+    // warn so an author notices the dead command rather than assuming it fired.
+    warn_unreachable_commands(&runspec.commands, runspec.ticks);
 
     // 2. Load the PRL synchronously (no worker thread; headless has no event
     //    loop). The loader owns file IO and validation.
@@ -132,6 +135,8 @@ fn run_headless_inner(runspec_arg: Option<&str>) -> Result<String> {
     let mut crossing_detector = CrossingDetector::new();
     let mut mesh_clip_tables = MeshClipTables::new();
     let mut hit_zone_store = HitZoneStore::new();
+    // Intentionally empty: headless has no level-tag source. Any tag-gated
+    // level reaction stays inert for the whole run.
     let active_level_tags: Vec<String> = Vec::new();
     let mut timings = StartupTimings::new();
 
@@ -171,7 +176,12 @@ fn run_headless_inner(runspec_arg: Option<&str>) -> Result<String> {
     let mut ai_warned: HashSet<String> = HashSet::new();
     let mut anim_time: f64 = 0.0;
     let mut prev_fire_active = false;
-    let mut last_facing_yaw = 0.0f32;
+    // Seeded from tick 0's effective aim (not just `0.0`) so a `ticks: 0` run —
+    // which never enters the loop below — still reports the authored aim
+    // instead of an always-neutral facing.
+    let mut last_facing_yaw = effective_aim_at(&runspec.commands, 0)
+        .map(|aim| yaw_from_direction(aim.direction))
+        .unwrap_or(0.0);
     let mut events: Vec<TickEventRecord> = Vec::new();
 
     for tick in 0..runspec.ticks {
@@ -319,8 +329,30 @@ fn neutral_movement(facing_yaw: f32) -> MovementInput {
 /// Derive the engine facing yaw from an aim direction's horizontal projection.
 /// Inverts the camera's `forward = (-sin(yaw), 0, -cos(yaw))` mapping, so a
 /// direction of `-Z` yields yaw `0`. Purely horizontal — pitch is ignored.
+/// A zero-length or non-finite direction carries no aim at all; treated as
+/// neutral (yaw `0.0`) rather than `atan2`'s arbitrary `-π` for `(-0.0, -0.0)`.
 fn yaw_from_direction(direction: [f32; 3]) -> f32 {
+    let dir = Vec3::from_array(direction);
+    if dir == Vec3::ZERO || !dir.is_finite() {
+        return 0.0;
+    }
     (-direction[0]).atan2(-direction[2])
+}
+
+/// Warn (stderr) about any command authored at a tick the run never reaches —
+/// `tick >= ticks` is a silent no-op the sim never observes. Does not reject:
+/// that's the runspec validator's call, out of scope here.
+fn warn_unreachable_commands(commands: &[CommandEntry], ticks: u32) {
+    let unreachable: Vec<u32> = commands
+        .iter()
+        .map(|entry| entry.tick)
+        .filter(|&tick| tick >= ticks)
+        .collect();
+    if !unreachable.is_empty() {
+        log::warn!(
+            "[Headless] command tick(s) {unreachable:?} are >= ticks ({ticks}); these commands never activate"
+        );
+    }
 }
 
 fn to_owned_strings(events: &[&'static str]) -> Vec<String> {
@@ -393,6 +425,19 @@ mod tests {
     }
 
     #[test]
+    fn yaw_from_zero_direction_is_neutral_not_negative_pi() {
+        // Naive atan2(-0.0, -0.0) would yield an arbitrary -π; zero-length aim
+        // carries no facing, so this must report neutral (0.0) instead.
+        assert_eq!(yaw_from_direction([0.0, 0.0, 0.0]), 0.0);
+    }
+
+    #[test]
+    fn yaw_from_non_finite_direction_is_neutral() {
+        assert_eq!(yaw_from_direction([f32::NAN, 0.0, -1.0]), 0.0);
+        assert_eq!(yaw_from_direction([f32::INFINITY, 0.0, -1.0]), 0.0);
+    }
+
+    #[test]
     fn neutral_movement_is_zeroed_but_carries_yaw() {
         let movement = neutral_movement(0.75);
         assert_eq!(movement.wish_dir, Vec2::ZERO);
@@ -456,5 +501,36 @@ mod tests {
         // A fresh press after release is a rising edge again.
         let repressed = fire_button_state(true, false);
         assert!(repressed.active && repressed.pressed);
+    }
+
+    #[test]
+    fn warn_unreachable_commands_is_silent_when_all_ticks_in_range() {
+        let commands = vec![entry(0, false, None), entry(9, true, None)];
+        let captured = crate::scripting::reactions::log_capture::capture(|| {
+            warn_unreachable_commands(&commands, 10);
+        });
+        assert!(
+            captured.is_empty(),
+            "expected no log output, got: {captured:?}"
+        );
+    }
+
+    #[test]
+    fn warn_unreachable_commands_flags_ticks_at_or_past_the_run_length() {
+        let commands = vec![
+            entry(0, false, None),
+            entry(10, true, None),
+            entry(15, false, None),
+        ];
+        let captured = crate::scripting::reactions::log_capture::capture(|| {
+            warn_unreachable_commands(&commands, 10);
+        });
+        assert!(
+            captured.iter().any(|(lvl, msg)| *lvl == log::Level::Warn
+                && msg.contains("[Headless]")
+                && msg.contains("10")
+                && msg.contains("15")),
+            "expected a warn-level log naming the unreachable ticks, got: {captured:?}"
+        );
     }
 }

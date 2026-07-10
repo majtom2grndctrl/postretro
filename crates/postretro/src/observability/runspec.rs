@@ -15,6 +15,12 @@ use crate::movement::MovementInput;
 /// learns how many entries were dropped (see [`super::document::DumpSelection`]).
 const DEFAULT_DUMP_CAP: usize = 1000;
 
+/// Upper bound on `RunSpec::ticks`. 20 minutes at 60 Hz. A headless run is a
+/// concise, targeted exercise; a longer run means the runspec needs better
+/// setup. Guardrail against fat-fingering, not a hard limit — raise
+/// deliberately with a concrete use case.
+const MAX_TICKS: u32 = 72_000;
+
 /// A complete headless run description: which map, how many fixed ticks, the
 /// scripted per-tick commands, and how to filter the resulting state dump.
 ///
@@ -88,7 +94,9 @@ impl CommandEntry {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct MovementCommand {
-    /// `[right, forward]` wish direction; component magnitudes in `[0, 1]`.
+    /// `[right, forward]` wish direction; each component in `[-1.0, 1.0]`
+    /// (negative is valid: left-strafe / reverse). See
+    /// [`RunSpecError::WishDirOutOfRange`].
     pub wish_dir: [f32; 2],
     pub jump_pressed: bool,
     pub dash_pressed: bool,
@@ -181,22 +189,56 @@ pub(crate) enum RunSpecError {
     /// here instead of clamped so authoring bugs surface loudly.
     #[error("invalid runspec: commands[{index}].movement.wish_dir must be finite, got [{x}, {y}]")]
     NonFiniteWishDir { index: usize, x: f32, y: f32 },
+    /// `wish_dir` is analog movement input consumed by `wish_dir_from_input`
+    /// (`movement/substrate.rs`), which scales the forward/right basis vectors
+    /// by each component before normalizing — component magnitudes must stay
+    /// within `[-1.0, 1.0]` (negative is valid: reverse/left-strafe). A
+    /// finite-but-huge value like `1e20` passes the finite check but overflows
+    /// to `inf` during normalization downstream, silently becoming a no-op
+    /// movement. Rejected here so the failure is loud, not a wrong-but-exit-0 run.
+    #[error(
+        "invalid runspec: commands[{index}].movement.wish_dir components must be in [-1.0, 1.0], got [{x}, {y}]"
+    )]
+    WishDirOutOfRange { index: usize, x: f32, y: f32 },
+    /// `aim.origin` is a world position that flows unchecked into the weapon
+    /// raycast (`aim.direction` is guarded downstream via `normalize_or_zero`;
+    /// origin has no such guard). A non-finite origin (e.g. `1e40` overflowing
+    /// to `inf`) produces a raycast that silently never hits anything. Origin
+    /// has no natural magnitude bound (it's a world position), so only
+    /// finiteness is checked.
+    #[error("invalid runspec: commands[{index}].aim.origin must be finite")]
+    NonFiniteAimOrigin { index: usize },
+    /// A headless run is a concise, targeted exercise; an unbounded `ticks`
+    /// buffers unbounded per-tick state and can spin for a very long time.
+    /// Rejected at parse rather than allowed to run so a fat-fingered value
+    /// fails loudly instead of hanging or exhausting memory.
+    #[error("invalid runspec: ticks {ticks} exceeds the cap of {cap}")]
+    TicksExceedCap { ticks: u32, cap: u32 },
 }
 
 /// Parse a runspec from JSON text. Malformed JSON, unknown fields, out-of-order
-/// or duplicate command ticks, and non-finite `wish_dir` components all yield an
-/// `Err` with a diagnostic message.
+/// or duplicate command ticks, non-finite or out-of-range `wish_dir`
+/// components, non-finite `aim.origin` components, and a `ticks` value above
+/// [`MAX_TICKS`] all yield an `Err` with a diagnostic message.
 pub(crate) fn parse_runspec(json: &str) -> Result<RunSpec, RunSpecError> {
     let spec: RunSpec = serde_json::from_str(json)?;
+    if spec.ticks > MAX_TICKS {
+        return Err(RunSpecError::TicksExceedCap {
+            ticks: spec.ticks,
+            cap: MAX_TICKS,
+        });
+    }
     validate_commands(&spec.commands)?;
     Ok(spec)
 }
 
 /// Validate the sparse command timeline: ticks must be strictly ascending (no
-/// out-of-order or duplicate entries), and every `wish_dir` component must be
-/// finite. See [`RunSpecError::UnorderedCommandTick`] and
-/// [`RunSpecError::NonFiniteWishDir`] for why these are parse-time rejections
-/// rather than silent sort/clamp.
+/// out-of-order or duplicate entries), every `wish_dir` component must be
+/// finite and within `[-1.0, 1.0]`, and every `aim.origin` component must be
+/// finite. See [`RunSpecError::UnorderedCommandTick`],
+/// [`RunSpecError::NonFiniteWishDir`], [`RunSpecError::WishDirOutOfRange`],
+/// and [`RunSpecError::NonFiniteAimOrigin`] for why these are parse-time
+/// rejections rather than silent sort/clamp.
 fn validate_commands(commands: &[CommandEntry]) -> Result<(), RunSpecError> {
     let mut previous_tick: Option<u32> = None;
     for (index, entry) in commands.iter().enumerate() {
@@ -214,6 +256,17 @@ fn validate_commands(commands: &[CommandEntry]) -> Result<(), RunSpecError> {
         let [x, y] = entry.movement.wish_dir;
         if !x.is_finite() || !y.is_finite() {
             return Err(RunSpecError::NonFiniteWishDir { index, x, y });
+        }
+        // NaN.abs() > 1.0 is false, so the is_finite check above still catches
+        // NaN; this range check alone would let it through.
+        if x.abs() > 1.0 || y.abs() > 1.0 {
+            return Err(RunSpecError::WishDirOutOfRange { index, x, y });
+        }
+
+        if let Some(aim) = &entry.aim {
+            if aim.origin.iter().any(|c| !c.is_finite()) {
+                return Err(RunSpecError::NonFiniteAimOrigin { index });
+            }
         }
     }
     Ok(())
@@ -424,5 +477,102 @@ mod tests {
         }"#;
         let spec = parse_runspec(json).unwrap();
         assert_eq!(spec.commands[0].movement.wish_dir, [0.5, -1.0]);
+    }
+
+    // Regression: a finite-but-out-of-range wish_dir (e.g. 1.5) passes the
+    // is_finite check but still overflows to inf during downstream
+    // normalization, silently becoming a no-op movement.
+    #[test]
+    fn parse_runspec_rejects_wish_dir_component_over_one() {
+        let json = r#"{
+            "map": "m.prl", "ticks": 1,
+            "commands": [ { "tick": 0, "movement": { "wish_dir": [1.5, 0.0] } } ]
+        }"#;
+        let err = parse_runspec(json).unwrap_err();
+        assert!(
+            err.to_string().contains("wish_dir"),
+            "diagnostic should name wish_dir, got: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_runspec_accepts_wish_dir_at_unit_bounds() {
+        let json = r#"{
+            "map": "m.prl", "ticks": 1,
+            "commands": [ { "tick": 0, "movement": { "wish_dir": [1.0, -1.0] } } ]
+        }"#;
+        let spec = parse_runspec(json).unwrap();
+        assert_eq!(spec.commands[0].movement.wish_dir, [1.0, -1.0]);
+    }
+
+    // Regression: NaN.abs() > 1.0 is false, so the range check alone would let
+    // a NaN wish_dir through; the is_finite check must remain. JSON has no NaN
+    // literal, so this exercises validate_commands directly rather than
+    // through parse_runspec's JSON layer.
+    #[test]
+    fn validate_commands_rejects_nan_wish_dir() {
+        let commands = vec![CommandEntry {
+            tick: 0,
+            movement: MovementCommand {
+                wish_dir: [f32::NAN, 0.0],
+                ..MovementCommand::default()
+            },
+            aim: None,
+            fire: false,
+            reload: false,
+        }];
+        let err = validate_commands(&commands).unwrap_err();
+        assert!(
+            matches!(err, RunSpecError::NonFiniteWishDir { index: 0, .. }),
+            "NaN must still be caught as non-finite, got: {err:?}"
+        );
+    }
+
+    // Regression: aim.direction is guarded downstream via normalize_or_zero,
+    // but aim.origin flows unchecked into the weapon raycast; an overflowed
+    // origin silently never hits anything.
+    #[test]
+    fn parse_runspec_rejects_non_finite_aim_origin() {
+        let json = r#"{
+            "map": "m.prl", "ticks": 1,
+            "commands": [ { "tick": 0, "aim": { "origin": [1e40, 0.0, 0.0], "direction": [0.0, 0.0, -1.0] } } ]
+        }"#;
+        let err = parse_runspec(json).unwrap_err();
+        assert!(
+            err.to_string().contains("aim.origin"),
+            "diagnostic should name aim.origin, got: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_runspec_accepts_large_finite_aim_origin() {
+        let json = r#"{
+            "map": "m.prl", "ticks": 1,
+            "commands": [ { "tick": 0, "aim": { "origin": [1e30, -1e30, 0.0], "direction": [0.0, 0.0, -1.0] } } ]
+        }"#;
+        let spec = parse_runspec(json).unwrap();
+        assert_eq!(
+            spec.commands[0].aim.as_ref().unwrap().origin,
+            [1e30, -1e30, 0.0]
+        );
+    }
+
+    // Regression: an unbounded ticks value (e.g. a fat-fingered extra digit)
+    // buffers unbounded per-tick state / spins for a very long time.
+    #[test]
+    fn parse_runspec_rejects_ticks_over_cap() {
+        let json = r#"{ "map": "m.prl", "ticks": 72001 }"#;
+        let err = parse_runspec(json).unwrap_err();
+        assert!(
+            err.to_string().contains("72001") && err.to_string().contains("72000"),
+            "diagnostic should name both the offending ticks and the cap, got: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_runspec_accepts_ticks_at_cap() {
+        let json = r#"{ "map": "m.prl", "ticks": 72000 }"#;
+        let spec = parse_runspec(json).unwrap();
+        assert_eq!(spec.ticks, MAX_TICKS);
     }
 }

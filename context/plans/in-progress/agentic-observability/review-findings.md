@@ -37,14 +37,38 @@ Also fixed in the same pass: `boot_sequence.md` §3 sprite-pass rows (this branc
 folded two sprite passes into one — table renumbered, cross-refs updated); a
 `MovementCommand` re-export warning (driver test now uses the full `runspec::` path).
 
-🟢 nits: deferred (not this pass).
+🟢 nits: deferred to follow-up pass 2 (below).
 
-**Pre-existing, NOT this branch — flagged for a separate decision:**
-`crates/postretro/src/scripting/systems/ai_tests.rs:~2316` trips
-`clippy::assertions_on_constants` under `cargo clippy --all-targets` (newer clippy).
-It is outside the session diff and blocks `--all-targets` clippy (so this pass's new
-test code is compiled + test-passing but not clippy-linted). Production-surface clippy
-(`-p postretro --features observability`, lib+bin) is clean.
+## Follow-up pass 2 (Fable depth review + deferred items)
+
+A solo Fable agent re-ran the correctness-tracer and adversarial-tester lenses over
+fix pass `51cffde`. Correctness: clean (no bypass around `validate_commands`; exact
+gravity parity; nothing else reads the events vec). Drift-guard rewrite: attacked,
+holds (tag derives solely from variant name). Three grounded 🟢 residuals surfaced
+and are now **resolved** here, along with the deferred items:
+
+- **wish_dir out-of-range** — finite-but-huge `wish_dir` (`[1e20,0]`) passed `is_finite`
+  then overflowed to a silent no-op. Now rejected at parse (`WishDirOutOfRange`,
+  `|component| > 1.0`); `is_finite` check kept ahead of it so NaN is still caught.
+  Stale `[0,1]` doc corrected to `[-1,1]`.
+- **aim.origin unvalidated** — the symmetric twin; `origin:[1e40,..]` fed an infinite
+  raycast origin. Now rejected at parse (`NonFiniteAimOrigin`, `is_finite` only —
+  origin is a world position, no range bound).
+- **ticks OOM (was only partially closed)** — event-gating in pass 1 fixed only the
+  `events:false` case; the default `events:true` OOM was still live. Now capped at
+  parse: `MAX_TICKS = 72_000` (20 min @ 60 Hz — guardrail, raise deliberately),
+  `TicksExceedCap`.
+- **🟢 nits:** zero-length aim → neutral yaw (was `-π`); zero-tick `facing_yaw` seeded
+  from tick-0 aim; `tick >= ticks` commands now warn on stderr; `active_level_tags`
+  empty-headless intentional comment; `cap:0` doc note; `mod.rs` header trimmed to
+  two-line convention.
+- **Pre-existing clippy blocker — RESOLVED.** `ai_tests.rs` const-assert now wrapped in
+  `const { assert!(...) }` (strictly better — a const relationship belongs at compile
+  time). `cargo clippy -p postretro --features observability --all-targets -- -D warnings`
+  is now fully green, so all new test code is clippy-linted.
+
+Gate (pass 2): fmt clean · check feature + no-feature clean · clippy `--all-targets`
+green · 49 observability tests + `ai_tests` pass.
 
 ---
 

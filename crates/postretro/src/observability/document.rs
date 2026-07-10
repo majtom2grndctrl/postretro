@@ -126,6 +126,10 @@ pub(crate) struct DumpSelection {
 /// A `None` component filter walks every kind (so an entity carrying several
 /// components yields one record per component). The tag filter, entity-id
 /// allowlist, and cap all compose.
+///
+/// `dump.cap: 0` is a valid, distinct-from-default value: it empties `records`
+/// and reports the entire matched population as `truncated` (honest — the count
+/// is correct — but easy to mistake for the default cap).
 pub(crate) fn apply_dump(
     registry: &EntityRegistry,
     dump: &DumpSpec,

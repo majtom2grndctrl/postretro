@@ -1,10 +1,7 @@
-// Headless observability vocabulary: runspec input, entity-dump output, and the
-// deterministic JSON serialization that keeps two identical runs byte-identical.
+// Headless observability vocabulary: runspec input, entity-dump output, and
+// deterministic JSON serialization for byte-identical runs. Driver
+// (`driver::run_headless`) is wired from `startup::build_session`.
 // See: context/plans/in-progress/agentic-observability
-
-// This module is the vocabulary substrate the headless driver consumes; the
-// driver ([`driver::run_headless`]) is wired from `startup::build_session` behind
-// `--headless`.
 
 mod document;
 mod driver;

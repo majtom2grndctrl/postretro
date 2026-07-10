@@ -8,6 +8,7 @@ use std::rc::Rc;
 use glam::{Vec2, Vec3};
 use parry3d::math::{Isometry, Point};
 use parry3d::shape::TriMesh;
+use postretro_level_format::navmesh::{NAVMESH_VERSION, NavMeshSection, NavRegion};
 use proptest::prelude::*;
 
 use super::{SimCommand, TickEvents, simulate_tick};
@@ -15,10 +16,16 @@ use crate::collision::CollisionWorld;
 use crate::collision::moving::MoverCollider;
 use crate::kinematic_mover::MoverTickStateTable;
 use crate::movement::MovementInput;
+use crate::nav::NavGraph;
 use crate::scripting_systems::hit_zones::HitZoneStore;
 use crate::weapon::FireButtonState;
+use postretro_entities::components::agent::AgentComponent;
 use postretro_entities::components::brain::{AiStateMap, AiTuning, BrainComponent, LogicalState};
 use postretro_entities::components::health::{HealthComponent, Hitbox};
+use postretro_entities::components::mesh::{
+    AnimationState, InterruptPolicy, MeshAnimation, MeshComponent, RATE_CHANGE_EPSILON, RATE_MAX,
+    RATE_MIN,
+};
 use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::{EntityId, EntityRegistry, Transform};
 use postretro_foundation::{
@@ -416,6 +423,292 @@ fn floor_world() -> CollisionWorld {
         mesh: TriMesh::new(points, triangles),
         isometry: Isometry::identity(),
     }
+}
+
+fn open_floor_nav_graph() -> NavGraph {
+    NavGraph::from_section(&NavMeshSection {
+        version: NAVMESH_VERSION,
+        origin: [0.0, 0.0, 0.0],
+        cell_size: 1.0,
+        dim_x: 64,
+        dim_z: 64,
+        agent_radius: 0.35,
+        agent_height: 1.8,
+        step_height: 0.4,
+        max_slope_deg: 45.0,
+        regions: vec![NavRegion {
+            x0: 0,
+            z0: 0,
+            x1: 64,
+            z1: 64,
+            floor_y_min: 0.0,
+            floor_y_max: 0.25,
+        }],
+        portals: vec![],
+    })
+}
+
+fn driven_agent_tuning() -> AiTuning {
+    AiTuning {
+        detection_range: 40.0,
+        attack_range: 2.0,
+        leash_range: 48.0,
+        attack_damage: 7.0,
+        attack_cooldown_ms: 1000.0,
+        move_speed: 3.5,
+        death_despawn_ms: 1000.0,
+        states: AiStateMap {
+            idle: "idle".to_string(),
+            alert: "locomotion".to_string(),
+            attack: "attack".to_string(),
+            death: "death".to_string(),
+        },
+    }
+}
+
+fn driven_agent_mesh(current_state: &str) -> MeshComponent {
+    let state = |clip: &str, clip_index| AnimationState {
+        clip: clip.to_string(),
+        looping: true,
+        crossfade_ms: 0.0,
+        interrupt: InterruptPolicy::Smooth,
+        clip_index: Some(clip_index),
+    };
+    let mut states = std::collections::HashMap::new();
+    states.insert("idle".to_string(), state("idle", 0));
+    states.insert("locomotion".to_string(), state("walk", 1));
+    states.insert("attack".to_string(), state("attack", 2));
+    states.insert("death".to_string(), state("death", 3));
+
+    MeshComponent::animated(
+        "driven-agent".to_string(),
+        MeshAnimation::new(states, current_state.to_string()),
+    )
+}
+
+fn spawn_driven_agent(
+    registry: &mut EntityRegistry,
+    position: Vec3,
+    state: LogicalState,
+    animation_state: &str,
+) -> EntityId {
+    let enemy = registry.spawn(Transform {
+        position,
+        ..Transform::default()
+    });
+    registry
+        .set_component(
+            enemy,
+            BrainComponent {
+                state,
+                attack_cooldown_remaining_ms: 0.0,
+                think_stride_counter: 0,
+                death_despawn_remaining_ms: None,
+                locomotion_moving: false,
+                acquired_target: None,
+                combat_slot: None,
+                combat_slot_hold_ticks: 0,
+                tuning: driven_agent_tuning(),
+            },
+        )
+        .expect("driven agent brain should attach");
+    registry
+        .set_component(enemy, AgentComponent::new(0.35, 1.8, 0.4, 3.5))
+        .expect("driven agent steering component should attach");
+    registry
+        .set_component(enemy, driven_agent_mesh(animation_state))
+        .expect("driven agent mesh should attach");
+    enemy
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_driven_agent_sim_tick(
+    registry: Rc<RefCell<EntityRegistry>>,
+    world: &CollisionWorld,
+    nav_graph: &NavGraph,
+    anim_time: f64,
+    progress: &mut ProgressTracker,
+    ai_warned: &mut HashSet<String>,
+    mover_states: &mut MoverTickStateTable,
+) {
+    let command = SimCommand {
+        movement: MovementInput {
+            wish_dir: Vec2::ZERO,
+            jump_pressed: false,
+            dash_pressed: false,
+            running: false,
+            crouch_intent: false,
+            facing_yaw: 0.0,
+        },
+        fire_button: FireButtonState {
+            pressed: false,
+            active: false,
+        },
+        reload: false,
+    };
+    let _ = simulate_tick(
+        registry,
+        world,
+        &HitZoneStore::new(),
+        Some(nav_graph),
+        GRAVITY,
+        None,
+        anim_time,
+        progress,
+        ai_warned,
+        &[],
+        mover_states,
+        &[],
+        &command,
+        |_| super::PostMovementCommand {
+            aim_origin: Vec3::ZERO,
+            aim_direction: Vec3::Z,
+        },
+        DT,
+    );
+}
+
+#[test]
+fn simulate_tick_scales_walk_rate_from_post_steering_velocity_and_skips_sub_epsilon_writes() {
+    let world = floor_world();
+    let nav_graph = open_floor_nav_graph();
+    let mut progress = ProgressTracker::new();
+    let mut ai_warned = HashSet::new();
+    let mut mover_states = MoverTickStateTable::default();
+
+    // Attack is not the alert-mapped locomotion state, so the sim-tick path
+    // must restore its previously scaled playback rate to one.
+    let non_walk_registry = Rc::new(RefCell::new(EntityRegistry::new()));
+    let non_walk_enemy = {
+        let mut registry = non_walk_registry.borrow_mut();
+        spawn_player(&mut registry, Vec3::new(7.0, 1.21, 5.0));
+        let enemy = spawn_driven_agent(
+            &mut registry,
+            Vec3::new(5.0, 1.21, 5.0),
+            LogicalState::Attack,
+            "attack",
+        );
+        let mut mesh = registry
+            .get_component::<MeshComponent>(enemy)
+            .expect("driven agent keeps mesh")
+            .clone();
+        mesh.animation.as_mut().unwrap().rate = RATE_MIN;
+        registry
+            .set_component(enemy, mesh)
+            .expect("scaled non-walk mesh should update");
+        enemy
+    };
+    run_driven_agent_sim_tick(
+        non_walk_registry.clone(),
+        &world,
+        &nav_graph,
+        1.0,
+        &mut progress,
+        &mut ai_warned,
+        &mut mover_states,
+    );
+    assert_eq!(
+        non_walk_registry
+            .borrow()
+            .get_component::<MeshComponent>(non_walk_enemy)
+            .unwrap()
+            .animation
+            .as_ref()
+            .unwrap()
+            .rate,
+        1.0,
+        "non-walk states rest at the authored playback rate",
+    );
+
+    let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+    let enemy = {
+        let mut registry = registry.borrow_mut();
+        spawn_player(&mut registry, Vec3::new(30.0, 1.21, 5.0));
+        spawn_driven_agent(
+            &mut registry,
+            Vec3::new(5.0, 1.21, 5.0),
+            LogicalState::Alert,
+            "locomotion",
+        )
+    };
+
+    // The first tick builds the route and drives actual steering. The second
+    // tick makes the AI select the walk state from that driven velocity.
+    run_driven_agent_sim_tick(
+        registry.clone(),
+        &world,
+        &nav_graph,
+        1.0,
+        &mut progress,
+        &mut ai_warned,
+        &mut mover_states,
+    );
+    run_driven_agent_sim_tick(
+        registry.clone(),
+        &world,
+        &nav_graph,
+        2.0,
+        &mut progress,
+        &mut ai_warned,
+        &mut mover_states,
+    );
+
+    {
+        let registry = registry.borrow();
+        let agent = registry
+            .get_component::<AgentComponent>(enemy)
+            .expect("driven agent keeps steering state");
+        let animation = registry
+            .get_component::<MeshComponent>(enemy)
+            .unwrap()
+            .animation
+            .as_ref()
+            .unwrap();
+        let speed_xz = Vec3::new(agent.velocity.x, 0.0, agent.velocity.z).length();
+        let expected_rate = (speed_xz / agent.move_speed).clamp(RATE_MIN, RATE_MAX);
+        assert_eq!(animation.current_state, "locomotion");
+        assert!(speed_xz > 0.0, "scenario must be driven by steering");
+        assert!(
+            (animation.rate - expected_rate).abs() <= 1.0e-6,
+            "walk rate must use this tick's resolved steering velocity",
+        );
+    }
+
+    let before = {
+        let mut registry = registry.borrow_mut();
+        let mut mesh = registry
+            .get_component::<MeshComponent>(enemy)
+            .expect("driven agent keeps mesh")
+            .clone();
+        let animation = mesh.animation.as_mut().unwrap();
+        animation.rate = RATE_MIN + RATE_CHANGE_EPSILON * 0.5;
+        animation.rebase_time = Some(2.0);
+        animation.rebase_elapsed = 1.0;
+        registry
+            .set_component(enemy, mesh)
+            .expect("sub-epsilon setup should update mesh");
+        registry
+            .get_component::<MeshComponent>(enemy)
+            .expect("driven agent keeps mesh")
+            .clone()
+    };
+    run_driven_agent_sim_tick(
+        registry.clone(),
+        &world,
+        &nav_graph,
+        3.0,
+        &mut progress,
+        &mut ai_warned,
+        &mut mover_states,
+    );
+    assert_eq!(
+        registry
+            .borrow()
+            .get_component::<MeshComponent>(enemy)
+            .expect("driven agent keeps mesh"),
+        &before,
+        "a sub-epsilon post-steering rate change must leave rebase state untouched",
+    );
 }
 
 fn fixed_command_stream() -> Vec<RecordedCommand> {

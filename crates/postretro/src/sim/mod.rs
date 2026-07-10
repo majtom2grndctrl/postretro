@@ -18,9 +18,12 @@ use crate::netcode::{AuthorizedShot, OpenAuthorizedShot, ShotId};
 use crate::scripting_systems;
 use crate::scripting_systems::hit_zones::HitZoneStore;
 use crate::weapon::{self, FireButtonState, WeaponFireAuthorization, WeaponFireCommand};
+use postretro_entities::components::agent::AgentComponent;
+use postretro_entities::components::brain::{BrainComponent, LogicalState};
 use postretro_entities::components::health::{
     DamageContext, HealthComponent, apply_damage_with_context,
 };
+use postretro_entities::components::mesh::MeshComponent;
 use postretro_entities::components::weapon::{UNKNOWN_WEAPON_CREDIT_SOURCE, WeaponComponent};
 use postretro_entities::{ComponentKind, EntityId, EntityRegistry};
 use postretro_scripting_core::reaction_dispatch::ProgressTracker;
@@ -131,6 +134,7 @@ pub(crate) fn simulate_tick(
         let mut registry = registry.borrow_mut();
         // AgentTickResult only carries a diagnostic `replans` counter, not observable sim state, so the return value is intentionally discarded.
         let _ = agent_steering::tick(&mut registry, collision_world, nav_graph, gravity, tick_dt);
+        update_brain_animation_playback_rates(&mut registry, anim_time);
     }
 
     let (authorized_shots, reload_deliveries) =
@@ -154,6 +158,60 @@ pub(crate) fn simulate_tick(
         death,
         authorized_shots,
         reload_deliveries,
+    }
+}
+
+/// Update brain-driven walk playback after steering has resolved this tick's
+/// velocity. `anim_time` is the slow-mo/freeze-gated animation clock sampled by
+/// the renderer. The AI pass's locomotion intent is deliberately not reused: it
+/// is a pre-steering, squared-speed read from the prior tick, while this path
+/// must match the motion the steering system actually produced.
+fn update_brain_animation_playback_rates(registry: &mut EntityRegistry, anim_time: f64) {
+    let rate_inputs: Vec<(EntityId, String, f32)> = registry
+        .iter_with_kind(ComponentKind::Brain)
+        .filter_map(|(id, _)| {
+            let brain = registry.get_component::<BrainComponent>(id).ok()?;
+            let agent = registry.get_component::<AgentComponent>(id).ok()?;
+            let path_state = agent_steering::path_state(registry, id)?;
+            let speed_xz = Vec3::new(path_state.velocity.x, 0.0, path_state.velocity.z).length();
+            let raw_ratio = if agent.move_speed > 0.0 {
+                speed_xz / agent.move_speed
+            } else {
+                1.0
+            };
+            Some((
+                id,
+                brain
+                    .tuning
+                    .states
+                    .animation_for(LogicalState::Alert)
+                    .to_owned(),
+                raw_ratio,
+            ))
+        })
+        .collect();
+
+    for (id, walk_state, raw_ratio) in rate_inputs {
+        let Ok(mut mesh) = registry.get_component::<MeshComponent>(id).cloned() else {
+            continue;
+        };
+        let previous_mesh = mesh.clone();
+        let Some(animation) = mesh.animation.as_mut() else {
+            continue;
+        };
+
+        let rate_input = if animation.current_state == walk_state {
+            raw_ratio
+        } else {
+            1.0
+        };
+        animation.update_playback_rate(rate_input, anim_time);
+
+        // `update_playback_rate` has an epsilon guard. Avoid turning its no-op
+        // path into a registry write by only replacing a changed component.
+        if mesh != previous_mesh {
+            let _ = registry.set_component(id, mesh);
+        }
     }
 }
 

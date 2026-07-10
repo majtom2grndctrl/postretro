@@ -99,6 +99,26 @@ pub(crate) fn build_session() -> Result<BootSession> {
     // the content root and optional boot map. Net role is intentionally NOT
     // parsed here — it defers into `PendingSessionInit`.
     let args: Vec<String> = std::env::args().collect();
+
+    // Headless observability batch mode terminates the process (exit code)
+    // instead of returning a `BootSession`, so `main` never drives a windowless
+    // event loop. Arg detection sits OUTSIDE the feature gate: the driver body is
+    // feature-gated, but the diagnostic for a build without the feature must be
+    // reachable so `--headless` on a stock binary fails loudly.
+    if let Some(runspec_arg) = headless_arg(&args) {
+        #[cfg(feature = "observability")]
+        crate::observability::run_headless(runspec_arg);
+        #[cfg(not(feature = "observability"))]
+        {
+            let _ = runspec_arg;
+            eprintln!(
+                "[Headless] `--headless` requires the `observability` feature; \
+                 launch via `cargo run -p xtask -- observe <runspec>`"
+            );
+            std::process::exit(1);
+        }
+    }
+
     let map_path = resolve_map_path(&args);
     let content_root = resolve_content_root(&args, map_path.as_deref());
     log::info!("[Engine] Content root: {}", content_root.display());
@@ -202,6 +222,29 @@ pub(crate) fn resolve_map_path(args: &[String]) -> Option<String> {
             continue;
         }
         return Some(arg.clone());
+    }
+    None
+}
+
+/// Detect the headless observability batch-mode flag. Returns `Some(path)` when
+/// `--headless <runspec>` / `--headless=<runspec>` is present (inner `None` when
+/// the flag appears with no following value — the driver reports that as an
+/// error), or `None` when the flag is absent. Kept beside the other arg helpers
+/// and OUTSIDE the `observability` feature gate so a stock binary can still detect
+/// the flag and emit the "rebuild with the feature" diagnostic.
+fn headless_arg(args: &[String]) -> Option<Option<&str>> {
+    let mut iter = args.iter().skip(1).peekable();
+    while let Some(arg) = iter.next() {
+        if arg == "--headless" {
+            // A following token that is not itself a flag is the runspec path.
+            let value = iter
+                .next_if(|value| !value.starts_with("--"))
+                .map(String::as_str);
+            return Some(value);
+        }
+        if let Some(value) = arg.strip_prefix("--headless=") {
+            return Some((!value.is_empty()).then_some(value));
+        }
     }
     None
 }
@@ -417,6 +460,43 @@ mod tests {
             resolve_content_root(&args, map_path.as_deref()),
             PathBuf::from("content/mods/my-campaign"),
         );
+    }
+
+    #[test]
+    fn headless_arg_absent_returns_none() {
+        let args = vec!["postretro".to_string()];
+        assert_eq!(headless_arg(&args), None);
+    }
+
+    #[test]
+    fn headless_arg_captures_following_runspec_path() {
+        let args = vec![
+            "postretro".to_string(),
+            "--headless".to_string(),
+            "run.json".to_string(),
+        ];
+        assert_eq!(headless_arg(&args), Some(Some("run.json")));
+    }
+
+    #[test]
+    fn headless_arg_present_without_value_is_some_none() {
+        // A trailing `--headless` (or one followed by another flag) is detected,
+        // but with no path — the driver reports the missing runspec.
+        let args = vec!["postretro".to_string(), "--headless".to_string()];
+        assert_eq!(headless_arg(&args), Some(None));
+
+        let args = vec![
+            "postretro".to_string(),
+            "--headless".to_string(),
+            "--content-root".to_string(),
+        ];
+        assert_eq!(headless_arg(&args), Some(None));
+    }
+
+    #[test]
+    fn headless_arg_accepts_equals_form() {
+        let args = vec!["postretro".to_string(), "--headless=run.json".to_string()];
+        assert_eq!(headless_arg(&args), Some(Some("run.json")));
     }
 
     #[test]

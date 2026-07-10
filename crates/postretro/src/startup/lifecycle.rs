@@ -887,12 +887,12 @@ pub(crate) struct WorldInstallProducts {
     /// Static colliders for every loaded kinematic mover.
     pub(crate) mover_colliders: Vec<crate::collision::moving::MoverCollider>,
     /// A fresh, empty mover tick-state table. Not an install product — it is
-    /// caller-owned per-tick state — returned only so a headless caller has one
-    /// to hand `simulate_tick` without reaching into `App` (the windowed `App`
-    /// field is its own `MoverTickStateTable::default()` and ignores this).
-    /// `allow(dead_code)`: the sole reader is this plan's headless batch runner,
-    /// a sibling task not yet landed; the windowed path deliberately never reads it.
-    #[allow(dead_code)]
+    /// caller-owned per-tick state — returned only so the headless batch runner
+    /// has one to hand `simulate_tick` without reaching into `App` (the windowed
+    /// `App` field is its own `MoverTickStateTable::default()` and ignores this).
+    /// The headless driver (`observability::driver`) is the sole reader, so the
+    /// field is dead only in a build without that feature.
+    #[cfg_attr(not(feature = "observability"), allow(dead_code))]
     pub(crate) mover_tick_states: crate::kinematic_mover::MoverTickStateTable,
     /// The spawned player pawn's active weapon instance and its descriptor name,
     /// if a boot pawn spawned.

@@ -2,14 +2,19 @@
 // deterministic JSON serialization that keeps two identical runs byte-identical.
 // See: context/plans/in-progress/agentic-observability
 
-// This module is the vocabulary substrate the headless driver (a later task in
-// the same plan) consumes. Until that driver lands, nothing in-crate calls these
-// entry points, so the staged public surface is intentionally unused.
-#![allow(dead_code)]
+// This module is the vocabulary substrate the headless driver consumes; the
+// driver ([`driver::run_headless`]) is wired from `startup::build_session` behind
+// `--headless`.
 
 mod document;
+mod driver;
 mod runspec;
 
+pub(crate) use driver::run_headless;
+
+// `apply_dump` is re-exported for symmetry with the rest of the dump vocabulary
+// but is reached only through `build_output_document` today; the same is true of
+// a few payload structs the driver serializes transitively rather than by name.
 #[allow(unused_imports)]
 pub(crate) use document::{
     apply_dump, build_output_document, DumpSelection, EntityRecord, OutOfFrame, OutputDocument,

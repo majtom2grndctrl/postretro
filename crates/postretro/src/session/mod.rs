@@ -34,7 +34,9 @@ use crate::scripting_systems;
 use crate::startup::StartupTimings;
 use crate::{audio, netcode, options};
 use postretro_scripting_core::primitives_registry::PrimitiveRegistry;
-use postretro_scripting_core::reaction_dispatch::ProgressTracker;
+use postretro_scripting_core::reaction_dispatch::{
+    ProgressTracker, validate_scoped_sequence_primitives,
+};
 use postretro_scripting_core::runtime::Frontend;
 use postretro_scripting_core::runtime::{ScriptRuntime, ScriptRuntimeConfig};
 use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
@@ -316,71 +318,13 @@ impl Session {
         };
         boot_timings.record("audio_init_complete");
 
-        // 3. Scripting bootstrap: primitive registry, runtime construction, and
-        //    SDK type emission. Runs behind first pixels.
-        //    See: context/lib/scripting.md.
-        let script_ctx = ScriptCtx::new();
-        let mut script_registry = PrimitiveRegistry::new();
-        register_all(&mut script_registry, script_ctx.clone());
-        let script_runtime = ScriptRuntime::new(
-            &script_registry,
-            &ScriptRuntimeConfig::default(),
-            &script_ctx,
-        )
-        .context("failed to construct script runtime")?;
-        // See `ScriptRuntime::new` for why this runs here rather than in the
-        // constructor. See: context/lib/scripting.md §7.
-        postretro_scripting_core::typedef::emit_sdk_types_in_debug(&script_registry);
-        // The runtime is now constructed behind first pixels; record the mark
-        // where it actually fires so the boot order line proves first pixels
-        // precede `script_runtime_ctor`. See: context/lib/boot_sequence.md §1.
-        boot_timings.record("script_runtime_ctor");
-
-        // Rust-only handlers on the sequence-dispatch path — distinct from the
-        // script-facing primitive registry (these never run inside QuickJS/Luau).
-        let mut sequence_registry = SequencedPrimitiveRegistry::new();
-        register_sequenced_light_primitives(&mut sequence_registry, script_ctx.clone());
-        register_sequenced_fog_primitives(&mut sequence_registry, script_ctx.clone());
-
-        // Reaction-primitive handlers invoked by name when a `Primitive` reaction
-        // fires. Populated once at startup; survives level reloads.
-        let mut reaction_registry = ReactionPrimitiveRegistry::new();
-        register_emitter_reaction_primitives(&mut reaction_registry);
-        register_fog_reaction_primitives(&mut reaction_registry);
-
-        // System-reaction handlers (no entity targets) — the second arm of the
-        // shared named-reaction vocabulary. They enqueue typed commands onto
-        // `script_ctx.system_commands`. See: context/lib/scripting.md §10.4.
-        let mut system_registry = SystemReactionRegistry::new();
-        register_system_reaction_primitives(&mut system_registry);
-
-        // Built-in classname dispatch — survives level unload because handlers
-        // describe engine types, not per-level state. See: context/lib/scripting.md.
-        let mut classname_dispatch = ClassnameDispatch::new();
-        register_builtin_classnames(&mut classname_dispatch);
-
-        // Subsystems that each capture a `ScriptCtx` clone (`Rc`-backed handle).
-        // All clones in the script tranche are distributed here.
-        let player_hud_state =
-            scripting_systems::ui_proxy::PlayerHudStatePublisher::new(script_ctx.clone());
-        let flash_decay = scripting_systems::flash_decay::FlashDecay::new(script_ctx.clone());
-        let vignette_decay =
-            scripting_systems::vignette_decay::VignetteDecay::new(script_ctx.clone());
-        let shake_decay = scripting_systems::shake_decay::ShakeDecay::new(script_ctx.clone());
-        let input_mode_tracker =
-            scripting_systems::input_mode::InputModeTracker::new(script_ctx.clone());
-        let scripting = ScriptingCore {
-            script_runtime,
-            script_ctx,
-            sequence_registry,
-            reaction_registry,
-            system_registry,
-            player_hud_state,
-            flash_decay,
-            vignette_decay,
-            shake_decay,
-            input_mode_tracker,
-        };
+        // 3. Scripting bootstrap: primitive registry, runtime construction, SDK
+        //    type emission, the Rust-side registries, classname dispatch, and
+        //    every `ScriptCtx`-clone subsystem. Extracted into
+        //    `build_scripting_core` and shared verbatim with the headless
+        //    observability path so the two paths cannot drift. Runs behind first
+        //    pixels; records `script_runtime_ctor`. See: context/lib/scripting.md.
+        let (scripting, classname_dispatch) = build_scripting_core(boot_timings)?;
 
         let mut input_system = input::InputSystem::new(input::default_bindings());
         input_system.set_mouse_sensitivity(player_options.mouse_sensitivity);
@@ -493,5 +437,262 @@ impl Session {
             #[cfg(feature = "dev-tools")]
             debug_ui: None,
         })
+    }
+}
+
+/// Construct the scripting core — the script VM runtime, script context, all
+/// Rust-side registries (sequence/reaction/system), the classname dispatch table,
+/// and every subsystem that captures a `ScriptCtx` clone — shared verbatim
+/// between [`Session::build`] (windowed) and the headless observability path so
+/// the two cannot drift. Returns the assembled [`ScriptingCore`] and the separate
+/// [`ClassnameDispatch`] field (dispatch is not part of `ScriptingCore`). The
+/// screen-effect decay fields on `ScriptingCore` are built here too and sit unused
+/// on the headless path.
+///
+/// Records `script_runtime_ctor` into `timings` at the exact point
+/// `Session::build` has always recorded it (right after SDK-type emission), so the
+/// boot-order marks are unchanged. The only fallible step is script-runtime
+/// construction. See: context/lib/boot_sequence.md §1, context/lib/scripting.md §12.
+fn build_scripting_core(
+    timings: &mut StartupTimings,
+) -> Result<(ScriptingCore, ClassnameDispatch)> {
+    let script_ctx = ScriptCtx::new();
+    let mut script_registry = PrimitiveRegistry::new();
+    register_all(&mut script_registry, script_ctx.clone());
+    let script_runtime = ScriptRuntime::new(
+        &script_registry,
+        &ScriptRuntimeConfig::default(),
+        &script_ctx,
+    )
+    .context("failed to construct script runtime")?;
+    // See `ScriptRuntime::new` for why this runs here rather than in the
+    // constructor. See: context/lib/scripting.md §7.
+    postretro_scripting_core::typedef::emit_sdk_types_in_debug(&script_registry);
+    // The runtime is now constructed behind first pixels; record the mark where it
+    // actually fires so the boot order line proves first pixels precede
+    // `script_runtime_ctor`. See: context/lib/boot_sequence.md §1.
+    timings.record("script_runtime_ctor");
+
+    // Rust-only handlers on the sequence-dispatch path — distinct from the
+    // script-facing primitive registry (these never run inside QuickJS/Luau).
+    let mut sequence_registry = SequencedPrimitiveRegistry::new();
+    register_sequenced_light_primitives(&mut sequence_registry, script_ctx.clone());
+    register_sequenced_fog_primitives(&mut sequence_registry, script_ctx.clone());
+
+    // Reaction-primitive handlers invoked by name when a `Primitive` reaction
+    // fires. Populated once at startup; survives level reloads.
+    let mut reaction_registry = ReactionPrimitiveRegistry::new();
+    register_emitter_reaction_primitives(&mut reaction_registry);
+    register_fog_reaction_primitives(&mut reaction_registry);
+
+    // System-reaction handlers (no entity targets) — the second arm of the shared
+    // named-reaction vocabulary. They enqueue typed commands onto
+    // `script_ctx.system_commands`. See: context/lib/scripting.md §10.4.
+    let mut system_registry = SystemReactionRegistry::new();
+    register_system_reaction_primitives(&mut system_registry);
+
+    // Built-in classname dispatch — survives level unload because handlers
+    // describe engine types, not per-level state. A separate `Session` field, not
+    // inside `ScriptingCore`. See: context/lib/scripting.md.
+    let mut classname_dispatch = ClassnameDispatch::new();
+    register_builtin_classnames(&mut classname_dispatch);
+
+    // Subsystems that each capture a `ScriptCtx` clone (`Rc`-backed handle). All
+    // clones in the script tranche are distributed here.
+    let player_hud_state =
+        scripting_systems::ui_proxy::PlayerHudStatePublisher::new(script_ctx.clone());
+    let flash_decay = scripting_systems::flash_decay::FlashDecay::new(script_ctx.clone());
+    let vignette_decay = scripting_systems::vignette_decay::VignetteDecay::new(script_ctx.clone());
+    let shake_decay = scripting_systems::shake_decay::ShakeDecay::new(script_ctx.clone());
+    let input_mode_tracker =
+        scripting_systems::input_mode::InputModeTracker::new(script_ctx.clone());
+
+    let scripting = ScriptingCore {
+        script_runtime,
+        script_ctx,
+        sequence_registry,
+        reaction_registry,
+        system_registry,
+        player_hud_state,
+        flash_decay,
+        vignette_decay,
+        shake_decay,
+        input_mode_tracker,
+    };
+    Ok((scripting, classname_dispatch))
+}
+
+impl ScriptingCore {
+    /// Drain the validated mod manifest's engine-global registrations into the
+    /// `DataRegistry`: entity-type descriptors, the map catalog, global reactions
+    /// (validated against the sequence registry), and global crossings. Shared by
+    /// the windowed splash path and the headless driver so the two cannot drift —
+    /// without this drain the archetype sweep sees an empty entity-type list and
+    /// no player pawn spawns.
+    ///
+    /// Scope: the `DataRegistry` surface only. The windowed path additionally
+    /// drains the manifest's UI trees, theme, fonts, and frontend after this call
+    /// (all UI-lifetime state a headless run has no home for). A `None` manifest
+    /// (debug build, no start-script) is a no-op here; the headless driver rejects
+    /// that case up front via [`require_headless_mod_manifest`].
+    /// See: context/lib/boot_sequence.md §3, context/lib/scripting.md §2.
+    pub(crate) fn drain_manifest_registrations(&mut self) {
+        let Some(manifest) = self.script_runtime.mod_manifest_mut() else {
+            return;
+        };
+        // `manifest` borrows `self.script_runtime`; `data_registry` and
+        // `sequence_registry` are disjoint fields, so all three coexist.
+        let mut data_registry = self.script_ctx.data_registry.borrow_mut();
+        for desc in std::mem::take(&mut manifest.entities) {
+            data_registry.upsert_entity_type(desc);
+        }
+        data_registry.replace_maps(std::mem::take(&mut manifest.maps));
+        let global_reactions = validate_scoped_sequence_primitives(
+            std::mem::take(&mut manifest.reactions),
+            &self.sequence_registry,
+        );
+        data_registry.replace_global_reactions(global_reactions);
+        data_registry.replace_global_crossings(std::mem::take(&mut manifest.crossings));
+    }
+}
+
+// --- Headless observability session construction ---------------------------
+//
+// A reduced session-construction path beside `Session::build`: the scripting core
+// only (script runtime + context, registries, classname dispatch, the data-script
+// runner living on the runtime), with no audio, input, UI/modal stack, net
+// endpoint, player options I/O, or window. A headless driver (a LATER task) loads
+// a `.prl` map, runs fixed ticks with scripted commands, dumps world state, and
+// exits — without a GPU or display server. A net endpoint is deliberately omitted,
+// not designed out: Epic 15 Phase 4's dedicated server attaches one to this same
+// path later. See: context/plans/in-progress/agentic-observability.
+
+/// Shared hint naming the observe launcher, used by both headless preconditions.
+#[cfg(feature = "observability")]
+const OBSERVE_LAUNCH_HINT: &str =
+    "launch headless via `cargo run -p xtask -- observe <runspec>`, which builds \
+     the `scripts-build` sidecar before running";
+
+/// Reduced session-lifetime container for headless runs: the scripting core and
+/// the classname dispatch table, plus the content root derived from the runspec
+/// map path. No windowed session-lifetime state (audio, input, UI, net, options).
+/// See the module-level comment above.
+#[cfg(feature = "observability")]
+pub(crate) struct HeadlessSession {
+    /// Scripting core shared verbatim with [`Session`]. Mod-init and the
+    /// data-script runner live on `scripting.script_runtime`; the manifest drain
+    /// is [`ScriptingCore::drain_manifest_registrations`].
+    pub(crate) scripting: ScriptingCore,
+
+    /// Built-in classname dispatch table — a separate field, matching `Session`.
+    pub(crate) classname_dispatch: ClassnameDispatch,
+
+    /// Content root derived from the runspec map path (windowed derives from
+    /// argv). The driver uses it to run mod-init and resolve the map.
+    pub(crate) content_root: PathBuf,
+}
+
+#[cfg(feature = "observability")]
+impl HeadlessSession {
+    /// Build the reduced headless session for `map_path`. Derives the content root
+    /// from the map path via `content_root_from_map` (the windowed helper), then
+    /// requires the `scripts-build` sidecar exactly as the windowed engine does —
+    /// rejecting with a diagnostic that names the observe launcher, because
+    /// debug-build `run_mod_init` treats a missing start-script as a non-fatal
+    /// `Ok(None)` rather than an error. Finally builds the scripting core shared
+    /// with [`Session::build`].
+    ///
+    /// Mod-init, the `None`-manifest check ([`require_headless_mod_manifest`]), and
+    /// the manifest drain ([`ScriptingCore::drain_manifest_registrations`]) are
+    /// LATER driver steps, not part of construction.
+    pub(crate) fn build(map_path: &std::path::Path) -> Result<Self> {
+        require_scripts_build_sidecar()?;
+        let content_root = crate::startup::session::content_root_from_map(map_path.to_str());
+        // Headless has no boot-timing surface; the shared extractor records its
+        // `script_runtime_ctor` mark into a throwaway.
+        let mut timings = StartupTimings::new();
+        let (scripting, classname_dispatch) = build_scripting_core(&mut timings)?;
+        Ok(Self {
+            scripting,
+            classname_dispatch,
+            content_root,
+        })
+    }
+}
+
+/// Reject a headless run when the `scripts-build` sidecar is absent. The headless
+/// path needs it exactly as the windowed engine does; debug-build `run_mod_init`
+/// treats a missing start-script as a non-fatal `Ok(None)`, so this must reject up
+/// front rather than relying on mod-init to fail. Detection touches process env;
+/// the pure decision lives in [`require_scripts_build_present`] for unit testing.
+#[cfg(feature = "observability")]
+fn require_scripts_build_sidecar() -> Result<()> {
+    require_scripts_build_present(
+        postretro_scripting_core::watcher::TsCompilerPath::detect().is_some(),
+    )
+}
+
+/// Pure core of [`require_scripts_build_sidecar`]: error naming the observe
+/// launcher when the sidecar is absent.
+#[cfg(feature = "observability")]
+fn require_scripts_build_present(present: bool) -> Result<()> {
+    if present {
+        Ok(())
+    } else {
+        anyhow::bail!("[Headless] `scripts-build` sidecar not found; {OBSERVE_LAUNCH_HINT}");
+    }
+}
+
+/// Reject a headless run when mod-init produced no manifest. In debug builds
+/// `run_mod_init` returns `Ok` with a `None` manifest when no start-script exists,
+/// so a driver must call this after mod-init rather than trusting its `Result` — a
+/// `None` manifest means the entity-type registry stays empty and no player pawn
+/// would spawn. Pure and unit-testable; the driver passes
+/// `runtime.mod_manifest().is_some()`.
+#[cfg(feature = "observability")]
+pub(crate) fn require_headless_mod_manifest(manifest_present: bool) -> Result<()> {
+    if manifest_present {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "[Headless] mod-init produced no manifest (missing start-script); {OBSERVE_LAUNCH_HINT}"
+        );
+    }
+}
+
+#[cfg(all(test, feature = "observability"))]
+mod headless_tests {
+    use super::*;
+
+    #[test]
+    fn scripts_build_present_is_ok_when_sidecar_found() {
+        assert!(require_scripts_build_present(true).is_ok());
+    }
+
+    #[test]
+    fn scripts_build_absent_errors_and_names_observe_launcher() {
+        let err = require_scripts_build_present(false).expect_err("absent sidecar must reject");
+        let msg = format!("{err}");
+        assert!(msg.contains("scripts-build"), "names the sidecar: {msg}");
+        assert!(
+            msg.contains("cargo run -p xtask -- observe"),
+            "names the observe launcher: {msg}",
+        );
+    }
+
+    #[test]
+    fn headless_mod_manifest_is_ok_when_present() {
+        assert!(require_headless_mod_manifest(true).is_ok());
+    }
+
+    #[test]
+    fn headless_mod_manifest_none_errors_and_names_observe_launcher() {
+        let err = require_headless_mod_manifest(false).expect_err("None manifest must reject");
+        let msg = format!("{err}");
+        assert!(msg.contains("manifest"), "names the missing manifest: {msg}");
+        assert!(
+            msg.contains("cargo run -p xtask -- observe"),
+            "names the observe launcher: {msg}",
+        );
     }
 }

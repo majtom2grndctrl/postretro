@@ -114,7 +114,7 @@ option (the driver already resolves names to an internal `target_segment` index)
 | enable-on-spawn | `enabled_on_spawn: bool` → seeds `armed` | `enabled_on_spawn` (single byte) | none | `enabled_on_spawn` (choices 0/1) |
 | trigger state | `armed`/`latched`/`rearm_remaining_ms` on the component (serde) | serde only; **not on the wire** (E18 seam) | none | n/a |
 | mover query kind | `QueryFilter::KinematicMover`; `WorldQueryComponent` variant | n/a | `world.query({ component: "kinematic_mover", tag })` (snake literal, matching `fog_volume`) | n/a |
-| mover handle | `collect_mover_handles` → `MoverEntity` handle | n/a | `MoverEntityHandle` (`sdk/lib/entities/movers.{ts,luau}`) | n/a |
+| mover handle | `collect_kinematic_mover_handles_json` → `MoverEntity` handle | n/a | `MoverEntityHandle` (`sdk/lib/entities/movers.{ts,luau}`) — SDK wrapper around the Rust `MoverEntity` handle; the name split is intentional Rust-vs-SDK layering, not drift | n/a |
 | mover target node | `KinematicMoverComponent.target_segment: Option<u16>` (phase, replicated); `waypoint_names: Vec<String>` (static, not replicated) | wire `WireKinematicMoverState.target_segment: Option<u16>` | via `goToPathNode` | n/a |
 | use input | `Action::Use` consumed by trigger system | wire `WireMovementInput.use_pressed: bool` | n/a | n/a |
 
@@ -131,12 +131,16 @@ cover both. The trigger component is **not** replicated this slice — no
   baseline/delta, and drift/round-trip tests. The client needs it to predict a
   `goToPathNode` hold — without it a predicted mover overshoots the target node.
 - **`WireMovementInput`** gains `use_pressed: bool`. Update its `bitcode` encode/decode,
-  raw↔typed conversion, and the `InputCommand` round-trip tests. The host reads the
-  replicated edge for remote players; the local player reads `Action::Use` directly.
+  raw↔typed conversion, and the `InputCommand` round-trip tests. In co-op the host reads
+  `Action::Use` directly for its own local player and the replicated `use_pressed` edge
+  only for remote players; a client reads its local `Action::Use` and sends
+  `use_pressed` to the host.
 - Bump `SNAPSHOT_VERSION` 8 → 9 and the transport wire-version/`protocol_id` gate (both
-  are existing-type layout changes — see networking.md's two-gate handshake). The
-  engine/net `component_kind_discriminant` drift guard is unaffected: no new replicated
-  kind is added (`TriggerVolume = 14` is engine-only, like the other non-wire kinds).
+  are existing-type layout changes — see networking.md's two-gate handshake). Adding
+  `TriggerVolume = 14` extends the engine/net `component_kind_discriminant` map and its
+  drift test additively, the same way the non-replicated `Light` kind is already covered
+  — but no new *replicated* kind enters the wire/replicated set; no net-side wire
+  constant is added for it.
 
 ### PRL `TriggerVolumeSection` (`SectionId::TriggerVolumes = 44`)
 
@@ -161,6 +165,9 @@ encoding; emit only when the map has triggers.
 - [ ] `sdk/TrenchBroom/postretro.fgd` includes `@SolidClass = trigger_volume` with keys
   `activation`, `target_tag`, `command`, `command_arg`, `fire_mode`, `rearm_ms`,
   `enabled_on_spawn`, `_tags` (inspection gate — no automated FGD test exists).
+  `activation`, `command`, and `fire_mode` are FGD `choices` enums (TrenchBroom-side
+  constraint); `prl-build` still validates them (AC 3) for maps authored outside
+  TrenchBroom.
 - [ ] `prl-build` compiles a map with one `trigger_volume` brush into a PRL
   `TriggerVolumes` section (id 44). The trigger brush is absent from static geometry,
   static BVH, static collision, portals, lightmap/SDF occluder bakes, and navmesh
@@ -173,8 +180,9 @@ encoding; emit only when the map has triggers.
   through serde. Trigger-less and mover-less maps load and behave unchanged.
 - [ ] A `touch` trigger fires its command when a player capsule enters its volume
   (rising edge). A `fire_mode = once` trigger fires exactly once; a `multiple` trigger
-  re-fires only after `rearm_ms` elapses; an `enabled_on_spawn = 0` trigger does not
-  fire until enabled — verified in the deterministic sim.
+  re-fires only after `rearm_ms` elapses; an `enabled_on_spawn = 0` trigger stays inert
+  this slice (never fires) — verified in the deterministic sim. Enabling a disabled
+  trigger at runtime is E18.
 - [ ] A `use` trigger fires only when a player capsule overlaps the volume **and** a Use
   rising edge occurs the same tick; capsule overlap alone does not fire it.
 - [ ] Every touch and use activation reaches command dispatch only through
@@ -218,10 +226,13 @@ type; the applier co-locates with the driver in `crates/postretro/src/kinematic_
 Implement the **Command Semantics** table exactly — pure phase mutation, no wall-clock,
 no RNG. Extend `KinematicMoverComponent` with `target_segment: Option<u16>` (phase) and
 `waypoint_names: Vec<String>` (static, seeded at construction alongside `waypoints`; not
-replicated). Extend the deterministic driver (`advance_mover`) so that when
-`target_segment` is `Some`, the mover advances toward it and holds on arrival (endpoint
-wait then idle), clearing `target_segment`; `target_segment` supersedes `once`/`ping_pong`
-endpoint reversal until reached. `go_to_path_node` resolves the node name against
+replicated). Extend the deterministic driver — the single-tick integrator
+`advance_mover_phase_one_tick` (invoked each tick by the driver entry point
+`run_kinematic_mover_tick`; `advance_mover` is a private inner helper, not itself the
+extension point) — so that when `target_segment` is `Some`, the mover advances toward it
+and holds on arrival (endpoint wait then idle), clearing `target_segment`;
+`target_segment` supersedes `once`/`ping_pong` endpoint reversal until reached.
+`go_to_path_node` resolves the node name against
 `waypoint_names` to an index; unknown names warn and no-op. The driver stays a pure
 function of {phase, static path, dt} so host and client reproduce it identically.
 
@@ -239,8 +250,9 @@ current last variant `KinematicMover = 13`), and a
 `ComponentValue`, registry storage, serde, the `component_kind_name` reverse map
 (`crates/entities/src/ffi.rs`), and the `component_kind_discriminant` map + drift test
 (`crates/postretro/src/netcode/mod.rs`) — **no** net-side constant (kind 14 is not
-replicated this slice, like `Light`). `component_kind_from_name` keeps `trigger_volume`
-unmapped (not script-queryable). The component carries static config
+replicated this slice, like `Light`). `component_kind_from_name` keeps both
+`trigger_volume` and `kinematic_mover` unmapped (neither is script-attachable;
+`kinematic_mover` remains query-only, per Task 4). The component carries static config
 { `activation`, `target_tag`, `command: MoverCommand`, `fire_mode`, `rearm_ms`,
 `enabled_on_spawn` } and mutable state { `armed`, `latched`, `rearm_remaining_ms` };
 `armed` seeds from `enabled_on_spawn`.
@@ -268,9 +280,12 @@ Add a fixed-tick trigger system that runs after player movement settles (a new
 update-order stage after Player movement tick, before AI brain tick — see
 entity_model.md §5). Each tick, for each trigger, the system computes activation against
 authoritative player state: `touch` = a player capsule's rising-edge entry into the
-trigger AABB (track prior-overlap per trigger to detect the edge); `use` = capsule
-overlap plus a Use rising edge for that player. Single-player reads `Action::Use`
-locally; co-op reads the host-side per-player `use_pressed` (Task 5). On activation, call
+trigger AABB (track prior-overlap per (trigger, player) pair, so each player's rising
+edge is detected independently — required for correct co-op behavior with multiple
+players); `use` = capsule overlap plus a Use rising edge for that player.
+Single-player and, in co-op, the host's own local player read `Action::Use` directly;
+for every remote player the host reads the replicated per-player `use_pressed`
+(Task 5). On activation, call
 the sole gate `evaluate_trigger_activation(&TriggerVolumeComponent, activator: PlayerId)
 -> Fire | Suppress`, which this slice decides on armed/latched/rearm only and logs the
 discarded activator in dev builds. On `Fire`: resolve `target_tag` to entities
@@ -292,8 +307,13 @@ single-gate assertion; end-to-end trigger → mover command → observed motion.
 Register `kinematic_mover` as a `world.query` component kind: add the
 `WorldQueryComponent` enum variant (`crates/lighting/src/script_primitives.rs`, snake
 literal `kinematic_mover` matching `fog_volume`), a `QueryFilter::KinematicMover { tag }`
-arm and `collect_mover_handles` in `crates/postretro/src/scripting/entity_world_primitives.rs`,
-and a `MoverEntity` handle type (id, position, tags). Add
+arm and `collect_kinematic_mover_handles_json` in `crates/postretro/src/scripting/entity_world_primitives.rs`,
+and a `MoverEntity` handle type (id, position, tags). Query-ability and attach-ability
+are separate mechanisms: this registration makes `kinematic_mover` readable via
+`world.query`, but `component_kind_from_name`'s existing hard rejection of
+`kinematic_mover` in the FromJs/FromLua `setComponent` paths (`crates/entities/src/ffi.rs`)
+must stay in place — scripts may read mover handles but must not be able to spawn/attach
+a raw `KinematicMover` component. Add
 `sdk/lib/entities/movers.{ts,luau}` — a `MoverEntityHandle` wrapper whose `start()`,
 `stop()`, `reverse()`, and `goToPathNode(node)` build reaction step descriptors (the
 `SequenceStep { id, primitive, args }` shape lights/fog use), delegated to from
@@ -329,10 +349,11 @@ and that a client-issued Use press fires a use trigger on the host.
 ### Task 6: Demo map, diagnostics, and documentation
 
 Extend a dev map with a `trigger_volume` wired to A's elevator/platform (a touch pad that
-starts it, and a use panel that sends it to a named node). Diagnostics: optional debug-line
-overlay for trigger AABBs and their target tags; log one summary at level load (trigger
-count, activation/command breakdown). Update context docs where the durable contract
-changed:
+starts it, and a use panel that sends it to a named node). Diagnostics (non-gated
+deliverable — no AC): optional debug-line overlay for trigger AABBs and their target
+tags; log one summary at level load (trigger count, activation/command breakdown).
+Update context docs where the durable contract changed (also non-gated — docs, not
+covered by an AC):
 
 - `entity_model.md` — `TriggerVolume` component and the new trigger stage in the §5
   update-order table (after Player movement, before AI brain).
